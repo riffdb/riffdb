@@ -265,7 +265,6 @@ const TICKET_DETAIL_SQL: &str =
             t.reporter_id::text, t.assignee_id::text, t.status, t.title,
             p.name AS project_name,
             o.name AS organization_name,
-            u.email AS assignee_email,
             u.display_name AS assignee_display_name
      FROM ticket t
      JOIN project p
@@ -1194,18 +1193,18 @@ impl AppBackend for PostgresAppBackend {
             organization_id: ticket.organization_id,
             name: ticket_row.get(8),
         };
-        let assignee = match (
-            ticket_row.get::<_, Option<&str>>(9),
-            ticket_row.get::<_, Option<&str>>(10),
-        ) {
-            (Some(email), Some(display_name)) => Some(UserRow {
+        // The detail page projects the assignee as `user_id` and `display_name`,
+        // exactly what the RiffDB `TicketPage` query returns, so both backends
+        // execute one canonical semantic payload shape; the email is not part
+        // of the page on either side.
+        let assignee = ticket_row
+            .get::<_, Option<&str>>(9)
+            .map(|display_name| UserRow {
                 organization_id: ticket.organization_id,
                 user_id: ticket.assignee_id,
-                email: email.to_owned(),
+                email: String::new(),
                 display_name: display_name.to_owned(),
-            }),
-            _ => None,
-        };
+            });
 
         let comment_rows = client
             .query(

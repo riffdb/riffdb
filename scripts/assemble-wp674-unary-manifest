@@ -68,10 +68,7 @@ def main() -> int:
         selected.append(("workstation", args.workstation.absolute()))
     selected.append(("n1", args.n1.absolute()))
     selected.append(("e2", args.e2.absolute()))
-    for expected, path in (
-        *selected,
-        ("e2", args.e2.absolute()),
-    ):
+    for expected, path in selected:
         fragment = read_fragment(path)
         identity = (
             fragment.get("source_revision"),

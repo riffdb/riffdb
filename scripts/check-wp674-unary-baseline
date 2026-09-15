@@ -376,10 +376,15 @@ def verify_candidate(
             "runner_sha256",
             "riffdbd_sha256",
             "harness_sha256",
+            "method",
         }
         or candidate.get("schema") != CANDIDATE_SCHEMA
     ):
         fail(f"{label}: exact candidate identity is absent")
+    # ADR-0171: every banked receipt records which backend the stability rule
+    # binds, so a candidate measured under a different rule fails method drift.
+    if candidate.get("method") != {"stability_rule_binds": "gated_backend"}:
+        fail(f"{label}: candidate stability rule is not bound to the gated backend")
     if candidate.get("source_tree_clean") is not True:
         fail(f"{label}: source tree was not clean")
     for key in (
@@ -1716,6 +1721,7 @@ def fake_report(manifest: dict[str, Any], profile: str, scenario: str) -> dict[s
             "harness_sha256": manifest["harness_sha256"],
             "runner_sha256": "4" * 64,
             "riffdbd_sha256": "5" * 64,
+            "method": {"stability_rule_binds": "gated_backend"},
         },
         "backend_execution_order": [
             "postgres_safe_app",
