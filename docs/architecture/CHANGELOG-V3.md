@@ -895,9 +895,9 @@ A reconnect resets only frame chaining at the confirmed receipt position.
 The consumer has no database writer, source-acknowledgement callback or command
 admission dependency. Tests cover failures before and after sink persistence,
 exact retry, overflow, reconnect, malformed frames, gaps, frontier mismatch and
-redacted diagnostics. This is an internal foundation: the concrete archive sink,
-operator configuration and offline archive restore remain unfinished. The
-bounded external manifest codec is described below.
+redacted diagnostics. This is an internal foundation: operator configuration and
+offline archive restore remain unfinished. The bounded external manifest codec
+and filesystem sink are described below.
 No archive CLI availability or wall-clock recovery promise is implied.
 
 ### External archive manifest V1
@@ -928,14 +928,41 @@ and exact descriptor comparison. No V3 or BackupManifestV1 bytes change.
 
 Encryption tag `0` declares operator-permitted unencrypted storage; tag `1`
 declares operator-managed sink encryption. The descriptor performs no encryption
-and attests no external encryption enforcement. A future concrete sink must
-honor the configured posture before releasing archive bytes. Manifest decoding
+and attests no external encryption enforcement. Sink composition must honor the
+configured posture before releasing archive bytes. Manifest decoding
 alone neither establishes backup validity nor permits restore: the repository
 must select an exact terminal record and verify the complete suffix before any
-database replacement. Filesystem publication, archive configuration and restore
-are still unfinished; no new recovery-granularity promise is made by this codec.
+database replacement. Archive configuration and restore are still unfinished;
+no new recovery-granularity promise is made by this codec.
 
 Regenerate the four deterministic first/successor vectors for both encryption
 postures with `./scripts/generate-archive-manifest-fixtures`; `--check` verifies
 them without writing. The generator participates in `check-generated`. These
 new format vectors require the package's human fixture review before closure.
+
+### Filesystem archive custody
+
+The storage backend now provides an exclusively locked private filesystem
+repository. It receives only already validated frames and independently verified
+backup binding inputs; it has no database writer or source-acknowledgement port.
+Immutable frame and manifest files are addressed by the first covered physical
+receipt sequence. Their complete bytes and directory entries become durable
+before `CURRENT` is atomically replaced and its directory synced. `CURRENT`
+contains the same existing manifest encoding, with no second record format.
+
+An uncertain write keeps consumer progress unchanged. Retry compares the exact
+pending bytes, resolves a possibly completed selector rename and synchronizes
+the selected pair before confirming durability. Reopen walks from the original
+backup fence to the exact selected terminal manifest, validating every linked
+descriptor and complete frame with one frame in memory. Missing, corrupt,
+reordered or foreign records refuse; directory ordering never selects a head.
+Cancellation is checked between frames and grants no recovered progress.
+
+Only after successful prefix validation may recovery remove the three fixed
+staging names and the exact next unconfirmed frame/manifest pair. All five names
+are size-checked before cleanup; unrelated entries remain untouched. Symlinks,
+nonprivate roots and changed lock identities refuse. Process-exit tests cover
+each staged-file, immutable-pair and selector boundary; independent uncertain-I/O
+tests require exact retry at those same nine boundaries. This repository does
+not implement encryption, retention policy, object-store access or the offline
+restore ceremony; WP-749 remains open for that composition and its full proof.

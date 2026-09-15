@@ -252,13 +252,14 @@ pub use maintenance::validate_maintenance_receipt_fixture;
 #[doc(hidden)]
 pub use maintenance::validate_migration_receipt_fixture;
 pub use maintenance::{
-    RedbBootstrapCandidate, RedbBootstrapCatalogSession, RedbBootstrapMaterializationInput,
-    RedbBootstrapMaterializer, RedbBootstrapReceiverRepository, RedbBootstrapRepository,
-    RedbBootstrapSourceBuild, RedbBootstrapStage, RedbBootstrapVerification,
-    RedbFollowerColumnarBuild, RedbFollowerColumnarScratch, RedbHeldBootstrapSource,
-    RedbMaintenanceOperationEvidence, RedbMaintenanceReconciliation, RedbMaintenanceStorage,
-    RedbMigrationDiskReservation, RedbPublishedBootstrapCandidate, RedbSealedStagedRestore,
-    RedbStagedRestore, RedbValidatedBootstrapCandidate, RedbVerifiedBootstrapTransfer,
+    RedbArchiveRepository, RedbBootstrapCandidate, RedbBootstrapCatalogSession,
+    RedbBootstrapMaterializationInput, RedbBootstrapMaterializer, RedbBootstrapReceiverRepository,
+    RedbBootstrapRepository, RedbBootstrapSourceBuild, RedbBootstrapStage,
+    RedbBootstrapVerification, RedbFollowerColumnarBuild, RedbFollowerColumnarScratch,
+    RedbHeldBootstrapSource, RedbMaintenanceOperationEvidence, RedbMaintenanceReconciliation,
+    RedbMaintenanceStorage, RedbMigrationDiskReservation, RedbPublishedBootstrapCandidate,
+    RedbSealedStagedRestore, RedbStagedRestore, RedbValidatedBootstrapCandidate,
+    RedbVerifiedBootstrapTransfer,
 };
 #[doc(hidden)]
 pub use maintenance::{
