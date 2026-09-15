@@ -1381,6 +1381,7 @@ version = "0.1.0"
 dependencies = [
  "prost",
  "riffdb-contract-ir",
+ "riffdb-errors",
  "riffdb-proto",
  "riffdb-types",
  "sha2",
