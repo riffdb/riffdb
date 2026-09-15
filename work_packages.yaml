@@ -22387,6 +22387,10 @@ work_packages:
   - Offline `riffdb storage restore --archive` replaying the archived suffix through the follower
     applier after a verified full restore, stopping at the last archived or an operator-supplied
     earlier sequence and failing closed on any gap, checksum, or incarnation mismatch
+  - Exact archive restore receipt amendment accepted 2026-09-15, with archive-only maintenance
+    receipt V3 and distinct RestoreArchivedBackup RPC; preserve V1/V2 bytes, freeze verified
+    backup/archive selection on retry, retain exact application-sequence stopping, staged
+    authorization and incarnation publication, and prove every receipt and publication crash edge
   - Handbook backup/restore pages stating sequence granularity and the absence of a wall-clock
     point-in-time promise
   - Test `archived_suffix_restore_recovers_to_last_archived_sequence` under
