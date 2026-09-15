@@ -112,6 +112,7 @@ async fn follower_authentication_rechecks_published_capabilities_and_withdraws_o
         readers.clone(),
         notifier,
         &fixture.path.with_extension("projections"),
+        &[],
         activator,
         graph_keys,
         audience.clone(),

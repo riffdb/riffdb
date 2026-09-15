@@ -23,6 +23,7 @@ impl RunningFollowerService {
         reads: FollowerReadSnapshots,
         notifier: ProjectionNotifier,
         projections_root: &std::path::Path,
+        projections: &[crate::config::ConfiguredProjection],
         activator: RiffDbServiceActivator,
         keys: ProductionDigestKeys,
         audience: Audience,
@@ -41,6 +42,11 @@ impl RunningFollowerService {
         {
             return Err(ProductionGraphBuildError::CurrentView);
         }
+        crate::columnar_adapter::validate_follower_columnar_admission(&initial, projections)
+            .map_err(|source| ProductionGraphBuildError::ColumnarRegistration {
+                source,
+                cleanup: None,
+            })?;
         drop(initial);
         let FollowerStartupEvidence {
             database_id,

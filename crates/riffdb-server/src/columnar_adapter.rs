@@ -5,6 +5,16 @@
 
 //! Server-side columnar apply source and published projection port.
 
+#[path = "columnar_admission.rs"]
+mod admission;
+pub(crate) use admission::validate_follower_columnar_admission;
+#[cfg(test)]
+use admission::validate_follower_columnar_controls;
+#[cfg(test)]
+#[path = "columnar_admission_tests.rs"]
+mod admission_tests;
+use admission::{resolve_columnar_bindings, validate_columnar_configuration};
+
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
 use std::path::{Path, PathBuf};
@@ -1336,82 +1346,14 @@ pub(crate) fn prepare_columnar_control_foundation(
     projections_root: &Path,
     history_incarnation: u64,
 ) -> Result<Vec<ColumnarControlBinding>, ColumnarRegistrationError> {
-    if projections.len() > 256
-        || projections.iter().any(|projection| {
-            let name = projection.name();
-            name.is_empty()
-                || name.len() > 256
-                || name == "."
-                || name == ".."
-                || name.contains('/')
-                || name.contains('\\')
-        })
-    {
-        return Err(ColumnarRegistrationError::definition(
-            first_projection_name(projections),
-        ));
-    }
+    validate_columnar_configuration(projections)?;
     let active = ActiveCatalogSnapshot::read(storage).map_err(|error| {
         ColumnarRegistrationError::storage(error, first_projection_name(projections))
     })?;
-    let Some(active) = active else {
-        if projections.is_empty() {
-            return Ok(Vec::new());
-        }
-        return Err(ColumnarRegistrationError::no_active_catalog(
-            first_projection_name(projections),
-        ));
-    };
-    let bundle = active.bundle().bundle();
-    let mut bindings =
-        Vec::with_capacity(projections.len() + bundle.schema().vector_production_specs().len());
-    let mut names = BTreeSet::new();
-    let mut sources = BTreeSet::new();
-    for configured in projections {
-        let name = configured.name().to_owned();
-        let definition = resolve_configured_projection(configured, bundle)?;
-        let spec = ColumnarProjectionSpecV1::for_scalar(&definition, bundle)
-            .map_err(|_| ColumnarRegistrationError::definition(name.clone()))?;
-        insert_control_binding(
-            &mut bindings,
-            &mut names,
-            &mut sources,
-            ColumnarControlBinding {
-                name,
-                definition,
-                spec,
-                is_vector: false,
-            },
-        )?;
-    }
-    for production in bundle.schema().vector_production_specs() {
-        let entity = bundle
-            .schema()
-            .entity(production.entity())
-            .ok_or_else(|| ColumnarRegistrationError::definition("production-vector"))?;
-        let vector_field = entity
-            .record()
-            .field(production.field())
-            .ok_or_else(|| ColumnarRegistrationError::definition("production-vector"))?;
-        let name = format!("{}.{}", entity.name(), vector_field.name());
-        let definition = resolve_vector_registration(bundle, entity, &name)?;
-        let spec = ColumnarProjectionSpecV1::for_vector(&definition, production.field(), bundle)
-            .map_err(|_| ColumnarRegistrationError::definition(name.clone()))?;
-        insert_control_binding(
-            &mut bindings,
-            &mut names,
-            &mut sources,
-            ColumnarControlBinding {
-                name,
-                definition,
-                spec,
-                is_vector: true,
-            },
-        )?;
-    }
-    if bindings.len() > 256 {
-        return Err(ColumnarRegistrationError::definition("columnar-control"));
-    }
+    let mut bindings = resolve_columnar_bindings(
+        projections,
+        active.as_ref().map(|active| active.bundle().bundle()),
+    )?;
 
     let mut fresh = Vec::new();
     for binding in &bindings {
@@ -1473,21 +1415,6 @@ pub(crate) fn prepare_columnar_control_foundation(
     }
     bindings.sort_by(|left, right| left.name.cmp(&right.name));
     Ok(bindings)
-}
-
-fn insert_control_binding(
-    bindings: &mut Vec<ColumnarControlBinding>,
-    names: &mut BTreeSet<String>,
-    sources: &mut BTreeSet<Vec<u8>>,
-    binding: ColumnarControlBinding,
-) -> Result<(), ColumnarRegistrationError> {
-    if !names.insert(binding.name.clone())
-        || !sources.insert(binding.spec.source().to_canonical_bytes())
-    {
-        return Err(ColumnarRegistrationError::duplicate_name(binding.name));
-    }
-    bindings.push(binding);
-    Ok(())
 }
 
 fn reconcile_common_control(
@@ -2502,7 +2429,7 @@ mod tests {
         ColumnarProjectionControlWriteResultV1, ColumnarProjectionLifecycleV1,
     };
 
-    const ADAPTER_BOARD_CONTRACT: &str = r#"
+    pub(super) const ADAPTER_BOARD_CONTRACT: &str = r#"
 contract AdapterBoard version 1 {
   entity Ticket {
     key (organization_id: uuid, ticket_id: uuid)
@@ -2532,7 +2459,7 @@ contract AdapterBoard version 1 {
 }
 "#;
 
-    const PRODUCTION_VECTOR_CONTRACT: &str = r#"
+    pub(super) const PRODUCTION_VECTOR_CONTRACT: &str = r#"
 contract VectorBoard version 1 {
   entity Document {
     key (organization_id: uuid, document_id: uuid)
@@ -2613,7 +2540,7 @@ contract VectorBoard version 1 {
             .expect("activate checked adapter ports")
     }
 
-    fn board_runtime(label: &str) -> (Arc<ColumnarRuntime>, tempfile::TempDir) {
+    pub(super) fn board_runtime(label: &str) -> (Arc<ColumnarRuntime>, tempfile::TempDir) {
         let scope = adapter_scope(label);
         let database_path = scope.path().join("db.redb");
         let projections_root = scope.path().join("projections");
@@ -2693,7 +2620,9 @@ contract VectorBoard version 1 {
         (runtime, scope)
     }
 
-    fn production_vector_runtime(label: &str) -> (Arc<ColumnarRuntime>, tempfile::TempDir) {
+    pub(super) fn production_vector_runtime(
+        label: &str,
+    ) -> (Arc<ColumnarRuntime>, tempfile::TempDir) {
         let scope = adapter_scope(label);
         let database_path = scope.path().join("db.redb");
         let projections_root = scope.path().join("projections");
