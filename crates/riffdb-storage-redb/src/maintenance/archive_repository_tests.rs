@@ -371,3 +371,100 @@ fn archive_repository_reader_refuses_selector_withdrawal_between_frames() {
         "restoration cannot revive a failed reader"
     );
 }
+
+fn selection(manifest: ArchiveManifestV1, empty: bool) -> ArchiveRestoreSelectionV3 {
+    ArchiveRestoreSelectionV3::new(
+        OfflineBackupManifestIdentityV1::new(
+            BackupIntegrityChecksumV1::new(manifest.full_backup_manifest_digest().to_vec())
+                .unwrap(),
+            manifest.lineage().database_id(),
+            None,
+        ),
+        manifest.lineage(),
+        manifest.backup_fence(),
+        if empty {
+            ArchiveRestoreSuffixV3::Empty
+        } else {
+            ArchiveRestoreSuffixV3::Terminal(Box::new(manifest))
+        },
+    )
+    .unwrap()
+}
+
+#[test]
+fn archive_selection_reader_keeps_frozen_terminal_and_empty_suffix_after_current_advances() {
+    let scope = crate::test_path::ScopedDirectory::new("archive-frozen-reader");
+    let path = scope.join("archive");
+    let (lineage, fence) = fixture::fixture();
+    let mut consumer = ArchiveConsumerV1::new(open(&path).unwrap(), lineage, fence);
+    let first_bytes = fixture::frame(lineage, fence, 1);
+    let first = consumer.append(first_bytes.clone()).unwrap();
+    let repository = consumer.into_sink();
+    let frozen = selection(repository.head().unwrap(), false);
+    let empty = selection(repository.head().unwrap(), true);
+    let absent = open(&scope.join("empty-archive")).unwrap();
+    assert!(
+        absent.frames_for_selection(&frozen).is_err(),
+        "a missing retained terminal is never treated as an empty suffix"
+    );
+    let mut consumer = ArchiveConsumerV1::new(repository, lineage, first);
+    consumer.begin_stream().unwrap();
+    let last = consumer.append(fixture::frame(lineage, first, 2)).unwrap();
+    drop(consumer);
+    let current_bytes = fs::read(path.join("CURRENT")).unwrap();
+    let repository = open(&path).unwrap();
+    let frames = repository
+        .frames_for_selection(&frozen)
+        .unwrap()
+        .collect::<Result<Vec<_>, _>>()
+        .unwrap();
+    assert_eq!(frames.len(), 1);
+    assert_eq!(frames[0].1, first_bytes);
+    assert_eq!(frames[0].0.covered(), first);
+    assert_eq!(repository.frames_for_selection(&empty).unwrap().count(), 0);
+    assert_eq!(repository.position(), last);
+    assert_eq!(repository.frames().count(), 2);
+    assert_eq!(fs::read(path.join("CURRENT")).unwrap(), current_bytes);
+    let mut reader = repository.frames_for_selection(&frozen).unwrap();
+    fs::write(
+        path.join("frame-0000000000000002.v3"),
+        b"changed frozen frame",
+    )
+    .unwrap();
+    assert!(reader.next().unwrap().is_err());
+    assert!(reader.next().is_none());
+}
+
+#[test]
+fn archive_selection_reader_refuses_foreign_backup_or_fence_before_reading_frames() {
+    let scope = crate::test_path::ScopedDirectory::new("archive-foreign-selection");
+    let path = scope.join("archive");
+    let (lineage, fence) = fixture::fixture();
+    let repository = open(&path).unwrap();
+    for (digest, before) in [
+        ([0x44; 32], fence),
+        (
+            [0x33; 32],
+            ChangelogHistoryPointV3::new(
+                fence.sequence().checked_next().unwrap(),
+                [0x55; 32],
+                fence.frontier(),
+            ),
+        ),
+    ] {
+        let selection = ArchiveRestoreSelectionV3::new(
+            OfflineBackupManifestIdentityV1::new(
+                BackupIntegrityChecksumV1::new(digest.to_vec()).unwrap(),
+                lineage.database_id(),
+                None,
+            ),
+            lineage,
+            before,
+            ArchiveRestoreSuffixV3::Empty,
+        )
+        .unwrap();
+        assert!(repository.frames_for_selection(&selection).is_err());
+    }
+    assert_eq!(repository.position(), fence);
+    assert!(!path.join("CURRENT").exists());
+}

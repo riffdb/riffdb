@@ -4,8 +4,9 @@ use super::*;
 use crate::maintenance::{RedbArchiveRepository, archive_backup::read_only_database};
 use redb::ReadableDatabase;
 use riffdb_storage_api::{
-    AuthoritativeNamespaceV1 as N, ChangelogFrameV3, ChangelogHistoryStateV3,
-    ReplicationAuthorityClassV1, ReplicationFollowerStateV3, ReplicationTransferV1,
+    ArchiveRestoreSelectionV3, ArchiveRestoreSuffixV3, AuthoritativeNamespaceV1 as N,
+    ChangelogFrameV3, ChangelogHistoryStateV3, ReplicationAuthorityClassV1,
+    ReplicationFollowerStateV3, ReplicationTransferV1,
     proto_codec::encode_replication_follower_state_v3,
 };
 use std::{
@@ -19,6 +20,7 @@ pub struct RedbArchiveRestoreStage {
     stage: RedbStagedRestore,
     file: File,
     history: ChangelogHistoryStateV3,
+    selection: ArchiveRestoreSelectionV3,
     archive: RedbArchiveRepository,
 }
 
@@ -29,6 +31,7 @@ pub struct RedbReplayedArchiveRestore {
     stage: RedbStagedRestore,
     file: File,
     history: ChangelogHistoryStateV3,
+    selection: ArchiveRestoreSelectionV3,
 }
 
 impl RedbStagedRestore {
@@ -38,6 +41,27 @@ impl RedbStagedRestore {
     pub fn begin_archive_replay(
         self,
         archive: RedbArchiveRepository,
+        cancellation: &AtomicBool,
+    ) -> Result<RedbArchiveRestoreStage, StorageError> {
+        self.begin_archive_replay_inner(archive, None, cancellation)
+    }
+
+    /// Replays only the independently checked selection retained by an archive
+    /// receipt. Later archive frames never replace its terminal manifest or empty
+    /// suffix. The complete selected prefix is verified before stage conversion.
+    pub fn begin_selected_archive_replay(
+        self,
+        archive: RedbArchiveRepository,
+        selection: ArchiveRestoreSelectionV3,
+        cancellation: &AtomicBool,
+    ) -> Result<RedbArchiveRestoreStage, StorageError> {
+        self.begin_archive_replay_inner(archive, Some(selection), cancellation)
+    }
+
+    fn begin_archive_replay_inner(
+        self,
+        archive: RedbArchiveRepository,
+        selection: Option<ArchiveRestoreSelectionV3>,
         cancellation: &AtomicBool,
     ) -> Result<RedbArchiveRestoreStage, StorageError> {
         cancelled(cancellation)?;
@@ -62,7 +86,30 @@ impl RedbStagedRestore {
         {
             return Err(corrupt());
         }
-        for frame in archive.frames() {
+        let selection = match selection {
+            Some(selection) => selection,
+            None => ArchiveRestoreSelectionV3::new(
+                self.manifest_identity.clone(),
+                history.lineage(),
+                history.tail(),
+                archive
+                    .head()
+                    .map_or(ArchiveRestoreSuffixV3::Empty, |head| {
+                        ArchiveRestoreSuffixV3::Terminal(Box::new(head))
+                    }),
+            )
+            .map_err(|_| corrupt())?,
+        };
+        if selection.backup() != &self.manifest_identity
+            || selection.lineage() != history.lineage()
+            || selection.backup_fence() != history.tail()
+        {
+            return Err(corrupt());
+        }
+        for frame in archive
+            .frames_for_selection(&selection)
+            .map_err(invalid_archive)?
+        {
             cancelled(cancellation)?;
             drop(frame.map_err(invalid_archive)?);
         }
@@ -153,6 +200,7 @@ impl RedbStagedRestore {
             stage: self,
             file,
             history,
+            selection,
             archive,
         };
         value.verify()?;
@@ -188,6 +236,7 @@ impl RedbArchiveRestoreStage {
             stage: self.stage,
             file: self.file,
             history,
+            selection: self.selection,
         })
     }
 
@@ -202,7 +251,11 @@ impl RedbArchiveRestoreStage {
         if applier.durable_history()? != self.history {
             return Err(corrupt());
         }
-        for item in self.archive.frames() {
+        for item in self
+            .archive
+            .frames_for_selection(&self.selection)
+            .map_err(invalid_archive)?
+        {
             cancelled(cancellation)?;
             self.verify()?;
             let (manifest, bytes) = item.map_err(invalid_archive)?;
@@ -226,7 +279,11 @@ impl RedbArchiveRestoreStage {
         self.verify()?;
         applier.verify_database_file(&self.file)?;
         let history = applier.durable_history()?;
-        if history.tail() != self.archive.position() {
+        let selected_end = match self.selection.suffix() {
+            ArchiveRestoreSuffixV3::Empty => self.selection.backup_fence(),
+            ArchiveRestoreSuffixV3::Terminal(terminal) => terminal.covered(),
+        };
+        if history.tail() != selected_end {
             return Err(corrupt());
         }
         Ok(history)
@@ -239,7 +296,12 @@ impl RedbReplayedArchiveRestore {
     pub fn staged_database_file(&self) -> &Path {
         self.stage.staged_database_file()
     }
-    /// Original lineage and exact last archived physical/dual frontier.
+    /// Exact immutable backup/archive selection replayed by this private stage.
+    #[must_use]
+    pub const fn selection(&self) -> &ArchiveRestoreSelectionV3 {
+        &self.selection
+    }
+    /// Original lineage and exact selected physical/dual frontier.
     #[must_use]
     pub const fn history(&self) -> ChangelogHistoryStateV3 {
         self.history

@@ -2,8 +2,9 @@
 use super::path_guard::PinnedDirectory;
 use riffdb_storage_api::{
     ARCHIVE_MANIFEST_V1_BYTES, ArchiveConsumerErrorV1 as Error, ArchiveEncryptionPostureV1,
-    ArchiveFrameSinkV1, ArchiveFrameV1, ArchiveManifestV1, ChangelogHistoryPointV3,
-    ChangelogLineageV3, MAX_CHANGELOG_FRAME_BYTES, StorageError, StorageErrorKind,
+    ArchiveFrameSinkV1, ArchiveFrameV1, ArchiveManifestV1, ArchiveRestoreSelectionV3,
+    ArchiveRestoreSuffixV3, ChangelogHistoryPointV3, ChangelogLineageV3, MAX_CHANGELOG_FRAME_BYTES,
+    StorageError, StorageErrorKind,
 };
 use std::{
     ffi::OsStr,
@@ -52,6 +53,7 @@ struct ReadPair {
 pub struct RedbArchiveFrames<'a> {
     repository: &'a RedbArchiveRepository,
     previous: Option<ArchiveManifestV1>,
+    terminal: Option<ArchiveManifestV1>,
     finished: bool,
 }
 
@@ -72,7 +74,7 @@ impl Iterator for RedbArchiveFrames<'_> {
             {
                 return Err(Error::ResyncRequired);
             }
-            let Some(head) = self.repository.head else {
+            let Some(head) = self.terminal else {
                 return Ok(None);
             };
             let pair = self.repository.read_pair(self.previous.as_ref(), head)?;
@@ -203,8 +205,47 @@ impl RedbArchiveRepository {
         RedbArchiveFrames {
             repository: self,
             previous: None,
+            terminal: self.head,
             finished: false,
         }
+    }
+
+    /// Streams only the receipt's frozen prefix, even if a later reopen observes
+    /// an advanced CURRENT. The caller must validate the complete selected stream
+    /// before changing a restore stage. Construction checks binding and bounds;
+    /// iteration checks each exact frame and the terminal manifest bytes.
+    pub fn frames_for_selection(
+        &self,
+        selection: &ArchiveRestoreSelectionV3,
+    ) -> Result<RedbArchiveFrames<'_>, Error> {
+        self.verify()?;
+        if selection.lineage() != self.lineage {
+            return Err(Error::ForeignLineage);
+        }
+        if selection.backup_fence() != self.backup_fence
+            || selection.backup().manifest_checksum().as_bytes() != self.backup_digest
+        {
+            return Err(Error::InvalidManifest);
+        }
+        let terminal = match selection.suffix() {
+            ArchiveRestoreSuffixV3::Empty => None,
+            ArchiveRestoreSuffixV3::Terminal(manifest) => {
+                self.check_binding(manifest)?;
+                if self
+                    .head
+                    .is_none_or(|head| manifest.covered().sequence() > head.covered().sequence())
+                {
+                    return Err(Error::InvalidPosition);
+                }
+                Some(**manifest)
+            }
+        };
+        Ok(RedbArchiveFrames {
+            repository: self,
+            previous: None,
+            terminal,
+            finished: false,
+        })
     }
 
     fn verify(&self) -> Result<(), Error> {
