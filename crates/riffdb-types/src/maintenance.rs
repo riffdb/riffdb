@@ -4,7 +4,7 @@ use std::error::Error;
 use std::fmt;
 
 use crate::{
-    ContractBundleHash, ContractMigrationInputHash, MigrationBundleHash,
+    CommitSequence, ContractBundleHash, ContractMigrationInputHash, MigrationBundleHash,
     OfflineMaintenanceInputHash, hash_contract_migration_input, hash_offline_maintenance_input,
 };
 
@@ -91,6 +91,100 @@ fn validate_backup_name_v1(value: &str) -> Result<(), BackupNameV1Error> {
         return Err(BackupNameV1Error::InvalidByte { index });
     }
     Ok(())
+}
+
+/// Maximum bytes in one configured archive name.
+pub const MAX_ARCHIVE_NAME_V1_BYTES: usize = MAX_BACKUP_NAME_V1_BYTES;
+
+/// A checked operator-configured archive name, never a filesystem path or URI.
+///
+/// Its distinct type prevents a backup identity from silently selecting an
+/// archive. The accepted grammar is exactly the bounded backup-name grammar.
+#[derive(Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
+pub struct ArchiveNameV1(BackupNameV1);
+
+impl ArchiveNameV1 {
+    /// Checks the exact ASCII grammar without normalization or path resolution.
+    pub fn new(value: impl Into<String>) -> Result<Self, ArchiveNameV1Error> {
+        BackupNameV1::new(value)
+            .map(Self)
+            .map_err(ArchiveNameV1Error)
+    }
+
+    /// Borrows the exact configured archive name.
+    #[must_use]
+    pub fn as_str(&self) -> &str {
+        self.0.as_str()
+    }
+
+    /// Borrows the canonical ASCII name bytes.
+    #[must_use]
+    pub fn as_bytes(&self) -> &[u8] {
+        self.0.as_bytes()
+    }
+}
+
+impl fmt::Display for ArchiveNameV1 {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        self.0.fmt(formatter)
+    }
+}
+
+/// A bounded archive-name validation failure that retains no rejected input.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct ArchiveNameV1Error(BackupNameV1Error);
+
+impl fmt::Display for ArchiveNameV1Error {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str(match self.0 {
+            BackupNameV1Error::Empty => "archive name must not be empty",
+            BackupNameV1Error::TooLong => "archive name exceeds 64 bytes",
+            BackupNameV1Error::InvalidFirstByte => {
+                "archive name must start with a lowercase ASCII letter or digit"
+            }
+            BackupNameV1Error::InvalidByte { .. } => "archive name contains an invalid byte",
+        })
+    }
+}
+
+impl Error for ArchiveNameV1Error {}
+
+/// Exact application-sequence selection for an offline archive restore.
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+pub enum ArchiveRestoreStopV1 {
+    /// Resolve once to a verified terminal archive selection before replay.
+    LastArchived,
+    /// Restore exactly this application sequence, without rounding to a frame.
+    AtApplicationSequence(CommitSequence),
+}
+
+/// Binds every archive restore input to a distinct canonical input domain.
+///
+/// Artifact selection is resolved and frozen separately in receipt V3. In
+/// particular, `LastArchived` never hashes a moving archive head into a request
+/// identity. A fresh transport request ID does not change this retry identity.
+#[must_use]
+pub fn archive_restore_input_hash(
+    backup_name: &BackupNameV1,
+    archive_name: &ArchiveNameV1,
+    stop: ArchiveRestoreStopV1,
+    confirmation: OfflineMaintenanceReplacementConfirmation,
+) -> OfflineMaintenanceInputHash {
+    let mut canonical = Vec::with_capacity(176);
+    canonical.extend_from_slice(b"riffdb.archive-restore-input/v1\0");
+    for name in [backup_name.as_bytes(), archive_name.as_bytes()] {
+        canonical.push(u8::try_from(name.len()).expect("checked names have at most 64 bytes"));
+        canonical.extend_from_slice(name);
+    }
+    canonical.push(confirmation.tag());
+    match stop {
+        ArchiveRestoreStopV1::LastArchived => canonical.push(0),
+        ArchiveRestoreStopV1::AtApplicationSequence(sequence) => {
+            canonical.push(1);
+            canonical.extend_from_slice(&sequence.get().to_be_bytes());
+        }
+    }
+    hash_offline_maintenance_input(&canonical)
 }
 
 /// The closed semantic kind of one offline maintenance operation.
@@ -207,6 +301,113 @@ pub fn offline_maintenance_input_hash(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // req: REP-007
+    #[test]
+    fn archive_name_uses_the_exact_bounded_backup_grammar_without_becoming_a_path() {
+        for accepted in ["a", "0", "daily-archive", "archive_2026"] {
+            let name = ArchiveNameV1::new(accepted).expect("checked archive name");
+            assert_eq!(name.as_str(), accepted);
+            assert_eq!(name.as_bytes(), accepted.as_bytes());
+        }
+        for rejected in [
+            "",
+            "-archive",
+            "_archive",
+            ".maintenance",
+            "Upper",
+            "a.b",
+            "a/b",
+            "a\\b",
+            "c:archive",
+            "archive space",
+            "café",
+            "https://sink",
+            "a\0b",
+        ] {
+            assert!(ArchiveNameV1::new(rejected).is_err(), "{rejected:?}");
+        }
+        assert!(ArchiveNameV1::new("a".repeat(64)).is_ok());
+        assert!(ArchiveNameV1::new("a".repeat(65)).is_err());
+        let error = ArchiveNameV1::new("secret/sink").unwrap_err();
+        assert!(!error.to_string().contains("secret"));
+        assert!(!format!("{error:?}").contains("secret"));
+    }
+
+    // req: REP-007
+    #[test]
+    fn archive_restore_retry_identity_binds_every_field_and_is_distinct_from_plain_restore() {
+        use crate::CommitSequence;
+        use ArchiveRestoreStopV1::{AtApplicationSequence, LastArchived};
+        use OfflineMaintenanceReplacementConfirmation::{AllowReplaceNonemptyTarget, NotProvided};
+        let backup = BackupNameV1::new("before-upgrade").unwrap();
+        let archive = ArchiveNameV1::new("daily").unwrap();
+        let baseline = archive_restore_input_hash(&backup, &archive, LastArchived, NotProvided);
+        // Independent SHA-256 fixture for the ADR-0011 frame and exact input domain.
+        assert_eq!(
+            baseline.into_bytes(),
+            [
+                0x32, 0xfd, 0x15, 0x67, 0xf6, 0xdd, 0x2b, 0x4d, 0xc6, 0x4c, 0x78, 0xaa, 0x67, 0x54,
+                0xfe, 0x7d, 0x79, 0x46, 0xe8, 0xc7, 0xb2, 0xfb, 0xbe, 0x24, 0xad, 0x7d, 0xb5, 0xb3,
+                0xc7, 0x1b, 0x1f, 0x50,
+            ]
+        );
+        assert_eq!(
+            baseline,
+            archive_restore_input_hash(&backup, &archive, LastArchived, NotProvided)
+        );
+        let variants = [
+            archive_restore_input_hash(
+                &BackupNameV1::new("other").unwrap(),
+                &archive,
+                LastArchived,
+                NotProvided,
+            ),
+            archive_restore_input_hash(
+                &backup,
+                &ArchiveNameV1::new("other").unwrap(),
+                LastArchived,
+                NotProvided,
+            ),
+            archive_restore_input_hash(&backup, &archive, LastArchived, AllowReplaceNonemptyTarget),
+            archive_restore_input_hash(
+                &backup,
+                &archive,
+                AtApplicationSequence(CommitSequence::first()),
+                NotProvided,
+            ),
+            archive_restore_input_hash(
+                &backup,
+                &archive,
+                AtApplicationSequence(CommitSequence::new(u64::MAX).unwrap()),
+                NotProvided,
+            ),
+            offline_maintenance_input_hash(
+                OfflineMaintenanceOperationKind::RestoreBackup,
+                &backup,
+                NotProvided,
+            ),
+        ];
+        for (index, value) in variants.iter().enumerate() {
+            assert_ne!(*value, baseline);
+            assert!(!variants[..index].contains(value));
+        }
+        // Field boundaries are canonical even for names with ambiguous concatenation.
+        assert_ne!(
+            archive_restore_input_hash(
+                &BackupNameV1::new("a").unwrap(),
+                &ArchiveNameV1::new("bc").unwrap(),
+                LastArchived,
+                NotProvided
+            ),
+            archive_restore_input_hash(
+                &BackupNameV1::new("ab").unwrap(),
+                &ArchiveNameV1::new("c").unwrap(),
+                LastArchived,
+                NotProvided
+            ),
+        );
+    }
 
     #[test]
     fn backup_name_v1_accepts_only_the_exact_ascii_grammar() {

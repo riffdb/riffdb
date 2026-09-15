@@ -1076,3 +1076,14 @@ It freezes verified selection for retries and preserves existing receipt bytes
 and exact application-sequence stopping. Receipt V3 and the administrative
 operation remain implementation work; ordinary restore cannot substitute for
 the archive operation.
+
+The checked archive request primitives now distinguish `ArchiveNameV1` from a
+backup name while reusing its exact 1–64 ASCII-byte grammar. Neither name can
+be a path or URI. `ArchiveRestoreStopV1` admits only last archived or an exact
+nonzero application sequence. The canonical retry hash uses the distinct
+`riffdb.archive-restore-input/v1` input domain inside the existing maintenance
+hash frame and binds both names, stop choice and replacement confirmation.
+It excludes the moving archive head: receipt V3 must freeze verified selection
+separately. Tests pin the hash and prove that changing any request field changes
+identity, including name-boundary ambiguity and the maximum sequence. These
+primitives expose no restore operation and leave V1/V2 receipt bytes unchanged.
