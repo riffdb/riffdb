@@ -46,7 +46,7 @@ riffdb-storage-api = { version = "0.1.0", path = "../riffdb-storage-api", defaul
 riffdb-storage-redb = { version = "0.1.0", path = "../riffdb-storage-redb", default-features = false }
 riffdb-types = { version = "0.1.0", path = "../riffdb-types", default-features = false }
 rustls-pki-types = { version = "=1.15.1", default-features = false, features = ["std"] }
-rustls-webpki = { version = "=0.103.13", default-features = false, features = ["std"] }
+rustls-webpki = { version = "=0.103.14", default-features = false, features = ["std"] }
 serde = { version = "=1.0.229", default-features = false, features = ["derive", "std"] }
 serde_json = { version = "=1.0.150", default-features = false, features = ["std"] }
 tokio = { version = "=1.52.0", default-features = false, features = ["macros", "net", "rt-multi-thread", "signal", "sync", "time"] }

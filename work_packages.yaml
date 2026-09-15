@@ -23813,6 +23813,17 @@ work_packages:
   closure:
     status: open
     decisions_taken:
+    - The storage-api consumer inventory recognizes only the two concrete legacy changelog
+      reader fakes in the original root recovery test under ADR-0207. Missing implementations,
+      mere mentions and unrelated test-only traits still fail negative self-tests; the
+      production crate dependency graph and V3-only production checks remain unchanged.
+    - Security advisory RUSTSEC-2026-0285 is remediated by exact rustls 0.23.45 and its
+      required rustls-webpki 0.103.14 companion. Both cargo deny check and cargo audit
+      passed on 2026-09-14; no advisory exception was added. The complete feature graph
+      is equal after only those version substitutions, and other root lockfile versions,
+      checksums and edges remain unchanged. The independent agent-alpha Rust lock also
+      resolves only these two changes. Broader example/fuzz lock refreshes were excluded
+      because their pre-existing stale graphs proposed unrelated package changes.
     - Obligation names identify the actual semantic command/checkpoint/recovery and frozen
       codec tests. The command proof also runs its process-crash matrix; the compatibility
       proof scans production source for legacy frame consumers while retaining the original

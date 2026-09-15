@@ -81,6 +81,7 @@ fn client_depends_only_on_proto_tonic_types_errors_and_config() {
 }
 
 #[test]
+// req: NET-005
 fn reviewed_transport_and_entropy_graph_remains_exact() {
     let manifest = include_str!("../Cargo.toml");
     assert!(manifest.contains("default = []"));
@@ -100,7 +101,7 @@ fn reviewed_transport_and_entropy_graph_remains_exact() {
         "rustls-pki-types = { version = \"=1.15.1\", default-features = false, features = [\"std\"] }"
     ));
     assert!(manifest.contains(
-        "rustls-webpki = { version = \"=0.103.13\", default-features = false, features = [\"std\"] }"
+        "rustls-webpki = { version = \"=0.103.14\", default-features = false, features = [\"std\"] }"
     ));
     for forbidden in [
         "base64 =",
