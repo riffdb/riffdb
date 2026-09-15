@@ -1249,6 +1249,34 @@ pub struct ColumnarObservation {
 }
 
 impl ColumnarObservation {
+    /// Attach the trusted process database identity to engine-local frontiers.
+    pub(crate) fn scope_to_database(
+        mut self,
+        database_id: riffdb_types::DatabaseId,
+    ) -> Result<Self, ColumnarPortError> {
+        if [
+            self.published_frontier.database_id(),
+            self.head.database_id(),
+        ]
+        .into_iter()
+        .flatten()
+        .any(|existing| existing != database_id)
+        {
+            return Err(ColumnarPortError::Integrity);
+        }
+        self.published_frontier = riffdb_types::ProjectionFrontier::new_scoped(
+            database_id,
+            self.published_frontier.history_incarnation(),
+            self.published_frontier.position(),
+        );
+        self.head = riffdb_types::ProjectionFrontier::new_scoped(
+            database_id,
+            self.head.history_incarnation(),
+            self.head.position(),
+        );
+        Ok(self)
+    }
+
     /// Constructs one complete observation after the engine lock is released.
     #[must_use]
     pub fn new(

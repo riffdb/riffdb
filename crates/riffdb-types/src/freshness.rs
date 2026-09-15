@@ -1,8 +1,8 @@
 //! Opaque commit tokens, projection frontiers, and freshness policies (ADR-0086 §3).
 //!
 //! Wire carriage of these types is a separate protocol concern. This module owns
-//! only the semantic identities: each token/frontier binds a history incarnation
-//! so a restore can never satisfy a stale pre-restore token.
+//! only semantic identities. V2 binds the database as well as its incarnation;
+//! V1 remains readable for primary-only legacy compatibility.
 
 use std::cmp::Ordering;
 use std::error::Error;
@@ -10,29 +10,32 @@ use std::fmt;
 use std::hash::{Hash, Hasher};
 use std::time::Duration;
 
-use crate::{CommitSequence, FrontierPosition};
+use crate::{CommitSequence, DatabaseId, FrontierPosition};
 
 /// Opaque encoding version for [`CommitToken`] and [`ProjectionFrontier`] bytes.
 const FRESHNESS_BYTES_V1: u8 = 0x01;
+/// Database-bound successor; V1 payloads remain byte-exact.
+const FRESHNESS_BYTES_V2: u8 = 0x02;
 
 /// Position tag: no commit has been applied.
 const POSITION_BEFORE_FIRST: u8 = 0x00;
 /// Position tag: applied through an exact nonzero commit sequence.
 const POSITION_APPLIED_THROUGH: u8 = 0x01;
 
-/// An opaque, incarnation-bound commit identity used as a causal freshness fence.
+/// An opaque, scoped commit identity used as a causal freshness fence.
 ///
-/// Internally `(history_incarnation, commit_sequence)`. Public diagnostics redact
+/// V2 binds `(database_id, history_incarnation, commit_sequence)`. Public diagnostics redact
 /// the payload; callers that need wire bytes use [`CommitToken::as_bytes`].
 #[derive(Clone)]
 pub struct CommitToken {
     bytes: Vec<u8>,
+    database_id: Option<DatabaseId>,
     history_incarnation: u64,
     commit_sequence: CommitSequence,
 }
 
 impl CommitToken {
-    /// Builds a token for one exact commit under a history incarnation.
+    /// Builds a legacy V1 token with no database scope. Followers refuse V1.
     #[must_use]
     pub fn new(history_incarnation: u64, commit_sequence: CommitSequence) -> Self {
         let mut bytes = Vec::with_capacity(1 + 8 + 1 + 8);
@@ -42,22 +45,54 @@ impl CommitToken {
         bytes.extend_from_slice(&commit_sequence.to_be_bytes());
         Self {
             bytes,
+            database_id: None,
             history_incarnation,
             commit_sequence,
         }
     }
 
+    /// Builds a V2 token bound to one database and exact history position.
+    #[must_use]
+    pub fn new_scoped(
+        database_id: DatabaseId,
+        history_incarnation: u64,
+        commit_sequence: CommitSequence,
+    ) -> Self {
+        let mut token = Self::new(history_incarnation, commit_sequence);
+        token.bytes = scoped_bytes(database_id, &token.bytes);
+        token.database_id = Some(database_id);
+        token
+    }
+
     /// Parses opaque token bytes produced by [`Self::as_bytes`].
     pub fn from_bytes(bytes: Vec<u8>) -> Result<Self, FreshnessTokenError> {
-        let (history_incarnation, position) = decode_frontier_payload(&bytes)?;
+        let (database_id, history_incarnation, position) = decode_frontier_payload(&bytes)?;
         let FrontierPosition::AppliedThrough(commit_sequence) = position else {
             return Err(FreshnessTokenError::InvalidShape);
         };
         Ok(Self {
             bytes,
+            database_id,
             history_incarnation,
             commit_sequence,
         })
+    }
+
+    /// Database scope; absent only on legacy V1 tokens.
+    #[must_use]
+    pub const fn database_id(&self) -> Option<DatabaseId> {
+        self.database_id
+    }
+
+    /// The exact required frontier, preserving the complete token scope.
+    #[must_use]
+    pub fn frontier(&self) -> ProjectionFrontier {
+        ProjectionFrontier {
+            bytes: self.bytes.clone(),
+            database_id: self.database_id,
+            history_incarnation: self.history_incarnation,
+            position: FrontierPosition::AppliedThrough(self.commit_sequence),
+        }
     }
 
     /// History incarnation bound into the token.
@@ -85,20 +120,21 @@ impl CommitToken {
     }
 }
 
-/// An opaque, incarnation-bound projection visibility frontier.
+/// An opaque, scoped projection visibility frontier.
 ///
-/// Internally `(history_incarnation, FrontierPosition)`. Comparison and
-/// [`ProjectionFrontier::satisfies`] require equal incarnations; a restore that
+/// V2 binds `(database_id, history_incarnation, FrontierPosition)`. Comparison and
+/// [`ProjectionFrontier::satisfies`] require equal scopes; a restore that
 /// bumps the incarnation can never satisfy a pre-restore causal token.
 #[derive(Clone)]
 pub struct ProjectionFrontier {
     bytes: Vec<u8>,
+    database_id: Option<DatabaseId>,
     history_incarnation: u64,
     position: FrontierPosition,
 }
 
 impl ProjectionFrontier {
-    /// Builds a frontier at `position` under a history incarnation.
+    /// Builds an engine-local or legacy V1 frontier with no database scope.
     #[must_use]
     pub fn new(history_incarnation: u64, position: FrontierPosition) -> Self {
         let mut bytes = Vec::with_capacity(1 + 8 + 1 + 8);
@@ -115,18 +151,53 @@ impl ProjectionFrontier {
         }
         Self {
             bytes,
+            database_id: None,
             history_incarnation,
             position,
         }
     }
 
+    /// Builds a V2 frontier bound to one database and history incarnation.
+    #[must_use]
+    pub fn new_scoped(
+        database_id: DatabaseId,
+        history_incarnation: u64,
+        position: FrontierPosition,
+    ) -> Self {
+        let mut frontier = Self::new(history_incarnation, position);
+        frontier.bytes = scoped_bytes(database_id, &frontier.bytes);
+        frontier.database_id = Some(database_id);
+        frontier
+    }
+
     /// Parses opaque frontier bytes produced by [`Self::as_bytes`].
     pub fn from_bytes(bytes: Vec<u8>) -> Result<Self, FreshnessTokenError> {
-        let (history_incarnation, position) = decode_frontier_payload(&bytes)?;
+        let (database_id, history_incarnation, position) = decode_frontier_payload(&bytes)?;
         Ok(Self {
             bytes,
+            database_id,
             history_incarnation,
             position,
+        })
+    }
+
+    /// Database scope; absent only on legacy V1 frontiers.
+    #[must_use]
+    pub const fn database_id(&self) -> Option<DatabaseId> {
+        self.database_id
+    }
+
+    /// Returns a token for an applied position without losing its scope.
+    #[must_use]
+    pub fn commit_token(&self) -> Option<CommitToken> {
+        let FrontierPosition::AppliedThrough(commit_sequence) = self.position else {
+            return None;
+        };
+        Some(CommitToken {
+            bytes: self.bytes.clone(),
+            database_id: self.database_id,
+            history_incarnation: self.history_incarnation,
+            commit_sequence,
         })
     }
 
@@ -154,13 +225,14 @@ impl ProjectionFrontier {
         self.bytes
     }
 
-    /// Whether this frontier covers `required` under the same history incarnation.
+    /// Whether this frontier covers `required` under exactly the same scope.
     ///
-    /// Incarnation mismatch always fails closed (restore must not satisfy a
-    /// pre-restore causal token).
+    /// Database, version-scope, or incarnation mismatch always fails closed.
     #[must_use]
     pub fn satisfies(&self, required: &CommitToken) -> bool {
-        if self.history_incarnation != required.history_incarnation {
+        if self.database_id != required.database_id
+            || self.history_incarnation != required.history_incarnation
+        {
             return false;
         }
         match self.position {
@@ -172,10 +244,12 @@ impl ProjectionFrontier {
     }
 
     /// Sequence distance from this frontier to `head` when both share an
-    /// incarnation and are sequenced.
+    /// database scope and incarnation and are sequenced.
     #[must_use]
     pub fn lag_sequences(&self, head: &Self) -> Option<u64> {
-        if self.history_incarnation != head.history_incarnation {
+        if self.database_id != head.database_id
+            || self.history_incarnation != head.history_incarnation
+        {
             return None;
         }
         match (self.position, head.position) {
@@ -236,29 +310,54 @@ impl fmt::Display for FreshnessTokenError {
 
 impl Error for FreshnessTokenError {}
 
-fn decode_frontier_payload(bytes: &[u8]) -> Result<(u64, FrontierPosition), FreshnessTokenError> {
-    if bytes.len() < 1 + 8 + 1 {
+fn scoped_bytes(database_id: DatabaseId, legacy: &[u8]) -> Vec<u8> {
+    let mut bytes = Vec::with_capacity(legacy.len() + 16);
+    bytes.push(FRESHNESS_BYTES_V2);
+    bytes.extend_from_slice(database_id.as_bytes());
+    bytes.extend_from_slice(&legacy[1..]);
+    bytes
+}
+
+fn decode_frontier_payload(
+    bytes: &[u8],
+) -> Result<(Option<DatabaseId>, u64, FrontierPosition), FreshnessTokenError> {
+    let (database_id, payload) = match bytes.first() {
+        Some(&FRESHNESS_BYTES_V1) => (None, &bytes[1..]),
+        Some(&FRESHNESS_BYTES_V2) => {
+            if bytes.len() < 17 {
+                return Err(FreshnessTokenError::TruncatedOrTrailing);
+            }
+            let database = DatabaseId::from_bytes(bytes[1..17].try_into().expect("length checked"))
+                .map_err(|_| FreshnessTokenError::InvalidShape)?;
+            (Some(database), &bytes[17..])
+        }
+        None => return Err(FreshnessTokenError::TruncatedOrTrailing),
+        _ => return Err(FreshnessTokenError::InvalidShape),
+    };
+    if payload.len() < 8 + 1 {
         return Err(FreshnessTokenError::TruncatedOrTrailing);
     }
-    if bytes[0] != FRESHNESS_BYTES_V1 {
-        return Err(FreshnessTokenError::InvalidShape);
-    }
-    let history_incarnation = u64::from_be_bytes(bytes[1..9].try_into().expect("length checked"));
-    match bytes[9] {
+    let history_incarnation = u64::from_be_bytes(payload[..8].try_into().expect("length checked"));
+    match payload[8] {
         POSITION_BEFORE_FIRST => {
-            if bytes.len() != 10 {
+            if payload.len() != 9 {
                 return Err(FreshnessTokenError::TruncatedOrTrailing);
             }
-            Ok((history_incarnation, FrontierPosition::BeforeFirst))
+            Ok((
+                database_id,
+                history_incarnation,
+                FrontierPosition::BeforeFirst,
+            ))
         }
         POSITION_APPLIED_THROUGH => {
-            if bytes.len() != 18 {
+            if payload.len() != 17 {
                 return Err(FreshnessTokenError::TruncatedOrTrailing);
             }
-            let sequence = u64::from_be_bytes(bytes[10..18].try_into().expect("length checked"));
+            let sequence = u64::from_be_bytes(payload[9..17].try_into().expect("length checked"));
             let commit_sequence =
                 CommitSequence::new(sequence).ok_or(FreshnessTokenError::ZeroCommitSequence)?;
             Ok((
+                database_id,
                 history_incarnation,
                 FrontierPosition::AppliedThrough(commit_sequence),
             ))
@@ -342,6 +441,90 @@ mod tests {
 
     fn seq(value: u64) -> CommitSequence {
         CommitSequence::new(value).expect("nonzero")
+    }
+
+    fn database(seed: u8) -> DatabaseId {
+        DatabaseId::from_unix_milliseconds_and_random(42, [seed; 10]).unwrap()
+    }
+
+    // req: REP-004
+    #[test]
+    fn scoped_freshness_v2_preserves_golden_v1_and_v2_bytes() {
+        let legacy = CommitToken::new(3, seq(42));
+        let token = CommitToken::new_scoped(database(1), 3, seq(42));
+        let before = ProjectionFrontier::new_scoped(database(1), 3, FrontierPosition::BeforeFirst);
+        let fixtures = include_str!("../../../fixtures/freshness/opaque-v1-v2.txt")
+            .lines()
+            .collect::<Vec<_>>();
+        let hex = |bytes: &[u8]| {
+            bytes
+                .iter()
+                .map(|byte| format!("{byte:02x}"))
+                .collect::<String>()
+        };
+        assert_eq!(hex(legacy.as_bytes()), fixtures[0]);
+        assert_eq!(hex(token.as_bytes()), fixtures[1]);
+        assert_eq!(hex(before.as_bytes()), fixtures[2]);
+        for expected in [legacy, token] {
+            let decoded = CommitToken::from_bytes(expected.as_bytes().to_vec()).unwrap();
+            assert_eq!(decoded, expected);
+            let frontier = decoded.frontier();
+            assert_eq!(frontier.commit_token().unwrap(), decoded);
+            assert_eq!(
+                ProjectionFrontier::from_bytes(frontier.as_bytes().to_vec()).unwrap(),
+                frontier
+            );
+            assert!(frontier.satisfies(&decoded));
+        }
+        assert_eq!(
+            ProjectionFrontier::from_bytes(before.as_bytes().to_vec()).unwrap(),
+            before
+        );
+        assert!(before.commit_token().is_none());
+        assert!(CommitToken::from_bytes(before.into_bytes()).is_err());
+    }
+
+    // req: REP-004
+    #[test]
+    fn scoped_freshness_refuses_foreign_database_incarnation_and_unbound_v1() {
+        let token = CommitToken::new_scoped(database(1), 3, seq(42));
+        let frontier = token.frontier();
+        for other in [
+            CommitToken::new_scoped(database(2), 3, seq(42)),
+            CommitToken::new_scoped(database(1), 4, seq(42)),
+            CommitToken::new(3, seq(42)),
+        ] {
+            assert_ne!(token, other);
+            assert!(!frontier.satisfies(&other));
+            assert!(!other.frontier().satisfies(&token));
+            assert_eq!(frontier.lag_sequences(&other.frontier()), None);
+        }
+        assert!(frontier.satisfies(&CommitToken::new_scoped(database(1), 3, seq(41))));
+        assert!(!frontier.satisfies(&CommitToken::new_scoped(database(1), 3, seq(43))));
+        assert_eq!(
+            format!("{token:?}"),
+            "CommitToken { bytes: \"[REDACTED]\", length: 34 }"
+        );
+    }
+
+    // req: REP-004
+    #[test]
+    fn scoped_freshness_decoder_refuses_every_truncation_and_noncanonical_shape() {
+        let bytes = CommitToken::new_scoped(database(1), 3, seq(42)).into_bytes();
+        for length in 0..bytes.len() {
+            assert!(CommitToken::from_bytes(bytes[..length].to_vec()).is_err());
+            assert!(ProjectionFrontier::from_bytes(bytes[..length].to_vec()).is_err());
+        }
+        let mut trailing = bytes.clone();
+        trailing.push(0);
+        assert!(CommitToken::from_bytes(trailing.clone()).is_err());
+        assert!(ProjectionFrontier::from_bytes(trailing).is_err());
+        for (offset, value) in [(0, 3), (7, 0), (9, 0), (25, 2), (33, 0)] {
+            let mut corrupt = bytes.clone();
+            corrupt[offset] = value;
+            assert!(CommitToken::from_bytes(corrupt.clone()).is_err());
+            assert!(ProjectionFrontier::from_bytes(corrupt).is_err());
+        }
     }
 
     #[test]

@@ -158,7 +158,8 @@ fn causal(token: CommitToken, max_wait: Duration) -> FreshnessPolicy {
 }
 
 fn frontier_at(sequence: CommitSequence) -> ProjectionFrontier {
-    ProjectionFrontier::new(
+    ProjectionFrontier::new_scoped(
+        support::database_id(),
         BOARD_HISTORY_INCARNATION,
         FrontierPosition::AppliedThrough(sequence),
     )
@@ -266,7 +267,11 @@ fn board_projected_rows_are_byte_identical_to_the_compiled_board_page() {
         }
 
         let last_sequence = *sequences.last().expect("at least one committed write");
-        let token = CommitToken::new(BOARD_HISTORY_INCARNATION, last_sequence);
+        let token = CommitToken::new_scoped(
+            support::database_id(),
+            BOARD_HISTORY_INCARNATION,
+            last_sequence,
+        );
 
         // Both paths for each shape, at the same frontier (Causal to the last
         // write; no further writes happen during comparison).
@@ -364,7 +369,8 @@ fn causal_token_satisfied_immediately_serves_without_waiting() {
             .board_columnar()
             .wait_until_applied(sequence, Duration::from_secs(10));
 
-        let token = CommitToken::new(BOARD_HISTORY_INCARNATION, sequence);
+        let token =
+            CommitToken::new_scoped(support::database_id(), BOARD_HISTORY_INCARNATION, sequence);
         let (context, _cancellation) = harness.context(0x22);
         let result = harness
             .service
@@ -425,7 +431,8 @@ fn causal_wait_parks_until_real_apply_advances_then_serves_at_the_token() {
             "paused apply must be strictly behind the write"
         );
 
-        let token = CommitToken::new(BOARD_HISTORY_INCARNATION, sequence);
+        let token =
+            CommitToken::new_scoped(support::database_id(), BOARD_HISTORY_INCARNATION, sequence);
         let service = harness.service.clone();
         let projected_request = harness.board_projected_request(
             org,
@@ -504,7 +511,8 @@ fn causal_wait_times_out_with_typed_lagging() {
         );
         let sequence = journaled(&harness, 0x41, request).await;
 
-        let token = CommitToken::new(BOARD_HISTORY_INCARNATION, sequence);
+        let token =
+            CommitToken::new_scoped(support::database_id(), BOARD_HISTORY_INCARNATION, sequence);
         let (context, _cancellation) = harness.context(0x42);
         let result = harness
             .service
@@ -764,7 +772,11 @@ fn stale_incarnation_token_is_never_served() {
             .board_columnar()
             .wait_until_applied(sequence, Duration::from_secs(10));
 
-        let foreign = CommitToken::new(BOARD_HISTORY_INCARNATION + 1, sequence);
+        let foreign = CommitToken::new_scoped(
+            support::database_id(),
+            BOARD_HISTORY_INCARNATION + 1,
+            sequence,
+        );
         let (context, _cancellation) = harness.context(0x72);
         let result = harness
             .service
@@ -836,7 +848,8 @@ fn revocation_mid_wait_denies_at_the_post_wake_safe_point() {
         // Head will advance past `sequence` but never reach the fence below.
         let note = harness.create_note_request("revoke-mid-wait-note", org, uuid(0xd1), "wake");
         let note_sequence = journaled(&harness, 0x82, note).await;
-        let unreachable = CommitToken::new(
+        let unreachable = CommitToken::new_scoped(
+            support::database_id(),
             BOARD_HISTORY_INCARNATION,
             CommitSequence::new(note_sequence.get() + 8).expect("nonzero fence"),
         );
@@ -2028,7 +2041,8 @@ fn causal_aggregates_carry_the_same_frontier_and_token_as_rows() {
         harness
             .board_columnar()
             .wait_until_applied(sequence, Duration::from_secs(10));
-        let token = CommitToken::new(BOARD_HISTORY_INCARNATION, sequence);
+        let token =
+            CommitToken::new_scoped(support::database_id(), BOARD_HISTORY_INCARNATION, sequence);
 
         let body = ProjectedQueryBody::new(CanonicalValue::Uuid(org))
             .with_limit(Some(50))
