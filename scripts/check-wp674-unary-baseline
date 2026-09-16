@@ -76,6 +76,11 @@ SCENARIO_CLASSES = {
         "open_ticket_with_labels",
     },
 }
+# "gate" refuses a corpus on an ADR-0142 absolute service-level miss; "disclose"
+# records the misses in the baseline output (ADR-0183 bank). Set from the CLI.
+ABSOLUTE_CEILING_POLICY = "gate"
+ABSOLUTE_CEILING_MISSES: list[str] = []
+
 ABSOLUTE_CEILINGS_NS = {
     "ordinary_named_read": {"p50_ns": 3_000_000.0, "p95_ns": 6_000_000.0},
     "wide_bounded_named_read": {"p50_ns": 6_000_000.0, "p95_ns": 12_000_000.0},
@@ -582,8 +587,13 @@ def verify_process_evidence(
             require_exact_integer(writer.get("logical_commands_committed"), 0, f"{prefix}.logical_commands")
         else:
             physical_commits = writer["physical_commits"]
+            # The minimal cell's first process generation also serves the three
+            # board-page live crosscheck reads (limits 50, 200, 450); later
+            # generations carry the measured reads only. Every retained column,
+            # including the 2026-08-30 N1 column, records 10,206 then 10,203.
+            expected_reads = 10_206 if index == 0 else 10_203
             if (
-                stage_counts["read_pipeline_stages"] != [10_206] * len(READ_PIPELINE_STAGES)
+                stage_counts["read_pipeline_stages"] != [expected_reads] * len(READ_PIPELINE_STAGES)
                 or stage_counts["write_service_stages"]
                 != [4_000, 23_220, 23_220, 23_220, 4_000]
                 or stage_counts["command_pipeline_stages"]
@@ -1359,10 +1369,19 @@ def verify_corpus(
                 ceilings = ABSOLUTE_CEILINGS_NS[metrics["class"]]
                 for statistic, ceiling in ceilings.items():
                     if metrics["riffdb"][statistic] > ceiling:
-                        fail(
+                        miss = (
                             f"{profile_id}.{scenario}: {statistic} "
                             f"{metrics['riffdb'][statistic]:.0f} exceeds {ceiling:.0f}"
                         )
+                        # An ADR-0183 bank records the low-water values as
+                        # they were measured; an ADR-0142 absolute service
+                        # level miss is disclosed in the baseline rather than
+                        # refusing the bank, and the release gate keeps its
+                        # own refusal.
+                        if ABSOLUTE_CEILING_POLICY == "disclose":
+                            ABSOLUTE_CEILING_MISSES.append(miss)
+                            continue
+                        fail(miss)
             host_digests[scenario] = metrics.pop("host_observation_sha256")
             hardware_digests.add(metrics.pop("hardware_identity_sha256"))
             runner_digests.add(binaries["runner_sha256"])
@@ -1447,6 +1466,11 @@ def verify_corpus(
             for class_name, members in SCENARIO_CLASSES.items()
         },
         "profiles": profiles,
+        **(
+            {"absolute_ceiling_misses": sorted(ABSOLUTE_CEILING_MISSES)}
+            if ABSOLUTE_CEILING_MISSES
+            else {}
+        ),
     }
 
 
@@ -1539,7 +1563,9 @@ def fake_timing(value: int) -> dict[str, Any]:
     }
 
 
-def fake_process_evidence(*, scenario_class_name: str | None) -> dict[str, Any]:
+def fake_process_evidence(
+    *, scenario_class_name: str | None, generation_index: int = 0
+) -> dict[str, Any]:
     if scenario_class_name == "compiled_command":
         read_counts = [0] * len(READ_PIPELINE_STAGES)
         write_counts = [MEASUREMENTS] * len(WRITE_SERVICE_STAGES)
@@ -1551,7 +1577,8 @@ def fake_process_evidence(*, scenario_class_name: str | None) -> dict[str, Any]:
         command_counts = [0] * len(COMMAND_PIPELINE_STAGES)
         physical_commits = logical_commands = 0
     else:
-        read_counts = [10_206] * len(READ_PIPELINE_STAGES)
+        # Generation zero also serves the three board-page crosscheck reads.
+        read_counts = [10_206 if generation_index == 0 else 10_203] * len(READ_PIPELINE_STAGES)
         write_counts = [4_000, 23_220, 23_220, 23_220, 4_000]
         physical_commits = 4_321
         command_counts = [physical_commits] * len(COMMAND_PIPELINE_STAGES)
@@ -1798,7 +1825,8 @@ def fake_minimal_report(manifest: dict[str, Any], profile: str) -> dict[str, Any
     report = fake_report(manifest, profile, first)
     report.pop("unary_qualification")
     report["riffdb_process_evidence"] = [
-        fake_process_evidence(scenario_class_name=None) for _ in range(REPETITIONS)
+        fake_process_evidence(scenario_class_name=None, generation_index=index)
+        for index in range(REPETITIONS)
     ]
     report["backend_execution_order"] = [
         "postgres_minimal",
@@ -2638,7 +2666,17 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--profile", choices=sorted(PROFILE_HARDWARE_RULES))
     parser.add_argument("--comparator", choices=("safe-app", "minimal"))
     parser.add_argument("--scenario", choices=sorted(SCENARIOS))
+    parser.add_argument(
+        "--absolute-ceilings",
+        choices=("gate", "disclose"),
+        default="gate",
+        help="gate: an ADR-0142 absolute service-level miss refuses the corpus (default); "
+        "disclose: the miss is recorded in the baseline as absolute_ceiling_misses "
+        "(ADR-0183 bank)",
+    )
     args = parser.parse_args()
+    global ABSOLUTE_CEILING_POLICY
+    ABSOLUTE_CEILING_POLICY = args.absolute_ceilings
     if args.self_test and any(
         (
             args.manifest,
@@ -2699,6 +2737,8 @@ def main() -> int:
     if args.baseline is not None:
         baseline, _ = load_json(args.baseline, MAX_BASELINE_BYTES)
         output = verify_against_baseline(candidate, baseline)
+    for miss in ABSOLUTE_CEILING_MISSES:
+        print(f"absolute service-level miss disclosed: {miss}", file=sys.stderr)
     encoded = json.dumps(output, indent=2, sort_keys=True) + "\n"
     if args.output is None:
         print(encoded, end="")
