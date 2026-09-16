@@ -3888,12 +3888,7 @@ fn inspect_commit_row(
         value,
         &events,
         sequence,
-        |commands| {
-            let bundles = transaction
-                .open_table(CONTRACT_BUNDLES)
-                .map_err(table_error)?;
-            crate::command_prefix::validate_catalog_images(&bundles, commands.iter())
-        },
+        |commands| crate::command_prefix::validate_catalog_images(transaction, commands.iter()),
     ) {
         Ok(records) => records,
         Err(error) => {

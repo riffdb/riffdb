@@ -131,20 +131,26 @@ Secondary-index puts now require a typed matching key, the command's schema
 binding and its exact owning partition/index epoch. Available prior index images
 also require that owning bucket before replacement or deletion. Resealed wrong
 types and foreign partitions refuse in follower and retained startup tests.
-Startup and follower replay additionally resolve supplied index keys through the
-retained command bundle through a pure catalog-owned validator. Its shared IR
-encoders derive each put's key
-and exact covered record from its entity post-image. A resealed undeclared cover
-field refuses in production startup and follower tests. Only one decoded bundle
-is retained during validation. Supplied puts also require the catalog-derived
-owning partition, and supplied deletions must belong to a command entity.
+Startup and follower replay use a pure catalog-owned validator to resolve
+supplied index keys through the retained command bundle. Its shared IR encoders
+derive each put's key and exact covered record from its entity post-image. A resealed undeclared cover
+field refuses in production startup and follower tests. Direct bundle lookup
+retains one bundle; mixed writer bindings additionally use the existing bounded
+lineage proof for one resolved command plan. Supplied puts also require the
+catalog-derived owning partition, and supplied deletions must belong to a command entity.
 Follower validation now derives each entity's exact index mutation inventory
 from its actual predecessor and post-image, rejecting missing puts/deletes and
 extra mutations. Retained segments prove this for explicit creates and known
 intra-segment predecessors; unknown historical live values remain unproven.
 Resealed omissions preserve receipt/net agreement and refuse in both production
-follower and retained-segment tests. Actual prior-index contents still need their
-full semantic proof.
+follower and retained-segment tests. A lazy catalog iterator now derives each
+required prior index row, including unchanged indexes, and the backend compares
+available actual rows against its key, cover and owning partition. Expected
+covers are retained one at a time. Missing or malformed unchanged receiver rows
+refuse before durable progress; unknown historical observations remain unproven.
+Older writer images use the existing catalog materialization rules before
+index derivation; raw writer bytes still own transition hashes. Historical schema
+binding remains owned by the startup history proof or preceding validated prefix.
 This is not an exact-stop restore implementation. Complete secondary-index/vector
 and cross-history graph validation, private reconstruction, publication proofs
 and write-path measurements remain required.
