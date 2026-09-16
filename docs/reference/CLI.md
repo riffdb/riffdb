@@ -650,6 +650,7 @@ Inspects or upgrades one closed database's durable format
 Usage: riffdb storage [OPTIONS] <COMMAND>
 
 Commands:
+  restore    Restores a full backup plus its configured archive through maintenance admission
   preflight  Compares the retained format identity without opening the database
   upgrade    Runs the sole manifest-authorized offline transition from a verified backup
 
@@ -2502,6 +2503,29 @@ Options:
       --max-attempts <1..10>
       --credential-file <PATH>
   -h, --help                               Print help
+```
+
+#### `riffdb storage restore`
+
+```text
+Restores a full backup plus its configured archive through maintenance admission
+
+Usage: riffdb storage restore [OPTIONS] --archive <ARCHIVE_NAME> <BACKUP_NAME>
+
+Arguments:
+  <BACKUP_NAME>
+
+Options:
+      --archive <ARCHIVE_NAME>
+      --config <PATH>
+      --endpoint <HTTP_OR_HTTPS_ENDPOINT>
+      --stop-at-sequence <STOP_AT_SEQUENCE>
+      --confirm-replace-current-database
+      --database <DATABASE>
+      --output <human|json>                  [possible values: human, json]
+      --max-attempts <1..10>
+      --credential-file <PATH>
+  -h, --help                                 Print help
 ```
 
 #### `riffdb storage preflight`

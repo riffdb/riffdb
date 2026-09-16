@@ -137,6 +137,12 @@ fn every_client_vector_passes_its_strict_public_boundary() {
             "riffdb.v1.CreateOfflineBackupResponse" => {
                 decode::<v1::CreateOfflineBackupResponse>(&bytes)
             }
+            "riffdb.v1.RestoreArchivedBackupRequest" => {
+                decode::<v1::RestoreArchivedBackupRequest>(&bytes)
+            }
+            "riffdb.v1.RestoreArchivedBackupResponse" => {
+                decode::<v1::RestoreArchivedBackupResponse>(&bytes)
+            }
             "riffdb.v1.RestoreOfflineBackupRequest" => {
                 decode::<v1::RestoreOfflineBackupRequest>(&bytes)
             }
@@ -153,8 +159,8 @@ fn every_client_vector_passes_its_strict_public_boundary() {
         }
         count += 1;
     }
-    assert_eq!(count, 145);
-    assert_eq!(rpcs.len(), 26);
+    assert_eq!(count, 149);
+    assert_eq!(rpcs.len(), 27);
     assert_eq!(request_rpcs, rpcs);
     assert_eq!(visible_rpcs, rpcs);
 }
@@ -1654,6 +1660,16 @@ fn expected_enum_values() -> BTreeSet<String> {
 fn expected_optional_registry() -> BTreeSet<String> {
     [
         (
+            "riffdb.v1.RestoreArchivedBackupRequest.stop_at_sequence",
+            "AdminService.RestoreArchivedBackup:request:last-archived",
+            "AdminService.RestoreArchivedBackup:request:at-sequence",
+        ),
+        (
+            "riffdb.v1.ArchiveRestoreObservation.stop_at_sequence",
+            "AdminService.RestoreArchivedBackup:response:last-archived",
+            "AdminService.RestoreArchivedBackup:response:at-sequence",
+        ),
+        (
             "riffdb.v1.ReplicationStatistics.registered_followers",
             "AdminService.Stats:response:replication-unknown",
             "AdminService.Stats:response:replication-primary",
@@ -1817,6 +1833,26 @@ fn strict_decode<M: PublicMessage>(vector: &FixtureVector<'_>, message_type: &st
 
 fn optional_field_present(field: &str, vector: &FixtureVector<'_>) -> bool {
     match field {
+        "riffdb.v1.RestoreArchivedBackupRequest.stop_at_sequence" => {
+            strict_decode::<v1::RestoreArchivedBackupRequest>(
+                vector,
+                "riffdb.v1.RestoreArchivedBackupRequest",
+            )
+            .stop_at_sequence
+            .is_some()
+        }
+        "riffdb.v1.ArchiveRestoreObservation.stop_at_sequence" => {
+            strict_decode::<v1::RestoreArchivedBackupResponse>(
+                vector,
+                "riffdb.v1.RestoreArchivedBackupResponse",
+            )
+            .operation
+            .expect("archive operation")
+            .archive_restore
+            .expect("archive detail")
+            .stop_at_sequence
+            .is_some()
+        }
         "riffdb.v1.CompiledContractCandidate.parent_version" => {
             let response = strict_decode::<v1::ValidateContractResponse>(
                 vector,
@@ -2122,7 +2158,7 @@ fn assert_unspecified_enum_rejected(enumeration: &str, message_type: &str, bytes
 #[test]
 fn wp137_enum_optional_and_page_registry_is_complete() {
     let (vectors, registry) = fixture_sections();
-    assert_eq!(vectors.len(), 145);
+    assert_eq!(vectors.len(), 149);
 
     let expected_enums = expected_enum_values();
     let expected_optionals = expected_optional_registry();

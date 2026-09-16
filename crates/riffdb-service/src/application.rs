@@ -237,6 +237,14 @@ pub trait OfflineMaintenanceApplication: Send + Sync {
         invocation: RestoreOfflineBackupInvocation,
     ) -> ServiceFuture<'_, OfflineMaintenanceStartResult>;
 
+    /// Restores an exact selected archived suffix through the same offline ceremony.
+    fn restore_archived_backup(
+        &self,
+        _invocation: crate::RestoreArchivedBackupInvocation,
+    ) -> ServiceFuture<'_, OfflineMaintenanceStartResult> {
+        Box::pin(async { Err(riffdb_errors::PublicError::storage_unavailable().into()) })
+    }
+
     /// Admits or resolves one receipted immutable-backup retirement.
     fn retire_offline_backup(
         &self,

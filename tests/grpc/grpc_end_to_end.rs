@@ -897,6 +897,46 @@ impl OfflineMaintenanceApplication for ProjectionService {
         Box::pin(async { Ok(maintenance_restore_start_result()) })
     }
 
+    fn restore_archived_backup(
+        &self,
+        invocation: riffdb_service::RestoreArchivedBackupInvocation,
+    ) -> ServiceFuture<'_, OfflineMaintenanceStartResult> {
+        self.maintenance_invocations
+            .lock()
+            .unwrap()
+            .push(ObservedMaintenanceInvocation::Restore {
+                redacted_invocation: format!("{invocation:?}"),
+            });
+        let observation = OfflineMaintenanceOperationObservation::new(
+            invocation.operation_id(),
+            OfflineMaintenanceOperationKind::RestoreBackup,
+            BackupNameV1::new("restore").unwrap(),
+            invocation.input_hash(),
+            OfflineMaintenanceObservationPhase::Accepted,
+            None,
+        )
+        .unwrap()
+        .with_archive_restore(
+            riffdb_service::ArchiveRestoreObservation::new(
+                riffdb_types::ArchiveNameV1::new("daily").unwrap(),
+                riffdb_types::ArchiveRestoreStopV1::AtApplicationSequence(
+                    CommitSequence::new(7).unwrap(),
+                ),
+                None,
+                None,
+            )
+            .unwrap(),
+        )
+        .unwrap();
+        Box::pin(async move {
+            Ok(OfflineMaintenanceStartResult::new(
+                OfflineMaintenanceStartDisposition::Accepted,
+                observation,
+            )
+            .unwrap())
+        })
+    }
+
     fn retire_offline_backup(
         &self,
         context: RequestContext,
@@ -1624,6 +1664,36 @@ async fn ready_offline_maintenance_uses_one_shared_service_and_exact_current_aut
                 operation_id: create_operation_id,
             },
         ]
+    );
+
+    let archive_request = v1::RestoreArchivedBackupRequest {
+        request_id: request_id(25).into_bytes().to_vec(),
+        operation_id: maintenance_operation_id(4).into_bytes().to_vec(),
+        backup_name: "restore".to_owned(),
+        archive_name: "daily".to_owned(),
+        stop_at_sequence: Some(7),
+        replacement_confirmation:
+            v1::OfflineMaintenanceReplacementConfirmation::AllowReplaceNonemptyTarget as i32,
+    };
+    let mut archive = Request::new(archive_request.clone());
+    authorize(&mut archive);
+    let archive = client
+        .restore_archived_backup(archive)
+        .await
+        .expect("distinct archive RPC")
+        .into_inner();
+    riffdb_proto::validate_restore_archived_backup_exchange(&archive_request, &archive).unwrap();
+    assert_eq!(authenticator.calls(), 5);
+    assert_eq!(
+        service.maintenance_invocations().last(),
+        Some(&ObservedMaintenanceInvocation::Restore {
+            redacted_invocation: "RestoreArchivedBackupInvocation([REDACTED])".to_owned(),
+        })
+    );
+    assert!(route.recovery_admissions().is_empty());
+    assert_ne!(
+        archive.operation.as_ref().unwrap().input_hash,
+        restore_input_hash("restore").as_bytes()
     );
 
     drop(client);

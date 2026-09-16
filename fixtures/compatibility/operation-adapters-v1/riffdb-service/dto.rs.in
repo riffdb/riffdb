@@ -5952,6 +5952,132 @@ impl fmt::Debug for RestoreOfflineBackupInvocation {
     }
 }
 
+/// Checked distinct request to restore a backup and its frozen archived suffix.
+#[derive(Clone, Eq, PartialEq)]
+pub struct RestoreArchivedBackupRequest {
+    operation_id: OfflineMaintenanceOperationId,
+    backup_name: BackupNameV1,
+    archive_name: riffdb_types::ArchiveNameV1,
+    stop: riffdb_types::ArchiveRestoreStopV1,
+    confirmation: OfflineMaintenanceReplacementConfirmation,
+    input_hash: OfflineMaintenanceInputHash,
+}
+
+impl RestoreArchivedBackupRequest {
+    /// Joins checked input and computes its stable semantic identity.
+    pub fn new(
+        operation_id: OfflineMaintenanceOperationId,
+        backup_name: BackupNameV1,
+        archive_name: riffdb_types::ArchiveNameV1,
+        stop: riffdb_types::ArchiveRestoreStopV1,
+        confirmation: OfflineMaintenanceReplacementConfirmation,
+    ) -> Result<Self, ServiceDtoError> {
+        let input_hash = riffdb_types::archive_restore_input_hash(&backup_name, &archive_name, stop, confirmation);
+        let request = Self {
+            operation_id,
+            backup_name,
+            archive_name,
+            stop,
+            confirmation,
+            input_hash,
+        };
+        ensure_service_request_bound(&request)?;
+        Ok(request)
+    }
+
+    /// Returns the caller-stable receipt identity.
+    #[must_use]
+    pub const fn operation_id(&self) -> OfflineMaintenanceOperationId {
+        self.operation_id
+    }
+
+    /// Borrows the checked server-relative backup name.
+    #[must_use]
+    pub const fn backup_name(&self) -> &BackupNameV1 {
+        &self.backup_name
+    }
+
+    /// Checked operator-configured archive name, never a filesystem path.
+    #[must_use]
+    pub const fn archive_name(&self) -> &riffdb_types::ArchiveNameV1 { &self.archive_name }
+
+    /// Exact application sequence or once-resolved selected archive end.
+    #[must_use]
+    pub const fn stop(&self) -> riffdb_types::ArchiveRestoreStopV1 { self.stop }
+
+    /// Returns the caller's exact destructive-replacement confirmation.
+    #[must_use]
+    pub const fn confirmation(&self) -> OfflineMaintenanceReplacementConfirmation {
+        self.confirmation
+    }
+
+    /// Returns the canonical semantic-input identity.
+    #[must_use]
+    pub const fn input_hash(&self) -> OfflineMaintenanceInputHash {
+        self.input_hash
+    }
+}
+
+impl fmt::Debug for RestoreArchivedBackupRequest {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("RestoreArchivedBackupRequest([REDACTED])")
+    }
+}
+
+/// Move-only restore invocation retaining the ordinary bearer for staged auth.
+///
+/// The credential is auth-owned, bounded, zeroizing, nonserializable, and
+/// exposed to the maintenance controller only after current authorization.
+pub struct RestoreArchivedBackupInvocation {
+    context: RequestContext,
+    request: RestoreArchivedBackupRequest,
+    credential: RetainedOpaqueCredential,
+}
+
+impl RestoreArchivedBackupInvocation {
+    /// Joins the ready-service context, checked restore input, and retained bearer.
+    #[must_use]
+    pub const fn new(
+        context: RequestContext,
+        request: RestoreArchivedBackupRequest,
+        credential: RetainedOpaqueCredential,
+    ) -> Self {
+        Self {
+            context,
+            request,
+            credential,
+        }
+    }
+
+    /// Returns the checked receipt identity without exposing retained authority.
+    #[must_use]
+    pub const fn operation_id(&self) -> OfflineMaintenanceOperationId {
+        self.request.operation_id()
+    }
+
+    /// Returns the canonical semantic input identity without exposing retained authority.
+    #[must_use]
+    pub const fn input_hash(&self) -> OfflineMaintenanceInputHash {
+        self.request.input_hash()
+    }
+
+    pub(crate) fn into_parts(
+        self,
+    ) -> (
+        RequestContext,
+        RestoreArchivedBackupRequest,
+        RetainedOpaqueCredential,
+    ) {
+        (self.context, self.request, self.credential)
+    }
+}
+
+impl fmt::Debug for RestoreArchivedBackupInvocation {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("RestoreArchivedBackupInvocation([REDACTED])")
+    }
+}
+
 /// Move-only restore invocation accepted only by the recovery-only service.
 ///
 /// It deliberately has no authenticated principal or current-policy proof.
@@ -6083,6 +6209,56 @@ pub enum OfflineMaintenanceObservationFailure {
     InternalFailure,
 }
 
+/// The original full backup's application frontier, including a known empty backup.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct ArchiveBackupFrontier(Option<CommitSequence>);
+impl ArchiveBackupFrontier {
+    /// Separates a known backup frontier from unresolved artifact selection.
+    #[must_use]
+    pub const fn new(frontier: Option<CommitSequence>) -> Self { Self(frontier) }
+    /// Original full-backup frontier, never the restored archived frontier.
+    #[must_use]
+    pub const fn application(self) -> Option<CommitSequence> { self.0 }
+}
+
+/// Bounded archive-specific receipt facts; no sink paths, payloads or hashes.
+#[derive(Clone, Eq, PartialEq)]
+pub struct ArchiveRestoreObservation {
+    archive_name: riffdb_types::ArchiveNameV1,
+    stop: riffdb_types::ArchiveRestoreStopV1,
+    backup_frontier: Option<ArchiveBackupFrontier>,
+    restored_frontier: Option<riffdb_types::DualFrontier>,
+}
+impl ArchiveRestoreObservation {
+    /// Checks resolved selection and exact requested application stopping.
+    pub fn new(archive_name: riffdb_types::ArchiveNameV1, stop: riffdb_types::ArchiveRestoreStopV1,
+        backup_frontier: Option<ArchiveBackupFrontier>, restored_frontier: Option<riffdb_types::DualFrontier>) -> Result<Self, ServiceDtoError> {
+        if let Some(restored) = restored_frontier {
+            let backup = backup_frontier.ok_or(ServiceDtoError::InvalidShape)?;
+            if restored.application() < backup.application()
+                || matches!(stop, riffdb_types::ArchiveRestoreStopV1::AtApplicationSequence(sequence) if restored.application() != Some(sequence)) {
+                return Err(ServiceDtoError::InvalidShape);
+            }
+        }
+        Ok(Self { archive_name, stop, backup_frontier, restored_frontier })
+    }
+    /// Name chosen from operator configuration.
+    #[must_use]
+    pub const fn archive_name(&self) -> &riffdb_types::ArchiveNameV1 { &self.archive_name }
+    /// Exact requested stop.
+    #[must_use]
+    pub const fn stop(&self) -> riffdb_types::ArchiveRestoreStopV1 { self.stop }
+    /// Original backup frontier once selection is resolved.
+    #[must_use]
+    pub const fn backup_frontier(&self) -> Option<ArchiveBackupFrontier> { self.backup_frontier }
+    /// Actual validated restoration frontier, separate from the backup frontier.
+    #[must_use]
+    pub const fn restored_frontier(&self) -> Option<riffdb_types::DualFrontier> { self.restored_frontier }
+}
+impl fmt::Debug for ArchiveRestoreObservation {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result { formatter.write_str("ArchiveRestoreObservation([REDACTED])") }
+}
+
 /// One bounded API-neutral receipt observation.
 #[derive(Clone, Eq, PartialEq)]
 pub struct OfflineMaintenanceOperationObservation {
@@ -6092,6 +6268,7 @@ pub struct OfflineMaintenanceOperationObservation {
     input_hash: OfflineMaintenanceInputHash,
     phase: OfflineMaintenanceObservationPhase,
     failure: Option<OfflineMaintenanceObservationFailure>,
+    archive_restore: Option<ArchiveRestoreObservation>,
 }
 
 impl OfflineMaintenanceOperationObservation {
@@ -6117,8 +6294,23 @@ impl OfflineMaintenanceOperationObservation {
             input_hash,
             phase,
             failure,
+            archive_restore: None,
         })
     }
+
+    /// Attaches checked archive facts only to a restore observation. Successful
+    /// archive restoration must expose its actual validated frontier.
+    pub fn with_archive_restore(mut self, archive: ArchiveRestoreObservation) -> Result<Self, ServiceDtoError> {
+        if self.kind != OfflineMaintenanceOperationKind::RestoreBackup
+            || (self.phase == OfflineMaintenanceObservationPhase::Succeeded && archive.restored_frontier().is_none()) {
+            return Err(ServiceDtoError::InvalidShape);
+        }
+        self.archive_restore = Some(archive);
+        Ok(self)
+    }
+    /// Archive-only facts; ordinary V1/V2 operations return none.
+    #[must_use]
+    pub const fn archive_restore(&self) -> Option<&ArchiveRestoreObservation> { self.archive_restore.as_ref() }
 
     /// Returns the caller-stable receipt identity.
     #[must_use]
@@ -9865,6 +10057,19 @@ impl ServiceRequestCharge for RestoreOfflineBackupRequest {
     }
 }
 
+impl ServiceRequestCharge for RestoreArchivedBackupRequest {
+    fn structural_charge(&self) -> Result<usize, ServiceDtoError> {
+        let mut charge = RequestCharge::default();
+        charge.add(self.operation_id.as_bytes().len())?;
+        charge.add_framed_bytes(self.backup_name.as_bytes().len())?;
+        charge.add_framed_bytes(self.archive_name.as_bytes().len())?;
+        charge.add(STRUCTURAL_ENUM_TAG_BYTES + 8)?;
+        charge.add(STRUCTURAL_ENUM_TAG_BYTES)?;
+        charge.add(self.input_hash.as_bytes().len())?;
+        Ok(charge.finish())
+    }
+}
+
 impl ServiceRequestCharge for RetireOfflineBackupRequest {
     fn structural_charge(&self) -> Result<usize, ServiceDtoError> {
         let mut charge = RequestCharge::default();
@@ -10372,6 +10577,7 @@ contract OutcomeShapes version 1 {
         assert_charge::<RevokeCapabilityRequest>();
         assert_charge::<CreateOfflineBackupRequest>();
         assert_charge::<RestoreOfflineBackupRequest>();
+        assert_charge::<RestoreArchivedBackupRequest>();
         assert_charge::<GetOfflineMaintenanceOperationRequest>();
         assert_charge::<ListPendingOutboxDeliveriesRequest>();
         assert_charge::<DiscoverCommandToolsRequest>();

@@ -25,7 +25,7 @@ use riffdb_proto::{
     validate_get_contract_version_exchange, validate_get_offline_maintenance_operation_exchange,
     validate_get_outcome_exchange, validate_get_projection_status_exchange,
     validate_list_pending_outbox_deliveries_exchange, validate_public_message,
-    validate_query_projection_exchange, validate_restore_offline_backup_exchange,
+    validate_query_projection_exchange, validate_restore_archived_backup_exchange, validate_restore_offline_backup_exchange,
     validate_retire_offline_backup_exchange, validate_scan_commits_exchange,
     validate_scan_index_exchange, validate_start_application_export_exchange,
     validate_start_application_installation_exchange, validate_start_application_reimport_exchange,
@@ -47,7 +47,7 @@ use crate::status::{
 use crate::{
     ApplyContractMigration, AttemptBudget, BootstrapCallMetadata,
     BootstrapCapabilityCreateTemplate, CallMetadata, CheckContractMigration, CreateOfflineBackup,
-    IdempotentCommand, NormalCapabilityCreateTemplate, RestoreOfflineBackup, RetireOfflineBackup,
+    IdempotentCommand, NormalCapabilityCreateTemplate, RestoreArchivedBackup, RestoreOfflineBackup, RetireOfflineBackup,
     StartApplicationExport, StartApplicationInstallation, StartApplicationReimport, SystemIdSource,
 };
 
@@ -704,6 +704,14 @@ impl RiffDbClient {
         validate_restore_offline_backup_exchange
     );
     unary_exchange!(
+        restore_archived_backup,
+        admin,
+        restore_archived_backup,
+        v1::RestoreArchivedBackupRequest,
+        v1::RestoreArchivedBackupResponse,
+        validate_restore_archived_backup_exchange
+    );
+    unary_exchange!(
         retire_offline_backup,
         admin,
         retire_offline_backup,
@@ -1034,6 +1042,39 @@ impl RiffDbClient {
             retry.note_request_id(&request_id);
             match self
                 .restore_offline_backup(restore.request(request_id), metadata)
+                .await
+            {
+                Ok(response) => return Ok(response),
+                Err(error) => match retry.handle_failure(error) {
+                    RetryDecision::Retry => {}
+                    RetryDecision::RetryAfter(delay) => {
+                        apply_overloaded_backoff(delay).await;
+                    }
+                    RetryDecision::Return(error) => return Err(error),
+                },
+            }
+        }
+    }
+
+    /// Starts or resolves one immutable archive restore operation with bounded retry.
+    pub async fn restore_archived_backup_with_retry(
+        &mut self,
+        restore: &RestoreArchivedBackup,
+        attempt_budget: AttemptBudget,
+        metadata: &CallMetadata,
+    ) -> Result<v1::RestoreArchivedBackupResponse, ClientError> {
+        let mut request_ids = SystemIdSource::new();
+        let mut retry = RetryState::new(attempt_budget);
+        loop {
+            if !retry.begin_submission() {
+                return Err(ClientError::OutcomeUnknown(crate::OutcomeUnknown));
+            }
+            let request_id = request_ids
+                .next_request_id()
+                .map_err(|error| retry.request_id_failure(error))?;
+            retry.note_request_id(&request_id);
+            match self
+                .restore_archived_backup(restore.request(request_id), metadata)
                 .await
             {
                 Ok(response) => return Ok(response),

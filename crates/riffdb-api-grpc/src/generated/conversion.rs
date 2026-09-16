@@ -3934,6 +3934,22 @@ pub fn restore_offline_backup_request_from_proto(
     Ok((request_id, request))
 }
 
+/// Converts only the distinct archive RPC, retaining exact stop and confirmation.
+pub fn restore_archived_backup_request_from_proto(request: v1::RestoreArchivedBackupRequest)
+    -> Result<(RequestId, riffdb_service::RestoreArchivedBackupRequest), Status> {
+    let (request_id, ordinary) = restore_offline_backup_request_from_proto(v1::RestoreOfflineBackupRequest {
+        request_id: request.request_id, operation_id: request.operation_id, backup_name: request.backup_name,
+        replacement_confirmation: request.replacement_confirmation,
+    })?;
+    let archive = riffdb_types::ArchiveNameV1::new(request.archive_name).map_err(|_| invalid_request())?;
+    let stop = match request.stop_at_sequence {
+        None => riffdb_types::ArchiveRestoreStopV1::LastArchived,
+        Some(sequence) => riffdb_types::ArchiveRestoreStopV1::AtApplicationSequence(riffdb_types::CommitSequence::new(sequence).ok_or_else(invalid_request)?),
+    };
+    let request = riffdb_service::RestoreArchivedBackupRequest::new(ordinary.operation_id(), ordinary.backup_name().clone(), archive, stop, ordinary.confirmation()).map_err(|_| invalid_request())?;
+    Ok((request_id, request))
+}
+
 /// Converts one checked immutable-backup retirement request.
 pub fn retire_offline_backup_request_from_proto(
     request: v1::RetireOfflineBackupRequest,
@@ -4597,7 +4613,28 @@ fn offline_maintenance_operation_to_proto(
         input_hash: operation.input_hash().into_bytes().to_vec(),
         phase: phase as i32,
         failure: failure as i32,
+        archive_restore: operation.archive_restore().map(|archive| v1::ArchiveRestoreObservation {
+            archive_name: archive.archive_name().as_str().to_owned(),
+            stop_at_sequence: match archive.stop() {
+                riffdb_types::ArchiveRestoreStopV1::LastArchived => None,
+                riffdb_types::ArchiveRestoreStopV1::AtApplicationSequence(sequence) => Some(sequence.get()),
+            },
+            backup_frontier: archive.backup_frontier().map(|backup| v1::ArchiveBackupFrontier {
+                application: Some(archive_frontier_position(backup.application().map(|sequence| sequence.get()))),
+            }),
+            restored_frontier: archive.restored_frontier().map(|frontier| v1::ReplicationFrontier {
+                application: Some(archive_frontier_position(frontier.application().map(|sequence| sequence.get()))),
+                administration: Some(archive_frontier_position(frontier.administration().map(|sequence| sequence.get()))),
+            }),
+        }),
     }
+}
+
+fn archive_frontier_position(sequence: Option<u64>) -> v1::FrontierPosition {
+    v1::FrontierPosition { position: Some(match sequence {
+        Some(sequence) => v1::frontier_position::Position::AppliedThrough(sequence),
+        None => v1::frontier_position::Position::BeforeFirst(v1::Unit {}),
+    }) }
 }
 
 /// Converts one migration start result without semantic reinterpretation.

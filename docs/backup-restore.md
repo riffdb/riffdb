@@ -270,8 +270,7 @@ marker and empty journal. After publication is recorded, recovery permits engine
 bookkeeping changes from interrupted startup, but requires the same lineage, RestoreAnchor and dual frontier, permits only
 empty `DirtyActivation` receipts from those startups, and compares every
 authoritative row against the retained published stage before success.
-It cannot rebuild an unpublished stage without credentials. This does not yet
-expose a new restore command.
+It cannot rebuild an unpublished stage without credentials.
 The storage owner can publish a separately validated and sealed replay only against
 matching durable Offline V3 evidence and its recorded incarnation. It creates an
 empty source journal at the actual restored application/administration frontier,
@@ -279,8 +278,41 @@ validates the new source completely, and then uses the existing replacement and
 parent-sync boundaries. Pre-receipt cleanup cannot delete an admitted V3 stage.
 The shared staged-authorization check uses one immutable restored-state snapshot;
 it can check replayed grants, expiry, approvals and revocations without local
-follower authority writes. Admission, daemon recovery routing and public
-archive command integration remain in progress.
+follower authority writes.
+
+### Archive restore integration status
+
+A ready source server now accepts the distinct `RestoreArchivedBackup` RPC and
+Rust-client `RestoreArchivedBackup` submission. The CLI uses the same service:
+
+```bash
+riffdb --config "$HOME/.config/riffdb/client.toml" \
+  storage restore before-upgrade --archive daily \
+  --stop-at-sequence 42 --confirm-replace-current-database
+```
+
+The archive name resolves through [server configuration](configuration.md).
+Omitting `--stop-at-sequence` selects the last archived frontier when the server
+first verifies the archive. An explicit sequence must be positive and fall
+within the verified backup and selected suffix. The operation freezes that
+selection before replay, and a retry retains the operation ID, archive name,
+stop choice and replacement confirmation. The client never falls back to an
+ordinary restore when the archive RPC is unavailable.
+
+Accepted and uncertain output contains the maintenance operation ID. Poll it
+using `backup operation`; rerunning `storage restore` generates a new ID.
+Archive status includes `archive_restore.archive_name`, the requested stop,
+and, once resolved, `backup_application_frontier` and `restored_frontier`.
+The latter has independent application and administration positions. An absent
+frontier means unresolved; `before_first` means a known empty history. Ordinary
+maintenance output is unchanged.
+
+This remains incomplete WP-749 integration. Automatic archive collection,
+daemon restart routing for an unfinished V3 receipt, and source-less archive
+restore admission are still unavailable. Restart with an unfinished V3 receipt
+refuses readiness; the internal recovery driver proofs do not yet provide a
+public restart recovery ceremony. Do not rely on this increment for disaster
+recovery. Receipt editing is unsupported.
 
 An SDK or direct API caller supplies the maintenance operation ID. After a lost
 response or process interruption, that caller retries the exact same start

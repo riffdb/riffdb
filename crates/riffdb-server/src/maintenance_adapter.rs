@@ -205,6 +205,11 @@ pub(crate) enum MaintenanceTrigger {
         credential: riffdb_auth::RetainedOpaqueCredential,
         start_ready: oneshot::Receiver<()>,
     },
+    RestoreArchivedBackup {
+        request: riffdb_service::RestoreArchivedBackupRequest,
+        credential: riffdb_auth::RetainedOpaqueCredential,
+        start_ready: oneshot::Receiver<()>,
+    },
     RetireBackup {
         request: RetireOfflineBackupRequest,
         start_ready: oneshot::Receiver<()>,
@@ -225,6 +230,7 @@ impl MaintenanceTrigger {
         match self {
             Self::CreateBackup { request, .. } => Some(request.operation_id()),
             Self::RestoreBackup { request, .. } => Some(request.operation_id()),
+            Self::RestoreArchivedBackup { request, .. } => Some(request.operation_id()),
             Self::RetireBackup { request, .. } => Some(request.operation_id()),
             Self::RecoveryRestore { restore, .. } => Some(restore.request().operation_id()),
             Self::ContractMigrationApply { .. } => None,
@@ -247,6 +253,7 @@ impl MaintenanceTrigger {
         match self {
             Self::CreateBackup { start_ready, .. }
             | Self::RestoreBackup { start_ready, .. }
+            | Self::RestoreArchivedBackup { start_ready, .. }
             | Self::RetireBackup { start_ready, .. } => start_ready.await.map_err(|_| ()),
             Self::ContractMigrationApply { start_ready, .. } => start_ready.await.map_err(|_| ()),
             Self::RecoveryRestore { .. } => Ok(()),
@@ -259,6 +266,9 @@ impl fmt::Debug for MaintenanceTrigger {
         formatter.write_str(match self {
             Self::CreateBackup { .. } => "MaintenanceTrigger::CreateBackup([REDACTED])",
             Self::RestoreBackup { .. } => "MaintenanceTrigger::RestoreBackup([REDACTED])",
+            Self::RestoreArchivedBackup { .. } => {
+                "MaintenanceTrigger::RestoreArchivedBackup([REDACTED])"
+            }
             Self::RetireBackup { .. } => "MaintenanceTrigger::RetireBackup([REDACTED])",
             Self::RecoveryRestore { .. } => "MaintenanceTrigger::RecoveryRestore([REDACTED])",
             Self::ContractMigrationApply { .. } => {
@@ -1223,11 +1233,17 @@ fn claim_recovery_lifecycle(
     result
 }
 
+#[path = "maintenance_archive_adapter.rs"]
+mod archive;
+
 fn admit_start(
     controller: &MaintenanceController,
     request: AuthorizedOfflineMaintenanceStart,
 ) -> Result<OfflineMaintenanceStartResult, OfflineMaintenanceStartPortError> {
     let request = match request {
+        archive @ AuthorizedOfflineMaintenanceStart::RestoreArchivedBackup { .. } => {
+            return archive::admit(controller, archive);
+        }
         retire @ AuthorizedOfflineMaintenanceStart::RetireBackup { .. } => {
             return admit_retire_start(controller, retire);
         }
@@ -1247,6 +1263,7 @@ fn admit_start(
     let result = if let Some(existing) = existing {
         resolve_existing(controller, &mut storage, prepared, existing)
     } else {
+        archive::refuse_archive_collision(controller, &mut storage, operation_id)?;
         // A previously admitted operation may have closed routing after this
         // request reserved its blocking permit. Only exact duplicates above may
         // resolve while ordinary admission is frozen.
@@ -1312,6 +1329,7 @@ fn admit_retire_start(
         if !controller.lifecycle.ordinary_admission_available() {
             return Err(OfflineMaintenanceStartPortError::Unavailable);
         }
+        archive::refuse_archive_collision(controller, &mut storage, operation_id)?;
         let (create_operation, manifest) = storage
             .prepare_backup_retirement(request.backup_name())
             .map_err(|error| map_receipt_create_error(controller, operation_id, error))?;
@@ -1456,7 +1474,8 @@ fn prepare_start(
                 start_ready: Some(start_ready),
             })
         }
-        AuthorizedOfflineMaintenanceStart::RetireBackup { .. } => {
+        AuthorizedOfflineMaintenanceStart::RetireBackup { .. }
+        | AuthorizedOfflineMaintenanceStart::RestoreArchivedBackup { .. } => {
             Err(OfflineMaintenanceStartPortError::Integrity)
         }
     }
@@ -1685,11 +1704,18 @@ fn observe_receipt(
     {
         return receipt_observation(&receipt).map(Some);
     }
-    storage
+    if let Some(receipt) = storage
         .read_retire_receipt(operation_id)
         .map_err(|error| map_observation_error(controller, operation_id, error))?
+    {
+        return retire_receipt_observation(&receipt).map(Some);
+    }
+    use riffdb_storage_api::OfflineArchiveReceiptPersistencePort;
+    storage
+        .read_archive_receipt(operation_id)
+        .map_err(|error| map_observation_error(controller, operation_id, error))?
         .as_ref()
-        .map(retire_receipt_observation)
+        .map(archive::observation)
         .transpose()
 }
 

@@ -1855,6 +1855,20 @@ impl ServiceResponseCharge for RevokeCapabilityResult {
     }
 }
 
+impl sealed::Sealed for crate::ArchiveRestoreObservation {}
+impl ServiceResponseCharge for crate::ArchiveRestoreObservation {
+    fn service_response_charge_v1(
+        &self,
+    ) -> Result<ServiceResponseChargeV1, ServiceResponseChargeOverflow> {
+        let mut charge = ChargeAccumulator::message();
+        charge.bytes(self.archive_name().as_bytes().len())?;
+        // Conservative maximum for the stop selector and the two optional
+        // nested frontier messages, including every scalar and nesting reserve.
+        charge.fields(12)?;
+        Ok(charge.finish())
+    }
+}
+
 impl ServiceResponseCharge for OfflineMaintenanceOperationObservation {
     fn service_response_charge_v1(
         &self,
@@ -1867,6 +1881,9 @@ impl ServiceResponseCharge for OfflineMaintenanceOperationObservation {
         charge.fields(1)?;
         if self.failure().is_some() {
             charge.fields(1)?;
+        }
+        if let Some(archive) = self.archive_restore() {
+            charge.nested(archive)?;
         }
         Ok(charge.finish())
     }

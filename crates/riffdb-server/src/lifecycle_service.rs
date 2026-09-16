@@ -458,6 +458,22 @@ impl OfflineMaintenanceApplication for LifecycleApplicationService {
         Box::pin(async move { service.restore_offline_backup(invocation).await })
     }
 
+    fn restore_archived_backup(
+        &self,
+        invocation: riffdb_service::RestoreArchivedBackupInvocation,
+    ) -> ServiceFuture<'_, OfflineMaintenanceStartResult> {
+        let Some(service) =
+            self.route
+                .admit_offline_maintenance(GrpcOfflineMaintenanceOperation::RestoreBackup {
+                    operation_id: invocation.operation_id(),
+                    input_hash: invocation.input_hash(),
+                })
+        else {
+            return unavailable();
+        };
+        Box::pin(async move { service.restore_archived_backup(invocation).await })
+    }
+
     fn retire_offline_backup(
         &self,
         context: RequestContext,

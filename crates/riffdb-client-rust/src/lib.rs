@@ -72,7 +72,7 @@ pub use ids::{
 pub use installation::StartApplicationInstallation;
 pub use maintenance::{
     ApplyContractMigration, CheckContractMigration, ContractMigrationSubmissionError,
-    CreateOfflineBackup, RestoreOfflineBackup, RetireOfflineBackup,
+    CreateOfflineBackup, RestoreArchivedBackup, RestoreOfflineBackup, RetireOfflineBackup,
 };
 pub use metadata::{
     BearerCredential, BootstrapCallMetadata, BootstrapCredential, CallMetadata, MetadataError,
@@ -117,8 +117,8 @@ pub use riffdb_errors::{
 };
 pub use riffdb_types::{
     ApplicationExportOperationId, ApplicationExportSelectionV1, ApplicationInstallationCampaignId,
-    BackupNameV1, BackupNameV1Error, CapabilityApplicationExportScopeV1,
-    CapabilityApplicationReimportScopeV1, ContractMigrationOperationId, DEFAULT_DATABASE_ALIAS,
-    DatabaseAlias, MigrationBundleHash, OfflineMaintenanceOperationId,
-    OfflineMaintenanceReplacementConfirmation, RequestId,
+    ArchiveNameV1, ArchiveRestoreStopV1, BackupNameV1, BackupNameV1Error,
+    CapabilityApplicationExportScopeV1, CapabilityApplicationReimportScopeV1, CommitSequence,
+    ContractMigrationOperationId, DEFAULT_DATABASE_ALIAS, DatabaseAlias, MigrationBundleHash,
+    OfflineMaintenanceOperationId, OfflineMaintenanceReplacementConfirmation, RequestId,
 };

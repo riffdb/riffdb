@@ -75,6 +75,7 @@ service AdminService {
   rpc ListPendingOutboxDeliveries(ListPendingOutboxDeliveriesRequest) returns (ListPendingOutboxDeliveriesResponse);
   rpc CreateOfflineBackup(CreateOfflineBackupRequest) returns (CreateOfflineBackupResponse);
   rpc RestoreOfflineBackup(RestoreOfflineBackupRequest) returns (RestoreOfflineBackupResponse);
+  rpc RestoreArchivedBackup(RestoreArchivedBackupRequest) returns (RestoreArchivedBackupResponse);
   rpc RetireOfflineBackup(RetireOfflineBackupRequest) returns (RetireOfflineBackupResponse);
   rpc GetOfflineMaintenanceOperation(GetOfflineMaintenanceOperationRequest) returns (GetOfflineMaintenanceOperationResponse);
   rpc CheckContractMigration(CheckContractMigrationRequest) returns (CheckContractMigrationResponse);

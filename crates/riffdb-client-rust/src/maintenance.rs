@@ -320,6 +320,94 @@ impl fmt::Debug for RestoreOfflineBackup {
     }
 }
 
+/// One immutable archive restore whose archive selection is frozen by its durable receipt.
+pub struct RestoreArchivedBackup {
+    operation_id: OfflineMaintenanceOperationId,
+    backup_name: BackupNameV1,
+    archive_name: riffdb_types::ArchiveNameV1,
+    stop: riffdb_types::ArchiveRestoreStopV1,
+    confirmation: OfflineMaintenanceReplacementConfirmation,
+}
+
+impl RestoreArchivedBackup {
+    /// Retains checked input and the caller-stable identity for every retry.
+    #[must_use]
+    pub const fn new(
+        operation_id: OfflineMaintenanceOperationId,
+        backup_name: BackupNameV1,
+        archive_name: riffdb_types::ArchiveNameV1,
+        stop: riffdb_types::ArchiveRestoreStopV1,
+        confirmation: OfflineMaintenanceReplacementConfirmation,
+    ) -> Self {
+        Self {
+            operation_id,
+            backup_name,
+            archive_name,
+            stop,
+            confirmation,
+        }
+    }
+
+    /// Returns the stable maintenance operation identity.
+    #[must_use]
+    pub const fn operation_id(&self) -> OfflineMaintenanceOperationId {
+        self.operation_id
+    }
+
+    /// Borrows the checked backup name.
+    #[must_use]
+    pub const fn backup_name(&self) -> &BackupNameV1 {
+        &self.backup_name
+    }
+
+    /// Borrows the configured archive name.
+    #[must_use]
+    pub const fn archive_name(&self) -> &riffdb_types::ArchiveNameV1 {
+        &self.archive_name
+    }
+
+    /// Returns the exact requested application stop.
+    #[must_use]
+    pub const fn stop(&self) -> riffdb_types::ArchiveRestoreStopV1 {
+        self.stop
+    }
+
+    /// Returns the explicit replacement confirmation.
+    #[must_use]
+    pub const fn confirmation(&self) -> OfflineMaintenanceReplacementConfirmation {
+        self.confirmation
+    }
+
+    pub(crate) fn request(&self, request_id: RequestId) -> v1::RestoreArchivedBackupRequest {
+        v1::RestoreArchivedBackupRequest {
+            request_id: request_id.into_bytes().to_vec(),
+            operation_id: self.operation_id.into_bytes().to_vec(),
+            backup_name: self.backup_name.as_str().to_owned(),
+            archive_name: self.archive_name.as_str().to_owned(),
+            stop_at_sequence: match self.stop {
+                riffdb_types::ArchiveRestoreStopV1::LastArchived => None,
+                riffdb_types::ArchiveRestoreStopV1::AtApplicationSequence(sequence) => {
+                    Some(sequence.get())
+                }
+            },
+            replacement_confirmation: match self.confirmation {
+                OfflineMaintenanceReplacementConfirmation::NotProvided => {
+                    v1::OfflineMaintenanceReplacementConfirmation::Unspecified as i32
+                }
+                OfflineMaintenanceReplacementConfirmation::AllowReplaceNonemptyTarget => {
+                    v1::OfflineMaintenanceReplacementConfirmation::AllowReplaceNonemptyTarget as i32
+                }
+            },
+        }
+    }
+}
+
+impl fmt::Debug for RestoreArchivedBackup {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("RestoreArchivedBackup([REDACTED])")
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -331,6 +419,35 @@ mod tests {
     fn operation_id() -> OfflineMaintenanceOperationId {
         OfflineMaintenanceOperationId::from_unix_milliseconds_and_random(1, [2; 10])
             .expect("operation ID")
+    }
+
+    #[test]
+    // req: REP-007, AFC-007
+    fn archive_restore_retry_keeps_every_semantic_input_and_redacts_debug() {
+        let restore = RestoreArchivedBackup::new(
+            operation_id(),
+            BackupNameV1::new("backup").unwrap(),
+            riffdb_types::ArchiveNameV1::new("private-archive").unwrap(),
+            riffdb_types::ArchiveRestoreStopV1::AtApplicationSequence(
+                riffdb_types::CommitSequence::new(7).unwrap(),
+            ),
+            OfflineMaintenanceReplacementConfirmation::AllowReplaceNonemptyTarget,
+        );
+        let first = restore.request(request_id(1));
+        let mut second = restore.request(request_id(2));
+        assert_ne!(first.request_id, second.request_id);
+        second.request_id = first.request_id.clone();
+        assert_eq!(first, second);
+        assert_eq!(first.stop_at_sequence, Some(7));
+        assert!(!format!("{restore:?}").contains("private-archive"));
+        let last = RestoreArchivedBackup::new(
+            operation_id(),
+            BackupNameV1::new("backup").unwrap(),
+            riffdb_types::ArchiveNameV1::new("private-archive").unwrap(),
+            riffdb_types::ArchiveRestoreStopV1::LastArchived,
+            OfflineMaintenanceReplacementConfirmation::NotProvided,
+        );
+        assert_eq!(last.request(request_id(3)).stop_at_sequence, None);
     }
 
     fn migration_operation_id() -> ContractMigrationOperationId {

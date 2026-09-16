@@ -203,3 +203,34 @@ V3 public admission, daemon startup routing, source-less recovery, archive worke
 RPC/client/CLI, complete crash qualification and write-path measurements remain
 open. An unfinished V3 receipt still refuses automatic daemon startup pending
 that routing integration. This increment alone does not expose archive restore.
+
+
+## Ready-source admission and public transport increment (2026-09-16)
+
+The accepted text above remains unchanged. The implementation now connects the
+archive-only request and immutable input hash to the existing two current-policy
+checks, bounded maintenance job, V3 receipt owner, exclusive trigger and internal
+driver. Receipt retries synchronize the parent directory before acknowledging
+existing evidence, including terminal outcomes. V1/V2 identity collisions refuse
+without replacing either receipt version.
+
+The distinct additive RPC, typed Rust-client submission and
+`storage restore --archive [--stop-at-sequence]` CLI dispatch are implemented.
+Archive observations separate the original backup application frontier from the
+actual restored application/administration frontier. Unknown progress is distinct
+from known before-first. Existing restore requests and response bytes with no
+archive detail remain unchanged. A missing archive RPC has no ordinary-restore
+fallback. Public unknown fields follow ADR-0040; duplicate known singular fields
+and inconsistent exact-frontier evidence refuse.
+
+Decisions: use additive status field 7 and a presence-bearing backup frontier
+wrapper; retain the existing private restore routing class with the distinct
+archive input hash; account conservatively for bounded nested response fields;
+resynchronize unchanged V3 receipts before retry acknowledgement. These decisions
+implement the accepted amendment without introducing another durable identity.
+
+Qualification remains open. Daemon restart routing, credential retry/recovery
+hosts, source-less archive admission, automatic archive collection and the full
+WP-749 process fault matrix are still required before closure. Focused admission,
+wire, conversion, client, CLI and routing checks accompany this increment; final
+check results are recorded in its commit note and execution handoff.

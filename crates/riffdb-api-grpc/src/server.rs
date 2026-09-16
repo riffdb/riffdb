@@ -3095,6 +3095,32 @@ impl AdminService for GrpcApplication {
         }))
     }
 
+    async fn restore_archived_backup(
+        &self,
+        request: Request<v1::RestoreArchivedBackupRequest>,
+    ) -> Result<Response<v1::RestoreArchivedBackupResponse>, Status> {
+        let (metadata, _peer, message) = split_request(request);
+        let lifecycle = self.select_lifecycle(&metadata)?;
+        let (request_id, request) = restore_archived_backup_request_from_proto(message)?;
+        let (service, security) = self.ready_maintenance_admission(
+            lifecycle.as_ref(),
+            GrpcOfflineMaintenanceOperation::RestoreBackup {
+                operation_id: request.operation_id(),
+                input_hash: request.input_hash(),
+            },
+        )?;
+        let (context, credential, _cancellation) =
+            self.restore_context(&metadata, request_id, &security)?;
+        let invocation =
+            riffdb_service::RestoreArchivedBackupInvocation::new(context, request, credential);
+        let result = map_service(service.restore_archived_backup(invocation).await)?;
+        let (disposition, operation) = offline_maintenance_start_result_to_proto(&result);
+        Ok(Response::new(v1::RestoreArchivedBackupResponse {
+            disposition,
+            operation,
+        }))
+    }
+
     async fn retire_offline_backup(
         &self,
         request: Request<v1::RetireOfflineBackupRequest>,
