@@ -22786,7 +22786,8 @@ work_packages:
     crates/riffdb-policy/**, crates/riffdb-storage-api/**, crates/riffdb-storage-redb/**,
     crates/riffdb-commit/**, crates/riffdb-service/**, crates/riffdb-client-rust/**,
     crates/riffdb-api-grpc/**, crates/riffdb-server/**, crates/riffdb-cli/**,
-    crates/riffdb-testkit/**, fixtures/**, tests/**, scripts/**, docs/**]
+    crates/riffdb-testkit/**, fixtures/**, tests/**, scripts/**, docs/**,
+    release/durable-format-manifest-v1.json]
   deliverables:
   - Audited follower register, retire, and promote administrative operations under administrative
     capabilities, exposed through gRPC, the Rust client, and CLI only
