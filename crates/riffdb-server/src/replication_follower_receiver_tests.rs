@@ -19,6 +19,9 @@ use std::sync::Mutex;
 #[path = "replication_follower_read_auth_tests.rs"]
 mod read_auth;
 
+#[path = "maintenance_staged_authorization_tests.rs"]
+mod staged_authorization;
+
 #[path = "replication_follower_columnar_tests.rs"]
 mod columnar;
 

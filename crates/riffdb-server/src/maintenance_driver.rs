@@ -28,8 +28,8 @@ use riffdb_storage_api::{
     OfflineMaintenanceReceiptFailureV1, OfflineMaintenanceReceiptPersistencePort,
     OfflineMaintenanceReceiptPhaseV1, OfflineMaintenanceReceiptTransitionV1,
     OfflineMaintenanceReceiptV1, OfflineMaintenanceReceiptV2, OfflineRestoreOverwritePolicyV1,
-    OfflineRestoreResultV1, StartupValidationInputs, StorageError, StorageErrorKind,
-    StorageValueError,
+    OfflineRestoreResultV1, OwnedSnapshotReader, StartupValidationInputs, StorageError,
+    StorageErrorKind, StorageValueError,
 };
 use riffdb_storage_redb::{
     RedbCommitProfile, RedbMaintenanceOperationEvidence, RedbMaintenanceStorage,
@@ -50,7 +50,6 @@ use crate::maintenance_recovery_controller::{
     MaintenanceRecoveryBoundary, MaintenanceRecoveryController,
 };
 use crate::startup::{CheckedRedbStartup, open_redb_startup_with_commit_profile};
-use crate::storage::SharedRedbOperationalPorts;
 
 /// Production dependencies needed only while a private staged database is open.
 pub(crate) struct MaintenanceDriverDependencies<'a> {
@@ -1256,8 +1255,42 @@ fn validate_and_authorize_stage(
         _allocator_capacity,
         operational_ports,
     ) = staged_startup.into_parts();
-    let storage = SharedRedbOperationalPorts::new(operational_ports, None)
+    let snapshot = operational_ports
+        .open_owned_snapshot()
         .map_err(|_| DriverFault::Validation)?;
+    let admission = authorize_staged_restore(
+        snapshot,
+        staged_database_id,
+        credential,
+        operation_id,
+        input_hash,
+        dependencies,
+    )
+    .map_err(|_| DriverFault::StagedAuthorization)?;
+    // The helper consumes every read pin and bearer before this final writer
+    // owner closes. The recovery boundary therefore still has no open engine.
+    drop(operational_ports);
+    dependencies
+        .recovery
+        .reached(MaintenanceRecoveryBoundary::StagedAuthorizationComplete);
+    let sealed = stage
+        .seal_after_validation(staged_database_id)
+        .map_err(DriverFault::ArtifactStorage)?;
+    Ok(PreparedStagedRestore { sealed, admission })
+}
+
+/// Reauthenticates and authorizes one immutable restored-state pin. This owns
+/// only semantic readers and cannot originate authoritative follower writes.
+/// The caller must validate the candidate and its exact history before pinning,
+/// then close every remaining engine handle before sealing or publication.
+pub(crate) fn authorize_staged_restore(
+    storage: riffdb_storage_redb::RedbOwnedSnapshot,
+    staged_database_id: riffdb_types::DatabaseId,
+    credential: RetainedOpaqueCredential,
+    operation_id: OfflineMaintenanceOperationId,
+    input_hash: riffdb_types::OfflineMaintenanceInputHash,
+    dependencies: &MaintenanceDriverDependencies<'_>,
+) -> Result<OfflineMaintenanceAdmissionV1, OfflineMaintenanceReceiptFailureV1> {
     let authenticator = ServerCredentialAuthenticator::new(
         storage.clone(),
         Arc::clone(&dependencies.capability_keys),
@@ -1271,7 +1304,7 @@ fn validate_and_authorize_stage(
     );
     let principal = authenticator
         .authenticate(credential.borrow(), &authentication)
-        .map_err(|_| DriverFault::StagedAuthorization)?;
+        .map_err(|_| OfflineMaintenanceReceiptFailureV1::StagedAuthorizationFailed)?;
     let policy_request =
         OfflineMaintenanceAuthorizationRequest::restore_backup(operation_id, input_hash);
     let policy = ServerCurrentPolicyPort::new(
@@ -1284,10 +1317,12 @@ fn validate_and_authorize_stage(
     );
     let proof = match policy
         .authorize_offline_maintenance(&principal, policy_request.clone())
-        .map_err(|_| DriverFault::StagedAuthorization)?
+        .map_err(|_| OfflineMaintenanceReceiptFailureV1::StagedAuthorizationFailed)?
     {
         OfflineMaintenanceDecision::Allow(proof) => proof,
-        OfflineMaintenanceDecision::Deny(_) => return Err(DriverFault::StagedAuthorization),
+        OfflineMaintenanceDecision::Deny(_) => {
+            return Err(OfflineMaintenanceReceiptFailureV1::StagedAuthorizationFailed);
+        }
     };
     if !valid_staged_authorization(
         &proof,
@@ -1296,7 +1331,7 @@ fn validate_and_authorize_stage(
         &dependencies.environment,
         &policy_request,
     ) {
-        return Err(DriverFault::StagedAuthorization);
+        return Err(OfflineMaintenanceReceiptFailureV1::StagedAuthorizationFailed);
     }
     let admission = OfflineMaintenanceAdmissionV1::new(
         proof.principal_id().clone(),
@@ -1306,20 +1341,14 @@ fn validate_and_authorize_stage(
     );
 
     // These explicit drops make the publication boundary auditable: neither a
-    // bearer, proof, principal, adapter, nor open staged database survives it.
+    // bearer, proof, principal, adapter, nor owned snapshot survives it.
     drop(proof);
     drop(principal);
     drop(policy);
     drop(authenticator);
     drop(storage);
     drop(credential);
-    dependencies
-        .recovery
-        .reached(MaintenanceRecoveryBoundary::StagedAuthorizationComplete);
-    let sealed = stage
-        .seal_after_validation(staged_database_id)
-        .map_err(DriverFault::ArtifactStorage)?;
-    Ok(PreparedStagedRestore { sealed, admission })
+    Ok(admission)
 }
 
 fn valid_staged_authorization(
