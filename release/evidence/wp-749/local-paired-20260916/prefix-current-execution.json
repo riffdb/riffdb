@@ -1,0 +1,25 @@
+{
+  "cell": "prefix-current",
+  "exit_code": 0,
+  "elapsed_seconds": 377.18086409568787,
+  "command": [
+    "/home/user/tmp/wp749-measure-current/benchmarks/run-app-baseline",
+    "--full",
+    "--load",
+    "write_only",
+    "--load-clients",
+    "32",
+    "--load-duration-secs",
+    "90",
+    "--load-warmup-secs",
+    "15",
+    "--reps",
+    "3",
+    "--require-stable",
+    "--skip-postgres",
+    "--database-root",
+    "/home/user/tmp/wp749-measure-db",
+    "--output",
+    "/home/user/tmp/wp749-local-paired-20260916/prefix-current.json"
+  ]
+}

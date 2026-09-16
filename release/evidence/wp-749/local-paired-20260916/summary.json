@@ -1,0 +1,696 @@
+{
+  "purpose": "WP-749 local same-workload disclosure; not WP-750 N1/E2 campaign qualification",
+  "interpretation": "Local fixed-order disclosure only; no added cross-variant threshold, causal isolation, cloud qualification, full catch-up or no-regression claim.",
+  "cells": {
+    "prefix-control": {
+      "report_sha256": "a962fa1f57524d5d68f8735edebe2d87ee2f503f83ea4a0dfb9df996adc22c7b",
+      "elapsed_seconds": 372.3169674873352,
+      "metrics": {
+        "throughput_ops_s": {
+          "max": 3858.0,
+          "median": 3844.0,
+          "min": 3823.0,
+          "reps": 3,
+          "spread_ratio": 1.0091551137849857,
+          "stability": "stable",
+          "values": [
+            3858.0,
+            3844.0,
+            3823.0
+          ]
+        },
+        "aggregate_p50_ns": {
+          "max": 8126463.0,
+          "median": 8126463.0,
+          "min": 8126463.0,
+          "reps": 3,
+          "spread_ratio": 1.0,
+          "stability": "stable",
+          "values": [
+            8126463.0,
+            8126463.0,
+            8126463.0
+          ]
+        },
+        "aggregate_p95_ns": {
+          "max": 11010047.0,
+          "median": 11010047.0,
+          "min": 11010047.0,
+          "reps": 3,
+          "spread_ratio": 1.0,
+          "stability": "stable",
+          "values": [
+            11010047.0,
+            11010047.0,
+            11010047.0
+          ]
+        },
+        "aggregate_p99_ns": {
+          "max": 22020095.0,
+          "median": 20971519.0,
+          "min": 20971519.0,
+          "reps": 3,
+          "spread_ratio": 1.050000002384186,
+          "stability": "stable",
+          "values": [
+            20971519.0,
+            22020095.0,
+            20971519.0
+          ]
+        }
+      },
+      "resources": {
+        "process_scope_committed_commands": {
+          "values": [
+            407098,
+            405618,
+            403247
+          ],
+          "median": 405618
+        },
+        "cpu_ticks": {
+          "values": [
+            21833,
+            21815,
+            21862
+          ],
+          "median": 21833
+        },
+        "rss_bytes_peak_sampled": {
+          "values": [
+            3583242240,
+            3586326528,
+            3575009280
+          ],
+          "median": 3583242240
+        },
+        "durable_bytes_growth_per_process_scope_committed_command": {
+          "values": [
+            15217,
+            15268,
+            15376
+          ],
+          "median": 15268
+        },
+        "process_write_bytes_per_process_scope_committed_command": {
+          "values": [
+            75287,
+            73315,
+            57989
+          ],
+          "median": 73315
+        }
+      },
+      "resource_scope": "complete measured process generation including warmup",
+      "archive_collection": [
+        null,
+        null,
+        null
+      ],
+      "evidence_eligibility": {
+        "comparison_complete": false,
+        "correctness_clean": true,
+        "eligible": true,
+        "missing_required_fields": [],
+        "non_evidentiary_window": false,
+        "resource_attribution_complete": true,
+        "same_device_comparable": true,
+        "stable": true,
+        "host_idle": true,
+        "reason_codes": []
+      },
+      "hardware": {
+        "cpu_model": "AMD Ryzen 9 7950X 16-Core Processor",
+        "operating_system": {
+          "id": "'gentoo'",
+          "version_id": "'2.18'"
+        },
+        "system_product": "MS-7E12",
+        "system_vendor": "Micro-Star International Co., Ltd."
+      },
+      "environment": {
+        "cpu_governor": "powersave",
+        "database_root": "/home/user/tmp/wp749-measure-db",
+        "free_bytes_at_start": 868610154496,
+        "harness": "app-baseline-load",
+        "kernel": "7.2.0-gentoo-x86_64",
+        "medium": {
+          "device_model": "Samsung SSD 990 PRO 2TB",
+          "fstype": "ext4",
+          "kind": "disk",
+          "mount": "/home/user/tmp",
+          "mount_options": "rw,nosuid,nodev,noatime"
+        }
+      },
+      "host_whole_cell": {
+        "elapsed_steal_ticks": 0,
+        "elapsed_total_ticks": 1201340,
+        "maximum_steal_percent": 1.0,
+        "reason": null,
+        "steal_percent": 0.0,
+        "valid": true
+      }
+    },
+    "prefix-current": {
+      "report_sha256": "73069e837bac1fd312a680900c645d08c7540f5203d3f45ebd2bb8e2c478d1af",
+      "elapsed_seconds": 377.18086409568787,
+      "metrics": {
+        "throughput_ops_s": {
+          "max": 3688.0,
+          "median": 3687.0,
+          "min": 3661.0,
+          "reps": 3,
+          "spread_ratio": 1.0073750341436767,
+          "stability": "stable",
+          "values": [
+            3687.0,
+            3688.0,
+            3661.0
+          ]
+        },
+        "aggregate_p50_ns": {
+          "max": 8912895.0,
+          "median": 8388607.0,
+          "min": 8388607.0,
+          "reps": 3,
+          "spread_ratio": 1.0625000074505815,
+          "stability": "stable",
+          "values": [
+            8388607.0,
+            8388607.0,
+            8912895.0
+          ]
+        },
+        "aggregate_p95_ns": {
+          "max": 11534335.0,
+          "median": 11534335.0,
+          "min": 11534335.0,
+          "reps": 3,
+          "spread_ratio": 1.0,
+          "stability": "stable",
+          "values": [
+            11534335.0,
+            11534335.0,
+            11534335.0
+          ]
+        },
+        "aggregate_p99_ns": {
+          "max": 37748735.0,
+          "median": 37748735.0,
+          "min": 35651583.0,
+          "reps": 3,
+          "spread_ratio": 1.0588235310617202,
+          "stability": "stable",
+          "values": [
+            37748735.0,
+            37748735.0,
+            35651583.0
+          ]
+        }
+      },
+      "resources": {
+        "process_scope_committed_commands": {
+          "values": [
+            388191,
+            388147,
+            385176
+          ],
+          "median": 388147
+        },
+        "cpu_ticks": {
+          "values": [
+            21610,
+            21664,
+            21606
+          ],
+          "median": 21610
+        },
+        "rss_bytes_peak_sampled": {
+          "values": [
+            4403838976,
+            4408610816,
+            4388048896
+          ],
+          "median": 4403838976
+        },
+        "durable_bytes_growth_per_process_scope_committed_command": {
+          "values": [
+            16006,
+            16005,
+            16122
+          ],
+          "median": 16006
+        },
+        "process_write_bytes_per_process_scope_committed_command": {
+          "values": [
+            76891,
+            71177,
+            86039
+          ],
+          "median": 76891
+        }
+      },
+      "resource_scope": "complete measured process generation including warmup",
+      "archive_collection": [
+        null,
+        null,
+        null
+      ],
+      "evidence_eligibility": {
+        "comparison_complete": false,
+        "correctness_clean": true,
+        "eligible": true,
+        "missing_required_fields": [],
+        "non_evidentiary_window": false,
+        "resource_attribution_complete": true,
+        "same_device_comparable": true,
+        "stable": true,
+        "host_idle": true,
+        "reason_codes": []
+      },
+      "hardware": {
+        "cpu_model": "AMD Ryzen 9 7950X 16-Core Processor",
+        "operating_system": {
+          "id": "'gentoo'",
+          "version_id": "'2.18'"
+        },
+        "system_product": "MS-7E12",
+        "system_vendor": "Micro-Star International Co., Ltd."
+      },
+      "environment": {
+        "cpu_governor": "powersave",
+        "database_root": "/home/user/tmp/wp749-measure-db",
+        "free_bytes_at_start": 868722274304,
+        "harness": "app-baseline-load",
+        "kernel": "7.2.0-gentoo-x86_64",
+        "medium": {
+          "device_model": "Samsung SSD 990 PRO 2TB",
+          "fstype": "ext4",
+          "kind": "disk",
+          "mount": "/home/user/tmp",
+          "mount_options": "rw,nosuid,nodev,noatime"
+        }
+      },
+      "host_whole_cell": {
+        "elapsed_steal_ticks": 0,
+        "elapsed_total_ticks": 1217198,
+        "maximum_steal_percent": 1.0,
+        "reason": null,
+        "steal_percent": 0.0,
+        "valid": true
+      }
+    },
+    "archive-disabled": {
+      "report_sha256": "4468977ba3ce8d6d08dcda02709092bc9cde2e2476fc3362f80b7416e0712072",
+      "elapsed_seconds": 379.96107840538025,
+      "metrics": {
+        "throughput_ops_s": {
+          "max": 3704.0,
+          "median": 3674.0,
+          "min": 3670.0,
+          "reps": 3,
+          "spread_ratio": 1.0092643051771117,
+          "stability": "stable",
+          "values": [
+            3670.0,
+            3704.0,
+            3674.0
+          ]
+        },
+        "aggregate_p50_ns": {
+          "max": 8388607.0,
+          "median": 8388607.0,
+          "min": 8388607.0,
+          "reps": 3,
+          "spread_ratio": 1.0,
+          "stability": "stable",
+          "values": [
+            8388607.0,
+            8388607.0,
+            8388607.0
+          ]
+        },
+        "aggregate_p95_ns": {
+          "max": 11534335.0,
+          "median": 11534335.0,
+          "min": 11534335.0,
+          "reps": 3,
+          "spread_ratio": 1.0,
+          "stability": "stable",
+          "values": [
+            11534335.0,
+            11534335.0,
+            11534335.0
+          ]
+        },
+        "aggregate_p99_ns": {
+          "max": 37748735.0,
+          "median": 37748735.0,
+          "min": 37748735.0,
+          "reps": 3,
+          "spread_ratio": 1.0,
+          "stability": "stable",
+          "values": [
+            37748735.0,
+            37748735.0,
+            37748735.0
+          ]
+        }
+      },
+      "resources": {
+        "process_scope_committed_commands": {
+          "values": [
+            385054,
+            388796,
+            385524
+          ],
+          "median": 385524
+        },
+        "cpu_ticks": {
+          "values": [
+            21550,
+            21597,
+            21625
+          ],
+          "median": 21597
+        },
+        "rss_bytes_peak_sampled": {
+          "values": [
+            4372992000,
+            4416823296,
+            4386185216
+          ],
+          "median": 4386185216
+        },
+        "durable_bytes_growth_per_process_scope_committed_command": {
+          "values": [
+            16138,
+            15985,
+            16081
+          ],
+          "median": 16081
+        },
+        "process_write_bytes_per_process_scope_committed_command": {
+          "values": [
+            76552,
+            75661,
+            96398
+          ],
+          "median": 76552
+        }
+      },
+      "resource_scope": "complete measured process generation including warmup",
+      "archive_collection": [
+        {
+          "archived_application_sequence": null,
+          "archived_history_transactions": 0,
+          "backup_application_sequence": 19220,
+          "caught_up_at_shutdown": "not_claimed",
+          "collector_terminal_failure_observed": false,
+          "enabled": false,
+          "manifest_digest": null
+        },
+        {
+          "archived_application_sequence": null,
+          "archived_history_transactions": 0,
+          "backup_application_sequence": 19220,
+          "caught_up_at_shutdown": "not_claimed",
+          "collector_terminal_failure_observed": false,
+          "enabled": false,
+          "manifest_digest": null
+        },
+        {
+          "archived_application_sequence": null,
+          "archived_history_transactions": 0,
+          "backup_application_sequence": 19220,
+          "caught_up_at_shutdown": "not_claimed",
+          "collector_terminal_failure_observed": false,
+          "enabled": false,
+          "manifest_digest": null
+        }
+      ],
+      "evidence_eligibility": {
+        "comparison_complete": false,
+        "correctness_clean": true,
+        "eligible": true,
+        "missing_required_fields": [],
+        "non_evidentiary_window": false,
+        "resource_attribution_complete": true,
+        "same_device_comparable": true,
+        "stable": true,
+        "host_idle": true,
+        "reason_codes": []
+      },
+      "hardware": {
+        "cpu_model": "AMD Ryzen 9 7950X 16-Core Processor",
+        "operating_system": {
+          "id": "'gentoo'",
+          "version_id": "'2.18'"
+        },
+        "system_product": "MS-7E12",
+        "system_vendor": "Micro-Star International Co., Ltd."
+      },
+      "environment": {
+        "cpu_governor": "powersave",
+        "database_root": "/home/user/tmp/wp749-measure-db",
+        "free_bytes_at_start": 868921712640,
+        "harness": "app-baseline-load",
+        "kernel": "7.2.0-gentoo-x86_64",
+        "medium": {
+          "device_model": "Samsung SSD 990 PRO 2TB",
+          "fstype": "ext4",
+          "kind": "disk",
+          "mount": "/home/user/tmp",
+          "mount_options": "rw,nosuid,nodev,noatime"
+        }
+      },
+      "host_whole_cell": {
+        "elapsed_steal_ticks": 0,
+        "elapsed_total_ticks": 1225842,
+        "maximum_steal_percent": 1.0,
+        "reason": null,
+        "steal_percent": 0.0,
+        "valid": true
+      }
+    },
+    "archive-enabled": {
+      "report_sha256": "36cf615069fbcbf59d00bb1693d94303b428d5a91726cd4c96cd84bf6937dca2",
+      "elapsed_seconds": 379.0352487564087,
+      "metrics": {
+        "throughput_ops_s": {
+          "max": 2860.0,
+          "median": 2860.0,
+          "min": 2844.0,
+          "reps": 3,
+          "spread_ratio": 1.0056258790436006,
+          "stability": "stable",
+          "values": [
+            2844.0,
+            2860.0,
+            2860.0
+          ]
+        },
+        "aggregate_p50_ns": {
+          "max": 11010047.0,
+          "median": 11010047.0,
+          "min": 11010047.0,
+          "reps": 3,
+          "spread_ratio": 1.0,
+          "stability": "stable",
+          "values": [
+            11010047.0,
+            11010047.0,
+            11010047.0
+          ]
+        },
+        "aggregate_p95_ns": {
+          "max": 17825791.0,
+          "median": 17825791.0,
+          "min": 17825791.0,
+          "reps": 3,
+          "spread_ratio": 1.0,
+          "stability": "stable",
+          "values": [
+            17825791.0,
+            17825791.0,
+            17825791.0
+          ]
+        },
+        "aggregate_p99_ns": {
+          "max": 32505855.0,
+          "median": 32505855.0,
+          "min": 32505855.0,
+          "reps": 3,
+          "spread_ratio": 1.0,
+          "stability": "stable",
+          "values": [
+            32505855.0,
+            32505855.0,
+            32505855.0
+          ]
+        }
+      },
+      "resources": {
+        "process_scope_committed_commands": {
+          "values": [
+            298857,
+            299807,
+            299614
+          ],
+          "median": 299614
+        },
+        "cpu_ticks": {
+          "values": [
+            17213,
+            17349,
+            17326
+          ],
+          "median": 17326
+        },
+        "rss_bytes_peak_sampled": {
+          "values": [
+            3492208640,
+            3498008576,
+            3494141952
+          ],
+          "median": 3494141952
+        },
+        "durable_bytes_growth_per_process_scope_committed_command": {
+          "values": [
+            21105,
+            21036,
+            21108
+          ],
+          "median": 21105
+        },
+        "process_write_bytes_per_process_scope_committed_command": {
+          "values": [
+            99463,
+            99361,
+            99474
+          ],
+          "median": 99463
+        }
+      },
+      "resource_scope": "complete measured process generation including warmup",
+      "archive_collection": [
+        {
+          "archived_application_sequence": 39791,
+          "archived_history_transactions": 1567,
+          "backup_application_sequence": 19220,
+          "caught_up_at_shutdown": "not_claimed",
+          "collector_terminal_failure_observed": false,
+          "enabled": true,
+          "manifest_digest": "fd1d3a0fff0de3e4bcae80a60a38fb99dead55cfe78cce6456e7831b947d9c1e"
+        },
+        {
+          "archived_application_sequence": 39609,
+          "archived_history_transactions": 1587,
+          "backup_application_sequence": 19220,
+          "caught_up_at_shutdown": "not_claimed",
+          "collector_terminal_failure_observed": false,
+          "enabled": true,
+          "manifest_digest": "5e36c3f9306d05311bbb630f65a8ce6855cfb9a5a6fad5e775515c69d26ed110"
+        },
+        {
+          "archived_application_sequence": 39480,
+          "archived_history_transactions": 1589,
+          "backup_application_sequence": 19220,
+          "caught_up_at_shutdown": "not_claimed",
+          "collector_terminal_failure_observed": false,
+          "enabled": true,
+          "manifest_digest": "7b21b725daf4320dc629dc04b589c924f045849770067922c877bafb203d45cf"
+        }
+      ],
+      "evidence_eligibility": {
+        "comparison_complete": false,
+        "correctness_clean": true,
+        "eligible": true,
+        "missing_required_fields": [],
+        "non_evidentiary_window": false,
+        "resource_attribution_complete": true,
+        "same_device_comparable": true,
+        "stable": true,
+        "host_idle": true,
+        "reason_codes": []
+      },
+      "hardware": {
+        "cpu_model": "AMD Ryzen 9 7950X 16-Core Processor",
+        "operating_system": {
+          "id": "'gentoo'",
+          "version_id": "'2.18'"
+        },
+        "system_product": "MS-7E12",
+        "system_vendor": "Micro-Star International Co., Ltd."
+      },
+      "environment": {
+        "cpu_governor": "powersave",
+        "database_root": "/home/user/tmp/wp749-measure-db",
+        "free_bytes_at_start": 868963266560,
+        "harness": "app-baseline-load",
+        "kernel": "7.2.0-gentoo-x86_64",
+        "medium": {
+          "device_model": "Samsung SSD 990 PRO 2TB",
+          "fstype": "ext4",
+          "kind": "disk",
+          "mount": "/home/user/tmp",
+          "mount_options": "rw,nosuid,nodev,noatime"
+        }
+      },
+      "host_whole_cell": {
+        "elapsed_steal_ticks": 0,
+        "elapsed_total_ticks": 1221013,
+        "maximum_steal_percent": 1.0,
+        "reason": null,
+        "steal_percent": 0.0,
+        "valid": true
+      }
+    }
+  },
+  "comparisons": {
+    "prefix": {
+      "before": "prefix-control",
+      "after": "prefix-current",
+      "median_ratios": {
+        "throughput_ops_s": {
+          "after_divided_by_before": 0.9591571279916753,
+          "change_percent": -4.08428720083247
+        },
+        "aggregate_p50_ns": {
+          "after_divided_by_before": 1.0322580684856375,
+          "change_percent": 3.2258068485637503
+        },
+        "aggregate_p95_ns": {
+          "after_divided_by_before": 1.0476190519441015,
+          "change_percent": 4.761905194410154
+        },
+        "aggregate_p99_ns": {
+          "after_divided_by_before": 1.8000000381469745,
+          "change_percent": 80.00000381469745
+        }
+      }
+    },
+    "archive": {
+      "before": "archive-disabled",
+      "after": "archive-enabled",
+      "median_ratios": {
+        "throughput_ops_s": {
+          "after_divided_by_before": 0.7784431137724551,
+          "change_percent": -22.15568862275449
+        },
+        "aggregate_p50_ns": {
+          "after_divided_by_before": 1.3125000372529074,
+          "change_percent": 31.250003725290743
+        },
+        "aggregate_p95_ns": {
+          "after_divided_by_before": 1.5454545927441852,
+          "change_percent": 54.54545927441852
+        },
+        "aggregate_p99_ns": {
+          "after_divided_by_before": 0.861111107431812,
+          "change_percent": -13.888889256818803
+        }
+      }
+    }
+  }
+}
