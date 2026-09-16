@@ -195,6 +195,17 @@ impl RecoveryOfflineMaintenanceApplication for RecoveryOfflineMaintenanceService
             start_recovery_restore(inner, invocation, operation_submission).await
         })
     }
+    fn restore_archived_backup(
+        &self,
+        invocation: crate::RecoveryRestoreArchivedBackupInvocation,
+    ) -> ServiceFuture<'_, OfflineMaintenanceStartResult> {
+        let inner = Arc::clone(&self.inner);
+        let submission = Arc::new(MaintenanceSubmissionState::new());
+        let operation_submission = Arc::clone(&submission);
+        self.spawn_restore(submission, async move {
+            archive::start_recovery(inner, invocation, operation_submission).await
+        })
+    }
 }
 
 impl std::fmt::Debug for RecoveryOfflineMaintenanceService {
@@ -647,7 +658,9 @@ async fn start_recovery_restore(
     let expected = request.clone();
     submission.mark_submit_in_flight();
     let receipt = match permit.submit(RecoveryOfflineMaintenanceRestore::new(
-        request_id, request, credential,
+        request_id,
+        request.into(),
+        credential,
     )) {
         Ok(receipt) => receipt,
         Err(error) => {

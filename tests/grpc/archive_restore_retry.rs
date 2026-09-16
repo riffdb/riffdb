@@ -128,3 +128,135 @@ async fn archive_restore_retry_authenticates_only_exact_archive_input() {
     shutdown_sender.send(()).unwrap();
     server.await.unwrap().unwrap();
 }
+
+struct ArchiveRecoveryService {
+    request: riffdb_service::RestoreArchivedBackupRequest,
+    invocations: Mutex<Vec<String>>,
+}
+impl RecoveryOfflineMaintenanceApplication for ArchiveRecoveryService {
+    fn restore_offline_backup(
+        &self,
+        _: RecoveryRestoreOfflineBackupInvocation,
+    ) -> ServiceFuture<'_, OfflineMaintenanceStartResult> {
+        panic!("archive recovery cannot become ordinary restore")
+    }
+    fn restore_archived_backup(
+        &self,
+        invocation: riffdb_service::RecoveryRestoreArchivedBackupInvocation,
+    ) -> ServiceFuture<'_, OfflineMaintenanceStartResult> {
+        self.invocations
+            .lock()
+            .unwrap()
+            .push(format!("{invocation:?}"));
+        let observation = OfflineMaintenanceOperationObservation::new(
+            self.request.operation_id(),
+            OfflineMaintenanceOperationKind::RestoreBackup,
+            self.request.backup_name().clone(),
+            self.request.input_hash(),
+            OfflineMaintenanceObservationPhase::Accepted,
+            None,
+        )
+        .unwrap()
+        .with_archive_restore(
+            riffdb_service::ArchiveRestoreObservation::new(
+                self.request.archive_name().clone(),
+                self.request.stop(),
+                None,
+                None,
+            )
+            .unwrap(),
+        )
+        .unwrap();
+        Box::pin(async move {
+            Ok(OfflineMaintenanceStartResult::new(
+                OfflineMaintenanceStartDisposition::Accepted,
+                observation,
+            )
+            .unwrap())
+        })
+    }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn archive_recovery_rpc_has_no_current_authentication_or_ordinary_fallback() {
+    let wire = v1::RestoreArchivedBackupRequest {
+        request_id: request_id(26).into_bytes().to_vec(),
+        operation_id: maintenance_operation_id(6).into_bytes().to_vec(),
+        backup_name: "restore".into(),
+        archive_name: "daily".into(),
+        stop_at_sequence: Some(7),
+        replacement_confirmation:
+            v1::OfflineMaintenanceReplacementConfirmation::AllowReplaceNonemptyTarget as i32,
+    };
+    let (_, request) =
+        riffdb_api_grpc::restore_archived_backup_request_from_proto(wire.clone()).unwrap();
+    let service = Arc::new(ArchiveRecoveryService {
+        request,
+        invocations: Mutex::new(vec![]),
+    });
+    let route = Arc::new(MaintenanceRoute {
+        ready: None,
+        retry: None,
+        recovery: Some(service.clone()),
+        security: None,
+        ready_admissions: Mutex::new(vec![]),
+        recovery_admissions: Mutex::new(vec![]),
+        security_fetches: AtomicUsize::new(0),
+    });
+    let application = GrpcApplication::new(
+        route.clone(),
+        GrpcRequestLimits::new(Duration::from_secs(30)).unwrap(),
+    );
+    let incoming = TcpIncoming::bind("127.0.0.1:0".parse().unwrap()).unwrap();
+    let address = incoming.local_addr().unwrap();
+    let (shutdown_sender, shutdown_receiver) = oneshot::channel();
+    let server = tokio::spawn(
+        Server::builder()
+            .add_service(application.admin_server())
+            .serve_with_incoming_shutdown(incoming, async move {
+                let _ = shutdown_receiver.await;
+            }),
+    );
+    let channel = Endpoint::from_shared(format!("http://{address}"))
+        .unwrap()
+        .connect()
+        .await
+        .unwrap();
+    let mut client = AdminServiceClient::new(channel);
+    assert!(
+        client
+            .restore_archived_backup(Request::new(wire.clone()))
+            .await
+            .is_err()
+    );
+    assert!(service.invocations.lock().unwrap().is_empty());
+    let mut call = Request::new(wire.clone());
+    authorize(&mut call);
+    let response = client
+        .restore_archived_backup(call)
+        .await
+        .unwrap()
+        .into_inner();
+    riffdb_proto::validate_restore_archived_backup_exchange(&wire, &response).unwrap();
+    assert_eq!(
+        *service.invocations.lock().unwrap(),
+        vec!["RecoveryRestoreArchivedBackupInvocation([REDACTED])"]
+    );
+    assert_eq!(route.security_fetches(), 0);
+    assert!(
+        route
+            .recovery_admissions()
+            .iter()
+            .all(|pair| *pair == (service.request.operation_id(), service.request.input_hash()))
+    );
+    let mut create = Request::new(v1::CreateOfflineBackupRequest {
+        request_id: wire.request_id,
+        operation_id: wire.operation_id,
+        backup_name: "restore".into(),
+    });
+    authorize(&mut create);
+    assert!(client.create_offline_backup(create).await.is_err());
+    drop(client);
+    shutdown_sender.send(()).unwrap();
+    server.await.unwrap().unwrap();
+}

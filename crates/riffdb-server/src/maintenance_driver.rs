@@ -208,14 +208,14 @@ impl fmt::Debug for MaintenanceDriverRequest {
 
 /// Staged-only restore request accepted while ordinary readiness is unavailable.
 pub(crate) struct RecoveryMaintenanceDriverRequest {
-    request: RestoreOfflineBackupRequest,
+    request: riffdb_service::OfflineRestoreRequest,
     credential: Option<RetainedOpaqueCredential>,
 }
 
 impl RecoveryMaintenanceDriverRequest {
     #[must_use]
     pub(crate) const fn new(
-        request: RestoreOfflineBackupRequest,
+        request: riffdb_service::OfflineRestoreRequest,
         credential: RetainedOpaqueCredential,
     ) -> Self {
         Self {
@@ -226,7 +226,7 @@ impl RecoveryMaintenanceDriverRequest {
 
     /// Resumes only a reconciliation-proven already-published source-less restore.
     #[must_use]
-    pub(crate) const fn resume_published(request: RestoreOfflineBackupRequest) -> Self {
+    pub(crate) const fn resume_published(request: riffdb_service::OfflineRestoreRequest) -> Self {
         Self {
             request,
             credential: None,
@@ -287,6 +287,7 @@ pub(crate) struct MaintenanceDriverFailure {
     operation_id: OfflineMaintenanceOperationId,
     failure: OfflineMaintenanceReceiptFailureV1,
     terminal_receipt: Option<Box<OfflineMaintenanceReceiptV1>>,
+    archive_terminal_receipt: Option<Box<riffdb_storage_api::OfflineMaintenanceReceiptV3>>,
 }
 
 impl MaintenanceDriverFailure {
@@ -306,6 +307,12 @@ impl MaintenanceDriverFailure {
         self.terminal_receipt.as_deref()
     }
 
+    pub(crate) fn archive_terminal_receipt(
+        &self,
+    ) -> Option<&riffdb_storage_api::OfflineMaintenanceReceiptV3> {
+        self.archive_terminal_receipt.as_deref()
+    }
+
     fn without_receipt(
         operation_id: OfflineMaintenanceOperationId,
         failure: OfflineMaintenanceReceiptFailureV1,
@@ -314,6 +321,7 @@ impl MaintenanceDriverFailure {
             operation_id,
             failure,
             terminal_receipt: None,
+            archive_terminal_receipt: None,
         }
     }
 }
@@ -747,10 +755,57 @@ fn advance_retire_receipt(
 
 /// Executes or resumes the sole staged-only recovery operation.
 ///
+/// Refuses a frozen request or receipt-domain mismatch before staging.
+pub(crate) fn recovery_request_matches(
+    storage: &mut RedbMaintenanceStorage,
+    request: &riffdb_service::OfflineRestoreRequest,
+) -> Result<bool, StorageError> {
+    use riffdb_storage_api::OfflineArchiveReceiptPersistencePort;
+    let id = request.operation_id();
+    if storage
+        .validate_retire_receipt_inventory()?
+        .receipts()
+        .iter()
+        .any(|r| r.operation_id() == id)
+    {
+        return Ok(false);
+    }
+    match request {
+        riffdb_service::OfflineRestoreRequest::Ordinary(request) => {
+            if storage
+                .validate_archive_receipt_inventory()?
+                .receipts()
+                .iter()
+                .any(|r| r.operation_id() == id)
+            {
+                return Ok(false);
+            }
+            Ok(storage.read_receipt(id)?.is_none_or(|receipt| {
+                receipt_matches_restore_request(&receipt, request)
+                    && receipt.source_database_id().is_none()
+            }))
+        }
+        riffdb_service::OfflineRestoreRequest::Archived(request) => {
+            if storage
+                .validate_receipt_inventory()?
+                .receipts()
+                .iter()
+                .any(|r| r.operation_id() == id)
+            {
+                return Ok(false);
+            }
+            Ok(storage
+                .read_archive_receipt(id)?
+                .is_none_or(|receipt| archive::matches_request(&receipt, request)))
+        }
+    }
+}
+
 /// A new receipt is not admitted until the immutable backup has passed full
 /// startup validation and the retained bearer has independently passed staged
-/// authentication and authorization. An incomplete source-bearing receipt is
-/// deliberately not adopted by this route.
+/// authentication and authorization. Ordinary V1
+/// source-bearing receipts remain excluded; admitted V3 restores retain their
+/// exact original selection and independently reauthorize the staged state.
 pub(crate) fn run_recovery_restore(
     storage: &mut RedbMaintenanceStorage,
     lifecycle: &MaintenanceLifecycle,
@@ -761,6 +816,12 @@ pub(crate) fn run_recovery_restore(
         request,
         credential,
     } = invocation;
+    let request = match request {
+        riffdb_service::OfflineRestoreRequest::Ordinary(request) => request,
+        riffdb_service::OfflineRestoreRequest::Archived(request) => {
+            return archive::run_recovery(storage, lifecycle, dependencies, request, credential);
+        }
+    };
     let operation_id = request.operation_id();
 
     let existing = match storage.read_receipt(operation_id) {
@@ -1501,6 +1562,7 @@ fn fail_receipt(
             operation_id,
             failure,
             terminal_receipt: Some(Box::new(candidate)),
+            archive_terminal_receipt: None,
         },
         Err(_) => MaintenanceDriverFailure::without_receipt(operation_id, failure),
     }
@@ -1520,6 +1582,7 @@ fn failure_from_terminal_or_conflict(
             operation_id,
             failure,
             terminal_receipt: Some(Box::new(receipt)),
+            archive_terminal_receipt: None,
         }
     } else {
         MaintenanceDriverFailure::without_receipt(

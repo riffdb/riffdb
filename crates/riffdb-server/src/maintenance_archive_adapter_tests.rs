@@ -340,3 +340,44 @@ fn archive_admission_terminal_retry_requires_parent_sync_before_acknowledgement(
     );
     assert!(receiver.try_recv().is_err());
 }
+
+#[test]
+fn archive_recovery_request_match_refuses_ordinary_and_archive_domain_collisions() {
+    for archive_owned in [true, false] {
+        let (_dir, controller, _receiver) = controller();
+        let (request, archive_receipt) = candidate(9, "daily");
+        let ordinary = riffdb_service::RestoreOfflineBackupRequest::new(
+            request.operation_id(),
+            request.backup_name().clone(),
+            request.confirmation(),
+        )
+        .unwrap();
+        let mut storage = controller.storage.lock().unwrap();
+        if archive_owned {
+            storage
+                .create_or_read_archive_receipt(&archive_receipt)
+                .unwrap();
+        } else {
+            let receipt = OfflineMaintenanceReceiptV1::accepted(
+                ordinary.operation_id(),
+                OfflineMaintenanceOperationKind::RestoreBackup,
+                ordinary.backup_name().clone(),
+                ordinary.input_hash(),
+                ordinary.confirmation(),
+                archive_receipt.admission().clone(),
+            )
+            .unwrap();
+            storage.create_or_read_receipt(&receipt).unwrap();
+        }
+        assert_eq!(
+            crate::maintenance_driver::recovery_request_matches(&mut storage, &request.into())
+                .unwrap(),
+            archive_owned
+        );
+        assert_eq!(
+            crate::maintenance_driver::recovery_request_matches(&mut storage, &ordinary.into())
+                .unwrap(),
+            !archive_owned
+        );
+    }
+}

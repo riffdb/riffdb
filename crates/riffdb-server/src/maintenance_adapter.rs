@@ -1180,14 +1180,14 @@ fn admit_restore_retry(
     }
     let (request, authorization, credential) = retry.into_parts();
     let start = match request {
-        riffdb_service::RestoreRetryRequest::Ordinary(request) => {
+        riffdb_service::OfflineRestoreRequest::Ordinary(request) => {
             AuthorizedOfflineMaintenanceStart::RestoreBackup {
                 request,
                 authorization,
                 credential,
             }
         }
-        riffdb_service::RestoreRetryRequest::Archived(request) => {
+        riffdb_service::OfflineRestoreRequest::Archived(request) => {
             AuthorizedOfflineMaintenanceStart::RestoreArchivedBackup {
                 request,
                 authorization,
@@ -1244,6 +1244,7 @@ fn claim_recovery_lifecycle(
 
 #[path = "maintenance_archive_adapter.rs"]
 mod archive;
+pub(crate) use archive::start_result as archive_start_result;
 
 fn admit_start(
     controller: &MaintenanceController,

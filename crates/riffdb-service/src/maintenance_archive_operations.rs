@@ -138,3 +138,53 @@ pub(super) async fn start_retry(
     ensure_response_budget(&result)?;
     Ok(result)
 }
+
+pub(super) async fn start_recovery(
+    service: Arc<RecoveryOfflineMaintenanceServiceInner>,
+    invocation: crate::RecoveryRestoreArchivedBackupInvocation,
+    submission: Arc<MaintenanceSubmissionState>,
+) -> ServiceResult<OfflineMaintenanceStartResult> {
+    let (request_id, control, request, credential) = invocation.into_parts();
+    let permit = match wait_with_control(
+        &control,
+        service.deadline_scheduler.as_ref(),
+        service.coordinator.reserve_restore(&control),
+    )
+    .await
+    {
+        Ok(Ok(permit)) => permit,
+        Ok(Err(error)) => return Err(pre_submit_admission_failure(error)),
+        Err(error) => return Err(controlled_wait_failure(error)),
+    };
+
+    ensure_control_open(&control)?;
+    let expected = request.clone();
+    submission.mark_submit_in_flight();
+    let receipt = match permit.submit(RecoveryOfflineMaintenanceRestore::new(
+        request_id,
+        request.into(),
+        credential,
+    )) {
+        Ok(receipt) => receipt,
+        Err(error) => {
+            submission.mark_submit_rejected();
+            return Err(pre_submit_admission_failure(error));
+        }
+    };
+    let result =
+        match wait_with_control(&control, service.deadline_scheduler.as_ref(), receipt).await {
+            Ok(Ok(Ok(result))) => result,
+            Ok(Ok(Err(error))) => return Err(recovery_port_failure(&service, error)),
+            Ok(Err(PortDriverStopped)) | Err(_) => {
+                return Err(post_submit_start_uncertainty());
+            }
+        };
+    if !observation_matches_archive(result.operation(), &expected) {
+        return Err(recovery_internal_failure(
+            &service,
+            MaintenanceInternalDefect::LowerIntegrity,
+        ));
+    }
+    ensure_response_budget(&result)?;
+    Ok(result)
+}

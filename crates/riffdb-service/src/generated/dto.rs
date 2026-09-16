@@ -6129,6 +6129,57 @@ impl fmt::Debug for RecoveryRestoreOfflineBackupInvocation {
     }
 }
 
+/// Move-only archive restore invocation accepted only by the recovery-only service.
+///
+/// It deliberately has no authenticated principal or current-policy proof.
+/// Possession of a recovery service trait object is the server lifecycle
+/// capability; the distinct controller port must fully validate staging and
+/// freshly authenticate and authorize this retained bearer before admission.
+pub struct RecoveryRestoreArchivedBackupInvocation {
+    request_id: RequestId,
+    control: crate::RequestControl,
+    request: RestoreArchivedBackupRequest,
+    credential: RetainedOpaqueCredential,
+}
+
+impl RecoveryRestoreArchivedBackupInvocation {
+    /// Constructs the restricted public-gRPC recovery invocation.
+    ///
+    /// This context cannot invoke normal service operations, create a backup,
+    /// poll a receipt, or claim an authenticated principal.
+    #[must_use]
+    pub const fn from_restricted_grpc(
+        request_id: RequestId,
+        control: crate::RequestControl,
+        request: RestoreArchivedBackupRequest,
+        credential: RetainedOpaqueCredential,
+    ) -> Self {
+        Self {
+            request_id,
+            control,
+            request,
+            credential,
+        }
+    }
+
+    pub(crate) fn into_parts(
+        self,
+    ) -> (
+        RequestId,
+        crate::RequestControl,
+        RestoreArchivedBackupRequest,
+        RetainedOpaqueCredential,
+    ) {
+        (self.request_id, self.control, self.request, self.credential)
+    }
+}
+
+impl fmt::Debug for RecoveryRestoreArchivedBackupInvocation {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("RecoveryRestoreArchivedBackupInvocation([REDACTED])")
+    }
+}
+
 /// Checked request to observe one receipt-backed maintenance operation.
 #[derive(Clone, Copy, Eq, PartialEq)]
 pub struct GetOfflineMaintenanceOperationRequest {

@@ -52,7 +52,7 @@ pub(super) fn initial_action(
         return Ok(None);
     };
     if archives.next().is_some()
-        || receipt.source_database_id().is_none()
+        || (receipt.source_database_id().is_none() && receipt.selection().is_none())
         || reconciliation
             .receipts()
             .receipts()
@@ -72,6 +72,22 @@ pub(super) fn initial_action(
             && storage
                 .archive_restore_target_matches(receipt.operation_id())
                 .map_err(DaemonError::MaintenanceStorage)?);
+    if receipt.source_database_id().is_none() || (!published && target_requires_recovery) {
+        if published {
+            let request = riffdb_service::RestoreArchivedBackupRequest::new(
+                receipt.operation_id(),
+                receipt.backup_name().clone(),
+                receipt.archive_name().clone(),
+                receipt.stop(),
+                receipt.replacement_confirmation(),
+            )
+            .map_err(|_| DaemonError::MaintenanceDriver)?;
+            return Ok(Some(InitialDatabaseAction::ResumeRecovery(request.into())));
+        }
+        return Ok(Some(InitialDatabaseAction::AwaitRecoveryCredential(
+            receipt.clone().into(),
+        )));
+    }
     if published {
         // The archive driver revalidates the receipt-bound stage and complete
         // source authority before readiness. This grants no ordinary V1 authority.
