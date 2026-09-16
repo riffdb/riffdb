@@ -120,6 +120,8 @@ impl Worker {
                     let mut observed = *status.borrow();
                     observed.failure = Some(error);
                     status.send_replace(observed);
+                    #[cfg(feature = "test-fixtures")]
+                    probe::observe_failure(archive.name(), error);
                     // Fixed safe class and checked bounded operator name; never a path or payload.
                     eprintln!(
                         "riffdb-archive-v1\tarchive={}\tstate={error}",

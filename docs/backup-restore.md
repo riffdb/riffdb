@@ -352,7 +352,11 @@ archive frame, validates retained history, and writes outside command
 acknowledgement. Collection failures stop the collector and leave primary writes
 available; monitor the redacted `riffdb-archive-v1` diagnostics. A stopped
 collector needs a database restart after the cause is corrected. It cannot bridge
-a history gap already pruned from the source.
+a history gap already pruned from the source. The live sink-loss acceptance case
+withdraws the archive directory after confirmed collection, checks that primary
+writes still succeed after the collector stops, then restores only the confirmed
+prefix after the directory is returned. This proves write availability and prefix
+recovery for that failure; acknowledgement latency is measured separately.
 
 The Linux acceptance runner `./scripts/check-archive-cli` builds the production
 CLI and runs both stop modes against a real daemon with verified TLS and automatic
