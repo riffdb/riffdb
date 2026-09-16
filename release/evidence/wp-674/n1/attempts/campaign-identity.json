@@ -1,0 +1,35 @@
+{
+  "schema": "riffdb.wp-674-unary-campaign-identity/v1",
+  "profile": "n1",
+  "source_revision": "48bcb5ced552b7a19d6ac431f05432ae70deeaa2",
+  "cargo_lock_sha256": "42067e22a885ca75efc65fff7ba7db5208b49e5ce62d8d636d27082b56995e87",
+  "harness_sha256": "998f7d1f769bd2d7b75fda5eb28d9cd18f41049496df9541b8f19eba014e9070",
+  "runner_sha256": "fb9babf42923833244eb9f50651337aac299f480c57d36faa0f48513c9082204",
+  "riffdbd_sha256": "52de06848ed2c243ceafefb29de1c7be4fd6b69dd0f8f84938d6238b40e7f783",
+  "method": {
+    "samples": 1000,
+    "warmups": 20,
+    "reps": 5,
+    "comparators": [
+      "safe-app",
+      "minimal"
+    ],
+    "scenarios": [
+      "point_get_ticket",
+      "point_get_user",
+      "list_tickets_by_project_status",
+      "list_open_tickets_for_assignee",
+      "list_comments_for_ticket",
+      "list_project_members",
+      "ticket_detail_page",
+      "board_page_50",
+      "board_page_200",
+      "board_page_450",
+      "create_comment",
+      "close_ticket_with_comment",
+      "swap_member_roles",
+      "open_ticket_with_labels"
+    ],
+    "stability_rule_binds": "gated_backend"
+  }
+}

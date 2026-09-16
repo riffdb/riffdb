@@ -1493,12 +1493,30 @@ if report.get("schema") == "riffdb.app-baseline/v1":
         # spread is published as disclosure rather than making the attempt
         # ineligible, because the comparator's measurement stability is not a
         # property RiffDB can influence and its ratios are not a gate.
+        # ADR-0171 Amendment 2: the complete minimal disclosure cell (every
+        # scenario in one process) does not re-prove RiffDB's central-three
+        # rule; each scenario's dedicated cell proves it. The minimal cell
+        # binds five positive generations for both backends and publishes
+        # RiffDB's spreads as disclosure beside the comparator's.
+        minimal_cell = len(comparisons.get("scenarios") or []) > 1
         parity_stable = bool(unary_summaries) and all(
             five_positive_generations((entry.get("postgres") or {}).get(statistic))
-            and central_three_stable((entry.get("riffdb") or {}).get(statistic))
+            and (
+                five_positive_generations((entry.get("riffdb") or {}).get(statistic))
+                if minimal_cell
+                else central_three_stable((entry.get("riffdb") or {}).get(statistic))
+            )
             for entry in unary_summaries.values()
             for statistic in ("p50_ns", "p95_ns")
         )
+        if minimal_cell:
+            eligibility["riffdb_central_three_spread_disclosed"] = sorted(
+                f"{scenario}.{statistic}"
+                for scenario, entry in unary_summaries.items()
+                for statistic in ("p50_ns", "p95_ns")
+                if five_positive_generations((entry.get("riffdb") or {}).get(statistic))
+                and not central_three_stable((entry.get("riffdb") or {}).get(statistic))
+            )
         eligibility["postgres_central_three_spread_disclosed"] = sorted(
             f"{scenario}.{statistic}"
             for scenario, entry in unary_summaries.items()
@@ -1623,6 +1641,7 @@ report["qualification_candidate"] = {
     "riffdbd_sha256": riffdbd_sha256,
     "harness_sha256": harness_sha256,
     "referee_sha256": referee_sha256,
+    "method": {"stability_rule_binds": "gated_backend"},
     "build": {
         "cargo": "cargo +1.97.0 build --locked --release",
         "package": "riffdb-server",

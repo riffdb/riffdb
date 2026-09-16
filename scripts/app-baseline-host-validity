@@ -269,15 +269,33 @@ def run_self_test() -> None:
         "started_processes": 0,
         "exited_processes": 0,
         "pid_reuses": 0,
+        "kernel_thread_events_excluded": 0,
     }
     assert interval_churn(stable_process, {7: {"starttime_ticks": 101}}) == {
         "stable_identity_required": True,
         "started_processes": 1,
         "exited_processes": 1,
         "pid_reuses": 1,
+        "kernel_thread_events_excluded": 0,
     }
     assert interval_churn(stable_process, {})["exited_processes"] == 1
     assert interval_churn({}, stable_process)["started_processes"] == 1
+    # Kernel threads are retired and created by the kernel itself; their
+    # lifecycle is disclosed but never counted as host process churn, while a
+    # user process start in the same interval still is.
+    kernel_before = {**stable_process, 40: {"starttime_ticks": 5, "kernel_thread": True}}
+    kernel_after = {**stable_process, 41: {"starttime_ticks": 9, "kernel_thread": True}}
+    assert interval_churn(kernel_before, kernel_after) == {
+        "stable_identity_required": True,
+        "started_processes": 0,
+        "exited_processes": 0,
+        "pid_reuses": 0,
+        "kernel_thread_events_excluded": 2,
+    }
+    assert process_interval_is_stable(interval_churn(kernel_before, kernel_after)) is True
+    mixed_after = {**kernel_after, 8: {"starttime_ticks": 200}}
+    assert interval_churn(kernel_before, mixed_after)["started_processes"] == 1
+    assert process_interval_is_stable(interval_churn(kernel_before, mixed_after)) is False
 
     # A process that disappears while one endpoint is sampled is host churn,
     # not an untyped inventory failure. Retain a bounded unstable identity so
@@ -300,6 +318,7 @@ def run_self_test() -> None:
         "started_processes": 1,
         "exited_processes": 1,
         "pid_reuses": 1,
+        "kernel_thread_events_excluded": 0,
     }
     assert process_interval_is_stable(unavailable_churn) is False
 
@@ -330,6 +349,11 @@ def read_process(pid: int) -> dict[str, int | str] | None:
         comm = stat[open_paren + 1 : close_paren][:64]
         fields = stat[close_paren + 2 :].split()
         cpu_ticks = int(fields[11]) + int(fields[12])
+        # PF_KTHREAD: the task is a kernel thread (kworker, ksoftirqd, ...).
+        # Kernel threads are created and retired by the kernel itself, so their
+        # lifecycle is not host process churn; they remain subject to the CPU
+        # and I/O interference thresholds like any other task.
+        kernel_thread = bool(int(fields[6]) & PF_KTHREAD)
         starttime_ticks = int(fields[19])
         rss_pages = max(0, int(fields[21]))
         read_bytes = 0
@@ -351,6 +375,7 @@ def read_process(pid: int) -> dict[str, int | str] | None:
             "pid": pid,
             "comm": comm,
             "cpu_ticks": cpu_ticks,
+            "kernel_thread": kernel_thread,
             "starttime_ticks": starttime_ticks,
             "rss_bytes": rss_pages * os.sysconf("SC_PAGE_SIZE"),
             "read_bytes": read_bytes,
@@ -410,22 +435,45 @@ def snapshot(
     return result
 
 
+PF_KTHREAD = 0x00200000
+
+
 def interval_churn(
     before: dict[int, dict[str, int | str]],
     after: dict[int, dict[str, int | str]],
 ) -> dict[str, int | bool]:
-    before_identities = {(pid, int(row["starttime_ticks"])) for pid, row in before.items()}
-    after_identities = {(pid, int(row["starttime_ticks"])) for pid, row in after.items()}
+    def user_tasks(rows: dict[int, dict[str, int | str]]) -> dict[int, dict[str, int | str]]:
+        return {pid: row for pid, row in rows.items() if not row.get("kernel_thread", False)}
+
+    before_user = user_tasks(before)
+    after_user = user_tasks(after)
+    before_identities = {
+        (pid, int(row["starttime_ticks"])) for pid, row in before_user.items()
+    }
+    after_identities = {(pid, int(row["starttime_ticks"])) for pid, row in after_user.items()}
     reused = sum(
         1
-        for pid in set(before) & set(after)
-        if before[pid]["starttime_ticks"] != after[pid]["starttime_ticks"]
+        for pid in set(before_user) & set(after_user)
+        if before_user[pid]["starttime_ticks"] != after_user[pid]["starttime_ticks"]
     )
+    before_kernel = {
+        (pid, int(row["starttime_ticks"]))
+        for pid, row in before.items()
+        if row.get("kernel_thread", False)
+    }
+    after_kernel = {
+        (pid, int(row["starttime_ticks"]))
+        for pid, row in after.items()
+        if row.get("kernel_thread", False)
+    }
     return {
         "stable_identity_required": True,
         "started_processes": len(after_identities - before_identities),
         "exited_processes": len(before_identities - after_identities),
         "pid_reuses": reused,
+        # Kernel-thread starts and exits observed in the interval. They are
+        # recorded for disclosure and never invalidate the host observation.
+        "kernel_thread_events_excluded": len(after_kernel ^ before_kernel),
     }
 
 

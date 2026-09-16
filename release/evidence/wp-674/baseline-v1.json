@@ -1,0 +1,1624 @@
+{
+  "absolute_ceiling_misses": [
+    "e2.board_page_450: p50_ns 6282439 exceeds 6000000"
+  ],
+  "cargo_lock_sha256": "42067e22a885ca75efc65fff7ba7db5208b49e5ce62d8d636d27082b56995e87",
+  "governance_predecessor_sha256": "dbacb30c19133dea846161c68401211a7e28977ff26fcae4dadc068c88a621fe",
+  "harness_sha256": "998f7d1f769bd2d7b75fda5eb28d9cd18f41049496df9541b8f19eba014e9070",
+  "method": {
+    "comparator_spread_treatment": "published_disclosure",
+    "host_validity_schema": "riffdb.app-baseline-host-validity/v2",
+    "maximum_riffdb_regression_ratio": 1.1,
+    "maximum_spread_ratio": 1.2,
+    "maximum_whole_cell_steal_percent": 1.0,
+    "measurements_per_generation": 1000,
+    "process_generations": 5,
+    "qualified_statistic": "median_of_five_with_central_three_stability",
+    "stability_rule_binds": "gated_backend",
+    "warmups_per_generation": 20
+  },
+  "profiles": [
+    {
+      "hardware_class": "gcp_n1_persistent_disk",
+      "hardware_identity_sha256": "69801409b89e35adeea3515b20e7267a49ea16bb9d5604e320fbb6e90fc261f9",
+      "host_attempts": [
+        {
+          "attempt": 1,
+          "minimal_report_sha256": "acdf89aba5bc98c1329cae3351fa41546fb9440b9c4ecf05a88b21547a8dce74",
+          "report_sha256": {
+            "board_page_200": "32e5af4519e730af9a172f3c7ebe3c7c146b998bd956c8a5fe4d8a280515a376",
+            "board_page_450": "ba9ef9b43d3d5a9480c91bc586a1fae44fa9260d0afa8ea783b7d749568db5c3",
+            "board_page_50": "5da0e7b0ca53d652c71fdc18397980ba8e4c2ea7a937a9ac6f65acc432caf88c",
+            "close_ticket_with_comment": "6e2d4f0d1f3bfb35e8ed83e65ba3c3840b3ada622e7ae8442a7dd6c45ba2522c",
+            "create_comment": "a521bed05b007773d7a090b81750c4150f32a4789a3bd30a089b84e0f307796a",
+            "list_comments_for_ticket": "0867d64baa58b24b7e81fe8a29be3786d56c0d9bf0efee4960c34714a7e2d9a3",
+            "list_open_tickets_for_assignee": "42124fa7c2e7e6aaac33bd604258b0ba53d71682b5ed610701da81e08f6ffb33",
+            "list_project_members": "44881aa01df209040d0e7727f9f4d5832f756b3ac743c039bb4adc034573e45f",
+            "list_tickets_by_project_status": "3b71d2ec12bc6d7590be00250d57748c00f6bc64855c0748c935a6f3beebbade",
+            "open_ticket_with_labels": "b13848212b6911d05f754ee51f14d87971b3bdd71df9483ee6b2565e75079e3c",
+            "point_get_ticket": "f42bc38fa974e4e73fe3073c982c81d345718bd80272e90b026aa36e4afaed13",
+            "point_get_user": "331ec1abbb64caeefad39233feeaf4e9536ad08bd0ee5e13458aa9ae45a9fe96",
+            "swap_member_roles": "09ec088ede21f67a4d80d88e95f104df0b82bb066e4d1d44778899ef5ebe7afc",
+            "ticket_detail_page": "451ffff578eba810b67364dfabef5f52b115570fc582566d880117fd9bb007ce"
+          },
+          "status": "accepted"
+        }
+      ],
+      "host_inventory_sha256": {
+        "board_page_200": "a1fa14e8b87b63a22ecdf3e55638daf6d6919fc2c6d19e0695ae8015a8ac4571",
+        "board_page_450": "7876c82388951a234d23a8af4e537c85257fd1f8b013155768d7e9e4d3316eb3",
+        "board_page_50": "ec773a75c326fc930814075cde2e5ac1673ef4b6b23eb71ad0c946b0df938c27",
+        "close_ticket_with_comment": "90606ed77e2b234dfc748f0b8f7092f6988776468e3b88efe15b11fb49d5e718",
+        "create_comment": "897092bce7857076e51cd0ae3eaee76b2a9bd162f6f2f8c8b80a019ae6f9bdc3",
+        "list_comments_for_ticket": "347578a1450bfb792943edf9b70fb61fc760a012e947fd0e4215e8d682c7b462",
+        "list_open_tickets_for_assignee": "9078c59c04ca59cdfe37238fb26d29641494fd23f7f7b56df50da56ac9aca85c",
+        "list_project_members": "8f8aede892b9e0a7dc3ee708f91eca0802d1bf6b923b95862fd74de95089a399",
+        "list_tickets_by_project_status": "e13fd852341bc9a5db6ee54a4684dd4ae3bccf35551fce5f3eb962012e6da65c",
+        "minimal": "661b234808b62bed665d3909c569e3fe21169bff0d1ac3d81f2d40f009d30124",
+        "open_ticket_with_labels": "e4e764fdc4440ae0b11c021dd9e94f7d86e39e5f9ba22ca61563477c8d222335",
+        "point_get_ticket": "8d72c651544fbbfc559b612b3290b8e23846e9a8a25f585485d6d17d6ae77bce",
+        "point_get_user": "bcf41fb8cad65dbdf005159058deb4aea7eee3eb35b604a5db717e7a74f67c93",
+        "swap_member_roles": "880a6473536e467fc490278cdc401fb28ee1b0a42f2e3c939f4e92751f725367",
+        "ticket_detail_page": "0a1dbe4b16b2a46313dbbde2eb911cc27fc3c6405625d821ac77fadb20433b97"
+      },
+      "id": "n1",
+      "minimal_postgres": {
+        "board_page_200": {
+          "postgres": {
+            "p50_ns": 4342007.0,
+            "p95_ns": 4492634.0
+          },
+          "postgres_central_three_spread": {
+            "p50_ns": 1.0055677927304485,
+            "p95_ns": 1.0006733475929828
+          },
+          "postgres_stability_disclosure": [],
+          "ratios_riffdb_over_postgres": {
+            "p50": 0.8231737074583252,
+            "p95": 1.1321618898846424
+          },
+          "riffdb": {
+            "p50_ns": 3574226.0,
+            "p95_ns": 5086389.0
+          },
+          "riffdb_central_three_spread": {
+            "p50_ns": 1.0033873749065378,
+            "p95_ns": 1.0211656263900706
+          },
+          "riffdb_stability_disclosure": []
+        },
+        "board_page_450": {
+          "postgres": {
+            "p50_ns": 2655323.0,
+            "p95_ns": 2794633.0
+          },
+          "postgres_central_three_spread": {
+            "p50_ns": 1.013852225872936,
+            "p95_ns": 1.0546532509422695
+          },
+          "postgres_stability_disclosure": [],
+          "ratios_riffdb_over_postgres": {
+            "p50": 1.911672139321657,
+            "p95": 2.5527763395050442
+          },
+          "riffdb": {
+            "p50_ns": 5076107.0,
+            "p95_ns": 7134073.0
+          },
+          "riffdb_central_three_spread": {
+            "p50_ns": 1.0001588052799013,
+            "p95_ns": 1.0032680785575432
+          },
+          "riffdb_stability_disclosure": []
+        },
+        "board_page_50": {
+          "postgres": {
+            "p50_ns": 1661134.0,
+            "p95_ns": 1732202.0
+          },
+          "postgres_central_three_spread": {
+            "p50_ns": 1.0103374563592231,
+            "p95_ns": 1.0321062694139813
+          },
+          "postgres_stability_disclosure": [],
+          "ratios_riffdb_over_postgres": {
+            "p50": 1.5856348735261574,
+            "p95": 2.2134826076866325
+          },
+          "riffdb": {
+            "p50_ns": 2633952.0,
+            "p95_ns": 3834199.0
+          },
+          "riffdb_central_three_spread": {
+            "p50_ns": 1.003092197880906,
+            "p95_ns": 1.0056351894879547
+          },
+          "riffdb_stability_disclosure": []
+        },
+        "close_ticket_with_comment": {
+          "postgres": {
+            "p50_ns": 1473152.0,
+            "p95_ns": 1831132.0
+          },
+          "postgres_central_three_spread": {
+            "p50_ns": 1.0361862834969857,
+            "p95_ns": 1.0093833218931691
+          },
+          "postgres_stability_disclosure": [],
+          "ratios_riffdb_over_postgres": {
+            "p50": 2.977930315405335,
+            "p95": 2.723271724812848
+          },
+          "riffdb": {
+            "p50_ns": 4386944.0,
+            "p95_ns": 4986670.0
+          },
+          "riffdb_central_three_spread": {
+            "p50_ns": 1.011922805817126,
+            "p95_ns": 1.0104744046857106
+          },
+          "riffdb_stability_disclosure": []
+        },
+        "create_comment": {
+          "postgres": {
+            "p50_ns": 1121346.0,
+            "p95_ns": 1328633.0
+          },
+          "postgres_central_three_spread": {
+            "p50_ns": 1.0096860636646312,
+            "p95_ns": 1.0246925991268534
+          },
+          "postgres_stability_disclosure": [],
+          "ratios_riffdb_over_postgres": {
+            "p50": 4.096849678868074,
+            "p95": 31.547992560774873
+          },
+          "riffdb": {
+            "p50_ns": 4593986.0,
+            "p95_ns": 41915704.0
+          },
+          "riffdb_central_three_spread": {
+            "p50_ns": 1.0071548662908476,
+            "p95_ns": 1.035682605206225
+          },
+          "riffdb_stability_disclosure": []
+        },
+        "list_comments_for_ticket": {
+          "postgres": {
+            "p50_ns": 132262.0,
+            "p95_ns": 228166.0
+          },
+          "postgres_central_three_spread": {
+            "p50_ns": 1.0787233559575966,
+            "p95_ns": 1.0061221343786475
+          },
+          "postgres_stability_disclosure": [],
+          "ratios_riffdb_over_postgres": {
+            "p50": 5.528322571864935,
+            "p95": 3.6856192421307292
+          },
+          "riffdb": {
+            "p50_ns": 731187.0,
+            "p95_ns": 840933.0
+          },
+          "riffdb_central_three_spread": {
+            "p50_ns": 1.0058433696902478,
+            "p95_ns": 1.0050711308872866
+          },
+          "riffdb_stability_disclosure": []
+        },
+        "list_open_tickets_for_assignee": {
+          "postgres": {
+            "p50_ns": 248478.0,
+            "p95_ns": 321705.0
+          },
+          "postgres_central_three_spread": {
+            "p50_ns": 1.0515872207440848,
+            "p95_ns": 1.1743041880215783
+          },
+          "postgres_stability_disclosure": [],
+          "ratios_riffdb_over_postgres": {
+            "p50": 4.6069269714018946,
+            "p95": 4.060611429725991
+          },
+          "riffdb": {
+            "p50_ns": 1144720.0,
+            "p95_ns": 1306319.0
+          },
+          "riffdb_central_three_spread": {
+            "p50_ns": 1.003383442508198,
+            "p95_ns": 1.0136507281640879
+          },
+          "riffdb_stability_disclosure": []
+        },
+        "list_project_members": {
+          "postgres": {
+            "p50_ns": 114684.0,
+            "p95_ns": 154680.0
+          },
+          "postgres_central_three_spread": {
+            "p50_ns": 1.059704379786682,
+            "p95_ns": 1.425707225076413
+          },
+          "postgres_stability_disclosure": [
+            "p95_ns"
+          ],
+          "ratios_riffdb_over_postgres": {
+            "p50": 6.139269645286178,
+            "p95": 5.220584432376519
+          },
+          "riffdb": {
+            "p50_ns": 704076.0,
+            "p95_ns": 807520.0
+          },
+          "riffdb_central_three_spread": {
+            "p50_ns": 1.006180092080374,
+            "p95_ns": 1.0099783312045565
+          },
+          "riffdb_stability_disclosure": []
+        },
+        "list_tickets_by_project_status": {
+          "postgres": {
+            "p50_ns": 152791.0,
+            "p95_ns": 210994.0
+          },
+          "postgres_central_three_spread": {
+            "p50_ns": 1.0622005722211427,
+            "p95_ns": 1.2607894235047352
+          },
+          "postgres_stability_disclosure": [
+            "p95_ns"
+          ],
+          "ratios_riffdb_over_postgres": {
+            "p50": 5.711370434122428,
+            "p95": 4.696972425756183
+          },
+          "riffdb": {
+            "p50_ns": 872646.0,
+            "p95_ns": 991033.0
+          },
+          "riffdb_central_three_spread": {
+            "p50_ns": 1.0118065382747643,
+            "p95_ns": 1.013816386081225
+          },
+          "riffdb_stability_disclosure": []
+        },
+        "open_ticket_with_labels": {
+          "postgres": {
+            "p50_ns": 1279312.0,
+            "p95_ns": 1583288.0
+          },
+          "postgres_central_three_spread": {
+            "p50_ns": 1.0407806651577793,
+            "p95_ns": 1.0251838034968916
+          },
+          "postgres_stability_disclosure": [],
+          "ratios_riffdb_over_postgres": {
+            "p50": 3.8464010343059396,
+            "p95": 3.529391367837058
+          },
+          "riffdb": {
+            "p50_ns": 4920747.0,
+            "p95_ns": 5588043.0
+          },
+          "riffdb_central_three_spread": {
+            "p50_ns": 1.0108883408344185,
+            "p95_ns": 1.0021119059234087
+          },
+          "riffdb_stability_disclosure": []
+        },
+        "point_get_ticket": {
+          "postgres": {
+            "p50_ns": 149587.0,
+            "p95_ns": 221144.0
+          },
+          "postgres_central_three_spread": {
+            "p50_ns": 1.1022526561778212,
+            "p95_ns": 1.0314122040030613
+          },
+          "postgres_stability_disclosure": [],
+          "ratios_riffdb_over_postgres": {
+            "p50": 5.327715643739095,
+            "p95": 4.124186050718084
+          },
+          "riffdb": {
+            "p50_ns": 796957.0,
+            "p95_ns": 912039.0
+          },
+          "riffdb_central_three_spread": {
+            "p50_ns": 1.0102449956357105,
+            "p95_ns": 1.0160230387948939
+          },
+          "riffdb_stability_disclosure": []
+        },
+        "point_get_user": {
+          "postgres": {
+            "p50_ns": 88137.0,
+            "p95_ns": 146517.0
+          },
+          "postgres_central_three_spread": {
+            "p50_ns": 1.0904248674063894,
+            "p95_ns": 1.3575883896865832
+          },
+          "postgres_stability_disclosure": [
+            "p95_ns"
+          ],
+          "ratios_riffdb_over_postgres": {
+            "p50": 7.552435413050138,
+            "p95": 5.262269907246258
+          },
+          "riffdb": {
+            "p50_ns": 665649.0,
+            "p95_ns": 771012.0
+          },
+          "riffdb_central_three_spread": {
+            "p50_ns": 1.0028167955568583,
+            "p95_ns": 1.0151570314194274
+          },
+          "riffdb_stability_disclosure": []
+        },
+        "swap_member_roles": {
+          "postgres": {
+            "p50_ns": 1066036.0,
+            "p95_ns": 1303638.0
+          },
+          "postgres_central_three_spread": {
+            "p50_ns": 1.0260033634405352,
+            "p95_ns": 1.022374506791034
+          },
+          "postgres_stability_disclosure": [],
+          "ratios_riffdb_over_postgres": {
+            "p50": 3.836148122577474,
+            "p95": 3.6065265050573854
+          },
+          "riffdb": {
+            "p50_ns": 4089472.0,
+            "p95_ns": 4701605.0
+          },
+          "riffdb_central_three_spread": {
+            "p50_ns": 1.0088686811446201,
+            "p95_ns": 1.00649051098938
+          },
+          "riffdb_stability_disclosure": []
+        },
+        "ticket_detail_page": {
+          "postgres": {
+            "p50_ns": 349466.0,
+            "p95_ns": 423549.0
+          },
+          "postgres_central_three_spread": {
+            "p50_ns": 1.0353649838436283,
+            "p95_ns": 1.5226587187589773
+          },
+          "postgres_stability_disclosure": [
+            "p95_ns"
+          ],
+          "ratios_riffdb_over_postgres": {
+            "p50": 2.5262686498829643,
+            "p95": 2.3706206365733364
+          },
+          "riffdb": {
+            "p50_ns": 882845.0,
+            "p95_ns": 1004074.0
+          },
+          "riffdb_central_three_spread": {
+            "p50_ns": 1.0025213658248882,
+            "p95_ns": 1.0033086637344935
+          },
+          "riffdb_stability_disclosure": []
+        }
+      },
+      "report_sha256": {
+        "board_page_200": "32e5af4519e730af9a172f3c7ebe3c7c146b998bd956c8a5fe4d8a280515a376",
+        "board_page_450": "ba9ef9b43d3d5a9480c91bc586a1fae44fa9260d0afa8ea783b7d749568db5c3",
+        "board_page_50": "5da0e7b0ca53d652c71fdc18397980ba8e4c2ea7a937a9ac6f65acc432caf88c",
+        "close_ticket_with_comment": "6e2d4f0d1f3bfb35e8ed83e65ba3c3840b3ada622e7ae8442a7dd6c45ba2522c",
+        "create_comment": "a521bed05b007773d7a090b81750c4150f32a4789a3bd30a089b84e0f307796a",
+        "list_comments_for_ticket": "0867d64baa58b24b7e81fe8a29be3786d56c0d9bf0efee4960c34714a7e2d9a3",
+        "list_open_tickets_for_assignee": "42124fa7c2e7e6aaac33bd604258b0ba53d71682b5ed610701da81e08f6ffb33",
+        "list_project_members": "44881aa01df209040d0e7727f9f4d5832f756b3ac743c039bb4adc034573e45f",
+        "list_tickets_by_project_status": "3b71d2ec12bc6d7590be00250d57748c00f6bc64855c0748c935a6f3beebbade",
+        "minimal": "acdf89aba5bc98c1329cae3351fa41546fb9440b9c4ecf05a88b21547a8dce74",
+        "open_ticket_with_labels": "b13848212b6911d05f754ee51f14d87971b3bdd71df9483ee6b2565e75079e3c",
+        "point_get_ticket": "f42bc38fa974e4e73fe3073c982c81d345718bd80272e90b026aa36e4afaed13",
+        "point_get_user": "331ec1abbb64caeefad39233feeaf4e9536ad08bd0ee5e13458aa9ae45a9fe96",
+        "swap_member_roles": "09ec088ede21f67a4d80d88e95f104df0b82bb066e4d1d44778899ef5ebe7afc",
+        "ticket_detail_page": "451ffff578eba810b67364dfabef5f52b115570fc582566d880117fd9bb007ce"
+      },
+      "scenarios": {
+        "board_page_200": {
+          "class": "wide_bounded_named_read",
+          "encoded_size": {
+            "request_bytes": 40,
+            "response_bytes": 19697
+          },
+          "postgres": {
+            "p50_ns": 4665576.0,
+            "p95_ns": 4902607.0
+          },
+          "postgres_central_three_spread": {
+            "p50_ns": 1.0169642847473486,
+            "p95_ns": 1.008621408130564
+          },
+          "postgres_stability_disclosure": [],
+          "profile": "n1",
+          "ratios_riffdb_over_postgres": {
+            "p50": 0.6300611114254703,
+            "p95": 0.6338664306561794
+          },
+          "riffdb": {
+            "p50_ns": 2939598.0,
+            "p95_ns": 3107598.0
+          }
+        },
+        "board_page_450": {
+          "class": "wide_bounded_named_read",
+          "encoded_size": {
+            "request_bytes": 40,
+            "response_bytes": 44447
+          },
+          "postgres": {
+            "p50_ns": 2931436.0,
+            "p95_ns": 3101372.0
+          },
+          "postgres_central_three_spread": {
+            "p50_ns": 1.0286563656325816,
+            "p95_ns": 1.096705124563863
+          },
+          "postgres_stability_disclosure": [],
+          "profile": "n1",
+          "ratios_riffdb_over_postgres": {
+            "p50": 1.494587976677642,
+            "p95": 1.4921660478007799
+          },
+          "riffdb": {
+            "p50_ns": 4381289.0,
+            "p95_ns": 4627762.0
+          }
+        },
+        "board_page_50": {
+          "class": "wide_bounded_named_read",
+          "encoded_size": {
+            "request_bytes": 40,
+            "response_bytes": 4897
+          },
+          "postgres": {
+            "p50_ns": 1917560.0,
+            "p95_ns": 2127757.0
+          },
+          "postgres_central_three_spread": {
+            "p50_ns": 1.003051423274731,
+            "p95_ns": 1.0095195686311322
+          },
+          "postgres_stability_disclosure": [],
+          "profile": "n1",
+          "ratios_riffdb_over_postgres": {
+            "p50": 1.0655087715638625,
+            "p95": 1.0246076032178486
+          },
+          "riffdb": {
+            "p50_ns": 2043177.0,
+            "p95_ns": 2180116.0
+          }
+        },
+        "close_ticket_with_comment": {
+          "class": "compiled_command",
+          "encoded_size": {
+            "request_bytes": 156,
+            "response_bytes": 4
+          },
+          "postgres": {
+            "p50_ns": 2574139.0,
+            "p95_ns": 2917120.0
+          },
+          "postgres_central_three_spread": {
+            "p50_ns": 1.0080007479308681,
+            "p95_ns": 1.0348816403510892
+          },
+          "postgres_stability_disclosure": [],
+          "profile": "n1",
+          "ratios_riffdb_over_postgres": {
+            "p50": 1.4551063481808868,
+            "p95": 1.427027684839842
+          },
+          "riffdb": {
+            "p50_ns": 3745646.0,
+            "p95_ns": 4162811.0
+          }
+        },
+        "create_comment": {
+          "class": "compiled_command",
+          "encoded_size": {
+            "request_bytes": 139,
+            "response_bytes": 4
+          },
+          "postgres": {
+            "p50_ns": 2285871.0,
+            "p95_ns": 2618176.0
+          },
+          "postgres_central_three_spread": {
+            "p50_ns": 1.0034650338416113,
+            "p95_ns": 1.196198236197791
+          },
+          "postgres_stability_disclosure": [],
+          "profile": "n1",
+          "ratios_riffdb_over_postgres": {
+            "p50": 1.5452980505024125,
+            "p95": 1.4988449974333276
+          },
+          "riffdb": {
+            "p50_ns": 3532352.0,
+            "p95_ns": 3924240.0
+          }
+        },
+        "list_comments_for_ticket": {
+          "class": "ordinary_named_read",
+          "encoded_size": {
+            "request_bytes": 39,
+            "response_bytes": 359
+          },
+          "postgres": {
+            "p50_ns": 264467.0,
+            "p95_ns": 298952.0
+          },
+          "postgres_central_three_spread": {
+            "p50_ns": 1.0085055688973772,
+            "p95_ns": 1.0365385265577982
+          },
+          "postgres_stability_disclosure": [],
+          "profile": "n1",
+          "ratios_riffdb_over_postgres": {
+            "p50": 2.2874385083961326,
+            "p95": 2.3383051459766118
+          },
+          "riffdb": {
+            "p50_ns": 604952.0,
+            "p95_ns": 699041.0
+          }
+        },
+        "list_open_tickets_for_assignee": {
+          "class": "ordinary_named_read",
+          "encoded_size": {
+            "request_bytes": 39,
+            "response_bytes": 2065
+          },
+          "postgres": {
+            "p50_ns": 391856.0,
+            "p95_ns": 459255.0
+          },
+          "postgres_central_three_spread": {
+            "p50_ns": 1.007523336155757,
+            "p95_ns": 1.0133604421083828
+          },
+          "postgres_stability_disclosure": [],
+          "profile": "n1",
+          "ratios_riffdb_over_postgres": {
+            "p50": 2.4320668817116493,
+            "p95": 2.307589465547463
+          },
+          "riffdb": {
+            "p50_ns": 953020.0,
+            "p95_ns": 1059772.0
+          }
+        },
+        "list_project_members": {
+          "class": "ordinary_named_read",
+          "encoded_size": {
+            "request_bytes": 39,
+            "response_bytes": 296
+          },
+          "postgres": {
+            "p50_ns": 267553.0,
+            "p95_ns": 307977.0
+          },
+          "postgres_central_three_spread": {
+            "p50_ns": 1.0285957612842955,
+            "p95_ns": 1.0251315345755043
+          },
+          "postgres_stability_disclosure": [],
+          "profile": "n1",
+          "ratios_riffdb_over_postgres": {
+            "p50": 2.25092598475816,
+            "p95": 2.282498368384652
+          },
+          "riffdb": {
+            "p50_ns": 602242.0,
+            "p95_ns": 702957.0
+          }
+        },
+        "list_tickets_by_project_status": {
+          "class": "ordinary_named_read",
+          "encoded_size": {
+            "request_bytes": 40,
+            "response_bytes": 689
+          },
+          "postgres": {
+            "p50_ns": 295584.0,
+            "p95_ns": 329873.0
+          },
+          "postgres_central_three_spread": {
+            "p50_ns": 1.032114201999898,
+            "p95_ns": 1.1681875378948299
+          },
+          "postgres_stability_disclosure": [],
+          "profile": "n1",
+          "ratios_riffdb_over_postgres": {
+            "p50": 2.4197216358124933,
+            "p95": 2.4883364203799645
+          },
+          "riffdb": {
+            "p50_ns": 715231.0,
+            "p95_ns": 820835.0
+          }
+        },
+        "open_ticket_with_labels": {
+          "class": "compiled_command",
+          "encoded_size": {
+            "request_bytes": 204,
+            "response_bytes": 4
+          },
+          "postgres": {
+            "p50_ns": 2546008.0,
+            "p95_ns": 2897352.0
+          },
+          "postgres_central_three_spread": {
+            "p50_ns": 1.0075845520960667,
+            "p95_ns": 1.0670844704425633
+          },
+          "postgres_stability_disclosure": [],
+          "profile": "n1",
+          "ratios_riffdb_over_postgres": {
+            "p50": 1.706854809568548,
+            "p95": 1.655510617971168
+          },
+          "riffdb": {
+            "p50_ns": 4345666.0,
+            "p95_ns": 4796597.0
+          }
+        },
+        "point_get_ticket": {
+          "class": "ordinary_named_read",
+          "encoded_size": {
+            "request_bytes": 35,
+            "response_bytes": 101
+          },
+          "postgres": {
+            "p50_ns": 250108.0,
+            "p95_ns": 297715.0
+          },
+          "postgres_central_three_spread": {
+            "p50_ns": 1.0319266143905854,
+            "p95_ns": 1.857354998385882
+          },
+          "postgres_stability_disclosure": [
+            "p95_ns"
+          ],
+          "profile": "n1",
+          "ratios_riffdb_over_postgres": {
+            "p50": 2.1355334495497944,
+            "p95": 2.128310632652033
+          },
+          "riffdb": {
+            "p50_ns": 534114.0,
+            "p95_ns": 633630.0
+          }
+        },
+        "point_get_user": {
+          "class": "ordinary_named_read",
+          "encoded_size": {
+            "request_bytes": 35,
+            "response_bytes": 73
+          },
+          "postgres": {
+            "p50_ns": 241032.0,
+            "p95_ns": 275673.0
+          },
+          "postgres_central_three_spread": {
+            "p50_ns": 1.032355322992587,
+            "p95_ns": 1.089711494146926
+          },
+          "postgres_stability_disclosure": [],
+          "profile": "n1",
+          "ratios_riffdb_over_postgres": {
+            "p50": 2.1463623087390884,
+            "p95": 2.237096124756505
+          },
+          "riffdb": {
+            "p50_ns": 517342.0,
+            "p95_ns": 616707.0
+          }
+        },
+        "swap_member_roles": {
+          "class": "compiled_command",
+          "encoded_size": {
+            "request_bytes": 131,
+            "response_bytes": 4
+          },
+          "postgres": {
+            "p50_ns": 2329371.0,
+            "p95_ns": 2679277.0
+          },
+          "postgres_central_three_spread": {
+            "p50_ns": 1.0047831948554273,
+            "p95_ns": 1.028822679226235
+          },
+          "postgres_stability_disclosure": [],
+          "profile": "n1",
+          "ratios_riffdb_over_postgres": {
+            "p50": 1.541374044752854,
+            "p95": 1.4932457524921836
+          },
+          "riffdb": {
+            "p50_ns": 3590432.0,
+            "p95_ns": 4000819.0
+          }
+        },
+        "ticket_detail_page": {
+          "class": "ordinary_named_read",
+          "encoded_size": {
+            "request_bytes": 39,
+            "response_bytes": 672
+          },
+          "postgres": {
+            "p50_ns": 479180.0,
+            "p95_ns": 523620.0
+          },
+          "postgres_central_three_spread": {
+            "p50_ns": 1.0201220545500571,
+            "p95_ns": 1.0357795230681486
+          },
+          "postgres_stability_disclosure": [],
+          "profile": "n1",
+          "ratios_riffdb_over_postgres": {
+            "p50": 1.564422555198464,
+            "p95": 1.6260475153737444
+          },
+          "riffdb": {
+            "p50_ns": 749640.0,
+            "p95_ns": 851431.0
+          }
+        }
+      }
+    },
+    {
+      "hardware_class": "gcp_e2_persistent_disk",
+      "hardware_identity_sha256": "731bc8d38f262e1c7f12a211bd22e5b0cd5feacc16e4085bc959885add08e28f",
+      "host_attempts": [
+        {
+          "attempt": 1,
+          "minimal_report_sha256": "b53ec0f47a430bb565547da320c4f0a435683aa69f35831321b985fece202b9a",
+          "report_sha256": {
+            "board_page_200": "fef7276639bc91e32155a626b06d365dbdd42af24460128d4acf74f8d1b7294b",
+            "board_page_450": "27ed7be960a587e3323d1866b999d6d757948fee0fca5cea80c8eef3ddfc6194",
+            "board_page_50": "58548cd2671cd65e2a016e0157071c000f14fd073676bc41bf7dec6943c38f98",
+            "close_ticket_with_comment": "a150abeba3fde289aedb6ead469d66e8de8d0bb242594bcaa7b2e7e5ea76f222",
+            "create_comment": "a23869a7ccf48cc44b4efce11404cc16f0d55ebf8946dbc14b489740164b8ad4",
+            "list_comments_for_ticket": "b1cdd3c0a3bbcc434a91e1798045610c9c7647f9040a7767061bd702b17e1323",
+            "list_open_tickets_for_assignee": "93e9938f0f995418b1166fd8dd49e063dc3be3656ae45da2fdb2c9621ed3c78a",
+            "list_project_members": "3e345655967483ec0b168dd5a57409d849f0ad961836834ac3a0b9c0e2fc1cd0",
+            "list_tickets_by_project_status": "34ad34d00cf34e124012f2e7827ac4ab25120c8b353ca0ad9b07a43a405d91fd",
+            "open_ticket_with_labels": "14911e86392d48c05bc89c8c7d3101407c03238484e44ad69df06988f37e80cb",
+            "point_get_ticket": "7f3194d1e6361b7db1443cd9debb3cdfea35674c28d589087d696406907b62ca",
+            "point_get_user": "1bf003442cb8e74e3787986000d98b46b411bc3344c7b65b66ffad7c013d5682",
+            "swap_member_roles": "7366c62a7ecd67b0313b5a2bae018133ff851a06d5b1791a9fa9a9c12cf4e747",
+            "ticket_detail_page": "9a3593040a9216392eba055b949090461c21c8988440323149657d22d159608c"
+          },
+          "status": "accepted"
+        }
+      ],
+      "host_inventory_sha256": {
+        "board_page_200": "775f5b632aec0e8d3e428a04ed9212a9f64190afcf56898d2fdbf3b626725eef",
+        "board_page_450": "fc0f65e879ae1e627b7f4dc12688087678c077b819efa5100c6480dbe7b1c83e",
+        "board_page_50": "0ce428045d8d564239bb8dce8b74f58fec612936b7098c2c099c2d6c50d5360c",
+        "close_ticket_with_comment": "29946ded6c65084a79895a505bee2d7f833dfe4329a96ad05192175fc4385cd6",
+        "create_comment": "ef8acfc097846410b5d1dbf06ed00f70f79fb9e247c784547cf8858c321122ce",
+        "list_comments_for_ticket": "b9417cd904056d7876a87883a240b86d86838c03182d56979e716c12c05153ca",
+        "list_open_tickets_for_assignee": "c8b6d75d77166ffad87af8c6d26c95429ac4380495a32541a5fe8b1e7110ce74",
+        "list_project_members": "9c4878b60d30ac2d34969d4ac550a7f62d87d7e913b9b162cf83d9e0272d9ea7",
+        "list_tickets_by_project_status": "a4ac3d4aa88e658aa00f2b2a6e7788d130375db2c135ebfeeee3c3c99369be18",
+        "minimal": "7dea98a3fadf2c9bc560ea64613135679bedb1575703506beb5a7486eaf91f54",
+        "open_ticket_with_labels": "5b6d58e4c130259a94baf218b452c5fc73f3aa82c42db55a683ad4929b5cd1f3",
+        "point_get_ticket": "baae4f9ca94697e9a234dc9550d731d0e7e3245349daf89bafc68cea26dc2187",
+        "point_get_user": "8c2540440923a1ce7eedaa9bb7bb40fba46da6342e7e2e9e76387c8434868840",
+        "swap_member_roles": "2c30baa336e5ecdf1af1298dabd678ac71e44e75db72a019e051d3a95b6cd896",
+        "ticket_detail_page": "90b1714b250eb71d7fce6993a883f35a40526f7087f276bcada1e553c6daeaaf"
+      },
+      "id": "e2",
+      "minimal_postgres": {
+        "board_page_200": {
+          "postgres": {
+            "p50_ns": 3540330.0,
+            "p95_ns": 4389859.0
+          },
+          "postgres_central_three_spread": {
+            "p50_ns": 1.1032884605420605,
+            "p95_ns": 1.0540450944084259
+          },
+          "postgres_stability_disclosure": [],
+          "ratios_riffdb_over_postgres": {
+            "p50": 1.4794920247547545,
+            "p95": 1.5341811661832419
+          },
+          "riffdb": {
+            "p50_ns": 5237890.0,
+            "p95_ns": 6734839.0
+          },
+          "riffdb_central_three_spread": {
+            "p50_ns": 1.0737304288074865,
+            "p95_ns": 1.121647888874466
+          },
+          "riffdb_stability_disclosure": []
+        },
+        "board_page_450": {
+          "postgres": {
+            "p50_ns": 2710150.0,
+            "p95_ns": 3336890.0
+          },
+          "postgres_central_three_spread": {
+            "p50_ns": 1.0712477150386357,
+            "p95_ns": 1.0466085212237979
+          },
+          "postgres_stability_disclosure": [],
+          "ratios_riffdb_over_postgres": {
+            "p50": 2.4303595741933104,
+            "p95": 2.5567279712546713
+          },
+          "riffdb": {
+            "p50_ns": 6586639.0,
+            "p95_ns": 8531520.0
+          },
+          "riffdb_central_three_spread": {
+            "p50_ns": 1.0525895908834981,
+            "p95_ns": 1.1087145910561305
+          },
+          "riffdb_stability_disclosure": []
+        },
+        "board_page_50": {
+          "postgres": {
+            "p50_ns": 1751370.0,
+            "p95_ns": 2356390.0
+          },
+          "postgres_central_three_spread": {
+            "p50_ns": 1.1582016305638374,
+            "p95_ns": 1.123687215150457
+          },
+          "postgres_stability_disclosure": [],
+          "ratios_riffdb_over_postgres": {
+            "p50": 2.400177575269646,
+            "p95": 2.344153556923939
+          },
+          "riffdb": {
+            "p50_ns": 4203599.0,
+            "p95_ns": 5523740.0
+          },
+          "riffdb_central_three_spread": {
+            "p50_ns": 1.0806728389124833,
+            "p95_ns": 1.100815712879191
+          },
+          "riffdb_stability_disclosure": []
+        },
+        "close_ticket_with_comment": {
+          "postgres": {
+            "p50_ns": 4455090.0,
+            "p95_ns": 6173390.0
+          },
+          "postgres_central_three_spread": {
+            "p50_ns": 1.2555673530196567,
+            "p95_ns": 1.1834439588306032
+          },
+          "postgres_stability_disclosure": [
+            "p50_ns"
+          ],
+          "ratios_riffdb_over_postgres": {
+            "p50": 1.9784516137721124,
+            "p95": 3.13564654104147
+          },
+          "riffdb": {
+            "p50_ns": 8814180.0,
+            "p95_ns": 19357569.0
+          },
+          "riffdb_central_three_spread": {
+            "p50_ns": 1.0870771610924654,
+            "p95_ns": 1.0627244062434316
+          },
+          "riffdb_stability_disclosure": []
+        },
+        "create_comment": {
+          "postgres": {
+            "p50_ns": 2427830.0,
+            "p95_ns": 3133759.0
+          },
+          "postgres_central_three_spread": {
+            "p50_ns": 1.1115396569007254,
+            "p95_ns": 1.1395638858005916
+          },
+          "postgres_stability_disclosure": [],
+          "ratios_riffdb_over_postgres": {
+            "p50": 3.6753475325702376,
+            "p95": 6.234087560657983
+          },
+          "riffdb": {
+            "p50_ns": 8923119.0,
+            "p95_ns": 19536128.0
+          },
+          "riffdb_central_three_spread": {
+            "p50_ns": 1.085760926928482,
+            "p95_ns": 1.0196264863971372
+          },
+          "riffdb_stability_disclosure": []
+        },
+        "list_comments_for_ticket": {
+          "postgres": {
+            "p50_ns": 473810.0,
+            "p95_ns": 934280.0
+          },
+          "postgres_central_three_spread": {
+            "p50_ns": 1.493544748057157,
+            "p95_ns": 1.165285149906687
+          },
+          "postgres_stability_disclosure": [
+            "p50_ns"
+          ],
+          "ratios_riffdb_over_postgres": {
+            "p50": 4.317363500137186,
+            "p95": 2.912274692811577
+          },
+          "riffdb": {
+            "p50_ns": 2045610.0,
+            "p95_ns": 2720880.0
+          },
+          "riffdb_central_three_spread": {
+            "p50_ns": 1.109741964978683,
+            "p95_ns": 1.0890610680663169
+          },
+          "riffdb_stability_disclosure": []
+        },
+        "list_open_tickets_for_assignee": {
+          "postgres": {
+            "p50_ns": 593790.0,
+            "p95_ns": 1101770.0
+          },
+          "postgres_central_three_spread": {
+            "p50_ns": 1.3785938075930704,
+            "p95_ns": 1.0737123849607728
+          },
+          "postgres_stability_disclosure": [
+            "p50_ns"
+          ],
+          "ratios_riffdb_over_postgres": {
+            "p50": 4.364169150709847,
+            "p95": 3.090372763825481
+          },
+          "riffdb": {
+            "p50_ns": 2591400.0,
+            "p95_ns": 3404880.0
+          },
+          "riffdb_central_three_spread": {
+            "p50_ns": 1.0958676473574351,
+            "p95_ns": 1.0914259887862756
+          },
+          "riffdb_stability_disclosure": []
+        },
+        "list_project_members": {
+          "postgres": {
+            "p50_ns": 438230.0,
+            "p95_ns": 936979.0
+          },
+          "postgres_central_three_spread": {
+            "p50_ns": 1.6599086344244347,
+            "p95_ns": 1.1092045865459763
+          },
+          "postgres_stability_disclosure": [
+            "p50_ns"
+          ],
+          "ratios_riffdb_over_postgres": {
+            "p50": 4.527049722748329,
+            "p95": 2.840629299055795
+          },
+          "riffdb": {
+            "p50_ns": 1983889.0,
+            "p95_ns": 2661610.0
+          },
+          "riffdb_central_three_spread": {
+            "p50_ns": 1.1176658040624812,
+            "p95_ns": 1.1226813028568339
+          },
+          "riffdb_stability_disclosure": []
+        },
+        "list_tickets_by_project_status": {
+          "postgres": {
+            "p50_ns": 481250.0,
+            "p95_ns": 969390.0
+          },
+          "postgres_central_three_spread": {
+            "p50_ns": 1.437937091418568,
+            "p95_ns": 1.0785393196070814
+          },
+          "postgres_stability_disclosure": [
+            "p50_ns"
+          ],
+          "ratios_riffdb_over_postgres": {
+            "p50": 4.557194805194805,
+            "p95": 3.0443784235447033
+          },
+          "riffdb": {
+            "p50_ns": 2193150.0,
+            "p95_ns": 2951190.0
+          },
+          "riffdb_central_three_spread": {
+            "p50_ns": 1.1269263824052191,
+            "p95_ns": 1.1328666293601939
+          },
+          "riffdb_stability_disclosure": []
+        },
+        "open_ticket_with_labels": {
+          "postgres": {
+            "p50_ns": 3883790.0,
+            "p95_ns": 5670929.0
+          },
+          "postgres_central_three_spread": {
+            "p50_ns": 1.3215121368352034,
+            "p95_ns": 1.2055062371768317
+          },
+          "postgres_stability_disclosure": [
+            "p50_ns",
+            "p95_ns"
+          ],
+          "ratios_riffdb_over_postgres": {
+            "p50": 2.525082200633917,
+            "p95": 4.315458190359992
+          },
+          "riffdb": {
+            "p50_ns": 9806889.0,
+            "p95_ns": 24472657.0
+          },
+          "riffdb_central_three_spread": {
+            "p50_ns": 1.0892753801112016,
+            "p95_ns": 1.0504876905621199
+          },
+          "riffdb_stability_disclosure": []
+        },
+        "point_get_ticket": {
+          "postgres": {
+            "p50_ns": 547230.0,
+            "p95_ns": 910630.0
+          },
+          "postgres_central_three_spread": {
+            "p50_ns": 1.2673741633813147,
+            "p95_ns": 1.1041195709682075
+          },
+          "postgres_stability_disclosure": [
+            "p50_ns"
+          ],
+          "ratios_riffdb_over_postgres": {
+            "p50": 3.718856787822305,
+            "p95": 2.830403127505134
+          },
+          "riffdb": {
+            "p50_ns": 2035070.0,
+            "p95_ns": 2577450.0
+          },
+          "riffdb_central_three_spread": {
+            "p50_ns": 1.0829314578565135,
+            "p95_ns": 1.1218986514881064
+          },
+          "riffdb_stability_disclosure": []
+        },
+        "point_get_user": {
+          "postgres": {
+            "p50_ns": 404330.0,
+            "p95_ns": 873140.0
+          },
+          "postgres_central_three_spread": {
+            "p50_ns": 1.6225595695618755,
+            "p95_ns": 1.1172086549411615
+          },
+          "postgres_stability_disclosure": [
+            "p50_ns"
+          ],
+          "ratios_riffdb_over_postgres": {
+            "p50": 4.6193183785521725,
+            "p95": 2.826889158668713
+          },
+          "riffdb": {
+            "p50_ns": 1867729.0,
+            "p95_ns": 2468270.0
+          },
+          "riffdb_central_three_spread": {
+            "p50_ns": 1.1027234564363564,
+            "p95_ns": 1.0969355822873081
+          },
+          "riffdb_stability_disclosure": []
+        },
+        "swap_member_roles": {
+          "postgres": {
+            "p50_ns": 3194349.0,
+            "p95_ns": 4561159.0
+          },
+          "postgres_central_three_spread": {
+            "p50_ns": 1.3204801920768308,
+            "p95_ns": 1.1875887065909905
+          },
+          "postgres_stability_disclosure": [
+            "p50_ns"
+          ],
+          "ratios_riffdb_over_postgres": {
+            "p50": 2.656246703162366,
+            "p95": 2.912814264970811
+          },
+          "riffdb": {
+            "p50_ns": 8484979.0,
+            "p95_ns": 13285809.0
+          },
+          "riffdb_central_three_spread": {
+            "p50_ns": 1.093486260544527,
+            "p95_ns": 1.5610253485334953
+          },
+          "riffdb_stability_disclosure": [
+            "p95_ns"
+          ]
+        },
+        "ticket_detail_page": {
+          "postgres": {
+            "p50_ns": 1301570.0,
+            "p95_ns": 2418580.0
+          },
+          "postgres_central_three_spread": {
+            "p50_ns": 1.8007727853183955,
+            "p95_ns": 1.2169839481564935
+          },
+          "postgres_stability_disclosure": [
+            "p50_ns",
+            "p95_ns"
+          ],
+          "ratios_riffdb_over_postgres": {
+            "p50": 1.787594981445485,
+            "p95": 1.277146093989035
+          },
+          "riffdb": {
+            "p50_ns": 2326680.0,
+            "p95_ns": 3088880.0
+          },
+          "riffdb_central_three_spread": {
+            "p50_ns": 1.1450925200237034,
+            "p95_ns": 1.1086055380533908
+          },
+          "riffdb_stability_disclosure": []
+        }
+      },
+      "report_sha256": {
+        "board_page_200": "fef7276639bc91e32155a626b06d365dbdd42af24460128d4acf74f8d1b7294b",
+        "board_page_450": "27ed7be960a587e3323d1866b999d6d757948fee0fca5cea80c8eef3ddfc6194",
+        "board_page_50": "58548cd2671cd65e2a016e0157071c000f14fd073676bc41bf7dec6943c38f98",
+        "close_ticket_with_comment": "a150abeba3fde289aedb6ead469d66e8de8d0bb242594bcaa7b2e7e5ea76f222",
+        "create_comment": "a23869a7ccf48cc44b4efce11404cc16f0d55ebf8946dbc14b489740164b8ad4",
+        "list_comments_for_ticket": "b1cdd3c0a3bbcc434a91e1798045610c9c7647f9040a7767061bd702b17e1323",
+        "list_open_tickets_for_assignee": "93e9938f0f995418b1166fd8dd49e063dc3be3656ae45da2fdb2c9621ed3c78a",
+        "list_project_members": "3e345655967483ec0b168dd5a57409d849f0ad961836834ac3a0b9c0e2fc1cd0",
+        "list_tickets_by_project_status": "34ad34d00cf34e124012f2e7827ac4ab25120c8b353ca0ad9b07a43a405d91fd",
+        "minimal": "b53ec0f47a430bb565547da320c4f0a435683aa69f35831321b985fece202b9a",
+        "open_ticket_with_labels": "14911e86392d48c05bc89c8c7d3101407c03238484e44ad69df06988f37e80cb",
+        "point_get_ticket": "7f3194d1e6361b7db1443cd9debb3cdfea35674c28d589087d696406907b62ca",
+        "point_get_user": "1bf003442cb8e74e3787986000d98b46b411bc3344c7b65b66ffad7c013d5682",
+        "swap_member_roles": "7366c62a7ecd67b0313b5a2bae018133ff851a06d5b1791a9fa9a9c12cf4e747",
+        "ticket_detail_page": "9a3593040a9216392eba055b949090461c21c8988440323149657d22d159608c"
+      },
+      "scenarios": {
+        "board_page_200": {
+          "class": "wide_bounded_named_read",
+          "encoded_size": {
+            "request_bytes": 40,
+            "response_bytes": 19697
+          },
+          "postgres": {
+            "p50_ns": 5185460.0,
+            "p95_ns": 6111720.0
+          },
+          "postgres_central_three_spread": {
+            "p50_ns": 1.0448292276975448,
+            "p95_ns": 1.0096130193933073
+          },
+          "postgres_stability_disclosure": [],
+          "profile": "e2",
+          "ratios_riffdb_over_postgres": {
+            "p50": 0.9026333247195042,
+            "p95": 0.889153953387917
+          },
+          "riffdb": {
+            "p50_ns": 4680569.0,
+            "p95_ns": 5434260.0
+          }
+        },
+        "board_page_450": {
+          "class": "wide_bounded_named_read",
+          "encoded_size": {
+            "request_bytes": 40,
+            "response_bytes": 44447
+          },
+          "postgres": {
+            "p50_ns": 4465119.0,
+            "p95_ns": 5515750.0
+          },
+          "postgres_central_three_spread": {
+            "p50_ns": 1.2596813890717404,
+            "p95_ns": 1.1085750932244853
+          },
+          "postgres_stability_disclosure": [
+            "p50_ns"
+          ],
+          "profile": "e2",
+          "ratios_riffdb_over_postgres": {
+            "p50": 1.4070037103154474,
+            "p95": 1.3615827403344967
+          },
+          "riffdb": {
+            "p50_ns": 6282439.0,
+            "p95_ns": 7510150.0
+          }
+        },
+        "board_page_50": {
+          "class": "wide_bounded_named_read",
+          "encoded_size": {
+            "request_bytes": 40,
+            "response_bytes": 4897
+          },
+          "postgres": {
+            "p50_ns": 2650629.0,
+            "p95_ns": 3722890.0
+          },
+          "postgres_central_three_spread": {
+            "p50_ns": 1.2409631604444809,
+            "p95_ns": 1.0553663834495146
+          },
+          "postgres_stability_disclosure": [
+            "p50_ns"
+          ],
+          "profile": "e2",
+          "ratios_riffdb_over_postgres": {
+            "p50": 1.3792499817967736,
+            "p95": 1.1669187110013994
+          },
+          "riffdb": {
+            "p50_ns": 3655880.0,
+            "p95_ns": 4344310.0
+          }
+        },
+        "close_ticket_with_comment": {
+          "class": "compiled_command",
+          "encoded_size": {
+            "request_bytes": 156,
+            "response_bytes": 4
+          },
+          "postgres": {
+            "p50_ns": 9202520.0,
+            "p95_ns": 14677428.0
+          },
+          "postgres_central_three_spread": {
+            "p50_ns": 1.0836019872549256,
+            "p95_ns": 1.0298339771484106
+          },
+          "postgres_stability_disclosure": [],
+          "profile": "e2",
+          "ratios_riffdb_over_postgres": {
+            "p50": 0.935991445821362,
+            "p95": 0.7161226748991717
+          },
+          "riffdb": {
+            "p50_ns": 8613480.0,
+            "p95_ns": 10510839.0
+          }
+        },
+        "create_comment": {
+          "class": "compiled_command",
+          "encoded_size": {
+            "request_bytes": 139,
+            "response_bytes": 4
+          },
+          "postgres": {
+            "p50_ns": 8652030.0,
+            "p95_ns": 13258849.0
+          },
+          "postgres_central_three_spread": {
+            "p50_ns": 1.0590376817940501,
+            "p95_ns": 1.0216044456355415
+          },
+          "postgres_stability_disclosure": [],
+          "profile": "e2",
+          "ratios_riffdb_over_postgres": {
+            "p50": 0.9659801225839485,
+            "p95": 0.7695207178239981
+          },
+          "riffdb": {
+            "p50_ns": 8357689.0,
+            "p95_ns": 10202959.0
+          }
+        },
+        "list_comments_for_ticket": {
+          "class": "ordinary_named_read",
+          "encoded_size": {
+            "request_bytes": 39,
+            "response_bytes": 359
+          },
+          "postgres": {
+            "p50_ns": 367970.0,
+            "p95_ns": 1525640.0
+          },
+          "postgres_central_three_spread": {
+            "p50_ns": 1.2288867077958496,
+            "p95_ns": 1.432536855783343
+          },
+          "postgres_stability_disclosure": [
+            "p50_ns",
+            "p95_ns"
+          ],
+          "profile": "e2",
+          "ratios_riffdb_over_postgres": {
+            "p50": 4.717803081772971,
+            "p95": 1.513364882934375
+          },
+          "riffdb": {
+            "p50_ns": 1736010.0,
+            "p95_ns": 2308850.0
+          }
+        },
+        "list_open_tickets_for_assignee": {
+          "class": "ordinary_named_read",
+          "encoded_size": {
+            "request_bytes": 39,
+            "response_bytes": 2065
+          },
+          "postgres": {
+            "p50_ns": 582820.0,
+            "p95_ns": 2232080.0
+          },
+          "postgres_central_three_spread": {
+            "p50_ns": 1.024432343752727,
+            "p95_ns": 1.1123304730216177
+          },
+          "postgres_stability_disclosure": [],
+          "profile": "e2",
+          "ratios_riffdb_over_postgres": {
+            "p50": 3.853350948834975,
+            "p95": 1.3425141571986667
+          },
+          "riffdb": {
+            "p50_ns": 2245810.0,
+            "p95_ns": 2996599.0
+          }
+        },
+        "list_project_members": {
+          "class": "ordinary_named_read",
+          "encoded_size": {
+            "request_bytes": 39,
+            "response_bytes": 296
+          },
+          "postgres": {
+            "p50_ns": 364740.0,
+            "p95_ns": 1602969.0
+          },
+          "postgres_central_three_spread": {
+            "p50_ns": 1.0249293528440726,
+            "p95_ns": 1.138650000351709
+          },
+          "postgres_stability_disclosure": [],
+          "profile": "e2",
+          "ratios_riffdb_over_postgres": {
+            "p50": 4.3567472720293905,
+            "p95": 1.381561340238021
+          },
+          "riffdb": {
+            "p50_ns": 1589080.0,
+            "p95_ns": 2214600.0
+          }
+        },
+        "list_tickets_by_project_status": {
+          "class": "ordinary_named_read",
+          "encoded_size": {
+            "request_bytes": 40,
+            "response_bytes": 689
+          },
+          "postgres": {
+            "p50_ns": 432280.0,
+            "p95_ns": 1763920.0
+          },
+          "postgres_central_three_spread": {
+            "p50_ns": 1.2968260239694456,
+            "p95_ns": 1.6228548864758143
+          },
+          "postgres_stability_disclosure": [
+            "p50_ns",
+            "p95_ns"
+          ],
+          "profile": "e2",
+          "ratios_riffdb_over_postgres": {
+            "p50": 4.0066854816322754,
+            "p95": 1.3630946981722527
+          },
+          "riffdb": {
+            "p50_ns": 1732010.0,
+            "p95_ns": 2404390.0
+          }
+        },
+        "open_ticket_with_labels": {
+          "class": "compiled_command",
+          "encoded_size": {
+            "request_bytes": 204,
+            "response_bytes": 4
+          },
+          "postgres": {
+            "p50_ns": 8650250.0,
+            "p95_ns": 14054699.0
+          },
+          "postgres_central_three_spread": {
+            "p50_ns": 1.0331947311019922,
+            "p95_ns": 1.0649902245704352
+          },
+          "postgres_stability_disclosure": [],
+          "profile": "e2",
+          "ratios_riffdb_over_postgres": {
+            "p50": 1.040532932574203,
+            "p95": 0.7697269077053873
+          },
+          "riffdb": {
+            "p50_ns": 9000870.0,
+            "p95_ns": 10818280.0
+          }
+        },
+        "point_get_ticket": {
+          "class": "ordinary_named_read",
+          "encoded_size": {
+            "request_bytes": 35,
+            "response_bytes": 101
+          },
+          "postgres": {
+            "p50_ns": 348860.0,
+            "p95_ns": 1640550.0
+          },
+          "postgres_central_three_spread": {
+            "p50_ns": 1.0827548620274223,
+            "p95_ns": 1.3968402899374268
+          },
+          "postgres_stability_disclosure": [
+            "p95_ns"
+          ],
+          "profile": "e2",
+          "ratios_riffdb_over_postgres": {
+            "p50": 4.581608668233676,
+            "p95": 1.3200755844076681
+          },
+          "riffdb": {
+            "p50_ns": 1598340.0,
+            "p95_ns": 2165650.0
+          }
+        },
+        "point_get_user": {
+          "class": "ordinary_named_read",
+          "encoded_size": {
+            "request_bytes": 35,
+            "response_bytes": 73
+          },
+          "postgres": {
+            "p50_ns": 334570.0,
+            "p95_ns": 1364510.0
+          },
+          "postgres_central_three_spread": {
+            "p50_ns": 1.045172692687895,
+            "p95_ns": 1.3146121004654026
+          },
+          "postgres_stability_disclosure": [
+            "p95_ns"
+          ],
+          "profile": "e2",
+          "ratios_riffdb_over_postgres": {
+            "p50": 4.181068236841319,
+            "p95": 1.4935837773266594
+          },
+          "riffdb": {
+            "p50_ns": 1398860.0,
+            "p95_ns": 2038010.0
+          }
+        },
+        "swap_member_roles": {
+          "class": "compiled_command",
+          "encoded_size": {
+            "request_bytes": 131,
+            "response_bytes": 4
+          },
+          "postgres": {
+            "p50_ns": 7426079.0,
+            "p95_ns": 12447919.0
+          },
+          "postgres_central_three_spread": {
+            "p50_ns": 1.3425195908555518,
+            "p95_ns": 1.165176073024301
+          },
+          "postgres_stability_disclosure": [
+            "p50_ns"
+          ],
+          "profile": "e2",
+          "ratios_riffdb_over_postgres": {
+            "p50": 1.0545726755667426,
+            "p95": 0.7484487969434891
+          },
+          "riffdb": {
+            "p50_ns": 7831340.0,
+            "p95_ns": 9316630.0
+          }
+        },
+        "ticket_detail_page": {
+          "class": "ordinary_named_read",
+          "encoded_size": {
+            "request_bytes": 39,
+            "response_bytes": 672
+          },
+          "postgres": {
+            "p50_ns": 800950.0,
+            "p95_ns": 3080779.0
+          },
+          "postgres_central_three_spread": {
+            "p50_ns": 1.6863845839397398,
+            "p95_ns": 1.2083654050008537
+          },
+          "postgres_stability_disclosure": [
+            "p50_ns",
+            "p95_ns"
+          ],
+          "profile": "e2",
+          "ratios_riffdb_over_postgres": {
+            "p50": 2.315487858168425,
+            "p95": 0.8244278476320437
+          },
+          "riffdb": {
+            "p50_ns": 1854590.0,
+            "p95_ns": 2539880.0
+          }
+        }
+      }
+    }
+  ],
+  "requirements": [
+    "END-007",
+    "END-008",
+    "PERF-005",
+    "PERF-008",
+    "PERF-018"
+  ],
+  "riffdbd_sha256": "52de06848ed2c243ceafefb29de1c7be4fd6b69dd0f8f84938d6238b40e7f783",
+  "runner_sha256": "fb9babf42923833244eb9f50651337aac299f480c57d36faa0f48513c9082204",
+  "scenario_classes": {
+    "compiled_command": {
+      "p50_ns": 10000000.0,
+      "p95_ns": 15000000.0,
+      "scenarios": [
+        "close_ticket_with_comment",
+        "create_comment",
+        "open_ticket_with_labels",
+        "swap_member_roles"
+      ]
+    },
+    "ordinary_named_read": {
+      "p50_ns": 3000000.0,
+      "p95_ns": 6000000.0,
+      "scenarios": [
+        "list_comments_for_ticket",
+        "list_open_tickets_for_assignee",
+        "list_project_members",
+        "list_tickets_by_project_status",
+        "point_get_ticket",
+        "point_get_user",
+        "ticket_detail_page"
+      ]
+    },
+    "wide_bounded_named_read": {
+      "p50_ns": 6000000.0,
+      "p95_ns": 12000000.0,
+      "scenarios": [
+        "board_page_200",
+        "board_page_450",
+        "board_page_50"
+      ]
+    }
+  },
+  "schema": "riffdb.wp-674-unary-baseline/v2",
+  "source_revision": "48bcb5ced552b7a19d6ac431f05432ae70deeaa2"
+}

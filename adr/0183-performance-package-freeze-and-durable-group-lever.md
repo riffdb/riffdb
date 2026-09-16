@@ -25,7 +25,7 @@ obligations:
       change or close, and no fifth exception exists.
   - id: OBL-0183-2
     package: WP-762
-    proof: assemble-wp674-unary-manifest --require-both-profiles
+    proof: check-wp762-baseline-bank
     says: The banked baseline carries interactive c32, write-only, and unary
       receipts for both N1 and E2, each recording the stability_rule_binds method
       field set to gated_backend, before the freeze is recorded as started.
