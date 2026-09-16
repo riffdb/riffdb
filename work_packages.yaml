@@ -23050,6 +23050,15 @@ work_packages:
       startup or sink failures remain redacted and never gate primary writes.
       Existing archives never rebind to another backup or history. Full process
       qualification and same-workload acknowledgement measurements remain open.
+    - Rebuild lagging derived projection generations before the unchanged complete
+      archive candidate scrub, using the existing follower catalog proof and pure
+      projection replay owner. The real daemon restore test exposed a projection
+      frontier/marker mismatch after replaying beyond a full backup. Supply only
+      the restricted follower catalog/recovery owner to composition, recheck the
+      original history and retained inode, then validate every namespace. Earlier
+      physical stops rebuild at their exact boundary; interior cuts rebuild the
+      physical predecessor before private prefix reconstruction and sealing.
+      Keep archive/receipt bytes, source controls and publication gates unchanged.
   human_review_triggers: *id0178
 
 - id: WP-750

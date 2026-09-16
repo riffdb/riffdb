@@ -412,7 +412,19 @@ pub(crate) fn recover_follower_projections(
     cancellation: Arc<AtomicBool>,
 ) -> Result<riffdb_storage_redb::RedbFollowerStore, StorageError> {
     check_cancel(&cancellation)?;
-    let mut session = store.begin_projection_recovery(inputs, Arc::clone(&cancellation))?;
+    let session = store.begin_projection_recovery(inputs, Arc::clone(&cancellation))?;
+    let owner = rebuild_follower_projection_session(session, cancellation)?;
+    let store = owner.finish_rebuild()?;
+    follower_recovery_edge("rebuilt");
+    Ok(store)
+}
+
+/// Shared private replay under catalog proof; callers retain the final scrub gate.
+pub(crate) fn rebuild_follower_projection_session(
+    mut session: riffdb_storage_redb::RedbFollowerRecoveryCatalogSession,
+    cancellation: Arc<AtomicBool>,
+) -> Result<riffdb_storage_redb::RedbFollowerProjectionRecovery, StorageError> {
+    check_cancel(&cancellation)?;
     let database = session.database_id();
     let session_id = session.open_session_id();
     let (outcome, end) = validate_catalog_history(&mut session)
@@ -447,9 +459,7 @@ pub(crate) fn recover_follower_projections(
         }
     }
     check_cancel(&cancellation)?;
-    let store = owner.finish_rebuild()?;
-    follower_recovery_edge("rebuilt");
-    Ok(store)
+    Ok(owner)
 }
 
 fn follower_recovery_edge(_edge: &str) {

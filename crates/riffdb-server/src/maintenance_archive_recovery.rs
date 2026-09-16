@@ -139,10 +139,11 @@ pub(in crate::maintenance_driver) fn run_recovery(
                 update(storage, receipt, selected)?;
             }
             let prepared = candidate
-                .prepare_restore(
+                .prepare_restore_with_projection_rebuild(
                     request.stop(),
                     dependencies.startup_inputs.clone(),
                     cancellation,
+                    &ArchiveProjectionRebuild,
                 )
                 .map_err(DriverFault::ArtifactStorage)?;
             let database = selection.lineage().database_id();

@@ -253,16 +253,17 @@ pub use maintenance::validate_maintenance_receipt_fixture;
 #[doc(hidden)]
 pub use maintenance::validate_migration_receipt_fixture;
 pub use maintenance::{
-    RedbArchiveFrames, RedbArchiveRepository, RedbArchiveRestoreStage, RedbBootstrapCandidate,
-    RedbBootstrapCatalogSession, RedbBootstrapMaterializationInput, RedbBootstrapMaterializer,
-    RedbBootstrapReceiverRepository, RedbBootstrapRepository, RedbBootstrapSourceBuild,
-    RedbBootstrapStage, RedbBootstrapVerification, RedbFollowerColumnarBuild,
-    RedbFollowerColumnarScratch, RedbHeldBootstrapSource, RedbMaintenanceOperationEvidence,
-    RedbMaintenanceReconciliation, RedbMaintenanceStorage, RedbMigrationDiskReservation,
-    RedbPreparedArchiveRestore, RedbPrivateArchiveRestoreCandidate,
-    RedbPublishedBootstrapCandidate, RedbReplayedArchiveRestore, RedbSealedArchiveRestore,
-    RedbSealedStagedRestore, RedbStagedRestore, RedbValidatedBootstrapCandidate,
-    RedbValidatedPrivateArchiveRestore, RedbVerifiedArchiveBackup, RedbVerifiedBootstrapTransfer,
+    RedbArchiveFrames, RedbArchiveProjectionRebuild, RedbArchiveRepository,
+    RedbArchiveRestoreStage, RedbBootstrapCandidate, RedbBootstrapCatalogSession,
+    RedbBootstrapMaterializationInput, RedbBootstrapMaterializer, RedbBootstrapReceiverRepository,
+    RedbBootstrapRepository, RedbBootstrapSourceBuild, RedbBootstrapStage,
+    RedbBootstrapVerification, RedbFollowerColumnarBuild, RedbFollowerColumnarScratch,
+    RedbHeldBootstrapSource, RedbMaintenanceOperationEvidence, RedbMaintenanceReconciliation,
+    RedbMaintenanceStorage, RedbMigrationDiskReservation, RedbPreparedArchiveRestore,
+    RedbPrivateArchiveRestoreCandidate, RedbPublishedBootstrapCandidate,
+    RedbReplayedArchiveRestore, RedbSealedArchiveRestore, RedbSealedStagedRestore,
+    RedbStagedRestore, RedbValidatedBootstrapCandidate, RedbValidatedPrivateArchiveRestore,
+    RedbVerifiedArchiveBackup, RedbVerifiedBootstrapTransfer,
 };
 #[doc(hidden)]
 pub use maintenance::{

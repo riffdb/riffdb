@@ -86,6 +86,19 @@ impl RedbReplayedArchiveRestore {
         inputs: StartupValidationInputs,
         cancellation: &AtomicBool,
     ) -> Result<RebuiltArchiveStop, StorageError> {
+        self.rebuild_to_stop_with_projection_rebuild(stop, inputs, cancellation, None)
+    }
+
+    pub(super) fn rebuild_to_stop_with_projection_rebuild(
+        self,
+        stop: CommitSequence,
+        inputs: StartupValidationInputs,
+        cancellation: &AtomicBool,
+        rebuilder: Option<(
+            &dyn preparation::RedbArchiveProjectionRebuild,
+            std::sync::Arc<AtomicBool>,
+        )>,
+    ) -> Result<RebuiltArchiveStop, StorageError> {
         cancelled(cancellation)?;
         verify_file(&self.stage, &self.file)?;
         let Self {
@@ -104,18 +117,32 @@ impl RedbReplayedArchiveRestore {
         )?;
         let mut applier = crate::startup::open_validated_archive_follower(
             stage.staged_database_file(),
-            inputs,
+            inputs.clone(),
             cancellation,
         )?;
         applier.verify_database_file(&stage.file)?;
         let result = replay_predecessor(&stage, &mut applier, stop, cancellation);
+        let predecessor = applier.durable_history();
         let closed = applier.close();
         let stopped = result?;
+        let predecessor = predecessor?;
         closed?;
         cancelled(cancellation)?;
         match stopped {
-            ReplayStop::Interior(receipt) => construct(stage, receipt, stop, cancellation)
-                .map(|candidate| RebuiltArchiveStop::Private(Box::new(candidate))),
+            ReplayStop::Interior(receipt) => {
+                if let Some((rebuilder, flag)) = rebuilder {
+                    preparation::rebuild_projection_state(
+                        &stage.stage,
+                        &stage.file,
+                        predecessor,
+                        inputs,
+                        flag,
+                        Some(rebuilder),
+                    )?;
+                }
+                construct(stage, receipt, stop, cancellation)
+                    .map(|candidate| RebuiltArchiveStop::Private(Box::new(candidate)))
+            }
             ReplayStop::Physical(history) => {
                 stage.verify()?;
                 Ok(RebuiltArchiveStop::Physical(Box::new(
