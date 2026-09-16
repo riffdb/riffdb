@@ -228,8 +228,11 @@ that newly anchored database. A shared preparation owner now also handles earlie
 complete receipt boundaries and the verified backup fence without partial
 reconstruction. It validates the full selected suffix before preparing any earlier
 stop; explicit sequence stops exclude subsequent administration-only records,
-while last-archived includes the selected terminal frontier. Archive driver
-integration and the public exact-stop command remain WP-749 work.
+while last-archived includes the selected terminal frontier. The maintenance
+driver exposes these paths through `RestoreArchivedBackup`, the Rust operator
+client and `riffdb storage restore --archive`; see [archive restore](backup-restore.md#archive-restore-integration-status)
+for selection, retry and staged-authorization rules. Full CI and write-path
+performance qualification remain required before WP-749 closes.
 
 Inspect the format while the server is stopped:
 
