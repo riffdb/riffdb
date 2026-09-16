@@ -417,3 +417,34 @@ test hit its 120-second CI timeout, and seven existing tests were skipped.
 There were no assertion failures. Scope, formatting, clippy, handbook, file-size
 and panic checks all passed. The recurring bootstrap timing failure is still
 reported separately; this increment does not claim a fully green merge gate.
+
+
+## Projection-bearing interior-stop verification (2026-09-16)
+
+`archive_interior_stop_rebuilds_projection_without_later_rows_or_control_advances`
+in `crates/riffdb-server/src/replication_archive_projection_tests.rs` joins the
+previously separate projection-recovery and interior-stop proofs. Real compiled
+budget commands and the commit coordinator produce one physical receipt spanning
+application sequences 5–6. An explicit storage-admission hold and bounded channel
+observation fix the queue order; the test asserts the resulting receipt bounds.
+
+The verified backup contains a published projection at sequence 3 with an amount
+of 1000. The full selected archive includes later controls at sequence 6 and rows
+of 1500 and 700. Restore stops at sequence 5 inside the physical group, preserves
+the included commit and entity exactly, and excludes sequence 6's entity update.
+The retained projection control remains at 3: after private reconstruction,
+validated publication and reopen, its rows equal the backup's original rows.
+Restoring application state does not silently advance derived control authority.
+
+Preparation without the production projection rebuild refuses before publishing
+a target. The successful path uses the same catalog-validated rebuild function
+as the archive maintenance driver. This is real-storage composition evidence;
+the public API/CLI and process-crash campaigns remain separately identified tests.
+No production behavior, accepted amendment, durable identity or public interface
+changes. Package closure and host-qualified latency evidence remain outstanding.
+
+The real API/CLI scenarios additionally restart the restored source, commit a new
+command at the successor sequence, check its changed entity, retry that command
+with identical outcome/provenance and no second mutation, then reopen to verify
+the durable head and unchanged restored incarnation. This proves ordinary writes
+resume after restore, independently of replaying pre-restore idempotent outcomes.

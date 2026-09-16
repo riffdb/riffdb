@@ -627,3 +627,6 @@ fn assert_control_deletion_refused(
         "control deletion must not leave orphaned generation authority"
     );
 }
+
+#[path = "replication_archive_projection_tests.rs"]
+mod archive_projection;
