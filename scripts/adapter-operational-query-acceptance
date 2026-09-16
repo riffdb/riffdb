@@ -57,6 +57,10 @@ cleanup() {
 trap cleanup EXIT INT TERM
 
 cd "$repo_root"
+# Cargo's metadata reflects both CARGO_TARGET_DIR and repository configuration.
+# Launch the exact artifacts built below, including in isolated CI checkouts.
+runtime_bin_dir="$(cargo +1.97.0 metadata --no-deps --format-version 1 \
+    | jq -er '.target_directory')/debug"
 cargo +1.97.0 build --quiet \
     -p riffdb-server --bin riffdbd \
     -p riffdb-cli --bin riffdb \
@@ -136,7 +140,7 @@ EOF
 mkfifo "$work_root/server.input" "$work_root/server.output"
 exec {server_input_fd}<>"$work_root/server.input"
 exec {server_output_fd}<>"$work_root/server.output"
-target/debug/riffdbd --config "$work_root/riffdbd.toml" \
+"$runtime_bin_dir/riffdbd" --config "$work_root/riffdbd.toml" \
     <&"$server_input_fd" >"$work_root/server.output" 2>"$work_root/server.stderr" &
 server_pid=$!
 ready=
@@ -161,12 +165,12 @@ max_attempts = 3
 tls_trust_root = "$work_root/ca.pem"
 tls_server_name = "127.0.0.1"
 EOF
-target/debug/riffdb --config "$work_root/bootstrap-client.toml" capability bootstrap \
+"$runtime_bin_dir/riffdb" --config "$work_root/bootstrap-client.toml" capability bootstrap \
     --request "$work_root/bootstrap.json" --generate "$work_root/bootstrap.credential" \
     --bearer-output "$work_root/operator.credential" >/dev/null
 sed 's/database = "default"/database = "other"/' "$work_root/bootstrap-client.toml" \
     >"$work_root/other-bootstrap-client.toml"
-target/debug/riffdb --config "$work_root/other-bootstrap-client.toml" capability bootstrap \
+"$runtime_bin_dir/riffdb" --config "$work_root/other-bootstrap-client.toml" capability bootstrap \
     --request "$work_root/bootstrap.json" --generate "$work_root/other-bootstrap.credential" \
     --bearer-output "$work_root/other-operator.credential" >/dev/null
 cat >"$work_root/operator-client.toml" <<EOF
@@ -196,12 +200,12 @@ mv "$work_root/application/riffdb.application.wp701.json" \
     "$work_root/application/riffdb.application.json"
 (
     cd "$work_root/application"
-    "$repo_root/target/debug/riffdb" application lock --write \
+    "$runtime_bin_dir/riffdb" application lock --write \
         riffdb.application.json --lock riffdb.application.lock.json >/dev/null
 )
 (
     cd "$work_root/application"
-    "$repo_root/target/debug/riffdb" --config "$work_root/operator-client.toml" application deploy \
+    "$runtime_bin_dir/riffdb" --config "$work_root/operator-client.toml" application deploy \
         riffdb.application.json --lock riffdb.application.lock.json \
         --provision-role AdapterOperationalApplication --lifetime-seconds 3600 >/dev/null
 )
@@ -211,7 +215,7 @@ if [[ "$credential_file" == /* ]]; then credential="$credential_file"; else cred
 [[ -f "$credential" ]] || { echo "adapter application credential was not provisioned" >&2; exit 1; }
 (
     cd "$work_root/application"
-    "$repo_root/target/debug/riffdb" --config "$work_root/other-operator-client.toml" application deploy \
+    "$runtime_bin_dir/riffdb" --config "$work_root/other-operator-client.toml" application deploy \
         riffdb.application.json --lock riffdb.application.lock.json \
         --provision-role AdapterOperationalApplication --lifetime-seconds 3600 >/dev/null
 )
@@ -220,30 +224,30 @@ other_credential_file="$(jq -r 'if (.role.credential_file // "") == "" then "app
 if [[ "$other_credential_file" == /* ]]; then other_credential="$other_credential_file"; else other_credential="$other_deployment_root/$other_credential_file"; fi
 [[ -f "$other_credential" ]] || { echo "other-database application credential was not provisioned" >&2; exit 1; }
 
-target/debug/riffdb --config "$work_root/operator-client.toml" role bind \
+"$runtime_bin_dir/riffdb" --config "$work_root/operator-client.toml" role bind \
     "$work_root/application/generated/riffdb.application.exact.json" \
     --role AdapterOperationalLimited --principal adapter-operational-limited \
     --actor-kind service --audience riffdb-adapter-operational --lifetime-seconds 3600 \
     --credential-output "$work_root/limited.credential" --output json >/dev/null
-target/debug/riffdb --config "$work_root/operator-client.toml" role bind \
+"$runtime_bin_dir/riffdb" --config "$work_root/operator-client.toml" role bind \
     "$work_root/application/generated/riffdb.application.exact.json" \
     --role AdapterOperationalApplication --principal adapter-operational-mcp \
     --actor-kind agent --audience "http://127.0.0.1:$mcp_port/mcp" --lifetime-seconds 3600 \
     --capability-id 01990000-0000-7000-8000-000000000701 \
     --credential-output "$work_root/mcp.credential" --output json >/dev/null
-target/debug/riffdb --config "$work_root/operator-client.toml" role bind \
+"$runtime_bin_dir/riffdb" --config "$work_root/operator-client.toml" role bind \
     "$work_root/application/generated/riffdb.application.exact.json" \
     --role AdapterOperationalApplication --principal adapter-operational-mcp-auth \
     --actor-kind agent --audience "http://127.0.0.1:$mcp_port/mcp" --lifetime-seconds 3600 \
     --capability-id 01990000-0000-7000-8000-000000000702 \
     --credential-output "$work_root/mcp-auth.credential" --output json >/dev/null
-target/debug/riffdb --config "$work_root/other-operator-client.toml" role bind \
+"$runtime_bin_dir/riffdb" --config "$work_root/other-operator-client.toml" role bind \
     "$work_root/application/generated/riffdb.application.exact.json" \
     --role AdapterOperationalApplication --principal adapter-operational-mcp-other \
     --actor-kind agent --audience "http://127.0.0.1:$mcp_port/mcp" --lifetime-seconds 3600 \
     --capability-id 01990000-0000-7000-8000-000000000703 \
     --credential-output "$work_root/mcp-other.credential" --output json >/dev/null
-target/debug/riffdb --config "$work_root/operator-client.toml" role bind \
+"$runtime_bin_dir/riffdb" --config "$work_root/operator-client.toml" role bind \
     "$work_root/application/generated/riffdb.application.exact.json" \
     --role AdapterOperationalApplication --principal adapter-operational-stdio-auth \
     --actor-kind agent --audience riffdb-adapter-operational --lifetime-seconds 3600 \
@@ -277,7 +281,7 @@ cat >"$work_root/binary-interval-parameters.json" <<'EOF'
 EOF
 binary_interval_ready=''
 for _attempt in $(seq 1 100); do
-    if target/debug/riffdb --config "$work_root/application-client.toml" \
+    if "$runtime_bin_dir/riffdb" --config "$work_root/application-client.toml" \
         query run-named DocumentsInTitleWindow \
         --contract-lineage AdapterOperationalConformance --contract-version 1 \
         --module-hash "$module_hash" --parameters "$work_root/binary-interval-parameters.json" \
@@ -307,7 +311,7 @@ EOF
 for exact_query in ExactDocumentsContainsAsc ExactDocumentsEndsWithDesc ExactDocumentsStartsWithAsc; do
     exact_provider_ready=''
     for _attempt in $(seq 1 100); do
-        if target/debug/riffdb --config "$work_root/application-client.toml" \
+        if "$runtime_bin_dir/riffdb" --config "$work_root/application-client.toml" \
             query run-named "$exact_query" \
             --contract-lineage AdapterOperationalConformance --contract-version 1 \
             --module-hash "$module_hash" --parameters "$work_root/exact-provider-readiness.json" \
@@ -347,7 +351,7 @@ cat >"$work_root/exact-predicate-reviewed-readiness.json" <<'EOF'
 EOF
 exact_provider_ready=''
 for _attempt in $(seq 1 100); do
-    if target/debug/riffdb --config "$work_root/application-client.toml" \
+    if "$runtime_bin_dir/riffdb" --config "$work_root/application-client.toml" \
         query run-named SearchDirectoryUsers \
         --contract-lineage AdapterOperationalConformance --contract-version 1 \
         --module-hash "$module_hash" --parameters "$work_root/exact-predicate-readiness.json" \
@@ -371,7 +375,7 @@ for query_and_file in \
     readiness_file="${query_and_file#*:}"
     exact_provider_ready=''
     for _attempt in $(seq 1 100); do
-        if target/debug/riffdb --config "$work_root/application-client.toml" \
+        if "$runtime_bin_dir/riffdb" --config "$work_root/application-client.toml" \
             query run-named "$exact_query" \
             --contract-lineage AdapterOperationalConformance --contract-version 1 \
             --module-hash "$module_hash" --parameters "$readiness_file" \
@@ -405,7 +409,7 @@ for exact_query in \
     InventoryByObservedDescNullsFirst; do
     nullable_provider_ready=''
     for _attempt in $(seq 1 100); do
-        if target/debug/riffdb --config "$work_root/application-client.toml" \
+        if "$runtime_bin_dir/riffdb" --config "$work_root/application-client.toml" \
             query run-named "$exact_query" \
             --contract-lineage AdapterOperationalConformance --contract-version 1 \
             --module-hash "$module_hash" --parameters "$work_root/nullable-order-readiness.json" \
@@ -431,7 +435,7 @@ WP701_GENERATED_ROOT="$work_root/application/generated" \
         --manifest-path fixtures/riffql/wp701-binary-text-interval/runner/rust/Cargo.toml \
         >"$work_root/binary_interval_rust.json"
 
-target/debug/riffdb --config "$work_root/application-client.toml" \
+"$runtime_bin_dir/riffdb" --config "$work_root/application-client.toml" \
     query run-named DocumentsInTitleWindow \
     --contract-lineage AdapterOperationalConformance --contract-version 1 \
     --module-hash "$module_hash" --parameters "$work_root/binary-interval-parameters.json" \
@@ -441,7 +445,7 @@ binary_interval_cli_cursor="$(jq -r '.result.next_cursor // empty' "$work_root/b
     echo "CLI binary interval first page omitted its cursor" >&2
     exit 1
 }
-target/debug/riffdb --config "$work_root/application-client.toml" \
+"$runtime_bin_dir/riffdb" --config "$work_root/application-client.toml" \
     query run-named DocumentsInTitleWindow \
     --contract-lineage AdapterOperationalConformance --contract-version 1 \
     --module-hash "$module_hash" --parameters "$work_root/binary-interval-parameters.json" \
@@ -463,7 +467,7 @@ cat >"$work_root/list-fga-parameters.json" <<'EOF'
   "after": null
 }
 EOF
-target/debug/riffdb --config "$work_root/application-client.toml" query run-named ListFgaTuples \
+"$runtime_bin_dir/riffdb" --config "$work_root/application-client.toml" query run-named ListFgaTuples \
     --contract-lineage AdapterOperationalConformance --contract-version 1 \
     --module-hash "$module_hash" --parameters "$work_root/list-fga-parameters.json" \
     --output json >"$work_root/cli.json"
@@ -489,7 +493,7 @@ for query_and_parameters in \
     remainder="${remainder#*:}"
     root_field="${remainder%%:*}"
     nested_field="${remainder#*:}"
-    target/debug/riffdb --config "$work_root/application-client.toml" query run-named "$query" \
+    "$runtime_bin_dir/riffdb" --config "$work_root/application-client.toml" query run-named "$query" \
         --contract-lineage AdapterOperationalConformance --contract-version 1 \
         --module-hash "$module_hash" --parameters "$parameters" \
         --output json >"$work_root/cli-$query.json"
@@ -514,7 +518,7 @@ cat >"$work_root/exact-document-parameters.json" <<'EOF'
   "offset": {"$u64":"1"}
 }
 EOF
-target/debug/riffdb --config "$work_root/application-client.toml" query run-named ExactDocumentsContainsAsc \
+"$runtime_bin_dir/riffdb" --config "$work_root/application-client.toml" query run-named ExactDocumentsContainsAsc \
     --contract-lineage AdapterOperationalConformance --contract-version 1 \
     --module-hash "$module_hash" --parameters "$work_root/exact-document-parameters.json" \
     --output json >"$work_root/cli-exact.json"
@@ -526,7 +530,7 @@ jq -e '
        | select(.name == "value") | .value.type == "u64" and .value.value == "2")
 ' "$work_root/cli-exact.json" >/dev/null
 
-target/debug/riffdb --config "$work_root/application-client.toml" query run-named InventoryBySubtitleAscNullsFirst \
+"$runtime_bin_dir/riffdb" --config "$work_root/application-client.toml" query run-named InventoryBySubtitleAscNullsFirst \
     --contract-lineage AdapterOperationalConformance --contract-version 1 \
     --module-hash "$module_hash" --parameters "$work_root/nullable-order-readiness.json" \
     --output json >"$work_root/cli-nullable.json"
@@ -553,7 +557,7 @@ EOF
 cat >"$work_root/metric-parameters.json" <<'EOF'
 {"experiment_id":{"$uuid":"018f0f8b-7c6d-7e31-8a4f-000000000014"}}
 EOF
-if target/debug/riffdb --config "$work_root/limited-client.toml" query run-named MetricDashboard \
+if "$runtime_bin_dir/riffdb" --config "$work_root/limited-client.toml" query run-named MetricDashboard \
     --contract-lineage AdapterOperationalConformance --contract-version 1 \
     --module-hash "$module_hash" --parameters "$work_root/metric-parameters.json" \
     --output json >"$work_root/unauthorized-aggregate.json" 2>&1; then
@@ -583,7 +587,7 @@ pool_connections = 4
 streams_per_connection = 64
 EOF
 chmod 0600 "$work_root/driver.toml"
-target/debug/riffdb-driverd "$work_root/driver.toml" >"$work_root/driver.stdout" 2>"$work_root/driver.stderr" &
+"$runtime_bin_dir/riffdb-driverd" "$work_root/driver.toml" >"$work_root/driver.stdout" 2>"$work_root/driver.stderr" &
 driver_pid=$!
 deadline=$((SECONDS + 30))
 while [[ ! -S "$socket" && "$SECONDS" -lt "$deadline" ]]; do
@@ -808,7 +812,7 @@ raw_mcp_call "$work_root/mcp-auth-curl.conf" "$auth_session_id" 11 \
     '{"site_id":"018f0f8b-7c6d-7e31-8a4f-000000000023","after_title":"a","horizon_title":"😀"}' \
     mcp-auth-first
 auth_cursor="$(jq -er '.result.structuredContent.page.next_cursor' "$work_root/mcp-auth-first-output.json")"
-target/debug/riffdb --config "$work_root/operator-client.toml" capability revoke \
+"$runtime_bin_dir/riffdb" --config "$work_root/operator-client.toml" capability revoke \
     01990000-0000-7000-8000-000000000702 --reason policy_change >/dev/null
 raw_mcp_call "$work_root/mcp-auth-curl.conf" "$auth_session_id" 12 \
     adapter_operational_conformance_documents_in_title_window \
@@ -858,7 +862,7 @@ path = "$work_root/riffdb-other.redb"
 backup_root = "$work_root/backups-other"
 environment = "development"
 EOF
-target/debug/riffdbd --config "$work_root/riffdbd-stdio.toml" \
+"$runtime_bin_dir/riffdbd" --config "$work_root/riffdbd-stdio.toml" \
     <&"$server_input_fd" >"$work_root/server.output" 2>"$work_root/server-stdio.stderr" &
 server_pid=$!
 ready=
@@ -921,13 +925,13 @@ EOF
 RIFFDB_MCP_CONFIG="$work_root/riffdb-mcp.toml" \
     RIFFDB_MCP_OTHER_CONFIG="$work_root/riffdb-mcp-other.toml" \
     RIFFDB_MCP_AUTH_CONFIG="$work_root/riffdb-mcp-auth.toml" \
-    RIFFDB_MCP_BINARY="$repo_root/target/debug/riffdb-mcp" \
+    RIFFDB_MCP_BINARY="$runtime_bin_dir/riffdb-mcp" \
     RIFFDB_MCP_RESULT="$work_root/binary_interval_mcp_stdio.json" \
     RIFFDB_MCP_PROOF="$work_root/mcp-stdio-proof.json" \
     RIFFDB_MCP_AUTH_FIRST="$work_root/mcp-stdio-auth-first.json" \
     RIFFDB_MCP_STDERR="$work_root/mcp-stdio.stderr" \
     RIFFDB_HOSTED_STALE_CURSOR="$hosted_cursor" \
-    RIFFDB_CLI="$repo_root/target/debug/riffdb" \
+    RIFFDB_CLI="$runtime_bin_dir/riffdb" \
     RIFFDB_OPERATOR_CONFIG="$work_root/stdio-operator-client.toml" \
     "$work_root/python-venv/bin/python" - <<'PY'
 import json
