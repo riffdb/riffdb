@@ -317,6 +317,7 @@ fn every_registered_semantic_record_round_trips_in_registry_order() {
 }
 
 #[test]
+// req: REP-007
 fn command_capsule_round_trip_reconstructs_every_existing_view_exactly() {
     let atomic = sample::atomic_record_set();
     let audit_basis = sample::service_audit_record();
@@ -360,6 +361,40 @@ fn command_capsule_round_trip_reconstructs_every_existing_view_exactly() {
         terminal,
     )
     .expect("reciprocal capsule");
+
+    // Prefix frontier evidence must agree with this complete reciprocal graph.
+    // Empty mutations here check only the frontier join, not entity evidence.
+    let prefix = |app, admin| {
+        crate::CommandPrefixEvidenceV1::new(
+            riffdb_types::DualFrontier::new(
+                CommitSequence::new(app),
+                AdministrationSequence::new(admin),
+            ),
+            riffdb_types::DualFrontier::new(
+                CommitSequence::new(app + 1),
+                AdministrationSequence::new(admin + 2),
+            ),
+            Vec::new(),
+        )
+        .unwrap()
+    };
+    let prior_app = capsule.commit_sequence().get() - 1;
+    prefix(prior_app, 0).validate_command(&capsule).unwrap();
+    assert!(prefix(prior_app + 1, 0).validate_command(&capsule).is_err());
+    assert!(prefix(prior_app, 1).validate_command(&capsule).is_err());
+    let terminal_only = crate::CommandPrefixEvidenceV1::new(
+        riffdb_types::DualFrontier::new(
+            CommitSequence::new(prior_app),
+            AdministrationSequence::new(1),
+        ),
+        riffdb_types::DualFrontier::new(
+            Some(capsule.commit_sequence()),
+            AdministrationSequence::new(2),
+        ),
+        Vec::new(),
+    )
+    .unwrap();
+    terminal_only.validate_command(&capsule).unwrap();
 
     let encoded = encode_command_capsule_v1(&capsule).expect("capsule encodes");
     let decoded = decode_command_capsule_v1(encoded.as_bytes(), atomic.events().to_vec())
