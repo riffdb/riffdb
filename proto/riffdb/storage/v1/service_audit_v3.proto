@@ -1,0 +1,43 @@
+syntax = "proto3";
+
+package riffdb.storage.v1;
+
+import "riffdb/storage/v1/audit.proto";
+import "riffdb/storage/v1/common.proto";
+import "riffdb/storage/v1/service_audit_v2.proto";
+
+message ReplicationFollowerAuditTargetV3 {
+  bytes database_id = 1;
+  uint64 history_incarnation = 2;
+  uint64 leadership_epoch = 3;
+  bytes hold_id = 4;
+}
+
+message ServiceAuditTargetV3 {
+  oneof target {
+    string contract_lineage = 1;
+    ContractVersionAuditTargetV1 contract_version = 2;
+    EntityTypeAuditTargetV1 entity_type = 3;
+    CommandAuditTargetV1 command = 4;
+    ProjectionAuditTargetV1 projection = 5;
+    IndexAuditTargetV1 index = 6;
+    uint64 commit_sequence = 7;
+    bytes provenance_id = 8;
+    bytes capability_id = 9;
+    EventConsumerAuditTargetV2 event_consumer = 10;
+    ReplicationFollowerAuditTargetV3 replication_follower = 11;
+  }
+}
+
+message ServiceAuditRecordV3 {
+  uint64 administration_sequence = 1;
+  bytes request_id = 2;
+  TimestampV1 timestamp = 3;
+  ServiceOperationV1 operation = 4;
+  ServiceAuditPhaseV1 phase = 5;
+  AuditPrincipalV1 principal = 6;
+  ServiceIngressKindV1 ingress = 7;
+  repeated ServiceAuditTargetV3 targets = 8;
+  optional string approval_id = 9;
+  ServiceAuditLinkV1 link = 10;
+}

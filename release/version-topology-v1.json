@@ -759,6 +759,25 @@
       "last_change": {"classification":"new_domain_identity","decision":"ADR-0178 section 6 and compatibility / WP-748 follower registration policy in the existing source-hold domain"}
     },
     {
+      "id": "durable.service_audit",
+      "title": "Service audit with lineage-scoped follower target",
+      "classification": "durable",
+      "owner": "riffdb-storage-api",
+      "source_assertions": [{"kind":"literal","path":"proto/riffdb/storage/v1/audit.proto","literal":"message ServiceAuditRecordV1 {"}, {"kind":"literal","path":"proto/riffdb/storage/v1/service_audit_v2.proto","literal":"message ServiceAuditRecordV2 {"}, {"kind":"literal","path":"proto/riffdb/storage/v1/service_audit_v3.proto","literal":"message ServiceAuditRecordV3 {"}],
+      "readable_identities": ["tag-22/revision-1", "tag-22/revision-2", "tag-22/revision-3"],
+      "writable_identities": ["tag-22/revision-2", "tag-22/revision-3"],
+      "current_identities": ["tag-22/revision-2", "tag-22/revision-3"],
+      "writer_policy": "least_sufficient",
+      "compatibility_rule": "V1/V2 identities and target fields remain frozen. Follower-target audits require V3; existing audits continue to write V2. All readers refuse malformed, unknown, duplicate or noncanonical targets and lists above sixteen.",
+      "breaking_when": "Tag 22, existing revisions, field numbers, target payloads, order or audit lifecycle meaning changes.",
+      "supported_release_posture": "WP-748 registers the bounded V3 codec and mixed-generation reader. Administrative registration/retirement and promotion writers remain disabled pending atomic lifecycle proofs. Earlier exact registry markers require a matching binary; no inferred or automatic migration is enabled.",
+      "lifecycle": {"active":["tag-22/revision-2", "tag-22/revision-3"],"read_only":["tag-22/revision-1"],"retirement_candidate":[],"retired":[]},
+      "reserved_identity_policy": "Audit tags, revisions and target field numbers are never reused.",
+      "evidence": ["fixtures/proto/durable-service-audit-v3-all-targets.hex", "crates/riffdb-proto/tests/follower_audit_compatibility.rs", "crates/riffdb-storage-api/src/proto_codec/tests/audit_v3.rs", "crates/riffdb-storage-api/src/proto_codec/tests/malformed_semantic.rs"],
+      "checks": ["./scripts/check-version-topology", "./scripts/check-durable-format-manifest"],
+      "last_change": {"classification":"new_domain_identity","decision":"ADR-0021/0178 and SPEC 13.5 / WP-748 exact registration-audit amendment accepted in 05d2938b"}
+    },
+    {
       "id": "durable.tokenized_text_provider_state",
       "title": "Tokenized-text provider checkpoint",
       "classification": "durable",

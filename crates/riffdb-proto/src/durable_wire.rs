@@ -763,6 +763,19 @@ shape!(SERVICE_AUDIT_TARGET_V2 [
     fixed_bytes(9, 16),
     message(10, &EVENT_CONSUMER_AUDIT_TARGET),
 ]);
+shape!(REPLICATION_FOLLOWER_AUDIT_TARGET [fixed_bytes(1, 16), fixed_bytes(4, 16)]);
+shape!(SERVICE_AUDIT_TARGET_V3 [
+    string(1, MAX_TEXT_ID_BYTES),
+    message(2, &CONTRACT_VERSION_TARGET),
+    message(3, &ENTITY_TYPE_TARGET),
+    message(4, &COMMAND_TARGET),
+    message(5, &PROJECTION_TARGET),
+    message(6, &INDEX_TARGET),
+    fixed_bytes(8, 16),
+    fixed_bytes(9, 16),
+    message(10, &EVENT_CONSUMER_AUDIT_TARGET),
+    message(11, &REPLICATION_FOLLOWER_AUDIT_TARGET),
+]);
 shape!(COMMAND_AUDIT_LINK[fixed_bytes(2, 16)]);
 shape!(CONTROL_AUDIT_LINK []);
 shape!(SERVICE_AUDIT_LINK [
@@ -783,6 +796,14 @@ shape!(SERVICE_AUDIT_V2 [
     message(3, &TIMESTAMP),
     message(6, &AUDIT_PRINCIPAL),
     repeated_message(8, 16, &SERVICE_AUDIT_TARGET_V2),
+    string(9, MAX_TEXT_ID_BYTES),
+    message(10, &SERVICE_AUDIT_LINK),
+]);
+shape!(SERVICE_AUDIT_V3 [
+    fixed_bytes(2, 16),
+    message(3, &TIMESTAMP),
+    message(6, &AUDIT_PRINCIPAL),
+    repeated_message(8, 16, &SERVICE_AUDIT_TARGET_V3),
     string(9, MAX_TEXT_ID_BYTES),
     message(10, &SERVICE_AUDIT_LINK),
 ]);
@@ -1071,7 +1092,7 @@ shape!(REPLICATION_SOURCE_HOLD_V2 [
     message(6, &CHANGELOG_POSITION_V3),
 ]);
 
-const ROOTS: [&Shape; 104] = [
+const ROOTS: [&Shape; 105] = [
     &ROOT_EMPTY,
     &ROOT_DATABASE_ID,
     &ROOT_OPTIONAL_UNIT_FIELD_TWO,
@@ -1187,6 +1208,7 @@ const ROOTS: [&Shape; 104] = [
     &REPLICATION_SOURCE_HOLD_V2,
     &ROOT_APPLICATION_EXPORT_OPERATION_V2,
     &ROOT_APPLICATION_EXPORT_PAGE_COMMITMENT,
+    &SERVICE_AUDIT_V3,
 ];
 
 pub(crate) fn payload(record_index: usize, input: &[u8]) -> Result<(), DurablePreflightError> {
