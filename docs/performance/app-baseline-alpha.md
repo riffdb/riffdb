@@ -438,3 +438,11 @@ are in the source tree at `release/evidence/wp-749/local-paired-20260916/`.
 No performance-selected retries were taken. This local point supplies disclosure;
 the required N1/E2 campaign, interactive and concurrency sweeps, and repeated-kill
 qualification remain outstanding. No performance threshold or freeze state changes.
+
+A follow-up diagnostic trace found 11 sync calls per archived frame, with the
+collector spending most of that traced run waiting inside those calls. Normal
+archive publication now uses five sync calls: durable artifact bytes and names
+precede the durable selector. Exact retries and process-crash recovery cover the
+publication boundaries. This syscall reduction has not yet been qualified by a
+fresh paired latency comparison; the results above remain the last measured
+comparison, and the no-regression gate remains open.
