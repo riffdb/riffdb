@@ -416,7 +416,8 @@ or freeze exception, and smoke results cannot establish a latency comparison.
 
 A fixed four-cell run used the full dataset, write-only load, 32 clients and three
 90-second generations with 15-second warmups on a local Ryzen 9 7950X host. All
-cells passed correctness, host validity and existing within-cell stability checks.
+cells passed correctness and existing within-cell stability checks; their
+recorded host samplers reported valid.
 
 | Cell | Median operations/s | p95 ms | p99 ms |
 | --- | ---: | ---: | ---: |
@@ -431,7 +432,14 @@ implementation changes. Enabling collection measured 22.2% lower throughput and
 54.5% higher p95 than disabling it with the same current binary. Collection made
 verified durable progress but lagged substantially; full catch-up is not claimed.
 These results leave the no-regression exit gate unresolved. Within-cell stability
-is not cross-cell parity.
+is not cross-cell parity. The earlier process inventories did not bind namespace
+visibility. A subsequent observation confirmed that an ordinary tool sandbox
+sees only its own processes, while the host-visible sampler sees unrelated CPU
+activity and refuses measurement. The earlier sampler flags cannot establish
+host-wide absence of interference. Retain these numbers as unqualified local
+observations; neither their causal attribution nor their host validity is proven.
+Details and the new refused preflight are in
+`release/evidence/wp-749/host-observation-20260916/`.
 
 The complete raw reports, build identities, fixed protocol and reproducible summary
 are in the source tree at `release/evidence/wp-749/local-paired-20260916/`.

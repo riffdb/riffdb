@@ -5,9 +5,18 @@ Measured 2026-09-16. Source behavior and guarantees are unchanged by this bundle
 
 ## Result
 
-All four cells exited successfully, with clean correctness, valid pre/postflight
+All four cells exited successfully, with clean correctness, reported-valid pre/postflight
 host observations, zero whole-cell steal, and stable three-generation results
 under the existing harness rules. These checks do **not** establish no regression.
+
+**Host visibility correction:** These reports do not bind process-namespace
+visibility. Their empty active-process inventories cannot establish host-wide
+absence of interference. A later bounded observation confirmed that the ordinary
+tool sandbox exposes only its own processes; the host-visible sampler refused a
+new run because of unrelated activity. See `../host-observation-20260916/`.
+Retain the original numbers and raw flags as unqualified local observations;
+actual interference during these earlier cells is unknown. This correction
+changes no raw report, log, execution receipt, protocol, or measured ratio.
 
 | Cell | Median ops/s | p50 ms | p95 ms | p99 ms |
 | --- | ---: | ---: | ---: | ---: |
