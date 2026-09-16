@@ -1497,6 +1497,66 @@ stay byte-exact. Implement the admitted archive restore CLI through the same
 API-neutral service and administrative transport path; no CLI-local redb open
 or filesystem bypass is introduced.
 
+### Exact command-prefix restoration evidence (accepted 2026-09-15)
+
+The maintainer accepted the exact amendment in
+`docs/architecture/WP-749-EXACT-STOP-REVIEW.md` in session on 2026-09-15
+(America/Chicago): "Approve exact amendment". The following qualifies ADR-0102's
+command authority representation and ADR-0178/0186's restore composition. WP-749
+owns implementation and the complete intermediate-stop, corruption, recovery,
+authorization and same-workload write-path evidence before closure.
+
+**Exact command-prefix restoration evidence.** Successful-command authority
+MUST retain sufficient bounded, canonical evidence to reconstruct the exact
+authoritative state after each application commit sequence inside a physical
+command group, including intermediate entity values overwritten or deleted
+later in that group. Hashes alone are insufficient. The evidence MUST cover
+the complete reciprocal command graph and all independently stored authority
+changed by that prefix; it MUST NOT depend on later live source reads,
+application callbacks, inverse hashes, or a surviving local journal.
+
+Introduce successor stored command capsule V7 (record tag 54, revision 6) and
+command segment V6 (record tag 55, revision 6) for this evidence. Evidence may
+reuse existing semantic mutation and command types. Its encoding MUST avoid
+self-reference, bind exact command order and original before/after frontiers,
+and validate against the complete original transaction's net mutations and
+canonical command facts. Startup and recovery MUST reject missing,
+contradictory, duplicated, noncanonical, or out-of-bound required evidence.
+The evidence is part of existing command authority in the existing namespace;
+it adds no authority namespace and changes no V3 frame or receipt encoding.
+
+The source MUST form and persist this evidence atomically with the existing
+command graph. Its bytes count against existing command, segment, transaction,
+journal and changelog ceilings, with capacity refusal before authoritative
+mutation. It adds no archive sink dependency, additional durability fence,
+acknowledgement gate, application control, or change to FIFO/grouping rules.
+WP-749 MUST provide same-workload write-path measurements and crash proofs.
+
+Exact archive restore MUST validate the complete selected original V3 frames
+and replay them through the existing follower applier. For a stop inside a
+physical transaction, the offline owner may reconstruct a separate private
+candidate from the validated predecessor and checked command-prefix evidence.
+That candidate is an offline restore artifact, never an attached follower,
+source receipt, acknowledged replication position, or serving database. It
+MUST NOT claim the full source transaction's identity, hash, or frontier.
+
+Before publication, the complete candidate MUST pass structural, catalog,
+reciprocal command, entity/index and exact-frontier validation, then staged
+authentication and current policy against that candidate. All readers MUST
+close before the durable receipt-authorized incarnation and RestoreAnchor
+publication ceremony. Receipt V3 retains the immutable original selection
+separately from the actual restored frontier. Interrupted private construction
+rebuilds from that selection; it never grants admission or publication authority.
+
+Existing stored capsule/segment bytes MUST NOT be reinterpreted or guessed
+into the new evidence. Register the successor identities and use the existing
+explicit compatibility/refusal and migration governance. Where old history
+lacks a recoverable intermediate value, refuse the requested exact stop before
+target replacement; never claim that old history gained sequence granularity.
+Such legacy refusal does not satisfy WP-749's exit gate for newly written
+supported history. Backup manifest V1, archive-manifest/v1, maintenance receipt
+V1/V2/V3, and changelog V3 bytes remain unchanged.
+
 ### Generated public-surface adapters and the operation registry (ADR-0179)
 
 Every public operation is declared once and its transport, presentation, and

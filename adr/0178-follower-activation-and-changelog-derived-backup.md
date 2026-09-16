@@ -13,7 +13,9 @@ acceptance: >-
   docs/architecture/WP-747-FOLLOWER-COLUMNAR-REVIEW.md; exact archive restore
   receipt amendment accepted by the maintainer in session 2026-09-15,
   "Approve exact text", referring to
-  docs/architecture/WP-749-ARCHIVE-RESTORE-RECEIPT-REVIEW.md.
+  docs/architecture/WP-749-ARCHIVE-RESTORE-RECEIPT-REVIEW.md; exact command-prefix
+  evidence amendment accepted in session 2026-09-15, "Approve exact amendment",
+  referring to docs/architecture/WP-749-EXACT-STOP-REVIEW.md.
 requires: [ADR-0019, ADR-0050, ADR-0061, ADR-0072, ADR-0082, ADR-0083, ADR-0085,
   ADR-0086, ADR-0093, ADR-0100, ADR-0101, ADR-0104, ADR-0112, ADR-0124]
 # ADR-0085 is required at Amendments 2 and 3; ADR-0100 at Amendments 1 and 2.
@@ -91,6 +93,18 @@ Three facts make activation tractable without new design. There is one total ord
 Incremental backup falls out of the same stream. A consumer that persists checksummed frames to a configured sink beside periodic full backups gives restore-to-last-archived-sequence without a second durable format, which the limitations page today lists as absent.
 
 ## Decision
+
+### Accepted amendment: exact command-prefix restoration evidence
+
+The exact "Exact command-prefix restoration evidence" amendment in SPEC §4.10
+is incorporated here in full. The maintainer accepted it in session on
+2026-09-15: "Approve exact amendment", referring to
+`docs/architecture/WP-749-EXACT-STOP-REVIEW.md`. WP-749 owns successor capsule V7
+(tag 54, revision 6), segment V6 (tag 55, revision 6), complete bounded prefix
+evidence and validated private reconstruction before the unchanged receipt,
+authorization and incarnation publication ceremony. Original V3 receipt semantics
+and bytes remain unchanged; missing legacy evidence never permits a rounded stop.
+
 
 ### 1. Sequencing and freeze
 

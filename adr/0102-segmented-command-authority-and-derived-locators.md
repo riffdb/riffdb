@@ -4,6 +4,8 @@
 - **Date:** 2026-08-07
 - **Accepted:** 2026-08-07
 - **Exact text accepted:** 2026-08-07
+- **Amendment acceptance:** maintainer, in session, 2026-09-15: "Approve exact amendment";
+  `docs/architecture/WP-749-EXACT-STOP-REVIEW.md`
 - **Decision owners:** RiffDB maintainers
 - **Related requirements:** `STO-002`, `STO-020`, `STO-021`, `STO-022`,
   `REC-001`, `REC-002`, `TXN-041`, `TXN-042`, `TXN-043`, `TXN-044`,
@@ -36,6 +38,18 @@ exact indexes may accelerate an authoritative record provided readiness and
 every read fail closed when the index cannot be proven complete.
 
 ## Decision
+
+### Accepted amendment: exact command-prefix restoration evidence
+
+The exact "Exact command-prefix restoration evidence" amendment in SPEC §4.10
+is incorporated here in full. The maintainer accepted it in session on
+2026-09-15: "Approve exact amendment", referring to
+`docs/architecture/WP-749-EXACT-STOP-REVIEW.md`. WP-749 owns successor capsule V7
+(tag 54, revision 6), segment V6 (tag 55, revision 6), complete bounded prefix
+evidence and validated private reconstruction before the unchanged receipt,
+authorization and incarnation publication ceremony. Original V3 receipt semantics
+and bytes remain unchanged; missing legacy evidence never permits a rounded stop.
+
 
 ### Bounded contiguous command segments
 

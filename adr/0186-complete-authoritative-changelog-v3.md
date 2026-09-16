@@ -5,14 +5,18 @@ status: accepted
 tier: guarantee
 date: "2026-09-02"
 accepted: "2026-09-14"
-acceptance: "maintainer, in session, 2026-09-14: \"I approve of these changes\"; follower lifecycle amendment (original record accepted 2026-09-02)"
+acceptance: >-
+  Maintainer, in session, 2026-09-14: "I approve of these changes"; follower
+  lifecycle amendment (original record accepted 2026-09-02). Exact command-prefix
+  evidence amendment accepted in session 2026-09-15: "Approve exact amendment",
+  referring to docs/architecture/WP-749-EXACT-STOP-REVIEW.md.
 requires: [ADR-0019, ADR-0061, ADR-0072, ADR-0082, ADR-0083, ADR-0085,
   ADR-0093, ADR-0100, ADR-0101, ADR-0104, ADR-0112, ADR-0124, ADR-0156,
   ADR-0157, ADR-0178]
 amends: [ADR-0019, ADR-0093, ADR-0100, ADR-0157, ADR-0178, REP-003, STO-012]
 supersedes: []
 requirements: [REP-002, REP-003, REP-007, REC-001, PERF-007, STO-012]
-packages: [WP-772, WP-746]
+packages: [WP-772, WP-746, WP-749]
 obligations:
   - id: OBL-0186-1
     package: WP-772
@@ -62,6 +66,18 @@ roots or the local journal. It must preserve ADR-0061 atomicity and acknowledgem
 durable state while giving resume and bootstrap enough retained evidence to avoid a full-state rewrite.
 
 ## Decision
+
+### Accepted amendment: exact command-prefix restoration evidence
+
+The exact "Exact command-prefix restoration evidence" amendment in SPEC §4.10
+is incorporated here in full. The maintainer accepted it in session on
+2026-09-15: "Approve exact amendment", referring to
+`docs/architecture/WP-749-EXACT-STOP-REVIEW.md`. WP-749 owns successor capsule V7
+(tag 54, revision 6), segment V6 (tag 55, revision 6), complete bounded prefix
+evidence and validated private reconstruction before the unchanged receipt,
+authorization and incarnation publication ceremony. Original V3 receipt semantics
+and bytes remain unchanged; missing legacy evidence never permits a rounded stop.
+
 
 ### 1. One catalog owns the complete storage inventory
 
