@@ -59,6 +59,27 @@ impl PreparedRestoreAnchor {
         if incarnation == predecessor.lineage().history_incarnation() {
             return Ok(None);
         }
+        Self::at_frontier(predecessor, predecessor.tail().frontier(), incarnation).map(Some)
+    }
+
+    pub(super) fn prepare_private(
+        transaction: &WriteTransaction,
+        binding: crate::maintenance::PrivateArchiveValidationBinding,
+        incarnation: u64,
+    ) -> Result<Self, StorageError> {
+        binding.validate_for_write(transaction)?;
+        if incarnation <= binding.predecessor().lineage().history_incarnation() {
+            return Err(storage_error(StorageErrorKind::InvariantViolation));
+        }
+        Self::at_frontier(binding.predecessor(), binding.frontier(), incarnation)
+    }
+
+    fn at_frontier(
+        predecessor: ChangelogHistoryStateV3,
+        frontier: riffdb_types::DualFrontier,
+        incarnation: u64,
+    ) -> Result<Self, StorageError> {
+        let corrupt = || storage_error(StorageErrorKind::CorruptData);
         let lineage = ChangelogLineageV3::new(
             predecessor.lineage().database_id(),
             incarnation,
@@ -74,8 +95,8 @@ impl PreparedRestoreAnchor {
                 history_incarnation: incarnation,
                 predecessor: None,
                 sequence,
-                predecessor_frontier: predecessor.tail().frontier(),
-                covered_frontier: predecessor.tail().frontier(),
+                predecessor_frontier: frontier,
+                covered_frontier: frontier,
                 prior_history_hash: [0; 32],
             },
             ChangelogAttributionV3::RestoreAnchor,
@@ -85,7 +106,7 @@ impl PreparedRestoreAnchor {
         let point = ChangelogHistoryPointV3::from_receipt(&receipt).map_err(|_| corrupt())?;
         let successor =
             ChangelogHistoryStateV3::new(lineage, point, point, point).map_err(|_| corrupt())?;
-        Ok(Some(Self {
+        Ok(Self {
             predecessor,
             successor,
             history: encode_changelog_history_state_v3(successor).map_err(codec_error)?,
@@ -93,7 +114,7 @@ impl PreparedRestoreAnchor {
             follower: encode_replication_follower_state_v3(ReplicationFollowerStateV3::detached())
                 .map_err(codec_error)?,
             receipt: receipt.encode().map_err(|_| corrupt())?,
-        }))
+        })
     }
 
     pub(super) fn stage(self, transaction: &WriteTransaction) -> Result<(), StorageError> {

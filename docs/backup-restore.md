@@ -247,8 +247,12 @@ application/audit frontier. Ordinary source and follower opens refuse this
 artifact. A separate validation owner now checks its exact construction bytes,
 full structural/catalog evidence, reciprocal command graph and actual stopped
 frontier. It can release one pinned snapshot for staged authentication and current
-policy without local writes. Staged authorization and publication integration
-remain unfinished. This does not expose a new restore command.
+policy without local writes. Once every authorization reader closes, storage can
+seal the validated cut and publish it through the matching durable Offline V3
+receipt. Its recorded incarnation authorizes a fresh RestoreAnchor at the actual
+stopped frontier; only then is the source journal created and the normal format
+marker restored. Interrupted private stages rebuild from the receipt's original selection.
+Archive driver integration remains unfinished. This does not expose a new restore command.
 The storage owner can publish a separately validated and sealed replay only against
 matching durable Offline V3 evidence and its recorded incarnation. It creates an
 empty source journal at the actual restored application/administration frontier,

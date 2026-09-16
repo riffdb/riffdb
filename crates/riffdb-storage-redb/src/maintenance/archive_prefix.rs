@@ -11,7 +11,7 @@ mod graph;
 mod validation;
 pub(crate) use validation::PrivateArchiveValidationBinding;
 pub use validation::RedbValidatedPrivateArchiveRestore;
-const PRIVATE_MARKER: &str = "private-restore-format.riffdb";
+pub(super) const PRIVATE_MARKER: &str = "private-restore-format.riffdb";
 
 /// Unpublished command-prefix artifact. Its original format marker is quarantined
 /// and its follower attachment removed. Complete private validation and staged
@@ -305,7 +305,7 @@ fn construct(
     })
 }
 
-fn prefix_edge(_name: &str) {
+pub(super) fn prefix_edge(_name: &str) {
     #[cfg(any(test, feature = "test-fixtures"))]
     if std::env::var("RIFFDB_PRIVATE_PREFIX_CRASH").as_deref() == Ok(_name) {
         std::process::exit(98);
