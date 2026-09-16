@@ -1,0 +1,197 @@
+//! V7 independent mutation validation against a received original receipt.
+//! This layer does not grant reconstruction/publication authority or replace
+//! the command, entity/index, catalog and structural validators.
+
+use redb::WriteTransaction;
+use riffdb_storage_api::{
+    AuthoritativeNamespaceV1 as N, AuthoritativeTransactionV3, ChangelogAttributionV3,
+    DurableCodecErrorKind, StorageError, StorageErrorKind, decode_command_segment_v1,
+    validate_command_prefix_mutations_v1,
+};
+
+use crate::{
+    changelog_v3_write::{check_predecessor, value_error},
+    error::{codec_error, storage_error},
+    keys::encode_application_sequence_key,
+};
+
+/// Runs before applying the original receipt. The transaction is pinned to that
+/// receipt's predecessor, including earlier receipts in the same private frame.
+/// Legacy command groups remain readable; they cannot supply exact-stop evidence.
+pub(crate) fn validate_received_prefixes(
+    transaction: &WriteTransaction,
+    tables: &std::collections::BTreeSet<&'static str>,
+    receipt: &AuthoritativeTransactionV3,
+) -> Result<(), StorageError> {
+    // Retention can re-encode an old segment without advancing its commands.
+    // Its retained prefix frontiers belong to the original command receipt,
+    // not the administrative transaction that rewrites the segment.
+    if !matches!(
+        receipt.attribution(),
+        ChangelogAttributionV3::JournaledApplicationGroup
+            | ChangelogAttributionV3::DirectApplicationOrServiceAuditGroup
+    ) {
+        return Ok(());
+    }
+    let corrupt = || storage_error(StorageErrorKind::CorruptData);
+    let mut segments = Vec::new();
+    let mut command_count = 0_usize;
+    let mut legacy = false;
+    for mutation in receipt
+        .mutations()
+        .iter()
+        .filter(|m| m.namespace() == N::Commits)
+    {
+        let Some(value) = mutation.value() else {
+            legacy = true;
+            continue;
+        };
+        let segment = match decode_command_segment_v1(value) {
+            Ok(decoded) => decoded.into_parts().0,
+            Err(error) if error.kind() == DurableCodecErrorKind::UnexpectedRecordType => {
+                legacy = true;
+                continue;
+            }
+            Err(error) => return Err(codec_error(error)),
+        };
+        if segment.commands()[0].prefix_evidence().is_none() {
+            legacy = true;
+            continue;
+        }
+        if encode_application_sequence_key(segment.first_commit_sequence()) != mutation.key()
+            || segment.database_id() != receipt.binding().database_id
+            || segment.history_incarnation() != receipt.binding().history_incarnation
+            || mutation.expected_hash().is_some()
+        {
+            return Err(corrupt());
+        }
+        command_count = command_count
+            .checked_add(segment.commands().len())
+            .filter(|count| *count <= riffdb_storage_api::MAX_STAGED_COMMANDS)
+            .ok_or_else(|| storage_error(StorageErrorKind::LimitExceeded))?;
+        segments.push(segment);
+    }
+    if segments.is_empty() {
+        return Ok(());
+    }
+    if legacy {
+        return Err(corrupt());
+    }
+    // The receipt's bounded canonical segment bytes own every payload. Retain
+    // borrowed evidence here; neither this list nor first-observation lookup
+    // copies independent post-images from the decoded segments.
+    let evidence = segments
+        .iter()
+        .flat_map(|segment| segment.commands())
+        .map(|command| command.prefix_evidence().ok_or_else(corrupt))
+        .collect::<Result<Vec<_>, _>>()?;
+    validate_independent_prefixes(transaction, tables, &evidence, receipt)
+}
+
+fn validate_independent_prefixes<
+    P: std::borrow::Borrow<riffdb_storage_api::CommandPrefixEvidenceV1>,
+>(
+    transaction: &WriteTransaction,
+    tables: &std::collections::BTreeSet<&'static str>,
+    evidence: &[P],
+    receipt: &AuthoritativeTransactionV3,
+) -> Result<(), StorageError> {
+    for first in validate_command_prefix_mutations_v1(evidence, receipt).map_err(value_error)? {
+        if !tables.contains(first.namespace().table()) {
+            return Err(storage_error(StorageErrorKind::CorruptData));
+        }
+        // Includes keys with no net mutation in the receipt. Merely checking
+        // the receipt's preconditions would leave these false histories hidden.
+        check_predecessor(transaction, first)?;
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use redb::ReadableTable;
+    use riffdb_storage_api::{
+        AuthoritativeMutationV3 as M, AuthoritativeTransactionBindingV3,
+        ChangelogTransactionSequence, CommandPrefixEvidenceV1 as Prefix,
+    };
+    use riffdb_types::{AdministrationSequence, CommitSequence, DatabaseId, DualFrontier};
+
+    fn frontier(sequence: u64) -> DualFrontier {
+        DualFrontier::new(
+            CommitSequence::new(sequence),
+            AdministrationSequence::new(sequence * 2),
+        )
+    }
+
+    #[test]
+    // req: REP-007, REP-003
+    fn net_zero_prefixes_check_actual_predecessor_without_mutating_it() {
+        let scope = crate::test_path::ScopedDirectory::new("prefix-predecessor");
+        let database = redb::Database::create(scope.join("db.redb")).unwrap();
+        let transaction = database.begin_write().unwrap();
+        let receipt = AuthoritativeTransactionV3::new(
+            AuthoritativeTransactionBindingV3 {
+                database_id: DatabaseId::from_unix_milliseconds_and_random(1, [7; 10]).unwrap(),
+                history_incarnation: 1,
+                predecessor: None,
+                sequence: ChangelogTransactionSequence::new(1).unwrap(),
+                predecessor_frontier: frontier(0),
+                covered_frontier: frontier(2),
+                prior_history_hash: [0; 32],
+            },
+            ChangelogAttributionV3::JournaledApplicationGroup,
+            vec![M::put(N::Commits, b"opaque-graph", None, b"graph").unwrap()],
+        )
+        .unwrap();
+        // This checks only the independent predecessor layer. Opaque graph
+        // bytes are never passed to a decoder or given startup/publication proof.
+        for initial in [None, Some(b"initial".as_slice())] {
+            let first = match initial {
+                None => M::put(N::Entities, b"key", None, b"temporary"),
+                Some(before) => M::replace(N::Entities, b"key", before, b"temporary"),
+            }
+            .unwrap();
+            let last = match initial {
+                None => M::delete_matching(N::Entities, b"key", b"temporary"),
+                Some(after) => M::replace(N::Entities, b"key", b"temporary", after),
+            }
+            .unwrap();
+            let evidence = [
+                Prefix::new(frontier(0), frontier(1), vec![first]).unwrap(),
+                Prefix::new(frontier(1), frontier(2), vec![last]).unwrap(),
+            ];
+            let tables = [N::Entities.table()].into_iter().collect();
+            for physical in [
+                None,
+                Some(b"initial".as_slice()),
+                Some(b"unrelated".as_slice()),
+            ] {
+                let mut table = transaction.open_table(crate::layout::ENTITIES).unwrap();
+                match physical {
+                    Some(value) => {
+                        table.insert(b"key".as_slice(), value).unwrap();
+                    }
+                    None => {
+                        table.remove(b"key".as_slice()).unwrap();
+                    }
+                }
+                drop(table);
+                let result =
+                    validate_independent_prefixes(&transaction, &tables, &evidence, &receipt);
+                assert_eq!(result.is_ok(), physical == initial);
+                let table = transaction.open_table(crate::layout::ENTITIES).unwrap();
+                let retained = table.get(b"key".as_slice()).unwrap();
+                assert_eq!(retained.as_ref().map(|row| row.value()), physical);
+            }
+            transaction.delete_table(crate::layout::ENTITIES).unwrap();
+            let absent = crate::changelog_v3_write::table_inventory(&transaction).unwrap();
+            assert!(absent.is_empty());
+            assert!(
+                validate_independent_prefixes(&transaction, &absent, &evidence, &receipt).is_err()
+            );
+            assert_eq!(transaction.list_tables().unwrap().count(), 0);
+        }
+        transaction.abort().unwrap();
+    }
+}

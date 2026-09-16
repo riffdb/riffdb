@@ -1,5 +1,7 @@
 //! Isolated applier transaction evidence; fixtures do not grant server readiness.
 // req: REP-002, REP-003, REC-001
+#[path = "store_follower_tests/command_prefix.rs"]
+mod command_prefix;
 #[path = "store_follower_tests/indexes.rs"]
 mod indexes;
 use super::*;

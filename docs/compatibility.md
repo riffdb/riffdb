@@ -151,8 +151,11 @@ remain readable by their own codecs and do not acquire intermediate values.
 The registry digest changes: a database or backup carrying the previous exact
 registry marker is refused by this binary before opening or replacement. Use
 its matching binary; this addition declares no automatic migration edge.
-The successor codecs are implemented, but production evidence capture and
-exact-stop archive restore remain unfinished WP-749 work.
+For received successor command groups, the follower checks evidence against the
+original receipt and the exact starting rows, including keys that disappear
+from the receipt because later commands restore their original values. A
+contradiction refuses the frame without advancing durable progress. Production
+evidence capture and exact-stop archive restore remain unfinished WP-749 work.
 
 Inspect the format while the server is stopped:
 

@@ -168,10 +168,14 @@ impl std::fmt::Debug for CommandPrefixEvidenceV1 {
 /// must validate the original frame, join every capsule, check every first
 /// observation against the validated predecessor, and validate all graph-owned
 /// authority. In particular a net-zero change still needs that predecessor check.
-pub fn validate_command_prefix_mutations_v1(
-    evidence: &[CommandPrefixEvidenceV1],
+/// Returns the first mutation of each distinct namespace/key in canonical order,
+/// including keys erased by net-zero reduction. These borrow the bounded input;
+/// the storage owner must check each one's `matches_prior` against its pinned
+/// predecessor before using any prefix. No row payloads are copied for this list.
+pub fn validate_command_prefix_mutations_v1<'a, P: std::borrow::Borrow<CommandPrefixEvidenceV1>>(
+    evidence: &'a [P],
     original: &AuthoritativeTransactionV3,
-) -> Result<(), ChangelogV3Error> {
+) -> Result<Vec<&'a AuthoritativeMutationV3>, ChangelogV3Error> {
     if evidence.is_empty() || evidence.len() > MAX_STAGED_COMMANDS {
         return Err(ChangelogV3Error::LimitExceeded);
     }
@@ -186,6 +190,7 @@ pub fn validate_command_prefix_mutations_v1(
     let mut bytes = 0_usize;
     let mut mutations = 0_usize;
     for command in evidence {
+        let command = command.borrow();
         if command.predecessor() != frontier {
             return Err(ChangelogV3Error::PredecessorMismatch);
         }
@@ -204,8 +209,13 @@ pub fn validate_command_prefix_mutations_v1(
         return Err(ChangelogV3Error::PredecessorMismatch);
     }
     let mut accumulator = AuthoritativeMutationAccumulatorV3::default();
+    let mut first_observations = std::collections::BTreeMap::new();
     for command in evidence {
+        let command = command.borrow();
         for mutation in command.mutations() {
+            first_observations
+                .entry((mutation.namespace(), mutation.key()))
+                .or_insert(mutation);
             accumulator.record(mutation.clone())?;
         }
     }
@@ -217,5 +227,5 @@ pub fn validate_command_prefix_mutations_v1(
     {
         return Err(ChangelogV3Error::PredecessorMismatch);
     }
-    Ok(())
+    Ok(first_observations.into_values().collect())
 }

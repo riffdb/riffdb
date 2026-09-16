@@ -107,6 +107,46 @@ fn cancelled_changes_remain_reconstructible_even_without_a_net_receipt_row() {
 }
 
 #[test]
+fn first_observations_survive_net_zero_reduction_and_bind_the_real_predecessor() {
+    for initial in [None, Some(b"original".as_slice())] {
+        let first = match initial {
+            None => M::put(N::Entities, b"key", None, b"temporary"),
+            Some(before) => M::replace(N::Entities, b"key", before, b"temporary"),
+        }
+        .unwrap();
+        let last = match initial {
+            None => M::delete_matching(N::Entities, b"key", b"temporary"),
+            Some(after) => M::replace(N::Entities, b"key", b"temporary", after),
+        }
+        .unwrap();
+        let evidence = [prefix(1, vec![first]), prefix(2, vec![last])];
+        let observed =
+            validate_command_prefix_mutations_v1(&evidence, &receipt(2, vec![])).unwrap();
+        assert_eq!(observed.len(), 1);
+        assert!(std::ptr::eq(observed[0], &evidence[0].mutations()[0]));
+        assert!(observed[0].matches_prior(initial));
+        assert!(!observed[0].matches_prior(Some(b"unrelated")));
+    }
+}
+
+#[test]
+fn first_observations_are_distinct_by_namespace_and_key_without_copying_values() {
+    let mut mutations = vec![
+        M::put(N::Entities, b"z", None, b"entity-z").unwrap(),
+        M::put(N::Entities, b"a", None, b"entity-a").unwrap(),
+        M::put(N::IndexEpochs, b"a", None, b"epoch-a").unwrap(),
+    ];
+    mutations.sort_by(|a, b| (a.namespace(), a.key()).cmp(&(b.namespace(), b.key())));
+    let original = receipt(1, mutations.clone());
+    let evidence = [prefix(1, mutations)];
+    let observed = validate_command_prefix_mutations_v1(&evidence, &original).unwrap();
+    assert_eq!(observed, evidence[0].mutations().iter().collect::<Vec<_>>());
+    for (borrowed, original) in observed.iter().zip(evidence[0].mutations()) {
+        assert!(std::ptr::eq(*borrowed, original));
+    }
+}
+
+#[test]
 fn missing_reordered_stale_and_contradictory_evidence_refuses() {
     let first = prefix(
         1,
