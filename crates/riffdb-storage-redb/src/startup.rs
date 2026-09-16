@@ -1,5 +1,8 @@
 //! Exclusive read-only startup evidence over one immutable redb snapshot.
 
+mod archive_follower;
+pub(crate) use archive_follower::open_validated_archive_follower;
+
 mod index_migration_backend;
 #[path = "startup_v3_activation.rs"]
 mod v3_activation;

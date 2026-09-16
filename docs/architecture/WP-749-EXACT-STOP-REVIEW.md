@@ -182,9 +182,20 @@ and raw hashes must agree. Unavailable historical counters remain unproven.
 Production follower tests reject independently resealed total/stale/model and
 health partition/threshold/breach forgeries, preserve the baseline after reopen,
 and accept the original frame. No source writer or encoding changes are involved.
-This is not an exact-stop restore implementation. Complete secondary-index/vector
-and cross-history graph validation, private reconstruction, publication proofs
-and write-path measurements remain required.
+Private construction now consumes a fully replayed selection, scrubs it, and
+rebuilds from the original verified backup. Preceding original receipts replay
+through the follower applier; the crossing command group is validated against
+its actual predecessor before its checked prefix is applied. The private cut
+rebuilds its segment seal, manifest, reciprocal locators and saved allocators,
+and refuses unaccounted graph mutations. Its format marker is quarantined before
+partial writes and its follower attachment is removed atomically. The move-only
+result exposes the actual dual frontier separately from the original selection;
+it has no seal or publication capability. Production tests cover interior
+put/overwrite/delete/recreate states in both durability profiles, preceding receipt replay,
+exact capsule and locator retention, ordinary-open refusal and failed-request
+cleanup. Complete private candidate validation, staged authorization and
+publication integration, cross-history proof, crash coverage and write-path
+measurements remain required. This is not an exposed exact-stop restore command.
 
 - A real same-entity group with multiple puts, delete, and recreate restores to
   each application sequence with exact entity bytes and reciprocal command facts.
@@ -203,3 +214,62 @@ new durable identities and changes to accepted decisions for human review.
 Approval of the prior archive receipt amendment did not authorize these new
 command-authority encodings or private prefix-construction semantics. The
 maintainer separately approved this exact amendment as recorded above.
+
+
+## Private construction verification note
+
+Package: WP-749. Tier: guarantee (implementation of the accepted exact-stop
+amendment). This records an implementation increment, not package closure.
+
+### Behavior
+
+After complete selected archive replay and follower scrub, rebuild from the
+verified original backup. Replay preceding original receipts through the real
+follower applier. For an interior command stop, validate the complete crossing
+receipt against the actual predecessor, then derive its independent mutation
+net, command segment/manifest, reciprocal locators and exact saved allocators.
+A partial segment receives its own seal, never the full source segment's digest.
+
+Quarantine the existing format marker before changing partial authority and
+remove the follower attachment in the same transaction as the cut. The move-only
+artifact exposes its actual dual frontier and immutable original selection; it
+has no seal, publication or serving capability. Failure and discard remove only
+the private stage. Ordinary source/follower opens refuse it.
+
+### Checks
+
+The production fixture writes a preceding command and a physical five-command
+put/overwrite/delete/recreate/overwrite group. Tests inspect exact interior entity values,
+retained capsules, segment chain, index/head images, locator populations and
+saved frontiers under standard journaled and hardened profiles. Boundary,
+out-of-range and cancelled requests refuse without target replacement.
+Process tests exit after marker quarantine, before cut commit and after cut
+commit, then reconstruct twice from the original selection. The verified backup
+remains byte-identical and the configured target remains absent.
+
+Validation: the scoped acceptance run exercised 1,230 tests: 1,228 passed;
+the catalog-adapter architecture check failed and the existing bootstrap crash
+test reached its 120-second timeout. The helper now lives in the startup adapter
+without changing the architecture check. The final focused run passed all seven
+construction/crash/architecture tests, including the added interior recreate
+stop. The unchanged bootstrap test passed alone in 113.785 seconds with the same
+120-second limit. Final scope, formatting, clippy, handbook, file-size and panic
+checks all passed. Seven existing tests remain skipped by the CI profile.
+
+### Compatibility and documentation
+
+No existing durable encoding, source receipt, application write path or public
+restore command changes. Handbook updates: `docs/backup-restore.md` and
+`docs/compatibility.md`. The accepted review's implementation-status paragraph
+now distinguishes private construction from completed restore support.
+
+### Hazards and follow-ups
+
+Complete private structural/catalog/reciprocal graph validation, staged
+authorization, receipt-authorized incarnation and publication integration remain
+required before this artifact can be published. The original predecessor roots
+remain private reconstruction evidence; they do not describe the cut's actual
+frontier and cannot be used for ordinary startup or replication. The marker
+quarantine is a private staging convention, not a new durable identity or a
+migration path. WP-749's archive driver, public RPC/client/CLI, complete crash
+matrix and same-workload write-path measurements remain open.

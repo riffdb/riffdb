@@ -240,6 +240,12 @@ suffix remains empty. Ordinary create/restore V1 and retire
 V2 receipt bytes are unchanged. An unfinished V3 receipt currently refuses server
 startup; the archive recovery driver and public restore command are still being
 implemented. Recognizing a receipt does not validate or publish its replay stage.
+For an interior command stop, storage can rebuild a separate private artifact
+from the verified backup and checked command-prefix evidence after full original
+replay. It retains the original archive selection separately from its actual
+application/audit frontier. Ordinary source and follower opens refuse this
+artifact; complete candidate validation, staged authorization and publication
+integration remain unfinished. This does not expose a new restore command.
 The storage owner can publish a separately validated and sealed replay only against
 matching durable Offline V3 evidence and its recorded incarnation. It creates an
 empty source journal at the actual restored application/administration frontier,
