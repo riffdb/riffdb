@@ -1,4 +1,4 @@
-// req: SIM-004
+// req: SIM-004, REC-001
 //! D4 (SIM-C2, SPEC SIM-004): the found-seed regression corpus.
 //!
 //! Every seed that ever caught a real defect or exercised interesting
@@ -131,11 +131,15 @@ pub(crate) struct CorpusWitnessRotation {
     /// original rotation AND restoration receipts; the successor chain still
     /// has to end in a live witness for exactly the same territory.
     pub restoration_moved_by: Option<&'static str>,
+    /// A second restoration, retaining the first restoration and its later
+    /// displacement rather than overwriting either historical receipt.
+    pub restoration_returned_by: Option<&'static str>,
 }
 
 impl CorpusWitnessRotation {
     fn currently_restored(self) -> bool {
-        self.restored_by.is_some() && self.restoration_moved_by.is_none()
+        self.restoration_returned_by.is_some()
+            || (self.restored_by.is_some() && self.restoration_moved_by.is_none())
     }
 }
 
@@ -147,16 +151,30 @@ fn moved_restoration_preserves_both_historical_receipts() {
         rotated: "2026-08-11",
         restored_by: Some("fa5d906c3abc47af15590810676f27615233aef5"),
         restoration_moved_by: None,
+        restoration_returned_by: None,
     };
     assert!(original.currently_restored());
     let moved = CorpusWitnessRotation {
         restoration_moved_by: Some("a29312ffbfd3cd464f4803b1a32ce8e294279d83"),
+        restoration_returned_by: None,
         ..original
     };
     assert!(!moved.currently_restored());
     assert_eq!(moved.restored_by, original.restored_by);
     assert_eq!(moved.invalidated_by_commit, original.invalidated_by_commit);
     assert_eq!(moved.successor_seed, original.successor_seed);
+    let returned = CorpusWitnessRotation {
+        restoration_returned_by: Some("d32e1182889cc338b44808448c13f4539ee9253e"),
+        ..moved
+    };
+    assert!(returned.currently_restored());
+    assert_eq!(returned.restored_by, original.restored_by);
+    assert_eq!(returned.restoration_moved_by, moved.restoration_moved_by);
+    assert_eq!(
+        returned.invalidated_by_commit,
+        original.invalidated_by_commit
+    );
+    assert_eq!(returned.successor_seed, original.successor_seed);
 }
 
 /// Receipted retirement of one expectation whose territory an intentional
@@ -207,6 +225,7 @@ pub(crate) const REGRESSION_CORPUS: &[CorpusEntry] = &[
             rotated: "2026-08-11",
             restored_by: Some("c7ec046edb68fd489a7ca00f7c356f6265f979c7"),
             restoration_moved_by: None,
+            restoration_returned_by: None,
         }),
         retirement: None,
     },
@@ -240,6 +259,7 @@ pub(crate) const REGRESSION_CORPUS: &[CorpusEntry] = &[
             // receipt is retained because it was true in between.
             restored_by: Some("fa5d906c3abc47af15590810676f27615233aef5"),
             restoration_moved_by: Some("a29312ffbfd3cd464f4803b1a32ce8e294279d83"),
+            restoration_returned_by: None,
         }),
         retirement: None,
     },
@@ -266,6 +286,7 @@ pub(crate) const REGRESSION_CORPUS: &[CorpusEntry] = &[
             rotated: "2026-08-14",
             restored_by: None,
             restoration_moved_by: None,
+            restoration_returned_by: None,
         }),
         retirement: None,
     },
@@ -296,6 +317,7 @@ pub(crate) const REGRESSION_CORPUS: &[CorpusEntry] = &[
             // 4.1.0 pin; the successor witness stays in the corpus.
             restored_by: Some("c7ec046edb68fd489a7ca00f7c356f6265f979c7"),
             restoration_moved_by: None,
+            restoration_returned_by: None,
         }),
         retirement: None,
     },
@@ -318,6 +340,7 @@ pub(crate) const REGRESSION_CORPUS: &[CorpusEntry] = &[
             rotated: "2026-08-14",
             restored_by: Some("c7ec046edb68fd489a7ca00f7c356f6265f979c7"),
             restoration_moved_by: None,
+            restoration_returned_by: None,
         }),
         retirement: None,
     },
@@ -349,6 +372,7 @@ pub(crate) const REGRESSION_CORPUS: &[CorpusEntry] = &[
             // witness.
             restored_by: Some("5a136021db21a4a84b781d5cdc77d7f9d022c013"),
             restoration_moved_by: Some("a29312ffbfd3cd464f4803b1a32ce8e294279d83"),
+            restoration_returned_by: None,
         }),
         retirement: None,
     },
@@ -375,6 +399,7 @@ pub(crate) const REGRESSION_CORPUS: &[CorpusEntry] = &[
             rotated: "2026-08-18",
             restored_by: None,
             restoration_moved_by: None,
+            restoration_returned_by: None,
         }),
         retirement: None,
     },
@@ -406,6 +431,10 @@ pub(crate) const REGRESSION_CORPUS: &[CorpusEntry] = &[
             // retained; the successor stays in the corpus.
             restored_by: Some("fa5d906c3abc47af15590810676f27615233aef5"),
             restoration_moved_by: Some("a29312ffbfd3cd464f4803b1a32ce8e294279d83"),
+            // Complete schema-bound images in d32e1182 restore this coordinate:
+            // 45 torn decisions, four recovery-window crashes, one interrupted
+            // admission and four absent commits, identical through 12 reruns.
+            restoration_returned_by: Some("d32e1182889cc338b44808448c13f4539ee9253e"),
         }),
         retirement: None,
     },
@@ -449,6 +478,7 @@ pub(crate) const REGRESSION_CORPUS: &[CorpusEntry] = &[
             rotated: "2026-08-30",
             restored_by: None,
             restoration_moved_by: None,
+            restoration_returned_by: None,
         }),
         retirement: None,
     },
@@ -474,6 +504,7 @@ pub(crate) const REGRESSION_CORPUS: &[CorpusEntry] = &[
             rotated: "2026-08-30",
             restored_by: None,
             restoration_moved_by: None,
+            restoration_returned_by: None,
         }),
         retirement: None,
     },
@@ -516,7 +547,11 @@ pub(crate) const REGRESSION_CORPUS: &[CorpusEntry] = &[
             // successor 630e1a42 gives 34 with all four predicates holding.
             // Activation subsequently gives 31 and keeps the same territory.
             restored_by: Some("630e1a42bf005c7e7c52b2585d822f0f3ea3b88a"),
-            restoration_moved_by: None,
+            // Corrected schema-bound fixture d32e1182 resolves only 25 torn
+            // decisions here, below the unchanged 30-decision predicate.
+            // The existing forward successor chain still proves that territory.
+            restoration_moved_by: Some("d32e1182889cc338b44808448c13f4539ee9253e"),
+            restoration_returned_by: None,
         }),
         retirement: None,
     },
@@ -544,6 +579,7 @@ pub(crate) const REGRESSION_CORPUS: &[CorpusEntry] = &[
             rotated: "2026-09-14",
             restored_by: None,
             restoration_moved_by: None,
+            restoration_returned_by: None,
         }),
         // Only the live admission/absent territory moves. The original
         // commit-PRESENT retirement remains asserted even on this rotated
@@ -577,6 +613,7 @@ pub(crate) const REGRESSION_CORPUS: &[CorpusEntry] = &[
             rotated: "2026-09-14",
             restored_by: None,
             restoration_moved_by: None,
+            restoration_returned_by: None,
         }),
         retirement: None,
     },
@@ -612,6 +649,7 @@ pub(crate) const REGRESSION_CORPUS: &[CorpusEntry] = &[
             rotated: "2026-09-14",
             restored_by: None,
             restoration_moved_by: None,
+            restoration_returned_by: None,
         }),
         retirement: None,
     },
@@ -807,6 +845,15 @@ fn regression_corpus_replays_and_reproduces_its_territory() {
                         && commit.len() == 40
                         && commit.bytes().all(|byte| byte.is_ascii_hexdigit()),
                     "a moved restoration retains its restoring and causal layout commits"
+                );
+            }
+            if let Some(commit) = rotation.restoration_returned_by {
+                assert!(
+                    rotation.restored_by.is_some()
+                        && rotation.restoration_moved_by.is_some()
+                        && commit.len() == 40
+                        && commit.bytes().all(|byte| byte.is_ascii_hexdigit()),
+                    "a returned restoration retains every earlier receipt"
                 );
             }
             // Retirement still applies if the surviving territory moves.

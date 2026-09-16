@@ -448,3 +448,34 @@ command at the successor sequence, check its changed entity, retry that command
 with identical outcome/provenance and no second mutation, then reopen to verify
 the durable head and unchanged restored incarnation. This proves ordinary writes
 resume after restore, independently of replaying pre-restore idempotent outcomes.
+
+
+## Full-workspace simulation verification (2026-09-16)
+
+Full CI at `aee2e694` passed workspace clippy and reached the simulation tests,
+where all five recovery-oracle tests refused synthetic entity/index images as
+`CorruptData`. The old fixtures omitted required entity fields, used a constant
+index key unrelated to the stored field, and supplied undeclared index covers.
+The seeded campaign and simulated-store smoke tests shared this defect;
+four campaign checks and all three smoke checks also refused startup.
+
+`d32e1182` corrects only the fixtures: complete entity records include their key
+fields and required empty notes, while a declared covered payload preserves
+same-key supersession and the generated value-size distribution. Production
+validation and all seeds, generator plans, crash schedules, model comparisons
+and acceptance predicates remain unchanged. The five recovery-oracle tests
+pass; the seeded sweep and scenario coverage also pass.
+
+The complete corpus audit found two historical witness changes. Seed `C0DF`
+again proves its original recovery-window/admission territory; seed `C307`
+resolves 25 torn decisions, below its unchanged minimum of 30. Its existing
+forward successor chain still proves that minimum. The corpus keeps its
+original rotation, restoration and displacement receipts, and records the
+second restoration separately. Both changed seeds reproduced identical full
+reports in 12 consecutive runs each. This is test-evidence maintenance, with no
+public behavior or persistent format change. Full CI and package closure
+remain outstanding until all required gates pass.
+
+Scoped acceptance for this correction passes all 13 steps, including clippy,
+handbook, governance, and all 55 simulation tests (eight existing opt-in tests
+skipped). The full corpus replay preserves its original outcome predicates.
