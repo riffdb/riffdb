@@ -22993,6 +22993,14 @@ work_packages:
       Decode each shared health row once and bound temporary identities by the prefix.
       Catalog-derived source/embedding transitions, predecessor counter arithmetic and
       full candidate graph validation remain separate required work.
+    - Derive vector prefix mutation inventory from known entity predecessors and
+      retained production declarations in the catalog owner. Validate source values,
+      vector dimensions and new embedding metadata; preserve exact prior stamps via
+      the existing checked vector transition owner. Join available evidence and
+      reciprocal index predecessors, including unchanged evidence; unknown retained
+      history remains unknown. Reuse raw-hash-before-materialization handling and
+      skip vector context allocation for entities without production vector fields.
+      Exact observation/health arithmetic and full candidate validation remain.
     - Reuse the checked backup-name grammar through a distinct ArchiveNameV1 type.
       Bind backup, archive, closed application stop and replacement confirmation
       under the versioned archive-input preimage in the existing maintenance hash

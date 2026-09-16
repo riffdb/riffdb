@@ -1,14 +1,15 @@
-//! Catalog-owned checks for supplied command-prefix index images.
+//! Catalog-owned checks for supplied command-prefix index and vector images.
 
 use crate::{CatalogError, CatalogErrorKind, ValidatedContractBundle};
 use riffdb_storage_api::{AuthoritativeNamespaceV1 as N, StoredCommandCapsuleV2};
 
-fn corrupt() -> CatalogError {
+pub(super) fn corrupt() -> CatalogError {
     CatalogError::new(CatalogErrorKind::InvalidHistoricalEvidence)
 }
 
 /// Checks supplied secondary-index keys and derives put keys and covers from
 /// their owning entity post-images using the exact retained command bundle.
+/// Supplied vector images also require a production field and checked new model metadata.
 /// This pure check grants no readiness, mutation or reconstruction authority;
 /// complete mutation inventory and predecessor proofs remain separate.
 pub fn validate_command_prefix_index_images_v1(
@@ -25,6 +26,7 @@ pub fn validate_command_prefix_index_images_v1(
     {
         return Err(corrupt());
     }
+    super::command_prefix_vector::validate_supplied_images(bundle, command)?;
     for mutation in prefix
         .mutations()
         .iter()
@@ -107,7 +109,6 @@ pub fn validate_command_prefix_entity_indexes_v1<'a>(
     prior: Option<&'a riffdb_storage_api::StoredEntityRecordV1>,
     resolved: Option<&crate::ResolvedExecutablePlan>,
 ) -> Result<CommandPrefixIndexPriorsV1<'a>, CatalogError> {
-    use riffdb_storage_api::EntityChainStateV1 as State;
     let prefix = command.prefix_evidence().ok_or_else(corrupt)?;
     let plan = command.base().commit().plan();
     if bundle.lineage() != plan.contract_lineage()
@@ -117,37 +118,7 @@ pub fn validate_command_prefix_entity_indexes_v1<'a>(
     {
         return Err(corrupt());
     }
-    match (transition.prior_state(), prior) {
-        (
-            State::Live {
-                version,
-                value_hash,
-            },
-            Some(record),
-        ) if record.target() == transition.target()
-            && record.entity_version() == version
-            && riffdb_storage_api::derive_entity_record_hash_v1(record)
-                .map_err(|_| corrupt())?
-                == value_hash => {}
-        (State::NeverExisted | State::Deleted, None) => {}
-        _ => return Err(corrupt()),
-    }
-    // Verify the raw prior hash above, then apply the existing lineage-owned
-    // logical view. Never hash the null-filled view as historical writer bytes.
-    let prior = prior
-        .map(|record| {
-            if record.schema_binding().matches_plan(plan) {
-                Ok(std::borrow::Cow::Borrowed(record))
-            } else {
-                let resolved = resolved
-                    .filter(|resolved| resolved.reference() == plan)
-                    .ok_or_else(corrupt)?;
-                crate::materialization::materialize_prefix_index_predecessor(resolved, record)
-                    .map(std::borrow::Cow::Owned)
-                    .map_err(|_| corrupt())
-            }
-        })
-        .transpose()?;
+    let prior = checked_prior(command, transition, prior, resolved)?;
     let target = transition.target();
     let entity = bundle
         .bundle()
@@ -350,4 +321,46 @@ fn require_index_mutation(
         return Err(corrupt());
     }
     Ok(())
+}
+
+// Raw transition identity is proved before any historical null materialization.
+pub(super) fn checked_prior<'a>(
+    command: &StoredCommandCapsuleV2,
+    transition: &riffdb_storage_api::CommittedEntityTransitionV1,
+    prior: Option<&'a riffdb_storage_api::StoredEntityRecordV1>,
+    resolved: Option<&crate::ResolvedExecutablePlan>,
+) -> Result<Option<std::borrow::Cow<'a, riffdb_storage_api::StoredEntityRecordV1>>, CatalogError> {
+    use riffdb_storage_api::EntityChainStateV1 as State;
+    let plan = command.base().commit().plan();
+    match (transition.prior_state(), prior) {
+        (
+            State::Live {
+                version,
+                value_hash,
+            },
+            Some(record),
+        ) if record.target() == transition.target()
+            && record.entity_version() == version
+            && riffdb_storage_api::derive_entity_record_hash_v1(record)
+                .map_err(|_| corrupt())?
+                == value_hash => {}
+        (State::NeverExisted | State::Deleted, None) => {}
+        _ => return Err(corrupt()),
+    }
+    // Verify the raw prior hash above, then apply the existing lineage-owned
+    // logical view. Never hash the null-filled view as historical writer bytes.
+    prior
+        .map(|record| {
+            if record.schema_binding().matches_plan(plan) {
+                Ok(std::borrow::Cow::Borrowed(record))
+            } else {
+                let resolved = resolved
+                    .filter(|resolved| resolved.reference() == plan)
+                    .ok_or_else(corrupt)?;
+                crate::materialization::materialize_prefix_index_predecessor(resolved, record)
+                    .map(std::borrow::Cow::Owned)
+                    .map_err(|_| corrupt())
+            }
+        })
+        .transpose()
 }

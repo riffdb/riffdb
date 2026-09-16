@@ -15,7 +15,7 @@ use std::{collections::BTreeMap, time::Duration};
 const CONTRACT: &str = include_str!("../../fixtures/vector-exit/documents.riff");
 const QUERY: &str = include_str!("../../fixtures/vector-exit/similar_documents.riffq");
 
-async fn deploy(client: &mut RiffDbClient, admin: &CallMetadata) -> [u8; 32] {
+pub(super) async fn deploy(client: &mut RiffDbClient, admin: &CallMetadata) -> [u8; 32] {
     let deployed = client
         .deploy_contract(
             v1::DeployContractRequest {
@@ -61,7 +61,7 @@ async fn deploy(client: &mut RiffDbClient, admin: &CallMetadata) -> [u8; 32] {
     module.module.unwrap().module_hash.try_into().unwrap()
 }
 
-async fn authority(
+pub(super) async fn authority(
     client: &mut RiffDbClient,
     admin: &CallMetadata,
     module: [u8; 32],
@@ -145,7 +145,7 @@ async fn authority(
     CallMetadata::authenticated(BearerCredential::new(&created.token).unwrap())
 }
 
-async fn write(
+pub(super) async fn write(
     client: &mut RiffDbClient,
     caller: &CallMetadata,
     id: u8,

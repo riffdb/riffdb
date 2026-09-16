@@ -158,8 +158,14 @@ observations, with command-owned revisions and nonempty persisted partition
 counts. Re-sealed extra vector rows refuse in production startup and follower
 tests. Missing links and inconsistent revisions, metadata and vector presence
 also refuse; existing primary/follower vector traffic remains covered separately.
-Catalog-derived source/embedding transitions and exact predecessor counter
-arithmetic remain unproven by these intrinsic checks.
+Catalog validation now rejects undeclared production fields and wrong rewritten
+embedding metadata. Known entity predecessors determine source changes, vector
+changes and required evidence mutation inventory. Available evidence and its
+reciprocal index are joined to the actual predecessor; the shared checked
+transition owner proves exact preserved source/embedding stamps. Unrelated
+entity updates keep earlier evidence. Historical entity bytes use the same
+bounded materialization proof as index derivation; unknown evidence remains
+unknown. Exact predecessor counter arithmetic remains required.
 This is not an exact-stop restore implementation. Complete secondary-index/vector
 and cross-history graph validation, private reconstruction, publication proofs
 and write-path measurements remain required.

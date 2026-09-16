@@ -18,7 +18,7 @@ pub(super) fn baseline(path: &Path) -> AuthoritativeNamespaceModel {
     AuthoritativeNamespaceModel::capture(cursor.as_mut()).unwrap()
 }
 
-fn follower(path: &Path) -> RedbFollowerApplier {
+pub(super) fn follower(path: &Path) -> RedbFollowerApplier {
     let key = DigestKeyId::new(1).unwrap();
     let inputs = StartupValidationInputs::new(
         now(),

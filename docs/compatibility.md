@@ -189,9 +189,15 @@ binds the entity image, version, vector presence, command plan, sequence,
 provenance and partition. Every evidence mutation requires its reciprocal index
 mutation and partition/lineage observations; missing, extra or contradictory
 links refuse. Observation revisions must match the command, and persisted
-partition counts cannot be empty. Catalog-derived vector transitions, exact
-counter arithmetic, unknown cross-history values, complete candidate graph
-validation and exact-stop archive restore remain unfinished WP-749 work.
+partition counts cannot be empty. Catalog checks reject undeclared vector fields
+and validate rewritten embedding metadata against the production declaration.
+Known entity predecessors determine required source/embedding writes and deletes,
+including refusal when all vector work is omitted. Available prior evidence and
+its reciprocal index must agree; unchanged fields preserve earlier evidence,
+and source-only writes preserve embedding stamps exactly. Unknown retained
+predecessors remain unproven. Exact counter arithmetic, complete cross-history
+and candidate graph validation, and exact-stop archive restore remain unfinished
+WP-749 work.
 
 Inspect the format while the server is stopped:
 
