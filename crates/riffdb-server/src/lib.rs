@@ -18,6 +18,7 @@ pub(crate) const PRODUCTION_THREAD_STACK_BYTES: usize = 384 * 1024;
 
 mod application_export_adapter;
 mod application_reimport_adapter;
+mod archive_worker;
 mod auth_adapters;
 mod clocks;
 mod columnar_adapter;

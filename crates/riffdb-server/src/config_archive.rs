@@ -1,7 +1,7 @@
 //! Operator-only named filesystem archive bindings.
 use super::*;
 use riffdb_storage_api::ArchiveEncryptionPostureV1;
-use riffdb_types::ArchiveNameV1;
+use riffdb_types::{ArchiveNameV1, BackupNameV1};
 
 const MAX_CONFIGURED_ARCHIVES: usize = 16;
 
@@ -11,6 +11,7 @@ pub(super) struct ArchiveDocument {
     name: String,
     path: String,
     encryption: String,
+    backup: Option<String>,
 }
 
 #[derive(Clone)]
@@ -18,8 +19,12 @@ pub(crate) struct ConfiguredArchive {
     name: ArchiveNameV1,
     path: PathBuf,
     encryption: ArchiveEncryptionPostureV1,
+    backup: Option<BackupNameV1>,
 }
 impl ConfiguredArchive {
+    pub(crate) fn backup(&self) -> Option<&BackupNameV1> {
+        self.backup.as_ref()
+    }
     pub(crate) fn name(&self) -> &ArchiveNameV1 {
         &self.name
     }
@@ -57,10 +62,16 @@ pub(super) fn parse_archives(
                 "operator_managed" => ArchiveEncryptionPostureV1::OperatorManaged,
                 _ => return Err(ServerConfigError::InvalidArchiveConfiguration),
             };
+            let backup = document
+                .backup
+                .map(BackupNameV1::new)
+                .transpose()
+                .map_err(|_| ServerConfigError::InvalidArchiveConfiguration)?;
             Ok(ConfiguredArchive {
                 name,
                 path,
                 encryption,
+                backup,
             })
         })
         .collect()
@@ -147,6 +158,24 @@ mod tests {
             }
         }
     }
+    #[test]
+    fn archive_collection_accepts_only_a_checked_optional_backup_name() {
+        let root = tempfile::tempdir().unwrap();
+        let path = root.path().join("config.toml");
+        for (backup, accepted) in [("baseline", true), ("../baseline", false), ("", false)] {
+            std::fs::write(&path, format!("[[maintenance.archives]]\nname = 'daily'\npath = '{}'\nencryption = 'unencrypted'\nbackup = '{backup}'\n", root.path().join("archive").display())).unwrap();
+            assert_eq!(
+                ServerConfig::resolve(
+                    ["--config".into(), path.clone().into_os_string()],
+                    &EmptyEnvironment,
+                    root.path()
+                )
+                .is_ok(),
+                accepted
+            );
+        }
+    }
+
     #[test]
     fn named_database_archives_reject_cross_database_path_ownership() {
         let root = tempfile::tempdir().unwrap();

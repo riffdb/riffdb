@@ -23040,6 +23040,16 @@ work_packages:
       the caller closes its engine and seals the candidate. Replayed capability
       grants, approval requirements, expiry and revocations govern that selected
       state; no local follower authority or cached source proof is introduced.
+    - Enable automatic filesystem collection with an optional checked backup name
+      on each existing operator archive binding; an omitted name remains restore-only.
+      Each independent collector owns only published immutable snapshots, one pending
+      frame and its verified external sink. Coalesce notifications and resume through
+      durable receipts; a pruned gap or foreign lineage stops with typed resync.
+      Retry uncertain append bytes at most three times, never advancing confirmed
+      progress early. Join collectors before storage close or offline maintenance;
+      startup or sink failures remain redacted and never gate primary writes.
+      Existing archives never rebind to another backup or history. Full process
+      qualification and same-workload acknowledgement measurements remain open.
   human_review_triggers: *id0178
 
 - id: WP-750
