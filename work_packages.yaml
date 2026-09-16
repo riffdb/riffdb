@@ -22481,6 +22481,13 @@ work_packages:
       for atomic prefix-evidence bounds and to riffdb-client-rust for the already
       accepted distinct archive restore operation. WP-749 remains open until the
       full exact-stop, corruption, crash, authorization and write-path evidence passes.
+    - Reuse AuthoritativeMutationV3 and its checked sequential-to-net accumulator
+      for command-prefix evidence. Retain only independent command namespaces;
+      command facts, locators and allocators remain owned by their existing graph
+      constructors. Check each logical application/audit step and total evidence
+      bytes before reduction, including values absent from the final net receipt.
+      This semantic component does not grant restore or publication authority;
+      original predecessor, full graph, durable codecs and capture remain required.
     - Reuse the checked backup-name grammar through a distinct ArchiveNameV1 type.
       Bind backup, archive, closed application stop and replacement confirmation
       under the versioned archive-input preimage in the existing maintenance hash

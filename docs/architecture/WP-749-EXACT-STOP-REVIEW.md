@@ -91,6 +91,16 @@ semantics and REP-007's application-sequence recovery granularity.
 
 ## Required proof before closure
 
+Implementation status: the storage-api semantic validator retains each command's
+independent mutations and checks logical frontier continuity, audit-frontier joins,
+canonical order, cumulative bounds and exact reduction to the original receipt's
+corresponding net mutations. Tests cover intermediate puts, deletes, recreations
+and net-zero histories. This is a validation component, not a durable codec or an
+exact-stop restore implementation. Capsule V7/segment V6 encoding, atomic source
+capture, original predecessor and complete graph validation, private reconstruction
+and publication proofs remain required. First-observed preconditions must still be
+checked against the validated predecessor even when a key has no net receipt row.
+
 - A real same-entity group with multiple puts, delete, and recreate restores to
   each application sequence with exact entity bytes and reciprocal command facts.
 - Corrupt, missing or reordered prefix evidence refuses before replacement.
