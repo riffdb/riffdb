@@ -23091,6 +23091,16 @@ work_packages:
       progress lagged substantially. Publish those costs without claiming
       cross-cell parity, full catch-up, N1/E2 qualification or package closure.
       The no-regression exit gate and follow-up investigation remain open.
+    - Diagnose the measured collector cost using the unchanged pinned binary.
+      A syscall-only trace observed 3623 sync calls for 329 archived frames and
+      18.1 seconds inside those calls. Publish both immutable artifact names with
+      one directory barrier after syncing their bytes, then persist the selector
+      bytes and rename; retain inode/path validation and all exact retry checks.
+      Normal append uses five syncs instead of eleven. Extend uncertain-I/O and
+      process-crash coverage at the artifacts-synced boundary, requiring the old
+      prefix before selector rename and the new prefix after successful rename.
+      No frame bytes, retention acknowledgement or source write gate changes.
+      Fresh paired latency qualification and the no-regression gate remain open.
   human_review_triggers: *id0178
 
 - id: WP-750

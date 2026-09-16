@@ -138,6 +138,7 @@ fn archive_repository_process_crashes_recover_only_a_complete_selected_prefix() 
         "manifest-staged",
         "manifest-linked",
         "manifest-published",
+        "artifacts-synced",
         "current-staged",
         "current-renamed",
         "current-synced",
@@ -160,9 +161,18 @@ fn archive_repository_process_crashes_recover_only_a_complete_selected_prefix() 
         );
         let repository = open(&path).unwrap();
         let recovered = repository.position();
-        assert!(
-            recovered == first || recovered.sequence() == first.sequence().checked_next().unwrap()
-        );
+        if matches!(edge, "current-renamed" | "current-synced") {
+            assert_eq!(
+                recovered.sequence(),
+                first.sequence().checked_next().unwrap(),
+                "the successful selector rename survives process death: {edge}"
+            );
+        } else {
+            assert_eq!(
+                recovered, first,
+                "unselected artifacts cannot advance recovery: {edge}"
+            );
+        }
         let second_bytes = fixture::frame(lineage, first, 2);
         let mut consumer = ArchiveConsumerV1::new(repository, lineage, recovered);
         let second = if recovered == first {
@@ -278,6 +288,7 @@ fn archive_repository_uncertain_io_retries_exact_pending_bytes_at_every_boundary
         "manifest-staged",
         "manifest-linked",
         "manifest-published",
+        "artifacts-synced",
         "current-staged",
         "current-renamed",
         "current-synced",

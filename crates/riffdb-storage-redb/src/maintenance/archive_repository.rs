@@ -419,6 +419,10 @@ impl RedbArchiveRepository {
     }
     fn sync_retained(&self, name: &str, file: &File) -> Result<(), Error> {
         file.sync_all().map_err(io)?;
+        self.verify_retained(name, file)
+    }
+
+    fn verify_retained(&self, name: &str, file: &File) -> Result<(), Error> {
         if !self
             .directory
             .regular_file_matches(OsStr::new(name), file)
@@ -537,11 +541,12 @@ impl RedbArchiveRepository {
         self.directory
             .hard_link_to(OsStr::new(temporary), &self.directory, OsStr::new(name))
             .map_err(storage)?;
-        self.sync_retained(name, &file)?;
+        // write_temporary already made the file's bytes durable. The link
+        // and temporary-name removal change only this retained directory;
+        // persist both artifact names together before publishing CURRENT.
+        self.verify_retained(name, &file)?;
         self.boundary(edges[1])?;
-        self.directory.sync().map_err(storage)?;
         self.remove_bounded(temporary, maximum)?;
-        self.directory.sync().map_err(storage)?;
         self.boundary(edges[2])?;
         self.verify()
     }
@@ -629,6 +634,12 @@ impl ArchiveFrameSinkV1 for RedbArchiveRepository {
             ARCHIVE_MANIFEST_V1_BYTES,
             ["manifest-staged", "manifest-linked", "manifest-published"],
         )?;
+        // Both immutable files have durable bytes. This barrier persists
+        // their final names (and temporary-name cleanup) before CURRENT can
+        // select them. A pre-selector crash leaves only an unselected pair,
+        // which recovery validates the old prefix before discarding.
+        self.directory.sync().map_err(storage)?;
+        self.boundary("artifacts-synced")?;
         let current =
             self.write_temporary(CURRENT_TEMP, &manifest_bytes, ARCHIVE_MANIFEST_V1_BYTES)?;
         self.boundary("current-staged")?;
@@ -640,7 +651,9 @@ impl ArchiveFrameSinkV1 for RedbArchiveRepository {
             .rename(OsStr::new(CURRENT_TEMP), OsStr::new(CURRENT))
             .map_err(storage)?;
         self.boundary("current-renamed")?;
-        self.sync_retained(CURRENT, &current)?;
+        // The selector bytes were synced before rename. Only its directory
+        // entry changed; verify the retained inode and persist that entry.
+        self.verify_retained(CURRENT, &current)?;
         self.directory.sync().map_err(storage)?;
         self.boundary("current-synced")?;
         self.verify()?;
