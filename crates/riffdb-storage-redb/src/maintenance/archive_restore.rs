@@ -1,7 +1,10 @@
 //! Private verified-backup conversion and exact archived-frame replay. Publication
 //! requires a separate complete validation seal and matching durable V3 receipt.
+#[path = "archive_prefix.rs"]
+mod prefix;
 #[path = "archive_publication.rs"]
 mod publication;
+pub use prefix::RedbPrivateArchiveRestoreCandidate;
 pub use publication::RedbSealedArchiveRestore;
 
 use super::*;
@@ -32,6 +35,7 @@ pub struct RedbArchiveRestoreStage {
 /// validation, staged authorization and the existing incarnation ceremony remain
 /// required. Dropping it discards the stage.
 pub struct RedbReplayedArchiveRestore {
+    archive: RedbArchiveRepository,
     stage: RedbStagedRestore,
     file: File,
     history: ChangelogHistoryStateV3,
@@ -237,6 +241,7 @@ impl RedbArchiveRestoreStage {
         let history = result?;
         closed?;
         Ok(RedbReplayedArchiveRestore {
+            archive: self.archive,
             stage: self.stage,
             file: self.file,
             history,

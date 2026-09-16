@@ -204,8 +204,11 @@ observation predecessors are available, validation folds every affected entity
 into its shared partition counter and checks exact total, stale and per-model
 counts. It also derives the lineage health summary with the compiler-owned
 thresholds. Resealed counter and health forgeries refuse before follower progress.
-Unknown retained predecessors remain unproven. Complete cross-history and candidate
-graph validation, and exact-stop archive restore remain unfinished WP-749 work.
+Unknown retained predecessors remain unproven. The offline owner can now rebuild
+an interior command boundary from a fully replayed selection and checked prefix
+evidence. This private artifact has no replication identity or publication
+capability, and ordinary database opens refuse it. Complete candidate validation,
+publication integration and the public exact-stop command remain WP-749 work.
 
 Inspect the format while the server is stopped:
 

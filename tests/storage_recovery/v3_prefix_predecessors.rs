@@ -6,7 +6,7 @@ use riffdb_storage_redb::{
     RedbBootstrapMaterializer, RedbBootstrapStage, RedbFollowerApplier, RedbFollowerStore,
 };
 
-fn inputs() -> StartupValidationInputs {
+pub(super) fn inputs() -> StartupValidationInputs {
     let key = ReadableDigestKey::v1(DigestKeyId::new(1).unwrap());
     StartupValidationInputs::new(
         Timestamp::new(1_700_000_000, 0).unwrap(),
@@ -15,7 +15,7 @@ fn inputs() -> StartupValidationInputs {
     )
 }
 
-fn open_follower(path: &Path) -> RedbFollowerApplier {
+pub(super) fn open_follower(path: &Path) -> RedbFollowerApplier {
     let mut session = RedbFollowerStore::open(path)
         .unwrap()
         .begin_structural_evidence(inputs())
