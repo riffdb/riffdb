@@ -365,6 +365,12 @@ restored application data and exact retry through the Rust client. These two
 process tests are explicitly ignored by ordinary Cargo test runs because they
 require the separate CLI binary; `ci-all` runs the dedicated runner.
 
+The storage recovery matrix covers an archive sink refusing a frame and losing
+confirmation after persisting it. In both Standard and Hardened profiles, the
+source commits further commands before a process exit; repeated source recovery
+retains them, while validated archive replay includes only the durable archive
+prefix. The collector never reports its uncertain frame as confirmed.
+
 WP-749 remains incomplete: the complete end-to-end crash qualification and
 write-path measurements are still pending. These restore
 paths do not yet constitute a qualified disaster-recovery deployment.

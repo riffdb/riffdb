@@ -1,6 +1,8 @@
 //! Production command owners after the real validated V3 activation handoff.
 //! Exact successor receipts, command semantics, checkpoint and recovery evidence.
 // req: REP-003, REC-001, STO-012, PERF-007
+#[path = "v3_archive_sink_crash.rs"]
+mod archive_sink_crash;
 #[path = "v3_prefix_predecessors.rs"]
 mod prefix_predecessors;
 #[path = "v3_private_archive_prefix.rs"]
