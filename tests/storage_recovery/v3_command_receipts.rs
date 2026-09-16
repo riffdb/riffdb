@@ -652,3 +652,126 @@ fn grouped_v3_receipt_retains_only_terminal_entity_image() {
         riffdb_storage_api::derive_entity_record_hash_v1(second_image).unwrap()
     );
 }
+
+#[test]
+// req: REP-007, REP-003, REC-001
+fn command_group_captures_each_put_delete_recreate_and_logical_index_epoch() {
+    for profile in [RedbCommitProfile::Standard, RedbCommitProfile::Hardened] {
+        let path = TestDatabasePath::new("v7-grouped-prefix-images");
+        let anchor = install_fixture(&path.0);
+        let (ports, _receiver) = observed_ports(&path.0, profile);
+        let first = command_fixture_at(1);
+        let second = superseding_command_fixture_at(2, 1, &first);
+        let third = deleting_command_fixture_at(3, &second);
+        let fourth =
+            build_command_fixture(4, 1, Some(&third), AdmissionShape::VacantTerminal, false);
+        let commands = [first, second, third, fourth];
+        if profile == RedbCommitProfile::Standard {
+            let epoch = ports.begin_deferred_command_epoch().unwrap();
+            let empty = DeferredCommandEpoch::begin_empty_batch(epoch).unwrap();
+            let batch = stage_command_group(empty, &commands);
+            let epoch = batch
+                .apply_unpublished_with_service_audit_transitions(
+                    DurabilityMode::Sync,
+                    commands.iter().map(command_audit_transition).collect(),
+                )
+                .unwrap();
+            DeferredCommandEpoch::fence(epoch).unwrap();
+        } else {
+            commit_command_group(&ports, &commands);
+        }
+        let pin = ports.published_changelog_snapshot_v3().unwrap();
+        let mut cursor = pin
+            .changelog_receipts_v3(anchor.lineage(), anchor.tail())
+            .unwrap();
+        let mut checked = false;
+        let mut stored_segment = None;
+        while let Some(receipt) = cursor.next_receipt().unwrap() {
+            if receipt.binding().covered_frontier.application() != CommitSequence::new(4) {
+                continue;
+            }
+            let segment_mutation = receipt
+                .mutations()
+                .iter()
+                .find(|m| m.namespace() == N::Commits)
+                .unwrap();
+            let segment = decode_command_segment_v1(segment_mutation.value().unwrap()).unwrap();
+            stored_segment = Some(segment_mutation.value().unwrap().to_vec());
+            assert_eq!(segment.value().commands().len(), 4);
+            let evidence = segment
+                .value()
+                .commands()
+                .iter()
+                .map(|c| {
+                    c.prefix_evidence()
+                        .expect("newly committed command retains prefix evidence")
+                })
+                .collect::<Vec<_>>();
+            riffdb_storage_api::validate_command_prefix_mutations_v1(&evidence, &receipt).unwrap();
+            for (command, prefix) in commands.iter().zip(evidence) {
+                let entity = prefix
+                    .mutations()
+                    .iter()
+                    .find(|m| m.namespace() == N::Entities)
+                    .unwrap();
+                assert_eq!(entity.key(), command.target.key().as_bytes());
+                assert_eq!(
+                    entity
+                        .value()
+                        .map(|bytes| decode_entity_record_v1(bytes).unwrap().into_parts().0),
+                    command.records.entities()[0].live_post_image().cloned()
+                );
+                let epoch = prefix
+                    .mutations()
+                    .iter()
+                    .find(|m| m.namespace() == N::IndexEpochs)
+                    .unwrap();
+                assert_eq!(
+                    decode_index_epoch_v1(epoch.value().unwrap())
+                        .unwrap()
+                        .value(),
+                    command.write_plan.index_epochs()[0].post_image()
+                );
+                assert!(
+                    prefix
+                        .mutations()
+                        .iter()
+                        .any(|m| m.namespace() == N::EntityChainHeads)
+                );
+            }
+            checked = true;
+        }
+        assert!(checked);
+        drop(cursor);
+        drop(pin);
+        drop(_receiver);
+        drop(ports);
+
+        // Standard reopen consumes the journal recovery/checkpoint path;
+        // hardened reopen reads the already durable Immediate transaction.
+        let (reopened, _receiver) = observed_ports(&path.0, profile);
+        let pin = reopened.published_changelog_snapshot_v3().unwrap();
+        let mut cursor = pin
+            .changelog_receipts_v3(anchor.lineage(), anchor.tail())
+            .unwrap();
+        let mut recovered = None;
+        while let Some(receipt) = cursor.next_receipt().unwrap() {
+            for mutation in receipt
+                .mutations()
+                .iter()
+                .filter(|m| m.namespace() == N::Commits)
+            {
+                assert!(
+                    recovered
+                        .replace(mutation.value().unwrap().to_vec())
+                        .is_none()
+                );
+            }
+        }
+        assert_eq!(recovered, stored_segment);
+        assert_eq!(
+            reopened.read_entity(&commands[3].target).unwrap(),
+            commands[3].records.entities()[0].live_post_image().cloned()
+        );
+    }
+}

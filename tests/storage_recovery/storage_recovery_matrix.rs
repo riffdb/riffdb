@@ -737,7 +737,8 @@ fn build_command_fixture(
     // A superseding write must carry different canonical bytes, or the frame
     // under test could not distinguish the two post-images.
     let payload = if prior.is_some() { 2 } else { 1 };
-    let prior_entity = prior.map(|fixture| fixture.records.entities()[0].post_image().clone());
+    let prior_entity =
+        prior.and_then(|fixture| fixture.records.entities()[0].live_post_image().cloned());
     let prior_epoch = prior.map_or(IndexEpochPosition::BeforeFirst, |fixture| {
         IndexEpochPosition::Value(fixture.write_plan.index_epochs()[0].next())
     });
@@ -1329,10 +1330,28 @@ fn try_commit_command_group(
     fixtures: &[CommandFixture],
     audit_fixtures: &[CommandFixture],
 ) -> Result<(), riffdb_storage_api::StorageError> {
+    stage_command_group(
+        ports
+            .begin_empty_batch()
+            .expect("begin serial recovery batch"),
+        fixtures,
+    )
+    .commit_with_service_audit_transitions(
+        DurabilityMode::Sync,
+        audit_fixtures
+            .iter()
+            .map(command_audit_transition)
+            .collect(),
+    )
+    .map(|_| ())
+}
+
+fn stage_command_group(
+    empty: <RedbOperationalPorts as ApplicationCommandTransactionPort>::EmptyBatch,
+    fixtures: &[CommandFixture],
+) -> impl NonEmptyCommandBatch + DeferredNonEmptyCommandBatch<Epoch = RedbDurabilityEpoch> {
     let (first, remaining) = fixtures.split_first().expect("non-empty recovery group");
-    let candidate = ports
-        .begin_empty_batch()
-        .expect("begin serial recovery batch")
+    let candidate = empty
         .begin_candidate(Box::new(first.intent.clone()))
         .expect("begin first candidate");
     let CandidateAdmissionResult::Proceed(candidate) = candidate
@@ -1393,14 +1412,6 @@ fn try_commit_command_group(
             .expect("stage next graph");
     }
     batch
-        .commit_with_service_audit_transitions(
-            DurabilityMode::Sync,
-            audit_fixtures
-                .iter()
-                .map(command_audit_transition)
-                .collect(),
-        )
-        .map(|_| ())
 }
 
 /// The one `Started`/`Succeeded` pair every fixture's command lifecycle uses.

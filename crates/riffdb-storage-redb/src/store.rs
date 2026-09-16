@@ -1242,6 +1242,7 @@ pub(crate) struct RedbWriteAccess {
     journal_checkpoint: Option<JournalRuntime>,
     composite_predecessor: Option<Arc<crate::composite_view::RedbCompositeReadView>>,
     composite_stage: Option<RefCell<crate::composite_view::RedbCompositeMutationStage>>,
+    command_prefix_capture: RefCell<crate::command_prefix::CommandMutationCapture>,
     fresh_locator_expected_mutations: RefCell<Vec<FreshLocatorMutationPermit>>,
     fresh_locator_actual_mutations: RefCell<Vec<FreshLocatorMutationPermit>>,
     fresh_locator_expectations_closed: std::cell::Cell<bool>,
@@ -5295,6 +5296,7 @@ impl RedbOperationalPorts {
             journal_checkpoint,
             composite_predecessor: None,
             composite_stage: None,
+            command_prefix_capture: RefCell::default(),
             fresh_locator_expected_mutations: RefCell::new(Vec::new()),
             fresh_locator_actual_mutations: RefCell::new(Vec::new()),
             fresh_locator_expectations_closed: std::cell::Cell::new(false),
@@ -5405,6 +5407,7 @@ impl RedbOperationalPorts {
             journal_checkpoint: None,
             composite_predecessor: Some(composite_predecessor),
             composite_stage: Some(RefCell::new(composite_stage)),
+            command_prefix_capture: RefCell::default(),
             fresh_locator_expected_mutations: RefCell::new(Vec::new()),
             fresh_locator_actual_mutations: RefCell::new(Vec::new()),
             fresh_locator_expectations_closed: std::cell::Cell::new(false),
@@ -5636,6 +5639,40 @@ impl RedbWriteAccess {
             FreshLocatorMutationKind::Delete
         };
         self.record_actual_fresh_locator_mutation(mutation.table().label(), mutation.key(), kind)
+    }
+
+    pub(crate) fn begin_command_prefix_capture(&self, budget: usize) -> Result<(), StorageError> {
+        self.command_prefix_capture
+            .try_borrow_mut()
+            .map_err(|_| storage_error(StorageErrorKind::InvariantViolation))?
+            .begin(budget)
+    }
+
+    pub(crate) fn finish_command_prefix_capture(
+        &self,
+    ) -> Result<Vec<riffdb_storage_api::AuthoritativeMutationV3>, StorageError> {
+        self.command_prefix_capture
+            .try_borrow_mut()
+            .map_err(|_| storage_error(StorageErrorKind::InvariantViolation))?
+            .finish()
+    }
+
+    pub(crate) fn capture_logical_command_mutation(
+        &self,
+        mutation: &crate::journal::JournalMutation,
+    ) -> Result<(), StorageError> {
+        self.command_prefix_capture
+            .try_borrow_mut()
+            .map_err(|_| storage_error(StorageErrorKind::InvariantViolation))?
+            .record(mutation)
+    }
+
+    fn record_command_mutation(
+        &self,
+        mutation: &crate::journal::JournalMutation,
+    ) -> Result<(), StorageError> {
+        self.record_actual_fresh_locator_journal_mutation(mutation)?;
+        self.capture_logical_command_mutation(mutation)
     }
 
     pub(crate) fn expect_fresh_locator_raw_insert(
@@ -6159,7 +6196,7 @@ impl RedbWriteAccess {
             None => crate::journal::JournalMutation::put(table, key, value.into_bytes()),
         }
         .map_err(journal_storage_error)?;
-        self.record_actual_fresh_locator_journal_mutation(&mutation)?;
+        self.record_command_mutation(&mutation)?;
         if let Some(transaction) = self.transaction.as_ref() {
             transaction.apply_journal_mutation(&mutation)?;
         }
@@ -6188,7 +6225,7 @@ impl RedbWriteAccess {
         let mutation =
             crate::journal::JournalMutation::delete_matching(table, key, &proven_current)
                 .map_err(journal_storage_error)?;
-        self.record_actual_fresh_locator_journal_mutation(&mutation)?;
+        self.record_command_mutation(&mutation)?;
         if let Some(transaction) = self.transaction.as_ref() {
             transaction.apply_journal_mutation(&mutation)?;
         }
@@ -6263,7 +6300,7 @@ impl RedbWriteAccess {
             None => crate::journal::JournalMutation::put(table, key, value),
         }
         .map_err(journal_storage_error)?;
-        self.record_actual_fresh_locator_journal_mutation(&mutation)?;
+        self.record_command_mutation(&mutation)?;
         if let Some(transaction) = self.transaction.as_ref() {
             transaction.apply_journal_mutation(&mutation)?;
         }
@@ -6291,7 +6328,7 @@ impl RedbWriteAccess {
     ) -> Result<(), StorageError> {
         let mutation = crate::journal::JournalMutation::put(table, key, value)
             .map_err(journal_storage_error)?;
-        self.record_actual_fresh_locator_journal_mutation(&mutation)?;
+        self.record_command_mutation(&mutation)?;
         if let Some(transaction) = self.transaction.as_ref() {
             transaction.apply_journal_mutation(&mutation)?;
         }
@@ -6308,7 +6345,7 @@ impl RedbWriteAccess {
         };
         let mutation = crate::journal::JournalMutation::delete_matching(table, key, &prior)
             .map_err(journal_storage_error)?;
-        self.record_actual_fresh_locator_journal_mutation(&mutation)?;
+        self.record_command_mutation(&mutation)?;
         if let Some(transaction) = self.transaction.as_ref() {
             transaction.apply_journal_mutation(&mutation)?;
         }
@@ -6336,7 +6373,7 @@ impl RedbWriteAccess {
             value.clone(),
         )
         .map_err(journal_storage_error)?;
-        self.record_actual_fresh_locator_journal_mutation(&mutation)?;
+        self.record_command_mutation(&mutation)?;
         if let Some(transaction) = self.transaction.as_ref() {
             transaction.apply_journal_mutation(&mutation)?;
         }
@@ -7094,6 +7131,7 @@ impl RedbDurabilityEpoch {
             journal_checkpoint: None,
             composite_predecessor: None,
             composite_stage: composite_stage.map(RefCell::new),
+            command_prefix_capture: RefCell::default(),
             fresh_locator_expected_mutations: RefCell::new(Vec::new()),
             fresh_locator_actual_mutations: RefCell::new(Vec::new()),
             fresh_locator_expectations_closed: std::cell::Cell::new(false),

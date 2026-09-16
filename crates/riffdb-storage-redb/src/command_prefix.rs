@@ -15,6 +15,94 @@ use crate::{
     keys::encode_application_sequence_key,
 };
 
+/// One transaction-private command's bounded independent mutation fold. The
+/// application owner scopes this around staging; graph and allocator writes
+/// occur after it closes. An ignored capture error permanently poisons it.
+#[derive(Default)]
+pub(crate) struct CommandMutationCapture {
+    active: Option<riffdb_storage_api::AuthoritativeMutationAccumulatorV3>,
+    budget: usize,
+    failure: Option<StorageErrorKind>,
+}
+
+impl CommandMutationCapture {
+    pub(crate) fn begin(&mut self, budget: usize) -> Result<(), StorageError> {
+        if self.failure.is_some()
+            || self.active.is_some()
+            || !(40..=riffdb_storage_api::MAX_STAGED_WRITE_BYTES).contains(&budget)
+        {
+            return self.refuse(StorageErrorKind::InvariantViolation);
+        }
+        self.budget = budget;
+        self.active = Some(Default::default());
+        Ok(())
+    }
+
+    fn refuse<T>(&mut self, kind: StorageErrorKind) -> Result<T, StorageError> {
+        self.failure.get_or_insert(kind);
+        Err(storage_error(kind))
+    }
+
+    pub(crate) fn record(
+        &mut self,
+        mutation: &crate::journal::JournalMutation,
+    ) -> Result<(), StorageError> {
+        if let Some(kind) = self.failure {
+            return Err(storage_error(kind));
+        }
+        let Some(active) = self.active.as_mut() else {
+            return Ok(());
+        };
+        let result = (|| {
+            use riffdb_storage_api::{AuthoritativeMutationV3 as M, ChangelogV3Error as E};
+            let namespace = riffdb_storage_api::AuthoritativeStateCatalogV1
+                .lookup(mutation.table().label(), mutation.key())
+                .ok_or(E::InvalidNamespace)?;
+            if !riffdb_storage_api::CommandPrefixEvidenceV1::supports_namespace(namespace) {
+                return Err(E::InvalidNamespace);
+            }
+            let captured = match mutation.value() {
+                Some(value) => M::put(namespace, mutation.key(), mutation.expected_hash(), value)?,
+                None => M::delete(
+                    namespace,
+                    mutation.key(),
+                    mutation.expected_hash().ok_or(E::InvalidEncoding)?,
+                )?,
+            };
+            active.record(captured)
+        })();
+        match result {
+            Ok(()) => Ok(()),
+            Err(error) => self.refuse(value_error(error).kind()),
+        }
+    }
+
+    pub(crate) fn finish(
+        &mut self,
+    ) -> Result<Vec<riffdb_storage_api::AuthoritativeMutationV3>, StorageError> {
+        if let Some(kind) = self.failure {
+            return Err(storage_error(kind));
+        }
+        let Some(active) = self.active.take() else {
+            return self.refuse(StorageErrorKind::InvariantViolation);
+        };
+        let mutations = match active.finish() {
+            Ok(value) => value,
+            Err(error) => return self.refuse(value_error(error).kind()),
+        };
+        let bytes = mutations.iter().try_fold(40_usize, |bytes, mutation| {
+            bytes.checked_add(mutation.encoded_len())
+        });
+        if bytes.is_none_or(|bytes| bytes > self.budget) {
+            // The presequence reservation already charged this complete copy.
+            // Exceeding it is a broken internal proof, never a late capacity
+            // refusal or permission to publish the partly staged command.
+            return self.refuse(StorageErrorKind::InvariantViolation);
+        }
+        Ok(mutations)
+    }
+}
+
 /// Runs before applying the original receipt. The transaction is pinned to that
 /// receipt's predecessor, including earlier receipts in the same private frame.
 /// Legacy command groups remain readable; they cannot supply exact-stop evidence.
@@ -122,6 +210,52 @@ mod tests {
             CommitSequence::new(sequence),
             AdministrationSequence::new(sequence * 2),
         )
+    }
+
+    #[test]
+    // req: REP-007
+    fn command_capture_keeps_command_boundaries_and_poisoned_refusals() {
+        use crate::journal::{JournalMutation as J, JournalTable as T};
+        let mut capture = CommandMutationCapture::default();
+        capture
+            .record(&J::put(T::Commits, b"graph".as_slice(), b"opaque".as_slice()).unwrap())
+            .unwrap();
+        capture.begin(100).unwrap();
+        capture
+            .record(&J::put(T::Entities, b"key".as_slice(), b"first".as_slice()).unwrap())
+            .unwrap();
+        let first = capture.finish().unwrap();
+        capture.begin(100).unwrap();
+        capture
+            .record(
+                &J::replace(T::Entities, b"key".as_slice(), b"first", b"last".as_slice()).unwrap(),
+            )
+            .unwrap();
+        let last = capture.finish().unwrap();
+        assert_eq!(first[0].value(), Some(b"first".as_slice()));
+        assert_eq!(last[0].value(), Some(b"last".as_slice()));
+        assert!(last[0].matches_prior(first[0].value()));
+
+        for bad in [
+            J::put(T::Commits, b"graph".as_slice(), b"opaque".as_slice()).unwrap(),
+            J::replace(T::Entities, b"key".as_slice(), b"wrong", b"bad".as_slice()).unwrap(),
+        ] {
+            let mut refused = CommandMutationCapture::default();
+            refused.begin(100).unwrap();
+            refused
+                .record(&J::put(T::Entities, b"key".as_slice(), b"first".as_slice()).unwrap())
+                .unwrap();
+            assert!(refused.record(&bad).is_err());
+            assert!(refused.finish().is_err());
+            assert!(refused.begin(100).is_err());
+        }
+        let mut underestimated = CommandMutationCapture::default();
+        underestimated.begin(40).unwrap();
+        underestimated
+            .record(&J::put(T::Entities, b"key".as_slice(), b"first".as_slice()).unwrap())
+            .unwrap();
+        assert!(underestimated.finish().is_err());
+        assert!(underestimated.begin(100).is_err());
     }
 
     #[test]

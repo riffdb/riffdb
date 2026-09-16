@@ -313,7 +313,7 @@
       "writer_policy": "multi_current",
       "compatibility_rule": "Successors require bounded command-prefix evidence; earlier capsule and segment bytes remain readable without inferred evidence. Exact prior registry markers require the matching binary; no new automatic migration edge is declared.",
       "breaking_when": "A successor tag, revision, evidence field, graph binding, original frontier or complete post-image changes meaning, or old bytes are reinterpreted as containing prefix evidence.",
-      "supported_release_posture": "V7 capsule and V6 segment codecs are registered. Production capture, independent-row validation, private exact-stop reconstruction and restore publication remain WP-749 work.",
+      "supported_release_posture": "New audited source commands write V7 capsules in V6 segments with atomic independent mutation capture and presequence reservation. Complete independent-row and graph validation, private exact-stop reconstruction and restore publication remain WP-749 work.",
       "lifecycle": {
         "active": [
           "tag-54/revision-6",

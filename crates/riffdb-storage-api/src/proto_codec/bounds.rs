@@ -387,7 +387,7 @@ impl EncodedAtomicCommandRecordSetV1 {
     }
 }
 
-/// Computes a tight sequence-free canonical-envelope reservation.
+/// Computes a conservative sequence-free canonical-envelope reservation.
 ///
 /// This creates private Protobuf sizing projections, not semantic records. The
 /// projections cannot escape this function or enter decode/persistence APIs.
@@ -401,7 +401,7 @@ pub fn command_write_set_upper_bound_v1(
     command_write_set_upper_bound_with_vector_evidence_v1(intent, index_entries, index_epochs, &[])
 }
 
-/// Computes a tight sequence-free reservation including vector evidence.
+/// Computes a conservative sequence-free reservation including vector evidence.
 pub fn command_write_set_upper_bound_with_vector_evidence_v1(
     intent: &CommitIntent,
     index_entries: &[IndexEntryMutationV1],
@@ -545,7 +545,7 @@ pub fn command_write_set_upper_bound_with_vector_evidence_v1(
         },
     ))?;
 
-    let raw = RawWriteClassBreakdownV1 {
+    let mut raw = RawWriteClassBreakdownV1 {
         allocator: sizing_charge_len(
             super::metadata::APPLICATION,
             key_len(1, prost::encoding::WireType::Varint)
@@ -557,6 +557,10 @@ pub fn command_write_set_upper_bound_with_vector_evidence_v1(
             sizing_entity_len(mutation, schema_binding_len)
                 .and_then(|len| sizing_charge_len(ENTITY, len))
         }))?
+        .checked_add(sum_sizes(evaluated.mutations().iter().map(|mutation| {
+            sizing_chain_head_charge(mutation.post_image().target())
+        }))?)
+        .ok_or_else(DurableCodecError::invariant)?
         .checked_add(sum_sizes(vector_evidence.iter().map(|transition| {
             match transition.materialize(
                 riffdb_types::CommitSequence::new(MAXIMUM_WIDTH_U64)
@@ -614,7 +618,109 @@ pub fn command_write_set_upper_bound_with_vector_evidence_v1(
         provenance: sizing_charge_len(PROVENANCE_V2, provenance_len)?,
         commit: sizing_charge_len(COMMIT, commit_len)?,
     };
+    // V7 retains complete independent command post-images inside authority.
+    // Charge both the physical rows above and their nested copies before any
+    // sequence is assigned. Deletes still carry their exact keys/preconditions.
+    let prefix =
+        command_prefix_payload_bound(intent, index_entries, index_epochs, vector_evidence, raw)?;
+    raw.commit = raw
+        .commit
+        .checked_add(bytes_field_len(6, prefix)?)
+        .ok_or_else(DurableCodecError::invariant)?;
     finish_upper_bound(raw)
+}
+
+fn sizing_chain_head_charge(target: &crate::EntityTarget) -> Result<usize, DurableCodecError> {
+    let state = sum_proto_fields([
+        varint_field_len(1, 2_u32),
+        varint_field_len(2, MAXIMUM_WIDTH_U64),
+        bytes_field_len(3, 32),
+    ])?;
+    let payload = sum_proto_fields([
+        message_field_len(1, entity_target_to_proto(target).encoded_len()),
+        varint_field_len(2, MAXIMUM_WIDTH_U64),
+        message_field_len(3, state),
+        varint_field_len(4, MAXIMUM_WIDTH_U64),
+        bytes_field_len(5, 32),
+    ])?;
+    sizing_charge_len("riffdb.storage.v1.StoredEntityChainHeadV1", payload)
+}
+
+fn command_prefix_payload_bound(
+    intent: &CommitIntent,
+    index_entries: &[IndexEntryMutationV1],
+    index_epochs: &[IndexEpochAdvanceV1],
+    vectors: &[VectorEvidenceTransitionPlanV1],
+    raw: RawWriteClassBreakdownV1,
+) -> Result<usize, DurableCodecError> {
+    let mut bytes = sum_sizes([
+        Ok(40),
+        Ok(raw.entities),
+        Ok(raw.index_entries),
+        Ok(raw.index_epochs),
+    ])?;
+    let mut count = 0_usize;
+    let mut add_key = |key_bytes: usize| -> Result<(), DurableCodecError> {
+        count = count
+            .checked_add(1)
+            .ok_or_else(DurableCodecError::invariant)?;
+        bytes = bytes
+            .checked_add(44)
+            .and_then(|n| n.checked_add(key_bytes))
+            .ok_or_else(DurableCodecError::invariant)?;
+        Ok(())
+    };
+    for mutation in intent.evaluated().mutations() {
+        let key = mutation.post_image().target().key().as_bytes().len();
+        add_key(key)?; // independent entity value or delete
+        add_key(key)?; // delete-aware chain head
+    }
+    for mutation in index_entries {
+        add_key(mutation.key().as_bytes().len())?;
+    }
+    for advance in index_epochs {
+        add_key(advance.post_image().target().to_key_bytes().len())?;
+    }
+    for transition in vectors {
+        let target = transition.observation_target();
+        let entity_key = transition.target().key().as_bytes().len();
+        // These fixed framing widths follow the physical vector key grammar.
+        // Include both partition and lineage health observation keys, even
+        // when the command changes only one entity's evidence.
+        let observation_key = sum_sizes([
+            Ok(14),
+            Ok(target.lineage().as_bytes().len()),
+            Ok(target.partition_key().as_bytes().len()),
+        ])?;
+        add_key(
+            entity_key
+                .checked_add(4)
+                .ok_or_else(DurableCodecError::invariant)?,
+        )?;
+        add_key(sum_sizes([Ok(4), Ok(observation_key), Ok(entity_key)])?)?;
+        add_key(observation_key)?;
+        add_key(7 + target.lineage().as_bytes().len())?;
+    }
+    if matches!(
+        intent.admission_expectation(),
+        crate::CommandAdmissionExpectationV1::ExistingPending
+    ) {
+        let key = intent
+            .pending()
+            .identity()
+            .storage_key()
+            .map_err(|_| DurableCodecError::invariant())?;
+        add_key(key.as_bytes().len())?;
+    }
+    // The existing byte-summing batch/epoch reservation must also dominate
+    // the aggregate prefix item count. A per-item reservation floor converts
+    // that fixed count ceiling into the same presequence capacity proof, even
+    // for tiny deletes, without changing FIFO selection or adding a late gate.
+    let per_item = MAX_STAGED_WRITE_BYTES.div_ceil(crate::MAX_CHANGELOG_FRAME_ENTRIES);
+    let count_reservation = count
+        .checked_mul(per_item)
+        .ok_or_else(DurableCodecError::invariant)?;
+    Ok(bytes.max(count_reservation))
 }
 
 fn finish_upper_bound(

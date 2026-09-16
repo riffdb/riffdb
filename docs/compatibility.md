@@ -154,8 +154,13 @@ its matching binary; this addition declares no automatic migration edge.
 For received successor command groups, the follower checks evidence against the
 original receipt and the exact starting rows, including keys that disappear
 from the receipt because later commands restore their original values. A
-contradiction refuses the frame without advancing durable progress. Production
-evidence capture and exact-stop archive restore remain unfinished WP-749 work.
+contradiction refuses the frame without advancing durable progress. Newly
+committed audited commands now write these successor identities and retain
+their intermediate entity/index state atomically. Their complete evidence copy
+counts toward the existing pre-sequence capacity reservation, so a command near
+the previous encoded limit may now be refused before receiving a sequence.
+Complete prefix graph validation and exact-stop archive restore remain
+unfinished WP-749 work.
 
 Inspect the format while the server is stopped:
 

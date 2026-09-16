@@ -3004,13 +3004,20 @@ fn stage_checked_standalone_service_audit_group_in_write(
 /// Stages linked command audit rows using evidence that can only be produced
 /// by consuming complete command graphs already written to this transaction.
 pub(crate) struct StagedCommandAuditRecordsV1 {
+    predecessor: Option<AdministrationSequence>,
     started: StoredServiceAuditRecordV1,
     terminal: StoredServiceAuditRecordV1,
 }
 
 impl StagedCommandAuditRecordsV1 {
-    pub(crate) fn into_parts(self) -> (StoredServiceAuditRecordV1, StoredServiceAuditRecordV1) {
-        (self.started, self.terminal)
+    pub(crate) fn into_parts(
+        self,
+    ) -> (
+        StoredServiceAuditRecordV1,
+        StoredServiceAuditRecordV1,
+        Option<AdministrationSequence>,
+    ) {
+        (self.started, self.terminal, self.predecessor)
     }
 }
 
@@ -3111,6 +3118,7 @@ pub(crate) fn stage_command_service_audit_group_in_write(
                     .ok_or_else(|| storage_error(StorageErrorKind::InvariantViolation))?;
                 let terminal = StoredServiceAuditRecordV1::from_owned_intent(sequence, terminal);
                 records.push(StagedCommandAuditRecordsV1 {
+                    predecessor: AdministrationSequence::new(sequence.get() - 1),
                     started: prior_start
                         .ok_or_else(|| storage_error(StorageErrorKind::InvariantViolation))?,
                     terminal,
@@ -3127,6 +3135,7 @@ pub(crate) fn stage_command_service_audit_group_in_write(
                     .next()
                     .ok_or_else(|| storage_error(StorageErrorKind::InvariantViolation))?;
                 records.push(StagedCommandAuditRecordsV1 {
+                    predecessor: AdministrationSequence::new(started_sequence.get() - 1),
                     started: StoredServiceAuditRecordV1::from_owned_intent(
                         started_sequence,
                         started,
