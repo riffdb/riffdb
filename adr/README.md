@@ -265,6 +265,7 @@ record with no front matter.
 | [0230](0230-bounded-atomic-projection-replay-batches.md) | Bounded Atomic Projection Replay Batches | Accepted | guarantee |
 | [0231](0231-incremental-exact-text-and-predicate-catch-up.md) | Incremental Exact Text And Predicate Catch Up | Accepted | guarantee |
 | [0232](0232-append-only-export-page-commitments.md) | Append Only Export Page Commitments | Accepted | guarantee |
+| [0233](0233-typed-boolean-operands-in-row-policy-evaluation.md) | Typed Boolean Operands In Row Policy Evaluation | Accepted | guarantee |
 <!-- adr-index:end -->
 
 The human architecture review on 2026-07-12 approved the direction represented
