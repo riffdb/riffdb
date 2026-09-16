@@ -371,9 +371,13 @@ source commits further commands before a process exit; repeated source recovery
 retains them, while validated archive replay includes only the durable archive
 prefix. The collector never reports its uncertain frame as confirmed.
 
-WP-749 remains incomplete: the complete end-to-end crash qualification and
-write-path measurements are still pending. These restore
-paths do not yet constitute a qualified disaster-recovery deployment.
+Full CI at `71ae34a7` and the later sink-failure matrix checks passed;
+the repository bundle at
+`release/evidence/wp-749/verification-71ae34a7/README.md` records their exact scope. WP-749 remains incomplete because host-qualified
+write-path measurements are still pending. The local host preflight refused
+measurement due to interference. WP-750's full replication campaign is also
+outstanding, so these paths do not yet constitute a qualified disaster-recovery
+deployment.
 
 An SDK or direct API caller supplies the maintenance operation ID. After a lost
 response or process interruption, that caller retries the exact same start
