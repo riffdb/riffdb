@@ -2788,7 +2788,8 @@ contract DeleteRestrict version 1 {
     }
 
     #[test]
-    fn event_reference_trims_keep_the_largest_semantic_fit_within_encoded_capacity() {
+    // req: REP-007
+    fn prefix_evidence_capacity_is_refused_before_sequence_assignment() {
         const ENTRY_COUNT: u64 = 17;
         const CANONICAL_RECORD_OVERHEAD: usize = 16;
 
@@ -2820,14 +2821,48 @@ contract DeleteRestrict version 1 {
                 shape.index_entries(),
                 shape.index_epochs(),
             ),
-            Ok(EncodedWriteSetUpperBoundResultV1::Fits(_))
+            Ok(EncodedWriteSetUpperBoundResultV1::ExceedsAcceptedAggregateCap(_))
         ));
         drop(shape);
 
         let pending_before = fixture.intent.pending().clone();
         assert!(matches!(
             prepare_synthetic_write_set(&fixture, entries),
+            SequenceFreeWriteSetPreparation::CapacityUnavailable
+        ));
+        assert_eq!(fixture.intent.pending(), &pending_before);
+
+        // V7 duplicates the complete index post-images. The semantic ceiling
+        // still holds, but the complete encoded reservation is now tighter.
+        // Find its exact capacity edge and prove ordinary plans still pass.
+        let mut fitting = 0;
+        let mut exceeding = valid;
+        while fitting + 1 < exceeding {
+            let candidate = fitting + (exceeding - fitting) / 2;
+            let entries = synthetic_index_entries(&fixture, ENTRY_COUNT, candidate);
+            if matches!(
+                command_write_set_upper_bound_v1(&fixture.intent, &entries, &[]),
+                Ok(EncodedWriteSetUpperBoundResultV1::Fits(_))
+            ) {
+                fitting = candidate;
+            } else {
+                exceeding = candidate;
+            }
+        }
+        assert!(fitting > 0);
+        assert!(matches!(
+            prepare_synthetic_write_set(
+                &fixture,
+                synthetic_index_entries(&fixture, ENTRY_COUNT, fitting)
+            ),
             SequenceFreeWriteSetPreparation::Ready(_)
+        ));
+        assert!(matches!(
+            prepare_synthetic_write_set(
+                &fixture,
+                synthetic_index_entries(&fixture, ENTRY_COUNT, exceeding)
+            ),
+            SequenceFreeWriteSetPreparation::CapacityUnavailable
         ));
         assert_eq!(fixture.intent.pending(), &pending_before);
     }

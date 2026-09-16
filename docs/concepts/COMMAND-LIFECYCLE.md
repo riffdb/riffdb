@@ -32,13 +32,19 @@ The commit coordinator opens the authoritative write transaction, revalidates
 read dependencies against transaction-current state, reevaluates bounded commit
 checks, verifies capacity, and then assigns the next sequence.
 
+The encoded reservation includes command-prefix evidence: intermediate entity
+and index values needed when a later command in the same physical group
+overwrites or deletes them. These bytes share the existing size limits. A
+command whose complete reservation exceeds the limit is refused before sequence
+assignment; an archive sink is not part of admission or acknowledgement.
+
 For a successful command, the following become durable atomically:
 
 - entity and index mutations;
 - the terminal typed outcome;
 - durable events and outbox intents;
 - provenance; and
-- the commit record.
+- the commit record and its command-prefix evidence.
 
 No response is reported as committed before the configured durability boundary
 is satisfied.

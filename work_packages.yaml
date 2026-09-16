@@ -22921,6 +22921,17 @@ work_packages:
       missing tables. Preserve complete source receipt identity and legacy groups;
       retention rewrites keep their original command frontiers. Full independent
       row/graph validation, source capture and exact-stop publication remain open.
+    - Capture each command's checked independent JournalMutation values under a
+      poisoned transaction-private scope; fold repeated keys only within that
+      command. Capture logical index epochs before their deferred physical flush.
+      The existing audit owner supplies the exact predecessor administration
+      sequence. New audited source groups persist V7/V6 in the same transaction.
+      Reserve physical chain heads and the nested evidence copy before sequence
+      assignment, with a per-item byte reservation floor derived from the existing
+      byte/count ceilings so existing batch and epoch capacity checks bound both.
+      Capacity refusal stays before assignment; FIFO policy and durability fences
+      are unchanged. Complete row/graph validation and exact-stop publication
+      remain required before closure.
     - Reuse the checked backup-name grammar through a distinct ArchiveNameV1 type.
       Bind backup, archive, closed application stop and replacement confirmation
       under the versioned archive-input preimage in the existing maintenance hash

@@ -107,10 +107,18 @@ introduced. The follower applier now joins received successor groups to the
 original receipt's independent net mutations and checks every first observation
 against its pinned predecessor before applying that receipt, including keys
 erased by net-zero reduction. Missing tables, contradictory values and mixed
-legacy/successor command groups refuse without durable progress. This is not an
-exact-stop restore implementation. Atomic source capture, complete independent
-row/graph and startup/recovery validation, private reconstruction and publication
-proofs remain required.
+legacy/successor command groups refuse without durable progress. Source staging
+now captures each command's independent mutations and deferred logical index
+epochs inside its existing private transaction, binding the exact audit-owner
+predecessor. New audited commands write V7/V6 atomically. Pre-sequence sizing
+charges physical chain heads and the complete nested prefix copy; its per-item
+reservation floor also enforces the aggregate evidence-count ceiling through
+the existing batch/epoch capacity check. A production same-entity group proves
+put, replace, delete and recreate images and every intermediate index epoch on
+standard journaled and hardened paths. This is not an exact-stop restore
+implementation. Complete independent row/graph and startup/recovery validation,
+private reconstruction, publication proofs and write-path measurements remain
+required.
 
 - A real same-entity group with multiple puts, delete, and recreate restores to
   each application sequence with exact entity bytes and reciprocal command facts.

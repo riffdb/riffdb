@@ -97,6 +97,7 @@ struct BatchCore {
     reserved_provenance_ids: BTreeSet<ProvenanceId>,
     capsule_extensions: Vec<Vec<riffdb_storage_api::IndexEpochAdvanceV1>>,
     capsule_entity_transitions: Vec<Vec<CommittedEntityTransitionV1>>,
+    capsule_independent_mutations: Vec<Vec<riffdb_storage_api::AuthoritativeMutationV3>>,
     detached: Vec<DetachedRedbCandidate>,
     detached_index_generation_base: Option<BTreeMap<PartitionIndexTarget, IndexEpochPosition>>,
 }
@@ -134,6 +135,7 @@ impl BatchCore {
             reserved_provenance_ids: BTreeSet::new(),
             capsule_extensions: Vec::new(),
             capsule_entity_transitions: Vec::new(),
+            capsule_independent_mutations: Vec::new(),
             detached: Vec::new(),
             detached_index_generation_base: None,
         })
@@ -172,17 +174,20 @@ fn capsulate_command_rows(
     if audit_records.len() != command_links.len()
         || audit_records.len() != core.capsule_extensions.len()
         || audit_records.len() != core.capsule_entity_transitions.len()
+        || audit_records.len() != core.capsule_independent_mutations.len()
     {
         return Err(storage_error(StorageErrorKind::InvariantViolation));
     }
     let mut capsules = Vec::with_capacity(command_links.len());
-    for (((link, audit), index_generation_transitions), entity_transitions) in command_links
-        .into_iter()
-        .zip(audit_records)
-        .zip(core.capsule_extensions.drain(..))
-        .zip(core.capsule_entity_transitions.drain(..))
+    for ((((link, audit), index_generation_transitions), entity_transitions), mutations) in
+        command_links
+            .into_iter()
+            .zip(audit_records)
+            .zip(core.capsule_extensions.drain(..))
+            .zip(core.capsule_entity_transitions.drain(..))
+            .zip(core.capsule_independent_mutations.drain(..))
     {
-        let (started, terminal) = audit.into_parts();
+        let (started, terminal, predecessor_administration) = audit.into_parts();
         let base = link
             .into_capsule(started, terminal.clone())
             .map_err(invariant_value)?;
@@ -192,6 +197,21 @@ fn capsulate_command_rows(
                 index_generation_transitions,
                 entity_transitions,
             )
+            .map_err(invariant_value)?;
+        let prefix = riffdb_storage_api::CommandPrefixEvidenceV1::new(
+            riffdb_types::DualFrontier::new(
+                CommitSequence::new(capsule.commit_sequence().get() - 1),
+                predecessor_administration,
+            ),
+            riffdb_types::DualFrontier::new(
+                Some(capsule.commit_sequence()),
+                Some(terminal.administration_sequence()),
+            ),
+            mutations,
+        )
+        .map_err(crate::changelog_v3_write::value_error)?;
+        let capsule = capsule
+            .with_prefix_evidence(prefix)
             .map_err(invariant_value)?;
         capsules.push(capsule);
         terminals.push(terminal);
@@ -1919,6 +1939,13 @@ fn apply_record_set(
     records: &AtomicCommandRecordSet,
     encoded: riffdb_storage_api::EncodedCapsuleCommandRecordSetV1,
 ) -> Result<Vec<CommittedEntityTransitionV1>, StorageError> {
+    core.access.begin_command_prefix_capture(
+        records
+            .presequence_charge()
+            .encoded_upper_bound()
+            .classes()
+            .commit(),
+    )?;
     let BatchCore {
         access,
         entity_observations,
@@ -1946,6 +1973,7 @@ fn apply_record_set(
     apply_vector_evidence(access, records, vector_evidence)?;
     apply_index_entries(access, records, index_entries)?;
     apply_index_epochs(
+        access,
         records,
         index_epochs,
         index_generations,
@@ -1971,6 +1999,8 @@ fn apply_record_set(
             return Err(storage_error(StorageErrorKind::InvariantViolation));
         };
     }
+    let independent = access.finish_command_prefix_capture()?;
+    core.capsule_independent_mutations.push(independent);
     Ok(entity_transitions)
 }
 
@@ -2349,6 +2379,7 @@ fn apply_index_entries(
 }
 
 fn apply_index_epochs(
+    access: &RedbWriteAccess,
     records: &AtomicCommandRecordSet,
     encoded: Vec<riffdb_storage_api::CanonicalStoredEnvelopeV1>,
     generations: &mut BTreeMap<PartitionIndexTarget, IndexEpochPosition>,
@@ -2369,6 +2400,32 @@ fn apply_index_epochs(
             }
             _ => {}
         }
+        let key = encode_partition_index_key(advance.post_image().target());
+        let prior_bytes = match pending.get(advance.post_image().target()) {
+            Some(prior) => Some(prior.final_bytes.as_bytes().to_vec()),
+            None => access.read_command_value(JournalTable::IndexEpochs, &key)?,
+        };
+        let physical = match prior_bytes.as_deref() {
+            Some(before) => {
+                let row = decoded_value(decode_index_epoch_v1(before)?);
+                if row.target() != advance.post_image().target() {
+                    return Err(storage_error(StorageErrorKind::CorruptData));
+                }
+                IndexEpochPosition::Value(row.epoch())
+            }
+            None => IndexEpochPosition::BeforeFirst,
+        };
+        if physical != advance.prior() {
+            return Err(storage_error(StorageErrorKind::InvariantViolation));
+        }
+        let logical = match prior_bytes.as_deref() {
+            Some(before) => {
+                JournalMutation::replace(JournalTable::IndexEpochs, key, before, bytes.as_bytes())
+            }
+            None => JournalMutation::put(JournalTable::IndexEpochs, key, bytes.as_bytes()),
+        }
+        .map_err(journal_codec_error)?;
+        access.capture_logical_command_mutation(&logical)?;
         let initial = pending
             .get(advance.post_image().target())
             .map_or(advance.prior(), |prior| prior.initial);
