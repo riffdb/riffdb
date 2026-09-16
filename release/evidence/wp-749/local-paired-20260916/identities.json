@@ -1,0 +1,18 @@
+{
+  "control": {
+    "source_revision": "a7e2088bdd84375412d17a519eccfefaa11256db",
+    "root_lock_sha256": "42067e22a885ca75efc65fff7ba7db5208b49e5ce62d8d636d27082b56995e87",
+    "daemon_sha256": "9ab7d8504096d43a0ee705e74a83ba2477df70769e1a5d1aac2693adbd03ca2f"
+  },
+  "current": {
+    "source_revision": "6d2d00d6573499dce1b5fa4743d57abaad2630d8",
+    "root_lock_sha256": "42067e22a885ca75efc65fff7ba7db5208b49e5ce62d8d636d27082b56995e87",
+    "daemon_sha256": "0314093aaa4da3d8df1f6d829d9b48306c25ed8610d3565d0c4fa9d4721b40bf"
+  },
+  "harness": {
+    "source_revision": "6d2d00d6573499dce1b5fa4743d57abaad2630d8",
+    "source_tree": "58ecc5cde29bdbae3f4f4d77156b68b03519a6b8",
+    "nested_lock_sha256": "c1cd51760ec34e4e1731e465ed79f202799d36af2500df5af651a15433b0ae0b",
+    "runner_sha256": "3a16640969c9705e08538fd6c8ea8f9b34a3a2845f5d461be20c0fc2465abfd5"
+  }
+}

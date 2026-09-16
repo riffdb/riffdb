@@ -23081,6 +23081,16 @@ work_packages:
       or any observed collector failure, independently of diagnostic-ring retention.
       Default baseline behavior is unchanged. This is measurement infrastructure,
       not a completed comparison or a performance-freeze exception.
+    - Retain the fixed four-cell full-dataset local write-only c32 comparison
+      under release/evidence/wp-749/local-paired-20260916, with three 90-second
+      generations per cell, exact build identities and no performance-selected
+      retries. All correctness, host and within-cell stability checks passed.
+      Current versus historical throughput fell 4.1 percent and p95 rose 4.8
+      percent; p99 rose 80.0 percent. Enabling archive collection reduced
+      throughput 22.2 percent and increased p95 54.5 percent; confirmed archive
+      progress lagged substantially. Publish those costs without claiming
+      cross-cell parity, full catch-up, N1/E2 qualification or package closure.
+      The no-regression exit gate and follow-up investigation remain open.
   human_review_triggers: *id0178
 
 - id: WP-750

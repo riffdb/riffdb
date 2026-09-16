@@ -1,0 +1,372 @@
+using exact supplied riffdbd: /tmp/wp749-clean-measure-inputs/current-riffdbd
+using exact supplied app-baseline runner: /tmp/wp749-clean-measure-inputs/riffdb-app-baseline
+running app baseline (full)
+load phase: RiffDB only (PostgreSQL phase already finished)
+[riffdbd-stderr] riffdb-process-memory-baseline-v1
+[riffdbd-stderr] [riffdbd-diag] trigger=startup clean_close_fast=false decline=engine_initialized_at_open (full validation pass; cost scales with retained history)
+[riffdbd-stderr] riffdb-startup-stages-v1	mode=complete_validation	store_open=20556	evidence_begin=113	structural_drain=64	catalog_history=19	evidence_finish=16	port_activation=17902	current_views=16	consumer_recovery=2	outbox_recovery=6	graph_rest=10806	process_to_ready=86465	transient_index_rebuilds=1	population_table_walk=observed	columnar_cold_sources=0	columnar_activations=0	columnar_population_passes=0
+[riffdbd-stderr] riffdb-shutdown-progress-v1	stage=service_jobs_idle	phase=begin	elapsed_us=0
+[riffdbd-stderr] riffdb-shutdown-progress-v1	stage=service_jobs_idle	phase=complete	elapsed_us=0
+[riffdbd-stderr] riffdb-shutdown-progress-v1	stage=exact_text_worker	phase=begin	elapsed_us=0
+[riffdbd-stderr] riffdb-shutdown-progress-v1	stage=exact_text_worker	phase=complete	elapsed_us=22
+[riffdbd-stderr] riffdb-shutdown-progress-v1	stage=columnar_worker	phase=begin	elapsed_us=0
+[riffdbd-stderr] riffdb-shutdown-progress-v1	stage=columnar_worker	phase=complete	elapsed_us=20
+[riffdbd-stderr] riffdb-shutdown-progress-v1	stage=projection_worker	phase=begin	elapsed_us=0
+[riffdbd-stderr] riffdb-shutdown-progress-v1	stage=projection_worker	phase=complete	elapsed_us=19
+[riffdbd-stderr] riffdb-shutdown-progress-v1	stage=notifications	phase=begin	elapsed_us=0
+[riffdbd-stderr] riffdb-shutdown-progress-v1	stage=notifications	phase=complete	elapsed_us=0
+[riffdbd-stderr] riffdb-shutdown-progress-v1	stage=coordinator	phase=begin	elapsed_us=0
+[riffdbd-stderr] riffdb-shutdown-progress-v1	stage=coordinator	phase=complete	elapsed_us=226
+[riffdbd-stderr] riffdb-shutdown-progress-v1	stage=blocking_ports	phase=begin	elapsed_us=0
+[riffdbd-stderr] riffdb-shutdown-progress-v1	stage=blocking_ports	phase=complete	elapsed_us=105
+[riffdbd-stderr] riffdb-shutdown-progress-v1	stage=validated_prefix_checkpoint_write	phase=begin	elapsed_us=0
+[riffdbd-stderr] riffdb-shutdown-progress-v1	stage=validated_prefix_checkpoint_write	phase=complete	elapsed_us=19971
+[riffdbd-stderr] riffdb-shutdown-progress-v1	stage=graph_storage_release	phase=begin	elapsed_us=0
+[riffdbd-stderr] riffdb-shutdown-progress-v1	stage=graph_storage_release	phase=complete	elapsed_us=4653
+riffdb-write-completion-groups-v1	0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0
+[riffdbd-stderr] riffdb-shutdown-stage-labels-v1	service_jobs_idle,exact_text_worker,columnar_worker,projection_worker,notifications,coordinator,blocking_ports,validated_prefix_checkpoint_write
+riffdb-dispatch-reasons-v1	0,0,2,0
+[riffdbd-stderr] riffdb-graceful-checkpoint-close-v1	left_stale	clean_committed	14090,13,5861
+[riffdbd-stderr] riffdb-shutdown-release-v1	graph_storage_release=4653	post_graph_release=0	columnar_activations=0	columnar_population_passes=0
+riffdb-shutdown-stages-v1	20422	0,22,20,19,0,226,105,19971
+riffdb-read-stages-v1	transport_adapt:0:0:0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0;authn:0:0:0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0;admission_context:0:0:0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0;spawn_dispatch:0:0:0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0;plan_lookup:0:0:0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0;param_materialize:0:0:0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0;authorize_begin:0:0:0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0;authorize_pre:0:0:0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0;execute:0:0:0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0;authorize_post:0:0:0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0;response_build:0:0:0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0;encode_convert:0:0:0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0;audit_finish:0:0:0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0;service_await:0:0:0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0;server_handler:0:0:0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0
+riffdb-write-service-stages-v1	transport_adapt:0:0:0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0;service_prepare:0:0:0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0;coordinator_await:0:0:0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0;service_finish:0:0:0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0;encode_convert:0:0:0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0
+riffdb-command-stages-v1	admission:0:0:0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0;compatibility:0:0:0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0;evaluation:0:0:0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0;validation_encoding_staging:0:0:0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0;publication:0:0:0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0
+riffdb-writer-evidence-v1	busy_us=61535;idle_us=7762;dispatch_selected=2;dispatch_deferred=0;dispatch_deferred_max=0;compatibility_selected=0;compatibility_groups=0;compatibility_conflict_key_splits=0;compatibility_exact_access_splits=0;compatibility_commutative_shared_groups=0;queue_delay_estimate_us=9754;prepared_epoch_rollbacks=0;prepared_epoch_proof_mismatches=0;frontier_equivalence_checks=0;frontier_equivalence_failures=0	commit_us:0:0:0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0;flush_us:0:0:0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0;batch_size:0:0:0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0;storage_queue_us:0:0:0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0;group_residence_us:2:2:0,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2;final_apply_us:0:0:0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0;journal_submit_us:0:0:0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0;preparation_pool_depth:0:0:0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0;reorder_buffer_occupancy:0:0:0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0
+riffdb-completion-lane-v1	counts=2,2,3,0;elapsed_us=0,3019,0,0;max_depth=1;max_reorder=0
+riffdb-writer-frame-census-v1	0,0,0,0,0,0
+riffdb-writer-flush-census-v1	0,0,0,0,0,0,0
+riffdb-writer-journal-stages-v1	0,0,0,0,0,0,0,0,0,0
+riffdb-writer-publication-stages-v1	0,0,0,0,0,0,0,0,0
+[riffdbd-stderr] riffdb-shutdown-release-v1	graph_storage_release=4653	post_graph_release=344	columnar_activations=0	columnar_population_passes=0
+[riffdbd-stderr] riffdb-process-memory-baseline-v1
+[riffdbd-stderr] [riffdbd-diag] trigger=startup clean_close_fast=true
+[riffdbd-stderr] riffdb-startup-stages-v1	mode=clean_certificate	store_open=2172	evidence_begin=302	structural_drain=289	catalog_history=4066	evidence_finish=1272	port_activation=0	current_views=103	consumer_recovery=6	outbox_recovery=0	graph_rest=9921	process_to_ready=25253	transient_index_rebuilds=0	population_table_walk=none	columnar_cold_sources=1	columnar_activations=0	columnar_population_passes=0
+riffdb-seed-start	total=19220	concurrency=128
+riffdb-seed-progress	phase=comment	completed=11933/19220	overall_ms=2125	rate_ops_s=5615.5
+riffdb-seed-progress	phase=ticket_label	completed=19220/19220	overall_ms=2916	rate_ops_s=6591.2
+riffdb-seed-progress	phase=done	completed=19220/19220	overall_ms=2916	rate_ops_s=6591.2
+[riffdbd-stderr] riffdb-shutdown-progress-v1	stage=service_jobs_idle	phase=begin	elapsed_us=0
+[riffdbd-stderr] riffdb-shutdown-progress-v1	stage=service_jobs_idle	phase=complete	elapsed_us=0
+[riffdbd-stderr] riffdb-shutdown-progress-v1	stage=exact_text_worker	phase=begin	elapsed_us=0
+[riffdbd-stderr] riffdb-shutdown-progress-v1	stage=exact_text_worker	phase=complete	elapsed_us=25
+[riffdbd-stderr] riffdb-shutdown-progress-v1	stage=columnar_worker	phase=begin	elapsed_us=0
+[riffdbd-stderr] riffdb-shutdown-progress-v1	stage=columnar_worker	phase=complete	elapsed_us=234
+[riffdbd-stderr] riffdb-shutdown-progress-v1	stage=projection_worker	phase=begin	elapsed_us=0
+[riffdbd-stderr] riffdb-shutdown-progress-v1	stage=projection_worker	phase=complete	elapsed_us=107
+[riffdbd-stderr] riffdb-shutdown-progress-v1	stage=notifications	phase=begin	elapsed_us=0
+[riffdbd-stderr] riffdb-shutdown-progress-v1	stage=notifications	phase=complete	elapsed_us=0
+[riffdbd-stderr] riffdb-shutdown-progress-v1	stage=coordinator	phase=begin	elapsed_us=0
+[riffdbd-stderr] riffdb-shutdown-progress-v1	stage=coordinator	phase=complete	elapsed_us=485
+[riffdbd-stderr] riffdb-shutdown-progress-v1	stage=blocking_ports	phase=begin	elapsed_us=0
+[riffdbd-stderr] riffdb-shutdown-progress-v1	stage=blocking_ports	phase=complete	elapsed_us=136
+[riffdbd-stderr] riffdb-shutdown-progress-v1	stage=validated_prefix_checkpoint_write	phase=begin	elapsed_us=0
+[riffdbd-stderr] riffdb-shutdown-progress-v1	stage=validated_prefix_checkpoint_write	phase=complete	elapsed_us=184225
+[riffdbd-stderr] riffdb-shutdown-progress-v1	stage=graph_storage_release	phase=begin	elapsed_us=0
+[riffdbd-stderr] riffdb-shutdown-progress-v1	stage=graph_storage_release	phase=complete	elapsed_us=73469
+[riffdbd-stderr] riffdb-shutdown-stage-labels-v1	service_jobs_idle,exact_text_worker,columnar_worker,projection_worker,notifications,coordinator,blocking_ports,validated_prefix_checkpoint_write
+[riffdbd-stderr] riffdb-graceful-checkpoint-close-v1	left_stale	clean_committed	166076,7,18125
+[riffdbd-stderr] riffdb-shutdown-release-v1	graph_storage_release=73469	post_graph_release=0	columnar_activations=0	columnar_population_passes=0
+riffdb-write-completion-groups-v1	0,0,0,0,0,0,0,0,0,1,0,1,0,0,0,20,1,0,1,0,0,1,1,1,0,0,1,0,0,0,1,15,0,1,1,0,0,1,0,0,0,0,1,0,1,0,0,101,2,3,1,2,0,0,0,0,1,1,0,0,0,0,1,23,1,0,1,0,0,1,1,0,0,0,0,0,1,0,2,95,0,0,1,0,1,0,0,0,0,1,0,0,1,1,0,11,1,0,0,0,1,0,0,0,1,1,0,0,1,0,0,8,0,0,0,1,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0
+riffdb-dispatch-reasons-v1	0,0,320,0
+riffdb-shutdown-stages-v1	185273	0,25,234,107,0,485,136,184225
+riffdb-read-stages-v1	transport_adapt:0:0:0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0;authn:0:0:0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0;admission_context:0:0:0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0;spawn_dispatch:0:0:0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0;plan_lookup:0:0:0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0;param_materialize:0:0:0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0;authorize_begin:0:0:0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0;authorize_pre:0:0:0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0;execute:0:0:0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0;authorize_post:0:0:0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0;response_build:0:0:0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0;encode_convert:0:0:0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0;audit_finish:0:0:0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0;service_await:0:0:0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0;server_handler:0:0:0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0
+riffdb-write-service-stages-v1	transport_adapt:0:0:0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0;service_prepare:19220:1587823:0,0,0,0,0,1,772,9885,17096,18883,19164,19220,19220,19220,19220,19220;coordinator_await:19220:330988168:0,0,0,0,0,0,0,0,0,0,0,818,19220,19220,19220,19220;service_finish:19220:110091:1,693,4079,11399,15675,18426,19155,19206,19210,19218,19220,19220,19220,19220,19220,19220;encode_convert:0:0:0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0
+riffdb-command-stages-v1	admission:316:111844:0,0,0,0,0,0,0,4,14,75,316,316,316,316,316,316;compatibility:316:16686:0,0,0,0,1,14,57,239,313,316,316,316,316,316,316,316;evaluation:316:171477:0,0,0,0,0,0,0,0,0,16,313,316,316,316,316,316;validation_encoding_staging:316:824825:0,0,0,0,0,0,0,0,0,0,31,306,316,316,316,316;publication:316:7841:27,217,292,314,315,315,315,315,315,315,315,316,316,316,316,316
+riffdb-writer-evidence-v1	busy_us=2506866;idle_us=251327;dispatch_selected=19224;dispatch_deferred=0;dispatch_deferred_max=0;compatibility_selected=19220;compatibility_groups=316;compatibility_conflict_key_splits=0;compatibility_exact_access_splits=0;compatibility_commutative_shared_groups=1;queue_delay_estimate_us=14891;prepared_epoch_rollbacks=0;prepared_epoch_proof_mismatches=0;frontier_equivalence_checks=316;frontier_equivalence_failures=0	commit_us:316:2021729:0,0,0,0,0,0,0,0,0,0,0,298,316,316,316,316;flush_us:316:2021729:0,0,0,0,0,0,0,0,0,0,0,298,316,316,316,316;batch_size:316:19220:0,0,0,0,0,22,44,184,316,316,316,316,316,316,316,316;storage_queue_us:19220:111438065:0,0,0,0,0,0,0,20,173,756,1420,17588,19220,19220,19220,19220;group_residence_us:320:1957541:1,3,3,3,4,4,4,4,4,27,37,280,320,320,320,320;final_apply_us:316:409395:0,0,0,0,0,0,0,0,0,1,119,316,316,316,316,316;journal_submit_us:316:1290623:0,0,0,0,0,0,0,0,0,0,2,312,316,316,316,316;preparation_pool_depth:958:3812:479,479,479,479,958,958,958,958,958,958,958,958,958,958,958,958;reorder_buffer_occupancy:3812:34995:1735,1773,1862,1979,2401,3003,3563,3798,3812,3812,3812,3812,3812,3812,3812,3812
+riffdb-completion-lane-v1	counts=320,320,156,0;elapsed_us=0,770833,319378,0;max_depth=3;max_reorder=0
+riffdb-writer-frame-census-v1	316,19220,91532462,91532462,59865548,59865548
+riffdb-writer-flush-census-v1	316,316,19220,91532462,1,473768,7008
+riffdb-writer-journal-stages-v1	316,3055,201,316,45260,429,15779,168,412404,6782
+riffdb-writer-publication-stages-v1	316,623505,41802,0,0,208537,40796,164836,40787
+[riffdbd-stderr] riffdb-shutdown-release-v1	graph_storage_release=73469	post_graph_release=1513	columnar_activations=0	columnar_population_passes=0
+[riffdbd-stderr] riffdb-process-memory-baseline-v1
+[riffdbd-stderr] [riffdbd-diag] trigger=startup clean_close_fast=true
+[riffdbd-stderr] riffdb-startup-stages-v1	mode=clean_certificate	store_open=218942	evidence_begin=1879	structural_drain=211	catalog_history=3353	evidence_finish=4223	port_activation=0	current_views=76	consumer_recovery=4	outbox_recovery=0	graph_rest=7971	process_to_ready=245752	transient_index_rebuilds=0	population_table_walk=none	columnar_cold_sources=1	columnar_activations=0	columnar_population_passes=0
+
+== load riffdb_public_grpc profile=write_only clients=32 window=90.0s tenant=single_organization count=1 hot=0pct ==
+throughput=3670 ops/s  logical_ops=330324  success=330324  conflict=0  idempotency_mismatch=0  unavailable=0  overloaded=0  replayed=0  error=0
+latency p50=8.389ms p95=11.534ms p99=37.749ms max=55.964ms
+  create_comment: n=231268 p50=8.389ms p99=37.749ms ok=231268 conflict=0 idempotency_mismatch=0 unavailable=0 replay=0 err=0
+  close_ticket_with_comment: n=65869 p50=8.913ms p99=23.069ms ok=65869 conflict=0 idempotency_mismatch=0 unavailable=0 replay=0 err=0
+  open_ticket_with_labels: n=33187 p50=8.913ms p99=39.846ms ok=33187 conflict=0 idempotency_mismatch=0 unavailable=0 replay=0 err=0
+[riffdbd-stderr] riffdb-shutdown-progress-v1	stage=service_jobs_idle	phase=begin	elapsed_us=0
+[riffdbd-stderr] riffdb-shutdown-progress-v1	stage=service_jobs_idle	phase=complete	elapsed_us=1
+[riffdbd-stderr] riffdb-shutdown-progress-v1	stage=exact_text_worker	phase=begin	elapsed_us=0
+[riffdbd-stderr] riffdb-shutdown-progress-v1	stage=exact_text_worker	phase=complete	elapsed_us=30
+[riffdbd-stderr] riffdb-shutdown-progress-v1	stage=columnar_worker	phase=begin	elapsed_us=0
+[riffdbd-stderr] riffdb-shutdown-progress-v1	stage=columnar_worker	phase=complete	elapsed_us=953
+[riffdbd-stderr] riffdb-shutdown-progress-v1	stage=projection_worker	phase=begin	elapsed_us=0
+[riffdbd-stderr] riffdb-shutdown-progress-v1	stage=projection_worker	phase=complete	elapsed_us=93
+[riffdbd-stderr] riffdb-shutdown-progress-v1	stage=notifications	phase=begin	elapsed_us=0
+[riffdbd-stderr] riffdb-shutdown-progress-v1	stage=notifications	phase=complete	elapsed_us=0
+[riffdbd-stderr] riffdb-shutdown-progress-v1	stage=coordinator	phase=begin	elapsed_us=0
+[riffdbd-stderr] riffdb-shutdown-progress-v1	stage=coordinator	phase=complete	elapsed_us=800
+[riffdbd-stderr] riffdb-shutdown-progress-v1	stage=blocking_ports	phase=begin	elapsed_us=0
+[riffdbd-stderr] riffdb-shutdown-progress-v1	stage=blocking_ports	phase=complete	elapsed_us=118
+[riffdbd-stderr] riffdb-shutdown-progress-v1	stage=validated_prefix_checkpoint_write	phase=begin	elapsed_us=0
+[riffdbd-stderr] riffdb-shutdown-progress-v1	stage=validated_prefix_checkpoint_write	phase=complete	elapsed_us=504311
+[riffdbd-stderr] riffdb-shutdown-progress-v1	stage=graph_storage_release	phase=begin	elapsed_us=0
+[riffdbd-stderr] riffdb-shutdown-progress-v1	stage=graph_storage_release	phase=complete	elapsed_us=2041794
+riffdb-write-completion-groups-v1	14,17,14,14,15,41,40,63,204,477,1250,2113,3143,2184,1936,1434,1934,2164,3089,2071,1203,441,176,43,35,24,5,4,9,7,11,4,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0
+[riffdbd-stderr] riffdb-shutdown-stage-labels-v1	service_jobs_idle,exact_text_worker,columnar_worker,projection_worker,notifications,coordinator,blocking_ports,validated_prefix_checkpoint_write
+[riffdbd-stderr] riffdb-graceful-checkpoint-close-v1	left_stale	clean_committed	486733,8,17543
+riffdb-dispatch-reasons-v1	0,0,24179,0
+[riffdbd-stderr] riffdb-shutdown-release-v1	graph_storage_release=2041794	post_graph_release=0	columnar_activations=0	columnar_population_passes=0
+riffdb-shutdown-stages-v1	506365	1,30,953,93,0,800,118,504311
+riffdb-read-stages-v1	transport_adapt:96:220:0,53,80,91,94,94,96,96,96,96,96,96,96,96,96,96;authn:96:351:0,62,89,93,94,94,94,94,96,96,96,96,96,96,96,96;admission_context:96:18:85,94,94,95,96,96,96,96,96,96,96,96,96,96,96,96;spawn_dispatch:96:486:0,25,56,69,78,90,95,96,96,96,96,96,96,96,96,96;plan_lookup:96:18075:83,91,92,92,92,92,92,92,92,92,92,96,96,96,96,96;param_materialize:96:284:0,5,56,92,94,95,96,96,96,96,96,96,96,96,96,96;authorize_begin:96:406:0,1,37,70,91,93,95,96,96,96,96,96,96,96,96,96;authorize_pre:96:143:11,72,84,91,95,96,96,96,96,96,96,96,96,96,96,96;execute:96:615:0,1,15,44,77,93,94,96,96,96,96,96,96,96,96,96;authorize_post:96:37:65,92,94,96,96,96,96,96,96,96,96,96,96,96,96,96;response_build:96:11:90,93,95,96,96,96,96,96,96,96,96,96,96,96,96,96;encode_convert:96:69:60,75,89,94,96,96,96,96,96,96,96,96,96,96,96,96;audit_finish:96:0:96,96,96,96,96,96,96,96,96,96,96,96,96,96,96,96;service_await:96:21671:0,0,0,0,0,10,66,90,91,92,92,96,96,96,96,96;server_handler:96:22566:0,0,0,0,0,1,53,87,91,92,92,96,96,96,96,96
+riffdb-write-service-stages-v1	transport_adapt:385054:2152198:0,802,22367,137828,351295,381469,384823,385045,385054,385054,385054,385054,385054,385054,385054,385054;service_prepare:385054:41782676:0,0,0,0,0,0,301,49721,291244,380159,384819,385054,385054,385054,385054,385054;coordinator_await:385054:3202809413:0,0,0,0,0,0,0,0,0,0,0,347429,385022,385054,385054,385054;service_finish:385054:3249310:0,357,9185,82277,266672,351331,380695,384672,384988,385037,385052,385054,385054,385054,385054,385054;encode_convert:385054:1123675:10483,121935,239029,331560,367313,380722,384614,385013,385047,385051,385054,385054,385054,385054,385054,385054
+riffdb-command-stages-v1	admission:24179:3826868:0,0,0,0,0,6,33,249,10550,21667,24178,24179,24179,24179,24179,24179;compatibility:24179:424805:0,6,24,57,1034,13592,22798,24139,24179,24179,24179,24179,24179,24179,24179,24179;evaluation:24179:12067965:0,0,0,0,0,0,0,1,10,1641,24092,24179,24179,24179,24179,24179;validation_encoding_staging:24179:33964741:0,0,0,0,0,0,0,0,11,35,6304,23936,24179,24179,24179,24179;publication:24179:714381:14423,23291,23966,24162,24176,24178,24178,24178,24178,24178,24178,24178,24178,24179,24179,24179
+riffdb-writer-evidence-v1	busy_us=88860426;idle_us=3920707;dispatch_selected=385054;dispatch_deferred=0;dispatch_deferred_max=0;compatibility_selected=385054;compatibility_groups=24179;compatibility_conflict_key_splits=36216;compatibility_exact_access_splits=0;compatibility_commutative_shared_groups=38;queue_delay_estimate_us=4395;prepared_epoch_rollbacks=0;prepared_epoch_proof_mismatches=0;frontier_equivalence_checks=24179;frontier_equivalence_failures=0	commit_us:24179:79472216:0,0,0,0,0,0,0,0,0,0,0,23922,24179,24179,24179,24179;flush_us:24179:79472216:0,0,0,0,0,0,0,0,0,0,0,23922,24179,24179,24179,24179;batch_size:24179:385054:0,14,31,59,218,12959,24179,24179,24179,24179,24179,24179,24179,24179,24179,24179;storage_queue_us:385054:992786760:0,0,0,0,0,0,107,1222,4930,14331,86609,381057,385054,385054,385054,385054;group_residence_us:24179:66118994:0,0,0,0,0,0,0,0,0,858,4659,23915,24179,24179,24179,24179;final_apply_us:24179:12044463:0,0,0,0,0,0,0,3,20,395,23910,24179,24179,24179,24179,24179;journal_submit_us:24179:36346428:0,0,0,0,0,0,0,0,0,3,2578,24060,24179,24179,24179,24179;preparation_pool_depth:11802:38514:5901,5920,5949,6001,11802,11802,11802,11802,11802,11802,11802,11802,11802,11802,11802,11802;reorder_buffer_occupancy:38514:72087:17963,21337,27501,33314,37525,38510,38514,38514,38514,38514,38514,38514,38514,38514,38514,38514
+riffdb-completion-lane-v1	counts=24179,24179,8666,0;elapsed_us=0,44722032,13621706,0;max_depth=4;max_reorder=0
+riffdb-writer-frame-census-v1	24179,385054,2124699605,2124699605,1355696014,1355696014
+riffdb-writer-flush-census-v1	24161,24179,385054,2124699605,2,31075675,15814
+riffdb-writer-journal-stages-v1	24179,379615,8735,24161,988276,161,531986,82,29531463,15745
+riffdb-writer-publication-stages-v1	24179,39121278,29646,0,0,9888164,28686,8058321,28675
+[riffdbd-stderr] riffdb-shutdown-release-v1	graph_storage_release=2041794	post_graph_release=9529	columnar_activations=0	columnar_population_passes=0
+[riffdbd-stderr] riffdb-process-memory-baseline-v1
+[riffdbd-stderr] [riffdbd-diag] trigger=startup clean_close_fast=false decline=engine_initialized_at_open (full validation pass; cost scales with retained history)
+[riffdbd-stderr] riffdb-startup-stages-v1	mode=complete_validation	store_open=20955	evidence_begin=117	structural_drain=62	catalog_history=20	evidence_finish=15	port_activation=17797	current_views=21	consumer_recovery=3	outbox_recovery=7	graph_rest=10757	process_to_ready=87716	transient_index_rebuilds=1	population_table_walk=observed	columnar_cold_sources=0	columnar_activations=0	columnar_population_passes=0
+[riffdbd-stderr] riffdb-shutdown-progress-v1	stage=service_jobs_idle	phase=begin	elapsed_us=0
+[riffdbd-stderr] riffdb-shutdown-progress-v1	stage=service_jobs_idle	phase=complete	elapsed_us=0
+[riffdbd-stderr] riffdb-shutdown-progress-v1	stage=exact_text_worker	phase=begin	elapsed_us=0
+[riffdbd-stderr] riffdb-shutdown-progress-v1	stage=exact_text_worker	phase=complete	elapsed_us=31
+[riffdbd-stderr] riffdb-shutdown-progress-v1	stage=columnar_worker	phase=begin	elapsed_us=0
+[riffdbd-stderr] riffdb-shutdown-progress-v1	stage=columnar_worker	phase=complete	elapsed_us=25
+[riffdbd-stderr] riffdb-shutdown-progress-v1	stage=projection_worker	phase=begin	elapsed_us=0
+[riffdbd-stderr] riffdb-shutdown-progress-v1	stage=projection_worker	phase=complete	elapsed_us=91
+[riffdbd-stderr] riffdb-shutdown-progress-v1	stage=notifications	phase=begin	elapsed_us=0
+[riffdbd-stderr] riffdb-shutdown-progress-v1	stage=notifications	phase=complete	elapsed_us=0
+[riffdbd-stderr] riffdb-shutdown-progress-v1	stage=coordinator	phase=begin	elapsed_us=0
+[riffdbd-stderr] riffdb-shutdown-progress-v1	stage=coordinator	phase=complete	elapsed_us=253
+[riffdbd-stderr] riffdb-shutdown-progress-v1	stage=blocking_ports	phase=begin	elapsed_us=0
+[riffdbd-stderr] riffdb-shutdown-progress-v1	stage=blocking_ports	phase=complete	elapsed_us=92
+[riffdbd-stderr] riffdb-shutdown-progress-v1	stage=validated_prefix_checkpoint_write	phase=begin	elapsed_us=0
+[riffdbd-stderr] riffdb-shutdown-progress-v1	stage=validated_prefix_checkpoint_write	phase=complete	elapsed_us=19767
+[riffdbd-stderr] riffdb-shutdown-progress-v1	stage=graph_storage_release	phase=begin	elapsed_us=0
+[riffdbd-stderr] riffdb-shutdown-progress-v1	stage=graph_storage_release	phase=complete	elapsed_us=3891
+riffdb-write-completion-groups-v1	0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0
+[riffdbd-stderr] riffdb-shutdown-stage-labels-v1	service_jobs_idle,exact_text_worker,columnar_worker,projection_worker,notifications,coordinator,blocking_ports,validated_prefix_checkpoint_write
+riffdb-dispatch-reasons-v1	0,0,2,0
+[riffdbd-stderr] riffdb-graceful-checkpoint-close-v1	left_stale	clean_committed	13991,13,5755
+riffdb-shutdown-stages-v1	20315	0,31,25,91,0,253,92,19767
+[riffdbd-stderr] riffdb-shutdown-release-v1	graph_storage_release=3891	post_graph_release=0	columnar_activations=0	columnar_population_passes=0
+riffdb-read-stages-v1	transport_adapt:0:0:0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0;authn:0:0:0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0;admission_context:0:0:0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0;spawn_dispatch:0:0:0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0;plan_lookup:0:0:0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0;param_materialize:0:0:0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0;authorize_begin:0:0:0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0;authorize_pre:0:0:0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0;execute:0:0:0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0;authorize_post:0:0:0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0;response_build:0:0:0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0;encode_convert:0:0:0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0;audit_finish:0:0:0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0;service_await:0:0:0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0;server_handler:0:0:0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0
+riffdb-write-service-stages-v1	transport_adapt:0:0:0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0;service_prepare:0:0:0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0;coordinator_await:0:0:0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0;service_finish:0:0:0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0;encode_convert:0:0:0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0
+riffdb-command-stages-v1	admission:0:0:0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0;compatibility:0:0:0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0;evaluation:0:0:0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0;validation_encoding_staging:0:0:0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0;publication:0:0:0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0
+riffdb-writer-evidence-v1	busy_us=90263;idle_us=7027;dispatch_selected=2;dispatch_deferred=0;dispatch_deferred_max=0;compatibility_selected=0;compatibility_groups=0;compatibility_conflict_key_splits=0;compatibility_exact_access_splits=0;compatibility_commutative_shared_groups=0;queue_delay_estimate_us=13383;prepared_epoch_rollbacks=0;prepared_epoch_proof_mismatches=0;frontier_equivalence_checks=0;frontier_equivalence_failures=0	commit_us:0:0:0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0;flush_us:0:0:0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0;batch_size:0:0:0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0;storage_queue_us:0:0:0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0;group_residence_us:2:1:1,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2;final_apply_us:0:0:0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0;journal_submit_us:0:0:0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0;preparation_pool_depth:0:0:0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0;reorder_buffer_occupancy:0:0:0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0
+riffdb-completion-lane-v1	counts=2,2,3,0;elapsed_us=0,2975,0,0;max_depth=1;max_reorder=0
+riffdb-writer-frame-census-v1	0,0,0,0,0,0
+riffdb-writer-flush-census-v1	0,0,0,0,0,0,0
+riffdb-writer-journal-stages-v1	0,0,0,0,0,0,0,0,0,0
+riffdb-writer-publication-stages-v1	0,0,0,0,0,0,0,0,0
+[riffdbd-stderr] riffdb-shutdown-release-v1	graph_storage_release=3891	post_graph_release=198	columnar_activations=0	columnar_population_passes=0
+[riffdbd-stderr] riffdb-process-memory-baseline-v1
+[riffdbd-stderr] [riffdbd-diag] trigger=startup clean_close_fast=true
+[riffdbd-stderr] riffdb-startup-stages-v1	mode=clean_certificate	store_open=3613	evidence_begin=307	structural_drain=271	catalog_history=3627	evidence_finish=1395	port_activation=0	current_views=97	consumer_recovery=3	outbox_recovery=0	graph_rest=10226	process_to_ready=26760	transient_index_rebuilds=0	population_table_walk=none	columnar_cold_sources=1	columnar_activations=0	columnar_population_passes=0
+riffdb-seed-start	total=19220	concurrency=128
+riffdb-seed-progress	phase=comment	completed=11933/19220	overall_ms=2176	rate_ops_s=5483.9
+riffdb-seed-progress	phase=ticket_label	completed=19220/19220	overall_ms=2967	rate_ops_s=6477.9
+riffdb-seed-progress	phase=done	completed=19220/19220	overall_ms=2967	rate_ops_s=6477.9
+[riffdbd-stderr] riffdb-shutdown-progress-v1	stage=service_jobs_idle	phase=begin	elapsed_us=0
+[riffdbd-stderr] riffdb-shutdown-progress-v1	stage=service_jobs_idle	phase=complete	elapsed_us=0
+[riffdbd-stderr] riffdb-shutdown-progress-v1	stage=exact_text_worker	phase=begin	elapsed_us=0
+[riffdbd-stderr] riffdb-shutdown-progress-v1	stage=exact_text_worker	phase=complete	elapsed_us=30
+[riffdbd-stderr] riffdb-shutdown-progress-v1	stage=columnar_worker	phase=begin	elapsed_us=0
+[riffdbd-stderr] riffdb-shutdown-progress-v1	stage=columnar_worker	phase=complete	elapsed_us=72
+[riffdbd-stderr] riffdb-shutdown-progress-v1	stage=projection_worker	phase=begin	elapsed_us=0
+[riffdbd-stderr] riffdb-shutdown-progress-v1	stage=projection_worker	phase=complete	elapsed_us=105
+[riffdbd-stderr] riffdb-shutdown-progress-v1	stage=notifications	phase=begin	elapsed_us=0
+[riffdbd-stderr] riffdb-shutdown-progress-v1	stage=notifications	phase=complete	elapsed_us=0
+[riffdbd-stderr] riffdb-shutdown-progress-v1	stage=coordinator	phase=begin	elapsed_us=0
+[riffdbd-stderr] riffdb-shutdown-progress-v1	stage=coordinator	phase=complete	elapsed_us=523
+[riffdbd-stderr] riffdb-shutdown-progress-v1	stage=blocking_ports	phase=begin	elapsed_us=0
+[riffdbd-stderr] riffdb-shutdown-progress-v1	stage=blocking_ports	phase=complete	elapsed_us=105
+[riffdbd-stderr] riffdb-shutdown-progress-v1	stage=validated_prefix_checkpoint_write	phase=begin	elapsed_us=0
+[riffdbd-stderr] riffdb-shutdown-progress-v1	stage=validated_prefix_checkpoint_write	phase=complete	elapsed_us=193988
+[riffdbd-stderr] riffdb-shutdown-progress-v1	stage=graph_storage_release	phase=begin	elapsed_us=0
+[riffdbd-stderr] riffdb-shutdown-progress-v1	stage=graph_storage_release	phase=complete	elapsed_us=75040
+[riffdbd-stderr] riffdb-shutdown-stage-labels-v1	service_jobs_idle,exact_text_worker,columnar_worker,projection_worker,notifications,coordinator,blocking_ports,validated_prefix_checkpoint_write
+[riffdbd-stderr] riffdb-graceful-checkpoint-close-v1	left_stale	clean_committed	174182,8,19788
+[riffdbd-stderr] riffdb-shutdown-release-v1	graph_storage_release=75040	post_graph_release=0	columnar_activations=0	columnar_population_passes=0
+riffdb-write-completion-groups-v1	0,0,0,1,0,0,0,0,0,1,0,0,0,0,0,29,0,1,0,1,0,0,1,0,0,1,1,1,0,1,1,59,1,1,0,0,0,1,0,1,0,1,2,0,0,0,1,68,0,1,0,2,0,0,0,0,1,0,0,0,0,1,0,8,0,1,0,1,0,0,1,0,0,0,0,0,0,0,0,62,1,0,0,0,2,1,0,0,0,1,0,0,0,1,1,44,1,1,0,1,1,1,0,0,1,0,0,1,0,1,0,13,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0
+riffdb-dispatch-reasons-v1	0,0,328,0
+riffdb-shutdown-stages-v1	194887	0,30,72,105,0,523,105,193988
+riffdb-read-stages-v1	transport_adapt:0:0:0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0;authn:0:0:0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0;admission_context:0:0:0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0;spawn_dispatch:0:0:0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0;plan_lookup:0:0:0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0;param_materialize:0:0:0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0;authorize_begin:0:0:0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0;authorize_pre:0:0:0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0;execute:0:0:0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0;authorize_post:0:0:0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0;response_build:0:0:0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0;encode_convert:0:0:0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0;audit_finish:0:0:0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0;service_await:0:0:0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0;server_handler:0:0:0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0
+riffdb-write-service-stages-v1	transport_adapt:0:0:0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0;service_prepare:19220:1778233:0,0,0,0,0,2,800,8594,16415,18570,19195,19220,19220,19220,19220,19220;coordinator_await:19220:336069797:0,0,0,0,0,0,0,0,0,0,0,1498,19220,19220,19220,19220;service_finish:19220:102173:1,1083,4896,11853,15987,18525,19168,19217,19220,19220,19220,19220,19220,19220,19220,19220;encode_convert:0:0:0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0
+riffdb-command-stages-v1	admission:324:114039:0,0,0,0,0,0,1,5,25,98,324,324,324,324,324,324;compatibility:324:17193:0,0,0,0,2,22,90,220,318,324,324,324,324,324,324,324;evaluation:324:172606:0,0,0,0,0,0,0,0,0,30,314,324,324,324,324,324;validation_encoding_staging:324:845036:0,0,0,0,0,0,0,0,0,2,44,314,324,324,324,324;publication:324:8760:72,283,312,323,323,323,323,323,323,323,323,324,324,324,324,324
+riffdb-writer-evidence-v1	busy_us=2575028;idle_us=242547;dispatch_selected=19224;dispatch_deferred=0;dispatch_deferred_max=0;compatibility_selected=19220;compatibility_groups=324;compatibility_conflict_key_splits=0;compatibility_exact_access_splits=0;compatibility_commutative_shared_groups=0;queue_delay_estimate_us=15635;prepared_epoch_rollbacks=0;prepared_epoch_proof_mismatches=0;frontier_equivalence_checks=324;frontier_equivalence_failures=0	commit_us:324:2093250:0,0,0,0,0,0,0,0,0,0,0,294,324,324,324,324;flush_us:324:2093250:0,0,0,0,0,0,0,0,0,0,0,294,324,324,324,324;batch_size:324:19220:0,0,0,1,1,31,98,187,324,324,324,324,324,324,324,324;storage_queue_us:19220:106717168:0,0,0,0,0,0,0,63,281,1105,2506,16737,19220,19220,19220,19220;group_residence_us:328:2003487:0,3,3,3,4,4,4,4,4,41,55,264,328,328,328,328;final_apply_us:324:431985:0,0,0,0,0,0,0,0,0,2,154,324,324,324,324,324;journal_submit_us:324:1335104:0,0,0,0,0,0,0,0,0,0,2,320,324,324,324,324;preparation_pool_depth:984:3914:492,492,492,493,984,984,984,984,984,984,984,984,984,984,984,984;reorder_buffer_occupancy:3914:32732:1869,1886,1999,2253,2619,3211,3671,3895,3914,3914,3914,3914,3914,3914,3914,3914
+riffdb-completion-lane-v1	counts=328,328,159,0;elapsed_us=0,801863,284861,0;max_depth=3;max_reorder=0
+riffdb-writer-frame-census-v1	324,19220,91539955,91539955,59866164,59866164
+riffdb-writer-flush-census-v1	324,324,19220,91539955,1,470254,5535
+riffdb-writer-journal-stages-v1	324,3046,108,324,44611,464,15968,605,409345,5456
+riffdb-writer-publication-stages-v1	324,651721,42871,0,0,236462,41757,200623,41750
+[riffdbd-stderr] riffdb-shutdown-release-v1	graph_storage_release=75040	post_graph_release=2978	columnar_activations=0	columnar_population_passes=0
+[riffdbd-stderr] riffdb-process-memory-baseline-v1
+[riffdbd-stderr] [riffdbd-diag] trigger=startup clean_close_fast=true
+[riffdbd-stderr] riffdb-startup-stages-v1	mode=clean_certificate	store_open=232538	evidence_begin=2852	structural_drain=215	catalog_history=3365	evidence_finish=3469	port_activation=0	current_views=65	consumer_recovery=4	outbox_recovery=0	graph_rest=8395	process_to_ready=260090	transient_index_rebuilds=0	population_table_walk=none	columnar_cold_sources=1	columnar_activations=0	columnar_population_passes=0
+
+== load riffdb_public_grpc profile=write_only clients=32 window=90.0s tenant=single_organization count=1 hot=0pct ==
+throughput=3705 ops/s  logical_ops=333439  success=333439  conflict=0  idempotency_mismatch=0  unavailable=0  overloaded=0  replayed=0  error=0
+latency p50=8.389ms p95=11.534ms p99=37.749ms max=57.289ms
+  create_comment: n=233413 p50=8.389ms p99=37.749ms ok=233413 conflict=0 idempotency_mismatch=0 unavailable=0 replay=0 err=0
+  close_ticket_with_comment: n=66527 p50=8.389ms p99=37.749ms ok=66527 conflict=0 idempotency_mismatch=0 unavailable=0 replay=0 err=0
+  open_ticket_with_labels: n=33499 p50=8.913ms p99=25.166ms ok=33499 conflict=0 idempotency_mismatch=0 unavailable=0 replay=0 err=0
+[riffdbd-stderr] riffdb-shutdown-progress-v1	stage=service_jobs_idle	phase=begin	elapsed_us=0
+[riffdbd-stderr] riffdb-shutdown-progress-v1	stage=service_jobs_idle	phase=complete	elapsed_us=1
+[riffdbd-stderr] riffdb-shutdown-progress-v1	stage=exact_text_worker	phase=begin	elapsed_us=0
+[riffdbd-stderr] riffdb-shutdown-progress-v1	stage=exact_text_worker	phase=complete	elapsed_us=36
+[riffdbd-stderr] riffdb-shutdown-progress-v1	stage=columnar_worker	phase=begin	elapsed_us=0
+[riffdbd-stderr] riffdb-shutdown-progress-v1	stage=columnar_worker	phase=complete	elapsed_us=273
+[riffdbd-stderr] riffdb-shutdown-progress-v1	stage=projection_worker	phase=begin	elapsed_us=0
+[riffdbd-stderr] riffdb-shutdown-progress-v1	stage=projection_worker	phase=complete	elapsed_us=121
+[riffdbd-stderr] riffdb-shutdown-progress-v1	stage=notifications	phase=begin	elapsed_us=0
+[riffdbd-stderr] riffdb-shutdown-progress-v1	stage=notifications	phase=complete	elapsed_us=0
+[riffdbd-stderr] riffdb-shutdown-progress-v1	stage=coordinator	phase=begin	elapsed_us=0
+[riffdbd-stderr] riffdb-shutdown-progress-v1	stage=coordinator	phase=complete	elapsed_us=953
+[riffdbd-stderr] riffdb-shutdown-progress-v1	stage=blocking_ports	phase=begin	elapsed_us=0
+[riffdbd-stderr] riffdb-shutdown-progress-v1	stage=blocking_ports	phase=complete	elapsed_us=118
+[riffdbd-stderr] riffdb-shutdown-progress-v1	stage=validated_prefix_checkpoint_write	phase=begin	elapsed_us=0
+[riffdbd-stderr] riffdb-shutdown-progress-v1	stage=validated_prefix_checkpoint_write	phase=complete	elapsed_us=281614
+[riffdbd-stderr] riffdb-shutdown-progress-v1	stage=graph_storage_release	phase=begin	elapsed_us=0
+[riffdbd-stderr] riffdb-shutdown-progress-v1	stage=graph_storage_release	phase=complete	elapsed_us=2062641
+riffdb-write-completion-groups-v1	15,22,47,33,77,71,45,94,143,336,1188,2174,3100,2592,1641,1904,1600,2547,3027,2074,1112,286,111,63,21,50,55,11,40,7,4,8,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0
+riffdb-dispatch-reasons-v1	0,0,24498,0
+riffdb-shutdown-stages-v1	283182	1,36,273,121,0,953,118,281614
+[riffdbd-stderr] riffdb-shutdown-stage-labels-v1	service_jobs_idle,exact_text_worker,columnar_worker,projection_worker,notifications,coordinator,blocking_ports,validated_prefix_checkpoint_write
+[riffdbd-stderr] riffdb-graceful-checkpoint-close-v1	left_stale	clean_committed	272855,6,8734
+[riffdbd-stderr] riffdb-shutdown-release-v1	graph_storage_release=2062642	post_graph_release=0	columnar_activations=0	columnar_population_passes=0
+riffdb-read-stages-v1	transport_adapt:96:297:1,32,76,89,93,93,95,96,96,96,96,96,96,96,96,96;authn:96:522:1,57,91,92,93,93,93,93,94,96,96,96,96,96,96,96;admission_context:96:10:87,95,96,96,96,96,96,96,96,96,96,96,96,96,96,96;spawn_dispatch:96:824:0,7,38,58,62,76,94,96,96,96,96,96,96,96,96,96;plan_lookup:96:126139:63,64,64,64,64,64,64,64,64,64,64,96,96,96,96,96;param_materialize:96:336:0,6,35,80,93,95,96,96,96,96,96,96,96,96,96,96;authorize_begin:96:475:0,0,23,71,86,92,96,96,96,96,96,96,96,96,96,96;authorize_pre:96:144:10,70,84,92,94,96,96,96,96,96,96,96,96,96,96,96;execute:96:1055:0,1,14,46,67,84,88,93,96,96,96,96,96,96,96,96;authorize_post:96:78:44,83,91,94,96,96,96,96,96,96,96,96,96,96,96,96;response_build:96:15:85,92,96,96,96,96,96,96,96,96,96,96,96,96,96,96;encode_convert:96:90:55,74,84,92,96,96,96,96,96,96,96,96,96,96,96,96;audit_finish:96:0:96,96,96,96,96,96,96,96,96,96,96,96,96,96,96,96;service_await:96:132688:0,0,0,0,0,6,52,64,64,64,64,96,96,96,96,96;server_handler:96:133839:0,0,0,0,0,3,30,60,64,64,64,96,96,96,96,96
+riffdb-write-service-stages-v1	transport_adapt:388796:2141041:0,1266,25708,148269,356500,384969,388580,388784,388793,388795,388795,388796,388796,388796,388796,388796;service_prepare:388796:42224711:0,0,0,0,0,0,380,52251,292868,382896,388642,388796,388796,388796,388796,388796;coordinator_await:388796:3200568559:0,0,0,0,0,0,0,0,0,0,0,350751,388764,388796,388796,388796;service_finish:388796:3294718:0,620,10382,84557,268097,354175,384300,388369,388713,388769,388794,388796,388796,388796,388796,388796;encode_convert:388796:1151639:11795,123682,239812,332709,369999,384115,388343,388743,388784,388790,388796,388796,388796,388796,388796,388796
+riffdb-command-stages-v1	admission:24498:3813243:0,0,0,0,0,10,42,465,11257,21989,24497,24498,24498,24498,24498,24498;compatibility:24498:425510:0,14,30,105,1092,14181,23140,24453,24496,24498,24498,24498,24498,24498,24498,24498;evaluation:24498:11985327:0,0,0,0,0,0,0,0,22,1830,24395,24498,24498,24498,24498,24498;validation_encoding_staging:24498:33600199:0,0,0,0,0,0,0,0,15,46,7011,24251,24498,24498,24498,24498;publication:24498:709152:16368,23614,24251,24477,24496,24497,24497,24497,24497,24497,24497,24497,24497,24498,24498,24498
+riffdb-writer-evidence-v1	busy_us=88285786;idle_us=4037585;dispatch_selected=388796;dispatch_deferred=0;dispatch_deferred_max=0;compatibility_selected=388796;compatibility_groups=24498;compatibility_conflict_key_splits=36431;compatibility_exact_access_splits=0;compatibility_commutative_shared_groups=38;queue_delay_estimate_us=6080;prepared_epoch_rollbacks=0;prepared_epoch_proof_mismatches=0;frontier_equivalence_checks=24498;frontier_equivalence_failures=0	commit_us:24498:80329641:0,0,0,0,0,0,0,0,0,0,0,24242,24498,24498,24498,24498;flush_us:24498:80329641:0,0,0,0,0,0,0,0,0,0,0,24242,24498,24498,24498,24498;batch_size:24498:388796:0,15,37,117,404,13482,24498,24498,24498,24498,24498,24498,24498,24498,24498,24498;storage_queue_us:388796:990220481:0,0,0,0,0,0,124,1717,6682,17916,90223,384567,388796,388796,388796,388796;group_residence_us:24498:66122951:0,0,0,0,0,0,0,0,0,1185,4929,24223,24498,24498,24498,24498;final_apply_us:24498:11925026:0,0,0,0,0,0,0,9,29,708,24236,24498,24498,24498,24498,24498;journal_submit_us:24498:36240216:0,0,0,0,0,0,0,0,0,6,2955,24378,24498,24498,24498,24498;preparation_pool_depth:12544:40929:6272,6302,6345,6463,12544,12544,12544,12544,12544,12544,12544,12544,12544,12544,12544,12544;reorder_buffer_occupancy:40929:75821:19195,22751,29593,35612,39850,40920,40929,40929,40929,40929,40929,40929,40929,40929,40929,40929
+riffdb-completion-lane-v1	counts=24498,24498,8824,0;elapsed_us=0,45663063,13986421,0;max_depth=5;max_reorder=0
+riffdb-writer-frame-census-v1	24498,388796,2148176546,2148176546,1370749796,1370749796
+riffdb-writer-flush-census-v1	24478,24498,388796,2148176546,2,32193168,15906
+riffdb-writer-journal-stages-v1	24498,440213,4962,24478,991118,135,521350,111,30656408,15855
+riffdb-writer-publication-stages-v1	24498,40223621,28554,3,2,9780761,26617,7996818,26608
+[riffdbd-stderr] riffdb-shutdown-release-v1	graph_storage_release=2062642	post_graph_release=11740	columnar_activations=0	columnar_population_passes=0
+[riffdbd-stderr] riffdb-process-memory-baseline-v1
+[riffdbd-stderr] [riffdbd-diag] trigger=startup clean_close_fast=false decline=engine_initialized_at_open (full validation pass; cost scales with retained history)
+[riffdbd-stderr] riffdb-startup-stages-v1	mode=complete_validation	store_open=20474	evidence_begin=124	structural_drain=63	catalog_history=27	evidence_finish=16	port_activation=17934	current_views=21	consumer_recovery=4	outbox_recovery=8	graph_rest=10776	process_to_ready=95304	transient_index_rebuilds=1	population_table_walk=observed	columnar_cold_sources=0	columnar_activations=0	columnar_population_passes=0
+[riffdbd-stderr] riffdb-shutdown-progress-v1	stage=service_jobs_idle	phase=begin	elapsed_us=0
+[riffdbd-stderr] riffdb-shutdown-progress-v1	stage=service_jobs_idle	phase=complete	elapsed_us=0
+[riffdbd-stderr] riffdb-shutdown-progress-v1	stage=exact_text_worker	phase=begin	elapsed_us=0
+[riffdbd-stderr] riffdb-shutdown-progress-v1	stage=exact_text_worker	phase=complete	elapsed_us=29
+[riffdbd-stderr] riffdb-shutdown-progress-v1	stage=columnar_worker	phase=begin	elapsed_us=0
+[riffdbd-stderr] riffdb-shutdown-progress-v1	stage=columnar_worker	phase=complete	elapsed_us=38
+[riffdbd-stderr] riffdb-shutdown-progress-v1	stage=projection_worker	phase=begin	elapsed_us=0
+[riffdbd-stderr] riffdb-shutdown-progress-v1	stage=projection_worker	phase=complete	elapsed_us=57
+[riffdbd-stderr] riffdb-shutdown-progress-v1	stage=notifications	phase=begin	elapsed_us=0
+[riffdbd-stderr] riffdb-shutdown-progress-v1	stage=notifications	phase=complete	elapsed_us=0
+[riffdbd-stderr] riffdb-shutdown-progress-v1	stage=coordinator	phase=begin	elapsed_us=0
+[riffdbd-stderr] riffdb-shutdown-progress-v1	stage=coordinator	phase=complete	elapsed_us=267
+[riffdbd-stderr] riffdb-shutdown-progress-v1	stage=blocking_ports	phase=begin	elapsed_us=0
+[riffdbd-stderr] riffdb-shutdown-progress-v1	stage=blocking_ports	phase=complete	elapsed_us=98
+[riffdbd-stderr] riffdb-shutdown-progress-v1	stage=validated_prefix_checkpoint_write	phase=begin	elapsed_us=0
+[riffdbd-stderr] riffdb-shutdown-progress-v1	stage=validated_prefix_checkpoint_write	phase=complete	elapsed_us=19954
+[riffdbd-stderr] riffdb-shutdown-progress-v1	stage=graph_storage_release	phase=begin	elapsed_us=0
+[riffdbd-stderr] riffdb-shutdown-progress-v1	stage=graph_storage_release	phase=complete	elapsed_us=3613
+[riffdbd-stderr] riffdb-shutdown-stage-labels-v1	service_jobs_idle,exact_text_worker,columnar_worker,projection_worker,notifications,coordinator,blocking_ports,validated_prefix_checkpoint_write
+riffdb-write-completion-groups-v1	0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0
+[riffdbd-stderr] riffdb-graceful-checkpoint-close-v1	left_stale	clean_committed	14272,14,5661
+[riffdbd-stderr] riffdb-shutdown-release-v1	graph_storage_release=3613	post_graph_release=0	columnar_activations=0	columnar_population_passes=0
+riffdb-dispatch-reasons-v1	0,0,2,0
+riffdb-shutdown-stages-v1	20499	0,29,38,57,0,267,98,19954
+riffdb-read-stages-v1	transport_adapt:0:0:0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0;authn:0:0:0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0;admission_context:0:0:0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0;spawn_dispatch:0:0:0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0;plan_lookup:0:0:0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0;param_materialize:0:0:0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0;authorize_begin:0:0:0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0;authorize_pre:0:0:0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0;execute:0:0:0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0;authorize_post:0:0:0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0;response_build:0:0:0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0;encode_convert:0:0:0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0;audit_finish:0:0:0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0;service_await:0:0:0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0;server_handler:0:0:0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0
+riffdb-write-service-stages-v1	transport_adapt:0:0:0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0;service_prepare:0:0:0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0;coordinator_await:0:0:0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0;service_finish:0:0:0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0;encode_convert:0:0:0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0
+riffdb-command-stages-v1	admission:0:0:0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0;compatibility:0:0:0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0;evaluation:0:0:0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0;validation_encoding_staging:0:0:0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0;publication:0:0:0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0
+riffdb-writer-evidence-v1	busy_us=91438;idle_us=6958;dispatch_selected=2;dispatch_deferred=0;dispatch_deferred_max=0;compatibility_selected=0;compatibility_groups=0;compatibility_conflict_key_splits=0;compatibility_exact_access_splits=0;compatibility_commutative_shared_groups=0;queue_delay_estimate_us=13552;prepared_epoch_rollbacks=0;prepared_epoch_proof_mismatches=0;frontier_equivalence_checks=0;frontier_equivalence_failures=0	commit_us:0:0:0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0;flush_us:0:0:0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0;batch_size:0:0:0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0;storage_queue_us:0:0:0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0;group_residence_us:2:1:1,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2;final_apply_us:0:0:0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0;journal_submit_us:0:0:0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0;preparation_pool_depth:0:0:0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0;reorder_buffer_occupancy:0:0:0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0
+riffdb-completion-lane-v1	counts=2,2,3,0;elapsed_us=0,3208,0,0;max_depth=1;max_reorder=0
+riffdb-writer-frame-census-v1	0,0,0,0,0,0
+riffdb-writer-flush-census-v1	0,0,0,0,0,0,0
+riffdb-writer-journal-stages-v1	0,0,0,0,0,0,0,0,0,0
+riffdb-writer-publication-stages-v1	0,0,0,0,0,0,0,0,0
+[riffdbd-stderr] riffdb-shutdown-release-v1	graph_storage_release=3613	post_graph_release=290	columnar_activations=0	columnar_population_passes=0
+[riffdbd-stderr] riffdb-process-memory-baseline-v1
+[riffdbd-stderr] [riffdbd-diag] trigger=startup clean_close_fast=true
+[riffdbd-stderr] riffdb-startup-stages-v1	mode=clean_certificate	store_open=2941	evidence_begin=326	structural_drain=277	catalog_history=3610	evidence_finish=1248	port_activation=0	current_views=102	consumer_recovery=3	outbox_recovery=0	graph_rest=9835	process_to_ready=25401	transient_index_rebuilds=0	population_table_walk=none	columnar_cold_sources=1	columnar_activations=0	columnar_population_passes=0
+riffdb-seed-start	total=19220	concurrency=128
+riffdb-seed-progress	phase=comment	completed=11933/19220	overall_ms=2133	rate_ops_s=5594.5
+riffdb-seed-progress	phase=ticket_label	completed=19220/19220	overall_ms=2931	rate_ops_s=6557.5
+riffdb-seed-progress	phase=done	completed=19220/19220	overall_ms=2931	rate_ops_s=6557.5
+[riffdbd-stderr] riffdb-shutdown-progress-v1	stage=service_jobs_idle	phase=begin	elapsed_us=0
+[riffdbd-stderr] riffdb-shutdown-progress-v1	stage=service_jobs_idle	phase=complete	elapsed_us=1
+[riffdbd-stderr] riffdb-shutdown-progress-v1	stage=exact_text_worker	phase=begin	elapsed_us=0
+[riffdbd-stderr] riffdb-shutdown-progress-v1	stage=exact_text_worker	phase=complete	elapsed_us=42
+[riffdbd-stderr] riffdb-shutdown-progress-v1	stage=columnar_worker	phase=begin	elapsed_us=0
+[riffdbd-stderr] riffdb-shutdown-progress-v1	stage=columnar_worker	phase=complete	elapsed_us=92
+[riffdbd-stderr] riffdb-shutdown-progress-v1	stage=projection_worker	phase=begin	elapsed_us=0
+[riffdbd-stderr] riffdb-shutdown-progress-v1	stage=projection_worker	phase=complete	elapsed_us=100
+[riffdbd-stderr] riffdb-shutdown-progress-v1	stage=notifications	phase=begin	elapsed_us=0
+[riffdbd-stderr] riffdb-shutdown-progress-v1	stage=notifications	phase=complete	elapsed_us=0
+[riffdbd-stderr] riffdb-shutdown-progress-v1	stage=coordinator	phase=begin	elapsed_us=0
+[riffdbd-stderr] riffdb-shutdown-progress-v1	stage=coordinator	phase=complete	elapsed_us=520
+[riffdbd-stderr] riffdb-shutdown-progress-v1	stage=blocking_ports	phase=begin	elapsed_us=0
+[riffdbd-stderr] riffdb-shutdown-progress-v1	stage=blocking_ports	phase=complete	elapsed_us=123
+[riffdbd-stderr] riffdb-shutdown-progress-v1	stage=validated_prefix_checkpoint_write	phase=begin	elapsed_us=0
+[riffdbd-stderr] riffdb-shutdown-progress-v1	stage=validated_prefix_checkpoint_write	phase=complete	elapsed_us=203610
+[riffdbd-stderr] riffdb-shutdown-progress-v1	stage=graph_storage_release	phase=begin	elapsed_us=0
+[riffdbd-stderr] riffdb-shutdown-progress-v1	stage=graph_storage_release	phase=complete	elapsed_us=76244
+riffdb-write-completion-groups-v1	0,0,0,0,0,0,0,0,0,1,0,0,0,1,0,28,0,1,0,1,1,0,0,0,2,0,0,2,0,0,1,58,0,2,1,1,0,0,1,1,0,1,0,0,0,0,0,53,1,1,0,1,0,0,0,0,0,0,0,1,0,2,0,36,0,3,0,1,0,0,0,0,0,0,0,0,0,1,1,48,0,0,0,0,0,1,0,0,1,0,0,0,1,1,0,45,0,0,0,2,0,0,2,0,0,0,0,0,0,1,0,16,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0
+riffdb-dispatch-reasons-v1	0,0,326,0
+[riffdbd-stderr] riffdb-shutdown-stage-labels-v1	service_jobs_idle,exact_text_worker,columnar_worker,projection_worker,notifications,coordinator,blocking_ports,validated_prefix_checkpoint_write
+[riffdbd-stderr] riffdb-graceful-checkpoint-close-v1	left_stale	clean_committed	184279,8,19307
+[riffdbd-stderr] riffdb-shutdown-release-v1	graph_storage_release=76244	post_graph_release=0	columnar_activations=0	columnar_population_passes=0
+riffdb-shutdown-stages-v1	204548	1,42,92,100,0,520,123,203610
+riffdb-read-stages-v1	transport_adapt:0:0:0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0;authn:0:0:0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0;admission_context:0:0:0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0;spawn_dispatch:0:0:0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0;plan_lookup:0:0:0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0;param_materialize:0:0:0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0;authorize_begin:0:0:0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0;authorize_pre:0:0:0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0;execute:0:0:0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0;authorize_post:0:0:0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0;response_build:0:0:0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0;encode_convert:0:0:0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0;audit_finish:0:0:0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0;service_await:0:0:0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0;server_handler:0:0:0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0
+riffdb-write-service-stages-v1	transport_adapt:0:0:0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0;service_prepare:19220:1676689:0,0,0,0,0,0,928,9387,16217,18691,19211,19220,19220,19220,19220,19220;coordinator_await:19220:332461854:0,0,0,0,0,0,0,0,0,0,0,936,19220,19220,19220,19220;service_finish:19220:107199:1,821,4211,11426,15695,18443,19170,19215,19219,19219,19220,19220,19220,19220,19220,19220;encode_convert:0:0:0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0
+riffdb-command-stages-v1	admission:322:113139:0,0,0,0,0,0,0,1,27,109,322,322,322,322,322,322;compatibility:322:17335:0,0,0,0,0,19,94,222,315,322,322,322,322,322,322,322;evaluation:322:167899:0,0,0,0,0,0,0,0,0,29,320,322,322,322,322,322;validation_encoding_staging:322:830849:0,0,0,0,0,0,0,0,0,1,43,313,322,322,322,322;publication:322:8849:75,255,306,320,321,321,321,321,321,321,321,322,322,322,322,322
+riffdb-writer-evidence-v1	busy_us=2545450;idle_us=225199;dispatch_selected=19224;dispatch_deferred=0;dispatch_deferred_max=0;compatibility_selected=19220;compatibility_groups=322;compatibility_conflict_key_splits=0;compatibility_exact_access_splits=0;compatibility_commutative_shared_groups=0;queue_delay_estimate_us=16992;prepared_epoch_rollbacks=0;prepared_epoch_proof_mismatches=0;frontier_equivalence_checks=322;frontier_equivalence_failures=0	commit_us:322:2059714:0,0,0,0,0,0,0,0,0,0,0,299,322,322,322,322;flush_us:322:2059714:0,0,0,0,0,0,0,0,0,0,0,299,322,322,322,322;batch_size:322:19220:0,0,0,0,0,30,96,198,322,322,322,322,322,322,322,322;storage_queue_us:19220:104358297:0,0,0,0,0,0,0,28,177,819,1908,17217,19220,19220,19220,19220;group_residence_us:326:2004616:2,3,3,3,4,4,4,4,4,29,45,272,326,326,326,326;final_apply_us:322:433284:0,0,0,0,0,0,0,0,0,2,124,322,322,322,322,322;journal_submit_us:322:1323904:0,0,0,0,0,0,0,0,0,0,3,318,322,322,322,322;preparation_pool_depth:982:3900:491,491,491,491,982,982,982,982,982,982,982,982,982,982,982,982;reorder_buffer_occupancy:3900:32687:1810,1831,1932,2195,2635,3253,3658,3885,3900,3900,3900,3900,3900,3900,3900,3900
+riffdb-completion-lane-v1	counts=326,326,156,0;elapsed_us=0,780532,303533,0;max_depth=3;max_reorder=0
+riffdb-writer-frame-census-v1	322,19220,91539993,91539993,59867181,59867181
+riffdb-writer-flush-census-v1	322,322,19220,91539993,1,475380,11589
+riffdb-writer-journal-stages-v1	322,2932,41,322,46305,354,13221,94,415550,11467
+riffdb-writer-publication-stages-v1	322,620891,31116,0,0,204108,30153,161615,30147
+[riffdbd-stderr] riffdb-shutdown-release-v1	graph_storage_release=76244	post_graph_release=4868	columnar_activations=0	columnar_population_passes=0
+[riffdbd-stderr] riffdb-process-memory-baseline-v1
+[riffdbd-stderr] [riffdbd-diag] trigger=startup clean_close_fast=true
+[riffdbd-stderr] riffdb-startup-stages-v1	mode=clean_certificate	store_open=232618	evidence_begin=2933	structural_drain=188	catalog_history=3426	evidence_finish=1449	port_activation=0	current_views=97	consumer_recovery=6	outbox_recovery=0	graph_rest=8814	process_to_ready=260187	transient_index_rebuilds=0	population_table_walk=none	columnar_cold_sources=1	columnar_activations=0	columnar_population_passes=0
+
+== load riffdb_public_grpc profile=write_only clients=32 window=90.0s tenant=single_organization count=1 hot=0pct ==
+throughput=3675 ops/s  logical_ops=330750  success=330750  conflict=0  idempotency_mismatch=0  unavailable=0  overloaded=0  replayed=0  error=0
+latency p50=8.389ms p95=11.534ms p99=37.749ms max=58.585ms
+  create_comment: n=231566 p50=8.389ms p99=35.652ms ok=231566 conflict=0 idempotency_mismatch=0 unavailable=0 replay=0 err=0
+  close_ticket_with_comment: n=65958 p50=8.913ms p99=39.846ms ok=65958 conflict=0 idempotency_mismatch=0 unavailable=0 replay=0 err=0
+  open_ticket_with_labels: n=33226 p50=8.913ms p99=25.166ms ok=33226 conflict=0 idempotency_mismatch=0 unavailable=0 replay=0 err=0
+[riffdbd-stderr] riffdb-shutdown-progress-v1	stage=service_jobs_idle	phase=begin	elapsed_us=0
+[riffdbd-stderr] riffdb-shutdown-progress-v1	stage=service_jobs_idle	phase=complete	elapsed_us=0
+[riffdbd-stderr] riffdb-shutdown-progress-v1	stage=exact_text_worker	phase=begin	elapsed_us=0
+[riffdbd-stderr] riffdb-shutdown-progress-v1	stage=exact_text_worker	phase=complete	elapsed_us=32
+[riffdbd-stderr] riffdb-shutdown-progress-v1	stage=columnar_worker	phase=begin	elapsed_us=0
+[riffdbd-stderr] riffdb-shutdown-progress-v1	stage=columnar_worker	phase=complete	elapsed_us=748
+[riffdbd-stderr] riffdb-shutdown-progress-v1	stage=projection_worker	phase=begin	elapsed_us=0
+[riffdbd-stderr] riffdb-shutdown-progress-v1	stage=projection_worker	phase=complete	elapsed_us=106
+[riffdbd-stderr] riffdb-shutdown-progress-v1	stage=notifications	phase=begin	elapsed_us=0
+[riffdbd-stderr] riffdb-shutdown-progress-v1	stage=notifications	phase=complete	elapsed_us=0
+[riffdbd-stderr] riffdb-shutdown-progress-v1	stage=coordinator	phase=begin	elapsed_us=0
+[riffdbd-stderr] riffdb-shutdown-progress-v1	stage=coordinator	phase=complete	elapsed_us=1026
+[riffdbd-stderr] riffdb-shutdown-progress-v1	stage=blocking_ports	phase=begin	elapsed_us=0
+[riffdbd-stderr] riffdb-shutdown-progress-v1	stage=blocking_ports	phase=complete	elapsed_us=102
+[riffdbd-stderr] riffdb-shutdown-progress-v1	stage=validated_prefix_checkpoint_write	phase=begin	elapsed_us=0
+[riffdbd-stderr] riffdb-shutdown-progress-v1	stage=validated_prefix_checkpoint_write	phase=complete	elapsed_us=471489
+[riffdbd-stderr] riffdb-shutdown-progress-v1	stage=graph_storage_release	phase=begin	elapsed_us=0
+[riffdbd-stderr] riffdb-shutdown-progress-v1	stage=graph_storage_release	phase=complete	elapsed_us=2061463
+riffdb-write-completion-groups-v1	11,17,49,14,49,28,34,93,135,421,1025,2127,3205,2135,2126,1589,2111,2098,3155,2079,997,386,121,77,18,13,38,5,39,6,1,8,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0
+riffdb-dispatch-reasons-v1	0,0,24210,0
+[riffdbd-stderr] riffdb-shutdown-stage-labels-v1	service_jobs_idle,exact_text_worker,columnar_worker,projection_worker,notifications,coordinator,blocking_ports,validated_prefix_checkpoint_write
+[riffdbd-stderr] riffdb-graceful-checkpoint-close-v1	left_stale	clean_committed	452096,8,19367
+riffdb-shutdown-stages-v1	473584	0,32,748,106,0,1026,102,471489
+[riffdbd-stderr] riffdb-shutdown-release-v1	graph_storage_release=2061463	post_graph_release=0	columnar_activations=0	columnar_population_passes=0
+riffdb-read-stages-v1	transport_adapt:96:244:3,70,81,90,94,94,95,95,96,96,96,96,96,96,96,96;authn:96:765:27,70,86,90,90,90,90,90,95,96,96,96,96,96,96,96;admission_context:96:27:86,95,95,95,95,95,96,96,96,96,96,96,96,96,96,96;spawn_dispatch:96:429:0,55,62,70,76,90,96,96,96,96,96,96,96,96,96,96;plan_lookup:96:54320:82,84,84,84,84,84,84,84,84,84,84,96,96,96,96,96;param_materialize:96:202:0,40,76,94,94,95,96,96,96,96,96,96,96,96,96,96;authorize_begin:96:324:0,22,61,77,88,94,96,96,96,96,96,96,96,96,96,96;authorize_pre:96:93:42,80,85,93,96,96,96,96,96,96,96,96,96,96,96,96;execute:96:470:0,14,46,62,81,92,95,96,96,96,96,96,96,96,96,96;authorize_post:96:16:84,93,95,96,96,96,96,96,96,96,96,96,96,96,96,96;response_build:96:10:88,94,96,96,96,96,96,96,96,96,96,96,96,96,96,96;encode_convert:96:76:63,76,86,91,96,96,96,96,96,96,96,96,96,96,96,96;audit_finish:96:0:96,96,96,96,96,96,96,96,96,96,96,96,96,96,96,96;service_await:96:58016:0,0,0,0,0,32,69,82,84,84,84,96,96,96,96,96;server_handler:96:59318:0,0,0,0,0,21,62,81,84,84,84,96,96,96,96,96
+riffdb-write-service-stages-v1	transport_adapt:385524:2144880:0,1032,24394,140700,352337,381898,385311,385511,385520,385524,385524,385524,385524,385524,385524,385524;service_prepare:385524:41816707:0,0,0,0,0,0,275,50303,290501,380129,385428,385509,385524,385524,385524,385524;coordinator_await:385524:3202403477:0,0,0,0,0,0,0,0,0,0,0,348034,385492,385524,385524,385524;service_finish:385524:3315261:0,296,8595,79792,262853,350123,380828,385080,385427,385501,385522,385524,385524,385524,385524,385524;encode_convert:385524:1152467:9406,118396,235384,329431,366775,380844,385074,385477,385513,385520,385524,385524,385524,385524,385524,385524
+riffdb-command-stages-v1	admission:24210:3848995:0,0,0,0,0,9,31,287,10436,21682,24209,24210,24210,24210,24210,24210;compatibility:24210:420720:0,9,24,78,1024,13828,22872,24176,24210,24210,24210,24210,24210,24210,24210,24210;evaluation:24210:12131033:0,0,0,0,0,0,0,0,19,1377,24098,24210,24210,24210,24210,24210;validation_encoding_staging:24210:34573875:0,0,0,0,0,0,0,0,8,39,6209,23964,24209,24210,24210,24210;publication:24210:719253:14935,23321,23989,24188,24206,24208,24208,24208,24208,24208,24208,24209,24209,24210,24210,24210
+riffdb-writer-evidence-v1	busy_us=89572609;idle_us=3105376;dispatch_selected=385524;dispatch_deferred=0;dispatch_deferred_max=0;compatibility_selected=385524;compatibility_groups=24210;compatibility_conflict_key_splits=36408;compatibility_exact_access_splits=0;compatibility_commutative_shared_groups=42;queue_delay_estimate_us=4911;prepared_epoch_rollbacks=0;prepared_epoch_proof_mismatches=0;frontier_equivalence_checks=24210;frontier_equivalence_failures=0	commit_us:24210:79483612:0,0,0,0,0,0,0,0,0,0,0,23953,24210,24210,24210,24210;flush_us:24210:79483612:0,0,0,0,0,0,0,0,0,0,0,23953,24210,24210,24210,24210;batch_size:24210:385524:0,11,28,91,295,13058,24210,24210,24210,24210,24210,24210,24210,24210,24210,24210;storage_queue_us:385524:1003943010:0,0,0,0,0,0,106,1225,4951,13855,85677,381480,385509,385524,385524,385524;group_residence_us:24210:66939958:0,0,0,0,0,0,0,0,0,864,4491,23946,24209,24210,24210,24210;final_apply_us:24210:12041544:0,0,0,0,0,0,0,5,22,381,23946,24210,24210,24210,24210,24210;journal_submit_us:24210:36356164:0,0,0,0,0,0,0,0,0,7,2357,24092,24210,24210,24210,24210;preparation_pool_depth:11728:38399:5864,5886,5917,6005,11728,11728,11728,11728,11728,11728,11728,11728,11728,11728,11728,11728;reorder_buffer_occupancy:38399:76165:17042,20365,26888,32818,37307,38394,38399,38399,38399,38399,38399,38399,38399,38399,38399,38399
+riffdb-completion-lane-v1	counts=24210,24210,8726,0;elapsed_us=0,44716030,13607390,0;max_depth=5;max_reorder=0
+riffdb-writer-frame-census-v1	24210,385524,2131221417,2131221417,1359994669,1359994669
+riffdb-writer-flush-census-v1	24191,24210,385524,2131221417,3,31145454,16530
+riffdb-writer-journal-stages-v1	24210,373181,9591,24191,990584,138,520761,90,29610161,16467
+riffdb-writer-publication-stages-v1	24210,39144109,28738,3,3,9805907,27781,7990413,27773
+[riffdbd-stderr] riffdb-shutdown-release-v1	graph_storage_release=2061463	post_graph_release=12056	columnar_activations=0	columnar_population_passes=0
+wrote /home/kevin/tmp/wp749-local-paired-20260916/archive-disabled.json
+report: /home/kevin/tmp/wp749-local-paired-20260916/archive-disabled.json

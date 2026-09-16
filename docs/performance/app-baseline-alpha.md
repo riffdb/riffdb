@@ -411,3 +411,30 @@ persisted archive progress, and terminal collector failures invalidate the run.
 The source-tree guide `examples/app-baseline/README.md` gives the invocation and limits.
 This measurement option supplies WP-749 evidence; it adds no performance candidate
 or freeze exception, and smoke results cannot establish a latency comparison.
+
+### Local paired disclosure, 2026-09-16
+
+A fixed four-cell run used the full dataset, write-only load, 32 clients and three
+90-second generations with 15-second warmups on a local Ryzen 9 7950X host. All
+cells passed correctness, host validity and existing within-cell stability checks.
+
+| Cell | Median operations/s | p95 ms | p99 ms |
+| --- | ---: | ---: | ---: |
+| Historical prefix control | 3,844 | 11.01 | 20.97 |
+| Current prefix implementation | 3,687 | 11.53 | 37.75 |
+| Current, collector disabled | 3,674 | 11.53 | 37.75 |
+| Current, collector enabled | 2,860 | 17.83 | 32.51 |
+
+The current revision measured 4.1% lower throughput and 4.8% higher p95 than the
+historical control; p99 rose 80.0%. This revision comparison includes intervening
+implementation changes. Enabling collection measured 22.2% lower throughput and
+54.5% higher p95 than disabling it with the same current binary. Collection made
+verified durable progress but lagged substantially; full catch-up is not claimed.
+These results leave the no-regression exit gate unresolved. Within-cell stability
+is not cross-cell parity.
+
+The complete raw reports, build identities, fixed protocol and reproducible summary
+are in the source tree at `release/evidence/wp-749/local-paired-20260916/`.
+No performance-selected retries were taken. This local point supplies disclosure;
+the required N1/E2 campaign, interactive and concurrency sweeps, and repeated-kill
+qualification remain outstanding. No performance threshold or freeze state changes.
