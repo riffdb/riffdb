@@ -219,8 +219,22 @@ async fn scenario(
     let mut client = fixture.client("primary").await;
     let second = workload::allocate(&mut client, &writer, 2).await;
     let entity_second = workload::entity(&mut client, &writer).await;
+    if damage != Damage::None {
+        // Corruption/reordering requires two distinct durable frame files.
+        // Coalescing may otherwise collect both commands in one valid frame.
+        process
+            .wait_for_readiness("riffdb-archive-collected-v1\tcommit=2", TIMEOUT)
+            .unwrap();
+    }
     let third = workload::allocate(&mut client, &writer, 3).await;
     let entity_third = workload::entity(&mut client, &writer).await;
+    if damage == Damage::None {
+        // Consume the ordered observation without forcing separate frames in
+        // the ordinary restore, crash, sink-loss and CLI scenarios.
+        process
+            .wait_for_readiness("riffdb-archive-collected-v1\tcommit=2", TIMEOUT)
+            .unwrap();
+    }
     process
         .wait_for_readiness("riffdb-archive-collected-v1\tcommit=3", TIMEOUT)
         .unwrap();

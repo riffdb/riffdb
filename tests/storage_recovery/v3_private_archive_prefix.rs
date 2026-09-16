@@ -120,6 +120,28 @@ fn check_private_archive_case(
     .unwrap()
     .encode()
     .unwrap();
+    let mut emitter = riffdb_storage_api::ChangelogFrameCursorV3::open(
+        pin.as_ref(),
+        riffdb_storage_api::ReplicationHandshakeV3::new(
+            anchor.lineage(),
+            anchor.tail(),
+            ChangelogFrameV3::IDENTITY,
+            anchor.lineage().catalog_digest(),
+            riffdb_storage_api::MAX_CHANGELOG_FRAME_BYTES as u64,
+            riffdb_storage_api::MAX_STAGED_COMMANDS as u64,
+        )
+        .unwrap(),
+    )
+    .unwrap();
+    let emitted = emitter.next_coalesced_frame().unwrap().unwrap();
+    assert_eq!(
+        emitted.as_bytes(),
+        frame,
+        "production grouping retains exact original receipts"
+    );
+    assert!(emitter.next_coalesced_frame().unwrap().is_none());
+    let frame = emitted.into_bytes();
+    drop(emitter);
     drop(pin);
     drop(receiver);
     drop(ports);

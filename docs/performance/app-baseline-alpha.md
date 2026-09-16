@@ -446,3 +446,11 @@ precede the durable selector. Exact retries and process-crash recovery cover the
 publication boundaries. This syscall reduction has not yet been qualified by a
 fresh paired latency comparison; the results above remain the last measured
 comparison, and the no-regression gate remains open.
+
+The collector also groups complete receipts already available in its published
+snapshot into V3 frames, under the existing 256-transition and 32-MiB ceilings.
+It does not wait to fill a frame or split a physical transaction. Ordinary
+replication emission keeps its existing framing. Grouping preserves exact
+receipt identities, archive retries and application-sequence restore stops;
+a fresh paired run is required to quantify its effect on collection lag and
+acknowledgement latency.

@@ -2,8 +2,8 @@
 //! application authorization, network, or journal bytes are reachable here.
 
 use super::{
-    ChangelogCursorErrorV3, ChangelogFrameBindingV3, ChangelogFrameV3, ChangelogHistoryPointV3,
-    ChangelogLineageV3, ChangelogReceiptCursorV3, ChangelogV3Error,
+    AuthoritativeTransactionV3, ChangelogCursorErrorV3, ChangelogFrameBindingV3, ChangelogFrameV3,
+    ChangelogHistoryPointV3, ChangelogLineageV3, ChangelogReceiptCursorV3, ChangelogV3Error,
 };
 use crate::{
     AuthoritativeStateCatalogV1, MAX_CHANGELOG_FRAME_BYTES, MAX_STAGED_COMMANDS,
@@ -113,8 +113,10 @@ impl EmittedChangelogFrameV3 {
 }
 
 /// Synchronous framing core used outside the exclusive write gate. Retains one
-/// bounded receipt cursor and emits one unsplit receipt per frame. New pins can
-/// coalesce any number of notifications without skipping retained receipts.
+/// bounded receipt cursor. Ordinary emission preserves one receipt per frame;
+/// archive emission may group complete receipts within the same wire ceilings.
+/// At most one bounded lookahead receipt is retained. New pins can coalesce
+/// notifications without skipping retained receipts.
 ///
 /// Each connection's frame chain starts at the negotiated resume history hash;
 /// subsequent frames bind the previous frame checksum. Receipt history remains
@@ -125,6 +127,7 @@ pub struct ChangelogFrameCursorV3 {
     position: ChangelogHistoryPointV3,
     prior_frame_hash: [u8; 32],
     cursor: Box<dyn ChangelogReceiptCursorV3>,
+    lookahead: Option<AuthoritativeTransactionV3>,
     failure: Option<ReplicationStreamErrorV3>,
 }
 
@@ -142,6 +145,7 @@ impl ChangelogFrameCursorV3 {
             position: handshake.after,
             prior_frame_hash: handshake.after.history_hash(),
             cursor,
+            lookahead: None,
             failure: None,
         })
     }
@@ -160,6 +164,9 @@ impl ChangelogFrameCursorV3 {
             let cursor = snapshot.changelog_receipts_v3(self.lineage, self.position)?;
             validate_pin(cursor.as_ref(), self.lineage, self.position)?;
             self.cursor = cursor;
+            // The new cursor starts after the emitted position, so any old
+            // lookahead must be read again through this pin's exact fence.
+            self.lookahead = None;
             Ok(())
         })();
         if let Err(error) = result {
@@ -168,7 +175,7 @@ impl ChangelogFrameCursorV3 {
         result
     }
 
-    /// Produces one complete frame or the exact pinned end. Once failed, never
+    /// Produces a one-receipt frame or the exact pinned end. Once failed, never
     /// returns another frame. All validation finishes before progress advances.
     pub fn next_frame(
         &mut self,
@@ -176,9 +183,25 @@ impl ChangelogFrameCursorV3 {
         if let Some(error) = self.failure {
             return Err(error);
         }
-        let result = self.frame_next_receipt();
+        let result = self.frame_next_receipts(1);
         if let Err(error) = result {
             self.failure = Some(error);
+        }
+        result
+    }
+
+    /// Coalesces already-published complete receipts up to the existing V3
+    /// byte and transition ceilings, without waiting for another publication.
+    pub fn next_coalesced_frame(
+        &mut self,
+    ) -> Result<Option<EmittedChangelogFrameV3>, ReplicationStreamErrorV3> {
+        if let Some(error) = self.failure {
+            return Err(error);
+        }
+        let result = self.frame_next_receipts(MAX_STAGED_COMMANDS);
+        if let Err(error) = result {
+            self.failure = Some(error);
+            self.lookahead = None;
         }
         result
     }
@@ -200,26 +223,64 @@ impl ChangelogFrameCursorV3 {
         Ok(self.cursor.history().tail())
     }
 
-    fn frame_next_receipt(
+    fn frame_next_receipts(
         &mut self,
+        maximum_receipts: usize,
     ) -> Result<Option<EmittedChangelogFrameV3>, ReplicationStreamErrorV3> {
         let tail = self.cursor.history().tail();
-        let Some(receipt) = self.cursor.next_receipt()? else {
-            if self.position != tail {
+        let mut covered = self.position;
+        let mut receipts = Vec::new();
+        let mut transitions = 0_u64;
+        let mut bytes = super::frame::FIXED_FRAME_BYTES;
+        while receipts.len() < maximum_receipts && transitions < MAX_STAGED_COMMANDS as u64 {
+            let next = match self.lookahead.take() {
+                Some(receipt) => Some(receipt),
+                None => self.cursor.next_receipt()?,
+            };
+            let Some(receipt) = next else {
+                if covered != tail {
+                    return Err(ReplicationStreamErrorV3::CorruptHistory);
+                }
+                break;
+            };
+            let binding = receipt.binding();
+            let successor = ChangelogHistoryPointV3::from_receipt(&receipt)?;
+            if binding.database_id != self.lineage.database_id()
+                || binding.history_incarnation != self.lineage.history_incarnation()
+                || binding.predecessor != Some(covered.sequence())
+                || Some(binding.sequence) != covered.sequence().checked_next()
+                || binding.prior_history_hash != covered.history_hash()
+                || binding.predecessor_frontier != covered.frontier()
+                || binding.sequence > tail.sequence()
+                || (binding.sequence == tail.sequence() && successor != tail)
+            {
                 return Err(ReplicationStreamErrorV3::CorruptHistory);
             }
+            let next_transitions = transitions
+                .checked_add(receipt.transition_count())
+                .ok_or(ChangelogV3Error::LimitExceeded)?;
+            let next_bytes = bytes
+                .checked_add(4)
+                .and_then(|n| n.checked_add(receipt.encoded_len().ok()?))
+                .ok_or(ChangelogV3Error::LimitExceeded)?;
+            if next_transitions > MAX_STAGED_COMMANDS as u64
+                || next_bytes > MAX_CHANGELOG_FRAME_BYTES
+            {
+                if receipts.is_empty() {
+                    return Err(ChangelogV3Error::LimitExceeded.into());
+                }
+                // Never split a physical transaction. Keep only this one
+                // checked receipt, bounded by its existing admission ceiling.
+                self.lookahead = Some(receipt);
+                break;
+            }
+            receipts.push(receipt);
+            transitions = next_transitions;
+            bytes = next_bytes;
+            covered = successor;
+        }
+        if receipts.is_empty() {
             return Ok(None);
-        };
-        let binding = receipt.binding();
-        let covered = ChangelogHistoryPointV3::from_receipt(&receipt)?;
-        if binding.predecessor != Some(self.position.sequence())
-            || Some(binding.sequence) != self.position.sequence().checked_next()
-            || binding.prior_history_hash != self.position.history_hash()
-            || binding.predecessor_frontier != self.position.frontier()
-            || binding.sequence > tail.sequence()
-            || (binding.sequence == tail.sequence() && covered != tail)
-        {
-            return Err(ReplicationStreamErrorV3::CorruptHistory);
         }
         let frame = ChangelogFrameV3::new(
             ChangelogFrameBindingV3::new(
@@ -229,7 +290,7 @@ impl ChangelogFrameCursorV3 {
                 self.lineage.catalog_digest(),
                 self.prior_frame_hash,
             )?,
-            vec![receipt],
+            receipts,
         )?;
         let bytes = frame.encode()?;
         let checksum = bytes

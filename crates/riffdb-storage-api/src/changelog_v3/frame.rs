@@ -13,10 +13,10 @@ const FOOTER_MAGIC: &[u8; 8] = b"RDBCLE03";
 const SOURCE_COUNT: usize = ChangelogAttributionV3::ALL.len();
 const HEADER_BYTES: usize = 166 + 4 * SOURCE_COUNT;
 const FOOTER_BYTES: usize = 48;
+pub(super) const FIXED_FRAME_BYTES: usize = HEADER_BYTES + FOOTER_BYTES;
 
 // Admission must leave space for a complete frame containing this unsplit row.
-pub(super) const MAX_RECEIPT_BYTES: usize =
-    MAX_CHANGELOG_FRAME_BYTES - HEADER_BYTES - FOOTER_BYTES - 4;
+pub(super) const MAX_RECEIPT_BYTES: usize = MAX_CHANGELOG_FRAME_BYTES - FIXED_FRAME_BYTES - 4;
 
 /// Exact checked lineage, leadership, catalog, and prior-frame binding.
 #[derive(Clone, Copy, Eq, PartialEq)]
@@ -154,7 +154,7 @@ impl ChangelogFrameV3 {
     pub fn encoded_len(&self) -> Result<usize, ChangelogV3Error> {
         self.receipts
             .iter()
-            .try_fold(HEADER_BYTES + FOOTER_BYTES, |bytes, row| {
+            .try_fold(FIXED_FRAME_BYTES, |bytes, row| {
                 bytes
                     .checked_add(4)
                     .and_then(|n| n.checked_add(row.encoded_len().ok()?))

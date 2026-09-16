@@ -23101,6 +23101,27 @@ work_packages:
       prefix before selector rename and the new prefix after successful rename.
       No frame bytes, retention acknowledgement or source write gate changes.
       Fresh paired latency qualification and the no-regression gate remain open.
+    - Use ADR-0186 section 3's existing complete-receipt grouping only for archive
+      emission. Fill from the current immutable snapshot up to the unchanged
+      256-transition and 32-MiB frame ceilings; never wait for more publications
+      or split a physical transaction. Retain at most one bounded lookahead
+      receipt and re-read it from the exact emitted fence after a successful
+      replacement pin. Preserve ordinary one-receipt replication emission.
+      Validate every candidate's lineage, chain and frontier before emission;
+      gaps or truncation fuse the stream without releasing a partial frame.
+      Prove grouped exact retry, bounded spillover and production-emitter bytes
+      through the existing private exact-stop restore fixture. Fresh paired
+      performance evidence is still required; no threshold or format changes.
+    - Adopt the already-present follower catch-up test correction after the broad
+      and isolated runs exhausted its fixed Statistics poll count before the
+      existing 30-second deadline. Wait within that unchanged deadline, yielding
+      between calls, and retain the exact final frontier and byte-faithful oracle
+      assertions. The multi-crash bootstrap campaign also passed in isolation at
+      116 seconds, nearly exhausting its general 120-second outer watchdog;
+      adopt its existing workspace-only override to 240 seconds while keeping
+      every internal 30-second progress deadline. Keep these acceptance
+      prerequisites separate from archive runtime changes; they change no
+      follower guarantee, performance gate or production behavior.
   human_review_triggers: *id0178
 
 - id: WP-750

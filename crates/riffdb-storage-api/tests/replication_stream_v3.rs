@@ -296,3 +296,6 @@ fn replication_negotiation_never_downgrades_format_catalog_or_bounds() {
         );
     }
 }
+
+#[path = "replication_stream_v3/coalesced.rs"]
+mod coalesced;
