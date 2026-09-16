@@ -22490,6 +22490,11 @@ work_packages:
       private stages from the frozen receipt, resolve receipt-parent uncertainty before
       mutation, clean all three receipt-owned unpublished target artifacts on recovery,
       and forbid pre-receipt cleanup after V3 admission.
+    - Share staged restore authentication and current-policy evaluation over one
+      immutable RedbOwnedSnapshot. Consume the bearer and all auth read pins before
+      the caller closes its engine and seals the candidate. Replayed capability
+      grants, approval requirements, expiry and revocations govern that selected
+      state; no local follower authority or cached source proof is introduced.
   human_review_triggers: *id0178
 
 - id: WP-750
