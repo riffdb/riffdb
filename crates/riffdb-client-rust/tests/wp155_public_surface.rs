@@ -35,8 +35,12 @@ async fn all_maintenance_methods_are_public(
     metadata: &CallMetadata,
     create: &CreateOfflineBackup,
     restore: &RestoreOfflineBackup,
+    archive: &riffdb_client_rust::RestoreArchivedBackup,
 ) {
     let budget = AttemptBudget::new(3).expect("budget");
+    let _ = client
+        .restore_archived_backup_with_retry(archive, budget, metadata)
+        .await;
     let _ = client
         .create_offline_backup_with_retry(create, budget, metadata)
         .await;

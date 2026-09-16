@@ -1198,6 +1198,17 @@ pub(crate) enum BackupCommand {
 
 #[derive(Debug, Subcommand)]
 pub(crate) enum StorageCommand {
+    /// Restores a full backup plus its configured archive through maintenance admission.
+    Restore {
+        #[arg(value_name = "BACKUP_NAME")]
+        name: String,
+        #[arg(long, value_name = "ARCHIVE_NAME")]
+        archive: String,
+        #[arg(long, value_parser = clap::value_parser!(u64).range(1..))]
+        stop_at_sequence: Option<u64>,
+        #[arg(long)]
+        confirm_replace_current_database: bool,
+    },
     /// Compares the retained format identity without opening the database.
     Preflight {
         #[arg(long, value_name = "PATH")]
@@ -2517,6 +2528,54 @@ mod tests {
             ])
             .is_err(),
             "a raw JSONL import without source operation/page/hash is unrepresentable"
+        );
+    }
+
+    #[test]
+    // req: REP-007, AFC-007
+    fn archive_restore_stop_requires_archive_and_a_positive_application_sequence() {
+        assert!(
+            Cli::try_parse_from([
+                "riffdb",
+                "storage",
+                "restore",
+                "base",
+                "--stop-at-sequence",
+                "7"
+            ])
+            .is_err()
+        );
+        assert!(
+            Cli::try_parse_from([
+                "riffdb",
+                "storage",
+                "restore",
+                "base",
+                "--archive",
+                "daily",
+                "--stop-at-sequence",
+                "0"
+            ])
+            .is_err()
+        );
+        assert!(
+            matches!(Cli::try_parse_from(["riffdb", "storage", "restore", "base", "--archive", "daily", "--stop-at-sequence", "7"]).unwrap().command,
+            TopLevel::Storage { command: StorageCommand::Restore { archive, stop_at_sequence: Some(7), .. } } if archive == "daily")
+        );
+        assert!(matches!(
+            Cli::try_parse_from(["riffdb", "storage", "restore", "base", "--archive", "daily"])
+                .unwrap()
+                .command,
+            TopLevel::Storage {
+                command: StorageCommand::Restore {
+                    stop_at_sequence: None,
+                    ..
+                }
+            }
+        ));
+        assert!(
+            Cli::try_parse_from(["riffdb", "backup", "restore", "base", "--archive", "daily"])
+                .is_err()
         );
     }
 

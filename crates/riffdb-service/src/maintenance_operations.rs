@@ -39,6 +39,9 @@ use crate::{
     port_completion_channel,
 };
 
+#[path = "maintenance_archive_operations.rs"]
+mod archive;
+
 impl OfflineMaintenanceApplication for RiffDbService {
     fn create_offline_backup(
         &self,
@@ -63,6 +66,20 @@ impl OfflineMaintenanceApplication for RiffDbService {
         let operation_submission = Arc::clone(&submission);
         self.spawn_tracked_maintenance_operation(submission, async move {
             start_restore_backup(service, context, request, credential, operation_submission).await
+        })
+    }
+
+    fn restore_archived_backup(
+        &self,
+        invocation: crate::RestoreArchivedBackupInvocation,
+    ) -> ServiceFuture<'_, OfflineMaintenanceStartResult> {
+        let service = Arc::clone(&self.inner);
+        let (context, request, credential) = invocation.into_parts();
+        let submission = Arc::new(MaintenanceSubmissionState::new());
+        let operation_submission = Arc::clone(&submission);
+        self.spawn_tracked_maintenance_operation(submission, async move {
+            archive::start_restore(service, context, request, credential, operation_submission)
+                .await
         })
     }
 
@@ -758,7 +775,8 @@ fn observation_matches_restore(
     observation: &OfflineMaintenanceOperationObservation,
     request: &RestoreOfflineBackupRequest,
 ) -> bool {
-    observation.operation_id() == request.operation_id()
+    observation.archive_restore().is_none()
+        && observation.operation_id() == request.operation_id()
         && observation.kind() == OfflineMaintenanceOperationKind::RestoreBackup
         && observation.backup_name() == request.backup_name()
         && observation.input_hash() == request.input_hash()
@@ -1065,5 +1083,65 @@ mod tests {
         assert!(!source.contains(concat!("riffdb_", "proto")));
         assert!(!source.contains(concat!("to", "nic")));
         assert!(!source.contains(concat!("pro", "st")));
+    }
+}
+
+#[cfg(test)]
+mod archive_request_tests {
+    // req: REP-007, AFC-007
+    use super::*;
+    use riffdb_types::{
+        ArchiveNameV1, ArchiveRestoreStopV1, BackupNameV1, CommitSequence,
+        OfflineMaintenanceReplacementConfirmation,
+    };
+    #[test]
+    fn archived_restore_identity_is_distinct_and_binds_archive_stop_and_confirmation() {
+        let id = OfflineMaintenanceOperationId::from_unix_milliseconds_and_random(1000, [41; 10])
+            .unwrap();
+        let backup = BackupNameV1::new("baseline").unwrap();
+        let archive = ArchiveNameV1::new("daily").unwrap();
+        let confirmation = OfflineMaintenanceReplacementConfirmation::NotProvided;
+        let baseline = crate::RestoreArchivedBackupRequest::new(
+            id,
+            backup.clone(),
+            archive.clone(),
+            ArchiveRestoreStopV1::LastArchived,
+            confirmation,
+        )
+        .unwrap();
+        let ordinary = RestoreOfflineBackupRequest::new(id, backup.clone(), confirmation).unwrap();
+        assert_ne!(baseline.input_hash(), ordinary.input_hash());
+        for changed in [
+            crate::RestoreArchivedBackupRequest::new(
+                id,
+                backup.clone(),
+                ArchiveNameV1::new("weekly").unwrap(),
+                ArchiveRestoreStopV1::LastArchived,
+                confirmation,
+            )
+            .unwrap(),
+            crate::RestoreArchivedBackupRequest::new(
+                id,
+                backup.clone(),
+                archive.clone(),
+                ArchiveRestoreStopV1::AtApplicationSequence(CommitSequence::first()),
+                confirmation,
+            )
+            .unwrap(),
+            crate::RestoreArchivedBackupRequest::new(
+                id,
+                backup,
+                archive,
+                ArchiveRestoreStopV1::LastArchived,
+                OfflineMaintenanceReplacementConfirmation::AllowReplaceNonemptyTarget,
+            )
+            .unwrap(),
+        ] {
+            assert_ne!(baseline.input_hash(), changed.input_hash());
+        }
+        assert_eq!(
+            format!("{baseline:?}"),
+            "RestoreArchivedBackupRequest([REDACTED])"
+        );
     }
 }

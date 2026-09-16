@@ -2452,6 +2452,15 @@ pub enum AuthorizedOfflineMaintenanceStart {
         /// Move-only bearer retained for fresh staged authentication.
         credential: RetainedOpaqueCredential,
     },
+    /// Restore a backup and archived suffix under a distinct canonical request.
+    RestoreArchivedBackup {
+        /// Checked archive name, exact stop and caller-stable operation identity.
+        request: crate::RestoreArchivedBackupRequest,
+        /// Current global restore authority bound to every semantic input.
+        authorization: Box<AuthorizedOfflineMaintenance>,
+        /// The same bearer, retained only for independent staged authorization.
+        credential: RetainedOpaqueCredential,
+    },
     /// Retire one exact immutable backup under the same global authority.
     RetireBackup {
         /// Checked semantic input and caller-stable receipt identity.
@@ -2469,6 +2478,9 @@ impl std::fmt::Debug for AuthorizedOfflineMaintenanceStart {
             }
             Self::RestoreBackup { .. } => {
                 "AuthorizedOfflineMaintenanceStart::RestoreBackup([REDACTED])"
+            }
+            Self::RestoreArchivedBackup { .. } => {
+                "AuthorizedOfflineMaintenanceStart::RestoreArchivedBackup([REDACTED])"
             }
             Self::RetireBackup { .. } => {
                 "AuthorizedOfflineMaintenanceStart::RetireBackup([REDACTED])"

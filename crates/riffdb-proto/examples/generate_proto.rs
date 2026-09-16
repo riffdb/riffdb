@@ -773,6 +773,7 @@ const EXPECTED_METHODS: &[(&str, &str, bool)] = &[
     ("AdminService", "Health", false),
     ("AdminService", "ListPendingOutboxDeliveries", false),
     ("AdminService", "RestoreOfflineBackup", false),
+    ("AdminService", "RestoreArchivedBackup", false),
     ("AdminService", "RetireOfflineBackup", false),
     ("AdminService", "RevokeCapability", false),
     ("AdminService", "Stats", false),
@@ -829,7 +830,17 @@ const DISCOVERY_PAGE_BOUNDARIES: [(&str, usize, bool, &str); 4] = [
     ("limit-500-exact-end", 500, false, "exact_end"),
 ];
 
-const WP137_OPTIONAL_COVERAGE: [(&str, &str, &str); 22] = [
+const WP137_OPTIONAL_COVERAGE: [(&str, &str, &str); 24] = [
+    (
+        "riffdb.v1.RestoreArchivedBackupRequest.stop_at_sequence",
+        "AdminService.RestoreArchivedBackup:request:last-archived",
+        "AdminService.RestoreArchivedBackup:request:at-sequence",
+    ),
+    (
+        "riffdb.v1.ArchiveRestoreObservation.stop_at_sequence",
+        "AdminService.RestoreArchivedBackup:response:last-archived",
+        "AdminService.RestoreArchivedBackup:response:at-sequence",
+    ),
     (
         "riffdb.v1.CompiledContractCandidate.parent_version",
         "ContractService.ValidateContract:response:valid",
@@ -4551,6 +4562,70 @@ fn public_client_vectors(descriptors: &FileDescriptorSet) -> Result<String, Box<
         },
     );
 
+    for (branch, stop_at_sequence) in [("last-archived", None), ("at-sequence", Some(7))] {
+        let archive_name = riffdb_types::ArchiveNameV1::new("daily-archive".to_owned())?;
+        let backup_name = riffdb_types::BackupNameV1::new("before-upgrade".to_owned())?;
+        let stop = match stop_at_sequence {
+            None => riffdb_types::ArchiveRestoreStopV1::LastArchived,
+            Some(sequence) => riffdb_types::ArchiveRestoreStopV1::AtApplicationSequence(
+                riffdb_types::CommitSequence::new(sequence).ok_or("invalid fixture sequence")?,
+            ),
+        };
+        let mut operation = public_maintenance_operation(
+            OfflineMaintenanceOperationKind::RestoreBackup,
+            "before-upgrade",
+            OfflineMaintenanceReplacementConfirmation::AllowReplaceNonemptyTarget,
+            v1::OfflineMaintenancePhase::Succeeded,
+            v1::OfflineMaintenanceFailureClass::Unspecified,
+        );
+        operation.input_hash = riffdb_types::archive_restore_input_hash(
+            &backup_name,
+            &archive_name,
+            stop,
+            OfflineMaintenanceReplacementConfirmation::AllowReplaceNonemptyTarget,
+        )
+        .as_bytes()
+        .to_vec();
+        operation.archive_restore = Some(v1::ArchiveRestoreObservation {
+            archive_name: archive_name.as_str().to_owned(),
+            stop_at_sequence,
+            backup_frontier: Some(v1::ArchiveBackupFrontier {
+                application: Some(public_applied(3)),
+            }),
+            restored_frontier: Some(v1::ReplicationFrontier {
+                application: Some(public_applied(7)),
+                administration: Some(public_applied(2)),
+            }),
+        });
+        append_client_vector(
+            &mut output,
+            "AdminService.RestoreArchivedBackup",
+            "request",
+            branch,
+            "riffdb.v1.RestoreArchivedBackupRequest",
+            &v1::RestoreArchivedBackupRequest {
+                request_id: public_request_id(),
+                operation_id: public_request_id(),
+                backup_name: backup_name.as_str().to_owned(),
+                replacement_confirmation:
+                    v1::OfflineMaintenanceReplacementConfirmation::AllowReplaceNonemptyTarget as i32,
+                archive_name: archive_name.as_str().to_owned(),
+                stop_at_sequence,
+            },
+        );
+        append_client_vector(
+            &mut output,
+            "AdminService.RestoreArchivedBackup",
+            "response",
+            branch,
+            "riffdb.v1.RestoreArchivedBackupResponse",
+            &v1::RestoreArchivedBackupResponse {
+                disposition: v1::OfflineMaintenanceStartDisposition::Terminal as i32,
+                operation: Some(operation),
+            },
+        );
+    }
+
     append_client_vector(
         &mut output,
         "AdminService.GetOfflineMaintenanceOperation",
@@ -5337,6 +5412,7 @@ fn public_maintenance_operation(
             .to_vec(),
         phase: phase as i32,
         failure: failure as i32,
+        ..Default::default()
     }
 }
 

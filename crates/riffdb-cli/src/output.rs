@@ -97,6 +97,7 @@ pub(crate) enum CommandIdentity {
     ReimportPage,
     ReimportStatus,
     ReimportCancel,
+    StorageRestore,
     StoragePreflight,
     StorageUpgrade,
     RetentionStatus,
@@ -182,6 +183,7 @@ impl CommandIdentity {
             Self::ReimportPage => "reimport.page",
             Self::ReimportStatus => "reimport.status",
             Self::ReimportCancel => "reimport.cancel",
+            Self::StorageRestore => "storage.restore",
             Self::StoragePreflight => "storage.preflight",
             Self::StorageUpgrade => "storage.upgrade",
             Self::RetentionStatus => "retention.status",
@@ -871,6 +873,16 @@ pub(crate) fn render_restore_maintenance_start(
 ) -> Terminal {
     render_maintenance_start(
         CommandIdentity::BackupRestore,
+        response.disposition,
+        response.operation.as_ref(),
+    )
+}
+
+pub(crate) fn render_archive_restore_maintenance_start(
+    response: &v1::RestoreArchivedBackupResponse,
+) -> Terminal {
+    render_maintenance_start(
+        CommandIdentity::StorageRestore,
         response.disposition,
         response.operation.as_ref(),
     )
@@ -2441,6 +2453,8 @@ struct MaintenanceOperationDto<'a> {
     phase: &'static str,
     #[serde(skip_serializing_if = "Option::is_none")]
     failure: Option<&'static str>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    archive_restore: Option<ArchiveRestoreDto<'a>>,
 }
 
 #[derive(Serialize)]
@@ -2605,6 +2619,41 @@ fn installation_next_action(value: i32) -> Option<&'static str> {
     }
 }
 
+struct ArchiveRestoreDto<'a>(&'a v1::ArchiveRestoreObservation);
+impl Serialize for ArchiveRestoreDto<'_> {
+    fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        let archive = self.0;
+        let mut map = serializer.serialize_map(None)?;
+        map.serialize_entry("archive_name", &archive.archive_name)?;
+        map.serialize_entry(
+            "stop",
+            if archive.stop_at_sequence.is_some() {
+                "at_sequence"
+            } else {
+                "last_archived"
+            },
+        )?;
+        if let Some(sequence) = archive.stop_at_sequence {
+            map.serialize_entry("stop_at_sequence", &sequence.to_string())?;
+        }
+        if let Some(backup) = &archive.backup_frontier {
+            map.serialize_entry(
+                "backup_application_frontier",
+                &Frontier(
+                    backup
+                        .application
+                        .as_ref()
+                        .ok_or_else(|| S::Error::custom("archive backup frontier"))?,
+                ),
+            )?;
+        }
+        if let Some(restored) = &archive.restored_frontier {
+            map.serialize_entry("restored_frontier", &ReplicationFrontierDto(restored))?;
+        }
+        map.end()
+    }
+}
+
 impl<'a> MaintenanceOperationDto<'a> {
     fn new(status: &'a str, operation: &'a v1::OfflineMaintenanceOperation) -> Option<Self> {
         let kind = match v1::OfflineMaintenanceOperationKind::try_from(operation.kind).ok()? {
@@ -2647,6 +2696,7 @@ impl<'a> MaintenanceOperationDto<'a> {
             input_hash: LowerHex(&operation.input_hash),
             phase,
             failure,
+            archive_restore: operation.archive_restore.as_ref().map(ArchiveRestoreDto),
         })
     }
 }
@@ -3055,6 +3105,68 @@ mod tests {
     #[derive(Serialize)]
     struct Status<'a> {
         status: &'a str,
+    }
+
+    #[test]
+    // req: REP-007, AFC-007
+    fn archive_restore_output_separates_backup_and_actual_frontiers() {
+        let frontier = |sequence| v1::FrontierPosition {
+            position: Some(v1::frontier_position::Position::AppliedThrough(sequence)),
+        };
+        let operation = v1::OfflineMaintenanceOperation {
+            operation_id: parse_uuid("018f2f85-3c20-7a31-8f11-112233445566")
+                .unwrap()
+                .to_vec(),
+            kind: v1::OfflineMaintenanceOperationKind::RestoreBackup as i32,
+            backup_name: "baseline".into(),
+            input_hash: vec![1; 32],
+            phase: v1::OfflineMaintenancePhase::Succeeded as i32,
+            failure: v1::OfflineMaintenanceFailureClass::Unspecified as i32,
+            archive_restore: Some(v1::ArchiveRestoreObservation {
+                archive_name: "daily".into(),
+                stop_at_sequence: Some(7),
+                backup_frontier: Some(v1::ArchiveBackupFrontier {
+                    application: Some(frontier(3)),
+                }),
+                restored_frontier: Some(v1::ReplicationFrontier {
+                    application: Some(frontier(7)),
+                    administration: Some(frontier(2)),
+                }),
+            }),
+        };
+        let response = v1::RestoreArchivedBackupResponse {
+            disposition: v1::OfflineMaintenanceStartDisposition::Terminal as i32,
+            operation: Some(operation),
+        };
+        let terminal = render_archive_restore_maintenance_start(&response);
+        let value: JsonValue = serde_json::from_slice(terminal.json_bytes().unwrap()).unwrap();
+        assert_eq!(value["command"], "storage.restore");
+        let detail = &value["result"]["archive_restore"];
+        assert_eq!(detail["archive_name"], "daily");
+        assert_eq!(detail["stop_at_sequence"], "7");
+        assert_eq!(
+            detail["backup_application_frontier"],
+            serde_json::to_value(Frontier(
+                response
+                    .operation
+                    .as_ref()
+                    .unwrap()
+                    .archive_restore
+                    .as_ref()
+                    .unwrap()
+                    .backup_frontier
+                    .as_ref()
+                    .unwrap()
+                    .application
+                    .as_ref()
+                    .unwrap()
+            ))
+            .unwrap()
+        );
+        assert_ne!(
+            detail["backup_application_frontier"],
+            detail["restored_frontier"]["application"]
+        );
     }
 
     #[test]
@@ -3851,6 +3963,7 @@ mod tests {
             input_hash: hex_bytes(value, "input_hash"),
             phase: phase as i32,
             failure: failure as i32,
+            archive_restore: None,
         }
     }
 

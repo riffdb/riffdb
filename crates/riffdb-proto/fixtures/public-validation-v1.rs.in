@@ -373,6 +373,29 @@ pub fn validate_restore_offline_backup_exchange(
     )
 }
 
+/// Validates the distinct archive request/response identity, with no fallback.
+pub fn validate_restore_archived_backup_exchange(request: &v1::RestoreArchivedBackupRequest,
+    response: &v1::RestoreArchivedBackupResponse) -> Result<(), PublicWireError> {
+    validate_public_message(request)?;
+    validate_public_message(response)?;
+    let backup = BackupNameV1::new(request.backup_name.clone()).map_err(|_| PublicWireError::InvalidIdentity)?;
+    let archive = riffdb_types::ArchiveNameV1::new(request.archive_name.clone()).map_err(|_| PublicWireError::InvalidIdentity)?;
+    let stop = archive_stop(request.stop_at_sequence)?;
+    let confirmation = match v1::OfflineMaintenanceReplacementConfirmation::try_from(request.replacement_confirmation).map_err(|_| PublicWireError::InvalidEnum)? {
+        v1::OfflineMaintenanceReplacementConfirmation::Unspecified => riffdb_types::OfflineMaintenanceReplacementConfirmation::NotProvided,
+        v1::OfflineMaintenanceReplacementConfirmation::AllowReplaceNonemptyTarget => riffdb_types::OfflineMaintenanceReplacementConfirmation::AllowReplaceNonemptyTarget,
+    };
+    let expected = riffdb_types::archive_restore_input_hash(&backup, &archive, stop, confirmation);
+    let operation = response.operation.as_ref().ok_or(PublicWireError::MissingRequiredField)?;
+    let detail = operation.archive_restore.as_ref().ok_or(PublicWireError::MissingRequiredField)?;
+    if operation.operation_id != request.operation_id || operation.kind != v1::OfflineMaintenanceOperationKind::RestoreBackup as i32
+        || operation.backup_name != request.backup_name || operation.input_hash != expected.as_bytes()
+        || detail.archive_name != request.archive_name || detail.stop_at_sequence != request.stop_at_sequence {
+        return Err(PublicWireError::InconsistentFields);
+    }
+    Ok(())
+}
+
 /// Validates retire-backup request/response semantic identity.
 pub fn validate_retire_offline_backup_exchange(
     request: &v1::RetireOfflineBackupRequest,
@@ -3963,6 +3986,26 @@ fn validate_offline_maintenance_operation(
     {
         return Err(PublicWireError::InconsistentFields);
     }
+    if let Some(archive) = &operation.archive_restore {
+        if operation.kind != v1::OfflineMaintenanceOperationKind::RestoreBackup as i32 {
+            return Err(PublicWireError::InconsistentFields);
+        }
+        riffdb_types::ArchiveNameV1::new(archive.archive_name.clone()).map_err(|_| PublicWireError::InvalidIdentity)?;
+        archive_stop(archive.stop_at_sequence)?;
+        let backup = archive.backup_frontier.as_ref().map(|backup| {
+            frontier_value(backup.application.as_ref().ok_or(PublicWireError::MissingRequiredField)?)
+        }).transpose()?;
+        let restored = archive.restored_frontier.as_ref().map(replication_frontier_pair).transpose()?;
+        if phase == v1::OfflineMaintenancePhase::Succeeded && restored.is_none() {
+            return Err(PublicWireError::MissingRequiredField);
+        }
+        if let Some(restored) = restored {
+            let backup = backup.ok_or(PublicWireError::MissingRequiredField)?.unwrap_or(0);
+            if restored.0 < backup || archive.stop_at_sequence.is_some_and(|sequence| restored.0 != sequence) {
+                return Err(PublicWireError::InconsistentFields);
+            }
+        }
+    }
     Ok(())
 }
 
@@ -4024,7 +4067,27 @@ fn validate_restore_offline_backup_request(
 fn validate_restore_offline_backup_response(
     message: &v1::RestoreOfflineBackupResponse,
 ) -> Result<(), PublicWireError> {
-    validate_offline_maintenance_start(message.disposition, message.operation.as_ref())
+    validate_offline_maintenance_start(message.disposition, message.operation.as_ref())?;
+    if message.operation.as_ref().is_some_and(|operation| operation.archive_restore.is_some()) { return Err(PublicWireError::InconsistentFields); }
+    Ok(())
+}
+
+fn archive_stop(sequence: Option<u64>) -> Result<riffdb_types::ArchiveRestoreStopV1, PublicWireError> {
+    match sequence {
+        None => Ok(riffdb_types::ArchiveRestoreStopV1::LastArchived),
+        Some(sequence) => riffdb_types::CommitSequence::new(sequence).map(riffdb_types::ArchiveRestoreStopV1::AtApplicationSequence).ok_or(PublicWireError::InvalidIdentity),
+    }
+}
+fn validate_restore_archived_backup_request(message: &v1::RestoreArchivedBackupRequest) -> Result<(), PublicWireError> {
+    validate_restore_offline_backup_request(&v1::RestoreOfflineBackupRequest { request_id: message.request_id.clone(), operation_id: message.operation_id.clone(), backup_name: message.backup_name.clone(), replacement_confirmation: message.replacement_confirmation })?;
+    riffdb_types::ArchiveNameV1::new(message.archive_name.clone()).map_err(|_| PublicWireError::InvalidIdentity)?;
+    archive_stop(message.stop_at_sequence)?;
+    Ok(())
+}
+fn validate_restore_archived_backup_response(message: &v1::RestoreArchivedBackupResponse) -> Result<(), PublicWireError> {
+    validate_offline_maintenance_start(message.disposition, message.operation.as_ref())?;
+    if message.operation.as_ref().is_none_or(|operation| operation.archive_restore.is_none()) { return Err(PublicWireError::MissingRequiredField); }
+    Ok(())
 }
 
 fn validate_retire_offline_backup_request(
@@ -7971,8 +8034,17 @@ fn preflight_list_outbox_response(input: &[u8]) -> Result<(), PublicWireError> {
     )
 }
 
+fn preflight_archive_backup_frontier(input: &[u8]) -> Result<(), PublicWireError> {
+    preflight_nested_message(input, 1, &[], &[], &[NestedRule { field: 1, preflight: preflight_frontier }], &[])
+}
+fn preflight_archive_restore_observation(input: &[u8]) -> Result<(), PublicWireError> {
+    preflight_nested_message(input, 4, &[], &[], &[
+        NestedRule { field: 3, preflight: preflight_archive_backup_frontier },
+        NestedRule { field: 4, preflight: preflight_replication_frontier },
+    ], &[])
+}
 fn preflight_offline_maintenance_operation(input: &[u8]) -> Result<(), PublicWireError> {
-    preflight_nested_message(input, 6, &[], &[], &[], &[])
+    preflight_nested_message(input, 7, &[], &[], &[NestedRule { field: 7, preflight: preflight_archive_restore_observation }], &[])
 }
 
 fn preflight_offline_maintenance_start_response(input: &[u8]) -> Result<(), PublicWireError> {
@@ -10677,6 +10749,14 @@ impl_public_message!(
     &[],
     preflight_offline_maintenance_start_response,
     validate_restore_offline_backup_response
+);
+impl_public_message!(
+    v1::RestoreArchivedBackupRequest, MAX_PUBLIC_REQUEST_BYTES, 6, &[], &[],
+    preflight_noop, validate_restore_archived_backup_request
+);
+impl_public_message!(
+    v1::RestoreArchivedBackupResponse, MAX_PUBLIC_RESPONSE_BYTES, 2, &[], &[],
+    preflight_offline_maintenance_start_response, validate_restore_archived_backup_response
 );
 impl_public_message!(
     v1::RetireOfflineBackupRequest,

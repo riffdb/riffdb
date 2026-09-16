@@ -24,7 +24,7 @@ use riffdb_client_rust::{
     NormalCapabilityCreateTemplate, OfflineMaintenanceOperationId,
     OfflineMaintenanceReplacementConfirmation, ProjectedAggregate, ProjectedAggregateValue,
     ProjectedOrder, ProjectedPredicate, ProjectedQuery, ProjectedQueryOutcome,
-    ProjectedResponseEncoding, ProjectedSortDirection, RestoreOfflineBackup, RetireOfflineBackup,
+    ProjectedResponseEncoding, ProjectedSortDirection, RestoreArchivedBackup, RestoreOfflineBackup, RetireOfflineBackup,
     RiffDbClient, StartApplicationExport, StartApplicationInstallation, StartApplicationReimport,
     app_v1, canonical_value_from_proto, canonical_value_to_proto,
     generate_application_export_operation_id, generate_application_installation_campaign_id,
@@ -77,7 +77,7 @@ use crate::output::{
     render_contract_migration_start, render_contract_validation, render_create_maintenance_start,
     render_entity, render_execution, render_health, render_installation_observation,
     render_installation_start, render_maintenance_operation, render_normal_create, render_outcome,
-    render_projection, render_restore_maintenance_start, render_retire_maintenance_start,
+    render_projection, render_archive_restore_maintenance_start, render_restore_maintenance_start, render_retire_maintenance_start,
     render_revoke, success, take_normal_create_disposition, uncertain,
 };
 use crate::project::{DEFAULT_PROJECT_FILE, ProjectError, PushCeremony, push_ceremony};
@@ -1601,6 +1601,9 @@ async fn dispatch(
         TopLevel::Backup { command } => backup_command(command, config, environment).await,
         TopLevel::Export { command } => export_command(command, config, environment).await,
         TopLevel::Reimport { command } => reimport_command(command, config, environment).await,
+        TopLevel::Storage { command: StorageCommand::Restore { name, archive, stop_at_sequence, confirm_replace_current_database } } => {
+            archive_restore_command(name, archive, stop_at_sequence, confirm_replace_current_database, config, environment).await
+        }
         TopLevel::Storage { command } => storage_command(command),
         TopLevel::Retention { command } => retention_command(command),
         TopLevel::Demo { command } => demo_command(command, config, environment),
@@ -11879,6 +11882,7 @@ const fn command_identity(command: &TopLevel) -> CommandIdentity {
         TopLevel::Reimport {
             command: ReimportCommand::Cancel { .. },
         } => CommandIdentity::ReimportCancel,
+        TopLevel::Storage { command: StorageCommand::Restore { .. } } => CommandIdentity::StorageRestore,
         TopLevel::Storage {
             command: StorageCommand::Preflight { .. },
         } => CommandIdentity::StoragePreflight,
@@ -11913,8 +11917,38 @@ const fn command_identity(command: &TopLevel) -> CommandIdentity {
     }
 }
 
+async fn archive_restore_command(
+    name: String, archive: String, stop_at_sequence: Option<u64>, confirm_replace: bool,
+    config: &EffectiveConfig, environment: &dyn Environment,
+) -> Terminal {
+    let identity = CommandIdentity::StorageRestore;
+    let name = match BackupNameV1::new(name) { Ok(name) => name, Err(_) => return invalid_input(identity) };
+    let archive = match riffdb_types::ArchiveNameV1::new(archive) { Ok(name) => name, Err(_) => return invalid_input(identity) };
+    let stop = match stop_at_sequence {
+        None => riffdb_types::ArchiveRestoreStopV1::LastArchived,
+        Some(sequence) => match riffdb_types::CommitSequence::new(sequence) {
+            Some(sequence) => riffdb_types::ArchiveRestoreStopV1::AtApplicationSequence(sequence),
+            None => return invalid_input(identity),
+        },
+    };
+    let operation_id = match generate_offline_maintenance_operation_id() {
+        Ok(id) => id, Err(error) => return client_error(identity, &ClientError::IdentifierGeneration(error)),
+    };
+    let metadata = match required_metadata(identity, config, environment) { Ok(metadata) => metadata, Err(terminal) => return terminal };
+    let mut client = match connect(config).await { Ok(client) => client, Err(error) => return client_error(identity, &error) };
+    let restore = RestoreArchivedBackup::new(operation_id, name, archive, stop, restore_confirmation(confirm_replace));
+    let attempts = AttemptBudget::new(config.max_attempts).expect("configuration bound");
+    match client.restore_archived_backup_with_retry(&restore, attempts, &metadata).await {
+        Ok(response) => render_archive_restore_maintenance_start(&response),
+        Err(ClientError::OutcomeUnknown(_)) => maintenance_uncertain(identity, operation_id),
+        Err(error) => client_error(identity, &error),
+    }
+}
+
 fn storage_command(command: StorageCommand) -> Terminal {
     match command {
+        // Network maintenance is dispatched by the asynchronous command router.
+        StorageCommand::Restore { .. } => invalid_input(CommandIdentity::StorageRestore),
         StorageCommand::Preflight { database_path } => {
             let identity = CommandIdentity::StoragePreflight;
             if validate_path(&database_path).is_err() {

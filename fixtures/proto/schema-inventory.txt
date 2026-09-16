@@ -1793,6 +1793,13 @@ messages
   riffdb.v1.ApplyContractMigrationResponse fields=2
     1 disposition optional .riffdb.v1.ContractMigrationStartDisposition
     2 operation optional .riffdb.v1.ContractMigrationOperation
+  riffdb.v1.ArchiveBackupFrontier fields=1
+    1 application optional .riffdb.v1.FrontierPosition
+  riffdb.v1.ArchiveRestoreObservation fields=4
+    1 archive_name optional string
+    2 stop_at_sequence optional uint64 proto3-optional oneof=_stop_at_sequence
+    3 backup_frontier optional .riffdb.v1.ArchiveBackupFrontier
+    4 restored_frontier optional .riffdb.v1.ReplicationFrontier
   riffdb.v1.AuthenticatedHealth fields=7
     1 status optional .riffdb.v1.HealthStatus
     2 active_contract_version optional uint64 proto3-optional oneof=_active_contract_version
@@ -2581,13 +2588,14 @@ messages
     1 created optional .riffdb.v1.NormalCapabilityCreated oneof=result
     2 already_created_token_unavailable optional .riffdb.v1.CapabilityIdentity oneof=result
     3 capability_id_conflict optional .riffdb.v1.Unit oneof=result
-  riffdb.v1.OfflineMaintenanceOperation fields=6
+  riffdb.v1.OfflineMaintenanceOperation fields=7
     1 operation_id optional bytes
     2 kind optional .riffdb.v1.OfflineMaintenanceOperationKind
     3 backup_name optional string
     4 input_hash optional bytes
     5 phase optional .riffdb.v1.OfflineMaintenancePhase
     6 failure optional .riffdb.v1.OfflineMaintenanceFailureClass
+    7 archive_restore optional .riffdb.v1.ArchiveRestoreObservation
   riffdb.v1.OperationSchemaArtifact fields=4
     1 schema_id optional string
     2 dialect optional string
@@ -2773,6 +2781,16 @@ messages
     1 items repeated .riffdb.v1.ResourceDescriptor
     2 next_cursor optional bytes proto3-optional oneof=_next_cursor
     3 observed_fence optional .riffdb.v1.DiscoveryCatalogFence
+  riffdb.v1.RestoreArchivedBackupRequest fields=6
+    1 request_id optional bytes
+    2 operation_id optional bytes
+    3 backup_name optional string
+    4 replacement_confirmation optional .riffdb.v1.OfflineMaintenanceReplacementConfirmation
+    5 archive_name optional string
+    6 stop_at_sequence optional uint64 proto3-optional oneof=_stop_at_sequence
+  riffdb.v1.RestoreArchivedBackupResponse fields=2
+    1 disposition optional .riffdb.v1.OfflineMaintenanceStartDisposition
+    2 operation optional .riffdb.v1.OfflineMaintenanceOperation
   riffdb.v1.RestoreOfflineBackupRequest fields=4
     1 request_id optional bytes
     2 operation_id optional bytes
@@ -3859,6 +3877,7 @@ services
     ListPendingOutboxDeliveries .riffdb.v1.ListPendingOutboxDeliveriesRequest -> .riffdb.v1.ListPendingOutboxDeliveriesResponse (unary)
     CreateOfflineBackup .riffdb.v1.CreateOfflineBackupRequest -> .riffdb.v1.CreateOfflineBackupResponse (unary)
     RestoreOfflineBackup .riffdb.v1.RestoreOfflineBackupRequest -> .riffdb.v1.RestoreOfflineBackupResponse (unary)
+    RestoreArchivedBackup .riffdb.v1.RestoreArchivedBackupRequest -> .riffdb.v1.RestoreArchivedBackupResponse (unary)
     RetireOfflineBackup .riffdb.v1.RetireOfflineBackupRequest -> .riffdb.v1.RetireOfflineBackupResponse (unary)
     GetOfflineMaintenanceOperation .riffdb.v1.GetOfflineMaintenanceOperationRequest -> .riffdb.v1.GetOfflineMaintenanceOperationResponse (unary)
     CheckContractMigration .riffdb.v1.CheckContractMigrationRequest -> .riffdb.v1.CheckContractMigrationResponse (unary)

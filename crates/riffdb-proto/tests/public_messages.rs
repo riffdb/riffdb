@@ -2108,6 +2108,7 @@ fn offline_maintenance_identity_phase_and_exchange_are_closed() {
         .to_vec(),
         phase: v1::OfflineMaintenancePhase::Accepted as i32,
         failure: v1::OfflineMaintenanceFailureClass::Unspecified as i32,
+        archive_restore: None,
     };
     let request = v1::CreateOfflineBackupRequest {
         request_id: uuid_v7(),
@@ -2166,6 +2167,7 @@ fn offline_maintenance_identity_phase_and_exchange_are_closed() {
         .to_vec(),
         phase: v1::OfflineMaintenancePhase::Succeeded as i32,
         failure: v1::OfflineMaintenanceFailureClass::Unspecified as i32,
+        archive_restore: None,
     };
     validate_restore_offline_backup_exchange(
         &restore_request,

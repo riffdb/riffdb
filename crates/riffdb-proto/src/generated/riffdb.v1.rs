@@ -522,6 +522,8 @@ pub struct OfflineMaintenanceOperation {
     pub phase: i32,
     #[prost(enumeration = "OfflineMaintenanceFailureClass", tag = "6")]
     pub failure: i32,
+    #[prost(message, optional, tag = "7")]
+    pub archive_restore: ::core::option::Option<ArchiveRestoreObservation>,
 }
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct CreateOfflineBackupRequest {
@@ -556,6 +558,44 @@ pub struct RestoreOfflineBackupResponse {
     pub disposition: i32,
     #[prost(message, optional, tag = "2")]
     pub operation: ::core::option::Option<OfflineMaintenanceOperation>,
+}
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct RestoreArchivedBackupRequest {
+    #[prost(bytes = "vec", tag = "1")]
+    pub request_id: ::prost::alloc::vec::Vec<u8>,
+    #[prost(bytes = "vec", tag = "2")]
+    pub operation_id: ::prost::alloc::vec::Vec<u8>,
+    #[prost(string, tag = "3")]
+    pub backup_name: ::prost::alloc::string::String,
+    #[prost(enumeration = "OfflineMaintenanceReplacementConfirmation", tag = "4")]
+    pub replacement_confirmation: i32,
+    #[prost(string, tag = "5")]
+    pub archive_name: ::prost::alloc::string::String,
+    #[prost(uint64, optional, tag = "6")]
+    pub stop_at_sequence: ::core::option::Option<u64>,
+}
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct RestoreArchivedBackupResponse {
+    #[prost(enumeration = "OfflineMaintenanceStartDisposition", tag = "1")]
+    pub disposition: i32,
+    #[prost(message, optional, tag = "2")]
+    pub operation: ::core::option::Option<OfflineMaintenanceOperation>,
+}
+#[derive(Clone, Copy, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct ArchiveBackupFrontier {
+    #[prost(message, optional, tag = "1")]
+    pub application: ::core::option::Option<FrontierPosition>,
+}
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct ArchiveRestoreObservation {
+    #[prost(string, tag = "1")]
+    pub archive_name: ::prost::alloc::string::String,
+    #[prost(uint64, optional, tag = "2")]
+    pub stop_at_sequence: ::core::option::Option<u64>,
+    #[prost(message, optional, tag = "3")]
+    pub backup_frontier: ::core::option::Option<ArchiveBackupFrontier>,
+    #[prost(message, optional, tag = "4")]
+    pub restored_frontier: ::core::option::Option<ReplicationFrontier>,
 }
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct RetireOfflineBackupRequest {

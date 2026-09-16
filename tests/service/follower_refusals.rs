@@ -100,6 +100,23 @@ fn follower_service_refuses_maintenance_migration_installation_export_and_reimpo
                 )
                 .await,
         );
+        let (context, _) = harness.context(0x40);
+        refused(
+            follower
+                .restore_archived_backup(RestoreArchivedBackupInvocation::new(
+                    context,
+                    RestoreArchivedBackupRequest::new(
+                        maintenance,
+                        name.clone(),
+                        ArchiveNameV1::new("daily").unwrap(),
+                        ArchiveRestoreStopV1::LastArchived,
+                        OfflineMaintenanceReplacementConfirmation::AllowReplaceNonemptyTarget,
+                    )
+                    .unwrap(),
+                    riffdb_auth::RetainedOpaqueCredential::new(b"private-presentation").unwrap(),
+                ))
+                .await,
+        );
         let (context, _) = harness.context(0x42);
         refused(
             follower

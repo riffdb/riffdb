@@ -2436,6 +2436,14 @@ fn normal_driver_request(
             request.operation_id(),
             credential,
         )),
+        MaintenanceTrigger::RestoreArchivedBackup {
+            request,
+            credential,
+            ..
+        } => Ok(MaintenanceDriverRequest::restore_backup(
+            request.operation_id(),
+            credential,
+        )),
         MaintenanceTrigger::RetireBackup { request, .. } => Ok(
             MaintenanceDriverRequest::retire_backup(request.operation_id()),
         ),
