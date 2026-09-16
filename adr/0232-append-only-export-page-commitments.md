@@ -1,11 +1,11 @@
 ---
 adr: "0232"
 title: Append Only Export Page Commitments
-status: proposed
+status: accepted
 tier: guarantee
 date: 2026-09-16
-accepted: null
-acceptance: null
+accepted: 2026-09-16
+acceptance: 'maintainer, in session, 2026-09-16: "Accept all four as written" (ADR-0227, ADR-0230, ADR-0231, ADR-0232)'
 requires: [ADR-0115, ADR-0207, ADR-0217]
 amends: []
 supersedes: []
