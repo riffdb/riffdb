@@ -397,14 +397,17 @@ fn archive_driver_resumes_exact_publication_without_credential_or_archive_access
         // Exact publication evidence survives archive loss; no credential-free
         // replay is possible because dependencies have no archive bindings.
         std::fs::remove_dir_all(fixture.archives[0].1.path()).unwrap();
+        let root = fixture._root.path().to_path_buf();
+        drop(fixture.storage);
+        let (storage, reconciliation) =
+            RedbMaintenanceStorage::open(root.join("target.redb"), root.join("backups")).unwrap();
+        fixture.storage = storage;
+        let request =
+            crate::daemon::archive_restart_request_for_test(&mut fixture.storage, &reconciliation);
         let lifecycle = offline(&mut fixture);
-        let success = run_offline_maintenance(
-            &mut fixture.storage,
-            &lifecycle,
-            &dependencies,
-            MaintenanceDriverRequest::resume_published_restore(id),
-        )
-        .unwrap();
+        let success =
+            run_offline_maintenance(&mut fixture.storage, &lifecycle, &dependencies, request)
+                .unwrap();
         assert_eq!(success.startup.retained_metadata().history_incarnation(), 2);
         assert_eq!(
             fixture
@@ -430,19 +433,15 @@ fn archive_driver_validation_crash_child() {
     let recovery =
         MaintenanceRecoveryController::armed(MaintenanceRecoveryBoundary::FreshValidationComplete);
     let dependencies = super::tests::fixture_dependencies(&clocks, &recovery, None);
-    let (mut storage, _) =
+    let (mut storage, reconciliation) =
         RedbMaintenanceStorage::open(root.join("target.redb"), root.join("backups")).unwrap();
     let id = archive_receipt(93, None).operation_id();
+    let request = crate::daemon::archive_restart_request_for_test(&mut storage, &reconciliation);
     let lifecycle = MaintenanceLifecycle::ready();
     lifecycle.begin(id).unwrap();
     mark_draining(&mut storage, &lifecycle, id).unwrap();
     mark_offline(&mut storage, &lifecycle, id).unwrap();
-    let result = run_offline_maintenance(
-        &mut storage,
-        &lifecycle,
-        &dependencies,
-        MaintenanceDriverRequest::resume_published_restore(id),
-    );
+    let result = run_offline_maintenance(&mut storage, &lifecycle, &dependencies, request);
     panic!("expected process abort, got {result:?}");
 }
 
@@ -477,7 +476,7 @@ fn archive_driver_recovers_after_process_crash_in_fresh_validation() {
     }
     #[cfg(not(unix))]
     assert!(!status.success());
-    let (mut storage, _) =
+    let (mut storage, reconciliation) =
         RedbMaintenanceStorage::open(root.join("target.redb"), root.join("backups")).unwrap();
     assert_eq!(
         storage
@@ -487,17 +486,13 @@ fn archive_driver_recovers_after_process_crash_in_fresh_validation() {
             .current_phase(),
         OfflineMaintenanceReceiptPhaseV1::Validating
     );
+    let request = crate::daemon::archive_restart_request_for_test(&mut storage, &reconciliation);
     let lifecycle = MaintenanceLifecycle::ready();
     lifecycle.begin(id).unwrap();
     mark_draining(&mut storage, &lifecycle, id).unwrap();
     mark_offline(&mut storage, &lifecycle, id).unwrap();
-    let success = run_offline_maintenance(
-        &mut storage,
-        &lifecycle,
-        &dependencies,
-        MaintenanceDriverRequest::resume_published_restore(id),
-    )
-    .unwrap();
+    let success =
+        run_offline_maintenance(&mut storage, &lifecycle, &dependencies, request).unwrap();
     assert_eq!(success.startup.retained_metadata().history_incarnation(), 2);
     assert_eq!(
         storage

@@ -3102,18 +3102,50 @@ impl AdminService for GrpcApplication {
         let (metadata, _peer, message) = split_request(request);
         let lifecycle = self.select_lifecycle(&metadata)?;
         let (request_id, request) = restore_archived_backup_request_from_proto(message)?;
-        let (service, security) = self.ready_maintenance_admission(
-            lifecycle.as_ref(),
-            GrpcOfflineMaintenanceOperation::RestoreBackup {
-                operation_id: request.operation_id(),
-                input_hash: request.input_hash(),
-            },
-        )?;
-        let (context, credential, _cancellation) =
-            self.restore_context(&metadata, request_id, &security)?;
-        let invocation =
-            riffdb_service::RestoreArchivedBackupInvocation::new(context, request, credential);
-        let result = map_service(service.restore_archived_backup(invocation).await)?;
+        let operation_id = request.operation_id();
+        let input_hash = request.input_hash();
+        let ready =
+            lifecycle.admit_offline_maintenance(GrpcOfflineMaintenanceOperation::RestoreBackup {
+                operation_id,
+                input_hash,
+            });
+        let retry = ready
+            .is_none()
+            .then(|| lifecycle.admit_restore_retry(operation_id, input_hash))
+            .flatten();
+        let result = match (ready, retry) {
+            (Some(service), None) => {
+                let security = lifecycle.security_context().ok_or_else(service_not_ready)?;
+                let (context, credential, _cancellation) =
+                    self.restore_context(&metadata, request_id, &security)?;
+                map_service(
+                    service
+                        .restore_archived_backup(
+                            riffdb_service::RestoreArchivedBackupInvocation::new(
+                                context, request, credential,
+                            ),
+                        )
+                        .await,
+                )?
+            }
+            (None, Some(service)) => {
+                let security = lifecycle
+                    .restore_retry_security_context()
+                    .ok_or_else(service_not_ready)?;
+                let (context, credential, _cancellation) =
+                    self.restore_retry_context(&metadata, request_id, &security)?;
+                map_service(
+                    service
+                        .restore_archived_backup(
+                            riffdb_service::RestoreArchivedBackupInvocation::new(
+                                context, request, credential,
+                            ),
+                        )
+                        .await,
+                )?
+            }
+            _ => return Err(service_not_ready()),
+        };
         let (disposition, operation) = offline_maintenance_start_result_to_proto(&result);
         Ok(Response::new(v1::RestoreArchivedBackupResponse {
             disposition,

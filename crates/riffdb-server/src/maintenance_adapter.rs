@@ -1179,14 +1179,23 @@ fn admit_restore_retry(
         return Err(OfflineMaintenanceStartPortError::Unavailable);
     }
     let (request, authorization, credential) = retry.into_parts();
-    admit_start(
-        controller,
-        AuthorizedOfflineMaintenanceStart::RestoreBackup {
-            request,
-            authorization,
-            credential,
-        },
-    )
+    let start = match request {
+        riffdb_service::RestoreRetryRequest::Ordinary(request) => {
+            AuthorizedOfflineMaintenanceStart::RestoreBackup {
+                request,
+                authorization,
+                credential,
+            }
+        }
+        riffdb_service::RestoreRetryRequest::Archived(request) => {
+            AuthorizedOfflineMaintenanceStart::RestoreArchivedBackup {
+                request,
+                authorization,
+                credential,
+            }
+        }
+    };
+    admit_start(controller, start)
 }
 
 fn admit_recovery_restore(

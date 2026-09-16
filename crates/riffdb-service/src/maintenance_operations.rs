@@ -309,6 +309,18 @@ impl RestoreRetryOfflineMaintenanceApplication for RestoreRetryOfflineMaintenanc
             start_restore_retry(inner, invocation, operation_submission).await
         })
     }
+
+    fn restore_archived_backup(
+        &self,
+        invocation: crate::RestoreArchivedBackupInvocation,
+    ) -> ServiceFuture<'_, OfflineMaintenanceStartResult> {
+        let inner = Arc::clone(&self.inner);
+        let submission = Arc::new(MaintenanceSubmissionState::new());
+        let operation_submission = Arc::clone(&submission);
+        self.spawn_restore(submission, async move {
+            archive::start_retry(inner, invocation, operation_submission).await
+        })
+    }
 }
 
 impl std::fmt::Debug for RestoreRetryOfflineMaintenanceService {
