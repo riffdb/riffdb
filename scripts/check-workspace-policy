@@ -88,6 +88,10 @@ EXPECTED_FIXTURE_BINS = {
     "package" => "riffdb-api-mcp",
     "required_features" => ["stdio"]
   },
+  "riffdbd-archive-fixture" => {
+    "package" => "riffdb-server",
+    "required_features" => ["test-fixtures"]
+  },
   "riffdbd-causal-wait-fixture" => {
     "package" => "riffdb-server",
     "required_features" => ["test-fixtures"]

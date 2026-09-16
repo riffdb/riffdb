@@ -2,7 +2,7 @@
 //! requires a separate complete validation seal and matching durable V3 receipt.
 #[path = "archive_preparation.rs"]
 mod preparation;
-pub use preparation::RedbPreparedArchiveRestore;
+pub use preparation::{RedbArchiveProjectionRebuild, RedbPreparedArchiveRestore};
 #[path = "archive_prefix.rs"]
 mod prefix;
 #[path = "archive_publication.rs"]

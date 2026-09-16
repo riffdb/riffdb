@@ -46,9 +46,9 @@ pub use failpoint::{
 };
 pub(crate) use staged::PrivateArchiveValidationBinding;
 pub use staged::{
-    RedbArchiveRestoreStage, RedbPreparedArchiveRestore, RedbPrivateArchiveRestoreCandidate,
-    RedbReplayedArchiveRestore, RedbSealedArchiveRestore, RedbSealedStagedRestore,
-    RedbStagedRestore, RedbValidatedPrivateArchiveRestore,
+    RedbArchiveProjectionRebuild, RedbArchiveRestoreStage, RedbPreparedArchiveRestore,
+    RedbPrivateArchiveRestoreCandidate, RedbReplayedArchiveRestore, RedbSealedArchiveRestore,
+    RedbSealedStagedRestore, RedbStagedRestore, RedbValidatedPrivateArchiveRestore,
 };
 pub use store::{
     RedbMaintenanceOperationEvidence, RedbMaintenanceReconciliation, RedbMaintenanceStorage,

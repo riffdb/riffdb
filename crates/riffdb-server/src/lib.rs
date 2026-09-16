@@ -68,6 +68,7 @@ pub use daemon::riffdbd_main;
 pub mod test_fixtures {
     //! Closed process-level recovery fixtures unavailable to normal builds.
 
+    pub use crate::archive_worker::install_archive_progress_probe;
     pub use crate::maintenance_recovery_controller::MaintenanceRecoveryTestPoint;
 
     use std::process::ExitCode;

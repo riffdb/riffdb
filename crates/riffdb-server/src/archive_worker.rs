@@ -249,6 +249,8 @@ fn collect(
                     caught_up: !progressed,
                     failure: None,
                 });
+                #[cfg(feature = "test-fixtures")]
+                probe::observe(archive.name(), pump.consumer.position());
                 if progressed {
                     continue;
                 }
@@ -284,3 +286,9 @@ fn collect(
 #[cfg(test)]
 #[path = "archive_worker_tests.rs"]
 mod tests;
+
+#[cfg(feature = "test-fixtures")]
+#[path = "archive_worker_probe.rs"]
+mod probe;
+#[cfg(feature = "test-fixtures")]
+pub use probe::install_archive_progress_probe;

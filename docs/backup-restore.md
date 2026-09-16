@@ -337,6 +337,14 @@ without a bearer or archive access; incomplete publication requires the retained
 backup and selected archive prefix plus fresh staged authorization. Receipt
 editing is unsupported.
 
+Archive replay can advance projection controls beyond the local projection rows
+copied from the full backup. Before validating a replayed candidate, restore uses
+the same catalog-validated projection rebuild as follower startup. It reconstructs
+only derived rows and apply markers, keeps source controls and history unchanged,
+and then runs the complete structural and catalog scrub. An earlier stop repeats
+this process at its selected boundary; an interior command cut rebuilds its
+physical predecessor before reconstructing the private command prefix.
+
 Automatic collection is enabled by the optional `backup` name in a configured
 archive entry; see [Named archive directories](configuration.md#named-archive-directories).
 The collector starts from the verified backup fence or the last confirmed

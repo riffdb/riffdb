@@ -3,6 +3,48 @@ use super::*;
 use riffdb_types::{ArchiveRestoreStopV1, DualFrontier};
 use std::sync::Arc;
 
+/// Composition-owned pure projection replay over a private follower candidate.
+/// The supplied owner permits historical validation and derived writes only;
+/// complete structural validation and publication remain separate gates.
+pub trait RedbArchiveProjectionRebuild {
+    /// Validates historical plans and restores every required local generation.
+    fn rebuild(
+        &self,
+        session: crate::RedbFollowerRecoveryCatalogSession,
+        cancellation: Arc<AtomicBool>,
+    ) -> Result<crate::RedbFollowerProjectionRecovery, StorageError>;
+}
+
+pub(super) fn rebuild_projection_state(
+    stage: &RedbStagedRestore,
+    file: &File,
+    expected: ChangelogHistoryStateV3,
+    inputs: StartupValidationInputs,
+    cancellation: Arc<AtomicBool>,
+    rebuilder: Option<&dyn RedbArchiveProjectionRebuild>,
+) -> Result<(), StorageError> {
+    let Some(rebuilder) = rebuilder else {
+        return Ok(());
+    };
+    cancelled(&cancellation)?;
+    verify_file(stage, file)?;
+    let store = crate::RedbFollowerStore::open(stage.staged_database_file())?;
+    let session = store.begin_projection_recovery(inputs, Arc::clone(&cancellation))?;
+    let owner = rebuilder.rebuild(session, Arc::clone(&cancellation))?;
+    if owner.durable_history()? != expected {
+        return Err(corrupt());
+    }
+    drop(owner.finish_rebuild()?);
+    cancelled(&cancellation)?;
+    verify_file(stage, file)?;
+    let database = read_only_database(file)?;
+    let read = database.begin_read().map_err(unavailable)?;
+    if crate::changelog_v3_roots::validate_retained_history(&read)? != Some(expected) {
+        return Err(corrupt());
+    }
+    Ok(())
+}
+
 enum PreparedKind {
     Physical {
         replayed: Box<RedbReplayedArchiveRestore>,
@@ -31,6 +73,28 @@ impl RedbArchiveRestoreStage {
         inputs: StartupValidationInputs,
         cancellation: Arc<AtomicBool>,
     ) -> Result<RedbPreparedArchiveRestore, StorageError> {
+        self.prepare_restore_inner(stop, inputs, cancellation, None)
+    }
+
+    /// Restores derived projection generations through the existing composition
+    /// owner before each unchanged complete scrub. It grants no serving authority.
+    pub fn prepare_restore_with_projection_rebuild(
+        self,
+        stop: ArchiveRestoreStopV1,
+        inputs: StartupValidationInputs,
+        cancellation: Arc<AtomicBool>,
+        rebuilder: &dyn RedbArchiveProjectionRebuild,
+    ) -> Result<RedbPreparedArchiveRestore, StorageError> {
+        self.prepare_restore_inner(stop, inputs, cancellation, Some(rebuilder))
+    }
+
+    fn prepare_restore_inner(
+        self,
+        stop: ArchiveRestoreStopV1,
+        inputs: StartupValidationInputs,
+        cancellation: Arc<AtomicBool>,
+        rebuilder: Option<&dyn RedbArchiveProjectionRebuild>,
+    ) -> Result<RedbPreparedArchiveRestore, StorageError> {
         cancelled(&cancellation)?;
         self.selection
             .target_application(stop)
@@ -41,12 +105,33 @@ impl RedbArchiveRestoreStage {
             &cancellation,
         )?;
         let replayed = self.replay(applier, &cancellation)?;
+        rebuild_projection_state(
+            &replayed.stage,
+            &replayed.file,
+            replayed.history,
+            inputs.clone(),
+            Arc::clone(&cancellation),
+            rebuilder,
+        )?;
         validate_physical(&replayed, inputs.clone(), Arc::clone(&cancellation))?;
         let kind = match stop {
             ArchiveRestoreStopV1::LastArchived => physical_kind(replayed)?,
             ArchiveRestoreStopV1::AtApplicationSequence(sequence) => {
-                match replayed.rebuild_to_stop(sequence, inputs.clone(), &cancellation)? {
+                match replayed.rebuild_to_stop_with_projection_rebuild(
+                    sequence,
+                    inputs.clone(),
+                    &cancellation,
+                    rebuilder.map(|owner| (owner, Arc::clone(&cancellation))),
+                )? {
                     prefix::RebuiltArchiveStop::Physical(replayed) => {
+                        rebuild_projection_state(
+                            &replayed.stage,
+                            &replayed.file,
+                            replayed.history,
+                            inputs.clone(),
+                            Arc::clone(&cancellation),
+                            rebuilder,
+                        )?;
                         validate_physical(&replayed, inputs.clone(), Arc::clone(&cancellation))?;
                         physical_kind(*replayed)?
                     }

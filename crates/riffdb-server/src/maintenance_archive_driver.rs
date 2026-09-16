@@ -194,10 +194,11 @@ fn restore(
                 .map_err(|_| DriverFault::ReceiptValue)?;
             update(storage, receipt, selected)?;
             let prepared = stage
-                .prepare_restore(
+                .prepare_restore_with_projection_rebuild(
                     receipt.stop(),
                     dependencies.startup_inputs.clone(),
                     cancellation,
+                    &ArchiveProjectionRebuild,
                 )
                 .map_err(DriverFault::ArtifactStorage)?;
             let database_id = prepared.selection().lineage().database_id();

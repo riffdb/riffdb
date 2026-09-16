@@ -2406,3 +2406,15 @@ mod tests {
 #[cfg(test)]
 #[path = "maintenance_archive_driver_tests.rs"]
 mod archive_tests;
+
+/// Uses the same restricted, catalog-validated replay as follower startup.
+struct ArchiveProjectionRebuild;
+impl riffdb_storage_redb::RedbArchiveProjectionRebuild for ArchiveProjectionRebuild {
+    fn rebuild(
+        &self,
+        session: riffdb_storage_redb::RedbFollowerRecoveryCatalogSession,
+        cancellation: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    ) -> Result<riffdb_storage_redb::RedbFollowerProjectionRecovery, StorageError> {
+        crate::replication_bootstrap::rebuild_follower_projection_session(session, cancellation)
+    }
+}
