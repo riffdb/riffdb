@@ -21,6 +21,7 @@ riffdb-contract-compiler = { path = "../../../crates/riffdb-contract-compiler", 
 riffdb-contract-ir = { path = "../../../crates/riffdb-contract-ir", version = "0.1.0", default-features = false }
 riffdb-proto = { path = "../../../crates/riffdb-proto", version = "0.1.0", default-features = false }
 riffdb-query-module = { path = "../../../crates/riffdb-query-module", version = "0.1.0", default-features = false }
+riffdb-storage-api = { path = "../../../crates/riffdb-storage-api", version = "0.1.0", default-features = false }
 riffdb-storage-redb = { path = "../../../crates/riffdb-storage-redb", version = "0.1.0", default-features = false, features = ["benchmark-support"] }
 riffdb-ticketdesk = { path = "../../ticketdesk", version = "0.1.0", default-features = false }
 riffdb-types = { path = "../../../crates/riffdb-types", version = "0.1.0", default-features = false }

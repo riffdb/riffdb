@@ -157,6 +157,28 @@ harness/application correctness bug, not a contention conflict. RiffDB reports
 also attach the server
 write-completion-group histogram after shutdown.
 
+### Archive collection comparison
+
+For WP-749's paired write-path evidence, set
+`RIFFDB_APP_BASELINE_ARCHIVE_COLLECTION=disabled` or `enabled` when running a
+write-bearing load profile. Both modes create and verify the same kind of offline
+full backup after setup and before the measured daemon starts. `enabled` binds the
+automatic collector to that backup; `disabled` keeps a restore-only binding. An
+unset variable preserves the ordinary baseline lifecycle. Other values fail.
+
+The shutdown report's `archive_collection` field records the mode, backup and
+archived application frontiers, confirmed history transaction count, and terminal
+manifest digest. An enabled run fails if no post-backup application write was
+archived, archive validation fails, or the collector reported any terminal
+failure, even if later diagnostics displaced that message from the log buffer.
+It does not claim that collection caught up before shutdown. A disabled run fails
+if an archive directory was created. Setup, backup creation and verification are
+outside timed load intervals; ordinary correctness and retry rules still apply.
+
+Use identical workload, binary, storage profile, dataset and host qualification
+for both modes. A smoke run checks harness operation only. It does not satisfy
+WP-749's latency comparison or WP-750's campaign and stability gates.
+
 Automatic RiffDB command retry is disabled for load runs
 (`command_attempt_budget=1`), so one logical operation is one transport
 submission and conflict latency/counts cannot hide retries. Normal application

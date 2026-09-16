@@ -66,6 +66,13 @@ fn write_new_report(path: &Path, encoded: &str) -> Result<(), String> {
 
 fn run() -> Result<(), String> {
     let args = Args::parse(env::args().skip(1))?;
+    if env::var_os("RIFFDB_APP_BASELINE_ARCHIVE_COLLECTION").is_some()
+        && (args.skip_riffdb
+            || args.load_profile.is_none()
+            || args.load_profile == Some(WorkloadProfile::ReadOnly))
+    {
+        return Err("archive collection comparison requires a write-bearing RiffDB load".into());
+    }
     if args.load_profile.is_some() {
         return run_load(args);
     }
@@ -1547,6 +1554,15 @@ fn riffdb_shutdown_evidence_json(evidence: &RiffDbShutdownEvidence) -> serde_jso
         })
         .collect::<Vec<_>>();
     json!({
+        "archive_collection": evidence.archive_collection.as_ref().map(|archive| json!({
+            "enabled": archive.enabled,
+            "backup_application_sequence": archive.backup_application_sequence,
+            "archived_application_sequence": archive.archived_application_sequence,
+            "archived_history_transactions": archive.archived_history_transactions,
+            "manifest_digest": archive.manifest_digest.map(|bytes| bytes.iter().map(|byte| format!("{byte:02x}")).collect::<String>()),
+            "collector_terminal_failure_observed": false,
+            "caught_up_at_shutdown": "not_claimed",
+        })),
         "startup": evidence.startup.as_ref().map(startup_evidence_json),
         "clean_close": clean_close_evidence_json(evidence),
         "graph_shutdown_elapsed_us": evidence.graph_shutdown_elapsed_us,
@@ -2699,6 +2715,7 @@ fn run_load(args: Args) -> Result<(), String> {
             "ticket_title_payload_bytes": args.scale.payload_bytes.min(128),
         },
         "comparison": {
+            "archive_collection": env::var("RIFFDB_APP_BASELINE_ARCHIVE_COLLECTION").ok(),
             "requested_clients": if args.load_concurrency_sweep {
                 serde_json::Value::Null
             } else {

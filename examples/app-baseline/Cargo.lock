@@ -1184,6 +1184,7 @@ dependencies = [
  "riffdb-contract-ir",
  "riffdb-proto",
  "riffdb-query-module",
+ "riffdb-storage-api",
  "riffdb-storage-redb",
  "riffdb-ticketdesk",
  "riffdb-types",

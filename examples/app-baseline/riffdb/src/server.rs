@@ -7,8 +7,13 @@ use std::net::SocketAddr;
 use std::os::unix::fs::OpenOptionsExt;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, ExitStatus, Stdio};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{self, Receiver, RecvTimeoutError, SyncSender};
 use std::sync::{Arc, Mutex};
+
+#[path = "archive_measurement.rs"]
+mod archive_measurement;
+pub use archive_measurement::ArchiveCollectionEvidence;
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
 
@@ -244,6 +249,7 @@ pub struct ServerStartOptions {
 /// Owns one live `riffdbd` process and a ready public client backend.
 pub struct RiffDbServerSession {
     _temporary: riffdb_bench_root::BenchDir,
+    archive_collection: Option<bool>,
     process: ServerProcess,
     riffdbd_bin: PathBuf,
     coordinator_workload_capacity: Option<u16>,
@@ -261,6 +267,8 @@ pub struct RiffDbServerSession {
 /// Redaction-safe fixed-cardinality server telemetry emitted at clean shutdown.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct RiffDbShutdownEvidence {
+    /// Verified archive mode and persisted progress, when explicitly requested.
+    pub archive_collection: Option<ArchiveCollectionEvidence>,
     /// Closed startup mode and stage observation for this process generation.
     pub startup: Option<RiffDbStartupEvidence>,
     /// Separate graceful checkpoint and final-certificate commit observation.
@@ -534,6 +542,7 @@ impl RiffDbServerSession {
         riffdbd_bin: &Path,
         options: ServerStartOptions,
     ) -> Result<Self, RiffDbError> {
+        let archive_collection = archive_measurement::requested_mode()?;
         let bench_root = resolve_bench_root(&options).map_err(|error| RiffDbError::Server {
             detail: error.to_string(),
         })?;
@@ -639,6 +648,7 @@ impl RiffDbServerSession {
         .await?;
         Ok(Self {
             _temporary: temporary,
+            archive_collection,
             process,
             riffdbd_bin: riffdbd_bin.to_path_buf(),
             coordinator_workload_capacity: options.coordinator_workload_capacity,
@@ -694,6 +704,9 @@ impl RiffDbServerSession {
                 .map_err(|error| RiffDbError::Server {
                     detail: format!("read pre-process authority snapshot: {error}"),
                 })?;
+        if let Some(enabled) = self.archive_collection {
+            archive_measurement::prepare(self._temporary.path(), enabled)?;
+        }
         let backup_root = self._temporary.path().join("backups");
         let projections_root = self._temporary.path().join("projections");
         let projections_config_path = self._temporary.path().join("projections.toml");
@@ -1076,6 +1089,17 @@ impl RiffDbServerSession {
                 .map_err(|error| RiffDbError::Server {
                     detail: error.to_string(),
                 })?;
+        if let Some(enabled) = self.archive_collection {
+            if self.process.archive_failure.load(Ordering::Acquire) {
+                return Err(RiffDbError::Server {
+                    detail: "archive collector failed during measurement".into(),
+                });
+            }
+            evidence.archive_collection = Some(archive_measurement::observe(
+                self._temporary.path(),
+                enabled,
+            )?);
+        }
         evidence.table_inventory_before_measurement =
             self.table_inventory_before_measurement.take();
         evidence.table_inventory_after_measurement =
@@ -1766,6 +1790,7 @@ struct ServerProcess {
     stdout: Option<JoinHandle<usize>>,
     stderr: Option<JoinHandle<usize>>,
     stderr_ring: Arc<Mutex<VecDeque<String>>>,
+    archive_failure: Arc<AtomicBool>,
     exit_observed: bool,
     /// Cached exit once observed; subsequent [`poll_exit`] returns this.
     cached_exit: Option<Result<ExitStatus, String>>,
@@ -1912,6 +1937,8 @@ impl ServerProcess {
             thread::spawn(move || read_server_stdout(stdout, ready_sender, shutdown_sender));
         let stderr_ring = Arc::new(Mutex::new(VecDeque::with_capacity(STDERR_RING_LINES)));
         let stderr_ring_worker = Arc::clone(&stderr_ring);
+        let archive_failure = Arc::new(AtomicBool::new(false));
+        let archive_failure_worker = Arc::clone(&archive_failure);
         let (baseline_sender, baseline_receiver) = mpsc::sync_channel(1);
         let (startup_sender, startup_receiver) = mpsc::sync_channel(1);
         let stderr = thread::spawn(move || {
@@ -1921,6 +1948,7 @@ impl ServerProcess {
                 child_id,
                 baseline_sender,
                 startup_sender,
+                archive_failure_worker,
             )
         });
         let baseline = if std::env::var_os("RIFFDB_APP_BASELINE_WP705_LIFECYCLE_EVIDENCE")
@@ -1969,6 +1997,7 @@ impl ServerProcess {
             stdout: Some(stdout),
             stderr: Some(stderr),
             stderr_ring,
+            archive_failure,
             exit_observed: false,
             cached_exit: None,
         })
@@ -2445,6 +2474,7 @@ fn read_server_stdout(
                                     completion_lane.transpose().and_then(|completion_lane| {
                                         query_execute.transpose().and_then(|query_execute| {
                                             optional_shutdown_stages(shutdown_stages_us).map(|(graph_shutdown_elapsed_us, shutdown_stages_us)| RiffDbShutdownEvidence {
+                                                archive_collection: None,
                                                 startup: None,
                                                 clean_close: None,
                                                 process_memory_at_spawn: None,
@@ -2811,6 +2841,7 @@ fn drain_server_stderr(
     child_id: u32,
     baseline_sender: SyncSender<io::Result<RiffDbProcessMemoryEvidence>>,
     startup_sender: SyncSender<io::Result<RiffDbStartupEvidence>>,
+    archive_failure: Arc<AtomicBool>,
 ) -> usize {
     let mut reader = BufReader::new(stream);
     let mut total = 0_usize;
@@ -2826,6 +2857,9 @@ fn drain_server_stderr(
         };
         if read == 0 {
             break;
+        }
+        if line.starts_with("riffdb-archive-v1\t") {
+            archive_failure.store(true, Ordering::Release);
         }
         // Mirror to parent stderr so panics are visible during a hung load.
         eprint!("[riffdbd-stderr] {line}");
@@ -3174,6 +3208,34 @@ mod tests {
         assert!(ring_bytes <= STDERR_RING_BYTES + huge.len());
     }
 
+    // req: REP-007
+    #[test]
+    fn stderr_collector_retains_archive_failure_after_diagnostic_ring_rollover() {
+        let input = format!(
+            "riffdb-archive-v1\tarchive=measurement\tstate=archive sink durability unavailable\n{}",
+            "later diagnostic\n".repeat(STDERR_RING_LINES + 1)
+        );
+        let ring = Arc::new(Mutex::new(VecDeque::new()));
+        let failure = Arc::new(AtomicBool::new(false));
+        let (baseline_sender, _) = mpsc::sync_channel(1);
+        let (startup_sender, _) = mpsc::sync_channel(1);
+        drain_server_stderr(
+            std::io::Cursor::new(input),
+            ring.clone(),
+            std::process::id(),
+            baseline_sender,
+            startup_sender,
+            failure.clone(),
+        );
+        assert!(failure.load(Ordering::Acquire));
+        assert!(
+            ring.lock()
+                .unwrap()
+                .iter()
+                .all(|line| !line.starts_with("riffdb-archive-v1\t"))
+        );
+    }
+
     // req: PERF-014, PERF-019
     #[test]
     fn stderr_collector_publishes_startup_after_the_complete_line() {
@@ -3188,6 +3250,7 @@ mod tests {
             std::process::id(),
             baseline_sender,
             startup_sender,
+            Arc::new(AtomicBool::new(false)),
         );
         assert_eq!(read, input.len());
         let startup = startup_receiver
