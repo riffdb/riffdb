@@ -1,10 +1,13 @@
-//! Real command execution, bootstrap and follower ingress with omitted vector work.
+//! Real command execution, bootstrap and ingress with resealed vector corruption.
 // req: REP-007, REP-003, REC-001
 use super::{columnar_reads, oracle, support::*, wait_for_commit};
 use riffdb_storage_api::AuthoritativeNamespaceV1 as N;
 use riffdb_storage_api::*;
 
-fn without_vector_work(receipt: &AuthoritativeTransactionV3) -> AuthoritativeTransactionV3 {
+fn tampered_vector_work(
+    receipt: &AuthoritativeTransactionV3,
+    case: u8,
+) -> AuthoritativeTransactionV3 {
     let graph = receipt
         .mutations()
         .iter()
@@ -27,12 +30,13 @@ fn without_vector_work(receipt: &AuthoritativeTransactionV3) -> AuthoritativeTra
                 .mutations()
                 .iter()
                 .filter(|row| {
-                    !matches!(
-                        row.namespace(),
-                        N::VectorEvidence | N::VectorEvidenceIndex | N::VectorObservations
-                    )
+                    case != 0
+                        || !matches!(
+                            row.namespace(),
+                            N::VectorEvidence | N::VectorEvidenceIndex | N::VectorObservations
+                        )
                 })
-                .cloned()
+                .map(|row| tampered_observation(row, case))
                 .collect();
             StoredCommandCapsuleV2::from_base_with_entity_transitions(
                 command.base().clone(),
@@ -94,8 +98,72 @@ fn without_vector_work(receipt: &AuthoritativeTransactionV3) -> AuthoritativeTra
     receipt
 }
 
+fn tampered_observation(row: &AuthoritativeMutationV3, case: u8) -> AuthoritativeMutationV3 {
+    if row.namespace() != N::VectorObservations || case == 0 {
+        return row.clone();
+    }
+    let bytes = row.value().unwrap();
+    let encoded = if let Ok(decoded) = decode_vector_observation_v1(bytes) {
+        if case > 3 {
+            return row.clone();
+        }
+        let value = decoded.value();
+        let models = value
+            .model_counts()
+            .map(|(model, count)| (model.clone(), count - u64::from(case == 3)))
+            .filter(|(_, count)| *count != 0)
+            .collect();
+        encode_vector_observation_v1(
+            &VectorObservationCountsV1::from_parts(
+                value.target().clone(),
+                value.total_entities() + u64::from(case == 1),
+                value.source_stale_entities() + u64::from(case == 2),
+                models,
+                value.revision(),
+            )
+            .unwrap(),
+        )
+        .unwrap()
+    } else {
+        if case < 4 {
+            return row.clone();
+        }
+        let decoded = decode_vector_health_observation_v1(bytes).unwrap();
+        let value = decoded.value();
+        let fields = value
+            .fields()
+            .map(|field| {
+                VectorHealthFieldObservationV1::from_parts(
+                    field.entity_type(),
+                    field.vector_field(),
+                    field.stale_entity_count_threshold() + u64::from(case == 5),
+                    field.partition_count() + u64::from(case == 4),
+                    field.breached_partition_count() + u64::from(case == 6),
+                )
+                .unwrap()
+            })
+            .collect();
+        encode_vector_health_observation_v1(
+            &VectorHealthObservationV1::from_parts(
+                value.lineage().clone(),
+                fields,
+                value.revision(),
+            )
+            .unwrap(),
+        )
+        .unwrap()
+    };
+    AuthoritativeMutationV3::put(
+        row.namespace(),
+        row.key(),
+        row.expected_hash(),
+        encoded.as_bytes(),
+    )
+    .unwrap()
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn follower_refuses_a_resealed_command_with_all_vector_work_omitted() {
+async fn follower_refuses_resealed_vector_inventory_and_counter_corruption() {
     let fixture = Fixture::new();
     let mut initial = fixture.start("primary", None);
     stop(&mut initial);
@@ -124,7 +192,7 @@ async fn follower_refuses_a_resealed_command_with_all_vector_work_omitted() {
     let mut follower = fixture.start("follower", Some("follower"));
     wait_for_commit(&fixture, &admin, first).await;
     stop(&mut follower);
-    let mut applier = oracle::follower(&fixture.database("follower"));
+    let applier = oracle::follower(&fixture.database("follower"));
     let baseline = applier.durable_history().unwrap();
     let second = columnar_reads::write(
         &mut client,
@@ -168,18 +236,29 @@ async fn follower_refuses_a_resealed_command_with_all_vector_work_omitted() {
         .unwrap()
         .encode()
         .unwrap();
-    receipts[offset] = without_vector_work(&receipts[offset]);
-    let forged = ChangelogFrameV3::new(binding, receipts)
-        .unwrap()
-        .encode()
-        .unwrap();
-    assert!(
-        applier.apply_frame(&forged).is_err(),
-        "valid checksums and net reduction cannot hide missing production vector work"
-    );
     drop(applier);
+    for case in 0..=6 {
+        let mut forged_receipts = receipts.clone();
+        forged_receipts[offset] = tampered_vector_work(&forged_receipts[offset], case);
+        let forged = ChangelogFrameV3::new(binding, forged_receipts)
+            .unwrap()
+            .encode()
+            .unwrap();
+        let mut applier = oracle::follower(&fixture.database("follower"));
+        assert_eq!(
+            applier.apply_frame(&forged).unwrap_err().kind(),
+            StorageErrorKind::CorruptData,
+            "case {case}: checksums and net agreement cannot prove vector counters"
+        );
+        drop(applier);
+        assert_eq!(
+            oracle::follower(&fixture.database("follower"))
+                .durable_history()
+                .unwrap(),
+            baseline
+        );
+    }
     let mut reopened = oracle::follower(&fixture.database("follower"));
-    assert_eq!(reopened.durable_history().unwrap(), baseline);
     let applied = reopened.apply_frame(&original).unwrap();
     assert_eq!(applied.frontier().application().unwrap().get(), second);
     drop(reopened);

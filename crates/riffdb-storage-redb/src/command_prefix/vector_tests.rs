@@ -323,3 +323,111 @@ fn vector_prefix_refuses_foreign_revisions_metadata_and_entity_images() {
         );
     }
 }
+
+#[test]
+fn vector_counter_fold_groups_shared_partitions_and_keeps_unknown_history_unproven() {
+    use super::super::{predecessor::PriorImages, vector_counts};
+    let command = fixture(true, false);
+    let mut rows = command.prefix_evidence().unwrap().mutations().to_vec();
+    let original = rows
+        .iter()
+        .find(|r| r.namespace() == N::VectorEvidence)
+        .unwrap();
+    let original = decode_vector_evidence_v1(original.value().unwrap()).unwrap();
+    let value = original.value();
+    let mut key = riffdb_types::EntityKeyBuilder::new(value.target().entity_type_id());
+    key.push_u64(987).unwrap();
+    let target = EntityTarget::new(value.target().entity_type_id(), key.finish().unwrap()).unwrap();
+    assert_ne!(&target, value.target());
+    let second = StoredVectorEvidenceV1::new(
+        target,
+        value.partition_key().clone(),
+        value.vector_field(),
+        value.entity_version(),
+        value.evidence_sequence(),
+        value.newest_source_write(),
+        value.embedding_write().cloned(),
+        value.schema_binding().clone(),
+        value.provenance_id(),
+        value.plan().clone(),
+    )
+    .unwrap();
+    let index = VectorEvidenceIndexEntryV1::from_evidence(&second).unwrap();
+    for (namespace, key, encoded) in [
+        (
+            N::VectorEvidence,
+            keys::encode_vector_evidence_key(second.target().key(), second.vector_field()).unwrap(),
+            encode_vector_evidence_v1(&second).unwrap(),
+        ),
+        (
+            N::VectorEvidenceIndex,
+            keys::encode_vector_evidence_index_key(index.target(), second.target().key()).unwrap(),
+            encode_vector_evidence_index_v1(&index).unwrap(),
+        ),
+    ] {
+        rows.push(AuthoritativeMutationV3::put(namespace, &key, None, encoded.as_bytes()).unwrap());
+    }
+    let observation_key = keys::encode_vector_observation_key(index.target()).unwrap();
+    let offset = rows
+        .iter()
+        .position(|r| r.namespace() == N::VectorObservations && r.key() == observation_key)
+        .unwrap();
+    let counts = VectorObservationCountsV1::from_parts(
+        index.target().clone(),
+        2,
+        0,
+        vec![(second.embedding_write().unwrap().metadata().clone(), 2)],
+        command.commit_sequence(),
+    )
+    .unwrap();
+    rows[offset] = AuthoritativeMutationV3::put(
+        N::VectorObservations,
+        &observation_key,
+        None,
+        encode_vector_observation_v1(&counts).unwrap().as_bytes(),
+    )
+    .unwrap();
+    let command = with_rows(&command, rows);
+    let rows = command.prefix_evidence().unwrap().mutations();
+    let checked = rows
+        .iter()
+        .filter(|r| r.namespace() == N::VectorEvidence)
+        .map(|r| (r.key(), (false, 10)))
+        .collect();
+    let known_absent = rows
+        .iter()
+        .map(|r| ((r.namespace(), r.key()), None))
+        .collect();
+    vector_counts::validate(&command, &checked, None, &known_absent).unwrap();
+    // One command shares a single count row and a single health contribution.
+    // A per-entity comparison or a per-entity health increment is incorrect.
+    let bad_counts = VectorObservationCountsV1::from_parts(
+        index.target().clone(),
+        3,
+        0,
+        vec![(second.embedding_write().unwrap().metadata().clone(), 2)],
+        command.commit_sequence(),
+    )
+    .unwrap();
+    let mut bad_rows = rows.to_vec();
+    let offset = bad_rows
+        .iter()
+        .position(|r| r.key() == observation_key && r.namespace() == N::VectorObservations)
+        .unwrap();
+    bad_rows[offset] = AuthoritativeMutationV3::put(
+        N::VectorObservations,
+        &observation_key,
+        None,
+        encode_vector_observation_v1(&bad_counts)
+            .unwrap()
+            .as_bytes(),
+    )
+    .unwrap();
+    let bad = with_rows(&command, bad_rows);
+    assert!(vector_counts::validate(&bad, &checked, None, &known_absent).is_err());
+    // Prefix expected-absent hashes alone cannot prove absent historical counts.
+    vector_counts::validate(&bad, &checked, None, &PriorImages::new()).unwrap();
+    let mut partial = checked.clone();
+    partial.pop_first();
+    vector_counts::validate(&bad, &partial, None, &known_absent).unwrap();
+}
