@@ -2256,6 +2256,16 @@ impl BudgetDatabase {
         amount: i128,
         request_seed: u8,
     ) -> CommandExecutionPreparation {
+        self.prepare_allocation_for(ports, ORGANIZATION_ID, amount, request_seed)
+    }
+
+    pub(crate) fn prepare_allocation_for(
+        &self,
+        ports: &RedbOperationalPorts,
+        organization: [u8; 16],
+        amount: i128,
+        request_seed: u8,
+    ) -> CommandExecutionPreparation {
         let plan = self
             .checked_bundle
             .bundle()
@@ -2271,7 +2281,7 @@ impl BudgetDatabase {
                     "idempotency_key",
                     CanonicalValue::string(&caller_key).expect("caller key"),
                 ),
-                ("organization_id", CanonicalValue::Uuid(ORGANIZATION_ID)),
+                ("organization_id", CanonicalValue::Uuid(organization)),
                 ("fiscal_year", CanonicalValue::I64(FISCAL_YEAR)),
                 ("matter_id", CanonicalValue::Uuid([0x22; 16])),
                 ("amount", decimal(amount)),
@@ -2309,6 +2319,26 @@ impl BudgetDatabase {
             0x51,
             request_seed,
         )
+    }
+
+    pub(crate) fn prepare_budget_for(
+        &self,
+        ports: &RedbOperationalPorts,
+        organization: [u8; 16],
+        seed: u8,
+    ) -> CommandExecutionPreparation {
+        let plan = self.command_plan();
+        let key = format!("budget-{seed}");
+        let input = input_record(
+            plan.input().record(),
+            [
+                ("idempotency_key", CanonicalValue::string(&key).unwrap()),
+                ("organization_id", CanonicalValue::Uuid(organization)),
+                ("fiscal_year", CanonicalValue::I64(FISCAL_YEAR)),
+                ("approved_amount", decimal(10000)),
+            ],
+        );
+        self.prepare_plan(ports, plan, input, &key, seed, seed)
     }
 
     fn prepare_plan(
@@ -2468,6 +2498,7 @@ impl BudgetDatabase {
 pub(crate) struct FixedAdmissionClock {
     value: Timestamp,
     calls: AtomicUsize,
+    first_call: Option<std::sync::mpsc::SyncSender<()>>,
 }
 
 impl FixedAdmissionClock {
@@ -2475,7 +2506,15 @@ impl FixedAdmissionClock {
         Self {
             value,
             calls: AtomicUsize::new(0),
+            first_call: None,
         }
+    }
+
+    pub(crate) fn observed(value: Timestamp) -> (Self, std::sync::mpsc::Receiver<()>) {
+        let (sender, receiver) = std::sync::mpsc::sync_channel(1);
+        let mut clock = Self::new(value);
+        clock.first_call = Some(sender);
+        (clock, receiver)
     }
 
     pub(crate) fn calls(&self) -> usize {
@@ -2485,7 +2524,11 @@ impl FixedAdmissionClock {
 
 impl AdmissionClock for FixedAdmissionClock {
     fn now(&self) -> Result<Timestamp, AdmissionClockError> {
-        self.calls.fetch_add(1, Ordering::Relaxed);
+        if self.calls.fetch_add(1, Ordering::Relaxed) == 0
+            && let Some(sender) = &self.first_call
+        {
+            let _ = sender.try_send(());
+        }
         Ok(self.value)
     }
 }
@@ -2733,7 +2776,7 @@ pub(crate) fn command_timestamp() -> Timestamp {
     timestamp(1_700_000_001)
 }
 
-fn open_operational(store: RedbStore) -> RedbOperationalPorts {
+pub(crate) fn open_operational(store: RedbStore) -> RedbOperationalPorts {
     let opened = complete_structural_open(store);
     let (_, _, _, dormant) = opened.into_parts();
     dormant

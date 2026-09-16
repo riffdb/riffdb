@@ -23131,6 +23131,19 @@ work_packages:
       Launch no timed cell while the existing interference gate refuses.
       Require host-visible process observations for future paired evidence;
       do not relax thresholds or treat sandbox-only validity as host validity.
+    - Prove projection-bearing interior archive stops with the real coordinator,
+      durable source, production emitter, private reconstruction and publication.
+      Hold storage admission and observe the first coordinator admission through
+      a bounded channel before queuing two disjoint commands; assert one physical
+      receipt spans application sequences 5 and 6, then restore exactly to 5.
+      Retain the preceding projection control at 3 and its original rows despite
+      later selected controls and rows at 6. Check exact included commit/entity
+      state, exclusion of the later entity update, fail-closed preparation without
+      projection rebuilding, and projection equality after publication/reopen.
+      Extend the real API/CLI restore scenarios with a fresh committed command,
+      unchanged-incarnation reopen, and exact outcome/provenance retry without a
+      second entity change. This adds evidence only; no production behavior,
+      boundary or bytes change.
   human_review_triggers: *id0178
 
 - id: WP-750

@@ -377,4 +377,31 @@ async fn scenario(
     if expected_sequence == archived_application.sequence {
         assert_eq!(restored_application.rows, archived_application.rows);
     }
+
+    // A restored source must accept a new durable command, not only replay an
+    // outcome retained by the selected archive prefix.
+    process = fixture.start("primary", None);
+    let mut client = fixture.client("primary").await;
+    let fresh = workload::allocate(&mut client, &writer, expected_sequence + 1).await;
+    assert_eq!(
+        fresh.status,
+        v1::execute_command_response::CompletionStatus::Committed as i32
+    );
+    let after_write = workload::entity(&mut client, &writer).await;
+    assert_ne!(after_write, expected_entity);
+    let replay = workload::allocate(&mut client, &writer, expected_sequence + 1).await;
+    assert_eq!(
+        replay.status,
+        v1::execute_command_response::CompletionStatus::Replayed as i32
+    );
+    assert_eq!(replay.commit_sequence, fresh.commit_sequence);
+    assert_eq!(replay.outcome, fresh.outcome);
+    assert_eq!(replay.outcome_uri, fresh.outcome_uri);
+    assert_eq!(replay.provenance_uri, fresh.provenance_uri);
+    assert_eq!(workload::entity(&mut client, &writer).await, after_write);
+    drop(client);
+    stop(&mut process);
+    let after_reopen = evidence::application(&database);
+    assert_eq!(after_reopen.sequence, expected_sequence + 1);
+    assert_eq!(after_reopen.incarnation, restored_application.incarnation);
 }
