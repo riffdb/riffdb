@@ -4,6 +4,7 @@
 
 mod predecessor;
 mod rows;
+mod secondary;
 
 pub(crate) use rows::{decode_capsule, decode_segment};
 

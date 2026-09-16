@@ -22952,6 +22952,13 @@ work_packages:
       put/delete/recreate prefixes replay and reopen. Complete secondary-index/
       vector and cross-history graph checks and private exact-stop reconstruction
       remain required.
+    - Validate typed secondary-index prefix puts against their physical keys,
+      command schema bindings and exact partition/index epoch targets. Validate
+      available deleted or replaced prior rows against the same owning bucket,
+      retaining historical prior schema bindings. Use checked key/record codecs
+      and canonical epoch lookup rather than decoding schema-owned key components
+      in the backend. Catalog-derived key/value coverage, vector graphs and
+      exact-stop reconstruction remain required before closure.
     - Reuse the checked backup-name grammar through a distinct ArchiveNameV1 type.
       Bind backup, archive, closed application stop and replacement confirmation
       under the versioned archive-input preimage in the existing maintenance hash

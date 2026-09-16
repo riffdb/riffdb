@@ -127,6 +127,10 @@ Retained segments check their known intra-segment semantic predecessors and raw
 mutation preconditions. Wrong nested record types cannot select a legacy decoder.
 Real source/bootstrap/follower tests prove resealed false priors refuse before
 any durable frame progress; valid put/delete/recreate groups replay and reopen.
+Secondary-index puts now require a typed matching key, the command's schema
+binding and its exact owning partition/index epoch. Available prior index images
+also require that owning bucket before replacement or deletion. Resealed wrong
+types and foreign partitions refuse in follower and retained startup tests.
 This is not an exact-stop restore implementation. Complete secondary-index/vector
 and cross-history graph validation, private reconstruction, publication proofs
 and write-path measurements remain required.
