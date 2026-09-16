@@ -16,9 +16,9 @@ fn corrupt() -> StorageError {
     storage_error(StorageErrorKind::CorruptData)
 }
 
-type PhysicalPrior<'a> = Option<(&'a WriteTransaction, &'a BTreeSet<&'static str>)>;
+pub(super) type PhysicalPrior<'a> = Option<(&'a WriteTransaction, &'a BTreeSet<&'static str>)>;
 
-type PriorImages<'a> = BTreeMap<(N, &'a [u8]), Option<&'a [u8]>>;
+pub(super) type PriorImages<'a> = BTreeMap<(N, &'a [u8]), Option<&'a [u8]>>;
 
 /// The caller has already bounded all prefixes, validated their row inventories
 /// and net reduction, and checked each first observation's physical row hash.
@@ -139,7 +139,7 @@ fn validate_sequence<'a>(
     Ok(())
 }
 
-fn with_prior(
+pub(super) fn with_prior(
     physical: PhysicalPrior<'_>,
     prior: &PriorImages<'_>,
     namespace: N,

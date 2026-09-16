@@ -1194,7 +1194,7 @@ fn validate_index_migration_row<S: StructuralEvidenceSession>(
     Ok(evidence.row().is_v1())
 }
 
-fn derive_historical_partition(
+pub(crate) fn derive_historical_partition(
     schema: &SchemaIr,
     entity: &EntitySchema,
     key: &riffdb_types::EntityKey,

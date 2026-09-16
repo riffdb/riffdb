@@ -173,9 +173,13 @@ are checked against that same generation bucket before replacement or deletion.
 Startup and follower replay also resolve supplied index keys through the retained
 command contract and derive each put's key and exact covered fields from its
 entity post-image. Undeclared or substituted covered fields refuse even when
-the receipt and prefix agree. Complete index mutation inventory, vector and
-cross-history graph validation, plus exact-stop archive restore, remain
-unfinished WP-749 work.
+the receipt and prefix agree. Supplied puts must also name the catalog-derived
+owning partition. Followers derive the complete required index puts and deletes
+from each entity's actual predecessor and post-image, refusing missing or extra
+mutations. Startup proves the same inventory for creates and known intra-segment
+predecessors; it does not invent unavailable historical entity values. Prior-index
+contents, vectors, cross-history graph validation and exact-stop archive restore
+remain unfinished WP-749 work.
 
 Inspect the format while the server is stopped:
 

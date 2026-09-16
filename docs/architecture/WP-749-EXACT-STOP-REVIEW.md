@@ -136,7 +136,15 @@ retained command bundle through a pure catalog-owned validator. Its shared IR
 encoders derive each put's key
 and exact covered record from its entity post-image. A resealed undeclared cover
 field refuses in production startup and follower tests. Only one decoded bundle
-is retained during validation. Complete mutation inventory is still unproven.
+is retained during validation. Supplied puts also require the catalog-derived
+owning partition, and supplied deletions must belong to a command entity.
+Follower validation now derives each entity's exact index mutation inventory
+from its actual predecessor and post-image, rejecting missing puts/deletes and
+extra mutations. Retained segments prove this for explicit creates and known
+intra-segment predecessors; unknown historical live values remain unproven.
+Resealed omissions preserve receipt/net agreement and refuse in both production
+follower and retained-segment tests. Actual prior-index contents still need their
+full semantic proof.
 This is not an exact-stop restore implementation. Complete secondary-index/vector
 and cross-history graph validation, private reconstruction, publication proofs
 and write-path measurements remain required.

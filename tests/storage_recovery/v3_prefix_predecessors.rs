@@ -82,6 +82,90 @@ fn bootstrap(ports: &RedbOperationalPorts, path: &Path) -> ChangelogHistoryState
     manifest.fence().history()
 }
 
+// Drop required independent index work and reseal both layers. This preserves
+// net agreement even when the omitted delete revives an earlier in-group put.
+fn missing_index_mutations(
+    receipt: &AuthoritativeTransactionV3,
+    case: u8,
+) -> AuthoritativeTransactionV3 {
+    let graph = receipt
+        .mutations()
+        .iter()
+        .find(|m| m.namespace() == N::Commits)
+        .unwrap();
+    let decoded = decode_command_segment_v1(graph.value().unwrap()).unwrap();
+    let segment = decoded.value();
+    let mut commands = segment.commands().to_vec();
+    let last = commands.last_mut().unwrap();
+    let prefix = last.prefix_evidence().unwrap();
+    let mutations = prefix
+        .mutations()
+        .iter()
+        .filter(|m| {
+            m.namespace() != N::SecondaryIndexes
+                || match case {
+                    10 => false,
+                    11 => m.value().is_some(),
+                    12 => m.value().is_none(),
+                    _ => panic!("omission case"),
+                }
+        })
+        .cloned()
+        .collect();
+    *last = StoredCommandCapsuleV2::from_base_with_entity_transitions(
+        last.base().clone(),
+        last.index_generation_transitions().to_vec(),
+        last.entity_transitions().to_vec(),
+    )
+    .unwrap()
+    .with_prefix_evidence(
+        CommandPrefixEvidenceV1::new(prefix.predecessor(), prefix.covered(), mutations).unwrap(),
+    )
+    .unwrap();
+    let mut accumulator = AuthoritativeMutationAccumulatorV3::default();
+    for command in &commands {
+        for mutation in command.prefix_evidence().unwrap().mutations() {
+            accumulator.record(mutation.clone()).unwrap();
+        }
+    }
+    let mut net = accumulator.finish().unwrap();
+    let draft = StoredCommandSegmentV1::new(
+        segment.database_id(),
+        segment.history_incarnation(),
+        segment.predecessor_segment_digest(),
+        commands,
+        segment.manifest().clone(),
+        CommandSegmentDigestV1::from_bytes([0; 32]),
+    )
+    .unwrap();
+    let (segment, encoded) = seal_and_encode_command_segment_v1(draft).unwrap();
+    for mutation in receipt.mutations() {
+        if mutation.namespace() == N::Commits {
+            net.push(
+                AuthoritativeMutationV3::put(
+                    N::Commits,
+                    mutation.key(),
+                    mutation.expected_hash(),
+                    encoded.as_bytes(),
+                )
+                .unwrap(),
+            );
+        } else if !CommandPrefixEvidenceV1::supports_namespace(mutation.namespace()) {
+            net.push(mutation.clone());
+        }
+    }
+    net.sort_by(|a, b| (a.namespace(), a.key()).cmp(&(b.namespace(), b.key())));
+    let original =
+        AuthoritativeTransactionV3::new(receipt.binding(), receipt.attribution(), net).unwrap();
+    let prefixes = segment
+        .commands()
+        .iter()
+        .map(|c| c.prefix_evidence().unwrap())
+        .collect::<Vec<_>>();
+    validate_command_prefix_mutations_v1(&prefixes, &original).unwrap();
+    original
+}
+
 // Semantic-prior substitutions retain exact receipt/prefix net agreement; a
 // real predecessor join is needed to refuse them. Separate cases substitute a
 // wrong nested envelope or break a retained raw precondition.
@@ -89,6 +173,9 @@ fn contradictory_prefix(
     receipt: &AuthoritativeTransactionV3,
     case: u8,
 ) -> AuthoritativeTransactionV3 {
+    if case >= 10 {
+        return missing_index_mutations(receipt, case);
+    }
     let graph = receipt
         .mutations()
         .iter()
@@ -259,6 +346,17 @@ fn contradictory_prefix(
         CommandPrefixEvidenceV1::new(prefix.predecessor(), prefix.covered(), mutations).unwrap(),
     )
     .unwrap();
+    if case == 7 {
+        // This pure check must derive ownership from the key/schema, even
+        // independently of the backend's command-epoch membership check.
+        assert!(
+            riffdb_catalog::validate_command_prefix_index_images_v1(
+                validated_contract_bundle(),
+                &replacement,
+            )
+            .is_err()
+        );
+    }
     let mut commands = segment.commands().to_vec();
     *commands.last_mut().unwrap() = replacement;
     let draft = StoredCommandSegmentV1::new(
@@ -313,7 +411,7 @@ fn contradictory_prefix(
 #[test]
 fn follower_joins_prefix_facts_to_physical_and_intra_group_predecessors() {
     for count in [1, 2, 4] {
-        for case in [0, 1, 2, 3, 4, 6, 7, 8, 9] {
+        for case in [0, 1, 2, 3, 4, 6, 7, 8, 9, 10, 11, 12] {
             // The other terminal steps delete the row or leave its bytes
             // unchanged, so there is no index put to substitute in those cases.
             if count != 1 && case >= 6 {
@@ -388,7 +486,7 @@ fn follower_joins_prefix_facts_to_physical_and_intra_group_predecessors() {
 
 #[test]
 fn startup_refuses_resealed_epoch_priors_and_secondary_index_images() {
-    for case in [3, 5, 6, 7, 8, 9] {
+    for case in [3, 5, 6, 7, 8, 9, 10, 11, 12] {
         let source = TestDatabasePath::new("prefix-prior-startup");
         let anchor = install_fixture(&source.0);
         let (ports, _receiver) = observed_ports(&source.0, RedbCommitProfile::Hardened);
