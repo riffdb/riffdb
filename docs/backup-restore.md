@@ -354,6 +354,13 @@ available; monitor the redacted `riffdb-archive-v1` diagnostics. A stopped
 collector needs a database restart after the cause is corrected. It cannot bridge
 a history gap already pruned from the source.
 
+The Linux acceptance runner `./scripts/check-archive-cli` builds the production
+CLI and runs both stop modes against a real daemon with verified TLS and automatic
+collection. It checks the generated operation ID, terminal JSON frontiers,
+restored application data and exact retry through the Rust client. These two
+process tests are explicitly ignored by ordinary Cargo test runs because they
+require the separate CLI binary; `ci-all` runs the dedicated runner.
+
 WP-749 remains incomplete: the complete end-to-end crash qualification and
 write-path measurements are still pending. These restore
 paths do not yet constitute a qualified disaster-recovery deployment.

@@ -22873,6 +22873,7 @@ work_packages:
     `tests/replication_archive_restore.rs` plus a crash-matrix arm for archive-sink failure
   acceptance_commands:
   - ./scripts/acceptance --wp WP-749
+  - ./scripts/check-archive-cli
   - ./scripts/ci-all
   exit_gate: A database restored from a verified full backup plus its archived suffix equals the
     primary through the last archived sequence, a truncated or reordered archive is refused before
@@ -23059,6 +23060,13 @@ work_packages:
       physical stops rebuild at their exact boundary; interior cuts rebuild the
       physical predecessor before private prefix reconstruction and sealing.
       Keep archive/receipt bytes, source controls and publication gates unchanged.
+    - Exercise archive restore through the separately built production CLI against
+      the real daemon, verified TLS and automatic collection. Check both last-archived
+      and earlier application stops, the CLI-generated operation ID, terminal JSON
+      frontiers, restored application bytes, outcomes/provenance and exact Rust-client
+      retry. scripts/check-archive-cli runs both explicitly ignored process cases and
+      is required by ci-all; missing binaries or unsupported hosts cannot silently pass.
+      This adds acceptance evidence only; crash and write-path measurements remain open.
   human_review_triggers: *id0178
 
 - id: WP-750
