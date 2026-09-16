@@ -14,7 +14,7 @@ use riffdb_storage_api::{
     PolicyAuthorizedEventReplayItemV1, StorageErrorKind, StoredCommitRecordV1,
 };
 use riffdb_types::{
-    ActorKind, CanonicalValue, ContractVersion, EventId, EventTypeId, PartitionKey,
+    ActorKind, CanonicalValue, CommitSequence, ContractVersion, EventId, EventTypeId, PartitionKey,
     PartitionKeyHash, PlanHash, ProvenanceId, RequestId, Timestamp, decode_canonical_value,
     hash_partition_key,
 };
@@ -169,12 +169,22 @@ impl ResolvedReactiveEventStream {
                 kind: EventReplayErrorKind::Storage(error.kind()),
             })?;
         let mut items = Vec::new();
+        let mut commit_cache = ReplayCommitCache::default();
+        let mut materializers = self
+            .materializers
+            .iter()
+            .map(|materializer| {
+                (
+                    materializer.event_type_id(),
+                    materializer.page_materializer(),
+                )
+            })
+            .collect::<Vec<_>>();
         for encoded_route in routes.items() {
             let route = *encoded_route.value();
-            let Some(materializer) = self
-                .materializers
-                .iter()
-                .find(|candidate| candidate.event_type_id() == route.event_type_id())
+            let Some((_, materializer)) = materializers
+                .iter_mut()
+                .find(|(event_type, _)| *event_type == route.event_type_id())
             else {
                 continue;
             };
@@ -184,13 +194,9 @@ impl ResolvedReactiveEventStream {
                     kind: EventReplayErrorKind::Storage(error.kind()),
                 })?
                 .ok_or_else(EventReplayError::integrity)?;
-            let commit = reader
-                .read_commit(route.event_id().commit_sequence())
-                .map_err(|error| EventReplayError {
-                    kind: EventReplayErrorKind::Storage(error.kind()),
-                })?
-                .ok_or_else(EventReplayError::integrity)?;
-            let (root_request_id, causing_event_id) = read_event_correlation(reader, &commit)?;
+            let cached = commit_cache.get(reader, route.event_id().commit_sequence())?;
+            let commit = &cached.commit;
+            let (root_request_id, causing_event_id) = cached.correlation;
             if route.event_id() != event.event_id()
                 || route.event_type_id() != event.event_type_id()
                 || route.event_hash() != event.event_hash()
@@ -200,12 +206,8 @@ impl ResolvedReactiveEventStream {
             {
                 return Err(EventReplayError::integrity());
             }
-            let view = materializer.materialize_routed_event(
-                commit.plan(),
-                self.partition_hash,
-                route,
-                &event,
-            )?;
+            let view =
+                materializer.materialize(commit.plan(), self.partition_hash, route, &event)?;
             if !predicate_matches(&self.predicate, &self.parameters, &view)? {
                 continue;
             }
@@ -329,6 +331,8 @@ impl ResolvedEventReplay {
                 kind: EventReplayErrorKind::Storage(error.kind()),
             })?;
         let mut items = Vec::new();
+        let mut commit_cache = ReplayCommitCache::default();
+        let mut materializer = self.materializer.page_materializer();
         for encoded_route in routes.items() {
             let route = *encoded_route.value();
             let event = reader
@@ -337,13 +341,9 @@ impl ResolvedEventReplay {
                     kind: EventReplayErrorKind::Storage(error.kind()),
                 })?
                 .ok_or_else(EventReplayError::integrity)?;
-            let commit = reader
-                .read_commit(route.event_id().commit_sequence())
-                .map_err(|error| EventReplayError {
-                    kind: EventReplayErrorKind::Storage(error.kind()),
-                })?
-                .ok_or_else(EventReplayError::integrity)?;
-            let (root_request_id, causing_event_id) = read_event_correlation(reader, &commit)?;
+            let cached = commit_cache.get(reader, route.event_id().commit_sequence())?;
+            let commit = &cached.commit;
+            let (root_request_id, causing_event_id) = cached.correlation;
             if route.event_id() != event.event_id()
                 || route.event_type_id() != event.event_type_id()
                 || route.event_hash() != event.event_hash()
@@ -354,12 +354,8 @@ impl ResolvedEventReplay {
                 return Err(EventReplayError::integrity());
             }
             if event.event_type_id() == self.materializer.event_type_id() {
-                let view = self.materializer.materialize_routed_event(
-                    commit.plan(),
-                    self.partition_hash,
-                    route,
-                    &event,
-                )?;
+                let view =
+                    materializer.materialize(commit.plan(), self.partition_hash, route, &event)?;
                 items.push(SymbolicEventEnvelope {
                     view,
                     occurred_at: commit.logical_time().timestamp(),
@@ -384,6 +380,53 @@ impl ResolvedEventReplay {
 impl fmt::Debug for ResolvedEventReplay {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         formatter.write_str("ResolvedEventReplay([CHECKED])")
+    }
+}
+
+// One page-local entry bounds retained history independently of page size.
+// Sibling events share immutable commit/provenance evidence, but every route
+// and payload still passes its own reciprocal and schema checks.
+#[derive(Default)]
+struct ReplayCommitCache {
+    current: Option<CheckedReplayCommit>,
+}
+
+struct CheckedReplayCommit {
+    commit: StoredCommitRecordV1,
+    correlation: (RequestId, Option<EventId>),
+}
+
+impl ReplayCommitCache {
+    fn get<R: AuthoritativePointReader>(
+        &mut self,
+        reader: &R,
+        sequence: CommitSequence,
+    ) -> Result<&CheckedReplayCommit, EventReplayError> {
+        if self
+            .current
+            .as_ref()
+            .is_none_or(|cached| cached.commit.commit_sequence() != sequence)
+        {
+            // Do not retain a prior record across a failed replacement.
+            self.current = None;
+            let commit = reader
+                .read_commit(sequence)
+                .map_err(|error| EventReplayError {
+                    kind: EventReplayErrorKind::Storage(error.kind()),
+                })?
+                .ok_or_else(EventReplayError::integrity)?;
+            if commit.commit_sequence() != sequence {
+                return Err(EventReplayError::integrity());
+            }
+            let correlation = read_event_correlation(reader, &commit)?;
+            self.current = Some(CheckedReplayCommit {
+                commit,
+                correlation,
+            });
+        }
+        self.current
+            .as_ref()
+            .ok_or_else(EventReplayError::integrity)
     }
 }
 
@@ -840,3 +883,7 @@ fn scalar_order(left: &CanonicalValue, right: &CanonicalValue) -> Option<Orderin
         _ => None,
     }
 }
+
+#[cfg(test)]
+#[path = "event_replay_cache_tests.rs"]
+mod cache_tests;

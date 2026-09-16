@@ -291,7 +291,13 @@ impl riffdb_service::VectorProjectionPort for FollowerColumnarRuntime {
             .observe(request.source_name())
             .map_err(super::map_vector_port_error)?;
         let source = crate::projection_read_source::ProjectionReadSource::new(self.reads.clone());
-        super::vector_view::execute(request, observation, &source, &source.query_executor())
+        super::vector_view::execute(
+            request,
+            observation,
+            &source,
+            &source.query_executor(),
+            None,
+        )
     }
 }
 

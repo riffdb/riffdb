@@ -26,10 +26,11 @@ use riffdb_service::{
     PortFuture, RequestControl,
 };
 use riffdb_storage_api::{
-    ApplicationExportEventRecordV1, ApplicationExportOperationRepository,
-    ApplicationExportOperationWriteResultV1, ApplicationExportSnapshotPort,
-    ApplicationExportSnapshotReader, ApplicationExportSourceRecordV1,
-    MAX_ACTIVE_APPLICATION_EXPORTS, StorageError, StorageErrorKind, StorageScanLimit,
+    ApplicationExportEventRecordV1, ApplicationExportLedgerPrefixV1,
+    ApplicationExportLedgerRepository, ApplicationExportOperationWriteResultV1,
+    ApplicationExportSnapshotPort, ApplicationExportSnapshotReader,
+    ApplicationExportSourceRecordV1, MAX_ACTIVE_APPLICATION_EXPORTS, StorageError,
+    StorageErrorKind, StorageScanLimit, StoredApplicationExportOperation,
     StoredApplicationExportOperationV1,
 };
 use riffdb_types::{
@@ -48,6 +49,8 @@ use crate::clocks::ServerApplicationExportClock;
 use crate::port_driver::{BlockingPortDriver, BlockingPortExecutor};
 use crate::storage::SharedRedbOperationalPorts;
 
+mod compact;
+
 const STATE_SCHEMA: &str = "riffdb.application-export-operation/v1";
 const PORTABILITY_STATE_SCHEMA: &str = "riffdb.application-export-operation/v2";
 const MANIFEST_SCHEMA: &str = "riffdb.application-export-manifest/v1";
@@ -55,7 +58,7 @@ const RECEIPT_SCHEMA: &str = "riffdb.application-export-receipt/v1";
 const PORTABILITY_MANIFEST_SCHEMA: &str = "riffdb.application-export-manifest/v2";
 const PORTABILITY_RECEIPT_SCHEMA: &str = "riffdb.application-export-receipt/v2";
 const CURSOR_VERSION: u8 = 1;
-const MAX_RETAINED_PAGE_HASHES: usize = 4_096;
+const MAX_RETAINED_PAGE_HASHES: usize = riffdb_types::MAX_APPLICATION_EXPORT_PAGES;
 const MAX_EXPORT_LINES_PER_STORAGE_CHUNK: u16 = 64;
 const MAX_POLICY_SOURCE_ROWS_PER_PUBLIC_PAGE: usize = 100_000;
 const MAX_APPLICATION_EXPORT_REPLAY_BYTES: usize = 64 * 1024 * 1024;
@@ -310,6 +313,7 @@ struct ExportState {
     class_rows: [u64; 4],
     class_bytes: [u64; 4],
     page_hashes: Vec<ApplicationExportPageHash>,
+    ledger: Option<ApplicationExportLedgerPrefixV1>,
     manifest: Option<Vec<u8>>,
     receipt: Option<Vec<u8>>,
     portability_manifest_hash: Option<ApplicationPortabilityManifestHash>,
@@ -323,7 +327,7 @@ fn resolve_selection(
     operation_id: ApplicationExportOperationId,
 ) -> Result<Option<ApplicationExportSelectionV1>, ApplicationExportObservationPortErrorV1> {
     storage
-        .read_application_export_operation(operation_id)
+        .read_application_export_head(operation_id)
         .map_err(map_observation_storage)?
         .map(|record| decode_state(&record).map(|state| state.selection))
         .transpose()
@@ -340,7 +344,7 @@ fn start_or_replay(
     let (_request_id, _ingress, request, authorization) = request.into_parts();
     validate_proof(&authorization, request.operation_id(), request.selection())?;
     if let Some(record) = storage
-        .read_application_export_operation(request.operation_id())
+        .read_application_export_head(request.operation_id())
         .map_err(map_mutation_storage)?
     {
         let mut state =
@@ -413,7 +417,7 @@ fn start_or_replay(
         };
     row_policy_names.sort();
     row_policy_names.dedup();
-    let state = ExportState {
+    let mut state = ExportState {
         operation_id: request.operation_id(),
         selection: request.selection().clone(),
         snapshot: snapshot.binding().clone(),
@@ -434,6 +438,7 @@ fn start_or_replay(
         class_rows: [0; 4],
         class_bytes: [0; 4],
         page_hashes: Vec::new(),
+        ledger: None,
         manifest: None,
         receipt: None,
         portability_manifest_hash,
@@ -441,9 +446,11 @@ fn start_or_replay(
         portability_entity_schedule,
         portability_entity_schedule_index: 0,
     };
+    compact::initialize(&mut state)?;
     let replacement = stored_state(&state)?;
+    let reserve = compact::terminal_reserve(&state)?;
     insert_snapshot_candidate(snapshots, state.operation_id, Arc::clone(&snapshot))?;
-    let write = storage.compare_and_swap_application_export_operation(None, &replacement);
+    let write = compact::commit(&mut storage, None, &replacement, None, reserve);
     match write {
         Err(error) => {
             remove_snapshot(snapshots, state.operation_id)?;
@@ -469,7 +476,7 @@ fn release_page(
 ) -> Result<ApplicationExportPageV1, ApplicationExportMutationPortErrorV1> {
     let (request, authorization) = request.into_parts();
     let retained = storage
-        .read_application_export_operation(request.operation_id())
+        .read_application_export_head(request.operation_id())
         .map_err(map_mutation_storage)?
         .ok_or(ApplicationExportMutationPortErrorV1::InputMismatch)?;
     let mut state =
@@ -509,7 +516,7 @@ fn release_page(
         replays,
         state.operation_id,
         request.cursor(),
-        retained.canonical_state(),
+        &compact::replay_identity(&retained)?,
     )? {
         return Ok(page);
     }
@@ -519,6 +526,21 @@ fn release_page(
     if cursor_for(&retained)? != *request.cursor() {
         return Err(ApplicationExportMutationPortErrorV1::InputMismatch);
     }
+    if usize::try_from(state.pages_released)
+        .map_err(|_| ApplicationExportMutationPortErrorV1::Integrity)?
+        >= MAX_RETAINED_PAGE_HASHES
+    {
+        terminalize(
+            &mut storage,
+            Some(&retained),
+            &mut state,
+            ApplicationExportFailureV1::LimitExceeded,
+        )?;
+        remove_snapshot(snapshots, state.operation_id)?;
+        remove_replay(replays, state.operation_id)?;
+        return Err(ApplicationExportMutationPortErrorV1::LimitExceeded);
+    }
+
     let snapshot = snapshots
         .lock()
         .map_err(|_| ApplicationExportMutationPortErrorV1::Integrity)?
@@ -656,17 +678,6 @@ fn release_page(
     state.class_bytes[class_index] = state.class_bytes[class_index]
         .checked_add(released_bytes)
         .ok_or(ApplicationExportMutationPortErrorV1::LimitExceeded)?;
-    if state.page_hashes.len() >= MAX_RETAINED_PAGE_HASHES {
-        terminalize(
-            &mut storage,
-            Some(&retained),
-            &mut state,
-            ApplicationExportFailureV1::LimitExceeded,
-        )?;
-        remove_snapshot(snapshots, state.operation_id)?;
-        remove_replay(replays, state.operation_id)?;
-        return Err(ApplicationExportMutationPortErrorV1::LimitExceeded);
-    }
 
     let operation_complete = next_class.is_none();
     let page_number = NonZeroU64::new(state.pages_released)
@@ -688,11 +699,45 @@ fn release_page(
         operation_complete,
     )
     .map_err(|_| ApplicationExportMutationPortErrorV1::LimitExceeded)?;
-    state.page_hashes.push(provisional.page_hash());
-    if operation_complete {
-        complete_state(&mut state)?;
-    }
-    let replacement = stored_state(&state)?;
+    let append = compact::append(
+        &mut state,
+        class,
+        provisional.page_hash(),
+        lines.len() as u64,
+        released_bytes,
+    )?;
+    let prepared = (|| {
+        if operation_complete {
+            if append.is_some() {
+                compact::load_terminal_hashes(&storage, Some(&retained), &mut state)?;
+                state.page_hashes.push(provisional.page_hash());
+            }
+            complete_state(&mut state)?;
+        }
+        let replacement = stored_state(&state)?;
+        let reserve = compact::terminal_reserve(&state)?;
+        compact::check_budget(&state, &replacement, reserve)?;
+        Ok::<_, ApplicationExportMutationPortErrorV1>((replacement, reserve))
+    })();
+    let (replacement, reserve) = match prepared {
+        Ok(prepared) => prepared,
+        Err(ApplicationExportMutationPortErrorV1::LimitExceeded) => {
+            // The rejected page was never released. Terminal evidence describes
+            // only the exact retained prefix, including its reserved headroom.
+            state = decode_state(&retained)
+                .map_err(|()| ApplicationExportMutationPortErrorV1::Integrity)?;
+            terminalize(
+                &mut storage,
+                Some(&retained),
+                &mut state,
+                ApplicationExportFailureV1::LimitExceeded,
+            )?;
+            remove_snapshot(snapshots, state.operation_id)?;
+            remove_replay(replays, state.operation_id)?;
+            return Err(ApplicationExportMutationPortErrorV1::LimitExceeded);
+        }
+        Err(error) => return Err(error),
+    };
     let next_cursor = if operation_complete {
         None
     } else {
@@ -713,14 +758,23 @@ fn release_page(
     }
     let replay = PageReplayEntry::new(request.cursor().clone(), &replacement, page.clone())?;
     install_replay(replays, state.operation_id, replay)?;
-    match storage
-        .compare_and_swap_application_export_operation(Some(&retained), &replacement)
-        .map_err(map_mutation_storage)?
+    match compact::commit(
+        &mut storage,
+        Some(&retained),
+        &replacement,
+        append.as_ref(),
+        reserve,
+    )
+    .map_err(map_mutation_storage)?
     {
         ApplicationExportOperationWriteResultV1::Applied
         | ApplicationExportOperationWriteResultV1::Unchanged => Ok(page),
         ApplicationExportOperationWriteResultV1::CompareMismatch => {
-            remove_replay_if_state(replays, state.operation_id, replacement.canonical_state())?;
+            remove_replay_if_state(
+                replays,
+                state.operation_id,
+                &compact::replay_identity(&replacement)?,
+            )?;
             Err(ApplicationExportMutationPortErrorV1::OutcomeUnknown)
         }
     }
@@ -735,7 +789,7 @@ fn observe(
 ) -> Result<Option<ApplicationExportOperationV1>, ApplicationExportObservationPortErrorV1> {
     let (request, authorization) = request.into_parts();
     let Some(retained) = storage
-        .read_application_export_operation(request.operation_id())
+        .read_application_export_head(request.operation_id())
         .map_err(map_observation_storage)?
     else {
         return Ok(None);
@@ -782,7 +836,7 @@ fn cancel(
 ) -> Result<Option<ApplicationExportOperationV1>, ApplicationExportMutationPortErrorV1> {
     let (request, authorization) = request.into_parts();
     let Some(retained) = storage
-        .read_application_export_operation(request.operation_id())
+        .read_application_export_head(request.operation_id())
         .map_err(map_mutation_storage)?
     else {
         return Ok(None);
@@ -991,16 +1045,14 @@ fn operation(
 
 fn terminalize(
     storage: &mut SharedRedbOperationalPorts,
-    expected: Option<&StoredApplicationExportOperationV1>,
+    expected: Option<&StoredApplicationExportOperation>,
     state: &mut ExportState,
     failure: ApplicationExportFailureV1,
 ) -> Result<(), ApplicationExportMutationPortErrorV1> {
+    compact::load_terminal_hashes(storage, expected, state)?;
     fail_state(state, failure)?;
     let replacement = stored_state(state)?;
-    match storage
-        .compare_and_swap_application_export_operation(expected, &replacement)
-        .map_err(map_mutation_storage)?
-    {
+    match compact::commit(storage, expected, &replacement, None, 0).map_err(map_mutation_storage)? {
         ApplicationExportOperationWriteResultV1::Applied
         | ApplicationExportOperationWriteResultV1::Unchanged => Ok(()),
         ApplicationExportOperationWriteResultV1::CompareMismatch => {
@@ -1011,23 +1063,16 @@ fn terminalize(
 
 fn terminalize_observation(
     storage: &mut SharedRedbOperationalPorts,
-    expected: &StoredApplicationExportOperationV1,
+    expected: &StoredApplicationExportOperation,
     state: &mut ExportState,
     failure: ApplicationExportFailureV1,
 ) -> Result<(), ApplicationExportObservationPortErrorV1> {
-    fail_state(state, failure).map_err(|_| ApplicationExportObservationPortErrorV1::Integrity)?;
-    let replacement =
-        stored_state(state).map_err(|_| ApplicationExportObservationPortErrorV1::Integrity)?;
-    match storage
-        .compare_and_swap_application_export_operation(Some(expected), &replacement)
-        .map_err(map_observation_storage)?
-    {
-        ApplicationExportOperationWriteResultV1::Applied
-        | ApplicationExportOperationWriteResultV1::Unchanged => Ok(()),
-        ApplicationExportOperationWriteResultV1::CompareMismatch => {
-            Err(ApplicationExportObservationPortErrorV1::Unavailable)
+    terminalize(storage, Some(expected), state, failure).map_err(|error| match error {
+        ApplicationExportMutationPortErrorV1::Integrity => {
+            ApplicationExportObservationPortErrorV1::Integrity
         }
-    }
+        _ => ApplicationExportObservationPortErrorV1::Unavailable,
+    })
 }
 
 fn fail_state(
@@ -1251,14 +1296,20 @@ fn actor_kind_name(actor: ActorKind) -> &'static str {
 }
 
 fn cursor_for(
-    record: &StoredApplicationExportOperationV1,
+    record: &StoredApplicationExportOperation,
 ) -> Result<ApplicationExportCursor, ApplicationExportMutationPortErrorV1> {
     let mut preimage = Vec::with_capacity(16 + record.canonical_state().len());
     preimage.extend_from_slice(record.operation_id().as_bytes());
-    preimage.extend_from_slice(record.canonical_state());
+    preimage.extend_from_slice(&compact::replay_identity(record)?);
     let digest = hash(HashDomain::ApplicationExportCursor, &preimage);
     let mut bytes = Vec::with_capacity(1 + 16 + 32);
-    bytes.push(CURSOR_VERSION);
+    bytes.push(
+        if matches!(record, StoredApplicationExportOperation::Compact(_)) {
+            2
+        } else {
+            CURSOR_VERSION
+        },
+    );
     bytes.extend_from_slice(record.operation_id().as_bytes());
     bytes.extend_from_slice(digest.as_bytes());
     ApplicationExportCursor::new(bytes).map_err(|_| ApplicationExportMutationPortErrorV1::Integrity)
@@ -1266,12 +1317,16 @@ fn cursor_for(
 
 fn stored_state(
     state: &ExportState,
-) -> Result<StoredApplicationExportOperationV1, ApplicationExportMutationPortErrorV1> {
+) -> Result<StoredApplicationExportOperation, ApplicationExportMutationPortErrorV1> {
+    if state.ledger.is_some() {
+        return compact::stored(state);
+    }
     StoredApplicationExportOperationV1::new(
         state.operation_id,
         state.selection.lineage().clone(),
         encode_state(state)?,
     )
+    .map(StoredApplicationExportOperation::Legacy)
     .map_err(|_| ApplicationExportMutationPortErrorV1::LimitExceeded)
 }
 
@@ -1280,10 +1335,13 @@ fn encode_state(state: &ExportState) -> Result<Vec<u8>, ApplicationExportMutatio
     serde_json::to_vec(&wire).map_err(|_| ApplicationExportMutationPortErrorV1::Integrity)
 }
 
-fn decode_state(record: &StoredApplicationExportOperationV1) -> Result<ExportState, ()> {
+fn decode_state(record: &StoredApplicationExportOperation) -> Result<ExportState, ()> {
+    if let StoredApplicationExportOperation::Compact(record) = record {
+        return compact::decode(record);
+    }
     let wire: ExportStateWireV1 =
         serde_json::from_slice(record.canonical_state()).map_err(|_| ())?;
-    let state = wire_to_state(wire)?;
+    let state = wire_to_state(wire, None)?;
     if state.operation_id != record.operation_id()
         || state.selection.lineage() != record.lineage()
         || encode_state(&state).map_err(|_| ())? != record.canonical_state()
@@ -1371,7 +1429,10 @@ fn state_to_wire(state: &ExportState) -> ExportStateWireV1 {
     }
 }
 
-fn wire_to_state(wire: ExportStateWireV1) -> Result<ExportState, ()> {
+fn wire_to_state(
+    wire: ExportStateWireV1,
+    ledger: Option<ApplicationExportLedgerPrefixV1>,
+) -> Result<ExportState, ()> {
     let portability = match wire.schema.as_str() {
         STATE_SCHEMA => false,
         PORTABILITY_STATE_SCHEMA => true,
@@ -1426,7 +1487,16 @@ fn wire_to_state(wire: ExportStateWireV1) -> Result<ExportState, ()> {
     if total_pages != wire.pages_released
         || total_rows != wire.rows_released
         || total_bytes != wire.bytes_released
-        || usize::try_from(total_pages).map_err(|_| ())? != wire.page_hashes.len()
+        || match ledger {
+            None => usize::try_from(total_pages).map_err(|_| ())? != wire.page_hashes.len(),
+            Some(prefix) => {
+                !wire.page_hashes.is_empty()
+                    || u64::from(prefix.pages()) != total_pages
+                    || prefix.class_pages().map(u64::from) != wire.class_pages
+                    || prefix.class_rows() != &wire.class_rows
+                    || prefix.class_bytes() != &wire.class_bytes
+            }
+        }
     {
         return Err(());
     }
@@ -1503,6 +1573,7 @@ fn wire_to_state(wire: ExportStateWireV1) -> Result<ExportState, ()> {
         class_pages: wire.class_pages,
         class_rows: wire.class_rows,
         class_bytes: wire.class_bytes,
+        ledger,
         page_hashes: wire
             .page_hashes
             .into_iter()
@@ -1636,18 +1707,19 @@ fn remove_snapshot_observation(
 impl PageReplayEntry {
     fn new(
         request_cursor: ApplicationExportCursor,
-        successor: &StoredApplicationExportOperationV1,
+        successor: &StoredApplicationExportOperation,
         page: ApplicationExportPageV1,
     ) -> Result<Self, ApplicationExportMutationPortErrorV1> {
         if successor.operation_id() != page.operation_id() {
             return Err(ApplicationExportMutationPortErrorV1::Integrity);
         }
+        let successor_state = compact::replay_identity(successor)?;
         let line_bytes = page.lines().iter().try_fold(0usize, |total, line| {
             total.checked_add(line.as_bytes().len().checked_add(1)?)
         });
         let retained_bytes = APPLICATION_EXPORT_REPLAY_FIXED_CHARGE
             .checked_add(request_cursor.as_bytes().len())
-            .and_then(|total| total.checked_add(successor.canonical_state().len()))
+            .and_then(|total| total.checked_add(successor_state.len()))
             .and_then(|total| total.checked_add(line_bytes?))
             .and_then(|total| {
                 total.checked_add(
@@ -1658,7 +1730,7 @@ impl PageReplayEntry {
             .ok_or(ApplicationExportMutationPortErrorV1::LimitExceeded)?;
         Ok(Self {
             request_cursor,
-            successor_state: successor.canonical_state().to_vec(),
+            successor_state,
             page,
             retained_bytes,
         })
@@ -2163,6 +2235,9 @@ fn base64_standard(bytes: &[u8]) -> String {
 fn map_mutation_storage(error: StorageError) -> ApplicationExportMutationPortErrorV1 {
     match error.kind() {
         StorageErrorKind::LimitExceeded => ApplicationExportMutationPortErrorV1::LimitExceeded,
+        StorageErrorKind::CommitStatusUnknown => {
+            ApplicationExportMutationPortErrorV1::OutcomeUnknown
+        }
         StorageErrorKind::InvariantViolation | StorageErrorKind::CorruptData => {
             ApplicationExportMutationPortErrorV1::Integrity
         }
@@ -2183,7 +2258,7 @@ fn map_observation_storage(error: StorageError) -> ApplicationExportObservationP
 mod tests {
     use super::*;
 
-    fn state() -> ExportState {
+    pub(super) fn state() -> ExportState {
         let operation_id =
             ApplicationExportOperationId::from_unix_milliseconds_and_random(1, [1; 10])
                 .expect("operation id");
@@ -2234,6 +2309,7 @@ mod tests {
             class_rows: [0; 4],
             class_bytes: [0; 4],
             page_hashes: Vec::new(),
+            ledger: None,
             manifest: None,
             receipt: None,
             portability_manifest_hash: None,
@@ -2265,7 +2341,7 @@ mod tests {
             noncanonical,
         )
         .expect("bounded state");
-        assert!(decode_state(&noncanonical).is_err());
+        assert!(decode_state(&StoredApplicationExportOperation::Legacy(noncanonical)).is_err());
 
         let wrong_lineage = StoredApplicationExportOperationV1::new(
             state.operation_id,
@@ -2273,7 +2349,7 @@ mod tests {
             stored.canonical_state().to_vec(),
         )
         .expect("bounded state");
-        assert!(decode_state(&wrong_lineage).is_err());
+        assert!(decode_state(&StoredApplicationExportOperation::Legacy(wrong_lineage)).is_err());
         assert!(
             !stored
                 .canonical_state()

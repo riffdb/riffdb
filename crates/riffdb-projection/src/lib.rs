@@ -5,6 +5,7 @@
 //! Authoritative entity and commit state never depends on this crate. Projection
 //! rows, markers, and frontiers are derived state and can be rebuilt.
 
+mod batch;
 mod control;
 mod error;
 mod evaluator;
@@ -20,6 +21,7 @@ mod registry;
 mod result_set_epoch;
 mod tokenized_text;
 
+pub use batch::*;
 pub use control::*;
 pub use error::*;
 pub use evaluator::*;

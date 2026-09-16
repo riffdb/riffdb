@@ -86,7 +86,8 @@ impl RedbFollowerApplier {
         Ok((
             history,
             state,
-            crate::owned_snapshot::RedbOwnedSnapshot::from_read_access(access),
+            crate::owned_snapshot::RedbOwnedSnapshot::from_read_access(access)
+                .with_source_pins(Arc::clone(&self.shared.derived_source_pins)),
         ))
     }
 

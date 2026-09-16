@@ -191,8 +191,14 @@ impl ReplicationSourceControl {
             previous.history.lineage(),
             previous.history.tail(),
         )?);
-        let Some(floor) =
-            retention::floor(&barrier.root, current.history, previous.history.tail())?
+        let mut derived = self.shared.derived_source_pins.reclamation()?;
+        let derived_floor = derived.oldest(current.history.lineage());
+        let Some(floor) = retention::floor(
+            &barrier.root,
+            current.history,
+            previous.history.tail(),
+            derived_floor,
+        )?
         else {
             self.observed = Some(current);
             return Ok(false);
@@ -213,6 +219,7 @@ impl ReplicationSourceControl {
         )?;
         write.validate()?;
         crash_edge("reclamation-staged");
+        derived.reserve(current.history.lineage(), floor);
         // Observe the post-commit root so this receipt cannot stimulate itself.
         self.observed = Some(write.commit()?);
         crash_edge("reclamation-committed");

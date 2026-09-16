@@ -89,7 +89,11 @@ async fn run(
                 retry = INITIAL_RETRY;
                 continue;
             }
-            Ok(None) => {}
+            Ok(None) => {
+                // A healthy source can close at its idle/lifetime limit. Reset
+                // failure backoff so prior silence does not delay new commits.
+                retry = INITIAL_RETRY;
+            }
             Err(error) if transient(error) && receiver.owner.is_some() => {}
             Err(error) => break Err(error),
         }
@@ -100,7 +104,9 @@ async fn run(
             _ = &mut stopped => break Ok(()),
             () = tokio::time::sleep(retry) => {},
         }
-        retry = retry.saturating_mul(2).min(MAX_RETRY);
+        if result.is_err() {
+            retry = retry.saturating_mul(2).min(MAX_RETRY);
+        }
     };
     let close = if receiver.owner.is_some() {
         receiver.close().await.map_err(storage)

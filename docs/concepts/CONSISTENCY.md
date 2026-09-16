@@ -38,6 +38,13 @@ to a projection generation. Callers that need read-after-commit behavior pass a
 known commit sequence and wait within a bounded deadline. A projection can be
 rebuilt from authoritative history without changing command truth.
 
+Aggregate projection catch-up groups up to 64 consecutive commits within the
+existing total row and byte bounds. Each commit, including one with no relevant
+event, retains its equality marker. Rows, all markers and the final frontier
+become durable together, so intermediate positions in a batch are not separately
+visible. A retry checks every marker, and an uncertain write is reconciled before
+notification. Command acknowledgement and durability are unchanged.
+
 Projected-query responses carry opaque V2 commit tokens and frontiers bound to
 the database identity, history incarnation and applied position. Carry the
 returned token unchanged for a causal projected read. A follower refuses a

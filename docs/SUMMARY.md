@@ -131,6 +131,7 @@
   - [WP-598 Framework Profile Verification](architecture/WP-598-FRAMEWORK-PROFILE-VERIFICATION.md)
   - [WP-608 Mixed Command-History Audit](architecture/WP-608-MIXED-COMMAND-HISTORY-AUDIT.md)
 
+
 # Performance
 
 - [Benchmark Integrity](performance/benchmark-integrity.md)

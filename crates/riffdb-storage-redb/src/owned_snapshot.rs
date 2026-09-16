@@ -23,8 +23,8 @@ use riffdb_types::{CommitSequence, ContractLineage, EventId, FrontierPosition, P
 
 use crate::codec::{
     IdempotencyRecordV1, decode_command_locator_v1, decode_durable_event_v1,
-    decode_entity_record_v1, decode_idempotency_record_v1, decode_index_entry_v2,
-    decode_index_epoch_v1, decode_provenance_record_v1, decode_vector_evidence_index_v1,
+    decode_entity_record_v1, decode_idempotency_record_v1, decode_index_epoch_v1,
+    decode_provenance_record_v1, decode_vector_evidence_index_v1,
     decode_vector_health_observation_v1, decode_vector_observation_v1,
 };
 use crate::command_authority::{
@@ -41,7 +41,8 @@ use crate::keys::{
     encode_vector_observation_key,
 };
 use crate::reads::{
-    read_entity_record_access, read_epoch_position_access, read_snapshot_from_access,
+    decode_and_verify_index_entry, read_entity_record_access, read_epoch_position_access,
+    read_snapshot_from_access,
 };
 use crate::shared_ports::RedbSharedPorts;
 use crate::store::{RedbOperationalPorts, RedbReadAccess};
@@ -50,11 +51,35 @@ use crate::store::{RedbOperationalPorts, RedbReadAccess};
 #[derive(Clone)]
 pub struct RedbOwnedSnapshot {
     access: RedbReadAccess,
+    source_pins: Option<std::sync::Arc<crate::derived_source_pin::DerivedSourcePins>>,
 }
 
 impl RedbOwnedSnapshot {
     pub(crate) fn from_read_access(access: RedbReadAccess) -> Self {
-        Self { access }
+        Self {
+            access,
+            source_pins: None,
+        }
+    }
+
+    pub(crate) fn with_source_pins(
+        mut self,
+        pins: std::sync::Arc<crate::derived_source_pin::DerivedSourcePins>,
+    ) -> Self {
+        self.source_pins = Some(pins);
+        self
+    }
+
+    /// Retains the exact V3 tail of this already captured read view for bounded
+    /// derived catch-up. This grants no writer, remote hold or serving authority.
+    pub fn pin_derived_source_v3(
+        &self,
+    ) -> Result<crate::RedbDerivedSourcePin, riffdb_storage_api::ChangelogCursorErrorV3> {
+        let pins = self
+            .source_pins
+            .as_ref()
+            .ok_or_else(|| storage_error(StorageErrorKind::Unavailable))?;
+        crate::RedbDerivedSourcePin::capture(self.access.clone(), std::sync::Arc::clone(pins))
     }
 }
 
@@ -64,6 +89,7 @@ impl OwnedSnapshotReader for RedbOperationalPorts {
     fn open_owned_snapshot(&self) -> Result<Self::Snapshot<'_>, StorageError> {
         Ok(RedbOwnedSnapshot {
             access: self.begin_composite_read()?,
+            source_pins: Some(std::sync::Arc::clone(&self.shared.derived_source_pins)),
         })
     }
 }
@@ -127,10 +153,7 @@ impl SnapshotFenceReader for RedbOwnedSnapshot {
             {
                 continue;
             }
-            let decoded = decode_index_entry_v2(&encoded)?;
-            if decoded.value().key() != &key {
-                return Err(corrupt());
-            }
+            let decoded = decode_and_verify_index_entry(&key, &encoded)?;
             if entries.len() == wanted {
                 has_more = true;
                 break;
@@ -359,10 +382,7 @@ impl AuthoritativeScanReader for RedbOwnedSnapshot {
                 break;
             }
             let key = decode_index_entry_key(&physical_key).map_err(|_| corrupt())?;
-            let decoded = decode_index_entry_v2(&encoded)?;
-            if decoded.value().key() != &key {
-                return Err(corrupt());
-            }
+            let decoded = decode_and_verify_index_entry(&key, &encoded)?;
             if decoded.value().partition_key()
                 != request.target().generation_target().partition_key()
             {
@@ -383,7 +403,7 @@ impl AuthoritativeScanReader for RedbOwnedSnapshot {
                 has_more = true;
                 break;
             }
-            let row = IndexRangeEntry::new(key.index_id(), key, stored.covered_values().clone())
+            let row = IndexRangeEntry::new(key.index_id(), key, stored.into_covered_values())
                 .map_err(value_error)?;
             entries.push(EncodedPageItem::new(row, charge));
             encoded_bytes = next_bytes;
@@ -562,10 +582,7 @@ impl FilteredAuthoritativeScanReader for RedbOwnedSnapshot {
                 break;
             }
             let key = decode_index_entry_key(&physical_key).map_err(|_| corrupt())?;
-            let decoded = decode_index_entry_v2(&encoded)?;
-            if decoded.value().key() != &key {
-                return Err(corrupt());
-            }
+            let decoded = decode_and_verify_index_entry(&key, &encoded)?;
             let charge = decoded.encoded_content_charge();
             let next_inspected_bytes = inspected_bytes
                 .checked_add(charge.get())

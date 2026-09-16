@@ -66,6 +66,7 @@ const STORAGE_SOURCES: &[&str] = &[
     "riffdb/storage/v1/entity_transitions_v4.proto",
     "riffdb/storage/v1/event_references_v2.proto",
     "riffdb/storage/v1/export_v1.proto",
+    "riffdb/storage/v1/export_ledger_v1.proto",
     "riffdb/storage/v1/history_incarnation_v1.proto",
     "riffdb/storage/v1/index_generation_v2.proto",
     "riffdb/storage/v1/index_v2.proto",
@@ -124,6 +125,7 @@ const PRODUCTION_SOURCES: &[&str] = &[
     "riffdb/storage/v1/entity_transitions_v4.proto",
     "riffdb/storage/v1/event_references_v2.proto",
     "riffdb/storage/v1/export_v1.proto",
+    "riffdb/storage/v1/export_ledger_v1.proto",
     "riffdb/storage/v1/history_incarnation_v1.proto",
     "riffdb/storage/v1/index_generation_v2.proto",
     "riffdb/storage/v1/index_v2.proto",
@@ -729,6 +731,16 @@ const DURABLE_RECORDS: &[DurableRecord] = &[
         "StoredReplicationSourceHoldV2",
         PayloadBound::Exact(328),
     ),
+    durable(
+        "export_ledger_v1.proto",
+        "StoredApplicationExportOperationV2",
+        PayloadBound::Exact(256 * 1024),
+    ),
+    durable(
+        "export_ledger_v1.proto",
+        "StoredApplicationExportPageCommitmentV1",
+        PayloadBound::Exact(74),
+    ),
 ];
 
 const LEGACY_DURABLE_RECORD_COUNT: usize = 26;
@@ -1277,6 +1289,12 @@ fn main() -> Result<(), Box<dyn Error>> {
     let source_hold_v2_record = durable_registry
         .get(current_v1_record_count + 72)
         .ok_or_else(|| io::Error::other("durable source hold V2 registry is incomplete"))?;
+    let export_v2_record = durable_registry
+        .get(current_v1_record_count + 73)
+        .ok_or_else(|| io::Error::other("durable compact export registry is incomplete"))?;
+    let export_page_record = durable_registry
+        .get(current_v1_record_count + 74)
+        .ok_or_else(|| io::Error::other("durable export page registry is incomplete"))?;
     let command_prefix_records = durable_registry
         .get(current_v1_record_count + 70..current_v1_record_count + 72)
         .ok_or_else(|| io::Error::other("durable command-prefix registry is incomplete"))?;
@@ -1823,6 +1841,8 @@ fn main() -> Result<(), Box<dyn Error>> {
         ("replication-follower-state-v3", follower_record),
         ("replication-source-hold-v1", source_hold_record),
         ("replication-source-hold-v2", source_hold_v2_record),
+        ("export-operation-v2", export_v2_record),
+        ("export-page-commitment-v1", export_page_record),
     ] {
         for prefix in ["fixtures/proto", "crates/riffdb-proto/fixtures"] {
             write_artifact(
@@ -2114,9 +2134,9 @@ struct BuiltDurableRecord {
 fn build_durable_registry(
     storage: &FileDescriptorSet,
 ) -> Result<Vec<BuiltDurableRecord>, Box<dyn Error>> {
-    if DURABLE_RECORDS.len() != 102 {
+    if DURABLE_RECORDS.len() != 104 {
         return Err(
-            io::Error::other("readable durable registry must contain exactly 102 records").into(),
+            io::Error::other("readable durable registry must contain exactly 104 records").into(),
         );
     }
     if storage.file.len() != STORAGE_SOURCES.len()
@@ -2140,9 +2160,9 @@ fn build_durable_registry(
         .iter()
         .map(|file| file.enum_type.len())
         .sum::<usize>();
-    if message_count != 199 || enum_count != 30 {
+    if message_count != 201 || enum_count != 30 {
         return Err(io::Error::other(format!(
-            "storage schema must contain exactly 199 messages and 30 enums; found {message_count} messages and {enum_count} enums"
+            "storage schema must contain exactly 201 messages and 30 enums; found {message_count} messages and {enum_count} enums"
         ))
         .into());
     }
@@ -2499,6 +2519,9 @@ fn durable_writable_registry_fixture(
     let source_hold_v2 = records
         .get(current_v1_record_count + 72)
         .ok_or_else(|| io::Error::other("durable registry is missing source hold V2"))?;
+    let export_ledger = records
+        .get(current_v1_record_count + 73..current_v1_record_count + 75)
+        .ok_or_else(|| io::Error::other("durable registry is missing compact export ledger"))?;
     let writable = legacy[..8]
         .iter()
         .chain(std::iter::once(v2))
@@ -2551,10 +2574,11 @@ fn durable_writable_registry_fixture(
         .chain(std::iter::once(follower))
         .chain(std::iter::once(source_hold))
         .chain(command_prefix.iter())
-        .chain(std::iter::once(source_hold_v2));
+        .chain(std::iter::once(source_hold_v2))
+        .chain(export_ledger.iter());
 
     let mut output = String::from("riffdb-durable-writable-registry-v1\n");
-    let _ = writeln!(output, "records {}", current_v1_record_count + 55);
+    let _ = writeln!(output, "records {}", current_v1_record_count + 57);
     for record in writable {
         let _ = write!(output, "{} schema-hash=", record.record_type);
         for byte in record.schema_hash {

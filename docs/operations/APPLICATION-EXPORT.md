@@ -96,6 +96,23 @@ Pages are bounded to 500 rows, four MiB of canonical JSON, and the operation's
 server time budget. The client never accumulates the complete export in
 memory.
 
+An operation retains at most 4,096 pages within a shared 256 KiB durable-state
+budget. New operations retain a compact checkpoint and one append-only commitment
+per page, committed atomically. Space for the final manifest and receipt is
+reserved before a page is released, so the byte budget can stop an export before
+the page ceiling. Terminalization verifies the complete retained prefix once;
+public JSONL, page hashes, manifest order and receipt bytes are unchanged.
+Existing operations keep their original checkpoint and cursor encoding.
+
+The ledger adds an authoritative storage namespace under ADR-0232. The release
+manifest and normal format preflight bind its exact registry/catalog inventory.
+A database from a different current-build manifest is refused before mutation;
+use its matching binary. No automatic conversion of an active V3 history or
+physical downgrade is introduced. Explicitly recognized pre-V3 offline upgrades
+retain legacy export records and install an empty ledger. Keep the required
+backup and follow [format compatibility](../compatibility.md) before changing
+binaries.
+
 ## Observe or cancel
 
 ```bash

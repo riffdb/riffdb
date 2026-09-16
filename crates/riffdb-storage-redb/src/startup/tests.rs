@@ -800,7 +800,9 @@ fn sealed_offline_scrub_is_exact_end_idempotent_and_byte_read_only() {
 fn sealed_offline_scrub_refuses_exclusive_owner_and_corruption_without_mutation() {
     if let Ok(child_path) = std::env::var(SCRUB_OWNER_CHILD_PATH) {
         let _owner = RedbStore::open(child_path).expect("child acquires exclusive owner");
-        println!("SCRUB_OWNER_READY");
+        // Serial libtest prints its test-name prefix without a newline. Keep
+        // the parent/child protocol marker on its own line under either mode.
+        println!("\nSCRUB_OWNER_READY");
         std::io::stdout().flush().expect("flush child readiness");
         let mut release = String::new();
         std::io::stdin()

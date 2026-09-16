@@ -21,6 +21,7 @@ pub use riffdb_storage_api::{
 mod administration;
 mod application;
 mod application_export;
+mod application_export_ledger;
 mod application_installation;
 mod backup;
 #[cfg(feature = "benchmark-support")]
@@ -67,7 +68,9 @@ mod projection_replay;
 #[cfg(feature = "test-fixtures")]
 #[doc(hidden)]
 pub use migration_stage::{RedbMigrationStageFixture, RedbMigrationStageSnapshot};
+mod derived_source_pin;
 mod owned_snapshot;
+pub use derived_source_pin::RedbDerivedSourcePin;
 #[cfg(test)]
 mod query;
 mod query_diagnostics;

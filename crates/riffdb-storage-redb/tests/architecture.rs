@@ -1053,6 +1053,8 @@ fn every_live_database_engine_commit_routes_through_the_epoch_boundary() {
                     // Extracted store-owned graceful-close boundary; its sole
                     // final write commits through `SharedRedb::commit_durable`.
                     || name == "store_graceful_close.rs"
+                    // Extracted pre-V3 migration helper, checked below.
+                    || name == "store_export_ledger.rs"
                     // Sole follower frame/ack owner, checked explicitly below.
                     || name == "store_follower.rs"
                     // Derived persistence under that same move-only owner.
@@ -1087,6 +1089,29 @@ fn every_live_database_engine_commit_routes_through_the_epoch_boundary() {
     assert!(store.contains("fncommit_durable("));
     assert!(store.contains("self.shared.commit_durable(transaction)?"));
     assert!(store.contains("self.shared.commit_durable(transaction)"));
+    let export_migration = without_whitespace(&production_source(
+        source_dir.join("store_export_ledger.rs"),
+    ));
+    assert_eq!(
+        export_migration
+            .matches("shared.database.begin_write()")
+            .count(),
+        1
+    );
+    assert_eq!(
+        export_migration
+            .matches("shared.commit_durable(transaction)")
+            .count(),
+        1
+    );
+    assert_eq!(export_migration.matches(".commit()").count(), 0);
+    assert_eq!(
+        export_migration
+            .matches("set_durability(Durability::Immediate)")
+            .count(),
+        1
+    );
+    assert!(!export_migration.contains("RedbOperationalPorts"));
     let follower = without_whitespace(&production_source(source_dir.join("store_follower.rs")));
     assert_eq!(
         follower

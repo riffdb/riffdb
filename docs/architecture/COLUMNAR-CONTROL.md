@@ -45,12 +45,23 @@ disposable views without source-checksum claims or local control writes.
 ## V2 activation and immutable generations
 
 Each database and source activates V2 independently. A selected V1 generation
-remains the ordinary readable, writable, checkpoint, and compaction path while
-a disjoint V2 candidate is allocated, built from one authoritative snapshot
-plus its retained contiguous tail, and checked for logical equality at the same
-frontier. Head movement replaces the stale candidate without changing the V1
-selection. Candidate cancellation, storage exhaustion, corruption, or a crash
-before selection likewise leaves that exact V1 generation selected.
+remains readable while a disjoint V2 candidate is built from one authoritative
+snapshot plus its retained contiguous tail. Once a V2 candidate is allocated,
+the worker prepares that successor before advancing the selected V1 further.
+A fully validated candidate may publish its actual frontier H below the current
+authoritative head. A replacement must strictly advance the same-specification
+published frontier; a prepared candidate that cannot do so waits for newer work
+and is replaced when that work arrives. Head movement alone does not discard a
+candidate that can advance the published frontier. Cancellation, storage
+exhaustion, corruption, or a crash before selection leaves the exact prior
+generation selected.
+
+Publication never reports commits above H as applied. Queries requiring a newer
+frontier retain their existing bounded wait or typed unavailable result; Latest
+and epoch-intersection checks remain authoritative. Retention keeps the tail
+above the actual H, and the next bounded rebuild can advance it again. This
+removes rebuild invalidation under steady writes without promising that builds
+can keep up with an arbitrary write rate.
 
 A V2 generation is an immutable `generation-<u64-hex>` directory containing
 only its exact Segment V2 files, partition Manifest V2 files, and `ROOT-V1`.
@@ -81,8 +92,9 @@ segment-aligned, so that policy mode uses the same fixed scan work class and
 does not prune from protected statistics. Statistics, encoding choices, and
 skip counts are not public diagnostics, logs, or metrics.
 
-V2 compaction emits and publishes a new never-reused generation through the
-same gate; it never edits or reuses the selected root. Reclamation is derived
+V2 compaction emits a new never-reused generation through the same gate and
+publishes only after it advances the selected frontier; it never edits or
+reuses the selected root. Reclamation is derived
 from durable Published/Candidate/Predecessor control pointers and process-local
 captured views. An unselected directory is deleted only after neither class
 names or holds it, and deletion plus parent-directory sync is crash-idempotent.

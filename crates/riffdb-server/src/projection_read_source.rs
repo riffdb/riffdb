@@ -28,6 +28,13 @@ impl ProjectionReadSource {
         }
     }
 
+    /// Private worker reads and policy evidence share one immutable source root.
+    pub(crate) fn from_snapshot(snapshot: RedbOwnedSnapshot) -> Self {
+        Self {
+            open: Arc::new(move || Ok(snapshot.clone())),
+        }
+    }
+
     /// A follower rechecks live publication on every pin, including withdrawal.
     pub(crate) fn pin(&self) -> Result<RedbOwnedSnapshot, StorageError> {
         (self.open)()

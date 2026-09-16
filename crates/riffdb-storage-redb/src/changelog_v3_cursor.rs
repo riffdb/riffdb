@@ -197,20 +197,19 @@ impl ChangelogSuffix {
     }
 }
 
-pub(crate) fn open(
+/// The source history of this read root, without consulting primary-only
+/// consumer statistics. Follower snapshots have the same receipt proof but no
+/// source-hold inventory. `open` additionally proves the exact resume receipt.
+pub(crate) fn history(
     access: &RedbReadAccess,
-    lineage: ChangelogLineageV3,
-    after: ChangelogHistoryPointV3,
-) -> Result<Box<dyn ChangelogReceiptCursorV3>, ChangelogCursorErrorV3> {
-    let (root, history, sources) = match access {
-        RedbReadAccess::Current(root) | RedbReadAccess::Durable(root) => (
-            Arc::clone(root),
-            read_checkpoint_roots(root)?.ok_or_else(corrupt)?,
-            Vec::new(),
-        ),
+) -> Result<ChangelogHistoryStateV3, ChangelogCursorErrorV3> {
+    match access {
+        RedbReadAccess::Current(root) | RedbReadAccess::Durable(root) => {
+            Ok(read_checkpoint_roots(root)?.ok_or_else(corrupt)?)
+        }
         RedbReadAccess::Composite(view) => {
-            let suffix = view.changelog_suffix();
-            let history = suffix
+            let history = view
+                .changelog_suffix()
                 .history
                 .ok_or_else(|| storage_error(StorageErrorKind::IncompatibleFormat))?;
             if history.tail().frontier()
@@ -221,8 +220,25 @@ pub(crate) fn open(
             {
                 return Err(corrupt().into());
             }
-            (view.checkpoint_root_shared(), history, suffix.sources()?)
+            Ok(history)
         }
+    }
+}
+
+pub(crate) fn open(
+    access: &RedbReadAccess,
+    lineage: ChangelogLineageV3,
+    after: ChangelogHistoryPointV3,
+) -> Result<Box<dyn ChangelogReceiptCursorV3>, ChangelogCursorErrorV3> {
+    let history = history(access)?;
+    let (root, sources) = match access {
+        RedbReadAccess::Current(root) | RedbReadAccess::Durable(root) => {
+            (Arc::clone(root), Vec::new())
+        }
+        RedbReadAccess::Composite(view) => (
+            view.checkpoint_root_shared(),
+            view.changelog_suffix().sources()?,
+        ),
     };
     if lineage.database_id() != history.lineage().database_id()
         || lineage.history_incarnation() != history.lineage().history_incarnation()

@@ -12,9 +12,13 @@ pub(super) fn floor(
     root: &crate::checkpoint_root::CheckpointRoot,
     history: History,
     prior_checkpoint: Point,
+    derived_floor: Option<u64>,
 ) -> Result<Option<Point>, StorageError> {
     // The barrier completely validated the bounded holds and retained chain.
     let mut maximum = prior_checkpoint.sequence().get();
+    if let Some(derived_floor) = derived_floor {
+        maximum = maximum.min(derived_floor);
+    }
     let holds = root.open_table(SOURCE_HOLDS).map_err(table_error)?;
     for row in holds.iter().map_err(precommit_storage_error)? {
         let (_, value) = row.map_err(precommit_storage_error)?;

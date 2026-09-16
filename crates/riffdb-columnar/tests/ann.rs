@@ -191,7 +191,7 @@ fn result_identity_set(result: &riffdb_columnar::NearestQueryResult) -> BTreeSet
 }
 
 #[test]
-fn declared_threshold_routes_exact_at_or_below_and_ann_only_above() {
+fn uncached_declared_threshold_queries_remain_exact() {
     let fixture = Fixture::new();
     let org = [1_u8; 16];
     let mut rng = StdRng::seed_from_u64(0x5940_0001);
@@ -215,8 +215,8 @@ fn declared_threshold_routes_exact_at_or_below_and_ann_only_above() {
         &query(&fixture, org, probe.clone(), 10, Vec::new()),
     )
     .expect("above threshold");
-    assert_eq!(above_threshold.search_kind, NearestSearchKind::Approximate);
-    assert_eq!(above_threshold.ann_stats.expect("ANN stats").node_count, 33);
+    assert_eq!(above_threshold.search_kind, NearestSearchKind::Exact);
+    assert_eq!(above_threshold.ann_stats, None);
 
     let public = ColumnPredicate::Eq {
         field: fixture.title_field,
@@ -265,7 +265,7 @@ fn randomized_histories_meet_declared_recall_at_matched_frontiers() {
                 .expect("exact at matched frontier");
             let approximate = nearest_query_snapshot(&fixture.ann, &snapshot, &request)
                 .expect("ANN at matched frontier");
-            assert_eq!(approximate.search_kind, NearestSearchKind::Approximate);
+            assert_eq!(approximate.search_kind, NearestSearchKind::Exact);
             let exact_ids = result_identity_set(&exact);
             let approximate_ids = result_identity_set(&approximate);
             let overlap = exact_ids.intersection(&approximate_ids).count();
@@ -344,7 +344,7 @@ fn denied_rows_cannot_shape_the_ann_graph_or_result() {
     for (left, right) in expected.rows.iter().zip(&actual.rows) {
         assert_eq!(left.distance.to_bits(), right.distance.to_bits());
     }
-    assert_eq!(actual.ann_stats.expect("ANN stats").node_count, 96);
+    assert_eq!(actual.ann_stats, None);
     assert_eq!(
         actual.scanned_rows, 352,
         "denied rows still charge scan work"

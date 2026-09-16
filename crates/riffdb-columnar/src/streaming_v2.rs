@@ -1521,26 +1521,18 @@ fn encode_projected_row(row: &ProjectedRow) -> Result<Vec<u8>, ColumnarV2Streami
     let count =
         u32::try_from(row.cells.len()).map_err(|_| ColumnarV2StreamingError::BoundExceeded)?;
     bytes.extend_from_slice(&count.to_be_bytes());
+    let mut state_bytes = row.organization.as_bytes().len();
     for cell in &row.cells {
         let encoded =
             encode_canonical_value(cell).map_err(|_| ColumnarV2StreamingError::Invalid)?;
+        state_bytes = state_bytes
+            .checked_add(encoded.len())
+            .ok_or(ColumnarV2StreamingError::BoundExceeded)?;
+        if state_bytes > MAX_PROVIDER_STATE_BYTES_PER_ROW {
+            return Err(ColumnarV2StreamingError::BoundExceeded);
+        }
         push_bytes(&mut bytes, &encoded)?;
     }
-    let state_bytes = row
-        .organization
-        .as_bytes()
-        .len()
-        .checked_add(
-            row.cells
-                .iter()
-                .map(|value| encode_canonical_value(value).map(|bytes| bytes.len()))
-                .collect::<Result<Vec<_>, _>>()
-                .map_err(|_| ColumnarV2StreamingError::Invalid)?
-                .into_iter()
-                .try_fold(0usize, usize::checked_add)
-                .ok_or(ColumnarV2StreamingError::BoundExceeded)?,
-        )
-        .ok_or(ColumnarV2StreamingError::BoundExceeded)?;
     if state_bytes > MAX_PROVIDER_STATE_BYTES_PER_ROW || bytes.len() > MAX_PROJECTED_ROW_PAYLOAD {
         return Err(ColumnarV2StreamingError::BoundExceeded);
     }
@@ -1548,6 +1540,9 @@ fn encode_projected_row(row: &ProjectedRow) -> Result<Vec<u8>, ColumnarV2Streami
 }
 
 fn decode_projected_row(bytes: &[u8]) -> Result<ProjectedRow, ColumnarV2StreamingError> {
+    if bytes.len() > MAX_PROJECTED_ROW_PAYLOAD {
+        return Err(ColumnarV2StreamingError::BoundExceeded);
+    }
     let mut cursor = Cursor::new(bytes);
     let key = PrimaryKeyBytes::from_entity_key_bytes(cursor.read_bytes(MAX_KEY_BYTES)?.to_vec());
     let version =
@@ -1569,8 +1564,15 @@ fn decode_projected_row(bytes: &[u8]) -> Result<ProjectedRow, ColumnarV2Streamin
         return Err(ColumnarV2StreamingError::BoundExceeded);
     }
     let mut cells = Vec::with_capacity(count);
+    let mut state_bytes = organization.as_bytes().len();
     for _ in 0..count {
         let encoded = cursor.read_bytes(MAX_PROVIDER_STATE_BYTES_PER_ROW)?;
+        state_bytes = state_bytes
+            .checked_add(encoded.len())
+            .ok_or(ColumnarV2StreamingError::BoundExceeded)?;
+        if state_bytes > MAX_PROVIDER_STATE_BYTES_PER_ROW {
+            return Err(ColumnarV2StreamingError::BoundExceeded);
+        }
         let value =
             decode_canonical_value(encoded).map_err(|_| ColumnarV2StreamingError::Invalid)?;
         if encode_canonical_value(&value).map_err(|_| ColumnarV2StreamingError::Invalid)? != encoded
@@ -1586,9 +1588,8 @@ fn decode_projected_row(bytes: &[u8]) -> Result<ProjectedRow, ColumnarV2Streamin
         organization,
         cells,
     };
-    if encode_projected_row(&row)? != bytes {
-        return Err(ColumnarV2StreamingError::Invalid);
-    }
+    // Length prefixes and integers have one fixed-width representation; the
+    // organization and every cell were checked for canonical bytes above.
     Ok(row)
 }
 
@@ -1704,6 +1705,53 @@ fn hit(controller: Option<&ColumnarTestController>, boundary: ColumnarTestBounda
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // req: PRJ-004, PRJ-009, OQ-020
+    #[test]
+    fn projected_row_codec_preserves_bytes_and_checks_combined_state_bound() {
+        let row = row(1, 2, 3);
+        let encoded = encode_projected_row(&row).unwrap();
+        let mut expected = Vec::new();
+        push_bytes(&mut expected, row.key.as_bytes()).unwrap();
+        expected.extend_from_slice(&row.version.to_be_bytes());
+        push_bytes(&mut expected, row.organization.as_bytes()).unwrap();
+        expected.extend_from_slice(&1_u32.to_be_bytes());
+        push_bytes(
+            &mut expected,
+            &encode_canonical_value(&row.cells[0]).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(encoded, expected);
+        assert_eq!(
+            encode_projected_row(&decode_projected_row(&encoded).unwrap()).unwrap(),
+            encoded
+        );
+        let mut trailing = encoded.clone();
+        trailing.push(0);
+        assert!(decode_projected_row(&trailing).is_err());
+        for len in 0..encoded.len() {
+            assert!(decode_projected_row(&encoded[..len]).is_err());
+        }
+
+        // Each cell fits its own bound but their combined canonical state does not.
+        let mut oversized = Vec::new();
+        push_bytes(&mut oversized, row.key.as_bytes()).unwrap();
+        oversized.extend_from_slice(&row.version.to_be_bytes());
+        push_bytes(&mut oversized, row.organization.as_bytes()).unwrap();
+        oversized.extend_from_slice(&2_u32.to_be_bytes());
+        for _ in 0..2 {
+            push_bytes(
+                &mut oversized,
+                &encode_canonical_value(&CanonicalValue::string("x".repeat(8_192)).unwrap())
+                    .unwrap(),
+            )
+            .unwrap();
+        }
+        assert!(matches!(
+            decode_projected_row(&oversized),
+            Err(ColumnarV2StreamingError::BoundExceeded)
+        ));
+    }
 
     fn temp_directory(label: &str) -> PathBuf {
         let path = std::env::temp_dir().join(format!(

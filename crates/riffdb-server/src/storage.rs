@@ -1117,6 +1117,49 @@ impl ApplicationExportOperationRepository for SharedRedbOperationalPorts {
     }
 }
 
+impl riffdb_storage_api::ApplicationExportLedgerRepository for SharedRedbOperationalPorts {
+    fn read_application_export_head(
+        &self,
+        operation: riffdb_types::ApplicationExportOperationId,
+    ) -> Result<Option<riffdb_storage_api::StoredApplicationExportOperation>, StorageError> {
+        self.cell
+            .with_mut(|ports| ports.read_application_export_head(operation))
+    }
+
+    fn compare_and_swap_application_export_head(
+        &mut self,
+        expected: Option<&riffdb_storage_api::StoredApplicationExportOperation>,
+        replacement: &riffdb_storage_api::StoredApplicationExportOperation,
+        append: Option<&riffdb_storage_api::ApplicationExportPageCommitmentV1>,
+        terminal_reserve: usize,
+    ) -> Result<ApplicationExportOperationWriteResultV1, StorageError> {
+        self.cell.with_mut(|ports| {
+            ports.compare_and_swap_application_export_head(
+                expected,
+                replacement,
+                append,
+                terminal_reserve,
+            )
+        })
+    }
+
+    fn verify_application_export_ledger(
+        &self,
+        expected: &riffdb_storage_api::StoredApplicationExportOperationV2,
+    ) -> Result<Vec<riffdb_types::ApplicationExportPageHash>, StorageError> {
+        self.cell
+            .with_mut(|ports| ports.verify_application_export_ledger(expected))
+    }
+
+    fn list_application_export_heads(
+        &self,
+        maximum: usize,
+    ) -> Result<Vec<riffdb_storage_api::StoredApplicationExportOperation>, StorageError> {
+        self.cell
+            .with_mut(|ports| ports.list_application_export_heads(maximum))
+    }
+}
+
 impl ApplicationExportSnapshotPort for SharedRedbOperationalPorts {
     fn capture_application_export_snapshot(
         &self,
@@ -1868,6 +1911,13 @@ impl OutboxRepository for SharedRedbOperationalPorts {
 }
 
 impl ProjectionApplySnapshotReader for SharedRedbOperationalPorts {
+    fn capture_apply_batch_snapshot(
+        &self,
+        identity: &riffdb_types::ProjectionIdentity,
+    ) -> Result<Box<dyn riffdb_storage_api::ProjectionBatchSnapshot>, StorageError> {
+        ProjectionApplySnapshotReader::capture_apply_batch_snapshot(&self.shared, identity)
+    }
+
     fn read_apply_snapshot(
         &self,
         request: &ProjectionApplySnapshotRequest,
@@ -1877,6 +1927,19 @@ impl ProjectionApplySnapshotReader for SharedRedbOperationalPorts {
 }
 
 impl ProjectionMutationRepository for SharedRedbOperationalPorts {
+    fn resolve_projection_batch(
+        &self,
+        request: &riffdb_storage_api::ProjectionApplyBatchV1,
+    ) -> Result<riffdb_storage_api::ProjectionApplyBatchResult, StorageError> {
+        self.shared.resolve_projection_batch(request)
+    }
+    fn apply_projection_batch(
+        &mut self,
+        request: &riffdb_storage_api::ProjectionApplyBatchV1,
+    ) -> Result<riffdb_storage_api::ProjectionApplyBatchResult, StorageError> {
+        self.cell
+            .with_mut(|ports| ProjectionMutationRepository::apply_projection_batch(ports, request))
+    }
     fn apply_projection(
         &mut self,
         request: &ProjectionApplyRequestV1,

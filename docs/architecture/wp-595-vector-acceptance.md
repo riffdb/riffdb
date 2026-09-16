@@ -43,7 +43,8 @@ an index choice, threshold, recall target, raw query AST, storage identifier, or
 freshness bypass. Public failures name the corrective contract/query action;
 internal graph and storage details remain redacted.
 
-The remaining limitation is physical, not semantic: the POC graph is rebuilt
-ephemerally from one bounded organization snapshot. Durable incremental graph
-storage remains deferred and would require a separate accepted design and the
-same recall/isolation gates.
+ADR-0229 replaces synchronous per-query construction with exact cold execution
+and bounded background reuse over an exactly matched admitted population.
+Current admission and frontier checks still run on every query. Graphs remain
+memory-only; durable incremental graph storage remains deferred and requires
+a separate accepted design with the same recall/isolation gates.

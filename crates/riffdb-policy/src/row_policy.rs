@@ -81,8 +81,10 @@ impl ProjectedPolicyCandidateObservationV1 {
 #[derive(Eq, PartialEq)]
 pub struct AuthorizedProjectedRowAdmissionV1 {
     entity: EntityTypeId,
-    candidates: BTreeSet<EntityKey>,
-    admitted: BTreeSet<EntityKey>,
+    // Strictly sorted once at admission; owns each key once alongside its
+    // decision, without requiring an observation slice to outlive the proof.
+    candidates: Vec<(EntityKey, bool)>,
+    admitted_count: usize,
 }
 
 impl std::fmt::Debug for AuthorizedProjectedRowAdmissionV1 {
@@ -91,7 +93,7 @@ impl std::fmt::Debug for AuthorizedProjectedRowAdmissionV1 {
             .debug_struct("AuthorizedProjectedRowAdmissionV1")
             .field("entity", &self.entity)
             .field("candidate_count", &self.candidates.len())
-            .field("admitted_count", &self.admitted.len())
+            .field("admitted_count", &self.admitted_count)
             .finish()
     }
 }
@@ -114,10 +116,16 @@ impl AuthorizedProjectedRowAdmissionV1 {
                 .iter()
                 .all(|candidate| candidate.entity_type_id() == entity)
             && admitted.is_subset(&candidates))
-        .then_some(Self {
+        .then(|| Self {
             entity,
-            candidates,
-            admitted,
+            admitted_count: admitted.len(),
+            candidates: candidates
+                .into_iter()
+                .map(|key| {
+                    let allowed = admitted.contains(&key);
+                    (key, allowed)
+                })
+                .collect(),
         })
     }
 
@@ -125,14 +133,18 @@ impl AuthorizedProjectedRowAdmissionV1 {
     #[doc(hidden)]
     #[must_use]
     pub fn covers(&self, entity: EntityTypeId, candidates: &BTreeSet<EntityKey>) -> bool {
-        self.entity == entity && &self.candidates == candidates
+        self.entity == entity
+            && self.candidates.len() == candidates.len()
+            && self.candidates.iter().map(|(key, _)| key).eq(candidates)
     }
 
     /// Whether one covered key was admitted.
     #[doc(hidden)]
     #[must_use]
     pub fn admits(&self, key: &EntityKey) -> bool {
-        self.admitted.contains(key)
+        self.candidates
+            .binary_search_by(|(candidate, _)| candidate.cmp(key))
+            .is_ok_and(|position| self.candidates[position].1)
     }
 }
 
@@ -362,6 +374,7 @@ impl AuthorizedCommandRowPolicyContextV1 {
 /// cannot be supplied by an application request.
 #[derive(Eq, PartialEq)]
 pub struct AuthorizedQueryRowPolicyContextV1 {
+    bundle: Option<riffdb_types::ContractBundleHash>,
     authority: Option<AuthorizedRowPolicyAuthority>,
     principal: PrincipalFactBindingV1,
     policies: BTreeMap<EntityTypeId, AuthorizedEntityPolicyV1>,
@@ -529,6 +542,7 @@ impl AuthorizedQueryRowPolicyContextV1 {
             }
         }
         Ok(Self {
+            bundle: None,
             authority: None,
             principal,
             policies: selected,
@@ -562,6 +576,26 @@ impl AuthorizedQueryRowPolicyContextV1 {
         self.authority
             .as_ref()
             .map(AuthorizedRowPolicyAuthority::internal_grant)
+    }
+
+    /// Exact current capability and selected policy identity for disposable ANN reuse.
+    /// This identifies admission inputs; callers must still evaluate every row.
+    /// Unbound or fixture-only contexts decline the optional optimization.
+    #[doc(hidden)]
+    pub fn internal_vector_cache_identity(&self, entity: EntityTypeId) -> Option<Vec<u8>> {
+        let (capability, revision) = self.internal_capability_identity()?;
+        let selected = self.policies.get(&entity)?;
+        let grant = self.internal_row_policy_grant()?;
+        // The compiled role hash is the existing authoritative policy identity,
+        // not a hash substitute for the admitted vector population.
+        let mut bytes = Vec::with_capacity(96 + selected.policy.name().len());
+        bytes.extend_from_slice(self.bundle?.as_bytes());
+        bytes.extend_from_slice(capability.as_bytes());
+        bytes.extend_from_slice(&revision.get().to_be_bytes());
+        bytes.extend_from_slice(grant.application_role_hash().as_bytes());
+        bytes.extend_from_slice(&entity.to_be_bytes());
+        bytes.extend_from_slice(selected.policy.name().as_bytes());
+        Some(bytes)
     }
 
     /// Derives the complete bounded relationship lookups required for a row.
@@ -610,6 +644,20 @@ impl AuthorizedQueryRowPolicyContextV1 {
             })
         })
         .collect()
+    }
+
+    /// Conservative indexed-relationship dependencies of one selected read
+    /// policy. Derived workers use these to invalidate membership when another
+    /// entity changes; absence of a probe for one row is not independence.
+    #[doc(hidden)]
+    pub fn internal_relationship_entities(
+        &self,
+        entity: EntityTypeId,
+    ) -> impl Iterator<Item = EntityTypeId> + '_ {
+        self.policies
+            .get(&entity)
+            .into_iter()
+            .flat_map(|selected| selected.relationships.keys().map(|(target, _)| *target))
     }
 
     /// Applies the exact selected read policy to one authoritative row and the
@@ -724,27 +772,27 @@ impl AuthorizedQueryRowPolicyContextV1 {
         if observations.len() > MAX_PROJECTED_POLICY_CANDIDATES_V1 {
             return Err(QueryRowPolicyContextErrorV1::InvalidProjectedCandidateSet);
         }
-        let mut candidates = BTreeSet::new();
-        let mut admitted = BTreeSet::new();
-        let mut prior: Option<&EntityKey> = None;
-        for observation in &observations {
+        let mut candidates = Vec::<(EntityKey, bool)>::with_capacity(observations.len());
+        let mut admitted_count = 0;
+        for observation in observations {
             if observation.key.entity_type_id() != entity
-                || prior.is_some_and(|prior| prior >= &observation.key)
+                || candidates
+                    .last()
+                    .is_some_and(|(prior, _)| prior >= &observation.key)
             {
                 return Err(QueryRowPolicyContextErrorV1::InvalidProjectedCandidateSet);
             }
-            prior = Some(&observation.key);
-            candidates.insert(observation.key.clone());
-            if let Some((row, evidence)) = &observation.current
-                && self.allows(entity, row, evidence)
-            {
-                admitted.insert(observation.key.clone());
-            }
+            let allowed = observation
+                .current
+                .as_ref()
+                .is_some_and(|(row, evidence)| self.allows(entity, row, evidence));
+            admitted_count += usize::from(allowed);
+            candidates.push((observation.key, allowed));
         }
         Ok(AuthorizedProjectedRowAdmissionV1 {
             entity,
             candidates,
-            admitted,
+            admitted_count,
         })
     }
 }
@@ -930,6 +978,7 @@ pub fn resolve_authorized_query_row_policy_context(
         );
     }
     Ok(Some(AuthorizedQueryRowPolicyContextV1 {
+        bundle: Some(bundle.bundle_hash()),
         authority: Some(authority.clone()),
         principal: authority.internal_principal().clone(),
         policies,
@@ -1041,6 +1090,7 @@ pub fn resolve_authorized_vector_inspection_row_policy_context(
         .entity(entity)
         .ok_or(QueryRowPolicyContextErrorV1::InvalidRelationshipPlan)?;
     Ok(Some(AuthorizedQueryRowPolicyContextV1 {
+        bundle: Some(bundle.bundle_hash()),
         authority: Some(authority.clone()),
         principal: authority.internal_principal().clone(),
         policies: BTreeMap::from([(
@@ -1082,6 +1132,7 @@ pub fn resolve_authorized_application_export_row_policy_context(
         bundle.schema().entities().iter().map(|entity| entity.id()),
     )?;
     Ok(Some(AuthorizedQueryRowPolicyContextV1 {
+        bundle: Some(bundle.bundle_hash()),
         authority: Some(authority.clone()),
         principal: authority.internal_principal().clone(),
         policies,
@@ -1117,6 +1168,7 @@ pub fn resolve_authorized_contextual_row_policy_context(
     };
     let policies = resolve_read_policies(authority, bundle, entities.iter().copied())?;
     Ok(Some(AuthorizedQueryRowPolicyContextV1 {
+        bundle: Some(bundle.bundle_hash()),
         authority: Some(authority.clone()),
         principal: authority.internal_principal().clone(),
         policies,
@@ -1147,6 +1199,7 @@ pub fn resolve_authorized_event_row_policy_context(
     };
     let policies = resolve_read_policies(authority, bundle, entities.iter().copied())?;
     Ok(Some(AuthorizedQueryRowPolicyContextV1 {
+        bundle: Some(bundle.bundle_hash()),
         authority: Some(authority.clone()),
         principal: authority.internal_principal().clone(),
         policies,
@@ -1181,6 +1234,7 @@ pub fn resolve_authorized_event_replay_row_policy_context(
     };
     let policies = resolve_read_policies(authority, bundle, entities.iter().copied())?;
     Ok(Some(AuthorizedQueryRowPolicyContextV1 {
+        bundle: Some(bundle.bundle_hash()),
         authority: Some(authority.clone()),
         principal: authority.internal_principal().clone(),
         policies,
@@ -1945,7 +1999,9 @@ fn canonical_node(
 
 fn boolean_node(values: &[NodeValue], index: u16) -> Result<bool, RowPolicyDenyReasonV1> {
     match values.get(usize::from(index)) {
-        Some(NodeValue::Boolean(value)) => Ok(*value),
+        Some(NodeValue::Boolean(value) | NodeValue::Canonical(CanonicalValue::Bool(value))) => {
+            Ok(*value)
+        }
         Some(NodeValue::Canonical(_)) | None => Err(RowPolicyDenyReasonV1::InvalidPlanOrRow),
     }
 }
@@ -1991,5 +2047,105 @@ const fn hex_nibble(value: u8) -> Option<u8> {
         b'0'..=b'9' => Some(value - b'0'),
         b'a'..=b'f' => Some(value - b'a' + 10),
         _ => None,
+    }
+}
+
+#[cfg(test)]
+mod projected_admission_tests {
+    use super::*;
+    use riffdb_types::{
+        ActorId, Audience, CapabilityPrincipalFactsV1, DatabaseId, EntityKeyBuilder, Environment,
+        TenantScope, Timestamp,
+    };
+
+    fn context() -> AuthorizedQueryRowPolicyContextV1 {
+        AuthorizedQueryRowPolicyContextV1 {
+            bundle: None,
+            authority: None,
+            principal: PrincipalFactBindingV1::new(
+                CapabilityId::from_unix_milliseconds_and_random(1, [5; 10]).unwrap(),
+                NonZeroU64::MIN,
+                DatabaseId::from_unix_milliseconds_and_random(1, [1; 10]).unwrap(),
+                Environment::new("test").unwrap(),
+                ActorId::new("reader").unwrap(),
+                ActorKind::Human,
+                vec![Audience::new("test").unwrap()],
+                TenantScope::Global,
+                Timestamp::new(1, 0).unwrap(),
+                Timestamp::new(100, 0).unwrap(),
+                CapabilityPrincipalFactsV1::empty(),
+            )
+            .unwrap(),
+            policies: BTreeMap::new(),
+        }
+    }
+
+    fn key(entity: EntityTypeId, value: u64) -> EntityKey {
+        let mut key = EntityKeyBuilder::new(entity);
+        key.push_u64(value).unwrap();
+        key.finish().unwrap()
+    }
+
+    // req: VEC-007
+    #[test]
+    fn owned_sorted_admission_preserves_exact_coverage_and_absent_row_denial() {
+        let entity = EntityTypeId::new(1).unwrap();
+        let keys = (0..32)
+            .map(|value| key(entity, value))
+            .collect::<BTreeSet<_>>();
+        let observations = keys
+            .iter()
+            .enumerate()
+            .map(|(position, key)| {
+                if position % 2 == 0 {
+                    ProjectedPolicyCandidateObservationV1::current(
+                        key.clone(),
+                        CanonicalRecord::new(vec![]).unwrap(),
+                        vec![],
+                    )
+                } else {
+                    ProjectedPolicyCandidateObservationV1::missing(key.clone())
+                }
+            })
+            .collect();
+        let proof = context()
+            .authorize_projected_candidates(entity, observations)
+            .unwrap();
+        assert!(proof.covers(entity, &keys));
+        assert!(!proof.covers(EntityTypeId::new(2).unwrap(), &keys));
+        for (position, key) in keys.iter().enumerate() {
+            assert_eq!(proof.admits(key), position % 2 == 0);
+        }
+        let missing = key(entity, 100);
+        assert!(!proof.admits(&missing));
+        let mut different = keys.clone();
+        different.pop_first();
+        assert!(!proof.covers(entity, &different));
+        different.insert(missing);
+        assert!(!proof.covers(entity, &different));
+    }
+
+    // req: VEC-007
+    #[test]
+    fn owned_admission_rejects_duplicate_reversed_and_wrong_entity_candidates() {
+        let entity = EntityTypeId::new(1).unwrap();
+        let first = key(entity, 1);
+        let second = key(entity, 2);
+        for keys in [
+            vec![first.clone(), first],
+            vec![second, key(entity, 1)],
+            vec![key(EntityTypeId::new(2).unwrap(), 1)],
+        ] {
+            let observations = keys
+                .into_iter()
+                .map(ProjectedPolicyCandidateObservationV1::missing)
+                .collect();
+            assert_eq!(
+                context()
+                    .authorize_projected_candidates(entity, observations)
+                    .unwrap_err(),
+                QueryRowPolicyContextErrorV1::InvalidProjectedCandidateSet
+            );
+        }
     }
 }

@@ -101,6 +101,7 @@ contract ProjectionEvaluation version 1 {
 }
 "#;
 
+#[derive(Clone)]
 struct SemanticRepository {
     head: FrontierPosition,
     control: Option<StoredProjectionControlV1>,
@@ -149,6 +150,12 @@ impl SemanticRepository {
             .map_or(FrontierPosition::BeforeFirst, |commit| {
                 FrontierPosition::AppliedThrough(commit.value().commit_sequence())
             });
+    }
+}
+
+impl riffdb_storage_api::ProjectionBatchSnapshot for SemanticRepository {
+    fn control(&self) -> &StoredProjectionControlV1 {
+        self.control.as_ref().expect("captured control")
     }
 }
 
@@ -1642,4 +1649,69 @@ fn timeout_final_reread_does_not_consume_waiter_capacity() {
         "the final storage reread must retain the last free capacity slot"
     );
     drop(held_registrations);
+}
+
+// req: PRJ-001, PRJ-002, PRJ-003, PRJ-004
+#[test]
+fn projection_batch_builder_matches_sequential_catalog_evaluation_and_flushes_at_64() {
+    let fixture = evaluator_fixture();
+    let identity = fixture.schema.identity().clone();
+    let registry = ProjectionSchemaRegistry::new([fixture.schema.clone()]).expect("registry");
+    let mut oracle = ProjectionController::new(
+        SemanticRepository::with_head(sequence(65)),
+        ProjectionNotifier::from_registry(&registry),
+    );
+    oracle
+        .initialize(fixture.schema.clone())
+        .expect("initialize");
+    oracle.start_initial_catch_up(&identity).expect("catch up");
+    let mut builder = riffdb_projection::ProjectionBatchBuilder::new(
+        Box::new(oracle.repository().clone()),
+        fixture.schema.clone(),
+        ProjectionGeneration::first(),
+    )
+    .expect("pinned batch");
+    let mut expected = Vec::new();
+    for value in 1..=65 {
+        let commit = evaluator_commit(
+            &fixture,
+            sequence(value),
+            if value % 3 == 0 {
+                &[]
+            } else {
+                &[(10, -3), (10, 7), (20, 100)]
+            },
+        );
+        let evaluated = evaluate_projection_commit(
+            &fixture.resolved,
+            fixture.schema.clone(),
+            ProjectionGeneration::first(),
+            &commit,
+        )
+        .expect("evaluate");
+        if value == 65 {
+            assert!(!builder.try_push(&evaluated).expect("count flush"));
+            assert_eq!(
+                builder.frontier(),
+                FrontierPosition::AppliedThrough(sequence(64))
+            );
+        } else {
+            let request = prepare_projection_apply(&evaluated, oracle.repository())
+                .expect("reference request");
+            assert!(builder.try_push(&evaluated).expect("bounded member"));
+            oracle.apply(&request).expect("reference apply");
+            expected.push(request);
+        }
+    }
+    let batch = builder.finish().expect("checked batch");
+    assert_eq!(
+        batch.members(),
+        expected,
+        "each prior, post-image and canonical marker matches the per-commit oracle"
+    );
+    assert_eq!(batch.observations().len(), 1);
+    assert!(matches!(
+        batch.observations(),
+        [ProjectionApplyRowObservation::Absent(_)]
+    ));
 }

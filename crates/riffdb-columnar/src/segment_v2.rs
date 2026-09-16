@@ -917,40 +917,40 @@ fn select_encoding(
     cells: &[SegmentV2Cell],
     values: &[CanonicalValue],
 ) -> Result<(PhysicalEncoding, Vec<u8>), SegmentV2Error> {
-    let mut candidates = Vec::new();
-    candidates.push((
+    let mut best = (
         PhysicalEncoding::OffsetCanonical,
         encode_offset_values(values)?,
-    ));
+    );
+    let mut consider = |encoding, payload: Vec<u8>| {
+        if (payload.len(), encoding) < (best.1.len(), best.0) {
+            best = (encoding, payload);
+        }
+    };
     if is_fixed_width_type(logical_type) {
-        candidates.push((PhysicalEncoding::FixedWidth, encode_fixed_values(values)?));
+        consider(PhysicalEncoding::FixedWidth, encode_fixed_values(values)?);
     }
     if matches!(
         logical_type,
         SegmentV2LogicalType::String | SegmentV2LogicalType::Enum(_)
     ) {
-        candidates.push((
+        consider(
             PhysicalEncoding::Dictionary,
             encode_dictionary_values(values)?,
-        ));
+        );
     }
     if matches!(logical_type, SegmentV2LogicalType::Bool) {
-        candidates.push((
+        consider(
             PhysicalEncoding::BooleanBitmap,
             encode_boolean_values(cells)?,
-        ));
+        );
     }
     if is_delta_type(logical_type) {
-        candidates.push((
+        consider(
             PhysicalEncoding::CheckedDelta,
             encode_delta_values(logical_type, values)?,
-        ));
+        );
     }
-    candidates.sort_by_key(|(encoding, payload)| (payload.len(), *encoding));
-    candidates
-        .into_iter()
-        .next()
-        .ok_or(SegmentV2Error::Invalid("encoding registry is empty"))
+    Ok(best)
 }
 
 fn encode_with(

@@ -312,33 +312,14 @@ pub(super) fn derive_delete_ranges(
             .decode_entity(key)
             .map_err(|_| CommandIndexError::internal_defect())?;
         for (source_entity, index_id, entry_limit) in specifications {
-            let source = schema
-                .entity(source_entity)
-                .ok_or_else(CommandIndexError::internal_defect)?;
-            let index = source
-                .indexes()
-                .iter()
-                .find(|index| index.id() == index_id)
-                .ok_or_else(CommandIndexError::internal_defect)?;
-            if values.is_empty() || values.len() > index.key_schema().components().len() {
-                return Err(CommandIndexError::internal_defect());
-            }
-            let mut storage_prefix = IndexRangePrefixBuilder::new(index_id);
-            for (component, value) in index.key_schema().components().iter().zip(&values) {
-                push_storage_prefix_component(&mut storage_prefix, component.codec(), value)?;
-            }
-            let storage_prefix = storage_prefix.finish();
-            let ir_prefix = index
-                .key_schema()
-                .encode_index_prefix(&values)
-                .map_err(|_| CommandIndexError::internal_defect())?;
-            if storage_prefix.as_bytes() != ir_prefix.as_bytes() {
-                return Err(CommandIndexError::internal_defect());
-            }
-            ranges.push((
-                IndexRangeTarget::new(facts.partition_key().clone(), storage_prefix),
-                entry_limit,
-            ));
+            let target = derive_delete_range_target(
+                schema,
+                facts.partition_key(),
+                source_entity,
+                index_id,
+                &values,
+            )?;
+            ranges.push((target, entry_limit));
         }
     }
     ranges.sort_unstable_by(|left, right| left.0.cmp(&right.0));
@@ -1317,7 +1298,7 @@ impl IndexDerivationBuilder {
             return Err(CommandIndexError::internal_defect());
         }
         Ok(Self {
-            entry_mutations: Vec::new(),
+            entry_mutations: Vec::with_capacity(validation_positions.min(MAX_INDEX_DELTAS)),
             entry_keys: BTreeSet::new(),
             affected_targets: BTreeSet::new(),
             unique_targets: BTreeSet::new(),
@@ -4060,6 +4041,7 @@ contract ReimportEraRows version 1 {
         assert_eq!(derived.affected_targets.as_slice().len(), 2);
     }
 
+    // req: DEP-001
     #[test]
     fn storage_prefix_builder_matches_ir_for_every_v1_key_scalar() {
         let compiled = compile_contract_source(SCALAR_SOURCE).expect("scalar source compiles");
@@ -4086,6 +4068,40 @@ contract ReimportEraRows version 1 {
         let partition = PartitionKeyBuilder::new(AggregateTypeId::first())
             .finish()
             .expect("partition key");
+        for length in 1..=values.len() {
+            let target = derive_delete_range_target(
+                schema,
+                &partition,
+                schema.entities()[0].id(),
+                index.id(),
+                &values[..length],
+            )
+            .expect("cross-checked delete prefix");
+            assert_eq!(
+                target.prefix().as_bytes(),
+                index
+                    .key_schema()
+                    .encode_index_prefix(&values[..length])
+                    .expect("independent IR prefix")
+                    .as_bytes()
+            );
+            assert_eq!(target.generation_target().partition_key(), &partition);
+        }
+        let mut oversized = values.clone();
+        oversized.push(CanonicalValue::Bool(false));
+        for invalid in [&[][..], oversized.as_slice(), &[CanonicalValue::U64(1)][..]] {
+            assert!(
+                derive_delete_range_target(
+                    schema,
+                    &partition,
+                    schema.entities()[0].id(),
+                    index.id(),
+                    invalid,
+                )
+                .is_err(),
+                "empty, oversized and mistyped prefixes must fail closed"
+            );
+        }
         insert_generation(index, &values, &partition, &mut builder)
             .expect("cross-checked generation");
         let derived = builder.finish().expect("derived generation");

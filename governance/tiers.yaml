@@ -145,10 +145,13 @@ acceptance:         # accepting a record is a human act and must be visible as o
   own_commit_paths: [adr/**, work_packages.yaml, SPEC.md]
 directives:         # standing maintainer directives; ./scripts/brief prints them first
   - id: D-001
-    since: "2026-09-12"
-    text: "While WP-757, WP-760, and WP-772 are open, no new decision record is opened.
-      Those packages are executed, not re-decided. A failing test is a reason for a record
-      only when making it pass would require changing an accepted decision or a SPEC MUST."
+    since: "2026-09-15"
+    text: "While WP-757, WP-760, and WP-772 are open, new decision records adding
+      functionality are restricted. Records needed to address discovered high or critical
+      issues may be opened; this restriction must not block their investigation or repair.
+      Those packages are otherwise executed, not re-decided. Implementation choices remain
+      governed by D-003. Changing an accepted decision or a SPEC MUST still requires human
+      acceptance of the exact decision record before the change is implemented."
   - id: D-002
     since: "2026-09-12"
     text: "Acceptance is the maintainer's decision, never the agent's. An agent never sets

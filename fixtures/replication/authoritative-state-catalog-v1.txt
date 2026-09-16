@@ -41,6 +41,7 @@ riffdb.authoritative-state-catalog/v1
 40	idempotency_locators	-	replicated-authoritative	existing
 41	provenance_locators	-	replicated-authoritative	existing
 42	audit_by_request_locators	-	replicated-authoritative	existing
+43	application_export_page_commitments	-	replicated-authoritative	existing
 101	meta	format_version	replicated-authoritative	existing
 102	meta	database_id	replicated-authoritative	existing
 103	meta	next_application_sequence	replicated-authoritative	existing

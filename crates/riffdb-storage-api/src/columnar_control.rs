@@ -859,7 +859,8 @@ impl StoredColumnarProjectionControlV1 {
         Ok(self)
     }
 
-    /// Publishes a Prepared Candidate only at the transaction-current authoritative head.
+    /// Publishes a complete candidate at its validated frontier, no greater than head.
+    /// Same-specification replacements must advance the selected frontier strictly.
     pub fn publish_prepared_generation(
         self,
         transaction_current_head: FrontierPosition,
@@ -872,7 +873,14 @@ impl StoredColumnarProjectionControlV1 {
                 | ColumnarProjectionLifecycleV1::Rebuilding
         ) || self.failure.is_some()
             || candidate.artifact().is_none()
-            || candidate.frontier() != transaction_current_head
+            || !frontier_le(candidate.frontier(), transaction_current_head)
+            || self
+                .published
+                .as_ref()
+                .is_some_and(|published| !frontier_lt(published.frontier(), candidate.frontier()))
+            || self.predecessor.as_ref().is_some_and(|predecessor| {
+                !frontier_le(predecessor.frontier(), candidate.frontier())
+            })
         {
             return Err(ColumnarControlError);
         }

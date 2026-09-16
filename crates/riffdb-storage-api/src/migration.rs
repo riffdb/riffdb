@@ -586,6 +586,19 @@ impl fmt::Display for MigrationStageError {
 
 impl Error for MigrationStageError {}
 
+/// Borrowed final-stage uniqueness reader. Its lifetime freezes the exclusive stage;
+/// observations never survive a mutation, restart, or publication.
+pub trait MigrationUniqueValidation {
+    /// Requires exactly the independently derived owner, schema, partition and cover.
+    /// Implementations inspect at most two entries under the complete canonical prefix.
+    fn validate_unique_owner(
+        &self,
+        entity: EntityTypeId,
+        prefix: &crate::StructurallyDecodedIndexRangePrefixV1,
+        expected: &StoredIndexEntryV2,
+    ) -> Result<(), MigrationStageError>;
+}
+
 /// Private-stage operations used only by the commit-owned coordinator.
 pub trait MigrationStagePort {
     /// Returns the transaction-current active bundle hash.
@@ -596,6 +609,17 @@ pub trait MigrationStagePort {
         &self,
         cursor: &MigrationScanCursor,
     ) -> Result<MigrationScanPage, MigrationStageError>;
+
+    /// Opens a structurally validated, immutable final-stage observation scope.
+    /// Unsupported adapters retain the independent complete-row uniqueness scan.
+    ///
+    #[doc = include_str!("../tests/fixtures/migration_unique_borrow.md")]
+    fn migration_unique_validation(
+        &self,
+        _artifacts: crate::ContractMigrationArtifactsV1,
+    ) -> Result<Option<Box<dyn MigrationUniqueValidation + '_>>, MigrationStageError> {
+        Ok(None)
+    }
 
     /// Tests one exact relationship target without exposing general reads.
     fn migration_target_exists(

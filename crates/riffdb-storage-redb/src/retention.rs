@@ -5,7 +5,7 @@
 mod v3_tests;
 
 use std::collections::BTreeSet;
-use std::ops::Bound::Included;
+use std::ops::Bound::{Included, Unbounded};
 use std::path::{Path, PathBuf};
 
 use redb::{
@@ -1164,7 +1164,11 @@ fn walk_tombstone_preimage(
 
     {
         let commits = write.open_table(COMMITS).map_err(table_error)?;
-        for entry in commits.iter().map_err(precommit_storage_error)? {
+        let (lower, upper) = tombstone_commit_bounds(&commits, first, last)?;
+        for entry in commits
+            .range::<&[u8]>((Included(lower.as_slice()), Included(upper.as_slice())))
+            .map_err(precommit_storage_error)?
+        {
             let (key, value) = entry.map_err(precommit_storage_error)?;
             let physical_sequence = decode_application_sequence_key(key.value())
                 .map_err(|_| storage_error(StorageErrorKind::CorruptData))?;
@@ -1273,6 +1277,37 @@ fn walk_tombstone_preimage(
     }
 
     Ok(counts)
+}
+
+fn tombstone_commit_bounds(
+    commits: &impl ReadableTable<&'static [u8], &'static [u8]>,
+    first: u64,
+    last: u64,
+) -> Result<([u8; 8], [u8; 8]), StorageError> {
+    let first = CommitSequence::new(first)
+        .ok_or_else(|| storage_error(StorageErrorKind::InvariantViolation))?;
+    let last = CommitSequence::new(last)
+        .filter(|last| *last >= first)
+        .ok_or_else(|| storage_error(StorageErrorKind::InvariantViolation))?;
+    let first_key = encode_application_sequence_key(first);
+    let last_key = encode_application_sequence_key(last);
+    // A segment is keyed by its first command, which may precede this subrange.
+    // The exclusive offline gate and subsequent whole-table rewrite validation
+    // still reject corrupt history before deletion is committed.
+    let predecessor = commits
+        .range::<&[u8]>((Unbounded, Included(first_key.as_slice())))
+        .map_err(precommit_storage_error)?
+        .next_back()
+        .transpose()
+        .map_err(precommit_storage_error)?;
+    let lower = match predecessor {
+        Some((key, _)) => encode_application_sequence_key(
+            decode_application_sequence_key(key.value())
+                .map_err(|_| storage_error(StorageErrorKind::CorruptData))?,
+        ),
+        None => first_key,
+    };
+    Ok((lower, last_key))
 }
 
 fn append_tombstone_member(

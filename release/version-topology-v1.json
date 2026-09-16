@@ -142,6 +142,106 @@
       "manifest_scalar_assertions": {"alpha_epoch":1,"writer":1,"minimum_supported_source_release":"0.1.0-pre-format-manifest","maximum_supported_source_release":"0.1.0"}
     },
     {
+      "id": "durable.application_export_operation",
+      "title": "Export operation head",
+      "classification": "durable",
+      "owner": "riffdb-storage-api",
+      "source_assertions": [
+        {
+          "kind": "literal",
+          "path": "proto/riffdb/storage/v1/export_ledger_v1.proto",
+          "literal": "message StoredApplicationExportOperationV2 {"
+        }
+      ],
+      "readable_identities": [
+        "tag-60/revision-1",
+        "tag-60/revision-2"
+      ],
+      "writable_identities": [
+        "tag-60/revision-1",
+        "tag-60/revision-2"
+      ],
+      "current_identities": [
+        "tag-60/revision-1",
+        "tag-60/revision-2"
+      ],
+      "writer_policy": "multi_current",
+      "compatibility_rule": "New operations use compact heads and one atomically appended page member; existing V1 envelopes keep their original encoding and cursor until terminal. Exact manifest/catalog mismatches refuse before mutation.",
+      "breaking_when": "An existing envelope, ordinal key, page hash, prefix commitment or cursor is reinterpreted.",
+      "supported_release_posture": "ADR-0232 compact export ledger; no automatic active V3 catalog migration or physical downgrade.",
+      "lifecycle": {
+        "active": [
+          "tag-60/revision-1",
+          "tag-60/revision-2"
+        ],
+        "read_only": [],
+        "retirement_candidate": [],
+        "retired": []
+      },
+      "reserved_identity_policy": "Published tags, revisions and namespace 43 remain reserved.",
+      "evidence": [
+        "fixtures/proto/durable-export-operation-v2-schema-hash.bin",
+        "fixtures/proto/durable-export-page-commitment-v1-schema-hash.bin",
+        "crates/riffdb-storage-redb/src/application_export_ledger/tests.rs"
+      ],
+      "checks": [
+        "./scripts/check-version-topology",
+        "./scripts/check-durable-format-manifest"
+      ],
+      "last_change": {
+        "classification": "new_domain_identity",
+        "decision": "ADR-0232 append-only export page commitments"
+      }
+    },
+    {
+      "id": "durable.application_export_page_commitment",
+      "title": "Append-only export page commitment",
+      "classification": "durable",
+      "owner": "riffdb-storage-api",
+      "source_assertions": [
+        {
+          "kind": "literal",
+          "path": "proto/riffdb/storage/v1/export_ledger_v1.proto",
+          "literal": "message StoredApplicationExportPageCommitmentV1 {"
+        }
+      ],
+      "readable_identities": [
+        "tag-74/revision-1"
+      ],
+      "writable_identities": [
+        "tag-74/revision-1"
+      ],
+      "current_identities": [
+        "tag-74/revision-1"
+      ],
+      "writer_policy": "single_current",
+      "compatibility_rule": "New operations use compact heads and one atomically appended page member; existing V1 envelopes keep their original encoding and cursor until terminal. Exact manifest/catalog mismatches refuse before mutation.",
+      "breaking_when": "An existing envelope, ordinal key, page hash, prefix commitment or cursor is reinterpreted.",
+      "supported_release_posture": "ADR-0232 compact export ledger; no automatic active V3 catalog migration or physical downgrade.",
+      "lifecycle": {
+        "active": [
+          "tag-74/revision-1"
+        ],
+        "read_only": [],
+        "retirement_candidate": [],
+        "retired": []
+      },
+      "reserved_identity_policy": "Published tags, revisions and namespace 43 remain reserved.",
+      "evidence": [
+        "fixtures/proto/durable-export-operation-v2-schema-hash.bin",
+        "fixtures/proto/durable-export-page-commitment-v1-schema-hash.bin",
+        "crates/riffdb-storage-redb/src/application_export_ledger/tests.rs"
+      ],
+      "checks": [
+        "./scripts/check-version-topology",
+        "./scripts/check-durable-format-manifest"
+      ],
+      "last_change": {
+        "classification": "new_domain_identity",
+        "decision": "ADR-0232 append-only export page commitments"
+      }
+    },
+    {
       "id": "durable.archive_manifest",
       "title": "External linked archive manifests",
       "classification": "durable",
@@ -206,7 +306,7 @@
       "writer_policy": "single_current",
       "compatibility_rule": "The retained root accepts only the digest of the sole storage-owned catalog; unknown catalogs refuse without partial authority or diagnostic disclosure.",
       "breaking_when": "Tag 69, revision 1, its field, or catalog binding changes meaning.",
-      "supported_release_posture": "Codec registered during WP-772; persistence requires complete receipted V3 activation, not yet enabled.",
+      "supported_release_posture": "Complete receipted V3 activation binds the exact catalog, including ADR-0232 export-page namespace 43. A different active catalog is refused, never silently repaired.",
       "lifecycle": {"active":["tag-69/revision-1"],"read_only":[],"retirement_candidate":[],"retired":[]},
       "reserved_identity_policy": "Tag, revision and field number are never reused.",
       "evidence": ["fixtures/replication/authoritative-state-catalog-v1.hex", "crates/riffdb-storage-api/tests/changelog_roots_v3.rs"],
@@ -468,7 +568,7 @@
       "writer_policy": "single_current",
       "compatibility_rule": "Leadership is a distinct nonzero fence with checked advancement; transaction and incarnation counter records cannot substitute for it.",
       "breaking_when": "Tag 70, revision 1, its field, zero refusal or checked advancement changes meaning.",
-      "supported_release_posture": "Codec registered during WP-772; persistence requires complete receipted V3 activation, not yet enabled.",
+      "supported_release_posture": "Complete receipted V3 activation binds the exact catalog, including ADR-0232 export-page namespace 43. A different active catalog is refused, never silently repaired.",
       "lifecycle": {"active":["tag-70/revision-1"],"read_only":[],"retirement_candidate":[],"retired":[]},
       "reserved_identity_policy": "Tag, revision and field number are never reused.",
       "evidence": ["fixtures/replication/leadership-epoch-v1-first.hex", "fixtures/replication/leadership-epoch-v1-last.hex", "crates/riffdb-storage-api/tests/changelog_roots_v3.rs"],

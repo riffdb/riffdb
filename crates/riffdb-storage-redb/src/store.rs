@@ -10,6 +10,9 @@ use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Condvar, Mutex, RwLock};
 use std::time::{Duration, Instant};
 
+#[path = "store_export_ledger.rs"]
+mod export_ledger;
+
 #[path = "store_follower.rs"]
 mod follower;
 pub(crate) use follower::validate_open as validate_follower_open;
@@ -243,6 +246,7 @@ pub(crate) fn command_publication_stage_census() -> [u64; 9] {
 }
 
 pub(crate) struct SharedRedb {
+    pub(crate) derived_source_pins: Arc<crate::derived_source_pin::DerivedSourcePins>,
     open_mode: OpenMode,
     follower_namespace: Mutex<Option<crate::maintenance::FollowerNamespace>>,
     pub(crate) database: Database,
@@ -2245,6 +2249,7 @@ impl RedbStore {
             .map_err(|_| storage_error(StorageErrorKind::Unavailable))?;
         let store = Self {
             shared: Arc::new(SharedRedb {
+                derived_source_pins: Arc::default(),
                 open_mode: open_mode.clone(),
                 follower_namespace: Mutex::new(None),
                 database,
@@ -2555,10 +2560,18 @@ impl RedbStore {
             StorageFormatVersion::V1 => RegistryMigration::Current,
             _ => return Err(storage_error(StorageErrorKind::IncompatibleFormat)),
         };
+        let install_export_ledger = export_ledger::needs_installation(
+            &transaction,
+            format == StorageFormatVersion::V1 || registry_migration != RegistryMigration::Current,
+        )?;
         drop(registry);
         drop(encoded_format);
         drop(metadata);
         drop(transaction);
+
+        if install_export_ledger {
+            export_ledger::install_empty_legacy_table(&self.shared)?;
+        }
 
         if registry_migration == RegistryMigration::EventRoute {
             migrate_event_routes(&self.shared)?;
@@ -8724,7 +8737,10 @@ fn fresh_locator_table_allowed(class: PreservingImmediateClass, table: &str, key
         }
         PreservingImmediateClass::ColumnarControl => table == "columnar_projection_controls",
         PreservingImmediateClass::Installation => table == "application_installation_campaigns",
-        PreservingImmediateClass::Export => table == "application_export_operations",
+        PreservingImmediateClass::Export => matches!(
+            table,
+            "application_export_operations" | "application_export_page_commitments"
+        ),
     }
 }
 
@@ -9688,6 +9704,7 @@ fn classify_table_names(
     for name in [
         "vector_projection_controls",
         "columnar_projection_controls",
+        "application_export_page_commitments",
         "idempotency_locators",
         "provenance_locators",
         "audit_by_request_locators",

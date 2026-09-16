@@ -620,7 +620,27 @@ impl FilteredAuthoritativeScanReader for RedbSharedPorts {
     }
 }
 
+impl RedbSharedPorts {
+    /// Resolves a bounded derived batch after an uncertain write without writing.
+    pub fn resolve_projection_batch(
+        &self,
+        request: &riffdb_storage_api::ProjectionApplyBatchV1,
+    ) -> Result<riffdb_storage_api::ProjectionApplyBatchResult, StorageError> {
+        riffdb_storage_api::ProjectionMutationRepository::resolve_projection_batch(
+            &self.operational(),
+            request,
+        )
+    }
+}
+
 impl ProjectionApplySnapshotReader for RedbSharedPorts {
+    fn capture_apply_batch_snapshot(
+        &self,
+        identity: &riffdb_types::ProjectionIdentity,
+    ) -> Result<Box<dyn riffdb_storage_api::ProjectionBatchSnapshot>, StorageError> {
+        ProjectionApplySnapshotReader::capture_apply_batch_snapshot(&self.operational(), identity)
+    }
+
     fn read_apply_snapshot(
         &self,
         request: &ProjectionApplySnapshotRequest,

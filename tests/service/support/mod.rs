@@ -1735,6 +1735,7 @@ pub(crate) fn request_id(seed: u8) -> RequestId {
 }
 
 struct AuditDatabase {
+    scope: riffdb_testkit::scratch::ScratchDir,
     path: PathBuf,
     source: String,
     active_catalog: ActiveCatalogSnapshot,
@@ -1762,7 +1763,8 @@ impl AuditDatabase {
         additional_commands: usize,
         include_reimport_command: bool,
     ) -> Self {
-        let path = next_database_path();
+        let scope = new_database_scope();
+        let path = scope.path().join("database.redb");
         let mut store = RedbStore::open(&path).expect("create service harness database");
         assert_eq!(
             store
@@ -1853,6 +1855,7 @@ impl AuditDatabase {
         .clone();
         drop(ports);
         Self {
+            scope,
             path,
             source,
             active_catalog,
@@ -1865,7 +1868,8 @@ impl AuditDatabase {
 
     fn create_pre_bootstrap(with_index: bool) -> Self {
         let mut database = Self::create(with_index);
-        let populated_fixture_path = std::mem::replace(&mut database.path, next_database_path());
+        let fresh_path = database.scope.path().join("pre-bootstrap.redb");
+        let populated_fixture_path = std::mem::replace(&mut database.path, fresh_path);
         let mut store = RedbStore::open(&database.path).expect("create pre-bootstrap database");
         assert_eq!(
             store
@@ -1886,7 +1890,8 @@ impl AuditDatabase {
                 .expect("unchanged partition schemas form a compatible successor"),
         )
         .expect("compatible successor is catalog-valid");
-        let path = next_database_path();
+        let scope = new_database_scope();
+        let path = scope.path().join("database.redb");
         let mut store = RedbStore::open(&path).expect("create compatible-race catalog database");
         assert_eq!(
             store
@@ -2138,35 +2143,15 @@ impl AuditDatabase {
     }
 }
 
-fn next_database_path() -> PathBuf {
+fn new_database_scope() -> riffdb_testkit::scratch::ScratchDir {
     let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .join("../..")
         .join("target")
         .join("service-harness");
-    std::fs::create_dir_all(&root).expect("create service harness directory");
-    root.join(format!(
-        "riffdb-service-harness-{}-{}.redb",
-        std::process::id(),
-        NEXT_PATH.fetch_add(1, Ordering::Relaxed)
-    ))
-}
-
-impl Drop for AuditDatabase {
-    fn drop(&mut self) {
-        let _ = std::fs::remove_file(&self.path);
-        let _ = std::fs::remove_file(riffdb_storage_redb::durable_format_marker_path(&self.path));
-        for suffix in [
-            ".riffjournal",
-            ".riffjournal.checkpoint",
-            ".riffjournal.next",
-            ".riffjournal.rewrite",
-            ".riffjournal.extent-v3",
-        ] {
-            let mut companion = self.path.as_os_str().to_os_string();
-            companion.push(suffix);
-            let _ = std::fs::remove_file(PathBuf::from(companion));
-        }
-    }
+    // A fresh directory cannot inherit a durable-format side file from an
+    // interrupted run whose process ID was later reused.
+    riffdb_testkit::scratch::ScratchDir::new_in(root, "service-harness")
+        .expect("create isolated service harness directory")
 }
 
 fn scan_service_audits(
@@ -5434,7 +5419,8 @@ impl AuditDatabase {
     /// `CreateNote` plan so irrelevant-entity commands run through the same
     /// real coordinator.
     fn create_board() -> (Self, ResolvedExecutablePlan) {
-        let path = next_database_path();
+        let scope = new_database_scope();
+        let path = scope.path().join("database.redb");
         let mut store = RedbStore::open(&path).expect("create board harness database");
         assert_eq!(
             store
@@ -5510,6 +5496,7 @@ impl AuditDatabase {
         drop(ports);
         (
             Self {
+                scope,
                 path,
                 source,
                 active_catalog,

@@ -214,6 +214,50 @@ where
         Ok(result)
     }
 
+    /// Applies a complete bounded chain and notifies only after durable resolution.
+    pub fn apply_batch(
+        &mut self,
+        request: &riffdb_storage_api::ProjectionApplyBatchV1,
+    ) -> Result<riffdb_storage_api::ProjectionApplyBatchResult, ProjectionCoreError> {
+        use riffdb_storage_api::{ProjectionApplyBatchResult, StorageErrorKind};
+        self.hooks
+            .failpoint(ProjectionFailpoint::BeforeStateAndFrontierApply)?;
+        let (result, reconciled) = match self.repository.apply_projection_batch(request) {
+            Err(error) if error.kind() == StorageErrorKind::CommitStatusUnknown => {
+                // An uncertain engine write fences new writes. Resolve from one
+                // read view; every marker and its control frontier must agree.
+                // A partial/absent prefix requests fresh preparation, never a
+                // guessed suffix apply or an acknowledgement of unknown work.
+                (
+                    self.repository
+                        .resolve_projection_batch(request)
+                        .map_err(|_| ProjectionCoreError::from(error))?,
+                    true,
+                )
+            }
+            result => (result?, false),
+        };
+        match &result {
+            ProjectionApplyBatchResult::Applied(control) => {
+                self.hooks
+                    .failpoint(ProjectionFailpoint::AfterStateAndFrontierApply)?;
+                for _ in request.members() {
+                    self.hooks.record(ProjectionTelemetryEvent::SequenceApplied);
+                }
+                self.notify(control.identity())?;
+            }
+            ProjectionApplyBatchResult::AlreadyApplied => {
+                self.hooks
+                    .record(ProjectionTelemetryEvent::DuplicateApplyConfirmed);
+                if reconciled {
+                    self.notify(request.expected().identity())?;
+                }
+            }
+            ProjectionApplyBatchResult::StateChanged => {}
+        }
+        Ok(result)
+    }
+
     fn transition(
         &mut self,
         operation: ProjectionControlOperation,

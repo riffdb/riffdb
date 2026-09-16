@@ -16,6 +16,7 @@ ignored = ["rustls-webpki"]
 default = []
 test-fixtures = [
     "riffdb-commit/test-fixtures",
+    "riffdb-policy/test-fixtures",
     "riffdb-storage-redb/test-fixtures",
     "riffdb-service/test-fixtures",
 ]
@@ -23,6 +24,11 @@ test-fixtures = [
 [[bin]]
 name = "riffdbd-causal-wait-fixture"
 path = "tests/fixtures/causal_wait_daemon.rs"
+required-features = ["test-fixtures"]
+
+[[bin]]
+name = "riffdbd-exact-provider-fixture"
+path = "tests/fixtures/exact_provider_daemon.rs"
 required-features = ["test-fixtures"]
 
 [dependencies]

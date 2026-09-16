@@ -108,6 +108,16 @@ impl riffdb_storage_api::PartitionEventRouteReader for RedbMigrationProjectionPo
 }
 
 impl riffdb_storage_api::ProjectionApplySnapshotReader for RedbMigrationProjectionPorts {
+    fn capture_apply_batch_snapshot(
+        &self,
+        identity: &riffdb_types::ProjectionIdentity,
+    ) -> Result<Box<dyn riffdb_storage_api::ProjectionBatchSnapshot>, StorageError> {
+        riffdb_storage_api::ProjectionApplySnapshotReader::capture_apply_batch_snapshot(
+            &self.operational(),
+            identity,
+        )
+    }
+
     fn read_apply_snapshot(
         &self,
         request: &riffdb_storage_api::ProjectionApplySnapshotRequest,
@@ -120,6 +130,26 @@ impl riffdb_storage_api::ProjectionApplySnapshotReader for RedbMigrationProjecti
 }
 
 impl riffdb_storage_api::ProjectionMutationRepository for RedbMigrationProjectionPorts {
+    fn apply_projection_batch(
+        &mut self,
+        request: &riffdb_storage_api::ProjectionApplyBatchV1,
+    ) -> Result<riffdb_storage_api::ProjectionApplyBatchResult, StorageError> {
+        riffdb_storage_api::ProjectionMutationRepository::apply_projection_batch(
+            &mut self.operational(),
+            request,
+        )
+    }
+
+    fn resolve_projection_batch(
+        &self,
+        request: &riffdb_storage_api::ProjectionApplyBatchV1,
+    ) -> Result<riffdb_storage_api::ProjectionApplyBatchResult, StorageError> {
+        riffdb_storage_api::ProjectionMutationRepository::resolve_projection_batch(
+            &self.operational(),
+            request,
+        )
+    }
+
     fn apply_projection(
         &mut self,
         request: &riffdb_storage_api::ProjectionApplyRequestV1,
@@ -398,6 +428,10 @@ impl RedbContractMigrationStage {
 
 #[cfg(feature = "test-fixtures")]
 mod fixture {
+    #[cfg(test)]
+    mod unique_tests {
+        include!("../tests/support/migration_unique.rs");
+    }
     use std::num::NonZeroU64;
 
     use redb::ReadableTable;
@@ -674,6 +708,16 @@ mod fixture {
             self.stage.validate_migration_stage_structure()
         }
 
+        fn migration_unique_validation(
+            &self,
+            artifacts: ContractMigrationArtifactsV1,
+        ) -> Result<
+            Option<Box<dyn riffdb_storage_api::MigrationUniqueValidation + '_>>,
+            MigrationStageError,
+        > {
+            self.stage.migration_unique_validation(artifacts)
+        }
+
         fn finalize_migration(
             &mut self,
             cutover: MigrationCutover,
@@ -804,6 +848,22 @@ impl MigrationStagePort for RedbContractMigrationStage {
         cursor: &MigrationScanCursor,
     ) -> Result<MigrationScanPage, MigrationStageError> {
         scan_rows(&self.ports, cursor)
+    }
+
+    fn migration_unique_validation(
+        &self,
+        artifacts: ContractMigrationArtifactsV1,
+    ) -> Result<
+        Option<Box<dyn riffdb_storage_api::MigrationUniqueValidation + '_>>,
+        MigrationStageError,
+    > {
+        if artifacts != self.context.artifacts {
+            return Err(MigrationStageError::Integrity);
+        }
+        self.validate_migration_stage_structure()?;
+        // Holding this borrow prevents all authoritative stage mutations. The
+        // split projection port can change only derived projection state.
+        Ok(Some(Box::new(FinalUniqueValidation(self))))
     }
 
     fn migration_target_exists(
@@ -1112,6 +1172,10 @@ impl MigrationStagePort for RedbContractMigrationStage {
         if journal.step() < ContractMigrationJournalStepV1::Validating
             || journal.step() == ContractMigrationJournalStepV1::Complete
             || journal.artifacts() != self.context.artifacts
+            || journal.operation_id() != self.context.operation_id
+            || journal.input_hash() != self.context.input_hash
+            || journal.database_id() != self.context.backup_manifest.database_id()
+            || journal.frozen_application_frontier() != self.migration_frozen_frontier()
         {
             return Err(MigrationStageError::Integrity);
         }
@@ -1478,6 +1542,53 @@ fn immutable_history_digest(
         }
     }
     Ok(digest.finalize().into())
+}
+
+struct FinalUniqueValidation<'a>(&'a RedbContractMigrationStage);
+
+impl riffdb_storage_api::MigrationUniqueValidation for FinalUniqueValidation<'_> {
+    fn validate_unique_owner(
+        &self,
+        entity: riffdb_types::EntityTypeId,
+        prefix: &riffdb_storage_api::StructurallyDecodedIndexRangePrefixV1,
+        expected: &riffdb_storage_api::StoredIndexEntryV2,
+    ) -> Result<(), MigrationStageError> {
+        if expected.schema_binding().bundle_hash() != self.0.context.artifacts.candidate()
+            || expected.key().index_id() != prefix.index_id()
+            || !expected.key().as_bytes().starts_with(prefix.as_bytes())
+        {
+            return Err(MigrationStageError::Integrity);
+        }
+        let upper = crate::reads::exclusive_prefix_end(prefix.as_bytes())
+            .ok_or(MigrationStageError::Integrity)?;
+        let access = self.0.ports.begin_composite_read().map_err(stage_error)?;
+        let entries = access
+            .read_range(JournalTable::SecondaryIndexes, prefix.as_bytes(), &upper, 2)
+            .map_err(stage_error)?;
+        for (key, value) in &entries {
+            let decoded = crate::codec::decode_index_entry_v2(value).map_err(stage_error)?;
+            if encode_index_entry_key(decoded.value().key()) != key.as_ref()
+                || decoded.value().key().index_id() != prefix.index_id()
+                || decoded.value().schema_binding() != expected.schema_binding()
+            {
+                return Err(MigrationStageError::Integrity);
+            }
+        }
+        match entries.as_slice() {
+            [(_, value)] => {
+                let decoded = crate::codec::decode_index_entry_v2(value).map_err(stage_error)?;
+                if decoded.value() != expected {
+                    return Err(MigrationStageError::Integrity);
+                }
+                Ok(())
+            }
+            [_, _] => Err(MigrationStageError::UniqueConflict {
+                entity,
+                index: prefix.index_id(),
+            }),
+            _ => Err(MigrationStageError::Integrity),
+        }
+    }
 }
 
 fn validate_entity_index_structure(ports: &RedbOperationalPorts) -> Result<(), StorageError> {

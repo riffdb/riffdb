@@ -105,6 +105,7 @@ files
     import riffdb/storage/v1/common.proto
   riffdb/storage/v1/event_route_v1.proto
     import riffdb/storage/v1/common.proto
+  riffdb/storage/v1/export_ledger_v1.proto
   riffdb/storage/v1/export_v1.proto
   riffdb/storage/v1/history_incarnation_v1.proto
   riffdb/storage/v1/index_generation_v2.proto
@@ -922,6 +923,14 @@ messages
     1 operation_id optional bytes
     2 contract_lineage optional string
     3 canonical_state optional bytes
+  riffdb.storage.v1.StoredApplicationExportOperationV2 fields=5
+    1 operation_id optional bytes
+    2 contract_lineage optional string
+    3 immutable_binding optional bytes
+    4 canonical_state optional bytes
+    5 canonical_prefix optional bytes
+  riffdb.storage.v1.StoredApplicationExportPageCommitmentV1 fields=1
+    1 canonical_commitment optional bytes
   riffdb.storage.v1.StoredApplicationInstallationCampaignV1 fields=4
     1 campaign_id optional bytes
     2 contract_lineage optional string

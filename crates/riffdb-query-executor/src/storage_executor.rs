@@ -458,7 +458,8 @@ where
         let fetch_limit = page_limit.saturating_add(1);
         let scan_ceiling = usize::try_from(MAX_QUERY_SCANNED_ROWS).map_err(|_| limit_exceeded())?;
         let plan = RowMaterializePlan::for_step(self.program, step)?;
-        let mut rows = Vec::<(IndexEntryKey, QueryRow)>::new();
+        let mut rows =
+            Vec::<(IndexEntryKey, QueryRow)>::with_capacity(fetch_limit.min(scan_ceiling));
         let mut physical = 0usize;
         let mut eligible = 0usize;
 
@@ -475,11 +476,14 @@ where
                 if remaining == 0 {
                     return Err(limit_exceeded());
                 }
-                let request_limit =
-                    u16::try_from(remaining.min(riffdb_storage_api::MAX_SCAN_PAGE_ENTRIES))
-                        .ok()
-                        .and_then(StorageScanLimit::new)
-                        .ok_or_else(limit_exceeded)?;
+                let request_limit = u16::try_from(
+                    remaining
+                        .min(riffdb_storage_api::MAX_SCAN_PAGE_ENTRIES)
+                        .min(fetch_limit.saturating_sub(rows.len()).max(1)),
+                )
+                .ok()
+                .and_then(StorageScanLimit::new)
+                .ok_or_else(limit_exceeded)?;
                 let request = SnapshotIndexRangeRequestV1::new(
                     window.start_inclusive().to_vec(),
                     !window.skip_start_equal(),
@@ -593,7 +597,9 @@ where
                 }
             })
             .collect::<Result<Vec<_>, _>>()?;
-        let mut rows = Vec::<(IndexEntryKey, Vec<CanonicalValue>)>::new();
+        let mut rows = Vec::<(IndexEntryKey, Vec<CanonicalValue>)>::with_capacity(
+            fetch_limit.min(scan_ceiling),
+        );
         let mut physical = 0usize;
         let mut eligible = 0usize;
         'ranges: for range in schedule.ranges() {
@@ -609,11 +615,14 @@ where
                 if remaining == 0 {
                     return Err(limit_exceeded());
                 }
-                let request_limit =
-                    u16::try_from(remaining.min(riffdb_storage_api::MAX_SCAN_PAGE_ENTRIES))
-                        .ok()
-                        .and_then(StorageScanLimit::new)
-                        .ok_or_else(limit_exceeded)?;
+                let request_limit = u16::try_from(
+                    remaining
+                        .min(riffdb_storage_api::MAX_SCAN_PAGE_ENTRIES)
+                        .min(fetch_limit.saturating_sub(rows.len()).max(1)),
+                )
+                .ok()
+                .and_then(StorageScanLimit::new)
+                .ok_or_else(limit_exceeded)?;
                 let request = SnapshotIndexRangeRequestV1::new(
                     window.start_inclusive().to_vec(),
                     !window.skip_start_equal(),

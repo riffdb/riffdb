@@ -12,10 +12,45 @@ use riffdb_storage_api::{
     ChangelogFrameCursorV3, ChangelogHistoryPointV3, ChangelogLineageV3,
     ChangelogTransactionSequence, LeadershipEpochV1, ReplicationHandshakeV3,
 };
-use std::{sync::Arc, time::Duration};
+use std::{collections::VecDeque, sync::Arc, time::Duration};
 use tokio::sync::{OwnedSemaphorePermit, Semaphore};
 
 const MAX_STREAMS: usize = 16;
+const MAX_PREFETCH_FRAMES: usize = 64;
+const PREFETCH_TARGET_BYTES: usize = 256 * 1024;
+// A frame cannot be split. Retention is bounded by TARGET + one maximum
+// frame, independently of history size; no batch changes wire framing.
+#[derive(Default)]
+struct FrameBatch {
+    frames: VecDeque<riffdb_service::ReplicationFrame>,
+    failure: Option<riffdb_errors::ReplicationStreamErrorV3>,
+}
+
+fn read_frame_batch(
+    mut next: impl FnMut() -> Result<
+        Option<riffdb_service::ReplicationFrame>,
+        riffdb_errors::ReplicationStreamErrorV3,
+    >,
+) -> FrameBatch {
+    let mut batch = FrameBatch::default();
+    let mut bytes = 0;
+    while batch.frames.len() < MAX_PREFETCH_FRAMES && bytes < PREFETCH_TARGET_BYTES {
+        match next() {
+            Ok(Some(frame)) => {
+                bytes += frame.len();
+                batch.frames.push_back(frame);
+            }
+            Ok(None) => break,
+            Err(error) => {
+                // Release the already validated prefix before reporting the
+                // next frame's failure, matching one-at-a-time streaming.
+                batch.failure = Some(error);
+                break;
+            }
+        }
+    }
+    batch
+}
 const IDLE_LIMIT: Duration = Duration::from_secs(30);
 const LIFETIME_LIMIT: Duration = Duration::from_secs(15 * 60);
 
@@ -120,6 +155,7 @@ impl ReplicationSourcePort for PublishedReplicationSource {
             Ok(Box::new(PublishedFrames {
                 publications,
                 cursor: Some(cursor),
+                pending: FrameBatch::default(),
                 expires,
                 permit,
             }) as Box<dyn ReplicationItemSource>)
@@ -130,6 +166,7 @@ impl ReplicationSourcePort for PublishedReplicationSource {
 struct PublishedFrames {
     publications: ReplicationPublishedSnapshots,
     cursor: Option<ChangelogFrameCursorV3>,
+    pending: FrameBatch,
     expires: tokio::time::Instant,
     permit: Arc<OwnedSemaphorePermit>,
 }
@@ -141,28 +178,49 @@ impl ReplicationItemSource for PublishedFrames {
                 if tokio::time::Instant::now() >= self.expires {
                     return Ok(None);
                 }
-                let mut cursor = self.cursor.take().ok_or(ReplicationFailure::Unavailable)?;
                 let newer = self
                     .publications
                     .take_newer()
                     .map_err(ReplicationFailure::Source)?;
-                let (returned, frame) = bounded_read(Arc::clone(&self.permit), move || {
-                    let result = (|| {
-                        if let Some(pin) = newer {
+                if let Some(pin) = newer {
+                    // Revalidate changed publication authority before releasing
+                    // buffered bytes; an unavailable/changed lineage cannot be
+                    // hidden behind the prefetch queue.
+                    let mut cursor = self.cursor.take().ok_or(ReplicationFailure::Unavailable)?;
+                    self.cursor = Some(
+                        bounded_read(Arc::clone(&self.permit), move || {
                             cursor.advance_snapshot(pin.as_ref())?;
-                        }
-                        let frame = cursor.next_frame()?;
+                            Ok(cursor)
+                        })
+                        .await
+                        .map_err(|_| ReplicationFailure::Unavailable)?
+                        .map_err(ReplicationFailure::Source)?,
+                    );
+                }
+                if let Some(frame) = self.pending.frames.pop_front() {
+                    return Ok(Some(riffdb_service::ReplicationItem::Frame(frame)));
+                }
+                if let Some(error) = self.pending.failure {
+                    return Err(ReplicationFailure::Source(error));
+                }
+                let mut cursor = self.cursor.take().ok_or(ReplicationFailure::Unavailable)?;
+                let (returned, batch) = bounded_read(Arc::clone(&self.permit), move || {
+                    let result = (|| {
                         let head = cursor.published_head()?;
                         let observation = riffdb_service::ReplicationSourceHead::new(
                             head.sequence().get(),
                             head.frontier(),
                         )
                         .ok_or(riffdb_errors::ReplicationStreamErrorV3::CorruptHistory)?;
-                        Ok(frame.map(|frame| {
-                            riffdb_service::ReplicationFrame::new(
-                                frame.into_bytes(),
-                                Some(observation),
-                            )
+                        Ok(read_frame_batch(|| {
+                            cursor.next_frame().map(|frame| {
+                                frame.map(|frame| {
+                                    riffdb_service::ReplicationFrame::new(
+                                        frame.into_bytes(),
+                                        Some(observation),
+                                    )
+                                })
+                            })
                         }))
                     })();
                     (cursor, result)
@@ -170,9 +228,12 @@ impl ReplicationItemSource for PublishedFrames {
                 .await
                 .map_err(|_| ReplicationFailure::Unavailable)?;
                 self.cursor = Some(returned);
-                let frame = frame.map_err(ReplicationFailure::Source)?;
-                if frame.is_some() {
-                    return Ok(frame.map(riffdb_service::ReplicationItem::Frame));
+                self.pending = batch.map_err(ReplicationFailure::Source)?;
+                if let Some(frame) = self.pending.frames.pop_front() {
+                    return Ok(Some(riffdb_service::ReplicationItem::Frame(frame)));
+                }
+                if let Some(error) = self.pending.failure {
+                    return Err(ReplicationFailure::Source(error));
                 }
                 let deadline = self.expires.min(tokio::time::Instant::now() + IDLE_LIMIT);
                 let pin = match tokio::time::timeout_at(deadline, self.publications.changed()).await
@@ -198,6 +259,55 @@ impl ReplicationItemSource for PublishedFrames {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // req: REP-003, PERF-007
+    #[test]
+    fn prefetch_bounds_reads_and_preserves_valid_prefix_before_failure() {
+        let mut calls = 0;
+        let batch = read_frame_batch(|| {
+            calls += 1;
+            Ok(Some(vec![calls as u8].into()))
+        });
+        assert_eq!(calls, MAX_PREFETCH_FRAMES);
+        assert_eq!(batch.frames.len(), MAX_PREFETCH_FRAMES);
+        assert_eq!(
+            batch
+                .frames
+                .iter()
+                .map(|frame| frame[0])
+                .collect::<Vec<_>>(),
+            (1..=64).collect::<Vec<_>>()
+        );
+        let mut calls = 0;
+        let batch = read_frame_batch(|| {
+            calls += 1;
+            Ok(Some(vec![0; PREFETCH_TARGET_BYTES / 2 + 1].into()))
+        });
+        assert_eq!(calls, 2);
+        assert_eq!(batch.frames.len(), 2);
+        let mut calls = 0;
+        let batch = read_frame_batch(|| {
+            calls += 1;
+            if calls == 3 {
+                Err(riffdb_errors::ReplicationStreamErrorV3::CorruptHistory)
+            } else {
+                Ok(Some(vec![calls as u8].into()))
+            }
+        });
+        assert_eq!(calls, 3);
+        assert_eq!(
+            batch
+                .frames
+                .iter()
+                .map(|frame| frame[0])
+                .collect::<Vec<_>>(),
+            [1, 2]
+        );
+        assert_eq!(
+            batch.failure,
+            Some(riffdb_errors::ReplicationStreamErrorV3::CorruptHistory)
+        );
+    }
 
     #[tokio::test]
     // req: REP-003, PERF-007

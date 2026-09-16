@@ -44,6 +44,11 @@ use crate::layout::META_APPLICATION_SEQUENCE;
 use crate::layout::{EVENTS, META};
 use crate::store::{RedbOperationalPorts, RedbReadAccess};
 
+#[cfg(test)]
+thread_local! {
+    static SNAPSHOT_MAX_RANGE_READ: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
 type BytesTable = ReadOnlyTable<&'static [u8], &'static [u8]>;
 
 impl SnapshotReader for RedbOperationalPorts {
@@ -100,36 +105,48 @@ pub(crate) fn read_snapshot_from_access(
             .map_err(materialization_value)?;
         let prefix = target.prefix().as_bytes();
         let upper = exclusive_prefix_end(prefix).ok_or_else(corrupt)?;
-        let entries = access.read_range(
-            JournalTable::SecondaryIndexes,
-            prefix,
-            &upper,
-            MAX_INDEX_SCAN_INSPECTED_ENTRIES.saturating_add(1),
-        )?;
         let entry_limit = request
             .range_entry_limit(position)
             .ok_or_else(|| materialization_value(StorageValueError::IdentityMismatch))?;
         let mut retained = 0usize;
-        for (physical_key, encoded) in entries {
-            let key = decode_index_entry_key(&physical_key).map_err(|_| corrupt())?;
-            let decoded = decode_index_entry_v2(&encoded)?;
-            if decoded.value().key() != &key {
-                return Err(corrupt());
+        let mut inspected = 0usize;
+        let mut start = prefix.to_vec();
+        let scan_limit = MAX_INDEX_SCAN_INSPECTED_ENTRIES.saturating_add(1);
+        'batches: while inspected < scan_limit {
+            let read_limit = entry_limit
+                .saturating_sub(retained)
+                .saturating_add(1)
+                .min(scan_limit - inspected);
+            #[cfg(test)]
+            SNAPSHOT_MAX_RANGE_READ.set(SNAPSHOT_MAX_RANGE_READ.get().max(read_limit));
+            let entries =
+                access.read_range(JournalTable::SecondaryIndexes, &start, &upper, read_limit)?;
+            let count = entries.len();
+            inspected += count;
+            let last_key = entries.last().map(|(key, _)| key.to_vec());
+            for (physical_key, encoded) in entries {
+                let key = decode_index_entry_key(&physical_key).map_err(|_| corrupt())?;
+                let decoded = decode_and_verify_index_entry(&key, &encoded)?;
+                if decoded.value().partition_key() != target.generation_target().partition_key() {
+                    continue;
+                }
+                if retained == entry_limit {
+                    break 'batches;
+                }
+                let row = IndexRangeEntry::new(
+                    key.index_id(),
+                    key,
+                    decoded.value().covered_values().clone(),
+                )
+                .map_err(corrupt_value)?;
+                range.push_entry(row).map_err(materialization_value)?;
+                retained += 1;
             }
-            if decoded.value().partition_key() != target.generation_target().partition_key() {
-                continue;
-            }
-            if retained == entry_limit {
+            if count < read_limit {
                 break;
             }
-            let row = IndexRangeEntry::new(
-                key.index_id(),
-                key,
-                decoded.value().covered_values().clone(),
-            )
-            .map_err(corrupt_value)?;
-            range.push_entry(row).map_err(materialization_value)?;
-            retained += 1;
+            start = last_key.ok_or_else(corrupt)?;
+            start.push(0);
         }
         range.finish().map_err(materialization_value)?;
     }
@@ -489,10 +506,7 @@ impl AuthoritativeScanReader for RedbOperationalPorts {
                 break;
             }
             let key = decode_index_entry_key(&physical_key).map_err(|_| corrupt())?;
-            let decoded = decode_index_entry_v2(&encoded)?;
-            if decoded.value().key() != &key {
-                return Err(corrupt());
-            }
+            let decoded = decode_and_verify_index_entry(&key, &encoded)?;
             if decoded.value().partition_key()
                 != request.target().generation_target().partition_key()
             {
@@ -513,7 +527,7 @@ impl AuthoritativeScanReader for RedbOperationalPorts {
                 has_more = true;
                 break;
             }
-            let row = IndexRangeEntry::new(key.index_id(), key, stored.covered_values().clone())
+            let row = IndexRangeEntry::new(key.index_id(), key, stored.into_covered_values())
                 .map_err(corrupt_value)?;
             entries.push(EncodedPageItem::new(row, charge));
             encoded_bytes = next_bytes;
@@ -701,10 +715,7 @@ impl FilteredAuthoritativeScanReader for RedbOperationalPorts {
             }
 
             let key = decode_index_entry_key(&physical_key).map_err(|_| corrupt())?;
-            let decoded = decode_index_entry_v2(&encoded)?;
-            if decoded.value().key() != &key {
-                return Err(corrupt());
-            }
+            let decoded = decode_and_verify_index_entry(&key, &encoded)?;
             let charge = decoded.encoded_content_charge();
             let next_inspected_bytes = inspected_bytes
                 .checked_add(charge.get())
@@ -750,6 +761,20 @@ impl FilteredAuthoritativeScanReader for RedbOperationalPorts {
                 .map_err(corrupt_value)
         }
     }
+}
+
+/// Decodes a canonical index envelope and binds it to its physical key before
+/// any partition filtering. Callers retain their own continuation, partition,
+/// lineage and byte-budget order: those differ between the reader contracts.
+pub(crate) fn decode_and_verify_index_entry(
+    key: &riffdb_types::IndexEntryKey,
+    encoded: &[u8],
+) -> Result<EncodedPageItem<riffdb_storage_api::StoredIndexEntryV2>, StorageError> {
+    let decoded = decode_index_entry_v2(encoded)?;
+    if decoded.value().key() != key {
+        return Err(corrupt());
+    }
+    Ok(decoded)
 }
 
 fn read_entity_observation_access(
@@ -810,7 +835,7 @@ pub(crate) fn read_epoch_position_access(
     Ok(IndexEpochPosition::Value(epoch.epoch()))
 }
 
-fn exclusive_prefix_end(prefix: &[u8]) -> Option<Vec<u8>> {
+pub(crate) fn exclusive_prefix_end(prefix: &[u8]) -> Option<Vec<u8>> {
     let mut upper = prefix.to_vec();
     let position = upper.iter().rposition(|byte| *byte != u8::MAX)?;
     upper[position] = upper[position].saturating_add(1);
@@ -1715,6 +1740,100 @@ mod tests {
             IndexEpochPosition::Value(IndexEpoch::first())
         );
         assert_eq!(snapshot.ranges()[0].entries()[0].key(), &key);
+    }
+
+    // req: DEP-001
+    #[test]
+    fn index_readers_reject_substituted_payload_before_partition_filtering() {
+        use riffdb_storage_api::OwnedSnapshotReader;
+
+        for partition in [1, 2] {
+            let (_path, ports) = operational("index-payload-substitution");
+            seed_filtered_rows(&ports, vec![filtered_row(1, 1, "application-test")]);
+            let substituted = filtered_row(2, partition, "application-test");
+            let encoded = encode_index_entry_v2(&substituted).expect("encode substitution");
+            let access = ports.begin_write().expect("begin substitution");
+            {
+                let mut table = access
+                    .transaction()
+                    .expect("transaction")
+                    .open_table(SECONDARY_INDEXES)
+                    .expect("index table");
+                table
+                    .insert(filtered_index_key(1).as_bytes(), encoded.as_bytes())
+                    .expect("replace payload under another physical key");
+            }
+            access.commit().expect("commit substitution");
+            let owned = ports.open_owned_snapshot().expect("owned snapshot");
+            let request = AuthoritativeIndexScanRequest::new(
+                filtered_range(),
+                None,
+                StorageScanLimit::new(1).expect("limit"),
+            )
+            .expect("request");
+            for result in [ports.scan_index(request.clone()), owned.scan_index(request)] {
+                assert_eq!(
+                    result.expect_err("substitution is not absence").kind(),
+                    StorageErrorKind::CorruptData
+                );
+            }
+            for result in [
+                ports.scan_index_filtered(filtered_request(1, None, 1)),
+                owned.scan_index_filtered(filtered_request(1, None, 1)),
+            ] {
+                assert_eq!(
+                    result
+                        .expect_err("foreign partition cannot hide corruption")
+                        .kind(),
+                    StorageErrorKind::CorruptData
+                );
+            }
+            let request =
+                SnapshotRequest::new(plan(), Vec::new(), Vec::new(), vec![filtered_range()])
+                    .expect("snapshot request");
+            for result in [
+                ports.read_snapshot(request.clone()),
+                owned.read_snapshot(request),
+            ] {
+                assert_eq!(
+                    result
+                        .expect_err("command snapshot rejects substitution")
+                        .kind(),
+                    StorageErrorKind::CorruptData
+                );
+            }
+        }
+    }
+
+    // req: DEP-001
+    #[test]
+    fn small_snapshot_range_reads_continue_past_foreign_partition_batches() {
+        let (_path, ports) = operational("bounded-snapshot-range");
+        seed_filtered_rows(
+            &ports,
+            (0..20)
+                .map(|key| filtered_row(key, if key < 7 { 2 } else { 1 }, "application-test"))
+                .collect(),
+        );
+        SNAPSHOT_MAX_RANGE_READ.set(0);
+        let snapshot = ports
+            .read_snapshot(
+                SnapshotRequest::new_with_cascade(
+                    plan(),
+                    Vec::new(),
+                    Vec::new(),
+                    Vec::new(),
+                    vec![(filtered_range_for(1), 1)],
+                )
+                .unwrap(),
+            )
+            .unwrap();
+        assert_eq!(snapshot.ranges()[0].entries().len(), 1);
+        assert_eq!(
+            snapshot.ranges()[0].entries()[0].key(),
+            &filtered_index_key(7)
+        );
+        assert_eq!(SNAPSHOT_MAX_RANGE_READ.get(), 2);
     }
 
     #[test]

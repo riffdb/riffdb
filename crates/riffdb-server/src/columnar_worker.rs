@@ -413,23 +413,6 @@ enum PublishedV1AdvanceResolution {
     RemainClosed,
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-enum PreparedV2HeadResolution {
-    Publish,
-    ReplaceCandidate,
-}
-
-fn prepared_v2_head_resolution(
-    candidate_frontier: FrontierPosition,
-    authoritative_head: FrontierPosition,
-) -> PreparedV2HeadResolution {
-    if candidate_frontier == authoritative_head {
-        PreparedV2HeadResolution::Publish
-    } else {
-        PreparedV2HeadResolution::ReplaceCandidate
-    }
-}
-
 fn publication_resolution(
     _attempt: ColumnarPublicationAttempt,
     durable: &StoredColumnarProjectionControlV1,
@@ -574,6 +557,16 @@ fn maintain_common_generations(
             && control.lifecycle() == ColumnarProjectionLifecycleV1::Rebuilding
         {
             advance_v2_candidate(runtime, &binding, &slot, &control, stop_before_next_page)?
+        } else if let Some(candidate) = control.candidate()
+            && candidate.layout() == ColumnarProjectionLayoutV1::V2
+            && control.published().is_some()
+            && matches!(
+                control.lifecycle(),
+                ColumnarProjectionLifecycleV1::CatchingUp
+                    | ColumnarProjectionLifecycleV1::Rebuilding
+            )
+        {
+            advance_v2_candidate(runtime, &binding, &slot, &control, stop_before_next_page)?
         } else if let Some(published) = control.servable_generation()
             && published.layout() == ColumnarProjectionLayoutV1::V1
         {
@@ -685,33 +678,23 @@ fn advance_v2_candidate(
         );
     }
 
-    // A prepared V2 root is immutable. If the authoritative head advanced,
-    // replace it through the accepted never-reused allocation transition;
-    // the ordinary V1 published pointer remains selected and byte-exact.
-    if prepared_v2_head_resolution(
-        candidate.frontier(),
-        runtime.read_application_head().map_err(map_port_error)?,
-    ) == PreparedV2HeadResolution::ReplaceCandidate
+    // ADR-0227: a head advance does not invalidate a completely prepared root.
+    // Only a root that cannot advance the selected frontier needs rebuilding.
+    let head = runtime.read_application_head().map_err(map_port_error)?;
+    if candidate.frontier() > head {
+        return Err(ColumnarWorkerError::Integrity);
+    }
+    if let Some(published) = control.published()
+        && candidate.frontier() <= published.frontier()
     {
-        let physical = PhysicalGenerationFingerprintV1::compute(binding.definition().fingerprint());
-        let result = if control.published().is_none()
-            && control.predecessor().is_some()
-            && control.servable_generation().is_none()
-        {
-            runtime.storage().allocate_unservable_rebuild_candidate(
-                control,
-                binding.spec().definition_fingerprint(),
-                binding.spec().hash(),
-                binding.spec().replay_limits(),
-                ColumnarProjectionLayoutV1::V2,
-                Some(*physical.as_bytes()),
-            )
-        } else {
-            runtime
+        if head > published.frontier() {
+            let physical =
+                PhysicalGenerationFingerprintV1::compute(binding.definition().fingerprint());
+            let _ = runtime
                 .storage()
                 .allocate_same_spec_candidate(control, *physical.as_bytes())
-        };
-        let _ = result.map_err(map_storage_error)?;
+                .map_err(map_storage_error)?;
+        }
         return Ok(true);
     }
 
@@ -1827,6 +1810,15 @@ fn run_columnar_pass(
     Ok(ColumnarPassOutcome::Completed)
 }
 #[cfg(test)]
+pub(crate) fn advance_one_published_v1_for_test(
+    runtime: &ColumnarRuntime,
+    binding: &ColumnarControlBinding,
+) {
+    let control = recover_control(runtime, binding).expect("test control");
+    assert!(advance_published_v1(runtime, binding, &control, &mut || false).expect("V1 advance"));
+}
+
+#[cfg(test)]
 pub(crate) fn run_one_test_pass(runtime: &ColumnarRuntime) -> bool {
     let mut state = ColumnarWorkerState::new(runtime);
     matches!(
@@ -1920,9 +1912,8 @@ mod publication_tests {
     };
 
     use super::{
-        ColumnarPublicationAttempt, ColumnarPublicationResolution, PreparedV2HeadResolution,
-        prepared_v2_head_resolution, publication_resolution_for, v2_candidate_failure_reason,
-        v2_streaming_failure_reason,
+        ColumnarPublicationAttempt, ColumnarPublicationResolution, publication_resolution_for,
+        v2_candidate_failure_reason, v2_streaming_failure_reason,
     };
 
     fn prepared_v2() -> (
@@ -1954,7 +1945,9 @@ mod publication_tests {
             initial_candidate.generation(),
             ColumnarProjectionLayoutV1::V1,
             FrontierPosition::BeforeFirst,
-            matched_frontier,
+            FrontierPosition::AppliedThrough(
+                riffdb_types::CommitSequence::new(2).expect("V1 frontier"),
+            ),
             1,
             ColumnarProjectionArtifactV1::new(64, [0x31; 32]).expect("V1 artifact"),
             definition,
@@ -2066,35 +2059,29 @@ mod publication_tests {
 
     // req: PRJ-002, PRJ-004, PRJ-006, PRJ-010, OQ-020
     #[test]
-    fn retained_tail_head_movement_replaces_v2_candidate_and_preserves_v1_selection() {
-        let (prepared_control, _, _, _) = prepared_v2();
-        let stale = prepared_control.candidate().expect("prepared V2").clone();
-        let published = prepared_control.published().expect("selected V1").clone();
+    fn retained_tail_head_movement_publishes_actual_candidate_frontier() {
+        let (prepared_control, source, prepared, _) = prepared_v2();
+        let prior = prepared_control.published().expect("selected V1").clone();
         let moved_head = FrontierPosition::AppliedThrough(
             riffdb_types::CommitSequence::new(4).expect("advanced head"),
         );
-        assert_eq!(
-            prepared_v2_head_resolution(stale.frontier(), moved_head),
-            PreparedV2HeadResolution::ReplaceCandidate
-        );
-
-        let replacement = prepared_control
-            .allocate_same_spec_candidate(
-                stale
-                    .physical_generation_fingerprint()
-                    .expect("physical fingerprint"),
-            )
-            .expect("replace stale immutable candidate");
-        assert_eq!(replacement.published(), Some(&published));
-        let candidate = replacement.candidate().expect("replacement candidate");
-        assert!(candidate.generation() > stale.generation());
-        assert!(candidate.artifact().is_none());
-        assert_eq!(candidate.frontier(), FrontierPosition::BeforeFirst);
-        assert_eq!(
-            replacement.retention_frontier(),
-            Some(FrontierPosition::BeforeFirst),
-            "new snapshot cannot release retained tail before durable preparation"
-        );
+        let published = prepared_control
+            .publish_prepared_generation(moved_head)
+            .expect("head movement does not invalidate the root");
+        let selected = published.published().expect("selected V2");
+        assert_eq!(selected.frontier(), prepared.frontier());
+        assert!(selected.frontier() < moved_head);
+        assert!(selected.frontier() > prior.frontier());
+        assert_eq!(published.retention_frontier(), Some(prepared.frontier()));
+        for attempt in [
+            ColumnarPublicationAttempt::Applied,
+            ColumnarPublicationAttempt::UnknownCommit,
+        ] {
+            assert_eq!(
+                publication_resolution_for(attempt, &published, &source, &prepared),
+                ColumnarPublicationResolution::InstallSelectedAndAcknowledge
+            );
+        }
     }
 
     // req: PRJ-002, PRJ-004, PRJ-006, PRJ-009, PRJ-010, OQ-020

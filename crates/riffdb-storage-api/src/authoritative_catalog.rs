@@ -47,7 +47,7 @@ macro_rules! namespaces {
 
         impl AuthoritativeNamespaceV1 {
             /// Every domain, in frozen ascending tag order.
-            pub const ALL: [Self; 62] = [$(Self::$name,)+];
+            pub const ALL: [Self; 63] = [$(Self::$name,)+];
 
             /// Closed namespace tag, distinct from journal or record tags.
             #[must_use]
@@ -130,6 +130,7 @@ namespaces! {
     IdempotencyLocators = 40, "idempotency_locators", None, ReplicatedAuthoritative, false;
     ProvenanceLocators = 41, "provenance_locators", None, ReplicatedAuthoritative, false;
     AuditByRequestLocators = 42, "audit_by_request_locators", None, ReplicatedAuthoritative, false;
+    ApplicationExportPageCommitments = 43, "application_export_page_commitments", None, ReplicatedAuthoritative, false;
     FormatVersion = 101, "meta", Some("format_version"), ReplicatedAuthoritative, false;
     DatabaseIdentity = 102, "meta", Some("database_id"), ReplicatedAuthoritative, false;
     NextApplicationSequence = 103, "meta", Some("next_application_sequence"), ReplicatedAuthoritative, false;

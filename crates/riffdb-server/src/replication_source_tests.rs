@@ -152,7 +152,7 @@ async fn production_source_bootstrap_resumes_exact_pages_and_attaches_to_retaine
         .unwrap()
         .history()
         .tail();
-    publisher.observe_published_snapshot_v3(source_pin);
+    publisher.observe_published_snapshot_v3(Arc::clone(&source_pin));
     for _ in 0..2 {
         let mut stream = source.open(attachment.clone()).await.unwrap();
         let Some(ReplicationItem::Frame(bytes)) = stream.next_item().await.unwrap() else {
@@ -176,6 +176,15 @@ async fn production_source_bootstrap_resumes_exact_pages_and_attaches_to_retaine
             acknowledged.history_hash()
         );
         assert_eq!(std::fs::read_dir(&root).unwrap().count(), 1);
+        // A prefetched prefix must not hide the source's unavailable fence.
+        publisher.observe_source_unavailable_v3();
+        assert_eq!(
+            stream.next_item().await.err(),
+            Some(ReplicationFailure::Source(
+                riffdb_errors::ReplicationStreamErrorV3::Unavailable
+            ))
+        );
+        publisher.observe_published_snapshot_v3(Arc::clone(&source_pin));
     }
     let current_history = || {
         ports

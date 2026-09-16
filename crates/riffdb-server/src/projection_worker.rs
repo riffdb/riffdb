@@ -20,15 +20,16 @@ use riffdb_commit::{
     MigrationProjectionBuildObservation, MigrationProjectionBuildPort, MigrationProjectionError,
 };
 use riffdb_projection::{
-    ProjectionController, ProjectionCoreError, ProjectionCoreErrorKind, ProjectionEvaluationError,
-    ProjectionInitializationResult, ProjectionNotifier, ProjectionRecoveryError,
-    ProjectionRecoveryOutcome, ProjectionSchemaRegistry, evaluate_and_prepare_projection_commit,
-    validate_and_recover_projection_generation,
+    ProjectionBatchBuilder, ProjectionController, ProjectionCoreError, ProjectionCoreErrorKind,
+    ProjectionEvaluationError, ProjectionInitializationResult, ProjectionNotifier,
+    ProjectionRecoveryError, ProjectionRecoveryOutcome, ProjectionSchemaRegistry,
+    evaluate_projection_commit, validate_and_recover_projection_generation,
 };
 use riffdb_storage_api::{
     AuthoritativeScanReader, CatalogRepository, CheckedProjectionSchema, CommitScanPageV1,
-    CommitScanRequest, ProjectionApplyResult, ProjectionControlResult, ProjectionFailureCodeV1,
-    ProjectionGenerationPosition, ProjectionLifecycleV1, ProjectionQueryReader,
+    CommitScanRequest, ProjectionApplyBatchResult, ProjectionApplySnapshotReader,
+    ProjectionControlResult, ProjectionFailureCodeV1, ProjectionGenerationPosition,
+    ProjectionLifecycleV1, ProjectionMutationRepository, ProjectionQueryReader,
     ProjectionRecoveryPageLimit, StorageError, StorageScanLimit, StoredProjectionControlV1,
 };
 use riffdb_storage_redb::RedbMigrationProjectionPorts;
@@ -37,7 +38,9 @@ use riffdb_types::{CommitSequence, FrontierPosition, ProjectionGeneration, Proje
 use crate::storage::SharedRedbOperationalPorts;
 
 const WORKER_POLL_INTERVAL: Duration = Duration::from_millis(25);
-const COMMIT_SCAN_ROWS: u16 = 500;
+// Seven complete 64-member batches fit beneath the storage scan's 500-row cap.
+// Avoid a partial batch at every source-page boundary during fitting catch-up.
+const COMMIT_SCAN_ROWS: u16 = 448;
 const RECOVERY_PAGE_ROWS: u16 = 500;
 const MAX_CONTROL_TRANSITIONS_PER_PASS: usize = 32;
 
@@ -613,31 +616,53 @@ fn apply_migration_generation(
         if page.inclusive_upper() != expected_head || page.inclusive_upper() < frontier {
             return Err(MigrationProjectionError::EvidenceMismatch);
         }
-        for charged in page.records() {
-            let commit = charged.value();
-            if FrontierPosition::AppliedThrough(commit.commit_sequence()) <= frontier {
-                continue;
-            }
-            if !is_exact_successor(frontier, commit.commit_sequence()) {
-                return Err(MigrationProjectionError::EvidenceMismatch);
-            }
-            let request = evaluate_and_prepare_projection_commit(
-                resolved,
-                schema.clone(),
-                generation,
-                commit,
-                controller.repository(),
-            )
-            .map_err(|_| MigrationProjectionError::BuildFailed)?;
-            match controller
-                .apply(&request)
-                .map_err(|_| MigrationProjectionError::BuildFailed)?
+        let mut position = 0usize;
+        while position < page.records().len() {
+            let base = controller
+                .repository()
+                .capture_apply_batch_snapshot(schema.identity())
+                .map_err(|_| MigrationProjectionError::BuildFailed)?;
+            if base.control().frontier_for(generation) != Some(frontier)
+                || !base.control().permits_application(generation)
             {
-                ProjectionApplyResult::Applied { .. }
-                | ProjectionApplyResult::AlreadyApplied(_) => {
-                    frontier = FrontierPosition::AppliedThrough(commit.commit_sequence());
+                return Ok(ApplyProgress::StateChanged);
+            }
+            let mut batch = ProjectionBatchBuilder::new(base, schema.clone(), generation)
+                .map_err(|_| MigrationProjectionError::BuildFailed)?;
+            while position < page.records().len() && !batch.is_full() {
+                let commit = page.records()[position].value();
+                if FrontierPosition::AppliedThrough(commit.commit_sequence()) <= frontier {
+                    position += 1;
+                    continue;
                 }
-                ProjectionApplyResult::StateChanged => return Ok(ApplyProgress::StateChanged),
+                let pushed = if is_exact_successor(batch.frontier(), commit.commit_sequence()) {
+                    evaluate_projection_commit(resolved, schema.clone(), generation, commit)
+                        .and_then(|evaluated| batch.try_push(&evaluated))
+                        .map_err(|_| MigrationProjectionError::BuildFailed)
+                } else {
+                    Err(MigrationProjectionError::EvidenceMismatch)
+                };
+                match pushed {
+                    Ok(true) => position += 1,
+                    Ok(false) => break,
+                    Err(error) => {
+                        // Retain the previously valid prefix just as the single-
+                        // member path did, without changing migration failure policy.
+                        if !batch.is_empty()
+                            && !flush_projection_batch(controller, batch, &mut frontier)
+                                .map_err(|_| MigrationProjectionError::BuildFailed)?
+                        {
+                            return Ok(ApplyProgress::StateChanged);
+                        }
+                        return Err(error);
+                    }
+                }
+            }
+            if !batch.is_empty()
+                && !flush_projection_batch(controller, batch, &mut frontier)
+                    .map_err(|_| MigrationProjectionError::BuildFailed)?
+            {
+                return Ok(ApplyProgress::StateChanged);
             }
         }
         match page {
@@ -699,47 +724,63 @@ fn apply_generation(
         if inclusive_upper < frontier {
             return Err(ProjectionWorkerError::Integrity);
         }
-        for charged in page.records() {
-            let commit = charged.value();
-            if FrontierPosition::AppliedThrough(commit.commit_sequence()) <= frontier {
-                continue;
+        let mut position = 0usize;
+        while position < page.records().len() {
+            let base = controller
+                .repository()
+                .capture_apply_batch_snapshot(schema.identity())
+                .map_err(ProjectionWorkerError::Storage)?;
+            if base.control().frontier_for(generation) != Some(frontier)
+                || !base.control().permits_application(generation)
+            {
+                return Ok(ApplyProgress::StateChanged);
             }
-            if !is_exact_successor(frontier, commit.commit_sequence()) {
-                return record_generation_failure(
-                    controller,
-                    schema.identity(),
-                    generation,
-                    ProjectionFailureCodeV1::MissingCommit,
-                    commit.commit_sequence(),
-                );
-            }
-            let request = match evaluate_and_prepare_projection_commit(
-                resolved,
-                schema.clone(),
-                generation,
-                commit,
-                controller.repository(),
-            ) {
-                Ok(request) => request,
-                Err(error) => {
-                    return handle_evaluation_failure(
+            let mut batch = ProjectionBatchBuilder::new(base, schema.clone(), generation)
+                .map_err(|_| ProjectionWorkerError::Integrity)?;
+            while position < page.records().len() && !batch.is_full() {
+                let commit = page.records()[position].value();
+                if FrontierPosition::AppliedThrough(commit.commit_sequence()) <= frontier {
+                    position += 1;
+                    continue;
+                }
+                if !is_exact_successor(batch.frontier(), commit.commit_sequence()) {
+                    if !batch.is_empty()
+                        && !flush_projection_batch(controller, batch, &mut frontier)?
+                    {
+                        return Ok(ApplyProgress::StateChanged);
+                    }
+                    return record_generation_failure(
                         controller,
                         schema.identity(),
                         generation,
+                        ProjectionFailureCodeV1::MissingCommit,
                         commit.commit_sequence(),
-                        error,
                     );
                 }
-            };
-            match controller
-                .apply(&request)
-                .map_err(ProjectionWorkerError::Projection)?
-            {
-                ProjectionApplyResult::Applied { .. }
-                | ProjectionApplyResult::AlreadyApplied(_) => {
-                    frontier = FrontierPosition::AppliedThrough(commit.commit_sequence());
+                let evaluated =
+                    evaluate_projection_commit(resolved, schema.clone(), generation, commit);
+                let pushed = evaluated.and_then(|evaluated| batch.try_push(&evaluated));
+                match pushed {
+                    Ok(true) => position += 1,
+                    Ok(false) => break,
+                    Err(error) => {
+                        if !batch.is_empty()
+                            && !flush_projection_batch(controller, batch, &mut frontier)?
+                        {
+                            return Ok(ApplyProgress::StateChanged);
+                        }
+                        return handle_evaluation_failure(
+                            controller,
+                            schema.identity(),
+                            generation,
+                            commit.commit_sequence(),
+                            error,
+                        );
+                    }
                 }
-                ProjectionApplyResult::StateChanged => return Ok(ApplyProgress::StateChanged),
+            }
+            if !batch.is_empty() && !flush_projection_batch(controller, batch, &mut frontier)? {
+                return Ok(ApplyProgress::StateChanged);
             }
         }
         match page {
@@ -764,6 +805,27 @@ fn apply_generation(
                 };
             }
         }
+    }
+}
+
+fn flush_projection_batch<R: ProjectionMutationRepository + ProjectionQueryReader>(
+    controller: &mut ProjectionController<R>,
+    batch: ProjectionBatchBuilder,
+    frontier: &mut FrontierPosition,
+) -> Result<bool, ProjectionWorkerError> {
+    let next = batch.frontier();
+    let request = batch
+        .finish()
+        .map_err(|_| ProjectionWorkerError::Integrity)?;
+    match controller
+        .apply_batch(&request)
+        .map_err(ProjectionWorkerError::Projection)?
+    {
+        ProjectionApplyBatchResult::Applied(_) | ProjectionApplyBatchResult::AlreadyApplied => {
+            *frontier = next;
+            Ok(true)
+        }
+        ProjectionApplyBatchResult::StateChanged => Ok(false),
     }
 }
 

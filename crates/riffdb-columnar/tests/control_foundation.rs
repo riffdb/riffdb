@@ -181,7 +181,7 @@ fn columnar_hash_domain_and_definition_semantics_are_collision_closed() {
         ))
         .expect("32-byte golden")
     );
-    assert_eq!(HashDomain::ALL.len(), 52);
+    assert_eq!(HashDomain::ALL.len(), 53);
     assert_eq!(
         HashDomain::ColumnarProjectionSpec.label(),
         "riffdb.columnar-projection-spec/v1"

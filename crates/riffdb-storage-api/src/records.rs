@@ -359,6 +359,12 @@ impl StoredIndexEntryV2 {
         &self.covered_values
     }
 
+    /// Consumes the checked entry and moves out its canonical covered values.
+    #[must_use]
+    pub fn into_covered_values(self) -> CanonicalRecord {
+        self.covered_values
+    }
+
     /// Returns the checked canonical encoding length retained at construction.
     #[must_use]
     pub fn covered_values_encoded_len(&self) -> usize {

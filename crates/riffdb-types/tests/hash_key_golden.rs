@@ -88,6 +88,10 @@ fn hash_v1_domain_vectors_are_stable() {
             HashDomain::CommandBatch,
             "fb5295452b8b2a703ce46f092939b2d25fd2b57399dc3ef46353d660a9d34bfb",
         ),
+        (
+            HashDomain::ApplicationExportLedger,
+            "c815451e2604cd3361c3c1d528d49d866b692f26b684aa4a3262220c834da6de",
+        ),
     ];
 
     for (domain, expected) in vectors {

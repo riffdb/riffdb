@@ -209,7 +209,51 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         point,
         Some(point),
     )?)?;
+    // ADR-0232: complete canonical member/head vectors, in addition to the
+    // generated schema identities and bounds. Legacy export records are frozen.
+    use riffdb_storage_api::{
+        ApplicationExportLedgerPrefixV1, ApplicationExportPageCommitmentV1,
+        ApplicationExportPageOrdinalV1, StoredApplicationExportOperationV2,
+        encode_application_export_operation_v2, encode_application_export_page_commitment_v1,
+    };
+    use riffdb_types::{
+        ApplicationExportClassV1, ApplicationExportOperationId, ApplicationExportPageHash,
+        ContractLineage,
+    };
+    let export_id = ApplicationExportOperationId::from_unix_milliseconds_and_random(
+        1_700_000_000_000,
+        [0x91; 10],
+    )?;
+    let export_binding = b"frozen-export-snapshot-authority-binding".to_vec();
+    let export_genesis = ApplicationExportLedgerPrefixV1::genesis(export_id, &export_binding)?;
+    let export_page = ApplicationExportPageCommitmentV1::new(
+        export_id,
+        ApplicationExportPageOrdinalV1::new(1)?,
+        ApplicationExportClassV1::Entity,
+        ApplicationExportPageHash::from_bytes([0x92; 32]),
+        2,
+        64,
+    )?;
+    let export_member = encode_application_export_page_commitment_v1(&export_page)?;
+    let export_prefix = export_genesis.advance(
+        &export_page,
+        export_page.canonical_key().len() + export_member.as_bytes().len(),
+    )?;
+    let export_head =
+        encode_application_export_operation_v2(&StoredApplicationExportOperationV2::new(
+            export_id,
+            ContractLineage::new("ExportLedger")?,
+            export_binding,
+            b"{\"phase\":\"exporting\"}".to_vec(),
+            export_prefix,
+        )?)?;
     for (name, bytes) in [
+        ("export-operation-v2.hex", export_head.as_bytes()),
+        ("export-page-commitment-v1.hex", export_member.as_bytes()),
+        (
+            "export-page-commitment-key-v1.hex",
+            export_page.canonical_key().as_slice(),
+        ),
         ("changelog-frame-v1.hex", v1.as_bytes()),
         (
             "replication-source-hold-v1-follower.hex",

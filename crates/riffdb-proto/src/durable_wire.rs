@@ -962,6 +962,16 @@ shape!(ROOT_APPLICATION_EXPORT_OPERATION [
     string(2, MAX_TEXT_ID_BYTES),
     nonempty_bytes(3, 256 * 1024),
 ]);
+shape!(ROOT_APPLICATION_EXPORT_OPERATION_V2 [
+    fixed_bytes(1, 16),
+    string(2, MAX_TEXT_ID_BYTES),
+    nonempty_bytes(3, 256 * 1024),
+    nonempty_bytes(4, 256 * 1024),
+    fixed_bytes(5, 163),
+]);
+shape!(ROOT_APPLICATION_EXPORT_PAGE_COMMITMENT [
+    fixed_bytes(1, 72),
+]);
 shape!(VECTOR_EMBEDDING_WRITE [
     string(2, MAX_TEXT_ID_BYTES),
     string(3, MAX_TEXT_ID_BYTES),
@@ -1061,7 +1071,7 @@ shape!(REPLICATION_SOURCE_HOLD_V2 [
     message(6, &CHANGELOG_POSITION_V3),
 ]);
 
-const ROOTS: [&Shape; 102] = [
+const ROOTS: [&Shape; 104] = [
     &ROOT_EMPTY,
     &ROOT_DATABASE_ID,
     &ROOT_OPTIONAL_UNIT_FIELD_TWO,
@@ -1175,6 +1185,8 @@ const ROOTS: [&Shape; 102] = [
     &COMMAND_CAPSULE_V7,
     &COMMAND_SEGMENT_V6,
     &REPLICATION_SOURCE_HOLD_V2,
+    &ROOT_APPLICATION_EXPORT_OPERATION_V2,
+    &ROOT_APPLICATION_EXPORT_PAGE_COMMITMENT,
 ];
 
 pub(crate) fn payload(record_index: usize, input: &[u8]) -> Result<(), DurablePreflightError> {

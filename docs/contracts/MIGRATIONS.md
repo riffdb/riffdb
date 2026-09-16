@@ -33,6 +33,15 @@ rechecks the exact target, entity version, schema binding, canonical bytes, and
 canonical row hash. Required projection generations are tied to the frozen
 application frontier before final cutover.
 
+Final validation still scans every row and validates the private stage and its
+immutable history. Under ADR-0228, redb checks newly added unique constraints
+with at most two entries per complete canonical unique prefix. Every row must
+have exactly its independently derived owner, schema, partition and covered
+values in the rebuilt index. Missing entries cannot hide duplicates. The
+observation borrows the exclusive frozen stage and cannot survive a mutation
+or restart; adapters without this observation retain independent full scans.
+Preflight and cutover atomicity are unchanged.
+
 Gate-A required-field transforms advance each changed entity version exactly
 once and bind that post-image to the successor. Index-only and validation-only
 work does not advance entity versions. Migration never assigns an application

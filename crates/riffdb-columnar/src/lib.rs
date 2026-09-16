@@ -61,6 +61,7 @@
 mod apply;
 // WP-712 mechanics remain inert until ADR-0161's differential and performance
 // gates select them from the production query path.
+mod ann_cache;
 #[allow(dead_code)]
 mod batch;
 mod checkpoint;
@@ -70,6 +71,7 @@ mod error;
 mod generation_root;
 mod generation_v2;
 mod hnsw;
+pub use ann_cache::NearestGraphCache;
 mod hooks;
 mod identity;
 mod manifest_v2;
@@ -120,8 +122,8 @@ pub use query::{
     GroupBySpec, NearestCandidate, NearestCandidateAdmission, NearestQueryAdmissionError,
     NearestQueryRequest, NearestQueryResult, NearestResultRow, NearestSearchKind, OrderSpec,
     QueryBudget, QueryError, QueryResult, QueryRow, QueryRows, SortDirection,
-    nearest_query_snapshot, nearest_query_snapshot_with_admission, query_snapshot,
-    query_snapshot_with_policy_admission,
+    nearest_query_snapshot, nearest_query_snapshot_with_admission,
+    nearest_query_snapshot_with_cache, query_snapshot, query_snapshot_with_policy_admission,
 };
 pub use riffdb_types::ColumnarProjectionSourceV1;
 pub use segment_v2::{
@@ -142,3 +144,6 @@ pub use streaming_v2::{
 
 #[doc(hidden)]
 pub use hooks::{ColumnarTestBoundary, ColumnarTestController};
+
+#[cfg(test)]
+mod ann_cache_query_tests;

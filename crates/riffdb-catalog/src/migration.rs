@@ -1057,6 +1057,13 @@ impl ValidatedMigrationPlan {
                 MigrationStageError::Integrity,
             ));
         }
+        let unique_validation = stage
+            .migration_unique_validation(riffdb_storage_api::ContractMigrationArtifactsV1::new(
+                self.parent_bundle_hash(),
+                self.candidate_bundle_hash(),
+                self.migration_bundle_hash(),
+            ))
+            .map_err(MigrationFinding::from_stage_error)?;
         let mut cursor = MigrationScanCursor::start();
         let mut checked_rows = 0_u64;
         loop {
@@ -1088,7 +1095,24 @@ impl ValidatedMigrationPlan {
                     }
                 }
                 for unique in prepared.unique_keys() {
-                    self.validate_successor_unique(stage, unique)?;
+                    if let Some(reader) = unique_validation.as_ref() {
+                        let expected = prepared
+                            .rebuilt_indexes()
+                            .iter()
+                            .find(|entry| entry.key().index_id() == unique.index())
+                            .ok_or_else(artifact_mismatch)?;
+                        let prefix =
+                            riffdb_storage_api::StructurallyDecodedIndexRangePrefixV1::new(
+                                unique.index(),
+                                unique.prefix().to_vec(),
+                            )
+                            .map_err(|_| artifact_mismatch())?;
+                        reader
+                            .validate_unique_owner(unique.entity_type(), &prefix, expected)
+                            .map_err(MigrationFinding::from_stage_error)?;
+                    } else {
+                        self.validate_successor_unique(stage, unique)?;
+                    }
                 }
                 checked_rows = checked_rows.checked_add(1).ok_or_else(|| {
                     MigrationFinding::from_stage_error(MigrationStageError::LimitExceeded)
@@ -1155,10 +1179,16 @@ impl ValidatedMigrationPlan {
         validate_all_invariants(entity, row.fields())?;
         let relationships = derive_relationships(self, entity_id, row.target(), row.fields())?;
         let unique_keys = derive_unique(self, entity, row.target(), row.fields())?;
+        let rebuilt_indexes = if unique_keys.is_empty() {
+            Vec::new()
+        } else {
+            let partition = derive_partition(self, entity_id, row.fields())?;
+            derive_indexes(self, entity, row.target(), row.fields(), &partition, true)?
+        };
         Ok(PreparedMigrationRow {
             source: row.clone(),
             post_image: None,
-            rebuilt_indexes: Vec::new(),
+            rebuilt_indexes,
             relationships,
             unique_keys,
             retired: false,

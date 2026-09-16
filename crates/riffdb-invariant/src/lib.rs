@@ -181,7 +181,7 @@ impl<'arena> ExpressionEvaluator<'arena> {
         let (kind, result_type) = self
             .arena
             .get(expression)
-            .map(|node| (node.kind().clone(), node.result_type().clone()))
+            .map(|node| (node.kind(), node.result_type()))
             .ok_or(EvaluationError::Integrity)?;
         let result = self.evaluate_kind(kind, values).and_then(|value| {
             result_type
@@ -200,38 +200,40 @@ impl<'arena> ExpressionEvaluator<'arena> {
 
     fn evaluate_kind(
         &mut self,
-        kind: ExpressionKind,
+        kind: &ExpressionKind,
         values: &(impl ExpressionValueSource + ?Sized),
     ) -> Result<Rc<CanonicalValue>, EvaluationError> {
         let value = match kind {
-            ExpressionKind::Constant(value) => Some(value),
-            ExpressionKind::InputField(field) => values.input_field(field),
-            ExpressionKind::ServiceValue(field) => values.service_value(field),
+            ExpressionKind::Constant(value) => Some(value.clone()),
+            ExpressionKind::InputField(field) => values.input_field(*field),
+            ExpressionKind::ServiceValue(field) => values.service_value(*field),
             ExpressionKind::CollectionElement => values.collection_element(),
-            ExpressionKind::CollectionElementField(field) => values.collection_element_field(field),
-            ExpressionKind::CompleteBinding(binding) => values.complete_binding(binding),
-            ExpressionKind::BoundField { binding, field } => values.bound_field(binding, field),
+            ExpressionKind::CollectionElementField(field) => {
+                values.collection_element_field(*field)
+            }
+            ExpressionKind::CompleteBinding(binding) => values.complete_binding(*binding),
+            ExpressionKind::BoundField { binding, field } => values.bound_field(*binding, *field),
             ExpressionKind::SchemaField { entity_type, field } => {
-                values.schema_field(entity_type, field)
+                values.schema_field(*entity_type, *field)
             }
             ExpressionKind::RootValidationField { read, field } => {
-                values.root_validation_field(read, field)
+                values.root_validation_field(*read, *field)
             }
-            ExpressionKind::SourceEventField(field) => values.source_event_field(field),
+            ExpressionKind::SourceEventField(field) => values.source_event_field(*field),
             ExpressionKind::TransactionTime => values
                 .transaction_time()
                 .map(LogicalTime::timestamp)
                 .map(CanonicalValue::Timestamp),
             ExpressionKind::TransactionDate => values.transaction_date().map(CanonicalValue::Date),
             ExpressionKind::Unary { operator, operand } => Some(evaluate_unary(
-                operator,
-                self.evaluate_shared(operand, values)?.as_ref(),
+                *operator,
+                self.evaluate_shared(*operand, values)?.as_ref(),
             )?),
             ExpressionKind::Binary {
                 operator,
                 left,
                 right,
-            } => Some(self.evaluate_binary(operator, left, right, values)?),
+            } => Some(self.evaluate_binary(*operator, *left, *right, values)?),
         };
         value.map(Rc::new).ok_or(EvaluationError::Integrity)
     }

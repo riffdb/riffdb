@@ -298,7 +298,7 @@ fn complete_history_and_follower_envelope_vectors_are_frozen() {
             )
             .unwrap(),
             include_str!("../../../fixtures/replication/changelog-history-state-v3.hex"),
-            "48ad6143ffec76c0457fa8f5ae2a0ce4cbc911a80027feca315a0ba06657e931",
+            "00d43ac2c12f1d6a7d204ebf9f5b3498496f3e2ee55d965826e52f7c95f110c2",
         ),
         (
             encode_replication_follower_state_v3(Follower::detached()).unwrap(),
@@ -315,7 +315,7 @@ fn complete_history_and_follower_envelope_vectors_are_frozen() {
             include_str!(
                 "../../../fixtures/replication/replication-follower-state-v3-attached.hex"
             ),
-            "94031698d3e54e7863ea3a68aee238fb72a7a07f12191577151c22ea83c85e1f",
+            "03f44f7f8b372bd3dc49db3debf20d0d5368d2a699b3f517e8782a5bf3c3e980",
         ),
     ] {
         let hex = encoded

@@ -223,6 +223,11 @@ fn render_fixture_inventory(
         Sha256::digest(fs::read(root.join(RETIRE_RECEIPT_V2_FIXTURE_PATH))?).into(),
     ));
     for path in [
+        "fixtures/replication/export-operation-v2.hex",
+        "fixtures/replication/export-page-commitment-v1.hex",
+        "fixtures/replication/export-page-commitment-key-v1.hex",
+        "fixtures/replication/authoritative-state-catalog-v1.hex",
+        "fixtures/replication/authoritative-state-catalog-v1.txt",
         "fixtures/compatibility/offline-maintenance-archive-accepted-receipt-v3.hex",
         "fixtures/compatibility/offline-maintenance-archive-selected-receipt-v3.hex",
     ] {
