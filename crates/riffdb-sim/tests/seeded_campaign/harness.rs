@@ -1,3 +1,4 @@
+// req: SIM-003, SIM-004, SIM-006
 //! Shared store harness for the seeded campaign: the fixture contract family,
 //! plan-driven fixture construction, and fallible bring-up/commit primitives.
 //!
@@ -69,7 +70,8 @@ contract StorageRecovery version 1 {
     key (id: u64)
     field value: u64
     field note: string<512>
-    index ByValue(value)
+    field payload: u64
+    index ByValue(value) cover (note, payload)
   }
 
   event RowCreated {
@@ -94,8 +96,9 @@ contract StorageRecovery version 1 {
     create Row(id) as row
       else RowAlreadyExists { id: id }
 
-    set row.value = value
+    set row.value = 10
     set row.note = note
+    set row.payload = value
 
     emit RowCreated { id: id, value: value }
     return RowCreatedOutcome { row: row }
@@ -202,6 +205,44 @@ fn record(value: u64, note_len: u64) -> CanonicalRecord {
         ));
     }
     CanonicalRecord::new(fields).expect("canonical record")
+}
+
+// Every entity field is present, including an empty required note. The index
+// key stays at 10 so updates preserve the existing same-key supersession shape;
+// its declared cover still carries the generated value-size distribution.
+fn entity_record(target: u64, value: u64, note_len: u64) -> CanonicalRecord {
+    let mut fields = vec![
+        (
+            FieldId::new(1).expect("id field"),
+            CanonicalValue::U64(6 + target),
+        ),
+        (
+            FieldId::new(3).expect("value field"),
+            CanonicalValue::U64(10),
+        ),
+    ];
+    fields.extend(index_cover(value, note_len).fields().iter().cloned());
+    CanonicalRecord::new(fields).expect("complete entity record")
+}
+
+fn index_cover(value: u64, note_len: u64) -> CanonicalRecord {
+    let length = usize::try_from(note_len).expect("bounded note length");
+    let mut note = String::with_capacity(length);
+    for index in 0..length {
+        let offset = u8::try_from(value.wrapping_add(index as u64) % 26).expect("bounded letter");
+        note.push(char::from(b'a' + offset));
+    }
+    CanonicalRecord::new(vec![
+        (
+            FieldId::new(2).expect("note field"),
+            CanonicalValue::string(note).expect("bounded note string"),
+        ),
+        (
+            FieldId::new(4).expect("payload field"),
+            CanonicalValue::U64(value),
+        ),
+    ])
+    .expect("declared index cover")
 }
 
 fn catalog_principal() -> AuditPrincipalV1 {
@@ -383,7 +424,7 @@ fn build_command_fixture(
     let post_image = EntityPostImage::new(
         target.clone(),
         plan.contract_version(),
-        record(payload, planned.note_len),
+        entity_record(planned.target, payload, planned.note_len),
     )
     .expect("entity post-image");
     let event_intent = EventIntent::new(
@@ -444,7 +485,7 @@ fn build_command_fixture(
             }),
         plan.contract_version(),
         DurableKeySchemaBindingV1::from_plan(&plan),
-        record(payload, planned.note_len),
+        entity_record(planned.target, payload, planned.note_len),
     )
     .expect("stored entity");
     let mutation = riffdb_storage_api::CommittedEntityMutationV1::new(
@@ -459,7 +500,7 @@ fn build_command_fixture(
     let index_record = StoredIndexEntryV2::new(
         index_key,
         DurableKeySchemaBindingV1::from_plan(&plan),
-        record(payload, planned.note_len),
+        index_cover(payload, planned.note_len),
         pending.partition_key().clone(),
     )
     .expect("stored index entry");
