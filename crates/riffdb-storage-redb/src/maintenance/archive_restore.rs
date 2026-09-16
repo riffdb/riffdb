@@ -4,7 +4,8 @@
 mod prefix;
 #[path = "archive_publication.rs"]
 mod publication;
-pub use prefix::RedbPrivateArchiveRestoreCandidate;
+pub(crate) use prefix::PrivateArchiveValidationBinding;
+pub use prefix::{RedbPrivateArchiveRestoreCandidate, RedbValidatedPrivateArchiveRestore};
 pub use publication::RedbSealedArchiveRestore;
 
 use super::*;

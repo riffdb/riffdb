@@ -18,11 +18,15 @@ pub use follower::{
     RedbFollowerStore,
 };
 
-#[derive(Clone, Copy, Eq, PartialEq)]
+#[derive(Clone, Eq, PartialEq)]
 enum OpenMode {
     Source,
     Follower,
+    PrivateRestore(Arc<crate::maintenance::PrivateArchiveValidationBinding>),
 }
+
+#[path = "store_private_restore.rs"]
+mod private_restore;
 
 #[path = "store_graceful_close.rs"]
 mod graceful_close;
@@ -2222,6 +2226,9 @@ impl RedbStore {
         // Source-mode construction cannot reinterpret attached follower state
         // as a writable primary. Refuse before locator installation, journal
         // recovery, or preparation workers. Promotion owns detachment.
+        if let OpenMode::PrivateRestore(binding) = &open_mode {
+            binding.validate(&database.begin_read().map_err(transaction_error)?)?;
+        }
         let attached = crate::follower_lifecycle::is_attached(
             &database.begin_read().map_err(transaction_error)?,
         )?;
@@ -2238,14 +2245,14 @@ impl RedbStore {
             .map_err(|_| storage_error(StorageErrorKind::Unavailable))?;
         let store = Self {
             shared: Arc::new(SharedRedb {
-                open_mode,
+                open_mode: open_mode.clone(),
                 follower_namespace: Mutex::new(None),
                 database,
                 path: path.to_path_buf(),
                 journal_media,
                 application_commit_profile,
                 mutation_gate: ExclusiveGate::default(),
-                write_fenced: AtomicBool::new(false),
+                write_fenced: AtomicBool::new(matches!(open_mode, OpenMode::PrivateRestore(_))),
                 engine_repaired_at_open: repair_observed.load(Ordering::Acquire),
                 engine_initialized_at_open: initialize_marker_witness.is_some(),
                 bounded_clean_startup: AtomicBool::new(false),
@@ -3007,7 +3014,7 @@ impl RedbStore {
     }
 
     pub(crate) fn ensure_writable(&self) -> Result<(), StorageError> {
-        if self.shared.is_follower_mode() {
+        if self.shared.open_mode != OpenMode::Source {
             return Err(storage_error(StorageErrorKind::InvariantViolation));
         }
         if self.shared.write_fenced.load(Ordering::Acquire) {

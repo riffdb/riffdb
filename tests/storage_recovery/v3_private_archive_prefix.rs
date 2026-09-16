@@ -17,6 +17,14 @@ fn private_archive_reconstruction_restores_hardened_group_without_source_identit
 }
 
 fn check_private_archive(profile: RedbCommitProfile, root: Option<PathBuf>) {
+    check_private_archive_case(profile, root, None);
+}
+
+fn check_private_archive_case(
+    profile: RedbCommitProfile,
+    root: Option<PathBuf>,
+    fault: Option<&str>,
+) {
     let scope = root.map_or_else(|| ScratchScope::new("private-archive-prefix"), ScratchScope);
     let path = scope.path().join("source.redb");
     let anchor = install_fixture(&path);
@@ -114,6 +122,9 @@ fn check_private_archive(profile: RedbCommitProfile, root: Option<PathBuf>) {
         (7, false),
         (2, true),
     ] {
+        if fault.is_some() && (stop != 2 || cancel) {
+            continue;
+        }
         let repository = RedbVerifiedArchiveBackup::open(&backup)
             .unwrap()
             .open_archive(&archive, ArchiveEncryptionPostureV1::Unencrypted)
@@ -154,6 +165,61 @@ fn check_private_archive(profile: RedbCommitProfile, root: Option<PathBuf>) {
             continue;
         }
         let candidate = result.unwrap();
+        let before_validation = validation_refusals::rows(&candidate_path);
+        if matches!(
+            fault,
+            Some("changed-frontier" | "missing-locator" | "restore-marker")
+        ) {
+            validation_refusals::tamper(&candidate_path, fault.unwrap());
+        }
+        let result = candidate.validate(
+            prefix_predecessors::inputs(),
+            Arc::new(AtomicBool::new(fault == Some("cancel-validation"))),
+        );
+        if matches!(
+            fault,
+            Some("changed-frontier" | "missing-locator" | "restore-marker" | "cancel-validation")
+        ) {
+            assert_eq!(
+                result.err().unwrap().kind(),
+                if fault == Some("cancel-validation") {
+                    StorageErrorKind::Unavailable
+                } else {
+                    StorageErrorKind::CorruptData
+                }
+            );
+            assert!(!candidate_path.exists());
+            assert!(!target.exists());
+            continue;
+        }
+        let candidate = result.unwrap();
+        assert_eq!(
+            validation_refusals::rows(&candidate_path),
+            before_validation
+        );
+        if fault == Some("changed-after-validation") {
+            validation_refusals::tamper(&candidate_path, "missing-locator");
+            assert_eq!(
+                candidate.authorization_snapshot().err().unwrap().kind(),
+                StorageErrorKind::CorruptData
+            );
+            candidate.discard().unwrap();
+            assert!(!candidate_path.exists());
+            assert!(!target.exists());
+            continue;
+        }
+        let snapshot = candidate.authorization_snapshot().unwrap();
+        assert_eq!(
+            snapshot.read_entity(&commands[0].target).unwrap(),
+            commands[stop as usize - 2].records.entities()[0]
+                .live_post_image()
+                .cloned()
+        );
+        assert_eq!(
+            snapshot.application_frontier().unwrap(),
+            CommitSequence::new(stop)
+        );
+        drop(snapshot);
         assert_eq!(candidate.selection(), &selection);
         assert_eq!(
             candidate.restored_frontier().application(),
@@ -270,3 +336,6 @@ fn check_private_archive(profile: RedbCommitProfile, root: Option<PathBuf>) {
 #[cfg(feature = "test-fixtures")]
 #[path = "v3_private_archive_crash.rs"]
 mod crash;
+
+#[path = "v3_private_archive_validation.rs"]
+mod validation_refusals;
