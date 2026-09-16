@@ -202,7 +202,11 @@ commands retain ADR-0165's allowance for missing physical locators; every presen
 locator must agree, and V7 commands require all reciprocal rows. Private
 validation cannot release serving, migration or source-write ports. Its validated
 result can provide one checksum-bound immutable snapshot for staged authentication
-and current policy. Staged authorization and publication integration, full crash
+and current policy. Once all readers close, the candidate can now be sealed and
+published by a matching durable Offline V3 receipt. Its recorded new incarnation
+owns a fresh RestoreAnchor at the actual stopped frontier, followed by journal
+creation, normal marker restoration, complete source validation and the existing
+replacement ceremony. Archive driver authorization integration, full crash
 coverage and write-path measurements remain required. This is not an exposed exact-stop restore command.
 
 - A real same-entity group with multiple puts, delete, and recreate restores to
@@ -275,8 +279,9 @@ now distinguishes private construction from completed restore support.
 
 The follow-on private validation path now runs the complete structural/catalog
 scan and reciprocal graph inventory, and provides an immutable authorization
-snapshot. Staged authorization, receipt-authorized incarnation and publication
-integration remain required before this artifact can be published. The original predecessor roots
+snapshot. The publication increment below adds receipt-authorized incarnation
+and storage publication; archive driver authorization and dispatch remain open.
+The original predecessor roots
 remain private reconstruction evidence; they do not describe the cut's actual
 frontier and cannot be used for ordinary startup or replication. The marker
 quarantine is a private staging convention, not a new durable identity or a
@@ -313,6 +318,56 @@ architecture tests, including authority-row equality and the added marker case.
 Final scope, formatting, clippy, handbook, file-size and panic gates passed.
 The initial large-enum lint was fixed by sharing the private binding through an
 `Arc`; source/follower handles do not carry the large binding inline.
-Remaining work: consume this validated candidate through staged authorization,
-reader closure, receipt-authorized incarnation and RestoreAnchor publication;
-then finish the archive driver and public RPC/client/CLI integration.
+The publication increment below now consumes this validated candidate after
+reader closure through receipt-authorized incarnation and RestoreAnchor publication.
+Archive driver staged authorization and public RPC/client/CLI integration remain open.
+
+
+## Private publication increment
+
+Package: WP-749. Tier: guarantee, under the accepted exact-stop amendment.
+
+Behavior: a validated private candidate now seals after staged authorization
+readers close. The shared archive publication owner requires the exact durable
+Offline V3 receipt, original selection, stop, database, actual frontier, seal
+checksum and a strictly newer recorded incarnation. A typed private binding is
+rechecked inside the incarnation transaction before a fresh RestoreAnchor is
+created at the cut's actual frontier. The original predecessor is only a
+comparison input; no partial old-source identity is fabricated. The transaction
+retains the existing watermark rebinding and detached follower semantics.
+
+After stamping, the owner creates the source journal, restores the normal format
+marker, runs the complete ordinary source scrub, verifies strict retained roots,
+and invokes the unchanged target replacement and directory-sync ceremony.
+Ordinary backup stamping retains its original strict root checks. The original
+backup manifest and archived selection remain separate from the actual frontier.
+
+Compatibility: no new durable encoding, migration, source receipt reinterpretation
+or exposed restore command. Handbook pages updated: backup/restore and
+compatibility. Decisions: share the existing sealed publication owner; keep the
+private predecessor/frontier binding internal and reconstruction-owned; restore
+the normal marker only inside receipt-authorized publication.
+
+Hazards and follow-ups: archive driver authorization, recovery dispatch and the
+RPC/client/CLI remain unfinished, as do the full qualification matrix and
+same-workload write-path measurements. These storage tests do not claim the public
+archive restore command is available.
+
+
+Checks: the initial scoped run exercised 1,242 tests: 1,240 passed, the
+bootstrap crash test hit its 120-second limit, and the architecture guard still
+named the pre-extraction incarnation function. Its single offline exception now
+names the shared helper and documents both exclusive-engine callers; the guard's
+scope is unchanged. The final focused run passed all 76 private restore and
+architecture tests, including both storage profiles, missing receipt, retained
+authorization reader, and process exits after incarnation stamping, journal
+creation and normal-marker restoration. Crash recovery rebuilds twice from the
+saved original selection before publishing the exact stop. Tests also distinguish
+the original backup and terminal archive frontier from the restored frontier and
+new zero-predecessor RestoreAnchor. Final scope, formatting, clippy, handbook,
+file-size and panic checks all passed. The bootstrap test also timed out alone
+under the same 120-second limit; that CI timing failure remains separately reported.
+
+A separate standalone diagnostic with a 240-second outer bound passed in
+117.87 seconds. It confirms the test completes; it does not change the
+reported 120-second CI timeout or its configured limit.

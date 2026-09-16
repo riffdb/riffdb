@@ -7,7 +7,12 @@ use riffdb_types::{ArchiveRestoreStopV1, DualFrontier};
 /// staged authentication/authorization and close its readers before sealing.
 /// Only the maintenance owner may use a matching durable V3 receipt to publish.
 pub struct RedbSealedArchiveRestore {
-    replayed: RedbReplayedArchiveRestore,
+    stage: RedbStagedRestore,
+    file: File,
+    selection: ArchiveRestoreSelectionV3,
+    lineage: riffdb_storage_api::ChangelogLineageV3,
+    frontier: DualFrontier,
+    private: Option<PrivateArchiveValidationBinding>,
     stop: ArchiveRestoreStopV1,
     checksum: BackupIntegrityChecksumV1,
     validation_inputs: StartupValidationInputs,
@@ -47,7 +52,12 @@ impl RedbReplayedArchiveRestore {
         let checksum = sha256_file(self.staged_database_file())?;
         verify_file(&self.stage, &self.file)?;
         Ok(RedbSealedArchiveRestore {
-            replayed: self,
+            stage: self.stage,
+            file: self.file,
+            selection: self.selection,
+            lineage: self.history.lineage(),
+            frontier: self.history.tail().frontier(),
+            private: None,
             stop,
             checksum,
             validation_inputs,
@@ -55,40 +65,62 @@ impl RedbReplayedArchiveRestore {
     }
 }
 impl RedbSealedArchiveRestore {
+    pub(super) fn from_private(
+        stage: RedbStagedRestore,
+        file: File,
+        selection: ArchiveRestoreSelectionV3,
+        binding: PrivateArchiveValidationBinding,
+        stop: ArchiveRestoreStopV1,
+        checksum: BackupIntegrityChecksumV1,
+        validation_inputs: StartupValidationInputs,
+    ) -> Self {
+        Self {
+            stage,
+            file,
+            selection,
+            lineage: binding.predecessor().lineage(),
+            frontier: binding.frontier(),
+            private: Some(binding),
+            stop,
+            checksum,
+            validation_inputs,
+        }
+    }
+
     /// Actual validated replay frontier; distinct from the original manifest.
     #[must_use]
     pub fn restored_frontier(&self) -> DualFrontier {
-        self.replayed.history.tail().frontier()
+        self.frontier
     }
     /// Immutable original backup and selected archived prefix.
     #[must_use]
     pub fn selection(&self) -> &ArchiveRestoreSelectionV3 {
-        &self.replayed.selection
+        &self.selection
     }
     /// The original history fence used by the driver's max(target, staged)+1 decision.
     #[must_use]
     pub fn staged_history_incarnation(&self) -> u64 {
-        self.replayed.history.lineage().history_incarnation()
+        self.lineage.history_incarnation()
     }
     pub(in crate::maintenance) fn operation_id(&self) -> OfflineMaintenanceOperationId {
-        self.replayed.stage.operation_id
+        self.stage.operation_id
     }
     pub(in crate::maintenance) fn configured_database_file(&self) -> &Path {
-        &self.replayed.stage.configured_database_file
+        &self.stage.configured_database_file
     }
 
     pub(in crate::maintenance) fn stamp_and_seal(
-        self,
+        mut self,
         receipt: &OfflineMaintenanceReceiptV3,
     ) -> Result<RedbSealedStagedRestore, StorageError> {
-        let stage = &self.replayed.stage;
-        verify_file(stage, &self.replayed.file)?;
+        let stage = &self.stage;
+        verify_file(stage, &self.file)?;
         if receipt.operation_id() != stage.operation_id
             || receipt.backup_name() != &stage.backup_name
             || receipt.current_phase() != OfflineMaintenanceReceiptPhaseV1::Offline
-            || receipt.selection() != Some(&self.replayed.selection)
+            || receipt.selection() != Some(&self.selection)
             || receipt.stop() != self.stop
-            || receipt.staged_database_id() != Some(self.replayed.history.lineage().database_id())
+            || receipt.staged_database_id() != Some(self.lineage.database_id())
             || receipt.restored_frontier() != Some(self.restored_frontier())
             || sha256_file(&stage.staged_database_file)? != self.checksum
         {
@@ -106,13 +138,19 @@ impl RedbSealedArchiveRestore {
                 true,
             )?;
         }
-        crate::backup::stamp_history_incarnation(&stage.staged_database_file, incarnation)?;
+        if let Some(binding) = self.private {
+            verify_quarantine(stage)?;
+            crate::backup::stamp_private_archive_incarnation(&self.file, binding, incarnation)?;
+            prefix::prefix_edge("private-incarnation-stamped");
+        } else {
+            crate::backup::stamp_history_incarnation(&stage.staged_database_file, incarnation)?;
+        }
         edge("restore-incarnation-stamped");
         // The replay follower has no source journal. The new RestoreAnchor owns
         // a fresh empty extent at the actual dual frontier, never the old backup head.
         let frontier = self.restored_frontier();
         let header = crate::journal::JournalFileHeader::with_frontiers(
-            self.replayed.history.lineage().database_id(),
+            self.lineage.database_id(),
             frontier.application(),
             frontier.administration(),
             [0; 32],
@@ -121,18 +159,34 @@ impl RedbSealedArchiveRestore {
             .map_err(crate::backup::backup_journal_error)?;
         stage.stage_cleanup.directory_guard.sync()?;
         edge("restore-journal-created");
+        if self.private.is_some() {
+            verify_quarantine(stage)?;
+            prefix::prefix_edge("private-journal-created");
+            let marker = crate::durable_format_marker_path(&stage.staged_database_file);
+            stage.stage_cleanup.directory_guard.rename(
+                stage
+                    .staged_format_marker_file
+                    .file_name()
+                    .ok_or_else(corrupt)?,
+                marker.file_name().ok_or_else(corrupt)?,
+            )?;
+            stage.stage_cleanup.directory_guard.sync()?;
+            self.stage.staged_format_marker_file = marker;
+            prefix::prefix_edge("private-marker-restored");
+        }
+        let stage = &self.stage;
         crate::startup::RedbOfflineIntegrityScrub::from_inputs(
             &stage.staged_database_file,
             self.validation_inputs,
         )
         .run()?;
         edge("restore-source-validated");
-        verify_file(stage, &self.replayed.file)?;
-        let database = read_only_database(&self.replayed.file)?;
+        verify_file(stage, &self.file)?;
+        let database = read_only_database(&self.file)?;
         let read = database.begin_read().map_err(unavailable)?;
         let history =
             crate::changelog_v3_roots::validate_retained_history(&read)?.ok_or_else(corrupt)?;
-        if history.lineage().database_id() != self.replayed.history.lineage().database_id()
+        if history.lineage().database_id() != self.lineage.database_id()
             || history.lineage().history_incarnation() != incarnation
             || history.tail().frontier() != frontier
             || crate::follower_lifecycle::is_attached(&read)?
@@ -144,8 +198,8 @@ impl RedbSealedArchiveRestore {
         let sealed_artifact_checksum = sha256_file(&stage.staged_database_file)?;
         let sealed_journal_checksum = sha256_file(&stage.staged_journal_file)?;
         let sealed_format_marker_checksum = sha256_file(&stage.staged_format_marker_file)?;
-        verify_file(stage, &self.replayed.file)?;
-        let stage = self.replayed.stage;
+        verify_file(stage, &self.file)?;
+        let stage = self.stage;
         Ok(RedbSealedStagedRestore {
             operation_id: stage.operation_id,
             backup_name: stage.backup_name,
@@ -171,4 +225,20 @@ impl std::fmt::Debug for RedbSealedArchiveRestore {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.write_str("RedbSealedArchiveRestore([redacted])")
     }
+}
+
+fn verify_quarantine(stage: &RedbStagedRestore) -> Result<(), StorageError> {
+    let directory = &stage.stage_cleanup.directory_guard;
+    let normal = crate::durable_format_marker_path(&stage.staged_database_file);
+    if directory
+        .regular_file_length(normal.file_name().ok_or_else(corrupt)?)?
+        .is_some()
+        || stage.staged_format_marker_file.file_name() != Some(OsStr::new(prefix::PRIVATE_MARKER))
+    {
+        return Err(corrupt());
+    }
+    let mut marker = directory
+        .open_file(OsStr::new(prefix::PRIVATE_MARKER))?
+        .into_std();
+    crate::maintenance::path_guard::check_current_marker(&mut marker)
 }

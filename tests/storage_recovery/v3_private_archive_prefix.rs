@@ -111,7 +111,7 @@ fn check_private_archive_case(
     consumer.append(frame).unwrap();
     drop(consumer);
     let target = scope.path().join("configured.redb");
-    let (maintenance, _) = RedbMaintenanceStorage::open(&target, &backups).unwrap();
+    let (mut maintenance, _) = RedbMaintenanceStorage::open(&target, &backups).unwrap();
     for (stop, cancel) in [
         (1, false),
         (2, false),
@@ -219,7 +219,36 @@ fn check_private_archive_case(
             snapshot.application_frontier().unwrap(),
             CommitSequence::new(stop)
         );
+        if fault == Some("held-publication-reader") {
+            let clone = snapshot.clone();
+            drop(snapshot);
+            assert!(
+                candidate
+                    .seal_after_validation(
+                        anchor.lineage().database_id(),
+                        prefix_predecessors::inputs()
+                    )
+                    .is_err()
+            );
+            drop(clone);
+            assert!(!target.exists());
+            continue;
+        }
         drop(snapshot);
+        if matches!(fault, Some("publish" | "no-publication-receipt")) {
+            publication::publish(
+                candidate,
+                &mut maintenance,
+                &target,
+                &commands[0],
+                fault.unwrap(),
+            );
+            assert_eq!(
+                std::fs::read(backup.join("database.redb")).unwrap(),
+                backup_bytes
+            );
+            continue;
+        }
         assert_eq!(candidate.selection(), &selection);
         assert_eq!(
             candidate.restored_frontier().application(),
@@ -339,3 +368,6 @@ mod crash;
 
 #[path = "v3_private_archive_validation.rs"]
 mod validation_refusals;
+
+#[path = "v3_private_archive_publication.rs"]
+mod publication;

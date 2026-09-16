@@ -89,6 +89,28 @@ pub fn stamp_history_incarnation(
         return Err(storage_error(StorageErrorKind::InvariantViolation));
     }
     let database = Database::open(path.as_ref()).map_err(database_error)?;
+    stamp_incarnation(database, incarnation, None)
+}
+
+pub(crate) fn stamp_private_archive_incarnation(
+    file: &File,
+    binding: crate::maintenance::PrivateArchiveValidationBinding,
+    incarnation: u64,
+) -> Result<(), StorageError> {
+    let database = Database::builder()
+        .create_file(
+            file.try_clone()
+                .map_err(|_| storage_error(StorageErrorKind::Unavailable))?,
+        )
+        .map_err(database_error)?;
+    stamp_incarnation(database, incarnation, Some(binding))
+}
+
+fn stamp_incarnation(
+    database: Database,
+    incarnation: u64,
+    private: Option<crate::maintenance::PrivateArchiveValidationBinding>,
+) -> Result<(), StorageError> {
     let mut transaction = database.begin_write().map_err(transaction_error)?;
     transaction.set_two_phase_commit(true);
     transaction
@@ -107,7 +129,14 @@ pub fn stamp_history_incarnation(
     if current.is_some_and(|current| current > incarnation) {
         return Err(storage_error(StorageErrorKind::InvariantViolation));
     }
-    let anchor = v3_restore::PreparedRestoreAnchor::prepare(&transaction, incarnation)?;
+    let anchor = match private {
+        Some(binding) => Some(v3_restore::PreparedRestoreAnchor::prepare_private(
+            &transaction,
+            binding,
+            incarnation,
+        )?),
+        None => v3_restore::PreparedRestoreAnchor::prepare(&transaction, incarnation)?,
+    };
     if current == Some(incarnation) {
         return transaction.abort().map_err(precommit_storage_error);
     }

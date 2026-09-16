@@ -210,8 +210,12 @@ evidence. This private artifact has no replication identity or publication
 capability, and ordinary database opens refuse it. A distinct private validator
 runs the full structural/catalog scan and checks reciprocal locators, segment
 links and the actual frontier. Its authorization snapshot is bound to those
-validated bytes. Publication integration and the public exact-stop command
-remain WP-749 work.
+validated bytes. After all authorization readers close, a matching durable Offline
+V3 receipt can authorize a new incarnation and RestoreAnchor at the stopped
+frontier. The original selection and backup manifest remain unchanged. Ordinary
+source validation must pass before the existing replacement ceremony publishes
+that newly anchored database. Archive driver integration and the public exact-stop
+command remain WP-749 work.
 
 Inspect the format while the server is stopped:
 

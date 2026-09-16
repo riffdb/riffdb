@@ -2475,9 +2475,11 @@ fn pre_fence_apply_failures_are_not_relabelled_as_commit_status_unknown() {
 #[test]
 fn only_commit_durable_advances_a_root_an_operational_reader_can_select() {
     const RECOVERY_OR_STOPPED_FILE: &[(&str, &str)] = &[
-        // Offline restore stamps, each on its own `Database::open` of a file
-        // whose owning process has stopped.
-        ("backup.rs", "stamp_history_incarnation"),
+        // Offline restore stamps own exclusive engines on stopped files. The
+        // common incarnation helper consumes the engine opened by ordinary
+        // backup restore or receipt-authorized private archive publication;
+        // neither caller can serve operational readers during this transaction.
+        ("backup.rs", "stamp_incarnation"),
         ("backup.rs", "stamp_retention_watermark"),
         // Test-only downgrade fixture, likewise on a stopped database.
         ("fixtures.rs", "downgrade_all_index_rows_to_v1_fixture"),

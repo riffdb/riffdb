@@ -1,6 +1,6 @@
 //! Validation of a quarantined logical cut, not a new replication position.
 use super::*;
-use redb::{ReadTransaction, ReadableTableMetadata};
+use redb::{ReadTransaction, ReadableTableMetadata, WriteTransaction};
 use riffdb_storage_api::{StorageFormatVersion, proto_codec::*};
 use std::sync::Arc;
 
@@ -25,6 +25,68 @@ impl PrivateArchiveValidationBinding {
         let meta = transaction
             .open_table(crate::layout::META)
             .map_err(unavailable)?;
+        self.validate_metadata(&meta)?;
+        for table in [
+            crate::changelog_v3_activation::HISTORY,
+            crate::changelog_v3_activation::SOURCE_HOLDS,
+        ] {
+            if !transaction
+                .open_table(table)
+                .map_err(unavailable)?
+                .is_empty()
+                .map_err(unavailable)?
+            {
+                return Err(corrupt());
+            }
+        }
+        Ok(())
+    }
+    pub(crate) fn predecessor(&self) -> ChangelogHistoryStateV3 {
+        self.predecessor
+    }
+
+    pub(crate) fn frontier(&self) -> DualFrontier {
+        self.frontier
+    }
+
+    pub(crate) fn validate_for_write(
+        &self,
+        transaction: &WriteTransaction,
+    ) -> Result<(), StorageError> {
+        let tables = crate::changelog_v3_write::table_inventory(transaction)?;
+        for namespace in [
+            N::ChangelogHistoryState,
+            N::ChangelogHistory,
+            N::ReplicationSourceHolds,
+        ] {
+            if !tables.contains(namespace.table()) {
+                return Err(corrupt());
+            }
+        }
+        let meta = transaction
+            .open_table(crate::layout::META)
+            .map_err(unavailable)?;
+        self.validate_metadata(&meta)?;
+        for table in [
+            crate::changelog_v3_activation::HISTORY,
+            crate::changelog_v3_activation::SOURCE_HOLDS,
+        ] {
+            if !transaction
+                .open_table(table)
+                .map_err(unavailable)?
+                .is_empty()
+                .map_err(unavailable)?
+            {
+                return Err(corrupt());
+            }
+        }
+        Ok(())
+    }
+
+    fn validate_metadata(
+        &self,
+        meta: &impl ReadableTable<&'static str, &'static [u8]>,
+    ) -> Result<(), StorageError> {
         let read = |namespace: N| -> Result<Vec<u8>, StorageError> {
             let value = meta
                 .get(namespace.metadata_key().ok_or_else(corrupt)?)
@@ -83,19 +145,6 @@ impl PrivateArchiveValidationBinding {
                     ))
                 && let Some(key) = namespace.metadata_key()
                 && meta.get(key).map_err(unavailable)?.is_some()
-            {
-                return Err(corrupt());
-            }
-        }
-        for table in [
-            crate::changelog_v3_activation::HISTORY,
-            crate::changelog_v3_activation::SOURCE_HOLDS,
-        ] {
-            if !transaction
-                .open_table(table)
-                .map_err(unavailable)?
-                .is_empty()
-                .map_err(unavailable)?
             {
                 return Err(corrupt());
             }
@@ -188,6 +237,48 @@ impl RedbValidatedPrivateArchiveRestore {
             crate::store::RedbReadAccess::Durable(root),
         ))
     }
+    /// Revalidates the private cut after staged authorization releases all
+    /// snapshots. The resulting seal still needs a matching durable V3 receipt.
+    pub fn seal_after_validation(
+        self,
+        validated_database_id: DatabaseId,
+        inputs: StartupValidationInputs,
+    ) -> Result<RedbSealedArchiveRestore, StorageError> {
+        self.candidate.verify_private()?;
+        if validated_database_id != self.candidate.binding.predecessor.lineage().database_id()
+            || sha256_file(self.staged_database_file())? != self.checksum
+        {
+            return Err(corrupt());
+        }
+        let stop = riffdb_types::ArchiveRestoreStopV1::AtApplicationSequence(
+            self.restored_frontier().application().ok_or_else(corrupt)?,
+        );
+        self.selection()
+            .validate_restored_frontier(stop, self.restored_frontier())
+            .map_err(|_| corrupt())?;
+        crate::startup::validate_private_archive(
+            self.staged_database_file(),
+            &self.candidate.file,
+            self.candidate.binding,
+            inputs.clone(),
+            Arc::new(AtomicBool::new(false)),
+        )?;
+        self.candidate.verify_private()?;
+        let checksum = sha256_file(self.staged_database_file())?;
+        let candidate = self.candidate;
+        Ok(
+            super::super::publication::RedbSealedArchiveRestore::from_private(
+                candidate.stage,
+                candidate.file,
+                candidate.selection,
+                candidate.binding,
+                stop,
+                checksum,
+                inputs,
+            ),
+        )
+    }
+
     /// Discards this private proof and artifact without replacing the target.
     pub fn discard(self) -> Result<(), StorageError> {
         self.candidate.discard()
