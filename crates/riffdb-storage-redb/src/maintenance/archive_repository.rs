@@ -129,6 +129,46 @@ impl RedbArchiveRepository {
         encryption: ArchiveEncryptionPostureV1,
         cancellation: &AtomicBool,
     ) -> Result<Self, Error> {
+        Self::open_mode(
+            path,
+            lineage,
+            backup_fence,
+            backup_digest,
+            encryption,
+            cancellation,
+            true,
+        )
+    }
+
+    /// Restore may consume only an existing owned archive; missing evidence
+    /// never initializes an empty sink as a side effect of a restore request.
+    pub(in crate::maintenance) fn open_existing(
+        path: &Path,
+        lineage: ChangelogLineageV3,
+        backup_fence: ChangelogHistoryPointV3,
+        backup_digest: [u8; 32],
+        encryption: ArchiveEncryptionPostureV1,
+    ) -> Result<Self, Error> {
+        Self::open_mode(
+            path,
+            lineage,
+            backup_fence,
+            backup_digest,
+            encryption,
+            &AtomicBool::new(false),
+            false,
+        )
+    }
+
+    fn open_mode(
+        path: &Path,
+        lineage: ChangelogLineageV3,
+        backup_fence: ChangelogHistoryPointV3,
+        backup_digest: [u8; 32],
+        encryption: ArchiveEncryptionPostureV1,
+        cancellation: &AtomicBool,
+        create_missing: bool,
+    ) -> Result<Self, Error> {
         cancelled(cancellation)?;
         let parent = path
             .parent()
@@ -138,7 +178,8 @@ impl RedbArchiveRepository {
         let name = path.file_name().ok_or(Error::InvalidManifest)?;
         let directory = match parent.child_directory(name).map_err(storage)? {
             Some(directory) => directory,
-            None => parent.create_private_child(name).map_err(storage)?,
+            None if create_missing => parent.create_private_child(name).map_err(storage)?,
+            None => return Err(Error::InvalidManifest),
         };
         directory.verify_private().map_err(storage)?;
         let lock = match directory
@@ -149,7 +190,7 @@ impl RedbArchiveRepository {
                 .open_file_read_write(OsStr::new(LOCK))
                 .map_err(storage)?
                 .into_std(),
-            None => {
+            None if create_missing => {
                 directory.bounded_entries(0).map_err(storage)?;
                 directory
                     .create_new_file(OsStr::new(LOCK))

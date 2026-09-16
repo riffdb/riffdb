@@ -238,7 +238,7 @@ private replay stage for archive recovery. Private replay can stop at the receip
 exact selected manifest after the archive advances; an explicitly empty selected
 suffix remains empty. Ordinary create/restore V1 and retire
 V2 receipt bytes are unchanged. An unfinished V3 receipt currently refuses server
-startup; the archive recovery driver and public restore command are still being
+startup; daemon recovery routing and the public restore command are still being
 implemented. Recognizing a receipt does not validate or publish its replay stage.
 For an interior command stop, storage can rebuild a separate private artifact
 from the verified backup and checked command-prefix evidence after full original
@@ -258,8 +258,20 @@ the entire selected original suffix, then rebuilds an earlier stop from the same
 backup and selection. An explicit sequence stops at its first exact boundary;
 last-archived retains the selected terminal administration frontier. Both paths
 provide a validated immutable snapshot for staged authorization and use the
-same receipt-authorized publication owner. Archive driver integration remains
-unfinished. This does not expose a new restore command.
+same receipt-authorized publication owner. The internal driver now drains an
+admitted V3 receipt, resolves its existing owned archive from operator configuration,
+and persists
+its verified selection before replay, authorizes the validated immutable stage,
+and records the actual frontier and incarnation before publication. Success
+requires fresh source startup validation and complete authoritative state equality
+with the retained stage. Before publication is durably recorded, credential-free
+resumption requires exact staged/target bytes and the receipt-bound RestoreAnchor,
+marker and empty journal. After publication is recorded, recovery permits engine
+bookkeeping changes from interrupted startup, but requires the same lineage, RestoreAnchor and dual frontier, permits only
+empty `DirtyActivation` receipts from those startups, and compares every
+authoritative row against the retained published stage before success.
+It cannot rebuild an unpublished stage without credentials. This does not yet
+expose a new restore command.
 The storage owner can publish a separately validated and sealed replay only against
 matching durable Offline V3 evidence and its recorded incarnation. It creates an
 empty source journal at the actual restored application/administration frontier,
@@ -267,7 +279,8 @@ validates the new source completely, and then uses the existing replacement and
 parent-sync boundaries. Pre-receipt cleanup cannot delete an admitted V3 stage.
 The shared staged-authorization check uses one immutable restored-state snapshot;
 it can check replayed grants, expiry, approvals and revocations without local
-follower authority writes. Archive driver integration remains in progress.
+follower authority writes. Admission, daemon recovery routing and public
+archive command integration remain in progress.
 
 An SDK or direct API caller supplies the maintenance operation ID. After a lost
 response or process interruption, that caller retries the exact same start

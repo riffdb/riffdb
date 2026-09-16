@@ -148,3 +148,58 @@ The maintainer's words/date and exact normative text are recorded in standalone
 acceptance commit `bce0fa59`, with SPEC/work-package references updated. All seven
 amendment acceptance checks passed. Implement and register V3 afterward. WP-749
 remains open until all deliverables and the full acceptance/CI gates pass.
+
+## Internal maintenance driver increment
+
+Package: WP-749. Tier: guarantee, under the accepted receipt and exact-stop
+amendments above. This increment does not close the package.
+
+### Behavior and decisions
+
+- Operator TOML binds up to 16 checked archive names per database to bounded,
+  absolute, disjoint directories and an explicit external encryption posture.
+  Requests cannot supply a filesystem path. Restore refuses a missing archive
+  directory or ownership lock instead of initializing an empty sink. These
+  bindings do not start a worker.
+- The exclusive maintenance driver recognizes V3 without changing V1/V2 routing.
+  It persists drain/offline phases and freezes verified backup/archive selection
+  before replay. The complete exact-stop preparation owner provides the snapshot
+  for real capability authentication and current policy authorization.
+- The actual dual frontier and checked `max(target, staged) + 1` incarnation are
+  durable before the existing stage stamp and publication. Fresh startup and
+  equality with the retained published authority precede a terminal success.
+- Before a publication phase is durable, credential-free reconciliation requires
+  byte-identical stage/target files, the exact receipt-bound RestoreAnchor, a
+  current marker and the fresh empty journal. The check holds a staged read-only
+  engine and a target file lock; it does not repair or replay either artifact.
+- A process crash during final startup dirties redb bytes and can retain an empty
+  `DirtyActivation` receipt. After durable publication, validation therefore uses
+  a bounded-row comparison of the complete catalog-defined authoritative state
+  against the retained published stage. Lineage, anchor and dual frontier must
+  match; an exact receipt cursor permits only empty `DirtyActivation` successors.
+  Other source receipts, even at the same application/audit frontier, refuse.
+  This follows the existing startup lifecycle; no new receipt identity or format
+  is introduced and unpublished stages cannot be rebuilt without credentials.
+
+### Checks and documentation
+
+The driver fixture uses a real capability grant that exists only in the archived
+suffix. Checks cover drain/offline persistence, staged authorization, required
+approval refusal, unknown archive and missing credential refusal, all three
+published recovery phases without archive access, and process abort during fresh
+validation. A separate test rejects a non-startup receipt after publication.
+Storage reconciliation tests change or remove target marker/journal bytes;
+configuration tests cover duplicate names, explicit encryption, bounded counts,
+relative paths and ownership overlap across databases. Final command results
+are recorded in the commit note and handoff.
+
+Handbook pages updated: `docs/configuration.md`, `docs/backup-restore.md`.
+
+### Compatibility and remaining work
+
+V1/V2 receipt bytes, archive selection identities, public command surfaces and
+full-backup checksums remain unchanged. Normal startup still owns DIRTY activation.
+V3 public admission, daemon startup routing, source-less recovery, archive worker,
+RPC/client/CLI, complete crash qualification and write-path measurements remain
+open. An unfinished V3 receipt still refuses automatic daemon startup pending
+that routing integration. This increment alone does not expose archive restore.

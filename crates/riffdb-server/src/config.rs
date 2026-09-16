@@ -2,6 +2,10 @@
 
 #![allow(dead_code)]
 
+#[path = "config_archive.rs"]
+mod archive;
+pub(crate) use archive::ConfiguredArchive;
+use archive::{ArchiveDocument, parse_archives};
 #[path = "config_follower.rs"]
 mod follower;
 use follower::FollowerSourceDocument;
@@ -73,6 +77,7 @@ pub(crate) struct ServerConfig {
 
 /// One independently hosted database's non-secret process configuration.
 pub(crate) struct DatabaseConfig {
+    archives: Vec<ConfiguredArchive>,
     follower: Option<FollowerSourceConfig>,
     alias: DatabaseAlias,
     database_path: PathBuf,
@@ -130,6 +135,10 @@ impl ConfiguredProjection {
 }
 
 impl DatabaseConfig {
+    pub(crate) fn archives(&self) -> &[ConfiguredArchive] {
+        &self.archives
+    }
+
     pub(crate) fn follower(&self) -> Option<&FollowerSourceConfig> {
         self.follower.as_ref()
     }
@@ -200,7 +209,9 @@ impl ServerConfig {
         )
     }
 
-    fn parse(arguments: impl IntoIterator<Item = OsString>) -> Result<Self, ServerConfigError> {
+    pub(crate) fn parse(
+        arguments: impl IntoIterator<Item = OsString>,
+    ) -> Result<Self, ServerConfigError> {
         Self::resolve(arguments, &EmptyEnvironment, Path::new("/riffdb-config"))
     }
 
@@ -254,12 +265,14 @@ impl ServerConfig {
             || server.environment.is_some()
             || maintenance.backup_root.is_some()
             || maintenance.projections_root.is_some()
+            || !maintenance.archives.is_empty()
             || !top_level_projections.is_empty();
         if !named_databases.is_empty() && uses_legacy_database_configuration {
             return Err(ServerConfigError::MixedDatabaseConfiguration);
         }
         let databases = if named_databases.is_empty() {
             vec![DatabaseConfig {
+                archives: parse_archives(maintenance.archives)?,
                 follower: server
                     .replication_source
                     .map(FollowerSourceDocument::resolve)
@@ -386,6 +399,12 @@ impl ServerConfig {
     fn validate_disjoint_paths(&self, current_directory: &Path) -> Result<(), ServerConfigError> {
         let mut paths = Vec::with_capacity(self.databases.len() * 5 + 2);
         for database in &self.databases {
+            for archive in database.archives() {
+                paths.push((
+                    ConfiguredPathRole::ArchiveRoot(database.alias.clone(), archive.name().clone()),
+                    archive.path().to_path_buf(),
+                ));
+            }
             paths.push((
                 ConfiguredPathRole::Database(database.alias.clone()),
                 lexical_absolute(&database.database_path, current_directory)?,
@@ -559,7 +578,9 @@ struct ArgumentValues {
 }
 
 impl ArgumentValues {
-    fn parse(arguments: impl IntoIterator<Item = OsString>) -> Result<Self, ServerConfigError> {
+    pub(crate) fn parse(
+        arguments: impl IntoIterator<Item = OsString>,
+    ) -> Result<Self, ServerConfigError> {
         let mut values = Self::default();
         let mut arguments = arguments.into_iter();
         while let Some(flag) = arguments.next() {
@@ -698,6 +719,8 @@ struct ListenerBoundsDocument {
 #[derive(Debug, Default, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct MaintenanceDocument {
+    #[serde(default)]
+    archives: Vec<ArchiveDocument>,
     backup_root: Option<String>,
     projections_root: Option<String>,
 }
@@ -705,6 +728,8 @@ struct MaintenanceDocument {
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct DatabaseDocument {
+    #[serde(default)]
+    archives: Vec<ArchiveDocument>,
     replication_source: Option<FollowerSourceDocument>,
     path: String,
     backup_root: String,
@@ -789,6 +814,7 @@ fn parse_named_databases(
                 }
             };
             Ok(DatabaseConfig {
+                archives: parse_archives(document.archives)?,
                 follower: document
                     .replication_source
                     .map(FollowerSourceDocument::resolve)
@@ -1089,6 +1115,7 @@ fn parse_redb_commit_profile(value: OsString) -> Result<RedbCommitProfile, Serve
 /// Closed process-configuration failures that never echo a supplied value.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) enum ConfiguredPathRole {
+    ArchiveRoot(DatabaseAlias, riffdb_types::ArchiveNameV1),
     Database(DatabaseAlias),
     BackupRoot(DatabaseAlias),
     ProjectionsRoot(DatabaseAlias),
@@ -1101,6 +1128,7 @@ pub(crate) enum ConfiguredPathRole {
 impl fmt::Display for ConfiguredPathRole {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
+            Self::ArchiveRoot(alias, name) => write!(formatter, "archive '{name}' for '{alias}'"),
             Self::Database(alias) => write!(formatter, "database path for '{alias}'"),
             Self::BackupRoot(alias) => write!(formatter, "backup_root for '{alias}'"),
             Self::ProjectionsRoot(alias) => write!(formatter, "projections_root for '{alias}'"),
@@ -1118,6 +1146,7 @@ impl fmt::Display for ConfiguredPathRole {
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) enum ServerConfigError {
+    InvalidArchiveConfiguration,
     InvalidFollowerConfiguration,
     UnknownOption,
     MissingValue,
@@ -1145,6 +1174,7 @@ pub(crate) enum ServerConfigError {
 impl fmt::Display for ServerConfigError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         formatter.write_str(match self {
+            Self::InvalidArchiveConfiguration => "archive configuration is invalid or incomplete",
             Self::InvalidFollowerConfiguration => {
                 "follower source configuration is invalid or incomplete"
             }

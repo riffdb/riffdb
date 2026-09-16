@@ -2476,6 +2476,11 @@ fn maintenance_driver_dependencies<'a>(
         recovery,
         retained_target_history_incarnation,
         metrics,
+    )
+    .with_archives(
+        config
+            .archive_bindings()
+            .map_err(|_| DaemonError::MaintenanceDriver)?,
     ))
 }
 

@@ -114,6 +114,25 @@ impl RedbVerifiedArchiveBackup {
         )
     }
 
+    /// Restore-only counterpart: never creates a missing archive or lock file.
+    pub(in crate::maintenance) fn open_existing_archive(
+        &self,
+        path: &Path,
+        encryption: ArchiveEncryptionPostureV1,
+    ) -> Result<RedbArchiveRepository, ArchiveConsumerErrorV1> {
+        self.verify().map_err(|error| match error.kind() {
+            StorageErrorKind::Unavailable => ArchiveConsumerErrorV1::SinkUnavailable,
+            _ => ArchiveConsumerErrorV1::InvalidManifest,
+        })?;
+        RedbArchiveRepository::open_existing(
+            path,
+            self.history.lineage(),
+            self.history.tail(),
+            self.digest,
+            encryption,
+        )
+    }
+
     fn verify(&self) -> Result<(), StorageError> {
         self.directory.verify()?;
         if self.manifest.checksums().len() != 3 {

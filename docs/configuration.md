@@ -75,6 +75,32 @@ idempotency_keys = "/etc/riffdb/idempotency.keys"
 backup_root = "/var/lib/riffdb/backups"
 ```
 
+### Named archive directories (WP-749 integration)
+
+An operator may bind up to 16 archive names per database in TOML. The legacy
+single-database form uses `[[maintenance.archives]]`; the named form uses
+`[[databases.<alias>.archives]]`. Each entry requires all three fields:
+
+```toml
+[[maintenance.archives]]
+name = "daily"
+path = "/var/lib/riffdb/archives/daily"
+encryption = "operator_managed"
+```
+
+Names are checked identifiers and must be unique within their database. Paths
+must be bounded absolute directories and disjoint from every database, backup,
+projection, archive and other reserved process path. Invalid or overlapping
+entries reject configuration. `encryption` is either `unencrypted` or
+`operator_managed`; the latter declares external operator-provided encryption,
+and does not ask RiffDB to encrypt files. Archive paths never come from restore
+request input.
+
+These bindings currently support the internal archive maintenance driver.
+Automatic archive production and the public archive restore command remain
+under implementation; configuring an entry does not start an archive worker.
+See [Backup and Restore](backup-restore.md).
+
 The legacy `server.grpc_listen` form always means literal-loopback cleartext.
 For an explicit closed listener profile, omit `grpc_listen` and select exactly
 one tagged table:

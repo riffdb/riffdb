@@ -95,6 +95,52 @@ impl CheckedRedbStartup {
         self.allocator_capacity
     }
 
+    /// Compares complete receipt-bound staged authority after fresh startup.
+    /// Repeated interrupted startups may append only empty DirtyActivation
+    /// receipts. Every replicated-authoritative row and the original anchor
+    /// remain exact. Both cursors retain at most one bounded item at a time.
+    pub(crate) fn matches_archive_restore_evidence(
+        &self,
+        mut expected: Box<dyn riffdb_storage_api::AuthoritativeStateCursorV3>,
+    ) -> Result<bool, ()> {
+        let snapshot = self
+            .operational_ports
+            .published_changelog_snapshot_v3()
+            .map_err(|_| ())?;
+        let mut actual = snapshot.authoritative_state_v3().map_err(|_| ())?;
+        let before = expected.history();
+        let after = actual.history();
+        if before.lineage() != after.lineage()
+            || before.anchor() != after.anchor()
+            || before.minimum_resume() != after.minimum_resume()
+            || before.tail().frontier() != after.tail().frontier()
+        {
+            return Ok(false);
+        }
+        let mut receipts = snapshot
+            .changelog_receipts_v3(before.lineage(), before.tail())
+            .map_err(|_| ())?;
+        while let Some(receipt) = receipts.next_receipt().map_err(|_| ())? {
+            if receipt.attribution() != riffdb_storage_api::ChangelogAttributionV3::DirtyActivation
+                || !receipt.mutations().is_empty()
+                || receipt.binding().predecessor_frontier != before.tail().frontier()
+                || receipt.binding().covered_frontier != before.tail().frontier()
+            {
+                return Ok(false);
+            }
+        }
+        loop {
+            let left = expected.next_item().map_err(|_| ())?;
+            let right = actual.next_item().map_err(|_| ())?;
+            if left != right {
+                return Ok(false);
+            }
+            if left.is_none() {
+                return Ok(true);
+            }
+        }
+    }
+
     pub(crate) fn take_replication_publications(
         &mut self,
     ) -> Option<crate::replication_publication::ReplicationPublishedSnapshots> {

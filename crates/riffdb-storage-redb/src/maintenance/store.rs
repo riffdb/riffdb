@@ -36,6 +36,9 @@ use crate::backup::{
 };
 use crate::error::storage_error;
 
+#[path = "archive_reconciliation.rs"]
+mod archive_reconciliation;
+
 #[path = "archive_receipt_store.rs"]
 mod archive_receipts;
 use archive_receipts::{archive_receipt_file_name, read_archive_receipt_file};
