@@ -6,6 +6,7 @@
 mod bootstrap;
 mod cursor;
 mod follower;
+mod follower_budget;
 mod frame;
 mod history;
 mod leadership;
@@ -29,6 +30,7 @@ pub use bootstrap::{
 };
 pub use cursor::{ChangelogCursorErrorV3, ChangelogReceiptCursorV3};
 pub use follower::ChangelogFollowerApplyPortV3;
+pub use follower_budget::{FollowerHoldBudget, FollowerHoldBudgetObservation};
 pub use frame::{ChangelogFrameBindingV3, ChangelogFrameV3};
 pub use history::{
     ChangelogHistoryPointV3, ChangelogHistoryStateV3, ChangelogLineageV3,
