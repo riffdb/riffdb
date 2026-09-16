@@ -103,10 +103,14 @@ bind its application/audit frontier, reject mixed legacy/successor segments and
 cover the payload in both normal and prepared segment seals. Generated vectors
 freeze the successor bytes; prior schema hashes and V3 bytes remain unchanged.
 The exact prior registry marker refuses before open; no automatic migration is
-introduced. This is not an exact-stop restore implementation. Atomic source
-capture, original predecessor and complete independent graph validation, private reconstruction
-and publication proofs remain required. First-observed preconditions must still be
-checked against the validated predecessor even when a key has no net receipt row.
+introduced. The follower applier now joins received successor groups to the
+original receipt's independent net mutations and checks every first observation
+against its pinned predecessor before applying that receipt, including keys
+erased by net-zero reduction. Missing tables, contradictory values and mixed
+legacy/successor command groups refuse without durable progress. This is not an
+exact-stop restore implementation. Atomic source capture, complete independent
+row/graph and startup/recovery validation, private reconstruction and publication
+proofs remain required.
 
 - A real same-entity group with multiple puts, delete, and recreate restores to
   each application sequence with exact entity bytes and reciprocal command facts.

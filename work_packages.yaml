@@ -22914,6 +22914,13 @@ work_packages:
       bounds before sealing. Existing exact-marker refusal remains the compatibility
       boundary; no automatic registry migration or production writer activation
       is implied by registering these codecs.
+    - Check received successor command prefixes against the original receipt's
+      exact independent net mutations and its pinned predecessor before follower
+      mutation. Return borrowed first observations even for net-zero keys; check
+      the existing table inventory before point reads so validation creates no
+      missing tables. Preserve complete source receipt identity and legacy groups;
+      retention rewrites keep their original command frontiers. Full independent
+      row/graph validation, source capture and exact-stop publication remain open.
     - Reuse the checked backup-name grammar through a distinct ArchiveNameV1 type.
       Bind backup, archive, closed application stop and replacement confirmation
       under the versioned archive-input preimage in the existing maintenance hash
