@@ -189,10 +189,11 @@ rg -q 'Limit<80>' "$evidence_root/fleet/query.riffq"
 
 cd "$repo_root"
 cargo build --quiet --locked -p riffdb-cli --bin riffdb
+cli_target_dir="$(cargo metadata --locked --no-deps --format-version 1 | jq -er '.target_directory')"
 for domain in clinic fleet library; do
     (
         cd "$work_root/$domain-application"
-        "$repo_root/target/debug/riffdb" --output json \
+        "$cli_target_dir/debug/riffdb" --output json \
             application check --source-only >"$work_root/$domain-final.out"
     )
     rg -q '^application sources compile; no lock or generated artifacts were checked$' \
