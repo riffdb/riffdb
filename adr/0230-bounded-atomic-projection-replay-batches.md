@@ -1,11 +1,11 @@
 ---
 adr: "0230"
 title: Bounded Atomic Projection Replay Batches
-status: proposed
+status: accepted
 tier: guarantee
 date: 2026-09-16
-accepted: null
-acceptance: null
+accepted: 2026-09-16
+acceptance: 'maintainer, in session, 2026-09-16: "Accept all four as written" (ADR-0227, ADR-0230, ADR-0231, ADR-0232)'
 requires: [ADR-0010, ADR-0017]
 amends: [ADR-0017 single-sequence atomic application operation]
 supersedes: []

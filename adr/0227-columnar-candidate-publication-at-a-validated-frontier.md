@@ -1,11 +1,11 @@
 ---
 adr: "0227"
 title: Columnar Candidate Publication At A Validated Frontier
-status: proposed
+status: accepted
 tier: guarantee
 date: 2026-09-15
-accepted: null
-acceptance: null
+accepted: 2026-09-16
+acceptance: 'maintainer, in session, 2026-09-16: "Accept all four as written" (ADR-0227, ADR-0230, ADR-0231, ADR-0232)'
 requires: [ADR-0190, ADR-0192]
 amends:
   - ADR-0190 decision 9 exact-head publication for schema-bound columnar candidates
