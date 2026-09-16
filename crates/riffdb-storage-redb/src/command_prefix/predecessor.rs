@@ -111,6 +111,15 @@ fn validate_sequence<'a>(
                 }
             })?;
         }
+        for row in prefix
+            .mutations()
+            .iter()
+            .filter(|row| row.namespace() == N::SecondaryIndexes)
+        {
+            with_prior(physical, &prior, N::SecondaryIndexes, row.key(), |bytes| {
+                super::secondary::validate_prior(command, row.key(), bytes).map_err(codec_error)
+            })?;
+        }
         // This map is bounded by the already checked segment/receipt-wide
         // item and byte ceilings. A present None shadows a deleted physical row.
         for row in prefix.mutations() {

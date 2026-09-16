@@ -167,6 +167,9 @@ also join entity, chain-head and epoch transitions to their exact logical prior
 rows, including earlier commands in the same group. Retained-segment decoding
 checks known intra-segment predecessors and their raw mutation preconditions.
 A wrong nested record type is corruption, never a legacy-format fallback.
+Secondary-index prefix puts also bind their typed key and schema to the command
+and require the exact owning partition/index epoch. Available prior index rows
+are checked against that same generation bucket before replacement or deletion.
 Complete secondary-index/vector and cross-history graph validation, plus
 exact-stop archive restore, remain unfinished WP-749 work.
 

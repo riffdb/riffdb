@@ -77,6 +77,7 @@ pub(super) fn validate_rows(command: &StoredCommandCapsuleV2) -> Result<(), Dura
     let Some(prefix) = command.prefix_evidence() else {
         return Ok(());
     };
+    super::secondary::validate_post_images(command)?;
     let mutations = prefix.mutations();
     let count = |namespace| {
         mutations

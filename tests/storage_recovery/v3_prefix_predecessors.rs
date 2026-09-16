@@ -101,7 +101,43 @@ fn contradictory_prefix(
     let mut epochs = last.index_generation_transitions().to_vec();
     let prefix = last.prefix_evidence().unwrap();
     let mut mutations = prefix.mutations().to_vec();
-    let (namespace, post_image) = if case == 4 {
+    let (namespace, post_image) = if case >= 6 {
+        let row = prefix
+            .mutations()
+            .iter()
+            .find(|m| m.namespace() == N::SecondaryIndexes && m.value().is_some())
+            .unwrap();
+        if case == 6 {
+            (
+                N::SecondaryIndexes,
+                prefix
+                    .mutations()
+                    .iter()
+                    .find(|m| m.namespace() == N::EntityChainHeads)
+                    .unwrap()
+                    .value()
+                    .unwrap()
+                    .to_vec(),
+            )
+        } else {
+            let decoded = decode_index_entry_v2(row.value().unwrap()).unwrap();
+            let entry = decoded.value();
+            let mut partition =
+                riffdb_types::PartitionKeyBuilder::new(entry.partition_key().aggregate_type_id());
+            partition.push_u64(999).unwrap();
+            let entry = StoredIndexEntryV2::new(
+                entry.key().clone(),
+                entry.schema_binding().clone(),
+                entry.covered_values().clone(),
+                partition.finish().unwrap(),
+            )
+            .unwrap();
+            (
+                N::SecondaryIndexes,
+                encode_index_entry_v2(&entry).unwrap().into_bytes(),
+            )
+        }
+    } else if case == 4 {
         let head = prefix
             .mutations()
             .iter()
@@ -167,8 +203,9 @@ fn contradictory_prefix(
     };
     let row = mutations
         .iter_mut()
-        .find(|m| m.namespace() == namespace)
+        .find(|m| m.namespace() == namespace && (case < 6 || m.value().is_some()))
         .unwrap();
+    let changed_key = row.key().to_vec();
     let expected = if case == 5 {
         Some([0x66; 32])
     } else {
@@ -199,7 +236,7 @@ fn contradictory_prefix(
     let (segment, encoded) = seal_and_encode_command_segment_v1(draft).unwrap();
     let mut net = receipt.mutations().to_vec();
     for row in &mut net {
-        let value = if row.namespace() == namespace {
+        let value = if row.namespace() == namespace && row.key() == changed_key {
             Some(post_image.as_slice())
         } else if row.namespace() == N::Commits {
             Some(encoded.as_bytes())
@@ -235,7 +272,12 @@ fn contradictory_prefix(
 #[test]
 fn follower_joins_prefix_facts_to_physical_and_intra_group_predecessors() {
     for count in [1, 2, 4] {
-        for case in 0..=4 {
+        for case in [0, 1, 2, 3, 4, 6, 7] {
+            // The other terminal steps delete the row or leave its bytes
+            // unchanged, so there is no index put to substitute in those cases.
+            if count != 1 && case >= 6 {
+                continue;
+            }
             let source = TestDatabasePath::new("prefix-prior-source");
             install_fixture(&source.0);
             let (ports, _receiver) = observed_ports(&source.0, RedbCommitProfile::Hardened);
@@ -304,8 +346,8 @@ fn follower_joins_prefix_facts_to_physical_and_intra_group_predecessors() {
 }
 
 #[test]
-fn startup_refuses_a_self_consistent_epoch_image_with_a_false_intra_group_prior() {
-    for case in [3, 5] {
+fn startup_refuses_resealed_epoch_priors_and_secondary_index_images() {
+    for case in [3, 5, 6, 7] {
         let source = TestDatabasePath::new("prefix-prior-startup");
         let anchor = install_fixture(&source.0);
         let (ports, _receiver) = observed_ports(&source.0, RedbCommitProfile::Hardened);
