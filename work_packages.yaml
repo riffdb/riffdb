@@ -22986,6 +22986,13 @@ work_packages:
       existing eligible-null materialization; raw bytes retain transition identity.
       Historical schema bindings retain their existing history/prefix proof owner;
       unknown historical rows, vectors and complete candidate validation remain.
+    - Validate intrinsic vector prefix rows at retained decoding and follower ingress.
+      Bind evidence to the entity image and command identity, require one reciprocal
+      index per primary mutation and the exact partition/lineage observation inventory,
+      and reject foreign revisions, empty persisted partition counts and wrong types.
+      Decode each shared health row once and bound temporary identities by the prefix.
+      Catalog-derived source/embedding transitions, predecessor counter arithmetic and
+      full candidate graph validation remain separate required work.
     - Reuse the checked backup-name grammar through a distinct ArchiveNameV1 type.
       Bind backup, archive, closed application stop and replacement confirmation
       under the versioned archive-input preimage in the existing maintenance hash

@@ -61,7 +61,7 @@ fn nested_error(error: DurableCodecError) -> DurableCodecError {
     }
 }
 
-fn required<'a>(
+pub(super) fn required<'a>(
     mutations: &'a [AuthoritativeMutationV3],
     namespace: N,
     key: &[u8],
@@ -78,6 +78,7 @@ pub(super) fn validate_rows(command: &StoredCommandCapsuleV2) -> Result<(), Dura
         return Ok(());
     };
     super::secondary::validate_post_images(command)?;
+    super::vector::validate_post_images(command)?;
     let mutations = prefix.mutations();
     let count = |namespace| {
         mutations
