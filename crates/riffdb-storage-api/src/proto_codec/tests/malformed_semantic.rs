@@ -956,3 +956,48 @@ fn canonical_record_bytes_are_reproved_and_retained_exactly() {
         &not_a_record,
     )));
 }
+
+#[test]
+// req: REP-006, STO-012
+fn frozen_audit_v2_refuses_a_follower_target_even_with_a_valid_envelope_checksum() {
+    const AUDIT: &str = "riffdb.storage.v1.ServiceAuditRecordV2";
+    let canonical =
+        encode_service_audit_record_v2(&sample::service_audit_record()).expect("audit encodes");
+    assert!(decode_service_audit_record_v2(canonical.as_bytes()).is_ok());
+    let message = payload_message::<wire::ServiceAuditRecordV2>(canonical.as_bytes());
+    let last = message
+        .targets
+        .last()
+        .expect("sample targets")
+        .encode_to_vec();
+    let mut last_field = vec![0x42, u8::try_from(last.len()).expect("short sample target")];
+    last_field.extend(last);
+    let mut payload = message.encode_to_vec();
+    let offsets = payload
+        .windows(last_field.len())
+        .enumerate()
+        .filter_map(|(offset, value)| (value == last_field).then_some(offset))
+        .collect::<Vec<_>>();
+    assert_eq!(offsets.len(), 1, "exact final target occurs once");
+    let insertion = offsets[0] + last_field.len();
+
+    // A bounded, canonical candidate follower payload: source database, history
+    // incarnation, epoch and opaque hold ID. Field 11 is absent from frozen V2.
+    let mut follower = vec![0x0a, 16];
+    follower.extend_from_slice(sample::database_id().as_bytes());
+    follower.extend_from_slice(&[0x10, 1, 0x18, 1, 0x22, 16]);
+    follower.extend_from_slice(&[0x81; 16]);
+    let mut target = vec![
+        0x5a,
+        u8::try_from(follower.len()).expect("bounded follower"),
+    ];
+    target.extend(follower);
+    let mut field = vec![0x42, u8::try_from(target.len()).expect("bounded target")];
+    field.extend(target);
+    payload.splice(insertion..insertion, field);
+    // The outer checksum is recomputed. Target order, all original fields and
+    // the sixteen-target bound remain intact; this new kind still must refuse.
+    assert_corrupt(decode_service_audit_record_v2(&raw_envelope(
+        AUDIT, payload,
+    )));
+}
