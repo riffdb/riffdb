@@ -187,7 +187,9 @@ pub(crate) fn validate_received_prefixes(
     let bundles = transaction
         .open_table(crate::layout::CONTRACT_BUNDLES)
         .map_err(crate::error::table_error)?;
-    validate_catalog_images(
+    catalog::validate_received_catalog_images(
+        transaction,
+        tables,
         &bundles,
         segments.iter().flat_map(|segment| segment.commands()),
     )?;

@@ -22969,6 +22969,14 @@ work_packages:
       retain at most one decoded bundle. Resealed undeclared covered fields must
       refuse despite receipt/net agreement. Complete mutation inventory, vector
       graphs and cross-history validation remain required.
+    - Derive exact secondary-index puts and deletes from known entity predecessors
+      and post-images in the catalog owner. Join received prefixes to actual
+      predecessor entities and retained prefixes to known intra-segment images;
+      infer only explicit entity absence, never missing live historical values.
+      Reject missing or extra index mutations despite valid receipt/net agreement,
+      and require schema-derived owning partitions and command-owned deletions.
+      Prior-index contents, unknown cross-history values, vectors and private
+      reconstruction remain separate required proofs.
     - Reuse the checked backup-name grammar through a distinct ArchiveNameV1 type.
       Bind backup, archive, closed application stop and replacement confirmation
       under the versioned archive-input preimage in the existing maintenance hash
