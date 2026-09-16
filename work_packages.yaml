@@ -25737,3 +25737,46 @@ work_packages:
       controller and production code carries no cfg(test) state.
     - The remaining linear per-command cost since 2026-09-05 is recorded in the performance note and
       left to the WP-762 rerun to quantify; it is not folded into this package.
+- id: WP-785
+  name: Bounded runtime review repairs
+  tier: guarantee
+  depends_on: []
+  objective: Implement the eight live resource-cost repairs admitted by accepted ADR-0234,
+    preserving public semantics, bounded fuel, snapshot-bound authority and fail-closed validation.
+  requirements: [OUT-001, OQ-019, PRJ-004, REP-002]
+  required_adrs: [ADR-0102, ADR-0173, ADR-0175, ADR-0183, ADR-0234]
+  allowed_paths:
+  - crates/riffdb-storage-redb/src/transient*.rs
+  - crates/riffdb-storage-redb/src/store.rs
+  - crates/riffdb-storage-redb/src/store_follower.rs
+  - crates/riffdb-storage-redb/src/store/**
+  - crates/riffdb-storage-redb/src/reads.rs
+  - crates/riffdb-storage-redb/src/derived/**
+  - crates/riffdb-storage-redb/src/hooks.rs
+  - crates/riffdb-columnar/src/streaming_v2.rs
+  - crates/riffdb-columnar/src/query.rs
+  - crates/riffdb-columnar/src/generation_v2_values.rs
+  - crates/riffdb-columnar/tests/**
+  - crates/riffdb-query-executor/src/**
+  - crates/riffdb-query-executor/tests/**
+  - crates/riffdb-outbox/src/worker.rs
+  deliverables:
+  - Bounded decoded command payload ownership with exact indexes, snapshot-bound cold lookups,
+    streamed rebuild and evicted-segment follower/retention evidence.
+  - At most 16 buffered scratch writers with 64 KiB buffers and explicit fallible flushes.
+  - Bounded partition prefetch, incremental mixed-page sorting and a fallible k-way run merge.
+  - Snapshot-scoped BM25 statistics, reused group-key scratch and strict single-pass vector decode.
+  - Regression and mechanism tests, complete review disposition and updated handbook pages.
+  acceptance_commands:
+  - ./scripts/acceptance --wp WP-785 --range HEAD..HEAD
+  - ./scripts/ci-all
+  - ./scripts/app-baseline-performance-sentinel-check
+  exit_gate: All eight admitted repairs preserve the existing semantic oracles and bounds;
+    cache eviction, corrupt evidence, follower changes, flush failure, partition boundaries and
+    exact scoring tests pass; scoped/full acceptance and existing sentinel evidence are recorded.
+  standing_design_tests:
+    interface_safety: No caller can select weaker validation, durability, authorization or fuel.
+    scale: Cached payloads, open writers, buffered pages and merge/scratch state have fixed bounds;
+      complete exact locator metadata remains proportional to retained identities.
+  human_review_triggers:
+  - An accepted ADR-0234 decision or an existing durable/public guarantee would change.
