@@ -10,6 +10,7 @@
 mod application_catalog;
 mod bundle;
 mod capability_partition;
+mod command_prefix;
 mod deployment;
 mod error;
 mod event_materialization;
@@ -27,6 +28,7 @@ mod reactive_module;
 pub use application_catalog::*;
 pub use bundle::*;
 pub use capability_partition::*;
+pub use command_prefix::*;
 pub use deployment::*;
 pub use error::*;
 pub use event_materialization::*;

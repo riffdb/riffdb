@@ -589,7 +589,7 @@ fn sha256_dependency_is_confined_to_reviewed_integrity_boundaries() {
 }
 
 #[test]
-fn only_startup_imports_the_catalog_driver_and_storage_never_imports_ir() {
+fn only_catalog_adapters_import_catalog_and_storage_never_imports_ir() {
     let sources = rust_sources();
     for forbidden in [
         "riffdb_contract_ir",
@@ -606,19 +606,28 @@ fn only_startup_imports_the_catalog_driver_and_storage_never_imports_ir() {
     let startup = source.join("startup.rs");
     let startup_tests = source.join("startup/tests.rs");
     let migration_backend = source.join("startup/index_migration_backend.rs");
+    let prefix_catalog = source.join("command_prefix/catalog.rs");
     let mut paths = Vec::new();
     collect_rust_sources(&source, &mut paths);
     for path in paths {
-        if path == startup || path == startup_tests || path == migration_backend {
+        if path == startup
+            || path == startup_tests
+            || path == migration_backend
+            || path == prefix_catalog
+        {
             continue;
         }
         assert!(
             !production_source(&path).contains("riffdb_catalog"),
-            "only startup migration may import catalog: {}",
+            "only startup and prefix catalog adapters may import catalog: {}",
             path.display()
         );
     }
 
+    // Prefix validation is a read-only catalog call; it cannot drive migration.
+    let prefix = read(prefix_catalog);
+    assert!(prefix.contains("validate_command_prefix_index_images_v1"));
+    assert!(!prefix.contains("CatalogIndexMigration"));
     let migration = read(migration_backend);
     assert!(migration.contains("CatalogIndexMigrationBackend"));
     assert!(!migration.contains("ValidatedCatalogHistory"));

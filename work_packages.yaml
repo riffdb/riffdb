@@ -22962,6 +22962,13 @@ work_packages:
       and canonical epoch lookup rather than decoding schema-owned key components
       in the backend. Catalog-derived key/value coverage, vector graphs and
       exact-stop reconstruction remain required before closure.
+    - Validate supplied prefix secondary-index keys against the retained command
+      bundle at startup and before follower receipt application. Derive put keys
+      and exact covered records from the owning entity post-image using the
+      existing contract-IR encoders in the catalog owner, keeping storage IR-blind;
+      retain at most one decoded bundle. Resealed undeclared covered fields must
+      refuse despite receipt/net agreement. Complete mutation inventory, vector
+      graphs and cross-history validation remain required.
     - Reuse the checked backup-name grammar through a distinct ArchiveNameV1 type.
       Bind backup, archive, closed application stop and replacement confirmation
       under the versioned archive-input preimage in the existing maintenance hash

@@ -2,10 +2,12 @@
 //! This layer does not grant reconstruction/publication authority or replace
 //! the command, entity/index, catalog and structural validators.
 
+mod catalog;
 mod predecessor;
 mod rows;
 mod secondary;
 
+pub(crate) use catalog::validate_catalog_images;
 pub(crate) use rows::{decode_capsule, decode_segment};
 
 use redb::WriteTransaction;
@@ -179,6 +181,16 @@ pub(crate) fn validate_received_prefixes(
         .map(|command| command.prefix_evidence().ok_or_else(corrupt))
         .collect::<Result<Vec<_>, _>>()?;
     validate_independent_prefixes(transaction, tables, &evidence, receipt)?;
+    if !tables.contains(N::ContractBundles.table()) {
+        return Err(corrupt());
+    }
+    let bundles = transaction
+        .open_table(crate::layout::CONTRACT_BUNDLES)
+        .map_err(crate::error::table_error)?;
+    validate_catalog_images(
+        &bundles,
+        segments.iter().flat_map(|segment| segment.commands()),
+    )?;
     predecessor::validate_commands(
         transaction,
         tables,

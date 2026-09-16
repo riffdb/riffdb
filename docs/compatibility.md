@@ -170,8 +170,12 @@ A wrong nested record type is corruption, never a legacy-format fallback.
 Secondary-index prefix puts also bind their typed key and schema to the command
 and require the exact owning partition/index epoch. Available prior index rows
 are checked against that same generation bucket before replacement or deletion.
-Complete secondary-index/vector and cross-history graph validation, plus
-exact-stop archive restore, remain unfinished WP-749 work.
+Startup and follower replay also resolve supplied index keys through the retained
+command contract and derive each put's key and exact covered fields from its
+entity post-image. Undeclared or substituted covered fields refuse even when
+the receipt and prefix agree. Complete index mutation inventory, vector and
+cross-history graph validation, plus exact-stop archive restore, remain
+unfinished WP-749 work.
 
 Inspect the format while the server is stopped:
 
