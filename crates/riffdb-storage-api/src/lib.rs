@@ -33,6 +33,7 @@ pub mod columnar_control;
 pub mod command;
 pub mod command_capsule;
 pub mod command_prefix;
+mod command_prefix_codec;
 pub mod command_segment;
 pub mod command_txn;
 pub mod composite_view;

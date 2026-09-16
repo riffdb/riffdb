@@ -18,6 +18,8 @@ mod source_progress;
 mod state_cursor;
 mod stream;
 
+pub(crate) use receipt_codec::{ReceiptReader, decode_mutation, encode_mutation};
+
 pub use bootstrap::{
     MAX_REPLICATION_BOOTSTRAP_BYTES, MAX_REPLICATION_BOOTSTRAP_PAGE_BYTES,
     MAX_REPLICATION_BOOTSTRAP_PAGE_ROWS, MAX_REPLICATION_BOOTSTRAP_PAGES,

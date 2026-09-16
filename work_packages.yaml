@@ -22488,6 +22488,12 @@ work_packages:
       bytes before reduction, including values absent from the final net receipt.
       This semantic component does not grant restore or publication authority;
       original predecessor, full graph, durable codecs and capture remain required.
+    - Encode nested command-prefix evidence with explicit dual frontiers and the
+      existing V3 mutation representation. Share the mutation codec without
+      changing frozen receipt bytes. Bound payload length and declared item count
+      before allocation; reject trailing, truncated, duplicated or reordered data.
+      The inner field has no independent record identity or integrity claim;
+      capsule V7/segment V6 still own envelopes, graph binding and checksums.
     - Reuse the checked backup-name grammar through a distinct ArchiveNameV1 type.
       Bind backup, archive, closed application stop and replacement confirmation
       under the versioned archive-input preimage in the existing maintenance hash
