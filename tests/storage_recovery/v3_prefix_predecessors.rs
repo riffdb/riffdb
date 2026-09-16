@@ -201,7 +201,7 @@ fn unexpected_vector_mutation(
         .extend_from_slice(&entity.value().target().entity_type_id().get().to_be_bytes());
     observation_key.extend_from_slice(&field.get().to_be_bytes());
     let (namespace, key) = match case {
-        13 => {
+        13 | 17 => {
             let mut key = entity_row.key().to_vec();
             key.extend_from_slice(&field.get().to_be_bytes());
             (N::VectorEvidence, key)
@@ -224,8 +224,28 @@ fn unexpected_vector_mutation(
         }
         _ => panic!("vector case"),
     };
-    let extra =
-        AuthoritativeMutationV3::put(namespace, &key, None, entity_row.value().unwrap()).unwrap();
+    let typed;
+    let bytes = if case == 17 {
+        let value = entity.value();
+        let evidence = StoredVectorEvidenceV1::new(
+            value.target().clone(),
+            last.base().outcome().partition_key().clone(),
+            field,
+            value.entity_version(),
+            last.commit_sequence(),
+            Some(last.commit_sequence()),
+            None,
+            value.schema_binding().clone(),
+            last.base().commit().provenance_id(),
+            last.base().commit().plan().clone(),
+        )
+        .unwrap();
+        typed = encode_vector_evidence_v1(&evidence).unwrap();
+        typed.as_bytes()
+    } else {
+        entity_row.value().unwrap()
+    };
+    let extra = AuthoritativeMutationV3::put(namespace, &key, None, bytes).unwrap();
     let mut mutations = prefix.mutations().to_vec();
     mutations.push(extra.clone());
     mutations.sort_by(|a, b| (a.namespace(), a.key()).cmp(&(b.namespace(), b.key())));
@@ -239,6 +259,16 @@ fn unexpected_vector_mutation(
         CommandPrefixEvidenceV1::new(prefix.predecessor(), prefix.covered(), mutations).unwrap(),
     )
     .unwrap();
+    if case == 17 {
+        assert!(
+            riffdb_catalog::validate_command_prefix_index_images_v1(
+                validated_contract_bundle(),
+                last
+            )
+            .is_err(),
+            "catalog must refuse evidence for a field without a production vector spec"
+        );
+    }
     let draft = StoredCommandSegmentV1::new(
         segment.database_id(),
         segment.history_incarnation(),
@@ -732,5 +762,28 @@ fn follower_refuses_invalid_prior_index_even_when_next_command_keeps_its_bytes()
         assert!(applier.apply_frame(&frame).is_err(), "missing {missing}");
         drop(applier);
         assert_eq!(open_follower(&path).durable_history().unwrap(), baseline);
+    }
+}
+
+#[test]
+fn catalog_refuses_vector_evidence_for_an_undeclared_production_field() {
+    let source = TestDatabasePath::new("prefix-vector-catalog");
+    let anchor = install_fixture(&source.0);
+    let (ports, _receiver) = observed_ports(&source.0, RedbCommitProfile::Hardened);
+    commit_command_fixture(&ports, &command_fixture_at(1));
+    let pin = ports.published_changelog_snapshot_v3().unwrap();
+    let mut cursor = pin
+        .changelog_receipts_v3(anchor.lineage(), anchor.tail())
+        .unwrap();
+    loop {
+        let receipt = cursor.next_receipt().unwrap().unwrap();
+        if receipt
+            .mutations()
+            .iter()
+            .any(|m| m.namespace() == N::Commits)
+        {
+            unexpected_vector_mutation(&receipt, 17);
+            break;
+        }
     }
 }

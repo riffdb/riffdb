@@ -14,6 +14,8 @@ mod oracle;
 mod proxy;
 #[path = "replication_follower/support.rs"]
 mod support;
+#[path = "replication_follower/vector_prefix.rs"]
+mod vector_prefix;
 #[path = "replication_follower/workload.rs"]
 mod workload;
 
