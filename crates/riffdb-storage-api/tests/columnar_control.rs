@@ -445,6 +445,65 @@ fn columnar_history_reset_transition_is_exact_and_closed() {
     );
 }
 
+// req: PRJ-005, PRJ-006, PRJ-007, PRJ-008, PRJ-009, PRJ-010
+#[test]
+fn columnar_candidates_publish_validated_frontiers_under_continuous_head_advance() {
+    let definition = DefinitionFingerprint::from_bytes([0x11; 32]);
+    let spec = ColumnarProjectionSpecHashV1::from_bytes([0x22; 32]);
+    let initial = StoredColumnarProjectionControlV1::initialize_fresh_v1(
+        source(definition),
+        definition,
+        spec,
+        limits(),
+        1,
+    )
+    .expect("initial");
+    let initial = prepare(initial, applied(1), applied(1), artifact(64, 0x44));
+    assert!(
+        initial
+            .clone()
+            .publish_prepared_generation(FrontierPosition::BeforeFirst)
+            .is_err()
+    );
+    let mut ready = initial
+        .publish_prepared_generation(applied(2))
+        .expect("publish validated H below head");
+    for sequence in 2..=16 {
+        let candidate = if sequence == 2 {
+            ready.clone().begin_v2_candidate([0x33; 32])
+        } else {
+            ready.clone().allocate_same_spec_candidate([0x33; 32])
+        }
+        .expect("allocate");
+        let prior = applied(sequence - 1);
+        let no_progress = prepare(candidate.clone(), prior, prior, artifact(64, 0x44));
+        assert!(
+            no_progress
+                .publish_prepared_generation(applied(sequence + 1))
+                .is_err(),
+            "same-spec publication must advance strictly"
+        );
+        let h = applied(sequence);
+        let prepared = prepare(candidate, h, h, artifact(64, 0x44));
+        assert_eq!(prepared.retention_frontier(), Some(prior));
+        ready = prepared
+            .publish_prepared_generation(applied(sequence + 1))
+            .expect("head always advances after build");
+        assert_eq!(ready.published().expect("published").frontier(), h);
+        assert_eq!(
+            ready.retention_frontier(),
+            Some(h),
+            "retain unapplied tail, not newer head"
+        );
+        let encoded = encode_columnar_projection_control_v1(&ready).expect("canonical control");
+        let decoded = decode_columnar_projection_control_v1(encoded.as_bytes())
+            .expect("reopen control")
+            .into_parts()
+            .0;
+        assert_eq!(ready, decoded);
+    }
+}
+
 fn source(fingerprint: DefinitionFingerprint) -> ColumnarProjectionSourceV1 {
     ColumnarProjectionSourceV1::scalar(
         ContractLineage::new("ColumnarControl").expect("lineage"),

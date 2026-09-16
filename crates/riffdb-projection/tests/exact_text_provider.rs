@@ -17,6 +17,175 @@ const CHECKPOINT_FIXTURE: &str =
 const CHECKPOINT_FIXTURE_V2: &str =
     include_str!("../../../fixtures/projection/exact-text-provider-state-v2.txt");
 
+// req: PRJ-001, PRJ-002, PRJ-004
+#[test]
+fn filtered_text_incremental_replacement_removal_and_nulls_match_full_rebuild() {
+    use riffdb_projection::ExactTextIndexMutationV3 as Mutation;
+    let generation = ProjectionGeneration::first();
+    let mut rows = BTreeMap::from([
+        (
+            key(1),
+            (
+                "alpha match".to_owned(),
+                CanonicalValue::Bool(true),
+                output(1),
+            ),
+        ),
+        (
+            key(2),
+            (
+                "beta match".to_owned(),
+                CanonicalValue::Bool(false),
+                output(2),
+            ),
+        ),
+        (
+            key(3),
+            (
+                "alpha match".to_owned(),
+                CanonicalValue::Bool(true),
+                output(3),
+            ),
+        ),
+    ]);
+    let build = |epoch, rows: &BTreeMap<_, _>| {
+        ExactTextPartitionIndexV3::rebuild(
+            partition(3),
+            generation,
+            seq(epoch),
+            ExactTextProfileV1::BinaryUtf8V1,
+            FieldId::new(2).unwrap(),
+            rows,
+        )
+        .unwrap()
+    };
+    let mut provider = build(1, &rows);
+    let steps = [
+        vec![Mutation::Upsert {
+            row: key(1),
+            value: "gamma match".into(),
+            filter: CanonicalValue::Bool(false),
+            output: output(11),
+        }],
+        vec![
+            Mutation::Delete(key(2)),
+            Mutation::Upsert {
+                row: key(4),
+                value: "alpha match".into(),
+                filter: CanonicalValue::Null,
+                output: output(4),
+            },
+        ],
+        vec![],
+        vec![
+            Mutation::Delete(key(3)),
+            Mutation::Upsert {
+                row: key(4),
+                value: "new".into(),
+                filter: CanonicalValue::Bool(true),
+                output: output(44),
+            },
+        ],
+    ];
+    for (i, changes) in steps.iter().enumerate() {
+        let epoch = i as u64 + 2;
+        for change in changes {
+            match change {
+                Mutation::Upsert {
+                    row,
+                    value,
+                    filter,
+                    output,
+                } => {
+                    rows.insert(row.clone(), (value.clone(), filter.clone(), output.clone()));
+                }
+                Mutation::Delete(row) => {
+                    rows.remove(row);
+                }
+            }
+        }
+        provider.apply(seq(epoch), changes).unwrap();
+        let reference = build(epoch, &rows);
+        assert_eq!(
+            provider, reference,
+            "every posting/filter/output/frontier matches at {epoch}"
+        );
+        let bytes = provider.to_checkpoint_bytes().unwrap();
+        assert_eq!(bytes, reference.to_checkpoint_bytes().unwrap());
+        assert_eq!(
+            provider,
+            ExactTextPartitionIndexV3::from_checkpoint_bytes(&bytes).unwrap()
+        );
+        for filter in [
+            None,
+            Some(CanonicalValue::Bool(true)),
+            Some(CanonicalValue::Bool(false)),
+            Some(CanonicalValue::Null),
+        ] {
+            for operator in [
+                ExactTextOperatorV1::Equals,
+                ExactTextOperatorV1::StartsWith,
+                ExactTextOperatorV1::EndsWith,
+                ExactTextOperatorV1::Contains,
+            ] {
+                for order in [
+                    ExactTextOrderV1::ValueAscEntityKey,
+                    ExactTextOrderV1::ValueDescEntityKey,
+                ] {
+                    let needle = ExactTextProfileV1::BinaryUtf8V1
+                        .bind_needle("match")
+                        .unwrap();
+                    assert_eq!(
+                        provider
+                            .result_page(
+                                operator,
+                                &needle,
+                                filter.as_ref(),
+                                order,
+                                1,
+                                NonZeroU16::MIN
+                            )
+                            .unwrap(),
+                        reference
+                            .result_page(
+                                operator,
+                                &needle,
+                                filter.as_ref(),
+                                order,
+                                1,
+                                NonZeroU16::MIN
+                            )
+                            .unwrap()
+                    );
+                }
+            }
+        }
+    }
+    let prior = provider.clone();
+    let duplicate = [Mutation::Delete(key(1)), Mutation::Delete(key(1))];
+    assert_eq!(
+        provider.apply(seq(6), &duplicate),
+        Err(ExactTextProviderErrorV1::DuplicateRowMutation)
+    );
+    assert_eq!(provider, prior);
+    assert_eq!(
+        provider.apply(seq(5), &[]),
+        Err(ExactTextProviderErrorV1::NonAdvancingEpoch)
+    );
+    assert_eq!(provider, prior);
+    let oversized = [Mutation::Upsert {
+        row: key(1),
+        value: "x".repeat(riffdb_types::MAX_EXACT_TEXT_VALUE_BYTES_V1 + 1),
+        filter: CanonicalValue::Null,
+        output: output(1),
+    }];
+    assert_eq!(
+        provider.apply(seq(6), &oversized),
+        Err(ExactTextProviderErrorV1::ValueTooLong)
+    );
+    assert_eq!(provider, prior);
+}
+
 fn seq(value: u64) -> CommitSequence {
     CommitSequence::new(value).unwrap()
 }

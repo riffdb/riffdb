@@ -128,6 +128,8 @@ pub enum HashDomain {
     ApplicationExportReceipt,
     /// One opaque checkpoint cursor for a symbolic application export.
     ApplicationExportCursor,
+    /// Immutable export genesis and ordered page-ledger prefix (ADR-0232).
+    ApplicationExportLedger,
     /// One adapter-owned compiled reimport mapping manifest.
     ApplicationPortabilityManifest,
     /// One terminal application reimport reconciliation receipt.
@@ -140,7 +142,7 @@ pub enum HashDomain {
 
 impl HashDomain {
     /// Every registered unkeyed domain, for compatibility and collision checks.
-    pub const ALL: [Self; 52] = [
+    pub const ALL: [Self; 53] = [
         Self::CanonicalValue,
         Self::Source,
         Self::MigrationSource,
@@ -189,6 +191,7 @@ impl HashDomain {
         Self::ApplicationExportManifest,
         Self::ApplicationExportReceipt,
         Self::ApplicationExportCursor,
+        Self::ApplicationExportLedger,
         Self::ApplicationPortabilityManifest,
         Self::ApplicationReimportReceipt,
         Self::ExactResultCheckpoint,
@@ -246,6 +249,7 @@ impl HashDomain {
             Self::ApplicationExportManifest => "riffdb.application-export-manifest/v1",
             Self::ApplicationExportReceipt => "riffdb.application-export-receipt/v1",
             Self::ApplicationExportCursor => "riffdb.application-export-cursor/v1",
+            Self::ApplicationExportLedger => "riffdb.application-export-ledger/v1",
             Self::ApplicationPortabilityManifest => "riffdb.application-portability-manifest/v1",
             Self::ApplicationReimportReceipt => "riffdb.application-reimport-receipt/v1",
             Self::ExactResultCheckpoint => "riffdb.exact-result-checkpoint/v1",

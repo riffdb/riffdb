@@ -397,6 +397,7 @@ impl RedbFollowerApplier {
             for receipt in frame.receipts() {
                 successor = successor.advance(receipt).map_err(value_error)?;
                 crate::command_prefix::validate_received_prefixes(&write, &tables, receipt)?;
+                crate::application_export_ledger::validate_received(&write, &tables, receipt)?;
                 for mutation in receipt.mutations() {
                     if !tables.contains(mutation.namespace().table()) {
                         return Err(corrupt());

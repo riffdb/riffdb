@@ -83,7 +83,7 @@ impl Fixture {
     pub(super) fn projections(&self, name: &str) -> PathBuf {
         self.root.path().join(format!("{name}-projections"))
     }
-    fn config(&self, name: &str) -> PathBuf {
+    pub(super) fn config(&self, name: &str) -> PathBuf {
         self.root.path().join(format!("{name}.toml"))
     }
     fn endpoint(&self, name: &str) -> String {

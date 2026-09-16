@@ -120,7 +120,7 @@ fn catalog_and_leadership_complete_envelope_vectors_are_frozen() {
         (
             encode_catalog(AuthoritativeStateCatalogV1).unwrap(),
             include_str!("../../../fixtures/replication/authoritative-state-catalog-v1.hex"),
-            "5244423202450001000000220ddd4efe0a204ab9f21e9446ab94671415b4e705efdc78e848d589b59d5f4b8d2a268645eb81\n",
+            "524442320245000100000022415b75500a20043b7bc3c19905ae8f0d479ee891a6eae3851ae8c3ae62c9b7359db70c85d8ef\n",
         ),
         (
             encode_epoch(LeadershipEpochV1::initial()).unwrap(),

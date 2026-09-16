@@ -19,7 +19,7 @@ use riffdb_types::{
 };
 
 use crate::ResolvedExecutablePlan;
-use crate::lineage::{RecordOwnerV1, WriterRelation};
+use crate::lineage::{LineageMaterializationProof, RecordOwnerV1, WriterRelation};
 
 const CANONICAL_NULL_FIELD_BYTES_V1: usize = 4 + 1 + 1;
 const MAX_MATERIALIZATION_MASK_BYTES_V1: usize =
@@ -788,11 +788,26 @@ fn analyze_record_fields(
     entity: &EntitySchema,
     record: &StoredEntityRecordV1,
 ) -> Result<RecordAnalysis, CommandSnapshotMaterializationError> {
+    analyze_record_fields_at(
+        resolved.bundle(),
+        resolved.lineage_proof(),
+        resolved.executing_ordinal(),
+        entity,
+        record,
+    )
+}
+
+fn analyze_record_fields_at(
+    bundle: &crate::ValidatedContractBundle,
+    lineage: &LineageMaterializationProof,
+    ordinal: u16,
+    entity: &EntitySchema,
+    record: &StoredEntityRecordV1,
+) -> Result<RecordAnalysis, CommandSnapshotMaterializationError> {
     let schema = entity.record();
     let owner = RecordOwnerV1::Entity(record.target().entity_type_id());
-    let (relation, eligibility) = resolved
-        .lineage_proof()
-        .writer_materialization(owner, record.schema_binding(), resolved.executing_ordinal())
+    let (relation, eligibility) = lineage
+        .writer_materialization(owner, record.schema_binding(), ordinal)
         .map_err(|_| CommandSnapshotMaterializationError::integrity())?;
     if eligibility
         .as_ref()
@@ -816,11 +831,7 @@ fn analyze_record_fields(
             return Err(CommandSnapshotMaterializationError::integrity());
         }
         if let Some(value) = value {
-            validate_static_value(
-                resolved.bundle().bundle().schema(),
-                field.value_type(),
-                value,
-            )?;
+            validate_static_value(bundle.bundle().schema(), field.value_type(), value)?;
         } else {
             if relation != WriterRelation::Ancestor
                 || !eligible
@@ -830,7 +841,7 @@ fn analyze_record_fields(
             }
             missing.push(position);
             validate_static_value(
-                resolved.bundle().bundle().schema(),
+                bundle.bundle().schema(),
                 field.value_type(),
                 &CanonicalValue::Null,
             )?;
@@ -866,6 +877,46 @@ fn analyze_record_fields(
         record_limit_exceeded: expanded_bytes > MAX_CANONICAL_DOCUMENT_BYTES
             || expanded_fields > MAX_RECORD_FIELDS,
     })
+}
+
+impl crate::ActiveCatalogSnapshot {
+    /// Validates a complete writer post-image and materializes only optional
+    /// fields proved by the existing catalog lineage for an exact derived plan.
+    /// This consumes source bytes already bound to a validated snapshot/receipt;
+    /// it never reads a newer entity or infers a missing writer/schema binding.
+    pub fn materialize_derived_entity(
+        &self,
+        executing: &riffdb_storage_api::DurableKeySchemaBindingV1,
+        record: StoredEntityRecordV1,
+    ) -> Result<StoredEntityRecordV1, CommandSnapshotMaterializationError> {
+        materialize_derived_record(self.lineage_proof(), executing, record)
+    }
+}
+
+fn materialize_derived_record(
+    lineage: &LineageMaterializationProof,
+    executing: &riffdb_storage_api::DurableKeySchemaBindingV1,
+    record: StoredEntityRecordV1,
+) -> Result<StoredEntityRecordV1, CommandSnapshotMaterializationError> {
+    let (_, writer) = lineage
+        .exact_binding_member(record.schema_binding())
+        .ok_or_else(CommandSnapshotMaterializationError::integrity)?;
+    crate::command_prefix_entity::validate_record(writer, &record)
+        .map_err(|_| CommandSnapshotMaterializationError::integrity())?;
+    let (ordinal, bundle) = lineage
+        .exact_binding_member(executing)
+        .ok_or_else(CommandSnapshotMaterializationError::integrity)?;
+    let entity = bundle
+        .bundle()
+        .schema()
+        .entity(record.target().entity_type_id())
+        .ok_or_else(CommandSnapshotMaterializationError::integrity)?;
+    let analysis = analyze_record_fields_at(bundle, lineage, ordinal, entity, &record)?;
+    validate_entity_record_key(entity, &record)?;
+    if analysis.record_limit_exceeded {
+        return Err(CommandSnapshotMaterializationError::integrity());
+    }
+    normalize_record(record, entity.record(), analysis.mask.as_ref())
 }
 
 /// Prefix evidence retains raw writer bytes; index derivation must use the
@@ -1005,7 +1056,7 @@ fn normalize_record(
     if mask.is_some_and(|mask| !mask.has_canonical_shape(schema.fields().len())) {
         return Err(CommandSnapshotMaterializationError::integrity());
     }
-    let mut fields = record.fields().fields().to_vec();
+    let mut fields: Option<Vec<(riffdb_types::FieldId, CanonicalValue)>> = None;
     for (position, field) in schema.fields().iter().enumerate() {
         let found = record
             .fields()
@@ -1017,9 +1068,14 @@ fn normalize_record(
             return Err(CommandSnapshotMaterializationError::integrity());
         }
         if insert {
-            fields.push((field.id(), CanonicalValue::Null));
+            fields
+                .get_or_insert_with(|| record.fields().fields().to_vec())
+                .push((field.id(), CanonicalValue::Null));
         }
     }
+    let Some(fields) = fields else {
+        return Ok(record);
+    };
     let fields = CanonicalRecord::new(fields)
         .map_err(|_| CommandSnapshotMaterializationError::integrity())?;
     StoredEntityRecordV1::new(
@@ -1506,6 +1562,40 @@ contract SnapshotMaterialization version {version} {{
             ),
         )
         .expect("stored fixture record")
+    }
+
+    // req: PRJ-001, PRJ-002, PRJ-004
+    #[test]
+    fn derived_postimages_use_exact_writer_validation_and_existing_lineage_null_fill() {
+        let bundles = lineage(1);
+        let entity = entity_type(&bundles[0]);
+        let proof = LineageMaterializationProof::from_forward_bundles(bundles.clone()).unwrap();
+        let executing = binding(&bundles[1]);
+        let old = record(&bundles[0], entity, 1, 1, false, 7, None);
+        let normalized = materialize_derived_record(&proof, &executing, old.clone()).unwrap();
+        let resolved = resolved_at(bundles.clone(), 1);
+        assert_eq!(
+            normalized,
+            materialize_prefix_index_predecessor(&resolved, &old).unwrap()
+        );
+        let complete = record(&bundles[1], entity, 1, 2, true, 8, None);
+        assert_eq!(
+            materialize_derived_record(&proof, &executing, complete.clone()).unwrap(),
+            complete
+        );
+        let invalid = record(&bundles[1], entity, 1, 2, false, 8, None);
+        assert!(materialize_derived_record(&proof, &executing, invalid).is_err());
+        let extra = record(&bundles[0], entity, 1, 1, false, 7, Some(3));
+        assert!(materialize_derived_record(&proof, &executing, extra).is_err());
+        let substituted = StoredEntityRecordV1::new(
+            old.target().clone(),
+            old.entity_version(),
+            old.written_by_contract(),
+            old.schema_binding().clone(),
+            fields(&bundles[0], entity, 2, false, 7, None),
+        )
+        .unwrap();
+        assert!(materialize_derived_record(&proof, &executing, substituted).is_err());
     }
 
     fn snapshot(

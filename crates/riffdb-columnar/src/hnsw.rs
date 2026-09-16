@@ -8,6 +8,8 @@
 #![forbid(unsafe_code)]
 
 use riffdb_types::{CanonicalVector, DistanceMetric};
+use std::cmp::{Ordering, Reverse};
+use std::collections::BinaryHeap;
 
 use crate::nearest::{NearestError, ScoredCandidate, compute_distance};
 
@@ -15,6 +17,29 @@ const MAX_LEVEL: usize = 8;
 const MAX_NEIGHBORS: usize = 12;
 const EF_CONSTRUCTION: usize = 64;
 const MAX_EF_SEARCH: usize = 512;
+
+#[derive(Clone, Debug)]
+struct RankedCandidate(ScoredCandidate);
+
+impl PartialEq for RankedCandidate {
+    fn eq(&self, other: &Self) -> bool {
+        self.cmp(other) == Ordering::Equal
+    }
+}
+impl Eq for RankedCandidate {}
+impl PartialOrd for RankedCandidate {
+    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
+        Some(self.cmp(other))
+    }
+}
+impl Ord for RankedCandidate {
+    fn cmp(&self, other: &Self) -> Ordering {
+        self.0
+            .distance
+            .total_cmp(&other.0.distance)
+            .then_with(|| self.0.index.cmp(&other.0.index))
+    }
+}
 
 #[derive(Clone, Debug)]
 struct Node {
@@ -38,17 +63,26 @@ pub(crate) struct HnswIndex {
 }
 
 impl HnswIndex {
+    #[cfg(test)]
     pub(crate) fn build(
         vectors: &[&CanonicalVector],
         metric: DistanceMetric,
     ) -> Result<Self, NearestError> {
+        Self::build_while(vectors, metric, || true).map(|index| index.expect("uncancelled build"))
+    }
+
+    pub(crate) fn build_while(
+        vectors: &[&CanonicalVector],
+        metric: DistanceMetric,
+        mut retain: impl FnMut() -> bool,
+    ) -> Result<Option<Self>, NearestError> {
         let Some(first) = vectors.first() else {
-            return Ok(Self {
+            return Ok(Some(Self {
                 nodes: Vec::new(),
                 entry: 0,
                 maximum_level: 0,
                 metric,
-            });
+            }));
         };
         for (index, vector) in vectors.iter().enumerate() {
             if vector.dimension() != first.dimension() {
@@ -67,9 +101,29 @@ impl HnswIndex {
             metric,
         };
         for node_index in 0..vectors.len() {
+            if !retain() {
+                return Ok(None);
+            }
             index.insert(node_index, vectors);
         }
-        Ok(index)
+        Ok(Some(index))
+    }
+
+    #[cfg(test)]
+    pub(crate) fn retained_buffer_allocations(&self) -> usize {
+        usize::from(self.nodes.capacity() != 0)
+            + self
+                .nodes
+                .iter()
+                .map(|node| {
+                    usize::from(node.neighbors.capacity() != 0)
+                        + node
+                            .neighbors
+                            .iter()
+                            .filter(|neighbors| neighbors.capacity() != 0)
+                            .count()
+                })
+                .sum::<usize>()
     }
 
     fn insert(&mut self, node_index: usize, vectors: &[&CanonicalVector]) {
@@ -120,22 +174,26 @@ impl HnswIndex {
         if self.nodes[node].neighbors[layer].len() <= MAX_NEIGHBORS {
             return;
         }
-        let mut neighbors = std::mem::take(&mut self.nodes[node].neighbors[layer]);
-        neighbors.sort_unstable_by(|left, right| {
-            compute_distance(
-                vectors[node].components(),
-                vectors[*left].components(),
-                self.metric,
-            )
-            .total_cmp(&compute_distance(
-                vectors[node].components(),
-                vectors[*right].components(),
-                self.metric,
-            ))
-            .then_with(|| left.cmp(right))
-        });
-        neighbors.truncate(MAX_NEIGHBORS);
-        self.nodes[node].neighbors[layer] = neighbors;
+        let neighbors = std::mem::take(&mut self.nodes[node].neighbors[layer]);
+        let mut scored = neighbors
+            .into_iter()
+            .map(|index| {
+                RankedCandidate(ScoredCandidate {
+                    index,
+                    distance: compute_distance(
+                        vectors[node].components(),
+                        vectors[index].components(),
+                        self.metric,
+                    ),
+                })
+            })
+            .collect::<Vec<_>>();
+        scored.sort_unstable();
+        scored.truncate(MAX_NEIGHBORS);
+        self.nodes[node].neighbors[layer] = scored
+            .into_iter()
+            .map(|candidate| candidate.0.index)
+            .collect();
     }
 
     fn greedy_closest(
@@ -175,6 +233,73 @@ impl HnswIndex {
     }
 
     fn search_layer(
+        &self,
+        query: &CanonicalVector,
+        vectors: &[&CanonicalVector],
+        entry: usize,
+        layer: usize,
+        ef: usize,
+        node_limit: usize,
+    ) -> Vec<ScoredCandidate> {
+        let mut visited = vec![false; node_limit];
+        if entry >= node_limit {
+            return Vec::new();
+        }
+        let capacity = ef.min(node_limit);
+        if capacity == 0 {
+            return Vec::new();
+        }
+        visited[entry] = true;
+        let first = RankedCandidate(ScoredCandidate {
+            index: entry,
+            distance: compute_distance(
+                query.components(),
+                vectors[entry].components(),
+                self.metric,
+            ),
+        });
+        let mut pending = BinaryHeap::from([Reverse(first.clone())]);
+        let mut nearest = BinaryHeap::from([first]);
+        // Preserve the existing fixed expansion budget and discovery semantics:
+        // frontier entries are not discarded when they leave the best-result set.
+        for _ in 0..capacity {
+            let Some(Reverse(candidate)) = pending.pop() else {
+                break;
+            };
+            if let Some(neighbors) = self.nodes[candidate.0.index].neighbors.get(layer) {
+                for neighbor in neighbors {
+                    if *neighbor >= node_limit || visited[*neighbor] {
+                        continue;
+                    }
+                    visited[*neighbor] = true;
+                    let scored = RankedCandidate(ScoredCandidate {
+                        index: *neighbor,
+                        distance: compute_distance(
+                            query.components(),
+                            vectors[*neighbor].components(),
+                            self.metric,
+                        ),
+                    });
+                    pending.push(Reverse(scored.clone()));
+                    if nearest.len() < capacity {
+                        nearest.push(scored);
+                    } else if let Some(mut worst) = nearest.peek_mut()
+                        && scored < *worst
+                    {
+                        *worst = scored;
+                    }
+                }
+            }
+        }
+        nearest
+            .into_sorted_vec()
+            .into_iter()
+            .map(|candidate| candidate.0)
+            .collect()
+    }
+
+    #[cfg(test)]
+    fn reference_search_layer(
         &self,
         query: &CanonicalVector,
         vectors: &[&CanonicalVector],
@@ -323,6 +448,41 @@ mod tests {
             .filter(|candidate| exact.iter().any(|item| item.index == candidate.index))
             .count();
         u32::try_from(overlap * 10_000 / exact.len()).expect("recall is bounded")
+    }
+
+    // req: VEC-006, VEC-007
+    #[test]
+    fn heap_traversal_preserves_fixed_budget_discovery_and_ties() {
+        let mut rng = StdRng::seed_from_u64(0x5940_beef);
+        let mut vectors = (0..96)
+            .map(|_| random_vector(&mut rng, 8))
+            .collect::<Vec<_>>();
+        vectors.extend(std::iter::repeat_n(vectors[0].clone(), 16));
+        let refs = vectors.iter().collect::<Vec<_>>();
+        for metric in [
+            DistanceMetric::Euclidean,
+            DistanceMetric::Cosine,
+            DistanceMetric::DotProduct,
+        ] {
+            let index = HnswIndex::build(&refs, metric).unwrap();
+            for ef in [0, 1, 2, 12, 64, 112] {
+                for entry in [0, 12, 100, 112] {
+                    let actual = index.search_layer(&vectors[0], &refs, entry, 0, ef, refs.len());
+                    let expected =
+                        index.reference_search_layer(&vectors[0], &refs, entry, 0, ef, refs.len());
+                    assert_eq!(
+                        actual
+                            .iter()
+                            .map(|v| (v.index, v.distance.to_bits()))
+                            .collect::<Vec<_>>(),
+                        expected
+                            .iter()
+                            .map(|v| (v.index, v.distance.to_bits()))
+                            .collect::<Vec<_>>()
+                    );
+                }
+            }
+        }
     }
 
     #[test]

@@ -540,40 +540,40 @@ where
         retain: Option<CursorToken>,
     ) -> Result<bool, CursorUnavailable> {
         let mut evicted = false;
-        let principal_count = inner
+        let (principal_count, principal_oldest) = inner
             .entries
             .iter()
             .filter(|(token, entry)| {
                 Some(**token) != retain && &entry.binding.principal == principal
             })
-            .count();
+            .fold((0usize, None), |(count, oldest), (token, entry)| {
+                let oldest = match oldest {
+                    Some((_, tick)) if tick <= entry.created_at => oldest,
+                    _ => Some((*token, entry.created_at)),
+                };
+                (count + 1, oldest)
+            });
         if principal_count >= MAX_LIVE_CURSORS_PER_PRINCIPAL {
-            let oldest = inner
-                .entries
-                .iter()
-                .filter(|(token, entry)| {
-                    Some(**token) != retain && &entry.binding.principal == principal
-                })
-                .min_by_key(|(_, entry)| entry.created_at)
-                .map(|(token, _)| *token);
+            let oldest = principal_oldest.map(|(token, _)| token);
             let Some(oldest) = oldest else {
                 return Err(CursorUnavailable);
             };
             inner.entries.remove(&oldest);
             evicted = true;
         }
-        let live = inner
+        let (live, global_oldest) = inner
             .entries
             .iter()
             .filter(|(token, _)| Some(**token) != retain)
-            .count();
+            .fold((0usize, None), |(count, oldest), (token, entry)| {
+                let oldest = match oldest {
+                    Some((_, tick)) if tick <= entry.created_at => oldest,
+                    _ => Some((*token, entry.created_at)),
+                };
+                (count + 1, oldest)
+            });
         if live >= MAX_LIVE_CURSORS {
-            let oldest = inner
-                .entries
-                .iter()
-                .filter(|(token, _)| Some(**token) != retain)
-                .min_by_key(|(_, entry)| entry.created_at)
-                .map(|(token, _)| *token);
+            let oldest = global_oldest.map(|(token, _)| token);
             let Some(oldest) = oldest else {
                 return Err(CursorUnavailable);
             };
@@ -2711,9 +2711,38 @@ mod tests {
                 .resolve(sixty_fifth.token(), &binding(1, 64))
                 .is_ok()
         );
+    }
 
-        // Global eviction is covered by the principal path above for unit cost;
-        // a dedicated global fill would take thousands of tokens and is skipped.
+    // req: OQ-020
+    #[test]
+    fn global_eviction_preserves_retained_token_and_first_token_tie_break() {
+        let registry = CursorRegistry::new(SequentialGenerator::new(), FixedClock::at(0));
+        let mut inner = CursorRegistryInner::new();
+        let token = |ordinal: usize| {
+            let mut bytes = [0; CURSOR_TOKEN_BYTES];
+            bytes[..8].copy_from_slice(&(ordinal as u64).to_be_bytes());
+            CursorToken::from_bytes(bytes)
+        };
+        for ordinal in 0..=MAX_LIVE_CURSORS {
+            inner.entries.insert(
+                token(ordinal),
+                CursorEntry {
+                    binding: binding(ordinal as u16, 0),
+                    state: Arc::new(state(0)),
+                    created_at: CursorTick(0),
+                    expires_at: CursorTick(u64::MAX),
+                },
+            );
+        }
+        assert!(
+            registry
+                .make_room(&mut inner, &u16::MAX, Some(token(0)))
+                .unwrap()
+        );
+        assert!(inner.entries.contains_key(&token(0)));
+        assert!(!inner.entries.contains_key(&token(1)));
+        assert!(inner.entries.contains_key(&token(2)));
+        assert_eq!(inner.entries.len(), MAX_LIVE_CURSORS);
     }
 
     #[test]

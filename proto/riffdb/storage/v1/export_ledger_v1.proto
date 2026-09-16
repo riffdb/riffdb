@@ -1,0 +1,19 @@
+syntax = "proto3";
+
+package riffdb.storage.v1;
+
+// ADR-0232 compact state. Service-owned canonical frames retain their strict
+// decoding checks; the repository independently validates genesis and prefix.
+message StoredApplicationExportOperationV2 {
+  bytes operation_id = 1;
+  string contract_lineage = 2;
+  bytes immutable_binding = 3;
+  bytes canonical_state = 4;
+  bytes canonical_prefix = 5;
+}
+
+// Complete fixed-size RXPL V1 commitment, including exact owner and ordinal.
+// A separately registered operation/ordinal key must agree with this member.
+message StoredApplicationExportPageCommitmentV1 {
+  bytes canonical_commitment = 1;
+}

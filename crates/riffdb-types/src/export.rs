@@ -13,6 +13,13 @@ use crate::{
 /// Maximum immutable module identities bound into one export snapshot.
 pub const MAX_APPLICATION_EXPORT_MODULES: usize = 256;
 
+/// Maximum records released by one symbolic export page.
+pub const MAX_APPLICATION_EXPORT_PAGE_ROWS: usize = 500;
+/// Maximum content bytes released by one symbolic export page.
+pub const MAX_APPLICATION_EXPORT_PAGE_BYTES: usize = 4 * 1024 * 1024;
+/// Maximum retained page commitments for one symbolic export operation.
+pub const MAX_APPLICATION_EXPORT_PAGES: usize = 4_096;
+
 /// Safe construction failure for one symbolic export identity or selection.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum ApplicationExportValueError {

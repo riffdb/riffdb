@@ -157,6 +157,21 @@ divergence, and revocation failures cross every public transport. The
 application may use a bounded retry budget; it may not emulate the result while
 the provider is unavailable.
 
+Healthy binary-text and exact-predicate providers replay retained V3 receipt
+post-images in bounded passes of at most 64 application commits and one source
+byte page. Missing receipt history, oversized indivisible groups, and changes to
+indexed policy dependencies can require a complete snapshot rebuild. Attached
+followers currently use that rebuild path because they retain applied progress
+without the primary's receipt history. Provider checkpoints keep their existing
+complete encoding and validation.
+
+Background rebuilds read rows, catalog evidence, and row-policy evidence from
+one captured authoritative view. A healthy prior provider stays selected while
+its replacement is prepared, and the replacement checkpoint is reopened and
+validated before selection. The provider reports its actual captured frontier;
+Latest requests still require that frontier to equal their captured application
+head and may receive a typed freshness refusal while it lags.
+
 Numeric offsets are bounded direct ordinal selections inside one provider
 epoch. Use generated cursor pagination instead when a user journey spans
 multiple requests and must retain snapshot identity across concurrent writes;

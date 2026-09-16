@@ -496,6 +496,10 @@ hash_id!(
     ApplicationExportPageHash
 );
 hash_id!(
+    /// The domain-separated genesis or ordered prefix of an export page ledger.
+    ApplicationExportLedgerHash
+);
+hash_id!(
     /// The identity of one canonical symbolic application-export manifest.
     ApplicationExportManifestHash
 );

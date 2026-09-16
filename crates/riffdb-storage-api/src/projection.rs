@@ -1,5 +1,8 @@
 //! Typed projection state, control, apply, query, and lifecycle persistence.
 
+mod batch;
+pub use batch::*;
+
 use std::fmt;
 use std::num::NonZeroU16;
 
@@ -2362,6 +2365,18 @@ pub enum ProjectionApplyResult {
 
 /// Worker-only transaction-atomic apply-snapshot read port.
 pub trait ProjectionApplySnapshotReader {
+    /// Captures one immutable base for sequential bounded batch preparation.
+    /// Adapters without batch custody retain their existing single-member path.
+    fn capture_apply_batch_snapshot(
+        &self,
+        _identity: &ProjectionIdentity,
+    ) -> Result<Box<dyn ProjectionBatchSnapshot>, StorageError> {
+        Err(StorageError::new(
+            crate::StorageErrorKind::Unavailable,
+            None,
+        ))
+    }
+
     /// Reads control, frontier, and every requested row in one read view.
     fn read_apply_snapshot(
         &self,
@@ -2371,6 +2386,28 @@ pub trait ProjectionApplySnapshotReader {
 
 /// Worker-only derived projection mutation and control port.
 pub trait ProjectionMutationRepository {
+    /// Resolves exact batch markers and control without admitting another write.
+    fn resolve_projection_batch(
+        &self,
+        _request: &ProjectionApplyBatchV1,
+    ) -> Result<ProjectionApplyBatchResult, StorageError> {
+        Err(StorageError::new(
+            crate::StorageErrorKind::Unavailable,
+            None,
+        ))
+    }
+
+    /// Applies all new members atomically, preserving each canonical equality marker.
+    fn apply_projection_batch(
+        &mut self,
+        _request: &ProjectionApplyBatchV1,
+    ) -> Result<ProjectionApplyBatchResult, StorageError> {
+        Err(StorageError::new(
+            crate::StorageErrorKind::Unavailable,
+            None,
+        ))
+    }
+
     /// Applies rows, exact marker, and frontier in one atomic transaction.
     fn apply_projection(
         &mut self,

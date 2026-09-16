@@ -49,6 +49,14 @@ fn fixture(path: &Path) -> ChangelogHistoryStateV3 {
 }
 
 fn frame(history: ChangelogHistoryStateV3, mutations: Vec<Vec<Mutation>>) -> Vec<u8> {
+    frame_with_attribution(history, mutations, ChangelogAttributionV3::OutboxTransition)
+}
+
+fn frame_with_attribution(
+    history: ChangelogHistoryStateV3,
+    mutations: Vec<Vec<Mutation>>,
+    attribution: ChangelogAttributionV3,
+) -> Vec<u8> {
     let mut successor = history;
     let receipts = mutations
         .into_iter()
@@ -64,7 +72,7 @@ fn frame(history: ChangelogHistoryStateV3, mutations: Vec<Vec<Mutation>>) -> Vec
                     covered_frontier: tail.frontier(),
                     prior_history_hash: tail.history_hash(),
                 },
-                ChangelogAttributionV3::OutboxTransition,
+                attribution,
                 mutations,
             )
             .unwrap();
@@ -574,4 +582,124 @@ fn durable_applied_hash_rejects_changed_retry_payload_after_restart() {
     let mut applier = isolated_applier(RedbFollowerStore::open(&path).unwrap());
     assert_eq!(applier.apply_frame(&bytes).unwrap(), applied);
     assert_eq!(applier.shared.durable_commit_epoch(), 0);
+}
+
+// req: EXP-006, EXP-007, EXP-009, REP-003
+#[test]
+fn follower_export_ledger_applies_complete_prefix_and_survives_exact_retry_restart() {
+    use riffdb_storage_api::{
+        ApplicationExportLedgerPrefixV1, ApplicationExportPageCommitmentV1,
+        ApplicationExportPageOrdinalV1, StoredApplicationExportOperationV2,
+        encode_application_export_operation_v2, encode_application_export_page_commitment_v1,
+    };
+    use riffdb_types::{
+        ApplicationExportClassV1, ApplicationExportOperationId, ApplicationExportPageHash,
+        ContractLineage,
+    };
+    let scope = crate::test_path::ScopedDirectory::new("follower-export-ledger");
+    let path = scope.join("db.redb");
+    let history = fixture(&path);
+    let operation =
+        ApplicationExportOperationId::from_unix_milliseconds_and_random(1, [0x29; 10]).unwrap();
+    let binding = b"exact immutable operation binding".to_vec();
+    let prefix = ApplicationExportLedgerPrefixV1::genesis(operation, &binding).unwrap();
+    let initial = StoredApplicationExportOperationV2::new(
+        operation,
+        ContractLineage::new("ExportLedger").unwrap(),
+        binding.clone(),
+        b"accepted".to_vec(),
+        prefix,
+    )
+    .unwrap();
+    let page = ApplicationExportPageCommitmentV1::new(
+        operation,
+        ApplicationExportPageOrdinalV1::new(1).unwrap(),
+        ApplicationExportClassV1::Entity,
+        ApplicationExportPageHash::from_bytes([0x31; 32]),
+        1,
+        64,
+    )
+    .unwrap();
+    let encoded_page = encode_application_export_page_commitment_v1(&page).unwrap();
+    let prefix = prefix
+        .advance(
+            &page,
+            page.canonical_key().len() + encoded_page.as_bytes().len(),
+        )
+        .unwrap();
+    let next = StoredApplicationExportOperationV2::new(
+        operation,
+        initial.lineage().clone(),
+        binding,
+        b"exporting".to_vec(),
+        prefix,
+    )
+    .unwrap();
+    let old = encode_application_export_operation_v2(&initial).unwrap();
+    let new = encode_application_export_operation_v2(&next).unwrap();
+    let bytes = frame_with_attribution(
+        history,
+        vec![
+            vec![
+                Mutation::put(
+                    N::ApplicationExportOperations,
+                    operation.as_bytes(),
+                    None,
+                    old.as_bytes(),
+                )
+                .unwrap(),
+            ],
+            vec![
+                Mutation::replace(
+                    N::ApplicationExportOperations,
+                    operation.as_bytes(),
+                    old.as_bytes(),
+                    new.as_bytes(),
+                )
+                .unwrap(),
+                Mutation::put(
+                    N::ApplicationExportPageCommitments,
+                    &page.canonical_key(),
+                    None,
+                    encoded_page.as_bytes(),
+                )
+                .unwrap(),
+            ],
+        ],
+        ChangelogAttributionV3::ApplicationExportOperation,
+    );
+    let mut applier = isolated_applier(RedbFollowerStore::open(&path).unwrap());
+    let point = applier.apply_frame(&bytes).unwrap();
+    assert_eq!(applier.shared.durable_commit_epoch(), 1);
+    assert_eq!(applier.apply_frame(&bytes).unwrap(), point);
+    assert_eq!(applier.shared.durable_commit_epoch(), 1);
+    applier.close().unwrap();
+    let mut applier = isolated_applier(RedbFollowerStore::open(&path).unwrap());
+    assert_eq!(applier.apply_frame(&bytes).unwrap(), point);
+    assert_eq!(applier.shared.durable_commit_epoch(), 0);
+    let read = applier.shared.database.begin_read().unwrap();
+    crate::application_export_ledger::inspect_head(&read, operation.as_bytes(), new.as_bytes())
+        .unwrap();
+    let heads = read
+        .open_table(crate::layout::APPLICATION_EXPORT_OPERATIONS)
+        .unwrap();
+    assert_eq!(
+        heads
+            .get(operation.as_bytes().as_slice())
+            .unwrap()
+            .unwrap()
+            .value(),
+        new.as_bytes()
+    );
+    let pages = read
+        .open_table(crate::layout::APPLICATION_EXPORT_PAGE_COMMITMENTS)
+        .unwrap();
+    assert_eq!(
+        pages
+            .get(page.canonical_key().as_slice())
+            .unwrap()
+            .unwrap()
+            .value(),
+        encoded_page.as_bytes()
+    );
 }

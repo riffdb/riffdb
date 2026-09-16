@@ -7,8 +7,8 @@ stale, and maintains a derived per-organization search projection.
 
 The application never selects an index implementation. A contract may declare
 an approximate-search threshold and recall floor; RiffDB then uses exact search
-for small admitted partitions and first-party HNSW only when the admitted row
-count is above the threshold.
+for small admitted partitions. Above the threshold it can reuse a matching
+first-party HNSW graph; a cold or unavailable graph falls back to exact search.
 
 ## Declare the vector field
 
@@ -27,7 +27,8 @@ entity Document {
 
 `ann_threshold` and `recall_target_bps` are an atomic pair. In this example,
 search is exact at 256 or fewer admitted rows in the requested organization and
-uses approximate search above 256. The declared 9,500 basis points means
+may use a matching warm graph above 256. Cold queries remain exact while a
+bounded background build may prepare reuse. The declared 9,500 basis points means
 recall@K must be at least 0.95 against exact search at the same frontier. Query
 text and parameters cannot lower that target or force a tier.
 
@@ -91,8 +92,8 @@ query SimilarDocuments(
 
 The organization equality is mandatory, K is positive and compiler-bounded,
 and the source must name the same vector field used by `nearest`. Row policy is
-applied to the complete candidate set before vector validation, graph
-construction, scoring, ranking, or K selection. Another organization and a
+applied on every query to the complete candidate set before vector validation,
+graph lookup or construction, scoring, ranking, or K selection. Another organization and a
 policy-denied row cannot shape graph statistics or results.
 
 `freshness causal` is the normal read-after-write choice. `available` permits a
@@ -120,9 +121,12 @@ commit timestamps. Every successful projected response reports its frontier.
 
 Production nearest reads admit at most 500 rows from one organization. Because
 the approximate tier engages only above the declared threshold, a threshold of
-500 or more remains exact under this POC ceiling. The HNSW graph is derived and
-rebuilt ephemerally per bounded query; it is not part of backup identity.
-Persistent incremental graphs are deliberately deferred.
+500 or more remains exact under this POC ceiling. Primary providers can reuse
+memory-only graphs for an unchanged admitted population at the same generation
+and frontier. Model, policy or capability changes cannot reuse a mismatched
+graph. Followers currently use exact execution. Graphs reopen cold and are not
+part of backup identity; persistent incremental graphs remain deferred.
+The current projected-vector endpoint does not support continuation cursors.
 
 For the full declarations and query grammar, see
 [Contract Authoring](../contracts/AUTHORING.md) and

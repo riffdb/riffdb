@@ -154,6 +154,7 @@ pub(crate) enum ColumnarSlotLifecycle {
 }
 
 struct ActiveColumnarEngine {
+    ann_cache: Arc<riffdb_columnar::NearestGraphCache>,
     engine: ColumnarEngine,
     generation: Option<ProjectionGeneration>,
 }
@@ -275,6 +276,7 @@ pub(crate) struct RetiredColumnarGeneration {
 }
 
 struct CapturedColumnarView {
+    ann_cache: Arc<riffdb_columnar::NearestGraphCache>,
     observation: ColumnarObservation,
     generation: Option<ProjectionGeneration>,
 }
@@ -295,6 +297,7 @@ impl ColumnarCaptureGate<'_> {
             return Err(ColumnarPortError::Unavailable);
         }
         let replacement = ColumnarSlotState::Active(Box::new(ActiveColumnarEngine {
+            ann_cache: Arc::new(riffdb_columnar::NearestGraphCache::new()),
             engine,
             generation: Some(generation),
         }));
@@ -448,7 +451,11 @@ impl ColumnarEngineSlot {
         if !matches!(&*state, ColumnarSlotState::Activating) {
             return Err(ColumnarPortError::Integrity);
         }
-        *state = ColumnarSlotState::Active(Box::new(ActiveColumnarEngine { engine, generation }));
+        *state = ColumnarSlotState::Active(Box::new(ActiveColumnarEngine {
+            engine,
+            generation,
+            ann_cache: Arc::new(riffdb_columnar::NearestGraphCache::new()),
+        }));
         Ok(())
     }
 
@@ -531,6 +538,7 @@ impl ColumnarEngineSlot {
                 let outcome = active.engine.outcome(head.position());
                 let (has_published, lifecycle) = map_outcome_lifecycle(&outcome);
                 Ok(Some(CapturedColumnarView {
+                    ann_cache: Arc::clone(&active.ann_cache),
                     observation: ColumnarObservation::new(
                         definition,
                         snapshot,
@@ -1908,7 +1916,7 @@ impl VectorProjectionPort for ServerColumnarProjectionPort {
             .capture_active(head)
             .map_err(map_vector_port_error)?
             .ok_or(VectorProjectionPortError::Building)?;
-        let _installed_generation = captured
+        let installed_generation = captured
             .generation
             .ok_or(VectorProjectionPortError::Integrity)?;
         let observation = captured.observation;
@@ -1917,6 +1925,7 @@ impl VectorProjectionPort for ServerColumnarProjectionPort {
             observation,
             self.runtime.storage(),
             &self.runtime.storage().query_executor(),
+            Some((&captured.ann_cache, installed_generation)),
         )
     }
 }
@@ -2259,7 +2268,7 @@ pub(crate) fn is_holdback_active(error: &ColumnarError) -> bool {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use std::hint::black_box;
     use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
     use std::sync::mpsc;
@@ -2303,7 +2312,7 @@ mod tests {
         ColumnarProjectionControlWriteResultV1, ColumnarProjectionLifecycleV1,
     };
 
-    pub(super) const ADAPTER_BOARD_CONTRACT: &str = r#"
+    pub(crate) const ADAPTER_BOARD_CONTRACT: &str = r#"
 contract AdapterBoard version 1 {
   entity Ticket {
     key (organization_id: uuid, ticket_id: uuid)
@@ -2414,7 +2423,7 @@ contract VectorBoard version 1 {
             .expect("activate checked adapter ports")
     }
 
-    pub(super) fn board_runtime(label: &str) -> (Arc<ColumnarRuntime>, tempfile::TempDir) {
+    pub(crate) fn board_runtime(label: &str) -> (Arc<ColumnarRuntime>, tempfile::TempDir) {
         let scope = adapter_scope(label);
         let database_path = scope.path().join("db.redb");
         let projections_root = scope.path().join("projections");
@@ -2590,7 +2599,7 @@ contract VectorBoard version 1 {
         append_board_ticket_for_worker_at(runtime, CommitSequence::first(), 0x42);
     }
 
-    fn append_board_ticket_for_worker_at(
+    pub(crate) fn append_board_ticket_for_worker_at(
         runtime: &ColumnarRuntime,
         sequence: CommitSequence,
         ticket_seed: u8,
@@ -2927,7 +2936,8 @@ contract VectorBoard version 1 {
         prepare_two_partition_v2_publication_at_frontier(
             runtime,
             scope,
-            FrontierPosition::BeforeFirst,
+            FrontierPosition::AppliedThrough(CommitSequence::first()),
+            true,
         )
     }
 
@@ -2935,6 +2945,7 @@ contract VectorBoard version 1 {
         runtime: &Arc<ColumnarRuntime>,
         scope: &tempfile::TempDir,
         frontier: FrontierPosition,
+        advance_head: bool,
     ) -> PreparedV2Publication {
         request_projection(runtime, "ticket_board");
         assert!(crate::columnar_worker::run_one_test_pass(runtime));
@@ -2947,6 +2958,9 @@ contract VectorBoard version 1 {
             .recover_expected_control(binding.spec().source())
             .expect("read selected V1")
             .expect("selected V1");
+        if advance_head {
+            append_board_ticket_for_worker(runtime);
+        }
         let physical = PhysicalGenerationFingerprintV1::compute(binding.definition().fingerprint());
         assert_eq!(
             runtime
@@ -3201,6 +3215,9 @@ contract VectorBoard version 1 {
     // req: PRJ-002, PRJ-004, PRJ-006, PRJ-008, PRJ-009, PRJ-010, OQ-020, OQ-022
     #[test]
     fn columnar_v2_publication_requires_complete_root_and_transaction_current_head() {
+        // OBL-0190-3 retains its permanent proof name. ADR-0227 refines the
+        // current-head check to H <= head, with strict selected-frontier progress.
+        // Exercise repeated head advancement without relabeling artifact H.
         let (runtime, scope) = board_runtime("v2-root-publication");
         request_projection(&runtime, "ticket_board");
 
@@ -3237,6 +3254,7 @@ contract VectorBoard version 1 {
                 .is_none()
         );
         assert_eq!(catching_up.published(), ready_v1.published());
+        append_board_ticket_for_worker(&runtime);
 
         assert!(crate::columnar_worker::run_one_test_pass(&runtime));
         let prepared = runtime
@@ -3252,6 +3270,7 @@ contract VectorBoard version 1 {
             runtime.read_application_head().expect("head")
         );
         assert_eq!(prepared.published(), ready_v1.published());
+        append_board_ticket_for_worker_at(&runtime, CommitSequence::new(2).expect("second"), 0x43);
 
         assert!(crate::columnar_worker::run_one_test_pass(&runtime));
         let selected = runtime
@@ -3268,6 +3287,42 @@ contract VectorBoard version 1 {
             ColumnarProjectionLayoutV1::V2
         );
         assert!(selected.candidate().is_none());
+        assert_eq!(
+            selected.published().expect("published").frontier(),
+            candidate.frontier()
+        );
+        for sequence in 2..=5 {
+            assert!(crate::columnar_worker::run_one_test_pass(&runtime)); // allocate
+            assert!(crate::columnar_worker::run_one_test_pass(&runtime)); // prepare
+            append_board_ticket_for_worker_at(
+                &runtime,
+                CommitSequence::new(sequence + 1).expect("next"),
+                0x42 + sequence as u8,
+            );
+            assert!(crate::columnar_worker::run_one_test_pass(&runtime)); // publish despite moving head
+            let current = runtime
+                .storage()
+                .recover_expected_control(binding.spec().source())
+                .expect("read")
+                .expect("control");
+            assert_eq!(
+                current.published().expect("published").frontier(),
+                FrontierPosition::AppliedThrough(
+                    CommitSequence::new(sequence).expect("prepared frontier")
+                )
+            );
+            assert_eq!(
+                current.retention_frontier(),
+                Some(FrontierPosition::AppliedThrough(
+                    CommitSequence::new(sequence).expect("retained frontier")
+                ))
+            );
+        }
+        let selected = runtime
+            .storage()
+            .recover_expected_control(binding.spec().source())
+            .expect("read")
+            .expect("selected");
 
         drop(runtime);
         let reopened = reopen_board_runtime(&scope);
@@ -3393,6 +3448,11 @@ contract VectorBoard version 1 {
                 request_projection(&runtime, "ticket_board");
                 assert!(crate::columnar_worker::run_one_test_pass(&runtime));
                 assert!(crate::columnar_worker::run_one_test_pass(&runtime));
+                append_board_ticket_for_worker_at(
+                    &runtime,
+                    CommitSequence::new(2).expect("second"),
+                    0x43,
+                );
             }
             drop(runtime);
 
@@ -3523,7 +3583,15 @@ contract VectorBoard version 1 {
             let QueryResult::Rows(rows) = rows else {
                 panic!("board query returns rows");
             };
-            assert_eq!(rows.rows.len(), 1, "{label} authoritative row survives");
+            assert_eq!(
+                rows.rows.len(),
+                if layout == ColumnarProjectionLayoutV1::V2 {
+                    2
+                } else {
+                    1
+                },
+                "{label} authoritative rows survive"
+            );
         }
     }
 
@@ -4105,7 +4173,9 @@ contract VectorBoard version 1 {
             ),
             Ok(true)
         );
-        for _ in 0..3 {
+        assert!(crate::columnar_worker::run_one_test_pass(&runtime)); // allocate V2
+        append_board_ticket_for_worker_at(&runtime, CommitSequence::new(2).expect("second"), 0x43);
+        for _ in 0..2 {
             assert!(crate::columnar_worker::run_one_test_pass(&runtime));
         }
         let durable_v2 = runtime
@@ -4160,9 +4230,14 @@ contract VectorBoard version 1 {
             let path = PathBuf::from(std::env::var_os(CHILD_PATH).expect("child path"));
             let runtime = open_board_runtime_at(&path);
             request_projection(&runtime, "ticket_board");
-            for _ in 0..4 {
-                let _ = crate::columnar_worker::run_one_test_pass(&runtime);
-            }
+            assert!(crate::columnar_worker::activate_one_test_slot(
+                &runtime,
+                "ticket_board"
+            ));
+            crate::columnar_worker::advance_one_published_v1_for_test(
+                &runtime,
+                runtime.control_binding("ticket_board").expect("binding"),
+            );
             panic!("child did not abort at the requested V1 publication boundary");
         }
 
@@ -4365,8 +4440,12 @@ contract VectorBoard version 1 {
             racing_runtime.read_application_head().expect("empty head"),
             FrontierPosition::BeforeFirst
         );
-        let racing =
-            prepare_two_partition_v2_publication_at_frontier(&racing_runtime, &racing_scope, ahead);
+        let racing = prepare_two_partition_v2_publication_at_frontier(
+            &racing_runtime,
+            &racing_scope,
+            ahead,
+            false,
+        );
         let retained_v1 = racing.expected.published().cloned();
         let rejected = racing_runtime
             .storage()
@@ -5425,7 +5504,11 @@ contract VectorBoard version 1 {
     fn columnar_v2_compaction_reuses_generation_root_and_queries_validate_once() {
         let (runtime, scope) = board_runtime("v2-compaction-retirement");
         request_projection(&runtime, "ticket_board");
-        for _ in 0..4 {
+        for _ in 0..2 {
+            assert!(crate::columnar_worker::run_one_test_pass(&runtime));
+        }
+        append_board_ticket_for_worker(&runtime);
+        for _ in 0..2 {
             assert!(crate::columnar_worker::run_one_test_pass(&runtime));
         }
         let binding = runtime
@@ -5470,6 +5553,7 @@ contract VectorBoard version 1 {
         ));
         std::fs::rename(&offline_path, &root_path).expect("restore root for compaction");
 
+        append_board_ticket_for_worker_at(&runtime, CommitSequence::new(2).expect("second"), 0x43);
         let physical = PhysicalGenerationFingerprintV1::compute(binding.definition().fingerprint());
         assert_eq!(
             runtime
@@ -5880,7 +5964,6 @@ contract VectorBoard version 1 {
         }
 
         let (runtime, scope) = board_runtime("corrupt-selected-v2-no-fallback");
-        append_board_ticket_for_worker(&runtime);
         request_projection(&runtime, "ticket_board");
         assert!(crate::columnar_worker::run_one_test_pass(&runtime));
         let port = ServerColumnarProjectionPort::new(Arc::clone(&runtime));
@@ -5888,7 +5971,9 @@ contract VectorBoard version 1 {
             .observe("ticket_board")
             .expect("capture selected V1 predecessor")
             .snapshot_arc();
-        for _ in 0..3 {
+        assert!(crate::columnar_worker::run_one_test_pass(&runtime)); // allocate V2
+        append_board_ticket_for_worker(&runtime);
+        for _ in 0..2 {
             assert!(crate::columnar_worker::run_one_test_pass(&runtime));
         }
         let binding = runtime
@@ -5920,6 +6005,8 @@ contract VectorBoard version 1 {
             .observe("ticket_board")
             .expect("capture selected V2")
             .snapshot_arc();
+        let retained_v1_rows = query_snapshot(binding.definition(), &retained_v1, &board_query())
+            .expect("retained V1 rows");
         let expected_rows = query_snapshot(binding.definition(), &selected_v2, &board_query())
             .expect("query selected data-bearing V2");
         assert!(!Arc::ptr_eq(&retained_v1, &selected_v2));
@@ -5983,7 +6070,7 @@ contract VectorBoard version 1 {
         assert_eq!(
             query_snapshot(binding.definition(), &retained_v1, &board_query())
                 .expect("query retained V1 capability"),
-            expected_rows
+            retained_v1_rows
         );
         assert!(
             !Arc::ptr_eq(&retained_v1, &selected_v2),
@@ -6040,39 +6127,27 @@ contract VectorBoard version 1 {
             0x43,
         );
         let _ = crate::columnar_worker::run_one_test_pass(&reopened);
-        let replaced_recovery = reopened
+        let published_recovery = reopened
             .storage()
             .recover_expected_control(binding.spec().source())
-            .expect("reread replacement recovery")
-            .expect("replacement recovery control");
-        assert!(replaced_recovery.servable_generation().is_none());
+            .expect("read published recovery")
+            .expect("control");
         assert_eq!(
-            replaced_recovery
-                .predecessor()
+            published_recovery
+                .published()
                 .map(|value| value.generation()),
-            Some(published_v2.generation())
+            Some(recovery_generation)
         );
-        let replacement_generation = replaced_recovery
-            .candidate()
-            .expect("replacement recovery candidate")
-            .generation();
-        assert!(replacement_generation > recovery_generation);
-        assert!(
-            replaced_recovery
-                .candidate()
-                .is_some_and(|candidate| candidate.artifact().is_none()),
-            "head movement allocates a new unprepared recovery candidate"
+        assert_eq!(
+            published_recovery.published().map(|value| value.frontier()),
+            Some(FrontierPosition::AppliedThrough(CommitSequence::first()))
         );
-        let _ = crate::columnar_worker::run_one_test_pass(&reopened);
-        let prepared_replacement = reopened
-            .storage()
-            .recover_expected_control(binding.spec().source())
-            .expect("reread prepared replacement recovery")
-            .expect("prepared replacement recovery control");
-        assert!(prepared_replacement.candidate().is_some_and(|candidate| {
-            candidate.generation() == replacement_generation && candidate.artifact().is_some()
-        }));
-        let _ = crate::columnar_worker::run_one_test_pass(&reopened);
+        assert!(published_recovery.predecessor().is_none());
+        // New writes remain unapplied at this truthful frontier, then a separate
+        // generation catches up without discarding the just-published recovery.
+        for _ in 0..3 {
+            assert!(crate::columnar_worker::run_one_test_pass(&reopened));
+        }
         let recovered = reopened
             .storage()
             .recover_expected_control(binding.spec().source())
@@ -6082,7 +6157,9 @@ contract VectorBoard version 1 {
             recovered
                 .servable_generation()
                 .map(|value| value.generation()),
-            Some(replacement_generation)
+            Some(
+                ProjectionGeneration::new(recovery_generation.get() + 1).expect("next generation")
+            )
         );
         assert_eq!(
             recovered.servable_generation().map(|value| value.layout()),
@@ -6372,6 +6449,13 @@ contract VectorBoard version 1 {
                 .published()
                 .expect("published predecessor")
                 .generation();
+            // The head moves after the immutable root is prepared and before
+            // each crash boundary. Recovery must still select that exact H.
+            append_board_ticket_for_worker_at(
+                &runtime,
+                CommitSequence::new(2).expect("second"),
+                0x43,
+            );
             drop(publication);
             drop(runtime);
             let mut child = std::process::Command::new(
@@ -6411,6 +6495,15 @@ contract VectorBoard version 1 {
                 .expect("one durable selection");
             assert_eq!(selected.layout(), selected_layout, "{label}");
             assert_eq!(
+                selected.frontier(),
+                if selected_layout == ColumnarProjectionLayoutV1::V2 {
+                    FrontierPosition::AppliedThrough(CommitSequence::first())
+                } else {
+                    FrontierPosition::BeforeFirst
+                },
+                "{label}: no unapplied head claim"
+            );
+            assert_eq!(
                 selected.generation(),
                 if selected_layout == ColumnarProjectionLayoutV1::V2 {
                     candidate_generation
@@ -6437,7 +6530,11 @@ contract VectorBoard version 1 {
 
         let (runtime, compaction_scope) = board_runtime("process-compaction-publication");
         request_projection(&runtime, "ticket_board");
-        for _ in 0..4 {
+        for _ in 0..2 {
+            assert!(crate::columnar_worker::run_one_test_pass(&runtime));
+        }
+        append_board_ticket_for_worker(&runtime);
+        for _ in 0..2 {
             assert!(crate::columnar_worker::run_one_test_pass(&runtime));
         }
         let binding = runtime
@@ -6450,6 +6547,7 @@ contract VectorBoard version 1 {
             .expect("read selected before compaction")
             .expect("selected before compaction");
         let predecessor_generation = selected.published().expect("selected V2").generation();
+        append_board_ticket_for_worker_at(&runtime, CommitSequence::new(2).expect("second"), 0x43);
         let physical = PhysicalGenerationFingerprintV1::compute(binding.definition().fingerprint());
         assert_eq!(
             runtime

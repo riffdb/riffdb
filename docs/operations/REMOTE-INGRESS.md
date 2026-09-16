@@ -129,6 +129,12 @@ Each frontier contains separate application and administration positions,
 including an explicit before-first position. The counters are observations;
 they cannot satisfy a read's freshness policy or authorize promotion.
 
+The continuous follower waits for publication notifications on an open source
+stream. A clean stream close reconnects after a fixed 250 ms pause and resets
+failure backoff. Transient source failures back off from 250 ms to at most
+30 seconds; a successfully applied frame also resets that backoff. Shutdown
+interrupts either wait and drains storage work before releasing custody.
+
 | Counter | Primary | Follower |
 | --- | --- | --- |
 | `source_frontier` | Published local source head | Last validated source-head observation, when known |
@@ -222,6 +228,13 @@ connections, HTTP/2 streams per connection, handshake, idle, keepalive, and
 drain durations. Defaults are documented in the
 [configuration reference](../configuration.md). These are resource ceilings,
 not application authority or durability controls.
+
+Successful reads or writes reset the connection idle deadline. Both directions
+observe expiry even when separate tasks are waiting to read and write.
+Cancelling a Rust client call after its response has already been routed leaves
+the session usable. Cancelling an outstanding call retains bounded correlation
+state for late responses; command outcome uncertainty still requires the normal
+idempotency recovery flow.
 
 RiffDB ignores `Forwarded`, `X-Forwarded-*`, and proxy-supplied principal,
 tenant, database, and authorization assertions. A proxy may carry the byte

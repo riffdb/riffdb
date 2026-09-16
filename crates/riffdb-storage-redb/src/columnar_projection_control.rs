@@ -957,7 +957,7 @@ mod tests {
 
     // req: PRJ-002, PRJ-006, PRJ-008, PRJ-009, PRJ-010, OQ-020, OQ-022, OQ-024, OQ-053
     #[test]
-    fn columnar_control_pointer_cas_requires_transaction_current_head() {
+    fn columnar_control_pointer_cas_bounds_actual_frontier_by_transaction_current_head() {
         let (_path, ports) = ports(
             "columnar-v2-prepared-root-cas",
             RedbTestController::observe_index_migration(),
@@ -1033,7 +1033,7 @@ mod tests {
                 v2_candidate.generation(),
                 ColumnarProjectionLayoutV1::V2,
                 FrontierPosition::BeforeFirst,
-                FrontierPosition::BeforeFirst,
+                FrontierPosition::AppliedThrough(CommitSequence::first()),
                 1,
                 riffdb_storage_api::ColumnarProjectionArtifactV1::new(128, [0x61; 32])
                     .expect("root artifact"),
@@ -1053,10 +1053,28 @@ mod tests {
             .expect("read prepared V2")
             .expect("prepared V2");
 
+        let access = ports
+            .begin_write()
+            .expect("advance test head after preparation");
+        let encoded = crate::codec::encode_application_sequence_allocator_v1(
+            ApplicationSequenceAllocator::Next(CommitSequence::new(3).expect("next sequence")),
+        )
+        .expect("allocator");
+        let mut meta = access
+            .transaction()
+            .expect("transaction")
+            .open_table(META)
+            .expect("metadata");
+        meta.insert(META_APPLICATION_SEQUENCE, encoded.as_bytes())
+            .expect("head");
+        drop(meta);
+        access
+            .commit_for(RedbTestOperation::Initialization)
+            .expect("commit test head");
         assert_eq!(
             ports
                 .publish_prepared_generation_pointer(&prepared_v2_control, v2_pointer.clone())
-                .expect("publish at current head"),
+                .expect("publish below current head"),
             ColumnarProjectionControlWriteResultV1::Applied
         );
         let published = ports
@@ -1088,7 +1106,7 @@ mod tests {
             .expect("rebuilding");
         let racing_candidate = rebuilding.candidate().expect("racing candidate");
         let ahead = FrontierPosition::AppliedThrough(
-            CommitSequence::new(1).expect("frontier ahead of empty current head"),
+            CommitSequence::new(3).expect("frontier ahead of current head"),
         );
         let racing_pointer =
             riffdb_storage_api::StoredColumnarProjectionGenerationV1::prepared_candidate(

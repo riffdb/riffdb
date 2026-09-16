@@ -157,7 +157,7 @@ fn production_vector_adapter_admits_current_authoritative_rows_before_ranking() 
         .find("ProductionVectorAdmission")
         .expect("current-model candidate admission");
     let ranking = execution
-        .find("nearest_query_snapshot_with_admission(")
+        .find("nearest_query_snapshot_with_cache(")
         .expect("admission-aware ranking");
     assert!(evidence < admission && admission < ranking);
     assert!(execution.contains("NonZeroU16::new(500)"));

@@ -3821,12 +3821,19 @@ impl<S> BoundedIncoming<S> {
     }
 }
 
+// A duplex connection may be polled by two tasks. Each direction keeps its
+// own registered timer waker; activity in either direction resets both timers.
 struct AdmittedConnection<IO> {
     io: IO,
     _permit: OwnedSemaphorePermit,
     idle_timeout: Duration,
-    idle: Pin<Box<tokio::time::Sleep>>,
+    read_idle: Pin<Box<tokio::time::Sleep>>,
+    write_idle: Pin<Box<tokio::time::Sleep>>,
 }
+
+#[cfg(test)]
+#[path = "daemon_idle_tests.rs"]
+mod idle_tests;
 
 impl<S, IO, E> Stream for BoundedIncoming<S>
 where
@@ -3848,7 +3855,8 @@ where
                             io,
                             _permit: permit,
                             idle_timeout: self.idle_timeout,
-                            idle: Box::pin(tokio::time::sleep(self.idle_timeout)),
+                            read_idle: Box::pin(tokio::time::sleep(self.idle_timeout)),
+                            write_idle: Box::pin(tokio::time::sleep(self.idle_timeout)),
                         })));
                     }
                     Err(_) => drop(io),
@@ -3865,7 +3873,7 @@ impl<IO: AsyncRead + Unpin> AsyncRead for AdmittedConnection<IO> {
         context: &mut Context<'_>,
         buffer: &mut ReadBuf<'_>,
     ) -> Poll<io::Result<()>> {
-        if self.idle.as_mut().poll(context).is_ready() {
+        if self.read_idle.as_mut().poll(context).is_ready() {
             return Poll::Ready(Err(io::Error::new(
                 io::ErrorKind::TimedOut,
                 "connection idle limit elapsed",
@@ -3875,7 +3883,8 @@ impl<IO: AsyncRead + Unpin> AsyncRead for AdmittedConnection<IO> {
         let result = Pin::new(&mut self.io).poll_read(context, buffer);
         if matches!(result, Poll::Ready(Ok(()))) && buffer.filled().len() > before {
             let deadline = tokio::time::Instant::now() + self.idle_timeout;
-            self.idle.as_mut().reset(deadline);
+            self.read_idle.as_mut().reset(deadline);
+            self.write_idle.as_mut().reset(deadline);
         }
         result
     }
@@ -3887,7 +3896,7 @@ impl<IO: AsyncWrite + Unpin> AsyncWrite for AdmittedConnection<IO> {
         context: &mut Context<'_>,
         buffer: &[u8],
     ) -> Poll<Result<usize, io::Error>> {
-        if self.idle.as_mut().poll(context).is_ready() {
+        if self.write_idle.as_mut().poll(context).is_ready() {
             return Poll::Ready(Err(io::Error::new(
                 io::ErrorKind::TimedOut,
                 "connection idle limit elapsed",
@@ -3896,7 +3905,8 @@ impl<IO: AsyncWrite + Unpin> AsyncWrite for AdmittedConnection<IO> {
         let result = Pin::new(&mut self.io).poll_write(context, buffer);
         if matches!(result, Poll::Ready(Ok(written)) if written > 0) {
             let deadline = tokio::time::Instant::now() + self.idle_timeout;
-            self.idle.as_mut().reset(deadline);
+            self.read_idle.as_mut().reset(deadline);
+            self.write_idle.as_mut().reset(deadline);
         }
         result
     }
@@ -3924,7 +3934,7 @@ impl<IO: AsyncWrite + Unpin> AsyncWrite for AdmittedConnection<IO> {
         context: &mut Context<'_>,
         buffers: &[io::IoSlice<'_>],
     ) -> Poll<Result<usize, io::Error>> {
-        if self.idle.as_mut().poll(context).is_ready() {
+        if self.write_idle.as_mut().poll(context).is_ready() {
             return Poll::Ready(Err(io::Error::new(
                 io::ErrorKind::TimedOut,
                 "connection idle limit elapsed",
@@ -3933,7 +3943,8 @@ impl<IO: AsyncWrite + Unpin> AsyncWrite for AdmittedConnection<IO> {
         let result = Pin::new(&mut self.io).poll_write_vectored(context, buffers);
         if matches!(result, Poll::Ready(Ok(written)) if written > 0) {
             let deadline = tokio::time::Instant::now() + self.idle_timeout;
-            self.idle.as_mut().reset(deadline);
+            self.read_idle.as_mut().reset(deadline);
+            self.write_idle.as_mut().reset(deadline);
         }
         result
     }

@@ -55,13 +55,14 @@ use crate::error::{precommit_storage_error, storage_error, table_error, transact
 use crate::gate::ExclusiveLease;
 use crate::keys;
 use crate::layout::{
-    APPLICATION_EXPORT_OPERATIONS, APPLICATION_INSTALLATION_CAMPAIGNS, AUDIT, AUDIT_BY_REQUEST,
-    CAPABILITIES, CAPABILITY_TOKENS, CATALOG_ACTIVE, CATALOG_ACTIVE_KEY, COMMITS, CONTRACT_BUNDLES,
-    CONTRACT_MIGRATION_JOURNAL, CONTRACT_MIGRATIONS, CONTRACT_WRITE_RETIREMENTS, ENTITIES,
-    EVENT_CONSUMER_DELIVERIES, EVENT_CONSUMERS, EVENT_ROUTES, EVENTS, HISTORY_TOMBSTONES,
-    IDEMPOTENCY, IDEMPOTENCY_PENDING, INDEX_EPOCHS, META, META_ADMINISTRATION_SEQUENCE,
-    META_APPLICATION_SEQUENCE, META_CAPABILITY_BOOTSTRAP, META_CHANGELOG_V2_ROTATION_RECEIPT,
-    META_CLEAN_CLOSE_LIFECYCLE, META_DATABASE_ID, META_FORMAT_VERSION, META_HISTORY_INCARNATION,
+    APPLICATION_EXPORT_OPERATIONS, APPLICATION_EXPORT_PAGE_COMMITMENTS,
+    APPLICATION_INSTALLATION_CAMPAIGNS, AUDIT, AUDIT_BY_REQUEST, CAPABILITIES, CAPABILITY_TOKENS,
+    CATALOG_ACTIVE, CATALOG_ACTIVE_KEY, COMMITS, CONTRACT_BUNDLES, CONTRACT_MIGRATION_JOURNAL,
+    CONTRACT_MIGRATIONS, CONTRACT_WRITE_RETIREMENTS, ENTITIES, EVENT_CONSUMER_DELIVERIES,
+    EVENT_CONSUMERS, EVENT_ROUTES, EVENTS, HISTORY_TOMBSTONES, IDEMPOTENCY, IDEMPOTENCY_PENDING,
+    INDEX_EPOCHS, META, META_ADMINISTRATION_SEQUENCE, META_APPLICATION_SEQUENCE,
+    META_CAPABILITY_BOOTSTRAP, META_CHANGELOG_V2_ROTATION_RECEIPT, META_CLEAN_CLOSE_LIFECYCLE,
+    META_DATABASE_ID, META_FORMAT_VERSION, META_HISTORY_INCARNATION,
     META_INDEX_EPOCH_ROWS_REPAIRED, META_KEYS, META_RECORD_REGISTRY, META_RETENTION_HOLDS,
     META_RETENTION_WATERMARK, META_VALIDATED_PREFIX_CHECKPOINT, OUTBOX, OUTBOX_STATUS,
     PROJECTION_APPLIED, PROJECTION_FRONTIER, PROJECTION_STATE, PROVENANCE, QUERY_MODULE_ACTIVE,
@@ -250,7 +251,7 @@ pub(crate) fn begin_follower_bootstrap_scrub(
 // The V1 validated-prefix checkpoint permanently covers the original table set.
 // Additive tables are validated separately and never inferred from that proof.
 const STRUCTURAL_TABLE_COUNT: usize = 28;
-const ADDITIVE_STRUCTURAL_TABLE_COUNT: usize = 8;
+const ADDITIVE_STRUCTURAL_TABLE_COUNT: usize = 9;
 const STARTUP_TABLE_COUNT: usize = STRUCTURAL_TABLE_COUNT + ADDITIVE_STRUCTURAL_TABLE_COUNT;
 
 fn startup_registry_is_supported(digest: riffdb_types::SchemaHash) -> bool {
@@ -1513,6 +1514,7 @@ impl RedbStructuralEvidenceSession {
             table_len(transaction, VECTOR_EVIDENCE)?,
             table_len(transaction, VECTOR_OBSERVATIONS)?,
             table_len(transaction, VECTOR_EVIDENCE_INDEX)?,
+            table_len(transaction, APPLICATION_EXPORT_PAGE_COMMITMENTS)?,
         ];
         if additive_counts != self.additive_structural_counts {
             return Err(corrupt());
@@ -2556,6 +2558,9 @@ impl RedbStructuralEvidenceSession {
                     35 => transaction
                         .open_table(VECTOR_EVIDENCE_INDEX)
                         .map_err(table_error)?,
+                    36 => transaction
+                        .open_table(APPLICATION_EXPORT_PAGE_COMMITMENTS)
+                        .map_err(table_error)?,
                     _ => return Err(invariant()),
                 };
                 let range = self.open_structural_phase_range(phase, table)?;
@@ -2648,10 +2653,15 @@ fn inspect_table_row_from_bytes(
         29 => inspect_event_consumer_row(transaction, context.database_id, key, value),
         30 => inspect_event_consumer_delivery_row(transaction, key, value),
         31 => inspect_application_installation_campaign_row(key, value),
-        32 => inspect_application_export_operation_row(key, value),
+        32 => {
+            crate::application_export_ledger::inspect_head(transaction, key, value).map(|()| None)
+        }
         33 => inspect_vector_evidence_row(transaction, key, value),
         34 => inspect_vector_observation_row(transaction, key, value),
         35 => inspect_vector_evidence_index_row(transaction, key, value),
+        36 => {
+            crate::application_export_ledger::inspect_page(transaction, key, value).map(|()| None)
+        }
         _ => Err(invariant()),
     }
 }
@@ -2678,18 +2688,6 @@ fn inspect_application_installation_campaign_row(
         riffdb_storage_api::proto_codec::decode_application_installation_campaign_v1(value)
             .map_err(crate::error::codec_error)?;
     if key != decoded.value().campaign_id().as_bytes() {
-        return Err(corrupt());
-    }
-    Ok(None)
-}
-
-fn inspect_application_export_operation_row(
-    key: &[u8],
-    value: &[u8],
-) -> Result<Option<StructuralFinding>, StorageError> {
-    let decoded = riffdb_storage_api::decode_application_export_operation_v1(value)
-        .map_err(crate::error::codec_error)?;
-    if key != decoded.value().operation_id().as_bytes() {
         return Err(corrupt());
     }
     Ok(None)
@@ -3283,6 +3281,7 @@ fn collect_startup_snapshot(
         table_len(transaction, VECTOR_EVIDENCE)?,
         table_len(transaction, VECTOR_OBSERVATIONS)?,
         table_len(transaction, VECTOR_EVIDENCE_INDEX)?,
+        table_len(transaction, APPLICATION_EXPORT_PAGE_COMMITMENTS)?,
     ];
     let total = counts
         .iter()

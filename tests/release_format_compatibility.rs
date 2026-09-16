@@ -148,3 +148,38 @@ fn checked_release_manifest_and_fixture_inventory_are_current() {
         String::from_utf8_lossy(&output.stderr),
     );
 }
+
+// req: AFC-004, EXP-006, EXP-009
+#[test]
+fn pre_ledger_manifest_refuses_without_reinterpreting_an_active_v3_database() {
+    let root = case_root("pre-export-ledger");
+    let database = root.join("app.redb");
+    fs::write(
+        &database,
+        b"active V3 bytes must not be opened or rewritten",
+    )
+    .unwrap();
+    // Frozen release identity immediately before ADR-0232. Schema decoders
+    // remaining readable do not authorize changing a live catalog or cursor.
+    let marker = DurableFormatMarker::new(
+        current_durable_format_manifest().identity(),
+        riffdb_types::SchemaHash::from_bytes([
+            235, 214, 67, 233, 169, 133, 189, 97, 37, 163, 189, 188, 26, 58, 152, 255, 78, 37, 36,
+            155, 57, 32, 61, 170, 213, 246, 44, 24, 215, 92, 142, 139,
+        ]),
+        riffdb_storage_api::CompatibilityFixtureDigest::from_bytes([
+            143, 59, 81, 199, 139, 32, 82, 33, 219, 1, 127, 234, 204, 38, 84, 178, 253, 10, 177,
+            15, 150, 76, 243, 83, 37, 117, 149, 121, 184, 98, 37, 133,
+        ]),
+    );
+    fs::write(
+        durable_format_marker_path(&database),
+        encode_durable_format_marker(marker),
+    )
+    .unwrap();
+    let before = inventory(&root);
+    let error = preflight_durable_format_path(&database)
+        .expect_err("exact predecessor manifest is not the new ledger manifest");
+    assert_eq!(error.next_command(), SafeFormatCommand::UseMatchingBinary);
+    assert_eq!(inventory(&root), before);
+}

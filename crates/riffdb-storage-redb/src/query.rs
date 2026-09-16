@@ -313,6 +313,7 @@ static QUERY_TABLE_OPEN_TEST_LOCK: Mutex<()> = Mutex::new(());
 
 #[cfg(test)]
 thread_local! {
+    static QUERY_MAX_RANGE_READ: Cell<usize> = const { Cell::new(0) };
     static QUERY_TABLE_OPEN_COUNTS: Cell<QueryTableOpenCounts> =
         const { Cell::new(QueryTableOpenCounts {
             commits: 0,
@@ -325,6 +326,7 @@ thread_local! {
 #[cfg(test)]
 fn reset_query_table_open_counts() {
     QUERY_TABLE_OPEN_COUNTS.set(QueryTableOpenCounts::default());
+    QUERY_MAX_RANGE_READ.set(0);
 }
 
 #[cfg(test)]
@@ -1038,6 +1040,8 @@ impl RedbQueryView<'_> {
         end_exclusive: &[u8],
         max_rows: usize,
     ) -> Result<Vec<riffdb_storage_api::CompositeRow>, StorageError> {
+        #[cfg(test)]
+        QUERY_MAX_RANGE_READ.set(QUERY_MAX_RANGE_READ.get().max(max_rows));
         let started = self.profile.as_ref().map(|_| Instant::now());
         let rows = match direction {
             AccessDirection::Forward => self.transaction.read_range(
@@ -1273,85 +1277,110 @@ impl RedbQueryView<'_> {
             let Some(window) = range.resume_window(*direction, after, after_inclusive) else {
                 continue;
             };
-            let remaining_scan = scan_ceiling.saturating_sub(inspected);
-            if remaining_scan == 0 {
-                return Err(storage_error(StorageErrorKind::LimitExceeded));
-            }
             let inclusive_end = window.include_end_equal().then(|| {
                 let mut end = window.end_exclusive().to_vec();
                 end.push(0);
                 end
             });
-            self.touch_indexes();
-            let rows = self.read_index_range(
-                *direction,
-                window.start_inclusive(),
-                inclusive_end
-                    .as_deref()
-                    .unwrap_or_else(|| window.end_exclusive()),
-                remaining_scan,
-            )?;
-            let inspected_this_prefix = rows.len();
-            inspected = inspected
-                .checked_add(inspected_this_prefix)
-                .ok_or_else(|| storage_error(StorageErrorKind::LimitExceeded))?;
-            for entry in rows {
-                if matches!(direction, AccessDirection::Forward)
-                    && window.skip_start_equal()
-                    && entry.0.as_ref() == window.start_inclusive()
-                {
-                    continue;
+            let mut batch_start = window.start_inclusive().to_vec();
+            let mut batch_end = inclusive_end
+                .as_deref()
+                .unwrap_or_else(|| window.end_exclusive())
+                .to_vec();
+            loop {
+                let remaining_scan = scan_ceiling.saturating_sub(inspected);
+                if remaining_scan == 0 {
+                    return Err(storage_error(StorageErrorKind::LimitExceeded));
                 }
-                let entry_started = self.profile.as_ref().map(|_| Instant::now());
-                let decoded = decode_current_index_entry(entry)?;
-                if decoded.1.partition_key() != generation_target.partition_key() {
+                // Fetch only the remaining result lookahead. Filtered rows cause
+                // another bounded read, never a truncated logical range.
+                let batch_limit =
+                    remaining_scan.min(fetch_limit.saturating_sub(entries.len()).max(1));
+                self.touch_indexes();
+                let rows =
+                    self.read_index_range(*direction, &batch_start, &batch_end, batch_limit)?;
+                let inspected_this_prefix = rows.len();
+                let last_key = rows.last().map(|row| row.0.to_vec());
+                inspected = inspected
+                    .checked_add(inspected_this_prefix)
+                    .ok_or_else(|| storage_error(StorageErrorKind::LimitExceeded))?;
+                for entry in rows {
+                    if matches!(direction, AccessDirection::Forward)
+                        && window.skip_start_equal()
+                        && entry.0.as_ref() == window.start_inclusive()
+                    {
+                        continue;
+                    }
+                    let entry_started = self.profile.as_ref().map(|_| Instant::now());
+                    let decoded = decode_current_index_entry(entry)?;
+                    if decoded.1.partition_key() != generation_target.partition_key() {
+                        if let (Some(profile), Some(started)) =
+                            (self.profile.as_mut(), entry_started)
+                        {
+                            profile.stage_ns[INDEX_ENTRY_DECODE] = profile.stage_ns
+                                [INDEX_ENTRY_DECODE]
+                                .saturating_add(elapsed_nanos(started));
+                        }
+                        continue;
+                    }
+                    partition_candidates = partition_candidates
+                        .checked_add(1)
+                        .ok_or_else(|| storage_error(StorageErrorKind::LimitExceeded))?;
+                    // This scan reads the owning entity row, so the index key's
+                    // leading component values are never looked at. Validating the
+                    // key without materializing them keeps every rejection this
+                    // path had and drops two per-row vectors plus a key copy.
+                    let entity_key = schema
+                        .decode_index_entity_key(&decoded.0)
+                        .map_err(|_| corrupt())?;
+                    let target = EntityTarget::new(step.internal_entity_id(), entity_key)
+                        .map_err(|_| corrupt())?;
                     if let (Some(profile), Some(started)) = (self.profile.as_mut(), entry_started) {
                         profile.stage_ns[INDEX_ENTRY_DECODE] = profile.stage_ns[INDEX_ENTRY_DECODE]
                             .saturating_add(elapsed_nanos(started));
                     }
-                    continue;
+                    let record = self.read_entity(&target)?.ok_or_else(corrupt)?;
+                    let policy_started = self.profile.as_ref().map(|_| Instant::now());
+                    let allowed = self.allows_policy_record(
+                        policy,
+                        step.internal_entity_id(),
+                        record.fields(),
+                    )?;
+                    if let (Some(profile), Some(started)) = (self.profile.as_mut(), policy_started)
+                    {
+                        profile.stage_ns[ROW_POLICY] =
+                            profile.stage_ns[ROW_POLICY].saturating_add(elapsed_nanos(started));
+                    }
+                    if !allowed {
+                        continue;
+                    }
+                    let materialize_started = self.profile.as_ref().map(|_| Instant::now());
+                    let row = plan.materialize(&record)?;
+                    if let (Some(profile), Some(started)) =
+                        (self.profile.as_mut(), materialize_started)
+                    {
+                        profile.stage_ns[ROW_MATERIALIZE] = profile.stage_ns[ROW_MATERIALIZE]
+                            .saturating_add(elapsed_nanos(started));
+                    }
+                    entries.push((decoded.0, row));
+                    if entries.len() == fetch_limit {
+                        break 'ranges;
+                    }
                 }
-                partition_candidates = partition_candidates
-                    .checked_add(1)
-                    .ok_or_else(|| storage_error(StorageErrorKind::LimitExceeded))?;
-                // This scan reads the owning entity row, so the index key's
-                // leading component values are never looked at. Validating the
-                // key without materializing them keeps every rejection this
-                // path had and drops two per-row vectors plus a key copy.
-                let entity_key = schema
-                    .decode_index_entity_key(&decoded.0)
-                    .map_err(|_| corrupt())?;
-                let target = EntityTarget::new(step.internal_entity_id(), entity_key)
-                    .map_err(|_| corrupt())?;
-                if let (Some(profile), Some(started)) = (self.profile.as_mut(), entry_started) {
-                    profile.stage_ns[INDEX_ENTRY_DECODE] =
-                        profile.stage_ns[INDEX_ENTRY_DECODE].saturating_add(elapsed_nanos(started));
+                if inspected_this_prefix == remaining_scan {
+                    return Err(storage_error(StorageErrorKind::LimitExceeded));
                 }
-                let record = self.read_entity(&target)?.ok_or_else(corrupt)?;
-                let policy_started = self.profile.as_ref().map(|_| Instant::now());
-                let allowed =
-                    self.allows_policy_record(policy, step.internal_entity_id(), record.fields())?;
-                if let (Some(profile), Some(started)) = (self.profile.as_mut(), policy_started) {
-                    profile.stage_ns[ROW_POLICY] =
-                        profile.stage_ns[ROW_POLICY].saturating_add(elapsed_nanos(started));
+                if inspected_this_prefix < batch_limit {
+                    break;
                 }
-                if !allowed {
-                    continue;
+                let last_key = last_key.ok_or_else(invariant)?;
+                match direction {
+                    AccessDirection::Forward => {
+                        batch_start = last_key;
+                        batch_start.push(0);
+                    }
+                    AccessDirection::Reverse => batch_end = last_key,
                 }
-                let materialize_started = self.profile.as_ref().map(|_| Instant::now());
-                let row = plan.materialize(&record)?;
-                if let (Some(profile), Some(started)) = (self.profile.as_mut(), materialize_started)
-                {
-                    profile.stage_ns[ROW_MATERIALIZE] =
-                        profile.stage_ns[ROW_MATERIALIZE].saturating_add(elapsed_nanos(started));
-                }
-                entries.push((decoded.0, row));
-                if entries.len() == fetch_limit {
-                    break 'ranges;
-                }
-            }
-            if inspected_this_prefix == remaining_scan {
-                return Err(storage_error(StorageErrorKind::LimitExceeded));
             }
         }
         // Continuation only when an extra matching entry was observed. Bound is
@@ -1450,98 +1479,116 @@ impl RedbQueryView<'_> {
             let Some(window) = range.resume_window(*direction, after, false) else {
                 continue;
             };
-            let remaining_scan = scan_ceiling.saturating_sub(inspected);
-            if remaining_scan == 0 {
-                return Err(storage_error(StorageErrorKind::LimitExceeded));
-            }
-            self.touch_indexes();
-            let rows = self.read_index_range(
-                *direction,
-                window.start_inclusive(),
-                window.end_exclusive(),
-                remaining_scan,
-            )?;
-            let inspected_this_prefix = rows.len();
-            inspected = inspected
-                .checked_add(inspected_this_prefix)
-                .ok_or_else(|| storage_error(StorageErrorKind::LimitExceeded))?;
-            let entries_started = self.profile.as_ref().map(|_| Instant::now());
-            for entry in rows {
-                if matches!(direction, AccessDirection::Forward)
-                    && window.skip_start_equal()
-                    && entry.0.as_ref() == window.start_inclusive()
-                {
-                    continue;
+            let mut batch_start = window.start_inclusive().to_vec();
+            let mut batch_end = window.end_exclusive().to_vec();
+            loop {
+                let remaining_scan = scan_ceiling.saturating_sub(inspected);
+                if remaining_scan == 0 {
+                    return Err(storage_error(StorageErrorKind::LimitExceeded));
                 }
-                let (entry_key, stored) = decode_current_index_entry(entry)?;
-                if stored.partition_key() != generation_target.partition_key() {
-                    continue;
-                }
-                partition_candidates = partition_candidates
-                    .checked_add(1)
+                // Fetch only the remaining result lookahead. Filtered rows cause
+                // another bounded read, never a truncated logical range.
+                let batch_limit =
+                    remaining_scan.min(fetch_limit.saturating_sub(entries.len()).max(1));
+                self.touch_indexes();
+                let rows =
+                    self.read_index_range(*direction, &batch_start, &batch_end, batch_limit)?;
+                let inspected_this_prefix = rows.len();
+                let last_key = rows.last().map(|row| row.0.to_vec());
+                inspected = inspected
+                    .checked_add(inspected_this_prefix)
                     .ok_or_else(|| storage_error(StorageErrorKind::LimitExceeded))?;
-                let contract = self.program.contract();
-                if stored.schema_binding().lineage() != contract.lineage()
-                    || stored.schema_binding().contract_version() != contract.version()
-                    || stored.schema_binding().bundle_hash() != contract.bundle_hash()
-                {
-                    return Err(corrupt());
-                }
-                let covered_fields = stored.covered_values().fields();
-                if covered_fields.len() != expected_cover_ids.len()
-                    || covered_fields
-                        .iter()
-                        .zip(&expected_cover_ids)
-                        .any(|((actual, _), expected)| actual != expected)
-                {
-                    return Err(corrupt());
-                }
-                let decoded_key = schema.decode_index(&entry_key).map_err(|_| corrupt())?;
-                let entity_values = step
-                    .internal_entity_key_schema()
-                    .decode_entity(decoded_key.entity_key())
-                    .map_err(|_| corrupt())?;
-                let values = layout
-                    .fields()
-                    .iter()
-                    .zip(&layout_cover_positions)
-                    .map(|(field, cover_position)| match field.internal_source() {
-                        CoveredResultSourceV1::IndexKey(position) => decoded_key
-                            .values()
-                            .get(usize::from(position))
-                            .cloned()
-                            .ok_or_else(corrupt),
-                        CoveredResultSourceV1::EntityKey(position) => entity_values
-                            .get(usize::from(position))
-                            .cloned()
-                            .ok_or_else(corrupt),
-                        CoveredResultSourceV1::Cover => covered_fields
-                            .get(*cover_position)
-                            .map(|(_, value)| value.clone())
-                            .ok_or_else(corrupt),
-                    })
-                    .collect::<Result<Vec<_>, _>>()?;
-                if !covered_row_matches_predicates_v1(layout, &values, predicates)
-                    .map_err(|_| invariant())?
-                {
-                    continue;
-                }
-                entries.push((entry_key, values));
-                if entries.len() == fetch_limit {
-                    if let (Some(profile), Some(started)) = (self.profile.as_mut(), entries_started)
+                let entries_started = self.profile.as_ref().map(|_| Instant::now());
+                for entry in rows {
+                    if matches!(direction, AccessDirection::Forward)
+                        && window.skip_start_equal()
+                        && entry.0.as_ref() == window.start_inclusive()
                     {
-                        profile.stage_ns[INDEX_ENTRY_DECODE] = profile.stage_ns[INDEX_ENTRY_DECODE]
-                            .saturating_add(elapsed_nanos(started));
+                        continue;
                     }
-                    break 'ranges;
+                    let (entry_key, stored) = decode_current_index_entry(entry)?;
+                    if stored.partition_key() != generation_target.partition_key() {
+                        continue;
+                    }
+                    partition_candidates = partition_candidates
+                        .checked_add(1)
+                        .ok_or_else(|| storage_error(StorageErrorKind::LimitExceeded))?;
+                    let contract = self.program.contract();
+                    if stored.schema_binding().lineage() != contract.lineage()
+                        || stored.schema_binding().contract_version() != contract.version()
+                        || stored.schema_binding().bundle_hash() != contract.bundle_hash()
+                    {
+                        return Err(corrupt());
+                    }
+                    let covered_fields = stored.covered_values().fields();
+                    if covered_fields.len() != expected_cover_ids.len()
+                        || covered_fields
+                            .iter()
+                            .zip(&expected_cover_ids)
+                            .any(|((actual, _), expected)| actual != expected)
+                    {
+                        return Err(corrupt());
+                    }
+                    let decoded_key = schema.decode_index(&entry_key).map_err(|_| corrupt())?;
+                    let entity_values = step
+                        .internal_entity_key_schema()
+                        .decode_entity(decoded_key.entity_key())
+                        .map_err(|_| corrupt())?;
+                    let values = layout
+                        .fields()
+                        .iter()
+                        .zip(&layout_cover_positions)
+                        .map(|(field, cover_position)| match field.internal_source() {
+                            CoveredResultSourceV1::IndexKey(position) => decoded_key
+                                .values()
+                                .get(usize::from(position))
+                                .cloned()
+                                .ok_or_else(corrupt),
+                            CoveredResultSourceV1::EntityKey(position) => entity_values
+                                .get(usize::from(position))
+                                .cloned()
+                                .ok_or_else(corrupt),
+                            CoveredResultSourceV1::Cover => covered_fields
+                                .get(*cover_position)
+                                .map(|(_, value)| value.clone())
+                                .ok_or_else(corrupt),
+                        })
+                        .collect::<Result<Vec<_>, _>>()?;
+                    if !covered_row_matches_predicates_v1(layout, &values, predicates)
+                        .map_err(|_| invariant())?
+                    {
+                        continue;
+                    }
+                    entries.push((entry_key, values));
+                    if entries.len() == fetch_limit {
+                        if let (Some(profile), Some(started)) =
+                            (self.profile.as_mut(), entries_started)
+                        {
+                            profile.stage_ns[INDEX_ENTRY_DECODE] = profile.stage_ns
+                                [INDEX_ENTRY_DECODE]
+                                .saturating_add(elapsed_nanos(started));
+                        }
+                        break 'ranges;
+                    }
                 }
-            }
-            if let (Some(profile), Some(started)) = (self.profile.as_mut(), entries_started) {
-                profile.stage_ns[INDEX_ENTRY_DECODE] =
-                    profile.stage_ns[INDEX_ENTRY_DECODE].saturating_add(elapsed_nanos(started));
-            }
-            if inspected_this_prefix == remaining_scan {
-                return Err(storage_error(StorageErrorKind::LimitExceeded));
+                if let (Some(profile), Some(started)) = (self.profile.as_mut(), entries_started) {
+                    profile.stage_ns[INDEX_ENTRY_DECODE] =
+                        profile.stage_ns[INDEX_ENTRY_DECODE].saturating_add(elapsed_nanos(started));
+                }
+                if inspected_this_prefix == remaining_scan {
+                    return Err(storage_error(StorageErrorKind::LimitExceeded));
+                }
+                if inspected_this_prefix < batch_limit {
+                    break;
+                }
+                let last_key = last_key.ok_or_else(invariant)?;
+                match direction {
+                    AccessDirection::Forward => {
+                        batch_start = last_key;
+                        batch_start.push(0);
+                    }
+                    AccessDirection::Reverse => batch_end = last_key,
+                }
             }
         }
 
@@ -2082,6 +2129,7 @@ query ProjectMembersInRange(
         program: &QueryAccessProgramV1,
         parameters: &QueryParameters,
     ) -> Vec<String> {
+        QUERY_MAX_RANGE_READ.set(0);
         let mut prior = None;
         let mut codes = Vec::new();
         loop {
@@ -2110,6 +2158,10 @@ query ProjectMembersInRange(
                 .expect("continuation"),
             );
         }
+        assert!(
+            QUERY_MAX_RANGE_READ.get() <= 2,
+            "take 1 reads at most one row plus lookahead per storage call"
+        );
         codes
     }
 

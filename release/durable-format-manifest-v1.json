@@ -27,7 +27,7 @@
   "writable_format_upgrade_receipt_versions": [1],
   "readable_format_marker_versions": [1],
   "writable_format_marker_versions": [1],
-  "record_registry_digest": "ebd643e9a985bd6125a3bdbc1a3a98ff4e25249b39203daad5f62c18d75c8e8b",
+  "record_registry_digest": "274384ec2cd748f74914c248f6005efd8d241c55ba2c4cb7384892c40a06329c",
   "readable_records": [
     {"record_type":"riffdb.storage.v1.StoredStorageFormatVersionV1","tag":1,"revision":1,"schema_hash":"07371c0b9eba9bfcad3118b345064b3d33a20a13641c6bde017e5c99dc6020ab"},
     {"record_type":"riffdb.storage.v1.StoredDatabaseIdentityV1","tag":2,"revision":1,"schema_hash":"de6f4f35fa52ca7664a85d9ffaa0041c506f3c5eb22632ba0ecd757dc6df1dea"},
@@ -131,6 +131,8 @@
     {"record_type":"riffdb.storage.v1.StoredCommandCapsuleV7","tag":54,"revision":6,"schema_hash":"60e4309b8e6fb1d82d3a561c68e84ae2ccaac9dd32071aa55b7553b2b9f649e4"},
     {"record_type":"riffdb.storage.v1.StoredCommandSegmentV6","tag":55,"revision":6,"schema_hash":"88bdb1e78b982d5a422d464d0a1c650f59c637f349388dae61a8bfc6b487ded7"},
     {"record_type":"riffdb.storage.v1.StoredReplicationSourceHoldV2","tag":73,"revision":2,"schema_hash":"be8a329f7233292ae16e605e6a8d2b547ba19b848b878a2161cde5878f95155e"},
+    {"record_type":"riffdb.storage.v1.StoredApplicationExportOperationV2","tag":60,"revision":2,"schema_hash":"20cfe90b07db3206737761306b718660fd6e9c63c3ba73e2eb1384286652fc5d"},
+    {"record_type":"riffdb.storage.v1.StoredApplicationExportPageCommitmentV1","tag":74,"revision":1,"schema_hash":"67189f097e5d611ea936d929641b9a009dcc1393b4fdf8e430c331c030d53812"},
     {"record_type":"riffdb.storage.v1.CapabilityRecordV1","tag":18,"revision":1,"schema_hash":"cb42c4ebbce8280123f8b34d4dcde74ca9483406847531f34d5fb3f18d40b342"},
     {"record_type":"riffdb.storage.v1.CapabilityRecordV1","tag":18,"revision":2,"schema_hash":"dee2398ebbc71824471fe5a5f96fcbebdde09e511fe6c11531c2b30210f9e6bf"},
     {"record_type":"riffdb.storage.v1.CapabilityTokenLookupV1","tag":19,"revision":1,"schema_hash":"e00696f3d2c110c5b2b99685e7987f7204d2f9576f8b41c5fcd5a894c746bc86"},
@@ -221,9 +223,11 @@
     {"record_type":"riffdb.storage.v1.StoredReplicationSourceHoldV1","tag":73,"revision":1,"schema_hash":"742a2966ddf730bc5ac371c3881a321d362000c1d8ff1c11162bc6dc65ac61cc"},
     {"record_type":"riffdb.storage.v1.StoredCommandCapsuleV7","tag":54,"revision":6,"schema_hash":"60e4309b8e6fb1d82d3a561c68e84ae2ccaac9dd32071aa55b7553b2b9f649e4"},
     {"record_type":"riffdb.storage.v1.StoredCommandSegmentV6","tag":55,"revision":6,"schema_hash":"88bdb1e78b982d5a422d464d0a1c650f59c637f349388dae61a8bfc6b487ded7"},
-    {"record_type":"riffdb.storage.v1.StoredReplicationSourceHoldV2","tag":73,"revision":2,"schema_hash":"be8a329f7233292ae16e605e6a8d2b547ba19b848b878a2161cde5878f95155e"}
+    {"record_type":"riffdb.storage.v1.StoredReplicationSourceHoldV2","tag":73,"revision":2,"schema_hash":"be8a329f7233292ae16e605e6a8d2b547ba19b848b878a2161cde5878f95155e"},
+    {"record_type":"riffdb.storage.v1.StoredApplicationExportOperationV2","tag":60,"revision":2,"schema_hash":"20cfe90b07db3206737761306b718660fd6e9c63c3ba73e2eb1384286652fc5d"},
+    {"record_type":"riffdb.storage.v1.StoredApplicationExportPageCommitmentV1","tag":74,"revision":1,"schema_hash":"67189f097e5d611ea936d929641b9a009dcc1393b4fdf8e430c331c030d53812"}
   ],
-  "compatibility_fixture_digest": "8f3b51c78b205221db017feacc2654b2fd0ab10f964cf35325759579b8622585",
+  "compatibility_fixture_digest": "dc03747492088c639d0564065afe165da3abd6b96958651684ee2d77b306a04f",
   "upgrade_table": "compatibility/release-pairs-v1.json",
   "physical_format_inventory": "compatibility/physical-formats-v1.json",
   "backup_required_before_upgrade": true,

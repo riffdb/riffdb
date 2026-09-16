@@ -83,6 +83,9 @@ pub(crate) const APPLICATION_INSTALLATION_CAMPAIGNS: TableDefinition<&[u8], &[u8
     TableDefinition::new("application_installation_campaigns");
 pub(crate) const APPLICATION_EXPORT_OPERATIONS: TableDefinition<&[u8], &[u8]> =
     TableDefinition::new("application_export_operations");
+/// Append-only operation/ordinal commitments, atomically advanced with their head.
+pub(crate) const APPLICATION_EXPORT_PAGE_COMMITMENTS: TableDefinition<&[u8], &[u8]> =
+    TableDefinition::new("application_export_page_commitments");
 /// Authoritative per-entity vector source/model evidence (ADR-0136).
 pub(crate) const VECTOR_EVIDENCE: TableDefinition<&[u8], &[u8]> =
     TableDefinition::new("vector_evidence");
@@ -99,7 +102,7 @@ pub(crate) const VECTOR_PROJECTION_CONTROLS: TableDefinition<&[u8], &[u8]> =
 pub(crate) const COLUMNAR_PROJECTION_CONTROLS: TableDefinition<&[u8], &[u8]> =
     TableDefinition::new("columnar_projection_controls");
 
-pub(crate) const TABLE_NAMES: [&str; 43] = [
+pub(crate) const TABLE_NAMES: [&str; 44] = [
     "meta",
     "contract_bundles",
     "catalog_active",
@@ -134,6 +137,7 @@ pub(crate) const TABLE_NAMES: [&str; 43] = [
     "event_consumer_deliveries",
     "application_installation_campaigns",
     "application_export_operations",
+    "application_export_page_commitments",
     "validated_prefix_entity_heads",
     "vector_evidence",
     "vector_observations",
@@ -145,7 +149,7 @@ pub(crate) const TABLE_NAMES: [&str; 43] = [
     "audit_by_request_locators",
 ];
 
-pub(crate) const BYTE_TABLES: [TableDefinition<&[u8], &[u8]>; 38] = [
+pub(crate) const BYTE_TABLES: [TableDefinition<&[u8], &[u8]>; 39] = [
     CONTRACT_BUNDLES,
     CATALOG_ACTIVE,
     QUERY_MODULES,
@@ -179,6 +183,7 @@ pub(crate) const BYTE_TABLES: [TableDefinition<&[u8], &[u8]>; 38] = [
     EVENT_CONSUMER_DELIVERIES,
     APPLICATION_INSTALLATION_CAMPAIGNS,
     APPLICATION_EXPORT_OPERATIONS,
+    APPLICATION_EXPORT_PAGE_COMMITMENTS,
     VECTOR_EVIDENCE,
     VECTOR_OBSERVATIONS,
     VECTOR_EVIDENCE_INDEX,
@@ -264,6 +269,7 @@ pub(crate) fn create_all_tables(tx: &WriteTransaction) -> Result<(), TableError>
     drop(tx.open_table(EVENT_CONSUMER_DELIVERIES)?);
     drop(tx.open_table(APPLICATION_INSTALLATION_CAMPAIGNS)?);
     drop(tx.open_table(APPLICATION_EXPORT_OPERATIONS)?);
+    drop(tx.open_table(APPLICATION_EXPORT_PAGE_COMMITMENTS)?);
     drop(tx.open_table(VECTOR_EVIDENCE)?);
     drop(tx.open_table(VECTOR_OBSERVATIONS)?);
     drop(tx.open_table(VECTOR_EVIDENCE_INDEX)?);
@@ -341,6 +347,7 @@ mod tests {
             EVENT_CONSUMER_DELIVERIES.name(),
             APPLICATION_INSTALLATION_CAMPAIGNS.name(),
             APPLICATION_EXPORT_OPERATIONS.name(),
+            APPLICATION_EXPORT_PAGE_COMMITMENTS.name(),
             VALIDATED_PREFIX_ENTITY_HEADS.name(),
             VECTOR_EVIDENCE.name(),
             VECTOR_OBSERVATIONS.name(),
@@ -353,7 +360,7 @@ mod tests {
         ];
 
         assert_eq!(definition_names, TABLE_NAMES);
-        assert_eq!(TABLE_NAMES.len(), 43);
+        assert_eq!(TABLE_NAMES.len(), 44);
         assert_eq!(
             TABLE_NAMES.into_iter().collect::<BTreeSet<_>>().len(),
             TABLE_NAMES.len()

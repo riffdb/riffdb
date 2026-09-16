@@ -6022,6 +6022,18 @@ the matching frontier advance are one atomic transaction. A duplicate is an
 equal no-op only when identity, generation, sequence, and apply hash all match;
 gaps, missing markers, hash mismatch, or frontier inversion fail closed.
 
+Under ADR-0230, aggregate projection replay/catch-up MAY apply at most 64
+consecutive requests in one immediate-durability transaction. Each retains its
+original canonical hash and marker. Preparation MUST evaluate members sequentially
+against one captured base plus prior members' private post-images. Storage MUST
+revalidate the complete expected control and exact first-access base observations;
+all new rows, every marker, and the final frontier MUST commit together. Aggregate
+request, observation, overlay, row-update and encoded write sizes MUST remain within
+the existing single-apply byte/state ceilings; the member count does not multiply
+them. Equal whole-batch retry requires every retained marker to match. A mixed
+historical/new batch MUST refuse suffix application until freshly prepared. Unknown
+outcomes require exact marker/control reconciliation before acknowledgement.
+
 Before filter, key, or measure evaluation, the worker MUST pass each relevant
 immutable event, together with its enclosing commit's exact writer-plan
 reference, through the catalog-owned event-materialization view for the exact
@@ -6096,8 +6108,14 @@ legacy definition fingerprint.
 
 `PRJ-006` One exact expected-control compare-and-set MUST be the sole durable
 columnar selector and MUST compare the transaction-current authoritative head before
-publication. Published frontier advancement MUST be monotonic and MUST preserve any
-disjoint candidate byte-exact until its own publication or explicit replacement.
+publication. Under ADR-0227 a completely validated schema-bound columnar candidate
+MAY publish its actual frontier H when H is no greater than that head. A same-specification
+Published generation MUST be replaced only by a strictly newer frontier; initial and
+unservable rebuilds MAY establish the first valid frontier for their specification without
+regressing the retained source frontier. Publication MUST NOT claim unapplied commits,
+relax typed query freshness, or release the tail above H. Published frontier advancement
+MUST preserve any disjoint candidate byte-exact until its own publication or explicit
+replacement.
 
 `PRJ-007` A common columnar control MUST initialize only from authoritative state after
 its replay and retention fences are durable; no predecessor control, manifest, directory,
@@ -6121,8 +6139,8 @@ identity, fixture, reader/writer policy, topology registration, and transition p
 semantic hashes MUST use a dedicated collision-tested central hash domain, and runtime-only
 prepared witnesses MUST remain nonserializable and below public APIs.
 
-Initial build creates generation 1 as an unpublished candidate and applies the
-log from sequence 1. Publication is one control transition only when its
+For aggregate event-derived projections, initial build creates generation 1 as an
+unpublished candidate and applies the log from sequence 1. Publication is one control transition only when its
 frontier equals the transaction-current authoritative head. A same-plan rebuild
 allocates the next generation, retains the published generation, applies into a
 disjoint namespace, and publishes only when the candidate is not behind the old

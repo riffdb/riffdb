@@ -1505,13 +1505,14 @@ fn resolve_overlay_point(
 /// Persistent AVL map used by immutable published views.
 ///
 /// A successor reuses every untouched node and copies only one logarithmic
-/// search path. This is intentionally private: callers can observe only the
+/// search path, reusing uniquely owned nodes during private staging. This is intentionally private: callers can observe only the
 /// closed overlay lookup and bounded merge contracts above.
 #[derive(Clone, Default)]
 struct PersistentOverlayMap {
     root: Option<Arc<OverlayNode>>,
 }
 
+#[derive(Clone)]
 struct OverlayNode {
     // Shared, never copied. A successor copies one search path, and a
     // `Box<[u8]>` key here made that copy allocate and memcpy every key on the
@@ -1538,7 +1539,7 @@ impl PersistentOverlayMap {
     }
 
     fn insert(&mut self, key: Arc<[u8]>, value: OverlayValue) {
-        self.root = Some(insert_overlay_node(self.root.as_ref(), key, value));
+        self.root = Some(insert_overlay_node(self.root.take(), key, value));
     }
 
     fn from_sorted_entries(entries: BTreeMap<Arc<[u8]>, OverlayValue>) -> Self {
@@ -1583,30 +1584,36 @@ fn build_balanced_overlay(
 }
 
 fn insert_overlay_node(
-    node: Option<&Arc<OverlayNode>>,
+    node: Option<Arc<OverlayNode>>,
     key: Arc<[u8]>,
     value: OverlayValue,
 ) -> Arc<OverlayNode> {
-    let Some(node) = node else {
+    let Some(mut node) = node else {
         return overlay_node(key, value, None, None);
     };
-    match key.as_ref().cmp(node.key.as_ref()) {
-        std::cmp::Ordering::Less => rebalance_overlay_node(overlay_node(
-            node.key.clone(),
-            node.value.clone(),
-            Some(insert_overlay_node(node.left.as_ref(), key, value)),
-            node.right.clone(),
-        )),
-        std::cmp::Ordering::Equal => {
-            overlay_node(key, value, node.left.clone(), node.right.clone())
+    // Copy only shared paths. Subsequent private-stage mutations reuse the
+    // already-owned nodes while predecessor snapshots remain immutable.
+    let owned = Arc::make_mut(&mut node);
+    match key.as_ref().cmp(owned.key.as_ref()) {
+        std::cmp::Ordering::Less => {
+            owned.left = Some(insert_overlay_node(owned.left.take(), key, value));
         }
-        std::cmp::Ordering::Greater => rebalance_overlay_node(overlay_node(
-            node.key.clone(),
-            node.value.clone(),
-            node.left.clone(),
-            Some(insert_overlay_node(node.right.as_ref(), key, value)),
-        )),
+        std::cmp::Ordering::Equal => {
+            owned.key = key;
+            owned.value = value;
+        }
+        std::cmp::Ordering::Greater => {
+            owned.right = Some(insert_overlay_node(owned.right.take(), key, value));
+        }
     }
+    update_overlay_height(owned);
+    rebalance_overlay_node(node)
+}
+
+fn update_overlay_height(node: &mut OverlayNode) {
+    node.height = overlay_height(&node.left)
+        .max(overlay_height(&node.right))
+        .saturating_add(1);
 }
 
 fn overlay_node(
@@ -1631,7 +1638,7 @@ fn overlay_height(node: &Option<Arc<OverlayNode>>) -> u16 {
     node.as_ref().map_or(0, |node| node.height)
 }
 
-fn rebalance_overlay_node(node: Arc<OverlayNode>) -> Arc<OverlayNode> {
+fn rebalance_overlay_node(mut node: Arc<OverlayNode>) -> Arc<OverlayNode> {
     let balance = i32::from(overlay_height(&node.left)) - i32::from(overlay_height(&node.right));
     if balance > 1 {
         let left = node
@@ -1639,13 +1646,13 @@ fn rebalance_overlay_node(node: Arc<OverlayNode>) -> Arc<OverlayNode> {
             .as_ref()
             .expect("positive AVL balance has left child");
         if overlay_height(&left.left) < overlay_height(&left.right) {
-            let rotated_left = rotate_overlay_left(Arc::clone(left));
-            return rotate_overlay_right(overlay_node(
-                node.key.clone(),
-                node.value.clone(),
-                Some(rotated_left),
-                node.right.clone(),
-            ));
+            let owned = Arc::make_mut(&mut node);
+            let left = owned
+                .left
+                .take()
+                .expect("positive AVL balance has left child");
+            owned.left = Some(rotate_overlay_left(left));
+            update_overlay_height(owned);
         }
         return rotate_overlay_right(node);
     }
@@ -1655,55 +1662,47 @@ fn rebalance_overlay_node(node: Arc<OverlayNode>) -> Arc<OverlayNode> {
             .as_ref()
             .expect("negative AVL balance has right child");
         if overlay_height(&right.right) < overlay_height(&right.left) {
-            let rotated_right = rotate_overlay_right(Arc::clone(right));
-            return rotate_overlay_left(overlay_node(
-                node.key.clone(),
-                node.value.clone(),
-                node.left.clone(),
-                Some(rotated_right),
-            ));
+            let owned = Arc::make_mut(&mut node);
+            let right = owned
+                .right
+                .take()
+                .expect("negative AVL balance has right child");
+            owned.right = Some(rotate_overlay_right(right));
+            update_overlay_height(owned);
         }
         return rotate_overlay_left(node);
     }
     node
 }
 
-fn rotate_overlay_left(node: Arc<OverlayNode>) -> Arc<OverlayNode> {
-    let right = node
+fn rotate_overlay_left(mut node: Arc<OverlayNode>) -> Arc<OverlayNode> {
+    let mut right = Arc::make_mut(&mut node)
         .right
-        .as_ref()
+        .take()
         .expect("AVL left rotation has right child");
-    let new_left = overlay_node(
-        node.key.clone(),
-        node.value.clone(),
-        node.left.clone(),
-        right.left.clone(),
-    );
-    overlay_node(
-        right.key.clone(),
-        right.value.clone(),
-        Some(new_left),
-        right.right.clone(),
-    )
+    let middle = Arc::make_mut(&mut right).left.take();
+    let owned = Arc::make_mut(&mut node);
+    owned.right = middle;
+    update_overlay_height(owned);
+    let owned = Arc::make_mut(&mut right);
+    owned.left = Some(node);
+    update_overlay_height(owned);
+    right
 }
 
-fn rotate_overlay_right(node: Arc<OverlayNode>) -> Arc<OverlayNode> {
-    let left = node
+fn rotate_overlay_right(mut node: Arc<OverlayNode>) -> Arc<OverlayNode> {
+    let mut left = Arc::make_mut(&mut node)
         .left
-        .as_ref()
+        .take()
         .expect("AVL right rotation has left child");
-    let new_right = overlay_node(
-        node.key.clone(),
-        node.value.clone(),
-        left.right.clone(),
-        node.right.clone(),
-    );
-    overlay_node(
-        left.key.clone(),
-        left.value.clone(),
-        left.left.clone(),
-        Some(new_right),
-    )
+    let middle = Arc::make_mut(&mut left).right.take();
+    let owned = Arc::make_mut(&mut node);
+    owned.left = middle;
+    update_overlay_height(owned);
+    let owned = Arc::make_mut(&mut left);
+    owned.right = Some(node);
+    update_overlay_height(owned);
+    left
 }
 
 struct PersistentOverlayRange<'map> {
@@ -2597,6 +2596,56 @@ mod tests {
             view.merge_bounded(CompositeTableV1::Entities, base, b"a", Some(b"z"), 2, 1,),
             Err(StorageValueError::InvalidShape)
         );
+    }
+
+    #[test]
+    fn private_overlay_updates_reuse_owned_paths_without_changing_snapshots() {
+        let mut stage = PersistentOverlayMap::from_sorted_entries(
+            (0_u64..127)
+                .map(|key| {
+                    (
+                        Arc::<[u8]>::from(key.to_be_bytes()),
+                        OverlayValue::Value(Arc::from(key.to_be_bytes())),
+                    )
+                })
+                .collect(),
+        );
+        let predecessor = stage.clone();
+        let key: Arc<[u8]> = Arc::from(1_u64.to_be_bytes());
+        stage.insert(Arc::clone(&key), OverlayValue::Tombstone);
+        let path = |map: &PersistentOverlayMap| {
+            let mut nodes = Vec::new();
+            let mut cursor = map.root.as_ref();
+            while let Some(node) = cursor {
+                nodes.push(Arc::as_ptr(node));
+                cursor = match key.as_ref().cmp(node.key.as_ref()) {
+                    std::cmp::Ordering::Less => node.left.as_ref(),
+                    std::cmp::Ordering::Greater => node.right.as_ref(),
+                    std::cmp::Ordering::Equal => break,
+                };
+            }
+            nodes
+        };
+        let private_path = path(&stage);
+        for value in 0_u64..100 {
+            stage.insert(
+                Arc::clone(&key),
+                OverlayValue::Value(Arc::from(value.to_be_bytes())),
+            );
+            assert_eq!(
+                path(&stage),
+                private_path,
+                "private updates must not copy tree nodes"
+            );
+            assert!(
+                matches!(predecessor.get(&key), Some(OverlayValue::Value(bytes)) if bytes.as_ref() == 1_u64.to_be_bytes())
+            );
+        }
+        // Unchanged subtrees are still shared with the frozen predecessor.
+        assert!(Arc::ptr_eq(
+            stage.root.as_ref().unwrap().right.as_ref().unwrap(),
+            predecessor.root.as_ref().unwrap().right.as_ref().unwrap()
+        ));
     }
 
     #[test]

@@ -20,10 +20,7 @@ use crate::{
 
 /// Maximum canonical JSON bytes in one exported record line.
 pub const MAX_APPLICATION_EXPORT_JSON_LINE_BYTES: usize = 64 * 1024;
-/// Maximum canonical JSON lines returned by one public page.
-pub const MAX_APPLICATION_EXPORT_PAGE_ROWS: usize = 500;
-/// Maximum canonical JSON bytes returned by one public page.
-pub const MAX_APPLICATION_EXPORT_PAGE_BYTES: usize = 4 * 1024 * 1024;
+pub use riffdb_types::{MAX_APPLICATION_EXPORT_PAGE_BYTES, MAX_APPLICATION_EXPORT_PAGE_ROWS};
 /// Maximum canonical bytes in a terminal manifest or receipt document.
 pub const MAX_APPLICATION_EXPORT_TERMINAL_DOCUMENT_BYTES: usize = 256 * 1024;
 /// Maximum opaque cursor bytes on the public surface.

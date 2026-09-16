@@ -5,7 +5,7 @@
 //!
 //! Storage tests never allocate under the ambient temp directory (enforced by
 //! `tests/architecture.rs`); everything lives below
-//! `target/riffdb-test-data/storage-redb-unit`. [`ScopedDirectory`] scopes one
+//! `target/riffdb-test-data/storage-redb-unit/<pid-namespace>`. [`ScopedDirectory`] scopes one
 //! test's database and every side file it grows (journal, checkpoint, spare,
 //! durable-format marker, …) to a single directory removed on `Drop` — pass,
 //! fail, or panic — so cleanup never depends on a hand-maintained file list.
@@ -36,8 +36,27 @@ static NEXT_SCOPE: AtomicU64 = AtomicU64::new(1);
 pub(crate) fn root() -> PathBuf {
     let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .join("../../target/riffdb-test-data/storage-redb-unit");
+    // A pid is meaningful only inside its PID namespace. Independent sandbox
+    // runs share this checkout but cannot observe each other's /proc entries.
+    // Sweeping a shared flat root would delete another run's live databases.
+    #[cfg(target_os = "linux")]
+    let root = namespace_root(
+        &root,
+        &fs::read_link("/proc/self/ns/pid").expect("read test process PID namespace"),
+    );
     fs::create_dir_all(&root).expect("create repository-local redb test root");
     fs::canonicalize(root).expect("canonicalize repository-local redb test root")
+}
+
+#[cfg(target_os = "linux")]
+fn namespace_root(root: &Path, namespace: &Path) -> PathBuf {
+    let id = namespace
+        .to_str()
+        .and_then(|name| name.strip_prefix("pid:["))
+        .and_then(|name| name.strip_suffix(']'))
+        .filter(|id| !id.is_empty() && id.bytes().all(|byte| byte.is_ascii_digit()))
+        .expect("kernel PID namespace identity");
+    root.join(format!("pidns-{id}"))
 }
 
 /// One unit test's scratch scope: `<root>/scope-<label>-<pid>-<n>`, removed
@@ -141,6 +160,26 @@ mod tests {
     use super::*;
     use std::panic::{AssertUnwindSafe, catch_unwind};
     use std::sync::Mutex;
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn stale_scope_cleanup_never_inspects_a_foreign_pid_namespace() {
+        let host = ScopedDirectory::new("namespace-isolation");
+        let own = namespace_root(&host.0, Path::new("pid:[100]"));
+        let foreign = namespace_root(&host.0, Path::new("pid:[200]"));
+        // The same PID may be dead here and alive in the other sandbox.
+        let local_dead = own.join("scope-fixture-999999-1");
+        let foreign_live = foreign.join("scope-fixture-999999-1");
+        fs::create_dir_all(&local_dead).unwrap();
+        fs::create_dir_all(&foreign_live).unwrap();
+        fs::write(foreign_live.join("db.redb"), b"live foreign database").unwrap();
+        sweep_stale_scopes(&own);
+        assert!(!local_dead.exists());
+        assert_eq!(
+            fs::read(foreign_live.join("db.redb")).unwrap(),
+            b"live foreign database"
+        );
+    }
 
     /// Falsifiability for the guard itself: cleanup must happen on the panic
     /// path. With `Drop` neutered this observes the leak and fails.

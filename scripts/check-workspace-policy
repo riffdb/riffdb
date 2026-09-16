@@ -92,6 +92,9 @@ EXPECTED_FIXTURE_BINS = {
     "package" => "riffdb-server",
     "required_features" => ["test-fixtures"]
   },
+  "riffdbd-exact-provider-fixture" => {
+    "package" => "riffdb-server", "required_features" => ["test-fixtures"]
+  },
   "riffdbd-causal-wait-fixture" => {
     "package" => "riffdb-server",
     "required_features" => ["test-fixtures"]

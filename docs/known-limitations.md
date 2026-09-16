@@ -134,9 +134,11 @@ These limits are part of the POC release posture, not hidden roadmap promises.
 - Vector search's exact and declared approximate tiers are application-reachable
   through the same named RiffQL operation. The server chooses exact search at
   or below the contract's per-organization `ann_threshold` and first-party HNSW
-  strictly above it; callers cannot choose a tier or weaken the declared recall
-  target. The approximate graph is rebuilt ephemerally for each bounded query,
-  so this POC does not claim persistent-graph latency for large partitions. The
+  only above it when an exactly matched admitted-population graph is available.
+  Cold or unavailable graphs fall back to exact execution; callers cannot choose
+  a tier or weaken the declared recall target. Primary providers use bounded
+  background builds and memory-only reuse; followers currently stay exact.
+  This POC does not claim persistent-graph latency for large partitions. The
   current production candidate ceiling is 500 rows, which also means a declared
   threshold of 500 or more remains exact under the POC ceiling. The native and typed Protobuf value branches, gRPC and
   hosted MCP conversions, and CLI numeric component arrays now preserve finite

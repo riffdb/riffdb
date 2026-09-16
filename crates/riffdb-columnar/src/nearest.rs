@@ -110,6 +110,9 @@ pub(crate) fn exact_knn(
     Ok(scored)
 }
 
+#[cfg(test)]
+std::thread_local! { pub(crate) static DISTANCE_COUNT: std::cell::Cell<usize> = const { std::cell::Cell::new(0) }; }
+
 /// Computes the distance between two equal-dimension vectors under the given metric.
 ///
 /// Canonical vectors carry only finite components, but accumulation over
@@ -122,6 +125,8 @@ pub(crate) fn exact_knn(
 /// dot-product result.
 #[inline]
 pub(crate) fn compute_distance(a: &[f32], b: &[f32], metric: DistanceMetric) -> f32 {
+    #[cfg(test)]
+    DISTANCE_COUNT.set(DISTANCE_COUNT.get() + 1);
     let distance = match metric {
         DistanceMetric::Cosine => cosine_distance(a, b),
         DistanceMetric::Euclidean => euclidean_distance(a, b),

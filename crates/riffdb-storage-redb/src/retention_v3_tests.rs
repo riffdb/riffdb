@@ -8,6 +8,53 @@ use riffdb_storage_api::{
 use riffdb_types::{DatabaseId, DualFrontier};
 
 #[test]
+fn tombstone_scan_includes_only_the_predecessor_and_requested_physical_range() {
+    let scope = crate::test_path::ScopedDirectory::new("tombstone-bounded-commits");
+    let database = Database::create(scope.join("db.redb")).unwrap();
+    let write = database.begin_write().unwrap();
+    let mut table = write.open_table(COMMITS).unwrap();
+    // Physical segment starts: an interval beginning at 12 must still inspect
+    // the segment beginning at 10. A large retained suffix is not visited.
+    for sequence in [1_u64, 10, 20].into_iter().chain(100..1100) {
+        table
+            .insert(
+                sequence.to_be_bytes().as_slice(),
+                b"range-only-fixture".as_slice(),
+            )
+            .unwrap();
+    }
+    for (first, last, expected) in [
+        (12, 20, vec![10, 20]),
+        (10, 10, vec![10]),
+        (2, 9, vec![1]),
+        (21, 99, vec![20]),
+    ] {
+        let (lower, upper) = tombstone_commit_bounds(&table, first, last).unwrap();
+        let visited = table
+            .range::<&[u8]>((Included(lower.as_slice()), Included(upper.as_slice())))
+            .unwrap()
+            .map(|entry| {
+                decode_application_sequence_key(entry.unwrap().0.value())
+                    .unwrap()
+                    .get()
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(visited, expected);
+    }
+    assert!(tombstone_commit_bounds(&table, 0, 1).is_err());
+    assert!(tombstone_commit_bounds(&table, 20, 10).is_err());
+    table.remove(1_u64.to_be_bytes().as_slice()).unwrap();
+    let (lower, upper) = tombstone_commit_bounds(&table, 1, 9).unwrap();
+    assert!(
+        table
+            .range::<&[u8]>((Included(lower.as_slice()), Included(upper.as_slice())))
+            .unwrap()
+            .next()
+            .is_none()
+    );
+}
+
+#[test]
 fn prune_retained_plans_and_tombstone_length_refuse_bounds_before_buffer_growth() {
     let mut budget = RetainedPrunePlanBudget::default();
     budget

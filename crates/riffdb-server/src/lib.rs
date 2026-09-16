@@ -29,6 +29,8 @@ mod consumer_token;
 mod cursor;
 mod daemon;
 mod exact_text_adapter;
+#[cfg(feature = "test-fixtures")]
+mod exact_text_probe;
 mod hosted_mcp;
 mod identifiers;
 mod installation_adapter;
@@ -69,6 +71,7 @@ pub mod test_fixtures {
     //! Closed process-level recovery fixtures unavailable to normal builds.
 
     pub use crate::archive_worker::install_archive_progress_probe;
+    pub use crate::exact_text_probe::{ExactProviderTestPoint, install_exact_provider_probe};
     pub use crate::maintenance_recovery_controller::MaintenanceRecoveryTestPoint;
 
     use std::process::ExitCode;

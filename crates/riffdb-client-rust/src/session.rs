@@ -375,6 +375,11 @@ impl Drop for PendingCallGuard {
             return;
         }
         let retained = self.pending.lock().ok().is_some_and(|mut pending| {
+            // Routing a response removes its pending entry before waking the
+            // caller. Cancellation in that window has nothing left to cancel.
+            if !pending.contains_key(&self.correlation_id) {
+                return true;
+            }
             let cancel_correlation = self.next_correlation.fetch_add(1, Ordering::Relaxed);
             if cancel_correlation == 0 || cancel_correlation == u64::MAX {
                 pending.remove(&self.correlation_id);
@@ -645,6 +650,34 @@ mod tests {
             },
         ));
         assert!(session.pending.lock().expect("pending").is_empty());
+    }
+
+    #[tokio::test]
+    async fn cancelling_after_response_routing_preserves_the_session() {
+        let (session, mut outbound) = test_session(1);
+        let mut call =
+            Box::pin(session.execute_query(riffdb_proto::app::v1::ExecuteQueryRequest::default()));
+        assert!(futures_util::poll!(call.as_mut()).is_pending());
+        let request = outbound.recv().await.unwrap();
+        assert!(route_session_response(
+            &session.pending,
+            v1::ApplicationSessionResponse {
+                correlation_id: request.correlation_id,
+                response: None,
+            }
+        ));
+        // The response is delivered but its caller has not been polled again.
+        drop(call);
+        assert!(!session.closed.load(Ordering::Acquire));
+        assert!(session.pending.lock().unwrap().is_empty());
+        assert!(matches!(
+            outbound.try_recv(),
+            Err(mpsc::error::TryRecvError::Empty)
+        ));
+        let mut next =
+            Box::pin(session.execute_query(riffdb_proto::app::v1::ExecuteQueryRequest::default()));
+        assert!(futures_util::poll!(next.as_mut()).is_pending());
+        assert!(outbound.recv().await.unwrap().correlation_id > request.correlation_id);
     }
 
     #[tokio::test]

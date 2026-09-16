@@ -11,29 +11,44 @@ vector_field embedding(1536, cosine, (title, body), staleness_slo 60,
 
 Both values are compiler-owned projection properties. The row threshold is
 bounded to 1–65,536 per organization and the recall target to 1–10,000 basis
-points. Exact search remains active at and below the threshold; HNSW engages
-strictly above it. A query cannot select the tier or lower the declared target.
+points. Exact search remains active at and below the threshold. Under accepted
+ADR-0229, an uncached population also executes exactly above the threshold; a
+matching warm graph may use ANN. The result reports the path actually used.
+A query cannot lower the declared recall target.
 
 ## Isolation and boundedness
 
-The first-party Rust graph uses no external ANN dependency or unsafe code. It
-is built ephemerally from the query's admitted vectors after organization
-scope, scalar predicates, and principal-policy admission. Consequently its
-entry point, levels, neighbor links, traversal, and safe execution statistics
-are functions only of rows eligible for that query. Graph construction is
-bounded by the existing per-query scan budget; levels, neighbor count,
-construction breadth, and search breadth have fixed implementation ceilings.
+Every query repeats current organization, model/evidence, scalar-predicate and
+principal-policy admission before cache lookup or distance computation. Reuse
+requires the exact provider generation, history/frontier, model, policy bundle,
+capability revision, vector field and metric, plus byte-equivalent ordered
+admitted keys, entity versions and canonical vectors. A population hash never
+substitutes for these comparisons.
 
-The ephemeral design deliberately stores no durable graph. A query rebuilds
-from the visible merged snapshot in canonical primary-key order. Segment
-compaction therefore cannot preserve or corrupt graph bytes; maintenance is
-accepted by recall at an unchanged frontier, as VEC-010 requires.
+The primary provider may offer a cold admitted population to a background
+builder. Each provider has at most one active and one queued population, each
+bounded to 500 rows. Cache and builder state share a process-wide 64 MiB budget,
+reserved before copying retained data. Memory refusal or busy cache state keeps
+the exact result. Supersession cancels outdated builds; generation invalidation
+drops its cache. Outstanding searches and builders retain their reservations
+until they release their data.
+
+Graphs remain memory-only and reopen cold. Follower providers currently use
+exact execution. Continuation callers use exact execution on every page; the
+current production projected-vector endpoint rejects continuation cursors.
+Freshness, current model evidence and policy release checks remain unchanged.
 
 ## Reproducible evidence
 
-- `declared_threshold_routes_exact_at_or_below_and_ann_only_above` checks both
-  sides of the threshold and proves pre-ranking filters can route a reduced
-  candidate set back to exact search.
+- `uncached_declared_threshold_queries_remain_exact` proves cold routing.
+- `cold_exact_warm_reuse_and_recall_at_the_production_bound` exercises 500
+  candidates and all three metrics, proving one build per population, repeated
+  admission, exact cold answers and the declared warm recall.
+- `denied_malformed_rows_and_other_orgs_never_enter_reused_graphs` checks warm
+  policy isolation and refusal to reuse changed versions or vector bytes.
+- `paused_build_supersession_drop_and_search_keep_bounded_custody` and
+  `invalidated_provider_cancels_paused_builder_without_installation` use explicit
+  channel schedules to prove cancellation and memory custody.
 - `randomized_histories_meet_declared_recall_at_matched_frontiers` grows eight
   seeded histories and compares recall@20 with exact search at each identical
   published frontier.
@@ -60,11 +75,20 @@ canonical bytes, and hash. Catalog startup explicitly accepts V12. Commit-side
 tests prove the new projection-only metadata does not alter authoritative
 index derivation.
 
-## POC limitation
+## Bounded workload measurement and limitations
 
-The graph is rebuilt per query rather than retained as a durable derived
-structure. This gives the POC a small, auditable tenant-isolation boundary and
-strong compaction invariance, but it does not claim production-scale latency
-for very large partitions. Persisted incremental graph maintenance would be a
-separate design requiring the same per-org isolation and frozen-frontier recall
-gate; it must not silently replace this behavior.
+The deterministic 500-row, 12-dimensional fixture records distance counts and
+latency in `cold_exact_warm_reuse_and_recall_at_the_production_bound` (`--nocapture`).
+A development-profile run used 500 distance evaluations for cold exact queries,
+roughly 530–590 for warm traversal, and about 212,000–216,000 for graph construction.
+Cold query latency was roughly 0.9–1.1 ms and warm latency 1.0–1.2 ms on that run;
+these are local observations, not production latency guarantees. The cache
+reserved approximately 4.47 MB per retained fixture population, including a
+conservative graph/build allowance. The retained cache allocation ledger counted
+2,178 owned buffers/Arc allocations; warm hits allocated no new retained cache
+state. This ledger excludes transient query/build allocations and allocator
+metadata; allocator call profiling was unavailable. It avoids rebuilding on repeated queries;
+it does not establish a speed advantage over exact scanning at this small bound.
+
+No persisted graph format or incremental graph maintenance is introduced.
+Historical standalone graph recall and compaction tests remain applicable.

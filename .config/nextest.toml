@@ -16,6 +16,10 @@ slow-timeout = { period = "30s", terminate-after = 4, grace-period = "10s" }
 # baseline takes about 117s, leaving no margin under the general 120s ceiling.
 # Keep every in-test 30s readiness/progress deadline and every crash assertion.
 filter = 'binary_id(=riffdb-server::replication_follower) & test(=bootstrap_to_tail_fence_is_gap_free_across_crash)'
+# Repeated immediate-durability recovery competes with other crash campaigns
+# for storage. Reserve the runner while exercising the unchanged 30s deadlines.
+threads-required = "num-test-threads"
+priority = 100
 slow-timeout = { period = "30s", terminate-after = 8, grace-period = "10s" }
 
 [[profile.ci.scripts]]

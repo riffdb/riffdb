@@ -12,6 +12,12 @@ use riffdb_types::{
     MAX_AGGREGATE_DISTINCT_VALUES_V1, MAX_AGGREGATE_STATE_BYTES_V1, encode_canonical_value,
 };
 
+#[path = "query_aggregate.rs"]
+mod row_aggregate;
+
+#[path = "query_order.rs"]
+mod row_order;
+
 use crate::definition::RegisteredDefinition;
 use crate::segment_v2::SegmentV2Predicate;
 use crate::store::{ColumnarSnapshot, MergedRow, OrgKey, PrimaryKeyBytes, Segment};
@@ -661,6 +667,22 @@ pub fn nearest_query_snapshot_with_admission<A: NearestCandidateAdmission>(
     request: &NearestQueryRequest,
     admission: &mut A,
 ) -> Result<NearestQueryResult, NearestQueryAdmissionError<A::Error>> {
+    nearest_query_snapshot_with_cache(definition, snapshot, request, admission, None)
+}
+
+/// Executes current admission before consulting a disposable graph cache.
+///
+/// The optional context is first-party provider evidence binding source,
+/// generation, history, frontier, model and current policy/capability revision.
+/// It is compared byte-for-byte, together with every admitted key, version and
+/// canonical vector. Continuation executors must pass `None` (ADR-0229).
+pub fn nearest_query_snapshot_with_cache<A: NearestCandidateAdmission>(
+    definition: &RegisteredDefinition,
+    snapshot: &ColumnarSnapshot,
+    request: &NearestQueryRequest,
+    admission: &mut A,
+    cache: Option<(&crate::NearestGraphCache, &[u8])>,
+) -> Result<NearestQueryResult, NearestQueryAdmissionError<A::Error>> {
     // Validate org scope type.
     if !org_value_matches_type(&request.org_scope, definition.org_scope_type()) {
         return Err(QueryError::OrgScopeTypeMismatch {
@@ -748,11 +770,27 @@ pub fn nearest_query_snapshot_with_admission<A: NearestCandidateAdmission>(
     // cannot shape its statistics or traversal.
     let candidate_refs: Vec<&riffdb_types::CanonicalVector> = candidate_vectors.iter().collect();
     let ann_config = definition.vector_ann_config(request.vector_field);
-    let (scored, search_kind, ann_stats) = if let Some(config) =
-        ann_config.filter(|config| candidate_refs.len() > config.row_threshold() as usize)
-    {
-        let index = crate::hnsw::HnswIndex::build(&candidate_refs, request.metric)
-            .map_err(map_nearest_error)?;
+    let config = ann_config.filter(|config| candidate_refs.len() > config.row_threshold() as usize);
+    let graph = if config.is_some() {
+        cache.and_then(|(cache, context)| {
+            let rows = candidate_rows
+                .iter()
+                .map(|(key, _, row)| (key.clone(), row.entity_version))
+                .collect::<Vec<_>>();
+            cache.lookup_or_offer(crate::ann_cache::PopulationView {
+                context,
+                org: org.as_bytes(),
+                field: request.vector_field,
+                metric: request.metric,
+                rows: &rows,
+                vectors: &candidate_vectors,
+            })
+        })
+    } else {
+        None
+    };
+    let (scored, search_kind, ann_stats) = if let Some((graph, config)) = graph.zip(config) {
+        let index = &graph.index;
         let scored = index
             .search(
                 &request.query_vector,
@@ -841,9 +879,7 @@ pub(crate) fn execute_query(
         let field = predicate_field(predicate);
         projected_field_index(definition, field)?;
     }
-    for order in &request.order {
-        validate_order_field(definition, order.field)?;
-    }
+    let resolved_order = row_order::resolve(definition, &request.order)?;
     if let Some(group) = &request.group_by {
         for key in &group.keys {
             projected_field_index(definition, *key)?;
@@ -885,7 +921,11 @@ pub(crate) fn execute_query(
         return Err(QueryError::PolicyAdmissionMismatch);
     }
     let mut scanned = 0usize;
-    let mut matched: Vec<(PrimaryKeyBytes, Vec<CanonicalValue>, MergedRow)> = Vec::new();
+    let mut matched: Vec<row_order::MatchedRow> = Vec::new();
+    let mut top = request
+        .limit
+        .filter(|_| request.group_by.is_none() && request.aggregate.is_none())
+        .map(|limit| row_order::TopRows::new(&resolved_order, limit));
     for (key, row) in merged {
         if let Some(admission) = admission {
             let candidate = EntityKey::from_bytes(key.as_bytes().to_vec())
@@ -902,7 +942,12 @@ pub(crate) fn execute_query(
         }
         if predicates_match(definition, &row, &request.predicates)? {
             let pk_values = decode_primary_key(definition, &key)?;
-            matched.push((key, pk_values, row));
+            let row = (key, pk_values, row);
+            if let Some(top) = &mut top {
+                top.push(row);
+            } else {
+                matched.push(row);
+            }
         }
     }
 
@@ -920,32 +965,10 @@ pub(crate) fn execute_query(
         return Ok(QueryResult::Aggregate(value));
     }
 
-    // Sort with primary-key tie-break (PrimaryKeyBytes total order).
-    matched.sort_by(
-        |(left_key, left_pk, left_row), (right_key, right_pk, right_row)| {
-            for order in &request.order {
-                let cmp = compare_order_field(
-                    definition,
-                    order.field,
-                    left_pk,
-                    left_row,
-                    right_pk,
-                    right_row,
-                );
-                let cmp = match order.direction {
-                    SortDirection::Asc => cmp,
-                    SortDirection::Desc => cmp.reverse(),
-                };
-                if cmp != Ordering::Equal {
-                    return cmp;
-                }
-            }
-            left_key.cmp(right_key)
-        },
-    );
-
-    if let Some(limit) = request.limit {
-        matched.truncate(limit);
+    if let Some(top) = top {
+        matched = top.into_rows();
+    } else {
+        matched.sort_by(|left, right| row_order::compare(&resolved_order, left, right));
     }
 
     let primary_key_fields = definition.primary_key_fields().to_vec();
@@ -1054,44 +1077,55 @@ fn execute_group_by(
         .map(|field| projected_field_index(definition, *field))
         .collect::<Result<_, _>>()?;
 
-    let mut groups: BTreeMap<Vec<u8>, (Vec<CanonicalValue>, Vec<MergedRow>)> = BTreeMap::new();
+    let mut groups =
+        BTreeMap::<Vec<u8>, (Vec<CanonicalValue>, Vec<row_aggregate::Accumulator>)>::new();
+    let mut fuel = ColumnarAggregateFuel::new();
     for (_, _, row) in matched {
         let key_cells: Vec<CanonicalValue> = key_indexes
             .iter()
             .map(|idx| row.cells[*idx].clone())
             .collect();
         let encoded = encode_group_key(&key_cells)?;
-        let entry = groups
-            .entry(encoded)
-            .or_insert_with(|| (key_cells, Vec::new()));
-        entry.1.push(row.clone());
-        if groups.len() > budget.max_group_cardinality {
-            return Err(QueryError::GroupCardinalityExceeded {
-                max: budget.max_group_cardinality,
-            });
+        let group_count = groups.len();
+        let (_, states) = match groups.entry(encoded) {
+            std::collections::btree_map::Entry::Occupied(entry) => entry.into_mut(),
+            std::collections::btree_map::Entry::Vacant(entry) => {
+                if group_count >= budget.max_group_cardinality {
+                    return Err(QueryError::GroupCardinalityExceeded {
+                        max: budget.max_group_cardinality,
+                    });
+                }
+                let group_state = key_cells.iter().try_fold(32_usize, |bytes, value| {
+                    riffdb_types::canonical_value_encoded_len(value)
+                        .map_err(|_| QueryError::InvalidAggregate("group key encoding"))
+                        .and_then(|encoded_len| {
+                            bytes.checked_add(encoded_len).ok_or(
+                                QueryError::AggregateBudgetExceeded {
+                                    resource: "state bytes",
+                                    max: MAX_AGGREGATE_STATE_BYTES_V1 as usize,
+                                },
+                            )
+                        })
+                })?;
+                fuel.consume_state(group_state)?;
+                let states = group
+                    .aggregates
+                    .iter()
+                    .map(|op| row_aggregate::Accumulator::new(definition, op))
+                    .collect::<Result<Vec<_>, _>>()?;
+                entry.insert((key_cells, states))
+            }
+        };
+        for state in states {
+            state.push(row, &mut fuel)?;
         }
     }
-
-    let mut fuel = ColumnarAggregateFuel::new();
     let mut out = Vec::with_capacity(groups.len());
-    for (_, (key_cells, rows)) in groups {
-        let group_state = key_cells.iter().try_fold(32_usize, |bytes, value| {
-            encode_canonical_value(value)
-                .map_err(|_| QueryError::InvalidAggregate("group key encoding"))
-                .and_then(|encoded| {
-                    bytes
-                        .checked_add(encoded.len())
-                        .ok_or(QueryError::AggregateBudgetExceeded {
-                            resource: "state bytes",
-                            max: MAX_AGGREGATE_STATE_BYTES_V1 as usize,
-                        })
-                })
-        })?;
-        fuel.consume_state(group_state)?;
-        let mut aggregates = Vec::with_capacity(group.aggregates.len());
-        for agg in &group.aggregates {
-            aggregates.push(compute_aggregate(definition, rows.iter(), agg, &mut fuel)?);
-        }
+    for (_, (key_cells, states)) in groups {
+        let aggregates = states
+            .into_iter()
+            .map(|state| state.finish(&mut fuel))
+            .collect::<Result<Vec<_>, _>>()?;
         out.push((key_cells, aggregates));
     }
     Ok(QueryResult::Groups {
@@ -1109,149 +1143,11 @@ fn compute_aggregate<'a, I>(
 where
     I: Iterator<Item = &'a MergedRow>,
 {
-    let semantic = agg.semantic_identity();
-    let rows = rows.collect::<Vec<_>>();
-    fuel.consume_operations(rows.len())?;
-    match semantic {
-        AggregateSemanticIdentityV1::Count => {
-            fuel.consume_state(std::mem::size_of::<u64>())?;
-            let count = u64::try_from(rows.len())
-                .map_err(|_| QueryError::InvalidAggregate("count overflow"))?;
-            Ok(AggregateValue::Count(count))
-        }
-        AggregateSemanticIdentityV1::Sum => {
-            let idx = projected_field_index(definition, aggregate_input_field(agg)?)?;
-            let mut sum: i128 = 0;
-            for row in &rows {
-                sum = sum
-                    .checked_add(numeric_as_i128(&row.cells[idx])?)
-                    .ok_or(QueryError::InvalidAggregate("sum overflow"))?;
-            }
-            fuel.consume_state(std::mem::size_of::<i128>())?;
-            Ok(AggregateValue::Sum(sum))
-        }
-        AggregateSemanticIdentityV1::Min => {
-            let idx = projected_field_index(definition, aggregate_input_field(agg)?)?;
-            let mut min: Option<CanonicalValue> = None;
-            for row in &rows {
-                let value = &row.cells[idx];
-                min = Some(match min {
-                    None => value.clone(),
-                    Some(current) => {
-                        if compare_values(value, &current) == Ordering::Less {
-                            value.clone()
-                        } else {
-                            current
-                        }
-                    }
-                });
-            }
-            if let Some(value) = min.as_ref() {
-                fuel.consume_canonical_state(value)?;
-            }
-            Ok(AggregateValue::Scalar(min))
-        }
-        AggregateSemanticIdentityV1::Max => {
-            let idx = projected_field_index(definition, aggregate_input_field(agg)?)?;
-            let mut max: Option<CanonicalValue> = None;
-            for row in &rows {
-                let value = &row.cells[idx];
-                max = Some(match max {
-                    None => value.clone(),
-                    Some(current) => {
-                        if compare_values(value, &current) == Ordering::Greater {
-                            value.clone()
-                        } else {
-                            current
-                        }
-                    }
-                });
-            }
-            if let Some(value) = max.as_ref() {
-                fuel.consume_canonical_state(value)?;
-            }
-            Ok(AggregateValue::Scalar(max))
-        }
-        AggregateSemanticIdentityV1::CountPresent => {
-            let idx = projected_field_index(definition, aggregate_input_field(agg)?)?;
-            let count = rows
-                .iter()
-                .filter(|row| !matches!(row.cells[idx], CanonicalValue::Null))
-                .count();
-            fuel.consume_state(std::mem::size_of::<u64>())?;
-            Ok(AggregateValue::Count(u64::try_from(count).map_err(
-                |_| QueryError::InvalidAggregate("count overflow"),
-            )?))
-        }
-        AggregateSemanticIdentityV1::CountDistinct
-        | AggregateSemanticIdentityV1::CountDistinctPresent => {
-            let idx = projected_field_index(definition, aggregate_input_field(agg)?)?;
-            let mut distinct = BTreeSet::new();
-            for row in &rows {
-                let value = &row.cells[idx];
-                if semantic == AggregateSemanticIdentityV1::CountDistinctPresent
-                    && matches!(value, CanonicalValue::Null)
-                {
-                    continue;
-                }
-                let encoded = encode_canonical_value(value)
-                    .map_err(|_| QueryError::InvalidAggregate("distinct encoding"))?;
-                if !distinct.contains(&encoded) {
-                    if distinct.len() >= usize::from(MAX_AGGREGATE_DISTINCT_VALUES_V1) {
-                        return Err(QueryError::AggregateBudgetExceeded {
-                            resource: "distinct values",
-                            max: usize::from(MAX_AGGREGATE_DISTINCT_VALUES_V1),
-                        });
-                    }
-                    fuel.consume_state(encoded.len().checked_add(32).ok_or(
-                        QueryError::AggregateBudgetExceeded {
-                            resource: "state bytes",
-                            max: MAX_AGGREGATE_STATE_BYTES_V1 as usize,
-                        },
-                    )?)?;
-                    distinct.insert(encoded);
-                }
-            }
-            Ok(AggregateValue::Count(
-                u64::try_from(distinct.len())
-                    .map_err(|_| QueryError::InvalidAggregate("count overflow"))?,
-            ))
-        }
-        AggregateSemanticIdentityV1::Mean => {
-            let idx = projected_field_index(definition, aggregate_input_field(agg)?)?;
-            let mut total = 0_i128;
-            let mut count = 0_u64;
-            for row in &rows {
-                total = total
-                    .checked_add(numeric_as_i128(&row.cells[idx])?)
-                    .ok_or(QueryError::InvalidAggregate("mean total overflow"))?;
-                count = count
-                    .checked_add(1)
-                    .ok_or(QueryError::InvalidAggregate("mean count overflow"))?;
-            }
-            fuel.consume_state(std::mem::size_of::<i128>() + std::mem::size_of::<u64>())?;
-            Ok(AggregateValue::ExactMean { total, count })
-        }
-        AggregateSemanticIdentityV1::Any | AggregateSemanticIdentityV1::All => {
-            let idx = projected_field_index(definition, aggregate_input_field(agg)?)?;
-            let mut result = semantic == AggregateSemanticIdentityV1::All;
-            for row in &rows {
-                let CanonicalValue::Bool(value) = row.cells[idx] else {
-                    return Err(QueryError::InvalidAggregate("any/all requires bool"));
-                };
-                if semantic == AggregateSemanticIdentityV1::Any {
-                    result |= value;
-                } else {
-                    result &= value;
-                }
-            }
-            fuel.consume_state(std::mem::size_of::<bool>())?;
-            Ok(AggregateValue::Bool(result))
-        }
-        AggregateSemanticIdentityV1::ExactCount => Err(QueryError::InvalidAggregate(
-            "unsupported aggregate semantic",
-        )),
+    let mut state = row_aggregate::Accumulator::new(definition, agg)?;
+    for row in rows {
+        state.push(row, fuel)?;
     }
+    state.finish(fuel)
 }
 
 fn aggregate_input_field(aggregate: &AggregateOp) -> Result<FieldId, QueryError> {
@@ -1428,21 +1324,6 @@ fn validate_order_field(
     Ok(())
 }
 
-fn compare_order_field(
-    definition: &RegisteredDefinition,
-    field: FieldId,
-    left_pk: &[CanonicalValue],
-    left_row: &MergedRow,
-    right_pk: &[CanonicalValue],
-    right_row: &MergedRow,
-) -> Ordering {
-    if let Ok(idx) = projected_field_index(definition, field) {
-        return compare_values(&left_row.cells[idx], &right_row.cells[idx]);
-    }
-    let idx = primary_key_field_index(definition, field).expect("validated");
-    compare_values(&left_pk[idx], &right_pk[idx])
-}
-
 /// Decodes entity-key envelope bytes into primary-key field values.
 ///
 /// Extracted so falsifiability can corrupt field order in one place.
@@ -1535,12 +1416,21 @@ fn compare_values(left: &CanonicalValue, right: &CanonicalValue) -> Ordering {
 }
 
 fn encode_group_key(cells: &[CanonicalValue]) -> Result<Vec<u8>, QueryError> {
-    let mut out = Vec::new();
+    let invalid = || QueryError::InvalidAggregate("group key");
+    let capacity = cells.iter().try_fold(0usize, |bytes, value| {
+        let len = riffdb_types::canonical_value_encoded_len(value).map_err(|_| invalid())?;
+        bytes
+            .checked_add(4)
+            .and_then(|bytes| bytes.checked_add(len))
+            .ok_or_else(invalid)
+    })?;
+    let mut out = Vec::with_capacity(capacity);
     for cell in cells {
-        let encoded =
-            encode_canonical_value(cell).map_err(|_| QueryError::InvalidAggregate("group key"))?;
-        out.extend_from_slice(&(encoded.len() as u32).to_be_bytes());
-        out.extend_from_slice(&encoded);
+        let prefix = out.len();
+        out.extend_from_slice(&[0; 4]);
+        riffdb_types::encode_canonical_value_into(&mut out, cell).map_err(|_| invalid())?;
+        let len = u32::try_from(out.len() - prefix - 4).map_err(|_| invalid())?;
+        out[prefix..prefix + 4].copy_from_slice(&len.to_be_bytes());
     }
     Ok(out)
 }
@@ -1554,6 +1444,25 @@ mod order_proof_tests {
         EnumTypeId, EnumVariantId, Money, Timestamp,
     };
     use std::cmp::Ordering;
+
+    // req: OQ-045, OQ-050
+    #[test]
+    fn in_place_group_keys_preserve_length_framing_and_canonical_bytes() {
+        let cells = [
+            CanonicalValue::Null,
+            CanonicalValue::U64(42),
+            CanonicalValue::string("a\0b").unwrap(),
+            CanonicalValue::I64(-1),
+        ];
+        let mut expected = Vec::new();
+        for cell in &cells {
+            let encoded = riffdb_types::encode_canonical_value(cell).unwrap();
+            expected.extend_from_slice(&(encoded.len() as u32).to_be_bytes());
+            expected.extend_from_slice(&encoded);
+        }
+        assert_eq!(super::encode_group_key(&cells).unwrap(), expected);
+        assert!(super::encode_group_key(&[]).unwrap().is_empty());
+    }
 
     /// Encodes one component into an entity key and returns the key bytes.
     ///

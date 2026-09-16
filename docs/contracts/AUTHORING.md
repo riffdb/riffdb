@@ -156,6 +156,20 @@ Creates and renames are then both checked atomically by the engine. Concurrent
 writes to different experiments do not contend, because the conflict key
 carries `experiment_id`.
 
+## Boolean row policies
+
+A row-policy predicate can use a Boolean constant, row field, or declared
+principal fact directly, including under `!`, `&&`, and `||`. For example,
+`allow create when true` permits creation when the other capability, scope,
+and command checks allow it. An update must satisfy its policy for both the
+current and proposed row. Missing fields, mistyped facts, and missing required
+relationship evidence still deny the operation; values are never coerced to
+Booleans.
+
+Upgrade note: ADR-0233 corrects an evaluator defect that denied direct Boolean
+predicates even though they compiled. Such policies now apply their declared
+true/false result and may admit rows that the defective evaluator denied.
+
 ## Delete policy
 
 Every deletable entity declares what happens to inbound relationships. Choose
@@ -364,7 +378,8 @@ bundle, where it is part of the contract's durable identity:
 - The optional ANN clause is atomic: `ann_threshold` and
   `recall_target_bps` must appear together in that order. The threshold is
   1 to 65,536 rows per organization. Search remains exact at or below the
-  threshold and engages the approximate graph only above it.
+  threshold. Above it, a matching warm graph may engage; a cold or unavailable
+  graph uses the exact path under ADR-0229.
 - `recall_target_bps` is 1 to 10,000 basis points. For example, `9500`
   declares recall@K of at least 0.95 against exact scan at the same projection
   frontier. Application query inputs cannot lower or omit this projection-owned
@@ -372,10 +387,12 @@ bundle, where it is part of the contract's durable identity:
 
 The approximate graph is derived, bounded by the query's organization
 partition and scan budget, and rebuilt deterministically from the visible
-snapshot. Graph entry points and links are computed only after scalar filters
+snapshot in a bounded background build. Primary providers may reuse an exact
+population match at the same generation and frontier. Graph entry points and
+links are computed only after scalar filters
 and principal-policy admission, so another organization or a denied row cannot
-shape traversal or reported graph statistics. Exact KNN remains the reference
-path.
+shape traversal or reported graph statistics. Every cache hit repeats current
+admission. Exact KNN remains the reference and cold fallback path.
 
 Production vector fields are written only through the compiler-sealed `embed`
 effect; generic `set` is rejected at the target field:

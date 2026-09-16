@@ -3110,6 +3110,24 @@ pub struct StoredEventRouteV1 {
     pub event_hash: ::prost::alloc::vec::Vec<u8>,
 }
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct StoredApplicationExportOperationV2 {
+    #[prost(bytes = "vec", tag = "1")]
+    pub operation_id: ::prost::alloc::vec::Vec<u8>,
+    #[prost(string, tag = "2")]
+    pub contract_lineage: ::prost::alloc::string::String,
+    #[prost(bytes = "vec", tag = "3")]
+    pub immutable_binding: ::prost::alloc::vec::Vec<u8>,
+    #[prost(bytes = "vec", tag = "4")]
+    pub canonical_state: ::prost::alloc::vec::Vec<u8>,
+    #[prost(bytes = "vec", tag = "5")]
+    pub canonical_prefix: ::prost::alloc::vec::Vec<u8>,
+}
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct StoredApplicationExportPageCommitmentV1 {
+    #[prost(bytes = "vec", tag = "1")]
+    pub canonical_commitment: ::prost::alloc::vec::Vec<u8>,
+}
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct StoredApplicationExportOperationV1 {
     #[prost(bytes = "vec", tag = "1")]
     pub operation_id: ::prost::alloc::vec::Vec<u8>,

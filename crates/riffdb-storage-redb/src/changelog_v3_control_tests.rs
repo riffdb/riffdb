@@ -155,6 +155,90 @@ fn v3_reclamation_never_uses_newer_materialization_as_its_prior_checkpoint() {
     );
 }
 
+// req: PRJ-001, PRJ-002, PRJ-004, REP-003
+#[test]
+fn derived_source_pin_retains_exact_tail_until_successor_selection() {
+    use riffdb_storage_api::OwnedSnapshotReader;
+    let (_scope, ports, states) = fixture();
+    let captured = ports
+        .open_owned_snapshot()
+        .unwrap()
+        .pin_derived_source_v3()
+        .unwrap();
+    let selected = captured.at(states[2].tail()).unwrap();
+    let mut control = ports.replication_source_control();
+    assert!(!control.reclaim_history().unwrap());
+    append(&ports, b"writes after selected provider");
+    assert!(control.reclaim_history().unwrap());
+    assert_eq!(history(&ports).minimum_resume(), states[2].tail());
+    let successor = ports
+        .open_owned_snapshot()
+        .unwrap()
+        .pin_derived_source_v3()
+        .unwrap();
+    let mut cursor = successor.receipts_after(&selected).unwrap();
+    let mut observed = selected.position();
+    while let Some(receipt) = cursor.next_receipt().unwrap() {
+        assert_eq!(receipt.binding().predecessor, Some(observed.sequence()));
+        observed = riffdb_storage_api::ChangelogHistoryPointV3::from_receipt(&receipt).unwrap();
+    }
+    assert_eq!(observed, successor.position());
+    // A cloned query/candidate custody keeps the old fence until its last owner.
+    let retained = selected.clone();
+    drop(selected);
+    append(&ports, b"successor checkpoint durable");
+    assert!(!control.reclaim_history().unwrap());
+    drop(retained);
+    append(&ports, b"later checkpoint after custody release");
+    assert!(control.reclaim_history().unwrap());
+    assert_eq!(history(&ports).minimum_resume(), captured.position());
+    drop(captured);
+    append(&ports, b"successor selected");
+    assert!(control.reclaim_history().unwrap());
+    assert_eq!(history(&ports).minimum_resume(), successor.position());
+}
+
+// req: PRJ-001, PRJ-002, PRJ-004, REP-003
+#[test]
+fn derived_source_pin_cannot_resurrect_pruned_history_or_substitute_a_source() {
+    use riffdb_storage_api::{
+        ChangelogCursorErrorV3, ChangelogHistoryPointV3, OwnedSnapshotReader, StorageErrorKind,
+    };
+    let (_scope, ports, states) = fixture();
+    let old = ports
+        .open_owned_snapshot()
+        .unwrap()
+        .pin_derived_source_v3()
+        .unwrap();
+    let mut control = ports.replication_source_control();
+    assert!(!control.reclaim_history().unwrap());
+    append(&ports, b"later durable root");
+    assert!(control.reclaim_history().unwrap());
+    assert_eq!(history(&ports).minimum_resume(), old.position());
+    assert!(
+        matches!(old.at(states[2].tail()), Err(ChangelogCursorErrorV3::Storage(error)) if error.kind() == StorageErrorKind::HistoryPruned)
+    );
+    let bad = ChangelogHistoryPointV3::new(
+        old.position().sequence(),
+        [0; 32],
+        old.position().frontier(),
+    );
+    assert!(matches!(
+        old.at(bad),
+        Err(ChangelogCursorErrorV3::InvalidPosition)
+    ));
+    let (_other_scope, other, _) = fixture();
+    let foreign = other
+        .open_owned_snapshot()
+        .unwrap()
+        .pin_derived_source_v3()
+        .unwrap();
+    assert!(matches!(
+        foreign.receipts_after(&old),
+        Err(ChangelogCursorErrorV3::ForeignLineage)
+    ));
+}
+
 #[test]
 fn v3_reclamation_is_bounded_and_pinned_readers_keep_original_receipts() {
     use crate::{

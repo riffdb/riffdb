@@ -1,5 +1,7 @@
 //! Durable outbox and projection ports over the frozen redb layout.
 
+mod batch;
+
 use std::ops::Bound::{Excluded, Unbounded};
 
 use redb::ReadableTable;
@@ -595,6 +597,12 @@ where
 }
 
 impl ProjectionApplySnapshotReader for RedbOperationalPorts {
+    fn capture_apply_batch_snapshot(
+        &self,
+        identity: &ProjectionIdentity,
+    ) -> Result<Box<dyn riffdb_storage_api::ProjectionBatchSnapshot>, StorageError> {
+        batch::capture(self, identity)
+    }
     fn read_apply_snapshot(
         &self,
         request: &ProjectionApplySnapshotRequest,
@@ -628,6 +636,18 @@ impl ProjectionApplySnapshotReader for RedbOperationalPorts {
 }
 
 impl ProjectionMutationRepository for RedbOperationalPorts {
+    fn resolve_projection_batch(
+        &self,
+        request: &riffdb_storage_api::ProjectionApplyBatchV1,
+    ) -> Result<riffdb_storage_api::ProjectionApplyBatchResult, StorageError> {
+        batch::resolve(self, request)
+    }
+    fn apply_projection_batch(
+        &mut self,
+        request: &riffdb_storage_api::ProjectionApplyBatchV1,
+    ) -> Result<riffdb_storage_api::ProjectionApplyBatchResult, StorageError> {
+        batch::apply(self, request)
+    }
     fn apply_projection(
         &mut self,
         request: &ProjectionApplyRequestV1,
@@ -1756,6 +1776,7 @@ mod tests {
     mod bootstrap_projection;
     mod follower_indexes;
     mod follower_projection;
+    mod projection_batch;
     use std::num::{NonZeroU16, NonZeroU32};
     use std::path::PathBuf;
 

@@ -136,7 +136,7 @@ fn authority(
             }
             Some(AuthoritativeStateStepV3::EndNamespace(_)) => ends += 1,
             None => {
-                assert_eq!(ends, 52);
+                assert_eq!(ends, 53);
                 return rows;
             }
         }

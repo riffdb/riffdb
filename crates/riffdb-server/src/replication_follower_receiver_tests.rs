@@ -509,6 +509,58 @@ struct WorkerPeer {
     waiting: tokio::sync::Notify,
     terminal: bool,
 }
+
+struct IdleWorkerPeer {
+    peer: FinitePeer,
+    idle_calls: Mutex<Vec<tokio::time::Instant>>,
+}
+impl ReplicationSourcePort for IdleWorkerPeer {
+    fn open(
+        &self,
+        request: ReplicationRequest,
+    ) -> ReplicationFuture<'_, Box<dyn ReplicationItemSource>> {
+        Box::pin(async move {
+            if request.after_sequence == self.peer.history().tail().sequence().get() {
+                let count = {
+                    let mut calls = self.idle_calls.lock().unwrap();
+                    calls.push(tokio::time::Instant::now());
+                    calls.len()
+                };
+                if count <= 4 {
+                    return Err(Failure::Unavailable);
+                }
+                if count == 10 {
+                    return Err(Failure::AuthorizationDenied);
+                }
+            }
+            self.peer.open(request).await
+        })
+    }
+}
+
+#[tokio::test(start_paused = true)]
+async fn follower_worker_clean_eof_resets_failure_backoff_and_stays_fixed() {
+    let (fixture, build) = fixture().await;
+    let receiver = build
+        .publish_and_follow(fixture.path.clone())
+        .await
+        .unwrap();
+    let peer = Arc::new(IdleWorkerPeer {
+        peer: fixture.peer,
+        idle_calls: Mutex::new(Vec::new()),
+    });
+    let mut worker = super::worker::RunningFollowerReceiver::start(receiver, peer.clone()).unwrap();
+    assert_eq!(worker.finished().await, Err(Failure::AuthorizationDenied));
+    let calls = peer.idle_calls.lock().unwrap();
+    assert_eq!(calls.len(), 10);
+    for (i, pair) in calls[..5].windows(2).enumerate() {
+        assert_eq!(pair[1] - pair[0], Duration::from_millis(250 << i));
+    }
+    for pair in calls[4..].windows(2) {
+        assert_eq!(pair[1] - pair[0], Duration::from_millis(250));
+    }
+    assert_eq!(fixture.jobs.capacity.available_permits(), 1);
+}
 impl ReplicationSourcePort for WorkerPeer {
     fn open(
         &self,

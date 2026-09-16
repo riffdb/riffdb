@@ -3,7 +3,7 @@ use std::error::Error;
 use std::fmt;
 use std::future::Future;
 use std::pin::Pin;
-use std::sync::atomic::{AtomicBool, AtomicU8, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU8, AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Condvar, Mutex, MutexGuard, Weak};
 use std::task::{Context, Poll, Waker};
 use std::thread::{self, JoinHandle};
@@ -317,7 +317,7 @@ impl ShardedConflictManager {
                 .map(|_| Mutex::new(Shard::default()))
                 .collect(),
             queued_waiters: AtomicUsize::new(0),
-            next_waiter_id: Mutex::new(Some(1)),
+            next_waiter_id: AtomicU64::new(1),
             telemetry,
             #[cfg(any(test, feature = "loom", feature = "shuttle"))]
             scheduler: None,
@@ -375,7 +375,7 @@ impl ShardedConflictManager {
                 .map(|_| Mutex::new(Shard::default()))
                 .collect(),
             queued_waiters: AtomicUsize::new(0),
-            next_waiter_id: Mutex::new(Some(1)),
+            next_waiter_id: AtomicU64::new(1),
             telemetry,
             scheduler: Some(scheduler),
             timer: TimerQueue::new(),
@@ -778,7 +778,7 @@ struct Inner {
     config: ConflictManagerConfig,
     shards: Vec<Mutex<Shard>>,
     queued_waiters: AtomicUsize,
-    next_waiter_id: Mutex<Option<u64>>,
+    next_waiter_id: AtomicU64,
     telemetry: ConflictTelemetry,
     #[cfg(any(test, feature = "loom", feature = "shuttle"))]
     scheduler: Option<Arc<dyn DeterministicConflictScheduler>>,
@@ -787,10 +787,14 @@ struct Inner {
 
 impl Inner {
     fn next_waiter_id(&self) -> Result<u64, ConflictError> {
-        let mut next = lock_unpoisoned(&self.next_waiter_id);
-        let id = next.ok_or(ConflictError::IdentifierExhausted)?;
-        *next = id.checked_add(1);
-        Ok(id)
+        // Zero is an exhausted sentinel, never a waiter ID. The successful
+        // MAX -> 0 CAS still returns MAX exactly once; exhaustion is permanent.
+        // This counter publishes no waiter state, so relaxed ordering suffices.
+        self.next_waiter_id
+            .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |next| {
+                (next != 0).then(|| next.checked_add(1).unwrap_or(0))
+            })
+            .map_err(|_| ConflictError::IdentifierExhausted)
     }
 
     fn register(&self, waiter: &Arc<Waiter>) -> Result<Registration, ConflictError> {
@@ -1482,6 +1486,51 @@ mod tests {
     };
 
     const LONG_DEADLINE: Duration = Duration::from_secs(60);
+
+    #[test]
+    fn concurrent_waiter_ids_issue_the_final_id_once_and_never_wrap() {
+        let manager = manager();
+        assert_eq!(manager.inner.next_waiter_id(), Ok(1));
+        manager
+            .inner
+            .next_waiter_id
+            .store(u64::MAX - 1, Ordering::Relaxed);
+        let start = Arc::new(std::sync::Barrier::new(5));
+        let workers = (0..4)
+            .map(|_| {
+                let inner = Arc::clone(&manager.inner);
+                let start = Arc::clone(&start);
+                thread::spawn(move || {
+                    start.wait();
+                    [inner.next_waiter_id(), inner.next_waiter_id()]
+                })
+            })
+            .collect::<Vec<_>>();
+        start.wait();
+        let results = workers
+            .into_iter()
+            .flat_map(|worker| worker.join().unwrap())
+            .collect::<Vec<_>>();
+        let mut assigned = results
+            .iter()
+            .filter_map(|result| result.as_ref().ok().copied())
+            .collect::<Vec<_>>();
+        assigned.sort_unstable();
+        assert_eq!(assigned, [u64::MAX - 1, u64::MAX]);
+        assert_eq!(
+            results
+                .iter()
+                .filter(|result| **result == Err(ConflictError::IdentifierExhausted))
+                .count(),
+            6
+        );
+        for _ in 0..8 {
+            assert_eq!(
+                manager.inner.next_waiter_id(),
+                Err(ConflictError::IdentifierExhausted)
+            );
+        }
+    }
 
     #[test]
     fn unique_lease_transfers_to_a_worker_and_releases_exactly_once() {

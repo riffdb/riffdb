@@ -870,3 +870,6 @@ fn empty_operational_database(
         .expect("activate test database");
     (ProtectedTestDatabase { root }, ports)
 }
+
+#[path = "row_policy_typed_booleans.rs"]
+mod typed_booleans;

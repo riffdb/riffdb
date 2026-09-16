@@ -171,6 +171,57 @@ pub struct ResolvedEventMaterializer {
     active_ordinal: u16,
 }
 
+/// Page-local historical plan cache, bound to its materializer's lineage and event type.
+pub(crate) struct RoutedEventMaterializer<'a> {
+    owner: &'a ResolvedEventMaterializer,
+    writer_plan: Option<crate::ResolvedExecutablePlan>,
+}
+
+impl RoutedEventMaterializer<'_> {
+    pub(crate) fn materialize(
+        &mut self,
+        writer: &ExecutablePlanRef,
+        route_partition_hash: PartitionKeyHash,
+        route: StoredEventRouteV1,
+        event: &StoredDurableEventV1,
+    ) -> Result<SymbolicEventView, EventMaterializationError> {
+        if route.event_id() != event.event_id()
+            || route.event_type_id() != event.event_type_id()
+            || route.event_hash() != event.event_hash()
+            || event.event_type_id() != self.owner.event_type_id
+        {
+            return Err(EventMaterializationError::integrity());
+        }
+        if self
+            .writer_plan
+            .as_ref()
+            .is_none_or(|plan| plan.reference() != writer)
+        {
+            self.writer_plan = None;
+            let (ordinal, bundle) = self
+                .owner
+                .lineage_proof
+                .exact_member(writer.contract_version(), writer.contract_bundle_hash())
+                .filter(|(_, bundle)| bundle.lineage() == writer.contract_lineage())
+                .ok_or_else(EventMaterializationError::integrity)?;
+            let plan = bundle
+                .resolve_plan_with_proof(writer, Arc::clone(&self.owner.lineage_proof), ordinal)
+                .map_err(|_| EventMaterializationError::integrity())?;
+            if !plan.plan().instructions().iter().any(|instruction| matches!(instruction,
+                Instruction::EmitEvent(construction) if construction.event_type() == self.owner.event_type_id)) {
+                return Err(EventMaterializationError::integrity());
+            }
+            self.writer_plan = Some(plan);
+        }
+        let plan = self
+            .writer_plan
+            .as_ref()
+            .ok_or_else(EventMaterializationError::integrity)?;
+        self.owner
+            .materialize_checked_writer(plan, route_partition_hash, event)
+    }
+}
+
 impl ResolvedEventMaterializer {
     /// Returns the exact active-contract event symbol.
     #[must_use]
@@ -266,33 +317,25 @@ impl ResolvedEventMaterializer {
         route: StoredEventRouteV1,
         event: &StoredDurableEventV1,
     ) -> Result<SymbolicEventView, EventMaterializationError> {
-        if route.event_id() != event.event_id()
-            || route.event_type_id() != event.event_type_id()
-            || route.event_hash() != event.event_hash()
-        {
-            return Err(EventMaterializationError::integrity());
-        }
-        let (writer_ordinal, writer_bundle) = self
-            .lineage_proof
-            .exact_member(writer.contract_version(), writer.contract_bundle_hash())
-            .filter(|(_, bundle)| bundle.lineage() == writer.contract_lineage())
-            .ok_or_else(EventMaterializationError::integrity)?;
-        let writer_plan = writer_bundle
-            .resolve_plan_with_proof(writer, Arc::clone(&self.lineage_proof), writer_ordinal)
-            .map_err(|_| EventMaterializationError::integrity())?;
+        self.page_materializer()
+            .materialize(writer, route_partition_hash, route, event)
+    }
 
-        if event.event_type_id() != self.event_type_id
-            || !writer_plan.plan().instructions().iter().any(|instruction| {
-                matches!(
-                    instruction,
-                    Instruction::EmitEvent(construction)
-                        if construction.event_type() == event.event_type_id()
-                )
-            })
-        {
-            return Err(EventMaterializationError::integrity());
+    pub(crate) fn page_materializer(&self) -> RoutedEventMaterializer<'_> {
+        RoutedEventMaterializer {
+            owner: self,
+            writer_plan: None,
         }
+    }
 
+    fn materialize_checked_writer(
+        &self,
+        writer_plan: &crate::ResolvedExecutablePlan,
+        route_partition_hash: PartitionKeyHash,
+        event: &StoredDurableEventV1,
+    ) -> Result<SymbolicEventView, EventMaterializationError> {
+        let writer = writer_plan.reference();
+        let writer_bundle = writer_plan.bundle();
         let writer_schema = writer_bundle
             .bundle()
             .schema()
@@ -664,3 +707,7 @@ fn validate_complete_event_payload(
     }
     Ok(())
 }
+
+#[cfg(test)]
+#[path = "event_writer_cache_tests.rs"]
+mod writer_cache_tests;

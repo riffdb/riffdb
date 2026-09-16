@@ -418,7 +418,9 @@ query SimilarDocuments(
 The production path uses the automatically registered `Entity.field` columnar
 projection and the shared 500-row admission ceiling. If the contract declares
 `ann_threshold` and `recall_target_bps`, the server uses exact search at or
-below that per-organization threshold and first-party HNSW strictly above it.
+below that per-organization threshold. Above it, an exactly matched warm HNSW
+graph may serve the query; cold or unavailable graphs use exact execution.
+Current organization, model and policy admission still run on every query.
 The choice and recall floor are compiler-owned; neither is a request option.
 See [Vector Search](../getting-started/VECTOR-SEARCH.md) and
 [Known Limitations](../known-limitations.md).
@@ -668,6 +670,21 @@ evaluates one bounded authoritative candidate set under the current capability
 revision. Only admitted rows enter its count, order, and ordinal structures.
 This is not request-time filtering: each capability revision selects separate
 derived state, and a revision change requires fresh activation before release.
+
+Healthy binary-text and exact-predicate providers replay retained V3 receipt
+post-images in bounded passes of at most 64 application commits and one source
+byte page. Missing receipt history, oversized indivisible groups, and changes to
+indexed policy dependencies can require a complete snapshot rebuild. Attached
+followers currently use that rebuild path because they retain applied progress
+without the primary's receipt history. Provider checkpoints keep their existing
+complete encoding and validation.
+
+Background rebuilds read rows, catalog evidence, and row-policy evidence from
+one captured authoritative view. A healthy prior provider stays selected while
+its replacement is prepared, and the replacement checkpoint is reopened and
+validated before selection. The provider reports its actual captured frontier;
+Latest requests still require that frontier to equal their captured application
+head and may receive a typed freshness refusal while it lags.
 
 The closed predicates are `==`, `starts_with`, `ends_with`, and `contains`.
 They compare exact UTF-8 bytes; missing and null values do not match, and an

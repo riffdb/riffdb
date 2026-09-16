@@ -232,8 +232,8 @@ fn frozen_bootstrap_external_receipt_and_page_v1_bytes_are_exact() {
         decode_hex(include_str!("../../../fixtures/replication/bootstrap-manifest-v1.hex").trim());
     let manifest = ReplicationBootstrapManifestV1::decode(&bytes).unwrap();
     assert_eq!(manifest.encode().unwrap(), bytes);
-    assert_eq!(manifest.page_count(), 52);
-    assert_eq!(manifest.row_count(), 52);
+    assert_eq!(manifest.page_count(), 53);
+    assert_eq!(manifest.row_count(), 53);
     transcript.verify_manifest(manifest).unwrap();
 }
 

@@ -46,7 +46,7 @@ fn changelog_v3_is_only_production_replication_identity() {
         (
             &v3,
             745,
-            "ca6a0c9d68321bb7919c3ce2e95257e6227dfa2f7c692f4ce1637e2ec3a4b655",
+            "da40934ddb54b93beb7e8febe151bafc70a9e67c5faa22a4a06c705308b13c6a",
         ),
     ] {
         assert_eq!(bytes.len(), length);
@@ -201,7 +201,7 @@ fn amendment_one_command_vectors_preserve_exact_mutations_frontiers_and_source_c
         (
             &frame,
             872,
-            "b4e3e27f4f888358d0eee42337e8a1910649097ed6d86de875e4318f1fd99ceb",
+            "f9b2696b3982aa3a1d1f7f63cab25d939869f6e5ca61e045e7269c6d34829d8c",
         ),
     ] {
         assert_eq!(bytes.len(), length);

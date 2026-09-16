@@ -6,6 +6,10 @@ pub(super) fn execute(
     observation: ColumnarObservation,
     storage: &(impl AuthoritativePointReader + ?Sized),
     executor: &(impl riffdb_query_executor::QueryExecutionPort + ?Sized),
+    cache: Option<(
+        &riffdb_columnar::NearestGraphCache,
+        riffdb_types::ProjectionGeneration,
+    )>,
 ) -> Result<VectorProjectionResult, VectorProjectionPortError> {
     match observation.lifecycle() {
         Some(ColumnarLifecycle::Building) => return Err(VectorProjectionPortError::Building),
@@ -105,11 +109,16 @@ pub(super) fn execute(
             max_group_cardinality: 1,
         },
     };
-    let nearest = riffdb_columnar::nearest_query_snapshot_with_admission(
+    let context =
+        cache.and_then(|(_, generation)| graph_context(&request, &observation, generation));
+    let nearest = riffdb_columnar::nearest_query_snapshot_with_cache(
         observation.definition(),
         observation.snapshot().as_ref(),
         &nearest_request,
         &mut admission,
+        cache
+            .zip(context.as_deref())
+            .map(|((cache, _), context)| (cache, context)),
     )
     .map_err(map_vector_nearest_error)?;
     Ok(VectorProjectionResult::new(
@@ -144,4 +153,46 @@ fn trusted_commit_lag_ms(
         return Err(VectorProjectionPortError::Integrity);
     }
     trusted_timestamp_lag_ms(frontier_time, head_time)
+}
+
+// Generation-local cache ownership additionally binds the exact provider/source.
+// This is an ephemeral equality key, never a persisted encoding or hash proof.
+fn graph_context(
+    request: &VectorProjectionRequest,
+    observation: &ColumnarObservation,
+    generation: riffdb_types::ProjectionGeneration,
+) -> Option<Vec<u8>> {
+    let mut bytes = Vec::new();
+    let mut append = |value: &[u8]| -> Option<()> {
+        if bytes.len().checked_add(value.len())?.checked_add(8)? > 64 * 1024 {
+            return None;
+        }
+        bytes.extend_from_slice(&(value.len() as u64).to_be_bytes());
+        bytes.extend_from_slice(value);
+        Some(())
+    };
+    append(request.source_name().as_bytes())?;
+    append(request.lineage().as_str().as_bytes())?;
+    append(request.partition().as_bytes())?;
+    append(&generation.get().to_be_bytes())?;
+    append(
+        &observation
+            .published_frontier()
+            .history_incarnation()
+            .to_be_bytes(),
+    )?;
+    let FrontierPosition::AppliedThrough(frontier) = observation.published_frontier().position()
+    else {
+        return None;
+    };
+    append(&frontier.to_be_bytes())?;
+    append(observation.definition().fingerprint().as_bytes())?;
+    append(request.current_model().model_identity().as_bytes())?;
+    append(request.current_model().model_version().as_bytes())?;
+    if let Some(policy) = request.row_policy() {
+        append(&policy.internal_vector_cache_identity(request.entity())?)?;
+    } else {
+        append(&[])?;
+    }
+    Some(bytes)
 }

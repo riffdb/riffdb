@@ -8,6 +8,8 @@
 mod columnar_reads;
 #[path = "replication_follower/exact_reads.rs"]
 mod exact_reads;
+#[path = "replication_follower/export.rs"]
+mod export;
 #[path = "replication_follower/oracle.rs"]
 mod oracle;
 #[path = "replication_follower/proxy.rs"]

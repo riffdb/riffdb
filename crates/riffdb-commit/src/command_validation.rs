@@ -420,7 +420,7 @@ where
         let Some(context) = self.attempt.row_policy() else {
             return CheckedRowPolicyDecision::Denied(self.reject_row_policy());
         };
-        let mut all_lookups = Vec::new();
+        let mut all_lookups = Vec::with_capacity(transitions.len());
         let mut lookup_counts = Vec::with_capacity(transitions.len());
         for transition in &transitions {
             let lookups = match context.relationship_lookups(
@@ -511,7 +511,7 @@ struct PolicyTransition {
 fn command_policy_transitions<C>(
     command: &CheckedValidatedCommand<C>,
 ) -> Result<Vec<PolicyTransition>, ()> {
-    let mut transitions = Vec::new();
+    let mut transitions = Vec::with_capacity(command.evaluated().mutations().len());
     for mutation in command.evaluated().mutations() {
         if !mutation_entity_is_protected(command.resolved(), mutation) {
             continue;

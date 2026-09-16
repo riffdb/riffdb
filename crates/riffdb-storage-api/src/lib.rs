@@ -15,6 +15,8 @@ pub use riffdb_types::IndexEpochPosition;
 
 pub mod admission;
 pub mod application_export;
+mod application_export_compact;
+mod application_export_ledger;
 pub mod application_installation;
 pub mod archive;
 pub mod archive_manifest;
@@ -67,6 +69,8 @@ pub mod vector_evidence;
 
 pub use admission::*;
 pub use application_export::*;
+pub use application_export_compact::*;
+pub use application_export_ledger::*;
 pub use application_installation::*;
 pub use archive::*;
 pub use archive_manifest::*;

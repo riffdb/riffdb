@@ -446,6 +446,10 @@ fn storage_source_import_and_type_inventory_is_exact() {
             ),
             ("riffdb/storage/v1/export_v1.proto".to_owned(), vec![]),
             (
+                "riffdb/storage/v1/export_ledger_v1.proto".to_owned(),
+                vec![]
+            ),
+            (
                 "riffdb/storage/v1/history_incarnation_v1.proto".to_owned(),
                 vec![],
             ),
@@ -547,7 +551,7 @@ fn storage_source_import_and_type_inventory_is_exact() {
             .iter()
             .map(|file| file.message_type.len())
             .sum::<usize>(),
-        199,
+        201,
         "exact top-level semantic messages, StoredEnvelope and registry support"
     );
     assert_eq!(
@@ -576,9 +580,9 @@ fn storage_source_import_and_type_inventory_is_exact() {
 
 #[test]
 fn closed_registry_order_and_schema_hashes_are_exactly_derived() {
-    assert_eq!(CURRENT_RECORD_SCHEMA_COUNT, 84);
-    assert_eq!(READABLE_RECORD_SCHEMA_COUNT, 107);
-    assert_eq!(WRITABLE_RECORD_SCHEMA_COUNT, 84);
+    assert_eq!(CURRENT_RECORD_SCHEMA_COUNT, 86);
+    assert_eq!(READABLE_RECORD_SCHEMA_COUNT, 109);
+    assert_eq!(WRITABLE_RECORD_SCHEMA_COUNT, 86);
     assert_eq!(
         CURRENT_RECORD_SCHEMAS
             .iter()
@@ -674,6 +678,8 @@ fn closed_registry_order_and_schema_hashes_are_exactly_derived() {
     readable_names.push("riffdb.storage.v1.StoredCommandCapsuleV7".to_owned());
     readable_names.push("riffdb.storage.v1.StoredCommandSegmentV6".to_owned());
     readable_names.push("riffdb.storage.v1.StoredReplicationSourceHoldV2".to_owned());
+    readable_names.push("riffdb.storage.v1.StoredApplicationExportOperationV2".to_owned());
+    readable_names.push("riffdb.storage.v1.StoredApplicationExportPageCommitmentV1".to_owned());
     readable_names.push("riffdb.storage.v1.CapabilityRecordV1".to_owned());
     readable_names.push("riffdb.storage.v1.CapabilityRecordV1".to_owned());
     readable_names.push("riffdb.storage.v1.CapabilityTokenLookupV1".to_owned());
@@ -750,6 +756,8 @@ fn closed_registry_order_and_schema_hashes_are_exactly_derived() {
     writable_names.push("riffdb.storage.v1.StoredCommandCapsuleV7".to_owned());
     writable_names.push("riffdb.storage.v1.StoredCommandSegmentV6".to_owned());
     writable_names.push("riffdb.storage.v1.StoredReplicationSourceHoldV2".to_owned());
+    writable_names.push("riffdb.storage.v1.StoredApplicationExportOperationV2".to_owned());
+    writable_names.push("riffdb.storage.v1.StoredApplicationExportPageCommitmentV1".to_owned());
     assert_eq!(
         READABLE_RECORD_SCHEMAS
             .iter()
@@ -832,8 +840,8 @@ fn closed_registry_order_and_schema_hashes_are_exactly_derived() {
             .map(|schema| schema.max_payload_bytes())
             .collect::<BTreeSet<_>>()
             .len(),
-        18,
-        "five semantic classes plus thirteen FQN-specific absolute maxima"
+        20,
+        "five semantic classes plus fifteen FQN-specific absolute maxima"
     );
 
     let v1 = "riffdb.storage.v1.StoredIndexEntryV1";
@@ -1113,8 +1121,8 @@ fn columnar_control_v1_freezes_numeric_registry_and_bounds() {
 #[test]
 fn generated_registry_fixtures_freeze_exact_membership_and_hashes() {
     let legacy = registry_fixture_entries(LEGACY_REGISTRY_FIXTURE, 26);
-    let readable = registry_fixture_entries(READABLE_REGISTRY_FIXTURE, 107);
-    let writable = registry_fixture_entries(WRITABLE_REGISTRY_FIXTURE, 84);
+    let readable = registry_fixture_entries(READABLE_REGISTRY_FIXTURE, 109);
+    let writable = registry_fixture_entries(WRITABLE_REGISTRY_FIXTURE, 86);
 
     assert_eq!(legacy, readable[..legacy.len()]);
     assert_eq!(
@@ -1338,12 +1346,14 @@ fn schema_hash_hex(schema: &riffdb_proto::envelope::RecordSchema<'_>) -> String 
 fn tag_67_successor_registry_digest_is_frozen() {
     // The accepted predecessor remains frozen, even as WP-772 registers its
     // own additive identities. WP-749 successors at existing tags are likewise
-    // excluded from this historical set. Never replace its frozen digest.
+    // excluded from this historical set, as is ADR-0232's export-head revision.
+    // Never replace its frozen digest.
     let mut schemas = READABLE_RECORD_SCHEMAS
         .iter()
         .filter(|schema| {
             schema.compact_tag() <= 67
                 && !(matches!(schema.compact_tag(), 54 | 55) && schema.schema_revision() >= 6)
+                && !(schema.compact_tag() == 60 && schema.schema_revision() >= 2)
         })
         .collect::<Vec<_>>();
     schemas.sort_by_key(|schema| (schema.compact_tag(), schema.schema_revision()));

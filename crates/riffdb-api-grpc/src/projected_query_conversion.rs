@@ -202,8 +202,13 @@ pub fn execute_projected_query_result_to_proto_with_encoding(
                     // Rows expose select cells then primary-key components under the
                     // combined field name list (select first, then PK names not already
                     // present in select). Wire clients read ResultRecord fields by name.
+                    let emitted_primary_key_fields: Vec<_> = primary_key_fields
+                        .iter()
+                        .enumerate()
+                        .filter(|(_, name)| !fields.contains(name))
+                        .collect();
                     let mut wire_fields = fields.clone();
-                    for pk_name in &primary_key_fields {
+                    for &(_, pk_name) in &emitted_primary_key_fields {
                         if !wire_fields.iter().any(|name| name == pk_name) {
                             wire_fields.push(pk_name.clone());
                         }
@@ -221,10 +226,7 @@ pub fn execute_projected_query_result_to_proto_with_encoding(
                                 ),
                             });
                         }
-                        for (index, name) in primary_key_fields.iter().enumerate() {
-                            if fields.iter().any(|select| select == name) {
-                                continue;
-                            }
+                        for &(index, name) in &emitted_primary_key_fields {
                             let value = row.primary_key.get(index).ok_or_else(internal_defect)?;
                             record_fields.push(app_v1::Parameter {
                                 name: name.clone(),
@@ -1525,12 +1527,23 @@ mod packed_encoding_tests {
     #[test]
     fn row_or_absent_request_never_returns_ready_packed() {
         let result = ready(
-            vec!["title"],
-            vec!["ticket_id"],
-            vec![QueryRow {
-                cells: vec![CanonicalValue::string("t").expect("s")],
-                primary_key: vec![CanonicalValue::Uuid([9; 16])],
-            }],
+            vec!["title", "tenant"],
+            vec!["ticket_id", "tenant", "region"],
+            (1..=2)
+                .map(|value| QueryRow {
+                    cells: vec![
+                        CanonicalValue::string("t").expect("s"),
+                        CanonicalValue::U64(7),
+                    ],
+                    // A different shadowed value proves the select cell wins;
+                    // the unshadowed suffix retains its original PK position.
+                    primary_key: vec![
+                        CanonicalValue::U64(value),
+                        CanonicalValue::U64(99),
+                        CanonicalValue::U64(8),
+                    ],
+                })
+                .collect(),
         );
         for request in [
             row_request(),
@@ -1543,13 +1556,39 @@ mod packed_encoding_tests {
             let response =
                 execute_projected_query_result_to_proto_for_request(result.clone(), &request)
                     .expect("encode");
-            assert!(
-                matches!(
-                    response.outcome,
-                    Some(app_v1::execute_projected_query_response::Outcome::Ready(_))
-                ),
-                "must not emit ready_packed for non-PACKED request: {response:?}"
-            );
+            let Some(app_v1::execute_projected_query_response::Outcome::Ready(ready)) =
+                response.outcome
+            else {
+                panic!("non-PACKED requests must emit row Ready");
+            };
+            assert_eq!(ready.fields, ["title", "tenant", "ticket_id", "region"]);
+            assert_eq!(ready.rows.len(), 2);
+            for (position, row) in ready.rows.iter().enumerate() {
+                assert_eq!(
+                    row.fields
+                        .iter()
+                        .map(|field| field.name.as_str())
+                        .collect::<Vec<_>>(),
+                    ready.fields
+                );
+                let values = row
+                    .fields
+                    .iter()
+                    .map(|field| {
+                        canonical_value_from_proto(field.value.clone().expect("wire value"))
+                            .expect("canonical value")
+                    })
+                    .collect::<Vec<_>>();
+                assert_eq!(
+                    values,
+                    [
+                        CanonicalValue::string("t").expect("s"),
+                        CanonicalValue::U64(7),
+                        CanonicalValue::U64(position as u64 + 1),
+                        CanonicalValue::U64(8)
+                    ]
+                );
+            }
         }
     }
 

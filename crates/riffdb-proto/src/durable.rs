@@ -12,9 +12,9 @@ use crate::envelope::{PayloadValidationError, RecordRegistry, RecordSchema};
 use crate::storage::v1;
 
 /// Number of durable semantic payload tuples accepted while opening or migrating storage.
-pub const READABLE_RECORD_SCHEMA_COUNT: usize = 107;
+pub const READABLE_RECORD_SCHEMA_COUNT: usize = 109;
 /// Number of durable semantic roles accepted for current writes.
-pub const WRITABLE_RECORD_SCHEMA_COUNT: usize = 84;
+pub const WRITABLE_RECORD_SCHEMA_COUNT: usize = 86;
 /// Number of durable semantic roles accepted for current writes.
 pub const CURRENT_RECORD_SCHEMA_COUNT: usize = WRITABLE_RECORD_SCHEMA_COUNT;
 
@@ -1860,6 +1860,40 @@ const REPLICATION_SOURCE_HOLD_V2_RECORD_SCHEMA: RecordSchema<'static> = RecordSc
 )
 .with_compact_identity(73, 2);
 
+const APPLICATION_EXPORT_OPERATION_V2_RECORD_SCHEMA: RecordSchema<'static> =
+    RecordSchema::new_current(
+        "riffdb.storage.v1.StoredApplicationExportOperationV2",
+        SchemaHash::from_bytes(*include_bytes!(
+            "../fixtures/durable-export-operation-v2-schema-hash.bin"
+        )),
+        256 * 1024,
+        u32::from_be_bytes({
+            let bounds =
+                *include_bytes!("../fixtures/durable-export-operation-v2-record-bound.bin");
+            [bounds[4], bounds[5], bounds[6], bounds[7]]
+        }) as usize,
+        preflight_payload::<102>,
+        validate_payload::<102, v1::StoredApplicationExportOperationV2>,
+    )
+    .with_compact_identity(60, 2);
+
+const APPLICATION_EXPORT_PAGE_COMMITMENT_V1_RECORD_SCHEMA: RecordSchema<'static> =
+    RecordSchema::new_current(
+        "riffdb.storage.v1.StoredApplicationExportPageCommitmentV1",
+        SchemaHash::from_bytes(*include_bytes!(
+            "../fixtures/durable-export-page-commitment-v1-schema-hash.bin"
+        )),
+        74,
+        u32::from_be_bytes({
+            let bounds =
+                *include_bytes!("../fixtures/durable-export-page-commitment-v1-record-bound.bin");
+            [bounds[4], bounds[5], bounds[6], bounds[7]]
+        }) as usize,
+        preflight_payload::<103>,
+        validate_payload::<103, v1::StoredApplicationExportPageCommitmentV1>,
+    )
+    .with_compact_identity(74, 1);
+
 mod sealed {
     pub trait ReadableRecordMessage {}
     pub trait WritableRecordMessage: ReadableRecordMessage {}
@@ -2045,6 +2079,14 @@ readable_message!(
 readable_message!(
     v1::StoredApplicationExportOperationV1,
     APPLICATION_EXPORT_OPERATION_V1_RECORD_SCHEMA
+);
+readable_message!(
+    v1::StoredApplicationExportOperationV2,
+    APPLICATION_EXPORT_OPERATION_V2_RECORD_SCHEMA
+);
+readable_message!(
+    v1::StoredApplicationExportPageCommitmentV1,
+    APPLICATION_EXPORT_PAGE_COMMITMENT_V1_RECORD_SCHEMA
 );
 readable_message!(v1::StoredCommandCapsuleV5, COMMAND_CAPSULE_V5_RECORD_SCHEMA);
 readable_message!(v1::StoredCommandSegmentV4, COMMAND_SEGMENT_V4_RECORD_SCHEMA);
@@ -2232,6 +2274,8 @@ writable_message!(v1::StoredExecutionFailedV3);
 writable_message!(v1::StoredOutcomeV3);
 writable_message!(v1::StoredApplicationInstallationCampaignV1);
 writable_message!(v1::StoredApplicationExportOperationV1);
+writable_message!(v1::StoredApplicationExportOperationV2);
+writable_message!(v1::StoredApplicationExportPageCommitmentV1);
 writable_message!(v1::StoredCommandCapsuleV5);
 writable_message!(v1::StoredCommandSegmentV4);
 writable_message!(v1::StoredCommandCapsuleV6);
@@ -2451,6 +2495,8 @@ pub static READABLE_RECORD_SCHEMAS: [RecordSchema<'static>; READABLE_RECORD_SCHE
     COMMAND_CAPSULE_V7_RECORD_SCHEMA,
     COMMAND_SEGMENT_V6_RECORD_SCHEMA,
     REPLICATION_SOURCE_HOLD_V2_RECORD_SCHEMA,
+    APPLICATION_EXPORT_OPERATION_V2_RECORD_SCHEMA,
+    APPLICATION_EXPORT_PAGE_COMMITMENT_V1_RECORD_SCHEMA,
     PRE_WP280_CAPABILITY_RECORD_SCHEMA,
     PRE_WP416_CAPABILITY_RECORD_SCHEMA,
     PRE_WP416_CAPABILITY_TOKEN_LOOKUP_RECORD_SCHEMA,
@@ -2544,6 +2590,8 @@ pub static WRITABLE_RECORD_SCHEMAS: [RecordSchema<'static>; WRITABLE_RECORD_SCHE
     COMMAND_CAPSULE_V7_RECORD_SCHEMA,
     COMMAND_SEGMENT_V6_RECORD_SCHEMA,
     REPLICATION_SOURCE_HOLD_V2_RECORD_SCHEMA,
+    APPLICATION_EXPORT_OPERATION_V2_RECORD_SCHEMA,
+    APPLICATION_EXPORT_PAGE_COMMITMENT_V1_RECORD_SCHEMA,
 ];
 
 /// Current durable schemas. `current` is exactly synonymous with writable roles.

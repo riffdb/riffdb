@@ -61,7 +61,7 @@ struct PostingList {
 }
 
 type PostingMap = BTreeMap<Vec<u8>, PostingList>;
-type ExactTermSets = (BTreeSet<Vec<u8>>, BTreeSet<Vec<u8>>, BTreeSet<Vec<u8>>);
+type ExactTermSets<'a> = (BTreeSet<&'a [u8]>, BTreeSet<&'a [u8]>, BTreeSet<&'a [u8]>);
 
 /// One bounded exact result window and its whole admitted-population count.
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -989,7 +989,107 @@ pub struct ExactTextPartitionIndexV3 {
     filtered: BTreeMap<Vec<u8>, ExactTextFilterPostingsV3>,
 }
 
+/// Complete checked source change for a filtered binary-text provider.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum ExactTextIndexMutationV3 {
+    /// Replace text, filter and output together; no old posting survives.
+    Upsert {
+        /// Exact canonical entity key.
+        row: EntityKey,
+        /// Bounded source text.
+        value: String,
+        /// Complete canonical filter value, including explicit null.
+        filter: CanonicalValue,
+        /// Complete compiler-shaped output.
+        output: CanonicalRecord,
+    },
+    /// Remove the row and its old filter membership.
+    Delete(EntityKey),
+}
+
 impl ExactTextPartitionIndexV3 {
+    /// Applies one complete validated epoch to a private successor. Failed
+    /// validation leaves text, filters, outputs and the frontier unchanged.
+    pub fn apply(
+        &mut self,
+        epoch: CommitSequence,
+        mutations: &[ExactTextIndexMutationV3],
+    ) -> Result<(), ExactTextProviderErrorV1> {
+        if mutations.len() > MAX_EXACT_TEXT_ROWS_PER_PARTITION_V1 * 2 {
+            return Err(ExactTextProviderErrorV1::PartitionRowLimit);
+        }
+        let mut base_updates = Vec::with_capacity(mutations.len());
+        for mutation in mutations {
+            base_updates.push(match mutation {
+                ExactTextIndexMutationV3::Upsert {
+                    row,
+                    value,
+                    filter,
+                    output,
+                } => {
+                    if encode_canonical_value(filter)
+                        .map_err(|_| ExactTextProviderErrorV1::OutputInvalid)?
+                        .len()
+                        > MAX_EXACT_TEXT_OUTPUT_ROW_BYTES_V1
+                    {
+                        return Err(ExactTextProviderErrorV1::OutputTooLarge);
+                    }
+                    ExactTextIndexMutationV2::upsert(row.clone(), value, output.clone())?
+                }
+                ExactTextIndexMutationV3::Delete(row) => {
+                    ExactTextIndexMutationV2::delete(row.clone())
+                }
+            });
+        }
+        let mut next = self.clone();
+        next.base.apply(epoch, &base_updates)?;
+        let mut affected = BTreeSet::new();
+        for (mutation, base) in mutations.iter().zip(&base_updates) {
+            let row = hash_entity_key(base.row().as_bytes());
+            if let Some(old) = next.filters.remove(&row) {
+                affected.insert(
+                    encode_canonical_value(&old)
+                        .map_err(|_| ExactTextProviderErrorV1::OutputInvalid)?,
+                );
+            }
+            if let ExactTextIndexMutationV3::Upsert { filter, .. } = mutation {
+                affected.insert(
+                    encode_canonical_value(filter)
+                        .map_err(|_| ExactTextProviderErrorV1::OutputInvalid)?,
+                );
+                next.filters.insert(row, filter.clone());
+            }
+        }
+        // Rebuild only changed filter families. Untouched families retain their
+        // checked posting order; the base already applied replacements atomically.
+        let filters = next
+            .filters
+            .iter()
+            .filter_map(|(row, value)| match encode_canonical_value(value) {
+                Ok(encoded) if affected.contains(&encoded) => Some(Ok((*row, value.clone()))),
+                Ok(_) => None,
+                Err(_) => Some(Err(ExactTextProviderErrorV1::OutputInvalid)),
+            })
+            .collect::<Result<BTreeMap<_, _>, _>>()?;
+        for filter in affected {
+            next.filtered.remove(&filter);
+        }
+        if next.filters.len() != next.base.keys.len()
+            || next
+                .filters
+                .keys()
+                .any(|row| !next.base.keys.contains_key(row))
+        {
+            return Err(ExactTextProviderErrorV1::InvalidCheckpoint);
+        }
+        next.filtered
+            .extend(build_filter_subset_postings_v3(&next.base, &filters)?);
+        // Preserve the complete checkpoint/state ceiling before publication.
+        next.to_checkpoint_bytes()?;
+        *self = next;
+        Ok(())
+    }
+
     /// Rebuilds one complete V3 generation from authoritative rows.
     pub fn rebuild(
         partition: PartitionKeyHash,
@@ -1192,6 +1292,16 @@ fn build_filter_postings_v3(
     filters: &BTreeMap<EntityKeyHash, CanonicalValue>,
 ) -> Result<BTreeMap<Vec<u8>, ExactTextFilterPostingsV3>, ExactTextProviderErrorV1> {
     if filters.len() != base.keys.len() || filters.keys().any(|row| !base.keys.contains_key(row)) {
+        return Err(ExactTextProviderErrorV1::InvalidCheckpoint);
+    }
+    build_filter_subset_postings_v3(base, filters)
+}
+
+fn build_filter_subset_postings_v3(
+    base: &ExactTextPartitionIndexV2,
+    filters: &BTreeMap<EntityKeyHash, CanonicalValue>,
+) -> Result<BTreeMap<Vec<u8>, ExactTextFilterPostingsV3>, ExactTextProviderErrorV1> {
+    if filters.keys().any(|row| !base.keys.contains_key(row)) {
         return Err(ExactTextProviderErrorV1::InvalidCheckpoint);
     }
     let mut members = BTreeMap::<Vec<u8>, BTreeSet<EntityKeyHash>>::new();
@@ -1416,7 +1526,7 @@ fn add_value_to_postings(
     contains: &mut PostingMap,
 ) {
     let (prefix_terms, suffix_terms, contains_terms) = terms(value);
-    posting_insert(equals, value.as_bytes().to_vec(), row);
+    posting_insert(equals, value.as_bytes(), row);
     for term in prefix_terms {
         posting_insert(prefixes, term, row);
     }
@@ -1439,17 +1549,17 @@ fn remove_value_from_postings(
     let (prefix_terms, suffix_terms, contains_terms) = terms(value);
     posting_remove(equals, value.as_bytes(), row);
     for term in prefix_terms {
-        posting_remove(prefixes, &term, row);
+        posting_remove(prefixes, term, row);
     }
     for term in suffix_terms {
-        posting_remove(suffixes, &term, row);
+        posting_remove(suffixes, term, row);
     }
     for term in contains_terms {
-        posting_remove(contains, &term, row);
+        posting_remove(contains, term, row);
     }
 }
 
-fn terms(value: &str) -> ExactTermSets {
+fn terms(value: &str) -> ExactTermSets<'_> {
     let boundaries: Vec<usize> = value
         .char_indices()
         .map(|(offset, _)| offset)
@@ -1458,17 +1568,17 @@ fn terms(value: &str) -> ExactTermSets {
     let prefixes = boundaries
         .iter()
         .skip(1)
-        .map(|end| value.as_bytes()[..*end].to_vec())
+        .map(|end| &value.as_bytes()[..*end])
         .collect();
     let suffixes = boundaries
         .iter()
         .take(boundaries.len().saturating_sub(1))
-        .map(|start| value.as_bytes()[*start..].to_vec())
+        .map(|start| &value.as_bytes()[*start..])
         .collect();
     let mut contains = BTreeSet::new();
     for (start_index, &start) in boundaries.iter().enumerate() {
         for &end in boundaries.iter().skip(start_index + 1) {
-            contains.insert(value.as_bytes()[start..end].to_vec());
+            contains.insert(&value.as_bytes()[start..end]);
         }
     }
     (prefixes, suffixes, contains)
@@ -1483,16 +1593,16 @@ fn record_terms(
 ) {
     let (prefix_terms, suffix_terms, contains_terms) = terms(value);
     equals.insert(value.as_bytes().to_vec());
-    prefixes.extend(prefix_terms);
-    suffixes.extend(suffix_terms);
-    contains.extend(contains_terms);
+    prefixes.extend(prefix_terms.into_iter().map(<[u8]>::to_vec));
+    suffixes.extend(suffix_terms.into_iter().map(<[u8]>::to_vec));
+    contains.extend(contains_terms.into_iter().map(<[u8]>::to_vec));
 }
 
-fn posting_insert(postings: &mut PostingMap, term: Vec<u8>, row: EntityKeyHash) {
+fn posting_insert(postings: &mut PostingMap, term: &[u8], row: EntityKeyHash) {
     // The source row map is authoritative for values, so rebuild the compact
     // order vectors after each bounded mutation below. Incremental mutation
     // only records membership here and cannot admit duplicates.
-    let posting = postings.entry(term).or_default();
+    let posting = postings.entry(term.to_vec()).or_default();
     if !posting.ascending.contains(&row) {
         posting.ascending.push(row);
     }

@@ -14,6 +14,13 @@ successor state; and issues a move-only proof bound to the exact capability
 revision and row hashes. The same evaluator filters rows before limits and
 aggregates, and its final-safe-point recheck rejects capability or row drift.
 
+Boolean constants, fields and declared principal facts can be used directly as
+predicates or under logical operators. ADR-0233 fixes the evaluator's former
+incorrect denial of these compiled policies; after upgrade, `allow create when
+true` can allow creation subject to every existing authority check. Missing or
+mistyped values are still denied, and required relationship evidence is checked
+even when another Boolean branch is true. See [contract authoring](../contracts/AUTHORING.md#boolean-row-policies).
+
 Protected operations remain unavailable from the ordinary unbound role grant.
 Capability Record V4 persists the exact application role, canonical principal
 facts, selected policy per protected entity, and closed operation classes.
