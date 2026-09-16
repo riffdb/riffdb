@@ -29,6 +29,7 @@ const MAX_QUERY_MODULE_BYTES: usize = 16 * 1024 * 1024;
 const MAX_COMMAND_ITEMS: usize = 4_096;
 const MAX_COMMAND_INDEX_TRANSITIONS: usize = 65_535;
 const MAX_COMMAND_SEGMENT_COMMANDS: usize = 256;
+const MAX_COMMAND_PREFIX_BYTES: usize = 16 * 1024 * 1024;
 const MAX_COMMAND_SEGMENT_INDEX_ENTRIES: usize = 65_535;
 const MAX_CONFLICT_HASHES: usize = 2_046;
 const MAX_PACKED_ITEMS: usize = 65_535 + 19;
@@ -466,6 +467,24 @@ shape!(COMMAND_SEGMENT_BODY_V5 [
 ]);
 shape!(COMMAND_SEGMENT_V5 [
     message(1, &COMMAND_SEGMENT_BODY_V5),
+    fixed_bytes(2, 32),
+]);
+shape!(COMMAND_CAPSULE_V7 [
+    message(1, &COMMAND_CAPSULE_V1),
+    repeated_message(2, MAX_COMMAND_ITEMS, &DURABLE_EVENT_VARIANT_V1),
+    repeated_message(3, MAX_COMMAND_INDEX_TRANSITIONS, &INDEX_GENERATION_TRANSITION_V1),
+    bytes(4, MAX_DOCUMENT_BYTES),
+    repeated_message(5, MAX_COMMAND_ITEMS, &COMMITTED_ENTITY_TRANSITION_V1),
+    bytes(6, MAX_COMMAND_PREFIX_BYTES),
+]);
+shape!(COMMAND_SEGMENT_BODY_V6 [
+    fixed_bytes(1, 16),
+    fixed_bytes(3, 32),
+    repeated_message(8, MAX_COMMAND_SEGMENT_COMMANDS, &COMMAND_CAPSULE_V7),
+    message(9, &COMMAND_SEGMENT_MANIFEST_V1),
+]);
+shape!(COMMAND_SEGMENT_V6 [
+    message(1, &COMMAND_SEGMENT_BODY_V6),
     fixed_bytes(2, 32),
 ]);
 shape!(VALIDATED_PREFIX_CHECKPOINT_V2 [
@@ -1036,7 +1055,7 @@ shape!(REPLICATION_SOURCE_HOLD_V1 [
     message(7, &CHANGELOG_POSITION_V3),
 ]);
 
-const ROOTS: [&Shape; 99] = [
+const ROOTS: [&Shape; 101] = [
     &ROOT_EMPTY,
     &ROOT_DATABASE_ID,
     &ROOT_OPTIONAL_UNIT_FIELD_TWO,
@@ -1147,6 +1166,8 @@ const ROOTS: [&Shape; 99] = [
     &CHANGELOG_HISTORY_STATE_V3,
     &REPLICATION_FOLLOWER_STATE_V3,
     &REPLICATION_SOURCE_HOLD_V1,
+    &COMMAND_CAPSULE_V7,
+    &COMMAND_SEGMENT_V6,
 ];
 
 pub(crate) fn payload(record_index: usize, input: &[u8]) -> Result<(), DurablePreflightError> {

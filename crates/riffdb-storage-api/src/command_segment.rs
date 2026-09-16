@@ -219,6 +219,7 @@ pub struct StoredCommandCapsuleV2 {
     base: StoredCommandCapsuleV1,
     index_generation_transitions: Vec<IndexEpochAdvanceV1>,
     entity_transitions: Vec<CommittedEntityTransitionV1>,
+    prefix_evidence: Option<std::sync::Arc<crate::CommandPrefixEvidenceV1>>,
 }
 
 impl StoredCommandCapsuleV2 {
@@ -335,7 +336,38 @@ impl StoredCommandCapsuleV2 {
             base,
             index_generation_transitions,
             entity_transitions,
+            prefix_evidence: None,
         })
+    }
+
+    /// Binds successor evidence to this command's checked application/audit graph.
+    /// Existing capsules carry no evidence; readers never infer it from old bytes.
+    /// Complete independent-row and original-receipt validation remains the
+    /// storage owner's responsibility before use for exact reconstruction.
+    pub fn with_prefix_evidence(
+        mut self,
+        evidence: crate::CommandPrefixEvidenceV1,
+    ) -> Result<Self, StorageValueError> {
+        if self.prefix_evidence.is_some() {
+            return Err(StorageValueError::Duplicate);
+        }
+        evidence
+            .validate_command(&self.base)
+            .map_err(|_| StorageValueError::IdentityMismatch)?;
+        self.prefix_evidence = Some(std::sync::Arc::new(evidence));
+        Ok(self)
+    }
+
+    /// Exact successor evidence; absent for legacy capsule identities.
+    #[must_use]
+    pub fn prefix_evidence(&self) -> Option<&crate::CommandPrefixEvidenceV1> {
+        self.prefix_evidence.as_deref()
+    }
+
+    pub(crate) fn shared_prefix_evidence(
+        &self,
+    ) -> Option<std::sync::Arc<crate::CommandPrefixEvidenceV1>> {
+        self.prefix_evidence.clone()
     }
 
     /// Borrows the established five semantic command views.
@@ -470,6 +502,32 @@ impl StoredCommandSegmentV1 {
         for pair in commands.windows(2) {
             if pair[0].commit_sequence().checked_next() != Some(pair[1].commit_sequence()) {
                 return Err(StorageValueError::NonCanonicalOrder);
+            }
+        }
+        let has_prefix = commands[0].prefix_evidence().is_some();
+        let mut prior_prefix = None;
+        let mut prefix_bytes = 0_usize;
+        let mut prefix_mutations = 0_usize;
+        for command in &commands {
+            if command.prefix_evidence().is_some() != has_prefix {
+                return Err(StorageValueError::IdentityMismatch);
+            }
+            if let Some(evidence) = command.prefix_evidence() {
+                if prior_prefix.is_some_and(|prior| prior != evidence.predecessor()) {
+                    return Err(StorageValueError::IdentityMismatch);
+                }
+                prior_prefix = Some(evidence.covered());
+                prefix_bytes = prefix_bytes
+                    .checked_add(evidence.semantic_bytes())
+                    .ok_or(StorageValueError::SizeOverflow)?;
+                prefix_mutations = prefix_mutations
+                    .checked_add(evidence.mutations().len())
+                    .ok_or(StorageValueError::SizeOverflow)?;
+                if prefix_bytes > crate::MAX_STAGED_WRITE_BYTES
+                    || prefix_mutations > crate::MAX_CHANGELOG_FRAME_ENTRIES
+                {
+                    return Err(StorageValueError::LimitExceeded);
+                }
             }
         }
         if manifest.entries().iter().any(|entry| {

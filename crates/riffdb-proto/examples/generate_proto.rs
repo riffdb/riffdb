@@ -60,6 +60,7 @@ const STORAGE_SOURCES: &[&str] = &[
     "riffdb/storage/v1/event_policy_anchor.proto",
     "riffdb/storage/v1/event_policy_command_authority_v5.proto",
     "riffdb/storage/v1/correlated_index_work_command_authority_v6.proto",
+    "riffdb/storage/v1/command_prefix_authority_v7.proto",
     "riffdb/storage/v1/entity_references_v3.proto",
     "riffdb/storage/v1/entity_transitions_v4.proto",
     "riffdb/storage/v1/event_references_v2.proto",
@@ -116,6 +117,7 @@ const PRODUCTION_SOURCES: &[&str] = &[
     "riffdb/storage/v1/event_policy_anchor.proto",
     "riffdb/storage/v1/event_policy_command_authority_v5.proto",
     "riffdb/storage/v1/correlated_index_work_command_authority_v6.proto",
+    "riffdb/storage/v1/command_prefix_authority_v7.proto",
     "riffdb/storage/v1/entity_references_v3.proto",
     "riffdb/storage/v1/entity_transitions_v4.proto",
     "riffdb/storage/v1/event_references_v2.proto",
@@ -710,6 +712,16 @@ const DURABLE_RECORDS: &[DurableRecord] = &[
         "StoredReplicationSourceHoldV1",
         PayloadBound::Exact(163),
     ),
+    durable(
+        "command_prefix_authority_v7.proto",
+        "StoredCommandCapsuleV7",
+        PayloadBound::EnvelopeMaximum,
+    ),
+    durable(
+        "command_prefix_authority_v7.proto",
+        "StoredCommandSegmentV6",
+        PayloadBound::EnvelopeMaximum,
+    ),
 ];
 
 const LEGACY_DURABLE_RECORD_COUNT: usize = 26;
@@ -1244,6 +1256,9 @@ fn main() -> Result<(), Box<dyn Error>> {
     let source_hold_record = durable_registry
         .get(current_v1_record_count + 69)
         .ok_or_else(|| io::Error::other("durable source hold registry is incomplete"))?;
+    let command_prefix_records = durable_registry
+        .get(current_v1_record_count + 70..current_v1_record_count + 72)
+        .ok_or_else(|| io::Error::other("durable command-prefix registry is incomplete"))?;
     write_artifact(
         &output_root,
         "fixtures/proto/durable-registry.txt",
@@ -1721,6 +1736,26 @@ fn main() -> Result<(), Box<dyn Error>> {
     )?;
     write_artifact(
         &output_root,
+        "fixtures/proto/durable-command-prefix-authority-v7-schema-hashes.bin",
+        &durable_schema_hashes(command_prefix_records),
+    )?;
+    write_artifact(
+        &output_root,
+        "fixtures/proto/durable-command-prefix-authority-v7-record-bounds.bin",
+        &durable_record_bounds(command_prefix_records),
+    )?;
+    write_artifact(
+        &output_root,
+        "crates/riffdb-proto/fixtures/durable-command-prefix-authority-v7-schema-hashes.bin",
+        &durable_schema_hashes(command_prefix_records),
+    )?;
+    write_artifact(
+        &output_root,
+        "crates/riffdb-proto/fixtures/durable-command-prefix-authority-v7-record-bounds.bin",
+        &durable_record_bounds(command_prefix_records),
+    )?;
+    write_artifact(
+        &output_root,
         "fixtures/proto/durable-clean-close-lifecycle-v1-schema-hash.bin",
         &clean_close_lifecycle_record.schema_hash,
     )?;
@@ -2057,9 +2092,9 @@ struct BuiltDurableRecord {
 fn build_durable_registry(
     storage: &FileDescriptorSet,
 ) -> Result<Vec<BuiltDurableRecord>, Box<dyn Error>> {
-    if DURABLE_RECORDS.len() != 99 {
+    if DURABLE_RECORDS.len() != 101 {
         return Err(
-            io::Error::other("readable durable registry must contain exactly 99 records").into(),
+            io::Error::other("readable durable registry must contain exactly 101 records").into(),
         );
     }
     if storage.file.len() != STORAGE_SOURCES.len()
@@ -2083,9 +2118,9 @@ fn build_durable_registry(
         .iter()
         .map(|file| file.enum_type.len())
         .sum::<usize>();
-    if message_count != 195 || enum_count != 30 {
+    if message_count != 198 || enum_count != 30 {
         return Err(io::Error::other(format!(
-            "storage schema must contain exactly 195 messages and 30 enums; found {message_count} messages and {enum_count} enums"
+            "storage schema must contain exactly 198 messages and 30 enums; found {message_count} messages and {enum_count} enums"
         ))
         .into());
     }
@@ -2436,6 +2471,9 @@ fn durable_writable_registry_fixture(
     let source_hold = records
         .get(current_v1_record_count + 69)
         .ok_or_else(|| io::Error::other("durable registry is missing source hold"))?;
+    let command_prefix = records
+        .get(current_v1_record_count + 70..current_v1_record_count + 72)
+        .ok_or_else(|| io::Error::other("durable registry is missing command-prefix authority"))?;
     let writable = legacy[..8]
         .iter()
         .chain(std::iter::once(v2))
@@ -2486,10 +2524,11 @@ fn durable_writable_registry_fixture(
         .chain(std::iter::once(leadership))
         .chain(std::iter::once(history))
         .chain(std::iter::once(follower))
-        .chain(std::iter::once(source_hold));
+        .chain(std::iter::once(source_hold))
+        .chain(command_prefix.iter());
 
     let mut output = String::from("riffdb-durable-writable-registry-v1\n");
-    let _ = writeln!(output, "records {}", current_v1_record_count + 52);
+    let _ = writeln!(output, "records {}", current_v1_record_count + 54);
     for record in writable {
         let _ = write!(output, "{} schema-hash=", record.record_type);
         for byte in record.schema_hash {

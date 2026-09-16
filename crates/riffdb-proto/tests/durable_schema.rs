@@ -353,6 +353,15 @@ fn storage_source_import_and_type_inventory_is_exact() {
                 ],
             ),
             (
+                "riffdb/storage/v1/command_prefix_authority_v7.proto".to_owned(),
+                vec![
+                    "riffdb/storage/v1/command_capsule_v1.proto",
+                    "riffdb/storage/v1/command_segment_v1.proto",
+                    "riffdb/storage/v1/entity_transitions_v4.proto",
+                    "riffdb/storage/v1/event_policy_command_authority_v5.proto",
+                ],
+            ),
+            (
                 "riffdb/storage/v1/command_segment_v1.proto".to_owned(),
                 vec![
                     "riffdb/storage/v1/application.proto",
@@ -531,7 +540,7 @@ fn storage_source_import_and_type_inventory_is_exact() {
             .iter()
             .map(|file| file.message_type.len())
             .sum::<usize>(),
-        195,
+        198,
         "exact top-level semantic messages, StoredEnvelope and registry support"
     );
     assert_eq!(
@@ -560,9 +569,9 @@ fn storage_source_import_and_type_inventory_is_exact() {
 
 #[test]
 fn closed_registry_order_and_schema_hashes_are_exactly_derived() {
-    assert_eq!(CURRENT_RECORD_SCHEMA_COUNT, 81);
-    assert_eq!(READABLE_RECORD_SCHEMA_COUNT, 104);
-    assert_eq!(WRITABLE_RECORD_SCHEMA_COUNT, 81);
+    assert_eq!(CURRENT_RECORD_SCHEMA_COUNT, 83);
+    assert_eq!(READABLE_RECORD_SCHEMA_COUNT, 106);
+    assert_eq!(WRITABLE_RECORD_SCHEMA_COUNT, 83);
     assert_eq!(
         CURRENT_RECORD_SCHEMAS
             .iter()
@@ -655,6 +664,8 @@ fn closed_registry_order_and_schema_hashes_are_exactly_derived() {
     readable_names.push("riffdb.storage.v1.StoredChangelogHistoryStateV3".to_owned());
     readable_names.push("riffdb.storage.v1.StoredReplicationFollowerStateV3".to_owned());
     readable_names.push("riffdb.storage.v1.StoredReplicationSourceHoldV1".to_owned());
+    readable_names.push("riffdb.storage.v1.StoredCommandCapsuleV7".to_owned());
+    readable_names.push("riffdb.storage.v1.StoredCommandSegmentV6".to_owned());
     readable_names.push("riffdb.storage.v1.CapabilityRecordV1".to_owned());
     readable_names.push("riffdb.storage.v1.CapabilityRecordV1".to_owned());
     readable_names.push("riffdb.storage.v1.CapabilityTokenLookupV1".to_owned());
@@ -728,6 +739,8 @@ fn closed_registry_order_and_schema_hashes_are_exactly_derived() {
     writable_names.push("riffdb.storage.v1.StoredChangelogHistoryStateV3".to_owned());
     writable_names.push("riffdb.storage.v1.StoredReplicationFollowerStateV3".to_owned());
     writable_names.push("riffdb.storage.v1.StoredReplicationSourceHoldV1".to_owned());
+    writable_names.push("riffdb.storage.v1.StoredCommandCapsuleV7".to_owned());
+    writable_names.push("riffdb.storage.v1.StoredCommandSegmentV6".to_owned());
     assert_eq!(
         READABLE_RECORD_SCHEMAS
             .iter()
@@ -1091,8 +1104,8 @@ fn columnar_control_v1_freezes_numeric_registry_and_bounds() {
 #[test]
 fn generated_registry_fixtures_freeze_exact_membership_and_hashes() {
     let legacy = registry_fixture_entries(LEGACY_REGISTRY_FIXTURE, 26);
-    let readable = registry_fixture_entries(READABLE_REGISTRY_FIXTURE, 104);
-    let writable = registry_fixture_entries(WRITABLE_REGISTRY_FIXTURE, 81);
+    let readable = registry_fixture_entries(READABLE_REGISTRY_FIXTURE, 106);
+    let writable = registry_fixture_entries(WRITABLE_REGISTRY_FIXTURE, 83);
 
     assert_eq!(legacy, readable[..legacy.len()]);
     assert_eq!(
@@ -1315,10 +1328,14 @@ fn schema_hash_hex(schema: &riffdb_proto::envelope::RecordSchema<'_>) -> String 
 // req: STO-012
 fn tag_67_successor_registry_digest_is_frozen() {
     // The accepted predecessor remains frozen, even as WP-772 registers its
-    // own additive identities. Never replace this assertion with a new digest.
+    // own additive identities. WP-749 successors at existing tags are likewise
+    // excluded from this historical set. Never replace its frozen digest.
     let mut schemas = READABLE_RECORD_SCHEMAS
         .iter()
-        .filter(|schema| schema.compact_tag() <= 67)
+        .filter(|schema| {
+            schema.compact_tag() <= 67
+                && !(matches!(schema.compact_tag(), 54 | 55) && schema.schema_revision() >= 6)
+        })
         .collect::<Vec<_>>();
     schemas.sort_by_key(|schema| (schema.compact_tag(), schema.schema_revision()));
     assert_eq!(schemas.len(), 98);

@@ -2280,6 +2280,51 @@ impl StoredCommandAuditMemberV1 {
         }
     }
 }
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct StoredCommandCapsuleV7 {
+    #[prost(message, optional, tag = "1")]
+    pub base: ::core::option::Option<StoredCommandCapsuleV1>,
+    #[prost(message, repeated, tag = "2")]
+    pub events: ::prost::alloc::vec::Vec<StoredDurableEventVariantV1>,
+    #[prost(message, repeated, tag = "3")]
+    pub index_generation_transitions: ::prost::alloc::vec::Vec<
+        StoredIndexGenerationTransitionV1,
+    >,
+    #[prost(bytes = "vec", tag = "4")]
+    pub canonical_service_values: ::prost::alloc::vec::Vec<u8>,
+    #[prost(message, repeated, tag = "5")]
+    pub entity_transitions: ::prost::alloc::vec::Vec<StoredCommittedEntityTransitionV1>,
+    #[prost(bytes = "vec", tag = "6")]
+    pub command_prefix_evidence: ::prost::alloc::vec::Vec<u8>,
+}
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct StoredCommandSegmentBodyV6 {
+    #[prost(bytes = "vec", tag = "1")]
+    pub database_id: ::prost::alloc::vec::Vec<u8>,
+    #[prost(uint64, tag = "2")]
+    pub history_incarnation: u64,
+    #[prost(bytes = "vec", tag = "3")]
+    pub predecessor_segment_hash: ::prost::alloc::vec::Vec<u8>,
+    #[prost(uint64, tag = "4")]
+    pub first_commit_sequence: u64,
+    #[prost(uint64, tag = "5")]
+    pub last_commit_sequence: u64,
+    #[prost(uint64, tag = "6")]
+    pub first_administration_sequence: u64,
+    #[prost(uint64, tag = "7")]
+    pub last_administration_sequence: u64,
+    #[prost(message, repeated, tag = "8")]
+    pub commands: ::prost::alloc::vec::Vec<StoredCommandCapsuleV7>,
+    #[prost(message, optional, tag = "9")]
+    pub manifest: ::core::option::Option<CommandSegmentManifestV1>,
+}
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct StoredCommandSegmentV6 {
+    #[prost(message, optional, tag = "1")]
+    pub body: ::core::option::Option<StoredCommandSegmentBodyV6>,
+    #[prost(bytes = "vec", tag = "2")]
+    pub segment_digest: ::prost::alloc::vec::Vec<u8>,
+}
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct StoredIndexGenerationTransitionV1 {
     #[prost(message, optional, tag = "1")]
