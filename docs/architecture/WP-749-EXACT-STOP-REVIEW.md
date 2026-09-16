@@ -371,3 +371,49 @@ under the same 120-second limit; that CI timing failure remains separately repor
 A separate standalone diagnostic with a 240-second outer bound passed in
 117.87 seconds. It confirms the test completes; it does not change the
 reported 120-second CI timeout or its configured limit.
+
+
+## Complete exact-stop preparation increment
+
+Package: WP-749. Tier: guarantee, under the accepted exact-stop amendment.
+
+Behavior: one storage preparation owner consumes a verified stage, validates its
+complete selected original replay, then prepares the exact requested frontier.
+LastArchived retains the terminal selection, including later administration-only
+records. An explicit application sequence rebuilds from the same backup and
+immutable selection and stops at the first exact boundary at or after that
+backup. A complete receipt boundary retains its original physical identity until
+the existing RestoreAnchor ceremony; an interior cut uses the accepted private
+reconstruction and validation path. The original interior-only entry point keeps
+refusing physical boundaries.
+
+The prepared owner exposes one checksum-bound immutable authorization snapshot
+and a consuming seal operation. It refuses changed bytes and held readers,
+and both variants publish through the existing exact durable V3 receipt owner.
+Selection is available before replay so the driver can durably freeze it.
+
+Decisions: share preparation and authorization/sealing across the two existing
+validated origins; use original receipts at physical boundaries; retain the
+first exact application boundary for explicit stops and the full selected dual
+frontier for LastArchived. No new durable identity, encoding or application
+interface is introduced. Handbook pages updated: backup/restore and compatibility.
+
+Hazards and follow-ups: the maintenance archive driver must wire staged
+credentials/current policy, incarnation selection and recovery dispatch. Archive
+configuration/worker, RPC/client/CLI, complete crash qualification and same-workload
+measurements remain open. This increment does not expose an archive restore command.
+
+
+Checks: the new preparation API first failed to compile in its production-storage
+test because the method did not exist. The focused run then passed all five
+preparation tests, including Standard/Hardened receipt and interior stops,
+positive backup-fence stops, empty suffixes, trailing administration records,
+cancellation, out-of-range refusal, changed bytes and still-held authorization
+readers. Each successful sequence case publishes through an exact durable V3
+receipt and verifies the restored entity through a normal source reopen.
+
+Scoped acceptance ran 1,247 tests: 1,246 passed, the existing bootstrap crash
+test hit its 120-second CI timeout, and seven existing tests were skipped.
+There were no assertion failures. Scope, formatting, clippy, handbook, file-size
+and panic checks all passed. The recurring bootstrap timing failure is still
+reported separately; this increment does not claim a fully green merge gate.

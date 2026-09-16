@@ -214,8 +214,12 @@ validated bytes. After all authorization readers close, a matching durable Offli
 V3 receipt can authorize a new incarnation and RestoreAnchor at the stopped
 frontier. The original selection and backup manifest remain unchanged. Ordinary
 source validation must pass before the existing replacement ceremony publishes
-that newly anchored database. Archive driver integration and the public exact-stop
-command remain WP-749 work.
+that newly anchored database. A shared preparation owner now also handles earlier
+complete receipt boundaries and the verified backup fence without partial
+reconstruction. It validates the full selected suffix before preparing any earlier
+stop; explicit sequence stops exclude subsequent administration-only records,
+while last-archived includes the selected terminal frontier. Archive driver
+integration and the public exact-stop command remain WP-749 work.
 
 Inspect the format while the server is stopped:
 

@@ -1,5 +1,8 @@
 //! Private verified-backup conversion and exact archived-frame replay. Publication
 //! requires a separate complete validation seal and matching durable V3 receipt.
+#[path = "archive_preparation.rs"]
+mod preparation;
+pub use preparation::RedbPreparedArchiveRestore;
 #[path = "archive_prefix.rs"]
 mod prefix;
 #[path = "archive_publication.rs"]
@@ -218,6 +221,12 @@ impl RedbStagedRestore {
 }
 
 impl RedbArchiveRestoreStage {
+    /// Complete verified original selection to freeze durably before replay.
+    #[must_use]
+    pub const fn selection(&self) -> &ArchiveRestoreSelectionV3 {
+        &self.selection
+    }
+
     /// Exact private file to open through the ordinary complete follower startup.
     #[must_use]
     pub fn staged_database_file(&self) -> &Path {
@@ -311,7 +320,7 @@ impl RedbReplayedArchiveRestore {
     pub const fn selection(&self) -> &ArchiveRestoreSelectionV3 {
         &self.selection
     }
-    /// Original lineage and exact selected physical/dual frontier.
+    /// Original lineage and actual replayed physical/dual frontier.
     #[must_use]
     pub const fn history(&self) -> ChangelogHistoryStateV3 {
         self.history

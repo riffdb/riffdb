@@ -252,7 +252,14 @@ seal the validated cut and publish it through the matching durable Offline V3
 receipt. Its recorded incarnation authorizes a fresh RestoreAnchor at the actual
 stopped frontier; only then is the source journal created and the normal format
 marker restored. Interrupted private stages rebuild from the receipt's original selection.
-Archive driver integration remains unfinished. This does not expose a new restore command.
+One storage preparation owner now covers an empty suffix, the exact backup
+fence, earlier complete receipts and interior command cuts. It first validates
+the entire selected original suffix, then rebuilds an earlier stop from the same
+backup and selection. An explicit sequence stops at its first exact boundary;
+last-archived retains the selected terminal administration frontier. Both paths
+provide a validated immutable snapshot for staged authorization and use the
+same receipt-authorized publication owner. Archive driver integration remains
+unfinished. This does not expose a new restore command.
 The storage owner can publish a separately validated and sealed replay only against
 matching durable Offline V3 evidence and its recorded incarnation. It creates an
 empty source journal at the actual restored application/administration frontier,
