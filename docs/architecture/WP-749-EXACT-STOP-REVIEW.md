@@ -1,7 +1,9 @@
 # WP-749 — exact application stops inside physical groups
 
-Status: proposed; human review required. No format change is implemented or
-accepted by this document. WP-749 remains open.
+Status: accepted by the maintainer in session on 2026-09-15 (America/Chicago):
+"Approve exact amendment". Standalone acceptance commit `d3088476` records the
+exact text in SPEC §4.10 and ADR-0102/0178/0186. Implementation and proof remain
+WP-749 work; acceptance does not expose exact-stop restore.
 
 ## Demonstrated conflict
 
@@ -30,7 +32,7 @@ changing group formation, rounding the stop, relabelling partial data with the
 source receipt hash, or weakening the required recovery granularity is outside
 the accepted decisions.
 
-## Exact proposed amendment
+## Exact accepted amendment
 
 The following qualifies ADR-0102's command authority representation and
 ADR-0178/0186's restore composition. It preserves complete V3 source receipt
@@ -104,4 +106,5 @@ AGENTS.md requires human review when a required guarantee appears impossible
 under an accepted ADR or a test reveals a SPEC/ADR conflict. D-003 also reserves
 new durable identities and changes to accepted decisions for human review.
 Approval of the prior archive receipt amendment did not authorize these new
-command-authority encodings or private prefix-construction semantics.
+command-authority encodings or private prefix-construction semantics. The
+maintainer separately approved this exact amendment as recorded above.

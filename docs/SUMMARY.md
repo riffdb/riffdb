@@ -115,7 +115,7 @@
   - [WP-747 Accepted V2 Canonical Vector Amendment](architecture/WP-747-V2-VECTOR-REVIEW.md)
   - [WP-747 Accepted Cursor Error Clarification](architecture/WP-747-CURSOR-ERROR-REVIEW.md)
   - [WP-749 Accepted Archive Restore Receipt Amendment](architecture/WP-749-ARCHIVE-RESTORE-RECEIPT-REVIEW.md)
-  - [WP-749 Proposed Exact Application Stop Amendment](architecture/WP-749-EXACT-STOP-REVIEW.md)
+  - [WP-749 Accepted Exact Application Stop Amendment](architecture/WP-749-EXACT-STOP-REVIEW.md)
 - [Schema-Bound Columnar Control](architecture/COLUMNAR-CONTROL.md)
 - [Aggregate Semantic Registry](architecture/aggregate-semantic-registry-v1.md)
 - [Exact Aggregate Closure](architecture/WP-696-AGGREGATE-CLOSURE.md)
