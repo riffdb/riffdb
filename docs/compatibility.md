@@ -159,8 +159,12 @@ committed audited commands now write these successor identities and retain
 their intermediate entity/index state atomically. Their complete evidence copy
 counts toward the existing pre-sequence capacity reservation, so a command near
 the previous encoded limit may now be refused before receiving a sequence.
-Complete prefix graph validation and exact-stop archive restore remain
-unfinished WP-749 work.
+Startup, recovery and received successor groups also check that retained entity
+images, chain heads and index epochs exactly match their owning command facts;
+missing, extra or substituted rows refuse even when their envelopes are valid.
+Pending-idempotency mutations may only delete that command's identity. Complete
+secondary-index/vector and predecessor graph validation and exact-stop archive
+restore remain unfinished WP-749 work.
 
 Inspect the format while the server is stopped:
 

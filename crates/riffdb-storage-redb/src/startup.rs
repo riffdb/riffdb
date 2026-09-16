@@ -1679,20 +1679,19 @@ fn run_checkpoint_sample_windows(
                     break;
                 }
                 inspected = inspected.saturating_add(1);
-                let command_capsules =
-                    match riffdb_storage_api::decode_command_segment_v1(value.value()) {
-                        Ok(segment) => segment
-                            .value()
-                            .commands()
-                            .iter()
-                            .map(|command| (command.commit_sequence(), command.base().clone()))
-                            .collect(),
-                        // The authoritative commit-row inspector below owns all
-                        // malformed-record classification. A corrupt historical
-                        // non-segment must not make this segment-only cache abort
-                        // the evidence walk before that typed finding is emitted.
-                        Err(_) => std::collections::BTreeMap::new(),
-                    };
+                let command_capsules = match crate::command_prefix::decode_segment(value.value()) {
+                    Ok(segment) => segment
+                        .value()
+                        .commands()
+                        .iter()
+                        .map(|command| (command.commit_sequence(), command.base().clone()))
+                        .collect(),
+                    // The authoritative commit-row inspector below owns all
+                    // malformed-record classification. A corrupt historical
+                    // non-segment must not make this segment-only cache abort
+                    // the evidence walk before that typed finding is emitted.
+                    Err(_) => std::collections::BTreeMap::new(),
+                };
                 let embedded_command_authority =
                     command_capsules.keys().copied().collect::<BTreeSet<_>>();
                 let (finding, _) = inspect_commit_row(
@@ -2060,46 +2059,45 @@ impl RedbStructuralEvidenceSession {
             }
             let physical =
                 keys::decode_application_sequence_key(key.value()).map_err(|_| corrupt())?;
-            let (commands, embedded) =
-                match riffdb_storage_api::decode_command_segment_v1(value.value()) {
-                    Ok(segment) => {
-                        let segment = segment.into_parts().0;
-                        if segment.first_commit_sequence() != physical {
-                            return Err(corrupt());
-                        }
-                        (
-                            segment
-                                .commands()
-                                .iter()
-                                .map(|command| command.base().clone())
-                                .collect::<Vec<_>>(),
-                            true,
-                        )
+            let (commands, embedded) = match crate::command_prefix::decode_segment(value.value()) {
+                Ok(segment) => {
+                    let segment = segment.into_parts().0;
+                    if segment.first_commit_sequence() != physical {
+                        return Err(corrupt());
                     }
-                    Err(error)
-                        if error.kind()
-                            == riffdb_storage_api::DurableCodecErrorKind::UnexpectedRecordType =>
-                    {
-                        match command_member_at(&commits, &events, physical) {
-                            Ok(Some(command)) => {
-                                let embedded = matches!(
-                                    &command,
-                                    crate::command_authority::CommandAuthorityMember::CapsuleV2(_)
-                                );
-                                (vec![command.into_base()], embedded)
-                            }
-                            Ok(None) => (Vec::new(), false),
-                            Err(error) if error.kind() == StorageErrorKind::CorruptData => {
-                                (Vec::new(), false)
-                            }
-                            Err(error) => return Err(error),
+                    (
+                        segment
+                            .commands()
+                            .iter()
+                            .map(|command| command.base().clone())
+                            .collect::<Vec<_>>(),
+                        true,
+                    )
+                }
+                Err(error)
+                    if error.kind()
+                        == riffdb_storage_api::DurableCodecErrorKind::UnexpectedRecordType =>
+                {
+                    match command_member_at(&commits, &events, physical) {
+                        Ok(Some(command)) => {
+                            let embedded = matches!(
+                                &command,
+                                crate::command_authority::CommandAuthorityMember::CapsuleV2(_)
+                            );
+                            (vec![command.into_base()], embedded)
                         }
+                        Ok(None) => (Vec::new(), false),
+                        Err(error) if error.kind() == StorageErrorKind::CorruptData => {
+                            (Vec::new(), false)
+                        }
+                        Err(error) => return Err(error),
                     }
-                    // The physical commit phase owns malformed-row reporting. Do
-                    // not let this auxiliary cache turn that expected finding into
-                    // a storage-level abort.
-                    Err(_) => (Vec::new(), false),
-                };
+                }
+                // The physical commit phase owns malformed-row reporting. Do
+                // not let this auxiliary cache turn that expected finding into
+                // a storage-level abort.
+                Err(_) => (Vec::new(), false),
+            };
             for command in commands {
                 let sequence = command.commit_sequence();
                 if embedded && !embedded_authority.insert(sequence) {
@@ -6403,7 +6401,7 @@ fn entity_history_members_in_physical_row<E>(
 where
     E: ReadableTable<&'static [u8], &'static [u8]>,
 {
-    match riffdb_storage_api::decode_command_segment_v1(encoded) {
+    match crate::command_prefix::decode_segment(encoded) {
         Ok(segment) => {
             let segment = segment.into_parts().0;
             if segment.first_commit_sequence() != physical_sequence {
@@ -6428,7 +6426,7 @@ where
             if error.kind() == riffdb_storage_api::DurableCodecErrorKind::UnexpectedRecordType => {}
         Err(error) => return Err(crate::error::codec_error(error)),
     }
-    match riffdb_storage_api::decode_command_capsule_v2(encoded) {
+    match crate::command_prefix::decode_capsule(encoded) {
         Ok(capsule) => {
             let capsule = capsule.into_parts().0;
             if capsule.commit_sequence() != physical_sequence {

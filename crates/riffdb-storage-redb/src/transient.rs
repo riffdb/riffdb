@@ -895,7 +895,7 @@ fn rebuild_command_derived_indexes(
     for entry in commits.iter().map_err(precommit_storage_error)? {
         check_rebuild_cancellation(cancellation)?;
         let (key, value) = entry.map_err(precommit_storage_error)?;
-        match riffdb_storage_api::decode_command_segment_v1(value.value()) {
+        match crate::command_prefix::decode_segment(value.value()) {
             Ok(segment) => {
                 let segment = segment.into_parts().0;
                 let physical =

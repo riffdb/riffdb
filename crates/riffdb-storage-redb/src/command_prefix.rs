@@ -2,11 +2,14 @@
 //! This layer does not grant reconstruction/publication authority or replace
 //! the command, entity/index, catalog and structural validators.
 
+mod rows;
+
+pub(crate) use rows::{decode_capsule, decode_segment};
+
 use redb::WriteTransaction;
 use riffdb_storage_api::{
     AuthoritativeNamespaceV1 as N, AuthoritativeTransactionV3, ChangelogAttributionV3,
-    DurableCodecErrorKind, StorageError, StorageErrorKind, decode_command_segment_v1,
-    validate_command_prefix_mutations_v1,
+    DurableCodecErrorKind, StorageError, StorageErrorKind, validate_command_prefix_mutations_v1,
 };
 
 use crate::{
@@ -134,7 +137,7 @@ pub(crate) fn validate_received_prefixes(
             legacy = true;
             continue;
         };
-        let segment = match decode_command_segment_v1(value) {
+        let segment = match decode_segment(value) {
             Ok(decoded) => decoded.into_parts().0,
             Err(error) if error.kind() == DurableCodecErrorKind::UnexpectedRecordType => {
                 legacy = true;

@@ -50,7 +50,7 @@ pub(crate) fn commits_in_physical_row<E>(
 where
     E: ReadableTable<&'static [u8], &'static [u8]>,
 {
-    match riffdb_storage_api::decode_command_segment_v1(encoded) {
+    match crate::command_prefix::decode_segment(encoded) {
         Ok(segment) => {
             let segment = segment.into_parts().0;
             if segment.first_commit_sequence() != physical_sequence {
@@ -74,7 +74,7 @@ where
         Err(error) => return Err(crate::error::codec_error(error)),
     }
 
-    match riffdb_storage_api::decode_command_capsule_v2(encoded) {
+    match crate::command_prefix::decode_capsule(encoded) {
         Ok(capsule) => {
             let (capsule, charge) = capsule.into_parts();
             if capsule.commit_sequence() != physical_sequence {

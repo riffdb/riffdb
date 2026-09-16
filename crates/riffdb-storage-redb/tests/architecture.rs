@@ -808,7 +808,7 @@ fn startup_full_validation_reuses_exact_embedded_command_authority() {
         .split_once("\n    fn ensure_entity_chains_built(")
         .expect("command cache end")
         .0;
-    assert!(cache.contains("decode_command_segment_v1"));
+    assert!(cache.contains("crate::command_prefix::decode_segment"));
     assert!(cache.contains("embedded_authority.insert(sequence)"));
     assert!(cache.contains("return Err(corrupt())"));
 
