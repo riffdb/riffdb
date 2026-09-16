@@ -400,3 +400,14 @@ The matrix locates rather than assumes an offered-load knee by running the
 agent profile at 500, 2,000, and 8,000 operations/second. It also includes a
 separate accumulated-history 1/8/32/128-client curve; that curve must never be
 used as concurrency-only scaling evidence.
+
+## Archive collector measurements
+
+The app-baseline harness supports paired collector-disabled and collector-enabled
+write-bearing load runs through `RIFFDB_APP_BASELINE_ARCHIVE_COLLECTION`.
+Both prepare a verified offline backup before measurement; the enabled arm adds
+the configured asynchronous archive collector. Reports bind the mode and actual
+persisted archive progress, and terminal collector failures invalidate the run.
+The source-tree guide `examples/app-baseline/README.md` gives the invocation and limits.
+This measurement option supplies WP-749 evidence; it adds no performance candidate
+or freeze exception, and smoke results cannot establish a latency comparison.

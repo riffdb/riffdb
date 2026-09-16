@@ -23074,6 +23074,13 @@ work_packages:
       test-executable observation of existing failure state; production entry points
       install no probe. Process death and uncertain-write edges retain their separate
       existing tests; this availability proof is not a latency measurement.
+    - Add paired archive collection modes to the existing application-baseline
+      measurement harness. Both create the verified full backup outside the timed
+      interval; only the enabled arm starts collection. Bind persisted progress and
+      terminal manifest identity in shutdown evidence, and fail on missing progress
+      or any observed collector failure, independently of diagnostic-ring retention.
+      Default baseline behavior is unchanged. This is measurement infrastructure,
+      not a completed comparison or a performance-freeze exception.
   human_review_triggers: *id0178
 
 - id: WP-750
