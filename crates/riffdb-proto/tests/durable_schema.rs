@@ -232,6 +232,13 @@ fn storage_source_import_and_type_inventory_is_exact() {
         imports,
         BTreeMap::from([
             (
+                "riffdb/storage/v1/replication_source_hold_v2.proto".to_owned(),
+                vec![
+                    "riffdb/storage/v1/replication_source_hold_v1.proto",
+                    "riffdb/storage/v1/changelog_history_state_v3.proto"
+                ],
+            ),
+            (
                 "riffdb/storage/v1/replication_source_hold_v1.proto".to_owned(),
                 vec!["riffdb/storage/v1/changelog_history_state_v3.proto"],
             ),
@@ -540,7 +547,7 @@ fn storage_source_import_and_type_inventory_is_exact() {
             .iter()
             .map(|file| file.message_type.len())
             .sum::<usize>(),
-        198,
+        199,
         "exact top-level semantic messages, StoredEnvelope and registry support"
     );
     assert_eq!(
@@ -569,9 +576,9 @@ fn storage_source_import_and_type_inventory_is_exact() {
 
 #[test]
 fn closed_registry_order_and_schema_hashes_are_exactly_derived() {
-    assert_eq!(CURRENT_RECORD_SCHEMA_COUNT, 83);
-    assert_eq!(READABLE_RECORD_SCHEMA_COUNT, 106);
-    assert_eq!(WRITABLE_RECORD_SCHEMA_COUNT, 83);
+    assert_eq!(CURRENT_RECORD_SCHEMA_COUNT, 84);
+    assert_eq!(READABLE_RECORD_SCHEMA_COUNT, 107);
+    assert_eq!(WRITABLE_RECORD_SCHEMA_COUNT, 84);
     assert_eq!(
         CURRENT_RECORD_SCHEMAS
             .iter()
@@ -666,6 +673,7 @@ fn closed_registry_order_and_schema_hashes_are_exactly_derived() {
     readable_names.push("riffdb.storage.v1.StoredReplicationSourceHoldV1".to_owned());
     readable_names.push("riffdb.storage.v1.StoredCommandCapsuleV7".to_owned());
     readable_names.push("riffdb.storage.v1.StoredCommandSegmentV6".to_owned());
+    readable_names.push("riffdb.storage.v1.StoredReplicationSourceHoldV2".to_owned());
     readable_names.push("riffdb.storage.v1.CapabilityRecordV1".to_owned());
     readable_names.push("riffdb.storage.v1.CapabilityRecordV1".to_owned());
     readable_names.push("riffdb.storage.v1.CapabilityTokenLookupV1".to_owned());
@@ -741,6 +749,7 @@ fn closed_registry_order_and_schema_hashes_are_exactly_derived() {
     writable_names.push("riffdb.storage.v1.StoredReplicationSourceHoldV1".to_owned());
     writable_names.push("riffdb.storage.v1.StoredCommandCapsuleV7".to_owned());
     writable_names.push("riffdb.storage.v1.StoredCommandSegmentV6".to_owned());
+    writable_names.push("riffdb.storage.v1.StoredReplicationSourceHoldV2".to_owned());
     assert_eq!(
         READABLE_RECORD_SCHEMAS
             .iter()
@@ -823,8 +832,8 @@ fn closed_registry_order_and_schema_hashes_are_exactly_derived() {
             .map(|schema| schema.max_payload_bytes())
             .collect::<BTreeSet<_>>()
             .len(),
-        17,
-        "five semantic classes plus twelve FQN-specific absolute maxima"
+        18,
+        "five semantic classes plus thirteen FQN-specific absolute maxima"
     );
 
     let v1 = "riffdb.storage.v1.StoredIndexEntryV1";
@@ -1104,8 +1113,8 @@ fn columnar_control_v1_freezes_numeric_registry_and_bounds() {
 #[test]
 fn generated_registry_fixtures_freeze_exact_membership_and_hashes() {
     let legacy = registry_fixture_entries(LEGACY_REGISTRY_FIXTURE, 26);
-    let readable = registry_fixture_entries(READABLE_REGISTRY_FIXTURE, 106);
-    let writable = registry_fixture_entries(WRITABLE_REGISTRY_FIXTURE, 83);
+    let readable = registry_fixture_entries(READABLE_REGISTRY_FIXTURE, 107);
+    let writable = registry_fixture_entries(WRITABLE_REGISTRY_FIXTURE, 84);
 
     assert_eq!(legacy, readable[..legacy.len()]);
     assert_eq!(
@@ -1484,6 +1493,7 @@ fn semantic_optional_wire_presence_is_exact() {
         "StoredEntityChainStateV1.entity_version",
         "StoredReactiveModuleAdministrationV1.approval_id",
         "StoredRetentionWatermarkV1.chain_root_registry_digest",
+        "StoredReplicationSourceHoldV2.expires_at_application_sequence",
         "StoredValidatedPrefixCheckpointV1.previous_checkpoint_hash",
         "StoredVectorEvidenceIndexV1.newest_source_write_sequence",
         "StoredVectorEvidenceV1.newest_source_write_sequence",

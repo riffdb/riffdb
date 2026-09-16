@@ -22818,6 +22818,17 @@ work_packages:
   closure:
     status: open
     decisions_taken:
+    - Encode registration policy as tag 73 revision 2 within the existing
+      SourceOnly source-hold domain named by ADR-0178/0186. Embed the unchanged
+      V1 follower fence; preserve V1 identities, owner/key tags and writers.
+      Bind a registration to its predecessor and checked physical successor;
+      store a nonzero application budget, closed phase, optional application
+      expiry and a checked degradation observation. Decoding grants no writer,
+      audit, retention-release or promotion authority. Register the bounded
+      codec and exact registry refusal now; explicit migration and audited
+      runtime ceremonies remain required before policy writes are activated.
+    - Include the generated durable-format manifest in a separate scope
+      prerequisite, because the scope checker requires its explicit path.
     - Define follower hold budgets as nonzero application-sequence allowances.
       Derive a checked typed observation from a same-lineage published history
       and exact follower acknowledgement; do not charge administration or

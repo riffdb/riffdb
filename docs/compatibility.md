@@ -145,6 +145,16 @@ corrupt selected material fails closed without V1 fallback. Downgrade remains
 unsupported; a future removal of V1 identities still requires its separately
 governed retirement package.
 
+WP-748 adds a V2 follower-registration policy codec in the existing source-hold
+record domain (tag 73, revision 2). Frozen V1 follower, archive and bootstrap
+holds retain their exact bytes. V2 carries an explicit sequence budget,
+registration predecessor, phase, optional sequence expiry and checked degradation
+observation. Decoding it does not authorize a registration or fence release.
+The registry digest changes: prior exact registry markers require their matching
+binary. This codec increment enables no automatic migration or registration,
+retirement, expiry or promotion operation. Those runtime ceremonies remain
+WP-748 work; existing hold writers continue to write V1.
+
 WP-749 registers successor command capsule V7 (tag 54, revision 6) and segment
 V6 (tag 55, revision 6) for exact command-prefix evidence. Earlier record bytes
 remain readable by their own codecs and do not acquire intermediate values.

@@ -15,6 +15,7 @@ mod receipt;
 mod receipt_codec;
 mod sequence;
 mod source_hold;
+mod source_hold_v2;
 mod source_progress;
 mod state_cursor;
 mod stream;
@@ -46,6 +47,7 @@ pub use source_hold::{
     MAX_REPLICATION_SOURCE_HOLDS_V1, ReplicationSourceHoldIdV1, ReplicationSourceHoldKindV1,
     ReplicationSourceHoldV1,
 };
+pub use source_hold_v2::{FollowerRegistrationPhaseV1, ReplicationSourceHoldV2};
 pub use source_progress::ReplicationSourceProgressV3;
 pub use state_cursor::{
     AuthoritativeStateCursorV3, AuthoritativeStateRowV3, AuthoritativeStateStepV3,

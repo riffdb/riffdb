@@ -25,19 +25,20 @@ const SOURCE_HOLD: &str = "riffdb.storage.v1.StoredReplicationSourceHoldV1";
 pub fn encode_replication_source_hold_v1(
     hold: ReplicationSourceHoldV1,
 ) -> Result<CanonicalStoredEnvelopeV1, DurableCodecError> {
+    encode_message(SOURCE_HOLD, &source_hold_to_wire(hold))
+}
+
+fn source_hold_to_wire(hold: ReplicationSourceHoldV1) -> wire::StoredReplicationSourceHoldV1 {
     let lineage = hold.lineage();
-    encode_message(
-        SOURCE_HOLD,
-        &wire::StoredReplicationSourceHoldV1 {
-            kind: hold.kind() as i32,
-            hold_id: hold.id().as_bytes().to_vec(),
-            database_id: lineage.database_id().as_bytes().to_vec(),
-            history_incarnation: lineage.history_incarnation(),
-            leadership_epoch: lineage.leadership_epoch().get(),
-            catalog_digest: lineage.catalog_digest().to_vec(),
-            fence: Some(encode_position(hold.fence())),
-        },
-    )
+    wire::StoredReplicationSourceHoldV1 {
+        kind: hold.kind() as i32,
+        hold_id: hold.id().as_bytes().to_vec(),
+        database_id: lineage.database_id().as_bytes().to_vec(),
+        history_incarnation: lineage.history_incarnation(),
+        leadership_epoch: lineage.leadership_epoch().get(),
+        catalog_digest: lineage.catalog_digest().to_vec(),
+        fence: Some(encode_position(hold.fence())),
+    }
 }
 
 /// Refuses unknown owners, zero IDs, malformed positions and foreign catalogs.
@@ -45,27 +46,37 @@ pub fn encode_replication_source_hold_v1(
 pub fn decode_replication_source_hold_v1(
     encoded: &[u8],
 ) -> Result<EncodedPageItem<ReplicationSourceHoldV1>, DurableCodecError> {
-    decode_message::<wire::StoredReplicationSourceHoldV1, _, _>(SOURCE_HOLD, encoded, |v| {
-        let kind = match v.kind {
-            1 => ReplicationSourceHoldKindV1::FollowerAcknowledgement,
-            2 => ReplicationSourceHoldKindV1::ArchiveAcknowledgement,
-            3 => ReplicationSourceHoldKindV1::Bootstrap,
-            _ => return Err(DurableCodecError::corrupt()),
-        };
-        Ok(ReplicationSourceHoldV1::new(
-            ReplicationSourceHoldIdV1::new(fixed(v.hold_id)?)
-                .ok_or_else(DurableCodecError::corrupt)?,
-            kind,
-            decode_lineage(
-                v.database_id,
-                v.history_incarnation,
-                v.leadership_epoch,
-                v.catalog_digest,
-            )?,
-            decode_position(require(v.fence)?)?,
-        ))
-    })
+    decode_message::<wire::StoredReplicationSourceHoldV1, _, _>(
+        SOURCE_HOLD,
+        encoded,
+        source_hold_from_wire,
+    )
 }
+
+fn source_hold_from_wire(
+    v: wire::StoredReplicationSourceHoldV1,
+) -> Result<ReplicationSourceHoldV1, DurableCodecError> {
+    let kind = match v.kind {
+        1 => ReplicationSourceHoldKindV1::FollowerAcknowledgement,
+        2 => ReplicationSourceHoldKindV1::ArchiveAcknowledgement,
+        3 => ReplicationSourceHoldKindV1::Bootstrap,
+        _ => return Err(DurableCodecError::corrupt()),
+    };
+    Ok(ReplicationSourceHoldV1::new(
+        ReplicationSourceHoldIdV1::new(fixed(v.hold_id)?).ok_or_else(DurableCodecError::corrupt)?,
+        kind,
+        decode_lineage(
+            v.database_id,
+            v.history_incarnation,
+            v.leadership_epoch,
+            v.catalog_digest,
+        )?,
+        decode_position(require(v.fence)?)?,
+    ))
+}
+
+mod source_hold_v2;
+pub use source_hold_v2::*;
 
 /// Encodes only the storage owner's closed catalog; there is no caller-selected inventory.
 pub fn encode_authoritative_state_catalog_v1(
