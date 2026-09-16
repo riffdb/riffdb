@@ -1,4 +1,5 @@
 #![forbid(unsafe_code)]
+// req: SIM-003
 
 //! SIM-C1 (ADR-0113 Phase 1 item 4, SPEC SIM-003): the recovery oracle.
 //!
@@ -92,7 +93,8 @@ contract StorageRecovery version 1 {
   entity Row {
     key (id: u64)
     field value: u64
-    index ByValue(value)
+    field payload: u64
+    index ByValue(value) cover (payload)
   }
 
   event RowCreated {
@@ -116,7 +118,8 @@ contract StorageRecovery version 1 {
     create Row(id) as row
       else RowAlreadyExists { id: id }
 
-    set row.value = value
+    set row.value = 10
+    set row.payload = value
 
     emit RowCreated { id: id, value: value }
     return RowCreatedOutcome { row: row }
@@ -181,6 +184,35 @@ fn record(value: u64) -> CanonicalRecord {
         CanonicalValue::U64(value),
     )])
     .expect("canonical record")
+}
+
+// Keep the indexed value constant while varying the covered payload. This
+// preserves the oracle's same-key supersession workload and makes every image
+// agree with the retained contract instead of inventing an index key or cover.
+fn entity_record(target_ordinal: u64, payload: u64) -> CanonicalRecord {
+    CanonicalRecord::new(vec![
+        (
+            FieldId::new(1).expect("id field"),
+            CanonicalValue::U64(6 + target_ordinal),
+        ),
+        (
+            FieldId::new(2).expect("value field"),
+            CanonicalValue::U64(10),
+        ),
+        (
+            FieldId::new(3).expect("payload field"),
+            CanonicalValue::U64(payload),
+        ),
+    ])
+    .expect("complete entity record")
+}
+
+fn index_cover(payload: u64) -> CanonicalRecord {
+    CanonicalRecord::new(vec![(
+        FieldId::new(3).expect("payload field"),
+        CanonicalValue::U64(payload),
+    )])
+    .expect("declared index cover")
 }
 
 fn catalog_principal() -> AuditPrincipalV1 {
@@ -322,8 +354,12 @@ fn build_command_fixture(
         Vec::new(),
     )
     .expect("read snapshot");
-    let post_image = EntityPostImage::new(target.clone(), plan.contract_version(), record(payload))
-        .expect("entity post-image");
+    let post_image = EntityPostImage::new(
+        target.clone(),
+        plan.contract_version(),
+        entity_record(target_ordinal, payload),
+    )
+    .expect("entity post-image");
     let event_intent = EventIntent::new(EventTypeId::new(1).expect("event type"), record(payload))
         .expect("event intent");
     let declared_outcome =
@@ -377,7 +413,7 @@ fn build_command_fixture(
             }),
         plan.contract_version(),
         DurableKeySchemaBindingV1::from_plan(&plan),
-        record(payload),
+        entity_record(target_ordinal, payload),
     )
     .expect("stored entity");
     let mutation = riffdb_storage_api::CommittedEntityMutationV1::new(
@@ -392,7 +428,7 @@ fn build_command_fixture(
     let index_record = StoredIndexEntryV2::new(
         index_key,
         DurableKeySchemaBindingV1::from_plan(&plan),
-        record(payload),
+        index_cover(payload),
         pending.partition_key().clone(),
     )
     .expect("stored index entry");
