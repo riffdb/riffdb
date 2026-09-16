@@ -259,10 +259,10 @@ pub use maintenance::{
     RedbBootstrapStage, RedbBootstrapVerification, RedbFollowerColumnarBuild,
     RedbFollowerColumnarScratch, RedbHeldBootstrapSource, RedbMaintenanceOperationEvidence,
     RedbMaintenanceReconciliation, RedbMaintenanceStorage, RedbMigrationDiskReservation,
-    RedbPrivateArchiveRestoreCandidate, RedbPublishedBootstrapCandidate,
-    RedbReplayedArchiveRestore, RedbSealedArchiveRestore, RedbSealedStagedRestore,
-    RedbStagedRestore, RedbValidatedBootstrapCandidate, RedbValidatedPrivateArchiveRestore,
-    RedbVerifiedArchiveBackup, RedbVerifiedBootstrapTransfer,
+    RedbPreparedArchiveRestore, RedbPrivateArchiveRestoreCandidate,
+    RedbPublishedBootstrapCandidate, RedbReplayedArchiveRestore, RedbSealedArchiveRestore,
+    RedbSealedStagedRestore, RedbStagedRestore, RedbValidatedBootstrapCandidate,
+    RedbValidatedPrivateArchiveRestore, RedbVerifiedArchiveBackup, RedbVerifiedBootstrapTransfer,
 };
 #[doc(hidden)]
 pub use maintenance::{

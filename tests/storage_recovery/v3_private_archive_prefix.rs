@@ -27,7 +27,13 @@ fn check_private_archive_case(
 ) {
     let scope = root.map_or_else(|| ScratchScope::new("private-archive-prefix"), ScratchScope);
     let path = scope.path().join("source.redb");
-    let anchor = install_fixture(&path);
+    let mut anchor = install_fixture(&path);
+    if fault == Some("prepare-backup") {
+        let (ports, receiver) = observed_ports(&path, profile);
+        commit_command_group(&ports, &[command_fixture_at(1)]);
+        drop(receiver);
+        drop(ports);
+    }
     let backups = scope.path().join("backups");
     std::fs::create_dir(&backups).unwrap();
     let backup = backups.join("baseline");
@@ -37,10 +43,15 @@ fn check_private_archive_case(
                 .unwrap(),
         )
         .unwrap();
+    if fault == Some("prepare-backup") {
+        anchor = RedbVerifiedArchiveBackup::open(&backup).unwrap().history();
+    }
     let backup_bytes = std::fs::read(backup.join("database.redb")).unwrap();
-    let (ports, receiver) = observed_ports(&path, profile);
+    let (mut ports, receiver) = observed_ports(&path, profile);
     let predecessor = command_fixture_at(1);
-    commit_command_group(&ports, std::slice::from_ref(&predecessor));
+    if fault != Some("prepare-backup") {
+        commit_command_group(&ports, std::slice::from_ref(&predecessor));
+    }
     let first = superseding_command_fixture_at(2, 1, &predecessor);
     let second = superseding_command_fixture_at(3, 1, &first);
     let third = deleting_command_fixture_at(4, &second);
@@ -62,6 +73,17 @@ fn check_private_archive_case(
         DeferredCommandEpoch::fence(epoch).unwrap();
     } else {
         commit_command_group(&ports, &commands);
+    }
+    if fault.is_some_and(|f| f.starts_with("prepare")) {
+        match ports
+            .submit_service_audit_group(&[standalone_audit_intent(0xa1, 1_700_000_161)])
+            .unwrap()
+        {
+            ServiceAuditGroupAppend::Submitted(fence) => {
+                fence.wait().unwrap();
+            }
+            ServiceAuditGroupAppend::Complete(_) => {}
+        }
     }
     let pin = ports.published_changelog_snapshot_v3().unwrap();
     let mut cursor = pin
@@ -111,8 +133,8 @@ fn check_private_archive_case(
     consumer.append(frame).unwrap();
     drop(consumer);
     let target = scope.path().join("configured.redb");
-    let (mut maintenance, _) = RedbMaintenanceStorage::open(&target, &backups).unwrap();
     for (stop, cancel) in [
+        (0, false),
         (1, false),
         (2, false),
         (3, false),
@@ -122,9 +144,35 @@ fn check_private_archive_case(
         (7, false),
         (2, true),
     ] {
-        if fault.is_some() && (stop != 2 || cancel) {
+        let preparation = fault.is_some_and(|f| f.starts_with("prepare"));
+        if matches!(fault, Some("prepare-held" | "prepare-changed")) && (stop != 1 || cancel) {
             continue;
         }
+        if !preparation && (stop == 0 || (fault.is_some() && (stop != 2 || cancel))) {
+            continue;
+        }
+        let target = if preparation {
+            scope.path().join(format!("prepared-{stop}-{cancel}.redb"))
+        } else {
+            target.clone()
+        };
+        let backups = if preparation {
+            let case_root = scope.path().join(format!("case-{stop}-{cancel}"));
+            let case_backup = case_root.join("baseline");
+            std::fs::create_dir_all(&case_backup).unwrap();
+            for name in [
+                "database.redb",
+                "journal.riffextent",
+                "format.riffdb",
+                "manifest.riffdb",
+            ] {
+                std::fs::copy(backup.join(name), case_backup.join(name)).unwrap();
+            }
+            case_root
+        } else {
+            backups.clone()
+        };
+        let (mut maintenance, _) = RedbMaintenanceStorage::open(&target, &backups).unwrap();
         let repository = RedbVerifiedArchiveBackup::open(&backup)
             .unwrap()
             .open_archive(&archive, ArchiveEncryptionPostureV1::Unencrypted)
@@ -142,6 +190,23 @@ fn check_private_archive_case(
             .unwrap()
             .begin_archive_replay(repository, &AtomicBool::new(false))
             .unwrap();
+        if preparation {
+            preparation::check(
+                stage,
+                &mut maintenance,
+                &target,
+                &predecessor,
+                &commands,
+                stop,
+                cancel,
+                fault.unwrap(),
+            );
+            assert_eq!(
+                std::fs::read(backup.join("database.redb")).unwrap(),
+                backup_bytes
+            );
+            continue;
+        }
         let applier = prefix_predecessors::open_follower(stage.staged_database_file());
         let replayed = stage.replay(applier, &AtomicBool::new(false)).unwrap();
         let selection = replayed.selection().clone();
@@ -371,3 +436,6 @@ mod validation_refusals;
 
 #[path = "v3_private_archive_publication.rs"]
 mod publication;
+
+#[path = "v3_archive_preparation.rs"]
+mod preparation;

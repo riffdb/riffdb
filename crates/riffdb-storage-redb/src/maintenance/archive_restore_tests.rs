@@ -403,3 +403,6 @@ fn archive_restore_retries_replay_the_frozen_prefix_after_archive_advances() {
 
 #[path = "archive_publication_tests.rs"]
 mod publication;
+
+#[path = "archive_preparation_tests.rs"]
+mod preparation;

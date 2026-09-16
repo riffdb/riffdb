@@ -72,6 +72,22 @@ impl RedbReplayedArchiveRestore {
         )
         .run_follower()?;
         verify_file(&self.stage, &self.file)?;
+        match self.rebuild_to_stop(stop, inputs, cancellation)? {
+            RebuiltArchiveStop::Private(candidate) => Ok(*candidate),
+            RebuiltArchiveStop::Physical(_) => Err(corrupt()),
+        }
+    }
+
+    /// Both callers first scrub the complete original selected replay. This
+    /// rebuild retains that selection and never invents a physical receipt.
+    pub(super) fn rebuild_to_stop(
+        self,
+        stop: CommitSequence,
+        inputs: StartupValidationInputs,
+        cancellation: &AtomicBool,
+    ) -> Result<RebuiltArchiveStop, StorageError> {
+        cancelled(cancellation)?;
+        verify_file(&self.stage, &self.file)?;
         let Self {
             stage,
             file,
@@ -94,10 +110,36 @@ impl RedbReplayedArchiveRestore {
         applier.verify_database_file(&stage.file)?;
         let result = replay_predecessor(&stage, &mut applier, stop, cancellation);
         let closed = applier.close();
-        let receipt = result?;
+        let stopped = result?;
         closed?;
-        construct(stage, receipt, stop, cancellation)
+        cancelled(cancellation)?;
+        match stopped {
+            ReplayStop::Interior(receipt) => construct(stage, receipt, stop, cancellation)
+                .map(|candidate| RebuiltArchiveStop::Private(Box::new(candidate))),
+            ReplayStop::Physical(history) => {
+                stage.verify()?;
+                Ok(RebuiltArchiveStop::Physical(Box::new(
+                    RedbReplayedArchiveRestore {
+                        stage: stage.stage,
+                        file: stage.file,
+                        archive: stage.archive,
+                        selection: stage.selection,
+                        history,
+                    },
+                )))
+            }
+        }
     }
+}
+
+pub(super) enum RebuiltArchiveStop {
+    Physical(Box<RedbReplayedArchiveRestore>),
+    Private(Box<RedbPrivateArchiveRestoreCandidate>),
+}
+
+enum ReplayStop {
+    Physical(ChangelogHistoryStateV3),
+    Interior(riffdb_storage_api::AuthoritativeTransactionV3),
 }
 
 fn rebuild(
@@ -140,9 +182,12 @@ fn replay_predecessor(
     applier: &mut crate::RedbFollowerApplier,
     stop: CommitSequence,
     cancellation: &AtomicBool,
-) -> Result<riffdb_storage_api::AuthoritativeTransactionV3, StorageError> {
+) -> Result<ReplayStop, StorageError> {
     if applier.durable_history()? != stage.history {
         return Err(corrupt());
+    }
+    if stage.history.tail().frontier().application() == Some(stop) {
+        return Ok(ReplayStop::Physical(stage.history));
     }
     for item in stage
         .archive
@@ -156,10 +201,8 @@ fn replay_predecessor(
         for receipt in frame.receipts() {
             cancelled(cancellation)?;
             let binding = receipt.binding();
-            if binding.covered_frontier.application() >= Some(stop) {
-                if binding.predecessor_frontier.application() >= Some(stop)
-                    || binding.covered_frontier.application() == Some(stop)
-                {
+            if binding.covered_frontier.application() > Some(stop) {
+                if binding.predecessor_frontier.application() >= Some(stop) {
                     return Err(corrupt());
                 }
                 // Prove the crossing receipt's original predecessor before
@@ -168,7 +211,7 @@ fn replay_predecessor(
                     .durable_history()?
                     .advance(receipt)
                     .map_err(|_| corrupt())?;
-                return Ok(receipt.clone());
+                return Ok(ReplayStop::Interior(receipt.clone()));
             }
             let before = applier.resume_stream()?;
             let lineage = stage.history.lineage();
@@ -187,6 +230,9 @@ fn replay_predecessor(
             .encode()
             .map_err(|_| corrupt())?;
             applier.apply_frame(&wrapper)?;
+            if binding.covered_frontier.application() == Some(stop) {
+                return Ok(ReplayStop::Physical(applier.durable_history()?));
+            }
         }
     }
     Err(corrupt())

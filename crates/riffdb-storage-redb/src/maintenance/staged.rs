@@ -24,8 +24,8 @@ const COPY_BUFFER_BYTES: usize = 64 * 1024;
 mod archive;
 pub(crate) use archive::PrivateArchiveValidationBinding;
 pub use archive::{
-    RedbArchiveRestoreStage, RedbPrivateArchiveRestoreCandidate, RedbReplayedArchiveRestore,
-    RedbSealedArchiveRestore, RedbValidatedPrivateArchiveRestore,
+    RedbArchiveRestoreStage, RedbPreparedArchiveRestore, RedbPrivateArchiveRestoreCandidate,
+    RedbReplayedArchiveRestore, RedbSealedArchiveRestore, RedbValidatedPrivateArchiveRestore,
 };
 
 #[cfg(test)]
