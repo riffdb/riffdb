@@ -2,6 +2,8 @@
 #![forbid(unsafe_code)]
 //! Production collection and public restore, with an explicit durable-frame signal.
 // req: REP-007, AFC-007
+#[path = "replication_archive_restore/cli.rs"]
+mod cli;
 #[path = "replication_archive_restore/evidence.rs"]
 mod evidence;
 #[allow(dead_code)]
@@ -70,7 +72,14 @@ async fn terminal(
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn archived_suffix_restore_recovers_to_last_archived_sequence() {
-    scenario(ArchiveRestoreStopV1::LastArchived, 3, Damage::None, false).await;
+    scenario(
+        ArchiveRestoreStopV1::LastArchived,
+        3,
+        Damage::None,
+        false,
+        false,
+    )
+    .await;
 }
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn archived_suffix_restore_stops_at_an_earlier_application_sequence() {
@@ -79,12 +88,20 @@ async fn archived_suffix_restore_stops_at_an_earlier_application_sequence() {
         2,
         Damage::None,
         false,
+        false,
     )
     .await;
 }
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn archive_collector_process_crash_preserves_a_restorable_prefix() {
-    scenario(ArchiveRestoreStopV1::LastArchived, 3, Damage::None, true).await;
+    scenario(
+        ArchiveRestoreStopV1::LastArchived,
+        3,
+        Damage::None,
+        true,
+        false,
+    )
+    .await;
 }
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn truncated_archive_refuses_without_replacing_application_state() {
@@ -92,6 +109,7 @@ async fn truncated_archive_refuses_without_replacing_application_state() {
         ArchiveRestoreStopV1::LastArchived,
         3,
         Damage::Truncated,
+        false,
         false,
     )
     .await;
@@ -103,6 +121,31 @@ async fn reordered_archive_refuses_without_replacing_application_state() {
         3,
         Damage::Reordered,
         false,
+        false,
+    )
+    .await;
+}
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[ignore = "requires real CLI binary; scripts/check-archive-cli runs this in ci-all"]
+async fn cli_archive_restore_recovers_last_archived_and_polls_exact_operation() {
+    scenario(
+        ArchiveRestoreStopV1::LastArchived,
+        3,
+        Damage::None,
+        false,
+        true,
+    )
+    .await;
+}
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[ignore = "requires real CLI binary; scripts/check-archive-cli runs this in ci-all"]
+async fn cli_archive_restore_honors_the_explicit_earlier_stop() {
+    scenario(
+        ArchiveRestoreStopV1::AtApplicationSequence(riffdb_types::CommitSequence::new(2).unwrap()),
+        2,
+        Damage::None,
+        false,
+        true,
     )
     .await;
 }
@@ -111,11 +154,12 @@ async fn scenario(
     expected_sequence: u64,
     damage: Damage,
     crash: bool,
+    use_cli: bool,
 ) {
     let fixture = Fixture::new();
     let mut process = fixture.start("primary", None);
     stop(&mut process);
-    let (_, admin, _) = seed_primary(&fixture.database("primary"));
+    let (_, admin, token) = seed_primary(&fixture.database("primary"));
     process = fixture.start("primary", None);
     let mut client = fixture.client("primary").await;
     let writer = workload::prepare(&mut client, &admin).await;
@@ -189,17 +233,24 @@ async fn scenario(
     } else {
         None
     };
+    let cli = use_cli.then(|| cli::Cli::new(root, &original, &token));
+    let operation = match &cli {
+        Some(cli) => cli.restore(stop_at),
+        None => generate_offline_maintenance_operation_id().unwrap(),
+    };
     let restore = RestoreArchivedBackup::new(
-        generate_offline_maintenance_operation_id().unwrap(),
+        operation,
         BackupNameV1::new("baseline").unwrap(),
         ArchiveNameV1::new("daily").unwrap(),
         stop_at,
         OfflineMaintenanceReplacementConfirmation::AllowReplaceNonemptyTarget,
     );
-    client
-        .restore_archived_backup_with_retry(&restore, AttemptBudget::new(1).unwrap(), &admin)
-        .await
-        .unwrap();
+    if cli.is_none() {
+        client
+            .restore_archived_backup_with_retry(&restore, AttemptBudget::new(1).unwrap(), &admin)
+            .await
+            .unwrap();
+    }
     drop(client);
     if let Some(before) = before_refusal {
         assert!(!process.wait_for_exit(TIMEOUT).unwrap().status.success());
@@ -225,6 +276,9 @@ async fn scenario(
     rebound(&process);
     let mut client = fixture.client("primary").await;
     let receipt = terminal(&mut client, restore.operation_id(), &admin).await;
+    if let Some(cli) = &cli {
+        cli.terminal(restore.operation_id(), expected_sequence, stop_at);
+    }
     let restored = receipt
         .archive_restore
         .as_ref()

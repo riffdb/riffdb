@@ -1,0 +1,16 @@
+#!/usr/bin/env bash
+# req: REP-007, AFC-007
+set -euo pipefail
+repo_root="$(git rev-parse --show-toplevel)"
+cd "$repo_root"
+if [[ "$(uname -s)" != Linux ]]; then
+    echo "archive CLI acceptance requires Linux (the supported daemon target)" >&2
+    exit 1
+fi
+archive_timeout_bin="$(command -v timeout)"
+archive_target_dir="$(cargo metadata --locked --no-deps --format-version 1 | python3 -c 'import json,sys; print(json.load(sys.stdin)["target_directory"])')"
+cargo build --locked -p riffdb-cli --bin riffdb
+RIFFDB_ARCHIVE_CLI_BIN="$archive_target_dir/debug/riffdb" \
+RIFFDB_ARCHIVE_TIMEOUT_BIN="$archive_timeout_bin" \
+cargo test --locked -p riffdb-server --all-features --test replication_archive_restore \
+    cli_archive_restore -- --ignored

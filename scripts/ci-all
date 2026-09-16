@@ -28,6 +28,7 @@ cargo fmt --manifest-path xtask/Cargo.toml -- --check
 cargo clippy --workspace --all-targets --all-features -- -D warnings
 cargo clippy --locked --manifest-path xtask/Cargo.toml --all-targets -- -D warnings
 cargo test --workspace --all-features
+./scripts/check-archive-cli
 cargo test --locked --manifest-path xtask/Cargo.toml
 cargo riffdb --help >/dev/null 2>&1
 cargo riffdb install --help >/dev/null 2>&1
