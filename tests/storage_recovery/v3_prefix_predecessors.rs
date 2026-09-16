@@ -125,11 +125,37 @@ fn contradictory_prefix(
             let mut partition =
                 riffdb_types::PartitionKeyBuilder::new(entry.partition_key().aggregate_type_id());
             partition.push_u64(999).unwrap();
+            let key = if case == 9 {
+                let schema =
+                    &validated_contract_bundle().bundle().schema().entities()[0].indexes()[0];
+                let decoded = schema.key_schema().decode_index(entry.key()).unwrap();
+                schema
+                    .key_schema()
+                    .encode_index(
+                        &[riffdb_types::CanonicalValue::U64(999)],
+                        decoded.entity_key().clone(),
+                    )
+                    .unwrap()
+            } else {
+                entry.key().clone()
+            };
             let entry = StoredIndexEntryV2::new(
-                entry.key().clone(),
+                key,
                 entry.schema_binding().clone(),
-                entry.covered_values().clone(),
-                partition.finish().unwrap(),
+                if case == 8 {
+                    riffdb_types::CanonicalRecord::new(vec![(
+                        riffdb_types::FieldId::new(999).unwrap(),
+                        riffdb_types::CanonicalValue::U64(7),
+                    )])
+                    .unwrap()
+                } else {
+                    entry.covered_values().clone()
+                },
+                if case >= 8 {
+                    entry.partition_key().clone()
+                } else {
+                    partition.finish().unwrap()
+                },
             )
             .unwrap();
             (
@@ -211,7 +237,18 @@ fn contradictory_prefix(
     } else {
         row.expected_hash()
     };
-    *row = AuthoritativeMutationV3::put(namespace, row.key(), expected, &post_image).unwrap();
+    let replacement_key = if case == 9 {
+        decode_index_entry_v2(&post_image)
+            .unwrap()
+            .value()
+            .key()
+            .as_bytes()
+            .to_vec()
+    } else {
+        changed_key.clone()
+    };
+    *row =
+        AuthoritativeMutationV3::put(namespace, &replacement_key, expected, &post_image).unwrap();
     let replacement = StoredCommandCapsuleV2::from_base_with_entity_transitions(
         last.base().clone(),
         epochs,
@@ -246,7 +283,11 @@ fn contradictory_prefix(
         if let Some(value) = value {
             *row = AuthoritativeMutationV3::put(
                 row.namespace(),
-                row.key(),
+                if case == 9 && row.namespace() == namespace {
+                    &replacement_key
+                } else {
+                    row.key()
+                },
                 row.expected_hash(),
                 value,
             )
@@ -272,7 +313,7 @@ fn contradictory_prefix(
 #[test]
 fn follower_joins_prefix_facts_to_physical_and_intra_group_predecessors() {
     for count in [1, 2, 4] {
-        for case in [0, 1, 2, 3, 4, 6, 7] {
+        for case in [0, 1, 2, 3, 4, 6, 7, 8, 9] {
             // The other terminal steps delete the row or leave its bytes
             // unchanged, so there is no index put to substitute in those cases.
             if count != 1 && case >= 6 {
@@ -347,7 +388,7 @@ fn follower_joins_prefix_facts_to_physical_and_intra_group_predecessors() {
 
 #[test]
 fn startup_refuses_resealed_epoch_priors_and_secondary_index_images() {
-    for case in [3, 5, 6, 7] {
+    for case in [3, 5, 6, 7, 8, 9] {
         let source = TestDatabasePath::new("prefix-prior-startup");
         let anchor = install_fixture(&source.0);
         let (ports, _receiver) = observed_ports(&source.0, RedbCommitProfile::Hardened);

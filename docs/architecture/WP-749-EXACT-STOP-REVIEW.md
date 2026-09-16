@@ -131,6 +131,12 @@ Secondary-index puts now require a typed matching key, the command's schema
 binding and its exact owning partition/index epoch. Available prior index images
 also require that owning bucket before replacement or deletion. Resealed wrong
 types and foreign partitions refuse in follower and retained startup tests.
+Startup and follower replay additionally resolve supplied index keys through the
+retained command bundle through a pure catalog-owned validator. Its shared IR
+encoders derive each put's key
+and exact covered record from its entity post-image. A resealed undeclared cover
+field refuses in production startup and follower tests. Only one decoded bundle
+is retained during validation. Complete mutation inventory is still unproven.
 This is not an exact-stop restore implementation. Complete secondary-index/vector
 and cross-history graph validation, private reconstruction, publication proofs
 and write-path measurements remain required.

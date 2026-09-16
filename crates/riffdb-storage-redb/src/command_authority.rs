@@ -50,12 +50,26 @@ pub(crate) fn commits_in_physical_row<E>(
 where
     E: ReadableTable<&'static [u8], &'static [u8]>,
 {
+    commits_in_physical_row_checked(encoded, events, physical_sequence, |_| Ok(()))
+}
+
+/// Startup supplies catalog validation while the decoded command slice is live.
+pub(crate) fn commits_in_physical_row_checked<E>(
+    encoded: &[u8],
+    events: &E,
+    physical_sequence: CommitSequence,
+    check: impl FnOnce(&[StoredCommandCapsuleV2]) -> Result<(), StorageError>,
+) -> Result<Vec<EncodedPageItem<StoredCommitRecordV1>>, StorageError>
+where
+    E: ReadableTable<&'static [u8], &'static [u8]>,
+{
     match crate::command_prefix::decode_segment(encoded) {
         Ok(segment) => {
             let segment = segment.into_parts().0;
             if segment.first_commit_sequence() != physical_sequence {
                 return Err(corrupt());
             }
+            check(segment.commands())?;
             return segment
                 .commands()
                 .iter()
@@ -80,6 +94,7 @@ where
             if capsule.commit_sequence() != physical_sequence {
                 return Err(corrupt());
             }
+            check(std::slice::from_ref(&capsule))?;
             return Ok(vec![EncodedPageItem::new(
                 capsule.base().commit().clone(),
                 charge,

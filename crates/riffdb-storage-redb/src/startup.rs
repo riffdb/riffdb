@@ -3884,7 +3884,17 @@ fn inspect_commit_row(
         ));
     };
     let events = transaction.open_table(EVENTS).map_err(table_error)?;
-    let records = match commits_in_physical_row(value, &events, sequence) {
+    let records = match crate::command_authority::commits_in_physical_row_checked(
+        value,
+        &events,
+        sequence,
+        |commands| {
+            let bundles = transaction
+                .open_table(CONTRACT_BUNDLES)
+                .map_err(table_error)?;
+            crate::command_prefix::validate_catalog_images(&bundles, commands.iter())
+        },
+    ) {
         Ok(records) => records,
         Err(error) => {
             let code = match error.kind() {

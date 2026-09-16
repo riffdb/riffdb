@@ -641,7 +641,10 @@ fn record(value: u64) -> CanonicalRecord {
 
 /// Ordinal-parameterized fixture target: ordinal 1 is the original fixture
 /// shape (entity/partition value 7); later ordinals commit disjoint rows.
-fn target_and_index_at(ordinal: u64) -> (EntityTarget, IndexEntryKey, IndexRangeTarget) {
+fn target_and_index_at(
+    ordinal: u64,
+    indexed_value: u64,
+) -> (EntityTarget, IndexEntryKey, IndexRangeTarget) {
     let entity_type_id = EntityTypeId::new(1).expect("entity type ID");
     let mut entity_key = EntityKeyBuilder::new(entity_type_id);
     entity_key
@@ -652,10 +655,10 @@ fn target_and_index_at(ordinal: u64) -> (EntityTarget, IndexEntryKey, IndexRange
 
     let index_id = IndexId::new(1).expect("index ID");
     let mut index_key = IndexEntryKeyBuilder::new(index_id);
-    index_key.push_u64(10).expect("index component");
+    index_key.push_u64(indexed_value).expect("index component");
     let index_key = index_key.finish(entity_key).expect("index entry key");
     let mut prefix = riffdb_storage_api::IndexRangePrefixBuilder::new(index_id);
-    prefix.push_u64(10).expect("range component");
+    prefix.push_u64(indexed_value).expect("range component");
     let mut partition = PartitionKeyBuilder::new(AggregateTypeId::new(1).expect("aggregate"));
     partition
         .push_u64(6 + ordinal)
@@ -733,10 +736,32 @@ fn build_command_fixture(
     let plan = plan();
     let sequence = CommitSequence::new(ordinal).expect("fixture ordinal");
     let ordinal_u8 = u8::try_from(ordinal % 256).expect("bounded fixture ordinal");
-    let (target, index_key, range) = target_and_index_at(target_ordinal);
     // A superseding write must carry different canonical bytes, or the frame
     // under test could not distinguish the two post-images.
     let payload = if prior.is_some() { 2 } else { 1 };
+    let indexed_value = if delete {
+        match prior.unwrap().records.entities()[0]
+            .live_post_image()
+            .unwrap()
+            .fields()
+            .fields()[1]
+            .1
+        {
+            CanonicalValue::U64(value) => value,
+            _ => panic!("fixture value"),
+        }
+    } else {
+        payload
+    };
+    let (target, index_key, range) = target_and_index_at(target_ordinal, indexed_value);
+    let entity_fields = CanonicalRecord::new(vec![
+        (
+            FieldId::new(1).unwrap(),
+            CanonicalValue::U64(6 + target_ordinal),
+        ),
+        (FieldId::new(2).unwrap(), CanonicalValue::U64(payload)),
+    ])
+    .unwrap();
     let prior_entity =
         prior.and_then(|fixture| fixture.records.entities()[0].live_post_image().cloned());
     let prior_epoch = prior.map_or(IndexEpochPosition::BeforeFirst, |fixture| {
@@ -802,8 +827,12 @@ fn build_command_fixture(
         Vec::new(),
     )
     .expect("read snapshot");
-    let post_image = EntityPostImage::new(target.clone(), plan.contract_version(), record(payload))
-        .expect("entity post-image");
+    let post_image = EntityPostImage::new(
+        target.clone(),
+        plan.contract_version(),
+        entity_fields.clone(),
+    )
+    .expect("entity post-image");
     let event_type_id = EventTypeId::new(1).expect("event type");
     let event_policy_anchor = riffdb_storage_api::StoredEventPolicyAnchorV1::new(
         DurableKeySchemaBindingV1::from_plan(&plan),
@@ -880,7 +909,7 @@ fn build_command_fixture(
             }),
         plan.contract_version(),
         DurableKeySchemaBindingV1::from_plan(&plan),
-        record(payload),
+        entity_fields,
     )
     .expect("stored entity");
     let mutation = if delete {
@@ -904,7 +933,7 @@ fn build_command_fixture(
     let index_record = StoredIndexEntryV2::new(
         index_key.clone(),
         DurableKeySchemaBindingV1::from_plan(&plan),
-        record(payload),
+        CanonicalRecord::new(Vec::new()).unwrap(),
         pending.partition_key().clone(),
     )
     .expect("stored index entry");
@@ -913,6 +942,14 @@ fn build_command_fixture(
     } else {
         IndexEntryMutationV1::Put(index_record)
     };
+    let mut index_mutations = vec![index_mutation];
+    if !delete && prior_entity.is_some() {
+        let previous = prior.unwrap();
+        if previous.index_key != index_key {
+            index_mutations.push(IndexEntryMutationV1::Delete(previous.index_key.clone()));
+        }
+    }
+    index_mutations.sort_by(|left, right| left.key().cmp(right.key()));
     let generation = PartitionIndexTarget::new(partition.clone(), index_key.index_id());
     let affected_targets =
         AffectedIndexEpochTargets::new(vec![generation.clone()]).expect("affected targets");
@@ -932,7 +969,7 @@ fn build_command_fixture(
     .expect("epoch advance");
     let upper_bound = match command_write_set_upper_bound_v1(
         &intent,
-        std::slice::from_ref(&index_mutation),
+        &index_mutations,
         std::slice::from_ref(&epoch_advance),
     )
     .expect("canonical encoded upper bound")
@@ -946,7 +983,7 @@ fn build_command_fixture(
         &intent,
         affected_targets.clone(),
         affected_current,
-        vec![index_mutation],
+        index_mutations,
         vec![epoch_advance],
         upper_bound,
     )
@@ -1911,7 +1948,10 @@ fn assert_postcommit_command_state(ports: &RedbOperationalPorts, fixture: &Comma
     );
     assert_eq!(entries.len(), 1);
     assert_eq!(entries[0].value().key(), &fixture.index_key);
-    assert_eq!(entries[0].value().covered_values(), &record(1));
+    assert_eq!(
+        entries[0].value().covered_values(),
+        &CanonicalRecord::new(Vec::new()).unwrap()
+    );
 
     let outbox = ports
         .scan_pending_outbox(
@@ -8783,6 +8823,17 @@ fn cross_aggregate_fixture() -> CrossAggregateFixture {
     let id = 41_u64;
     let entry = 7_u64;
     let value = 23_u64;
+    let row_fields = CanonicalRecord::new(vec![
+        (FieldId::new(1).unwrap(), CanonicalValue::U64(id)),
+        (FieldId::new(2).unwrap(), CanonicalValue::U64(value)),
+    ])
+    .unwrap();
+    let ledger_fields = CanonicalRecord::new(vec![
+        (FieldId::new(1).unwrap(), CanonicalValue::U64(id)),
+        (FieldId::new(2).unwrap(), CanonicalValue::U64(entry)),
+        (FieldId::new(3).unwrap(), CanonicalValue::U64(value)),
+    ])
+    .unwrap();
 
     // Aggregate 1's root: Row(id).
     let row_type = EntityTypeId::new(1).expect("row entity type");
@@ -8890,12 +8941,16 @@ fn cross_aggregate_fixture() -> CrossAggregateFixture {
     )
     .expect("cross-aggregate read snapshot");
 
-    let row_post = EntityPostImage::new(row_target.clone(), plan.contract_version(), record(value))
-        .expect("row post-image");
+    let row_post = EntityPostImage::new(
+        row_target.clone(),
+        plan.contract_version(),
+        row_fields.clone(),
+    )
+    .expect("row post-image");
     let ledger_post = EntityPostImage::new(
         ledger_target.clone(),
         plan.contract_version(),
-        record(value),
+        ledger_fields.clone(),
     )
     .expect("ledger post-image");
     let event_intent = EventIntent::new(EventTypeId::new(1).expect("event type"), record(value))
@@ -8937,7 +8992,7 @@ fn cross_aggregate_fixture() -> CrossAggregateFixture {
                 EntityVersion::first(),
                 plan.contract_version(),
                 schema_binding.clone(),
-                record(value),
+                row_fields,
             )
             .expect("stored row"),
         )
@@ -8949,7 +9004,7 @@ fn cross_aggregate_fixture() -> CrossAggregateFixture {
                 EntityVersion::first(),
                 plan.contract_version(),
                 schema_binding.clone(),
-                record(value),
+                ledger_fields,
             )
             .expect("stored ledger"),
         )
@@ -8961,7 +9016,7 @@ fn cross_aggregate_fixture() -> CrossAggregateFixture {
             StoredIndexEntryV2::new(
                 row_index_key.clone(),
                 schema_binding.clone(),
-                record(value),
+                CanonicalRecord::new(Vec::new()).unwrap(),
                 partition.clone(),
             )
             .expect("stored row index entry"),
@@ -8971,7 +9026,7 @@ fn cross_aggregate_fixture() -> CrossAggregateFixture {
             StoredIndexEntryV2::new(
                 ledger_index_key.clone(),
                 schema_binding.clone(),
-                record(value),
+                CanonicalRecord::new(Vec::new()).unwrap(),
                 ledger_partition.clone(),
             )
             .expect("stored ledger index entry"),
