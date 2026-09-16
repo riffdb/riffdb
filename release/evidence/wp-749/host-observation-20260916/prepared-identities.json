@@ -1,0 +1,13 @@
+{
+  "current": {
+    "source_revision": "700265a87b53e58e91244cd110cd16481dda5803",
+    "root_lock_sha256": "42067e22a885ca75efc65fff7ba7db5208b49e5ce62d8d636d27082b56995e87",
+    "daemon_sha256": "40eb1e90b092c8b8c6462516d68ec8e52bdd8e1d35a0df3eedd459453b04ed28"
+  },
+  "harness": {
+    "source_revision": "6d2d00d6573499dce1b5fa4743d57abaad2630d8",
+    "source_tree": "58ecc5cde29bdbae3f4f4d77156b68b03519a6b8",
+    "nested_lock_sha256": "c1cd51760ec34e4e1731e465ed79f202799d36af2500df5af651a15433b0ae0b",
+    "runner_sha256": "3a16640969c9705e08538fd6c8ea8f9b34a3a2845f5d461be20c0fc2465abfd5"
+  }
+}
