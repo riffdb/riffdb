@@ -95,8 +95,11 @@ Implementation status: the storage-api semantic validator retains each command's
 independent mutations and checks logical frontier continuity, audit-frontier joins,
 canonical order, cumulative bounds and exact reduction to the original receipt's
 corresponding net mutations. Tests cover intermediate puts, deletes, recreations
-and net-zero histories. This is a validation component, not a durable codec or an
-exact-stop restore implementation. Capsule V7/segment V6 encoding, atomic source
+and net-zero histories. Its bounded inner capsule payload codec shares the existing
+V3 mutation encoding; byte-exact V3 fixture tests preserve that encoding. The inner
+payload has no standalone record identity, checksum or publication authority.
+This is not an exact-stop restore implementation. Capsule V7/segment V6 envelopes,
+registry integration, atomic source
 capture, original predecessor and complete graph validation, private reconstruction
 and publication proofs remain required. First-observed preconditions must still be
 checked against the validated predecessor even when a key has no net receipt row.

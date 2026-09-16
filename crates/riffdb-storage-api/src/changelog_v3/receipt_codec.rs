@@ -47,26 +47,7 @@ impl AuthoritativeTransactionV3 {
                 .to_be_bytes(),
         );
         for mutation in self.mutations() {
-            bytes.extend_from_slice(&mutation.namespace().tag().to_be_bytes());
-            bytes.push(u8::from(mutation.value().is_none()));
-            bytes.push(u8::from(mutation.expected_hash().is_some()));
-            bytes.extend_from_slice(
-                &u32::try_from(mutation.key().len())
-                    .map_err(|_| ChangelogV3Error::LimitExceeded)?
-                    .to_be_bytes(),
-            );
-            let value_len = mutation
-                .value()
-                .map(|value| u32::try_from(value.len()))
-                .transpose()
-                .map_err(|_| ChangelogV3Error::LimitExceeded)?
-                .unwrap_or(DELETE_VALUE_LENGTH);
-            bytes.extend_from_slice(&value_len.to_be_bytes());
-            bytes.extend_from_slice(&mutation.expected_hash().unwrap_or([0; 32]));
-            bytes.extend_from_slice(mutation.key());
-            if let Some(value) = mutation.value() {
-                bytes.extend_from_slice(value);
-            }
+            encode_mutation(&mut bytes, mutation)?;
         }
         let checksum: [u8; 32] = Sha256::digest(&bytes).into();
         bytes.extend_from_slice(&checksum);
@@ -117,33 +98,7 @@ impl AuthoritativeTransactionV3 {
         }
         let mut mutations = Vec::with_capacity(count);
         for _ in 0..count {
-            let namespace = AuthoritativeStateCatalogV1
-                .by_tag(reader.u16()?)
-                .ok_or(ChangelogV3Error::InvalidNamespace)?;
-            let operation = reader.byte()?;
-            let expected_present = reader.byte()?;
-            let key_len =
-                usize::try_from(reader.u32()?).map_err(|_| ChangelogV3Error::LimitExceeded)?;
-            let value_len = reader.u32()?;
-            let expected_hash: [u8; 32] = reader.array()?;
-            let expected = match (expected_present, expected_hash) {
-                (0, hash) if hash == [0; 32] => None,
-                (1, hash) => Some(hash),
-                _ => return Err(ChangelogV3Error::InvalidEncoding),
-            };
-            let key = reader.take(key_len)?;
-            let mutation = match (operation, value_len, expected) {
-                (0, len, expected) if len != DELETE_VALUE_LENGTH => {
-                    let value = reader
-                        .take(usize::try_from(len).map_err(|_| ChangelogV3Error::LimitExceeded)?)?;
-                    AuthoritativeMutationV3::put(namespace, key, expected, value)?
-                }
-                (1, DELETE_VALUE_LENGTH, Some(hash)) => {
-                    AuthoritativeMutationV3::delete(namespace, key, hash)?
-                }
-                _ => return Err(ChangelogV3Error::InvalidEncoding),
-            };
-            mutations.push(mutation);
+            mutations.push(decode_mutation(&mut reader)?);
         }
         if !reader.remaining.is_empty() {
             return Err(ChangelogV3Error::InvalidEncoding);
@@ -172,12 +127,70 @@ impl AuthoritativeTransactionV3 {
     }
 }
 
-pub(super) struct ReceiptReader<'a> {
-    pub(super) remaining: &'a [u8],
+pub(crate) fn encode_mutation(
+    bytes: &mut Vec<u8>,
+    mutation: &AuthoritativeMutationV3,
+) -> Result<(), ChangelogV3Error> {
+    bytes.extend_from_slice(&mutation.namespace().tag().to_be_bytes());
+    bytes.push(u8::from(mutation.value().is_none()));
+    bytes.push(u8::from(mutation.expected_hash().is_some()));
+    bytes.extend_from_slice(
+        &u32::try_from(mutation.key().len())
+            .map_err(|_| ChangelogV3Error::LimitExceeded)?
+            .to_be_bytes(),
+    );
+    let value_len = mutation
+        .value()
+        .map(|value| u32::try_from(value.len()))
+        .transpose()
+        .map_err(|_| ChangelogV3Error::LimitExceeded)?
+        .unwrap_or(DELETE_VALUE_LENGTH);
+    bytes.extend_from_slice(&value_len.to_be_bytes());
+    bytes.extend_from_slice(&mutation.expected_hash().unwrap_or([0; 32]));
+    bytes.extend_from_slice(mutation.key());
+    if let Some(value) = mutation.value() {
+        bytes.extend_from_slice(value);
+    }
+    Ok(())
+}
+
+pub(crate) fn decode_mutation(
+    reader: &mut ReceiptReader<'_>,
+) -> Result<AuthoritativeMutationV3, ChangelogV3Error> {
+    let namespace = AuthoritativeStateCatalogV1
+        .by_tag(reader.u16()?)
+        .ok_or(ChangelogV3Error::InvalidNamespace)?;
+    let operation = reader.byte()?;
+    let expected_present = reader.byte()?;
+    let key_len = usize::try_from(reader.u32()?).map_err(|_| ChangelogV3Error::LimitExceeded)?;
+    let value_len = reader.u32()?;
+    let expected_hash: [u8; 32] = reader.array()?;
+    let expected = match (expected_present, expected_hash) {
+        (0, hash) if hash == [0; 32] => None,
+        (1, hash) => Some(hash),
+        _ => return Err(ChangelogV3Error::InvalidEncoding),
+    };
+    let key = reader.take(key_len)?;
+    let mutation = match (operation, value_len, expected) {
+        (0, len, expected) if len != DELETE_VALUE_LENGTH => {
+            let value =
+                reader.take(usize::try_from(len).map_err(|_| ChangelogV3Error::LimitExceeded)?)?;
+            AuthoritativeMutationV3::put(namespace, key, expected, value)?
+        }
+        (1, DELETE_VALUE_LENGTH, Some(hash)) => {
+            AuthoritativeMutationV3::delete(namespace, key, hash)?
+        }
+        _ => return Err(ChangelogV3Error::InvalidEncoding),
+    };
+    Ok(mutation)
+}
+
+pub(crate) struct ReceiptReader<'a> {
+    pub(crate) remaining: &'a [u8],
 }
 
 impl<'a> ReceiptReader<'a> {
-    pub(super) fn take(&mut self, count: usize) -> Result<&'a [u8], ChangelogV3Error> {
+    pub(crate) fn take(&mut self, count: usize) -> Result<&'a [u8], ChangelogV3Error> {
         let (value, remaining) = self
             .remaining
             .split_at_checked(count)
@@ -186,7 +199,7 @@ impl<'a> ReceiptReader<'a> {
         Ok(value)
     }
 
-    pub(super) fn array<const N: usize>(&mut self) -> Result<[u8; N], ChangelogV3Error> {
+    pub(crate) fn array<const N: usize>(&mut self) -> Result<[u8; N], ChangelogV3Error> {
         self.take(N)?
             .try_into()
             .map_err(|_| ChangelogV3Error::InvalidEncoding)
@@ -195,13 +208,13 @@ impl<'a> ReceiptReader<'a> {
     fn byte(&mut self) -> Result<u8, ChangelogV3Error> {
         Ok(self.array::<1>()?[0])
     }
-    pub(super) fn u16(&mut self) -> Result<u16, ChangelogV3Error> {
+    pub(crate) fn u16(&mut self) -> Result<u16, ChangelogV3Error> {
         Ok(u16::from_be_bytes(self.array()?))
     }
-    pub(super) fn u32(&mut self) -> Result<u32, ChangelogV3Error> {
+    pub(crate) fn u32(&mut self) -> Result<u32, ChangelogV3Error> {
         Ok(u32::from_be_bytes(self.array()?))
     }
-    pub(super) fn u64(&mut self) -> Result<u64, ChangelogV3Error> {
+    pub(crate) fn u64(&mut self) -> Result<u64, ChangelogV3Error> {
         Ok(u64::from_be_bytes(self.array()?))
     }
 }
