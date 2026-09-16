@@ -1,8 +1,8 @@
 {
   "schema": "riffdb.wp-674-unary-profile/v2",
-  "source_revision": "9bf995d9e118e8b44e9d559a6d308a53e14e2790",
-  "cargo_lock_sha256": "289fc08c2a964315c87fd3744b1bc30e3852d8130639211958730fb97e5c7b73",
-  "harness_sha256": "2923020a5f4f1a72b54c6b9a8edbaf98443bb3c5790fd323fb8277ec3f61920f",
+  "source_revision": "48bcb5ced552b7a19d6ac431f05432ae70deeaa2",
+  "cargo_lock_sha256": "42067e22a885ca75efc65fff7ba7db5208b49e5ce62d8d636d27082b56995e87",
+  "harness_sha256": "998f7d1f769bd2d7b75fda5eb28d9cd18f41049496df9541b8f19eba014e9070",
   "governance_predecessor_sha256": "dbacb30c19133dea846161c68401211a7e28977ff26fcae4dadc068c88a621fe",
   "profile": {
     "id": "n1",
@@ -11,77 +11,77 @@
       {
         "scenario": "point_get_ticket",
         "path": "safe-app-point_get_ticket.json",
-        "sha256": "edb7edeec590db1ac8925812c61447737b6fec8ff6adb7e9809525aae38f087e"
+        "sha256": "f42bc38fa974e4e73fe3073c982c81d345718bd80272e90b026aa36e4afaed13"
       },
       {
         "scenario": "point_get_user",
         "path": "safe-app-point_get_user.json",
-        "sha256": "bac988f75321df1a57930cd19f133d432ee8fce015695cb81f3b2a2410c4dc9a"
+        "sha256": "331ec1abbb64caeefad39233feeaf4e9536ad08bd0ee5e13458aa9ae45a9fe96"
       },
       {
         "scenario": "list_tickets_by_project_status",
         "path": "safe-app-list_tickets_by_project_status.json",
-        "sha256": "ffbd8092dedc5dceff452fe351abb2531f16af896d690452dd3ba1ccd30a692b"
+        "sha256": "3b71d2ec12bc6d7590be00250d57748c00f6bc64855c0748c935a6f3beebbade"
       },
       {
         "scenario": "list_open_tickets_for_assignee",
         "path": "safe-app-list_open_tickets_for_assignee.json",
-        "sha256": "13f74197e24e96d9d6a0f8796102cea2ae2c157a8a3d49f30d445944a71340c1"
+        "sha256": "42124fa7c2e7e6aaac33bd604258b0ba53d71682b5ed610701da81e08f6ffb33"
       },
       {
         "scenario": "list_comments_for_ticket",
         "path": "safe-app-list_comments_for_ticket.json",
-        "sha256": "4e57f65d13f362934a255a9d1b349c951c2b14ffa0231d551bf5c8b7314ca3d5"
+        "sha256": "0867d64baa58b24b7e81fe8a29be3786d56c0d9bf0efee4960c34714a7e2d9a3"
       },
       {
         "scenario": "list_project_members",
         "path": "safe-app-list_project_members.json",
-        "sha256": "4d1aff045e3c32d32a4a6766fd67e09790f47058862cdd64240a013af18fd4a9"
+        "sha256": "44881aa01df209040d0e7727f9f4d5832f756b3ac743c039bb4adc034573e45f"
       },
       {
         "scenario": "ticket_detail_page",
         "path": "safe-app-ticket_detail_page.json",
-        "sha256": "a45d3ef23bb1b4517ab90390f9bf4642b5b3a87f193692bcf6140f79660905f5"
+        "sha256": "451ffff578eba810b67364dfabef5f52b115570fc582566d880117fd9bb007ce"
       },
       {
         "scenario": "board_page_50",
         "path": "safe-app-board_page_50.json",
-        "sha256": "3388bed888a5268c4d4cc344f6381a89dc12feb98b29e1fe36f737dc27cdc77a"
+        "sha256": "5da0e7b0ca53d652c71fdc18397980ba8e4c2ea7a937a9ac6f65acc432caf88c"
       },
       {
         "scenario": "board_page_200",
         "path": "safe-app-board_page_200.json",
-        "sha256": "684873fd7df3283e19a76d9a384a5dc867b8368e35affce292c93d225816698c"
+        "sha256": "32e5af4519e730af9a172f3c7ebe3c7c146b998bd956c8a5fe4d8a280515a376"
       },
       {
         "scenario": "board_page_450",
         "path": "safe-app-board_page_450.json",
-        "sha256": "25a68bc29283d0acc00c2fa76dae452c3007deb5f1df4e32e66e92caae7ed2e3"
+        "sha256": "ba9ef9b43d3d5a9480c91bc586a1fae44fa9260d0afa8ea783b7d749568db5c3"
       },
       {
         "scenario": "create_comment",
         "path": "safe-app-create_comment.json",
-        "sha256": "82f2bdb404f54c599665673f9f1223d2bea112fefc38d3588f99aa77ef683ec2"
+        "sha256": "a521bed05b007773d7a090b81750c4150f32a4789a3bd30a089b84e0f307796a"
       },
       {
         "scenario": "close_ticket_with_comment",
         "path": "safe-app-close_ticket_with_comment.json",
-        "sha256": "515dcc8c7d41542338d23e4e3e7a0c7626d7ad7966c7d290eaffb07b6ecd0c29"
+        "sha256": "6e2d4f0d1f3bfb35e8ed83e65ba3c3840b3ada622e7ae8442a7dd6c45ba2522c"
       },
       {
         "scenario": "swap_member_roles",
         "path": "safe-app-swap_member_roles.json",
-        "sha256": "17998890e79e5e230f3129e755b601c401e4a95c7f8239b0108faf948a6a9517"
+        "sha256": "09ec088ede21f67a4d80d88e95f104df0b82bb066e4d1d44778899ef5ebe7afc"
       },
       {
         "scenario": "open_ticket_with_labels",
         "path": "safe-app-open_ticket_with_labels.json",
-        "sha256": "37b6ed66233716fafe264cd4e8bde6e8faf6357f33382d944e1ab54df10e178c"
+        "sha256": "b13848212b6911d05f754ee51f14d87971b3bdd71df9483ee6b2565e75079e3c"
       }
     ],
     "minimal_report": {
       "path": "minimal.json",
-      "sha256": "2707b50f2be1a9992dcf91b3edbf4f5e30a37a19183289cecbb10f5debac0eb9"
+      "sha256": "acdf89aba5bc98c1329cae3351fa41546fb9440b9c4ecf05a88b21547a8dce74"
     },
     "host_attempts": [
       {
@@ -91,79 +91,83 @@
           {
             "scenario": "point_get_ticket",
             "path": "attempts/host-attempt-1/safe-app-point_get_ticket.json",
-            "sha256": "edb7edeec590db1ac8925812c61447737b6fec8ff6adb7e9809525aae38f087e"
+            "sha256": "f42bc38fa974e4e73fe3073c982c81d345718bd80272e90b026aa36e4afaed13"
           },
           {
             "scenario": "point_get_user",
             "path": "attempts/host-attempt-1/safe-app-point_get_user.json",
-            "sha256": "bac988f75321df1a57930cd19f133d432ee8fce015695cb81f3b2a2410c4dc9a"
+            "sha256": "331ec1abbb64caeefad39233feeaf4e9536ad08bd0ee5e13458aa9ae45a9fe96"
           },
           {
             "scenario": "list_tickets_by_project_status",
             "path": "attempts/host-attempt-1/safe-app-list_tickets_by_project_status.json",
-            "sha256": "ffbd8092dedc5dceff452fe351abb2531f16af896d690452dd3ba1ccd30a692b"
+            "sha256": "3b71d2ec12bc6d7590be00250d57748c00f6bc64855c0748c935a6f3beebbade"
           },
           {
             "scenario": "list_open_tickets_for_assignee",
             "path": "attempts/host-attempt-1/safe-app-list_open_tickets_for_assignee.json",
-            "sha256": "13f74197e24e96d9d6a0f8796102cea2ae2c157a8a3d49f30d445944a71340c1"
+            "sha256": "42124fa7c2e7e6aaac33bd604258b0ba53d71682b5ed610701da81e08f6ffb33"
           },
           {
             "scenario": "list_comments_for_ticket",
             "path": "attempts/host-attempt-1/safe-app-list_comments_for_ticket.json",
-            "sha256": "4e57f65d13f362934a255a9d1b349c951c2b14ffa0231d551bf5c8b7314ca3d5"
+            "sha256": "0867d64baa58b24b7e81fe8a29be3786d56c0d9bf0efee4960c34714a7e2d9a3"
           },
           {
             "scenario": "list_project_members",
             "path": "attempts/host-attempt-1/safe-app-list_project_members.json",
-            "sha256": "4d1aff045e3c32d32a4a6766fd67e09790f47058862cdd64240a013af18fd4a9"
+            "sha256": "44881aa01df209040d0e7727f9f4d5832f756b3ac743c039bb4adc034573e45f"
           },
           {
             "scenario": "ticket_detail_page",
             "path": "attempts/host-attempt-1/safe-app-ticket_detail_page.json",
-            "sha256": "a45d3ef23bb1b4517ab90390f9bf4642b5b3a87f193692bcf6140f79660905f5"
+            "sha256": "451ffff578eba810b67364dfabef5f52b115570fc582566d880117fd9bb007ce"
           },
           {
             "scenario": "board_page_50",
             "path": "attempts/host-attempt-1/safe-app-board_page_50.json",
-            "sha256": "3388bed888a5268c4d4cc344f6381a89dc12feb98b29e1fe36f737dc27cdc77a"
+            "sha256": "5da0e7b0ca53d652c71fdc18397980ba8e4c2ea7a937a9ac6f65acc432caf88c"
           },
           {
             "scenario": "board_page_200",
             "path": "attempts/host-attempt-1/safe-app-board_page_200.json",
-            "sha256": "684873fd7df3283e19a76d9a384a5dc867b8368e35affce292c93d225816698c"
+            "sha256": "32e5af4519e730af9a172f3c7ebe3c7c146b998bd956c8a5fe4d8a280515a376"
           },
           {
             "scenario": "board_page_450",
             "path": "attempts/host-attempt-1/safe-app-board_page_450.json",
-            "sha256": "25a68bc29283d0acc00c2fa76dae452c3007deb5f1df4e32e66e92caae7ed2e3"
+            "sha256": "ba9ef9b43d3d5a9480c91bc586a1fae44fa9260d0afa8ea783b7d749568db5c3"
           },
           {
             "scenario": "create_comment",
             "path": "attempts/host-attempt-1/safe-app-create_comment.json",
-            "sha256": "82f2bdb404f54c599665673f9f1223d2bea112fefc38d3588f99aa77ef683ec2"
+            "sha256": "a521bed05b007773d7a090b81750c4150f32a4789a3bd30a089b84e0f307796a"
           },
           {
             "scenario": "close_ticket_with_comment",
             "path": "attempts/host-attempt-1/safe-app-close_ticket_with_comment.json",
-            "sha256": "515dcc8c7d41542338d23e4e3e7a0c7626d7ad7966c7d290eaffb07b6ecd0c29"
+            "sha256": "6e2d4f0d1f3bfb35e8ed83e65ba3c3840b3ada622e7ae8442a7dd6c45ba2522c"
           },
           {
             "scenario": "swap_member_roles",
             "path": "attempts/host-attempt-1/safe-app-swap_member_roles.json",
-            "sha256": "17998890e79e5e230f3129e755b601c401e4a95c7f8239b0108faf948a6a9517"
+            "sha256": "09ec088ede21f67a4d80d88e95f104df0b82bb066e4d1d44778899ef5ebe7afc"
           },
           {
             "scenario": "open_ticket_with_labels",
             "path": "attempts/host-attempt-1/safe-app-open_ticket_with_labels.json",
-            "sha256": "37b6ed66233716fafe264cd4e8bde6e8faf6357f33382d944e1ab54df10e178c"
+            "sha256": "b13848212b6911d05f754ee51f14d87971b3bdd71df9483ee6b2565e75079e3c"
           }
         ],
         "minimal_report": {
           "path": "attempts/host-attempt-1/minimal.json",
-          "sha256": "2707b50f2be1a9992dcf91b3edbf4f5e30a37a19183289cecbb10f5debac0eb9"
+          "sha256": "acdf89aba5bc98c1329cae3351fa41546fb9440b9c4ecf05a88b21547a8dce74"
         }
       }
-    ]
+    ],
+    "campaign_identity": {
+      "path": "attempts/campaign-identity.json",
+      "sha256": "d6be7ffb489908676247c9400bade44d21e4ec4a9bd1b2a30fd90761530754a7"
+    }
   }
 }

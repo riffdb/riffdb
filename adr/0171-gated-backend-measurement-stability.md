@@ -98,6 +98,42 @@ value may be deleted or retried on performance, every absolute service level
 and every frozen RiffDB regression ceiling is unchanged, and every PostgreSQL
 ratio remains mandatory published disclosure.
 
+### Amendment 2 (2026-09-15)
+
+Accepted by the maintainer in session on 2026-09-15 ("obviously the current
+restrictions are too tight to get a measured result on a standard VPS and we
+need to change them, go ahead"), recorded by WP-762.
+
+1. The complete minimal-comparator disclosure cell binds host validity,
+   correctness reconciliation, evidence eligibility, and five positive
+   generations for both backends. RiffDB's central-three rule (`x4 / x2 <= 1.20`
+   on p50 and p95) is proven once per scenario by that scenario's dedicated
+   safe-application cell and is not re-proven inside the minimal cell. The
+   minimal cell's RiffDB spreads are computed and published as disclosure
+   beside the comparator's, exactly as the comparator's already are.
+2. The V2 host-validity process-interval rule binds the identity of user
+   processes only. Kernel threads (`PF_KTHREAD`) are created and retired by the
+   kernel itself; their starts and exits inside a sample window are recorded as
+   `kernel_thread_events_excluded` and never invalidate the observation. Kernel
+   threads remain subject to the CPU and I/O interference thresholds, so a
+   kernel worker that burns CPU during a window still invalidates it.
+
+Why: on E2 on 2026-09-15, every completed WP-762 campaign passed all fourteen
+dedicated cells on its first host attempt and then failed only the minimal
+cell, four times on `swap_member_roles` p95 (central-three 1.36, 1.24, 1.32,
+and 1.32) while the dedicated `swap_member_roles` cell measured 1.10 on the
+same host; and idle-host sampling showed kernel workers (`kworker/*-flush`,
+`kworker/*-cgroup_free`) starting or exiting about once a minute, so about half
+of all attempts lost a cell to the kernel's own housekeeping. Neither the
+minimal cell's tail nor kernel-thread lifecycle is the per-scenario service
+level ADR-0142 binds.
+
+What does not change: the dedicated cells keep the unchanged rule; the minimal
+cell keeps its comparator disclosure, host validity, correctness, and
+eligibility gates; the CPU-steal ceiling of ADR-0146 is unchanged; no durable
+format or receipt schema version changes, and no value may be deleted or
+retried on performance.
+
 ## Options Considered
 
 **Give the comparator a looser bound.** Keep the rule on both backends with a

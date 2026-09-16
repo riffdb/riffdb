@@ -276,7 +276,20 @@ pub async fn execute_projected_board_packed(
     .await
 }
 
+/// Total budget for the catch-up gate across polls. Under ADR-0195 the first
+/// projected query against a cold columnar source returns `Building` at once
+/// while one server-owned worker activates and populates it; the gate polls
+/// until the source serves `Ready` at the seed head or this budget is spent.
+pub(crate) const CATCHUP_TOTAL_BUDGET: Duration = Duration::from_secs(900);
+const CATCHUP_POLL_INTERVAL: Duration = Duration::from_millis(250);
+
 /// Catch-up gate: Causal to the seed head must serve Ready.
+///
+/// A `Building`, `Rebuilding`, or `Lagging` outcome is the typed "not yet"
+/// the server returns immediately for a cold or activating source (ADR-0195,
+/// ADR-0196) or for a source still behind the token; the gate re-issues the
+/// same request until `Ready` or the total budget elapses. Every other
+/// outcome fails the gate and is never retried.
 pub async fn catchup_projected_board(
     channel: &Channel,
     bearer_token: &str,
@@ -286,29 +299,60 @@ pub async fn catchup_projected_board(
     status_ids: TicketStatusEnumIds,
     commit_token: Vec<u8>,
 ) -> Result<(), RiffDbError> {
+    use app_v1::execute_projected_query_response::Outcome;
+
     let mut client = ApplicationQueryServiceClient::new(channel.clone());
-    let message = build_board_projected_request(
-        organization_id,
-        project_id,
-        status,
-        1,
-        status_ids,
-        freshness_causal(commit_token, CATCHUP_MAX_WAIT),
-    );
-    let request = authenticated_request(message, bearer_token)?;
-    let response = client
-        .execute_projected_query(request)
-        .await
-        .map_err(|status| RiffDbError::Rpc(format!("projected catch-up: {status}")))?
-        .into_inner();
-    match response.outcome {
-        Some(app_v1::execute_projected_query_response::Outcome::Ready(_)) => Ok(()),
-        Some(other) => Err(RiffDbError::Rpc(format!(
-            "projected catch-up did not reach Ready: {other:?}"
-        ))),
-        None => Err(RiffDbError::Rpc(
-            "projected catch-up response missing outcome".into(),
-        )),
+    let started = std::time::Instant::now();
+    let mut polls: u32 = 0;
+    loop {
+        let message = build_board_projected_request(
+            organization_id,
+            project_id,
+            status,
+            1,
+            status_ids,
+            freshness_causal(commit_token.clone(), CATCHUP_MAX_WAIT),
+        );
+        let request = authenticated_request(message, bearer_token)?;
+        let response = client
+            .execute_projected_query(request)
+            .await
+            .map_err(|status| RiffDbError::Rpc(format!("projected catch-up: {status}")))?
+            .into_inner();
+        polls = polls.saturating_add(1);
+        match response.outcome {
+            Some(Outcome::Ready(_)) => {
+                if polls > 1 {
+                    eprintln!(
+                        "projected catch-up: Ready after {polls} polls in {:.1?}",
+                        started.elapsed()
+                    );
+                }
+                return Ok(());
+            }
+            Some(Outcome::Building(_) | Outcome::Rebuilding(_) | Outcome::Lagging(_))
+                if started.elapsed() < CATCHUP_TOTAL_BUDGET =>
+            {
+                if polls == 1 {
+                    eprintln!(
+                        "projected catch-up: columnar source not ready (demand activation); \
+                         polling every {CATCHUP_POLL_INTERVAL:?} for up to {CATCHUP_TOTAL_BUDGET:?}"
+                    );
+                }
+                tokio::time::sleep(CATCHUP_POLL_INTERVAL).await;
+            }
+            Some(other) => {
+                return Err(RiffDbError::Rpc(format!(
+                    "projected catch-up did not reach Ready after {polls} poll(s) in {:.1?}: {other:?}",
+                    started.elapsed()
+                )));
+            }
+            None => {
+                return Err(RiffDbError::Rpc(
+                    "projected catch-up response missing outcome".into(),
+                ));
+            }
+        }
     }
 }
 

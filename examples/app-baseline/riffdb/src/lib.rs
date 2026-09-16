@@ -1170,6 +1170,9 @@ impl AppBackend for RiffDbPublicBackend {
                             Ok(UserRow {
                                 organization_id,
                                 user_id: value_uuid(record.fields.get("user_id"))?,
+                                // `TicketPage` projects the assignee as user_id and
+                                // display_name; the PostgreSQL detail page returns the
+                                // same shape so the canonical semantic frames match.
                                 email: String::new(),
                                 display_name: value_string(record.fields.get("display_name"))?,
                             })

@@ -7024,6 +7024,9 @@ A human architecture or security review is mandatory when a change:
 - Changes projection frontier semantics.
 - Introduces a generic write, repair, or storage access path.
 - Alters POC/MVP scope or accepts a deferred feature into the critical path.
+- Registers a performance package, or changes a sealed `PERF-*` package
+  definition, while the ADR-0183 freeze recorded under `performance_freeze` in
+  `work_packages.yaml` is in force (`PERF-020`).
 
 ## 19.7 Pull request contract
 

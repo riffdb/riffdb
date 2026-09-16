@@ -413,13 +413,9 @@ minimal_attempt_spread_is_valid() {
         .reps == 5
         and ($values | length) == 5
         and ($values | all(type == "number" and . > 0));
-      def central_three_stable:
-        five_positive_generations
-        and ((.values | sort)[3] / (.values | sort)[1]) <= 1.20;
       ([.comparisons.unary_rep_summaries[] |
-        .postgres.p50_ns, .postgres.p95_ns] | all(five_positive_generations))
-      and ([.comparisons.unary_rep_summaries[] |
-        .riffdb.p50_ns, .riffdb.p95_ns] | all(central_three_stable))
+        .postgres.p50_ns, .postgres.p95_ns,
+        .riffdb.p50_ns, .riffdb.p95_ns] | all(five_positive_generations))
     ' >/dev/null
 }
 

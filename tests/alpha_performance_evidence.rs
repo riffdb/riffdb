@@ -127,7 +127,8 @@ fn host_receipt_with_scan_bound(source: &str) -> String {
                 "stable_identity_required": true,
                 "started_processes": 0,
                 "exited_processes": 0,
-                "pid_reuses": 0
+                "pid_reuses": 0,
+                "kernel_thread_events_excluded": 0
             });
         }
     }
@@ -186,7 +187,11 @@ fn minimal_preflight_host_invalid_receipt() -> String {
 }
 
 fn minimal_postflight_host_invalid_receipt() -> String {
-    production_shaped_postflight_host_invalid_receipt("release/evidence/wp-674/n1/minimal.json")
+    // The retained 2026-08-30 column is the historical, non-counterbalanced
+    // minimal topology; the live column under wp-674/n1 is the banked one.
+    production_shaped_postflight_host_invalid_receipt(
+        "release/evidence/wp-674/superseded/n1-9bf995d9/minimal.json",
+    )
 }
 
 fn production_shaped_postflight_host_invalid_receipt(relative: &str) -> String {
@@ -234,7 +239,8 @@ fn production_shaped_postflight_host_invalid_receipt(relative: &str) -> String {
             "stable_identity_required": true,
             "started_processes": 0,
             "exited_processes": 0,
-            "pid_reuses": 0
+            "pid_reuses": 0,
+            "kernel_thread_events_excluded": 0
         });
     }
     receipt["host_validity"]["postflight"]["baseline_report_sha256"] = json!(

@@ -60,6 +60,8 @@ trap - EXIT INT TERM
 ./scripts/adr-new --self-test
 ./scripts/adr-index --check
 ./scripts/check-acceptance-commits
+./scripts/check-performance-freeze
+./scripts/check-wp762-baseline-bank
 ./scripts/check-generated
 ./scripts/check-helm-render
 ./scripts/check-helm-operator-package
