@@ -88,6 +88,8 @@ use riffdb_types::{
 
 const CHILD_MODE: &str = "RIFFDB_STORAGE_RECOVERY_CHILD_MODE";
 mod changelog_compatibility;
+#[path = "../replication_promotion.rs"]
+mod replication_promotion;
 #[path = "v3_command_attribution.rs"]
 mod v3_command_attribution;
 #[path = "v3_command_receipts.rs"]

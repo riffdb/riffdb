@@ -615,6 +615,8 @@ pub enum RetentionFenceBinding {
     StagedMigrationFrozenFrontier,
     /// Minimum unresolved durable event-consumer frontier.
     ConsumerLowWater,
+    /// Minimum application frontier durably acknowledged by a registered follower.
+    FollowerLowWater,
     /// No fencing inputs constrained the watermark (unbounded / open).
     Unbounded,
 }
@@ -641,6 +643,9 @@ pub struct RetentionFencingInputs {
     pub staged_migration_frozen_frontier: Option<u64>,
     /// Minimum conservative checkpoint frontier across non-retired consumers.
     pub consumer_low_water: Option<u64>,
+    /// Minimum validated registered follower acknowledgement; before-first is zero.
+    /// Lag or hold-budget exhaustion never implies that this fence was released.
+    pub follower_low_water: Option<u64>,
 }
 
 /// Pure fencing minimum: max permissible inclusive watermark sequence.
@@ -709,6 +714,13 @@ pub fn compute_max_permissible_watermark(
         &mut binding,
         inputs.consumer_low_water,
         RetentionFenceBinding::ConsumerLowWater,
+    );
+
+    consider(
+        &mut min_value,
+        &mut binding,
+        inputs.follower_low_water,
+        RetentionFenceBinding::FollowerLowWater,
     );
 
     (min_value, binding)
@@ -789,6 +801,7 @@ mod tests {
             undelivered_outbox_low_water: None,
             staged_migration_frozen_frontier: None,
             consumer_low_water: None,
+            follower_low_water: None,
         }
     }
 
@@ -844,6 +857,39 @@ mod tests {
     }
 
     #[test]
+    // req: REP-006
+    fn follower_acknowledgement_binds_retention_including_before_first() {
+        for follower in [0, 1, 40, u64::MAX] {
+            let inputs = RetentionFencingInputs {
+                follower_low_water: Some(follower),
+                ..no_inputs()
+            };
+            assert_eq!(
+                compute_max_permissible_watermark(&inputs),
+                (Some(follower), RetentionFenceBinding::FollowerLowWater)
+            );
+        }
+        let inputs = RetentionFencingInputs {
+            durable_application_head: Some(100),
+            consumer_low_water: Some(30),
+            follower_low_water: Some(5),
+            ..no_inputs()
+        };
+        assert_eq!(
+            compute_max_permissible_watermark(&inputs),
+            (Some(5), RetentionFenceBinding::FollowerLowWater)
+        );
+        let earlier_consumer = RetentionFencingInputs {
+            consumer_low_water: Some(2),
+            ..inputs
+        };
+        assert_eq!(
+            compute_max_permissible_watermark(&earlier_consumer),
+            (Some(2), RetentionFenceBinding::ConsumerLowWater)
+        );
+    }
+
+    #[test]
     fn fencing_min_across_inputs() {
         let inputs = RetentionFencingInputs {
             durable_application_head: Some(80),
@@ -852,6 +898,7 @@ mod tests {
             undelivered_outbox_low_water: Some(75),
             staged_migration_frozen_frontier: Some(60),
             consumer_low_water: Some(40),
+            follower_low_water: Some(45),
         };
         let (v, b) = compute_max_permissible_watermark(&inputs);
         assert_eq!(v, Some(40));
@@ -867,6 +914,7 @@ mod tests {
             undelivered_outbox_low_water: Some(100),
             staged_migration_frozen_frontier: Some(100),
             consumer_low_water: Some(100),
+            follower_low_water: Some(100),
         };
         let (v, b) = compute_max_permissible_watermark(&inputs);
         assert_eq!(v, Some(1));

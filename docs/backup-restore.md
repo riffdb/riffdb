@@ -22,6 +22,14 @@ commit together in the existing hardened transaction. This adds no commit or
 flush and changes neither watermark normalization nor the recorded tombstone
 chain-root binding.
 
+Offline retention also respects each registered follower's durable acknowledged
+application frontier. A follower that has acknowledged no application commit
+pins the watermark at zero; a faster follower cannot release a slower follower's
+fence. Retention status reports `FollowerLowWater` when this is the binding
+minimum. Unreadable or inconsistent V3 hold evidence refuses collection and
+prune. Lag does not expire a hold automatically. The administrative retirement,
+configured expiry, hold-budget health and promotion ceremonies remain WP-748 work.
+
 `riffdbd` requires an absolute `--backup-root` path. The path must be lexically
 disjoint from the database file, capability digest keys, and idempotency digest
 keys. Only the server joins a checked backup name beneath this root.
