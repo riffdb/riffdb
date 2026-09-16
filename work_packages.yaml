@@ -219,6 +219,417 @@ gates:
   - WP-769
   - WP-770
   - WP-771
+performance_freeze:
+  schema: riffdb.performance-freeze/v1
+  started_at: '2026-09-16'
+  started_by: WP-762
+  digest_rule: sha256(rfc8785-jcs(package without top-level closure))
+  baseline:
+    source_revision: 48bcb5ced552b7a19d6ac431f05432ae70deeaa2
+    receipts:
+    - path: release/evidence/wp-762/n1/interactive-c32.json
+      sha256: 7adeb3d63e5ab16a9fed7870e643304f1b6d095725f421eb10bd637c5ee7ba5f
+    - path: release/evidence/wp-762/n1/write-only-sweep.json
+      sha256: 6e7cb3368b694c6d69302b452e380d9ccf28d5ff03a7b7a944944210386af63f
+    - path: release/evidence/wp-762/e2/interactive-c32.json
+      sha256: 5db6f775395f38fd380b92308237169b284006559b42591edfb39f13606834fc
+    - path: release/evidence/wp-762/e2/write-only-sweep.json
+      sha256: 86b4a17c5876f2d9396920f049b8428ea2ef8037e70dead4e7fcd30a3b535942
+    - path: release/evidence/wp-674/manifest-v1.json
+      sha256: a819d507025a1b48dfc1d29259eef28c8787a11e75a82328889f9b241504fd0a
+    - path: release/evidence/wp-674/baseline-v1.json
+      sha256: 665a2d5c90881ed06c01e02c6b249c7c11f0b559dbad5826b05656d16261b728
+  exceptions:
+    WP-750: closure_only_prerequisite
+    WP-760: closure_only_prerequisite
+    WP-762: bank_and_start
+    WP-763: candidate_build_activate_or_remove
+  inventory:
+  - id: WP-205
+    state: open
+    digest: dfed719505c2450939c0b6782c679a8aa664a8aa1efc3bb487d8a49d3a2a0585
+    perf_requirements:
+    - PERF-001
+    - PERF-002
+  - id: WP-270
+    state: closed
+  - id: WP-275
+    state: closed
+  - id: WP-362
+    state: closed
+  - id: WP-364
+    state: closed
+  - id: WP-366
+    state: closed
+  - id: WP-367
+    state: closed
+  - id: WP-368
+    state: closed
+  - id: WP-369
+    state: closed
+  - id: WP-371
+    state: closed
+  - id: WP-372
+    state: closed
+  - id: WP-373
+    state: closed
+  - id: WP-374
+    state: closed
+  - id: WP-375
+    state: closed
+  - id: WP-376
+    state: closed
+  - id: WP-377
+    state: closed
+  - id: WP-378
+    state: closed
+  - id: WP-379
+    state: closed
+  - id: WP-422
+    state: closed
+  - id: WP-423
+    state: closed
+  - id: WP-437
+    state: closed
+  - id: WP-438
+    state: closed
+  - id: WP-439
+    state: closed
+  - id: WP-440
+    state: closed
+  - id: WP-441
+    state: closed
+  - id: WP-442
+    state: closed
+  - id: WP-444
+    state: closed
+  - id: WP-445
+    state: closed
+  - id: WP-449
+    state: closed
+  - id: WP-450
+    state: closed
+  - id: WP-451
+    state: closed
+  - id: WP-452
+    state: closed
+  - id: WP-453
+    state: closed
+  - id: WP-454
+    state: closed
+  - id: WP-455
+    state: closed
+  - id: WP-456
+    state: closed
+  - id: WP-457
+    state: closed
+  - id: WP-458
+    state: closed
+  - id: WP-459
+    state: closed
+  - id: WP-460
+    state: closed
+  - id: WP-461
+    state: closed
+  - id: WP-462
+    state: closed
+  - id: WP-463
+    state: closed
+  - id: WP-464
+    state: closed
+  - id: WP-465
+    state: closed
+  - id: WP-466
+    state: closed
+  - id: WP-467
+    state: closed
+  - id: WP-468
+    state: closed
+  - id: WP-469
+    state: closed
+  - id: WP-470
+    state: closed
+  - id: WP-471
+    state: closed
+  - id: WP-472
+    state: closed
+  - id: WP-473
+    state: closed
+  - id: WP-474
+    state: closed
+  - id: WP-475
+    state: closed
+  - id: WP-476
+    state: closed
+  - id: WP-477
+    state: closed
+  - id: WP-478
+    state: closed
+  - id: WP-479
+    state: closed
+  - id: WP-480
+    state: closed
+  - id: WP-481
+    state: closed
+  - id: WP-482
+    state: closed
+  - id: WP-483
+    state: closed
+  - id: WP-484
+    state: closed
+  - id: WP-485
+    state: closed
+  - id: WP-486
+    state: closed
+  - id: WP-487
+    state: closed
+  - id: WP-488
+    state: closed
+  - id: WP-489
+    state: closed
+  - id: WP-490
+    state: closed
+  - id: WP-491
+    state: closed
+  - id: WP-552
+    state: closed
+  - id: WP-560
+    state: closed
+  - id: WP-561
+    state: closed
+  - id: WP-564
+    state: closed
+  - id: WP-577
+    state: closed
+  - id: WP-578
+    state: open
+    digest: b78a35f05e0ec233745ac69cb3c81cc19dbeec781599012789181f2a506ae543
+    perf_requirements:
+    - PERF-001
+    - PERF-003
+    - PERF-004
+    - PERF-007
+    - PERF-008
+    - PERF-013
+    - PERF-014
+  - id: WP-579
+    state: open
+    digest: ef3c3b441f5cce3f7529c9799c56446828ad93b26dd4abbf03dc8325f56b1a18
+    perf_requirements:
+    - PERF-001
+    - PERF-002
+    - PERF-003
+    - PERF-004
+    - PERF-007
+    - PERF-008
+    - PERF-009
+    - PERF-013
+    - PERF-014
+    - PERF-018
+  - id: WP-609
+    state: closed
+  - id: WP-620
+    state: closed
+  - id: WP-621
+    state: closed
+  - id: WP-622
+    state: closed
+  - id: WP-623
+    state: open
+    digest: c056f0de6207fcfa008a1098e5087ad3834a5cbad967f9258b7248b7df95f406
+    perf_requirements:
+    - PERF-008
+    - PERF-018
+  - id: WP-624
+    state: closed
+  - id: WP-625
+    state: closed
+  - id: WP-626
+    state: closed
+  - id: WP-627
+    state: closed
+  - id: WP-632
+    state: closed
+  - id: WP-636
+    state: closed
+  - id: WP-637
+    state: closed
+  - id: WP-638
+    state: closed
+  - id: WP-639
+    state: closed
+  - id: WP-640
+    state: closed
+  - id: WP-641
+    state: closed
+  - id: WP-642
+    state: closed
+  - id: WP-644
+    state: closed
+  - id: WP-649
+    state: closed
+  - id: WP-650
+    state: closed
+  - id: WP-653
+    state: closed
+  - id: WP-654
+    state: closed
+  - id: WP-659
+    state: closed
+  - id: WP-660
+    state: closed
+  - id: WP-661
+    state: closed
+  - id: WP-662
+    state: closed
+  - id: WP-663
+    state: closed
+  - id: WP-664
+    state: closed
+  - id: WP-665
+    state: closed
+  - id: WP-666
+    state: closed
+  - id: WP-667
+    state: closed
+  - id: WP-668
+    state: closed
+  - id: WP-669
+    state: closed
+  - id: WP-670
+    state: closed
+  - id: WP-671
+    state: closed
+  - id: WP-672
+    state: closed
+  - id: WP-673
+    state: closed
+  - id: WP-674
+    state: closed
+  - id: WP-678
+    state: closed
+  - id: WP-683
+    state: closed
+  - id: WP-684
+    state: open
+    digest: e12c8159b061cda8f253ed055408e59eee9508472699ec808c6d88682028cede
+    perf_requirements:
+    - PERF-004
+    - PERF-005
+  - id: WP-698
+    state: open
+    digest: 0a224cc8c5069b5365b877e8301212dece6c93d0b2b82e2cb52cfd71138dd6be
+    perf_requirements:
+    - PERF-004
+    - PERF-005
+  - id: WP-699
+    state: open
+    digest: 197cef4789378530bd5aa1991b742a6bb2d28d829c4d7184adbd1a30983bf0ba
+    perf_requirements:
+    - PERF-004
+    - PERF-005
+  - id: WP-704
+    state: closed
+  - id: WP-705
+    state: open
+    digest: 8f5c11a33f91e7254fb0a9f09aa34971bae36324bc4442c198821e22e1347cd3
+    perf_requirements:
+    - PERF-013
+    - PERF-014
+    - PERF-019
+  - id: WP-710
+    state: closed
+  - id: WP-711
+    state: closed
+  - id: WP-712
+    state: open
+    digest: 352f1a2ab8442d6d5df5b0ac12cfb0e3d8b168663be5ef465cf2d62637365148
+    perf_requirements:
+    - PERF-001
+    - PERF-007
+    - PERF-008
+    - PERF-018
+  - id: WP-713
+    state: open
+    digest: d597e4509cd5151b0715c938ea3d09c17b10072b488dbc896eea5fdb1efa780e
+    perf_requirements:
+    - PERF-001
+    - PERF-007
+    - PERF-008
+    - PERF-018
+  - id: WP-714
+    state: open
+    digest: ef73b84e4e2e4702187ebe4c896f69340a71813c1125384277991252c8652a91
+    perf_requirements:
+    - PERF-001
+    - PERF-007
+    - PERF-008
+    - PERF-018
+  - id: WP-715
+    state: open
+    digest: 8f2b89900bddd9bc3f3ed4c67ac1f896f833e62c67947f34f42086af45c2784e
+    perf_requirements:
+    - PERF-001
+    - PERF-007
+    - PERF-008
+    - PERF-018
+  - id: WP-717
+    state: closed
+  - id: WP-718
+    state: closed
+  - id: WP-721
+    state: closed
+  - id: WP-726
+    state: open
+    digest: 34ea6312bd76cdf921b269faef29ea001ff31842b8ee98b36fc29e98fb89f451
+    perf_requirements:
+    - PERF-008
+    - PERF-018
+  - id: WP-746
+    state: closed
+  - id: WP-750
+    state: open
+    digest: 7f6be3d936a1b691d1cfef9147740fbee57d28870d937442139ea078091e55ce
+    perf_requirements:
+    - PERF-008
+  - id: WP-760
+    state: open
+    digest: 42833ee30c254bcf13a0a9fa643b054265f2d0be47e5af5cf196afd373aa4ead
+    perf_requirements:
+    - PERF-014
+    - PERF-019
+  - id: WP-762
+    state: open
+    digest: b6d64eb40278615051891d2f8cd09d11e901eb8b65c14e2efa6605605d7aa695
+    perf_requirements:
+    - PERF-018
+    - PERF-020
+    - PERF-021
+  - id: WP-763
+    state: open
+    digest: cb45b8a5e3815b98254b866e17068e8e7b7145375bad801a93785dd45a5f2999
+    perf_requirements:
+    - PERF-007
+    - PERF-008
+    - PERF-022
+  - id: WP-772
+    state: closed
+  - id: WP-773
+    state: closed
+  - id: WP-774
+    state: closed
+  - id: WP-777
+    state: open
+    digest: 8e37de4a7c8bdbf3a9ac2542ef88a66b96a54c55c916df187f48cb678d0e777d
+    perf_requirements:
+    - PERF-007
+    - PERF-008
+    - PERF-019
+  - id: WP-778
+    state: closed
+  - id: WP-784
+    state: closed
+  lifted_by: null
 work_packages:
 - id: WP-000
   closure:
@@ -23283,6 +23694,60 @@ work_packages:
   - Group formation would wait for work that is not already admitted and prepared, or any
     ceiling of DeferredCommandEpoch would widen.
 
+  closure:
+    status: complete
+    completed_at: '2026-09-16'
+    evidence: docs/performance/wp-762-baseline-bank.md
+    decision: Both cloud profiles hold qualified interactive c32, write-only sweep, and unary
+      receipts from one identical daemon and runner build at 48bcb5ced552b7a19d6ac431f05432ae70deeaa2,
+      bound to the gated-backend stability rule, and the ADR-0183 freeze record was sealed in the
+      same change from those receipts (144 inventory entries, four named exceptions).
+      check-wp762-baseline-bank, check-wp674-unary-baseline, and check-performance-freeze are the
+      verifiers and are wired into ci-all. The bank records the values as measured; the E2
+      board_page_450 p50 miss against the ADR-0142 ceiling and the N1 seed ratio above the PERF-008
+      ceiling are disclosed in the baseline and the note, and the ADR-0142 and PERF-008 release
+      gates keep their own refusals.
+    decisions_taken:
+    - The retained N1 unary column from f4f03bae was superseded rather than reused because its
+      source, lock, harness, runner, and daemon identities differ from the banked revision; it is
+      kept under release/evidence/wp-674/superseded/n1-9bf995d9.
+    - The app-baseline runner polls the projected catch-up gate under ADR-0195 demand activation
+      (Building, Rebuilding, and Lagging are transient, 250 ms interval, 900 s budget) instead of
+      failing on the first non-Ready outcome; a cold source returns Building immediately since
+      ADR-0195 landed and the full harness had not been run since.
+    - examples/app-baseline/Cargo.lock was regenerated offline because host release builds with
+      --locked refused the stale nested lock; a second one-line refresh followed main's move to
+      05ad16c7.
+    - assemble-wp674-unary-manifest keeps --workstation optional and gains --require-both-profiles;
+      the workstation column is not part of an ADR-0183 bank because ADR-0142's unary gates are the
+      N1 and E2 absolute service levels.
+    - The freeze record uses schema riffdb.performance-freeze/v1 with an in-checker RFC 8785 JCS
+      implementation so the sealed digests are reproducible from the parsed package mapping alone.
+    - WP-762 was retiered from guarantee to surface; it changes no promise, it banks evidence and
+      records a freeze whose rule ADR-0183 already fixed.
+    - The first N1 receipts on 2026-09-15 exposed the quadratic fresh-locator seal from a493f162;
+      it was fixed as WP-784 (048a2728) before any receipt was banked.
+    - The load-receipt qualification candidate is built inline by run-app-baseline, not by
+      attach-app-baseline-qualification; the inline builder now records
+      method.stability_rule_binds gated_backend, and check-wp674-unary-baseline requires it.
+    - Under ADR-0171 Amendment 2 (maintainer, in session, 2026-09-15) the minimal disclosure cell binds
+      five positive generations for both backends and publishes RiffDB's spreads as disclosure, and
+      kernel threads (PF_KTHREAD) are excluded from the host-validity process-identity rule while
+      remaining under the CPU and I/O thresholds. Before it, E2 lost every completed campaign to
+      the minimal cell's swap_member_roles p95 tail or to a kernel worker retiring inside a 3 s
+      window.
+    - The PostgreSQL ticket-detail comparator was aligned to the RiffDB TicketPage projection
+      (assignee as user_id and display_name); the verifier had rejected every ticket_detail_page
+      receipt, including the retained 2026-08-30 column, on the 21-byte assignee-email difference.
+      The comparator was aligned rather than the public query widened.
+    - check-wp674-unary-baseline expects 10,206 reads in the minimal cell's first process
+      generation and 10,203 afterwards (the three board-page crosscheck reads run once); every
+      retained column records exactly that. It gains --absolute-ceilings disclose for an ADR-0183
+      bank, which records an ADR-0142 absolute service-level miss under absolute_ceiling_misses
+      instead of refusing the corpus; the default remains gate.
+    - Host preparation for the bank (stopped OSConfig and timer units, sshd firewalled to the
+      operator's address, E2's virtio balloon driver unloaded) is recorded in the note; every
+      failed campaign is retained on the hosts and none was resumed.
 - id: WP-763
   name: Durable-group formation from ready prepared work and its activation gate
   tier: guarantee
