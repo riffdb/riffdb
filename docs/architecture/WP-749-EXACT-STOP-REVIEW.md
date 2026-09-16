@@ -165,7 +165,16 @@ reciprocal index are joined to the actual predecessor; the shared checked
 transition owner proves exact preserved source/embedding stamps. Unrelated
 entity updates keep earlier evidence. Historical entity bytes use the same
 bounded materialization proof as index derivation; unknown evidence remains
-unknown. Exact predecessor counter arithmetic remains required.
+unknown. Available partition predecessors now support exact total, stale and
+per-model arithmetic across all affected entities in one command. Validation
+retains one model map at a time and borrows bounded primary-key groups. The
+lineage health check uses compiler-owned thresholds and the shared checked
+arithmetic; it removes affected prior contributions before adding successors
+without changing source execution order. Typed predecessor identities, revisions
+and raw hashes must agree. Unavailable historical counters remain unproven.
+Production follower tests reject independently resealed total/stale/model and
+health partition/threshold/breach forgeries, preserve the baseline after reopen,
+and accept the original frame. No source writer or encoding changes are involved.
 This is not an exact-stop restore implementation. Complete secondary-index/vector
 and cross-history graph validation, private reconstruction, publication proofs
 and write-path measurements remain required.

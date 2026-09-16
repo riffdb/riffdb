@@ -459,3 +459,86 @@ fn lineage_health_tracks_strict_partition_thresholds_and_round_trips() {
         .expect("delete breached partition");
     assert!(!health.any_partition_breached());
 }
+
+// req: REP-007, REP-003, REC-001
+#[test]
+fn replay_classifications_preserve_stale_model_changes_and_delete_without_accepting_wrong_identity()
+{
+    use riffdb_storage_api::VectorEvidenceClassificationTransitionV1 as Change;
+    let first = CommitSequence::new(5).unwrap();
+    let later = CommitSequence::new(8).unwrap();
+    let original = evidence(
+        first,
+        Some(first),
+        Some(StoredVectorEmbeddingWriteV1::new(first, metadata())),
+    )
+    .unwrap();
+    let stale = evidence(later, Some(later), original.embedding_write().cloned()).unwrap();
+    let mut counts = VectorObservationCountsV1::empty(
+        VectorEvidenceIndexEntryV1::from_evidence(&original)
+            .unwrap()
+            .target()
+            .clone(),
+        first,
+    );
+    counts
+        .apply(
+            &Change::from_evidence(None, Some(&original)).unwrap(),
+            first,
+        )
+        .unwrap();
+    counts
+        .apply(
+            &Change::from_evidence(Some(&original), Some(&stale)).unwrap(),
+            later,
+        )
+        .unwrap();
+    assert_eq!(counts.total_entities(), 1);
+    assert_eq!(counts.source_stale_entities(), 1);
+    assert_eq!(counts.model_count(&metadata()), 1);
+    let next_sequence = CommitSequence::new(9).unwrap();
+    let next_model = EmbeddingMetadata::new("other", "revision").unwrap();
+    let fresh = evidence(
+        next_sequence,
+        Some(later),
+        Some(StoredVectorEmbeddingWriteV1::new(
+            next_sequence,
+            next_model.clone(),
+        )),
+    )
+    .unwrap();
+    counts
+        .apply(
+            &Change::from_evidence(Some(&stale), Some(&fresh)).unwrap(),
+            next_sequence,
+        )
+        .unwrap();
+    assert_eq!(counts.source_stale_entities(), 0);
+    assert_eq!(counts.model_count(&metadata()), 0);
+    assert_eq!(counts.model_count(&next_model), 1);
+    counts
+        .apply(
+            &Change::from_evidence(Some(&fresh), None).unwrap(),
+            next_sequence,
+        )
+        .unwrap();
+    assert_eq!(counts.total_entities(), 0);
+    assert_eq!(counts.model_counts().count(), 0);
+    assert!(Change::from_evidence(None, None).is_err());
+    assert!(Change::from_evidence(Some(&stale), Some(&original)).is_err());
+    assert!(Change::from_evidence(Some(&original), Some(&original)).is_err());
+    let foreign = StoredVectorEvidenceV1::new(
+        fresh.target().clone(),
+        fresh.partition_key().clone(),
+        FieldId::new(19).unwrap(),
+        fresh.entity_version(),
+        fresh.evidence_sequence(),
+        fresh.newest_source_write(),
+        fresh.embedding_write().cloned(),
+        fresh.schema_binding().clone(),
+        fresh.provenance_id(),
+        fresh.plan().clone(),
+    )
+    .unwrap();
+    assert!(Change::from_evidence(Some(&stale), Some(&foreign)).is_err());
+}

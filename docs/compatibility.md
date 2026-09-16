@@ -194,10 +194,13 @@ and validate rewritten embedding metadata against the production declaration.
 Known entity predecessors determine required source/embedding writes and deletes,
 including refusal when all vector work is omitted. Available prior evidence and
 its reciprocal index must agree; unchanged fields preserve earlier evidence,
-and source-only writes preserve embedding stamps exactly. Unknown retained
-predecessors remain unproven. Exact counter arithmetic, complete cross-history
-and candidate graph validation, and exact-stop archive restore remain unfinished
-WP-749 work.
+and source-only writes preserve embedding stamps exactly. When evidence and
+observation predecessors are available, validation folds every affected entity
+into its shared partition counter and checks exact total, stale and per-model
+counts. It also derives the lineage health summary with the compiler-owned
+thresholds. Resealed counter and health forgeries refuse before follower progress.
+Unknown retained predecessors remain unproven. Complete cross-history and candidate
+graph validation, and exact-stop archive restore remain unfinished WP-749 work.
 
 Inspect the format while the server is stopped:
 

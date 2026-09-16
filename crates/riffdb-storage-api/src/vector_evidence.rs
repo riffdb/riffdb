@@ -1098,6 +1098,33 @@ pub struct VectorEvidenceClassificationTransitionV1 {
 }
 
 impl VectorEvidenceClassificationTransitionV1 {
+    /// Classifies already validated evidence images for read-only replay checks.
+    /// This verifies row identity and ordering; it does not prove catalog-derived
+    /// source/embedding changes or grant authority to write either image.
+    pub fn from_evidence(
+        prior: Option<&StoredVectorEvidenceV1>,
+        successor: Option<&StoredVectorEvidenceV1>,
+    ) -> Result<Self, StorageValueError> {
+        match (prior, successor) {
+            (None, None) => return Err(StorageValueError::InvalidShape),
+            (Some(prior), Some(successor))
+                if prior.target() != successor.target()
+                    || prior.partition_key() != successor.partition_key()
+                    || prior.vector_field() != successor.vector_field()
+                    || prior.schema_binding().lineage() != successor.schema_binding().lineage()
+                    || prior.entity_version() >= successor.entity_version()
+                    || prior.evidence_sequence() >= successor.evidence_sequence() =>
+            {
+                return Err(StorageValueError::IdentityMismatch);
+            }
+            _ => {}
+        }
+        Ok(Self {
+            prior: prior.map(StoredVectorEvidenceV1::classification),
+            successor: successor.map(StoredVectorEvidenceV1::classification),
+        })
+    }
+
     /// Borrows the transaction-current predecessor classification.
     #[must_use]
     pub const fn prior(&self) -> Option<&VectorEvidenceClassificationV1> {

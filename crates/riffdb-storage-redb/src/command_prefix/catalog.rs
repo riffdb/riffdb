@@ -86,6 +86,7 @@ fn validate_catalog_sequence<'a>(
                 return Err(corrupt());
             }
         }
+        let mut checked_vectors = super::vector_counts::CheckedVectors::new();
         for transition in command.entity_transitions() {
             let mut check = |bytes: Option<&[u8]>| {
                 let row = bytes
@@ -138,6 +139,7 @@ fn validate_catalog_sequence<'a>(
                     resolved.as_ref(),
                     physical,
                     &prior,
+                    &mut checked_vectors,
                 )?;
                 Ok(())
             };
@@ -160,12 +162,17 @@ fn validate_catalog_sequence<'a>(
                 )?;
             }
         }
+        super::vector_counts::validate(command, &checked_vectors, physical, &prior)?;
         // Borrow entity, ordinary index and vector images with deletion shadows. Prefix
         // and segment/receipt bounds already cap this overlay's total size.
         for row in prefix.mutations().iter().filter(|row| {
             matches!(
                 row.namespace(),
-                N::Entities | N::SecondaryIndexes | N::VectorEvidence | N::VectorEvidenceIndex
+                N::Entities
+                    | N::SecondaryIndexes
+                    | N::VectorEvidence
+                    | N::VectorEvidenceIndex
+                    | N::VectorObservations
             )
         }) {
             prior.insert((row.namespace(), row.key()), row.value());
@@ -175,14 +182,15 @@ fn validate_catalog_sequence<'a>(
 }
 
 #[allow(clippy::too_many_arguments)]
-fn validate_vectors(
+fn validate_vectors<'a>(
     bundle: &ValidatedContractBundle,
-    command: &StoredCommandCapsuleV2,
+    command: &'a StoredCommandCapsuleV2,
     transition: &riffdb_storage_api::CommittedEntityTransitionV1,
     entity_prior: Option<&riffdb_storage_api::StoredEntityRecordV1>,
     resolved: Option<&riffdb_catalog::ResolvedExecutablePlan>,
     physical: super::predecessor::PhysicalPrior<'_>,
     prior: &super::predecessor::PriorImages<'_>,
+    checked: &mut super::vector_counts::CheckedVectors<'a>,
 ) -> Result<(), StorageError> {
     use riffdb_storage_api::{
         VectorEvidenceIndexEntryV1, VectorEvidenceMutationV1 as Mutation, VectorObservationTargetV1,
@@ -227,7 +235,7 @@ fn validate_vectors(
         context
             .validate_inventory(field, supplied.as_ref())
             .map_err(|_| corrupt())?;
-        let check = |bytes: Option<&[u8]>| {
+        let mut check = |bytes: Option<&[u8]>| {
             if supplied_row.is_some_and(|row| !row.matches_prior(bytes)) {
                 return Err(corrupt());
             }
@@ -236,11 +244,15 @@ fn validate_vectors(
                 .transpose()
                 .map_err(crate::error::codec_error)?;
             let evidence = decoded.as_ref().map(|value| value.value());
-            // Derive with the existing checked transition owner. Counter and
-            // health arithmetic still require their own predecessor proof.
-            context
+            let derived = context
                 .validate(field, evidence, supplied.as_ref())
                 .map_err(|_| corrupt())?;
+            if let (Some(row), Some(plan)) = (supplied_row, derived) {
+                checked.insert(
+                    row.key(),
+                    (evidence.is_some(), plan.stale_entity_count_threshold()),
+                );
+            }
             let target = if let Some(evidence) = evidence {
                 VectorEvidenceIndexEntryV1::from_evidence(evidence)
                     .map_err(|_| corrupt())?
