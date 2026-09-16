@@ -948,7 +948,7 @@ fn validate_record_key(
     validate_entity_record_key(entity, record)
 }
 
-fn validate_entity_record_key(
+pub(crate) fn validate_entity_record_key(
     entity: &EntitySchema,
     record: &StoredEntityRecordV1,
 ) -> Result<(), CommandSnapshotMaterializationError> {

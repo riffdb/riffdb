@@ -151,6 +151,13 @@ refuse before durable progress; unknown historical observations remain unproven.
 Older writer images use the existing catalog materialization rules before
 index derivation; raw writer bytes still own transition hashes. Historical schema
 binding remains owned by the startup history proof or preceding validated prefix.
+Complete prefix entity images now validate against the exact command writer
+schema: field inventory, primitive/container bounds, enum membership, nested
+record shape, primary-key values and command partition route. Cross-aggregate
+keys retain their owning namespace on the same schema-decoded route. Missing optional fields
+are not silently expanded in newly written images. The command ID and plan hash
+must resolve in the retained bundle. A production capsule regression proves that
+an undeclared unindexed field refuses; historical prior materialization is separate.
 Intrinsic vector checks now bind typed evidence to its entity post-image,
 command sequence, plan, provenance and partition. Each primary evidence mutation
 requires exactly one reciprocal index mutation and its partition/lineage
