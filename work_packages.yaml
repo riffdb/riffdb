@@ -22783,6 +22783,7 @@ work_packages:
   allowed_paths: [SPEC.md, work_packages.yaml,
     adr/0178-follower-activation-and-changelog-derived-backup.md,
     proto/**, crates/riffdb-proto/**, crates/riffdb-types/**, crates/riffdb-auth/**,
+    crates/riffdb-operation-registry/**,
     crates/riffdb-policy/**, crates/riffdb-storage-api/**, crates/riffdb-storage-redb/**,
     crates/riffdb-commit/**, crates/riffdb-service/**, crates/riffdb-client-rust/**,
     crates/riffdb-api-grpc/**, crates/riffdb-server/**, crates/riffdb-cli/**,
@@ -22818,6 +22819,10 @@ work_packages:
   closure:
     status: open
     decisions_taken:
+    - Widen scope to riffdb-operation-registry in a prerequisite commit.
+      ADR-0179 requires declarations for the register/retire/promote surfaces
+      already named by ADR-0178. This adds no operation or audit vocabulary
+      and does not accept the separately proposed follower-audit amendment.
     - Encode registration policy as tag 73 revision 2 within the existing
       SourceOnly source-hold domain named by ADR-0178/0186. Embed the unchanged
       V1 follower fence; preserve V1 identities, owner/key tags and writers.
