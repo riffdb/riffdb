@@ -2776,15 +2776,25 @@ pub trait ContractMigrationCoordinatorPort: Send + Sync {
     ) -> PortFuture<'_, ContractMigrationObservationPermit, PortAdmissionError>;
 }
 
-/// Closed restore-only input for the exact-receipt retry coordinator.
+/// Closed ordinary/archive input for restricted restore coordinators.
 #[derive(Debug)]
-pub enum RestoreRetryRequest {
+pub enum OfflineRestoreRequest {
     /// Frozen ordinary backup restore input.
     Ordinary(RestoreOfflineBackupRequest),
     /// Frozen archive restore input with its distinct canonical hash.
     Archived(crate::RestoreArchivedBackupRequest),
 }
-impl RestoreRetryRequest {
+impl From<RestoreOfflineBackupRequest> for OfflineRestoreRequest {
+    fn from(request: RestoreOfflineBackupRequest) -> Self {
+        Self::Ordinary(request)
+    }
+}
+impl From<crate::RestoreArchivedBackupRequest> for OfflineRestoreRequest {
+    fn from(request: crate::RestoreArchivedBackupRequest) -> Self {
+        Self::Archived(request)
+    }
+}
+impl OfflineRestoreRequest {
     /// Returns the operation identity whose receipt is already durable.
     #[must_use]
     pub const fn operation_id(&self) -> OfflineMaintenanceOperationId {
@@ -2809,7 +2819,7 @@ impl RestoreRetryRequest {
 /// so a credential-retry host cannot submit backup creation or observe a
 /// maintenance receipt through its coordinator capability.
 pub struct AuthorizedRestoreRetryStart {
-    request: RestoreRetryRequest,
+    request: OfflineRestoreRequest,
     authorization: Box<AuthorizedOfflineMaintenance>,
     credential: RetainedOpaqueCredential,
 }
@@ -2821,7 +2831,7 @@ impl AuthorizedRestoreRetryStart {
         credential: RetainedOpaqueCredential,
     ) -> Self {
         Self {
-            request: RestoreRetryRequest::Ordinary(request),
+            request: OfflineRestoreRequest::Ordinary(request),
             authorization,
             credential,
         }
@@ -2833,7 +2843,7 @@ impl AuthorizedRestoreRetryStart {
         credential: RetainedOpaqueCredential,
     ) -> Self {
         Self {
-            request: RestoreRetryRequest::Archived(request),
+            request: OfflineRestoreRequest::Archived(request),
             authorization,
             credential,
         }
@@ -2841,7 +2851,7 @@ impl AuthorizedRestoreRetryStart {
 
     /// Returns the exact immutable restore input.
     #[must_use]
-    pub const fn request(&self) -> &RestoreRetryRequest {
+    pub const fn request(&self) -> &OfflineRestoreRequest {
         &self.request
     }
 
@@ -2850,7 +2860,7 @@ impl AuthorizedRestoreRetryStart {
     pub fn into_parts(
         self,
     ) -> (
-        RestoreRetryRequest,
+        OfflineRestoreRequest,
         Box<AuthorizedOfflineMaintenance>,
         RetainedOpaqueCredential,
     ) {
@@ -2887,14 +2897,14 @@ pub trait RestoreRetryOfflineMaintenanceCoordinatorPort: Send + Sync {
 /// fresh staged authorization before it may admit a receipt or publish.
 pub struct RecoveryOfflineMaintenanceRestore {
     request_id: RequestId,
-    request: RestoreOfflineBackupRequest,
+    request: OfflineRestoreRequest,
     credential: RetainedOpaqueCredential,
 }
 
 impl RecoveryOfflineMaintenanceRestore {
     pub(crate) const fn new(
         request_id: RequestId,
-        request: RestoreOfflineBackupRequest,
+        request: OfflineRestoreRequest,
         credential: RetainedOpaqueCredential,
     ) -> Self {
         Self {
@@ -2912,19 +2922,13 @@ impl RecoveryOfflineMaintenanceRestore {
 
     /// Borrows the checked restore semantic input.
     #[must_use]
-    pub const fn request(&self) -> &RestoreOfflineBackupRequest {
+    pub const fn request(&self) -> &OfflineRestoreRequest {
         &self.request
     }
 
     /// Separates the request from the move-only staged-auth credential.
     #[must_use]
-    pub fn into_parts(
-        self,
-    ) -> (
-        RequestId,
-        RestoreOfflineBackupRequest,
-        RetainedOpaqueCredential,
-    ) {
+    pub fn into_parts(self) -> (RequestId, OfflineRestoreRequest, RetainedOpaqueCredential) {
         (self.request_id, self.request, self.credential)
     }
 }

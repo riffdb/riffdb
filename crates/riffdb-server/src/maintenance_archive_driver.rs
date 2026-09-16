@@ -68,7 +68,14 @@ fn fail(
             .is_ok()
     {
         // Failure reporting never claims durability when replacement is uncertain.
-        let _ = storage.replace_archive_receipt(&receipt);
+        if storage.replace_archive_receipt(&receipt).is_ok() {
+            return MaintenanceDriverFailure {
+                operation_id: receipt.operation_id(),
+                failure,
+                terminal_receipt: None,
+                archive_terminal_receipt: Some(Box::new(receipt)),
+            };
+        }
     }
     MaintenanceDriverFailure::without_receipt(receipt.operation_id(), failure)
 }
@@ -144,7 +151,11 @@ fn restore(
     match receipt.current_phase() {
         Offline if published => {
             drop(credential);
-            advance(storage, receipt, ArtifactPublished)?;
+            advance(
+                storage,
+                receipt,
+                OfflineMaintenanceReceiptPhaseV1::ArtifactPublished,
+            )?;
         }
         Offline => {
             let credential = credential.ok_or(DriverFault::StagedAuthorization)?;
@@ -209,45 +220,15 @@ fn restore(
             dependencies
                 .recovery
                 .reached(MaintenanceRecoveryBoundary::StagedAuthorizationComplete);
-            let incarnation = match receipt.published_history_incarnation() {
-                Some(recorded) => recorded,
-                None => target_history_incarnation_for_bump(
-                    storage.configured_database_file(),
-                    dependencies.retained_target_history_incarnation,
-                    staged_incarnation,
-                    dependencies.metrics.as_ref(),
-                )
-                .max(staged_incarnation)
-                .checked_add(1)
-                .ok_or(DriverFault::ArtifactInvalid)?,
-            };
-            let mut validated = receipt.clone();
-            validated
-                .record_validated_restore(database_id, frontier)
-                .map_err(|_| DriverFault::ReceiptValue)?;
-            validated
-                .record_published_incarnation(incarnation)
-                .map_err(|_| DriverFault::ReceiptValue)?;
-            update(storage, receipt, validated)?;
-            match storage.publish_sealed_archive_restore(sealed) {
-                Ok(OfflineArchiveRestorePublicationV3::Published {
-                    restored_frontier,
-                    published_history_incarnation,
-                    ..
-                }) if restored_frontier == frontier
-                    && published_history_incarnation == incarnation => {}
-                Err(error) if error.kind() == StorageErrorKind::CommitStatusUnknown => {
-                    if !storage
-                        .archive_restore_target_matches(receipt.operation_id())
-                        .map_err(DriverFault::ArtifactStorage)?
-                    {
-                        return Err(DriverFault::PublicationUncertain);
-                    }
-                }
-                Err(error) => return Err(DriverFault::ArtifactStorage(error)),
-                _ => return Err(DriverFault::ArtifactUnavailable),
-            }
-            advance(storage, receipt, ArtifactPublished)?;
+            publish_prepared(
+                storage,
+                receipt,
+                sealed,
+                database_id,
+                frontier,
+                staged_incarnation,
+                dependencies,
+            )?;
         }
         ArtifactPublished | Validating => {
             drop(credential);
@@ -298,3 +279,62 @@ fn restore(
     advance(storage, receipt, Succeeded)?;
     Ok(startup)
 }
+
+#[allow(clippy::too_many_arguments)]
+fn publish_prepared(
+    storage: &mut RedbMaintenanceStorage,
+    receipt: &mut OfflineMaintenanceReceiptV3,
+    sealed: riffdb_storage_redb::RedbSealedArchiveRestore,
+    database_id: riffdb_types::DatabaseId,
+    frontier: riffdb_types::DualFrontier,
+    staged_incarnation: u64,
+    dependencies: &MaintenanceDriverDependencies<'_>,
+) -> Result<(), DriverFault> {
+    let incarnation = match receipt.published_history_incarnation() {
+        Some(recorded) => recorded,
+        None => target_history_incarnation_for_bump(
+            storage.configured_database_file(),
+            dependencies.retained_target_history_incarnation,
+            staged_incarnation,
+            dependencies.metrics.as_ref(),
+        )
+        .max(staged_incarnation)
+        .checked_add(1)
+        .ok_or(DriverFault::ArtifactInvalid)?,
+    };
+    let mut validated = receipt.clone();
+    validated
+        .record_validated_restore(database_id, frontier)
+        .map_err(|_| DriverFault::ReceiptValue)?;
+    validated
+        .record_published_incarnation(incarnation)
+        .map_err(|_| DriverFault::ReceiptValue)?;
+    update(storage, receipt, validated)?;
+    match storage.publish_sealed_archive_restore(sealed) {
+        Ok(OfflineArchiveRestorePublicationV3::Published {
+            restored_frontier,
+            published_history_incarnation,
+            ..
+        }) if restored_frontier == frontier && published_history_incarnation == incarnation => {}
+        Err(error) if error.kind() == StorageErrorKind::CommitStatusUnknown => {
+            if !storage
+                .archive_restore_target_matches(receipt.operation_id())
+                .map_err(DriverFault::ArtifactStorage)?
+            {
+                return Err(DriverFault::PublicationUncertain);
+            }
+        }
+        Err(error) => return Err(DriverFault::ArtifactStorage(error)),
+        _ => return Err(DriverFault::ArtifactUnavailable),
+    }
+    advance(
+        storage,
+        receipt,
+        OfflineMaintenanceReceiptPhaseV1::ArtifactPublished,
+    )?;
+    Ok(())
+}
+
+#[path = "maintenance_archive_recovery.rs"]
+mod recovery;
+pub(super) use recovery::{matches_request, run_recovery};

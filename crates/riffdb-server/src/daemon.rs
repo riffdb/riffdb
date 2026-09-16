@@ -47,10 +47,9 @@ use riffdb_service::{
 };
 use riffdb_storage_api::{
     ContractMigrationReceiptV1, OfflineMaintenanceReceiptFailureV1,
-    OfflineMaintenanceReceiptPersistencePort, OfflineMaintenanceReceiptPhaseV1,
-    OfflineMaintenanceReceiptV1, ReadableCapabilityDigestInventory, ReadableDigestKey,
-    ReadableIdempotencyDigestInventory, StartupValidationInputs, StorageError, StorageErrorKind,
-    StorageValueError,
+    OfflineMaintenanceReceiptPhaseV1, OfflineMaintenanceReceiptV1,
+    ReadableCapabilityDigestInventory, ReadableDigestKey, ReadableIdempotencyDigestInventory,
+    StartupValidationInputs, StorageError, StorageErrorKind, StorageValueError,
 };
 use riffdb_storage_redb::{
     RedbMaintenanceOperationEvidence, RedbMaintenanceReconciliation, RedbMaintenanceStorage,
@@ -84,8 +83,8 @@ use crate::maintenance_adapter::{
 use crate::maintenance_driver::{
     MaintenanceDriverDependencies, MaintenanceDriverFailure, MaintenanceDriverRequest,
     MaintenanceDriverSuccess, RecoveryMaintenanceDriverRequest,
-    contract_migration_backup_build_metadata, mark_draining, mark_offline,
-    receipt_matches_restore_request, run_offline_maintenance, run_recovery_restore,
+    contract_migration_backup_build_metadata, mark_draining, mark_offline, run_offline_maintenance,
+    run_recovery_restore,
 };
 use crate::maintenance_lifecycle::MaintenanceLifecycle;
 use crate::maintenance_migration::{MigrationDriverInputs, drive_contract_migration};
@@ -185,9 +184,9 @@ enum InitialDatabaseAction {
         request: MaintenanceDriverRequest,
         validate_current_source: bool,
     },
-    ResumeRecovery(RestoreOfflineBackupRequest),
+    ResumeRecovery(riffdb_service::OfflineRestoreRequest),
     AwaitRestoreCredential(ResumableMaintenanceReceipt),
-    AwaitRecoveryCredential(OfflineMaintenanceReceiptV1),
+    AwaitRecoveryCredential(ResumableMaintenanceReceipt),
     RecoveryOnly,
     FailClosed,
 }
@@ -342,14 +341,14 @@ fn initial_database_action(
             })
         }
         IncompleteMaintenanceDecision::ResumePublishedRecoveryRestore => Ok(
-            InitialDatabaseAction::ResumeRecovery(restore_request_from_receipt(&receipt)?),
+            InitialDatabaseAction::ResumeRecovery(restore_request_from_receipt(&receipt)?.into()),
         ),
         IncompleteMaintenanceDecision::AwaitCurrentCredential => Ok(
             InitialDatabaseAction::AwaitRestoreCredential(receipt.into()),
         ),
-        IncompleteMaintenanceDecision::AwaitRecoveryCredential => {
-            Ok(InitialDatabaseAction::AwaitRecoveryCredential(receipt))
-        }
+        IncompleteMaintenanceDecision::AwaitRecoveryCredential => Ok(
+            InitialDatabaseAction::AwaitRecoveryCredential(receipt.into()),
+        ),
         IncompleteMaintenanceDecision::FailClosed => Ok(InitialDatabaseAction::FailClosed),
     }
 }
@@ -1956,11 +1955,8 @@ async fn await_multi_recovery(
                     return Err(DaemonError::MaintenanceDriver);
                 }
             };
-            match storage.read_receipt(operation_id) {
-                Ok(Some(receipt))
-                    if !receipt_matches_restore_request(&receipt, &request)
-                        || receipt.source_database_id().is_some() =>
-                {
+            match crate::maintenance_driver::recovery_request_matches(&mut storage, &request) {
+                Ok(false) => {
                     if maintenance_lifecycle
                         .release_recovery_restore(operation_id)
                         .is_err()
@@ -2030,12 +2026,7 @@ async fn await_multi_recovery(
             }
             RecoveryAttempt::Succeeded(success) => {
                 let (receipt, startup) = (*success).into_parts();
-                let crate::maintenance_driver::MaintenanceTerminalReceipt::V1(receipt) = receipt
-                else {
-                    return Err(DaemonError::MaintenanceDriver);
-                };
-                let result = start_result(OfflineMaintenanceStartDisposition::Terminal, &receipt)
-                    .map_err(|_| DaemonError::MaintenanceDriver)?;
+                let result = terminal_restore_result(&receipt)?;
                 let _ = completion.complete(Ok(result));
                 recovery_host.begin_transport_shutdown();
                 recovery_host
@@ -2798,11 +2789,8 @@ async fn run_recovery_until_ready(
                     return Err(DaemonError::MaintenanceDriver);
                 }
             };
-            match storage.read_receipt(operation_id) {
-                Ok(Some(receipt))
-                    if !receipt_matches_restore_request(&receipt, &request)
-                        || receipt.source_database_id().is_some() =>
-                {
+            match crate::maintenance_driver::recovery_request_matches(&mut storage, &request) {
+                Ok(false) => {
                     if maintenance_lifecycle
                         .release_recovery_restore(operation_id)
                         .is_err()
@@ -2874,12 +2862,7 @@ async fn run_recovery_until_ready(
             }
             RecoveryAttempt::Succeeded(success) => {
                 let (receipt, startup) = (*success).into_parts();
-                let crate::maintenance_driver::MaintenanceTerminalReceipt::V1(receipt) = receipt
-                else {
-                    return Err(DaemonError::MaintenanceDriver);
-                };
-                let result = start_result(OfflineMaintenanceStartDisposition::Terminal, &receipt)
-                    .map_err(|_| DaemonError::MaintenanceDriver)?;
+                let result = terminal_restore_result(&receipt)?;
                 let _ = completion.complete(Ok(result));
                 recovery_host.begin_transport_shutdown();
                 transport.drain_after_signal().await?;
@@ -2919,6 +2902,25 @@ async fn run_recovery_until_ready(
     }
 }
 
+fn terminal_restore_result(
+    receipt: &crate::maintenance_driver::MaintenanceTerminalReceipt,
+) -> Result<riffdb_service::OfflineMaintenanceStartResult, DaemonError> {
+    use crate::maintenance_driver::MaintenanceTerminalReceipt;
+    match receipt {
+        MaintenanceTerminalReceipt::V1(receipt) => {
+            start_result(OfflineMaintenanceStartDisposition::Terminal, receipt)
+        }
+        MaintenanceTerminalReceipt::V3(receipt) => {
+            crate::maintenance_adapter::archive_start_result(
+                OfflineMaintenanceStartDisposition::Terminal,
+                receipt,
+            )
+        }
+        MaintenanceTerminalReceipt::V2(_) => return Err(DaemonError::MaintenanceDriver),
+    }
+    .map_err(|_| DaemonError::MaintenanceDriver)
+}
+
 fn classify_recovery_driver_failure(
     lifecycle: &MaintenanceLifecycle,
     operation_id: riffdb_types::OfflineMaintenanceOperationId,
@@ -2930,6 +2932,15 @@ fn classify_recovery_driver_failure(
     }
     if let Some(receipt) = failure.terminal_receipt() {
         return match start_result(OfflineMaintenanceStartDisposition::Terminal, receipt) {
+            Ok(result) => RecoveryAttempt::Terminal(result),
+            Err(_) => RecoveryAttempt::Stop(RecoveryOfflineMaintenancePortError::Integrity),
+        };
+    }
+    if let Some(receipt) = failure.archive_terminal_receipt() {
+        return match crate::maintenance_adapter::archive_start_result(
+            OfflineMaintenanceStartDisposition::Terminal,
+            receipt,
+        ) {
             Ok(result) => RecoveryAttempt::Terminal(result),
             Err(_) => RecoveryAttempt::Stop(RecoveryOfflineMaintenancePortError::Integrity),
         };
@@ -4616,6 +4627,25 @@ impl Error for DaemonError {
 }
 
 #[cfg(test)]
+pub(crate) fn assert_archive_recovery_restart_for_test(
+    storage: &mut RedbMaintenanceStorage,
+    reconciliation: &RedbMaintenanceReconciliation,
+    published: bool,
+) {
+    match initial_database_action(storage, reconciliation, true)
+        .unwrap_or_else(|_| panic!("archive recovery route"))
+    {
+        InitialDatabaseAction::ResumeRecovery(riffdb_service::OfflineRestoreRequest::Archived(
+            _,
+        )) => assert!(published),
+        InitialDatabaseAction::AwaitRecoveryCredential(ResumableMaintenanceReceipt::Archive(_)) => {
+            assert!(!published)
+        }
+        _ => panic!("archive recovery must retain its request domain"),
+    }
+}
+
+#[cfg(test)]
 pub(crate) fn archive_restart_request_for_test(
     storage: &mut RedbMaintenanceStorage,
     reconciliation: &RedbMaintenanceReconciliation,
@@ -4650,7 +4680,7 @@ mod tests {
 
     #[test]
     // req: REP-007, AFC-007
-    fn incomplete_archive_restore_refuses_ordinary_startup() {
+    fn source_less_archive_receipt_without_selection_refuses_startup() {
         use riffdb_storage_api::{
             OfflineArchiveReceiptPersistencePort, OfflineMaintenanceAdmissionV1,
             OfflineMaintenanceReceiptV3,
@@ -4760,7 +4790,7 @@ mod tests {
             ));
             assert!(matches!(
                 initial_database_action(&mut store, &reconciliation, true),
-                Ok(InitialDatabaseAction::FailClosed)
+                Ok(InitialDatabaseAction::AwaitRecoveryCredential(retry)) if retry.operation_id() == receipt.operation_id() && retry.input_hash() == receipt.input_hash()
             ));
             assert_eq!(
                 store

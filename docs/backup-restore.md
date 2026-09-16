@@ -321,11 +321,25 @@ access. It must verify the receipt-bound stage, exact restored target and full
 restored authority before readiness. A partially published target does not gain
 this credential-free authority.
 
-This remains incomplete WP-749 integration. Automatic archive collection and
-source-less archive restore admission are still unavailable. An unreadable or
-partially replaced target without complete publication evidence refuses startup;
-staged-credential recovery for that case remains unfinished. Do not rely on this
-increment for disaster recovery. Receipt editing is unsupported.
+When the current database is unavailable, the restricted recovery host accepts
+archive restore through the same distinct RPC. It verifies the full backup and
+selected archive prefix, reconstructs and validates the private candidate, then
+authenticates the bearer and checks restore policy against that restored state.
+A new recovery attempt persists its exact selection and admission in V3 only
+after those checks pass. Denial before admission leaves no receipt or target
+replacement. Recovery offers no ordinary application operations, backup creation,
+or receipt polling.
+
+An interrupted restore with an unreadable target uses the same staged checks
+and its original receipt selection. It cannot choose a newer archive head or
+change a recorded incarnation. Complete publication evidence permits validation
+without a bearer or archive access; incomplete publication requires the retained
+backup and selected archive prefix plus fresh staged authorization. Receipt
+editing is unsupported.
+
+WP-749 remains incomplete: automatic archive collection, the complete end-to-end
+crash qualification and write-path measurements are still pending. These restore
+paths do not yet constitute a qualified disaster-recovery deployment.
 
 An SDK or direct API caller supplies the maintenance operation ID. After a lost
 response or process interruption, that caller retries the exact same start

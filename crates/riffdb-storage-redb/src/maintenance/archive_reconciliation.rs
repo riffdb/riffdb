@@ -38,6 +38,30 @@ impl RedbMaintenanceStorage {
         Ok(repository)
     }
 
+    /// Opens the existing operator-configured archive against a verified named
+    /// backup for private recovery staging. This grants no receipt or publication
+    /// authority; the caller must freeze selection after staged authorization.
+    pub fn open_recovery_archive_repository(
+        &self,
+        backup_name: &BackupNameV1,
+        archive: &Path,
+        encryption: ArchiveEncryptionPostureV1,
+    ) -> Result<crate::RedbArchiveRepository, StorageError> {
+        self.verify_path_ownership()?;
+        let backup =
+            crate::RedbVerifiedArchiveBackup::open(&self.named_backup_directory(backup_name))?;
+        let repository = backup
+            .open_existing_archive(archive, encryption)
+            .map_err(|error| match error {
+                riffdb_storage_api::ArchiveConsumerErrorV1::SinkUnavailable => {
+                    storage_error(StorageErrorKind::Unavailable)
+                }
+                _ => corrupt(),
+            })?;
+        self.verify_path_ownership()?;
+        Ok(repository)
+    }
+
     /// Proves publication only from matching retained staged/target bytes,
     /// current markers, the fresh empty journal, and the exact receipt-bound
     /// RestoreAnchor. It performs no repair, replay, authorization or mutation.

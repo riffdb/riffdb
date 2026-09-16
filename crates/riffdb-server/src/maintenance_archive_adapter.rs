@@ -164,7 +164,7 @@ fn admit_candidate(
     result
 }
 
-pub(super) fn start_result(
+pub(crate) fn start_result(
     disposition: OfflineMaintenanceStartDisposition,
     receipt: &OfflineMaintenanceReceiptV3,
 ) -> Result<OfflineMaintenanceStartResult, OfflineMaintenanceStartPortError> {

@@ -3113,8 +3113,11 @@ impl AdminService for GrpcApplication {
             .is_none()
             .then(|| lifecycle.admit_restore_retry(operation_id, input_hash))
             .flatten();
-        let result = match (ready, retry) {
-            (Some(service), None) => {
+        let recovery = (ready.is_none() && retry.is_none())
+            .then(|| lifecycle.admit_recovery_restore(operation_id, input_hash))
+            .flatten();
+        let result = match (ready, retry, recovery) {
+            (Some(service), None, None) => {
                 let security = lifecycle.security_context().ok_or_else(service_not_ready)?;
                 let (context, credential, _cancellation) =
                     self.restore_context(&metadata, request_id, &security)?;
@@ -3128,7 +3131,7 @@ impl AdminService for GrpcApplication {
                         .await,
                 )?
             }
-            (None, Some(service)) => {
+            (None, Some(service), None) => {
                 let security = lifecycle
                     .restore_retry_security_context()
                     .ok_or_else(service_not_ready)?;
@@ -3143,6 +3146,15 @@ impl AdminService for GrpcApplication {
                         )
                         .await,
                 )?
+            }
+            (None, None, Some(service)) => {
+                let deadline = self.limits.deadline(&metadata)?;
+                let credential = retain_normal_request_credential(&metadata)?;
+                let (control, cancellation) = RequestControl::new(deadline);
+                let _cancellation = CancellationGuard(cancellation);
+                map_service(service.restore_archived_backup(
+                    riffdb_service::RecoveryRestoreArchivedBackupInvocation::from_restricted_grpc(request_id, control, request, credential)
+                ).await)?
             }
             _ => return Err(service_not_ready()),
         };

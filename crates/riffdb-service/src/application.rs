@@ -317,6 +317,13 @@ pub trait RecoveryOfflineMaintenanceApplication: Send + Sync {
         &self,
         invocation: RecoveryRestoreOfflineBackupInvocation,
     ) -> ServiceFuture<'_, OfflineMaintenanceStartResult>;
+    /// Validates and authorizes a private archive candidate before admission.
+    fn restore_archived_backup(
+        &self,
+        _invocation: crate::RecoveryRestoreArchivedBackupInvocation,
+    ) -> ServiceFuture<'_, OfflineMaintenanceStartResult> {
+        Box::pin(async { Err(riffdb_errors::PublicError::storage_unavailable().into()) })
+    }
 }
 
 /// Exact current-database restore retry after an interrupted healthy restore.
