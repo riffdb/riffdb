@@ -356,3 +356,59 @@ fn archive_publication_recovers_after_target_publication() {
 fn archive_publication_recovers_after_parent_sync() {
     crash_and_recover("after-sync");
 }
+
+#[test]
+fn archive_publication_reconciliation_requires_exact_retained_stage_and_target_bytes() {
+    let scope = crate::test_path::ScopedDirectory::new("archive-reconcile");
+    create_admitted(&scope);
+    let target = scope.join("configured.redb");
+    let (mut store, _) =
+        crate::RedbMaintenanceStorage::open(&target, scope.join("backups")).unwrap();
+    assert!(
+        !store
+            .archive_restore_target_matches(publication_id())
+            .unwrap()
+    );
+    let sealed = rebuild(&scope.join(""), &mut store);
+    assert!(
+        !store
+            .archive_restore_target_matches(publication_id())
+            .unwrap()
+    );
+    store.publish_sealed_archive_restore(sealed).unwrap();
+    assert!(
+        store
+            .archive_restore_target_matches(publication_id())
+            .unwrap()
+    );
+    // Valid retained identity/frontiers cannot substitute for exact bytes.
+    let marker = crate::durable_format_marker_path(&target);
+    let marker_bytes = fs::read(&marker).unwrap();
+    fs::write(&marker, b"incomplete-marker").unwrap();
+    assert!(
+        !store
+            .archive_restore_target_matches(publication_id())
+            .unwrap()
+    );
+    fs::write(&marker, marker_bytes).unwrap();
+    let journal = crate::journal::journal_path(&target);
+    let journal_bytes = fs::read(&journal).unwrap();
+    fs::write(&journal, b"incomplete-journal").unwrap();
+    assert!(
+        !store
+            .archive_restore_target_matches(publication_id())
+            .unwrap()
+    );
+    fs::write(&journal, journal_bytes).unwrap();
+    assert!(
+        store
+            .archive_restore_target_matches(publication_id())
+            .unwrap()
+    );
+    fs::remove_file(marker).unwrap();
+    assert!(
+        !store
+            .archive_restore_target_matches(publication_id())
+            .unwrap()
+    );
+}

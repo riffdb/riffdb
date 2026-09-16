@@ -217,8 +217,8 @@ impl RedbMaintenanceStorage {
 }
 
 impl RedbMaintenanceStorage {
-    /// Rebuilds an admitted Offline archive candidate from its exact selected
-    /// backup. Replay must still use the receipt's selected prefix and pass full
+    /// Builds an admitted Offline archive candidate from its named backup and,
+    /// once selected, verifies the exact retained backup identity. Replay must still use the receipt's selected prefix and pass full
     /// validation and staged authorization before publication. Prior private
     /// stage bytes do not substitute for receipt authority.
     pub fn stage_archive_restore(
@@ -233,10 +233,12 @@ impl RedbMaintenanceStorage {
         if receipt.current_phase() != OfflineMaintenanceReceiptPhaseV1::Offline {
             return Err(invariant());
         }
-        let selection = receipt.selection().ok_or_else(invariant)?;
         let directory = self.named_backup_directory(receipt.backup_name());
         let (_, identity) = validate_immutable_backup(&directory)?;
-        if selection.backup() != &identity {
+        if receipt
+            .selection()
+            .is_some_and(|selection| selection.backup() != &identity)
+        {
             return Err(corrupt());
         }
         self.sync_archive_receipt_parent()?;

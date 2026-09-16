@@ -10,6 +10,9 @@
 //! `riffdb-storage-api` and their encoding remains owned by
 //! `riffdb-storage-redb`.
 
+#[path = "maintenance_archive_driver.rs"]
+mod archive;
+
 use std::fmt;
 use std::sync::Arc;
 
@@ -53,6 +56,7 @@ use crate::startup::{CheckedRedbStartup, open_redb_startup_with_commit_profile};
 
 /// Production dependencies needed only while a private staged database is open.
 pub(crate) struct MaintenanceDriverDependencies<'a> {
+    archives: Vec<(std::path::PathBuf, crate::config::ConfiguredArchive)>,
     startup_inputs: StartupValidationInputs,
     database_ids: DatabaseIdCandidateSource,
     application_commit_profile: RedbCommitProfile,
@@ -72,6 +76,14 @@ pub(crate) struct MaintenanceDriverDependencies<'a> {
 }
 
 impl<'a> MaintenanceDriverDependencies<'a> {
+    pub(crate) fn with_archives(
+        mut self,
+        archives: Vec<(std::path::PathBuf, crate::config::ConfiguredArchive)>,
+    ) -> Self {
+        self.archives = archives;
+        self
+    }
+
     /// Captures value-only validation facts and the existing production auth adapters.
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn new(
@@ -90,6 +102,7 @@ impl<'a> MaintenanceDriverDependencies<'a> {
         metrics: Option<riffdb_observability::MetricRegistry>,
     ) -> Self {
         Self {
+            archives: Vec::new(),
             startup_inputs,
             database_ids,
             application_commit_profile,
@@ -245,6 +258,7 @@ impl MaintenanceDriverSuccess {
 pub(crate) enum MaintenanceTerminalReceipt {
     V1(OfflineMaintenanceReceiptV1),
     V2(OfflineMaintenanceReceiptV2),
+    V3(riffdb_storage_api::OfflineMaintenanceReceiptV3),
 }
 
 impl MaintenanceTerminalReceipt {
@@ -252,6 +266,7 @@ impl MaintenanceTerminalReceipt {
         match self {
             Self::V1(receipt) => receipt.operation_id(),
             Self::V2(receipt) => receipt.operation_id(),
+            Self::V3(receipt) => receipt.operation_id(),
         }
     }
 }
@@ -345,6 +360,14 @@ pub(crate) fn mark_draining(
         )
     })?;
     let Some(mut receipt) = receipt else {
+        if let Some(receipt) = archive::read(storage, lifecycle, operation_id)? {
+            return archive::mark_phase(
+                storage,
+                lifecycle,
+                receipt,
+                OfflineMaintenanceReceiptPhaseV1::Draining,
+            );
+        }
         let retirement = storage
             .read_retire_receipt(operation_id)
             .map_err(|_| {
@@ -426,6 +449,14 @@ pub(crate) fn mark_offline(
         )
     })?;
     let Some(mut receipt) = receipt else {
+        if let Some(receipt) = archive::read(storage, lifecycle, operation_id)? {
+            return archive::mark_phase(
+                storage,
+                lifecycle,
+                receipt,
+                OfflineMaintenanceReceiptPhaseV1::Offline,
+            );
+        }
         return mark_retirement_offline(storage, lifecycle, operation_id);
     };
     if receipt.source_database_id().is_none() {
@@ -542,6 +573,9 @@ pub(crate) fn run_offline_maintenance(
         ));
     }
 
+    if let Some(receipt) = archive::read(storage, lifecycle, operation_id)? {
+        return archive::run(storage, lifecycle, dependencies, receipt, request);
+    }
     if matches!(request, MaintenanceDriverRequest::RetireBackup { .. }) {
         return run_retirement(storage, lifecycle, dependencies, operation_id);
     }
@@ -2015,7 +2049,7 @@ mod tests {
         prepared: PreparedStagedRestore,
     }
 
-    fn fixture_admission(seed: u8) -> OfflineMaintenanceAdmissionV1 {
+    pub(super) fn fixture_admission(seed: u8) -> OfflineMaintenanceAdmissionV1 {
         use riffdb_types::{ActorId, ActorKind, ApprovalId, CapabilityId};
 
         OfflineMaintenanceAdmissionV1::new(
@@ -2026,7 +2060,7 @@ mod tests {
         )
     }
 
-    fn fixture_startup_inputs() -> StartupValidationInputs {
+    pub(super) fn fixture_startup_inputs() -> StartupValidationInputs {
         use riffdb_storage_api::{
             ReadableCapabilityDigestInventory, ReadableDigestKey,
             ReadableIdempotencyDigestInventory,
@@ -2041,7 +2075,7 @@ mod tests {
         )
     }
 
-    fn fixture_dependencies<'a>(
+    pub(super) fn fixture_dependencies<'a>(
         clocks: &'a ProductionWallClocks,
         recovery: &'a MaintenanceRecoveryController,
         retained_target_history_incarnation: Option<u64>,
@@ -2305,3 +2339,7 @@ mod tests {
         );
     }
 }
+
+#[cfg(test)]
+#[path = "maintenance_archive_driver_tests.rs"]
+mod archive_tests;
