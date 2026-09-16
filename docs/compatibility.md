@@ -177,9 +177,16 @@ the receipt and prefix agree. Supplied puts must also name the catalog-derived
 owning partition. Followers derive the complete required index puts and deletes
 from each entity's actual predecessor and post-image, refusing missing or extra
 mutations. Startup proves the same inventory for creates and known intra-segment
-predecessors; it does not invent unavailable historical entity values. Prior-index
-contents, vectors, cross-history graph validation and exact-stop archive restore
-remain unfinished WP-749 work.
+predecessors; it does not invent unavailable historical entity values. Each
+available prior index row, including unchanged indexes, must match the key,
+covered fields and owning partition derived from its predecessor entity. Missing
+or contradictory known rows refuse before durable follower progress. Expected
+covers are derived one at a time. Older writer records use the existing bounded
+lineage proof to materialize eligible optional fields as null before deriving
+index contents, while transition hashes still bind the raw writer bytes.
+Vectors, unknown cross-history values, complete
+candidate graph validation and exact-stop archive restore remain unfinished
+WP-749 work.
 
 Inspect the format while the server is stopped:
 

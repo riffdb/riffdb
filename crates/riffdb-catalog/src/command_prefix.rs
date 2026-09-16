@@ -98,12 +98,15 @@ pub fn validate_command_prefix_index_images_v1(
 /// Checks the complete secondary-index mutation inventory for one command-owned
 /// entity whose actual predecessor is available. Missing historical predecessors
 /// must not be represented as absent; callers skip this proof until they have one.
-pub fn validate_command_prefix_entity_indexes_v1(
-    bundle: &ValidatedContractBundle,
+/// The returned iterator lazily derives required prior rows, including unchanged
+/// indexes. Callers must validate every available row before granting progress.
+pub fn validate_command_prefix_entity_indexes_v1<'a>(
+    bundle: &'a ValidatedContractBundle,
     command: &StoredCommandCapsuleV2,
     transition: &riffdb_storage_api::CommittedEntityTransitionV1,
-    prior: Option<&riffdb_storage_api::StoredEntityRecordV1>,
-) -> Result<(), CatalogError> {
+    prior: Option<&'a riffdb_storage_api::StoredEntityRecordV1>,
+    resolved: Option<&crate::ResolvedExecutablePlan>,
+) -> Result<CommandPrefixIndexPriorsV1<'a>, CatalogError> {
     use riffdb_storage_api::EntityChainStateV1 as State;
     let prefix = command.prefix_evidence().ok_or_else(corrupt)?;
     let plan = command.base().commit().plan();
@@ -129,6 +132,22 @@ pub fn validate_command_prefix_entity_indexes_v1(
         (State::NeverExisted | State::Deleted, None) => {}
         _ => return Err(corrupt()),
     }
+    // Verify the raw prior hash above, then apply the existing lineage-owned
+    // logical view. Never hash the null-filled view as historical writer bytes.
+    let prior = prior
+        .map(|record| {
+            if record.schema_binding().matches_plan(plan) {
+                Ok(std::borrow::Cow::Borrowed(record))
+            } else {
+                let resolved = resolved
+                    .filter(|resolved| resolved.reference() == plan)
+                    .ok_or_else(corrupt)?;
+                crate::materialization::materialize_prefix_index_predecessor(resolved, record)
+                    .map(std::borrow::Cow::Owned)
+                    .map_err(|_| corrupt())
+            }
+        })
+        .transpose()?;
     let target = transition.target();
     let entity = bundle
         .bundle()
@@ -154,7 +173,10 @@ pub fn validate_command_prefix_entity_indexes_v1(
     }
     let mut required = 0usize;
     for index in entity.indexes() {
-        let old = prior.map(|row| index_image(index, row)).transpose()?;
+        let old = prior
+            .as_deref()
+            .map(|row| index_image(index, row))
+            .transpose()?;
         let new = next
             .as_ref()
             .map(|row| index_image(index, row.value()))
@@ -199,7 +221,101 @@ pub fn validate_command_prefix_entity_indexes_v1(
     if supplied != required {
         return Err(corrupt());
     }
-    Ok(())
+    let context = prior
+        .map(|record| {
+            crate::history::derive_historical_partition(
+                bundle.bundle().schema(),
+                entity,
+                target.key(),
+            )
+            .map(|partition| (record, partition))
+        })
+        .transpose()?;
+    Ok(CommandPrefixIndexPriorsV1 {
+        indexes: entity.indexes().iter(),
+        context,
+    })
+}
+
+/// Lazy expectations for one entity's index predecessors. This is read-only
+/// evidence, not a readiness or reconstruction capability. At most one cover
+/// is derived per step; no aggregate collection of covered values is retained.
+#[must_use = "validate the derived index predecessors before granting progress"]
+pub struct CommandPrefixIndexPriorsV1<'a> {
+    indexes: std::slice::Iter<'a, riffdb_contract_ir::IndexSchema>,
+    context: Option<(
+        std::borrow::Cow<'a, riffdb_storage_api::StoredEntityRecordV1>,
+        riffdb_types::PartitionKey,
+    )>,
+}
+
+impl Iterator for CommandPrefixIndexPriorsV1<'_> {
+    type Item = Result<CommandPrefixIndexPriorV1, CatalogError>;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        let (record, partition) = self.context.as_ref()?;
+        let index = self.indexes.next()?;
+        Some(
+            index_image(index, record).map(|(key, cover)| CommandPrefixIndexPriorV1 {
+                key,
+                cover,
+                partition: partition.clone(),
+            }),
+        )
+    }
+
+    fn size_hint(&self) -> (usize, Option<usize>) {
+        if self.context.is_some() {
+            self.indexes.size_hint()
+        } else {
+            (0, Some(0))
+        }
+    }
+}
+
+impl std::fmt::Debug for CommandPrefixIndexPriorsV1<'_> {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str("CommandPrefixIndexPriorsV1([REDACTED])")
+    }
+}
+
+/// One catalog-derived expected prior row, without a claimed historical schema
+/// binding. The startup history proof or preceding validated prefix owns that
+/// binding; this check proves the key, covered fields and owning partition.
+pub struct CommandPrefixIndexPriorV1 {
+    key: riffdb_types::IndexEntryKey,
+    cover: riffdb_types::CanonicalRecord,
+    partition: riffdb_types::PartitionKey,
+}
+
+impl CommandPrefixIndexPriorV1 {
+    /// Returns the exact key whose actual predecessor must be read.
+    #[must_use]
+    pub const fn key(&self) -> &riffdb_types::IndexEntryKey {
+        &self.key
+    }
+
+    /// Refuses an absent or contradictory actual row. A missing historical
+    /// observation is unknown, and must never be passed here as known absence.
+    pub fn validate(
+        &self,
+        row: Option<&riffdb_storage_api::StoredIndexEntryV2>,
+    ) -> Result<(), CatalogError> {
+        let row = row.ok_or_else(corrupt)?;
+        if row.key() != &self.key
+            || row.covered_values() != &self.cover
+            || row.partition_key() != &self.partition
+        {
+            return Err(corrupt());
+        }
+        Ok(())
+    }
+}
+
+impl std::fmt::Debug for CommandPrefixIndexPriorV1 {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str("CommandPrefixIndexPriorV1([REDACTED])")
+    }
 }
 
 fn index_image(

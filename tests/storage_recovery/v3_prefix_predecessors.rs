@@ -535,3 +535,91 @@ fn startup_refuses_resealed_epoch_priors_and_secondary_index_images() {
         }
     }
 }
+
+#[test]
+fn follower_refuses_invalid_prior_index_even_when_next_command_keeps_its_bytes() {
+    for missing in [false, true] {
+        let source = TestDatabasePath::new("prefix-unchanged-index-source");
+        install_fixture(&source.0);
+        let (ports, _receiver) = observed_ports(&source.0, RedbCommitProfile::Hardened);
+        let first = command_fixture_at(1);
+        commit_command_fixture(&ports, &first);
+        let second = superseding_command_fixture_at(2, 1, &first);
+        commit_command_fixture(&ports, &second);
+        let path = source.0.with_extension("follower.redb");
+        let baseline = bootstrap(&ports, &path);
+        // The command changes entity version but leaves indexed fields and
+        // covers unchanged, so its independent prefix has no index mutation.
+        let third = superseding_command_fixture_at(3, 1, &second);
+        commit_command_fixture(&ports, &third);
+        let pin = ports.published_changelog_snapshot_v3().unwrap();
+        let mut cursor = pin
+            .changelog_receipts_v3(baseline.lineage(), baseline.tail())
+            .unwrap();
+        let mut receipts = Vec::new();
+        while let Some(receipt) = cursor.next_receipt().unwrap() {
+            assert!(receipts.len() < 16);
+            receipts.push(receipt);
+        }
+        assert!(
+            receipts
+                .last()
+                .unwrap()
+                .mutations()
+                .iter()
+                .all(|m| m.namespace() != N::SecondaryIndexes)
+        );
+        let frame = ChangelogFrameV3::new(
+            ChangelogFrameBindingV3::new(
+                baseline.lineage().database_id(),
+                baseline.lineage().history_incarnation(),
+                baseline.lineage().leadership_epoch().get(),
+                baseline.lineage().catalog_digest(),
+                baseline.tail().history_hash(),
+            )
+            .unwrap(),
+            receipts,
+        )
+        .unwrap()
+        .encode()
+        .unwrap();
+        let database = Database::open(&path).unwrap();
+        let write = database.begin_write().unwrap();
+        {
+            let mut indexes = write.open_table(SECONDARY_INDEXES).unwrap();
+            let original = indexes
+                .get(second.index_key.as_bytes())
+                .unwrap()
+                .unwrap()
+                .value()
+                .to_vec();
+            if missing {
+                indexes.remove(second.index_key.as_bytes()).unwrap();
+            } else {
+                let decoded = decode_index_entry_v2(&original).unwrap();
+                let row = decoded.value();
+                let changed = StoredIndexEntryV2::new(
+                    row.key().clone(),
+                    row.schema_binding().clone(),
+                    riffdb_types::CanonicalRecord::new(vec![(
+                        riffdb_types::FieldId::new(999).unwrap(),
+                        riffdb_types::CanonicalValue::U64(7),
+                    )])
+                    .unwrap(),
+                    row.partition_key().clone(),
+                )
+                .unwrap();
+                let encoded = encode_index_entry_v2(&changed).unwrap();
+                indexes
+                    .insert(second.index_key.as_bytes(), encoded.as_bytes())
+                    .unwrap();
+            }
+        }
+        write.commit().unwrap();
+        drop(database);
+        let mut applier = open_follower(&path);
+        assert!(applier.apply_frame(&frame).is_err(), "missing {missing}");
+        drop(applier);
+        assert_eq!(open_follower(&path).durable_history().unwrap(), baseline);
+    }
+}

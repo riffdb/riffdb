@@ -22977,6 +22977,15 @@ work_packages:
       and require schema-derived owning partitions and command-owned deletions.
       Prior-index contents, unknown cross-history values, vectors and private
       reconstruction remain separate required proofs.
+    - Lazily derive each required prior index row from a known predecessor entity,
+      including indexes untouched by the command. Compare available actual rows
+      against the exact key, covered fields and catalog-derived owning partition;
+      retain one expected cover at a time and borrow earlier entity/index images.
+      Missing or malformed unchanged receiver rows refuse before durable progress.
+      Mixed writer bindings lazily resolve one bounded catalog lineage and reuse
+      existing eligible-null materialization; raw bytes retain transition identity.
+      Historical schema bindings retain their existing history/prefix proof owner;
+      unknown historical rows, vectors and complete candidate validation remain.
     - Reuse the checked backup-name grammar through a distinct ArchiveNameV1 type.
       Bind backup, archive, closed application stop and replacement confirmation
       under the versioned archive-input preimage in the existing maintenance hash

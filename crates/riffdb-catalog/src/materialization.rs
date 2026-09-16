@@ -778,6 +778,16 @@ fn analyze_record(
     entity: &EntitySchema,
     record: &StoredEntityRecordV1,
 ) -> Result<RecordAnalysis, CommandSnapshotMaterializationError> {
+    let analysis = analyze_record_fields(resolved, entity, record)?;
+    validate_record_key(resolved, positions, position, entity, record)?;
+    Ok(analysis)
+}
+
+fn analyze_record_fields(
+    resolved: &ResolvedExecutablePlan,
+    entity: &EntitySchema,
+    record: &StoredEntityRecordV1,
+) -> Result<RecordAnalysis, CommandSnapshotMaterializationError> {
     let schema = entity.record();
     let owner = RecordOwnerV1::Entity(record.target().entity_type_id());
     let (relation, eligibility) = resolved
@@ -826,8 +836,6 @@ fn analyze_record(
             )?;
         }
     }
-    validate_record_key(resolved, positions, position, entity, record)?;
-
     let mask = if missing.is_empty() {
         None
     } else {
@@ -858,6 +866,26 @@ fn analyze_record(
         record_limit_exceeded: expanded_bytes > MAX_CANONICAL_DOCUMENT_BYTES
             || expanded_fields > MAX_RECORD_FIELDS,
     })
+}
+
+/// Prefix evidence retains raw writer bytes; index derivation must use the
+/// same eligible-null materialization as the executing command's read view.
+pub(crate) fn materialize_prefix_index_predecessor(
+    resolved: &ResolvedExecutablePlan,
+    record: &StoredEntityRecordV1,
+) -> Result<StoredEntityRecordV1, CommandSnapshotMaterializationError> {
+    let entity = resolved
+        .bundle()
+        .bundle()
+        .schema()
+        .entity(record.target().entity_type_id())
+        .ok_or_else(CommandSnapshotMaterializationError::integrity)?;
+    let analysis = analyze_record_fields(resolved, entity, record)?;
+    validate_entity_record_key(entity, record)?;
+    if analysis.record_limit_exceeded {
+        return Err(CommandSnapshotMaterializationError::integrity());
+    }
+    normalize_record(record.clone(), entity.record(), analysis.mask.as_ref())
 }
 
 pub(crate) fn validate_static_value(
@@ -917,6 +945,14 @@ fn validate_record_key(
     if key_schema != entity.primary_key() {
         return Err(CommandSnapshotMaterializationError::integrity());
     }
+    validate_entity_record_key(entity, record)
+}
+
+fn validate_entity_record_key(
+    entity: &EntitySchema,
+    record: &StoredEntityRecordV1,
+) -> Result<(), CommandSnapshotMaterializationError> {
+    let key_schema = entity.primary_key();
     let values = key_schema
         .decode_entity(record.target().key())
         .map_err(|_| CommandSnapshotMaterializationError::integrity())?;
@@ -1517,6 +1553,100 @@ contract SnapshotMaterialization version {version} {{
             desired_size
         );
         payload
+    }
+
+    #[test]
+    // req: REP-007
+    fn prefix_prior_index_uses_null_after_an_index_adding_migration() {
+        let mut bundles = lineage(1);
+        let parent = bundles.last().unwrap();
+        let indexed_source = source(3, true, 1).replace(
+            "field note: optional<string<8>>",
+            "field note: optional<string<8>> index by_note(note) presence(note)",
+        );
+        let indexed = ValidatedContractBundle::from_compiler_bundle(
+            compile_contract_successor(&indexed_source, parent.bundle()).unwrap(),
+        )
+        .unwrap();
+        // The history driver validates durable migration evidence before this
+        // bounded proof constructor; supply its exact edge in this unit fixture.
+        let edges = [(parent.bundle_hash(), indexed.bundle_hash())]
+            .into_iter()
+            .collect();
+        let raw = record(&bundles[0], entity_type(&bundles[0]), 1, 1, false, 7, None);
+        bundles.push(indexed.clone());
+        let proof = LineageMaterializationProof::from_historical_bundles(bundles, &edges).unwrap();
+        let command = &indexed.bundle().commands()[0];
+        let reference = ExecutablePlanRef::new(
+            indexed.lineage().clone(),
+            indexed.contract_version(),
+            indexed.bundle_hash(),
+            command.command_id(),
+            command.plan_hash(),
+        );
+        let resolved = indexed
+            .resolve_plan_with_proof(&reference, proof, 2)
+            .unwrap();
+        let logical = materialize_prefix_index_predecessor(&resolved, &raw).unwrap();
+        let index = &indexed.bundle().schema().entities()[0].indexes()[0];
+        let raw_values =
+            riffdb_contract_ir::encode_operational_index_values_v1(index, raw.fields()).unwrap();
+        let logical_values =
+            riffdb_contract_ir::encode_operational_index_values_v1(index, logical.fields())
+                .unwrap();
+        assert_eq!(
+            raw_values[0],
+            CanonicalValue::U64(riffdb_contract_ir::PRESENCE_MISSING_V1)
+        );
+        assert_eq!(
+            logical_values[0],
+            CanonicalValue::U64(riffdb_contract_ir::PRESENCE_NULL_V1)
+        );
+        assert_ne!(
+            index
+                .key_schema()
+                .encode_index(&raw_values, raw.target().key().clone())
+                .unwrap(),
+            index
+                .key_schema()
+                .encode_index(&logical_values, raw.target().key().clone())
+                .unwrap()
+        );
+    }
+
+    #[test]
+    // req: REP-007
+    fn prefix_index_materialization_keeps_raw_identity_and_requires_lineage_eligibility() {
+        let bundles = lineage(1);
+        let entity = entity_type(&bundles[0]);
+        let raw = record(&bundles[0], entity, 1, 1, false, 7, None);
+        let raw_hash = riffdb_storage_api::derive_entity_record_hash_v1(&raw).unwrap();
+        let resolved = resolved_at(bundles.clone(), 1);
+        let materialized = materialize_prefix_index_predecessor(&resolved, &raw).unwrap();
+        assert_eq!(
+            materialized.fields(),
+            &fields(&bundles[1], entity, 1, true, 7, None)
+        );
+        assert_eq!(materialized.schema_binding(), raw.schema_binding());
+        assert_eq!(
+            riffdb_storage_api::derive_entity_record_hash_v1(&raw).unwrap(),
+            raw_hash
+        );
+        assert_ne!(
+            riffdb_storage_api::derive_entity_record_hash_v1(&materialized).unwrap(),
+            raw_hash
+        );
+        let exact_omission = record(&bundles[1], entity, 1, 1, false, 7, None);
+        assert!(materialize_prefix_index_predecessor(&resolved, &exact_omission).is_err());
+        let wrong_key_fields = StoredEntityRecordV1::new(
+            raw.target().clone(),
+            raw.entity_version(),
+            raw.written_by_contract(),
+            raw.schema_binding().clone(),
+            fields(&bundles[0], entity, 2, false, 7, None),
+        )
+        .unwrap();
+        assert!(materialize_prefix_index_predecessor(&resolved, &wrong_key_fields).is_err());
     }
 
     #[test]
