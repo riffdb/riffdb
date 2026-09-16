@@ -22784,7 +22784,7 @@ work_packages:
     adr/0178-follower-activation-and-changelog-derived-backup.md,
     proto/**, crates/riffdb-proto/**, crates/riffdb-types/**, crates/riffdb-auth/**,
     crates/riffdb-policy/**, crates/riffdb-storage-api/**, crates/riffdb-storage-redb/**,
-    crates/riffdb-commit/**, crates/riffdb-service/**,
+    crates/riffdb-commit/**, crates/riffdb-service/**, crates/riffdb-client-rust/**,
     crates/riffdb-api-grpc/**, crates/riffdb-server/**, crates/riffdb-cli/**,
     crates/riffdb-testkit/**, fixtures/**, tests/**, scripts/**, docs/**]
   deliverables:
@@ -22817,6 +22817,10 @@ work_packages:
   closure:
     status: open
     decisions_taken:
+    - Widen crate scope to riffdb-client-rust in its own prerequisite commit.
+      The accepted deliverables already require typed Rust-client registration,
+      retirement and promotion; this scope entry permits their implementation
+      without changing any accepted surface, authority or safety requirement.
     - Join durable follower acknowledgement application frontiers to offline
       retention as FollowerLowWater, treating before-first as zero. Validate the
       complete retained chain and every bounded source hold from the same pin
