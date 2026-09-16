@@ -120,10 +120,16 @@ and received successor groups now require exact entity, chain-head and index-epo
 mutation inventories and bind their typed post-images to each command's facts.
 Pending-idempotency mutations may only delete the owning outcome identity.
 Production corruption tests reseal missing, extra and substituted rows with
-valid envelopes and prove refusal; valid grouped images still reopen. This is
-not an exact-stop restore implementation. Complete secondary-index/vector and
-predecessor graph validation, private reconstruction, publication proofs and
-write-path measurements remain required.
+valid envelopes and prove refusal; valid grouped images still reopen. Received
+entity, chain-head and epoch transitions now join to actual pinned predecessor
+rows or borrowed earlier prefix images, with deletes shadowing physical rows.
+Retained segments check their known intra-segment semantic predecessors and raw
+mutation preconditions. Wrong nested record types cannot select a legacy decoder.
+Real source/bootstrap/follower tests prove resealed false priors refuse before
+any durable frame progress; valid put/delete/recreate groups replay and reopen.
+This is not an exact-stop restore implementation. Complete secondary-index/vector
+and cross-history graph validation, private reconstruction, publication proofs
+and write-path measurements remain required.
 
 - A real same-entity group with multiple puts, delete, and recreate restores to
   each application sequence with exact entity bytes and reciprocal command facts.

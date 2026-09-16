@@ -2,6 +2,7 @@
 //! This layer does not grant reconstruction/publication authority or replace
 //! the command, entity/index, catalog and structural validators.
 
+mod predecessor;
 mod rows;
 
 pub(crate) use rows::{decode_capsule, decode_segment};
@@ -137,7 +138,7 @@ pub(crate) fn validate_received_prefixes(
             legacy = true;
             continue;
         };
-        let segment = match decode_segment(value) {
+        let segment = match rows::decode_segment_images(value) {
             Ok(decoded) => decoded.into_parts().0,
             Err(error) if error.kind() == DurableCodecErrorKind::UnexpectedRecordType => {
                 legacy = true;
@@ -176,7 +177,12 @@ pub(crate) fn validate_received_prefixes(
         .flat_map(|segment| segment.commands())
         .map(|command| command.prefix_evidence().ok_or_else(corrupt))
         .collect::<Result<Vec<_>, _>>()?;
-    validate_independent_prefixes(transaction, tables, &evidence, receipt)
+    validate_independent_prefixes(transaction, tables, &evidence, receipt)?;
+    predecessor::validate_commands(
+        transaction,
+        tables,
+        segments.iter().flat_map(|segment| segment.commands()),
+    )
 }
 
 fn validate_independent_prefixes<

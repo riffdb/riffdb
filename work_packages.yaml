@@ -22941,6 +22941,17 @@ work_packages:
       groups reopen; missing, extra and substituted typed images refuse even with
       valid segment checksums. Complete secondary-index/vector and actual-prior
       graph checks remain required before exact-stop reconstruction or closure.
+    - Join received entity, chain-head and index-epoch transitions to the exact
+      pinned predecessor, borrowing earlier prefix images in a bounded map and
+      retaining explicit deletion shadows. Reuse the same semantic joins for
+      known intra-segment predecessors during retained decoding, including raw
+      precondition hashes for every repeatedly mutated key. Do not infer missing
+      historical values. A wrong nested record type is successor corruption and
+      cannot select the legacy decoder fallback. Production bootstrapped follower
+      cases prove false entity/chain/epoch priors refuse atomically while valid
+      put/delete/recreate prefixes replay and reopen. Complete secondary-index/
+      vector and cross-history graph checks and private exact-stop reconstruction
+      remain required.
     - Reuse the checked backup-name grammar through a distinct ArchiveNameV1 type.
       Bind backup, archive, closed application stop and replacement confirmation
       under the versioned archive-input preimage in the existing maintenance hash
