@@ -1055,7 +1055,13 @@ shape!(REPLICATION_SOURCE_HOLD_V1 [
     message(7, &CHANGELOG_POSITION_V3),
 ]);
 
-const ROOTS: [&Shape; 101] = [
+shape!(REPLICATION_SOURCE_HOLD_V2 [
+    message(1, &REPLICATION_SOURCE_HOLD_V1),
+    message(2, &CHANGELOG_POSITION_V3),
+    message(6, &CHANGELOG_POSITION_V3),
+]);
+
+const ROOTS: [&Shape; 102] = [
     &ROOT_EMPTY,
     &ROOT_DATABASE_ID,
     &ROOT_OPTIONAL_UNIT_FIELD_TWO,
@@ -1168,6 +1174,7 @@ const ROOTS: [&Shape; 101] = [
     &REPLICATION_SOURCE_HOLD_V1,
     &COMMAND_CAPSULE_V7,
     &COMMAND_SEGMENT_V6,
+    &REPLICATION_SOURCE_HOLD_V2,
 ];
 
 pub(crate) fn payload(record_index: usize, input: &[u8]) -> Result<(), DurablePreflightError> {

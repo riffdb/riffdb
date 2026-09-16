@@ -45,3 +45,54 @@ increment does not change the public handbook.
 The scoped storage-API suite passes all 449 tests, and the production retention
 test passes against redb. These checks do not claim that registration, health
 reporting or automatic expiry are implemented.
+
+
+## Versioned registration-policy codec increment
+
+Package: WP-748. Tier: guarantee, under accepted ADR-0178 section 6 and its
+compatibility decision naming registration/budget metadata through the registry
+migration path, within ADR-0186's existing SourceOnly hold table.
+
+Decisions:
+
+- Add tag 73 revision 2 in the existing hold domain; embed the unchanged V1
+  fence instead of reinterpreting its fields, owner tags or keys. V1 and V2
+  remain distinct checked codecs. Bootstrap and archive holds cannot carry
+  follower registration policy.
+- Keep registration phase separate from V1's frozen owner-kind enum. The
+  registration predecessor and its checked physical successor bind one
+  registration generation within its lineage. This is data, not a token.
+- Configured expiry is an optional future application sequence. Budget remains
+  a nonzero application-sequence allowance. A persisted degradation observation
+  must reach that allowance or configured expiry; it cannot authorize release.
+- Registration and acknowledgement points must have comparable monotone shape;
+  equal physical positions require exact frontier/hash identity. Pending
+  bootstrap pins the registration predecessor. Storage must still prove retained
+  ancestry and the actual registration transaction before accepting a row.
+- Reuse the existing V1 semantic conversion and bounded structural preflight.
+  V2 has a maximum 328-byte payload, with canonical phase-specific fixtures.
+- Register the codec now, without selecting a runtime writer or adding an
+  automatic migration edge. Existing exact registry markers continue to require
+  their matching binary. The runtime must use an explicit governed migration
+  before policy bytes can be persisted by registration.
+
+Compatibility: V1 schema hashes, wire vectors, compact identity and writers are
+unchanged. The public handbook's Compatibility page documents the new codec and
+exact registry refusal. No application or operator operation is activated.
+
+Evidence: V1/V2 tests check round trips, every truncation and single-byte
+corruption, cross-version refusal, redacted diagnostics, independently resealed
+invalid policy fields, expiry-only degradation, absent expiry/degradation,
+maximum counters and the exact 328-byte structural bound. Canonical fixtures
+bind all three registration phases.
+
+Hazards and follow-ups: source storage reads, registry migration, audited
+registration/retirement/expiry, health consumption, bootstrap/acknowledgement
+integration and all promotion deliverables remain unfinished. Codec values
+never release an existing retention fence. WP-748 stays open.
+
+Checks: scoped acceptance passes all nine steps, including 635 Protobuf and
+storage-API tests, clippy, generated artifacts, topology, handbook, file-size
+and panic-allowance checks. A byte comparison verifies all 105 existing
+schema-hash and V1 hold artifacts are unchanged. The release manifest retains
+every previous record identity/hash and adds only tag 73 revision 2.

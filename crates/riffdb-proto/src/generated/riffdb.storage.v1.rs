@@ -3815,6 +3815,68 @@ pub mod stored_replication_source_hold_v1 {
     }
 }
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct StoredReplicationSourceHoldV2 {
+    #[prost(message, optional, tag = "1")]
+    pub hold: ::core::option::Option<StoredReplicationSourceHoldV1>,
+    #[prost(message, optional, tag = "2")]
+    pub registered_at: ::core::option::Option<
+        stored_changelog_history_state_v3::Position,
+    >,
+    #[prost(uint64, tag = "3")]
+    pub hold_budget_sequences: u64,
+    #[prost(uint64, optional, tag = "4")]
+    pub expires_at_application_sequence: ::core::option::Option<u64>,
+    #[prost(enumeration = "stored_replication_source_hold_v2::Phase", tag = "5")]
+    pub phase: i32,
+    #[prost(message, optional, tag = "6")]
+    pub degraded_at: ::core::option::Option<stored_changelog_history_state_v3::Position>,
+}
+/// Nested message and enum types in `StoredReplicationSourceHoldV2`.
+pub mod stored_replication_source_hold_v2 {
+    #[derive(
+        Clone,
+        Copy,
+        Debug,
+        PartialEq,
+        Eq,
+        Hash,
+        PartialOrd,
+        Ord,
+        ::prost::Enumeration
+    )]
+    #[repr(i32)]
+    pub enum Phase {
+        Unspecified = 0,
+        AwaitingBootstrap = 1,
+        Attached = 2,
+        Retired = 3,
+    }
+    impl Phase {
+        /// String value of the enum field names used in the ProtoBuf definition.
+        ///
+        /// The values are not transformed in any way and thus are considered stable
+        /// (if the ProtoBuf definition does not change) and safe for programmatic use.
+        pub fn as_str_name(&self) -> &'static str {
+            match self {
+                Self::Unspecified => "PHASE_UNSPECIFIED",
+                Self::AwaitingBootstrap => "PHASE_AWAITING_BOOTSTRAP",
+                Self::Attached => "PHASE_ATTACHED",
+                Self::Retired => "PHASE_RETIRED",
+            }
+        }
+        /// Creates an enum from field names used in the ProtoBuf definition.
+        pub fn from_str_name(value: &str) -> ::core::option::Option<Self> {
+            match value {
+                "PHASE_UNSPECIFIED" => Some(Self::Unspecified),
+                "PHASE_AWAITING_BOOTSTRAP" => Some(Self::AwaitingBootstrap),
+                "PHASE_ATTACHED" => Some(Self::Attached),
+                "PHASE_RETIRED" => Some(Self::Retired),
+                _ => None,
+            }
+        }
+    }
+}
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct StoredRetentionWatermarkV1 {
     #[prost(uint64, tag = "1")]
     pub watermark_sequence: u64,

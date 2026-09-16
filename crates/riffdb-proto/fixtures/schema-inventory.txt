@@ -130,6 +130,9 @@ files
     import riffdb/storage/v1/changelog_history_state_v3.proto
   riffdb/storage/v1/replication_source_hold_v1.proto
     import riffdb/storage/v1/changelog_history_state_v3.proto
+  riffdb/storage/v1/replication_source_hold_v2.proto
+    import riffdb/storage/v1/replication_source_hold_v1.proto
+    import riffdb/storage/v1/changelog_history_state_v3.proto
   riffdb/storage/v1/retention_watermark_v1.proto
     import riffdb/storage/v1/common.proto
   riffdb/storage/v1/service_audit_request_index_v1.proto
@@ -1514,6 +1517,13 @@ messages
     5 leadership_epoch optional uint64
     6 catalog_digest optional bytes
     7 fence optional .riffdb.storage.v1.StoredChangelogHistoryStateV3.Position
+  riffdb.storage.v1.StoredReplicationSourceHoldV2 fields=6
+    1 hold optional .riffdb.storage.v1.StoredReplicationSourceHoldV1
+    2 registered_at optional .riffdb.storage.v1.StoredChangelogHistoryStateV3.Position
+    3 hold_budget_sequences optional uint64
+    4 expires_at_application_sequence optional uint64 proto3-optional oneof=_expires_at_application_sequence
+    5 phase optional .riffdb.storage.v1.StoredReplicationSourceHoldV2.Phase
+    6 degraded_at optional .riffdb.storage.v1.StoredChangelogHistoryStateV3.Position
   riffdb.storage.v1.StoredRetentionAdministrationV1 fields=5
     1 administration_sequence optional uint64
     2 action optional .riffdb.storage.v1.RetentionAdministrationActionV1
@@ -3387,6 +3397,11 @@ enums
     1 KIND_FOLLOWER_ACKNOWLEDGEMENT
     2 KIND_ARCHIVE_ACKNOWLEDGEMENT
     3 KIND_BOOTSTRAP
+  riffdb.storage.v1.StoredReplicationSourceHoldV2.Phase values=4
+    0 PHASE_UNSPECIFIED
+    1 PHASE_AWAITING_BOOTSTRAP
+    2 PHASE_ATTACHED
+    3 PHASE_RETIRED
   riffdb.storage.v1.StoredVectorProjectionLifecycleV1 values=6
     0 STORED_VECTOR_PROJECTION_LIFECYCLE_V1_UNSPECIFIED
     1 STORED_VECTOR_PROJECTION_LIFECYCLE_V1_BUILDING

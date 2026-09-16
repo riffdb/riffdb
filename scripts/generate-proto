@@ -161,6 +161,10 @@ artifacts=(
     fixtures/proto/durable-replication-source-hold-v1-schema-hash.bin
     crates/riffdb-proto/fixtures/durable-replication-source-hold-v1-record-bound.bin
     crates/riffdb-proto/fixtures/durable-replication-source-hold-v1-schema-hash.bin
+    fixtures/proto/durable-replication-source-hold-v2-record-bound.bin
+    fixtures/proto/durable-replication-source-hold-v2-schema-hash.bin
+    crates/riffdb-proto/fixtures/durable-replication-source-hold-v2-record-bound.bin
+    crates/riffdb-proto/fixtures/durable-replication-source-hold-v2-schema-hash.bin
     fixtures/proto/durable-replication-follower-state-v3-schema-hash.bin
     crates/riffdb-proto/fixtures/durable-replication-follower-state-v3-record-bound.bin
     crates/riffdb-proto/fixtures/durable-replication-follower-state-v3-schema-hash.bin
