@@ -1,6 +1,8 @@
 # WP-748 — follower registration audit authority
 
-Status: proposed; exact maintainer acceptance required before implementation.
+Status: exact text accepted by the maintainer in session, 2026-09-16:
+"Approve exact text". Authority-only acceptance commit: `05d2938b`.
+Implementation and required proofs remain open.
 Package: WP-748. Tier: guarantee. This does not close WP-748 or authorize a
 promotion implementation or a new old-primary fencing mechanism.
 
@@ -35,7 +37,7 @@ audit, preserving field order, existing targets and the target-count bound.
 It recomputes the envelope checksum and verifies that the existing codec refuses
 the unknown target. This refusal must remain after a successor is introduced.
 
-## Exact proposed amendment
+## Exact accepted amendment
 
 The following qualifies SPEC section 13.5, ADR-0021's target registry and durable
 compatibility decision, and ADR-0178's unchanged-durable-record statement. It

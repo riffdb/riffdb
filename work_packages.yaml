@@ -22823,6 +22823,12 @@ work_packages:
   closure:
     status: open
     decisions_taken:
+    - Share the existing checked LeadershipEpochV1 and ReplicationSourceHoldIdV1
+      definitions from riffdb-types, retaining storage-API re-exports and bytes.
+      Add the accepted lineage-scoped follower audit target with checked nonzero
+      incarnation, canonical key and redacted diagnostics. Frozen audit V1/V2
+      encoders and command capsules refuse this administrative target; successor
+      V3 encoding and atomic registration ceremonies remain required before use.
     - Record the maintainer's two exact acceptances in session 2026-09-16,
       "Approve exact text", separately referring to WP-748-REGISTRATION-AUDIT-REVIEW.md
       and WP-748-PROMOTION-FENCING-REVIEW.md. Incorporate both approved blocks verbatim

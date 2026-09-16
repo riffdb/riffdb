@@ -2,7 +2,7 @@
 
 use std::fmt;
 
-use riffdb_types::{CommitSequence, ServiceAuditLinkV1, ServiceAuditPhaseV1};
+use riffdb_types::{CommitSequence, ServiceAuditLinkV1, ServiceAuditPhaseV1, ServiceAuditTargetV1};
 
 use crate::{
     StorageValueError, StoredCommitRecordV1, StoredDurableEventV1, StoredOutcomeV1,
@@ -60,7 +60,15 @@ impl StoredCommandCapsuleV1 {
             && started_audit.targets() == terminal_audit.targets()
             && started_audit.approval_id() == terminal_audit.approval_id();
 
-        if outcome.commit_sequence() != sequence
+        // Follower targets address administrative registration, never a command.
+        // Frozen command capsules embed V2 audit targets and cannot encode them.
+        let has_follower_target = started_audit
+            .targets()
+            .as_slice()
+            .iter()
+            .any(|target| matches!(target, ServiceAuditTargetV1::ReplicationFollower(_)));
+        if has_follower_target
+            || outcome.commit_sequence() != sequence
             || outcome.admission_request_id() != commit.admission_request_id()
             || outcome.plan() != commit.plan()
             || outcome.canonical_input_hash() != commit.canonical_input_hash()

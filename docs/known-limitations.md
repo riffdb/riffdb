@@ -62,7 +62,9 @@ These limits are part of the POC release posture, not hidden roadmap promises.
   the administrative V3 stream, staged bootstrap, follower daemon and repeated
   crash proofs, verified through full CI. WP-747 adds verified follower reads,
   freshness and sequence-lag reporting. Promotion remains WP-748 work and
-  archives remain WP-749 work.
+  archives remain WP-749 work. The accepted WP-748 registration-audit and
+  promotion-fencing amendments are recorded in SPEC §13.5; registration, retirement,
+  source fencing and promotion are not yet available operator operations.
 - Compiler-sealed command decisions support bounded branch-local entity field
   assignments, embeddings, creates, and durable events. Workflow transition
   and lease instructions retain their existing dedicated command forms and are
