@@ -1,6 +1,9 @@
 //! Production command owners after the real validated V3 activation handoff.
 //! Exact successor receipts, command semantics, checkpoint and recovery evidence.
 // req: REP-003, REC-001, STO-012, PERF-007
+#[path = "v3_prefix_predecessors.rs"]
+mod prefix_predecessors;
+
 use super::*;
 use riffdb_storage_api::{
     AuthoritativeNamespaceV1 as N, AuthoritativeTransactionV3, ChangelogAttributionV3 as A,

@@ -162,9 +162,13 @@ the previous encoded limit may now be refused before receiving a sequence.
 Startup, recovery and received successor groups also check that retained entity
 images, chain heads and index epochs exactly match their owning command facts;
 missing, extra or substituted rows refuse even when their envelopes are valid.
-Pending-idempotency mutations may only delete that command's identity. Complete
-secondary-index/vector and predecessor graph validation and exact-stop archive
-restore remain unfinished WP-749 work.
+Pending-idempotency mutations may only delete that command's identity. Followers
+also join entity, chain-head and epoch transitions to their exact logical prior
+rows, including earlier commands in the same group. Retained-segment decoding
+checks known intra-segment predecessors and their raw mutation preconditions.
+A wrong nested record type is corruption, never a legacy-format fallback.
+Complete secondary-index/vector and cross-history graph validation, plus
+exact-stop archive restore, remain unfinished WP-749 work.
 
 Inspect the format while the server is stopped:
 

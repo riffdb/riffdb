@@ -18,9 +18,28 @@ fn corrupt() -> DurableCodecError {
 pub(crate) fn decode_segment(
     bytes: &[u8],
 ) -> Result<EncodedPageItem<StoredCommandSegmentV1>, DurableCodecError> {
+    let decoded = decode_segment_images(bytes)?;
+    super::predecessor::validate_retained_commands(decoded.value().commands()).map_err(
+        |error| {
+            DurableCodecError::new(match error.kind() {
+                riffdb_storage_api::StorageErrorKind::LimitExceeded => {
+                    DurableCodecErrorKind::LimitExceeded
+                }
+                _ => DurableCodecErrorKind::CorruptData,
+            })
+        },
+    )?;
+    Ok(decoded)
+}
+
+/// Received groups join against a complete pinned predecessor after net
+/// validation, so they do not also need the partial retained-segment pass.
+pub(super) fn decode_segment_images(
+    bytes: &[u8],
+) -> Result<EncodedPageItem<StoredCommandSegmentV1>, DurableCodecError> {
     let decoded = riffdb_storage_api::decode_command_segment_v1(bytes)?;
     for command in decoded.value().commands() {
-        validate_rows(command)?;
+        validate_rows(command).map_err(nested_error)?;
     }
     Ok(decoded)
 }
@@ -29,8 +48,17 @@ pub(crate) fn decode_capsule(
     bytes: &[u8],
 ) -> Result<EncodedPageItem<StoredCommandCapsuleV2>, DurableCodecError> {
     let decoded = riffdb_storage_api::decode_command_capsule_v2(bytes)?;
-    validate_rows(decoded.value())?;
+    validate_rows(decoded.value()).map_err(nested_error)?;
     Ok(decoded)
+}
+
+// Only the outer envelope may select the legacy decoder fallback. A wrong
+// record type inside a known successor is corruption of that successor.
+fn nested_error(error: DurableCodecError) -> DurableCodecError {
+    match error.kind() {
+        DurableCodecErrorKind::UnexpectedRecordType => corrupt(),
+        _ => error,
+    }
 }
 
 fn required<'a>(
