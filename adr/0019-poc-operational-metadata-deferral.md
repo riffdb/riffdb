@@ -37,6 +37,14 @@ adopt this narrower set without a migration.
 
 ## Decision
 
+### Accepted amendment: durable primary fencing and audited promotion
+
+The exact "Accepted amendment: durable primary fencing and audited promotion" text in SPEC §13.5
+is incorporated here in full and qualifies the original decision below.
+Maintainer, in session, 2026-09-16: "Approve exact text", referring to
+`docs/architecture/WP-748-PROMOTION-FENCING-REVIEW.md`. WP-748 owns implementation,
+compatibility fixtures and proof before activation.
+
 For the POC, the durable operational metadata required by `STO-012` is exactly:
 
 1. the storage format version;

@@ -38,6 +38,14 @@ or an unbounded result log.
 
 ## Decision
 
+### Accepted amendment: registration audit authority
+
+The exact "Accepted amendment: registration audit authority" text in SPEC §13.5
+is incorporated here in full and qualifies the original decision below.
+Maintainer, in session, 2026-09-16: "Approve exact text", referring to
+`docs/architecture/WP-748-REGISTRATION-AUDIT-REVIEW.md`. WP-748 owns implementation,
+compatibility fixtures and proof before activation.
+
 ### Closed v1 registry
 
 `riffdb-types` owns this exact value registry. Tag zero and every unlisted tag

@@ -5717,6 +5717,179 @@ with no protected output. A committed or uncertain control-plane transition uses
 its typed unavailable/uncertain recovery result. No audit failure rolls back an
 authoritative transition already known durable.
 
+### Accepted amendment: registration audit authority
+
+Maintainer, in session, 2026-09-16: "Approve exact text", referring to
+`docs/architecture/WP-748-REGISTRATION-AUDIT-REVIEW.md`. The exact accepted text follows.
+
+Add one closed semantic audit target, `ReplicationFollower`, at tag `0x0b`.
+Its payload is the request-selected source database ID, nonzero history
+incarnation, nonzero leadership epoch, and existing nonzero opaque 16-byte
+replication hold ID. It identifies one follower registration within one source
+lineage. It is not an authorizing capability or a result-derived target.
+
+Its canonical key is `0x0b || database_id:16_network_order_bytes ||
+history_incarnation:u64_be || leadership_epoch:u64_be || hold_id:16_bytes`.
+The existing zero-through-16 bound, duplicate refusal, canonical ordering,
+redacted diagnostics and shared-service ownership of target construction
+remain mandatory. Registration and retirement retain this exact target across
+started, denied, failed, uncertain and succeeded audit phases. No credential,
+address, business key, free-form reason or transport object is recorded.
+
+Add `ServiceAuditRecordV3` at durable record tag 22, revision 3, in a separate
+source file. Its target oneof preserves V2 fields 1 through 10 and adds
+`ReplicationFollower` as field 11. All other audit fields and lifecycle
+semantics retain their existing meaning. Preserve V1/V2 sources, descriptors,
+schema hashes, wire fixtures and readers; never reinterpret their bytes as
+containing the new target. New follower-target audits use V3; existing audits
+continue to use V2. Unknown or malformed target fields remain refused.
+
+Add `StoredReplicationAdministrationV1` at durable record tag 74, revision 1,
+in the existing administration-audit namespace. Its closed actions are
+`RegisterFollower`, `RetireFollower`, and `ExpireFollower`. One record binds
+its coordinator-assigned administration sequence and timestamp, the exact follower target,
+registration generation, bounded checked policy and before/after hold state,
+the initiating request/principal/approval for an explicit operation, and the
+original authorized registration receipt for configured expiry. The record
+contains no raw credential, path, address, business data or free-form reason.
+
+The coordinator-owned transition commits this record, its source-only hold
+change and the complete V3 receipt atomically at the drained writer barrier.
+Use the existing retention-administration attribution with its existing
+meaning; do not reinterpret attribution 27 or add another authority namespace.
+Exact replay returns the original authoritative administration sequence and
+cannot recreate a retired registration or release a different generation.
+Register/retire service success links that exact sequence through the existing
+`ControlPlane` result, preserving current authorization safe points and audit
+uncertainty rules. No caller may select a result sequence or waive audit.
+
+Configured expiry is an internal continuation of the exact previously
+authorized registration policy. It records `ExpireFollower` with that original
+receipt as provenance; it does not impersonate a new authenticated invocation.
+It may release only the matching registration after its configured sequence
+expiry and after typed replication health records degradation. Budget
+exhaustion alone never releases a fence. Startup, recovery and retention must
+validate and preserve required hold/control-receipt links and refuse missing,
+conflicting or substituted evidence. Retired registrations cannot acknowledge,
+bootstrap or resurrect under their old identity.
+
+Register both successor codecs through the existing registry/compatibility
+mechanism, with bounded canonical fixtures, mixed-generation reads, explicit
+old-binary refusal and the version topology. Prove atomic audit/hold changes,
+retry and crash recovery, current authorization, target equality, malformed
+record refusal and retention safety before enabling the public operations.
+These changes do not activate ordinary follower writes or local follower audit.
+
+### Accepted amendment: durable primary fencing and audited promotion
+
+Maintainer, in session, 2026-09-16: "Approve exact text", referring to
+`docs/architecture/WP-748-PROMOTION-FENCING-REVIEW.md`. The exact accepted text follows.
+
+**Durable source admission fence.** Add a versioned
+`ReplicationPrimaryAdmissionV1` record in one new retained metadata domain,
+`replication_primary_admission/v1`. Classify it as required
+`ReplicationControl(SourceOnly)` in successor `AuthoritativeStateCatalogV2`,
+mandatory for source-mode opens. Attached followers do not carry this
+source-only admission state. Its closed states are Active and Fenced. Both bind the exact source database
+ID, history incarnation and leadership epoch. Fenced additionally binds one
+operation ID, selected follower registration/generation, immutable final
+application sequence and the exact authoritative fence-administration receipt.
+Missing, malformed or contradictory required state fails closed at startup.
+Old catalog and record identities retain their bytes and meaning.
+
+Add the administrative `FenceReplicationPrimary` operation and permission,
+exposed through the shared service, gRPC, Rust operator client and CLI only.
+It is never application-role bindable or an MCP tool. Fresh authorization and
+any required approval precede mutation. It stops new command admission,
+drains already admitted work through the existing coordinator barrier, and
+atomically persists Fenced and a `StoredPrimaryFenceAdministrationV1` record
+with its complete V3 receipt. The application head is unchanged by fencing;
+its observed value becomes immutable fence evidence. Register the closed
+`PrimaryFence` attribution; existing attribution meanings remain unchanged.
+
+Current and subsequent source opens MUST consult the checked admission state
+before granting a command writer or application readiness. A fenced source
+returns the typed `primary_fenced` RDB-REP outcome on command admission.
+Control operations that can grant new application authority, replace the
+database, or undo the fence are refused. Bounded authenticated fence retries,
+health/statistics, existing replication drain/acknowledgement and required
+service-audit writes may continue; none can advance the application head or
+clear the fence. No unfence operation is introduced. Physical copies do not
+lose the fence, and deleting or losing required metadata is corruption.
+
+Exact retries of fencing retain the original operation, follower generation,
+final application head and administration sequence. A conflicting operation
+cannot retarget the fence. Losing the response never restores write admission.
+The fence operation may succeed even if the later promotion cannot finish;
+that availability loss must be explicit in operator documentation.
+
+**Proof before promotion.** The promotion owner obtains and validates the
+fence through the configured source's existing authenticated TLS peer path,
+under current administrative authority. It never accepts a caller's claim
+that a source stopped or a plain serialized receipt as proof. The source must
+validate that the candidate's exact applied V3 position belongs to the fenced
+source's retained history. Foreign lineage, wrong registration/generation,
+unproven ancestry, a candidate beyond the fence, or unavailable first-time
+proof refuses promotion. Ordinary replication capability revocation is not
+such proof. No new cryptography or external election/fencing service is added.
+
+After source fencing, stop receiving new input and drain the follower's
+already received complete prefix through the sole applier's durability
+boundary. Bind the resulting exact position to the validated source fence.
+It need not catch up through unreceived source history. Compute RPO by checked
+subtraction of the applied application sequence from the frozen source
+application sequence, treating BeforeFirst as zero. Administration or physical
+transaction counts are never substituted for application sequences.
+
+**Audited offline cutover.** Add bounded external
+`replication_promotion_receipt/v1` under the existing exclusive maintenance
+owner. It is a distinct domain, not a restore receipt or replicated history.
+It retains the exact request, authenticated actor/capability/approval identity,
+validated fence, drained applied position, RPO, chosen incarnation/epoch and
+phase. It contains no bearer, raw transport object or free-form payload.
+Receipt retries cannot change selection, target, arithmetic or chosen values.
+
+Authenticated promotion attempts are durably audited in this external ledger
+while the node is an attached follower or offline promotion candidate. This
+is a promotion-only exception to local database service-audit placement in
+SPEC section 13.5; it does not authorize ordinary follower audit writers.
+Explicit denials and failed or uncertain attempts retain their bounded audit
+outcome there and release no application authority. Successful cutover binds
+the complete attempt and terminal result to a new-lineage
+`StoredPromotionAdministrationV1` and normal service-audit records atomically.
+The existing registration-audit proposal's follower target and successor audit
+codec must be separately accepted before use; this proposal does not accept it.
+
+With the receiver/applier drained and all readers closed, the exclusive owner
+retains the exact applied authority and uses the ADR-0072 stamp path with
+checked successors of the old incarnation and leadership epoch. The caller
+cannot select either successor.
+It starts the existing Promotion-attributed V3 anchor, records the promotion
+audit/control result and installs Active admission state for the new lineage
+in one validated cutover. Counter exhaustion refuses before mutation. Only
+complete ordinary source validation and matching receipt reconciliation permit
+primary readiness. Old tokens, cursors, frames, streams and acknowledgements
+fail under their existing lineage checks.
+
+Before durable cutover, restart requires fresh authorization for the exact
+operation and validated immutable selection; it never promotes automatically.
+After durable cutover, recovery may finish validation and terminal receipt
+publication only from exact committed authority and receipt evidence. It never
+chooses another frontier, increments the counters again or rejoins the old
+source. A missing or contradictory receipt fences readiness. External attempt
+evidence remains available for audit and is not silently discarded on failure.
+
+Register these named successor identities, bounds and compatibility fixtures
+through the existing registry and topology. This one SourceOnly domain is
+permitted without a successor changelog-frame identity: it adds no
+replicated-authoritative mutation namespace and cannot appear in V3 mutations.
+Preserve existing record, changelog V3 frame and backup-manifest V1 bytes.
+A new catalog binding does not
+relabel old receipts. Incompatible old registry/catalog markers refuse before
+open or target replacement; no automatic migration or inferred admission state
+is authorized. Any explicit upgrade must preserve the original history and
+fence semantics and receive its normal migration proofs before activation.
+
 ## 13.6 MVP authorization
 
 MVP Streamable HTTP authorization SHOULD conform to the MCP HTTP authorization specification using OAuth 2.1 resource-server behavior. The internal capability model remains authoritative after token validation. OAuth scopes map to capabilities but do not replace tenant, field, command, approval, and environment policy.

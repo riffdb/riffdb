@@ -16,6 +16,12 @@ acceptance: >-
   docs/architecture/WP-749-ARCHIVE-RESTORE-RECEIPT-REVIEW.md; exact command-prefix
   evidence amendment accepted in session 2026-09-15, "Approve exact amendment",
   referring to docs/architecture/WP-749-EXACT-STOP-REVIEW.md.
+  Exact registration audit authority amendment accepted by the maintainer
+  in session 2026-09-16: "Approve exact text", referring to
+  docs/architecture/WP-748-REGISTRATION-AUDIT-REVIEW.md.
+  Exact durable primary fencing and audited promotion amendment accepted by the maintainer
+  in session 2026-09-16: "Approve exact text", referring to
+  docs/architecture/WP-748-PROMOTION-FENCING-REVIEW.md.
 requires: [ADR-0019, ADR-0050, ADR-0061, ADR-0072, ADR-0082, ADR-0083, ADR-0085,
   ADR-0086, ADR-0093, ADR-0100, ADR-0101, ADR-0104, ADR-0112, ADR-0124]
 # ADR-0085 is required at Amendments 2 and 3; ADR-0100 at Amendments 1 and 2.
@@ -93,6 +99,22 @@ Three facts make activation tractable without new design. There is one total ord
 Incremental backup falls out of the same stream. A consumer that persists checksummed frames to a configured sink beside periodic full backups gives restore-to-last-archived-sequence without a second durable format, which the limitations page today lists as absent.
 
 ## Decision
+
+### Accepted amendment: registration audit authority
+
+The exact "Accepted amendment: registration audit authority" text in SPEC §13.5
+is incorporated here in full and qualifies the original decision below.
+Maintainer, in session, 2026-09-16: "Approve exact text", referring to
+`docs/architecture/WP-748-REGISTRATION-AUDIT-REVIEW.md`. WP-748 owns implementation,
+compatibility fixtures and proof before activation.
+
+### Accepted amendment: durable primary fencing and audited promotion
+
+The exact "Accepted amendment: durable primary fencing and audited promotion" text in SPEC §13.5
+is incorporated here in full and qualifies the original decision below.
+Maintainer, in session, 2026-09-16: "Approve exact text", referring to
+`docs/architecture/WP-748-PROMOTION-FENCING-REVIEW.md`. WP-748 owns implementation,
+compatibility fixtures and proof before activation.
 
 ### Accepted amendment: exact command-prefix restoration evidence
 

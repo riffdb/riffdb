@@ -22779,7 +22779,7 @@ work_packages:
     join the registered follower's acknowledged frontier to the retention fencing set with a
     hold budget and ceremony-only release.
   requirements: [REP-005, REP-006]
-  required_adrs: [ADR-0072, ADR-0085, ADR-0093, ADR-0178, ADR-0186]
+  required_adrs: [ADR-0019, ADR-0021, ADR-0072, ADR-0085, ADR-0093, ADR-0178, ADR-0186]
   allowed_paths: [SPEC.md, work_packages.yaml,
     adr/0178-follower-activation-and-changelog-derived-backup.md,
     proto/**, crates/riffdb-proto/**, crates/riffdb-types/**, crates/riffdb-auth/**,
@@ -22790,11 +22790,15 @@ work_packages:
     crates/riffdb-testkit/**, fixtures/**, tests/**, scripts/**, docs/**,
     release/durable-format-manifest-v1.json]
   deliverables:
+  - Lineage-scoped ReplicationFollower audit target, ServiceAuditRecordV3 and atomic
+    StoredReplicationAdministrationV1 registration/retirement/expiry receipts, preserving
+    frozen audit generations and enforcing exact hold/control linkage per SPEC 13.5
   - Audited follower register, retire, and promote administrative operations under administrative
     capabilities, exposed through gRPC, the Rust client, and CLI only
-  - Fencing of the old primary by stop or replication-lease revocation, with a typed admission
-    refusal on the fenced primary and a promotion receipt recording applied sequence, new
-    incarnation, new leadership epoch, and RPO as the exact sequence delta
+  - Durable old-primary admission fencing through FenceReplicationPrimary, authenticated
+    exact fence proof, and external promotion-attempt audit as accepted in SPEC 13.5;
+    a typed admission refusal survives restart and the atomic cutover records the applied
+    sequence, checked new incarnation/epoch, and exact application-sequence RPO
   - Incarnation mint through the ADR-0072 stamp path so every old-lineage frontier, token, cursor,
     and stream fails closed under the existing contract
   - Additive `FollowerLowWater` fencing input to the ADR-0085 retention collector with a
@@ -22819,6 +22823,11 @@ work_packages:
   closure:
     status: open
     decisions_taken:
+    - Record the maintainer's two exact acceptances in session 2026-09-16,
+      "Approve exact text", separately referring to WP-748-REGISTRATION-AUDIT-REVIEW.md
+      and WP-748-PROMOTION-FENCING-REVIEW.md. Incorporate both approved blocks verbatim
+      into SPEC 13.5 and their governing ADRs before implementation. No public
+      activation, package closure or benchmark qualification is claimed.
     - Widen scope to riffdb-operation-registry in a prerequisite commit.
       ADR-0179 requires declarations for the register/retire/promote surfaces
       already named by ADR-0178. This adds no operation or audit vocabulary
