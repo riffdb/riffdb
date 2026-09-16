@@ -23067,6 +23067,13 @@ work_packages:
       retry. scripts/check-archive-cli runs both explicitly ignored process cases and
       is required by ci-all; missing binaries or unsupported hosts cannot silently pass.
       This adds acceptance evidence only; crash and write-path measurements remain open.
+    - Prove live filesystem sink loss after confirmed collection with the real
+      daemon. Withdraw the configured archive directory, acknowledge writes both
+      before and after the collector reports terminal sink failure, then restore
+      the confirmed prefix after returning the directory. Use a fixed one-shot
+      test-executable observation of existing failure state; production entry points
+      install no probe. Process death and uncertain-write edges retain their separate
+      existing tests; this availability proof is not a latency measurement.
   human_review_triggers: *id0178
 
 - id: WP-750

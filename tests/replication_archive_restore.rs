@@ -13,6 +13,13 @@ mod support;
 mod workload;
 use evidence::Damage;
 
+#[derive(Clone, Copy, Eq, PartialEq)]
+enum CollectorFault {
+    None,
+    Crash,
+    LoseSink,
+}
+
 use riffdb_client_rust::{
     ArchiveNameV1, ArchiveRestoreStopV1, AttemptBudget, BackupNameV1, CallMetadata,
     CreateOfflineBackup, OfflineMaintenanceReplacementConfirmation, RestoreArchivedBackup,
@@ -76,7 +83,7 @@ async fn archived_suffix_restore_recovers_to_last_archived_sequence() {
         ArchiveRestoreStopV1::LastArchived,
         3,
         Damage::None,
-        false,
+        CollectorFault::None,
         false,
     )
     .await;
@@ -87,7 +94,7 @@ async fn archived_suffix_restore_stops_at_an_earlier_application_sequence() {
         ArchiveRestoreStopV1::AtApplicationSequence(riffdb_types::CommitSequence::new(2).unwrap()),
         2,
         Damage::None,
-        false,
+        CollectorFault::None,
         false,
     )
     .await;
@@ -98,7 +105,7 @@ async fn archive_collector_process_crash_preserves_a_restorable_prefix() {
         ArchiveRestoreStopV1::LastArchived,
         3,
         Damage::None,
-        true,
+        CollectorFault::Crash,
         false,
     )
     .await;
@@ -109,7 +116,7 @@ async fn truncated_archive_refuses_without_replacing_application_state() {
         ArchiveRestoreStopV1::LastArchived,
         3,
         Damage::Truncated,
-        false,
+        CollectorFault::None,
         false,
     )
     .await;
@@ -120,7 +127,7 @@ async fn reordered_archive_refuses_without_replacing_application_state() {
         ArchiveRestoreStopV1::LastArchived,
         3,
         Damage::Reordered,
-        false,
+        CollectorFault::None,
         false,
     )
     .await;
@@ -132,7 +139,7 @@ async fn cli_archive_restore_recovers_last_archived_and_polls_exact_operation() 
         ArchiveRestoreStopV1::LastArchived,
         3,
         Damage::None,
-        false,
+        CollectorFault::None,
         true,
     )
     .await;
@@ -144,8 +151,19 @@ async fn cli_archive_restore_honors_the_explicit_earlier_stop() {
         ArchiveRestoreStopV1::AtApplicationSequence(riffdb_types::CommitSequence::new(2).unwrap()),
         2,
         Damage::None,
-        false,
+        CollectorFault::None,
         true,
+    )
+    .await;
+}
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn archive_sink_loss_keeps_primary_writable_and_confirmed_prefix_restorable() {
+    scenario(
+        ArchiveRestoreStopV1::LastArchived,
+        3,
+        Damage::None,
+        CollectorFault::LoseSink,
+        false,
     )
     .await;
 }
@@ -153,7 +171,7 @@ async fn scenario(
     stop_at: ArchiveRestoreStopV1,
     expected_sequence: u64,
     damage: Damage,
-    crash: bool,
+    fault: CollectorFault,
     use_cli: bool,
 ) {
     let fixture = Fixture::new();
@@ -206,27 +224,44 @@ async fn scenario(
     process
         .wait_for_readiness("riffdb-archive-collected-v1\tcommit=3", TIMEOUT)
         .unwrap();
+    let source_sequence = if fault == CollectorFault::LoseSink {
+        // The retained descriptor cannot make a withdrawn configured path valid.
+        fs::rename(root.join("archive"), root.join("withdrawn-archive")).unwrap();
+        workload::allocate(&mut client, &writer, 4).await;
+        process
+            .wait_for_readiness("riffdb-archive-failed-v1\tclass=sink-unavailable", TIMEOUT)
+            .unwrap();
+        // A further acknowledged write proves the stopped collector is not a write gate.
+        workload::allocate(&mut client, &writer, 5).await;
+        assert_ne!(workload::entity(&mut client, &writer).await, entity_third);
+        5
+    } else {
+        3
+    };
     drop(client);
-    if crash {
+    if fault == CollectorFault::Crash {
         assert!(!process.kill(TIMEOUT).unwrap().status.success());
     } else {
         stop(&mut process);
     }
+    if fault == CollectorFault::LoseSink {
+        fs::rename(root.join("withdrawn-archive"), root.join("archive")).unwrap();
+    }
     let archived_application = evidence::application(&database);
-    assert_eq!(archived_application.sequence, 3);
+    assert_eq!(archived_application.sequence, source_sequence);
     evidence::damage(&root.join("archive"), damage);
 
     // Freeze this archive, then make a real source change that restore must lose.
     fs::write(&config, format!("{original}{binding}")).unwrap();
     process = fixture.start("primary", None);
     let mut client = fixture.client("primary").await;
-    workload::allocate(&mut client, &writer, 4).await;
+    workload::allocate(&mut client, &writer, source_sequence + 1).await;
     assert_ne!(workload::entity(&mut client, &writer).await, entity_third);
     let before_refusal = if damage != Damage::None {
         drop(client);
         stop(&mut process);
         let observed = evidence::application(&database);
-        assert_eq!(observed.sequence, 4);
+        assert_eq!(observed.sequence, source_sequence + 1);
         process = fixture.start("primary", None);
         client = fixture.client("primary").await;
         Some(observed)
@@ -325,7 +360,7 @@ async fn scenario(
     let restored_application = evidence::application(&database);
     assert_eq!(restored_application.sequence, expected_sequence);
     assert!(restored_application.incarnation > archived_application.incarnation);
-    if expected_sequence == 3 {
+    if expected_sequence == archived_application.sequence {
         assert_eq!(restored_application.rows, archived_application.rows);
     }
 }
