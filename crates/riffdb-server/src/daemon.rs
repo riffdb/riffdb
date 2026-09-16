@@ -174,15 +174,19 @@ struct ReconciledMaintenanceOperation {
     evidence: RedbMaintenanceOperationEvidence,
 }
 
+#[path = "daemon_archive.rs"]
+mod archive;
+use archive::ResumableMaintenanceReceipt;
+
 enum InitialDatabaseAction {
     OpenCurrent,
     ResumeCurrent {
-        receipt: OfflineMaintenanceReceiptV1,
+        receipt: ResumableMaintenanceReceipt,
         request: MaintenanceDriverRequest,
         validate_current_source: bool,
     },
     ResumeRecovery(RestoreOfflineBackupRequest),
-    AwaitRestoreCredential(OfflineMaintenanceReceiptV1),
+    AwaitRestoreCredential(ResumableMaintenanceReceipt),
     AwaitRecoveryCredential(OfflineMaintenanceReceiptV1),
     RecoveryOnly,
     FailClosed,
@@ -276,18 +280,14 @@ fn has_recovery_backup(reconciliation: &RedbMaintenanceReconciliation) -> bool {
 }
 
 fn initial_database_action(
+    storage: &mut RedbMaintenanceStorage,
     reconciliation: &RedbMaintenanceReconciliation,
     target_requires_recovery: bool,
 ) -> Result<InitialDatabaseAction, DaemonError> {
-    // Archive replay candidates need their own validated recovery driver. They
-    // cannot be opened by the ordinary V1 restore or current-database route.
-    if reconciliation
-        .archive_receipts()
-        .receipts()
-        .iter()
-        .any(|receipt| !receipt.current_phase().is_terminal())
+    if let Some(action) =
+        archive::initial_action(storage, reconciliation, target_requires_recovery)?
     {
-        return Err(DaemonError::MaintenanceDriver);
+        return Ok(action);
     }
     let mut retirements = reconciliation
         .retire_receipts()
@@ -310,7 +310,7 @@ fn initial_database_action(
             .cloned()
             .ok_or(DaemonError::MaintenanceDriver)?;
         return Ok(InitialDatabaseAction::ResumeCurrent {
-            receipt: create,
+            receipt: create.into(),
             request: MaintenanceDriverRequest::retire_backup(retirement.operation_id()),
             validate_current_source: true,
         });
@@ -327,7 +327,7 @@ fn initial_database_action(
         IncompleteMaintenanceDecision::ResumeCreate => {
             let request = MaintenanceDriverRequest::create_backup(receipt.operation_id());
             Ok(InitialDatabaseAction::ResumeCurrent {
-                receipt,
+                receipt: receipt.into(),
                 request,
                 validate_current_source: true,
             })
@@ -336,7 +336,7 @@ fn initial_database_action(
             let request =
                 MaintenanceDriverRequest::resume_published_restore(receipt.operation_id());
             Ok(InitialDatabaseAction::ResumeCurrent {
-                receipt,
+                receipt: receipt.into(),
                 request,
                 validate_current_source: false,
             })
@@ -344,9 +344,9 @@ fn initial_database_action(
         IncompleteMaintenanceDecision::ResumePublishedRecoveryRestore => Ok(
             InitialDatabaseAction::ResumeRecovery(restore_request_from_receipt(&receipt)?),
         ),
-        IncompleteMaintenanceDecision::AwaitCurrentCredential => {
-            Ok(InitialDatabaseAction::AwaitRestoreCredential(receipt))
-        }
+        IncompleteMaintenanceDecision::AwaitCurrentCredential => Ok(
+            InitialDatabaseAction::AwaitRestoreCredential(receipt.into()),
+        ),
         IncompleteMaintenanceDecision::AwaitRecoveryCredential => {
             Ok(InitialDatabaseAction::AwaitRecoveryCredential(receipt))
         }
@@ -631,7 +631,7 @@ async fn run_server(
         GrpcApplication::new_with_audience(lifecycle_for_grpc, limits, config.audience().clone());
     let mut transport = HostedGrpc::bind(config.application_listener().clone(), &application)?;
     drop(application);
-    let (maintenance_storage, reconciliation) =
+    let (mut maintenance_storage, reconciliation) =
         RedbMaintenanceStorage::open(config.database_path(), config.backup_root())
             .map_err(DaemonError::MaintenanceStorage)?;
     let migration_startup = match incomplete_contract_migration(&reconciliation)? {
@@ -658,7 +658,11 @@ async fn run_server(
             .map_err(DaemonError::MaintenanceStorage)?
     };
     let recovery_backup_available = has_recovery_backup(&reconciliation);
-    let initial_action = initial_database_action(&reconciliation, target_requires_recovery)?;
+    let initial_action = initial_database_action(
+        &mut maintenance_storage,
+        &reconciliation,
+        target_requires_recovery,
+    )?;
     let (maintenance_triggers, mut maintenance_receiver) = maintenance_trigger_channel();
     let maintenance = MaintenanceController::new(
         shared_maintenance_storage(maintenance_storage),
@@ -1085,7 +1089,7 @@ async fn run_multi_database_server(
 
     let mut graphs = Vec::with_capacity(pending.len());
     for (database, mut pending) in config.databases().iter().zip(pending) {
-        let (maintenance_storage, reconciliation) =
+        let (mut maintenance_storage, reconciliation) =
             match RedbMaintenanceStorage::open(database.database_path(), database.backup_root()) {
                 Ok(value) => value,
                 Err(source) => {
@@ -1121,7 +1125,11 @@ async fn run_multi_database_server(
                 .configured_target_requires_recovery()
                 .map_err(DaemonError::MaintenanceStorage)?
         };
-        let initial_action = initial_database_action(&reconciliation, target_requires_recovery)?;
+        let initial_action = initial_database_action(
+            &mut maintenance_storage,
+            &reconciliation,
+            target_requires_recovery,
+        )?;
         let (maintenance_triggers, mut maintenance_receiver) = maintenance_trigger_channel();
         let maintenance = MaintenanceController::new_with_migration_exclusion(
             shared_maintenance_storage(maintenance_storage),
@@ -1740,7 +1748,7 @@ async fn await_multi_restore_retry(
     config: &ServerConfig,
     database: &DatabaseConfig,
     startup: crate::startup::CheckedRedbStartup,
-    receipt: OfflineMaintenanceReceiptV1,
+    receipt: ResumableMaintenanceReceipt,
     digest_keys: &ProductionDigestKeys,
     clocks: &ProductionWallClocks,
     identifiers: &ProductionIdentifierSources,
@@ -1784,7 +1792,8 @@ async fn await_multi_restore_retry(
         },
     };
     let RestoreRetryProcessTrigger::Maintenance(Some(
-        mut trigger @ MaintenanceTrigger::RestoreBackup { .. },
+        mut trigger @ (MaintenanceTrigger::RestoreBackup { .. }
+        | MaintenanceTrigger::RestoreArchivedBackup { .. }),
     )) = trigger
     else {
         retry_host.begin_transport_shutdown();
@@ -2515,7 +2524,7 @@ async fn run_restore_retry_until_ready(
     config: &ServerConfig,
     started_at: riffdb_types::Timestamp,
     startup: crate::startup::CheckedRedbStartup,
-    receipt: OfflineMaintenanceReceiptV1,
+    receipt: ResumableMaintenanceReceipt,
     mut transport: HostedGrpc,
     lifecycle: Arc<ProductionLifecycleRoute>,
     maintenance_lifecycle: Arc<MaintenanceLifecycle>,
@@ -2567,7 +2576,8 @@ async fn run_restore_retry_until_ready(
     };
 
     let RestoreRetryProcessTrigger::Maintenance(Some(
-        trigger @ MaintenanceTrigger::RestoreBackup { .. },
+        trigger @ (MaintenanceTrigger::RestoreBackup { .. }
+        | MaintenanceTrigger::RestoreArchivedBackup { .. }),
     )) = trigger
     else {
         retry_host.begin_transport_shutdown();
@@ -4606,6 +4616,24 @@ impl Error for DaemonError {
 }
 
 #[cfg(test)]
+pub(crate) fn archive_restart_request_for_test(
+    storage: &mut RedbMaintenanceStorage,
+    reconciliation: &RedbMaintenanceReconciliation,
+) -> MaintenanceDriverRequest {
+    match initial_database_action(storage, reconciliation, true).expect("restart classification") {
+        InitialDatabaseAction::ResumeCurrent {
+            receipt: ResumableMaintenanceReceipt::Archive(receipt),
+            request,
+            validate_current_source: false,
+        } => {
+            assert_eq!(request.operation_id(), receipt.operation_id());
+            request
+        }
+        _ => panic!("published archive must resume through its receipt-bound driver"),
+    }
+}
+
+#[cfg(test)]
 #[cfg(unix)]
 #[path = "replication_transport_tests.rs"]
 mod replication_transport_tests;
@@ -4659,12 +4687,88 @@ mod tests {
         .unwrap();
         store.create_or_read_archive_receipt(&receipt).unwrap();
         drop(store);
-        let (_store, reconciliation) = RedbMaintenanceStorage::open(&target, &backups).unwrap();
+        let (mut store, reconciliation) = RedbMaintenanceStorage::open(&target, &backups).unwrap();
         for target_requires_recovery in [false, true] {
             assert!(matches!(
-                initial_database_action(&reconciliation, target_requires_recovery),
+                initial_database_action(&mut store, &reconciliation, target_requires_recovery),
                 Err(DaemonError::MaintenanceDriver)
             ));
+        }
+    }
+
+    #[test]
+    // req: REP-007, AFC-007
+    fn archive_restore_restart_routes_current_source_to_exact_credential_retry() {
+        use riffdb_storage_api::{
+            OfflineArchiveReceiptPersistencePort, OfflineMaintenanceAdmissionV1,
+            OfflineMaintenanceReceiptV3,
+        };
+        use riffdb_types::{
+            ActorId, ActorKind, ArchiveNameV1, ArchiveRestoreStopV1, BackupNameV1, CapabilityId,
+            OfflineMaintenanceOperationId, OfflineMaintenanceReplacementConfirmation,
+            archive_restore_input_hash,
+        };
+        let root = tempfile::TempDir::new().unwrap();
+        let target = root.path().join("db.redb");
+        let backups = root.path().join("backups");
+        let (mut store, _) = RedbMaintenanceStorage::open(&target, &backups).unwrap();
+        let backup = BackupNameV1::new("before").unwrap();
+        let archive = ArchiveNameV1::new("daily").unwrap();
+        let stop = ArchiveRestoreStopV1::LastArchived;
+        let confirmation = OfflineMaintenanceReplacementConfirmation::NotProvided;
+        let mut receipt = OfflineMaintenanceReceiptV3::accepted_archive_restore(
+            OfflineMaintenanceOperationId::from_unix_milliseconds_and_random(1000, [3; 10])
+                .unwrap(),
+            backup.clone(),
+            archive.clone(),
+            stop,
+            archive_restore_input_hash(&backup, &archive, stop, confirmation),
+            confirmation,
+            OfflineMaintenanceAdmissionV1::new(
+                ActorId::new("operator").unwrap(),
+                ActorKind::Human,
+                CapabilityId::from_unix_milliseconds_and_random(1000, [4; 10]).unwrap(),
+                None,
+            ),
+            Some(
+                riffdb_types::DatabaseId::from_unix_milliseconds_and_random(1000, [5; 10]).unwrap(),
+            ),
+        )
+        .unwrap();
+        store.create_or_read_archive_receipt(&receipt).unwrap();
+        for phase in [
+            OfflineMaintenanceReceiptPhaseV1::Accepted,
+            OfflineMaintenanceReceiptPhaseV1::Draining,
+            OfflineMaintenanceReceiptPhaseV1::Offline,
+        ] {
+            if phase != receipt.current_phase() {
+                receipt
+                    .advance(
+                        riffdb_storage_api::OfflineMaintenanceReceiptTransitionV1::phase(phase),
+                    )
+                    .unwrap();
+                store.replace_archive_receipt(&receipt).unwrap();
+            }
+            drop(store);
+            let (reopened, reconciliation) =
+                RedbMaintenanceStorage::open(&target, &backups).unwrap();
+            store = reopened;
+            assert!(matches!(
+                initial_database_action(&mut store, &reconciliation, false),
+                Ok(InitialDatabaseAction::AwaitRestoreCredential(retry))
+                    if retry.operation_id() == receipt.operation_id() && retry.input_hash() == receipt.input_hash()
+            ));
+            assert!(matches!(
+                initial_database_action(&mut store, &reconciliation, true),
+                Ok(InitialDatabaseAction::FailClosed)
+            ));
+            assert_eq!(
+                store
+                    .read_archive_receipt(receipt.operation_id())
+                    .unwrap()
+                    .unwrap(),
+                receipt
+            );
         }
     }
 

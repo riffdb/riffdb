@@ -1289,7 +1289,15 @@ impl RecoveryOfflineMaintenanceApplication for RecordingRecoveryService {
     }
 }
 
+struct ArchiveRetryRoute {
+    operation_id: OfflineMaintenanceOperationId,
+    input_hash: OfflineMaintenanceInputHash,
+    service: Arc<dyn RestoreRetryOfflineMaintenanceApplication>,
+    security: CheckedGrpcRestoreRetrySecurityContext,
+}
+
 struct MaintenanceRoute {
+    retry: Option<ArchiveRetryRoute>,
     ready: Option<Arc<dyn ApplicationService>>,
     recovery: Option<Arc<dyn RecoveryOfflineMaintenanceApplication>>,
     security: Option<CheckedGrpcSecurityContext>,
@@ -1341,10 +1349,13 @@ impl GrpcLifecycleRoute for MaintenanceRoute {
 
     fn admit_restore_retry(
         &self,
-        _operation_id: OfflineMaintenanceOperationId,
-        _input_hash: OfflineMaintenanceInputHash,
+        operation_id: OfflineMaintenanceOperationId,
+        input_hash: OfflineMaintenanceInputHash,
     ) -> Option<Arc<dyn RestoreRetryOfflineMaintenanceApplication>> {
-        None
+        self.retry
+            .as_ref()
+            .filter(|retry| retry.operation_id == operation_id && retry.input_hash == input_hash)
+            .map(|retry| retry.service.clone())
     }
 
     fn admit_recovery_restore(
@@ -1365,7 +1376,7 @@ impl GrpcLifecycleRoute for MaintenanceRoute {
     }
 
     fn restore_retry_security_context(&self) -> Option<CheckedGrpcRestoreRetrySecurityContext> {
-        None
+        self.retry.as_ref().map(|retry| retry.security.clone())
     }
 
     fn server_generation(&self) -> Option<[u8; 16]> {
@@ -1513,6 +1524,7 @@ async fn ready_offline_maintenance_uses_one_shared_service_and_exact_current_aut
     let service = Arc::new(ProjectionService::new());
     let shared_service: Arc<dyn ApplicationService> = service.clone();
     let route = Arc::new(MaintenanceRoute {
+        retry: None,
         ready: Some(shared_service),
         recovery: None,
         security: Some(security),
@@ -1726,6 +1738,7 @@ async fn recovery_mode_exposes_only_restore_and_performs_no_current_authenticati
     let recovery = Arc::new(RecordingRecoveryService::new());
     let recovery_service: Arc<dyn RecoveryOfflineMaintenanceApplication> = recovery.clone();
     let route = Arc::new(MaintenanceRoute {
+        retry: None,
         ready: None,
         recovery: Some(recovery_service),
         security: Some(security),
@@ -3325,3 +3338,6 @@ async fn execute_query_records_five_residual_read_pipeline_stages() {
         .expect("server task did not panic")
         .expect("server shut down cleanly");
 }
+
+#[path = "archive_restore_retry.rs"]
+mod archive_restore_retry;

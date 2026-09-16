@@ -35,9 +35,9 @@ use riffdb_types::{
     ApplicationRoleHash, CanonicalRecord, CanonicalValue, CapabilityId, CommandId, CommitSequence,
     CompiledLongPatternV1, ContractBundleHash, ContractLineage, ContractMigrationOperationId,
     ContractVersion, DistanceMetric, EmbeddingMetadata, EntityKey, EntityTypeId, FieldId,
-    FrontierPosition, PartitionKey, PlanHash, ProjectionFrontier, ProjectionGeneration,
-    ProjectionProviderDescriptorHash, QueryModuleHash, QueryOperationName, ReactiveModuleHash,
-    RequestId,
+    FrontierPosition, OfflineMaintenanceInputHash, OfflineMaintenanceOperationId, PartitionKey,
+    PlanHash, ProjectionFrontier, ProjectionGeneration, ProjectionProviderDescriptorHash,
+    QueryModuleHash, QueryOperationName, ReactiveModuleHash, RequestId,
 };
 
 use crate::{
@@ -2776,13 +2776,40 @@ pub trait ContractMigrationCoordinatorPort: Send + Sync {
     ) -> PortFuture<'_, ContractMigrationObservationPermit, PortAdmissionError>;
 }
 
+/// Closed restore-only input for the exact-receipt retry coordinator.
+#[derive(Debug)]
+pub enum RestoreRetryRequest {
+    /// Frozen ordinary backup restore input.
+    Ordinary(RestoreOfflineBackupRequest),
+    /// Frozen archive restore input with its distinct canonical hash.
+    Archived(crate::RestoreArchivedBackupRequest),
+}
+impl RestoreRetryRequest {
+    /// Returns the operation identity whose receipt is already durable.
+    #[must_use]
+    pub const fn operation_id(&self) -> OfflineMaintenanceOperationId {
+        match self {
+            Self::Ordinary(request) => request.operation_id(),
+            Self::Archived(request) => request.operation_id(),
+        }
+    }
+    /// Returns the exact input identity, including the restore domain.
+    #[must_use]
+    pub const fn input_hash(&self) -> OfflineMaintenanceInputHash {
+        match self {
+            Self::Ordinary(request) => request.input_hash(),
+            Self::Archived(request) => request.input_hash(),
+        }
+    }
+}
+
 /// One freshly authorized retry of an already-durable restore receipt.
 ///
 /// This move-only command is distinct from [`AuthorizedOfflineMaintenanceStart`]
 /// so a credential-retry host cannot submit backup creation or observe a
 /// maintenance receipt through its coordinator capability.
 pub struct AuthorizedRestoreRetryStart {
-    request: RestoreOfflineBackupRequest,
+    request: RestoreRetryRequest,
     authorization: Box<AuthorizedOfflineMaintenance>,
     credential: RetainedOpaqueCredential,
 }
@@ -2794,7 +2821,19 @@ impl AuthorizedRestoreRetryStart {
         credential: RetainedOpaqueCredential,
     ) -> Self {
         Self {
-            request,
+            request: RestoreRetryRequest::Ordinary(request),
+            authorization,
+            credential,
+        }
+    }
+
+    pub(crate) const fn new_archive(
+        request: crate::RestoreArchivedBackupRequest,
+        authorization: Box<AuthorizedOfflineMaintenance>,
+        credential: RetainedOpaqueCredential,
+    ) -> Self {
+        Self {
+            request: RestoreRetryRequest::Archived(request),
             authorization,
             credential,
         }
@@ -2802,7 +2841,7 @@ impl AuthorizedRestoreRetryStart {
 
     /// Returns the exact immutable restore input.
     #[must_use]
-    pub const fn request(&self) -> &RestoreOfflineBackupRequest {
+    pub const fn request(&self) -> &RestoreRetryRequest {
         &self.request
     }
 
@@ -2811,7 +2850,7 @@ impl AuthorizedRestoreRetryStart {
     pub fn into_parts(
         self,
     ) -> (
-        RestoreOfflineBackupRequest,
+        RestoreRetryRequest,
         Box<AuthorizedOfflineMaintenance>,
         RetainedOpaqueCredential,
     ) {

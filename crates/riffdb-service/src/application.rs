@@ -331,6 +331,14 @@ pub trait RestoreRetryOfflineMaintenanceApplication: Send + Sync {
         &self,
         invocation: RestoreOfflineBackupInvocation,
     ) -> ServiceFuture<'_, OfflineMaintenanceStartResult>;
+
+    /// Reauthorizes the exact archived restore, preserving its distinct input identity.
+    fn restore_archived_backup(
+        &self,
+        _invocation: crate::RestoreArchivedBackupInvocation,
+    ) -> ServiceFuture<'_, OfflineMaintenanceStartResult> {
+        Box::pin(async { Err(riffdb_errors::PublicError::storage_unavailable().into()) })
+    }
 }
 
 /// Current-policy-filtered command-tool and resource discovery.

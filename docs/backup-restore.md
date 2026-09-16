@@ -237,9 +237,9 @@ the existing maintenance ownership and inventory limit, and retains an admitted
 private replay stage for archive recovery. Private replay can stop at the receipt's
 exact selected manifest after the archive advances; an explicitly empty selected
 suffix remains empty. Ordinary create/restore V1 and retire
-V2 receipt bytes are unchanged. An unfinished V3 receipt currently refuses server
-startup; daemon recovery routing and the public restore command are still being
-implemented. Recognizing a receipt does not validate or publish its replay stage.
+V2 receipt bytes are unchanged. Restart routes an unfinished V3 receipt through
+its archive-specific recovery checks. Recognizing a receipt does not validate
+or publish its replay stage.
 For an interior command stop, storage can rebuild a separate private artifact
 from the verified backup and checked command-prefix evidence after full original
 replay. It retains the original archive selection separately from its actual
@@ -307,12 +307,25 @@ The latter has independent application and administration positions. An absent
 frontier means unresolved; `before_first` means a known empty history. Ordinary
 maintenance output is unchanged.
 
-This remains incomplete WP-749 integration. Automatic archive collection,
-daemon restart routing for an unfinished V3 receipt, and source-less archive
-restore admission are still unavailable. Restart with an unfinished V3 receipt
-refuses readiness; the internal recovery driver proofs do not yet provide a
-public restart recovery ceremony. Do not rely on this increment for disaster
-recovery. Receipt editing is unsupported.
+For an interrupted archive restore admitted against a readable current database,
+restart accepts only the same archive restore operation ID and exact input.
+That retry authenticates against the current database and rechecks current
+restore policy before resuming. Ordinary commands, new maintenance operations,
+and receipt observation remain unavailable on this restricted retry host. The
+retained bearer must also pass staged authentication and policy before any
+unpublished target replacement. A different archive, stop, confirmation, or
+ordinary restore request cannot resume the receipt.
+
+After complete publication, restart can recover without a bearer or archive
+access. It must verify the receipt-bound stage, exact restored target and full
+restored authority before readiness. A partially published target does not gain
+this credential-free authority.
+
+This remains incomplete WP-749 integration. Automatic archive collection and
+source-less archive restore admission are still unavailable. An unreadable or
+partially replaced target without complete publication evidence refuses startup;
+staged-credential recovery for that case remains unfinished. Do not rely on this
+increment for disaster recovery. Receipt editing is unsupported.
 
 An SDK or direct API caller supplies the maintenance operation ID. After a lost
 response or process interruption, that caller retries the exact same start

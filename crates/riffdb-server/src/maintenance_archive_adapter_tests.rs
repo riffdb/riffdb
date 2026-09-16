@@ -61,6 +61,86 @@ fn credential() -> riffdb_auth::RetainedOpaqueCredential {
 }
 
 #[tokio::test]
+async fn archive_admission_restart_reacquires_exact_receipt_once() {
+    for phase in [
+        OfflineMaintenanceReceiptPhaseV1::Accepted,
+        OfflineMaintenanceReceiptPhaseV1::Draining,
+        OfflineMaintenanceReceiptPhaseV1::Offline,
+    ] {
+        let (_dir, controller, mut receiver) = controller();
+        let (request, mut receipt) = candidate(8, "daily");
+        controller
+            .storage
+            .lock()
+            .unwrap()
+            .create_or_read_archive_receipt(&receipt)
+            .unwrap();
+        for next in [
+            OfflineMaintenanceReceiptPhaseV1::Draining,
+            OfflineMaintenanceReceiptPhaseV1::Offline,
+        ] {
+            if receipt.current_phase() == phase {
+                break;
+            }
+            receipt
+                .advance(OfflineMaintenanceReceiptTransitionV1::phase(next))
+                .unwrap();
+            controller
+                .storage
+                .lock()
+                .unwrap()
+                .replace_archive_receipt(&receipt)
+                .unwrap();
+        }
+        controller
+            .lifecycle
+            .await_restore_retry(request.operation_id(), request.input_hash())
+            .unwrap();
+        let (changed, changed_candidate) = candidate(8, "changed");
+        assert!(matches!(
+            admit_candidate(&controller, changed, changed_candidate, credential()),
+            Err(OfflineMaintenanceStartPortError::InputMismatch)
+        ));
+        assert!(receiver.try_recv().is_err());
+        let result =
+            admit_candidate(&controller, request.clone(), receipt.clone(), credential()).unwrap();
+        assert_eq!(
+            result.disposition(),
+            OfflineMaintenanceStartDisposition::AlreadyAccepted
+        );
+        let mut trigger = receiver.try_recv().unwrap();
+        trigger.wait_for_start_ready().await.unwrap();
+        assert!(matches!(
+            trigger,
+            MaintenanceTrigger::RestoreArchivedBackup { .. }
+        ));
+        let persisted = controller
+            .storage
+            .lock()
+            .unwrap()
+            .read_archive_receipt(request.operation_id())
+            .unwrap()
+            .unwrap();
+        assert_eq!(persisted.admission(), receipt.admission());
+        assert_eq!(persisted.selection(), receipt.selection());
+        assert_eq!(
+            persisted.current_phase(),
+            if phase == OfflineMaintenanceReceiptPhaseV1::Accepted {
+                OfflineMaintenanceReceiptPhaseV1::Draining
+            } else {
+                phase
+            }
+        );
+        let duplicate = admit_candidate(&controller, request, receipt, credential()).unwrap();
+        assert_eq!(
+            duplicate.disposition(),
+            OfflineMaintenanceStartDisposition::AlreadyAccepted
+        );
+        assert!(receiver.try_recv().is_err());
+    }
+}
+
+#[tokio::test]
 async fn archive_admission_persists_before_trigger_and_exact_retry_has_one_driver() {
     let (_dir, controller, mut receiver) = controller();
     let (request, receipt) = candidate(1, "archive");
