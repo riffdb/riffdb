@@ -282,6 +282,8 @@ pub(crate) struct ProductionGraphBuilder {
     projections: Vec<ConfiguredProjection>,
     projections_root: std::path::PathBuf,
     replication_root: std::path::PathBuf,
+    archives: Vec<crate::config::ConfiguredArchive>,
+    backup_root: std::path::PathBuf,
 }
 
 impl ProductionGraphBuilder {
@@ -321,6 +323,8 @@ impl ProductionGraphBuilder {
             projections: database.projections().to_vec(),
             projections_root: database.projections_root().to_path_buf(),
             replication_root: database.replication_root(),
+            archives: database.archives().to_vec(),
+            backup_root: database.backup_root().to_path_buf(),
         }
     }
 
@@ -352,6 +356,8 @@ impl ProductionGraphBuilder {
             projections,
             projections_root,
             replication_root,
+            archives,
+            backup_root,
         } = self;
 
         let server_generation = server_generation
@@ -367,6 +373,7 @@ impl ProductionGraphBuilder {
             allocator_capacity,
             operational_ports,
         ) = startup.into_parts();
+        let archive_publications = replication_publications.clone();
         let replication_observations = replication_publications.clone();
         let replication_source = replication_publications
             .map(|publications| {
@@ -915,7 +922,13 @@ impl ProductionGraphBuilder {
         let hosted_service: Arc<dyn ApplicationService> =
             Arc::new(LifecycleApplicationService::new(lifecycle_for_hosted));
 
+        let archive_workers = crate::archive_worker::RunningArchiveWorkers::start(
+            archives,
+            backup_root,
+            archive_publications,
+        );
         Ok(RunningProductionGraph {
+            archive_workers,
             lifecycle,
             spawner,
             notifications,
@@ -992,6 +1005,7 @@ impl fmt::Debug for ProductionGraphBuilder {
 /// Owning guard for every thread, service job, and process-local authority in P1.
 #[must_use = "the production graph must be explicitly shut down and joined"]
 pub(crate) struct RunningProductionGraph {
+    archive_workers: crate::archive_worker::RunningArchiveWorkers,
     lifecycle: Arc<ProductionLifecycleRoute>,
     spawner: SupervisedServiceJobSpawner,
     notifications: FirstCommitNotificationHub,
@@ -1131,6 +1145,7 @@ impl RunningProductionGraph {
         self.lifecycle.stop();
         let started = begin_shutdown_stage(0);
         self.spawner.wait_for_idle().await;
+        self.archive_workers.shutdown();
         elapsed_us[0] = finish_shutdown_stage(0, started);
 
         let started = begin_shutdown_stage(1);
@@ -1249,6 +1264,7 @@ impl RunningProductionGraph {
         self.lifecycle.stop();
         let started = Instant::now();
         self.spawner.wait_for_idle().await;
+        self.archive_workers.shutdown();
         elapsed_us[0] = elapsed_microseconds(started);
 
         let started = Instant::now();

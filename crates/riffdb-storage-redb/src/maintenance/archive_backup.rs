@@ -114,6 +114,28 @@ impl RedbVerifiedArchiveBackup {
         )
     }
 
+    /// Opens a collector with cancellation between bounded archive validation
+    /// steps. The original full-backup binding is rechecked before any sink I/O.
+    pub fn open_archive_cancellable(
+        &self,
+        path: &Path,
+        encryption: ArchiveEncryptionPostureV1,
+        cancellation: &std::sync::atomic::AtomicBool,
+    ) -> Result<RedbArchiveRepository, ArchiveConsumerErrorV1> {
+        self.verify().map_err(|error| match error.kind() {
+            StorageErrorKind::Unavailable => ArchiveConsumerErrorV1::SinkUnavailable,
+            _ => ArchiveConsumerErrorV1::InvalidManifest,
+        })?;
+        RedbArchiveRepository::open_cancellable(
+            path,
+            self.history.lineage(),
+            self.history.tail(),
+            self.digest,
+            encryption,
+            cancellation,
+        )
+    }
+
     /// Restore-only counterpart: never creates a missing archive or lock file.
     pub(in crate::maintenance) fn open_existing_archive(
         &self,

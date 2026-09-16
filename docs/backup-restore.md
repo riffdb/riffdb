@@ -337,8 +337,17 @@ without a bearer or archive access; incomplete publication requires the retained
 backup and selected archive prefix plus fresh staged authorization. Receipt
 editing is unsupported.
 
-WP-749 remains incomplete: automatic archive collection, the complete end-to-end
-crash qualification and write-path measurements are still pending. These restore
+Automatic collection is enabled by the optional `backup` name in a configured
+archive entry; see [Named archive directories](configuration.md#named-archive-directories).
+The collector starts from the verified backup fence or the last confirmed
+archive frame, validates retained history, and writes outside command
+acknowledgement. Collection failures stop the collector and leave primary writes
+available; monitor the redacted `riffdb-archive-v1` diagnostics. A stopped
+collector needs a database restart after the cause is corrected. It cannot bridge
+a history gap already pruned from the source.
+
+WP-749 remains incomplete: the complete end-to-end crash qualification and
+write-path measurements are still pending. These restore
 paths do not yet constitute a qualified disaster-recovery deployment.
 
 An SDK or direct API caller supplies the maintenance operation ID. After a lost

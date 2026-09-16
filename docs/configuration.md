@@ -75,11 +75,11 @@ idempotency_keys = "/etc/riffdb/idempotency.keys"
 backup_root = "/var/lib/riffdb/backups"
 ```
 
-### Named archive directories (WP-749 integration)
+### Named archive directories
 
 An operator may bind up to 16 archive names per database in TOML. The legacy
 single-database form uses `[[maintenance.archives]]`; the named form uses
-`[[databases.<alias>.archives]]`. Each entry requires all three fields:
+`[[databases.<alias>.archives]]`. Each entry requires `name`, `path`, and `encryption`:
 
 ```toml
 [[maintenance.archives]]
@@ -96,9 +96,21 @@ entries reject configuration. `encryption` is either `unencrypted` or
 and does not ask RiffDB to encrypt files. Archive paths never come from restore
 request input.
 
-These bindings currently support the internal archive maintenance driver.
-Automatic archive production and the public archive restore command remain
-under implementation; configuring an entry does not start an archive worker.
+Add `backup = "baseline"` to the entry to collect published changelog frames
+beside the verified full backup named `baseline` under this database's
+`backup_root`. Without `backup`, the entry is available for restore only.
+The backup must already exist when the database starts. Each collector verifies
+its backup and existing archive before appending; it never rebinds an archive
+to a different backup or history incarnation. Use a new directory for a new base.
+
+Collection runs independently of command acknowledgement and the write gate.
+Each collector buffers at most one uncertain frame and retries those exact bytes
+up to three attempts. A missing or invalid backup, unavailable startup sink,
+pruned history gap, changed lineage, or exhausted append retries stops that
+collector with a redacted diagnostic. It does not stop primary writes. Correct
+the cause and restart the database to revalidate and resume. Shutdown joins all
+collectors before closing storage. The POC supports local filesystem sinks;
+`operator_managed` encryption must be supplied outside RiffDB.
 See [Backup and Restore](backup-restore.md).
 
 The legacy `server.grpc_listen` form always means literal-loopback cleartext.
