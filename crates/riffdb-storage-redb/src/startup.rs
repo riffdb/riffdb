@@ -1,5 +1,9 @@
 //! Exclusive read-only startup evidence over one immutable redb snapshot.
 
+mod archive_private;
+mod archive_private_graph;
+pub(crate) use archive_private::validate_private_archive;
+
 mod archive_follower;
 pub(crate) use archive_follower::open_validated_archive_follower;
 
@@ -675,6 +679,10 @@ impl RedbStore {
         inputs: StartupValidationInputs,
         purpose: EvidenceOpenPurpose,
     ) -> Result<RedbStructuralEvidenceSession, StorageError> {
+        let private = self.shared.private_restore_binding();
+        if private.is_some() && purpose != EvidenceOpenPurpose::OfflineIntegrityScrub {
+            return Err(invariant());
+        }
         let lease = self.acquire_mutation_lease()?;
         let durable_commit_epoch = self.shared.durable_commit_epoch();
         let transaction = self
@@ -682,8 +690,12 @@ impl RedbStore {
             .database
             .begin_read()
             .map_err(transaction_error)?;
-        let snapshot = collect_startup_snapshot(&transaction)?;
-        let v3_active = crate::changelog_v3_roots::read_checkpoint_roots(&transaction)?.is_some();
+        let snapshot = collect_startup_snapshot(&transaction, private)?;
+        let v3_active = if private.is_some() {
+            true // The private inventory check proved the distinct reconstruction roots.
+        } else {
+            crate::changelog_v3_roots::read_checkpoint_roots(&transaction)?.is_some()
+        };
         if self.shared.durable_commit_epoch() != durable_commit_epoch {
             return Err(corrupt());
         }
@@ -768,7 +780,7 @@ impl RedbStore {
         // The CLEAN branch above checks bounded terminal roots only. A full
         // session instead validates every retained receipt from THIS pin before
         // any prefix checkpoint or DIRTY write can follow successful evidence.
-        if v3_active {
+        if v3_active && private.is_none() {
             crate::changelog_v3_roots::validate_retained_history(&transaction)?
                 .ok_or_else(corrupt)?;
         }
@@ -1214,6 +1226,9 @@ impl StructuralEvidenceSession for RedbStructuralEvidenceSession {
         structural_end: Self::StructuralEnd,
         historical_end: Self::HistoricalEnd,
     ) -> Result<StructuralOpenOutcome<Self::DormantPorts, Self::MigrationPort>, StorageError> {
+        if self.shared.private_restore_binding().is_some() {
+            return Err(invariant()); // Private validation cannot release any operational port.
+        }
         self.check_cancellation()?;
         if !self.structural_finished
             || !self.historical_finished
@@ -1428,6 +1443,9 @@ impl RedbStructuralEvidenceSession {
         transaction: &ReadTransaction,
     ) -> Result<(), StorageError> {
         self.verify_structural_counts(transaction)?;
+        if let Some(binding) = self.shared.private_restore_binding() {
+            binding.validate(transaction)?;
+        }
         let metadata = read_retained_metadata(transaction)?;
         if metadata != self.retained_metadata {
             return Err(corrupt());
@@ -3221,8 +3239,9 @@ struct StartupSnapshot {
 
 fn collect_startup_snapshot(
     transaction: &ReadTransaction,
+    private: Option<crate::maintenance::PrivateArchiveValidationBinding>,
 ) -> Result<StartupSnapshot, StorageError> {
-    validate_table_inventory(transaction)?;
+    validate_table_inventory(transaction, private)?;
     let retained_metadata = read_retained_metadata(transaction)?;
     let meta = transaction.open_table(META).map_err(table_error)?;
     let counts = [
@@ -3378,7 +3397,10 @@ where
         .map(|(value, _)| value)
 }
 
-fn validate_table_inventory(transaction: &ReadTransaction) -> Result<(), StorageError> {
+fn validate_table_inventory(
+    transaction: &ReadTransaction,
+    private: Option<crate::maintenance::PrivateArchiveValidationBinding>,
+) -> Result<(), StorageError> {
     let tables = transaction
         .list_tables()
         .map_err(precommit_storage_error)?
@@ -3389,9 +3411,13 @@ fn validate_table_inventory(transaction: &ReadTransaction) -> Result<(), Storage
         .map_err(precommit_storage_error)?
         .map(|table| table.name().to_owned())
         .collect::<BTreeSet<_>>();
-    if crate::changelog_v3_journal::has_recovery_roots(transaction)? {
+    if private.is_some() || crate::changelog_v3_journal::has_recovery_roots(transaction)? {
         crate::store::v3_layout::exact_current_tables(&tables, &multimaps)?;
-        crate::changelog_v3_roots::read_checkpoint_roots(transaction)?.ok_or_else(corrupt)?;
+        if let Some(binding) = private {
+            binding.validate(transaction)?;
+        } else {
+            crate::changelog_v3_roots::read_checkpoint_roots(transaction)?.ok_or_else(corrupt)?;
+        }
         return Ok(());
     }
     if !multimaps.is_empty() {

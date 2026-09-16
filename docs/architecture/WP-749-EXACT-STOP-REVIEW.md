@@ -193,9 +193,17 @@ result exposes the actual dual frontier separately from the original selection;
 it has no seal or publication capability. Production tests cover interior
 put/overwrite/delete/recreate states in both durability profiles, preceding receipt replay,
 exact capsule and locator retention, ordinary-open refusal and failed-request
-cleanup. Complete private candidate validation, staged authorization and
-publication integration, cross-history proof, crash coverage and write-path
-measurements remain required. This is not an exposed exact-stop restore command.
+cleanup. A distinct private validation mode now binds the exact constructed
+bytes, predecessor control roots and actual stopped frontier, then runs the full
+structural/catalog scan without a clean-close or prefix-checkpoint shortcut.
+A streaming reciprocal graph pass checks retained segment manifests and links,
+all idempotency/provenance/audit locators and exact locator populations. Legacy
+commands retain ADR-0165's allowance for missing physical locators; every present
+locator must agree, and V7 commands require all reciprocal rows. Private
+validation cannot release serving, migration or source-write ports. Its validated
+result can provide one checksum-bound immutable snapshot for staged authentication
+and current policy. Staged authorization and publication integration, full crash
+coverage and write-path measurements remain required. This is not an exposed exact-stop restore command.
 
 - A real same-entity group with multiple puts, delete, and recreate restores to
   each application sequence with exact entity bytes and reciprocal command facts.
@@ -265,11 +273,46 @@ now distinguishes private construction from completed restore support.
 
 ### Hazards and follow-ups
 
-Complete private structural/catalog/reciprocal graph validation, staged
-authorization, receipt-authorized incarnation and publication integration remain
-required before this artifact can be published. The original predecessor roots
+The follow-on private validation path now runs the complete structural/catalog
+scan and reciprocal graph inventory, and provides an immutable authorization
+snapshot. Staged authorization, receipt-authorized incarnation and publication
+integration remain required before this artifact can be published. The original predecessor roots
 remain private reconstruction evidence; they do not describe the cut's actual
 frontier and cannot be used for ordinary startup or replication. The marker
 quarantine is a private staging convention, not a new durable identity or a
 migration path. WP-749's archive driver, public RPC/client/CLI, complete crash
 matrix and same-workload write-path measurements remain open.
+
+
+## Private validation increment
+
+Package: WP-749. Tier: guarantee, under the accepted exact-stop amendment.
+
+Behavior: a reconstruction-owned binding checks the original predecessor roots,
+current registry, database/incarnation/epoch, exact application/audit frontier,
+empty source populations and absence of follower/source lifecycle authority. A
+private engine mode skips source initialization, journal recovery and migration,
+starts write-fenced and cannot release operational ports. It runs the unchanged
+full structural/catalog validators plus a bounded reciprocal segment/locator
+scan. ADR-0165's legacy empty-table compatibility remains intact; V7 commands
+require their physical reciprocal locators. Exact construction bytes must still match before validation; the resulting
+proof binds a fresh checksum after its readers close. Authorization snapshots
+read those same validated bytes and refuse later modifications.
+
+Tests inspect stopped entities through the authorization snapshot, compare all
+stored authority before/after validation, and refuse changed frontiers, missing
+locators, cancellation, reinstated normal markers and changes after validation.
+Normal source/follower opens remain refused even if the marker is copied back.
+Compatibility: no new durable identity, source receipt, application write or
+public restore command. Handbook pages updated: backup/restore and compatibility.
+Checks: the scoped run exercised 1,234 tests: 1,233 passed and the existing
+bootstrap crash test hit its 120-second timeout; seven existing tests were skipped.
+That test passed alone in 116.755 seconds with the same timeout. The final focused
+run passed all 13 private reconstruction/validation/crash/compatibility and
+architecture tests, including authority-row equality and the added marker case.
+Final scope, formatting, clippy, handbook, file-size and panic gates passed.
+The initial large-enum lint was fixed by sharing the private binding through an
+`Arc`; source/follower handles do not carry the large binding inline.
+Remaining work: consume this validated candidate through staged authorization,
+reader closure, receipt-authorized incarnation and RestoreAnchor publication;
+then finish the archive driver and public RPC/client/CLI integration.

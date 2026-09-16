@@ -244,8 +244,11 @@ For an interior command stop, storage can rebuild a separate private artifact
 from the verified backup and checked command-prefix evidence after full original
 replay. It retains the original archive selection separately from its actual
 application/audit frontier. Ordinary source and follower opens refuse this
-artifact; complete candidate validation, staged authorization and publication
-integration remain unfinished. This does not expose a new restore command.
+artifact. A separate validation owner now checks its exact construction bytes,
+full structural/catalog evidence, reciprocal command graph and actual stopped
+frontier. It can release one pinned snapshot for staged authentication and current
+policy without local writes. Staged authorization and publication integration
+remain unfinished. This does not expose a new restore command.
 The storage owner can publish a separately validated and sealed replay only against
 matching durable Offline V3 evidence and its recorded incarnation. It creates an
 empty source journal at the actual restored application/administration frontier,

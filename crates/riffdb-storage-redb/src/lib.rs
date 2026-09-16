@@ -261,8 +261,8 @@ pub use maintenance::{
     RedbMaintenanceReconciliation, RedbMaintenanceStorage, RedbMigrationDiskReservation,
     RedbPrivateArchiveRestoreCandidate, RedbPublishedBootstrapCandidate,
     RedbReplayedArchiveRestore, RedbSealedArchiveRestore, RedbSealedStagedRestore,
-    RedbStagedRestore, RedbValidatedBootstrapCandidate, RedbVerifiedArchiveBackup,
-    RedbVerifiedBootstrapTransfer,
+    RedbStagedRestore, RedbValidatedBootstrapCandidate, RedbValidatedPrivateArchiveRestore,
+    RedbVerifiedArchiveBackup, RedbVerifiedBootstrapTransfer,
 };
 #[doc(hidden)]
 pub use maintenance::{

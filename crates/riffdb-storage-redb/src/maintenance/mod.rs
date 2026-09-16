@@ -44,9 +44,11 @@ mod store;
 pub use failpoint::{
     RedbMaintenanceFailpoint, RedbMaintenanceTestController, RedbMaintenanceTestEvent,
 };
+pub(crate) use staged::PrivateArchiveValidationBinding;
 pub use staged::{
     RedbArchiveRestoreStage, RedbPrivateArchiveRestoreCandidate, RedbReplayedArchiveRestore,
     RedbSealedArchiveRestore, RedbSealedStagedRestore, RedbStagedRestore,
+    RedbValidatedPrivateArchiveRestore,
 };
 pub use store::{
     RedbMaintenanceOperationEvidence, RedbMaintenanceReconciliation, RedbMaintenanceStorage,

@@ -7,12 +7,18 @@ use riffdb_types::{CommitSequence, DualFrontier};
 
 #[path = "archive_prefix_graph.rs"]
 mod graph;
+#[path = "archive_prefix_validation.rs"]
+mod validation;
+pub(crate) use validation::PrivateArchiveValidationBinding;
+pub use validation::RedbValidatedPrivateArchiveRestore;
 const PRIVATE_MARKER: &str = "private-restore-format.riffdb";
 
 /// Unpublished command-prefix artifact. Its original format marker is quarantined
 /// and its follower attachment removed. Complete private validation and staged
 /// authorization are required before a separate publication owner can exist.
 pub struct RedbPrivateArchiveRestoreCandidate {
+    construction_checksum: BackupIntegrityChecksumV1,
+    binding: PrivateArchiveValidationBinding,
     stage: RedbStagedRestore,
     file: File,
     selection: ArchiveRestoreSelectionV3,
@@ -287,7 +293,11 @@ fn construct(
     prefix_edge("prefix-committed");
     drop(database);
     stage.verify()?;
+    let construction_checksum = sha256_file(stage.staged_database_file())?;
+    stage.verify()?;
     Ok(RedbPrivateArchiveRestoreCandidate {
+        construction_checksum,
+        binding: PrivateArchiveValidationBinding::new(history, frontier),
         stage: stage.stage,
         file: stage.file,
         selection: stage.selection,

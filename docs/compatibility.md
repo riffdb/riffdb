@@ -207,8 +207,11 @@ thresholds. Resealed counter and health forgeries refuse before follower progres
 Unknown retained predecessors remain unproven. The offline owner can now rebuild
 an interior command boundary from a fully replayed selection and checked prefix
 evidence. This private artifact has no replication identity or publication
-capability, and ordinary database opens refuse it. Complete candidate validation,
-publication integration and the public exact-stop command remain WP-749 work.
+capability, and ordinary database opens refuse it. A distinct private validator
+runs the full structural/catalog scan and checks reciprocal locators, segment
+links and the actual frontier. Its authorization snapshot is bound to those
+validated bytes. Publication integration and the public exact-stop command
+remain WP-749 work.
 
 Inspect the format while the server is stopped:
 
