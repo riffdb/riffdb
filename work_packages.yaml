@@ -22414,7 +22414,7 @@ work_packages:
     restore from a verified full backup plus the archived suffix through the follower applier
     path with sequence-granular stopping and fail-closed gap and identity checks.
   requirements: [REP-007, AFC-007]
-  required_adrs: [ADR-0050, ADR-0072, ADR-0093, ADR-0100, ADR-0112, ADR-0124, ADR-0178,
+  required_adrs: [ADR-0102, ADR-0050, ADR-0072, ADR-0093, ADR-0100, ADR-0112, ADR-0124, ADR-0178,
     ADR-0186]
   allowed_paths: [SPEC.md, work_packages.yaml,
     adr/0102-segmented-command-authority-and-derived-locators.md,
@@ -22440,6 +22440,12 @@ work_packages:
     receipt V3 and distinct RestoreArchivedBackup RPC; preserve V1/V2 bytes, freeze verified
     backup/archive selection on retry, retain exact application-sequence stopping, staged
     authorization and incarnation publication, and prove every receipt and publication crash edge
+  - Exact command-prefix evidence amendment accepted 2026-09-15 (maintainer in session,
+    "Approve exact amendment", docs/architecture/WP-749-EXACT-STOP-REVIEW.md). Implement
+    successor command capsule V7 and segment V6 with complete bounded atomic prefix
+    evidence, validated private exact-stop reconstruction, original V3 identity preservation,
+    legacy missing-evidence refusal, corruption/crash coverage and same-workload write-path
+    measurements; do not round an application stop or invent an intermediate entity image.
   - Handbook backup/restore pages stating sequence granularity and the absence of a wall-clock
     point-in-time promise
   - Test `archived_suffix_restore_recovers_to_last_archived_sequence` under
@@ -22459,6 +22465,12 @@ work_packages:
   closure:
     status: open
     decisions_taken:
+    - Exact command-prefix amendment accepted by the maintainer in session 2026-09-15,
+      "Approve exact amendment". Record the exact text in SPEC and affected ADRs before
+      runtime changes. Widen scope separately from implementation to riffdb-commit
+      for atomic prefix-evidence bounds and to riffdb-client-rust for the already
+      accepted distinct archive restore operation. WP-749 remains open until the
+      full exact-stop, corruption, crash, authorization and write-path evidence passes.
     - Reuse the checked backup-name grammar through a distinct ArchiveNameV1 type.
       Bind backup, archive, closed application stop and replacement confirmation
       under the versioned archive-input preimage in the existing maintenance hash
