@@ -374,12 +374,11 @@ async fn assert_replication_lag_while_delivery_is_held(
 
 async fn wait_for_commit(fixture: &Fixture, metadata: &CallMetadata, expected: u64) {
     let mut reader = fixture.client("follower").await;
+    let mut observed = None;
     tokio::time::timeout(std::time::Duration::from_secs(30), async {
-        let mut observed = None;
-        // Catch-up after an offline bootstrap has a real backlog. Keep the
-        // 30-second deadline and bound requests without ending observation
-        // merely because thousands of fast Statistics calls overtook replay.
-        for _ in 0..16_384 {
+        // The deadline bounds this wait. A fixed poll count can expire much
+        // earlier when local Statistics calls overtake durable follower replay.
+        loop {
             let stats = reader
                 .stats(
                     v1::StatsRequest {
@@ -396,11 +395,13 @@ async fn wait_for_commit(fixture: &Fixture, metadata: &CallMetadata, expected: u
                 return;
             }
             observed = stats.last_commit_sequence;
+            tokio::task::yield_now().await;
         }
-        panic!("follower frontier {observed:?} did not reach workload frontier {expected}");
     })
     .await
-    .unwrap();
+    .unwrap_or_else(|_| {
+        panic!("follower frontier {observed:?} did not reach workload frontier {expected} in 30s")
+    });
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -417,26 +418,18 @@ async fn follower_applies_exact_prefix_byte_faithfully() {
     workload::deploy(&mut client, &metadata).await;
     let mut follower = fixture.start("follower", Some("follower"));
     let last_commit = workload::run(&fixture, &mut client, &metadata).await;
+    wait_for_commit(&fixture, &metadata, last_commit).await;
     let mut reader = fixture.client("follower").await;
-    tokio::time::timeout(std::time::Duration::from_secs(30), async {
-        for _ in 0..4096 {
-            let stats = reader
-                .stats(
-                    v1::StatsRequest {
-                        request_id: request_id(90),
-                    },
-                    &metadata,
-                )
-                .await
-                .unwrap();
-            if stats.last_commit_sequence == Some(last_commit) {
-                return;
-            }
-        }
-        panic!("follower did not reach the complete workload commit frontier");
-    })
-    .await
-    .unwrap();
+    let stats = reader
+        .stats(
+            v1::StatsRequest {
+                request_id: request_id(90),
+            },
+            &metadata,
+        )
+        .await
+        .unwrap();
+    assert_eq!(stats.last_commit_sequence, Some(last_commit));
     reader
         .health(
             v1::HealthRequest {
