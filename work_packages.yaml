@@ -22891,6 +22891,13 @@ work_packages:
   closure:
     status: open
     decisions_taken:
+    - Full workspace CI exposed simulation fixtures whose entity images omitted
+      required schema fields and whose secondary-index covers were undeclared.
+      Correct the fixtures to retain key 10 and vary a declared covered payload,
+      including required empty notes, without changing production validation,
+      generator plans, seeds, fault schedules or recovery predicates. Preserve
+      every historical corpus receipt when corrected images restore C0DF and
+      displace C307; the existing successor chain still proves the full territory.
     - Widen scope to riffdb-catalog for retained command-prefix schema validation.
       Keep contract IR and expression interpretation catalog-owned under ADR-0042;
       the backend supplies bounded decoded evidence and retains no IR dependency.

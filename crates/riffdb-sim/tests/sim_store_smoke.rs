@@ -1,4 +1,5 @@
 #![forbid(unsafe_code)]
+// req: SIM-002, REC-001
 
 //! D4 (SIM-B): the first fully simulated `RedbStore` open — a smoke test,
 //! not a campaign. The store opens through the hidden media constructor with
@@ -68,7 +69,8 @@ contract StorageRecovery version 1 {
   entity Row {
     key (id: u64)
     field value: u64
-    index ByValue(value)
+    field payload: u64
+    index ByValue(value) cover (payload)
   }
 
   event RowCreated {
@@ -92,7 +94,8 @@ contract StorageRecovery version 1 {
     create Row(id) as row
       else RowAlreadyExists { id: id }
 
-    set row.value = value
+    set row.value = 10
+    set row.payload = value
 
     emit RowCreated { id: id, value: value }
     return RowCreatedOutcome { row: row }
@@ -159,6 +162,35 @@ fn record(value: u64) -> CanonicalRecord {
     .expect("canonical record")
 }
 
+// Keep the indexed value constant while varying the covered payload. This
+// keeps the fixed index-key workload while making every entity and index
+// image agree with the retained contract.
+fn entity_record(target_ordinal: u64, payload: u64) -> CanonicalRecord {
+    CanonicalRecord::new(vec![
+        (
+            FieldId::new(1).expect("id field"),
+            CanonicalValue::U64(6 + target_ordinal),
+        ),
+        (
+            FieldId::new(2).expect("value field"),
+            CanonicalValue::U64(10),
+        ),
+        (
+            FieldId::new(3).expect("payload field"),
+            CanonicalValue::U64(payload),
+        ),
+    ])
+    .expect("complete entity record")
+}
+
+fn index_cover(payload: u64) -> CanonicalRecord {
+    CanonicalRecord::new(vec![(
+        FieldId::new(3).expect("payload field"),
+        CanonicalValue::U64(payload),
+    )])
+    .expect("declared index cover")
+}
+
 fn catalog_principal() -> AuditPrincipalV1 {
     AuditPrincipalV1::new(
         ActorId::new("sim-store-smoke-maintainer").expect("catalog principal"),
@@ -179,7 +211,7 @@ struct CommandFixture {
 
 /// The `storage_recovery_matrix` command fixture, trimmed to the
 /// vacant-terminal admission shape over disjoint entities: ordinal N commits
-/// commit sequence N over entity id `6 + N` with value 1.
+/// commit sequence N over entity id `6 + N`, with index value 10 and a distinct payload.
 fn command_fixture_at(ordinal: u64) -> CommandFixture {
     let plan = plan();
     let sequence = CommitSequence::new(ordinal).expect("fixture ordinal");
@@ -254,8 +286,12 @@ fn command_fixture_at(ordinal: u64) -> CommandFixture {
         Vec::new(),
     )
     .expect("read snapshot");
-    let post_image = EntityPostImage::new(target.clone(), plan.contract_version(), record(payload))
-        .expect("entity post-image");
+    let post_image = EntityPostImage::new(
+        target.clone(),
+        plan.contract_version(),
+        entity_record(ordinal, payload),
+    )
+    .expect("entity post-image");
     let event_intent = EventIntent::new(EventTypeId::new(1).expect("event type"), record(payload))
         .expect("event intent");
     let declared_outcome =
@@ -287,7 +323,7 @@ fn command_fixture_at(ordinal: u64) -> CommandFixture {
         EntityVersion::first(),
         plan.contract_version(),
         DurableKeySchemaBindingV1::from_plan(&plan),
-        record(payload),
+        entity_record(ordinal, payload),
     )
     .expect("stored entity");
     let mutation = riffdb_storage_api::CommittedEntityMutationV1::new(
@@ -298,7 +334,7 @@ fn command_fixture_at(ordinal: u64) -> CommandFixture {
     let index_record = StoredIndexEntryV2::new(
         index_key,
         DurableKeySchemaBindingV1::from_plan(&plan),
-        record(payload),
+        index_cover(payload),
         pending.partition_key().clone(),
     )
     .expect("stored index entry");
