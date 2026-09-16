@@ -68,7 +68,7 @@ impl<S: ArchiveFrameSinkV1> Pump<S> {
         }
         let Some(frame) = self
             .cursor
-            .next_frame()
+            .next_coalesced_frame()
             .map_err(|_| Error::ResyncRequired)?
         else {
             return Ok(false);

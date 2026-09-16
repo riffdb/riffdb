@@ -1,4 +1,4 @@
-//! One-shot test executable signal; absent from normal builds and never installed by riffdbd.
+//! Two bounded one-shot test executable progress signals; absent from normal builds and never installed by riffdbd.
 use riffdb_storage_api::{ArchiveConsumerErrorV1, ChangelogHistoryPointV3};
 use riffdb_types::{ArchiveNameV1, CommitSequence};
 use std::sync::{
@@ -7,10 +7,10 @@ use std::sync::{
 };
 struct Probe {
     name: ArchiveNameV1,
-    through: CommitSequence,
-    observer: fn(),
+    through: [CommitSequence; 2],
+    observers: [fn(); 2],
     failure_observer: fn(),
-    emitted: AtomicBool,
+    emitted: [AtomicBool; 2],
     failure_emitted: AtomicBool,
 }
 static PROBE: OnceLock<Probe> = OnceLock::new();
@@ -18,20 +18,28 @@ static PROBE: OnceLock<Probe> = OnceLock::new();
 /// Signals follow sink-confirmed progress or terminal sink failure; neither influences validation.
 pub fn install_archive_progress_probe(
     name: &'static str,
-    through: u64,
-    observer: fn(),
+    through: [u64; 2],
+    observers: [fn(); 2],
     failure_observer: fn(),
 ) -> bool {
-    let (Ok(name), Some(through)) = (ArchiveNameV1::new(name), CommitSequence::new(through)) else {
+    let (Ok(name), Some(first), Some(second)) = (
+        ArchiveNameV1::new(name),
+        CommitSequence::new(through[0]),
+        CommitSequence::new(through[1]),
+    ) else {
         return false;
     };
+    if first >= second {
+        return false;
+    }
+    let through = [first, second];
     PROBE
         .set(Probe {
             name,
             through,
-            observer,
+            observers,
             failure_observer,
-            emitted: AtomicBool::new(false),
+            emitted: [AtomicBool::new(false), AtomicBool::new(false)],
             failure_emitted: AtomicBool::new(false),
         })
         .is_ok()
@@ -39,13 +47,17 @@ pub fn install_archive_progress_probe(
 pub(super) fn observe(name: &ArchiveNameV1, position: ChangelogHistoryPointV3) {
     if let Some(probe) = PROBE.get()
         && &probe.name == name
-        && position
-            .frontier()
-            .application()
-            .is_some_and(|value| value >= probe.through)
-        && !probe.emitted.swap(true, Ordering::AcqRel)
     {
-        (probe.observer)();
+        for index in 0..probe.through.len() {
+            if position
+                .frontier()
+                .application()
+                .is_some_and(|value| value >= probe.through[index])
+                && !probe.emitted[index].swap(true, Ordering::AcqRel)
+            {
+                (probe.observers[index])();
+            }
+        }
     }
 }
 
