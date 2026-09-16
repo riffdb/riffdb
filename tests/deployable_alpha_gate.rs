@@ -63,8 +63,10 @@ fn final_gate_metadata_closes_post_freeze_safety_extensions() {
     let root = repository_root();
     let packages = std::fs::read_to_string(root.join("work_packages.yaml"))
         .expect("read work-package registry");
+    // The freeze ledger also names WP-579 in an indented list. Only the
+    // top-level work-package entry owns its dependencies and requirements.
     let package = packages
-        .split_once("- id: WP-579\n")
+        .split_once("\n- id: WP-579\n")
         .expect("WP-579 must remain registered")
         .1
         .split("\n- id: WP-")
