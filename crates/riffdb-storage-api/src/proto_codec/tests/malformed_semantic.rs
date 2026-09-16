@@ -1001,3 +1001,93 @@ fn frozen_audit_v2_refuses_a_follower_target_even_with_a_valid_envelope_checksum
         AUDIT, payload,
     )));
 }
+
+// req: REP-005, REP-006
+#[test]
+fn frozen_audit_encoders_refuse_follower_target_without_erasing_it() {
+    use riffdb_types::{
+        LeadershipEpochV1, ReplicationFollowerAuditTargetV1, ReplicationSourceHoldIdV1,
+        ServiceAuditTargetV1, ServiceAuditTargetsV1,
+    };
+    let original = sample::service_audit_record();
+    let follower = ServiceAuditTargetV1::ReplicationFollower(
+        ReplicationFollowerAuditTargetV1::new(
+            sample::database_id(),
+            1,
+            LeadershipEpochV1::initial(),
+            ReplicationSourceHoldIdV1::new([0x81; 16]).expect("hold"),
+        )
+        .expect("source lineage"),
+    );
+    let mut targets = original.targets().as_slice().to_vec();
+    targets.push(follower.clone());
+    let record = crate::StoredServiceAuditRecordV1::from_stored_parts(
+        original.administration_sequence(),
+        original.request_id(),
+        original.timestamp(),
+        original.operation(),
+        original.phase(),
+        original.principal().cloned(),
+        original.ingress(),
+        ServiceAuditTargetsV1::new(targets).expect("canonical targets"),
+        original.approval_id().cloned(),
+        original.link(),
+    )
+    .expect("checked semantic record");
+    assert!(encode_service_audit_record_legacy_v1(&record).is_err());
+    assert!(encode_service_audit_record_v2(&record).is_err());
+    assert_eq!(record.targets().as_slice().last(), Some(&follower));
+    assert!(encode_service_audit_record_v2(&original).is_ok());
+    // Compatibility imports are aliases of the shared type, not copies.
+    assert_eq!(
+        std::any::TypeId::of::<crate::LeadershipEpochV1>(),
+        std::any::TypeId::of::<LeadershipEpochV1>()
+    );
+    assert_eq!(
+        std::any::TypeId::of::<crate::ReplicationSourceHoldIdV1>(),
+        std::any::TypeId::of::<ReplicationSourceHoldIdV1>()
+    );
+}
+
+// req: REP-005, REP-006
+#[test]
+fn command_capsule_refuses_matching_follower_targets_before_frozen_encoding() {
+    use riffdb_types::{
+        LeadershipEpochV1, ReplicationFollowerAuditTargetV1, ReplicationSourceHoldIdV1,
+        ServiceAuditTargetV1, ServiceAuditTargetsV1,
+    };
+    let (capsule, _) = super::sample_command_capsule_v1();
+    let (outcome, provenance, commit, started, terminal) = capsule.into_parts();
+    let target = ServiceAuditTargetV1::ReplicationFollower(
+        ReplicationFollowerAuditTargetV1::new(
+            sample::database_id(),
+            1,
+            LeadershipEpochV1::initial(),
+            ReplicationSourceHoldIdV1::new([0x81; 16]).expect("hold"),
+        )
+        .expect("lineage"),
+    );
+    let with_follower = |record: &crate::StoredServiceAuditRecordV1| {
+        crate::StoredServiceAuditRecordV1::from_stored_parts(
+            record.administration_sequence(),
+            record.request_id(),
+            record.timestamp(),
+            record.operation(),
+            record.phase(),
+            record.principal().cloned(),
+            record.ingress(),
+            ServiceAuditTargetsV1::new([target.clone()]).expect("target"),
+            record.approval_id().cloned(),
+            record.link(),
+        )
+        .expect("semantically well-formed audit")
+    };
+    // Identical start/terminal targets pass the general audit equality check;
+    // the command capsule must still refuse this administrative-only target.
+    let started = with_follower(&started);
+    let terminal = with_follower(&terminal);
+    assert_eq!(started.targets(), terminal.targets());
+    assert!(
+        crate::StoredCommandCapsuleV1::new(outcome, provenance, commit, started, terminal).is_err()
+    );
+}

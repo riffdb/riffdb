@@ -7,7 +7,7 @@ use crate::limits::MAX_SERVICE_AUDIT_TARGETS;
 use crate::{
     AdministrationSequence, CapabilityId, CommandId, CommitSequence, ContractLineage,
     ContractVersion, EntityTypeId, EventConsumerIdentityHash, IndexId, ProjectionId, ProvenanceId,
-    ReactiveModuleHash, ReactiveOperationName,
+    ReactiveModuleHash, ReactiveOperationName, ReplicationFollowerAuditTargetV1,
 };
 
 /// The closed v1 application-service operation registry.
@@ -490,6 +490,8 @@ pub enum ServiceAuditTargetV1 {
         /// Domain-separated complete consumer identity.
         consumer_identity_hash: EventConsumerIdentityHash,
     },
+    /// One follower registration scoped to its exact source lineage.
+    ReplicationFollower(ReplicationFollowerAuditTargetV1),
 }
 
 impl ServiceAuditTargetV1 {
@@ -507,6 +509,7 @@ impl ServiceAuditTargetV1 {
             Self::Provenance(_) => 0x08,
             Self::Capability(_) => 0x09,
             Self::EventConsumer { .. } => 0x0a,
+            Self::ReplicationFollower(_) => 0x0b,
         }
     }
 
@@ -549,6 +552,12 @@ impl ServiceAuditTargetV1 {
             Self::Commit(sequence) => key.extend_from_slice(&sequence.to_be_bytes()),
             Self::Provenance(provenance_id) => key.extend_from_slice(provenance_id.as_bytes()),
             Self::Capability(capability_id) => key.extend_from_slice(capability_id.as_bytes()),
+            Self::ReplicationFollower(target) => {
+                key.extend_from_slice(target.database_id().as_bytes());
+                key.extend_from_slice(&target.history_incarnation().to_be_bytes());
+                key.extend_from_slice(&target.leadership_epoch().get().to_be_bytes());
+                key.extend_from_slice(target.hold_id().as_bytes());
+            }
             Self::EventConsumer {
                 lineage,
                 module_hash,
@@ -580,6 +589,7 @@ impl fmt::Debug for ServiceAuditTargetV1 {
             Self::Provenance(_) => "Provenance",
             Self::Capability(_) => "Capability",
             Self::EventConsumer { .. } => "EventConsumer",
+            Self::ReplicationFollower(_) => "ReplicationFollower",
         };
         write!(formatter, "ServiceAuditTargetV1::{variant}([REDACTED])")
     }

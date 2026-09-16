@@ -9,7 +9,6 @@ mod follower;
 mod follower_budget;
 mod frame;
 mod history;
-mod leadership;
 mod mutation;
 mod receipt;
 mod receipt_codec;
@@ -37,15 +36,14 @@ pub use history::{
     ChangelogHistoryPointV3, ChangelogHistoryStateV3, ChangelogLineageV3,
     ReplicationFollowerStateV3,
 };
-pub use leadership::LeadershipEpochV1;
 pub use mutation::{AuthoritativeMutationAccumulatorV3, AuthoritativeMutationV3};
 pub use receipt::{
     AuthoritativeTransactionBindingV3, AuthoritativeTransactionV3, ChangelogAttributionV3,
 };
+pub use riffdb_types::{LeadershipEpochV1, ReplicationSourceHoldIdV1};
 pub use sequence::{ChangelogTransactionAllocator, ChangelogTransactionSequence};
 pub use source_hold::{
-    MAX_REPLICATION_SOURCE_HOLDS_V1, ReplicationSourceHoldIdV1, ReplicationSourceHoldKindV1,
-    ReplicationSourceHoldV1,
+    MAX_REPLICATION_SOURCE_HOLDS_V1, ReplicationSourceHoldKindV1, ReplicationSourceHoldV1,
 };
 pub use source_hold_v2::{FollowerRegistrationPhaseV1, ReplicationSourceHoldV2};
 pub use source_progress::ReplicationSourceProgressV3;

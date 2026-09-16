@@ -1,8 +1,10 @@
 # WP-748 — durable primary fencing and audited promotion
 
-Status: proposed; exact maintainer acceptance required before implementation.
-Package: WP-748. Tier: guarantee. This is separate from the pending
-`WP-748-REGISTRATION-AUDIT-REVIEW.md`; neither proposal is accepted by this file.
+Status: exact text accepted by the maintainer in session, 2026-09-16:
+"Approve exact text". Authority-only acceptance commit: `05d2938b`.
+Implementation and required proofs remain open.
+Package: WP-748. Tier: guarantee. This is separate from
+`WP-748-REGISTRATION-AUDIT-REVIEW.md`, also accepted in `05d2938b`.
 
 ## Contract gap
 
@@ -25,7 +27,7 @@ Adding another metadata domain and its registry identity requires acceptance
 under AGENTS.md and D-003. Promotion also needs a durable attempt record while
 the attached follower still cannot originate database audit writes.
 
-## Exact proposed amendment
+## Exact accepted amendment
 
 This qualifies ADR-0178 sections 2 and 5, ADR-0186 sections 1 and 5 and its
 namespace compatibility rule,

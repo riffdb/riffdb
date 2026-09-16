@@ -77,6 +77,10 @@ pub(super) fn command_capsule_to_proto(
     }
 }
 
+#[expect(
+    clippy::expect_used,
+    reason = "StoredCommandCapsuleV1 construction refuses follower targets before this private codec"
+)]
 fn command_audit_to_proto(
     started: &StoredServiceAuditRecordV1,
     terminal: &StoredServiceAuditRecordV1,
@@ -91,7 +95,8 @@ fn command_audit_to_proto(
             .as_slice()
             .iter()
             .map(audit::target_to_proto_v2)
-            .collect(),
+            .collect::<Result<Vec<_>, _>>()
+            .expect("checked command capsule excludes follower audit targets"),
         approval_id: started.approval_id().map(|value| value.as_str().to_owned()),
         started_administration_sequence: started.administration_sequence().get(),
         started_at: Some(timestamp_to_proto(started.timestamp())),
@@ -156,7 +161,7 @@ fn command_audit_bytes_for_seal(
     }
     append_varint_field(&mut audit_bytes, 4, u64::from(started.ingress().tag()));
     for target in started.targets().as_slice() {
-        append_message_field(&mut audit_bytes, 5, &audit::target_to_proto_v2(target))?;
+        append_message_field(&mut audit_bytes, 5, &audit::target_to_proto_v2(target)?)?;
     }
     if let Some(approval_id) = started.approval_id() {
         append_length_delimited_field(&mut audit_bytes, 6, approval_id.as_str().as_bytes())?;

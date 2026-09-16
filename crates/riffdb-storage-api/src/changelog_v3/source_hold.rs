@@ -1,32 +1,10 @@
+use riffdb_types::ReplicationSourceHoldIdV1;
+
 use super::{ChangelogHistoryPointV3, ChangelogLineageV3};
 
 /// Hard total ceiling, including every follower, archive and bootstrap hold.
 /// This bounds follower count as well as the combined source-only population.
 pub const MAX_REPLICATION_SOURCE_HOLDS_V1: u64 = 4096;
-
-/// Opaque storage-local hold identity, never a NodeId or authority token.
-#[derive(Clone, Copy, Eq, Hash, Ord, PartialEq, PartialOrd)]
-pub struct ReplicationSourceHoldIdV1([u8; 16]);
-
-impl ReplicationSourceHoldIdV1 {
-    /// Zero is unassigned. Constructing an ID grants no mutation capability.
-    #[must_use]
-    pub fn new(bytes: [u8; 16]) -> Option<Self> {
-        (bytes != [0; 16]).then_some(Self(bytes))
-    }
-
-    /// Canonical bytes for the storage owner's codec and key.
-    #[must_use]
-    pub const fn as_bytes(&self) -> &[u8; 16] {
-        &self.0
-    }
-}
-
-impl std::fmt::Debug for ReplicationSourceHoldIdV1 {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str("ReplicationSourceHoldIdV1([redacted])")
-    }
-}
 
 /// Closed source-fence owners. Discriminants are the frozen V1 key tags.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]

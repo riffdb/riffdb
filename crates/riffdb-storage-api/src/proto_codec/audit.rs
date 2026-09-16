@@ -100,7 +100,9 @@ pub(super) fn ingress_from_proto(value: i32) -> Result<ServiceIngressKindV1, Dur
     ServiceIngressKindV1::from_tag(tag).ok_or_else(DurableCodecError::corrupt)
 }
 
-pub(super) fn target_to_proto_v2(value: &ServiceAuditTargetV1) -> wire::ServiceAuditTargetV2 {
+pub(super) fn target_to_proto_v2(
+    value: &ServiceAuditTargetV1,
+) -> Result<wire::ServiceAuditTargetV2, DurableCodecError> {
     use wire::service_audit_target_v2::Target;
     let target = match value {
         ServiceAuditTargetV1::ContractLineage(lineage) => {
@@ -142,6 +144,9 @@ pub(super) fn target_to_proto_v2(value: &ServiceAuditTargetV1) -> wire::ServiceA
         ServiceAuditTargetV1::Commit(sequence) => Target::CommitSequence(sequence.get()),
         ServiceAuditTargetV1::Provenance(id) => Target::ProvenanceId(id.as_bytes().to_vec()),
         ServiceAuditTargetV1::Capability(id) => Target::CapabilityId(id.as_bytes().to_vec()),
+        ServiceAuditTargetV1::ReplicationFollower(_) => {
+            return Err(DurableCodecError::invariant());
+        }
         ServiceAuditTargetV1::EventConsumer {
             lineage,
             module_hash,
@@ -154,9 +159,9 @@ pub(super) fn target_to_proto_v2(value: &ServiceAuditTargetV1) -> wire::ServiceA
             consumer_identity_hash: consumer_identity_hash.as_bytes().to_vec(),
         }),
     };
-    wire::ServiceAuditTargetV2 {
+    Ok(wire::ServiceAuditTargetV2 {
         target: Some(target),
-    }
+    })
 }
 
 #[cfg(test)]
@@ -204,7 +209,8 @@ fn target_to_proto_v1(
         ServiceAuditTargetV1::Commit(sequence) => Target::CommitSequence(sequence.get()),
         ServiceAuditTargetV1::Provenance(id) => Target::ProvenanceId(id.as_bytes().to_vec()),
         ServiceAuditTargetV1::Capability(id) => Target::CapabilityId(id.as_bytes().to_vec()),
-        ServiceAuditTargetV1::EventConsumer { .. } => {
+        ServiceAuditTargetV1::EventConsumer { .. }
+        | ServiceAuditTargetV1::ReplicationFollower(_) => {
             return Err(DurableCodecError::invariant());
         }
     };
@@ -366,7 +372,7 @@ pub fn encode_service_audit_record_v2(
                 .as_slice()
                 .iter()
                 .map(target_to_proto_v2)
-                .collect(),
+                .collect::<Result<Vec<_>, _>>()?,
             approval_id: value.approval_id().map(|value| value.as_str().to_owned()),
             link: Some(link_to_proto(value.link())),
         },
