@@ -4,3 +4,4 @@ performance/**
 superpowers/**
 architecture/vectors-recon-map.md
 architecture/vectors-projection-obligations.md
+architecture/WP-748-HOLD-BUDGET-IMPLEMENTATION.md

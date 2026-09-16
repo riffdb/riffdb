@@ -1,7 +1,10 @@
 //! Production storage portion of WP-748; administrative promotion is separate.
 // req: REP-006
 use super::*;
-use riffdb_storage_api::{OutboxSucceedV1, ReplicationSourceHoldIdV1};
+use riffdb_storage_api::{
+    FollowerHoldBudget, OutboxSucceedV1, ReplicationSourceHoldIdV1, ReplicationSourceHoldKindV1,
+    ReplicationSourceHoldV1,
+};
 use riffdb_storage_redb::RedbOfflineRetention;
 
 fn attach_follower(
@@ -57,6 +60,19 @@ fn retention_prune_refuses_to_pass_registered_follower_frontier() {
         .unwrap()
         .history();
     assert_eq!(head.tail().frontier().application(), CommitSequence::new(1));
+    // An exhausted observation cannot release the lagging follower's hold.
+    // These exact same-lineage positions came from the attached manifest and
+    // current source publication; the prune below proves the durable fence.
+    let lagging = ReplicationSourceHoldV1::new(
+        second.fence().hold_id(),
+        ReplicationSourceHoldKindV1::FollowerAcknowledgement,
+        head.lineage(),
+        second.fence().history().tail(),
+    );
+    let budget = FollowerHoldBudget::new(1).unwrap();
+    let exhausted = budget.observe(lagging, head).unwrap();
+    assert_eq!(exhausted.application_lag_sequences(), 1);
+    assert!(exhausted.is_exhausted());
     // One current follower cannot release the other's durable lagging fence.
     ports
         .acknowledge_replication_follower_v3(first.fence().hold_id(), head.lineage(), head.tail())
@@ -87,6 +103,13 @@ fn retention_prune_refuses_to_pass_registered_follower_frontier() {
     ports
         .acknowledge_replication_follower_v3(second.fence().hold_id(), head.lineage(), head.tail())
         .unwrap();
+    let caught_up = ReplicationSourceHoldV1::new(
+        second.fence().hold_id(),
+        ReplicationSourceHoldKindV1::FollowerAcknowledgement,
+        head.lineage(),
+        head.tail(),
+    );
+    assert!(!budget.observe(caught_up, head).unwrap().is_exhausted());
     drop(ports);
     let status = retention.prune_to(1).unwrap();
     assert_eq!(status.watermark_sequence, 1);

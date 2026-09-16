@@ -22817,6 +22817,13 @@ work_packages:
   closure:
     status: open
     decisions_taken:
+    - Define follower hold budgets as nonzero application-sequence allowances.
+      Derive a checked typed observation from a same-lineage published history
+      and exact follower acknowledgement; do not charge administration or
+      physical receipt sequences. Exhaustion begins at equality and never
+      authorizes removal or advancement of the retained fence. Persisted
+      registration policies, health wiring and audited retirement/expiry remain
+      required before this package can close; this value adds no durable format.
     - Widen crate scope to riffdb-client-rust in its own prerequisite commit.
       The accepted deliverables already require typed Rust-client registration,
       retirement and promotion; this scope entry permits their implementation
