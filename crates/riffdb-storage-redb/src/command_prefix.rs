@@ -6,6 +6,7 @@ mod catalog;
 mod predecessor;
 mod rows;
 mod secondary;
+mod vector;
 
 pub(crate) use catalog::validate_catalog_images;
 pub(crate) use rows::{decode_capsule, decode_segment};

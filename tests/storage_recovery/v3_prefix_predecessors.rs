@@ -166,6 +166,114 @@ fn missing_index_mutations(
     original
 }
 
+// A valid original receipt and segment checksum cannot make a nested value a
+// vector record. Keep the physical final graph unchanged in the startup case;
+// only the retained prefix contains this extra row.
+fn unexpected_vector_mutation(
+    receipt: &AuthoritativeTransactionV3,
+    case: u8,
+) -> AuthoritativeTransactionV3 {
+    let graph = receipt
+        .mutations()
+        .iter()
+        .find(|m| m.namespace() == N::Commits)
+        .unwrap();
+    let decoded = decode_command_segment_v1(graph.value().unwrap()).unwrap();
+    let segment = decoded.value();
+    let mut commands = segment.commands().to_vec();
+    let last = commands.last_mut().unwrap();
+    let prefix = last.prefix_evidence().unwrap();
+    let entity_row = prefix
+        .mutations()
+        .iter()
+        .find(|m| m.namespace() == N::Entities)
+        .unwrap();
+    let entity = decode_entity_record_v1(entity_row.value().unwrap()).unwrap();
+    let field = entity.value().fields().fields()[0].0;
+    let lineage = entity.value().schema_binding().lineage().as_bytes();
+    let partition = last.base().outcome().partition_key().as_bytes();
+    let mut observation_key = Vec::new();
+    observation_key.extend_from_slice(&u16::try_from(lineage.len()).unwrap().to_be_bytes());
+    observation_key.extend_from_slice(lineage);
+    observation_key.extend_from_slice(&u32::try_from(partition.len()).unwrap().to_be_bytes());
+    observation_key.extend_from_slice(partition);
+    observation_key
+        .extend_from_slice(&entity.value().target().entity_type_id().get().to_be_bytes());
+    observation_key.extend_from_slice(&field.get().to_be_bytes());
+    let (namespace, key) = match case {
+        13 => {
+            let mut key = entity_row.key().to_vec();
+            key.extend_from_slice(&field.get().to_be_bytes());
+            (N::VectorEvidence, key)
+        }
+        14 => {
+            let mut key = u32::try_from(observation_key.len())
+                .unwrap()
+                .to_be_bytes()
+                .to_vec();
+            key.extend_from_slice(&observation_key);
+            key.extend_from_slice(entity_row.key());
+            (N::VectorEvidenceIndex, key)
+        }
+        15 => (N::VectorObservations, observation_key),
+        16 => {
+            let mut key = vec![0, 0, b'V', b'H', 1];
+            key.extend_from_slice(&u16::try_from(lineage.len()).unwrap().to_be_bytes());
+            key.extend_from_slice(lineage);
+            (N::VectorObservations, key)
+        }
+        _ => panic!("vector case"),
+    };
+    let extra =
+        AuthoritativeMutationV3::put(namespace, &key, None, entity_row.value().unwrap()).unwrap();
+    let mut mutations = prefix.mutations().to_vec();
+    mutations.push(extra.clone());
+    mutations.sort_by(|a, b| (a.namespace(), a.key()).cmp(&(b.namespace(), b.key())));
+    *last = StoredCommandCapsuleV2::from_base_with_entity_transitions(
+        last.base().clone(),
+        last.index_generation_transitions().to_vec(),
+        last.entity_transitions().to_vec(),
+    )
+    .unwrap()
+    .with_prefix_evidence(
+        CommandPrefixEvidenceV1::new(prefix.predecessor(), prefix.covered(), mutations).unwrap(),
+    )
+    .unwrap();
+    let draft = StoredCommandSegmentV1::new(
+        segment.database_id(),
+        segment.history_incarnation(),
+        segment.predecessor_segment_digest(),
+        commands,
+        segment.manifest().clone(),
+        CommandSegmentDigestV1::from_bytes([0; 32]),
+    )
+    .unwrap();
+    let (segment, encoded) = seal_and_encode_command_segment_v1(draft).unwrap();
+    let mut net = receipt.mutations().to_vec();
+    let graph = net
+        .iter_mut()
+        .find(|m| m.namespace() == N::Commits)
+        .unwrap();
+    *graph = AuthoritativeMutationV3::put(
+        N::Commits,
+        graph.key(),
+        graph.expected_hash(),
+        encoded.as_bytes(),
+    )
+    .unwrap();
+    net.push(extra);
+    net.sort_by(|a, b| (a.namespace(), a.key()).cmp(&(b.namespace(), b.key())));
+    let original =
+        AuthoritativeTransactionV3::new(receipt.binding(), receipt.attribution(), net).unwrap();
+    let prefixes = segment
+        .commands()
+        .iter()
+        .map(|c| c.prefix_evidence().unwrap())
+        .collect::<Vec<_>>();
+    validate_command_prefix_mutations_v1(&prefixes, &original).unwrap();
+    original
+}
+
 // Semantic-prior substitutions retain exact receipt/prefix net agreement; a
 // real predecessor join is needed to refuse them. Separate cases substitute a
 // wrong nested envelope or break a retained raw precondition.
@@ -173,6 +281,9 @@ fn contradictory_prefix(
     receipt: &AuthoritativeTransactionV3,
     case: u8,
 ) -> AuthoritativeTransactionV3 {
+    if case >= 13 {
+        return unexpected_vector_mutation(receipt, case);
+    }
     if case >= 10 {
         return missing_index_mutations(receipt, case);
     }
@@ -411,7 +522,7 @@ fn contradictory_prefix(
 #[test]
 fn follower_joins_prefix_facts_to_physical_and_intra_group_predecessors() {
     for count in [1, 2, 4] {
-        for case in [0, 1, 2, 3, 4, 6, 7, 8, 9, 10, 11, 12] {
+        for case in [0, 1, 2, 3, 4, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16] {
             // The other terminal steps delete the row or leave its bytes
             // unchanged, so there is no index put to substitute in those cases.
             if count != 1 && case >= 6 {
@@ -486,7 +597,7 @@ fn follower_joins_prefix_facts_to_physical_and_intra_group_predecessors() {
 
 #[test]
 fn startup_refuses_resealed_epoch_priors_and_secondary_index_images() {
-    for case in [3, 5, 6, 7, 8, 9, 10, 11, 12] {
+    for case in [13, 14, 15, 16, 3, 5, 6, 7, 8, 9, 10, 11, 12] {
         let source = TestDatabasePath::new("prefix-prior-startup");
         let anchor = install_fixture(&source.0);
         let (ports, _receiver) = observed_ports(&source.0, RedbCommitProfile::Hardened);

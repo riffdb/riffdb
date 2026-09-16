@@ -151,6 +151,15 @@ refuse before durable progress; unknown historical observations remain unproven.
 Older writer images use the existing catalog materialization rules before
 index derivation; raw writer bytes still own transition hashes. Historical schema
 binding remains owned by the startup history proof or preceding validated prefix.
+Intrinsic vector checks now bind typed evidence to its entity post-image,
+command sequence, plan, provenance and partition. Each primary evidence mutation
+requires exactly one reciprocal index mutation and its partition/lineage
+observations, with command-owned revisions and nonempty persisted partition
+counts. Re-sealed extra vector rows refuse in production startup and follower
+tests. Missing links and inconsistent revisions, metadata and vector presence
+also refuse; existing primary/follower vector traffic remains covered separately.
+Catalog-derived source/embedding transitions and exact predecessor counter
+arithmetic remain unproven by these intrinsic checks.
 This is not an exact-stop restore implementation. Complete secondary-index/vector
 and cross-history graph validation, private reconstruction, publication proofs
 and write-path measurements remain required.

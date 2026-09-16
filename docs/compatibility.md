@@ -184,9 +184,14 @@ or contradictory known rows refuse before durable follower progress. Expected
 covers are derived one at a time. Older writer records use the existing bounded
 lineage proof to materialize eligible optional fields as null before deriving
 index contents, while transition hashes still bind the raw writer bytes.
-Vectors, unknown cross-history values, complete
-candidate graph validation and exact-stop archive restore remain unfinished
-WP-749 work.
+Vector prefix rows now require canonical keys and typed values. Written evidence
+binds the entity image, version, vector presence, command plan, sequence,
+provenance and partition. Every evidence mutation requires its reciprocal index
+mutation and partition/lineage observations; missing, extra or contradictory
+links refuse. Observation revisions must match the command, and persisted
+partition counts cannot be empty. Catalog-derived vector transitions, exact
+counter arithmetic, unknown cross-history values, complete candidate graph
+validation and exact-stop archive restore remain unfinished WP-749 work.
 
 Inspect the format while the server is stopped:
 
