@@ -787,3 +787,84 @@ fn catalog_refuses_vector_evidence_for_an_undeclared_production_field() {
         }
     }
 }
+
+#[test]
+fn catalog_refuses_malformed_unindexed_prefix_entity_fields() {
+    let source = TestDatabasePath::new("prefix-entity-schema");
+    let anchor = install_fixture(&source.0);
+    let (ports, _receiver) = observed_ports(&source.0, RedbCommitProfile::Hardened);
+    commit_command_fixture(&ports, &command_fixture_at(1));
+    let pin = ports.published_changelog_snapshot_v3().unwrap();
+    let mut cursor = pin
+        .changelog_receipts_v3(anchor.lineage(), anchor.tail())
+        .unwrap();
+    let receipt = loop {
+        let receipt = cursor.next_receipt().unwrap().unwrap();
+        if receipt
+            .mutations()
+            .iter()
+            .any(|m| m.namespace() == N::Commits)
+        {
+            break receipt;
+        }
+    };
+    let graph = receipt
+        .mutations()
+        .iter()
+        .find(|m| m.namespace() == N::Commits)
+        .unwrap();
+    let decoded = decode_command_segment_v1(graph.value().unwrap()).unwrap();
+    let command = &decoded.value().commands()[0];
+    riffdb_catalog::validate_command_prefix_index_images_v1(validated_contract_bundle(), command)
+        .unwrap();
+    let prefix = command.prefix_evidence().unwrap();
+    let offset = prefix
+        .mutations()
+        .iter()
+        .position(|r| r.namespace() == N::Entities)
+        .unwrap();
+    let mutation = &prefix.mutations()[offset];
+    let entity = decode_entity_record_v1(mutation.value().unwrap()).unwrap();
+    let entity = entity.value();
+    let mut fields = entity.fields().fields().to_vec();
+    fields.push((
+        riffdb_types::FieldId::new(999).unwrap(),
+        riffdb_types::CanonicalValue::U64(9),
+    ));
+    fields.sort_by_key(|(id, _)| *id);
+    let extra = StoredEntityRecordV1::new(
+        entity.target().clone(),
+        entity.entity_version(),
+        entity.schema_binding().contract_version(),
+        entity.schema_binding().clone(),
+        riffdb_types::CanonicalRecord::new(fields).unwrap(),
+    )
+    .unwrap();
+    let encoded = encode_entity_record_v1(&extra).unwrap();
+    let mut rows = prefix.mutations().to_vec();
+    rows[offset] = AuthoritativeMutationV3::put(
+        N::Entities,
+        mutation.key(),
+        mutation.expected_hash(),
+        encoded.as_bytes(),
+    )
+    .unwrap();
+    let changed = StoredCommandCapsuleV2::from_base_with_entity_transitions(
+        command.base().clone(),
+        command.index_generation_transitions().to_vec(),
+        command.entity_transitions().to_vec(),
+    )
+    .unwrap()
+    .with_prefix_evidence(
+        CommandPrefixEvidenceV1::new(prefix.predecessor(), prefix.covered(), rows).unwrap(),
+    )
+    .unwrap();
+    assert!(
+        riffdb_catalog::validate_command_prefix_index_images_v1(
+            validated_contract_bundle(),
+            &changed
+        )
+        .is_err(),
+        "an unindexed, undeclared entity field must fail catalog validation"
+    );
+}

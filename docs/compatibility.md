@@ -184,6 +184,11 @@ or contradictory known rows refuse before durable follower progress. Expected
 covers are derived one at a time. Older writer records use the existing bounded
 lineage proof to materialize eligible optional fields as null before deriving
 index contents, while transition hashes still bind the raw writer bytes.
+Every new prefix entity image now requires the complete field set declared by
+its exact writer schema, including explicit optional nulls. Catalog checks validate
+value types and bounds, primary-key field values, command partition route, and the
+retained executable plan. Extra or missing fields refuse even when no index or
+vector uses them; historical predecessor materialization remains separate.
 Vector prefix rows now require canonical keys and typed values. Written evidence
 binds the entity image, version, vector presence, command plan, sequence,
 provenance and partition. Every evidence mutation requires its reciprocal index

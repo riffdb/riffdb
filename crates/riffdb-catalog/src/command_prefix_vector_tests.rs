@@ -280,3 +280,75 @@ fn catalog_vector_prefix_preserves_old_stamps_and_unchanged_evidence() {
             .is_err()
     );
 }
+
+#[test]
+fn prefix_entity_images_require_exact_fields_types_bounds_and_primary_key_values() {
+    let f = Fixture::new();
+    let original = f.row(1, "title", "tag", Some(1.0));
+    let validate =
+        |row: &StoredEntityRecordV1| crate::command_prefix_entity::validate_record(&f.bundle, row);
+    validate(&original).unwrap();
+    let field = |name| {
+        f.bundle.bundle().schema().entities()[0]
+            .record()
+            .fields()
+            .iter()
+            .find(|f| f.name() == name)
+            .unwrap()
+            .id()
+    };
+    for case in 0..8 {
+        let mut fields = original.fields().fields().to_vec();
+        match case {
+            0 => fields.push((FieldId::new(9999).unwrap(), CanonicalValue::U64(1))),
+            1 => fields.retain(|(id, _)| *id != field("tag")),
+            _ => {
+                let (name, value) = match case {
+                    2 => ("tag", CanonicalValue::U64(1)),
+                    3 => (
+                        "tag",
+                        CanonicalValue::String(CanonicalString::new("01234567890123456").unwrap()),
+                    ),
+                    4 => ("document_id", CanonicalValue::Uuid([9; 16])),
+                    5 => ("title", CanonicalValue::Null),
+                    6 => (
+                        "embedding",
+                        CanonicalValue::Vector(CanonicalVector::new(vec![1.0, 2.0, 3.0]).unwrap()),
+                    ),
+                    7 => ("body", CanonicalValue::Bool(true)),
+                    _ => unreachable!(),
+                };
+                fields
+                    .iter_mut()
+                    .find(|(id, _)| *id == field(name))
+                    .unwrap()
+                    .1 = value;
+            }
+        }
+        fields.sort_by_key(|(id, _)| *id);
+        let row = StoredEntityRecordV1::new(
+            original.target().clone(),
+            original.entity_version(),
+            f.bundle.contract_version(),
+            original.schema_binding().clone(),
+            CanonicalRecord::new(fields).unwrap(),
+        )
+        .unwrap();
+        assert!(validate(&row).is_err(), "schema case {case}");
+    }
+    let mut fields = original.fields().fields().to_vec();
+    fields
+        .iter_mut()
+        .find(|(id, _)| *id == field("tag"))
+        .unwrap()
+        .1 = CanonicalValue::Null;
+    let optional_null = StoredEntityRecordV1::new(
+        original.target().clone(),
+        original.entity_version(),
+        f.bundle.contract_version(),
+        original.schema_binding().clone(),
+        CanonicalRecord::new(fields).unwrap(),
+    )
+    .unwrap();
+    validate(&optional_null).unwrap();
+}

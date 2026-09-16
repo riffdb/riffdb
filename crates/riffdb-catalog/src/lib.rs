@@ -11,6 +11,7 @@ mod application_catalog;
 mod bundle;
 mod capability_partition;
 mod command_prefix;
+mod command_prefix_entity;
 mod command_prefix_vector;
 mod deployment;
 mod error;

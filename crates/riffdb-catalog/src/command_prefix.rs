@@ -1,4 +1,4 @@
-//! Catalog-owned checks for supplied command-prefix index and vector images.
+//! Catalog-owned checks for supplied command-prefix entity, index and vector images.
 
 use crate::{CatalogError, CatalogErrorKind, ValidatedContractBundle};
 use riffdb_storage_api::{AuthoritativeNamespaceV1 as N, StoredCommandCapsuleV2};
@@ -9,7 +9,8 @@ pub(super) fn corrupt() -> CatalogError {
 
 /// Checks supplied secondary-index keys and derives put keys and covers from
 /// their owning entity post-images using the exact retained command bundle.
-/// Supplied vector images also require a production field and checked new model metadata.
+/// Entity images require the exact writer schema and command partition. Supplied
+/// vector images also require a production field and checked new model metadata.
 /// This pure check grants no readiness, mutation or reconstruction authority;
 /// complete mutation inventory and predecessor proofs remain separate.
 pub fn validate_command_prefix_index_images_v1(
@@ -26,6 +27,7 @@ pub fn validate_command_prefix_index_images_v1(
     {
         return Err(corrupt());
     }
+    super::command_prefix_entity::validate_images(bundle, command)?;
     super::command_prefix_vector::validate_supplied_images(bundle, command)?;
     for mutation in prefix
         .mutations()
