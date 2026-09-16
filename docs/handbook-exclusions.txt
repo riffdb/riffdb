@@ -6,3 +6,4 @@ architecture/vectors-recon-map.md
 architecture/vectors-projection-obligations.md
 architecture/WP-748-HOLD-BUDGET-IMPLEMENTATION.md
 architecture/WP-748-REGISTRATION-AUDIT-REVIEW.md
+architecture/WP-748-PROMOTION-FENCING-REVIEW.md
