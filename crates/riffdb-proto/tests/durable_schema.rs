@@ -505,6 +505,14 @@ fn storage_source_import_and_type_inventory_is_exact() {
                 ],
             ),
             (
+                "riffdb/storage/v1/service_audit_v3.proto".to_owned(),
+                vec![
+                    "riffdb/storage/v1/audit.proto",
+                    "riffdb/storage/v1/common.proto",
+                    "riffdb/storage/v1/service_audit_v2.proto",
+                ],
+            ),
+            (
                 "riffdb/storage/v1/validated_prefix_checkpoint_v1.proto".to_owned(),
                 vec![],
             ),
@@ -551,7 +559,7 @@ fn storage_source_import_and_type_inventory_is_exact() {
             .iter()
             .map(|file| file.message_type.len())
             .sum::<usize>(),
-        201,
+        204,
         "exact top-level semantic messages, StoredEnvelope and registry support"
     );
     assert_eq!(
@@ -580,9 +588,9 @@ fn storage_source_import_and_type_inventory_is_exact() {
 
 #[test]
 fn closed_registry_order_and_schema_hashes_are_exactly_derived() {
-    assert_eq!(CURRENT_RECORD_SCHEMA_COUNT, 86);
-    assert_eq!(READABLE_RECORD_SCHEMA_COUNT, 109);
-    assert_eq!(WRITABLE_RECORD_SCHEMA_COUNT, 86);
+    assert_eq!(CURRENT_RECORD_SCHEMA_COUNT, 87);
+    assert_eq!(READABLE_RECORD_SCHEMA_COUNT, 110);
+    assert_eq!(WRITABLE_RECORD_SCHEMA_COUNT, 87);
     assert_eq!(
         CURRENT_RECORD_SCHEMAS
             .iter()
@@ -680,6 +688,7 @@ fn closed_registry_order_and_schema_hashes_are_exactly_derived() {
     readable_names.push("riffdb.storage.v1.StoredReplicationSourceHoldV2".to_owned());
     readable_names.push("riffdb.storage.v1.StoredApplicationExportOperationV2".to_owned());
     readable_names.push("riffdb.storage.v1.StoredApplicationExportPageCommitmentV1".to_owned());
+    readable_names.push("riffdb.storage.v1.ServiceAuditRecordV3".to_owned());
     readable_names.push("riffdb.storage.v1.CapabilityRecordV1".to_owned());
     readable_names.push("riffdb.storage.v1.CapabilityRecordV1".to_owned());
     readable_names.push("riffdb.storage.v1.CapabilityTokenLookupV1".to_owned());
@@ -758,6 +767,7 @@ fn closed_registry_order_and_schema_hashes_are_exactly_derived() {
     writable_names.push("riffdb.storage.v1.StoredReplicationSourceHoldV2".to_owned());
     writable_names.push("riffdb.storage.v1.StoredApplicationExportOperationV2".to_owned());
     writable_names.push("riffdb.storage.v1.StoredApplicationExportPageCommitmentV1".to_owned());
+    writable_names.push("riffdb.storage.v1.ServiceAuditRecordV3".to_owned());
     assert_eq!(
         READABLE_RECORD_SCHEMAS
             .iter()
@@ -1121,8 +1131,8 @@ fn columnar_control_v1_freezes_numeric_registry_and_bounds() {
 #[test]
 fn generated_registry_fixtures_freeze_exact_membership_and_hashes() {
     let legacy = registry_fixture_entries(LEGACY_REGISTRY_FIXTURE, 26);
-    let readable = registry_fixture_entries(READABLE_REGISTRY_FIXTURE, 109);
-    let writable = registry_fixture_entries(WRITABLE_REGISTRY_FIXTURE, 86);
+    let readable = registry_fixture_entries(READABLE_REGISTRY_FIXTURE, 110);
+    let writable = registry_fixture_entries(WRITABLE_REGISTRY_FIXTURE, 87);
 
     assert_eq!(legacy, readable[..legacy.len()]);
     assert_eq!(
@@ -1352,6 +1362,7 @@ fn tag_67_successor_registry_digest_is_frozen() {
         .iter()
         .filter(|schema| {
             schema.compact_tag() <= 67
+                && !(schema.compact_tag() == 22 && schema.schema_revision() >= 3)
                 && !(matches!(schema.compact_tag(), 54 | 55) && schema.schema_revision() >= 6)
                 && !(schema.compact_tag() == 60 && schema.schema_revision() >= 2)
         })
@@ -1470,6 +1481,7 @@ fn semantic_optional_wire_presence_is_exact() {
         "ProjectionFailureV1.at_sequence",
         "ServiceAuditRecordV1.approval_id",
         "ServiceAuditRecordV2.approval_id",
+        "ServiceAuditRecordV3.approval_id",
         "StoredAdmittedProvenanceClaimsV1.approval_id",
         "StoredAdmittedProvenanceClaimsV1.reason",
         "StoredAdmittedProvenanceClaimsV1.source_commit",
@@ -1619,6 +1631,22 @@ fn closed_oneof_and_enum_registries_are_exact() {
                     ("provenance_id", 8),
                     ("capability_id", 9),
                     ("event_consumer", 10),
+                ],
+            ),
+            (
+                "riffdb.storage.v1.ServiceAuditTargetV3.target".to_owned(),
+                vec![
+                    ("contract_lineage", 1),
+                    ("contract_version", 2),
+                    ("entity_type", 3),
+                    ("command", 4),
+                    ("projection", 5),
+                    ("index", 6),
+                    ("commit_sequence", 7),
+                    ("provenance_id", 8),
+                    ("capability_id", 9),
+                    ("event_consumer", 10),
+                    ("replication_follower", 11),
                 ],
             ),
             (

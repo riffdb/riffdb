@@ -4099,6 +4099,76 @@ pub struct ServiceAuditRecordV2 {
     pub link: ::core::option::Option<ServiceAuditLinkV1>,
 }
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct ReplicationFollowerAuditTargetV3 {
+    #[prost(bytes = "vec", tag = "1")]
+    pub database_id: ::prost::alloc::vec::Vec<u8>,
+    #[prost(uint64, tag = "2")]
+    pub history_incarnation: u64,
+    #[prost(uint64, tag = "3")]
+    pub leadership_epoch: u64,
+    #[prost(bytes = "vec", tag = "4")]
+    pub hold_id: ::prost::alloc::vec::Vec<u8>,
+}
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct ServiceAuditTargetV3 {
+    #[prost(
+        oneof = "service_audit_target_v3::Target",
+        tags = "1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11"
+    )]
+    pub target: ::core::option::Option<service_audit_target_v3::Target>,
+}
+/// Nested message and enum types in `ServiceAuditTargetV3`.
+pub mod service_audit_target_v3 {
+    #[derive(Clone, PartialEq, Eq, Hash, ::prost::Oneof)]
+    pub enum Target {
+        #[prost(string, tag = "1")]
+        ContractLineage(::prost::alloc::string::String),
+        #[prost(message, tag = "2")]
+        ContractVersion(super::ContractVersionAuditTargetV1),
+        #[prost(message, tag = "3")]
+        EntityType(super::EntityTypeAuditTargetV1),
+        #[prost(message, tag = "4")]
+        Command(super::CommandAuditTargetV1),
+        #[prost(message, tag = "5")]
+        Projection(super::ProjectionAuditTargetV1),
+        #[prost(message, tag = "6")]
+        Index(super::IndexAuditTargetV1),
+        #[prost(uint64, tag = "7")]
+        CommitSequence(u64),
+        #[prost(bytes, tag = "8")]
+        ProvenanceId(::prost::alloc::vec::Vec<u8>),
+        #[prost(bytes, tag = "9")]
+        CapabilityId(::prost::alloc::vec::Vec<u8>),
+        #[prost(message, tag = "10")]
+        EventConsumer(super::EventConsumerAuditTargetV2),
+        #[prost(message, tag = "11")]
+        ReplicationFollower(super::ReplicationFollowerAuditTargetV3),
+    }
+}
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct ServiceAuditRecordV3 {
+    #[prost(uint64, tag = "1")]
+    pub administration_sequence: u64,
+    #[prost(bytes = "vec", tag = "2")]
+    pub request_id: ::prost::alloc::vec::Vec<u8>,
+    #[prost(message, optional, tag = "3")]
+    pub timestamp: ::core::option::Option<TimestampV1>,
+    #[prost(enumeration = "ServiceOperationV1", tag = "4")]
+    pub operation: i32,
+    #[prost(enumeration = "ServiceAuditPhaseV1", tag = "5")]
+    pub phase: i32,
+    #[prost(message, optional, tag = "6")]
+    pub principal: ::core::option::Option<AuditPrincipalV1>,
+    #[prost(enumeration = "ServiceIngressKindV1", tag = "7")]
+    pub ingress: i32,
+    #[prost(message, repeated, tag = "8")]
+    pub targets: ::prost::alloc::vec::Vec<ServiceAuditTargetV3>,
+    #[prost(string, optional, tag = "9")]
+    pub approval_id: ::core::option::Option<::prost::alloc::string::String>,
+    #[prost(message, optional, tag = "10")]
+    pub link: ::core::option::Option<ServiceAuditLinkV1>,
+}
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct StoredValidatedPrefixCheckpointV1 {
     #[prost(bytes = "vec", tag = "1")]
     pub database_id: ::prost::alloc::vec::Vec<u8>,

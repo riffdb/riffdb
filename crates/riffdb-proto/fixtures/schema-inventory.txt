@@ -140,6 +140,10 @@ files
   riffdb/storage/v1/service_audit_v2.proto
     import riffdb/storage/v1/audit.proto
     import riffdb/storage/v1/common.proto
+  riffdb/storage/v1/service_audit_v3.proto
+    import riffdb/storage/v1/audit.proto
+    import riffdb/storage/v1/common.proto
+    import riffdb/storage/v1/service_audit_v2.proto
   riffdb/storage/v1/validated_prefix_checkpoint_v1.proto
   riffdb/storage/v1/vector_evidence_index_v1.proto
     import riffdb/storage/v1/vector_evidence_v1.proto
@@ -846,6 +850,11 @@ messages
     1 contract_lineage optional string
     2 projection_id optional uint32
     3 projection_plan_hash optional bytes
+  riffdb.storage.v1.ReplicationFollowerAuditTargetV3 fields=4
+    1 database_id optional bytes
+    2 history_incarnation optional uint64
+    3 leadership_epoch optional uint64
+    4 hold_id optional bytes
   riffdb.storage.v1.RetentionHoldV1 fields=4
     1 hold_id optional string
     2 sequence optional uint64
@@ -887,6 +896,17 @@ messages
     8 targets repeated .riffdb.storage.v1.ServiceAuditTargetV2
     9 approval_id optional string proto3-optional oneof=_approval_id
     10 link optional .riffdb.storage.v1.ServiceAuditLinkV1
+  riffdb.storage.v1.ServiceAuditRecordV3 fields=10
+    1 administration_sequence optional uint64
+    2 request_id optional bytes
+    3 timestamp optional .riffdb.storage.v1.TimestampV1
+    4 operation optional .riffdb.storage.v1.ServiceOperationV1
+    5 phase optional .riffdb.storage.v1.ServiceAuditPhaseV1
+    6 principal optional .riffdb.storage.v1.AuditPrincipalV1
+    7 ingress optional .riffdb.storage.v1.ServiceIngressKindV1
+    8 targets repeated .riffdb.storage.v1.ServiceAuditTargetV3
+    9 approval_id optional string proto3-optional oneof=_approval_id
+    10 link optional .riffdb.storage.v1.ServiceAuditLinkV1
   riffdb.storage.v1.ServiceAuditTargetV1 fields=9
     1 contract_lineage optional string oneof=target
     2 contract_version optional .riffdb.storage.v1.ContractVersionAuditTargetV1 oneof=target
@@ -908,6 +928,18 @@ messages
     8 provenance_id optional bytes oneof=target
     9 capability_id optional bytes oneof=target
     10 event_consumer optional .riffdb.storage.v1.EventConsumerAuditTargetV2 oneof=target
+  riffdb.storage.v1.ServiceAuditTargetV3 fields=11
+    1 contract_lineage optional string oneof=target
+    2 contract_version optional .riffdb.storage.v1.ContractVersionAuditTargetV1 oneof=target
+    3 entity_type optional .riffdb.storage.v1.EntityTypeAuditTargetV1 oneof=target
+    4 command optional .riffdb.storage.v1.CommandAuditTargetV1 oneof=target
+    5 projection optional .riffdb.storage.v1.ProjectionAuditTargetV1 oneof=target
+    6 index optional .riffdb.storage.v1.IndexAuditTargetV1 oneof=target
+    7 commit_sequence optional uint64 oneof=target
+    8 provenance_id optional bytes oneof=target
+    9 capability_id optional bytes oneof=target
+    10 event_consumer optional .riffdb.storage.v1.EventConsumerAuditTargetV2 oneof=target
+    11 replication_follower optional .riffdb.storage.v1.ReplicationFollowerAuditTargetV3 oneof=target
   riffdb.storage.v1.SparseConsumerResolutionV1 fields=2
     1 event_id optional .riffdb.storage.v1.EventIdV1
     2 kind optional uint32

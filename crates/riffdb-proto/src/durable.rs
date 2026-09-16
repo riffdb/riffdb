@@ -12,9 +12,9 @@ use crate::envelope::{PayloadValidationError, RecordRegistry, RecordSchema};
 use crate::storage::v1;
 
 /// Number of durable semantic payload tuples accepted while opening or migrating storage.
-pub const READABLE_RECORD_SCHEMA_COUNT: usize = 109;
+pub const READABLE_RECORD_SCHEMA_COUNT: usize = 110;
 /// Number of durable semantic roles accepted for current writes.
-pub const WRITABLE_RECORD_SCHEMA_COUNT: usize = 86;
+pub const WRITABLE_RECORD_SCHEMA_COUNT: usize = 87;
 /// Number of durable semantic roles accepted for current writes.
 pub const CURRENT_RECORD_SCHEMA_COUNT: usize = WRITABLE_RECORD_SCHEMA_COUNT;
 
@@ -218,6 +218,14 @@ const SERVICE_AUDIT_V2_SCHEMA_HASH_BYTES: &[u8; 32] = include_bytes!(concat!(
 const SERVICE_AUDIT_V2_RECORD_BOUND_BYTES: &[u8; 8] = include_bytes!(concat!(
     env!("CARGO_MANIFEST_DIR"),
     "/fixtures/durable-service-audit-v2-record-bound.bin"
+));
+const SERVICE_AUDIT_V3_SCHEMA_HASH_BYTES: &[u8; 32] = include_bytes!(concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/fixtures/durable-service-audit-v3-schema-hash.bin"
+));
+const SERVICE_AUDIT_V3_RECORD_BOUND_BYTES: &[u8; 8] = include_bytes!(concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/fixtures/durable-service-audit-v3-record-bound.bin"
 ));
 const CONTEXTUAL_CAUSATION_V2_SCHEMA_HASH_BYTES: &[u8; 128] = include_bytes!(concat!(
     env!("CARGO_MANIFEST_DIR"),
@@ -1129,6 +1137,25 @@ const SERVICE_AUDIT_V2_RECORD_SCHEMA: RecordSchema<'static> = RecordSchema::new_
     validate_payload::<52, v1::ServiceAuditRecordV2>,
 )
 .with_compact_identity(22, 2);
+const SERVICE_AUDIT_V3_RECORD_SCHEMA: RecordSchema<'static> = RecordSchema::new_current(
+    "riffdb.storage.v1.ServiceAuditRecordV3",
+    SchemaHash::from_bytes(*SERVICE_AUDIT_V3_SCHEMA_HASH_BYTES),
+    u32::from_be_bytes([
+        SERVICE_AUDIT_V3_RECORD_BOUND_BYTES[0],
+        SERVICE_AUDIT_V3_RECORD_BOUND_BYTES[1],
+        SERVICE_AUDIT_V3_RECORD_BOUND_BYTES[2],
+        SERVICE_AUDIT_V3_RECORD_BOUND_BYTES[3],
+    ]) as usize,
+    u32::from_be_bytes([
+        SERVICE_AUDIT_V3_RECORD_BOUND_BYTES[4],
+        SERVICE_AUDIT_V3_RECORD_BOUND_BYTES[5],
+        SERVICE_AUDIT_V3_RECORD_BOUND_BYTES[6],
+        SERVICE_AUDIT_V3_RECORD_BOUND_BYTES[7],
+    ]) as usize,
+    preflight_payload::<104>,
+    validate_payload::<104, v1::ServiceAuditRecordV3>,
+)
+.with_compact_identity(22, 3);
 
 const fn contextual_causation_v2_schema_hash(index: usize) -> SchemaHash {
     let mut bytes = [0_u8; 32];
@@ -2158,6 +2185,7 @@ readable_message!(
     EVENT_CONSUMER_DELIVERY_V1_RECORD_SCHEMA
 );
 readable_message!(v1::ServiceAuditRecordV2, SERVICE_AUDIT_V2_RECORD_SCHEMA);
+readable_message!(v1::ServiceAuditRecordV3, SERVICE_AUDIT_V3_RECORD_SCHEMA);
 readable_message!(
     v1::StoredPendingAdmissionV2,
     PENDING_ADMISSION_V2_RECORD_SCHEMA
@@ -2264,6 +2292,7 @@ writable_message!(v1::StoredReactiveModuleAdministrationV1);
 writable_message!(v1::StoredEventConsumerV1);
 writable_message!(v1::StoredEventConsumerDeliveryV1);
 writable_message!(v1::ServiceAuditRecordV2);
+writable_message!(v1::ServiceAuditRecordV3);
 writable_message!(v1::StoredProvenanceRecordV2);
 writable_message!(v1::StoredCommandCapsuleV1);
 writable_message!(v1::StoredCommandLocatorV1);
@@ -2497,6 +2526,7 @@ pub static READABLE_RECORD_SCHEMAS: [RecordSchema<'static>; READABLE_RECORD_SCHE
     REPLICATION_SOURCE_HOLD_V2_RECORD_SCHEMA,
     APPLICATION_EXPORT_OPERATION_V2_RECORD_SCHEMA,
     APPLICATION_EXPORT_PAGE_COMMITMENT_V1_RECORD_SCHEMA,
+    SERVICE_AUDIT_V3_RECORD_SCHEMA,
     PRE_WP280_CAPABILITY_RECORD_SCHEMA,
     PRE_WP416_CAPABILITY_RECORD_SCHEMA,
     PRE_WP416_CAPABILITY_TOKEN_LOOKUP_RECORD_SCHEMA,
@@ -2592,6 +2622,7 @@ pub static WRITABLE_RECORD_SCHEMAS: [RecordSchema<'static>; WRITABLE_RECORD_SCHE
     REPLICATION_SOURCE_HOLD_V2_RECORD_SCHEMA,
     APPLICATION_EXPORT_OPERATION_V2_RECORD_SCHEMA,
     APPLICATION_EXPORT_PAGE_COMMITMENT_V1_RECORD_SCHEMA,
+    SERVICE_AUDIT_V3_RECORD_SCHEMA,
 ];
 
 /// Current durable schemas. `current` is exactly synonymous with writable roles.

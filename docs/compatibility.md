@@ -155,6 +155,15 @@ binary. This codec increment enables no automatic migration or registration,
 retirement, expiry or promotion operation. Those runtime ceremonies remain
 WP-748 work; existing hold writers continue to write V1.
 
+The accepted WP-748 audit successor adds `ServiceAuditRecordV3` (tag 22,
+revision 3) in a separate schema. It preserves existing target fields and adds
+one source-lineage-scoped follower target. V1/V2 bytes and readers remain
+unchanged; existing audits still write V2. The bounded V3 codec and mixed audit
+reader are implemented, but registration/retirement, configured expiry and
+promotion are not yet enabled. The exact registry digest changes; earlier
+markers still require their matching binary until an explicit migration is
+implemented and proven. An older binary refuses the V3 identity.
+
 WP-749 registers successor command capsule V7 (tag 54, revision 6) and segment
 V6 (tag 55, revision 6) for exact command-prefix evidence. Earlier record bytes
 remain readable by their own codecs and do not acquire intermediate values.

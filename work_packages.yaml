@@ -22823,6 +22823,13 @@ work_packages:
   closure:
     status: open
     decisions_taken:
+    - Register the accepted ServiceAuditRecordV3 at tag 22 revision 3 in its
+      own schema. Preserve all 109 prior schema identities and frozen target
+      fields; reuse V2 target semantics for the old variants. Existing audit
+      encoders stay V2 and reject the new target; V3 encoding requires a follower
+      target. Mixed reads validate the full canonical list. This adds only codecs;
+      exact registry migration, atomic administration receipts and operation
+      writers still require implementation and proof before activation.
     - Share the existing checked LeadershipEpochV1 and ReplicationSourceHoldIdV1
       definitions from riffdb-types, retaining storage-API re-exports and bytes.
       Add the accepted lineage-scoped follower audit target with checked nonzero

@@ -90,7 +90,7 @@ pub(super) fn operation_from_proto(value: i32) -> Result<ServiceOperationV1, Dur
     ServiceOperationV1::from_tag(tag).ok_or_else(DurableCodecError::corrupt)
 }
 
-fn phase_from_proto(value: i32) -> Result<ServiceAuditPhaseV1, DurableCodecError> {
+pub(super) fn phase_from_proto(value: i32) -> Result<ServiceAuditPhaseV1, DurableCodecError> {
     let tag = u8::try_from(value).map_err(|_| DurableCodecError::corrupt())?;
     ServiceAuditPhaseV1::from_tag(tag).ok_or_else(DurableCodecError::corrupt)
 }
@@ -314,7 +314,7 @@ pub(super) fn target_from_proto_v2(
     })
 }
 
-fn link_to_proto(value: ServiceAuditLinkV1) -> wire::ServiceAuditLinkV1 {
+pub(super) fn link_to_proto(value: ServiceAuditLinkV1) -> wire::ServiceAuditLinkV1 {
     use wire::service_audit_link_v1::Link;
     let link = match value {
         ServiceAuditLinkV1::None => Link::None(wire::UnitV1 {}),
@@ -334,7 +334,7 @@ fn link_to_proto(value: ServiceAuditLinkV1) -> wire::ServiceAuditLinkV1 {
     wire::ServiceAuditLinkV1 { link: Some(link) }
 }
 
-fn link_from_proto(
+pub(super) fn link_from_proto(
     value: wire::ServiceAuditLinkV1,
 ) -> Result<ServiceAuditLinkV1, DurableCodecError> {
     use wire::service_audit_link_v1::Link;
@@ -483,7 +483,7 @@ pub fn decode_service_audit_record_v2(
     })
 }
 
-/// Decodes either readable service-audit generation into the semantic record.
+/// Decodes every readable service-audit generation into the semantic record.
 pub fn decode_service_audit_record(
     encoded: &[u8],
 ) -> Result<EncodedPageItem<StoredServiceAuditRecordV1>, DurableCodecError> {
@@ -493,6 +493,7 @@ pub fn decode_service_audit_record(
     match decoded.record_type() {
         AUDIT_V1 => decode_service_audit_record_v1(encoded),
         AUDIT_V2 => decode_service_audit_record_v2(encoded),
+        super::audit_v3::AUDIT_V3 => super::decode_service_audit_record_v3(encoded),
         _ => Err(DurableCodecError::new(
             super::DurableCodecErrorKind::UnexpectedRecordType,
         )),
