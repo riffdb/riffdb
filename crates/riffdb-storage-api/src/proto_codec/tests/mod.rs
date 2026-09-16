@@ -1,6 +1,7 @@
 //! Durable semantic codec contract tests.
 
 mod bounds;
+mod command_prefix;
 mod entity_references;
 mod malformed_semantic;
 mod migration;

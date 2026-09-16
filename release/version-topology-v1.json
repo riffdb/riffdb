@@ -282,6 +282,64 @@
       "last_change": {"classification":"new_domain_identity","decision":"ADR-0192/WP-776 schema-bound columnar control"}
     },
     {
+      "id": "durable.command_prefix_authority",
+      "title": "Exact command-prefix capsule and segment authority",
+      "classification": "durable",
+      "owner": "riffdb-storage-api",
+      "source_assertions": [
+        {
+          "kind": "literal",
+          "path": "proto/riffdb/storage/v1/command_prefix_authority_v7.proto",
+          "literal": "message StoredCommandCapsuleV7 {"
+        },
+        {
+          "kind": "literal",
+          "path": "proto/riffdb/storage/v1/command_prefix_authority_v7.proto",
+          "literal": "message StoredCommandSegmentV6 {"
+        }
+      ],
+      "readable_identities": [
+        "tag-54/revision-6",
+        "tag-55/revision-6"
+      ],
+      "writable_identities": [
+        "tag-54/revision-6",
+        "tag-55/revision-6"
+      ],
+      "current_identities": [
+        "tag-54/revision-6",
+        "tag-55/revision-6"
+      ],
+      "writer_policy": "multi_current",
+      "compatibility_rule": "Successors require bounded command-prefix evidence; earlier capsule and segment bytes remain readable without inferred evidence. Exact prior registry markers require the matching binary; no new automatic migration edge is declared.",
+      "breaking_when": "A successor tag, revision, evidence field, graph binding, original frontier or complete post-image changes meaning, or old bytes are reinterpreted as containing prefix evidence.",
+      "supported_release_posture": "V7 capsule and V6 segment codecs are registered. Production capture, independent-row validation, private exact-stop reconstruction and restore publication remain WP-749 work.",
+      "lifecycle": {
+        "active": [
+          "tag-54/revision-6",
+          "tag-55/revision-6"
+        ],
+        "read_only": [],
+        "retirement_candidate": [],
+        "retired": []
+      },
+      "reserved_identity_policy": "Tags, revisions, schema hashes and field numbers are never reused.",
+      "evidence": [
+        "fixtures/proto/durable-command-prefix-v7-wire-vectors.txt",
+        "crates/riffdb-proto/tests/command_prefix_v7.rs",
+        "crates/riffdb-storage-api/src/proto_codec/tests/command_prefix.rs"
+      ],
+      "checks": [
+        "./scripts/check-version-topology",
+        "./scripts/check-durable-format-manifest",
+        "./scripts/check-generated"
+      ],
+      "last_change": {
+        "classification": "new_domain_identity",
+        "decision": "ADR-0102/0178/0186 accepted exact-stop amendment / WP-749"
+      }
+    },
+    {
       "id": "durable.contract_migration_receipt",
       "title": "Contract-migration check receipt",
       "classification": "durable",
@@ -482,7 +540,7 @@
       "lifecycle": {"active":["2"],"read_only":[],"retirement_candidate":[],"retired":[]},
       "reserved_identity_policy": "Record tags, revisions, schema hashes, and symbolic types are never reused.",
       "evidence": ["fixtures/proto/durable-readable-registry.txt", "fixtures/proto/durable-writable-registry.txt"], "checks": ["./scripts/check-durable-format-manifest"],
-      "last_change": {"classification":"new_domain_identity","decision":"ADR-0149 / WP-684 correlated index-work command authority"},
+      "last_change": {"classification":"new_domain_identity","decision":"ADR-0102/0178/0186 accepted exact-stop amendment / WP-749 command-prefix authority"},
       "durable_manifest": {"readable_key":"readable_registry_versions","writable_key":"writable_registry_versions"}
     },
     {

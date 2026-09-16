@@ -145,7 +145,16 @@ corrupt selected material fails closed without V1 fallback. Downgrade remains
 unsupported; a future removal of V1 identities still requires its separately
 governed retirement package.
 
-Inspect the same decision while the server is stopped:
+WP-749 registers successor command capsule V7 (tag 54, revision 6) and segment
+V6 (tag 55, revision 6) for exact command-prefix evidence. Earlier record bytes
+remain readable by their own codecs and do not acquire intermediate values.
+The registry digest changes: a database or backup carrying the previous exact
+registry marker is refused by this binary before opening or replacement. Use
+its matching binary; this addition declares no automatic migration edge.
+The successor codecs are implemented, but production evidence capture and
+exact-stop archive restore remain unfinished WP-749 work.
+
+Inspect the format while the server is stopped:
 
 ```bash
 riffdb storage preflight --database-path "$HOME/.local/share/riffdb/riffdb.redb"

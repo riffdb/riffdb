@@ -9,6 +9,28 @@ use riffdb_storage_api::{
 use riffdb_types::SchemaHash;
 
 #[test]
+// req: REP-007, AFC-007
+fn pre_prefix_registry_marker_requires_its_matching_binary_before_any_open() {
+    let current = current_durable_format_marker();
+    // Exact registry frozen at c5ae7c24, before the approved V7/V6 successors.
+    let prior = SchemaHash::from_bytes([
+        0x78, 0xe1, 0x3c, 0x03, 0x24, 0x88, 0x5b, 0x31, 0x2f, 0x28, 0x2c, 0xbb, 0x75, 0x16, 0x78,
+        0x8b, 0x70, 0xb1, 0x13, 0x87, 0xb9, 0x38, 0x52, 0xc4, 0xd6, 0x9b, 0x4d, 0x20, 0x69, 0xfd,
+        0xdc, 0xaf,
+    ]);
+    assert_ne!(prior, current.registry_digest());
+    let retained = DurableFormatMarker::new(
+        current.identity(),
+        prior,
+        current.compatibility_fixture_digest(),
+    );
+    assert_eq!(
+        preflight_durable_format_marker(retained),
+        Err(DurableFormatMarkerError::ManifestMismatch)
+    );
+}
+
+#[test]
 fn current_manifest_names_every_closed_format_family() {
     let manifest = current_durable_format_manifest();
 

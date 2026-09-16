@@ -98,9 +98,13 @@ corresponding net mutations. Tests cover intermediate puts, deletes, recreations
 and net-zero histories. Its bounded inner capsule payload codec shares the existing
 V3 mutation encoding; byte-exact V3 fixture tests preserve that encoding. The inner
 payload has no standalone record identity, checksum or publication authority.
-This is not an exact-stop restore implementation. Capsule V7/segment V6 envelopes,
-registry integration, atomic source
-capture, original predecessor and complete graph validation, private reconstruction
+Capsule V7/segment V6 envelopes and registry integration now require this evidence,
+bind its application/audit frontier, reject mixed legacy/successor segments and
+cover the payload in both normal and prepared segment seals. Generated vectors
+freeze the successor bytes; prior schema hashes and V3 bytes remain unchanged.
+The exact prior registry marker refuses before open; no automatic migration is
+introduced. This is not an exact-stop restore implementation. Atomic source
+capture, original predecessor and complete independent graph validation, private reconstruction
 and publication proofs remain required. First-observed preconditions must still be
 checked against the validated predecessor even when a key has no net receipt row.
 

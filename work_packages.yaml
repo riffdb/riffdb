@@ -22905,6 +22905,15 @@ work_packages:
       before allocation; reject trailing, truncated, duplicated or reordered data.
       The inner field has no independent record identity or integrity claim;
       capsule V7/segment V6 still own envelopes, graph binding and checksums.
+    - Register capsule V7 tag 54 revision 6 and segment V6 tag 55 revision 6 in
+      their own proto source, keeping predecessor schema hashes frozen. Carry
+      explicit optional evidence only in the semantic legacy-compatible value;
+      successor wire identities require it and cannot downgrade it. Share its
+      immutable Arc with prepared encoding to reject substitution without copying
+      post-images. Check uniform presence, consecutive frontiers and total evidence
+      bounds before sealing. Existing exact-marker refusal remains the compatibility
+      boundary; no automatic registry migration or production writer activation
+      is implied by registering these codecs.
     - Reuse the checked backup-name grammar through a distinct ArchiveNameV1 type.
       Bind backup, archive, closed application stop and replacement confirmation
       under the versioned archive-input preimage in the existing maintenance hash

@@ -41,6 +41,13 @@ generate_durable_relationship_vectors() {
             proto_codec::tests::relationships::emit_relationship_vectors_for_fixture_regeneration -- --exact
 }
 
+generate_command_prefix_vectors() {
+    LC_ALL=C TZ=UTC \
+        RIFFDB_COMMAND_PREFIX_V7_VECTOR_OUTPUT="$output_root/fixtures/proto/durable-command-prefix-v7-wire-vectors.txt" \
+        cargo test --quiet --locked -p riffdb-storage-api --lib \
+            proto_codec::tests::command_prefix::command_prefix_successor_wire_vectors_are_exact -- --exact
+}
+
 generate
 if [[ "$mode" == "" ]]; then
     # The checked-in Prost types are inputs to public wire-vector generation.
@@ -49,8 +56,10 @@ if [[ "$mode" == "" ]]; then
 fi
 generate_durable_vectors
 generate_durable_relationship_vectors
+generate_command_prefix_vectors
 
 artifacts=(
+    fixtures/proto/durable-command-prefix-v7-wire-vectors.txt
     crates/riffdb-proto/src/generated/riffdb.app.v1.rs
     crates/riffdb-proto/src/generated/riffdb.storage.v1.rs
     crates/riffdb-proto/src/generated/riffdb.v1.rs
@@ -121,6 +130,10 @@ artifacts=(
     fixtures/proto/durable-event-reference-v2-record-bounds.bin
     fixtures/proto/durable-event-reference-v2-schema-hashes.bin
     fixtures/proto/durable-event-reference-v2-wire-vectors.txt
+    fixtures/proto/durable-command-prefix-authority-v7-schema-hashes.bin
+    fixtures/proto/durable-command-prefix-authority-v7-record-bounds.bin
+    crates/riffdb-proto/fixtures/durable-command-prefix-authority-v7-schema-hashes.bin
+    crates/riffdb-proto/fixtures/durable-command-prefix-authority-v7-record-bounds.bin
     fixtures/proto/durable-correlated-index-work-command-authority-v6-record-bounds.bin
     fixtures/proto/durable-correlated-index-work-command-authority-v6-schema-hashes.bin
     crates/riffdb-proto/fixtures/durable-correlated-index-work-command-authority-v6-record-bounds.bin

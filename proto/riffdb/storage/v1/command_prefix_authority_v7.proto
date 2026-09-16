@@ -1,0 +1,38 @@
+syntax = "proto3";
+
+package riffdb.storage.v1;
+
+import "riffdb/storage/v1/command_capsule_v1.proto";
+import "riffdb/storage/v1/command_segment_v1.proto";
+import "riffdb/storage/v1/entity_transitions_v4.proto";
+import "riffdb/storage/v1/event_policy_command_authority_v5.proto";
+
+// Successor authority for the accepted WP-749 exact command-prefix amendment.
+// Earlier capsules remain immutable and cannot imply this evidence is present.
+message StoredCommandCapsuleV7 {
+  StoredCommandCapsuleV1 base = 1;
+  repeated StoredDurableEventVariantV1 events = 2;
+  repeated StoredIndexGenerationTransitionV1 index_generation_transitions = 3;
+  bytes canonical_service_values = 4;
+  repeated StoredCommittedEntityTransitionV1 entity_transitions = 5;
+  // Required canonical inner payload: before/after dual frontiers and bounded
+  // independent mutations. No recursive segment bytes or source receipt hash.
+  bytes command_prefix_evidence = 6;
+}
+
+message StoredCommandSegmentBodyV6 {
+  bytes database_id = 1;
+  uint64 history_incarnation = 2;
+  bytes predecessor_segment_hash = 3;
+  uint64 first_commit_sequence = 4;
+  uint64 last_commit_sequence = 5;
+  uint64 first_administration_sequence = 6;
+  uint64 last_administration_sequence = 7;
+  repeated StoredCommandCapsuleV7 commands = 8;
+  CommandSegmentManifestV1 manifest = 9;
+}
+
+message StoredCommandSegmentV6 {
+  StoredCommandSegmentBodyV6 body = 1;
+  bytes segment_digest = 2;
+}

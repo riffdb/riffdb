@@ -32,11 +32,13 @@ const COMMAND_CAPSULE_V3: &str = "riffdb.storage.v1.StoredCommandCapsuleV3";
 const COMMAND_CAPSULE_V4: &str = "riffdb.storage.v1.StoredCommandCapsuleV4";
 const COMMAND_CAPSULE_V5: &str = "riffdb.storage.v1.StoredCommandCapsuleV5";
 const COMMAND_CAPSULE_V6: &str = "riffdb.storage.v1.StoredCommandCapsuleV6";
+const COMMAND_CAPSULE_V7: &str = "riffdb.storage.v1.StoredCommandCapsuleV7";
 const COMMAND_SEGMENT_V1: &str = "riffdb.storage.v1.StoredCommandSegmentV1";
 const COMMAND_SEGMENT_V2: &str = "riffdb.storage.v1.StoredCommandSegmentV2";
 const COMMAND_SEGMENT_V3: &str = "riffdb.storage.v1.StoredCommandSegmentV3";
 const COMMAND_SEGMENT_V4: &str = "riffdb.storage.v1.StoredCommandSegmentV4";
 const COMMAND_SEGMENT_V5: &str = "riffdb.storage.v1.StoredCommandSegmentV5";
+const COMMAND_SEGMENT_V6: &str = "riffdb.storage.v1.StoredCommandSegmentV6";
 const COMMAND_DERIVED_INDEX_CHECKPOINT_V1: &str =
     "riffdb.storage.v1.StoredCommandDerivedIndexCheckpointV1";
 
@@ -411,6 +413,8 @@ pub enum CommandCapsuleWireVersionV1 {
     V5,
     /// Correlated index-work authority with the expanded transition bound.
     V6,
+    /// Complete independent command-prefix evidence.
+    V7,
 }
 
 /// Selects the least-sufficient wire identity for one command capsule.
@@ -418,7 +422,9 @@ pub enum CommandCapsuleWireVersionV1 {
 pub fn command_capsule_wire_version_v1(
     value: &StoredCommandCapsuleV2,
 ) -> CommandCapsuleWireVersionV1 {
-    if value.index_generation_transitions().len() > crate::MAX_INDEX_DELTAS {
+    if value.prefix_evidence().is_some() {
+        CommandCapsuleWireVersionV1::V7
+    } else if value.index_generation_transitions().len() > crate::MAX_INDEX_DELTAS {
         CommandCapsuleWireVersionV1::V6
     } else if capsule_requires_v5(value) {
         CommandCapsuleWireVersionV1::V5
@@ -439,6 +445,7 @@ pub fn command_segment_wire_version_v1(
             CommandCapsuleWireVersionV1::V4 => 0_u8,
             CommandCapsuleWireVersionV1::V5 => 1,
             CommandCapsuleWireVersionV1::V6 => 2,
+            CommandCapsuleWireVersionV1::V7 => 3,
         })
         .unwrap_or(CommandCapsuleWireVersionV1::V4)
 }
@@ -489,6 +496,34 @@ fn capsule_v6_to_proto(value: &StoredCommandCapsuleV2) -> wire::StoredCommandCap
     }
 }
 
+fn capsule_v7_to_proto(value: &StoredCommandCapsuleV2) -> wire::StoredCommandCapsuleV7 {
+    wire::StoredCommandCapsuleV7 {
+        command_prefix_evidence: value
+            .prefix_evidence()
+            .expect("V7 capsule has checked evidence")
+            .encode_capsule_payload()
+            .expect("checked prefix evidence encodes"),
+        base: Some(command_capsule::command_capsule_to_proto(value.base())),
+        events: value
+            .events()
+            .iter()
+            .map(application::event_variant_to_proto)
+            .collect(),
+        index_generation_transitions: value
+            .index_generation_transitions()
+            .iter()
+            .map(transition_to_proto)
+            .collect(),
+        canonical_service_values: encode_canonical_record(value.base().outcome().service_values())
+            .expect("checked canonical service values must encode"),
+        entity_transitions: value
+            .entity_transitions()
+            .iter()
+            .map(super::entity_transition::entity_transition_to_proto)
+            .collect(),
+    }
+}
+
 /// Move-only canonical command member prepared before ordered segment sealing.
 ///
 /// Construction is limited to [`prepare_command_segment_capsule_v1`]. The
@@ -498,6 +533,7 @@ fn capsule_v6_to_proto(value: &StoredCommandCapsuleV2) -> wire::StoredCommandCap
 pub struct PreparedCommandSegmentCapsuleV1 {
     commit_sequence: CommitSequence,
     wire_version: CommandCapsuleWireVersionV1,
+    prefix_evidence: Option<std::sync::Arc<crate::CommandPrefixEvidenceV1>>,
     bytes: Vec<u8>,
 }
 
@@ -519,6 +555,9 @@ pub fn prepare_command_segment_capsule_v1(
     wire_version: CommandCapsuleWireVersionV1,
 ) -> Result<PreparedCommandSegmentCapsuleV1, DurableCodecError> {
     let required = command_capsule_wire_version_v1(value);
+    if (wire_version == CommandCapsuleWireVersionV1::V7) != value.prefix_evidence().is_some() {
+        return Err(DurableCodecError::invariant());
+    }
     if matches!(
         (required, wire_version),
         (
@@ -538,10 +577,12 @@ pub fn prepare_command_segment_capsule_v1(
         CommandCapsuleWireVersionV1::V4 => capsule_v4_bytes_for_seal(value)?,
         CommandCapsuleWireVersionV1::V5 => capsule_v5_to_proto(value).encode_to_vec(),
         CommandCapsuleWireVersionV1::V6 => capsule_v6_to_proto(value).encode_to_vec(),
+        CommandCapsuleWireVersionV1::V7 => capsule_v7_to_proto(value).encode_to_vec(),
     };
     Ok(PreparedCommandSegmentCapsuleV1 {
         commit_sequence: value.commit_sequence(),
         wire_version,
+        prefix_evidence: value.shared_prefix_evidence(),
         bytes,
     })
 }
@@ -591,6 +632,22 @@ fn capsule_v6_from_proto(
         canonical_service_values: value.canonical_service_values,
         entity_transitions: value.entity_transitions,
     })
+}
+
+fn capsule_v7_from_proto(
+    value: wire::StoredCommandCapsuleV7,
+) -> Result<StoredCommandCapsuleV2, DurableCodecError> {
+    let evidence =
+        crate::CommandPrefixEvidenceV1::decode_capsule_payload(&value.command_prefix_evidence)
+            .map_err(|_| DurableCodecError::corrupt())?;
+    let capsule = capsule_v6_from_proto(wire::StoredCommandCapsuleV6 {
+        base: value.base,
+        events: value.events,
+        index_generation_transitions: value.index_generation_transitions,
+        canonical_service_values: value.canonical_service_values,
+        entity_transitions: value.entity_transitions,
+    })?;
+    storage_result(capsule.with_prefix_evidence(evidence))
 }
 
 fn base_with_entity_transition_provenance(
@@ -654,6 +711,9 @@ pub fn encode_command_capsule_v2(
         CommandCapsuleWireVersionV1::V6 => {
             encode_message(COMMAND_CAPSULE_V6, &capsule_v6_to_proto(value))
         }
+        CommandCapsuleWireVersionV1::V7 => {
+            encode_message(COMMAND_CAPSULE_V7, &capsule_v7_to_proto(value))
+        }
     }
 }
 
@@ -664,6 +724,7 @@ pub fn decode_command_capsule_v2(
     match decode_record_variant_chain(
         encoded,
         &[
+            COMMAND_CAPSULE_V7,
             COMMAND_CAPSULE_V6,
             COMMAND_CAPSULE_V5,
             COMMAND_CAPSULE_V4,
@@ -671,27 +732,32 @@ pub fn decode_command_capsule_v2(
             COMMAND_CAPSULE_V2,
         ],
     )? {
-        0 => decode_message::<wire::StoredCommandCapsuleV6, _, _>(
+        0 => decode_message::<wire::StoredCommandCapsuleV7, _, _>(
+            COMMAND_CAPSULE_V7,
+            encoded,
+            capsule_v7_from_proto,
+        ),
+        1 => decode_message::<wire::StoredCommandCapsuleV6, _, _>(
             COMMAND_CAPSULE_V6,
             encoded,
             capsule_v6_from_proto,
         ),
-        1 => decode_message::<wire::StoredCommandCapsuleV5, _, _>(
+        2 => decode_message::<wire::StoredCommandCapsuleV5, _, _>(
             COMMAND_CAPSULE_V5,
             encoded,
             capsule_v5_from_proto,
         ),
-        2 => decode_message::<wire::StoredCommandCapsuleV4, _, _>(
+        3 => decode_message::<wire::StoredCommandCapsuleV4, _, _>(
             COMMAND_CAPSULE_V4,
             encoded,
             capsule_v4_from_proto,
         ),
-        3 => decode_message::<wire::StoredCommandCapsuleV3, _, _>(
+        4 => decode_message::<wire::StoredCommandCapsuleV3, _, _>(
             COMMAND_CAPSULE_V3,
             encoded,
             capsule_v3_from_proto,
         ),
-        4 => decode_message::<wire::StoredCommandCapsuleV2, _, _>(
+        5 => decode_message::<wire::StoredCommandCapsuleV2, _, _>(
             COMMAND_CAPSULE_V2,
             encoded,
             capsule_v2_from_proto,
@@ -748,6 +814,22 @@ fn segment_body_v5_to_proto(value: &StoredCommandSegmentV1) -> wire::StoredComma
         first_administration_sequence: value.first_administration_sequence().get(),
         last_administration_sequence: value.last_administration_sequence().get(),
         commands: value.commands().iter().map(capsule_v6_to_proto).collect(),
+        manifest: Some(manifest_to_proto(value.manifest())),
+    }
+}
+
+fn segment_body_v6_to_proto(value: &StoredCommandSegmentV1) -> wire::StoredCommandSegmentBodyV6 {
+    wire::StoredCommandSegmentBodyV6 {
+        database_id: value.database_id().as_bytes().to_vec(),
+        history_incarnation: value.history_incarnation(),
+        predecessor_segment_hash: value
+            .predecessor_segment_digest()
+            .map_or_else(Vec::new, |digest| digest.as_bytes().to_vec()),
+        first_commit_sequence: value.first_commit_sequence().get(),
+        last_commit_sequence: value.last_commit_sequence().get(),
+        first_administration_sequence: value.first_administration_sequence().get(),
+        last_administration_sequence: value.last_administration_sequence().get(),
+        commands: value.commands().iter().map(capsule_v7_to_proto).collect(),
         manifest: Some(manifest_to_proto(value.manifest())),
     }
 }
@@ -896,6 +978,54 @@ fn segment_from_body_v5(
     Ok(segment)
 }
 
+fn segment_from_body_v6(
+    body: wire::StoredCommandSegmentBodyV6,
+    digest: CommandSegmentDigestV1,
+) -> Result<StoredCommandSegmentV1, DurableCodecError> {
+    if component_digest(SEGMENT_DIGEST_LABEL, &body.encode_to_vec()) != digest {
+        return Err(DurableCodecError::corrupt());
+    }
+    let first =
+        CommitSequence::new(body.first_commit_sequence).ok_or_else(DurableCodecError::corrupt)?;
+    let last =
+        CommitSequence::new(body.last_commit_sequence).ok_or_else(DurableCodecError::corrupt)?;
+    let first_administration =
+        riffdb_types::AdministrationSequence::new(body.first_administration_sequence)
+            .ok_or_else(DurableCodecError::corrupt)?;
+    let last_administration =
+        riffdb_types::AdministrationSequence::new(body.last_administration_sequence)
+            .ok_or_else(DurableCodecError::corrupt)?;
+    let predecessor = if body.predecessor_segment_hash.is_empty() {
+        None
+    } else {
+        Some(CommandSegmentDigestV1::from_bytes(fixed(
+            body.predecessor_segment_hash,
+        )?))
+    };
+    let commands = body
+        .commands
+        .into_iter()
+        .map(capsule_v7_from_proto)
+        .collect::<Result<Vec<_>, _>>()?;
+    let segment = storage_result(StoredCommandSegmentV1::new(
+        DatabaseId::from_bytes(fixed(body.database_id)?)
+            .map_err(|_| DurableCodecError::corrupt())?,
+        body.history_incarnation,
+        predecessor,
+        commands,
+        manifest_from_proto(require(body.manifest)?)?,
+        digest,
+    ))?;
+    if segment.first_commit_sequence() != first
+        || segment.last_commit_sequence() != last
+        || segment.first_administration_sequence() != first_administration
+        || segment.last_administration_sequence() != last_administration
+    {
+        return Err(DurableCodecError::corrupt());
+    }
+    Ok(segment)
+}
+
 fn append_length_delimited_field(
     output: &mut Vec<u8>,
     key: u8,
@@ -982,6 +1112,7 @@ fn segment_body_bytes_with_prepared_capsules(
     for (command, prepared) in value.commands().iter().zip(prepared) {
         if prepared.commit_sequence != command.commit_sequence()
             || prepared.wire_version != wire_version
+            || prepared.prefix_evidence.as_deref() != command.prefix_evidence()
         {
             return Err(DurableCodecError::invariant());
         }
@@ -1012,6 +1143,7 @@ pub fn command_segment_digest_v1(value: &StoredCommandSegmentV1) -> CommandSegme
         CommandCapsuleWireVersionV1::V4 => segment_body_v3_to_proto(value).encode_to_vec(),
         CommandCapsuleWireVersionV1::V5 => segment_body_v4_to_proto(value).encode_to_vec(),
         CommandCapsuleWireVersionV1::V6 => segment_body_v5_to_proto(value).encode_to_vec(),
+        CommandCapsuleWireVersionV1::V7 => segment_body_v6_to_proto(value).encode_to_vec(),
     };
     component_digest(SEGMENT_DIGEST_LABEL, &body)
 }
@@ -1043,6 +1175,9 @@ fn raw_segment_envelope(
         CommandCapsuleWireVersionV1::V6 => encode_structurally_proven_message::<
             wire::StoredCommandSegmentV5,
         >(COMMAND_SEGMENT_V5, &payload),
+        CommandCapsuleWireVersionV1::V7 => encode_structurally_proven_message::<
+            wire::StoredCommandSegmentV6,
+        >(COMMAND_SEGMENT_V6, &payload),
     }
 }
 
@@ -1100,6 +1235,7 @@ pub fn seal_and_encode_command_segment_with_metrics_v1(
         CommandCapsuleWireVersionV1::V4 => segment_body_v3_bytes_for_seal(&value)?,
         CommandCapsuleWireVersionV1::V5 => segment_body_v4_to_proto(&value).encode_to_vec(),
         CommandCapsuleWireVersionV1::V6 => segment_body_v5_to_proto(&value).encode_to_vec(),
+        CommandCapsuleWireVersionV1::V7 => segment_body_v6_to_proto(&value).encode_to_vec(),
     };
     let digest = component_digest(SEGMENT_DIGEST_LABEL, &body_bytes);
     let value = value.with_segment_digest(digest);
@@ -1202,6 +1338,20 @@ pub fn encode_command_segment_v1(
                 },
             )
         }
+        CommandCapsuleWireVersionV1::V7 => {
+            let body = segment_body_v6_to_proto(value);
+            let digest = component_digest(SEGMENT_DIGEST_LABEL, &body.encode_to_vec());
+            if digest != value.segment_digest() {
+                return Err(DurableCodecError::corrupt());
+            }
+            encode_message(
+                COMMAND_SEGMENT_V6,
+                &wire::StoredCommandSegmentV6 {
+                    body: Some(body),
+                    segment_digest: digest.as_bytes().to_vec(),
+                },
+            )
+        }
     }
 }
 
@@ -1212,6 +1362,7 @@ pub fn decode_command_segment_v1(
     match decode_record_variant_chain(
         encoded,
         &[
+            COMMAND_SEGMENT_V6,
             COMMAND_SEGMENT_V5,
             COMMAND_SEGMENT_V4,
             COMMAND_SEGMENT_V3,
@@ -1219,7 +1370,16 @@ pub fn decode_command_segment_v1(
             COMMAND_SEGMENT_V1,
         ],
     )? {
-        0 => decode_message::<wire::StoredCommandSegmentV5, _, _>(
+        0 => decode_message::<wire::StoredCommandSegmentV6, _, _>(
+            COMMAND_SEGMENT_V6,
+            encoded,
+            |value| {
+                let body = require(value.body)?;
+                let digest = CommandSegmentDigestV1::from_bytes(fixed(value.segment_digest)?);
+                segment_from_body_v6(body, digest)
+            },
+        ),
+        1 => decode_message::<wire::StoredCommandSegmentV5, _, _>(
             COMMAND_SEGMENT_V5,
             encoded,
             |value| {
@@ -1228,7 +1388,7 @@ pub fn decode_command_segment_v1(
                 segment_from_body_v5(body, digest)
             },
         ),
-        1 => decode_message::<wire::StoredCommandSegmentV4, _, _>(
+        2 => decode_message::<wire::StoredCommandSegmentV4, _, _>(
             COMMAND_SEGMENT_V4,
             encoded,
             |value| {
@@ -1237,7 +1397,7 @@ pub fn decode_command_segment_v1(
                 segment_from_body_v4(body, digest)
             },
         ),
-        2 => decode_message::<wire::StoredCommandSegmentV3, _, _>(
+        3 => decode_message::<wire::StoredCommandSegmentV3, _, _>(
             COMMAND_SEGMENT_V3,
             encoded,
             |value| {
@@ -1246,7 +1406,7 @@ pub fn decode_command_segment_v1(
                 segment_from_body_v3(body, digest)
             },
         ),
-        3 => decode_message::<wire::StoredCommandSegmentV2, _, _>(
+        4 => decode_message::<wire::StoredCommandSegmentV2, _, _>(
             COMMAND_SEGMENT_V2,
             encoded,
             |value| {
@@ -1296,7 +1456,7 @@ pub fn decode_command_segment_v1(
                 Ok(segment)
             },
         ),
-        4 => decode_message::<wire::StoredCommandSegmentV1, _, _>(
+        5 => decode_message::<wire::StoredCommandSegmentV1, _, _>(
             COMMAND_SEGMENT_V1,
             encoded,
             |value| {

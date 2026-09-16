@@ -12,9 +12,9 @@ use crate::envelope::{PayloadValidationError, RecordRegistry, RecordSchema};
 use crate::storage::v1;
 
 /// Number of durable semantic payload tuples accepted while opening or migrating storage.
-pub const READABLE_RECORD_SCHEMA_COUNT: usize = 104;
+pub const READABLE_RECORD_SCHEMA_COUNT: usize = 106;
 /// Number of durable semantic roles accepted for current writes.
-pub const WRITABLE_RECORD_SCHEMA_COUNT: usize = 81;
+pub const WRITABLE_RECORD_SCHEMA_COUNT: usize = 83;
 /// Number of durable semantic roles accepted for current writes.
 pub const CURRENT_RECORD_SCHEMA_COUNT: usize = WRITABLE_RECORD_SCHEMA_COUNT;
 
@@ -285,6 +285,14 @@ const CORRELATED_INDEX_WORK_COMMAND_AUTHORITY_V6_RECORD_BOUND_BYTES: &[u8] =
         env!("CARGO_MANIFEST_DIR"),
         "/fixtures/durable-correlated-index-work-command-authority-v6-record-bounds.bin"
     ));
+const COMMAND_PREFIX_AUTHORITY_V7_SCHEMA_HASH_BYTES: &[u8] = include_bytes!(concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/fixtures/durable-command-prefix-authority-v7-schema-hashes.bin"
+));
+const COMMAND_PREFIX_AUTHORITY_V7_RECORD_BOUND_BYTES: &[u8] = include_bytes!(concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/fixtures/durable-command-prefix-authority-v7-record-bounds.bin"
+));
 const ENTITY_TRANSITIONS_V4_SCHEMA_HASH_BYTES: &[u8; 160] = include_bytes!(concat!(
     env!("CARGO_MANIFEST_DIR"),
     "/fixtures/durable-entity-transitions-v4-schema-hashes.bin"
@@ -1476,6 +1484,55 @@ const COMMAND_SEGMENT_V5_RECORD_SCHEMA: RecordSchema<'static> = correlated_index
     5
 );
 
+const fn command_prefix_authority_v7_schema_hash(index: usize) -> SchemaHash {
+    let mut bytes = [0_u8; 32];
+    let mut offset = 0;
+    while offset < bytes.len() {
+        bytes[offset] = COMMAND_PREFIX_AUTHORITY_V7_SCHEMA_HASH_BYTES[index * 32 + offset];
+        offset += 1;
+    }
+    SchemaHash::from_bytes(bytes)
+}
+
+const fn command_prefix_authority_v7_record_bound(index: usize, offset: usize) -> usize {
+    let start = index * 8 + offset;
+    u32::from_be_bytes([
+        COMMAND_PREFIX_AUTHORITY_V7_RECORD_BOUND_BYTES[start],
+        COMMAND_PREFIX_AUTHORITY_V7_RECORD_BOUND_BYTES[start + 1],
+        COMMAND_PREFIX_AUTHORITY_V7_RECORD_BOUND_BYTES[start + 2],
+        COMMAND_PREFIX_AUTHORITY_V7_RECORD_BOUND_BYTES[start + 3],
+    ]) as usize
+}
+
+macro_rules! command_prefix_authority_v7_schema {
+    ($index:literal, $name:literal, $message:ty, $compact_tag:literal, $revision:literal) => {
+        RecordSchema::new_current(
+            concat!("riffdb.storage.v1.", $name),
+            command_prefix_authority_v7_schema_hash($index),
+            command_prefix_authority_v7_record_bound($index, 0),
+            command_prefix_authority_v7_record_bound($index, 4),
+            preflight_payload::<{ 99 + $index }>,
+            validate_payload::<{ 99 + $index }, $message>,
+        )
+        .with_compact_identity($compact_tag, $revision)
+    };
+}
+
+const COMMAND_CAPSULE_V7_RECORD_SCHEMA: RecordSchema<'static> = command_prefix_authority_v7_schema!(
+    0,
+    "StoredCommandCapsuleV7",
+    v1::StoredCommandCapsuleV7,
+    54,
+    6
+);
+const COMMAND_SEGMENT_V6_RECORD_SCHEMA: RecordSchema<'static> = command_prefix_authority_v7_schema!(
+    1,
+    "StoredCommandSegmentV6",
+    v1::StoredCommandSegmentV6,
+    55,
+    6
+);
+
 const fn entity_transitions_v4_schema_hash(index: usize) -> SchemaHash {
     let mut bytes = [0_u8; 32];
     let mut offset = 0;
@@ -1977,6 +2034,8 @@ readable_message!(v1::StoredCommandCapsuleV5, COMMAND_CAPSULE_V5_RECORD_SCHEMA);
 readable_message!(v1::StoredCommandSegmentV4, COMMAND_SEGMENT_V4_RECORD_SCHEMA);
 readable_message!(v1::StoredCommandCapsuleV6, COMMAND_CAPSULE_V6_RECORD_SCHEMA);
 readable_message!(v1::StoredCommandSegmentV5, COMMAND_SEGMENT_V5_RECORD_SCHEMA);
+readable_message!(v1::StoredCommandCapsuleV7, COMMAND_CAPSULE_V7_RECORD_SCHEMA);
+readable_message!(v1::StoredCommandSegmentV6, COMMAND_SEGMENT_V6_RECORD_SCHEMA);
 readable_message!(
     v1::StoredCleanCloseLifecycleV1,
     CLEAN_CLOSE_LIFECYCLE_V1_RECORD_SCHEMA
@@ -2157,6 +2216,8 @@ writable_message!(v1::StoredCommandCapsuleV5);
 writable_message!(v1::StoredCommandSegmentV4);
 writable_message!(v1::StoredCommandCapsuleV6);
 writable_message!(v1::StoredCommandSegmentV5);
+writable_message!(v1::StoredCommandCapsuleV7);
+writable_message!(v1::StoredCommandSegmentV6);
 writable_message!(v1::StoredCleanCloseLifecycleV1);
 writable_message!(v1::StoredColumnarProjectionControlV1);
 writable_message!(v1::StoredChangelogTransactionAllocatorV3);
@@ -2366,6 +2427,8 @@ pub static READABLE_RECORD_SCHEMAS: [RecordSchema<'static>; READABLE_RECORD_SCHE
     CHANGELOG_HISTORY_STATE_V3_RECORD_SCHEMA,
     REPLICATION_FOLLOWER_STATE_V3_RECORD_SCHEMA,
     REPLICATION_SOURCE_HOLD_V1_RECORD_SCHEMA,
+    COMMAND_CAPSULE_V7_RECORD_SCHEMA,
+    COMMAND_SEGMENT_V6_RECORD_SCHEMA,
     PRE_WP280_CAPABILITY_RECORD_SCHEMA,
     PRE_WP416_CAPABILITY_RECORD_SCHEMA,
     PRE_WP416_CAPABILITY_TOKEN_LOOKUP_RECORD_SCHEMA,
@@ -2456,6 +2519,8 @@ pub static WRITABLE_RECORD_SCHEMAS: [RecordSchema<'static>; WRITABLE_RECORD_SCHE
     CHANGELOG_HISTORY_STATE_V3_RECORD_SCHEMA,
     REPLICATION_FOLLOWER_STATE_V3_RECORD_SCHEMA,
     REPLICATION_SOURCE_HOLD_V1_RECORD_SCHEMA,
+    COMMAND_CAPSULE_V7_RECORD_SCHEMA,
+    COMMAND_SEGMENT_V6_RECORD_SCHEMA,
 ];
 
 /// Current durable schemas. `current` is exactly synonymous with writable roles.
