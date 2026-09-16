@@ -876,7 +876,40 @@ pub(crate) fn collect_fencing_inputs(
         undelivered_outbox_low_water: undelivered,
         staged_migration_frozen_frontier: staged,
         consumer_low_water,
+        follower_low_water: follower_low_water(transaction)?,
     })
+}
+
+/// A decoded acknowledgement alone is not a retention permit. Validate its
+/// identity, key, ancestry and exact dual frontier with the retained chain from
+/// this same read pin. Unknown or corrupt hold kinds cannot be ignored while
+/// selecting the follower subset. The existing validator enforces 4096 holds.
+fn follower_low_water(transaction: &redb::ReadTransaction) -> Result<Option<u64>, StorageError> {
+    use riffdb_storage_api::{
+        ReplicationSourceHoldKindV1, proto_codec::decode_replication_source_hold_v1,
+    };
+    if crate::changelog_v3_roots::validate_retained_history(transaction)?.is_none() {
+        return Ok(None);
+    }
+    let holds = transaction
+        .open_table(crate::changelog_v3_activation::SOURCE_HOLDS)
+        .map_err(table_error)?;
+    let mut minimum: Option<u64> = None;
+    for row in holds.iter().map_err(precommit_storage_error)? {
+        let (_, value) = row.map_err(precommit_storage_error)?;
+        let hold = *decode_replication_source_hold_v1(value.value())
+            .map_err(crate::error::codec_error)?
+            .value();
+        if hold.kind() == ReplicationSourceHoldKindV1::FollowerAcknowledgement {
+            let acknowledged = hold
+                .fence()
+                .frontier()
+                .application()
+                .map_or(0, CommitSequence::get);
+            minimum = Some(minimum.map_or(acknowledged, |prior| prior.min(acknowledged)));
+        }
+    }
+    Ok(minimum)
 }
 
 fn detached_projection_ids(holds: &StoredRetentionHoldsV1) -> BTreeSet<String> {

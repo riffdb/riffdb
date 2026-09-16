@@ -22403,6 +22403,16 @@ work_packages:
       incarnation refusals it already handles.
     scale: The fence is one sequence number per registration and the hold budget bounds how long a
       dead follower pins history; no node-local memory of another node is assumed.
+  closure:
+    status: open
+    decisions_taken:
+    - Join durable follower acknowledgement application frontiers to offline
+      retention as FollowerLowWater, treating before-first as zero. Validate the
+      complete retained chain and every bounded source hold from the same pin
+      before selecting follower fences. A faster follower cannot release another
+      registration, and lag never implies retirement. Reuse existing hold bytes
+      and all prior retention inputs; budget/expiry and administrative ceremonies
+      remain implementation work.
   human_review_triggers: *id0178
 
 - id: WP-749

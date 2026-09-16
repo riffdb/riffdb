@@ -84,6 +84,7 @@ const fn no_inputs() -> RetentionFencingInputs {
         undelivered_outbox_low_water: None,
         staged_migration_frozen_frontier: None,
         consumer_low_water: None,
+        follower_low_water: None,
     }
 }
 

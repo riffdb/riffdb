@@ -333,3 +333,68 @@ fn actual_offline_hold_process_crashes_preserve_original_or_complete_receipt() {
         assert_eq!(read(&path).0.len(), 2);
     }
 }
+
+#[test]
+// req: REP-006
+fn retention_status_refuses_invalid_source_holds_before_selecting_followers() {
+    use riffdb_storage_api::{
+        ReplicationSourceHoldIdV1, ReplicationSourceHoldKindV1, ReplicationSourceHoldV1,
+        proto_codec::encode_replication_source_hold_v1,
+    };
+    for invalid in ["key", "lineage", "value"] {
+        let scope = crate::test_path::ScopedDirectory::new("follower-retention-corrupt-hold");
+        let path = scope.join("db.redb");
+        initialized(&path);
+        let database = Database::open(&path).unwrap();
+        let read = database.begin_read().unwrap();
+        let history = crate::changelog_v3_roots::validate_retained_history(&read)
+            .unwrap()
+            .unwrap();
+        drop(read);
+        let lineage = if invalid == "lineage" {
+            ChangelogLineageV3::new(
+                DatabaseId::from_unix_milliseconds_and_random(1, [0x44; 10]).unwrap(),
+                1,
+                LeadershipEpochV1::initial(),
+            )
+            .unwrap()
+        } else {
+            history.lineage()
+        };
+        // Even an unselected kind must be validated; filtering raw kinds first
+        // could turn unknown or contradictory retention evidence into absence.
+        let hold = ReplicationSourceHoldV1::new(
+            ReplicationSourceHoldIdV1::new([0x77; 16]).unwrap(),
+            ReplicationSourceHoldKindV1::ArchiveAcknowledgement,
+            lineage,
+            history.tail(),
+        );
+        let mut key = hold.storage_key();
+        if invalid == "key" {
+            key[1] ^= 1;
+        }
+        let mut bytes = encode_replication_source_hold_v1(hold)
+            .unwrap()
+            .into_bytes();
+        if invalid == "value" {
+            bytes[0] ^= 1;
+        }
+        let write = database.begin_write().unwrap();
+        write
+            .open_table(crate::changelog_v3_activation::SOURCE_HOLDS)
+            .unwrap()
+            .insert(key.as_slice(), bytes.as_slice())
+            .unwrap();
+        write.commit().unwrap();
+        drop(database);
+        let error = RedbOfflineRetention::bind(&path).status().unwrap_err();
+        assert_eq!(error.kind(), StorageErrorKind::CorruptData, "{invalid}");
+        let database = Database::open(&path).unwrap();
+        let read = database.begin_read().unwrap();
+        assert!(load_watermark(&read).unwrap().is_none());
+        assert_eq!(
+            read.open_table(HISTORY_TOMBSTONES).unwrap().len().unwrap(),
+            0
+        );
+    }
+}
