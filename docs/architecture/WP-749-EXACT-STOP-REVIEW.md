@@ -115,10 +115,15 @@ charges physical chain heads and the complete nested prefix copy; its per-item
 reservation floor also enforces the aggregate evidence-count ceiling through
 the existing batch/epoch capacity check. A production same-entity group proves
 put, replace, delete and recreate images and every intermediate index epoch on
-standard journaled and hardened paths. This is not an exact-stop restore
-implementation. Complete independent row/graph and startup/recovery validation,
-private reconstruction, publication proofs and write-path measurements remain
-required.
+standard journaled and hardened paths. Storage-owned startup/recovery decoding
+and received successor groups now require exact entity, chain-head and index-epoch
+mutation inventories and bind their typed post-images to each command's facts.
+Pending-idempotency mutations may only delete the owning outcome identity.
+Production corruption tests reseal missing, extra and substituted rows with
+valid envelopes and prove refusal; valid grouped images still reopen. This is
+not an exact-stop restore implementation. Complete secondary-index/vector and
+predecessor graph validation, private reconstruction, publication proofs and
+write-path measurements remain required.
 
 - A real same-entity group with multiple puts, delete, and recreate restores to
   each application sequence with exact entity bytes and reciprocal command facts.

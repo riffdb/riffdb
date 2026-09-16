@@ -775,3 +775,123 @@ fn command_group_captures_each_put_delete_recreate_and_logical_index_epoch() {
         );
     }
 }
+
+#[test]
+// req: REP-007, REC-001
+fn startup_refuses_resealed_prefix_images_that_contradict_command_facts() {
+    use riffdb_storage_api::{
+        AuthoritativeMutationV3 as M, CommandPrefixEvidenceV1, CommandSegmentDigestV1,
+        StoredCommandCapsuleV2, StoredCommandSegmentV1,
+    };
+    const COMMITS: TableDefinition<&[u8], &[u8]> = TableDefinition::new("commits");
+    for case in 0..8 {
+        let path = TestDatabasePath::new("v7-prefix-row-corruption");
+        install_fixture(&path.0);
+        let (ports, receiver) = observed_ports(&path.0, RedbCommitProfile::Hardened);
+        let first = command_fixture_at(1);
+        let second = superseding_command_fixture_at(2, 1, &first);
+        commit_command_group(&ports, &[first, second]);
+        drop(receiver);
+        drop(ports);
+        let database = Database::open(&path.0).unwrap();
+        let write = database.begin_write().unwrap();
+        {
+            let mut table = write.open_table(COMMITS).unwrap();
+            let row = table.get(1_u64.to_be_bytes().as_slice()).unwrap().unwrap();
+            let decoded = decode_command_segment_v1(row.value()).unwrap();
+            let segment = decoded.value();
+            let command = &segment.commands()[0];
+            let prefix = command.prefix_evidence().unwrap();
+            let mut mutations = prefix.mutations().to_vec();
+            match case {
+                0 => {} // Valid resealing remains admissible.
+                1..=3 => {
+                    let namespace = [N::Entities, N::EntityChainHeads, N::IndexEpochs][case - 1];
+                    mutations.retain(|m| m.namespace() != namespace);
+                }
+                4..=6 => {
+                    // All bytes and keys are individually valid. Only the join
+                    // to command one's facts reveals command two's substitution.
+                    let namespace = [N::Entities, N::EntityChainHeads, N::IndexEpochs][case - 4];
+                    let later = segment.commands()[1]
+                        .prefix_evidence()
+                        .unwrap()
+                        .mutations()
+                        .iter()
+                        .find(|m| m.namespace() == namespace)
+                        .unwrap();
+                    let row = mutations
+                        .iter_mut()
+                        .find(|m| m.namespace() == namespace)
+                        .unwrap();
+                    *row = M::put(
+                        namespace,
+                        row.key(),
+                        row.expected_hash(),
+                        later.value().unwrap(),
+                    )
+                    .unwrap();
+                }
+                7 => {
+                    let row = mutations
+                        .iter()
+                        .find(|m| m.namespace() == N::Entities)
+                        .unwrap();
+                    mutations
+                        .push(M::put(N::Entities, b"extra", None, row.value().unwrap()).unwrap());
+                    mutations
+                        .sort_by(|a, b| (a.namespace(), a.key()).cmp(&(b.namespace(), b.key())));
+                }
+                _ => unreachable!(),
+            }
+            let replacement = StoredCommandCapsuleV2::from_base_with_entity_transitions(
+                command.base().clone(),
+                command.index_generation_transitions().to_vec(),
+                command.entity_transitions().to_vec(),
+            )
+            .unwrap()
+            .with_prefix_evidence(
+                CommandPrefixEvidenceV1::new(prefix.predecessor(), prefix.covered(), mutations)
+                    .unwrap(),
+            )
+            .unwrap();
+            let mut commands = segment.commands().to_vec();
+            commands[0] = replacement;
+            let draft = StoredCommandSegmentV1::new(
+                segment.database_id(),
+                segment.history_incarnation(),
+                segment.predecessor_segment_digest(),
+                commands,
+                segment.manifest().clone(),
+                CommandSegmentDigestV1::from_bytes([0; 32]),
+            )
+            .unwrap();
+            let bytes = seal_and_encode_command_segment_v1(draft).unwrap().1;
+            // This is a semantic corruption proof, not a checksum failure.
+            decode_command_segment_v1(bytes.as_bytes()).unwrap();
+            drop(row);
+            table
+                .insert(1_u64.to_be_bytes().as_slice(), bytes.as_bytes())
+                .unwrap();
+        }
+        write.commit().unwrap();
+        drop(database);
+        match RedbStore::open(&path.0) {
+            Ok(store) if case == 0 => {
+                drop(open_operational(store));
+            }
+            Ok(store) => assert!(
+                !collect_structural_findings(store).is_empty(),
+                "case {case}"
+            ),
+            Err(error) => {
+                assert_ne!(case, 0);
+                assert_eq!(
+                    error.kind(),
+                    riffdb_storage_api::StorageErrorKind::CorruptData,
+                    "case {case}"
+                );
+            }
+        }
+    }
+}

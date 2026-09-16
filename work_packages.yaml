@@ -22932,6 +22932,15 @@ work_packages:
       Capacity refusal stays before assignment; FIFO policy and durability fences
       are unchanged. Complete row/graph validation and exact-stop publication
       remain required before closure.
+    - Bind each successor prefix's entity images, chain heads and index epoch
+      post-images to the owning command's typed transitions at storage-owned
+      structural/recovery decode and before follower receipt application. Require
+      exact inventories and precondition presence; pending rows may only delete
+      the owning outcome identity. Preserve the engine-neutral codecs as shape
+      validators and the ordinary source staging path. Valid resealed production
+      groups reopen; missing, extra and substituted typed images refuse even with
+      valid segment checksums. Complete secondary-index/vector and actual-prior
+      graph checks remain required before exact-stop reconstruction or closure.
     - Reuse the checked backup-name grammar through a distinct ArchiveNameV1 type.
       Bind backup, archive, closed application stop and replacement confirmation
       under the versioned archive-input preimage in the existing maintenance hash

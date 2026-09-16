@@ -1,10 +1,10 @@
-//! Receipt/predecessor checks over isolated codec fixtures, not startup proof.
+//! Well-sealed codec fixtures are not proof of valid command-owned row images.
 // req: REP-007, REP-003
 
 use super::*;
 use riffdb_storage_api::{
-    AdministrationSequenceAllocator, ApplicationSequenceAllocator, ChangelogHistoryPointV3,
-    CommandSegmentDigestV1, StoredCommandSegmentV1, encode_administration_sequence_allocator_v1,
+    AdministrationSequenceAllocator, ApplicationSequenceAllocator, CommandSegmentDigestV1,
+    StoredCommandSegmentV1, encode_administration_sequence_allocator_v1,
     encode_application_sequence_allocator_v1, seal_and_encode_command_segment_v1,
 };
 
@@ -37,7 +37,7 @@ fn successor_fixture(history: ChangelogHistoryStateV3) -> Vec<u8> {
 }
 
 #[test]
-fn follower_checks_prefix_evidence_before_publishing_the_original_receipt() {
+fn follower_refuses_opaque_prefix_images_even_when_the_original_net_matches() {
     for valid in [false, true] {
         let scope = crate::test_path::ScopedDirectory::new("follower-prefix-net-refusal");
         let path = scope.join("db.redb");
@@ -99,7 +99,6 @@ fn follower_checks_prefix_evidence_before_publishing_the_original_receipt() {
             mutations,
         )
         .unwrap();
-        let expected = ChangelogHistoryPointV3::from_receipt(&receipt).unwrap();
         let bytes = ChangelogFrameV3::new(
             ChangelogFrameBindingV3::new(
                 history.lineage().database_id(),
@@ -115,19 +114,6 @@ fn follower_checks_prefix_evidence_before_publishing_the_original_receipt() {
         .encode()
         .unwrap();
         let mut applier = isolated_applier(read_store);
-        if valid {
-            assert_eq!(applier.apply_frame(&bytes).unwrap(), expected);
-            assert_eq!(applier.durable_history().unwrap().tail(), expected);
-            assert_eq!(applier.apply_frame(&bytes).unwrap(), expected);
-            assert_eq!(applier.shared.durable_commit_epoch(), 1);
-            let read = applier.shared.database.begin_read().unwrap();
-            let table = read.open_table(ENTITIES).unwrap();
-            assert_eq!(
-                table.get(b"key".as_slice()).unwrap().unwrap().value(),
-                b"intermediate"
-            );
-            continue;
-        }
         assert!(applier.apply_frame(&bytes).is_err());
         assert_eq!(applier.shared.durable_commit_epoch(), 0);
         assert!(applier.durable_history().is_err());
