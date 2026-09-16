@@ -588,3 +588,67 @@ fn real_v3_command_crashes_keep_whole_groups_and_receipts_through_repeated_recov
         }
     }
 }
+
+/// Diagnostic evidence for WP-749's intra-transaction stop requirement. This
+/// proves the existing V3 contract; it does not claim exact-stop restore support.
+#[test]
+// req: REP-003
+fn grouped_v3_receipt_retains_only_terminal_entity_image() {
+    let path = TestDatabasePath::new("v3-grouped-intermediate-image");
+    let anchor = install_fixture(&path.0);
+    let (ports, _receiver) = observed_ports(&path.0, RedbCommitProfile::Hardened);
+    let first = command_fixture_at(1);
+    let second = superseding_command_fixture_at(2, 1, &first);
+    let first_image = first.records.entities()[0].post_image();
+    let second_image = second.records.entities()[0].post_image();
+    assert_eq!(first_image.target(), second_image.target());
+    assert_ne!(first_image, second_image);
+    commit_command_group(&ports, &[first.clone(), second.clone()]);
+    assert_eq!(
+        ports.read_entity(&first.target).unwrap(),
+        Some(second_image.clone())
+    );
+    assert_eq!(
+        ports.read_commit(CommitSequence::new(1).unwrap()).unwrap(),
+        Some(first.records.commit().clone())
+    );
+    assert_eq!(
+        ports.read_commit(CommitSequence::new(2).unwrap()).unwrap(),
+        Some(second.records.commit().clone())
+    );
+    let pin = ports.published_changelog_snapshot_v3().unwrap();
+    let mut cursor = pin
+        .changelog_receipts_v3(anchor.lineage(), anchor.tail())
+        .unwrap();
+    let mut group = None;
+    while let Some(receipt) = cursor.next_receipt().unwrap() {
+        if receipt.attribution() == A::DirectApplicationOrServiceAuditGroup {
+            assert!(group.replace(receipt).is_none());
+        }
+    }
+    let group = group.unwrap();
+    assert_eq!(group.binding().predecessor_frontier.application(), None);
+    assert_eq!(
+        group.binding().covered_frontier.application(),
+        CommitSequence::new(2)
+    );
+    let entities = group
+        .mutations()
+        .iter()
+        .filter(|m| m.namespace() == N::Entities)
+        .collect::<Vec<_>>();
+    assert_eq!(entities.len(), 1);
+    let retained = decode_entity_record_v1(entities[0].value().unwrap()).unwrap();
+    assert_eq!(retained.value(), second_image);
+    assert_ne!(retained.value(), first_image);
+    // Command authority preserves a checked reference/hash, not this image.
+    let reference = &first.records.commit().entity_references()[0];
+    assert_eq!(
+        reference.post_image_hash(),
+        riffdb_storage_api::derive_entity_record_hash_v1(first_image).unwrap()
+    );
+    assert_ne!(
+        reference.post_image_hash(),
+        riffdb_storage_api::derive_entity_record_hash_v1(second_image).unwrap()
+    );
+}
