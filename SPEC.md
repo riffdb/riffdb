@@ -6104,7 +6104,10 @@ Requirements registered here; evidence is delivered by WP-591 through WP-595.
 - `VEC-009`: Exact KNN MUST remain available as the reference path and as
   the small-partition default. The approximate structure MUST engage only
   above a declared row threshold per organization. Below the threshold,
-  results MUST be exact.
+  results MUST be exact. Above the threshold, an unavailable exact-bound
+  admitted-population graph MUST fall back to exact execution and report the
+  actual search kind. Continuation-based execution MUST remain exact until
+  graph selection is bound by a separately accepted cursor design (ADR-0229).
 
 - `VEC-010`: For vector projections only, a query declares K and results
   are top-K under a declared recall target (per projection, e.g.

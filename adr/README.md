@@ -259,6 +259,12 @@ record with no front matter.
 | [0222](0222-exact-provider-v2-lowering-path-authority.md) | Exact Provider V2 Lowering Path Authority | Accepted | guarantee |
 | [0223](0223-epoch-two-application-source-and-lock-retirement.md) | Epoch-Two Application Source and Lock Retirement | Accepted | guarantee |
 | [0226](0226-rustls-security-patch-within-the-reviewed-tls-boundary.md) | Rustls Security Patch Within The Reviewed TLS Boundary | Accepted | guarantee |
+| [0227](0227-columnar-candidate-publication-at-a-validated-frontier.md) | Columnar Candidate Publication At A Validated Frontier | Proposed | guarantee |
+| [0228](0228-bounded-successor-unique-index-validation.md) | Bounded Successor Unique Index Validation | Accepted | guarantee |
+| [0229](0229-policy-safe-reuse-of-approximate-vector-graphs.md) | Policy Safe Reuse Of Approximate Vector Graphs | Accepted | guarantee |
+| [0230](0230-bounded-atomic-projection-replay-batches.md) | Bounded Atomic Projection Replay Batches | Proposed | guarantee |
+| [0231](0231-incremental-exact-text-and-predicate-catch-up.md) | Incremental Exact Text And Predicate Catch Up | Proposed | guarantee |
+| [0232](0232-append-only-export-page-commitments.md) | Append Only Export Page Commitments | Proposed | guarantee |
 <!-- adr-index:end -->
 
 The human architecture review on 2026-07-12 approved the direction represented
