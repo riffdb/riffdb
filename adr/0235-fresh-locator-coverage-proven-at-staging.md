@@ -1,11 +1,12 @@
 ---
 adr: "0235"
 title: Retire Fresh Locator Coverage Once The Derived Index Covers
-status: proposed
+status: accepted
 tier: guarantee
 date: 2026-09-17
-accepted: null
-acceptance: null
+accepted: 2026-09-17
+acceptance: 'maintainer, in session, 2026-09-17: "Okay let''s more forward with
+  the proposal" (ADR-0235 as written)'
 requires: [ADR-0102, ADR-0183, ADR-0197, ADR-0234]
 amends:
   - ADR-0183 only to admit the single enumerated repair below.
@@ -13,24 +14,24 @@ amends:
     what it proves while it is maintained.
 supersedes: []
 requirements: []
-packages: []
+packages: [WP-786]
 obligations:
   - id: OBL-0235-1
-    package: null
+    package: WP-786
     proof: coverage_retires_once_the_derived_index_covers_the_captured_frontier
     says: On the first seal whose captured frontier the command-derived index
       already covers, coverage retires and no later seal in that process
       performs the queued witness. A process whose index has not covered
       arms and maintains coverage exactly as before.
   - id: OBL-0235-2
-    package: null
+    package: WP-786
     proof: retired_coverage_is_distinguishable_from_failure_disabled_coverage
     says: Retirement and proof failure are separate terminal states. Every
       malformed span, count, ordinal, manifest entry, locator, capsule identity
       and audit pairing still disables by failure, still fences where it fences
       today, and is never reported as retirement.
   - id: OBL-0235-3
-    package: null
+    package: WP-786
     proof: cold_fresh_database_publications_complete_without_history_scans
     says: A fresh process over a database with retained history still completes
       its publications with zero history fallback scans and zero transient
