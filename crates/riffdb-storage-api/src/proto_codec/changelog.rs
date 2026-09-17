@@ -75,6 +75,8 @@ fn source_hold_from_wire(
     ))
 }
 
+mod administration;
+pub use administration::*;
 mod source_hold_v2;
 pub use source_hold_v2::*;
 

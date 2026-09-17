@@ -127,6 +127,12 @@ files
   riffdb/storage/v1/reactive_module_v1.proto
     import riffdb/storage/v1/common.proto
   riffdb/storage/v1/registry_v2.proto
+  riffdb/storage/v1/replication_administration_v1.proto
+    import riffdb/storage/v1/common.proto
+    import riffdb/storage/v1/changelog_history_state_v3.proto
+    import riffdb/storage/v1/replication_source_hold_v1.proto
+    import riffdb/storage/v1/replication_source_hold_v2.proto
+    import riffdb/storage/v1/service_audit_v3.proto
   riffdb/storage/v1/replication_follower_state_v3.proto
     import riffdb/storage/v1/changelog_history_state_v3.proto
   riffdb/storage/v1/replication_source_hold_v1.proto
@@ -1539,6 +1545,25 @@ messages
     2 index_range_epoch optional .riffdb.storage.v1.IndexRangeReadDependencyV1 oneof=dependency
   riffdb.storage.v1.StoredRecordRegistryV2 fields=1
     1 registry_digest optional bytes
+  riffdb.storage.v1.StoredReplicationAdministrationV1 fields=12
+    1 administration_sequence optional uint64
+    2 timestamp optional .riffdb.storage.v1.TimestampV1
+    3 action optional .riffdb.storage.v1.StoredReplicationAdministrationV1.Action
+    4 target optional .riffdb.storage.v1.ReplicationFollowerAuditTargetV3
+    5 registration_generation optional uint64
+    6 observed optional .riffdb.storage.v1.StoredChangelogHistoryStateV3.Position
+    7 absent optional .riffdb.storage.v1.UnitV1 oneof=before
+    8 legacy optional .riffdb.storage.v1.StoredReplicationSourceHoldV1 oneof=before
+    9 registered optional .riffdb.storage.v1.StoredReplicationSourceHoldV2 oneof=before
+    10 after optional .riffdb.storage.v1.StoredReplicationSourceHoldV2
+    11 explicit optional .riffdb.storage.v1.StoredReplicationAdministrationV1.Explicit oneof=origin
+    12 configured_expiry optional .riffdb.storage.v1.StoredReplicationAdministrationV1.ConfiguredExpiry oneof=origin
+  riffdb.storage.v1.StoredReplicationAdministrationV1.ConfiguredExpiry fields=1
+    1 registration_administration_sequence optional uint64
+  riffdb.storage.v1.StoredReplicationAdministrationV1.Explicit fields=3
+    1 request_id optional bytes
+    2 principal optional .riffdb.storage.v1.AuditPrincipalV1
+    3 approval_id optional string proto3-optional oneof=_approval_id
   riffdb.storage.v1.StoredReplicationFollowerStateV3 fields=2
     1 detached optional .riffdb.storage.v1.StoredReplicationFollowerStateV3.Detached oneof=state
     2 attached optional .riffdb.storage.v1.StoredReplicationFollowerStateV3.Attached oneof=state
@@ -3433,6 +3458,11 @@ enums
     0 STORED_COMMAND_AUDIT_MEMBER_UNSPECIFIED
     1 STORED_COMMAND_AUDIT_MEMBER_STARTED
     2 STORED_COMMAND_AUDIT_MEMBER_TERMINAL
+  riffdb.storage.v1.StoredReplicationAdministrationV1.Action values=4
+    0 ACTION_UNSPECIFIED
+    1 ACTION_REGISTER_FOLLOWER
+    2 ACTION_RETIRE_FOLLOWER
+    3 ACTION_EXPIRE_FOLLOWER
   riffdb.storage.v1.StoredReplicationSourceHoldV1.Kind values=4
     0 KIND_UNSPECIFIED
     1 KIND_FOLLOWER_ACKNOWLEDGEMENT

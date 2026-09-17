@@ -41,6 +41,13 @@ generate_durable_relationship_vectors() {
             proto_codec::tests::relationships::emit_relationship_vectors_for_fixture_regeneration -- --exact
 }
 
+generate_replication_administration_vectors() {
+    LC_ALL=C TZ=UTC \
+        RIFFDB_REPLICATION_ADMINISTRATION_VECTOR_OUTPUT="$output_root/fixtures/proto/durable-replication-administration-v1.hex" \
+        cargo test --quiet --locked -p riffdb-storage-api --test replication_administration \
+            administration_canonical_fixtures_and_old_registry_refusal_are_exact -- --exact
+}
+
 generate_command_prefix_vectors() {
     LC_ALL=C TZ=UTC \
         RIFFDB_COMMAND_PREFIX_V7_VECTOR_OUTPUT="$output_root/fixtures/proto/durable-command-prefix-v7-wire-vectors.txt" \
@@ -57,8 +64,14 @@ fi
 generate_durable_vectors
 generate_durable_relationship_vectors
 generate_command_prefix_vectors
+generate_replication_administration_vectors
 
 artifacts=(
+    fixtures/proto/durable-replication-administration-v1.hex
+    fixtures/proto/durable-replication-administration-v1-schema-hash.bin
+    fixtures/proto/durable-replication-administration-v1-record-bound.bin
+    crates/riffdb-proto/fixtures/durable-replication-administration-v1-schema-hash.bin
+    crates/riffdb-proto/fixtures/durable-replication-administration-v1-record-bound.bin
     fixtures/proto/durable-command-prefix-v7-wire-vectors.txt
     crates/riffdb-proto/src/generated/riffdb.app.v1.rs
     crates/riffdb-proto/src/generated/riffdb.storage.v1.rs

@@ -505,6 +505,16 @@ fn storage_source_import_and_type_inventory_is_exact() {
                 ],
             ),
             (
+                "riffdb/storage/v1/replication_administration_v1.proto".to_owned(),
+                vec![
+                    "riffdb/storage/v1/common.proto",
+                    "riffdb/storage/v1/changelog_history_state_v3.proto",
+                    "riffdb/storage/v1/replication_source_hold_v1.proto",
+                    "riffdb/storage/v1/replication_source_hold_v2.proto",
+                    "riffdb/storage/v1/service_audit_v3.proto"
+                ],
+            ),
+            (
                 "riffdb/storage/v1/service_audit_v3.proto".to_owned(),
                 vec![
                     "riffdb/storage/v1/audit.proto",
@@ -559,7 +569,7 @@ fn storage_source_import_and_type_inventory_is_exact() {
             .iter()
             .map(|file| file.message_type.len())
             .sum::<usize>(),
-        204,
+        205,
         "exact top-level semantic messages, StoredEnvelope and registry support"
     );
     assert_eq!(
@@ -588,9 +598,9 @@ fn storage_source_import_and_type_inventory_is_exact() {
 
 #[test]
 fn closed_registry_order_and_schema_hashes_are_exactly_derived() {
-    assert_eq!(CURRENT_RECORD_SCHEMA_COUNT, 87);
-    assert_eq!(READABLE_RECORD_SCHEMA_COUNT, 110);
-    assert_eq!(WRITABLE_RECORD_SCHEMA_COUNT, 87);
+    assert_eq!(CURRENT_RECORD_SCHEMA_COUNT, 88);
+    assert_eq!(READABLE_RECORD_SCHEMA_COUNT, 111);
+    assert_eq!(WRITABLE_RECORD_SCHEMA_COUNT, 88);
     assert_eq!(
         CURRENT_RECORD_SCHEMAS
             .iter()
@@ -689,6 +699,7 @@ fn closed_registry_order_and_schema_hashes_are_exactly_derived() {
     readable_names.push("riffdb.storage.v1.StoredApplicationExportOperationV2".to_owned());
     readable_names.push("riffdb.storage.v1.StoredApplicationExportPageCommitmentV1".to_owned());
     readable_names.push("riffdb.storage.v1.ServiceAuditRecordV3".to_owned());
+    readable_names.push("riffdb.storage.v1.StoredReplicationAdministrationV1".to_owned());
     readable_names.push("riffdb.storage.v1.CapabilityRecordV1".to_owned());
     readable_names.push("riffdb.storage.v1.CapabilityRecordV1".to_owned());
     readable_names.push("riffdb.storage.v1.CapabilityTokenLookupV1".to_owned());
@@ -768,6 +779,7 @@ fn closed_registry_order_and_schema_hashes_are_exactly_derived() {
     writable_names.push("riffdb.storage.v1.StoredApplicationExportOperationV2".to_owned());
     writable_names.push("riffdb.storage.v1.StoredApplicationExportPageCommitmentV1".to_owned());
     writable_names.push("riffdb.storage.v1.ServiceAuditRecordV3".to_owned());
+    writable_names.push("riffdb.storage.v1.StoredReplicationAdministrationV1".to_owned());
     assert_eq!(
         READABLE_RECORD_SCHEMAS
             .iter()
@@ -850,8 +862,8 @@ fn closed_registry_order_and_schema_hashes_are_exactly_derived() {
             .map(|schema| schema.max_payload_bytes())
             .collect::<BTreeSet<_>>()
             .len(),
-        20,
-        "five semantic classes plus fifteen FQN-specific absolute maxima"
+        21,
+        "five semantic classes plus sixteen FQN-specific absolute maxima"
     );
 
     let v1 = "riffdb.storage.v1.StoredIndexEntryV1";
@@ -1131,8 +1143,8 @@ fn columnar_control_v1_freezes_numeric_registry_and_bounds() {
 #[test]
 fn generated_registry_fixtures_freeze_exact_membership_and_hashes() {
     let legacy = registry_fixture_entries(LEGACY_REGISTRY_FIXTURE, 26);
-    let readable = registry_fixture_entries(READABLE_REGISTRY_FIXTURE, 110);
-    let writable = registry_fixture_entries(WRITABLE_REGISTRY_FIXTURE, 87);
+    let readable = registry_fixture_entries(READABLE_REGISTRY_FIXTURE, 111);
+    let writable = registry_fixture_entries(WRITABLE_REGISTRY_FIXTURE, 88);
 
     assert_eq!(legacy, readable[..legacy.len()]);
     assert_eq!(
@@ -1648,6 +1660,14 @@ fn closed_oneof_and_enum_registries_are_exact() {
                     ("event_consumer", 10),
                     ("replication_follower", 11),
                 ],
+            ),
+            (
+                "riffdb.storage.v1.StoredReplicationAdministrationV1.before".to_owned(),
+                vec![("absent", 7), ("legacy", 8), ("registered", 9)],
+            ),
+            (
+                "riffdb.storage.v1.StoredReplicationAdministrationV1.origin".to_owned(),
+                vec![("explicit", 11), ("configured_expiry", 12)],
             ),
             (
                 "riffdb.storage.v1.StoredAdministrationSequenceAllocatorV1.state".to_owned(),
@@ -2195,5 +2215,58 @@ fn legacy_durable_schema_hashes_are_frozen_source_literals() {
     assert!(
         fixture_line.contains("source=history_incarnation_v1.proto"),
         "history incarnation must use own-file source, got: {fixture_line}"
+    );
+}
+
+#[test]
+// req: REP-006, STO-012
+fn replication_administration_nested_origin_and_closed_actions_are_exact() {
+    let descriptors = descriptors();
+    let messages = message_map(&descriptors);
+    let record = messages["riffdb.storage.v1.StoredReplicationAdministrationV1"];
+    let actions = &record.enum_type[0];
+    assert_eq!(actions.name(), "Action");
+    assert_eq!(
+        actions
+            .value
+            .iter()
+            .map(|v| (v.name(), v.number()))
+            .collect::<Vec<_>>(),
+        [
+            ("ACTION_UNSPECIFIED", 0),
+            ("ACTION_REGISTER_FOLLOWER", 1),
+            ("ACTION_RETIRE_FOLLOWER", 2),
+            ("ACTION_EXPIRE_FOLLOWER", 3)
+        ]
+    );
+    assert_eq!(
+        record
+            .nested_type
+            .iter()
+            .map(|v| v.name())
+            .collect::<Vec<_>>(),
+        ["Explicit", "ConfiguredExpiry"]
+    );
+    let explicit = &record.nested_type[0];
+    assert_eq!(
+        explicit
+            .field
+            .iter()
+            .map(|f| (f.name(), f.number(), f.proto3_optional()))
+            .collect::<Vec<_>>(),
+        [
+            ("request_id", 1, false),
+            ("principal", 2, false),
+            ("approval_id", 3, true)
+        ]
+    );
+    let expiry = &record.nested_type[1];
+    assert_eq!(
+        expiry
+            .field
+            .iter()
+            .map(|f| (f.name(), f.number()))
+            .collect::<Vec<_>>(),
+        [("registration_administration_sequence", 1)]
     );
 }
