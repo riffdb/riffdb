@@ -1,0 +1,20 @@
+{
+  "version": 1,
+  "adapters": [
+    {
+      "name": "riffdb-openfga",
+      "repository": "https://github.com/riffdb/riffdb-openfga.git",
+      "revision": "afcd630fadb9c4a091811b61b295fc07cc2ab161"
+    },
+    {
+      "name": "riffdb-better-auth",
+      "repository": "https://github.com/riffdb/riffdb-better-auth.git",
+      "revision": "adbfe6e4e60aa5b7c352e374b2eba6efb5c05973"
+    },
+    {
+      "name": "riffdb-mlflow",
+      "repository": "https://github.com/riffdb/riffdb-mlflow.git",
+      "revision": "74a1e870cd252d6d9865c1e587ee36abdd682fa1"
+    }
+  ]
+}
