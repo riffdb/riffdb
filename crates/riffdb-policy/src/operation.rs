@@ -2903,7 +2903,8 @@ mod tests {
     fn request_inventory_covers_every_shared_operation() {
         let requests = requests();
         assert_eq!(requests.len(), 50);
-        // Migration, export, and reimport have dedicated current-policy request types:
+        // Migration, export, reimport and follower lifecycle have dedicated
+        // current-policy request types:
         // they must not be representable through the ordinary permission
         // registry or an `OperationRequest` fallback.
         let policy_operations = ServiceOperationV1::ALL
@@ -2920,6 +2921,8 @@ mod tests {
                         | ServiceOperationV1::ApplyApplicationReimportPage
                         | ServiceOperationV1::GetApplicationReimport
                         | ServiceOperationV1::CancelApplicationReimport
+                        | ServiceOperationV1::RegisterFollower
+                        | ServiceOperationV1::RetireFollower
                 )
             })
             .collect::<BTreeSet<_>>();
