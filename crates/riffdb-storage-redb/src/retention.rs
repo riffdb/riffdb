@@ -886,7 +886,7 @@ pub(crate) fn collect_fencing_inputs(
 /// selecting the follower subset. The existing validator enforces 4096 holds.
 fn follower_low_water(transaction: &redb::ReadTransaction) -> Result<Option<u64>, StorageError> {
     use riffdb_storage_api::{
-        ReplicationSourceHoldKindV1, proto_codec::decode_replication_source_hold_v1,
+        ReplicationSourceHoldKindV1, proto_codec::decode_replication_source_hold,
     };
     if crate::changelog_v3_roots::validate_retained_history(transaction)?.is_none() {
         return Ok(None);
@@ -897,9 +897,18 @@ fn follower_low_water(transaction: &redb::ReadTransaction) -> Result<Option<u64>
     let mut minimum: Option<u64> = None;
     for row in holds.iter().map_err(precommit_storage_error)? {
         let (_, value) = row.map_err(precommit_storage_error)?;
-        let hold = *decode_replication_source_hold_v1(value.value())
+        let state = *decode_replication_source_hold(value.value())
             .map_err(crate::error::codec_error)?
             .value();
+        let hold = match state {
+            riffdb_storage_api::ReplicationSourceHoldStateV1::Legacy(hold) => hold,
+            riffdb_storage_api::ReplicationSourceHoldStateV1::Registered(policy) => {
+                if policy.phase() == riffdb_storage_api::FollowerRegistrationPhaseV1::Retired {
+                    continue;
+                }
+                policy.hold()
+            }
+        };
         if hold.kind() == ReplicationSourceHoldKindV1::FollowerAcknowledgement {
             let acknowledged = hold
                 .fence()

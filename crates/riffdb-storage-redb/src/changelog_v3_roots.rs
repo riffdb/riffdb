@@ -94,6 +94,10 @@ pub(crate) fn validate_retained_history(
     // scan; all authoritative/catalog validators still run unchanged.
     if !table.is_empty().map_err(precommit_storage_error)? {
         validate_retained_rows(history, &table, &holds)?;
+        let audit = transaction
+            .open_table(crate::layout::AUDIT)
+            .map_err(table_error)?;
+        crate::replication_registration_links::validate(&holds, &audit, history, &table)?;
     }
     Ok(Some(history))
 }
@@ -113,6 +117,10 @@ pub(crate) fn validate_retained_history_for_write(
     // scan; all authoritative/catalog validators still run unchanged.
     if !table.is_empty().map_err(precommit_storage_error)? {
         validate_retained_rows(history, &table, &holds)?;
+        let audit = transaction
+            .open_table(crate::layout::AUDIT)
+            .map_err(table_error)?;
+        crate::replication_registration_links::validate(&holds, &audit, history, &table)?;
     }
     Ok(Some(history))
 }
@@ -162,18 +170,45 @@ fn validate_source_holds(
     history: ChangelogHistoryStateV3,
     receipts: &impl ReadableTable<&'static [u8], &'static [u8]>,
 ) -> Result<(), StorageError> {
-    use riffdb_storage_api::{ChangelogHistoryPointV3, MAX_REPLICATION_SOURCE_HOLDS_V1};
+    use riffdb_storage_api::{
+        ChangelogHistoryPointV3, FollowerRegistrationPhaseV1 as Phase,
+        MAX_REPLICATION_SOURCE_HOLDS_V1, ReplicationSourceHoldStateV1 as State,
+    };
     let corrupt = || storage_error(StorageErrorKind::CorruptData);
     if holds.len().map_err(precommit_storage_error)? > MAX_REPLICATION_SOURCE_HOLDS_V1 {
         return Err(storage_error(StorageErrorKind::LimitExceeded));
     }
     for row in holds.iter().map_err(precommit_storage_error)? {
         let (key, value) = row.map_err(precommit_storage_error)?;
-        let hold = *decode_replication_source_hold_v1(value.value())
+        let state = *decode_replication_source_hold(value.value())
             .map_err(codec_error)?
             .value();
+        let hold = match state {
+            State::Legacy(hold) => hold,
+            State::Registered(policy) => policy.hold(),
+        };
         if key.value() != hold.storage_key() || hold.lineage() != history.lineage() {
             return Err(corrupt());
+        }
+        if let State::Registered(policy) = state {
+            crate::replication_registration_links::validate_point(
+                policy.registered_at(),
+                history,
+                receipts,
+            )?;
+            if let Some(point) = policy.degraded_at() {
+                crate::replication_registration_links::validate_point(point, history, receipts)?;
+            }
+            if policy.phase() == Phase::Retired {
+                // The full audit pass proves the exact release before any
+                // caller may use the absence of this live retention fence.
+                crate::replication_registration_links::validate_point(
+                    hold.fence(),
+                    history,
+                    receipts,
+                )?;
+                continue;
+            }
         }
         ChangelogHistoryStateV3::new(
             history.lineage(),
@@ -203,6 +238,7 @@ pub(crate) fn read_checkpoint_roots_for_write(
     let mut meta_present = false;
     let mut history_present = false;
     let mut holds_present = false;
+    let mut audit_present = false;
     for (count, table) in transaction
         .list_tables()
         .map_err(precommit_storage_error)?
@@ -214,8 +250,9 @@ pub(crate) fn read_checkpoint_roots_for_write(
         meta_present |= table.name() == META.name();
         history_present |= table.name() == HISTORY.name();
         holds_present |= table.name() == SOURCE_HOLDS.name();
+        audit_present |= table.name() == crate::layout::AUDIT.name();
     }
-    if !meta_present {
+    if !meta_present || (history_present && !audit_present) {
         return Err(storage_error(StorageErrorKind::CorruptData));
     }
     let meta = transaction.open_table(META).map_err(table_error)?;

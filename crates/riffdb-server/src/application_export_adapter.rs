@@ -1918,6 +1918,9 @@ fn serialize_record(
                 }
                 riffdb_storage_api::StoredAdministrationAuditRecordV1::Service(_) => "service",
                 riffdb_storage_api::StoredAdministrationAuditRecordV1::Retention(_) => "retention",
+                riffdb_storage_api::StoredAdministrationAuditRecordV1::Replication(_) => {
+                    "replication"
+                }
             };
             json!({"administration_sequence":record.administration_sequence().get().to_string(),"class":"public_audit","kind":kind})
         }

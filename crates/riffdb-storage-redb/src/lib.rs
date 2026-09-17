@@ -65,6 +65,7 @@ mod maintenance;
 mod media;
 mod migration_stage;
 mod projection_replay;
+mod replication_registration_links;
 #[cfg(feature = "test-fixtures")]
 #[doc(hidden)]
 pub use migration_stage::{RedbMigrationStageFixture, RedbMigrationStageSnapshot};
@@ -79,6 +80,8 @@ mod retention;
 mod shared_ports;
 mod startup;
 mod store;
+#[cfg(test)]
+mod test_audit;
 #[cfg(test)]
 mod test_path;
 

@@ -302,7 +302,8 @@ fn scan_service_records(ports: &RedbOperationalPorts) -> Vec<StoredServiceAuditR
             | StoredAdministrationAuditRecordV1::Capability(_)
             | StoredAdministrationAuditRecordV1::QueryModule(_)
             | StoredAdministrationAuditRecordV1::ReactiveModule(_)
-            | StoredAdministrationAuditRecordV1::Retention(_) => {
+            | StoredAdministrationAuditRecordV1::Retention(_)
+            | StoredAdministrationAuditRecordV1::Replication(_) => {
                 panic!("service-only fixture contains a control-plane record")
             }
         })

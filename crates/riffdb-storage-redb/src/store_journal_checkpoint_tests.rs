@@ -42,7 +42,7 @@ fn live_checkpoint_materializes_the_original_v3_receipt_with_one_existing_commit
             JournalMutation::put(
                 JournalTable::Audit,
                 crate::keys::encode_audit_key(sequence),
-                b"opaque-audit".to_vec(),
+                crate::test_audit::canonical_denied_service_audit(sequence),
             )
             .unwrap(),
             JournalMutation::replace(

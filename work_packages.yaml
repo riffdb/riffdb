@@ -22823,6 +22823,19 @@ work_packages:
   closure:
     status: open
     decisions_taken:
+    - Validate registered source holds and retired tombstones against their exact
+      original and release administration receipts in the full same-pin source
+      validation pass. Stream audit history with memory bounded by the existing
+      4096-hold cap; preserve tombstones and audit links without pinning pruned
+      physical receipts. While retained, require the lifecycle transaction to
+      contain the exact audit insert with unchanged application head and the
+      accepted RetentionHold attribution. Mixed administration and retention
+      readers recognize V2 state; existing V1-only writers still refuse it.
+      Historical receipt exemptions require an older incarnation of the same
+      permanent database ID. Box the new shared audit variant so existing audit
+      scan items do not inherit its larger in-memory before/after policy size.
+      No lifecycle writer, migration, public operation or performance claim is
+      enabled by this reader increment.
     - Implement the accepted administration receipt at tag 75 revision 1 after
       the exact tag correction accepted in 83a4a23e. Preserve tag 74 export pages
       and all 110 prior schema identities. Bound the payload to 2 KiB and require

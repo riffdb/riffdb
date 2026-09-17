@@ -562,6 +562,8 @@ pub enum StoredAdministrationAuditRecordV1 {
     Service(StoredServiceAuditRecordV1),
     /// Offline retention administration action (projection detach/reattach).
     Retention(crate::StoredRetentionAdministrationV1),
+    /// Audited follower registration, retirement, or configured expiry.
+    Replication(Box<crate::StoredReplicationAdministrationV1>),
 }
 
 impl StoredAdministrationAuditRecordV1 {
@@ -575,6 +577,7 @@ impl StoredAdministrationAuditRecordV1 {
             Self::Capability(record) => record.administration_sequence(),
             Self::Service(record) => record.administration_sequence(),
             Self::Retention(record) => record.administration_sequence(),
+            Self::Replication(record) => record.administration_sequence(),
         }
     }
 }

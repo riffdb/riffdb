@@ -4,7 +4,7 @@ use super::*;
 use redb::{ReadableTable, ReadableTableMetadata};
 use riffdb_storage_api::{
     MAX_REPLICATION_SOURCE_HOLDS_V1, ReplicationSourceHoldKindV1 as Kind,
-    ReplicationSourceProgressV3, proto_codec::decode_replication_source_hold_v1,
+    ReplicationSourceProgressV3, proto_codec::decode_replication_source_hold,
 };
 
 pub(crate) fn observe(
@@ -41,11 +41,29 @@ pub(crate) fn observe(
             return Err(limit().into());
         }
         let (key, value) = row.map_err(precommit_storage_error)?;
-        let hold = *decode_replication_source_hold_v1(value.value())
+        let state = *decode_replication_source_hold(value.value())
             .map_err(crate::error::codec_error)?
             .value();
+        let hold = match state {
+            riffdb_storage_api::ReplicationSourceHoldStateV1::Legacy(hold) => hold,
+            riffdb_storage_api::ReplicationSourceHoldStateV1::Registered(policy) => policy.hold(),
+        };
         if key.value() != hold.storage_key() || hold.lineage() != history.lineage() {
             return Err(corrupt().into());
+        }
+        if let riffdb_storage_api::ReplicationSourceHoldStateV1::Registered(policy) = state {
+            if !policy.registered_at().precedes_or_equals(history.tail())
+                || policy.generation() > history.tail().sequence()
+                || !hold.fence().precedes_or_equals(history.tail())
+                || policy
+                    .degraded_at()
+                    .is_some_and(|point| !point.precedes_or_equals(history.tail()))
+            {
+                return Err(corrupt().into());
+            }
+            if policy.phase() == riffdb_storage_api::FollowerRegistrationPhaseV1::Retired {
+                continue;
+            }
         }
         // Startup and the source-control writer prove exact receipt ancestry.
         // This observational read checks shape/frontiers, never upgrades decoded
