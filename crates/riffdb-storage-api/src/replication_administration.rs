@@ -3,6 +3,9 @@
 #[path = "replication_administration_request.rs"]
 mod request;
 pub use request::ReplicationAdministrationRequestV1;
+#[path = "replication_administration_transaction.rs"]
+mod transaction;
+pub use transaction::*;
 
 use crate::{
     AuditPrincipalV1, ChangelogHistoryPointV3 as Point, ChangelogTransactionSequence,

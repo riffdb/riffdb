@@ -8,7 +8,8 @@ pub use replication::{AuthorizedReplicationRelease, ReplicationDecision};
 #[path = "authorizer_replication_administration.rs"]
 mod replication_administration;
 pub use replication_administration::{
-    AuthorizedReplicationAdministrationPreparation, ReplicationAdministrationDecision,
+    AuthorizedReplicationAdministration, AuthorizedReplicationAdministrationPreparation,
+    ReplicationAdministrationDecision,
 };
 
 use riffdb_auth::{

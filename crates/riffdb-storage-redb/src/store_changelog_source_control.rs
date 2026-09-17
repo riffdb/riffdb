@@ -26,6 +26,8 @@ use riffdb_storage_api::{
 #[path = "changelog_source_control_transaction.rs"]
 mod transaction;
 use transaction::Barrier;
+#[path = "replication_administration_write.rs"]
+mod administration;
 #[path = "changelog_bootstrap_attachment.rs"]
 mod bootstrap_attachment;
 #[path = "changelog_registered_ack.rs"]

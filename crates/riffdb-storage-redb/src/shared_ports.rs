@@ -542,6 +542,16 @@ impl CapabilityAdministrationTransactionPort for RedbSharedPorts {
     }
 }
 
+impl riffdb_storage_api::ReplicationAdministrationTransactionPort for RedbSharedPorts {
+    type Candidate = <RedbOperationalPorts as riffdb_storage_api::ReplicationAdministrationTransactionPort>::Candidate;
+    fn begin_replication_administration(
+        &self,
+        candidate: riffdb_storage_api::ReplicationAdministrationCandidateV1,
+    ) -> Result<Self::Candidate, StorageError> {
+        riffdb_storage_api::ReplicationAdministrationTransactionPort::begin_replication_administration(&self.operational(), candidate)
+    }
+}
+
 impl AuthoritativePointReader for RedbSharedPorts {
     fn read_entity(
         &self,

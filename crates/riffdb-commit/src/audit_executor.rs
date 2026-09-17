@@ -29,9 +29,13 @@ use riffdb_storage_api::{
 use tokio::runtime;
 use tokio::sync::{OwnedSemaphorePermit, Semaphore, mpsc, oneshot};
 
+use crate::control_plane::{
+    ReplicationAdministrationExecutionResult, drive_replication_administration,
+};
 use riffdb_conflict::ConflictManager;
 use riffdb_idempotency::IdempotencyDigestProvider;
-use riffdb_policy::AuthorizationClock;
+use riffdb_policy::{AuthorizationClock, AuthorizedReplicationAdministrationPreparation};
+use riffdb_storage_api::ReplicationAdministrationTransactionPort;
 
 use crate::{
     AdministrationAuditInputView, AdministrationClock, AdministrationClockError, AdmissionClock,
@@ -893,6 +897,21 @@ impl ControlPlaneExecutionCapacityPermit {
         Ok(ReactiveModulePublicationReceipt { receiver })
     }
 
+    /// Submits an explicitly authorized follower registration or retirement.
+    pub fn submit_replication_administration(
+        self,
+        preparation: AuthorizedReplicationAdministrationPreparation,
+    ) -> Result<ReplicationAdministrationReceipt, ControlPlaneExecutionAdmissionError> {
+        let (permit, submission) = self.into_submission()?;
+        let (completion, receiver) = oneshot::channel();
+        let _sender = permit.send(CoordinatorMessage::ReplicationAdministration {
+            preparation: Box::new(preparation),
+            completion,
+        });
+        drop(submission);
+        Ok(ReplicationAdministrationReceipt { receiver })
+    }
+
     /// Submits one freshly authorized normal capability creation.
     pub fn submit_capability_create(
         self,
@@ -1010,6 +1029,10 @@ control_plane_receipt!(
     ReactiveModulePublicationExecutionResult
 );
 control_plane_receipt!(CapabilityCreateReceipt, CapabilityCreateExecutionResult);
+control_plane_receipt!(
+    ReplicationAdministrationReceipt,
+    ReplicationAdministrationExecutionResult
+);
 control_plane_receipt!(CapabilityRevokeReceipt, CapabilityRevokeExecutionResult);
 control_plane_receipt!(
     CapabilityBootstrapReceipt,
@@ -1572,6 +1595,7 @@ impl RunningCommandCoordinator {
             + QueryModuleAdministrationRepository
             + ReactiveModuleAdministrationRepository
             + CapabilityAdministrationTransactionPort
+            + ReplicationAdministrationTransactionPort
             + CapabilityBootstrapAdministrationRepository
             + Send
             + 'static,
@@ -1624,6 +1648,7 @@ impl RunningCommandCoordinator {
             + QueryModuleAdministrationRepository
             + ReactiveModuleAdministrationRepository
             + CapabilityAdministrationTransactionPort
+            + ReplicationAdministrationTransactionPort
             + CapabilityBootstrapAdministrationRepository
             + Clone
             + Send
@@ -1683,6 +1708,7 @@ impl RunningCommandCoordinator {
             + QueryModuleAdministrationRepository
             + ReactiveModuleAdministrationRepository
             + CapabilityAdministrationTransactionPort
+            + ReplicationAdministrationTransactionPort
             + CapabilityBootstrapAdministrationRepository
             + Send
             + 'static,
@@ -1730,6 +1756,7 @@ impl RunningCommandCoordinator {
             + QueryModuleAdministrationRepository
             + ReactiveModuleAdministrationRepository
             + CapabilityAdministrationTransactionPort
+            + ReplicationAdministrationTransactionPort
             + CapabilityBootstrapAdministrationRepository
             + Send
             + 'static,
@@ -2137,6 +2164,12 @@ enum CoordinatorMessage {
         completion:
             oneshot::Sender<Result<CapabilityCreateExecutionResult, ControlPlaneExecutionError>>,
     },
+    ReplicationAdministration {
+        preparation: Box<AuthorizedReplicationAdministrationPreparation>,
+        completion: oneshot::Sender<
+            Result<ReplicationAdministrationExecutionResult, ControlPlaneExecutionError>,
+        >,
+    },
     CapabilityRevoke {
         preparation: Box<CapabilityRevokePreparation>,
         completion:
@@ -2195,6 +2228,10 @@ enum PendingCommandPublication {
 }
 
 trait CoordinatorActorOperations: Send {
+    fn administer_replication(
+        &mut self,
+        preparation: AuthorizedReplicationAdministrationPreparation,
+    ) -> Result<ReplicationAdministrationExecutionResult, ControlPlaneExecutionError>;
     fn append_audit(
         &mut self,
         input: &dyn AdministrationAuditInputView,
@@ -2318,6 +2355,7 @@ where
         + QueryModuleAdministrationRepository
         + ReactiveModuleAdministrationRepository
         + CapabilityAdministrationTransactionPort
+        + ReplicationAdministrationTransactionPort
         + CapabilityBootstrapAdministrationRepository
         + Send,
 {
@@ -2478,6 +2516,18 @@ where
         )
     }
 
+    fn administer_replication(
+        &mut self,
+        preparation: AuthorizedReplicationAdministrationPreparation,
+    ) -> Result<ReplicationAdministrationExecutionResult, ControlPlaneExecutionError> {
+        drive_replication_administration(
+            &self.repository,
+            self.authorization_clock.as_ref(),
+            &self.lifecycle,
+            preparation,
+        )
+    }
+
     fn revoke_capability(
         &mut self,
         preparation: CapabilityRevokePreparation,
@@ -2585,6 +2635,13 @@ where
         &mut self,
         _: CapabilityCreatePreparation,
     ) -> Result<CapabilityCreateExecutionResult, ControlPlaneExecutionError> {
+        Err(ControlPlaneExecutionError::coordinator_stopped())
+    }
+
+    fn administer_replication(
+        &mut self,
+        _: AuthorizedReplicationAdministrationPreparation,
+    ) -> Result<ReplicationAdministrationExecutionResult, ControlPlaneExecutionError> {
         Err(ControlPlaneExecutionError::coordinator_stopped())
     }
 
@@ -3649,6 +3706,13 @@ impl CommandWriter {
             } => {
                 self.execute_capability_create(*preparation, completion);
             }
+            CoordinatorMessage::ReplicationAdministration {
+                preparation,
+                completion,
+            } => {
+                let result = self.operations.administer_replication(*preparation);
+                let _receiver_may_be_dropped = completion.send(result);
+            }
             CoordinatorMessage::CapabilityRevoke {
                 preparation,
                 completion,
@@ -4331,6 +4395,9 @@ fn reject_message_fenced(message: CoordinatorMessage) {
         CoordinatorMessage::CapabilityCreate { completion, .. } => {
             let _ = completion.send(Err(ControlPlaneExecutionError::coordinator_fenced()));
         }
+        CoordinatorMessage::ReplicationAdministration { completion, .. } => {
+            let _ = completion.send(Err(ControlPlaneExecutionError::coordinator_fenced()));
+        }
         CoordinatorMessage::CapabilityRevoke { completion, .. } => {
             let _ = completion.send(Err(ControlPlaneExecutionError::coordinator_fenced()));
         }
@@ -4370,6 +4437,9 @@ fn reject_message_stopped(message: CoordinatorMessage) {
         CoordinatorMessage::CapabilityCreate { completion, .. } => {
             let _ = completion.send(Err(ControlPlaneExecutionError::coordinator_stopped()));
         }
+        CoordinatorMessage::ReplicationAdministration { completion, .. } => {
+            let _ = completion.send(Err(ControlPlaneExecutionError::coordinator_stopped()));
+        }
         CoordinatorMessage::CapabilityRevoke { completion, .. } => {
             let _ = completion.send(Err(ControlPlaneExecutionError::coordinator_stopped()));
         }
@@ -4402,6 +4472,7 @@ fn command_grouping_class(message: &CoordinatorMessage) -> CommandGroupingClass 
         | CoordinatorMessage::QueryModuleDeployment { .. }
         | CoordinatorMessage::ReactiveModulePublication { .. }
         | CoordinatorMessage::CapabilityCreate { .. }
+        | CoordinatorMessage::ReplicationAdministration { .. }
         | CoordinatorMessage::CapabilityRevoke { .. }
         | CoordinatorMessage::CapabilityBootstrap { .. }
         | CoordinatorMessage::CapabilityBootstrapTerminal { .. }

@@ -5,6 +5,11 @@
 
 //! Typed control-plane preparations and sole-writer execution.
 
+#[path = "replication_administration.rs"]
+mod replication_administration;
+pub use replication_administration::ReplicationAdministrationExecutionResult;
+pub(crate) use replication_administration::drive_replication_administration;
+
 use std::{error::Error, fmt, num::NonZeroU32, num::NonZeroU64};
 
 use riffdb_catalog::{

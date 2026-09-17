@@ -151,9 +151,10 @@ holds retain their exact bytes. V2 carries an explicit sequence budget,
 registration predecessor, phase, optional sequence expiry and checked degradation
 observation. Decoding it does not authorize a registration or fence release.
 The registry digest changes: prior exact registry markers require their matching
-binary. This codec increment enables no automatic migration or registration,
-retirement, expiry or promotion operation. Those runtime ceremonies remain
-WP-748 work; existing hold writers continue to write V1.
+binary. Internal registration and retirement now write V2 through the audited
+coordinator path described below. Archive and bootstrap jobs retain V1.
+Automatic migration, configured expiry and public lifecycle operations remain
+WP-748 work.
 
 The accepted WP-748 audit successor adds `ServiceAuditRecordV3` (tag 22,
 revision 3) in a separate schema. It preserves existing target fields and adds
@@ -205,16 +206,21 @@ returning bytes. Retirement therefore also refuses subsequent transfers through
 an old handle. A held artifact does not keep the source engine open. Closing the
 source invalidates that handle; reopening requires a fresh custody check.
 
-These source updates do not enable audited registration, retirement, expiry
-release or automatic registry migration. Those operations still require complete
-authorization and recovery proof.
-
 The internal lifecycle authorization preparation binds the entire request and
 requires current global administrative authority, as offline maintenance does.
 Permission to consume replication bytes alone does not authorize registration
-or retention-fence release. Preparations grant no write permission: a future
-coordinator transition must recheck authority from its drained transaction,
-including on exact retries. No public lifecycle RPC is activated by these types.
+or retention-fence release. The coordinator rechecks current authority and fresh
+time inside its drained transaction, including on exact retries. Registration and
+retirement atomically commit the policy, administration record and V3 receipt;
+their service result links the exact original administration sequence. A retry
+with the same lineage, identity and policy returns the original registration
+receipt even after attachment or retirement, without restoring a retired hold.
+Retirement selects the original generation and removes only its matching
+bootstrap job; independent archive custody remains held. Legacy adoption keeps
+the exact existing follower fence. Conflicting policies, stale generations,
+reached expiry for a new registration and full hold capacity refuse without
+allocating a sequence. These internal transitions do not yet expose public
+lifecycle RPCs, configured-expiry release or automatic registry migration.
 
 WP-749 registers successor command capsule V7 (tag 54, revision 6) and segment
 V6 (tag 55, revision 6) for exact command-prefix evidence. Earlier record bytes
