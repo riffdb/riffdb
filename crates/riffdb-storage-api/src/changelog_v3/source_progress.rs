@@ -13,6 +13,7 @@ pub struct ReplicationSourceProgressV3 {
     follower_count: u32,
     oldest_acknowledged: Option<ChangelogHistoryPointV3>,
     degraded_followers: u32,
+    maintenance_pending: bool,
 }
 
 impl ReplicationSourceProgressV3 {
@@ -45,6 +46,7 @@ impl ReplicationSourceProgressV3 {
             follower_count,
             oldest_acknowledged,
             degraded_followers: 0,
+            maintenance_pending: false,
         })
     }
     /// Published source history; never a private writer frontier.
@@ -60,7 +62,7 @@ impl ReplicationSourceProgressV3 {
     /// Binds the bounded count of live policies whose budget or configured expiry
     /// is reached in this same source pin. This is health, never release authority.
     pub fn with_degraded_followers(mut self, degraded: u32) -> Result<Self, ChangelogV3Error> {
-        if degraded > self.follower_count {
+        if degraded > self.follower_count || (degraded == 0 && self.maintenance_pending) {
             return Err(ChangelogV3Error::InvalidEncoding);
         }
         self.degraded_followers = degraded;
@@ -70,6 +72,23 @@ impl ReplicationSourceProgressV3 {
     #[must_use]
     pub const fn degraded_followers(self) -> u32 {
         self.degraded_followers
+    }
+    /// Adds a scheduling hint from the same bounded policy observation. This
+    /// never authorizes a transition or selects a registration for the writer.
+    pub fn with_registration_maintenance_pending(
+        mut self,
+        pending: bool,
+    ) -> Result<Self, ChangelogV3Error> {
+        if pending && self.degraded_followers == 0 {
+            return Err(ChangelogV3Error::InvalidEncoding);
+        }
+        self.maintenance_pending = pending;
+        Ok(self)
+    }
+    /// At least one live policy requires degradation persistence or expiry review.
+    #[must_use]
+    pub const fn registration_maintenance_pending(self) -> bool {
+        self.maintenance_pending
     }
     /// Slowest exact acknowledgement. None means no registered followers.
     #[must_use]

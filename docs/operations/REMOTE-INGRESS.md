@@ -158,7 +158,9 @@ also reports degradation when a live registration reaches its hold budget or
 configured sequence expiry, even if both lag counters are zero. This health
 observation never releases retention by itself. The internal expiry continuation
 requires a previously persisted degradation point and an atomic audited release;
-its background scheduling and public registration operations remain WP-748 work.
+the primary schedules it through its existing coordinator. The observer makes
+bounded passes and joins before coordinator shutdown. Public registration
+operations remain WP-748 work.
 A follower requires an available replication component, catalog, and authoritative read
 storage for readiness. It has no primary commit-coordinator component. An
 unavailable replication component makes follower health `not_ready`.

@@ -36,6 +36,7 @@ pub(crate) fn observe(
     }
     let mut count = 0_u32;
     let mut degraded = 0_u32;
+    let mut maintenance_pending = false;
     let mut oldest: Option<ChangelogHistoryPointV3> = None;
     for (index, row) in table.iter().map_err(precommit_storage_error)?.enumerate() {
         if u64::try_from(index).map_err(|_| limit())? >= MAX_REPLICATION_SOURCE_HOLDS_V1 {
@@ -73,6 +74,7 @@ pub(crate) fn observe(
             let expired = policy
                 .expires_at()
                 .is_some_and(|expiry| Some(expiry) <= history.tail().frontier().application());
+            maintenance_pending |= expired || (exhausted && policy.degraded_at().is_none());
             if exhausted || expired {
                 degraded = degraded.checked_add(1).ok_or_else(limit)?;
             }
@@ -100,5 +102,6 @@ pub(crate) fn observe(
     }
     ReplicationSourceProgressV3::new(history, count, oldest)
         .and_then(|progress| progress.with_degraded_followers(degraded))
+        .and_then(|progress| progress.with_registration_maintenance_pending(maintenance_pending))
         .map_err(|e| value_error(e).into())
 }

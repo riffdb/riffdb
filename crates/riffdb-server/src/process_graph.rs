@@ -373,6 +373,7 @@ impl ProductionGraphBuilder {
             allocator_capacity,
             operational_ports,
         ) = startup.into_parts();
+        let registration_publications = replication_publications.clone();
         let archive_publications = replication_publications.clone();
         let replication_observations = replication_publications.clone();
         let replication_source = replication_publications
@@ -927,7 +928,13 @@ impl ProductionGraphBuilder {
             backup_root,
             archive_publications,
         );
+        let registration_worker =
+            crate::replication_registration_worker::RunningRegistrationMaintenance::start(
+                registration_publications,
+                coordinator.control_plane_executor(),
+            );
         Ok(RunningProductionGraph {
+            registration_worker,
             archive_workers,
             lifecycle,
             spawner,
@@ -1005,6 +1012,7 @@ impl fmt::Debug for ProductionGraphBuilder {
 /// Owning guard for every thread, service job, and process-local authority in P1.
 #[must_use = "the production graph must be explicitly shut down and joined"]
 pub(crate) struct RunningProductionGraph {
+    registration_worker: crate::replication_registration_worker::RunningRegistrationMaintenance,
     archive_workers: crate::archive_worker::RunningArchiveWorkers,
     lifecycle: Arc<ProductionLifecycleRoute>,
     spawner: SupervisedServiceJobSpawner,
@@ -1144,6 +1152,7 @@ impl RunningProductionGraph {
         let mut elapsed_us = [0_u64; PRODUCTION_SHUTDOWN_STAGE_COUNT];
         self.lifecycle.stop();
         let started = begin_shutdown_stage(0);
+        self.registration_worker.shutdown();
         self.spawner.wait_for_idle().await;
         self.archive_workers.shutdown();
         elapsed_us[0] = finish_shutdown_stage(0, started);
@@ -1263,6 +1272,7 @@ impl RunningProductionGraph {
         let mut elapsed_us = [0_u64; PRODUCTION_SHUTDOWN_STAGE_COUNT];
         self.lifecycle.stop();
         let started = Instant::now();
+        self.registration_worker.shutdown();
         self.spawner.wait_for_idle().await;
         self.archive_workers.shutdown();
         elapsed_us[0] = elapsed_microseconds(started);
