@@ -25951,6 +25951,7 @@ work_packages:
     crates/riffdb-storage-redb/src/**,
     crates/riffdb-storage-redb/tests/**,
     crates/riffdb-sim/tests/seeded_campaign/corpus.rs,
+    crates/riffdb-sim/tests/seeded_campaign/campaign.rs,
     tests/storage_recovery/**, docs/performance/**]
   deliverables:
   - Removal of the coverage state machine, the affine witness roles, the queued seal witness,
