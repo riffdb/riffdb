@@ -57,7 +57,10 @@ jq -e '
     and all(.adapters[];
         (.name | test("^riffdb-[a-z0-9-]+$")) and
         (.repository == ("https://github.com/riffdb/" + .name + ".git")) and
-        (.revision | test("^[0-9a-f]{40}$")))
+        (.revision | test("^[0-9a-f]{40}$")) and
+        (.applications | type == "array" and length > 0 and length <= 32
+            and length == (unique | length) and index(".") != null
+            and all(.[]; test("^\\.$|^[a-z0-9_-]+(/[a-z0-9_-]+)*$"))))
 ' "$pins" >/dev/null || {
     echo "downstream-adapter-check: invalid immutable adapter pins" >&2
     exit 1
@@ -108,13 +111,21 @@ for repo in "${requested[@]}"; do
         status=1
         continue
     fi
-    if [[ ! -f "$directory/riffdb.toml" ]]; then
-        echo "$repo: no riffdb.toml; not a RiffDB application repository" >&2
-        status=1
-        continue
-    fi
     checked=$((checked + 1))
-    if (cd "$directory" && "$riffdb" application check); then
+    repo_status=0
+    mapfile -t applications < <(jq -r --arg name "$repo" \
+        '.adapters[] | select(.name == $name) | .applications[]' "$pins")
+    for application in "${applications[@]}"; do
+        if [[ ! -f "$directory/$application/riffdb.toml" ]]; then
+            echo "$repo/$application: no riffdb.toml; not a RiffDB application" >&2
+            repo_status=1
+        elif (cd "$directory/$application" && "$riffdb" application check); then
+            printf 'downstream-adapter-application-v1\t%s\t%s\tcompiles\n' "$repo" "$application"
+        else
+            repo_status=1
+        fi
+    done
+    if ((repo_status == 0)); then
         printf 'downstream-adapter-check-v1\t%s\tcompiles\n' "$repo"
     else
         printf 'downstream-adapter-check-v1\t%s\tfailed\n' "$repo" >&2

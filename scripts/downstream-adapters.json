@@ -4,17 +4,27 @@
     {
       "name": "riffdb-openfga",
       "repository": "https://github.com/riffdb/riffdb-openfga.git",
-      "revision": "afcd630fadb9c4a091811b61b295fc07cc2ab161"
+      "revision": "afcd630fadb9c4a091811b61b295fc07cc2ab161",
+      "applications": [
+        "."
+      ]
     },
     {
       "name": "riffdb-better-auth",
       "repository": "https://github.com/riffdb/riffdb-better-auth.git",
-      "revision": "adbfe6e4e60aa5b7c352e374b2eba6efb5c05973"
+      "revision": "2c09bd1cb6b431cd9de6f7fadfd165c89549ffd6",
+      "applications": [
+        ".",
+        "profiles/organization-security"
+      ]
     },
     {
       "name": "riffdb-mlflow",
       "repository": "https://github.com/riffdb/riffdb-mlflow.git",
-      "revision": "74a1e870cd252d6d9865c1e587ee36abdd682fa1"
+      "revision": "74a1e870cd252d6d9865c1e587ee36abdd682fa1",
+      "applications": [
+        "."
+      ]
     }
   ]
 }
