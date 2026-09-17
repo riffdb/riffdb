@@ -25795,3 +25795,66 @@ work_packages:
       complete exact locator metadata remains proportional to retained identities.
   human_review_triggers:
   - An accepted ADR-0234 decision or an existing durable/public guarantee would change.
+- id: WP-786
+  name: Retire fresh-locator coverage once the derived index covers
+  tier: guarantee
+  depends_on: [WP-778]
+  objective: Implement ADR-0235 Decisions 2 through 6 so a queued seal stops performing the
+    ADR-0197 coverage witness once the command-derived index already answers absence for the
+    captured frontier, while a process whose index has not covered arms and maintains coverage
+    exactly as before.
+  requirements: [OUT-001, OUT-002, TXN-042, REC-004]
+  required_adrs: [ADR-0235, ADR-0102, ADR-0183, ADR-0197, ADR-0234]
+  allowed_paths: [work_packages.yaml,
+    adr/0183-performance-package-freeze-and-durable-group-lever.md,
+    adr/0197-fresh-process-contiguous-idempotency-locator-coverage.md,
+    adr/0235-fresh-locator-coverage-proven-at-staging.md, adr/README.md,
+    crates/riffdb-storage-redb/src/store.rs,
+    crates/riffdb-storage-redb/src/store/**,
+    crates/riffdb-storage-redb/src/fresh_locator_coverage.rs,
+    crates/riffdb-storage-redb/src/application.rs,
+    crates/riffdb-storage-redb/src/hooks.rs,
+    tests/storage_recovery/**, docs/performance/**]
+  deliverables:
+  - A queued seal that evaluates, before any witness work, whether the command-derived index
+    covers the captured frontier, using the same predicate the admission path uses, and that
+    performs no witness and advances no chain when it does.
+  - A `Retired` terminal coverage state distinct from the existing failure-disabled state. It
+    is reachable only from the covering predicate, fences nothing, is reported separately on
+    the store and the test controller, and no condition that disables by failure may report it.
+  - Unchanged arming, maintenance and operational answering for a process whose derived index
+    has not covered, including the existing empty-authority arming rule and every ADR-0197
+    Decision 6 fact while coverage is maintained.
+  - The three proofs ADR-0235 names, proving that coverage retires on the first covering seal
+    and that no later seal in
+    that process witnesses; retirement and failure-disable are distinguishable; and the existing
+    cold fresh-database proof still completes with zero history fallback scans and zero
+    transient index rebuilds.
+  - A measurement note under docs/performance recording the implemented change against the
+    three arms already measured on E2, with no speedup claimed beyond what it measures.
+  acceptance_commands:
+  - ./scripts/acceptance --wp WP-786
+  - cargo test -p riffdb-storage-redb --test storage_recovery_matrix
+  - cargo test -p riffdb-storage-redb --lib -- fresh_locator
+  - ./scripts/ci-all
+  exit_gate: A seal whose captured frontier the derived index already covers performs no
+    coverage witness and retires coverage into a state distinct from failure-disable; a fresh
+    process whose index has not covered still completes its publications with zero history
+    fallback scans and zero transient index rebuilds; and no durable byte, storage key,
+    encoding, transaction ordering, acknowledgement or public surface changes.
+  standing_design_tests:
+    interface_safety: No public, operator, agent, SDK, transport or configuration surface
+      changes. Nothing can arm, retire, observe, extend or bypass coverage, and retirement is
+      not selectable by any caller.
+    scale: Retirement removes per-command seal work in steady state and adds one predicate
+      evaluation per seal. No new retained state, and no key, locator, segment or history
+      collection is introduced.
+  human_review_triggers:
+  - Coverage would retire while the derived index does not cover the captured frontier, or
+    while the transient index is dormant.
+  - Retirement would occur on a path that today disables coverage because a proof failed, or
+    would suppress a write fence.
+  - The absence answer for a novel identity would change, or an operational miss would be
+    answered from anything other than an exact covering proof.
+  - A durable byte, storage key, encoding, transaction ordering, acknowledgement or public
+    surface would change.
