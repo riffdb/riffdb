@@ -377,7 +377,7 @@ pub(crate) const REGRESSION_CORPUS: &[CorpusEntry] = &[
             // replay reaches the exact four-predicate territory, so the
             // restoration is active once more and every earlier receipt is
             // retained truthfully.
-            restoration_returned_by: Some("7705bd074bf25e5b0d5a6099166fee49bca55af2"),
+            restoration_returned_by: Some("98c198450c3a24871631d0e033976f68e41dd1fb"),
         }),
         retirement: None,
     },
@@ -655,7 +655,7 @@ pub(crate) const REGRESSION_CORPUS: &[CorpusEntry] = &[
             // ADR-0236 removed the affine fresh-locator coverage this
             // successor was appended for, which returned the physical
             // operation stream to this coordinate.
-            restored_by: Some("7705bd074bf25e5b0d5a6099166fee49bca55af2"),
+            restored_by: Some("98c198450c3a24871631d0e033976f68e41dd1fb"),
             restoration_moved_by: None,
             restoration_returned_by: None,
         }),
@@ -697,7 +697,7 @@ pub(crate) const REGRESSION_CORPUS: &[CorpusEntry] = &[
         ]),
         rotation: Some(CorpusWitnessRotation {
             successor_seed: 0x51C2_C41D,
-            invalidated_by_commit: "7705bd074bf25e5b0d5a6099166fee49bca55af2",
+            invalidated_by_commit: "98c198450c3a24871631d0e033976f68e41dd1fb",
             rotated: "2026-09-17",
             restored_by: None,
             restoration_moved_by: None,
