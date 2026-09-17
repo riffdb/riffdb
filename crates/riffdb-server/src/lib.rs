@@ -55,6 +55,7 @@ mod real_storage_support;
 mod recovery_host;
 pub mod replication_bootstrap;
 pub mod replication_publication;
+mod replication_registration_worker;
 mod replication_source;
 mod restore_retry_host;
 mod runtime_support;

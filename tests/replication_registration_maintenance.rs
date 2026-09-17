@@ -110,6 +110,7 @@ fn configured_expiry_persists_health_first_and_budget_alone_never_releases_reten
             .replication_source_progress_v3()
             .unwrap();
         assert_eq!(progress.degraded_followers(), 1);
+        assert!(progress.registration_maintenance_pending());
         let Maintenance::HealthRecorded(policy) =
             ports.maintain_replication_registration(now).unwrap()
         else {
@@ -120,6 +121,16 @@ fn configured_expiry_persists_health_first_and_budget_alone_never_releases_reten
             policy.phase(),
             riffdb_storage_api::FollowerRegistrationPhaseV1::Retired
         );
+        assert_eq!(
+            ports
+                .published_changelog_snapshot_v3()
+                .unwrap()
+                .replication_source_progress_v3()
+                .unwrap()
+                .registration_maintenance_pending(),
+            expiry
+        );
+
         drop(ports);
         let retention = RedbOfflineRetention::bind(&path.0);
         assert_eq!(

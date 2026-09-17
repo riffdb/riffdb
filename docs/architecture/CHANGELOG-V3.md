@@ -914,8 +914,10 @@ advances durably. Internal audited registration/retirement, health degradation
 and configured-expiry continuation are implemented; the latter first requires a
 durable degradation observation and then atomically records the release linked
 to its original registration. Budget exhaustion alone cannot release custody.
-Public lifecycle operations, background expiry scheduling and promotion remain
-incomplete WP-748 work.
+A primary-owned observer schedules bounded continuation passes from published
+state through the existing coordinator; it retains no source pin while waiting
+for writer capacity. Public lifecycle operations and promotion remain incomplete
+WP-748 work.
 
 ## Proofs and fixture review
 

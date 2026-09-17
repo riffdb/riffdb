@@ -153,8 +153,7 @@ observation. Decoding it does not authorize a registration or fence release.
 The registry digest changes: prior exact registry markers require their matching
 binary. Internal registration and retirement now write V2 through the audited
 coordinator path described below. Archive and bootstrap jobs retain V1.
-Automatic migration, maintenance scheduling and public lifecycle operations
-remain WP-748 work.
+Automatic migration and public lifecycle operations remain WP-748 work.
 
 The accepted WP-748 audit successor adds `ServiceAuditRecordV3` (tag 22,
 revision 3) in a separate schema. It preserves existing target fields and adds
@@ -230,7 +229,15 @@ point, its immutable policy and the original authorized registration receipt.
 The expiry record, retired hold and retention-attributed receipt commit atomically.
 Budget exhaustion alone never releases a hold. Crash recovery retains either the
 complete old or complete new state; retries do not allocate another expiry.
-Background scheduling of this continuation is not yet enabled.
+The primary schedules this continuation on an owned observer thread, using
+published snapshots and the existing bounded coordinator queue. It submits at
+most 16 one-registration steps before a one-second scheduling delay. A policy
+whose budget degradation is already persisted and has no reached expiry needs
+no further writer turn. Clock or proven-not-committed storage outages retry after
+the delay; corrupt, uncertain or stopped-coordinator outcomes stop the worker
+and preserve custody. Shutdown cancels capacity waits, drains accepted work and
+joins the observer before closing the coordinator. These delays schedule work;
+only application sequences determine expiry.
 
 Primary Health reports degraded replication when a live registration reaches its
 budget or configured expiry, including a caught-up registration at expiry.

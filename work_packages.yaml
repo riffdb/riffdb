@@ -22823,6 +22823,15 @@ work_packages:
   closure:
     status: open
     decisions_taken:
+    - Schedule immutable registration-policy continuation on one primary-owned
+      observer thread. A bounded same-pin hint avoids repeated writer barriers
+      for budget-only degradation already persisted. Drop each pin before queue
+      admission, submit at most 16 steps per pass and delay one second between
+      passes; expiry remains sequence-based. Retry proven unavailability after
+      that delay, and stop on uncertain or invalid outcomes with custody intact.
+      Cancel pending capacity waits and drain accepted work before joining the
+      observer ahead of coordinator shutdown. Deterministic schedules prove
+      pass bounds, backoff, refusal and shutdown without sleeps in tests.
     - Add a closed coordinator continuation for immutable registration policy,
       limited to one source transition per turn. Persist degradation in its V2
       hold with the existing empty SourceHold receipt before a later turn may
