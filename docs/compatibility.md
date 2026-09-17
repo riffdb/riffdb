@@ -192,9 +192,21 @@ overwrite a V2 policy. An advancing acknowledgement recomputes degradation from
 the validated source head: catch-up clears budget degradation, while a reached
 configured expiry remains degraded. Neither condition releases the fence.
 
-These readers and acknowledgement updates activate no lifecycle writer, release
-authority or automatic registry migration; atomic runtime transitions and
-recovery proof remain required.
+A pending V2 registration admits bootstrap custody at its exact registered
+source cut or a later cut. Attachment preserves its policy and generation while
+atomically replacing the bootstrap job with the attached follower fence. Missing
+custody, older cuts and retired identities refuse. A follower adopted from a
+legacy hold retains its exact older attachment retry. Artifact cleanup excludes
+a retired policy only after validating its registration and release evidence
+from the same source snapshot; a separate live bootstrap job still retains
+custody. Transfer composition revalidates current source custody before releasing
+a manifest, and already-open artifact handles check custody after page I/O before
+returning bytes. Retirement therefore also refuses subsequent transfers through
+an old handle.
+
+These source updates do not enable audited registration, retirement, expiry
+release or automatic registry migration. Those operations still require complete
+authorization and recovery proof.
 
 WP-749 registers successor command capsule V7 (tag 54, revision 6) and segment
 V6 (tag 55, revision 6) for exact command-prefix evidence. Earlier record bytes

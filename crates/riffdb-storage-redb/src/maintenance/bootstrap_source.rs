@@ -51,6 +51,7 @@ impl RedbBootstrapSourceBuild {
 /// must still recheck current policy before each outbound manifest/page.
 pub struct RedbHeldBootstrapSource {
     transfer: RedbVerifiedBootstrapTransfer,
+    ports: RedbOperationalPorts,
     repository: Option<Arc<RepositoryInner>>,
 }
 
@@ -172,18 +173,34 @@ impl RedbOperationalPorts {
         ))?;
         Ok(RedbHeldBootstrapSource {
             transfer,
+            ports: RedbOperationalPorts {
+                shared: Arc::clone(&self.shared),
+            },
             repository: None,
         })
     }
 }
 
 impl RedbHeldBootstrapSource {
-    /// Checks retained source/repository path identities without reading pages.
-    pub fn verify_private_identity(&self) -> Result<(), StorageError> {
+    fn verify_paths(&self) -> Result<(), StorageError> {
         self.repository
             .as_ref()
             .map_or(Ok(()), |repository| repository.verify())?;
         self.transfer.verify_private_identity()
+    }
+    fn verify_current_custody(&self) -> Result<(), StorageError> {
+        let fence = self.transfer.manifest().fence();
+        self.ports.validate_bootstrap_custody(Hold::new(
+            fence.hold_id(),
+            Kind::Bootstrap,
+            fence.history().lineage(),
+            fence.history().tail(),
+        ))
+    }
+    /// Checks retained paths and current source custody before releasing a manifest.
+    pub fn verify_private_identity(&self) -> Result<(), StorageError> {
+        self.verify_paths()?;
+        self.verify_current_custody()
     }
     /// Exact fixed manifest whose source hold is durable.
     #[must_use]
@@ -192,7 +209,11 @@ impl RedbHeldBootstrapSource {
     }
     /// One bounded immutable page. Current caller authorization remains required.
     pub fn read_page(&self, ordinal: u32) -> Result<Page, StorageError> {
-        self.verify_private_identity()?;
-        self.transfer.read_page(ordinal)
+        self.verify_paths()?;
+        let page = self.transfer.read_page(ordinal)?;
+        // Validate after bounded page I/O, so an old handle cannot release bytes
+        // after observing retirement or loss of its exact source job.
+        self.verify_current_custody()?;
+        Ok(page)
     }
 }

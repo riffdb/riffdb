@@ -1,8 +1,8 @@
-//! Checked policy lowering after the source barrier proves receipt ancestry.
+//! Checked registered-fence lowering after the source barrier proves ancestry.
 use riffdb_storage_api::{
     ChangelogHistoryStateV3 as History, ChangelogV3Error as Error,
-    FollowerRegistrationPhaseV1 as Phase, ReplicationSourceHoldV1 as Hold,
-    ReplicationSourceHoldV2 as Policy,
+    FollowerRegistrationPhaseV1 as Phase, ReplicationSourceHoldKindV1 as Kind,
+    ReplicationSourceHoldV1 as Hold, ReplicationSourceHoldV2 as Policy,
 };
 
 pub(super) fn advance(prior: Policy, hold: Hold, history: History) -> Result<Policy, Error> {
@@ -14,6 +14,34 @@ pub(super) fn advance(prior: Policy, hold: Hold, history: History) -> Result<Pol
     {
         return Err(Error::PredecessorMismatch);
     }
+    with_fence(prior, hold, history)
+}
+
+/// A pending registration already pins its predecessor. Its bootstrap may use
+/// that exact cut or a later one. The same-pin registration receipt, immutable
+/// generation and non-reusable ID bind custody; an older artifact is refused.
+pub(super) fn permits_bootstrap(prior: Policy, bootstrap: Hold) -> bool {
+    prior.phase() == Phase::AwaitingBootstrap
+        && bootstrap.kind() == Kind::Bootstrap
+        && prior.hold().id() == bootstrap.id()
+        && prior.hold().lineage() == bootstrap.lineage()
+        && prior.registered_at().precedes_or_equals(bootstrap.fence())
+}
+
+pub(super) fn attach(prior: Policy, bootstrap: Hold, history: History) -> Result<Policy, Error> {
+    if !permits_bootstrap(prior, bootstrap) {
+        return Err(Error::PredecessorMismatch);
+    }
+    let hold = Hold::new(
+        bootstrap.id(),
+        Kind::FollowerAcknowledgement,
+        bootstrap.lineage(),
+        bootstrap.fence(),
+    );
+    with_fence(prior, hold, history)
+}
+
+fn with_fence(prior: Policy, hold: Hold, history: History) -> Result<Policy, Error> {
     let budget = prior.budget().observe(hold, history)?;
     let head = history
         .tail()

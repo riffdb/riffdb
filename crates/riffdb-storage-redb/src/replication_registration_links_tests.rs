@@ -18,6 +18,8 @@ use std::num::NonZeroU64;
 
 #[path = "replication_policy_ack_tests.rs"]
 mod acknowledgements;
+#[path = "replication_policy_bootstrap_tests.rs"]
+mod bootstrap;
 
 fn point(physical: u64, app: u64, admin: u64) -> Point {
     Point::new(
