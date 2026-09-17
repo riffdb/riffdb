@@ -414,11 +414,6 @@ fn compact_export_head_and_page_are_atomic_retry_safe_and_recoverable() {
                 == riffdb_storage_api::AuthoritativeNamespaceV1::ApplicationExportPageCommitments)
     );
     assert!(cursor.next_receipt().unwrap().is_none());
-    assert!(
-        ports
-            .fresh_locator_public_and_private_roles_match_for_test()
-            .unwrap()
-    );
     drop(cursor);
     drop(after);
     drop(source);

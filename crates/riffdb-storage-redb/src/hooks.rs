@@ -7,7 +7,9 @@ use std::io::Write;
 use std::path::PathBuf;
 #[cfg(test)]
 use std::sync::Barrier;
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+#[cfg(test)]
+use std::sync::atomic::AtomicBool;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
 use riffdb_storage_api::{StorageError, StorageErrorKind};
@@ -114,7 +116,7 @@ struct TestControllerInner {
     index_migration: Mutex<IndexMigrationObservation>,
     audit_sequence_begin_reads: AtomicU64,
     fresh_locator_history_fallback_scans: AtomicU64,
-    corrupt_fresh_locator_successor_stamp: AtomicBool,
+    fresh_locator_history_fallback_rows: AtomicU64,
     #[cfg(test)]
     root_publication_schedule: Option<Arc<RootPublicationScheduleInner>>,
     #[cfg(feature = "test-fixtures")]
@@ -178,7 +180,7 @@ impl RedbTestController {
                 index_migration: Mutex::new(IndexMigrationObservation::default()),
                 audit_sequence_begin_reads: AtomicU64::new(0),
                 fresh_locator_history_fallback_scans: AtomicU64::new(0),
-                corrupt_fresh_locator_successor_stamp: AtomicBool::new(false),
+                fresh_locator_history_fallback_rows: AtomicU64::new(0),
                 #[cfg(test)]
                 root_publication_schedule: None,
                 #[cfg(feature = "test-fixtures")]
@@ -217,24 +219,26 @@ impl RedbTestController {
             .load(Ordering::Relaxed)
     }
 
-    pub(crate) fn observe_fresh_locator_history_fallback_scan(&self) {
+    /// Returns how many commit rows those history fallbacks covered in total.
+    #[must_use]
+    pub fn fresh_locator_history_fallback_rows(&self) -> u64 {
+        self.inner
+            .fresh_locator_history_fallback_rows
+            .load(Ordering::Relaxed)
+    }
+
+    pub(crate) fn observe_fresh_locator_history_fallback_scan(&self, rows: u64) {
+        let _ = self.inner.fresh_locator_history_fallback_rows.fetch_update(
+            Ordering::Relaxed,
+            Ordering::Relaxed,
+            |current| Some(current.saturating_add(rows)),
+        );
         let _ = self
             .inner
             .fresh_locator_history_fallback_scans
             .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |current| {
                 Some(current.saturating_add(1))
             });
-    }
-
-    /// Corrupts the successor allocator after coverage proof construction.
-    #[must_use]
-    pub fn corrupt_fresh_locator_successor_stamp_once() -> Self {
-        let controller = Self::observe_index_migration();
-        controller
-            .inner
-            .corrupt_fresh_locator_successor_stamp
-            .store(true, Ordering::Release);
-        controller
     }
 
     #[cfg(test)]
@@ -253,7 +257,7 @@ impl RedbTestController {
                 index_migration: Mutex::new(IndexMigrationObservation::default()),
                 audit_sequence_begin_reads: AtomicU64::new(0),
                 fresh_locator_history_fallback_scans: AtomicU64::new(0),
-                corrupt_fresh_locator_successor_stamp: AtomicBool::new(false),
+                fresh_locator_history_fallback_rows: AtomicU64::new(0),
                 root_publication_schedule: Some(Arc::clone(&inner)),
                 #[cfg(feature = "test-fixtures")]
                 external_kill_barrier: None,
@@ -281,13 +285,6 @@ impl RedbTestController {
             schedule.reader_retry.wait();
             schedule.release.wait();
         }
-    }
-
-    #[cfg(test)]
-    pub(crate) fn take_fresh_locator_successor_stamp_corruption(&self) -> bool {
-        self.inner
-            .corrupt_fresh_locator_successor_stamp
-            .swap(false, Ordering::AcqRel)
     }
 
     /// Injects one proven-not-committed storage failure.
@@ -356,7 +353,7 @@ impl RedbTestController {
                 index_migration: Mutex::new(IndexMigrationObservation::default()),
                 audit_sequence_begin_reads: AtomicU64::new(0),
                 fresh_locator_history_fallback_scans: AtomicU64::new(0),
-                corrupt_fresh_locator_successor_stamp: AtomicBool::new(false),
+                fresh_locator_history_fallback_rows: AtomicU64::new(0),
                 #[cfg(test)]
                 root_publication_schedule: None,
                 external_kill_barrier: Some(marker.into()),
@@ -389,7 +386,7 @@ impl RedbTestController {
                 index_migration: Mutex::new(IndexMigrationObservation::default()),
                 audit_sequence_begin_reads: AtomicU64::new(0),
                 fresh_locator_history_fallback_scans: AtomicU64::new(0),
-                corrupt_fresh_locator_successor_stamp: AtomicBool::new(false),
+                fresh_locator_history_fallback_rows: AtomicU64::new(0),
                 #[cfg(test)]
                 root_publication_schedule: None,
                 external_kill_barrier: Some(marker.into()),
@@ -471,7 +468,7 @@ impl RedbTestController {
                 index_migration: Mutex::new(IndexMigrationObservation::default()),
                 audit_sequence_begin_reads: AtomicU64::new(0),
                 fresh_locator_history_fallback_scans: AtomicU64::new(0),
-                corrupt_fresh_locator_successor_stamp: AtomicBool::new(false),
+                fresh_locator_history_fallback_rows: AtomicU64::new(0),
                 #[cfg(test)]
                 root_publication_schedule: None,
                 #[cfg(feature = "test-fixtures")]

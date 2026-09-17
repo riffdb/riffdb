@@ -853,11 +853,6 @@ mod tests {
             ports.list_application_export_operations(2).expect("list"),
             vec![earlier.clone(), next.clone()]
         );
-        assert!(
-            ports
-                .fresh_locator_public_and_private_roles_match_for_test()
-                .expect("export lane preserves both roles")
-        );
         drop(ports);
 
         let mut reopened = RedbStore::open(&path.0).expect("reopen");

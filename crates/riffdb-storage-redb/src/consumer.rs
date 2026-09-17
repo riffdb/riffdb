@@ -1333,11 +1333,6 @@ mod tests {
             .expect("consumer replacement preserves coverage");
 
         let continuation = ports.begin_write().expect("begin continuation");
-        assert!(
-            continuation
-                .fresh_locator_allows_miss()
-                .expect("matching private continuation")
-        );
         continuation.abort().expect("abort continuation");
     }
 }

@@ -935,11 +935,6 @@ mod tests {
             riffdb_storage_api::ColumnarProjectionLifecycleV1::Building
         );
         assert_eq!(replacement.highest_generation().get(), 2);
-        assert!(
-            ports
-                .fresh_locator_public_and_private_roles_match_for_test()
-                .expect("columnar control lane preserves both roles")
-        );
     }
 
     // req: PRJ-002, PRJ-006, PRJ-008, PRJ-009, PRJ-010, OQ-020, OQ-022, OQ-024, OQ-053

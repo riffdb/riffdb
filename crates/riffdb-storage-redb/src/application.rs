@@ -1252,14 +1252,13 @@ where
         prepared.push(result);
     }
     for admission in &prepared {
-        if let Some((key, encoded)) = &admission.encoded {
-            if pending
+        if let Some((key, encoded)) = &admission.encoded
+            && pending
                 .insert(key.as_slice(), encoded.as_slice())
                 .map_err(precommit_storage_error)?
                 .is_some()
-            {
-                return Err(storage_error(StorageErrorKind::InvariantViolation));
-            }
+        {
+            return Err(storage_error(StorageErrorKind::InvariantViolation));
         }
     }
     Ok(prepared
@@ -1405,10 +1404,6 @@ impl RedbExecutionFailureAwaitingDecision {
         let key = identity_key(self.request.expected_pending().identity())?;
         let encoded_key = encode_idempotency_key(&key);
         let encoded = encode_execution_failed_v1(&terminal)?;
-        if matches!(
-            self.request.admission_expectation(),
-            CommandAdmissionExpectationV1::ExistingPending
-        ) {}
         let terminal_audit = if let Some(transition) = audit {
             let intents = transition.into_intents();
             let records = stage_service_audit_group_in_write(&self.access, &intents)?;
@@ -2799,7 +2794,9 @@ fn command_outcome_from_operational_indexes(
     if first > frontier {
         return Ok(None);
     }
-    ports.note_fresh_locator_history_fallback_scan();
+    ports.note_fresh_locator_history_fallback_scan(
+        frontier.get().saturating_sub(first.get()).saturating_add(1),
+    );
     let start = encode_application_sequence_key(first);
     let mut end = encode_application_sequence_key(frontier).to_vec();
     end.push(0);

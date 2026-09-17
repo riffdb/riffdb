@@ -351,6 +351,7 @@ pub(crate) struct SharedRedb {
     transient_index_rebuilds: AtomicU64,
     transient_index_commit_rows: AtomicU64,
     fresh_locator_history_fallback_scans: AtomicU64,
+    fresh_locator_history_fallback_rows: AtomicU64,
     /// Retention watermark sequence, loaded and self-hash-verified once at
     /// open. The watermark advances only under exclusive OFFLINE maintenance,
     /// which cannot run while this handle holds the database open, so reads
@@ -571,14 +572,23 @@ impl SharedRedb {
         self.transient_index_commit_rows.load(Ordering::Relaxed)
     }
 
-    fn note_fresh_locator_history_fallback_scan(&self) {
+    /// ADR-0236 obligation three: the bounded history fallback is the only
+    /// absence backstop, so both how often it runs and how much it reads are
+    /// evidence. `rows` is the span it covered, bounded by the distance from
+    /// the checkpoint application frontier to the captured frontier.
+    fn note_fresh_locator_history_fallback_scan(&self, rows: u64) {
         if let Some(controller) = &self.test_controller {
-            controller.observe_fresh_locator_history_fallback_scan();
+            controller.observe_fresh_locator_history_fallback_scan(rows);
         }
         let _ = self.fresh_locator_history_fallback_scans.fetch_update(
             Ordering::Relaxed,
             Ordering::Relaxed,
             |current| Some(current.saturating_add(1)),
+        );
+        let _ = self.fresh_locator_history_fallback_rows.fetch_update(
+            Ordering::Relaxed,
+            Ordering::Relaxed,
+            |current| Some(current.saturating_add(rows)),
         );
     }
 
@@ -2182,6 +2192,7 @@ impl RedbStore {
                 transient_index_rebuilds: AtomicU64::new(0),
                 transient_index_commit_rows: AtomicU64::new(0),
                 fresh_locator_history_fallback_scans: AtomicU64::new(0),
+                fresh_locator_history_fallback_rows: AtomicU64::new(0),
                 retention_watermark: AtomicU64::new(0),
                 terminal_execution_failure_rows: AtomicU64::new(0),
                 checkpoint_count_rows_walked: AtomicU64::new(0),
@@ -4861,8 +4872,8 @@ impl RedbOperationalPorts {
         self.shared.application_commit_profile == RedbCommitProfile::Standard
     }
 
-    pub(crate) fn note_fresh_locator_history_fallback_scan(&self) {
-        self.shared.note_fresh_locator_history_fallback_scan();
+    pub(crate) fn note_fresh_locator_history_fallback_scan(&self, rows: u64) {
+        self.shared.note_fresh_locator_history_fallback_scan(rows);
     }
 
     pub(crate) fn command_derived_frontier(&self) -> Result<Option<CommitSequence>, StorageError> {
@@ -6650,9 +6661,7 @@ impl SharedRedb {
             self.restore_journal_runtime(runtime)?;
             return Err(error);
         }
-        if let Err(error) = self.commit_durable(transaction) {
-            return Err(error);
-        }
+        self.commit_durable(transaction)?;
         if let Err(error) = self.refresh_durable_read_frontier() {
             self.fence_writes();
             return Err(error);
@@ -7368,7 +7377,6 @@ impl SharedRedb {
             Err(error) => {
                 if publication_began {
                     self.fence_writes();
-                } else {
                 }
                 Err(error)
             }
