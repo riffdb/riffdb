@@ -47,7 +47,9 @@ The first hosted runs exposed independent stale packaging and tooling checks:
   version topology requiring 4. The current artifact passes; an artifact
   altered back to protocol 3 is rejected by the regression test.
 - Native registry acceptance uses portable grep for its literal checks.
-- Generated artifacts install Graphviz and ripgrep in their CI job.
+- Generated artifacts install Graphviz, ripgrep, and the repository-pinned
+  TypeScript checker. Node syntax checking alone does not validate TypeScript.
+  All 28 generated-artifact checks pass locally.
 - Bootstrap checks require the exact six-component fresh-primary health state,
   including healthy replication with zero registered followers. Unknown,
   missing, duplicated, or unhealthy required components remain failures.
