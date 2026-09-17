@@ -196,10 +196,10 @@ jobs:
     steps:
       - name: Check out repository
         uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
-      - name: Install diagram generation tools
+      - name: Install generated-artifact tools
         run: |
           sudo apt-get update
-          sudo apt-get install --yes graphviz
+          sudo apt-get install --yes graphviz ripgrep
       - name: Install pinned Rust toolchain
         run: rustup toolchain install "$RUST_TOOLCHAIN" --profile minimal --component rustfmt,clippy
       - name: Check generated artifacts

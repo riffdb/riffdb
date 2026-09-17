@@ -47,7 +47,7 @@ The first hosted runs exposed independent stale packaging and tooling checks:
   version topology requiring 4. The current artifact passes; an artifact
   altered back to protocol 3 is rejected by the regression test.
 - Native registry acceptance uses portable grep for its literal checks.
-- Generated handbook diagrams install Graphviz in their CI job.
+- Generated artifacts install Graphviz and ripgrep in their CI job.
 - Bootstrap checks require the exact six-component fresh-primary health state,
   including healthy replication with zero registered followers. Unknown,
   missing, duplicated, or unhealthy required components remain failures.
@@ -63,7 +63,17 @@ Local verification includes Python wheel/sdist inventory, reproducibility and
 offline installation, all 17 Python runtime tests and strict type checks;
 real-process source bootstrap smoke; positive and negative Go package arrival;
 workflow syntax; fuzz dependency policy and security audit; and package acceptance.
-Hosted results and final closure are recorded after the corrected head runs.
+The parser smoke completed 235,011 executions in 31 seconds without a failure.
+Package acceptance passed all nine steps; unscoped acceptance passed all eight.
+Adapter-owned hosted runs passed independently:
+
+- [OpenFGA](https://github.com/riffdb/riffdb-openfga/actions/runs/35284107855)
+- [Better Auth](https://github.com/riffdb/riffdb-better-auth/actions/runs/35284109106)
+- [MLflow](https://github.com/riffdb/riffdb-mlflow/actions/runs/35284110767)
+
+WP-723 is complete under the corrected ownership direction. The complete hosted
+merge battery remains required separately; this closure does not claim that
+pending GitHub jobs have passed.
 
 The adapter commits preserve their existing framework-test limitations:
 Better Auth's dev.16 registry packages were unavailable locally, and MLflow's
