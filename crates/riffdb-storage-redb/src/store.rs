@@ -3,7 +3,7 @@
 mod transient_access;
 
 use std::cell::RefCell;
-use std::collections::{BTreeMap, BTreeSet, VecDeque};
+use std::collections::{BTreeMap, BTreeSet, HashMap, VecDeque};
 use std::ops::Bound::{Excluded, Unbounded};
 use std::ops::Deref;
 use std::path::{Path, PathBuf};
@@ -7138,6 +7138,7 @@ impl RedbDurabilityEpoch {
                 let segment_is_exact = self.shared.fresh_locator_queued_segments_are_exact(
                     &composite_successor,
                     &self.transient_deltas,
+                    &checkpoint_mutations,
                     first_sequence,
                     last_sequence,
                     self.command_count,
@@ -7318,6 +7319,7 @@ impl SharedRedb {
         &self,
         view: &Arc<crate::composite_view::RedbCompositeReadView>,
         deltas: &[TransientIndexDelta],
+        staged: &[riffdb_storage_api::CompositeMutationV1],
         first_sequence: CommitSequence,
         last_sequence: CommitSequence,
         command_count: usize,
@@ -7349,11 +7351,29 @@ impl SharedRedb {
         {
             return Ok(false);
         }
+        // ADR-0197's witness proves every command's durable idempotency locator.
+        // This same seal staged those rows in `write_durable_command_locators`,
+        // so index them once here instead of merging the composite overlay
+        // against the checkpoint root once per command. A key this seal did not
+        // stage still resolves through the merged view, and a staged delete
+        // reports absence, so the proof observes exactly the rows it observed
+        // when it read every one of them back.
+        let mut staged_locators: HashMap<&[u8], Option<&[u8]>> = HashMap::new();
+        for mutation in staged
+            .iter()
+            .filter(|mutation| mutation.table() == JournalTable::IdempotencyLocators.composite())
+        {
+            staged_locators.insert(mutation.key(), mutation.value());
+        }
         for segment in segments {
             if exact_fresh_locator_segment(
                 database_id,
                 segment,
-                |key| view.resolve_point(JournalTable::IdempotencyLocators.composite(), key),
+                |key| match staged_locators.get(key) {
+                    Some(Some(value)) => Ok(Some((*value).to_vec())),
+                    Some(None) => Ok(None),
+                    None => view.resolve_point(JournalTable::IdempotencyLocators.composite(), key),
+                },
                 |first| {
                     let durable =
                         crate::command_authority::command_segment_at_access(&access, first)?;
