@@ -267,6 +267,7 @@ record with no front matter.
 | [0232](0232-append-only-export-page-commitments.md) | Append Only Export Page Commitments | Accepted | guarantee |
 | [0233](0233-typed-boolean-operands-in-row-policy-evaluation.md) | Typed Boolean Operands In Row Policy Evaluation | Accepted | guarantee |
 | [0234](0234-bounded-repairs-for-reviewed-runtime-resource-costs.md) | Bounded Repairs For Reviewed Runtime Resource Costs | Accepted | guarantee |
+| [0235](0235-fresh-locator-coverage-proven-at-staging.md) | Fresh Locator Coverage Proven At Staging | Proposed | guarantee |
 <!-- adr-index:end -->
 
 The human architecture review on 2026-07-12 approved the direction represented
