@@ -25865,6 +25865,13 @@ work_packages:
   human_review_triggers:
   - An accepted ADR-0234 decision or an existing durable/public guarantee would change.
 - id: WP-786
+  closure:
+    status: superseded
+    evidence: adr/0236-remove-fresh-locator-coverage.md
+    decision: ADR-0235 is superseded by ADR-0236. Retirement presumes a coverage mechanism
+      that arms, and instrumentation showed coverage never arms in the running server. The
+      staged-locator repair this package carried is merged; the retirement work is replaced
+      by WP-787.
   name: Retire fresh-locator coverage once the derived index covers
   tier: guarantee
   depends_on: [WP-778]
@@ -25925,5 +25932,61 @@ work_packages:
     would suppress a write fence.
   - The absence answer for a novel identity would change, or an operational miss would be
     answered from anything other than an exact covering proof.
+  - A durable byte, storage key, encoding, transaction ordering, acknowledgement or public
+    surface would change.
+- id: WP-787
+  name: Remove fresh-locator coverage
+  tier: guarantee
+  depends_on: [WP-778, WP-786]
+  objective: Implement ADR-0236 by removing the ADR-0197 fresh-locator coverage mechanism,
+    leaving every absence answer unchanged, deciding each structural check the queued witness
+    performed one by one, and making the bounded history fallback the evidenced sole backstop.
+  requirements: [OUT-001, OUT-002, TXN-042, REC-004]
+  required_adrs: [ADR-0236, ADR-0102, ADR-0183, ADR-0197, ADR-0234, ADR-0235]
+  allowed_paths: [work_packages.yaml,
+    adr/0183-performance-package-freeze-and-durable-group-lever.md,
+    adr/0197-fresh-process-contiguous-idempotency-locator-coverage.md,
+    adr/0235-fresh-locator-coverage-proven-at-staging.md,
+    adr/0236-remove-fresh-locator-coverage.md, adr/README.md,
+    crates/riffdb-storage-redb/src/**,
+    crates/riffdb-storage-redb/tests/**,
+    crates/riffdb-sim/tests/seeded_campaign/corpus.rs,
+    tests/storage_recovery/**, docs/performance/**]
+  deliverables:
+  - Removal of the coverage state machine, the affine witness roles, the queued seal witness,
+    the arming entry, the two consumption predicates, and the mutation expectation discipline
+    that exists only to preserve them, together with the architecture rules that guard them.
+  - An absence path whose content and order are unchanged apart from the removed coverage
+    short-circuit, proven equal to today for every identity, startup mode and index state.
+  - A written enumeration of every structural check the queued witness performed, each one
+    either still running on every seal or shown redundant with a check that does. Retained
+    command count against sealed count, span endpoints against the frame, and segment
+    adjacency are decided individually and named in the proof.
+  - Evidence for the bounded history fallback as the sole backstop, reporting how often it
+    runs and how many rows each scan covers, bounded by the span between the checkpoint
+    application frontier and the captured frontier.
+  - A measurement note under docs/performance recording the implemented change against the
+    arms already measured on E2, claiming no speedup beyond what it measures.
+  acceptance_commands:
+  - ./scripts/acceptance --wp WP-787
+  - cargo test -p riffdb-storage-redb --test storage_recovery_matrix
+  - ./scripts/ci-all
+  exit_gate: Fresh-locator coverage is gone from the crate, every absence answer is unchanged,
+    each structural check the witness performed is preserved or proven redundant by name, the
+    bounded history fallback reports its scan count and scanned rows, and no durable byte,
+    storage key, encoding, transaction ordering, acknowledgement or public surface changes.
+  standing_design_tests:
+    interface_safety: No public, operator, agent, SDK, transport or configuration surface
+      changes. Nothing becomes selectable, observable or bypassable that was not already.
+    scale: Removal deletes per-command seal work and adds none. The remaining fallback stays
+      bounded by the span between the checkpoint application frontier and the captured
+      frontier.
+  human_review_triggers:
+  - An absence answer for any identity would change, or the bounded history fallback would be
+    reached on a path that does not reach it today.
+  - A structural check the queued witness performed would stop running without a named check
+    that covers it.
+  - The bounded history fallback would scan an unbounded span, or its evidence counter would
+    stop being reported.
   - A durable byte, storage key, encoding, transaction ordering, acknowledgement or public
     surface would change.
