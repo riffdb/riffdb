@@ -85,3 +85,36 @@ Initial GitHub publication also exposed a workflow-level `runner.temp`
 reference in the existing driver-development workflow, where the runner
 context is unavailable. It now lives on the consuming step's environment;
 no release test or package behavior changes.
+
+The first hosted Python packaging run exposed independent baseline failures:
+[run 35282049177](https://github.com/riffdb/riffdb/actions/runs/35282049177).
+The x86_64 source distribution omits `crates/riffdb-operation-registry/Cargo.toml`;
+the ARM job cannot write `dist/riffdb-python-artifacts-v1.json` after its container
+build. These release-packaging failures are outside WP-723's compiler gate and
+remain follow-ups; this report does not claim the entire hosted CI is green.
+
+
+## Completion audit — 2026-09-17
+
+[Hosted job 105406159789](https://github.com/riffdb/riffdb/actions/runs/35282049162/job/105406159789)
+completed successfully at 22:33:51 UTC for PR head
+`8700d595debac6d787b5a27e252806900a498b58`. Its retained log reports all eight
+orchestration tests passing, all three full commit pins fetched, all four
+application directories compiling, and the deliberate bare `Limit` copy failing
+with `RDB-QS003` through the same checker. The package closure changes only
+this evidence and work-package metadata after that implementation proof.
+
+| Required outcome | Current evidence |
+| --- | --- |
+| Dependency merged | WP-569's completed closure and implementation are inherited from main. |
+| CI can reach pinned sources | All four GitHub repositories are public; the hosted log fetched the exact three revisions in `scripts/downstream-adapters.json`. |
+| Every PR checks every adapter | `CI` has an unconditional `pull_request` trigger and an unconditional **Downstream adapters** job, with no path filter or allowed failure. |
+| Compiler failures block the RiffDB change | The checker propagates failures; `main` requires this check from GitHub Actions app 15368, with strict freshness and administrator enforcement. The protection API was read back after configuration. |
+| ADR-0167 failure is reproduced | The hosted job first passed the real applications, then required a nonzero checker exit and `RDB-QS003` for the restored bare `Limit`. |
+| Intentional breaks are reviewed together | `docs/CONTRIBUTING.md` documents adapter migration, full revision updates, diff links, and the required same-change check. |
+| Scope and governance | Internal tier; no authoritative Rust, language, protocol, or durable format changed. Package acceptance and unscoped acceptance pass. |
+
+The adapter repositories are clean after their requested commits and publication.
+The implementation is ready for review in [PR #1](https://github.com/riffdb/riffdb/pull/1).
+The separate packaging failures above must be resolved before claiming a green
+full merge/release battery; this closure does not merge the pull request.
