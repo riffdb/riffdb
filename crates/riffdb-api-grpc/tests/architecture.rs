@@ -233,7 +233,7 @@ fn lifecycle_admission_precedes_security_fetch_and_bootstrap_transition() {
     let handler = source
         .split("async fn create_capability(")
         .nth(1)
-        .and_then(|tail| tail.split("async fn revoke_capability(").next())
+        .and_then(|tail| tail.split("\n    async fn ").next())
         .expect("create-capability handler");
     let security = handler
         .find("bootstrap_security")
@@ -280,7 +280,7 @@ fn capability_cancellation_guard_outlives_invocation_construction() {
     let handler = source
         .split("async fn create_capability(")
         .nth(1)
-        .and_then(|tail| tail.split("async fn revoke_capability(").next())
+        .and_then(|tail| tail.split("\n    async fn ").next())
         .expect("create-capability handler");
     assert_eq!(handler.matches("_cancellation").count(), 2);
     assert_eq!(
@@ -308,10 +308,12 @@ fn operator_campaigns_maintenance_and_migration_are_additive_and_never_an_mcp_su
             .lines()
             .filter(|line| line.trim_start().starts_with("rpc "))
             .count(),
-        59
+        61
     );
     assert_eq!(services.matches("rpc ExecuteBatch(").count(), 1);
     for rpc in [
+        "rpc RegisterFollower(",
+        "rpc RetireFollower(",
         "rpc CreateOfflineBackup(",
         "rpc RestoreOfflineBackup(",
         "rpc RestoreArchivedBackup(",
@@ -336,6 +338,8 @@ fn operator_campaigns_maintenance_and_migration_are_additive_and_never_an_mcp_su
 
     let mcp_registry = include_str!("../../riffdb-api-mcp/fixtures/fixed-tool-registry-v1.json");
     let normalized = mcp_registry.to_ascii_lowercase();
+    assert!(!normalized.contains("registerfollower"));
+    assert!(!normalized.contains("retirefollower"));
     assert!(!normalized.contains("backup"));
     assert!(!normalized.contains("maintenance"));
     assert!(!normalized.contains("migration"));
@@ -371,6 +375,14 @@ fn operator_campaigns_maintenance_and_migration_are_additive_and_never_an_mcp_su
         ),
     ] {
         let normalized = source.to_ascii_lowercase();
+        for operation in [
+            "registerfollower",
+            "register_follower",
+            "retirefollower",
+            "retire_follower",
+        ] {
+            assert!(!normalized.contains(operation), "{surface}: {operation}");
+        }
         assert!(!normalized.contains("migratecontract"), "{surface}");
         assert!(!normalized.contains("contractmigration"), "{surface}");
         assert!(!normalized.contains("contract_migration"), "{surface}");
