@@ -1,70 +1,77 @@
 ---
 adr: "0235"
-title: Fresh Locator Coverage Proven At Staging
+title: Retire Fresh Locator Coverage Once The Derived Index Covers
 status: proposed
 tier: guarantee
 date: 2026-09-17
 accepted: null
 acceptance: null
-requires: [ADR-0183, ADR-0197, ADR-0234]
+requires: [ADR-0102, ADR-0183, ADR-0197, ADR-0234]
 amends:
   - ADR-0183 only to admit the single enumerated repair below.
-  - ADR-0197 Decision 6 only to widen what a queued command witness may be
-    constructed from, without changing what it must establish.
+  - ADR-0197 only to bound how long coverage is maintained, without changing
+    what it proves while it is maintained.
 supersedes: []
 requirements: []
 packages: []
 obligations:
   - id: OBL-0235-1
     package: null
-    proof: staged_coverage_evidence_is_minted_only_by_the_locator_writer
-    says: Staged coverage evidence is constructible only inside the walk that
-      writes a segment's locator rows, is fixed size, and carries no key,
-      locator, segment or history collection. It cannot be cloned, copied,
-      defaulted, serialized, reused across segments, or built by any other
-      caller.
+    proof: coverage_retires_once_the_derived_index_covers_the_captured_frontier
+    says: On the first seal whose captured frontier the command-derived index
+      already covers, coverage retires and no later seal in that process
+      performs the queued witness. A process whose index has not covered
+      arms and maintains coverage exactly as before.
   - id: OBL-0235-2
     package: null
-    proof: staged_coverage_rejects_every_case_the_rederived_witness_rejected
-    says: Every malformed span, count, ordinal, manifest entry, locator,
-      capsule identity and audit pairing that disabled coverage under the
-      re-derived witness still disables coverage, and none reaches publication.
+    proof: retired_coverage_is_distinguishable_from_failure_disabled_coverage
+    says: Retirement and proof failure are separate terminal states. Every
+      malformed span, count, ordinal, manifest entry, locator, capsule identity
+      and audit pairing still disables by failure, still fences where it fences
+      today, and is never reported as retirement.
   - id: OBL-0235-3
     package: null
-    proof: grouped_fresh_locator_seal_is_constant_work_per_segment
-    says: Sealing an n-command group performs one durable segment resolution
-      and work proportional to the number of segments, not to n, while the
-      per-command facts remain established exactly once by the staging walk.
+    proof: cold_fresh_database_publications_complete_without_history_scans
+    says: A fresh process over a database with retained history still completes
+      its publications with zero history fallback scans and zero transient
+      index rebuilds, because coverage is maintained for exactly as long as the
+      derived index cannot answer absence.
 review_triggers:
-  - Coverage would advance on evidence the staging walk did not mint, or a
-    mismatch would do anything other than disable coverage.
-  - The per-command facts ADR-0197 Decision 6 enumerates would stop being
-    established for any command.
-  - Proof would move after the journal submit, or publication would consume a
-    witness whose evidence was incomplete when the frame was encoded.
-  - A durable byte, key, encoding, transaction ordering, acknowledgement or
-    public surface would change.
+  - Coverage would retire while the command-derived index does not cover the
+    captured frontier, or while the transient index is dormant.
+  - Retirement would occur on any path that today disables coverage because a
+    proof failed, or would suppress a write fence.
+  - The absence answer for a novel identity would change, or an operational
+    miss would be answered from anything other than an exact covering proof.
+  - A durable byte, storage key, encoding, transaction ordering, acknowledgement
+    or public surface would change.
 ---
-# ADR-0235: Fresh Locator Coverage Proven At Staging
+# ADR-0235: Retire Fresh Locator Coverage Once The Derived Index Covers
 
 ## Context
 
 A bisect on the E2 bench host attributes a 2026-09-05 write-path regression to
 `89f2e78bcf`, which moved ADR-0197's queued coverage witness inside the journal
 runtime guard and ahead of `lane.submit`. That commit added no work; it moved
-existing work onto the critical path, so the proof no longer overlaps the
-journal I/O it precedes. An ablation that skips the witness entirely measures
-its cost at 29 to 33 percent of mean group-commit time at 1, 8 and 32 clients.
+existing work onto the critical path. Measured on E2, write-only smoke, mean
+group-commit time over two interleaved rounds at 1, 8 and 32 clients:
 
-Resolving the witness's locator reads from the staged composite mutations,
-which ADR-0197 Decision 6 already names as an allowed input, recovers about a
-fifth of that. The remainder is re-derivation: for every command the seal
-recomputes an identity storage key, looks up a manifest entry, decodes a
-locator and compares a capsule identity, all of which the staging walk that
-wrote those very rows computed moments earlier. Decision 6 fixes what the
-witness may be constructed from, so relocating that establishment is a decision
-change rather than an implementation choice, and ADR-0183 freezes performance
-work, so admitting the repair is a second decision change.
+| arm | c=1 | c=8 | c=32 |
+|---|---|---|---|
+| main | 1739 us | 2971 us | 6572 us |
+| witness skipped | 1234 us | 1999 us | 4747 us |
+| coverage disabled every seal | 1308 us | 2054 us | 4590 us |
+
+The witness costs 29 to 33 percent of every group commit. Disabling coverage
+outright is 25 to 31 percent faster with 16 to 21 percent more throughput, and
+costs nothing measurable: both arms report zero transient index rebuilds and a
+clean-certificate startup.
+
+The reason is in the admission path. The bounded history scan coverage exists
+to avoid is the last resort, not the first. Ahead of it sits a second absence
+proof against the command-derived index, and once that index covers the
+captured frontier it answers every absence coverage would have answered. From
+that point the witness maintains a proof nothing consults.
 
 ## Decision
 
@@ -72,88 +79,79 @@ work, so admitting the repair is a second decision change.
    pattern. No sealed package, banked baseline, threshold or permitted closure
    changes. Register the implementing non-PERF package after acceptance, with
    exact allowed paths and the proofs below, before implementation begins.
-2. Amend ADR-0197 Decision 6 so a queued command witness is constructible from
-   the canonical sealed command segment, the same ADR-0104 composite mutation
-   stage, and fixed-size staged coverage evidence minted by the walk that wrote
-   that segment's locator rows. What the witness must establish is unchanged;
-   only where each fact is established moves.
-3. Staged coverage evidence is minted only inside the locator-writing walk,
-   which already visits every command and already holds its sequence, identity
-   and encoded locator. As it writes each row it establishes, for that command,
-   the exact facts Decision 6 enumerates: the canonical identity-key locator
-   decoding to its own sequence, the capsule agreement on sequence, database,
-   environment, tenant scope, principal, contract lineage, command id and keyed
-   caller-key digest, the single matching manifest entry at that ordinal, and
-   the started and terminal audit pairing.
-4. The evidence is fixed size. It records the segment's first and last commit
-   sequence, its command count, its first and last administration sequence, and
-   nothing else. It stores no key, locator, segment or history collection, so
-   ADR-0197 Decision 3 is preserved. It implements no `Clone`, `Copy`,
-   `Default`, serialization, public constructor or cross-segment conversion,
-   and a dropped, duplicated or mismatched instance disables coverage exactly
-   as a dropped witness does today.
-5. At the seal the queued witness consumes the evidence for each staged segment
-   and establishes only what spans segments: the database binding, the
-   arithmetic `first = successor(predecessor)` and `count = last - first + 1`,
-   agreement between segment span, retained count and stage count, and
-   contiguity across segments. That is work proportional to the number of
-   segments, not to the number of commands.
-6. Failure semantics are unchanged. Any mismatch disables coverage, and every
-   existing disable-and-fence path keeps its current behaviour and placement.
-7. The ordering `89f2e78bcf` established is retained. The evidence is complete
-   before the frame is encoded, so all fallible proof work still precedes
-   `lane.submit` and no submitted frame can escape through an unfenced proof
-   error. This decision buys that property back at a cost near zero rather than
-   trading it away.
-8. The direct-path witness is out of scope and unchanged.
-9. No durable byte, storage key, encoding, transaction ordering, conflict
+2. Amend ADR-0197 so coverage is maintained only while it can answer something
+   the command-derived index cannot. What coverage proves while maintained,
+   and every fact Decision 6 enumerates, are unchanged.
+3. At each queued seal, before any witness work, the seal asks whether the
+   command-derived index already covers the captured frontier, by the same
+   predicate the admission path uses. If it does, coverage retires: the seal
+   performs no witness, advances no chain, and no later seal in that process
+   performs one.
+4. Retirement is a distinct terminal state from failure. Coverage today has one
+   terminal state reached by proof failure, which fences on the paths that fence
+   today. Retirement reaches a separate terminal state, reports separately, and
+   fences nothing. No condition that disables by failure may report retirement.
+5. A process whose derived index has not covered is unchanged. It arms from
+   exact empty authority, maintains the chain seal by seal, and answers
+   operational misses from its published proof exactly as today. That is the
+   fresh-process case ADR-0197 exists for, and it keeps its full benefit.
+6. Retirement is irreversible within a process, as disabling is today. It is
+   safe because it is reachable only when the index covers, and because every
+   site that invalidates the transient index also fences writes; one of those
+   sites already disables coverage alongside. A store whose index has gone
+   invalid has stopped accepting writes, so coverage answering absence there
+   buys nothing.
+7. No durable byte, storage key, encoding, transaction ordering, conflict
    ownership, acknowledgement, outcome sequencing or public surface changes.
 
 ## Options considered
 
-1. **Remove only the redundant reads.** Measured at roughly 5 percent of mean
-   group-commit time, needs no record change, and is available immediately. It
-   leaves four fifths of the witness cost in place, so it is a complement to
-   this decision rather than an alternative.
-2. **Move the proof after the journal submit.** Recovers most of the cost,
-   because a proof failure disables coverage rather than invalidating the
-   frame, and the earlier code constructed the witness there. Rejected: it
-   reverses a deliberate guarantee-tier safety decision to buy what Decision 7
-   obtains for free.
-3. **Prove a sample of seals.** Rejected. Coverage answers absence, and a
-   sampled proof would make absence answerable from an unproven prefix.
-4. **Retire fresh-locator coverage.** Coverage exists to avoid bounded history
-   scans, and it is not established that the scans it avoids cost more than the
-   proof that maintains them. Out of scope here and worth measuring separately.
+1. **Make the witness cheaper by proving at staging.** Mint fixed-size evidence
+   in the walk that writes the locator rows and reduce the seal to a chain
+   check. Sound, and it keeps the pre-submit ordering, but it optimises work
+   that in steady state should not happen at all, and it is a far larger change
+   to a guarantee-tier proof system. Rejected in favour of not doing the work.
+2. **Remove only the witness's redundant reads.** Resolving its locator reads
+   from the staged composite mutations, an input Decision 6 already allows,
+   measured 4 to 7 percent and needs no record. It remains worth taking for the
+   window where coverage is still maintained, and is complementary to this
+   decision rather than an alternative.
+3. **Move the proof after the journal submit.** Recovers most of the cost but
+   reverses a deliberate guarantee-tier safety decision, and retirement obtains
+   more without touching the ordering.
+4. **Retire fresh-locator coverage entirely.** Tempting on these numbers, but
+   the measurement starts from an empty database, so the derived index covers
+   everything the process wrote. The fresh-process-over-retained-history case
+   is not exercised here and is exactly what ADR-0197 was built for. Rejected
+   as unproven.
 
 ## Consequences
 
-- Per-command establishment happens exactly once, in the walk that writes the
-  rows, instead of once there and once again at the seal.
-- Trust moves from the seal to the staging walk. The walk becomes the single
-  place segment exactness is established, and the seal becomes a chain check.
-- The evidence is stricter in one respect: it cannot be satisfied by a
-  pre-existing row of the right shape, which the current merged-view read can.
-- No speedup is claimed until measured. The measured facts today are the
-  witness's 29 to 33 percent share and the 5 percent recovered by Option 1.
-- The remaining performance program stays frozen.
+- Steady-state group commit stops paying for a proof nothing consults. The
+  measured ceiling is the coverage-disabled arm; no speedup is claimed until
+  the implemented change is measured.
+- Coverage becomes a startup-window mechanism rather than a permanent one,
+  which is what its name and its arming rule already describe.
+- A process that retires coverage and later loses its derived index answers
+  absence no worse than one that disabled coverage by failure, and only after
+  writes are already fenced.
+- Two terminal states must be told apart in evidence and tests, which is new
+  surface in the coverage state machine.
 
 ## Standing design tests
 
 - **Interface safety:** no public, operator, agent, SDK, transport or
-  configuration surface changes. Nothing can arm, observe, extend, weaken or
-  bypass coverage, or select where a fact is established.
-- **Scale:** the evidence is fixed size per segment and retains nothing after
-  the seal consumes it. Seal work is proportional to segments, per-command work
-  is proportional to commands and happens once, and no history-sized or
-  key-sized collection is introduced.
+  configuration surface changes. Nothing can arm, retire, observe, extend or
+  bypass coverage, and retirement is not selectable.
+- **Scale:** retirement removes per-command seal work in steady state and adds
+  one predicate evaluation per seal. No new retained state, and no key,
+  locator, segment or history collection is introduced.
 
 ## Checks
 
-- `staged_coverage_evidence_is_minted_only_by_the_locator_writer`
-- `staged_coverage_rejects_every_case_the_rederived_witness_rejected`
-- `grouped_fresh_locator_seal_is_constant_work_per_segment`
-- The existing `cold_fresh_database_publications_complete_without_history_scans`
-  and `grouped_fresh_locator_seal_resolves_the_durable_segment_once` proofs, and
-  every existing `fresh_locator_*` unit test, unchanged.
-- `./scripts/check-adr-obligations` and `./scripts/check-performance-freeze`.
+- `coverage_retires_once_the_derived_index_covers_the_captured_frontier`
+- `retired_coverage_is_distinguishable_from_failure_disabled_coverage`
+- `cold_fresh_database_publications_complete_without_history_scans`, unchanged
+- `grouped_fresh_locator_seal_resolves_the_durable_segment_once`, unchanged
+- Every existing `fresh_locator_*` unit test, unchanged
+- `./scripts/check-adr-obligations` and `./scripts/check-performance-freeze`
