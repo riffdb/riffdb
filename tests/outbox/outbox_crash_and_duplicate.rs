@@ -1062,3 +1062,74 @@ fn recovery_state_change_fails_closed_without_overwrite() {
     }
     assert_eq!(repository.status(event_id(0)), Some(concurrent));
 }
+
+// req: EFF-002
+#[test]
+fn review_interrupted_page_retries_before_advancing_cursor() {
+    let repository = FakeRepository::with_events(4);
+    let connector = SharedConnector::new(Vec::new(), ConnectorDisposition::Accepted);
+    let clock = SharedClock::new(10);
+    let policy = policy_with_limit(3, 2);
+    let mut dispatcher = OutboxDispatcher::new(
+        recovered(repository.clone(), &policy, &clock),
+        connector,
+        clock,
+        OneShotFailpoint::new(OutboxFailpoint::DeliveryAfterConnectorAcceptedBeforeSuccess),
+        NoOutboxTelemetry,
+        policy,
+    );
+    assert!(dispatcher.dispatch_once().is_err());
+    let report = dispatcher.dispatch_once().unwrap();
+    assert_eq!(report.delivered(), 2);
+    assert!(matches!(
+        repository.status(event_id(1)).unwrap().state(),
+        OutboxDeliveryStateV1::Delivered { .. }
+    ));
+    assert_eq!(repository.status(event_id(3)), None);
+}
+
+// req: EFF-002
+#[test]
+fn review_completion_state_change_keeps_remaining_page_reachable() {
+    let repository = FakeRepository::with_events(3);
+    let connector = SharedConnector::new(
+        vec![ConnectorDisposition::Retryable { safe_error: None }],
+        ConnectorDisposition::Accepted,
+    );
+    let clock = SharedClock::new(10);
+    let policy = policy_with_limit(3, 2);
+    let mut dispatcher = OutboxDispatcher::new(
+        recovered(repository.clone(), &policy, &clock),
+        connector,
+        clock,
+        NoOutboxFailpoints,
+        NoOutboxTelemetry,
+        policy,
+    );
+    let concurrent = StoredOutboxStatusV1::pending(
+        event_id(0),
+        OutboxRetryMetadataV1::new(
+            NonZeroU32::new(1).unwrap(),
+            timestamp(10),
+            Some(timestamp(30)),
+            riffdb_storage_api::OutboxDestinationIdV1::new("test/deterministic").unwrap(),
+            None,
+        ),
+    );
+    repository.change_during_next_retry(concurrent.clone());
+    assert!(matches!(
+        dispatcher.dispatch_once(),
+        Err(OutboxWorkerError::StateChanged {
+            phase: riffdb_outbox::OutboxTransitionPhase::Retry
+        })
+    ));
+    assert_eq!(repository.status(event_id(0)), Some(concurrent));
+    let report = dispatcher.dispatch_once().unwrap();
+    assert_eq!(report.deferred(), 1);
+    assert_eq!(report.delivered(), 1);
+    assert!(matches!(
+        repository.status(event_id(1)).unwrap().state(),
+        OutboxDeliveryStateV1::Delivered { .. }
+    ));
+    assert_eq!(repository.status(event_id(2)), None);
+}

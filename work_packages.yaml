@@ -25740,6 +25740,20 @@ work_packages:
 - id: WP-785
   name: Bounded runtime review repairs
   tier: guarantee
+  closure:
+    status: complete_with_failed_performance_gate
+    completed_at: '2026-09-16'
+    evidence: docs/reviews/2026-09-16-runtime-findings.md
+    decision: All eight accepted repairs and the initial semantic fixes pass full CI and
+      regression checks. The unchanged development sentinel remains red, with additional
+      misses and lower measured rates than the runtime baseline; no performance pass is claimed.
+    decisions_taken:
+    - Keep complete exact locator metadata, populate the bounded decoded payload cache lazily,
+      and validate positive lookups against captured storage authority even on cache hits.
+    - Account for decoded canonical tree layouts and variable buffers; avoid payload read views
+      only for complete-index negatives under the publication guard.
+    - Preserve all existing semantic, fuel, integrity and durable-format boundaries; retain
+      paired unedited sentinel receipts and record the remaining performance gap as a follow-up.
   depends_on: []
   objective: Implement the eight live resource-cost repairs admitted by accepted ADR-0234,
     preserving public semantics, bounded fuel, snapshot-bound authority and fail-closed validation.
@@ -25770,7 +25784,8 @@ work_packages:
   acceptance_commands:
   - ./scripts/acceptance --wp WP-785 --range HEAD..HEAD
   - ./scripts/ci-all
-  - ./scripts/app-baseline-performance-sentinel-check
+  - ./scripts/app-baseline-performance-sentinel --self-test
+  - ./scripts/app-baseline-performance-sentinel
   exit_gate: All eight admitted repairs preserve the existing semantic oracles and bounds;
     cache eviction, corrupt evidence, follower changes, flush failure, partition boundaries and
     exact scoring tests pass; scoped/full acceptance and existing sentinel evidence are recorded.

@@ -173,7 +173,6 @@ where
             PendingOutboxScanV1::Page { items, next_after } => (items, Some(next_after)),
             PendingOutboxScanV1::ExactEnd { items } => (items, None),
         };
-        self.scan_after = next_after;
         let mut report = OutboxDispatchReport {
             next_after,
             ..OutboxDispatchReport::default()
@@ -183,7 +182,10 @@ where
             OutboxDispatchReport::increment(&mut report.scanned)?;
             let (item, _) = encoded.into_parts();
             self.dispatch_item(&item, &mut report)?;
+            // An interrupted item and the rest of its page remain reachable.
+            self.scan_after = Some(item.event_id());
         }
+        self.scan_after = next_after;
         Ok(report)
     }
 

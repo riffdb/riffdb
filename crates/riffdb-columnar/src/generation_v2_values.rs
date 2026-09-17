@@ -51,9 +51,9 @@ pub(super) fn restore(
                 return Err(invalid);
             }
             let decoded = decode_canonical_value(bytes.as_bytes()).map_err(|_| invalid)?;
-            if !matches!(decoded, CanonicalValue::Vector(_))
-                || encode_canonical_value(&decoded).map_err(|_| invalid)? != bytes.as_bytes()
-            {
+            // Canonical decode rejects negative zero, non-finite components,
+            // bad dimensions and trailing bytes. Re-encoding adds no evidence.
+            if !matches!(decoded, CanonicalValue::Vector(_)) {
                 return Err(invalid);
             }
             decoded

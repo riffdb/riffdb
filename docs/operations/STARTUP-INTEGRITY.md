@@ -124,3 +124,20 @@ accepted configuration or command input.
 
 See also [Compatibility](../compatibility.md), [Backup and
 Restore](../backup-restore.md), and [Troubleshooting](TROUBLESHOOTING.md).
+
+## Command payload cache
+
+Command lookup keeps complete exact locator metadata for retained history, while
+its disposable decoded payload cache is capped at 64 entries and a conservative
+64 MiB ownership charge. This bounds payload retention, not total database
+memory: exact locator, manifest and event metadata still grow with retained
+identities. Startup rebuild streams one bounded segment at a time. The payload
+cache fills lazily from validated reads, so publication does not encode or
+decode commands again to populate it.
+
+Eviction can add an exact storage read and decode. Both cold and cached reads
+validate against the caller's captured storage view; missing or corrupt evidence
+is an error, never evidence that a committed command is absent. Follower
+replacement retains the prior manifest and event membership needed to remove
+old indexes even after payload eviction. These limits are internal and do not
+add operator tuning or weaken recovery checks.

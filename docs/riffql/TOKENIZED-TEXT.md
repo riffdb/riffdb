@@ -61,7 +61,9 @@ Replace `conjunction` with `disjunction`, `phrase`, or `proximity, 5` to compile
 the other shapes. Conjunction requires every analyzed term. Disjunction requires
 at least one. Phrase requires consecutive positions in one indexed field.
 Proximity requires the terms in order in one indexed field, with each adjacent
-distance no greater than the compiled bound.
+distance no greater than the compiled bound. Repeated intermediate terms are
+considered at every reachable position: an earlier occurrence cannot hide a
+later occurrence that completes the match.
 
 Omitting `riff_bm25_v1` gives Boolean execution and canonical entity-key order.
 Adding it selects the only ranked order. Applications cannot submit a field,
@@ -125,3 +127,8 @@ packs, highlighting, snippets, caller-selected relevance controls, score
 output, hybrid vector/text ranking, general joins, or ad hoc search endpoint.
 Applications export their changelog or authoritative data when a different
 search product is the better fit.
+
+Ranked execution computes each distinct query term's document frequency and
+each field's corpus length once for the captured provider snapshot. Scores and
+statistics identity share those values. Repeated query terms still contribute
+repeatedly to the frozen fixed-point score; they do not alter corpus identity.

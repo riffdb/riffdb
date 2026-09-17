@@ -413,3 +413,100 @@ fn vector_provider_descriptor_matches_real_exact_and_ann_engine_contracts() {
             .is_err()
     );
 }
+
+// req: OQ-019
+#[test]
+fn review_null_cells_do_not_match_upper_range_bounds() {
+    let fixture = Fixture::new();
+    let bundle = compile_contract_source(&EXACT_CONTRACT.replace(
+        "field title: string<64>",
+        "field title: string<64>\n    field label: optional<string<64>>",
+    ))
+    .unwrap();
+    let label = field_id(&bundle, "label");
+    let definition = RegisteredDefinition::register(
+        ColumnarProjectionDefinition {
+            name: "optional_label_vectors".into(),
+            entity_name: "Document".into(),
+            projected_fields: vec![label, field_id(&bundle, "embedding")],
+            org_scope_field: field_id(&bundle, "org_id"),
+        },
+        &bundle,
+    )
+    .unwrap();
+    let org = [1; 16];
+    let vector = CanonicalVector::new(vec![1.0; 12]).unwrap();
+    let mut snapshot = ColumnarSnapshot::empty();
+    let mut null_row = row("title", vector.clone(), 1);
+    null_row.cells[0] = CanonicalValue::Null;
+    snapshot
+        .delta
+        .entry(OrgKey::from_value(&CanonicalValue::Uuid(org)).unwrap())
+        .or_default()
+        .insert(primary_key(fixture.entity, org, 1), null_row);
+    let mut request = query(
+        &fixture,
+        org,
+        vector,
+        1,
+        vec![ColumnPredicate::Range {
+            field: label,
+            low: None,
+            high: Some(CanonicalValue::string("z").unwrap()),
+        }],
+    );
+    request.vector_field = field_id(&bundle, "embedding");
+    assert!(
+        nearest_query_snapshot(&definition, &snapshot, &request)
+            .unwrap()
+            .rows
+            .is_empty()
+    );
+    request.predicates = vec![ColumnPredicate::Eq {
+        field: label,
+        value: CanonicalValue::Null,
+    }];
+    assert_eq!(
+        nearest_query_snapshot(&definition, &snapshot, &request)
+            .unwrap()
+            .rows
+            .len(),
+        1
+    );
+}
+
+// req: OQ-019
+#[test]
+fn review_nearest_refuses_oversized_merge_before_candidate_admission() {
+    struct CountAdmissions(usize);
+    impl NearestCandidateAdmission for CountAdmissions {
+        type Error = std::convert::Infallible;
+        fn admit(&mut self, _: NearestCandidate<'_>) -> Result<bool, Self::Error> {
+            self.0 += 1;
+            Ok(true)
+        }
+    }
+    let fixture = Fixture::new();
+    let org = [1; 16];
+    let mut rng = StdRng::seed_from_u64(11);
+    let mut snapshot = ColumnarSnapshot::empty();
+    insert_random_rows(&mut snapshot, &fixture, org, 0, 3, "public", &mut rng);
+    let mut request = query(&fixture, org, random_vector(&mut rng), 1, vec![]);
+    request.budget.max_scanned_rows = 2;
+    let mut admission = CountAdmissions(0);
+    assert!(matches!(
+        nearest_query_snapshot_with_admission(&fixture.exact, &snapshot, &request, &mut admission),
+        Err(riffdb_columnar::NearestQueryAdmissionError::Query(
+            riffdb_columnar::QueryError::ScanBudgetExceeded { max: 2 }
+        ))
+    ));
+    assert_eq!(admission.0, 0);
+    request.budget.max_scanned_rows = 3;
+    assert_eq!(
+        nearest_query_snapshot_with_admission(&fixture.exact, &snapshot, &request, &mut admission)
+            .unwrap()
+            .scanned_rows,
+        3
+    );
+    assert_eq!(admission.0, 3);
+}

@@ -522,8 +522,8 @@ fn principal_admission_runs_before_candidate_validation_and_ranking() {
         })
     ));
     assert_eq!(
-        bounded_admission.calls, 3,
-        "the over-budget row fails before policy evaluation"
+        bounded_admission.calls, 0,
+        "the oversized partition fails before materialization or policy evaluation"
     );
 
     let mut failing_admission = FailingAdmission { calls: 0 };

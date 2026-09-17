@@ -55,6 +55,12 @@ Events without `partition_by` remain valid sources for projections and outbox
 delivery, but the application event catalog marks them as unavailable for
 replay and streaming.
 
+Outbox delivery remains retryable after commit. If a delivery attempt fails or
+its completion races with a status change, the dispatcher retains its position
+before the interrupted item. Remaining items in that page are available on the
+next scan; delivery is still at least once and consumers must deduplicate by
+the stable event ID.
+
 ## Evolution
 
 Events use the contract version and stable event symbol as their only evolution

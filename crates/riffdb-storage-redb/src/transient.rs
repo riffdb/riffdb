@@ -2,6 +2,9 @@
 
 #[path = "transient_follower.rs"]
 pub(crate) mod follower;
+#[path = "transient_payload.rs"]
+mod payload;
+use payload::{PayloadCache, SegmentMetadata};
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::ops::Bound::{Excluded, Unbounded};
@@ -55,7 +58,8 @@ pub(crate) struct CommandDerivedLocator {
 
 #[derive(Default)]
 struct CommandDerivedIndexes {
-    segments: BTreeMap<CommitSequence, Arc<StoredCommandSegmentV1>>,
+    segments: BTreeMap<CommitSequence, SegmentMetadata>,
+    payloads: PayloadCache,
     idempotency: BTreeMap<Vec<u8>, CommandDerivedLocator>,
     provenance: BTreeMap<Vec<u8>, CommandDerivedLocator>,
     audit_sequence: BTreeMap<Vec<u8>, CommandDerivedLocator>,
@@ -333,91 +337,140 @@ impl TransientIndexes {
         Some(Ok(output))
     }
 
+    pub(crate) fn has_command_member(
+        &self,
+        kind: CommandDerivedIndexKindV1,
+        key: &[u8],
+    ) -> Result<bool, StorageError> {
+        let indexes = self.command_derived.as_ref().ok_or_else(corrupt)?;
+        Ok(indexes.index(kind).contains_key(key))
+    }
+
+    pub(crate) fn has_command_at(&self, sequence: CommitSequence) -> Result<bool, StorageError> {
+        let indexes = self.command_derived.as_ref().ok_or_else(corrupt)?;
+        Ok(indexes
+            .segments
+            .range(..=sequence)
+            .next_back()
+            .is_some_and(|(_, metadata)| sequence <= metadata.last))
+    }
+
     pub(crate) fn command_audit_record(
         &self,
         sequence: riffdb_types::AdministrationSequence,
-    ) -> Option<Option<riffdb_storage_api::StoredServiceAuditRecordV1>> {
-        let indexes = self.command_derived.as_ref()?;
-        let exact_key = encode_audit_key(sequence);
-        let Some(locator) = indexes.audit_sequence.get(exact_key.as_slice()) else {
-            return Some(None);
-        };
-        let segment = indexes.segments.get(&locator.segment_first)?;
-        Some(command_audit_from_locator(segment, *locator, sequence))
+        load: impl FnOnce(CommitSequence) -> Result<Option<Vec<u8>>, StorageError>,
+    ) -> Result<Option<riffdb_storage_api::StoredServiceAuditRecordV1>, StorageError> {
+        self.command_audit_record_at_or_before(
+            sequence,
+            Some(CommitSequence::new(u64::MAX).ok_or_else(corrupt)?),
+            load,
+        )
     }
 
     pub(crate) fn command_audit_record_at_or_before(
         &self,
         sequence: riffdb_types::AdministrationSequence,
         frontier: Option<CommitSequence>,
-    ) -> Option<Option<riffdb_storage_api::StoredServiceAuditRecordV1>> {
-        let indexes = self.command_derived.as_ref()?;
-        let exact_key = encode_audit_key(sequence);
-        let Some(locator) = indexes.audit_sequence.get(exact_key.as_slice()) else {
-            return Some(None);
+        load: impl FnOnce(CommitSequence) -> Result<Option<Vec<u8>>, StorageError>,
+    ) -> Result<Option<riffdb_storage_api::StoredServiceAuditRecordV1>, StorageError> {
+        let indexes = self.command_derived.as_ref().ok_or_else(corrupt)?;
+        let key = encode_audit_key(sequence);
+        let Some(locator) = indexes.audit_sequence.get(key.as_slice()) else {
+            return Ok(None);
         };
-        let Some(frontier) = frontier else {
-            return Some(None);
-        };
-        let segment = indexes.segments.get(&locator.segment_first)?;
-        if segment.last_commit_sequence() > frontier {
-            return Some(None);
+        let metadata = indexes
+            .segments
+            .get(&locator.segment_first)
+            .ok_or_else(corrupt)?;
+        if frontier.is_none_or(|frontier| metadata.last > frontier) {
+            return Ok(None);
         }
-        Some(command_audit_from_locator(segment, *locator, sequence))
+        let segment = indexes.payloads.resolve(metadata, load)?;
+        command_audit_from_locator(&segment, *locator, sequence)
+            .map(Some)
+            .ok_or_else(corrupt)
     }
 
     pub(crate) fn command_derived_member(
         &self,
         kind: CommandDerivedIndexKindV1,
         exact_key: &[u8],
-    ) -> Option<Option<(Arc<StoredCommandSegmentV1>, CommandDerivedLocator)>> {
-        let indexes = self.command_derived.as_ref()?;
-        let index = indexes.index(kind);
-        let Some(locator) = index.get(exact_key).copied() else {
-            return Some(None);
+        load: impl FnOnce(CommitSequence) -> Result<Option<Vec<u8>>, StorageError>,
+    ) -> Result<Option<(Arc<StoredCommandSegmentV1>, CommandDerivedLocator)>, StorageError> {
+        let indexes = self.command_derived.as_ref().ok_or_else(corrupt)?;
+        let Some(locator) = indexes.index(kind).get(exact_key).copied() else {
+            return Ok(None);
         };
-        let segment = indexes.segments.get(&locator.segment_first).cloned()?;
-        Some(Some((segment, locator)))
+        let metadata = indexes
+            .segments
+            .get(&locator.segment_first)
+            .ok_or_else(corrupt)?;
+        let segment = indexes.payloads.resolve(metadata, load)?;
+        let command = segment
+            .commands()
+            .get(usize::from(locator.command_ordinal))
+            .ok_or_else(corrupt)?;
+        if expected_manifest_key(command, kind, locator.member, locator.member_ordinal)?.as_slice()
+            != exact_key
+        {
+            return Err(corrupt());
+        }
+        Ok(Some((segment, locator)))
     }
 
     pub(crate) fn command_segment_tail(
         &self,
     ) -> Option<Option<(CommitSequence, CommandSegmentDigestV1)>> {
-        let indexes = self.command_derived.as_ref()?;
         Some(
-            indexes
+            self.command_derived
+                .as_ref()?
                 .segments
                 .last_key_value()
-                .map(|(_, segment)| (segment.first_commit_sequence(), segment.segment_digest())),
+                .map(|(_, segment)| (segment.first, segment.digest)),
         )
     }
 
     pub(crate) fn command_segment_coverage(&self) -> Option<Option<CommitSequence>> {
-        let indexes = self.command_derived.as_ref()?;
         Some(
-            indexes
+            self.command_derived
+                .as_ref()?
                 .segments
                 .last_key_value()
-                .map(|(_, segment)| segment.last_commit_sequence()),
+                .map(|(_, segment)| segment.last),
         )
     }
 
     pub(crate) fn command_at(
         &self,
         sequence: CommitSequence,
-    ) -> Option<Option<StoredCommandCapsuleV2>> {
-        let indexes = self.command_derived.as_ref()?;
-        let Some((_, segment)) = indexes.segments.range(..=sequence).next_back() else {
-            return Some(None);
+        load: impl FnOnce(CommitSequence) -> Result<Option<Vec<u8>>, StorageError>,
+    ) -> Result<Option<StoredCommandCapsuleV2>, StorageError> {
+        let indexes = self.command_derived.as_ref().ok_or_else(corrupt)?;
+        let Some((_, metadata)) = indexes.segments.range(..=sequence).next_back() else {
+            return Ok(None);
         };
-        if sequence > segment.last_commit_sequence() {
-            return Some(None);
+        if sequence > metadata.last {
+            return Ok(None);
         }
-        let ordinal = sequence
-            .get()
-            .checked_sub(segment.first_commit_sequence().get())
-            .and_then(|value| usize::try_from(value).ok())?;
-        Some(segment.commands().get(ordinal).cloned())
+        let segment = indexes.payloads.resolve(metadata, load)?;
+        let ordinal =
+            usize::try_from(sequence.get() - metadata.first.get()).map_err(|_| corrupt())?;
+        segment
+            .commands()
+            .get(ordinal)
+            .cloned()
+            .map(Some)
+            .ok_or_else(corrupt)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn evict_payloads(&self) {
+        self.command_derived.as_ref().unwrap().payloads.clear();
+    }
+
+    #[cfg(test)]
+    pub(crate) fn payload_stats(&self) -> (usize, usize) {
+        self.command_derived.as_ref().unwrap().payloads.stats()
     }
 
     pub(crate) fn apply(&mut self, delta: TransientIndexDelta) {
@@ -699,22 +752,11 @@ fn rebuild_event_routes(
     if let Some(command_derived) = command_derived {
         for segment in command_derived.segments.values() {
             check_rebuild_cancellation(cancellation)?;
-            for command in segment.commands() {
+            for (event_id, (partition, route)) in &segment.events {
                 check_rebuild_cancellation(cancellation)?;
-                for event in command.events() {
-                    check_rebuild_cancellation(cancellation)?;
-                    let key = encode_event_route_key(
-                        command.base().commit().partition_hash(),
-                        event.event_id(),
-                    );
-                    let route = StoredEventRouteV1::new(
-                        event.event_id(),
-                        event.event_type_id(),
-                        event.event_hash(),
-                    );
-                    if routes.insert(key.to_vec(), route).is_some() {
-                        return Err(corrupt());
-                    }
+                let key = encode_event_route_key(*partition, *event_id);
+                if routes.insert(key.to_vec(), *route).is_some() {
+                    return Err(corrupt());
                 }
             }
         }
@@ -738,12 +780,9 @@ fn rebuild_event_routes(
 
 impl CommandDerivedIndexes {
     fn event_ids(&self) -> impl Iterator<Item = EventId> + '_ {
-        self.segments.values().flat_map(|segment| {
-            segment
-                .commands()
-                .iter()
-                .flat_map(|command| command.events().iter().map(|event| event.event_id()))
-        })
+        self.segments
+            .values()
+            .flat_map(|segment| segment.events.keys().copied())
     }
 
     fn index(&self, kind: CommandDerivedIndexKindV1) -> &BTreeMap<Vec<u8>, CommandDerivedLocator> {
@@ -767,7 +806,10 @@ impl CommandDerivedIndexes {
     ) -> Result<(), StorageError> {
         if self
             .segments
-            .insert(segment.first_commit_sequence(), Arc::clone(&segment))
+            .insert(
+                segment.first_commit_sequence(),
+                SegmentMetadata::new(&segment)?,
+            )
             .is_some()
         {
             return Err(corrupt());
@@ -808,6 +850,7 @@ impl CommandDerivedIndexes {
                 return Err(corrupt());
             }
         }
+
         Ok(())
     }
 }

@@ -1555,14 +1555,13 @@ fn administration_writes_preserve_a_startup_proof_without_history_rescans() {
 #[test]
 fn pipelined_writers_resolve_command_audits_from_the_unpublished_exact_index() {
     let source_dir = crate_root().join("src");
-    let store = without_whitespace(&production_source(source_dir.join("store.rs")));
+    let store = without_whitespace(&production_source(
+        source_dir.join("store/transient_access.rs"),
+    ));
     let lookup = store
         .split_once("pub(crate)fncommand_audit_record(")
         .expect("command audit lookup")
-        .1
-        .split_once("pub(crate)constfnretains_journal_mutations(")
-        .expect("command audit lookup end")
-        .0;
+        .1;
     assert!(lookup.contains("unpublished_command_indexes"));
     assert!(lookup.contains(".command_audit_record(sequence)"));
 
@@ -2422,13 +2421,26 @@ fn journal_runtime_rotation_stays_with_the_shared_store_owner() {
 /// proof then classifies as corruption.
 #[test]
 fn paired_command_index_lookups_hold_one_transient_guard_across_both_probes() {
-    let source = read(crate_root().join("src/store.rs"));
+    let store = read(crate_root().join("src/store.rs"));
+    let access = read(crate_root().join("src/store/transient_access.rs"));
+    let write_access = access
+        .split_once("impl RedbWriteAccess {")
+        .expect("write access")
+        .1;
     for name in [
         "fn command_segment_tail",
         "fn command_derived_member",
         "fn command_audit_record",
         "fn service_audit_sequences_for",
     ] {
+        let source = if matches!(
+            name,
+            "fn command_derived_member" | "fn command_audit_record"
+        ) {
+            write_access
+        } else {
+            &store
+        };
         let start = source
             .find(name)
             .unwrap_or_else(|| panic!("paired index lookup {name} is present"));

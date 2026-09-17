@@ -1,4 +1,6 @@
 //! Dormant redb handle, identity probe, and atomic initialization.
+#[path = "store/transient_access.rs"]
+mod transient_access;
 
 use std::cell::RefCell;
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
@@ -4986,31 +4988,6 @@ impl RedbOperationalPorts {
         self.shared.note_fresh_locator_history_fallback_scan();
     }
 
-    pub(crate) fn command_derived_member(
-        &self,
-        kind: riffdb_storage_api::CommandDerivedIndexKindV1,
-        exact_key: &[u8],
-    ) -> Result<
-        Option<(
-            Arc<riffdb_storage_api::StoredCommandSegmentV1>,
-            crate::transient::CommandDerivedLocator,
-        )>,
-        StorageError,
-    > {
-        let state = self
-            .shared
-            .transient_indexes
-            .read()
-            .map_err(|_| storage_error(StorageErrorKind::InvariantViolation))?;
-        match &*state {
-            TransientIndexState::Ready(indexes) => indexes
-                .command_derived_member(kind, exact_key)
-                .ok_or_else(|| storage_error(StorageErrorKind::Unavailable)),
-            TransientIndexState::Dormant => Ok(None),
-            TransientIndexState::Invalid => Err(storage_error(StorageErrorKind::Unavailable)),
-        }
-    }
-
     pub(crate) fn command_derived_frontier(&self) -> Result<Option<CommitSequence>, StorageError> {
         let state = self
             .shared
@@ -5020,24 +4997,6 @@ impl RedbOperationalPorts {
         match &*state {
             TransientIndexState::Ready(indexes) => indexes
                 .command_segment_coverage()
-                .ok_or_else(|| storage_error(StorageErrorKind::Unavailable)),
-            TransientIndexState::Dormant => Ok(None),
-            TransientIndexState::Invalid => Err(storage_error(StorageErrorKind::Unavailable)),
-        }
-    }
-
-    pub(crate) fn indexed_command_at(
-        &self,
-        sequence: CommitSequence,
-    ) -> Result<Option<riffdb_storage_api::StoredCommandCapsuleV2>, StorageError> {
-        let state = self
-            .shared
-            .transient_indexes
-            .read()
-            .map_err(|_| storage_error(StorageErrorKind::InvariantViolation))?;
-        match &*state {
-            TransientIndexState::Ready(indexes) => indexes
-                .command_at(sequence)
                 .ok_or_else(|| storage_error(StorageErrorKind::Unavailable)),
             TransientIndexState::Dormant => Ok(None),
             TransientIndexState::Invalid => Err(storage_error(StorageErrorKind::Unavailable)),
@@ -5065,54 +5024,6 @@ impl RedbOperationalPorts {
     /// incident, and `Invalid` still fails closed.
     fn ensure_command_audit_index(&self) -> Result<(), StorageError> {
         self.shared.ensure_transient_indexes_ready()
-    }
-
-    pub(crate) fn indexed_command_audit(
-        &self,
-        sequence: riffdb_types::AdministrationSequence,
-    ) -> Result<Option<riffdb_storage_api::StoredServiceAuditRecordV1>, StorageError> {
-        self.ensure_command_audit_index()?;
-        let state = self
-            .shared
-            .transient_indexes
-            .read()
-            .map_err(|_| storage_error(StorageErrorKind::InvariantViolation))?;
-        match &*state {
-            TransientIndexState::Ready(indexes) => {
-                Ok(indexes.command_audit_record(sequence).flatten())
-            }
-            // Unreachable after population, and never silently empty: a cold
-            // index must not be reported as an absent audit record.
-            TransientIndexState::Dormant => {
-                Err(storage_error(StorageErrorKind::InvariantViolation))
-            }
-            TransientIndexState::Invalid => Err(storage_error(StorageErrorKind::Unavailable)),
-        }
-    }
-
-    pub(crate) fn indexed_command_audit_at_access(
-        &self,
-        access: &RedbReadAccess,
-        sequence: riffdb_types::AdministrationSequence,
-    ) -> Result<Option<riffdb_storage_api::StoredServiceAuditRecordV1>, StorageError> {
-        let frontier = access.application_frontier()?;
-        self.ensure_command_audit_index()?;
-        let state = self
-            .shared
-            .transient_indexes
-            .read()
-            .map_err(|_| storage_error(StorageErrorKind::InvariantViolation))?;
-        match &*state {
-            TransientIndexState::Ready(indexes) => indexes
-                .command_audit_record_at_or_before(sequence, frontier)
-                .ok_or_else(|| storage_error(StorageErrorKind::Unavailable)),
-            // Unreachable after population, and never silently empty: a cold
-            // index must not be reported as an absent audit record.
-            TransientIndexState::Dormant => {
-                Err(storage_error(StorageErrorKind::InvariantViolation))
-            }
-            TransientIndexState::Invalid => Err(storage_error(StorageErrorKind::Unavailable)),
-        }
     }
 
     /// Exclusive-gate tickets ever issued on this database.
@@ -6019,57 +5930,6 @@ impl RedbWriteAccess {
         Ok(Some(epoch.or(earlier)))
     }
 
-    pub(crate) fn command_derived_member(
-        &self,
-        kind: riffdb_storage_api::CommandDerivedIndexKindV1,
-        exact_key: &[u8],
-    ) -> Result<
-        Option<(
-            Arc<riffdb_storage_api::StoredCommandSegmentV1>,
-            crate::transient::CommandDerivedLocator,
-        )>,
-        StorageError,
-    > {
-        let transient = self
-            .shared
-            .transient_indexes
-            .read()
-            .map_err(|_| storage_error(StorageErrorKind::InvariantViolation))?;
-        let published = match &*transient {
-            TransientIndexState::Ready(indexes) => indexes
-                .command_derived_member(kind, exact_key)
-                .ok_or_else(|| storage_error(StorageErrorKind::Unavailable))?,
-            TransientIndexState::Dormant => None,
-            TransientIndexState::Invalid => {
-                return Err(storage_error(StorageErrorKind::Unavailable));
-            }
-        };
-        let unpublished = self
-            .shared
-            .unpublished_command_indexes
-            .lock()
-            .map_err(|_| storage_error(StorageErrorKind::InvariantViolation))?
-            .command_derived_member(kind, exact_key);
-        drop(transient);
-        if published.is_some() && unpublished.is_some() {
-            return Err(storage_error(StorageErrorKind::CorruptData));
-        }
-        if let Some(found) = published.or(unpublished) {
-            return Ok(Some(found));
-        }
-        let mut found = None;
-        if let Some(RedbWriteOwnership::Epoch(epoch)) = self.ownership.as_ref() {
-            for delta in &epoch.transient_deltas {
-                if let Some(member) = delta.command_derived_member(kind, exact_key)
-                    && found.replace(member).is_some()
-                {
-                    return Err(storage_error(StorageErrorKind::CorruptData));
-                }
-            }
-        }
-        Ok(found)
-    }
-
     pub(crate) fn command_derived_key_exists(
         &self,
         kind: riffdb_storage_api::CommandDerivedIndexKindV1,
@@ -6094,64 +5954,6 @@ impl RedbWriteAccess {
             .read()
             .map_err(|_| storage_error(StorageErrorKind::InvariantViolation))?;
         Ok(matches!(*state, TransientIndexState::Dormant))
-    }
-
-    pub(crate) fn command_audit_record(
-        &self,
-        sequence: riffdb_types::AdministrationSequence,
-    ) -> Result<Option<riffdb_storage_api::StoredServiceAuditRecordV1>, StorageError> {
-        // Publication moves a segment out of the unpublished index and into the
-        // published one while holding both locks. Both probes must run under one
-        // continuous transient guard, exactly as the sibling lookups do: a guard
-        // released between them lets a concurrent publication land in the gap and
-        // hide a record that never left the store.
-        let transient = self
-            .shared
-            .transient_indexes
-            .read()
-            .map_err(|_| storage_error(StorageErrorKind::InvariantViolation))?;
-        let mut found = match &*transient {
-            TransientIndexState::Ready(indexes) => indexes
-                .command_audit_record(sequence)
-                .ok_or_else(|| storage_error(StorageErrorKind::Unavailable))?,
-            TransientIndexState::Dormant => None,
-            TransientIndexState::Invalid => {
-                return Err(storage_error(StorageErrorKind::Unavailable));
-            }
-        };
-        let unpublished = self
-            .shared
-            .unpublished_command_indexes
-            .lock()
-            .map_err(|_| storage_error(StorageErrorKind::InvariantViolation))?
-            .command_audit_record(sequence);
-        drop(transient);
-        if found.is_some() && unpublished.is_some() {
-            return Err(storage_error(StorageErrorKind::CorruptData));
-        }
-        found = found.or(unpublished);
-        if let Some(RedbWriteOwnership::Epoch(epoch)) = self.ownership.as_ref() {
-            let mut deltas = epoch.transient_deltas.iter().rev();
-            if let Some(record) = deltas
-                .next()
-                .and_then(TransientIndexDelta::command_audit_tail)
-                .filter(|record| record.administration_sequence() == sequence)
-                .cloned()
-            {
-                if found.is_some() {
-                    return Err(storage_error(StorageErrorKind::CorruptData));
-                }
-                return Ok(Some(record));
-            }
-            for delta in deltas {
-                if let Some(record) = delta.command_audit_record(sequence)
-                    && found.replace(record).is_some()
-                {
-                    return Err(storage_error(StorageErrorKind::CorruptData));
-                }
-            }
-        }
-        Ok(found)
     }
 
     pub(crate) const fn retains_journal_mutations(&self) -> bool {

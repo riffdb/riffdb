@@ -43,7 +43,7 @@ impl TransientIndexes {
                         return Err(corrupt());
                     }
                     indexes.apply_segment_arc(Arc::clone(&segment))?;
-                    affected.push(segment);
+                    affected.push(SegmentMetadata::new(&segment)?);
                 }
                 Err(error)
                     if error.kind()
@@ -52,15 +52,9 @@ impl TransientIndexes {
             }
         }
         for segment in affected {
-            for command in segment.commands() {
-                for event in command.events() {
-                    let route_key = encode_event_route_key(
-                        command.base().commit().partition_hash(),
-                        event.event_id(),
-                    );
-                    self.refresh_route(write, &route_key)?;
-                    self.refresh_outbox(write, event.event_id())?;
-                }
+            for (id, (partition, _)) in &segment.events {
+                self.refresh_route(write, &encode_event_route_key(*partition, *id))?;
+                self.refresh_outbox(write, *id)?;
             }
         }
         // All physical mutations were applied before this call. Union lookups
@@ -84,10 +78,8 @@ impl TransientIndexes {
         let indexes = self.command_derived.as_ref().ok_or_else(corrupt)?;
         let derived = indexes
             .event_at(event_id)
-            .filter(|(command, _)| command.base().commit().partition_hash() == partition)
-            .map(|(_, event)| {
-                StoredEventRouteV1::new(event.event_id(), event.event_type_id(), event.event_hash())
-            });
+            .filter(|(scope, _)| *scope == partition)
+            .map(|(_, event)| *event);
         let table = write.open_table(EVENT_ROUTES).map_err(table_error)?;
         let physical = table
             .get(key)
@@ -167,30 +159,20 @@ impl CommandDerivedIndexes {
     // Match startup rebuild's source of truth: the immutable command events,
     // not the presence of a locator entry in the segment manifest. Sequence and
     // ordinal identify one bounded member without walking any retained history.
-    fn event_at(
-        &self,
-        id: EventId,
-    ) -> Option<(
-        &StoredCommandCapsuleV2,
-        &riffdb_storage_api::StoredDurableEventV1,
-    )> {
-        let (first, segment) = self.segments.range(..=id.commit_sequence()).next_back()?;
-        let ordinal = usize::try_from(id.commit_sequence().get().checked_sub(first.get())?).ok()?;
-        let command = segment.commands().get(ordinal)?;
-        let event = command
-            .events()
-            .get(usize::try_from(id.event_ordinal()).ok()?)?;
-        (event.event_id() == id).then_some((command, event))
+    fn event_at(&self, id: EventId) -> Option<&(PartitionKeyHash, StoredEventRouteV1)> {
+        let (_, metadata) = self.segments.range(..=id.commit_sequence()).next_back()?;
+        metadata.events.get(&id)
     }
 
     fn remove_segment(
         &mut self,
         first: CommitSequence,
-    ) -> Result<Option<Arc<StoredCommandSegmentV1>>, StorageError> {
+    ) -> Result<Option<SegmentMetadata>, StorageError> {
         let Some(segment) = self.segments.remove(&first) else {
             return Ok(None);
         };
-        for entry in segment.manifest().entries() {
+        self.payloads.remove(first)?;
+        for entry in segment.manifest.entries() {
             let expected = CommandDerivedLocator {
                 segment_first: entry.segment_first_commit_sequence(),
                 command_ordinal: entry.command_ordinal(),

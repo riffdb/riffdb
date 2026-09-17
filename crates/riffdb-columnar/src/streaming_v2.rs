@@ -5,7 +5,7 @@
 //! removed before ROOT-V1 can be written.
 
 use std::cmp::{Ordering, Reverse};
-use std::collections::{BTreeMap, BinaryHeap};
+use std::collections::{BTreeMap, BinaryHeap, VecDeque};
 use std::fmt;
 use std::fs::{self, File, OpenOptions};
 use std::io::{BufReader, BufWriter, Read, Write};
@@ -65,6 +65,50 @@ pub const V2_SNAPSHOT_BUILD_MAX_BYTES: u64 = crate::MAX_COLUMNAR_GENERATION_ROOT
     + crate::MAX_SEGMENT_V2_BYTES as u64
     + 16;
 
+const MAX_OPEN_LANE_WRITERS: usize = 16;
+const LANE_BUFFER_BYTES: usize = 64 * 1024;
+
+#[derive(Default)]
+struct LaneWriters<W: Write> {
+    writers: VecDeque<(PathBuf, BufWriter<W>)>,
+}
+
+impl<W: Write> LaneWriters<W> {
+    fn append(
+        &mut self,
+        path: &Path,
+        payload: &[u8],
+        open: impl FnOnce(&Path) -> Result<W, ColumnarV2StreamingError>,
+    ) -> Result<(), ColumnarV2StreamingError> {
+        let index = if let Some(index) = self.writers.iter().position(|(key, _)| key == path) {
+            index
+        } else {
+            if self.writers.len() == MAX_OPEN_LANE_WRITERS {
+                self.writers
+                    .front_mut()
+                    .ok_or(ColumnarV2StreamingError::Invalid)?
+                    .1
+                    .flush()
+                    .map_err(|_| ColumnarV2StreamingError::Io)?;
+                self.writers.pop_front();
+            }
+            self.writers.push_back((
+                path.to_path_buf(),
+                BufWriter::with_capacity(LANE_BUFFER_BYTES, open(path)?),
+            ));
+            self.writers.len() - 1
+        };
+        append_frame(&mut self.writers[index].1, payload)
+    }
+
+    fn flush(&mut self) -> Result<(), ColumnarV2StreamingError> {
+        for (_, writer) in &mut self.writers {
+            writer.flush().map_err(|_| ColumnarV2StreamingError::Io)?;
+        }
+        Ok(())
+    }
+}
+
 // Count final merged rows, not pre-tail snapshot rows: a retained deletion may
 // shrink a snapshot that would otherwise exceed the final manifest capacity.
 struct PartitionLane {
@@ -73,12 +117,21 @@ struct PartitionLane {
 }
 
 impl PartitionLane {
-    fn append(&mut self, row: &ProjectedRow) -> Result<(), ColumnarV2StreamingError> {
+    fn append(
+        &mut self,
+        row: &ProjectedRow,
+        writers: &mut LaneWriters<File>,
+    ) -> Result<(), ColumnarV2StreamingError> {
         let remaining = self
             .remaining
             .checked_sub(1)
             .ok_or(ColumnarV2StreamingError::BoundExceeded)?;
-        append_frame(&self.path, &encode_projected_row(row)?)?;
+        writers.append(&self.path, &encode_projected_row(row)?, |path| {
+            OpenOptions::new()
+                .append(true)
+                .open(path)
+                .map_err(|_| ColumnarV2StreamingError::Io)
+        })?;
         self.remaining = remaining;
         Ok(())
     }
@@ -581,12 +634,16 @@ impl ColumnarV2StreamingRows {
             );
             lanes.push((organization.clone(), path));
         }
+        let mut writers = LaneWriters {
+            writers: VecDeque::new(),
+        };
         self.visit_final_rows(snapshot, definition, stop_before_next_page, |row| {
             let lane = identities
                 .get_mut(&row.organization)
                 .ok_or(ColumnarV2StreamingError::Invalid)?;
-            lane.append(&row)
+            lane.append(&row, &mut writers)
         })?;
+        writers.flush()?;
         Ok(lanes)
     }
 
@@ -1450,14 +1507,10 @@ fn sum_file_bytes(paths: &[PathBuf]) -> Result<u64, ColumnarV2StreamingError> {
     })
 }
 
-fn append_frame(path: &Path, payload: &[u8]) -> Result<(), ColumnarV2StreamingError> {
+fn append_frame(file: &mut impl Write, payload: &[u8]) -> Result<(), ColumnarV2StreamingError> {
     if payload.is_empty() || payload.len() > MAX_SCRATCH_FRAME_PAYLOAD {
         return Err(ColumnarV2StreamingError::BoundExceeded);
     }
-    let mut file = OpenOptions::new()
-        .append(true)
-        .open(path)
-        .map_err(|_| ColumnarV2StreamingError::Io)?;
     let length =
         u32::try_from(payload.len()).map_err(|_| ColumnarV2StreamingError::BoundExceeded)?;
     file.write_all(&length.to_be_bytes())
@@ -1706,6 +1759,89 @@ fn hit(controller: Option<&ColumnarTestController>, boundary: ColumnarTestBounda
 mod tests {
     use super::*;
 
+    #[derive(Clone, Default)]
+    struct LaneProbe {
+        bytes: std::rc::Rc<std::cell::RefCell<Vec<u8>>>,
+        fail: std::rc::Rc<std::cell::Cell<bool>>,
+    }
+
+    impl Write for LaneProbe {
+        fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+            if self.fail.get() {
+                return Err(std::io::Error::other("injected"));
+            }
+            self.bytes.borrow_mut().extend_from_slice(bytes);
+            Ok(bytes.len())
+        }
+        fn flush(&mut self) -> std::io::Result<()> {
+            if self.fail.get() {
+                Err(std::io::Error::other("injected"))
+            } else {
+                Ok(())
+            }
+        }
+    }
+
+    // req: PRJ-004
+    #[test]
+    fn review_lane_writers_bound_opens_and_propagate_eviction_and_finish_failures() {
+        let probe = LaneProbe::default();
+        let mut writers = LaneWriters {
+            writers: VecDeque::new(),
+        };
+        let mut opens = 0;
+        for _ in 0..100 {
+            writers
+                .append(Path::new("same"), b"payload", |_| {
+                    opens += 1;
+                    Ok(probe.clone())
+                })
+                .unwrap();
+        }
+        assert_eq!(opens, 1);
+        assert!(probe.bytes.borrow().is_empty());
+        for lane in 1..MAX_OPEN_LANE_WRITERS {
+            writers
+                .append(Path::new(&format!("lane-{lane}")), b"x", |_| {
+                    Ok(LaneProbe::default())
+                })
+                .unwrap();
+        }
+        assert_eq!(writers.writers.len(), MAX_OPEN_LANE_WRITERS);
+        assert!(
+            writers
+                .writers
+                .iter()
+                .all(|(_, writer)| writer.capacity() == LANE_BUFFER_BYTES)
+        );
+        probe.fail.set(true);
+        assert_eq!(
+            writers.append(Path::new("overflow"), b"x", |_| panic!(
+                "must flush before open"
+            )),
+            Err(ColumnarV2StreamingError::Io)
+        );
+        assert_eq!(writers.writers.len(), MAX_OPEN_LANE_WRITERS);
+        probe.fail.set(false);
+        let last = LaneProbe::default();
+        writers
+            .append(Path::new("overflow"), b"x", |_| Ok(last.clone()))
+            .unwrap();
+        let mut expected = Vec::new();
+        for _ in 0..100 {
+            append_frame(&mut expected, b"payload").unwrap();
+        }
+        assert_eq!(*probe.bytes.borrow(), expected);
+        last.fail.set(true);
+        assert_eq!(writers.flush(), Err(ColumnarV2StreamingError::Io));
+        last.fail.set(false);
+        writers.flush().unwrap();
+        let mut expected = Vec::new();
+        append_frame(&mut expected, b"x").unwrap();
+        assert_eq!(*last.bytes.borrow(), expected);
+        assert_eq!(writers.writers.len(), MAX_OPEN_LANE_WRITERS);
+    }
+
     // req: PRJ-004, PRJ-009, OQ-020
     #[test]
     fn projected_row_codec_preserves_bytes_and_checks_combined_state_bound() {
@@ -1867,11 +2003,16 @@ mod tests {
             path: path.clone(),
             remaining: 2,
         };
-        lane.append(&row(1, 1, 1)).expect("first row");
-        lane.append(&row(2, 1, 1)).expect("inclusive ceiling");
+        let mut writers = LaneWriters {
+            writers: VecDeque::new(),
+        };
+        lane.append(&row(1, 1, 1), &mut writers).expect("first row");
+        lane.append(&row(2, 1, 1), &mut writers)
+            .expect("inclusive ceiling");
+        writers.flush().expect("flush bounded lane");
         let at_limit = fs::read(&path).expect("bounded lane");
         assert_eq!(
-            lane.append(&row(3, 1, 1)),
+            lane.append(&row(3, 1, 1), &mut writers),
             Err(ColumnarV2StreamingError::BoundExceeded)
         );
         assert_eq!(fs::read(&path).expect("unchanged lane"), at_limit);

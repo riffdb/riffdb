@@ -1,0 +1,139 @@
+{
+  "cells": [
+    {
+      "cell_id": "interactive-c1",
+      "checks": {
+        "aggregate_p50_within_ceiling": true,
+        "aggregate_p99_within_ceiling": true,
+        "correctness_clean": true,
+        "create_comment_p50_within_ceiling": true,
+        "seed_within_ceiling": true,
+        "throughput_above_floor": true,
+        "zero_non_success_outcomes": true
+      },
+      "clients": 1,
+      "guardrails": {
+        "aggregate_p50_max_ms": 0.25,
+        "aggregate_p99_max_ms": 6.0,
+        "create_comment_p50_max_ms": 4.0,
+        "seed_max_ms": 3000,
+        "throughput_min_ops_s": 1500
+      },
+      "observed": {
+        "aggregate_p50_ms": 0.204799,
+        "aggregate_p99_ms": 3.014655,
+        "create_comment_p50_ms": 1.966079,
+        "non_success_outcomes": 0,
+        "seed_ms": 2937.473,
+        "throughput_ops_s": 1977
+      },
+      "passed": true,
+      "profile": "interactive"
+    },
+    {
+      "cell_id": "interactive-c32",
+      "checks": {
+        "aggregate_p50_within_ceiling": true,
+        "aggregate_p99_within_ceiling": true,
+        "correctness_clean": true,
+        "create_comment_p50_within_ceiling": true,
+        "seed_within_ceiling": true,
+        "throughput_above_floor": true,
+        "zero_non_success_outcomes": true
+      },
+      "clients": 32,
+      "guardrails": {
+        "aggregate_p50_max_ms": 0.35,
+        "aggregate_p99_max_ms": 12.0,
+        "create_comment_p50_max_ms": 7.0,
+        "seed_max_ms": 3000,
+        "throughput_min_ops_s": 26000
+      },
+      "observed": {
+        "aggregate_p50_ms": 0.229375,
+        "aggregate_p99_ms": 9.961471,
+        "create_comment_p50_ms": 6.553599,
+        "non_success_outcomes": 0,
+        "seed_ms": 2984.123,
+        "throughput_ops_s": 26248
+      },
+      "passed": true,
+      "profile": "interactive"
+    },
+    {
+      "cell_id": "interactive-c128",
+      "checks": {
+        "aggregate_p50_within_ceiling": true,
+        "aggregate_p99_within_ceiling": true,
+        "correctness_clean": true,
+        "create_comment_p50_within_ceiling": true,
+        "seed_within_ceiling": true,
+        "throughput_above_floor": false,
+        "zero_non_success_outcomes": true
+      },
+      "clients": 128,
+      "guardrails": {
+        "aggregate_p50_max_ms": 0.85,
+        "aggregate_p99_max_ms": 42.0,
+        "create_comment_p50_max_ms": 26.0,
+        "seed_max_ms": 3000,
+        "throughput_min_ops_s": 30000
+      },
+      "observed": {
+        "aggregate_p50_ms": 0.524287,
+        "aggregate_p99_ms": 35.651583,
+        "create_comment_p50_ms": 25.165823,
+        "non_success_outcomes": 0,
+        "seed_ms": 2875.731,
+        "throughput_ops_s": 29298
+      },
+      "passed": false,
+      "profile": "interactive"
+    },
+    {
+      "cell_id": "write-only-c32",
+      "checks": {
+        "aggregate_p50_within_ceiling": false,
+        "aggregate_p99_within_ceiling": false,
+        "correctness_clean": true,
+        "create_comment_p50_within_ceiling": false,
+        "seed_within_ceiling": false,
+        "throughput_above_floor": false,
+        "zero_non_success_outcomes": true
+      },
+      "clients": 32,
+      "guardrails": {
+        "aggregate_p50_max_ms": 7.0,
+        "aggregate_p99_max_ms": 25.0,
+        "create_comment_p50_max_ms": 7.0,
+        "seed_max_ms": 3000,
+        "throughput_min_ops_s": 4800
+      },
+      "observed": {
+        "aggregate_p50_ms": 7.602175,
+        "aggregate_p99_ms": 35.651583,
+        "create_comment_p50_ms": 7.602175,
+        "non_success_outcomes": 0,
+        "seed_ms": 3428.491,
+        "throughput_ops_s": 3650
+      },
+      "passed": false,
+      "profile": "write_only"
+    }
+  ],
+  "configuration": {
+    "automatic_rerun_of_failed_cells": true,
+    "backend_id": "riffdb_public_grpc",
+    "duration_seconds": 5,
+    "repetitions": 1,
+    "warmup_seconds": 1
+  },
+  "evidentiary": false,
+  "failed_cells": [
+    "interactive-c128",
+    "write-only-c32"
+  ],
+  "purpose": "short-window development regression sentinel",
+  "schema": "riffdb.app-baseline-performance-sentinel/v1",
+  "status": "regression_suspected"
+}

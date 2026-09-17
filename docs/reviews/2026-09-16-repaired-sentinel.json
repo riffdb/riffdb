@@ -1,0 +1,141 @@
+{
+  "cells": [
+    {
+      "cell_id": "interactive-c1",
+      "checks": {
+        "aggregate_p50_within_ceiling": true,
+        "aggregate_p99_within_ceiling": true,
+        "correctness_clean": true,
+        "create_comment_p50_within_ceiling": true,
+        "seed_within_ceiling": false,
+        "throughput_above_floor": true,
+        "zero_non_success_outcomes": true
+      },
+      "clients": 1,
+      "guardrails": {
+        "aggregate_p50_max_ms": 0.25,
+        "aggregate_p99_max_ms": 6.0,
+        "create_comment_p50_max_ms": 4.0,
+        "seed_max_ms": 3000,
+        "throughput_min_ops_s": 1500
+      },
+      "observed": {
+        "aggregate_p50_ms": 0.204799,
+        "aggregate_p99_ms": 3.014655,
+        "create_comment_p50_ms": 1.966079,
+        "non_success_outcomes": 0,
+        "seed_ms": 3576.92,
+        "throughput_ops_s": 1933
+      },
+      "passed": false,
+      "profile": "interactive"
+    },
+    {
+      "cell_id": "interactive-c32",
+      "checks": {
+        "aggregate_p50_within_ceiling": true,
+        "aggregate_p99_within_ceiling": true,
+        "correctness_clean": true,
+        "create_comment_p50_within_ceiling": true,
+        "seed_within_ceiling": false,
+        "throughput_above_floor": false,
+        "zero_non_success_outcomes": true
+      },
+      "clients": 32,
+      "guardrails": {
+        "aggregate_p50_max_ms": 0.35,
+        "aggregate_p99_max_ms": 12.0,
+        "create_comment_p50_max_ms": 7.0,
+        "seed_max_ms": 3000,
+        "throughput_min_ops_s": 26000
+      },
+      "observed": {
+        "aggregate_p50_ms": 0.229375,
+        "aggregate_p99_ms": 11.010047,
+        "create_comment_p50_ms": 6.553599,
+        "non_success_outcomes": 0,
+        "seed_ms": 3591.047,
+        "throughput_ops_s": 25309
+      },
+      "passed": false,
+      "profile": "interactive"
+    },
+    {
+      "cell_id": "interactive-c128",
+      "checks": {
+        "aggregate_p50_within_ceiling": true,
+        "aggregate_p99_within_ceiling": true,
+        "correctness_clean": true,
+        "create_comment_p50_within_ceiling": false,
+        "seed_within_ceiling": false,
+        "throughput_above_floor": false,
+        "zero_non_success_outcomes": true
+      },
+      "clients": 128,
+      "guardrails": {
+        "aggregate_p50_max_ms": 0.85,
+        "aggregate_p99_max_ms": 42.0,
+        "create_comment_p50_max_ms": 26.0,
+        "seed_max_ms": 3000,
+        "throughput_min_ops_s": 30000
+      },
+      "observed": {
+        "aggregate_p50_ms": 0.557055,
+        "aggregate_p99_ms": 39.845887,
+        "create_comment_p50_ms": 29.360127,
+        "non_success_outcomes": 0,
+        "seed_ms": 3677.291,
+        "throughput_ops_s": 24952
+      },
+      "passed": false,
+      "profile": "interactive"
+    },
+    {
+      "cell_id": "write-only-c32",
+      "checks": {
+        "aggregate_p50_within_ceiling": false,
+        "aggregate_p99_within_ceiling": false,
+        "correctness_clean": true,
+        "create_comment_p50_within_ceiling": false,
+        "seed_within_ceiling": false,
+        "throughput_above_floor": false,
+        "zero_non_success_outcomes": true
+      },
+      "clients": 32,
+      "guardrails": {
+        "aggregate_p50_max_ms": 7.0,
+        "aggregate_p99_max_ms": 25.0,
+        "create_comment_p50_max_ms": 7.0,
+        "seed_max_ms": 3000,
+        "throughput_min_ops_s": 4800
+      },
+      "observed": {
+        "aggregate_p50_ms": 8.912895,
+        "aggregate_p99_ms": 25.165823,
+        "create_comment_p50_ms": 8.912895,
+        "non_success_outcomes": 0,
+        "seed_ms": 3773.751,
+        "throughput_ops_s": 3579
+      },
+      "passed": false,
+      "profile": "write_only"
+    }
+  ],
+  "configuration": {
+    "automatic_rerun_of_failed_cells": true,
+    "backend_id": "riffdb_public_grpc",
+    "duration_seconds": 5,
+    "repetitions": 1,
+    "warmup_seconds": 1
+  },
+  "evidentiary": false,
+  "failed_cells": [
+    "interactive-c1",
+    "interactive-c32",
+    "interactive-c128",
+    "write-only-c32"
+  ],
+  "purpose": "short-window development regression sentinel",
+  "schema": "riffdb.app-baseline-performance-sentinel/v1",
+  "status": "regression_suspected"
+}
