@@ -15,7 +15,6 @@ concurrency:
 env:
   CARGO_INCREMENTAL: "0"
   SOURCE_DATE_EPOCH: "1735689600"
-  RIFFDB_TMP_ROOT: ${{ runner.temp }}/riffdb-wp611
 
 jobs:
   native-registry-consumers:
@@ -67,6 +66,7 @@ jobs:
         run: ./scripts/check-driver-development-registry
       - name: Prove four fresh native consumers
         env:
+          RIFFDB_TMP_ROOT: ${{ runner.temp }}/riffdb-wp611
           RIFFDB_DRIVER_DISTRIBUTION: ${{ github.workspace }}/target/wp611-distribution
           RIFFDB_VERDACCIO_BIN: ${{ github.workspace }}/target/wp611-tools/node_modules/verdaccio/bin/verdaccio
         run: ./scripts/driver-development-registry-acceptance --all-ecosystems

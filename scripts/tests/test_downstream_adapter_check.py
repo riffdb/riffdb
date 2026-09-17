@@ -33,9 +33,14 @@ class DownstreamCheck(unittest.TestCase):
                         FAILING_ADAPTER='none')
 
     def adapters(self, names=NAMES):
-        for name in names:
-            (self.root / name).mkdir()
-            (self.root / name / 'riffdb.toml').write_text('')
+        pins = json.loads((ROOT / 'scripts/downstream-adapters.json').read_text())
+        for adapter in pins['adapters']:
+            if adapter['name'] not in names:
+                continue
+            for application in adapter['applications']:
+                directory = self.root / adapter['name'] / application
+                directory.mkdir(parents=True, exist_ok=True)
+                (directory / 'riffdb.toml').write_text('')
 
     def check(self, *args):
         return subprocess.run([str(CHECK), '--repo-root', str(self.root), *args],
@@ -60,7 +65,14 @@ class DownstreamCheck(unittest.TestCase):
         self.adapters()
         result = self.check()
         self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertEqual(result.stdout.count('\tcompiles'), len(NAMES))
+        self.assertEqual(result.stdout.count('downstream-adapter-check-v1'), len(NAMES))
+
+    def test_a_missing_declared_profile_fails_the_adapter(self):
+        self.adapters()
+        (self.root / 'riffdb-better-auth/profiles/organization-security/riffdb.toml').unlink()
+        result = self.check()
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn('riffdb-better-auth\tfailed', result.stderr)
 
     def test_absent_manifest_fails(self):
         self.adapters()
@@ -85,7 +97,7 @@ class DownstreamCheck(unittest.TestCase):
         subprocess.run(['git', 'init', '--quiet', str(checkout)], check=True)
         shutil.copy2(CHECK, scripts / CHECK.name)
         valid = json.loads((ROOT / 'scripts/downstream-adapters.json').read_text())
-        for mutation in ('branch', 'empty', 'duplicate', 'foreign_repository'):
+        for mutation in ('branch', 'empty', 'duplicate', 'foreign_repository', 'unsafe_path'):
             with self.subTest(mutation=mutation):
                 pins = json.loads(json.dumps(valid))
                 if mutation == 'branch':
@@ -94,8 +106,10 @@ class DownstreamCheck(unittest.TestCase):
                     pins['adapters'] = []
                 elif mutation == 'duplicate':
                     pins['adapters'].append(pins['adapters'][0])
-                else:
+                elif mutation == 'foreign_repository':
                     pins['adapters'][0]['repository'] = 'file:///unreviewed'
+                else:
+                    pins['adapters'][0]['applications'] = ['.', '../outside']
                 (scripts / 'downstream-adapters.json').write_text(json.dumps(pins))
                 result = subprocess.run([str(scripts / CHECK.name)], cwd=checkout,
                                         env=self.env, capture_output=True, text=True)

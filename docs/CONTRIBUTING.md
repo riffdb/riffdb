@@ -238,8 +238,10 @@ repositories, which are the only end-to-end consumers of the contract and
 RiffQL languages. ADR-0167 previously broke them silently. The required
 **Downstream adapters** CI job runs on every pull request, without path filters,
 and compiles all revisions in `scripts/downstream-adapters.json` using the Rust
-CLI built from the proposed RiffDB tree. It checks exact application locks and
-generated artifacts as well as contract and RiffQL sources. A fetch failure,
+CLI built from the proposed RiffDB tree. The manifest names
+each application directory, including Better Auth's materialized organization
+profile. It checks exact application locks and generated artifacts where
+present, as well as contract and RiffQL sources. A fetch failure,
 missing adapter, stale artifact, or compilation error fails the RiffDB change.
 The public repositories under the [riffdb organization](https://github.com/riffdb)
 need no credentials or secrets, including for fork pull requests.

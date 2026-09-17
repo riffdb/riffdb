@@ -22,12 +22,13 @@ protocol, authorization, or language semantics.
 
 ## Evidence
 
-The initial seven-test orchestration suite includes a regression identified
+The initial eight-test orchestration suite includes a regression identified
 before implementation: with only OpenFGA present, the old checker returned
 success while skipping Better Auth and MLflow. It now rejects that state.
 The suite also covers propagated compilation failures while continuing to
 check other adapters, successful complete coverage, missing manifests,
-unknown names, missing arguments, and malformed or mutable pin sets.
+unknown names, missing arguments, missing declared profiles, and malformed or
+mutable pin sets.
 
 The committed Better Auth source at
 `9dfd90e591380b21f2918f5b8c50573ca5ff4e62` reproduced:
@@ -49,7 +50,7 @@ reproduction then copied the successful Better Auth tree, restored the bare
 status and `RDB-QS003`. A missing executable or unrelated lock failure cannot
 satisfy that diagnostic assertion.
 
-Local checks: seven orchestration tests; pinned GitHub check with ADR-0167
+Local checks: eight orchestration tests; pinned GitHub check with ADR-0167
 reproduction; `bash -n`; `git diff --check`; package allowed-path check;
 formatting and handbook check. Package closure records final acceptance.
 
@@ -72,3 +73,15 @@ the immutable `@riffdb/*@0.1.0-dev.16` packages point to an unavailable
 `127.0.0.1:4873` registry, and matching artifacts were not found locally.
 Those dependency pins and tests were not weakened. The adapter commit records
 this limitation. Public GitHub source publication is not a package release.
+
+The pending Better Auth materialization fixture independently exposed an
+unused cursor on unique `take 1` lookups (`RDB-QM005`). The adapter fix omits
+that cursor while retaining it for pagination, regenerates the fixture, and
+adds a regression assertion. The profile's 19 queries now compile. Its path
+is explicit in the pin manifest, so CI covers both Better Auth applications
+and refuses a missing profile.
+
+Initial GitHub publication also exposed a workflow-level `runner.temp`
+reference in the existing driver-development workflow, where the runner
+context is unavailable. It now lives on the consuming step's environment;
+no release test or package behavior changes.
