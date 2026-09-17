@@ -1,6 +1,8 @@
 # WP-748 follower hold budget implementation
 
-Status: implementation foundation; WP-748 remains open.
+Historical foundation notes; the evidence and remaining-work statements below
+record those earlier increments. See the [later lifecycle verification](WP-748-LIFECYCLE-VERIFICATION.md)
+for registration, retirement, health and expiry progress. WP-748 remains open.
 
 ADR-0178 section 6 and REP-006 require a per-registration sequence budget,
 typed health degradation on exhaustion, and ceremony-only fence release.
