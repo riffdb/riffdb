@@ -7,8 +7,12 @@ use riffdb_storage_api::{
     ReplicationBootstrapFenceV3 as Fence, ReplicationBootstrapManifestV1 as Manifest,
     ReplicationBootstrapPageV3 as Page, ReplicationSourceHoldIdV1 as HoldId,
     ReplicationSourceHoldKindV1 as Kind, ReplicationSourceHoldV1 as Hold, StorageError,
+    StorageErrorKind,
 };
-use std::{path::Path, sync::Arc};
+use std::{
+    path::Path,
+    sync::{Arc, Weak},
+};
 
 /// Bounded private source build or resume. Drop releases local handles and any
 /// source pin. Scratch files remain private; no retention hold is released.
@@ -51,7 +55,7 @@ impl RedbBootstrapSourceBuild {
 /// must still recheck current policy before each outbound manifest/page.
 pub struct RedbHeldBootstrapSource {
     transfer: RedbVerifiedBootstrapTransfer,
-    ports: RedbOperationalPorts,
+    source: Weak<crate::store::SharedRedb>,
     repository: Option<Arc<RepositoryInner>>,
 }
 
@@ -173,9 +177,7 @@ impl RedbOperationalPorts {
         ))?;
         Ok(RedbHeldBootstrapSource {
             transfer,
-            ports: RedbOperationalPorts {
-                shared: Arc::clone(&self.shared),
-            },
+            source: Arc::downgrade(&self.shared),
             repository: None,
         })
     }
@@ -190,7 +192,13 @@ impl RedbHeldBootstrapSource {
     }
     fn verify_current_custody(&self) -> Result<(), StorageError> {
         let fence = self.transfer.manifest().fence();
-        self.ports.validate_bootstrap_custody(Hold::new(
+        // An artifact must not extend the source engine's lifetime. Closure
+        // invalidates old handles; reopening requires a fresh custody check.
+        let shared = self
+            .source
+            .upgrade()
+            .ok_or_else(|| crate::error::storage_error(StorageErrorKind::Unavailable))?;
+        RedbOperationalPorts { shared }.validate_bootstrap_custody(Hold::new(
             fence.hold_id(),
             Kind::Bootstrap,
             fence.history().lineage(),

@@ -22834,6 +22834,8 @@ work_packages:
       a separate bootstrap or archive job remains held. Held artifact handles
       revalidate current custody before outbound manifests or pages, including
       after page I/O, so retirement refuses transfers through old handles.
+      Retain a non-owning source reference so the artifact cannot prolong the
+      source engine lifetime or rebind its handle after source reopen.
       No public registration,
       retirement, expiry release or migration is activated by these updates.
     - Preserve V2 policy and its original registration receipt when an attached

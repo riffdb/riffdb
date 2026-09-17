@@ -222,6 +222,38 @@ fn retirement_withholds_manifest_and_pages_from_an_already_held_source() {
 }
 
 #[test]
+fn held_artifact_does_not_keep_the_source_open_or_rebind_to_a_reopened_source() {
+    let (scope, ports, registration) = stored_registration();
+    let source = ports
+        .prepare_replication_bootstrap_v3(
+            &scope.join("held-source-lifetime"),
+            registration.after().hold().id(),
+        )
+        .unwrap();
+    source.read_page(1).unwrap();
+    drop(ports);
+    let store = crate::RedbStore::open(scope.join("db.redb")).unwrap();
+    let ports = crate::RedbOperationalPorts {
+        shared: store.shared,
+    };
+    assert!(
+        ports
+            .bootstrap_id_is_held(registration.after().hold().id())
+            .unwrap()
+    );
+    assert_eq!(
+        [
+            source
+                .verify_private_identity()
+                .err()
+                .map(|error| error.kind()),
+            source.read_page(1).err().map(|error| error.kind())
+        ],
+        [Some(riffdb_storage_api::StorageErrorKind::Unavailable); 2]
+    );
+}
+
+#[test]
 fn adopted_legacy_follower_keeps_its_exact_older_attachment_retry() {
     let (_scope, ports, states) = crate::changelog_v3_control_tests::fixture();
     let oldest = states[2];
