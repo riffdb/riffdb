@@ -82,8 +82,15 @@ The updated handbook pages are [Compatibility](../compatibility.md),
 [Changelog V3](CHANGELOG-V3.md#application-history-retention-fence-wp-748),
 [Backup and restore](../backup-restore.md), and [Known limitations](../known-limitations.md).
 
+The production administration dispatcher now selects V3 for checked follower
+targets and preserves identical V2 bytes for existing targets. Its follow-up
+passed 54 audit-focused tests, including mixed-generation reopen, refusal of
+substituted database/incarnation/epoch/hold identity at each terminal phase, and
+four process-crash edges with exact physical receipts. This follow-up is separate
+from the fixed lifecycle revision's full validation above.
+
 Public registration/retirement remain unactivated. They still need shared-service
-Started/terminal V3 audit selection and exact result linkage, distinct operation
+operation-specific Started/terminal auditing and exact result linkage, distinct operation
 identities, and gRPC/Rust-client/CLI adapters with authorization and cancellation
 proofs. Primary fencing, authenticated fence proof, offline promotion,
 incarnation/epoch advancement and exact RPO remain WP-748 work. WP-749 still

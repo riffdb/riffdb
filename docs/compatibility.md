@@ -221,6 +221,13 @@ reached expiry for a new registration and full hold capacity refuse without
 allocating a sequence. These internal transitions do not yet expose public
 lifecycle RPCs or automatic registry migration.
 
+The production audit writer selects `ServiceAuditRecordV3` only for the accepted
+follower target; existing targets continue to produce identical V2 bytes. Mixed
+V2/V3 audit groups use the existing atomic journal and direct-commit paths.
+Started and terminal records retain the same complete follower target; changing
+its database, incarnation, epoch or hold ID refuses the terminal append. This
+codec wiring does not enable public registration or retirement operations.
+
 The coordinator also admits a closed continuation of stored registration policy,
 with one transition per turn. Reached budget or sequence expiry first persists a
 checked degradation point without advancing application or administration heads.

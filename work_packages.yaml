@@ -22824,6 +22824,12 @@ work_packages:
   closure:
     status: open
     decisions_taken:
+    - Select ServiceAuditRecordV3 in the production administration dispatcher
+      exactly when a checked record contains the accepted follower target;
+      preserve byte-identical V2 selection for existing targets. Reuse the
+      existing audit transaction and journal paths. Prove mixed-generation
+      recovery, every terminal target component, and four process-crash edges
+      without activating public follower operations or changing result links.
     - Schedule immutable registration-policy continuation on one primary-owned
       observer thread. A bounded same-pin hint avoids repeated writer barriers
       for budget-only degradation already persisted. Drop each pin before queue
