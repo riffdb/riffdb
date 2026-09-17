@@ -372,7 +372,12 @@ pub(crate) const REGRESSION_CORPUS: &[CorpusEntry] = &[
             // witness.
             restored_by: Some("5a136021db21a4a84b781d5cdc77d7f9d022c013"),
             restoration_moved_by: Some("a29312ffbfd3cd464f4803b1a32ce8e294279d83"),
-            restoration_returned_by: None,
+            // ADR-0236 removed affine fresh-locator coverage, which returned
+            // the physical operation stream to this coordinate again. The
+            // replay reaches the exact four-predicate territory, so the
+            // restoration is active once more and every earlier receipt is
+            // retained truthfully.
+            restoration_returned_by: Some("7705bd074bf25e5b0d5a6099166fee49bca55af2"),
         }),
         retirement: None,
     },
@@ -647,7 +652,10 @@ pub(crate) const REGRESSION_CORPUS: &[CorpusEntry] = &[
             successor_seed: 0x51C2_C30A,
             invalidated_by_commit: "a29312ffbfd3cd464f4803b1a32ce8e294279d83",
             rotated: "2026-09-14",
-            restored_by: None,
+            // ADR-0236 removed the affine fresh-locator coverage this
+            // successor was appended for, which returned the physical
+            // operation stream to this coordinate.
+            restored_by: Some("7705bd074bf25e5b0d5a6099166fee49bca55af2"),
             restoration_moved_by: None,
             restoration_returned_by: None,
         }),
@@ -683,6 +691,38 @@ pub(crate) const REGRESSION_CORPUS: &[CorpusEntry] = &[
                  decisions, twelve recovery-window crashes and 24 initialization \
                  survivals; oracle holds throughout, identical in 12/12 reruns.",
         pinned: "2026-09-14",
+        outcome: CorpusOutcome::Completes(&[
+            CorpusExpectation::InFlightCommitAbsent,
+            CorpusExpectation::InFlightAdmitResolved,
+        ]),
+        rotation: Some(CorpusWitnessRotation {
+            successor_seed: 0x51C2_C41D,
+            invalidated_by_commit: "7705bd074bf25e5b0d5a6099166fee49bca55af2",
+            rotated: "2026-09-17",
+            restored_by: None,
+            restoration_moved_by: None,
+            restoration_returned_by: None,
+        }),
+        retirement: None,
+    },
+    // ---- successor appended for the ADR-0236 coverage removal ------------
+    //
+    // Removing affine fresh-locator coverage moved the physical operation
+    // stream again. 0x51C2C404 keeps its interrupted-admission resolutions but
+    // no longer resolves an interrupted commit as absent, so this successor
+    // carries the exact two-predicate territory under the current layout.
+    CorpusEntry {
+        seed: 0x51C2_C41D,
+        generator_version: 1,
+        config: COMMIT_PRESENT_ARMS_CONFIG,
+        caught: "successor for interrupted commit and admission after ADR-0236 \
+                 removed affine fresh-locator coverage and moved the physical \
+                 operation stream: two interrupted commits resolve absent, one \
+                 interrupted admission resolves absent, 83 torn decisions and \
+                 19 recovery-window crashes with the oracle holding \
+                 throughout; rerun 12/12 with identical counters before \
+                 pinning.",
+        pinned: "2026-09-17",
         outcome: CorpusOutcome::Completes(&[
             CorpusExpectation::InFlightCommitAbsent,
             CorpusExpectation::InFlightAdmitResolved,
