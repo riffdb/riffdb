@@ -25981,6 +25981,39 @@ work_packages:
   - A durable byte, storage key, encoding, transaction ordering, acknowledgement or public
     surface would change.
 - id: WP-787
+  closure:
+    status: complete
+    completed_at: '2026-09-17'
+    evidence: docs/performance/wp-787-fresh-locator-coverage-removal.md
+    decision: ADR-0236 is implemented. The coverage state machine, the affine witness roles, the
+      queued seal witness, the arming entry, both consumption predicates and the mutation
+      expectation discipline are removed, with the architecture rules that guarded them, for a net
+      3,392 fewer lines. The three named proofs pass, clippy is clean at deny-warnings, and the
+      full riffdb-storage-redb and riffdb-sim batteries pass apart from two bootstrap crash-recovery
+      tests that time out under this workstation's parallelism and also time out on main, passing in
+      isolation in 32 and 38 seconds. Measured on E2 against the merge base over two interleaved
+      rounds, mean group commit fell 15.8 percent at one client, 18.3 percent at eight and 15.5
+      percent at 32, with throughput up 6.0, 14.9 and 10.3 percent.
+    decisions_taken:
+    - Coverage was removed rather than repaired. Instrumentation showed it never arms in the running
+      server, because the sole initialization site ADR-0197 names has no production caller, the live
+      command pipeline writes through the composite stage that ADR-0197 excludes by name, and the
+      empty-authority proof's emptiness and dormancy conditions barely overlap. Redesigning arming
+      is recorded in ADR-0236 as the option to reopen on evidence, not taken here.
+    - The mutation expectation discipline left with coverage, because it existed to preserve the
+      coverage chain across preserve frames rather than to enforce an independent guarantee.
+    - Each structural check the queued witness performed was decided individually rather than
+      dropped in bulk. Four never failed a seal and only reported "not exact"; the rest are covered
+      by checks that still run, namely the segment constructor's contiguity and bounds validation,
+      the durable read's first-sequence pin, and the admission path's identity key encoding.
+    - Every site that disabled coverage and fenced writes still fences. Only the coverage disable
+      was removed, never the fence.
+    - The bounded history fallback now reports the commit rows it covers alongside how often it
+      runs, since it is the only absence backstop left. No workload in the suite reaches it, so its
+      proof bounds what a scan may cover rather than exercising one.
+    - The seeded-campaign witnesses were rotated rather than repinned silently. Two historical
+      corpus coordinates reach their territory again and are recorded as restorations; the active
+      interrupted-commit witness moved to 0x51C2C41D, verified identical across twelve reruns.
   name: Remove fresh-locator coverage
   tier: guarantee
   depends_on: [WP-778, WP-786]
