@@ -2760,7 +2760,8 @@ fn command_outcome_from_operational_indexes(
         return command_outcome_from_member(&segment, locator, identity).map(Some);
     }
     // ADR-0165 locator table, consulted BEFORE any absence conclusion below.
-    //
+    // ADR-0236 removed the fresh-locator coverage short-circuit that used to
+    // sit after this read; the order of everything that remains is unchanged.
     if let Some(encoded) = access.read_value(JournalTable::IdempotencyLocators, exact_key)? {
         let locator = crate::codec::decode_command_locator_v1(&encoded)?
             .into_parts()
