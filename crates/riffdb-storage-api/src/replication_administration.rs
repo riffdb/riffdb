@@ -1,5 +1,9 @@
 //! Checked follower lifecycle receipt values. These are evidence shapes, never
 //! authorization, ancestry, durability, acknowledgement or release capabilities.
+#[path = "replication_administration_request.rs"]
+mod request;
+pub use request::ReplicationAdministrationRequestV1;
+
 use crate::{
     AuditPrincipalV1, ChangelogHistoryPointV3 as Point, ChangelogTransactionSequence,
     FollowerRegistrationPhaseV1 as Phase, ReplicationSourceHoldKindV1 as Kind,

@@ -5,6 +5,11 @@ use std::{error::Error, fmt};
 #[path = "authorizer_replication.rs"]
 mod replication;
 pub use replication::{AuthorizedReplicationRelease, ReplicationDecision};
+#[path = "authorizer_replication_administration.rs"]
+mod replication_administration;
+pub use replication_administration::{
+    AuthorizedReplicationAdministrationPreparation, ReplicationAdministrationDecision,
+};
 
 use riffdb_auth::{
     AuthenticatedPrincipal, CurrentCapability, CurrentCapabilityActivity, CurrentCapabilityResolver,
@@ -1068,6 +1073,9 @@ fn authorize_tenant(
 
 #[cfg(test)]
 mod tests {
+    mod replication_administration {
+        include!("replication_administration_tests.rs");
+    }
     use std::num::{NonZeroU16, NonZeroU32, NonZeroU64};
 
     use riffdb_testkit::authorization::{

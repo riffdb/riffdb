@@ -22823,6 +22823,17 @@ work_packages:
   closure:
     status: open
     decisions_taken:
+    - Bind explicit follower lifecycle preparation to the entire request,
+      including its exact lineage target and retirement generation. Reuse the
+      existing global administrative authority used by offline maintenance;
+      replication-stream permission alone does not grant registration or release.
+      Recheck current capability and fresh time for every preparation and refuse
+      application-role, row-policy, tenant or partition restrictions and unmet
+      approval. These move-only preparations are not write permits; transaction-
+      current reauthorization, atomic lifecycle writes and public RPCs remain
+      required before activation. Reuse storage-api policy types through auth
+      rather than duplicating semantic types or adding a production dependency
+      from policy to storage-api; the latter dependency is test-only.
     - Preserve pending V2 registration policy and generation through existing
       bootstrap custody and atomic attachment. Permit its exact registered
       predecessor cut or a later validated cut; registration audit and the
