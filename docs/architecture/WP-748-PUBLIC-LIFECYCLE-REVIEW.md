@@ -1,8 +1,7 @@
 # WP-748 public registration and retirement fixture review
 
-Package: WP-748. Tier: guarantee. Base: `6510d052`.
-Status: implementation and focused checks complete; full validation and human
-fixture review pending. This implements the already accepted registration-audit
+Package: WP-748. Tier: guarantee. Review range: `6510d052..43a88c7e`.
+Status: implementation and full validation complete; human fixture review pending. This implements the already accepted registration-audit
 amendment; it does not propose another guarantee amendment or close WP-748.
 
 ## Behavior
@@ -52,8 +51,11 @@ checks that the returned generation equals the requested generation.
 Focused storage audit-link, service authorization/cancellation, daemon restart,
 wire-validation and CLI tests pass, including retirement-generation substitution
 and duplicate-request fail-closed recovery. Static acceptance passed all 14
-checks. Full acceptance of this public increment remains pending. Prerequisite
-revisions `88c1a275` and `6510d052` each passed all 12 full acceptance checks;
+checks. Public implementation revision `43a88c7e` passed all 12 full acceptance
+checks on 2026-09-17 with `./scripts/acceptance --base 6510d052 --full`;
+its `ci-all` run took 2,906.1 seconds. This includes workspace tests/doctests,
+real archive CLI tests, documentation, dependency checks, operator conformance,
+deployment checks and release-source installation. Prerequisite revisions `88c1a275` and `6510d052` each passed all 12 full acceptance checks;
 the final prerequisite CI run took 3,278.8 seconds on 2026-09-17.
 
 Existing clients retain their prior message shapes. Calling these additive RPCs
