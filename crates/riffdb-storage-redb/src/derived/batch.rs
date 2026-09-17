@@ -219,27 +219,14 @@ pub(super) fn apply(
     if bytes > MAX_PROJECTION_WRITE_SET_BYTES {
         return Err(storage_error(StorageErrorKind::LimitExceeded));
     }
-    for (key, _) in &prepared {
-        access
-            .expect_fresh_locator_byte_insert(PROJECTION_STATE, encode_projection_group_key(key))?;
-    }
-    for (key, _) in &markers {
-        access.expect_fresh_locator_byte_insert(
-            PROJECTION_APPLIED,
-            encode_projection_apply_key(key),
-        )?;
-    }
     let frontier_key = ProjectionFrontierKey::new(first.identity().clone());
     let control_key = encode_projection_frontier_key(&frontier_key);
-    access.expect_fresh_locator_byte_insert(PROJECTION_FRONTIER, control_key)?;
-    access.close_fresh_locator_mutation_expectations()?;
     {
         let mut rows = transaction
             .open_table(PROJECTION_STATE)
             .map_err(table_error)?;
         for (key, encoded) in prepared {
             let physical = encode_projection_group_key(&key);
-            access.record_actual_fresh_locator_byte_insert(PROJECTION_STATE, physical)?;
             let previous = rows
                 .insert(physical, encoded.as_bytes())
                 .map_err(precommit_storage_error)?;
@@ -260,7 +247,6 @@ pub(super) fn apply(
             .map_err(table_error)?;
         for (key, encoded) in markers {
             let physical = encode_projection_apply_key(&key);
-            access.record_actual_fresh_locator_byte_insert(PROJECTION_APPLIED, physical)?;
             if table
                 .insert(physical, encoded.as_bytes())
                 .map_err(precommit_storage_error)?
@@ -274,7 +260,6 @@ pub(super) fn apply(
         let mut controls = transaction
             .open_table(PROJECTION_FRONTIER)
             .map_err(table_error)?;
-        access.record_actual_fresh_locator_byte_insert(PROJECTION_FRONTIER, control_key)?;
         let previous = controls
             .insert(control_key, encoded_control.as_bytes())
             .map_err(precommit_storage_error)?

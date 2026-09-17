@@ -266,17 +266,10 @@ impl ApplicationExportLedgerRepository for RedbOperationalPorts {
         if prior.is_none() {
             require_empty(compact.operation_id(), &pages)?;
         }
-        access.expect_fresh_locator_byte_insert(HEADS, &key)?;
-        if let Some((key, _)) = &page {
-            access.expect_fresh_locator_byte_insert(PAGES, key)?;
-        }
-        access.close_fresh_locator_mutation_expectations()?;
-        access.record_actual_fresh_locator_byte_insert(HEADS, &key)?;
         heads
             .insert(key.as_slice(), encoded.as_bytes())
             .map_err(precommit_storage_error)?;
         if let Some((key, value)) = &page {
-            access.record_actual_fresh_locator_byte_insert(PAGES, key)?;
             pages
                 .insert(key.as_slice(), value.as_bytes())
                 .map_err(precommit_storage_error)?;

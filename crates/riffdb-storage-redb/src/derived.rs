@@ -282,9 +282,6 @@ impl RedbOperationalPorts {
             let transaction = access.transaction()?;
             let mut statuses = transaction.open_table(OUTBOX_STATUS).map_err(table_error)?;
             let key = encode_event_key(event_id);
-            access.expect_fresh_locator_byte_insert(OUTBOX_STATUS, &key)?;
-            access.close_fresh_locator_mutation_expectations()?;
-            access.record_actual_fresh_locator_byte_insert(OUTBOX_STATUS, &key)?;
             let previous = statuses
                 .insert(key.as_slice(), encoded.as_bytes())
                 .map_err(precommit_storage_error)?;
@@ -779,26 +776,12 @@ impl ProjectionMutationRepository for RedbOperationalPorts {
             return Err(storage_error(StorageErrorKind::LimitExceeded));
         }
 
-        for row in &prepared_rows {
-            access.expect_fresh_locator_byte_insert(
-                PROJECTION_STATE,
-                encode_projection_group_key(&row.key),
-            )?;
-        }
-        let encoded_marker_key = encode_projection_apply_key(&marker_key);
-        access.expect_fresh_locator_byte_insert(PROJECTION_APPLIED, encoded_marker_key)?;
-        let frontier_key = ProjectionFrontierKey::new(request.identity().clone());
-        let encoded_frontier_key = encode_projection_frontier_key(&frontier_key);
-        access.expect_fresh_locator_byte_insert(PROJECTION_FRONTIER, encoded_frontier_key)?;
-        access.close_fresh_locator_mutation_expectations()?;
-
         {
             let mut rows = transaction
                 .open_table(PROJECTION_STATE)
                 .map_err(table_error)?;
             for row in &prepared_rows {
                 let key = encode_projection_group_key(&row.key);
-                access.record_actual_fresh_locator_byte_insert(PROJECTION_STATE, key)?;
                 let previous = rows
                     .insert(key, row.encoded.as_bytes())
                     .map_err(precommit_storage_error)?;
@@ -824,7 +807,6 @@ impl ProjectionMutationRepository for RedbOperationalPorts {
                 .open_table(PROJECTION_APPLIED)
                 .map_err(table_error)?;
             let key = encode_projection_apply_key(&marker_key);
-            access.record_actual_fresh_locator_byte_insert(PROJECTION_APPLIED, key)?;
             if markers
                 .insert(key, encoded_marker.as_bytes())
                 .map_err(precommit_storage_error)?
@@ -839,7 +821,6 @@ impl ProjectionMutationRepository for RedbOperationalPorts {
             let mut controls = transaction
                 .open_table(PROJECTION_FRONTIER)
                 .map_err(table_error)?;
-            access.record_actual_fresh_locator_byte_insert(PROJECTION_FRONTIER, encoded_key)?;
             let previous = controls
                 .insert(encoded_key, encoded_control.as_bytes())
                 .map_err(precommit_storage_error)?
@@ -888,9 +869,6 @@ impl ProjectionMutationRepository for RedbOperationalPorts {
             let mut controls = transaction
                 .open_table(PROJECTION_FRONTIER)
                 .map_err(table_error)?;
-            access.expect_fresh_locator_byte_insert(PROJECTION_FRONTIER, encoded_key)?;
-            access.close_fresh_locator_mutation_expectations()?;
-            access.record_actual_fresh_locator_byte_insert(PROJECTION_FRONTIER, encoded_key)?;
             let previous = controls
                 .insert(encoded_key, encoded.as_bytes())
                 .map_err(precommit_storage_error)?;
@@ -2092,11 +2070,6 @@ contract Recovery version 1 {
         let mut ports = dormant
             .into_operational_after_catalog_validation()
             .expect("activate test ports");
-        assert!(
-            ports
-                .arm_exact_empty_fresh_locator_coverage_for_test()
-                .expect("arm exact empty coverage")
-        );
 
         assert!(matches!(
             ports

@@ -3,7 +3,7 @@
 mod transient_access;
 
 use std::cell::RefCell;
-use std::collections::{BTreeMap, BTreeSet, HashMap, VecDeque};
+use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::ops::Bound::{Excluded, Unbounded};
 use std::ops::Deref;
 use std::path::{Path, PathBuf};
@@ -110,7 +110,7 @@ use crate::keys::{
     decode_application_sequence_key, decode_audit_by_request_key, decode_audit_key,
     decode_index_range_prefix_key, decode_partition_index_key, decode_vector_evidence_index_key,
     encode_audit_by_request_key, encode_audit_by_request_prefix, encode_event_route_key,
-    encode_idempotency_key, encode_partition_index_key, encode_vector_health_observation_key,
+    encode_partition_index_key, encode_vector_health_observation_key,
     encode_vector_observation_key,
 };
 use crate::layout::{
@@ -1383,46 +1383,6 @@ struct ServiceAuditPublication {
     covered_administration_sequence: Option<AdministrationSequence>,
     composite_predecessor: Arc<crate::composite_view::RedbCompositeReadView>,
     composite_successor: Arc<crate::composite_view::RedbCompositeReadView>,
-}
-
-#[derive(Clone, Copy, Eq, PartialEq)]
-enum PreservingImmediateClass {
-    Admission,
-    ExecutionFailure,
-    ServiceAudit,
-    Catalog,
-    QueryModule,
-    ReactiveModule,
-    CapabilityAdministration,
-    CapabilityBootstrap,
-    Projection,
-    Outbox,
-    Consumer,
-    ColumnarControl,
-    Installation,
-    Export,
-}
-
-impl PreservingImmediateClass {
-    const fn from_operation(operation: RedbTestOperation) -> Option<Self> {
-        match operation {
-            RedbTestOperation::Admission => Some(Self::Admission),
-            RedbTestOperation::ExecutionFailure => Some(Self::ExecutionFailure),
-            RedbTestOperation::ServiceAudit => Some(Self::ServiceAudit),
-            RedbTestOperation::CatalogAdministration => Some(Self::Catalog),
-            RedbTestOperation::QueryModuleAdministration => Some(Self::QueryModule),
-            RedbTestOperation::ReactiveModuleAdministration => Some(Self::ReactiveModule),
-            RedbTestOperation::CapabilityAdministration => Some(Self::CapabilityAdministration),
-            RedbTestOperation::CapabilityBootstrap => Some(Self::CapabilityBootstrap),
-            RedbTestOperation::ProjectionMutation => Some(Self::Projection),
-            RedbTestOperation::OutboxTransition => Some(Self::Outbox),
-            RedbTestOperation::EventConsumerTransition => Some(Self::Consumer),
-            RedbTestOperation::ColumnarProjectionControl => Some(Self::ColumnarControl),
-            RedbTestOperation::ApplicationInstallationCampaign => Some(Self::Installation),
-            RedbTestOperation::ApplicationExportOperation => Some(Self::Export),
-            _ => None,
-        }
-    }
 }
 
 #[derive(Clone, Copy)]
@@ -7043,7 +7003,7 @@ impl SharedRedb {
 
     fn publish_pending_service_audit(
         &self,
-        mut publication: ServiceAuditPublication,
+        publication: ServiceAuditPublication,
         fence: crate::journal::JournalFence,
     ) -> Result<(), StorageError> {
         if fence.covered_sequence != publication.covered_sequence
@@ -7630,42 +7590,6 @@ pub(crate) fn read_administration_tail(
 
 fn next_commit_sequence(sequence: Option<CommitSequence>) -> Option<CommitSequence> {
     sequence.map_or(Some(CommitSequence::first()), CommitSequence::checked_next)
-}
-
-fn application_frontier_from_allocator(
-    allocator: riffdb_storage_api::ApplicationSequenceAllocator,
-) -> Option<CommitSequence> {
-    match allocator {
-        riffdb_storage_api::ApplicationSequenceAllocator::Next(next)
-            if next == CommitSequence::first() =>
-        {
-            None
-        }
-        riffdb_storage_api::ApplicationSequenceAllocator::Next(next) => {
-            CommitSequence::new(next.get() - 1)
-        }
-        riffdb_storage_api::ApplicationSequenceAllocator::Exhausted => {
-            CommitSequence::new(u64::MAX)
-        }
-    }
-}
-
-fn administration_frontier_from_allocator(
-    allocator: riffdb_storage_api::AdministrationSequenceAllocator,
-) -> Option<AdministrationSequence> {
-    match allocator {
-        riffdb_storage_api::AdministrationSequenceAllocator::Next(next)
-            if next == AdministrationSequence::first() =>
-        {
-            None
-        }
-        riffdb_storage_api::AdministrationSequenceAllocator::Next(next) => {
-            AdministrationSequence::new(next.get() - 1)
-        }
-        riffdb_storage_api::AdministrationSequenceAllocator::Exhausted => {
-            AdministrationSequence::new(u64::MAX)
-        }
-    }
 }
 
 fn journal_storage_error(error: crate::journal::JournalCodecError) -> StorageError {

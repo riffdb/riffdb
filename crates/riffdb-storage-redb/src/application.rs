@@ -1121,7 +1121,6 @@ impl AdmissionRepository for RedbOperationalPorts {
         }
         let access = self
             .begin_attributed_write(riffdb_storage_api::ChangelogAttributionV3::CommandAdmission)?;
-        access.arm_fresh_locator_coverage()?;
         let mut created_any = false;
         let staged = stage_admission_group(&access, requests.iter())?;
         let mut results = Vec::with_capacity(staged.len());
@@ -1253,16 +1252,7 @@ where
         prepared.push(result);
     }
     for admission in &prepared {
-        if let Some((key, _)) = &admission.encoded {
-            access.expect_fresh_locator_raw_insert(JournalTable::IdempotencyPending, key)?;
-        }
-    }
-    if access.has_fresh_locator_mutation_expectations()? {
-        access.close_fresh_locator_mutation_expectations()?;
-    }
-    for admission in &prepared {
         if let Some((key, encoded)) = &admission.encoded {
-            access.record_actual_fresh_locator_byte_insert(IDEMPOTENCY_PENDING, key)?;
             if pending
                 .insert(key.as_slice(), encoded.as_slice())
                 .map_err(precommit_storage_error)?
@@ -1418,18 +1408,12 @@ impl RedbExecutionFailureAwaitingDecision {
         if matches!(
             self.request.admission_expectation(),
             CommandAdmissionExpectationV1::ExistingPending
-        ) {
-            self.access
-                .expect_fresh_locator_byte_delete(IDEMPOTENCY_PENDING, encoded_key)?;
-        }
-        self.access
-            .expect_fresh_locator_byte_insert(IDEMPOTENCY, encoded_key)?;
+        ) {}
         let terminal_audit = if let Some(transition) = audit {
             let intents = transition.into_intents();
             let records = stage_service_audit_group_in_write(&self.access, &intents)?;
             records.last().cloned()
         } else {
-            self.access.close_fresh_locator_mutation_expectations()?;
             None
         };
         if matches!(
@@ -1439,8 +1423,6 @@ impl RedbExecutionFailureAwaitingDecision {
             let mut pending = transaction
                 .open_table(IDEMPOTENCY_PENDING)
                 .map_err(table_error)?;
-            self.access
-                .record_actual_fresh_locator_byte_delete(IDEMPOTENCY_PENDING, encoded_key)?;
             if pending
                 .remove(encoded_key)
                 .map_err(precommit_storage_error)?
@@ -1451,8 +1433,6 @@ impl RedbExecutionFailureAwaitingDecision {
         }
         {
             let mut outcomes = transaction.open_table(IDEMPOTENCY).map_err(table_error)?;
-            self.access
-                .record_actual_fresh_locator_byte_insert(IDEMPOTENCY, encoded_key)?;
             if outcomes
                 .insert(encoded_key, encoded.as_bytes())
                 .map_err(precommit_storage_error)?
@@ -2647,7 +2627,6 @@ fn command_outcome_from_write_indexes(
     // locator is absence.
     let Some(encoded) = access.read_command_value(JournalTable::IdempotencyLocators, exact_key)?
     else {
-        let _coverage_survives = access.fresh_locator_allows_miss()?;
         return Ok(None);
     };
     let locator = crate::codec::decode_command_locator_v1(&encoded)?
@@ -2787,12 +2766,6 @@ fn command_outcome_from_operational_indexes(
     }
     // ADR-0165 locator table, consulted BEFORE any absence conclusion below.
     //
-    // The coverage short-circuit that follows infers absence from the validated-
-    // prefix checkpoint covering the captured frontier. That inference assumes
-    // the derived index was built over the checkpoint, which is false on a
-    // bounded clean-close start where the index is dormant: on such a start the
-    // retained checkpoint's S can equal the captured frontier, so the
-    // short-circuit reported a durably committed outcome as absent.
     if let Some(encoded) = access.read_value(JournalTable::IdempotencyLocators, exact_key)? {
         let locator = crate::codec::decode_command_locator_v1(&encoded)?
             .into_parts()
@@ -2808,9 +2781,6 @@ fn command_outcome_from_operational_indexes(
             return Err(storage_error(StorageErrorKind::CorruptData));
         }
         return Ok(Some(capsule.outcome().clone()));
-    }
-    if ports.fresh_locator_proves_absence(access)? {
-        return Ok(None);
     }
     let Some(frontier) = frontier else {
         return Ok(None);
@@ -3436,9 +3406,6 @@ mod tests {
         .into_operational_after_catalog_validation()
         .expect("activate ports");
         let access = ports.begin_write().expect("first command-write entry");
-        access
-            .arm_fresh_locator_coverage()
-            .expect("arm exact empty authority");
         access.abort().expect("abort mutation-free entry");
 
         let identity = IdempotencyIdentity::new(
