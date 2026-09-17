@@ -156,6 +156,79 @@ impl Change {
 
 type Frame = Result<Option<ReplicationItem>, ReplicationFailure>;
 
+#[test]
+// req: REP-006
+fn lifecycle_policy_port_reloads_authority_and_default_implementations_refuse() {
+    use riffdb_policy::ReplicationAdministrationDecision;
+    let request = riffdb_auth::ReplicationAdministrationRequestV1::register(
+        riffdb_types::RequestId::from_unix_milliseconds_and_random(12, [12; 10]).unwrap(),
+        riffdb_types::ReplicationFollowerAuditTargetV1::new(
+            database(1),
+            1,
+            riffdb_types::LeadershipEpochV1::initial(),
+            riffdb_types::ReplicationSourceHoldIdV1::new([9; 16]).unwrap(),
+        )
+        .unwrap(),
+        riffdb_storage_api::FollowerHoldBudget::new(5).unwrap(),
+        None,
+    );
+    for change in Change::ALL {
+        let policy = Policy::new(CapabilityPermissionKindV1::AdministerCapabilities);
+        assert!(
+            matches!(
+                policy.authorize_replication_administration(&policy.principal(), request),
+                Err(AuthorizationError::CurrentCapabilityUnavailable)
+            ),
+            "a port without the dedicated implementation must refuse"
+        );
+        let resolver = policy.fixture.current_capability_resolver();
+        let authorizer = CurrentAuthorizer::new(
+            &resolver,
+            policy.as_ref(),
+            &NoopAuthorizationTelemetry,
+            database(1),
+            environment(),
+        );
+        let check = || {
+            CurrentPolicyPort::authorize_replication_administration(
+                &authorizer,
+                &policy.principal(),
+                request,
+            )
+        };
+        let ReplicationAdministrationDecision::Allow(proof) = check().unwrap() else {
+            panic!("current global administrator must pass");
+        };
+        assert_eq!(proof.request(), request);
+        assert_eq!(proof.authorized_at(), timestamp(150));
+        match change.apply(&policy) {
+            ReplicationFailure::AuthorizationDenied => assert!(matches!(
+                check(),
+                Ok(ReplicationAdministrationDecision::Deny(_))
+            )),
+            ReplicationFailure::Unavailable => assert!(check().is_err()),
+            _ => panic!("fixture has only policy changes"),
+        }
+    }
+    let stream_only = Policy::new(CapabilityPermissionKindV1::ReplicateChangelog);
+    let resolver = stream_only.fixture.current_capability_resolver();
+    let authorizer = CurrentAuthorizer::new(
+        &resolver,
+        stream_only.as_ref(),
+        &NoopAuthorizationTelemetry,
+        database(1),
+        environment(),
+    );
+    assert!(matches!(
+        CurrentPolicyPort::authorize_replication_administration(
+            &authorizer,
+            &stream_only.principal(),
+            request
+        ),
+        Ok(ReplicationAdministrationDecision::Deny(_))
+    ));
+}
+
 struct Frames {
     receiver: mpsc::Receiver<Frame>,
     reads: Arc<AtomicUsize>,

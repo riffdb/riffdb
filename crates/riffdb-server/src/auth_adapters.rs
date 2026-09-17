@@ -113,6 +113,22 @@ impl<S> ServerCurrentPolicyPort<S> {
 }
 
 impl<S: CapabilityReader + Send + Sync> CurrentPolicyPort for ServerCurrentPolicyPort<S> {
+    fn authorize_replication_administration(
+        &self,
+        principal: &AuthenticatedPrincipal,
+        request: riffdb_auth::ReplicationAdministrationRequestV1,
+    ) -> Result<riffdb_policy::ReplicationAdministrationDecision, AuthorizationError> {
+        let resolver = CapabilityReaderCurrentResolver::new(&self.storage);
+        CurrentAuthorizer::new(
+            &resolver,
+            &self.clock,
+            self.telemetry.as_ref(),
+            self.database_id,
+            self.environment.clone(),
+        )
+        .authorize_replication_administration(principal, request)
+    }
+
     fn authorize_replication(
         &self,
         principal: &AuthenticatedPrincipal,
@@ -419,6 +435,7 @@ mod tests {
     /// the capability's expiry invalidates the retained validity window even
     /// though nothing was published.
     #[test]
+    // req: REP-006
     fn production_capability_view_chain_refuses_reissue_after_revoke_and_after_expiry() {
         use std::num::{NonZeroU16, NonZeroU32, NonZeroU64};
         use std::sync::Arc;
@@ -561,6 +578,29 @@ mod tests {
             Arc::new(NoopAuthorizationTelemetry),
         );
 
+        let lifecycle_request = riffdb_auth::ReplicationAdministrationRequestV1::register(
+            request_id,
+            riffdb_types::ReplicationFollowerAuditTargetV1::new(
+                real.database_id,
+                1,
+                riffdb_types::LeadershipEpochV1::initial(),
+                riffdb_types::ReplicationSourceHoldIdV1::new([0x71; 16]).unwrap(),
+            )
+            .unwrap(),
+            riffdb_storage_api::FollowerHoldBudget::new(3).unwrap(),
+            None,
+        );
+        let Ok(riffdb_policy::ReplicationAdministrationDecision::Allow(preparation)) =
+            port.authorize_replication_administration(&principal, lifecycle_request)
+        else {
+            panic!("current global administrator must prepare the exact lifecycle request");
+        };
+        assert_eq!(preparation.request(), lifecycle_request);
+        assert_eq!(
+            preparation.authorized_at(),
+            Timestamp::new(ISSUED_SECONDS + 10, 0).unwrap()
+        );
+
         // Baseline: capture the generation before evaluating, exactly as
         // `begin_invocation` does, then take the full evaluation.
         let baseline = port
@@ -588,6 +628,10 @@ mod tests {
             Ordering::Release,
         );
         let expired = port.capability_view_checkpoint().expect("live checkpoint");
+        assert!(matches!(
+            port.authorize_replication_administration(&principal, lifecycle_request),
+            Ok(riffdb_policy::ReplicationAdministrationDecision::Deny(_))
+        ));
         assert_eq!(
             expired.generation(),
             baseline,
@@ -649,6 +693,10 @@ mod tests {
         assert!(matches!(revoked, CapabilityRevokeResult::Revoked { .. }));
 
         let after_revoke = port.capability_view_checkpoint().expect("live checkpoint");
+        assert!(matches!(
+            port.authorize_replication_administration(&principal, lifecycle_request),
+            Ok(riffdb_policy::ReplicationAdministrationDecision::Deny(_))
+        ));
         assert_ne!(
             after_revoke.generation(),
             baseline,

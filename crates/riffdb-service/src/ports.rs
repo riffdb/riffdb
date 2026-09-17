@@ -252,6 +252,16 @@ pub type BoxPortCapacityPermit<Request, Response, Failure> =
 
 /// The one non-caching current-policy entry point consumed by service code.
 pub trait CurrentPolicyPort: Send + Sync {
+    /// Reloads administrative authority for the exact follower lifecycle request.
+    /// The coordinator still reauthorizes inside its drained transaction.
+    fn authorize_replication_administration(
+        &self,
+        _principal: &AuthenticatedPrincipal,
+        _request: riffdb_auth::ReplicationAdministrationRequestV1,
+    ) -> Result<riffdb_policy::ReplicationAdministrationDecision, AuthorizationError> {
+        Err(AuthorizationError::CurrentCapabilityUnavailable)
+    }
+
     /// Reloads current administrative authority for one replication release.
     fn authorize_replication(
         &self,
@@ -330,6 +340,14 @@ where
     C: AuthorizationClock + Send + Sync + ?Sized,
     T: AuthorizationTelemetry + Send + Sync + ?Sized,
 {
+    fn authorize_replication_administration(
+        &self,
+        principal: &AuthenticatedPrincipal,
+        request: riffdb_auth::ReplicationAdministrationRequestV1,
+    ) -> Result<riffdb_policy::ReplicationAdministrationDecision, AuthorizationError> {
+        CurrentAuthorizer::authorize_replication_administration(self, principal, request)
+    }
+
     fn authorize_replication(
         &self,
         principal: &AuthenticatedPrincipal,
