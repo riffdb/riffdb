@@ -170,7 +170,21 @@ record. Checked administration values bind the exact target, generation, source
 predecessor, policy images and explicit principal/request/approval or original
 registration receipt for expiry. Malformed transitions fail closed. The mixed
 hold reader preserves V1 holds, V2 policies and retired tombstones distinctly.
-These codecs activate no lifecycle writer, release authority or automatic
+The storage administration reader also recognizes these receipts. Complete source
+validation checks current V2 policies and retired tombstones against their exact
+registration and release records from one database snapshot. While a lifecycle
+transaction remains in replication history, its audit bytes must match that
+transaction's receipt. Retired tombstones keep their audit links after older
+physical receipts are reclaimed; they no longer contribute a live retention
+fence. Missing or substituted evidence fails closed. This validation streams audit
+history and retains at most the existing 4096 source holds; it is a full validation
+pass, not a constant-time checkpoint check. Attached followers retain replicated
+audit records without acquiring source-only holds. Historical source receipts
+remain valid for older incarnations of the same permanent database identity.
+Application export identifies
+these administration rows with the `replication` kind.
+
+These readers activate no lifecycle writer, release authority or automatic
 registry migration; atomic runtime transitions and recovery proof remain required.
 
 WP-749 registers successor command capsule V7 (tag 54, revision 6) and segment

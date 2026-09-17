@@ -3,7 +3,8 @@
 
 use super::*;
 use riffdb_storage_api::{
-    ChangelogHistoryPointV3 as Point, proto_codec::encode_changelog_history_state_v3,
+    ChangelogHistoryPointV3 as Point,
+    proto_codec::{decode_replication_source_hold, encode_changelog_history_state_v3},
 };
 
 const MAX_RECLAIMED_RECEIPTS: u64 = 256;
@@ -22,9 +23,18 @@ pub(super) fn floor(
     let holds = root.open_table(SOURCE_HOLDS).map_err(table_error)?;
     for row in holds.iter().map_err(precommit_storage_error)? {
         let (_, value) = row.map_err(precommit_storage_error)?;
-        let hold = *decode_replication_source_hold_v1(value.value())
+        let state = *decode_replication_source_hold(value.value())
             .map_err(crate::error::codec_error)?
             .value();
+        let hold = match state {
+            riffdb_storage_api::ReplicationSourceHoldStateV1::Legacy(hold) => hold,
+            riffdb_storage_api::ReplicationSourceHoldStateV1::Registered(policy) => {
+                if policy.phase() == riffdb_storage_api::FollowerRegistrationPhaseV1::Retired {
+                    continue;
+                }
+                policy.hold()
+            }
+        };
         maximum = maximum.min(hold.fence().sequence().get());
     }
     let first = history.minimum_resume().sequence().get();

@@ -1,5 +1,5 @@
-//! Physical source/transaction tests; opaque audit payloads are not startup
-//! semantic validation or application acknowledgement evidence.
+//! Physical source/transaction tests use canonical audit bytes; they do not
+//! claim startup service-index validation or application acknowledgement evidence.
 // req: REP-003, REC-001, STO-012
 
 use super::*;
@@ -30,7 +30,7 @@ fn audit_source(history: ChangelogHistoryStateV3) -> JournalFrame {
             JournalMutation::put(
                 JournalTable::Audit,
                 crate::keys::encode_audit_key(assigned),
-                b"opaque-audit".to_vec(),
+                crate::test_audit::canonical_denied_service_audit(assigned),
             )
             .unwrap(),
             JournalMutation::replace(

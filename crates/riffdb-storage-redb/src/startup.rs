@@ -3055,7 +3055,8 @@ fn build_publication_audit_cache(
             }
             riffdb_storage_api::StoredAdministrationAuditRecordV1::Capability(_)
             | riffdb_storage_api::StoredAdministrationAuditRecordV1::Service(_)
-            | riffdb_storage_api::StoredAdministrationAuditRecordV1::Retention(_) => {}
+            | riffdb_storage_api::StoredAdministrationAuditRecordV1::Retention(_)
+            | riffdb_storage_api::StoredAdministrationAuditRecordV1::Replication(_) => {}
         }
         if retained_bytes > MAX_STARTUP_EVIDENCE_INDEX_BYTES {
             return Err(limit_exceeded());
@@ -4580,6 +4581,10 @@ fn inspect_audit_row(
         // no cross-linked peer row: the hold list is a live snapshot, not a
         // per-record reciprocal, so the codec's semantic decode is the check.
         riffdb_storage_api::StoredAdministrationAuditRecordV1::Retention(_) => None,
+        // The mandatory same-pin V3 pass validates the bounded source hold set
+        // against ALL replication receipts, including erased holds and releases.
+        // Attached followers replicate audit authority but carry no source holds.
+        riffdb_storage_api::StoredAdministrationAuditRecordV1::Replication(_) => None,
     };
     Ok(finding)
 }
