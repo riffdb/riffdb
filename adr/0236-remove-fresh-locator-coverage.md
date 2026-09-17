@@ -1,17 +1,18 @@
 ---
 adr: "0236"
 title: Remove Fresh Locator Coverage
-status: proposed
+status: accepted
 tier: guarantee
 date: 2026-09-16
-accepted: null
-acceptance: null
+accepted: 2026-09-17
+acceptance: 'maintainer, in session, 2026-09-17: "i accept, go ahead and
+  build" (ADR-0236 as written)'
 requires: [ADR-0102, ADR-0183, ADR-0197, ADR-0234, ADR-0235]
 amends:
   - ADR-0183 only to admit the single enumerated repair below.
 supersedes: [ADR-0197, ADR-0235]
 requirements: []
-packages: []
+packages: [WP-787]
 obligations:
   - id: OBL-0236-1
     package: WP-787
