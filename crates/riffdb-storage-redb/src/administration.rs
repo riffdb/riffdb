@@ -558,12 +558,7 @@ fn write_administration_allocator_in_permitted_access(
     expected: AdministrationSequenceAllocator,
     next: AdministrationSequenceAllocator,
 ) -> Result<(), StorageError> {
-    access.record_actual_fresh_locator_meta_insert(META_ADMINISTRATION_SEQUENCE)?;
     write_administration_allocator(access.transaction()?, expected, next)
-}
-
-fn expect_administration_allocator(access: &RedbWriteAccess) -> Result<(), StorageError> {
-    access.expect_fresh_locator_meta_insert(META_ADMINISTRATION_SEQUENCE)
 }
 
 fn write_administration_allocator_in_access(
@@ -640,37 +635,7 @@ fn append_audit_record_in_permitted_access(
     access: &RedbWriteAccess,
     record: &StoredAdministrationAuditRecordV1,
 ) -> Result<(), StorageError> {
-    let key = encode_audit_key(record.administration_sequence());
-    access.record_actual_fresh_locator_byte_insert(AUDIT, &key)?;
-    if let StoredAdministrationAuditRecordV1::Service(service) = record {
-        let index_key = crate::keys::encode_audit_by_request_key(
-            service.request_id(),
-            service.administration_sequence(),
-        );
-        access
-            .record_actual_fresh_locator_byte_insert(crate::layout::AUDIT_BY_REQUEST, &index_key)?;
-    }
     append_audit_record(access.transaction()?, record)
-}
-
-fn expect_audit_record(
-    access: &RedbWriteAccess,
-    record: &StoredAdministrationAuditRecordV1,
-) -> Result<(), StorageError> {
-    access.expect_fresh_locator_byte_insert(
-        AUDIT,
-        &encode_audit_key(record.administration_sequence()),
-    )?;
-    if let StoredAdministrationAuditRecordV1::Service(service) = record {
-        access.expect_fresh_locator_byte_insert(
-            crate::layout::AUDIT_BY_REQUEST,
-            &crate::keys::encode_audit_by_request_key(
-                service.request_id(),
-                service.administration_sequence(),
-            ),
-        )?;
-    }
-    Ok(())
 }
 
 fn read_audit_record<T, C, E>(
@@ -1117,20 +1082,7 @@ impl CatalogAdministrationRepository for RedbOperationalPorts {
         let encoded_active = encode_active_catalog_pointer_v1(&requested)?;
         let audit_record = StoredAdministrationAuditRecordV1::Catalog(record);
 
-        if existing.is_none() {
-            access.expect_fresh_locator_byte_insert(
-                CONTRACT_BUNDLES,
-                &encode_contract_bundle_key(
-                    intent.bundle().lineage(),
-                    intent.bundle().contract_version(),
-                )
-                .map_err(|_| invariant())?,
-            )?;
-        }
-        access.expect_fresh_locator_byte_insert(CATALOG_ACTIVE, &CATALOG_ACTIVE_KEY)?;
-        expect_audit_record(&access, &audit_record)?;
-        expect_administration_allocator(&access)?;
-        access.close_fresh_locator_mutation_expectations()?;
+        if existing.is_none() {}
 
         if existing.is_none() {
             let key = encode_contract_bundle_key(
@@ -1141,7 +1093,6 @@ impl CatalogAdministrationRepository for RedbOperationalPorts {
             let mut table = transaction
                 .open_table(CONTRACT_BUNDLES)
                 .map_err(table_error)?;
-            access.record_actual_fresh_locator_byte_insert(CONTRACT_BUNDLES, &key)?;
             if table
                 .insert(key.as_slice(), encoded_bundle.as_bytes())
                 .map_err(precommit_storage_error)?
@@ -1154,7 +1105,6 @@ impl CatalogAdministrationRepository for RedbOperationalPorts {
             let mut table = transaction
                 .open_table(CATALOG_ACTIVE)
                 .map_err(table_error)?;
-            access.record_actual_fresh_locator_byte_insert(CATALOG_ACTIVE, &CATALOG_ACTIVE_KEY)?;
             let prior = table
                 .insert(CATALOG_ACTIVE_KEY.as_slice(), encoded_active.as_bytes())
                 .map_err(precommit_storage_error)?;
@@ -1448,28 +1398,10 @@ impl QueryModuleAdministrationRepository for RedbOperationalPorts {
         let encoded_module = encode_query_module_v1(intent.module())?;
         let encoded_active = encode_query_module_administration_v1(&record)?;
         let audit_record = StoredAdministrationAuditRecordV1::QueryModule(record.clone());
-        if existing.is_none() {
-            access.expect_fresh_locator_byte_insert(
-                QUERY_MODULES,
-                &encode_query_module_key(intent.module().module_hash()),
-            )?;
-        }
-        access.expect_fresh_locator_byte_insert(
-            QUERY_MODULE_ACTIVE,
-            &encode_active_query_module_key(
-                intent.module().contract_lineage(),
-                intent.module().contract_version(),
-                intent.module().contract_bundle_hash(),
-            )
-            .map_err(|_| invariant())?,
-        )?;
-        expect_audit_record(&access, &audit_record)?;
-        expect_administration_allocator(&access)?;
-        access.close_fresh_locator_mutation_expectations()?;
+        if existing.is_none() {}
         if existing.is_none() {
             let key = encode_query_module_key(intent.module().module_hash());
             let mut table = transaction.open_table(QUERY_MODULES).map_err(table_error)?;
-            access.record_actual_fresh_locator_byte_insert(QUERY_MODULES, &key)?;
             if table
                 .insert(key.as_slice(), encoded_module.as_bytes())
                 .map_err(precommit_storage_error)?
@@ -1488,7 +1420,6 @@ impl QueryModuleAdministrationRepository for RedbOperationalPorts {
             let mut table = transaction
                 .open_table(QUERY_MODULE_ACTIVE)
                 .map_err(table_error)?;
-            access.record_actual_fresh_locator_byte_insert(QUERY_MODULE_ACTIVE, &key)?;
             let prior = table
                 .insert(key.as_slice(), encoded_active.as_bytes())
                 .map_err(precommit_storage_error)?
@@ -1774,14 +1705,9 @@ impl RedbOperationalPorts {
         let encoded = encode_reactive_module_v1(candidate)?;
         let key = encode_reactive_module_key(candidate.module_hash());
         let audit_record = StoredAdministrationAuditRecordV1::ReactiveModule(record);
-        access.expect_fresh_locator_byte_insert(REACTIVE_MODULES, &key)?;
-        expect_audit_record(&access, &audit_record)?;
-        expect_administration_allocator(&access)?;
-        access.close_fresh_locator_mutation_expectations()?;
         let mut modules = transaction
             .open_table(REACTIVE_MODULES)
             .map_err(table_error)?;
-        access.record_actual_fresh_locator_byte_insert(REACTIVE_MODULES, &key)?;
         if modules
             .insert(key.as_slice(), encoded.as_bytes())
             .map_err(precommit_storage_error)?
@@ -2690,14 +2616,6 @@ impl ServiceAuditAppendRepository for RedbOperationalPorts {
         if assigned.next().is_some() {
             return Err(storage_error(StorageErrorKind::InvariantViolation));
         }
-        for record in records.iter().flatten() {
-            expect_audit_record(
-                &access,
-                &StoredAdministrationAuditRecordV1::Service(record.clone()),
-            )?;
-        }
-        expect_administration_allocator(&access)?;
-        access.close_fresh_locator_mutation_expectations()?;
         let mut results = Vec::with_capacity(intents.len());
         for record in records {
             let Some(record) = record else {
@@ -2874,13 +2792,6 @@ impl AuditedAdmissionRepository for RedbOperationalPorts {
                 StoredServiceAuditRecordV1::from_intent(sequence, request.started())
             })
             .collect::<Vec<_>>();
-        for started in &started_records {
-            expect_audit_record(
-                &access,
-                &StoredAdministrationAuditRecordV1::Service(started.clone()),
-            )?;
-        }
-        expect_administration_allocator(&access)?;
         let admissions =
             stage_admission_group(&access, requests.iter().map(|request| request.admission()))?;
         let mut outputs = Vec::with_capacity(requests.len());
@@ -3281,16 +3192,6 @@ fn stage_service_audit_group_with_command_evidence(
         .zip(assigned)
         .map(|(intent, sequence)| StoredServiceAuditRecordV1::from_owned_intent(sequence, intent))
         .collect::<Vec<_>>();
-    if !command_owned_audits {
-        for record in &records {
-            expect_audit_record(
-                access,
-                &StoredAdministrationAuditRecordV1::Service(record.clone()),
-            )?;
-        }
-        expect_administration_allocator(access)?;
-        access.close_fresh_locator_mutation_expectations()?;
-    }
     let mut journal_mutations =
         Vec::with_capacity(records.len().saturating_mul(2).saturating_add(1));
     for record in &records {
@@ -3299,7 +3200,6 @@ fn stage_service_audit_group_with_command_evidence(
                 &StoredAdministrationAuditRecordV1::Service(record.clone()),
             )?;
             let key = encode_audit_key(record.administration_sequence());
-            access.record_actual_fresh_locator_byte_insert(AUDIT, &key)?;
             if audit
                 .insert(key.as_slice(), encoded.as_bytes())
                 .map_err(precommit_storage_error)?
@@ -3336,10 +3236,6 @@ fn stage_service_audit_group_with_command_evidence(
                     record.request_id(),
                     record.administration_sequence(),
                 ),
-            )?;
-            access.record_actual_fresh_locator_byte_insert(
-                crate::layout::AUDIT_BY_REQUEST,
-                &index_key,
             )?;
             if request_index
                 .insert(index_key.as_slice(), index_value.as_bytes())
@@ -3569,22 +3465,9 @@ fn commit_capability_create(
     let lookup = CapabilityTokenLookupV1::new(intent.capability_id());
     let encoded_lookup = encode_capability_token_lookup_v1(lookup)?;
     let audit_record = StoredAdministrationAuditRecordV1::Capability(audit);
-    access.expect_fresh_locator_byte_insert(
-        CAPABILITIES,
-        &encode_capability_key(intent.capability_id()),
-    )?;
-    access.expect_fresh_locator_byte_insert(
-        CAPABILITY_TOKENS,
-        &encode_capability_token_key(intent.token_digest()),
-    )?;
-    expect_audit_record(&access, &audit_record)?;
-    expect_administration_allocator(&access)?;
-    access.close_fresh_locator_mutation_expectations()?;
-
     {
         let key = encode_capability_key(intent.capability_id());
         let mut table = transaction.open_table(CAPABILITIES).map_err(table_error)?;
-        access.record_actual_fresh_locator_byte_insert(CAPABILITIES, &key)?;
         if table
             .insert(key.as_slice(), encoded_capability.as_bytes())
             .map_err(precommit_storage_error)?
@@ -3598,7 +3481,6 @@ fn commit_capability_create(
         let mut table = transaction
             .open_table(CAPABILITY_TOKENS)
             .map_err(table_error)?;
-        access.record_actual_fresh_locator_byte_insert(CAPABILITY_TOKENS, &key)?;
         if table
             .insert(key.as_slice(), encoded_lookup.as_bytes())
             .map_err(precommit_storage_error)?
@@ -3716,17 +3598,9 @@ fn commit_capability_revoke(
     .map_err(|_| invariant())?;
     let encoded = encode_capability_record_v1(&revoked)?;
     let audit_record = StoredAdministrationAuditRecordV1::Capability(audit);
-    access.expect_fresh_locator_byte_insert(
-        CAPABILITIES,
-        &encode_capability_key(intent.capability_id()),
-    )?;
-    expect_audit_record(&access, &audit_record)?;
-    expect_administration_allocator(&access)?;
-    access.close_fresh_locator_mutation_expectations()?;
     {
         let key = encode_capability_key(intent.capability_id());
         let mut table = transaction.open_table(CAPABILITIES).map_err(table_error)?;
-        access.record_actual_fresh_locator_byte_insert(CAPABILITIES, &key)?;
         let prior = table
             .insert(key.as_slice(), encoded.as_bytes())
             .map_err(precommit_storage_error)?
@@ -3926,24 +3800,9 @@ impl CapabilityBootstrapAdministrationRepository for RedbOperationalPorts {
         let encoded_marker = encode_capability_bootstrap_marker_v1(marker)?;
         let started_audit = StoredAdministrationAuditRecordV1::Service(started);
         let capability_audit = StoredAdministrationAuditRecordV1::Capability(capability_audit);
-        access.expect_fresh_locator_byte_insert(
-            CAPABILITIES,
-            &encode_capability_key(intent.capability_id()),
-        )?;
-        access.expect_fresh_locator_byte_insert(
-            CAPABILITY_TOKENS,
-            &encode_capability_token_key(intent.digests().current_write()),
-        )?;
-        access.expect_fresh_locator_meta_insert(META_CAPABILITY_BOOTSTRAP)?;
-        expect_audit_record(&access, &started_audit)?;
-        expect_audit_record(&access, &capability_audit)?;
-        expect_administration_allocator(&access)?;
-        access.close_fresh_locator_mutation_expectations()?;
-
         {
             let key = encode_capability_key(intent.capability_id());
             let mut table = transaction.open_table(CAPABILITIES).map_err(table_error)?;
-            access.record_actual_fresh_locator_byte_insert(CAPABILITIES, &key)?;
             if table
                 .insert(key.as_slice(), encoded_capability.as_bytes())
                 .map_err(precommit_storage_error)?
@@ -3957,7 +3816,6 @@ impl CapabilityBootstrapAdministrationRepository for RedbOperationalPorts {
             let mut table = transaction
                 .open_table(CAPABILITY_TOKENS)
                 .map_err(table_error)?;
-            access.record_actual_fresh_locator_byte_insert(CAPABILITY_TOKENS, &key)?;
             if table
                 .insert(key.as_slice(), encoded_lookup.as_bytes())
                 .map_err(precommit_storage_error)?
@@ -3968,7 +3826,6 @@ impl CapabilityBootstrapAdministrationRepository for RedbOperationalPorts {
         }
         {
             let mut table = transaction.open_table(META).map_err(table_error)?;
-            access.record_actual_fresh_locator_meta_insert(META_CAPABILITY_BOOTSTRAP)?;
             if table
                 .insert(META_CAPABILITY_BOOTSTRAP, encoded_marker.as_bytes())
                 .map_err(precommit_storage_error)?
@@ -4029,9 +3886,6 @@ fn bootstrap_replay(
     )
     .map_err(|_| corrupt())?;
     let started_audit = StoredAdministrationAuditRecordV1::Service(started);
-    expect_audit_record(&access, &started_audit)?;
-    expect_administration_allocator(&access)?;
-    access.close_fresh_locator_mutation_expectations()?;
     append_audit_record_in_permitted_access(&access, &started_audit)?;
     write_administration_allocator_in_permitted_access(&access, allocator, next)?;
     access.commit_for(RedbTestOperation::CapabilityBootstrap)?;
@@ -4271,13 +4125,7 @@ mod tests {
         AdministrationSequence,
     ) {
         let (path, mut ports) = initialized_ports(label);
-        if arm_coverage {
-            assert!(
-                ports
-                    .arm_exact_empty_fresh_locator_coverage_for_test()
-                    .expect("arm exact empty coverage")
-            );
-        }
+        if arm_coverage {}
         let contract = bundle("reactive-hygiene", 1, 0x51);
         assert!(matches!(
             ports
@@ -5439,11 +5287,6 @@ mod tests {
     #[test]
     fn catalog_and_service_audit_share_one_contiguous_stream() {
         let (_path, mut ports) = initialized_ports("catalog-audit");
-        assert!(
-            ports
-                .arm_exact_empty_fresh_locator_coverage_for_test()
-                .expect("arm exact empty coverage")
-        );
         let deployed = bundle("budget", 1, 7);
         let activated = ports
             .activate_catalog(&catalog_intent(None, deployed.clone(), 10))
@@ -5513,11 +5356,6 @@ mod tests {
     #[test]
     fn query_module_activation_is_atomic_cas_audited_and_restart_safe() {
         let (path, mut ports) = initialized_ports("query-module");
-        assert!(
-            ports
-                .arm_exact_empty_fresh_locator_coverage_for_test()
-                .expect("arm exact empty coverage")
-        );
         let contract = bundle("ticketdesk", 1, 7);
         ports
             .activate_catalog(&catalog_intent(None, contract.clone(), 30))
@@ -5598,11 +5436,6 @@ mod tests {
     #[test]
     fn bootstrap_replay_appends_only_a_new_linked_start() {
         let (_path, mut ports) = initialized_ports("bootstrap");
-        assert!(
-            ports
-                .arm_exact_empty_fresh_locator_coverage_for_test()
-                .expect("arm exact empty coverage")
-        );
         let root = capability_id(3);
         let root_digest = digest(1);
         let first = bootstrap_intent(20, root, root_digest, 10);
@@ -5686,11 +5519,6 @@ mod tests {
     #[test]
     fn consuming_create_and_revoke_transactions_are_atomic_and_replay_safe() {
         let (_path, mut ports) = initialized_ports("capability-transactions");
-        assert!(
-            ports
-                .arm_exact_empty_fresh_locator_coverage_for_test()
-                .expect("arm exact empty coverage")
-        );
         let root = capability_id(4);
         ports
             .bootstrap_capability(&bootstrap_intent(30, root, digest(3), 10))

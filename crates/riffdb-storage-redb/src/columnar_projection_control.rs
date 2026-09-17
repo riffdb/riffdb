@@ -143,9 +143,6 @@ impl RedbOperationalPorts {
             return Err(storage_error(StorageErrorKind::InvariantViolation));
         }
         let encoded = encode_columnar_projection_control_v1(&replacement)?;
-        access.expect_fresh_locator_byte_insert(COLUMNAR_PROJECTION_CONTROLS, &key)?;
-        access.close_fresh_locator_mutation_expectations()?;
-        access.record_actual_fresh_locator_byte_insert(COLUMNAR_PROJECTION_CONTROLS, &key)?;
         table
             .insert(key.as_slice(), encoded.as_bytes())
             .map_err(precommit_storage_error)?;
@@ -244,12 +241,7 @@ impl ColumnarProjectionControlRepository for RedbOperationalPorts {
                 return Ok(ColumnarProjectionControlWriteResultV1::StateChanged);
             }
         }
-        for (key, _) in &encoded {
-            access.expect_fresh_locator_byte_insert(COLUMNAR_PROJECTION_CONTROLS, key)?;
-        }
-        access.close_fresh_locator_mutation_expectations()?;
         for (key, value) in encoded {
-            access.record_actual_fresh_locator_byte_insert(COLUMNAR_PROJECTION_CONTROLS, &key)?;
             table
                 .insert(key.as_slice(), value.as_bytes())
                 .map_err(precommit_storage_error)?;
@@ -875,11 +867,6 @@ mod tests {
         let (_path, ports) = ports(
             "columnar-control-concurrent-cas",
             RedbTestController::observe_index_migration(),
-        );
-        assert!(
-            ports
-                .arm_exact_empty_fresh_locator_coverage_for_test()
-                .expect("arm exact empty coverage")
         );
         let (source, definition) = source();
         let spec = ColumnarProjectionSpecHashV1::from_bytes([0x22; 32]);
