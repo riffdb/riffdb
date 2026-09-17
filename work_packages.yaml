@@ -3151,6 +3151,36 @@ work_packages:
   - ./scripts/downstream-adapter-check --reproduce-adr-0167
   exit_gate: A language change that breaks a pinned adapter fails CI on the change that caused it,
     demonstrated by a deliberate reproduction of the ADR-0167 break.
+  closure:
+    status: complete
+    completed_at: "2026-09-17"
+    requirements_satisfied: [VER-003, DRV-014]
+    evidence: docs/architecture/WP-723-DOWNSTREAM-PROTECTION.md. Hosted PR job
+      https://github.com/riffdb/riffdb/actions/runs/35282049162/job/105406159789
+      passed eight orchestration tests, fetched all three public immutable adapter pins,
+      compiled four application directories against the proposed Rust CLI, and proved
+      that the historical bare Limit declaration fails the same checker with RDB-QS003.
+      GitHub main protection requires the Downstream adapters check from GitHub Actions,
+      with strict up-to-date enforcement including administrators. Package and unscoped
+      acceptance pass; the handbook records the same-change adapter migration procedure.
+    decisions_taken:
+    - Published RiffDB and all three adapters under the public riffdb GitHub organization
+      as requested by the maintainer in session on 2026-09-17, and committed pending
+      adapter work before pinning it.
+    - Kept full commit pins and explicit application directories in one reviewed manifest;
+      default checks fetch disposable trees, while explicit local checks remain read-only.
+    - Repaired Better Auth's unused unique-query cursor and included its materialized
+      organization profile in the same compiler gate without changing pagination semantics.
+    - Retained framework-runtime and installed-driver release conformance as separate
+      obligations; this gate adds continuous compiler and generated-artifact protection.
+    - Moved the existing driver-development workflow's runner context to the consuming
+      step after initial GitHub publication exposed invalid workflow-level use.
+    hazards_and_followups:
+    - Better Auth's full npm checks still require the unavailable immutable dev.16 local
+      registry packages. MLflow's full upstream tracking-store conformance remains pending.
+    - Initial hosted Python packaging checks expose an omitted operation-registry crate
+      in the sdist and an ARM artifact-receipt ownership error. These independent release
+      failures are documented; WP-723 does not claim the full merge battery is green.
 
 - id: WP-724
   name: Real adapter workload comprehensiveness
