@@ -92,10 +92,12 @@ jobs:
             --identity wp601-ci \
             "$GITHUB_WORKSPACE/target/wp601-distribution"
       - name: Prove clean package arrival
+        env:
+          RIFFDB_TMP_ROOT: ${{ runner.temp }}/riffdb-wp601-arrival
         run: |
           ./scripts/driver-package-arrival \
             --distribution "$GITHUB_WORKSPACE/target/wp601-distribution" \
-            --allowed-signers "$RIFFDB_TMP_ROOT/signing/allowed-signers" \
+            --allowed-signers "$GITHUB_WORKSPACE/target/wp601-tmp/signing/allowed-signers" \
             --identity wp601-ci \
             --receipt "$GITHUB_WORKSPACE/target/wp601-package-arrival.json"
       - name: Prove one package-only four-driver story

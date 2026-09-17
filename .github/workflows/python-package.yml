@@ -70,8 +70,10 @@ jobs:
         if: matrix.arch == 'x86_64'
         env:
           PYTHON: ${{ steps.py313.outputs.python-path }}
+          RUSTUP_HOME: ${{ runner.temp }}/riffdb-sdist-rustup
         shell: bash
         run: |
+          rustup toolchain install 1.97.0 --profile minimal
           "${{ steps.py313.outputs.python-path }}" -m pip install maturin==1.14.1
           ./scripts/build-python-sdist dist
       - name: Validate exact platform claims
