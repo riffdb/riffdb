@@ -22824,6 +22824,12 @@ work_packages:
   closure:
     status: open
     decisions_taken:
+    - Forward the exact lifecycle authorization request through CurrentPolicyPort
+      and the production capability-reader adapter into the existing checked
+      preparation. Unsupported adapters remain fail-closed. Re-read authority
+      and time for every preparation; the coordinator retains its independent
+      transaction-current reauthorization. Prove expiry, revocation, missing
+      or unavailable current facts, clock outage and replication-only denial.
     - Select ServiceAuditRecordV3 in the production administration dispatcher
       exactly when a checked record contains the accepted follower target;
       preserve byte-identical V2 selection for existing targets. Reuse the

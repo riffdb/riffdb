@@ -208,7 +208,9 @@ source invalidates that handle; reopening requires a fresh custody check.
 The internal lifecycle authorization preparation binds the entire request and
 requires current global administrative authority, as offline maintenance does.
 Permission to consume replication bytes alone does not authorize registration
-or retention-fence release. The coordinator rechecks current authority and fresh
+or retention-fence release. The shared-service policy port and production
+adapter forward the entire lifecycle request through this preparation; ports
+without that implementation refuse it. The coordinator rechecks current authority and fresh
 time inside its drained transaction, including on exact retries. Registration and
 retirement atomically commit the policy, administration record and V3 receipt;
 their service result links the exact original administration sequence. A retry

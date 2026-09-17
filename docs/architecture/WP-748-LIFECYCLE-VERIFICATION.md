@@ -89,6 +89,13 @@ substituted database/incarnation/epoch/hold identity at each terminal phase, and
 four process-crash edges with exact physical receipts. This follow-up is separate
 from the fixed lifecycle revision's full validation above.
 
+The shared-service current-policy port and production server adapter also forward
+complete lifecycle requests to the existing authorization preparation. Two
+focused tests prove the real capability-view path rejects expiry/revocation and
+the port rejects missing or unavailable current facts, clock outage, stream-only
+authority and unsupported adapters. Final transaction-current authorization
+remains independently required by the coordinator.
+
 Public registration/retirement remain unactivated. They still need shared-service
 operation-specific Started/terminal auditing and exact result linkage, distinct operation
 identities, and gRPC/Rust-client/CLI adapters with authorization and cancellation
