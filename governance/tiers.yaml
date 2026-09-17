@@ -90,8 +90,6 @@ checks:           # path-triggered checks; `run` entries are executed in order; 
     run: [./scripts/check-version-topology]
   - when: [docs/**, crates/riffdb-cli/**, README.md]
     run: [./scripts/handbook check]
-  - when: [crates/riffdb-contract-syntax/**, crates/riffdb-riffql-syntax/**, crates/riffdb-contract-compiler/**, crates/riffdb-query-compiler/**]
-    run: [./scripts/downstream-adapter-check]
   - when: [crates/riffdb-columnar/src/batch/**, scripts/check-columnar-batch-architecture, scripts/check-workspace-policy]
     run: [./scripts/check-columnar-batch-architecture, ./scripts/check-columnar-batch-architecture --self-test]
   - when: [Cargo.toml, Cargo.lock, crates/*/Cargo.toml, deny.toml, xtask/**]

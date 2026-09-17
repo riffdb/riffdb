@@ -120,7 +120,7 @@ dependencies = [
  "maybe-owned",
  "rustix",
  "rustix-linux-procfs",
- "windows-sys 0.61.2",
+ "windows-sys 0.60.2",
  "winx",
 ]
 
@@ -279,7 +279,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "39cab71617ae0d63f51a36d69f866391735b51691dbda63cf6f96d042b63efeb"
 dependencies = [
  "libc",
- "windows-sys 0.61.2",
+ "windows-sys 0.52.0",
 ]
 
 [[package]]
@@ -408,9 +408,9 @@ dependencies = [
 
 [[package]]
 name = "h2"
-version = "0.4.15"
+version = "0.4.16"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "6cb093c84e8bd9b188d4c4a8cb6579fc016968d14c99882163cd3ff402a4f155"
+checksum = "a9f37a958b41b3b19ee2707c06439c0e9e547e847223eb791ecb0cb821c65e27"
 dependencies = [
  "atomic-waker",
  "bytes",
@@ -1002,34 +1002,12 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "d6f6ff9a378485b298a5286656da665ba74413d36db0979633275d2e708145d4"
 
 [[package]]
-name = "riffdb-api-grpc"
-version = "0.1.0"
-dependencies = [
- "base64",
- "prost",
- "prost-types",
- "riffdb-proto",
- "tonic",
- "tonic-prost",
- "tonic-prost-build",
-]
-
-[[package]]
-name = "riffdb-application"
-version = "0.1.0"
-dependencies = [
- "riffdb-contract-ir",
- "riffdb-types",
- "serde",
- "serde_json",
-]
-
-[[package]]
 name = "riffdb-auth"
 version = "0.1.0"
 dependencies = [
  "base64",
  "getrandom 0.3.4",
+ "riffdb-observability",
  "riffdb-storage-api",
  "riffdb-types",
  "zeroize",
@@ -1041,6 +1019,7 @@ version = "0.1.0"
 dependencies = [
  "riffdb-contract-ir",
  "riffdb-invariant",
+ "riffdb-observability",
  "riffdb-query-module",
  "riffdb-storage-api",
  "riffdb-types",
@@ -1052,8 +1031,6 @@ version = "0.1.0"
 dependencies = [
  "futures-util",
  "getrandom 0.3.4",
- "riffdb-api-grpc",
- "riffdb-application",
  "riffdb-config",
  "riffdb-errors",
  "riffdb-proto",
@@ -1115,7 +1092,6 @@ name = "riffdb-driver-host"
 version = "0.1.0"
 dependencies = [
  "base64",
- "riffdb-application",
  "riffdb-client-rust",
  "riffdb-config",
  "riffdb-errors",
@@ -1143,23 +1119,21 @@ dependencies = [
 ]
 
 [[package]]
+name = "riffdb-observability"
+version = "0.1.0"
+dependencies = [
+ "riffdb-errors",
+ "riffdb-types",
+ "tracing",
+]
+
+[[package]]
 name = "riffdb-policy"
 version = "0.1.0"
 dependencies = [
  "riffdb-auth",
  "riffdb-contract-ir",
- "riffdb-types",
-]
-
-[[package]]
-name = "riffdb-projection"
-version = "0.1.0"
-dependencies = [
- "riffdb-catalog",
- "riffdb-contract-ir",
- "riffdb-invariant",
- "riffdb-query-ir",
- "riffdb-storage-api",
+ "riffdb-observability",
  "riffdb-types",
 ]
 
@@ -1170,8 +1144,12 @@ dependencies = [
  "base64",
  "crc",
  "prost",
+ "prost-types",
  "riffdb-errors",
  "riffdb-types",
+ "tonic",
+ "tonic-prost",
+ "tonic-prost-build",
 ]
 
 [[package]]
@@ -1181,19 +1159,6 @@ dependencies = [
  "riffdb-contract-ir",
  "riffdb-query-ir",
  "riffdb-reactive-syntax",
- "riffdb-riffql-syntax",
- "riffdb-types",
-]
-
-[[package]]
-name = "riffdb-query-executor"
-version = "0.1.0"
-dependencies = [
- "riffdb-auth",
- "riffdb-contract-ir",
- "riffdb-policy",
- "riffdb-projection",
- "riffdb-query-ir",
  "riffdb-riffql-syntax",
  "riffdb-types",
 ]
@@ -1240,6 +1205,7 @@ version = "0.1.0"
 dependencies = [
  "prost",
  "riffdb-contract-ir",
+ "riffdb-errors",
  "riffdb-proto",
  "riffdb-types",
  "sha2",
@@ -1252,14 +1218,12 @@ dependencies = [
  "cap-std",
  "redb",
  "riffdb-catalog",
- "riffdb-policy",
- "riffdb-projection",
+ "riffdb-columnar",
  "riffdb-proto",
- "riffdb-query-executor",
- "riffdb-query-ir",
  "riffdb-storage-api",
  "riffdb-types",
  "sha2",
+ "tempfile",
 ]
 
 [[package]]
@@ -1268,6 +1232,8 @@ version = "0.1.0"
 dependencies = [
  "caseless",
  "hmac",
+ "serde",
+ "serde_json",
  "sha2",
  "unicode-normalization",
  "unicode-segmentation",
@@ -1297,7 +1263,7 @@ dependencies = [
  "errno",
  "libc",
  "linux-raw-sys",
- "windows-sys 0.61.2",
+ "windows-sys 0.52.0",
 ]
 
 [[package]]
@@ -1312,9 +1278,9 @@ dependencies = [
 
 [[package]]
 name = "rustls"
-version = "0.23.43"
+version = "0.23.45"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "0283386ce02abc0151e1761d08802dfe86c173b0b494af5cbc086574e453da06"
+checksum = "0d41d731c7d2f962d1ccc364cec258de3c0e93b38c2fb3ba97ac74513048d634"
 dependencies = [
  "log",
  "once_cell",
@@ -1336,9 +1302,9 @@ dependencies = [
 
 [[package]]
 name = "rustls-webpki"
-version = "0.103.13"
+version = "0.103.14"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "61c429a8649f110dddef65e2a5ad240f747e85f7758a6bccc7e5777bd33f756e"
+checksum = "0527518605e68109d875e248ea259b6758801cf165e4b2c2733ae3b51f12535a"
 dependencies = [
  "ring",
  "rustls-pki-types",
@@ -1474,7 +1440,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c3d1e2c7f27f8d4cb10542a02c49005dbd6e93095799d6f3be745fae9f8fedd4"
 dependencies = [
  "libc",
- "windows-sys 0.61.2",
+ "windows-sys 0.60.2",
 ]
 
 [[package]]
@@ -1525,15 +1491,15 @@ checksum = "0bf256ce5efdfa370213c1dabab5935a12e49f2c58d15e9eac2870d3b4f27263"
 
 [[package]]
 name = "tempfile"
-version = "3.27.0"
+version = "3.24.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "32497e9a4c7b38532efcdebeef879707aa9f794296a4f0244f6f69e9bc8574bd"
+checksum = "655da9c7eb6305c55742045d5a8d2037996d61d8de95806335c7c86ce0f82e9c"
 dependencies = [
  "fastrand",
- "getrandom 0.4.3",
+ "getrandom 0.3.4",
  "once_cell",
  "rustix",
- "windows-sys 0.61.2",
+ "windows-sys 0.52.0",
 ]
 
 [[package]]
@@ -1542,7 +1508,7 @@ version = "1.2.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "d8c27177b12a6399ffc08b98f76f7c9a1f4fe9fc967c784c5a071fa8d93cf7e1"
 dependencies = [
- "windows-sys 0.61.2",
+ "windows-sys 0.59.0",
 ]
 
 [[package]]
@@ -1880,7 +1846,7 @@ version = "0.1.11"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c2a7b1c03c876122aa43f3020e6c3c3ee5c05081c9a00739faf7503aeba10d22"
 dependencies = [
- "windows-sys 0.61.2",
+ "windows-sys 0.52.0",
 ]
 
 [[package]]

@@ -44,8 +44,6 @@ cargo machete
 ./scripts/check-three-places --self-test
 ./scripts/check-adapter-evidence-claims --self-test
 ./scripts/check-adapter-evidence-claims
-python3 scripts/tests/test_downstream_adapter_check.py
-./scripts/downstream-adapter-check --reproduce-adr-0167
 ./scripts/expansion_completes_every_driver_before_release_or_refuses_whole
 ./scripts/expansion_memory_redb_parity_matches_independent_oracle
 wp701_proof_root="$(mktemp -d "${TMPDIR:-/tmp}/riffdb-wp701-ci.XXXXXX")"

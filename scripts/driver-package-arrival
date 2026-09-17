@@ -271,7 +271,7 @@ def smoke_go(distribution: Path, scratch: Path) -> None:
         "package arrival\n\n"
         'import (\n  "testing"\n  application "riffdb.dev/application"\n)\n\n'
         "func TestPackageArrival(t *testing.T) {\n"
-        "  if application.ProtocolVersion != 3 { t.Fatal(\"unexpected protocol\") }\n"
+        "  if application.ProtocolVersion != 4 { t.Fatal(\"unexpected protocol\") }\n"
         "  if value := application.I64(7); value.Type != \"i64\" { t.Fatal(\"invalid value\") }\n"
         "}\n",
     )
