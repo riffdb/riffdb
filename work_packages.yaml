@@ -3149,13 +3149,23 @@ work_packages:
   exit_gate: RiffDB's standard checks run without sample adapter repositories; each adapter
     independently compiles its applications against its selected RiffDB revision.
   closure:
-    status: open
-    evidence: docs/architecture/WP-723-DOWNSTREAM-PROTECTION.md
+    status: complete
+    completed_at: "2026-09-17"
+    requirements_satisfied: [VER-003, DRV-014]
+    evidence: docs/architecture/WP-723-DOWNSTREAM-PROTECTION.md. All three published
+      adapter-owned compatibility workflows passed on GitHub; core branch protection
+      requires only core checks. Package and unscoped acceptance pass. Independent CI
+      repairs pass local regression checks; the full hosted merge battery remains
+      required and is not implied by this package closure.
     decisions_taken:
     - The maintainer explicitly rejected making RiffDB depend on sample adapters in
       session on 2026-09-17; compatibility ownership moves into those repositories.
     - First-party SDK and package tests remain part of RiffDB CI. External sample
       adapters are consumers and cannot block core build, testing, release, or merge.
+    - Restored current Python source-package closure, driver protocol 4 checks, and
+      exact fresh-primary bootstrap health validation without changing runtime semantics.
+    - Patched the separate fuzz lockfile to h2 0.4.16 and rustls 0.23.45, already used
+      by the main workspace; fuzz cargo deny, cargo audit, and parser smoke pass.
 
 - id: WP-724
   name: Real adapter workload comprehensiveness
