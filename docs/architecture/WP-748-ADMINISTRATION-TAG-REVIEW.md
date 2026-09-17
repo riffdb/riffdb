@@ -1,6 +1,7 @@
 # WP-748 — replication administration tag collision
 
-Status: proposed; exact maintainer acceptance required before implementation.
+Status: accepted by the maintainer in session 2026-09-16: "Approve exact correction".
+Authority-only acceptance commit: `83a4a23e`.
 Package: WP-748. Tier: guarantee.
 
 ## Conflict
@@ -13,7 +14,7 @@ share one durable tag/revision identity. The replication administration record
 has not been implemented or written. The existing export identity must retain
 its bytes and meaning.
 
-## Exact proposed amendment
+## Exact accepted amendment
 
 > In the accepted WP-748 registration-audit amendment in SPEC §13.5,
 > incorporated by ADR-0021 and ADR-0178, replace the durable identity of
@@ -30,6 +31,6 @@ a distinct unused durable tag to the already accepted record before its first
 writer exists. V3 service audit remains tag 22, revision 3.
 
 AGENTS.md's authoritative-file conflict rule and standing directive D-003
-require exact human acceptance because the accepted decision explicitly names
-tag 74. After acceptance, record the correction in a standalone authority-only
-commit before implementing the replication administration codec.
+required exact human acceptance because the earlier accepted decision explicitly
+named tag 74. Commit `83a4a23e` records that acceptance in SPEC and ADR-0021/0178
+before implementation of the replication administration codec.
