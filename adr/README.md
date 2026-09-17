@@ -231,7 +231,7 @@ record with no front matter.
 | [0194](0194-generated-mcp-named-query-pagination-envelope.md) | Generated MCP Named-Query Pagination Envelope | Accepted | surface |
 | [0195](0195-demand-activated-columnar-runtime-materialization.md) | Demand-Activated Columnar Runtime Materialization | Accepted | guarantee |
 | [0196](0196-cold-columnar-query-outcome-alignment.md) | Cold Columnar Query Outcome Alignment | Accepted | guarantee |
-| [0197](0197-fresh-process-contiguous-idempotency-locator-coverage.md) | Fresh-Process Contiguous Idempotency Locator Coverage | Accepted | guarantee |
+| [0197](0197-fresh-process-contiguous-idempotency-locator-coverage.md) | Fresh-Process Contiguous Idempotency Locator Coverage | Superseded | guarantee |
 | [0198](0198-generated-mcp-catalog-descriptor-parity.md) | Generated MCP Catalog Descriptor Parity | Accepted | surface |
 | [0199](0199-performance-freeze-exceptions-for-named-lift-prerequisites.md) | Performance Freeze Exceptions for Named Lift Prerequisites | Accepted | guarantee |
 | [0200](0200-columnar-control-reset-for-history-incarnation.md) | Columnar Control Reset for History Incarnation | Accepted | guarantee |
@@ -267,8 +267,8 @@ record with no front matter.
 | [0232](0232-append-only-export-page-commitments.md) | Append Only Export Page Commitments | Accepted | guarantee |
 | [0233](0233-typed-boolean-operands-in-row-policy-evaluation.md) | Typed Boolean Operands In Row Policy Evaluation | Accepted | guarantee |
 | [0234](0234-bounded-repairs-for-reviewed-runtime-resource-costs.md) | Bounded Repairs For Reviewed Runtime Resource Costs | Accepted | guarantee |
-| [0235](0235-fresh-locator-coverage-proven-at-staging.md) | Retire Fresh Locator Coverage Once The Derived Index Covers | Accepted | guarantee |
-| [0236](0236-remove-fresh-locator-coverage.md) | Remove Fresh Locator Coverage | Proposed | guarantee |
+| [0235](0235-fresh-locator-coverage-proven-at-staging.md) | Retire Fresh Locator Coverage Once The Derived Index Covers | Superseded | guarantee |
+| [0236](0236-remove-fresh-locator-coverage.md) | Remove Fresh Locator Coverage | Accepted | guarantee |
 <!-- adr-index:end -->
 
 The human architecture review on 2026-07-12 approved the direction represented

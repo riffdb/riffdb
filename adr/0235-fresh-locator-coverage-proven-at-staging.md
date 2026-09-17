@@ -1,7 +1,7 @@
 ---
 adr: "0235"
 title: Retire Fresh Locator Coverage Once The Derived Index Covers
-status: accepted
+status: superseded
 tier: guarantee
 date: 2026-09-17
 accepted: 2026-09-17
@@ -12,7 +12,7 @@ amends:
   - ADR-0183 only to admit the single enumerated repair below.
   - ADR-0197 only to bound how long coverage is maintained, without changing
     what it proves while it is maintained.
-supersedes: []
+superseded_by: [ADR-0236]
 requirements: []
 packages: [WP-786]
 obligations:
