@@ -202,7 +202,8 @@ from the same source snapshot; a separate live bootstrap job still retains
 custody. Transfer composition revalidates current source custody before releasing
 a manifest, and already-open artifact handles check custody after page I/O before
 returning bytes. Retirement therefore also refuses subsequent transfers through
-an old handle.
+an old handle. A held artifact does not keep the source engine open. Closing the
+source invalidates that handle; reopening requires a fresh custody check.
 
 These source updates do not enable audited registration, retirement, expiry
 release or automatic registry migration. Those operations still require complete
