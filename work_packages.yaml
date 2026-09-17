@@ -3170,6 +3170,10 @@ work_packages:
       crate and rewrites only their include paths; installed-package checks verify exact bytes.
     - CI installs its explicit generator and registry prerequisites, uses a fresh pinned
       host toolchain for source archives, and places package consumers outside the checkout.
+    - Removed the obsolete downstream-script test. Scoped nextest overrides reserve
+      exclusive slots for the observed storage-heavy campaigns; their assertions and
+      internal progress deadlines remain unchanged. The migration wrapper allows its
+      existing 600-second terminal hang ceiling to complete; retries remain disabled.
 
 - id: WP-724
   name: Real adapter workload comprehensiveness

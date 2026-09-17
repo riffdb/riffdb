@@ -22,6 +22,33 @@ threads-required = "num-test-threads"
 priority = 100
 slow-timeout = { period = "30s", terminate-after = 8, grace-period = "10s" }
 
+[[profile.ci.overrides]]
+# Thirty-two durable recovery-stage copies plus cleanup verification exceeded
+# the generic 120s limit while competing with other disk-heavy CI campaigns.
+# Keep all iterations and assertions; reserve the runner and bound the campaign.
+filter = 'binary_id(=riffdb-storage-redb::maintenance) & test(=recovery_stage_failures_and_retries_leave_no_pre_receipt_inventory)'
+threads-required = "num-test-threads"
+priority = 100
+slow-timeout = { period = "30s", terminate-after = 8, grace-period = "10s" }
+
+[[profile.ci.overrides]]
+# This harnessless gate already owns a 600s terminal-state hang ceiling plus
+# bounded startup/shutdown phases. The synthetic nextest wrapper must allow
+# those original bounds to finish and report their semantic result.
+filter = 'binary_id(=riffdb-testkit-server::contract_migration_gate_a)'
+threads-required = "num-test-threads"
+priority = 100
+slow-timeout = { period = "30s", terminate-after = 24, grace-period = "10s" }
+
+[[profile.ci.overrides]]
+# These two complete replication campaigns contend for durable I/O with other
+# recovery tests. Preserve their internal 30s progress deadlines and exact
+# frontier assertions while giving each campaign the runner and a bounded budget.
+filter = 'binary_id(=riffdb-server::replication_follower) & (test(=follower_applies_exact_prefix_byte_faithfully) | test(=replication_stream_resumes_gap_free_after_repeated_kills))'
+threads-required = "num-test-threads"
+priority = 100
+slow-timeout = { period = "30s", terminate-after = 8, grace-period = "10s" }
+
 [[profile.ci.scripts]]
 filter = 'binary_id(=riffdb-testkit-server::full_recovery_matrix) | binary_id(=riffdb-testkit-server::offline_maintenance_matrix) | binary_id(=riffdb-testkit-server::contract_migration_gate_a) | binary_id(=riffdb-testkit-server::remote_ingress) | binary_id(=riffdb-testkit-server::remote_deployment_rotation)'
 list-wrapper = "harnessless"
