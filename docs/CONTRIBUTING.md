@@ -235,10 +235,54 @@ because rendering and YAML checks start nothing and a shipped
 `projections_root` under a read-only path once made the server unstartable;
 and `./scripts/downstream-adapter-check` compiles the out-of-tree adapter
 repositories, which are the only end-to-end consumers of the contract and
-RiffQL languages, because nothing in this repository compiles them and ADR-0167
-broke them silently. The adapter check is read-only, offline, never writes to a
-repository it checks, and is outside CI because those repositories have no
-remote.
+RiffQL languages. ADR-0167 previously broke them silently. The required
+**Downstream adapters** CI job runs on every pull request, without path filters,
+and compiles all revisions in `scripts/downstream-adapters.json` using the Rust
+CLI built from the proposed RiffDB tree. It checks exact application locks and
+generated artifacts as well as contract and RiffQL sources. A fetch failure,
+missing adapter, stale artifact, or compilation error fails the RiffDB change.
+The public repositories under the [riffdb organization](https://github.com/riffdb)
+need no credentials or secrets, including for fork pull requests.
+
+### Updating downstream adapter pins
+
+Pins are full Git commit hashes, never branches or tags. The default check
+fetches them into temporary directories and removes those directories afterward:
+
+```bash
+./scripts/downstream-adapter-check --reproduce-adr-0167
+```
+
+The regression mode first requires all adapters to pass. It then copies Better
+Auth, restores one historical bare `Limit` declaration, and requires this same
+checker to fail with `RDB-QS003`. This tests the CI failure path with the real
+compiler. `scripts/ci-all` runs the same checks. This POC gate covers application
+source, locks, and generated bindings; each adapter's framework runtime suite
+and installed-driver release conformance remain separate requirements.
+
+For an intentional language or generation change:
+
+1. Make the adapter migration in its own repository. Preserve its supported
+   behavior and run its checks against the proposed RiffDB CLI. Review source
+   changes before running `riffdb application lock --write`, then verify with
+   `riffdb application check`.
+2. Commit and push the adapter update. Record the old and new full revisions
+   and a link to the adapter diff in the RiffDB pull request.
+3. Update the matching revision in `scripts/downstream-adapters.json` in that
+   same reviewed RiffDB change. Run the command above and require the
+   **Downstream adapters** check to pass before merging. Do not remove an
+   adapter or weaken the check to accommodate the break.
+
+For local iteration, `./scripts/downstream-adapter-check --repo-root DIR`
+checks existing working copies without changing them. All pinned adapter names
+are required there too; `--repo NAME` explicitly narrows a local run and is not
+used by CI. Application compilation itself is offline; the default pin fetch
+and an uncached Cargo build require network access.
+
+The GitHub `main` branch protection must require the **Downstream adapters**
+status check with up-to-date branches and apply it to administrators. Keep the
+job name stable when editing workflows; the protection setting refers to it.
+
 
 CI runs the required unit and integration battery as four whole-target
 cargo-nextest jobs. The SHA-256 assignment is stable from each canonical

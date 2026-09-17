@@ -3130,6 +3130,7 @@ work_packages:
 
 - id: WP-723
   name: Continuous downstream adapter protection
+  tier: internal
   depends_on: [WP-569]
   objective: Make a contract or RiffQL language change unable to land green while it breaks an
     out-of-tree adapter. The adapter repositories are the only consumers exercising those languages
@@ -3146,7 +3147,8 @@ work_packages:
   - A recorded procedure for the intended break, where a language change updates the pinned adapter
     revision in the same reviewed change
   acceptance_commands:
-  - ./scripts/downstream-adapter-check
+  - python3 scripts/tests/test_downstream_adapter_check.py
+  - ./scripts/downstream-adapter-check --reproduce-adr-0167
   exit_gate: A language change that breaks a pinned adapter fails CI on the change that caused it,
     demonstrated by a deliberate reproduction of the ADR-0167 break.
 
