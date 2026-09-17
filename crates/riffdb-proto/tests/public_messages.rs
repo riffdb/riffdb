@@ -2011,6 +2011,23 @@ fn health_and_subscription_closed_bounds_are_checked() {
         ..Default::default()
     };
     for (kind, status, progress, valid) in [
+        // req: REP-006
+        // Configured sequence expiry degrades a primary's retention policy even
+        // when its follower has acknowledged the complete application head.
+        (
+            v1::HealthComponentKind::Replication,
+            v1::HealthComponentStatus::Degraded,
+            Some(v1::ReplicationStatistics {
+                role: v1::ReplicationRole::Primary.into(),
+                source_frontier: unknown.applied_frontier,
+                applied_frontier: unknown.applied_frontier,
+                acknowledged_frontier: unknown.applied_frontier,
+                registered_followers: Some(1),
+                application_lag_sequences: Some(0),
+                administration_lag_sequences: Some(0),
+            }),
+            true,
+        ),
         (
             v1::HealthComponentKind::Replication,
             v1::HealthComponentStatus::Degraded,

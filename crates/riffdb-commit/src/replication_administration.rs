@@ -99,3 +99,22 @@ pub(crate) fn drive_replication_administration<
         .map_err(|error| classify_write_error(error, lifecycle))?;
     Ok(ReplicationAdministrationExecutionResult { outcome })
 }
+
+pub(crate) fn drive_replication_maintenance<
+    R: riffdb_storage_api::ReplicationRegistrationMaintenancePort + ?Sized,
+>(
+    repository: &R,
+    clock: &dyn AdministrationClock,
+    lifecycle: &dyn CommandExecutionLifecycle,
+) -> Result<
+    riffdb_storage_api::ReplicationRegistrationMaintenanceResultV1,
+    ControlPlaneExecutionError,
+> {
+    let timestamp = clock.now().map_err(|error| ControlPlaneExecutionError {
+        kind: ControlPlaneExecutionErrorKind::StorageUnavailable,
+        detail: ControlPlaneExecutionErrorDetail::AdministrationClock(error),
+    })?;
+    repository
+        .maintain_replication_registration(timestamp)
+        .map_err(|error| classify_write_error(error, lifecycle))
+}

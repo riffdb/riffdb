@@ -22823,6 +22823,16 @@ work_packages:
   closure:
     status: open
     decisions_taken:
+    - Add a closed coordinator continuation for immutable registration policy,
+      limited to one source transition per turn. Persist degradation in its V2
+      hold with the existing empty SourceHold receipt before a later turn may
+      atomically expire it with its original registration provenance and accepted
+      retention-attributed administration receipt. Budget alone never releases a
+      fence; retries, crashes and reopen preserve audit and hold linkage. Reuse
+      existing retention commit fault hooks for process crash coverage. Observe
+      bounded same-pin budget and expiry degradation in primary Health, including
+      caught-up expiry, without adding wire fields or changing statistics counters.
+      Background scheduling and public lifecycle RPCs remain unactivated.
     - Route explicit follower registration and retirement through the existing
       sole-writer actor and a closed consuming source-barrier transaction port.
       Reauthorize digest-free transaction-current capability facts with a fresh

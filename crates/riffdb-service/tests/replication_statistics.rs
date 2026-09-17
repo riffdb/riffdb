@@ -81,6 +81,36 @@ fn operational_replication_is_one_typed_component_and_survives_statistics_assemb
 }
 
 #[test]
+// req: REP-006
+fn expired_registration_degrades_health_even_when_application_and_audit_heads_match() {
+    use riffdb_service::{ComponentHealth, HealthComponentStatus};
+    let head = frontier(3, 7);
+    let progress = ReplicationStatistics::primary(head, 1, Some(head)).unwrap();
+    assert!(progress.is_caught_up());
+    let health = ComponentHealth::replication_with_retention_degradation(progress, true).unwrap();
+    assert_eq!(health.status(), HealthComponentStatus::Degraded);
+    assert_eq!(health.replication_statistics(), Some(progress));
+    assert_eq!(
+        ComponentHealth::replication(progress).status(),
+        HealthComponentStatus::Healthy
+    );
+    assert!(
+        ComponentHealth::replication_with_retention_degradation(
+            ReplicationStatistics::primary(head, 0, None).unwrap(),
+            true,
+        )
+        .is_err()
+    );
+    assert!(
+        ComponentHealth::replication_with_retention_degradation(
+            ReplicationStatistics::follower(head, Some(head), Some(head)).unwrap(),
+            true,
+        )
+        .is_err()
+    );
+}
+
+#[test]
 fn follower_health_requires_replication_and_catalog_without_a_primary_coordinator() {
     use riffdb_service::{
         BuildInfo, ComponentHealth, HealthComponentKind as Kind, HealthComponentStatus as Status,

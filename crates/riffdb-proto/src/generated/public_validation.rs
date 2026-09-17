@@ -2807,7 +2807,13 @@ fn validate_health_response(message: &v1::HealthResponse) -> Result<(), PublicWi
                                 && progress.administration_lag_sequences == Some(0)
                                 && progress.acknowledged_frontier.is_some());
                         let expected = if healthy { v1::HealthComponentStatus::Healthy } else { v1::HealthComponentStatus::Degraded };
-                        if component.status != expected as i32 { return Err(PublicWireError::NonCanonical); }
+                        // A live primary registration can reach configured expiry
+                        // even at zero lag. Policy health adds degradation without
+                        // changing these exact sequence counters (REP-006).
+                        let policy_degraded = progress.role == v1::ReplicationRole::Primary as i32
+                            && progress.registered_followers.is_some_and(|count| count > 0)
+                            && component.status == v1::HealthComponentStatus::Degraded as i32;
+                        if component.status != expected as i32 && !policy_degraded { return Err(PublicWireError::NonCanonical); }
                     }
                     (v1::HealthComponentKind::Replication, None)
                         if component.status != v1::HealthComponentStatus::Unavailable as i32 => return Err(PublicWireError::MissingRequiredField),

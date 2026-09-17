@@ -12,6 +12,7 @@ pub struct ReplicationSourceProgressV3 {
     history: ChangelogHistoryStateV3,
     follower_count: u32,
     oldest_acknowledged: Option<ChangelogHistoryPointV3>,
+    degraded_followers: u32,
 }
 
 impl ReplicationSourceProgressV3 {
@@ -43,6 +44,7 @@ impl ReplicationSourceProgressV3 {
             history,
             follower_count,
             oldest_acknowledged,
+            degraded_followers: 0,
         })
     }
     /// Published source history; never a private writer frontier.
@@ -54,6 +56,20 @@ impl ReplicationSourceProgressV3 {
     #[must_use]
     pub const fn follower_count(self) -> u32 {
         self.follower_count
+    }
+    /// Binds the bounded count of live policies whose budget or configured expiry
+    /// is reached in this same source pin. This is health, never release authority.
+    pub fn with_degraded_followers(mut self, degraded: u32) -> Result<Self, ChangelogV3Error> {
+        if degraded > self.follower_count {
+            return Err(ChangelogV3Error::InvalidEncoding);
+        }
+        self.degraded_followers = degraded;
+        Ok(self)
+    }
+    /// Live registrations with reached policy limits, including caught-up expiry.
+    #[must_use]
+    pub const fn degraded_followers(self) -> u32 {
+        self.degraded_followers
     }
     /// Slowest exact acknowledgement. None means no registered followers.
     #[must_use]

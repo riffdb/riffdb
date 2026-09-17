@@ -7,6 +7,9 @@ use riffdb_storage_api::{
 };
 use riffdb_storage_redb::RedbOfflineRetention;
 
+#[path = "replication_registration_maintenance.rs"]
+mod registration_maintenance;
+
 fn attach_follower(
     ports: &RedbOperationalPorts,
     root: &Path,
