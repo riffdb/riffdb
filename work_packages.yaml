@@ -22823,6 +22823,15 @@ work_packages:
   closure:
     status: open
     decisions_taken:
+    - Preserve V2 policy and its original registration receipt when an attached
+      follower advances its exact acknowledgement through the existing drained
+      SourceHold lane. Keep its empty physical receipt and unchanged application
+      and administration heads. Equal retries allocate nothing; awaiting and
+      retired registrations refuse acknowledgements, and legacy registration
+      cannot overwrite policy. Recompute the degradation observation against
+      the same validated source head, clearing obsolete budget exhaustion only
+      when caught up and retaining degradation after configured expiry. This
+      grants no retirement, bootstrap, registration or expiry-release authority.
     - Validate registered source holds and retired tombstones against their exact
       original and release administration receipts in the full same-pin source
       validation pass. Stream audit history with memory bounded by the existing

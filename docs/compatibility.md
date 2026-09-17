@@ -184,8 +184,17 @@ remain valid for older incarnations of the same permanent database identity.
 Application export identifies
 these administration rows with the `replication` kind.
 
-These readers activate no lifecycle writer, release authority or automatic
-registry migration; atomic runtime transitions and recovery proof remain required.
+The internal source acknowledgement writer preserves a V2 registration's
+generation, budget, expiry and original audit link. Only attached registrations
+may acknowledge; equal retries allocate no receipt, and awaiting or retired
+registrations refuse even an equal acknowledgement. Legacy registration cannot
+overwrite a V2 policy. An advancing acknowledgement recomputes degradation from
+the validated source head: catch-up clears budget degradation, while a reached
+configured expiry remains degraded. Neither condition releases the fence.
+
+These readers and acknowledgement updates activate no lifecycle writer, release
+authority or automatic registry migration; atomic runtime transitions and
+recovery proof remain required.
 
 WP-749 registers successor command capsule V7 (tag 54, revision 6) and segment
 V6 (tag 55, revision 6) for exact command-prefix evidence. Earlier record bytes

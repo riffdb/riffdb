@@ -14,9 +14,13 @@ use crate::changelog_v3_write::{PreparedHistoryAdvance, value_error};
 use riffdb_storage_api::{
     AuthoritativeNamespaceV1 as N, AuthoritativeTransactionBindingV3, AuthoritativeTransactionV3,
     ChangelogAttributionV3 as Source, ChangelogCursorErrorV3 as Refusal,
-    ChangelogHistoryStateV3 as History, MAX_REPLICATION_SOURCE_HOLDS_V1,
-    ReplicationSourceHoldKindV1 as Kind, ReplicationSourceHoldV1 as Hold,
-    proto_codec::{decode_replication_source_hold_v1, encode_replication_source_hold_v1},
+    ChangelogHistoryStateV3 as History, FollowerRegistrationPhaseV1 as Phase,
+    MAX_REPLICATION_SOURCE_HOLDS_V1, ReplicationSourceHoldKindV1 as Kind,
+    ReplicationSourceHoldStateV1 as State, ReplicationSourceHoldV1 as Hold,
+    proto_codec::{
+        decode_replication_source_hold, decode_replication_source_hold_v1,
+        encode_replication_source_hold_v1, encode_replication_source_hold_v2,
+    },
 };
 
 #[path = "changelog_source_control_transaction.rs"]
@@ -24,6 +28,8 @@ mod transaction;
 use transaction::Barrier;
 #[path = "changelog_bootstrap_attachment.rs"]
 mod bootstrap_attachment;
+#[path = "changelog_registered_ack.rs"]
+mod registered_ack;
 #[path = "changelog_source_control_retention.rs"]
 mod retention;
 
@@ -109,11 +115,23 @@ impl ReplicationSourceControl {
             .get(hold.storage_key().as_slice())
             .map_err(precommit_storage_error)?
             .map(|row| {
-                decode_replication_source_hold_v1(row.value())
+                decode_replication_source_hold(row.value())
                     .map(|decoded| *decoded.value())
                     .map_err(crate::error::codec_error)
             })
             .transpose()?;
+        let (prior, policy) = match prior {
+            None => (None, None),
+            Some(State::Legacy(hold)) => (Some(hold), None),
+            Some(State::Registered(policy)) => {
+                // Neither a legacy registration retry nor an equal ack may
+                // bypass the registered lifecycle or downgrade its policy.
+                if !advancing || policy.phase() != Phase::Attached {
+                    return Err(Refusal::InvalidPosition);
+                }
+                (Some(policy.hold()), Some(policy))
+            }
+        };
         if prior == Some(hold) {
             return Ok(false);
         }
@@ -145,6 +163,13 @@ impl ReplicationSourceControl {
             _ => return Err(Refusal::InvalidPosition),
         }
         drop(table);
+        let encoded = if let Some(policy) = policy {
+            let successor = registered_ack::advance(policy, hold, barrier.observation().history)
+                .map_err(value_error)?;
+            encode_replication_source_hold_v2(successor).map_err(crate::error::codec_error)?
+        } else {
+            encode_replication_source_hold_v1(hold).map_err(crate::error::codec_error)?
+        };
         let write = barrier.begin()?;
         // Exhaustion and complete preflight precede the first mutation.
         let (receipt, _) = prepare_control_receipt(
@@ -152,7 +177,6 @@ impl ReplicationSourceControl {
             write.history(),
             Source::ReplicationSourceHold,
         )?;
-        let encoded = encode_replication_source_hold_v1(hold).map_err(crate::error::codec_error)?;
         write
             .transaction()?
             .open_table(SOURCE_HOLDS)
