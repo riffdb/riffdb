@@ -7,9 +7,12 @@
 
 #[path = "replication_administration.rs"]
 mod replication_administration;
-pub use replication_administration::ReplicationAdministrationExecutionResult;
 pub(crate) use replication_administration::drive_replication_administration;
 pub(crate) use replication_administration::drive_replication_maintenance;
+pub use replication_administration::{
+    ReplicationAdministrationExecutionResult, ReplicationAdministrationOutcome,
+    ReplicationAdministrationRefusal, ReplicationAdministrationResultReceipt,
+};
 
 use std::{error::Error, fmt, num::NonZeroU32, num::NonZeroU64};
 

@@ -72,7 +72,9 @@ fn requires_primary(operation: ServiceOperationV1) -> bool {
         | StartApplicationReimport
         | ApplyApplicationReimportPage
         | GetApplicationReimport
-        | CancelApplicationReimport => true,
+        | CancelApplicationReimport
+        | RegisterFollower
+        | RetireFollower => true,
     }
 }
 

@@ -237,7 +237,7 @@ macro_rules! declaration {
 }
 
 /// Exactly one declaration per [`ServiceOperationV1`], in stable tag order.
-pub const OPERATIONS: [OperationDeclaration; 57] = [
+pub const OPERATIONS: [OperationDeclaration; 59] = [
     declaration_with_types!(
         ValidateContract,
         "riffdb.v1",
@@ -877,6 +877,38 @@ pub const OPERATIONS: [OperationDeclaration; 57] = [
         OperatorProtected,
         OPERATOR_AUDIENCE
     ),
+    OperationDeclaration {
+        ingress: &[
+            ServiceIngressKindV1::Grpc,
+            ServiceIngressKindV1::InProcessTestComparison,
+        ],
+        ..declaration!(
+            RegisterFollower,
+            "riffdb.v1",
+            "RegisterFollowerRequest",
+            "RegisterFollowerResponse",
+            AdministerCapabilities,
+            IdempotentMutation,
+            OperatorProtected,
+            OPERATOR_AUDIENCE
+        )
+    },
+    OperationDeclaration {
+        ingress: &[
+            ServiceIngressKindV1::Grpc,
+            ServiceIngressKindV1::InProcessTestComparison,
+        ],
+        ..declaration!(
+            RetireFollower,
+            "riffdb.v1",
+            "RetireFollowerRequest",
+            "RetireFollowerResponse",
+            AdministerCapabilities,
+            IdempotentMutation,
+            OperatorProtected,
+            OPERATOR_AUDIENCE
+        )
+    },
 ];
 
 /// Looks up one declaration by its stable semantic operation.
@@ -923,7 +955,23 @@ mod tests {
     #[test]
     fn registry_is_a_leaf_with_closed_bounded_mapping_values() {
         assert_eq!(OPERATION_REGISTRY_VERSION, 1);
-        assert!(OPERATIONS.iter().all(|entry| entry.ingress == ALL_INGRESS));
+        for entry in OPERATIONS {
+            let lifecycle = matches!(
+                entry.operation,
+                ServiceOperationV1::RegisterFollower | ServiceOperationV1::RetireFollower
+            );
+            assert_eq!(
+                entry.ingress,
+                if lifecycle {
+                    &[
+                        ServiceIngressKindV1::Grpc,
+                        ServiceIngressKindV1::InProcessTestComparison,
+                    ][..]
+                } else {
+                    ALL_INGRESS
+                }
+            );
+        }
         for entry in OPERATIONS {
             let bound_targets = entry
                 .bounds

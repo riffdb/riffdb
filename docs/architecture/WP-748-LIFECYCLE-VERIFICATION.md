@@ -1,6 +1,7 @@
 # WP-748 lifecycle, health and expiry verification
 
-Package: WP-748. Tier: guarantee. Status: full validation in progress;
+Package: WP-748. Tier: guarantee. Status: lifecycle full validation passed;
+public operator increment validation in progress;
 WP-748 remains open. Benchmark qualification remains paused at the maintainer's
 request; this report makes no performance-qualification claim.
 
@@ -57,8 +58,10 @@ RUST_TEST_THREADS=1 NEXTEST_TEST_THREADS=1 ./scripts/acceptance --base ec5fac23 
 Scope is checked after the standalone scope-widening commit; full acceptance
 checks every implementation change since current main.
 
-Combined full validation result: pending. The lifecycle-only revision passed
-full acceptance on 2026-09-17; its `ci-all` run took 3,849.8 seconds. This is a
+Combined lifecycle/health/scheduler revision `88c1a275` passed all 12 full
+acceptance checks on 2026-09-17; its `ci-all` run took 3,223.0 seconds.
+The earlier lifecycle-only revision `b7f05212` passed full acceptance on
+2026-09-17; its `ci-all` run took 3,849.8 seconds. This is a
 correctness-check duration, not benchmark evidence. The intermediate health-only and scheduler full runs were superseded when
 main accepted ADR-0236 and removed fresh-locator coverage. Their focused and
 static checks passed; neither superseded full run is claimed as a pass. The
@@ -94,11 +97,23 @@ complete lifecycle requests to the existing authorization preparation. Two
 focused tests prove the real capability-view path rejects expiry/revocation and
 the port rejects missing or unavailable current facts, clock outage, stream-only
 authority and unsupported adapters. Final transaction-current authorization
-remains independently required by the coordinator.
+remains independently required by the coordinator. Final prerequisite revision
+`6510d052`, including the V3 writer and policy adapter, passed all 12 full
+acceptance checks on 2026-09-17; its `ci-all` run took 3,278.8 seconds.
 
-Public registration/retirement remain unactivated. They still need shared-service
-operation-specific Started/terminal auditing and exact result linkage, distinct operation
-identities, and gRPC/Rust-client/CLI adapters with authorization and cancellation
-proofs. Primary fencing, authenticated fence proof, offline promotion,
+The follow-up operator increment implements registration and retirement with
+shared-service Started/terminal auditing, exact action/target result linkage,
+distinct operation identities, and gRPC/Rust-client/CLI adapters. Its production
+daemon test covers new-request-ID retries across restart, historical replay
+after retirement and persisted audit links. Three focused service tests prove
+revocation between safe points, pre-admission cancellation, follower refusal and
+MCP refusal. Wire tests cover malformed lineage, zero policy, duplicate nested
+fields, ambiguous responses and retirement-generation substitution. CLI tests
+cover explicit selection, canonical hold IDs and full-width decimal output.
+See the [public fixture review](WP-748-PUBLIC-LIFECYCLE-REVIEW.md) for the exact
+additive surface and remaining validation. These public changes have not yet
+passed full acceptance or fixture review.
+
+Primary fencing, authenticated fence proof, offline promotion,
 incarnation/epoch advancement and exact RPO remain WP-748 work. WP-749 still
 requires its held qualification; WP-750 depends on both open packages.

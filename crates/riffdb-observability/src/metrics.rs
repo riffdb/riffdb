@@ -1689,6 +1689,8 @@ const fn operation_name(operation: ServiceOperationV1) -> &'static str {
         ServiceOperationV1::GetApplicationReimport => "get_application_reimport",
         ServiceOperationV1::CancelApplicationReimport => "cancel_application_reimport",
         ServiceOperationV1::InspectVectorState => "inspect_vector_state",
+        ServiceOperationV1::RegisterFollower => "register_follower",
+        ServiceOperationV1::RetireFollower => "retire_follower",
     }
 }
 

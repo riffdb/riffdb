@@ -2418,6 +2418,10 @@ messages
     1 partitions repeated .riffdb.v1.ScopedPartition
   riffdb.v1.FieldSelection fields=1
     1 field_ids repeated uint32
+  riffdb.v1.FollowerAdministrationReceipt fields=3
+    1 administration_sequence optional uint64
+    2 registration_generation optional uint64
+    3 replayed optional bool
   riffdb.v1.FrontierPosition fields=2
     1 before_first optional .riffdb.v1.Unit oneof=position
     2 applied_through optional uint64 oneof=position
@@ -2806,6 +2810,14 @@ messages
     1 contract_lineage optional string
     2 reactive_module_hash optional bytes
     3 operation_name optional string
+  riffdb.v1.RegisterFollowerRequest fields=4
+    1 request_id optional bytes
+    2 target optional .riffdb.v1.ReplicationFollowerTarget
+    3 hold_budget_sequences optional uint64
+    4 expires_at_application_sequence optional uint64 proto3-optional oneof=_expires_at_application_sequence
+  riffdb.v1.RegisterFollowerResponse fields=2
+    1 receipt optional .riffdb.v1.FollowerAdministrationReceipt oneof=result
+    2 refusal optional .riffdb.v1.FollowerAdministrationRefusal oneof=result
   riffdb.v1.ReplayEventsRequest fields=5
     1 request_id optional bytes
     2 selection optional .riffdb.v1.EventSelection
@@ -2821,6 +2833,11 @@ messages
     1 hold_id optional bytes
     2 resume_manifest optional bytes
     3 after_page optional uint32
+  riffdb.v1.ReplicationFollowerTarget fields=4
+    1 database_id optional bytes
+    2 history_incarnation optional uint64
+    3 leadership_epoch optional uint64
+    4 hold_id optional bytes
   riffdb.v1.ReplicationFrontier fields=2
     1 application optional .riffdb.v1.FrontierPosition
     2 administration optional .riffdb.v1.FrontierPosition
@@ -2878,6 +2895,13 @@ messages
   riffdb.v1.RetireEventStreamConsumerRequest fields=2
     1 request_id optional bytes
     2 selection optional .riffdb.v1.EventConsumerSelection
+  riffdb.v1.RetireFollowerRequest fields=3
+    1 request_id optional bytes
+    2 target optional .riffdb.v1.ReplicationFollowerTarget
+    3 registration_generation optional uint64
+  riffdb.v1.RetireFollowerResponse fields=2
+    1 receipt optional .riffdb.v1.FollowerAdministrationReceipt oneof=result
+    2 refusal optional .riffdb.v1.FollowerAdministrationRefusal oneof=result
   riffdb.v1.RetireOfflineBackupRequest fields=3
     1 request_id optional bytes
     2 operation_id optional bytes
@@ -3779,6 +3803,13 @@ enums
     29 FIXED_TOOL_KIND_CONTEXTUAL_STATUS
     30 FIXED_TOOL_KIND_CONTEXTUAL_REACT
     31 FIXED_TOOL_KIND_INSPECT_VECTOR_STATE
+  riffdb.v1.FollowerAdministrationRefusal values=6
+    0 FOLLOWER_ADMINISTRATION_REFUSAL_UNSPECIFIED
+    1 FOLLOWER_ADMINISTRATION_REFUSAL_LINEAGE_MISMATCH
+    2 FOLLOWER_ADMINISTRATION_REFUSAL_REGISTRATION_CONFLICT
+    3 FOLLOWER_ADMINISTRATION_REFUSAL_REGISTRATION_MISSING_OR_STALE
+    4 FOLLOWER_ADMINISTRATION_REFUSAL_EXPIRY_REACHED
+    5 FOLLOWER_ADMINISTRATION_REFUSAL_CAPACITY_EXHAUSTED
   riffdb.v1.HealthComponentKind values=8
     0 HEALTH_COMPONENT_KIND_UNSPECIFIED
     1 HEALTH_COMPONENT_KIND_AUTHORITATIVE_STORAGE
@@ -3979,6 +4010,8 @@ services
     ApplyApplicationReimportPage .riffdb.v1.ApplyApplicationReimportPageRequest -> .riffdb.v1.ApplyApplicationReimportPageResponse (unary)
     GetApplicationReimport .riffdb.v1.GetApplicationReimportRequest -> .riffdb.v1.GetApplicationReimportResponse (unary)
     CancelApplicationReimport .riffdb.v1.CancelApplicationReimportRequest -> .riffdb.v1.CancelApplicationReimportResponse (unary)
+    RegisterFollower .riffdb.v1.RegisterFollowerRequest -> .riffdb.v1.RegisterFollowerResponse (unary)
+    RetireFollower .riffdb.v1.RetireFollowerRequest -> .riffdb.v1.RetireFollowerResponse (unary)
   riffdb.v1.ApplicationSessionService
     Open .riffdb.v1.ApplicationSessionRequest -> .riffdb.v1.ApplicationSessionResponse (bidirectional-streaming)
   riffdb.v1.CommandService

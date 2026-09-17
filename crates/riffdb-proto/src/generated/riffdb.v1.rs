@@ -5931,6 +5931,76 @@ pub mod stream_changelog_response {
         BootstrapPage(::prost::alloc::vec::Vec<u8>),
     }
 }
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct ReplicationFollowerTarget {
+    #[prost(bytes = "vec", tag = "1")]
+    pub database_id: ::prost::alloc::vec::Vec<u8>,
+    #[prost(uint64, tag = "2")]
+    pub history_incarnation: u64,
+    #[prost(uint64, tag = "3")]
+    pub leadership_epoch: u64,
+    #[prost(bytes = "vec", tag = "4")]
+    pub hold_id: ::prost::alloc::vec::Vec<u8>,
+}
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct RegisterFollowerRequest {
+    #[prost(bytes = "vec", tag = "1")]
+    pub request_id: ::prost::alloc::vec::Vec<u8>,
+    #[prost(message, optional, tag = "2")]
+    pub target: ::core::option::Option<ReplicationFollowerTarget>,
+    #[prost(uint64, tag = "3")]
+    pub hold_budget_sequences: u64,
+    #[prost(uint64, optional, tag = "4")]
+    pub expires_at_application_sequence: ::core::option::Option<u64>,
+}
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct RetireFollowerRequest {
+    #[prost(bytes = "vec", tag = "1")]
+    pub request_id: ::prost::alloc::vec::Vec<u8>,
+    #[prost(message, optional, tag = "2")]
+    pub target: ::core::option::Option<ReplicationFollowerTarget>,
+    #[prost(uint64, tag = "3")]
+    pub registration_generation: u64,
+}
+#[derive(Clone, Copy, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct FollowerAdministrationReceipt {
+    #[prost(uint64, tag = "1")]
+    pub administration_sequence: u64,
+    #[prost(uint64, tag = "2")]
+    pub registration_generation: u64,
+    #[prost(bool, tag = "3")]
+    pub replayed: bool,
+}
+#[derive(Clone, Copy, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct RegisterFollowerResponse {
+    #[prost(oneof = "register_follower_response::Result", tags = "1, 2")]
+    pub result: ::core::option::Option<register_follower_response::Result>,
+}
+/// Nested message and enum types in `RegisterFollowerResponse`.
+pub mod register_follower_response {
+    #[derive(Clone, Copy, PartialEq, Eq, Hash, ::prost::Oneof)]
+    pub enum Result {
+        #[prost(message, tag = "1")]
+        Receipt(super::FollowerAdministrationReceipt),
+        #[prost(enumeration = "super::FollowerAdministrationRefusal", tag = "2")]
+        Refusal(i32),
+    }
+}
+#[derive(Clone, Copy, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct RetireFollowerResponse {
+    #[prost(oneof = "retire_follower_response::Result", tags = "1, 2")]
+    pub result: ::core::option::Option<retire_follower_response::Result>,
+}
+/// Nested message and enum types in `RetireFollowerResponse`.
+pub mod retire_follower_response {
+    #[derive(Clone, Copy, PartialEq, Eq, Hash, ::prost::Oneof)]
+    pub enum Result {
+        #[prost(message, tag = "1")]
+        Receipt(super::FollowerAdministrationReceipt),
+        #[prost(enumeration = "super::FollowerAdministrationRefusal", tag = "2")]
+        Refusal(i32),
+    }
+}
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, ::prost::Enumeration)]
 #[repr(i32)]
 pub enum ReplicationRefusal {
@@ -5980,6 +6050,58 @@ impl ReplicationRefusal {
             "REPLICATION_REFUSAL_CORRUPT_HISTORY" => Some(Self::CorruptHistory),
             "REPLICATION_REFUSAL_UNAVAILABLE" => Some(Self::Unavailable),
             "REPLICATION_REFUSAL_AUTHORIZATION_DENIED" => Some(Self::AuthorizationDenied),
+            _ => None,
+        }
+    }
+}
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, ::prost::Enumeration)]
+#[repr(i32)]
+pub enum FollowerAdministrationRefusal {
+    Unspecified = 0,
+    LineageMismatch = 1,
+    RegistrationConflict = 2,
+    RegistrationMissingOrStale = 3,
+    ExpiryReached = 4,
+    CapacityExhausted = 5,
+}
+impl FollowerAdministrationRefusal {
+    /// String value of the enum field names used in the ProtoBuf definition.
+    ///
+    /// The values are not transformed in any way and thus are considered stable
+    /// (if the ProtoBuf definition does not change) and safe for programmatic use.
+    pub fn as_str_name(&self) -> &'static str {
+        match self {
+            Self::Unspecified => "FOLLOWER_ADMINISTRATION_REFUSAL_UNSPECIFIED",
+            Self::LineageMismatch => "FOLLOWER_ADMINISTRATION_REFUSAL_LINEAGE_MISMATCH",
+            Self::RegistrationConflict => {
+                "FOLLOWER_ADMINISTRATION_REFUSAL_REGISTRATION_CONFLICT"
+            }
+            Self::RegistrationMissingOrStale => {
+                "FOLLOWER_ADMINISTRATION_REFUSAL_REGISTRATION_MISSING_OR_STALE"
+            }
+            Self::ExpiryReached => "FOLLOWER_ADMINISTRATION_REFUSAL_EXPIRY_REACHED",
+            Self::CapacityExhausted => {
+                "FOLLOWER_ADMINISTRATION_REFUSAL_CAPACITY_EXHAUSTED"
+            }
+        }
+    }
+    /// Creates an enum from field names used in the ProtoBuf definition.
+    pub fn from_str_name(value: &str) -> ::core::option::Option<Self> {
+        match value {
+            "FOLLOWER_ADMINISTRATION_REFUSAL_UNSPECIFIED" => Some(Self::Unspecified),
+            "FOLLOWER_ADMINISTRATION_REFUSAL_LINEAGE_MISMATCH" => {
+                Some(Self::LineageMismatch)
+            }
+            "FOLLOWER_ADMINISTRATION_REFUSAL_REGISTRATION_CONFLICT" => {
+                Some(Self::RegistrationConflict)
+            }
+            "FOLLOWER_ADMINISTRATION_REFUSAL_REGISTRATION_MISSING_OR_STALE" => {
+                Some(Self::RegistrationMissingOrStale)
+            }
+            "FOLLOWER_ADMINISTRATION_REFUSAL_EXPIRY_REACHED" => Some(Self::ExpiryReached),
+            "FOLLOWER_ADMINISTRATION_REFUSAL_CAPACITY_EXHAUSTED" => {
+                Some(Self::CapacityExhausted)
+            }
             _ => None,
         }
     }

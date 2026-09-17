@@ -682,6 +682,8 @@ impl LifecycleModel {
                     | ServiceOperationV1::GetActiveContract
                     | ServiceOperationV1::CreateCapability
                     | ServiceOperationV1::RevokeCapability
+                    | ServiceOperationV1::RegisterFollower
+                    | ServiceOperationV1::RetireFollower
                     | ServiceOperationV1::DiscoverCommandTools
                     | ServiceOperationV1::DiscoverResources
             ),
@@ -1369,6 +1371,8 @@ mod tests {
                         | ServiceOperationV1::GetActiveContract
                         | ServiceOperationV1::CreateCapability
                         | ServiceOperationV1::RevokeCapability
+                        | ServiceOperationV1::RegisterFollower
+                        | ServiceOperationV1::RetireFollower
                         | ServiceOperationV1::DiscoverCommandTools
                         | ServiceOperationV1::DiscoverResources
                 )
@@ -1927,6 +1931,8 @@ mod tests {
                     | ServiceOperationV1::GetActiveContract
                     | ServiceOperationV1::CreateCapability
                     | ServiceOperationV1::RevokeCapability
+                    | ServiceOperationV1::RegisterFollower
+                    | ServiceOperationV1::RetireFollower
                     | ServiceOperationV1::DiscoverCommandTools
                     | ServiceOperationV1::DiscoverResources
             );

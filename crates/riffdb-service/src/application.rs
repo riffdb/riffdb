@@ -183,6 +183,23 @@ pub trait EventServiceApplication: Send + Sync {
 
 /// Health, statistics, capabilities, and outbox administration.
 pub trait AdministrationApplication: Send + Sync {
+    /// Registers an immutable follower policy through current administrative authority.
+    fn register_follower(
+        &self,
+        _context: RequestContext,
+        _request: crate::RegisterFollowerRequest,
+    ) -> ServiceFuture<'_, crate::RegisterFollowerResult> {
+        Box::pin(async { Err(riffdb_errors::PublicError::storage_unavailable().into()) })
+    }
+    /// Retires exactly the selected registration generation through durable audit.
+    fn retire_follower(
+        &self,
+        _context: RequestContext,
+        _request: crate::RetireFollowerRequest,
+    ) -> ServiceFuture<'_, crate::RetireFollowerResult> {
+        Box::pin(async { Err(riffdb_errors::PublicError::storage_unavailable().into()) })
+    }
+
     /// Returns either restricted pre-bootstrap or authenticated health.
     fn health(
         &self,

@@ -2990,6 +2990,30 @@ impl AdminService for GrpcApplication {
         }
     }
 
+    async fn register_follower(
+        &self,
+        request: Request<v1::RegisterFollowerRequest>,
+    ) -> Result<Response<v1::RegisterFollowerResponse>, Status> {
+        let (metadata, _peer, message) = split_request(request);
+        let (request_id, request) = register_follower_request_from_proto(message)?;
+        let (service, context, _cancellation) =
+            self.normal_invocation(ServiceOperationV1::RegisterFollower, &metadata, request_id)?;
+        let result = map_service(service.register_follower(context, request).await)?;
+        Ok(Response::new(register_follower_result_to_proto(result)))
+    }
+
+    async fn retire_follower(
+        &self,
+        request: Request<v1::RetireFollowerRequest>,
+    ) -> Result<Response<v1::RetireFollowerResponse>, Status> {
+        let (metadata, _peer, message) = split_request(request);
+        let (request_id, request) = retire_follower_request_from_proto(message)?;
+        let (service, context, _cancellation) =
+            self.normal_invocation(ServiceOperationV1::RetireFollower, &metadata, request_id)?;
+        let result = map_service(service.retire_follower(context, request).await)?;
+        Ok(Response::new(retire_follower_result_to_proto(result)))
+    }
+
     async fn revoke_capability(
         &self,
         request: Request<v1::RevokeCapabilityRequest>,

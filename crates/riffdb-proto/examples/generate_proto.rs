@@ -809,6 +809,8 @@ const EXPECTED_METHODS: &[(&str, &str, bool)] = &[
     ("AdminService", "RestoreArchivedBackup", false),
     ("AdminService", "RetireOfflineBackup", false),
     ("AdminService", "RevokeCapability", false),
+    ("AdminService", "RegisterFollower", false),
+    ("AdminService", "RetireFollower", false),
     ("AdminService", "Stats", false),
     ("AdminService", "StartApplicationInstallation", false),
     ("CommandService", "Execute", false),
@@ -863,7 +865,12 @@ const DISCOVERY_PAGE_BOUNDARIES: [(&str, usize, bool, &str); 4] = [
     ("limit-500-exact-end", 500, false, "exact_end"),
 ];
 
-const WP137_OPTIONAL_COVERAGE: [(&str, &str, &str); 24] = [
+const WP137_OPTIONAL_COVERAGE: [(&str, &str, &str); 25] = [
+    (
+        "riffdb.v1.RegisterFollowerRequest.expires_at_application_sequence",
+        "AdminService.RegisterFollower:request:no-expiry",
+        "AdminService.RegisterFollower:request:configured-expiry",
+    ),
     (
         "riffdb.v1.RestoreArchivedBackupRequest.stop_at_sequence",
         "AdminService.RestoreArchivedBackup:request:last-archived",
@@ -3392,6 +3399,8 @@ fn public_client_vectors(descriptors: &FileDescriptorSet) -> Result<String, Box<
         limit: Some(50),
         cursor: None,
     };
+
+    append_follower_lifecycle_vectors(&mut output);
 
     append_client_vector(
         &mut output,
@@ -8031,6 +8040,97 @@ fn collect_enums<'a>(
             &message.enum_type,
             &message.nested_type,
             output,
+        );
+    }
+}
+
+fn append_follower_lifecycle_vectors(output: &mut String) {
+    let target = v1::ReplicationFollowerTarget {
+        database_id: public_request_id(),
+        history_incarnation: 1,
+        leadership_epoch: 1,
+        hold_id: vec![0x71; 16],
+    };
+    for (branch, expiry) in [("no-expiry", None), ("configured-expiry", Some(17))] {
+        append_client_vector(
+            output,
+            "AdminService.RegisterFollower",
+            "request",
+            branch,
+            "riffdb.v1.RegisterFollowerRequest",
+            &v1::RegisterFollowerRequest {
+                request_id: public_request_id(),
+                target: Some(target.clone()),
+                hold_budget_sequences: 9,
+                expires_at_application_sequence: expiry,
+            },
+        );
+    }
+    append_client_vector(
+        output,
+        "AdminService.RetireFollower",
+        "request",
+        "exact-generation",
+        "riffdb.v1.RetireFollowerRequest",
+        &v1::RetireFollowerRequest {
+            request_id: public_request_id(),
+            target: Some(target),
+            registration_generation: 3,
+        },
+    );
+    for (branch, replayed) in [("applied", false), ("replayed", true)] {
+        let receipt = v1::FollowerAdministrationReceipt {
+            administration_sequence: 5,
+            registration_generation: 3,
+            replayed,
+        };
+        append_client_vector(
+            output,
+            "AdminService.RegisterFollower",
+            "response",
+            branch,
+            "riffdb.v1.RegisterFollowerResponse",
+            &v1::RegisterFollowerResponse {
+                result: Some(v1::register_follower_response::Result::Receipt(receipt)),
+            },
+        );
+        append_client_vector(
+            output,
+            "AdminService.RetireFollower",
+            "response",
+            branch,
+            "riffdb.v1.RetireFollowerResponse",
+            &v1::RetireFollowerResponse {
+                result: Some(v1::retire_follower_response::Result::Receipt(receipt)),
+            },
+        );
+    }
+    for (branch, refusal) in [
+        ("lineage-mismatch", 1),
+        ("registration-conflict", 2),
+        ("registration-missing-or-stale", 3),
+        ("expiry-reached", 4),
+        ("capacity-exhausted", 5),
+    ] {
+        append_client_vector(
+            output,
+            "AdminService.RegisterFollower",
+            "response",
+            branch,
+            "riffdb.v1.RegisterFollowerResponse",
+            &v1::RegisterFollowerResponse {
+                result: Some(v1::register_follower_response::Result::Refusal(refusal)),
+            },
+        );
+        append_client_vector(
+            output,
+            "AdminService.RetireFollower",
+            "response",
+            branch,
+            "riffdb.v1.RetireFollowerResponse",
+            &v1::RetireFollowerResponse {
+                result: Some(v1::retire_follower_response::Result::Refusal(refusal)),
+            },
         );
     }
 }

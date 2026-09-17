@@ -4,6 +4,8 @@
 //! the receiver; this harness checks the independently launched service graphs.
 // req: REP-002, REP-003, REC-001
 
+#[path = "replication_follower/administration.rs"]
+mod administration;
 #[path = "replication_follower/columnar_reads.rs"]
 mod columnar_reads;
 #[path = "replication_follower/exact_reads.rs"]

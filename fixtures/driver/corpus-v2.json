@@ -1951,6 +1951,74 @@
           ]
         }
       ]
+    },
+    {
+      "tag": 58,
+      "operation": "RegisterFollower",
+      "bounds": [
+        {
+          "target": "encoded_request_bytes",
+          "maximum": 1048576,
+          "cases": [
+            {
+              "encoded_bytes": 1048576,
+              "expected_error_class": "none"
+            },
+            {
+              "encoded_bytes": 1048577,
+              "expected_error_class": "request_too_large"
+            }
+          ]
+        },
+        {
+          "target": "encoded_response_bytes",
+          "maximum": 4194304,
+          "cases": [
+            {
+              "encoded_bytes": 4194304,
+              "expected_error_class": "none"
+            },
+            {
+              "encoded_bytes": 4194305,
+              "expected_error_class": "response_too_large"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "tag": 59,
+      "operation": "RetireFollower",
+      "bounds": [
+        {
+          "target": "encoded_request_bytes",
+          "maximum": 1048576,
+          "cases": [
+            {
+              "encoded_bytes": 1048576,
+              "expected_error_class": "none"
+            },
+            {
+              "encoded_bytes": 1048577,
+              "expected_error_class": "request_too_large"
+            }
+          ]
+        },
+        {
+          "target": "encoded_response_bytes",
+          "maximum": 4194304,
+          "cases": [
+            {
+              "encoded_bytes": 4194304,
+              "expected_error_class": "none"
+            },
+            {
+              "encoded_bytes": 4194305,
+              "expected_error_class": "response_too_large"
+            }
+          ]
+        }
+      ]
     }
   ]
 }

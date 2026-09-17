@@ -2679,6 +2679,43 @@ impl HarnessPolicy {
 }
 
 impl riffdb_service::CurrentPolicyPort for HarnessPolicy {
+    fn authorize_replication_administration(
+        &self,
+        principal: &AuthenticatedPrincipal,
+        request: riffdb_auth::ReplicationAdministrationRequestV1,
+    ) -> Result<riffdb_policy::ReplicationAdministrationDecision, AuthorizationError> {
+        self.calls.fetch_add(1, Ordering::AcqRel);
+        let decision = CurrentAuthorizer::new(
+            &self.fixture.current_capability_resolver(),
+            &HarnessAuthorizationClock(self.now()),
+            &NoopAuthorizationTelemetry,
+            database_id(),
+            environment(),
+        )
+        .authorize_replication_administration(principal, request)?;
+        if matches!(
+            decision,
+            riffdb_policy::ReplicationAdministrationDecision::Allow(_)
+        ) {
+            let call = self.allowed_calls.fetch_add(1, Ordering::AcqRel) + 1;
+            if self
+                .revoke_after_allowed_call
+                .compare_exchange(call, 0, Ordering::AcqRel, Ordering::Acquire)
+                .is_ok()
+            {
+                self.revoke();
+            }
+            if self
+                .advance_clock_after_allowed_call
+                .compare_exchange(call, 0, Ordering::AcqRel, Ordering::Acquire)
+                .is_ok()
+            {
+                self.advance_to(self.advance_clock_to_seconds.load(Ordering::Acquire));
+            }
+        }
+        Ok(decision)
+    }
+
     fn authorize(
         &self,
         principal: &AuthenticatedPrincipal,

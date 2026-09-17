@@ -56,7 +56,7 @@ use crate::batch::{
     parse_source_with_validator as parse_batch_source_with_validator,
 };
 use crate::cli::{
-    AgentCommand, ApplicationCommand, ApplicationLanguage, BackupCommand, CapabilityCommand, Cli,
+    FollowerCommand, FollowerSelectionArgs, AgentCommand, ApplicationCommand, ApplicationLanguage, BackupCommand, CapabilityCommand, Cli,
     CommandCommand, CommitCommand, ContextualCommand, ContractCommand, ContractSelectionArgs,
     DemoCommand, EntityCommand, EventCommand, EventConsumerArgs, ExportCommand, ExportScope,
     MigrationCommand, OutputMode, ProjectMigrationCommand, ProjectionCommand, QueryCommand,
@@ -1594,6 +1594,7 @@ async fn dispatch(
         }
         TopLevel::Query { command } => query_command(command, config, environment, stdin).await,
         TopLevel::Role { command } => role_command(command, config, environment).await,
+        TopLevel::Follower { command } => follower_command(command, config, environment).await,
         TopLevel::Capability { command } => {
             capability_command(command, config, environment, stdin).await
         }
@@ -11845,6 +11846,8 @@ const fn command_identity(command: &TopLevel) -> CommandIdentity {
         TopLevel::Capability {
             command: CapabilityCommand::Revoke { .. },
         } => CommandIdentity::CapabilityRevoke,
+        TopLevel::Follower { command: FollowerCommand::Register { .. } } => CommandIdentity::FollowerRegister,
+        TopLevel::Follower { command: FollowerCommand::Retire { .. } } => CommandIdentity::FollowerRetire,
         TopLevel::Server { .. } => CommandIdentity::ServerHealth,
         TopLevel::Backup {
             command: BackupCommand::Create { .. },
@@ -12459,6 +12462,69 @@ struct RetentionPruneRefusalView {
     watermark_sequence: String,
 }
 
+fn follower_selection(target: FollowerSelectionArgs) -> Result<v1::ReplicationFollowerTarget, ()> {
+    let database_id = parse_uuid_v7(&target.database_id).ok_or(())?;
+    if target.hold_id.len() != 32 || !target.hold_id.bytes().all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte)) { return Err(()); }
+    let hold_id = parse_opaque_hex(&target.hold_id, 16)?;
+    if hold_id.len() != 16 || hold_id.iter().all(|byte| *byte == 0) { return Err(()); }
+    Ok(v1::ReplicationFollowerTarget { database_id: database_id.to_vec(), history_incarnation: target.history_incarnation.get(), leadership_epoch: target.leadership_epoch.get(), hold_id })
+}
+
+async fn follower_command(command: FollowerCommand, config: &EffectiveConfig, environment: &dyn Environment) -> Terminal {
+    let identity = match &command { FollowerCommand::Register { .. } => CommandIdentity::FollowerRegister, FollowerCommand::Retire { .. } => CommandIdentity::FollowerRetire };
+    let metadata = match required_metadata(identity, config, environment) { Ok(metadata) => metadata, Err(terminal) => return terminal };
+    let request_id = match request_id() { Ok(id) => id, Err(error) => return client_error(identity, &error) };
+    // Validate the entire selection before opening a transport connection.
+    let (register, retire) = match command {
+        FollowerCommand::Register { target, hold_budget_sequences, expires_at_sequence } => {
+            let target = match follower_selection(target) { Ok(target) => target, Err(()) => return invalid_input(identity) };
+            (Some(v1::RegisterFollowerRequest { request_id, target: Some(target), hold_budget_sequences: hold_budget_sequences.get(), expires_at_application_sequence: expires_at_sequence.map(std::num::NonZeroU64::get) }), None)
+        }
+        FollowerCommand::Retire { target, registration_generation } => {
+            let target = match follower_selection(target) { Ok(target) => target, Err(()) => return invalid_input(identity) };
+            (None, Some(v1::RetireFollowerRequest { request_id, target: Some(target), registration_generation: registration_generation.get() }))
+        }
+    };
+    let mut client = match connect(config).await { Ok(client) => client, Err(error) => return client_error(identity, &error) };
+    match (register, retire) {
+        (Some(request), None) => match client.register_follower(request, &metadata).await {
+            Ok(response) => match response.result {
+                Some(v1::register_follower_response::Result::Receipt(receipt)) => render_follower_receipt(identity, &receipt),
+                Some(v1::register_follower_response::Result::Refusal(refusal)) => render_follower_refusal(identity, refusal),
+                None => local_error(identity, "output_render_failed", "output rendering failed"),
+            },
+            Err(error) => client_error(identity, &error),
+        },
+        (None, Some(request)) => match client.retire_follower(request, &metadata).await {
+            Ok(response) => match response.result {
+                Some(v1::retire_follower_response::Result::Receipt(receipt)) => render_follower_receipt(identity, &receipt),
+                Some(v1::retire_follower_response::Result::Refusal(refusal)) => render_follower_refusal(identity, refusal),
+                None => local_error(identity, "output_render_failed", "output rendering failed"),
+            },
+            Err(error) => client_error(identity, &error),
+        },
+        _ => invalid_input(identity),
+    }
+}
+
+fn render_follower_receipt(command: CommandIdentity, receipt: &v1::FollowerAdministrationReceipt) -> Terminal {
+    #[derive(Serialize)]
+    struct Summary { status: &'static str, administration_sequence: String, registration_generation: String }
+    let status = if receipt.replayed { "replayed" } else { "applied" };
+    success(command, status, &Summary { status, administration_sequence: receipt.administration_sequence.to_string(), registration_generation: receipt.registration_generation.to_string() })
+}
+fn render_follower_refusal(command: CommandIdentity, refusal: i32) -> Terminal {
+    let (code, message) = match v1::FollowerAdministrationRefusal::try_from(refusal) {
+        Ok(v1::FollowerAdministrationRefusal::LineageMismatch) => ("lineage_mismatch", "selected source lineage is no longer current"),
+        Ok(v1::FollowerAdministrationRefusal::RegistrationConflict) => ("registration_conflict", "registration has another immutable policy or release action"),
+        Ok(v1::FollowerAdministrationRefusal::RegistrationMissingOrStale) => ("registration_missing_or_stale", "the exact registration generation is unavailable"),
+        Ok(v1::FollowerAdministrationRefusal::ExpiryReached) => ("expiry_reached", "the selected application-sequence expiry has been reached"),
+        Ok(v1::FollowerAdministrationRefusal::CapacityExhausted) => ("capacity_exhausted", "the follower registration capacity is exhausted"),
+        _ => ("output_render_failed", "output rendering failed"),
+    };
+    local_error(command, code, message)
+}
+
 #[cfg(test)]
 mod tests {
     use std::collections::BTreeMap;
@@ -12469,6 +12535,41 @@ mod tests {
     use std::path::PathBuf;
 
     use super::*;
+
+    #[test]
+    // req: REP-006
+    fn follower_cli_preserves_full_width_receipts_and_redacted_closed_refusals() {
+        for replayed in [false, true] {
+            let value = v1::FollowerAdministrationReceipt { administration_sequence: u64::MAX, registration_generation: u64::MAX - 1, replayed };
+            let mut stdout = Vec::new(); let mut stderr = Vec::new();
+            assert_eq!(render_follower_receipt(CommandIdentity::FollowerRegister, &value).emit(OutputMode::Json, &mut stdout, &mut stderr), ExitCode::SUCCESS);
+            let output: serde_json::Value = serde_json::from_slice(&stdout).unwrap();
+            assert_eq!(output["result"]["administration_sequence"], u64::MAX.to_string());
+            assert_eq!(output["result"]["registration_generation"], (u64::MAX - 1).to_string());
+            assert_eq!(output["result"]["status"], if replayed { "replayed" } else { "applied" });
+            assert!(stderr.is_empty());
+        }
+        for (value, code) in [(1, "lineage_mismatch"), (2, "registration_conflict"), (3, "registration_missing_or_stale"), (4, "expiry_reached"), (5, "capacity_exhausted"), (99, "output_render_failed")] {
+            let mut stdout = Vec::new(); let mut stderr = Vec::new();
+            assert_ne!(render_follower_refusal(CommandIdentity::FollowerRetire, value).emit(OutputMode::Json, &mut stdout, &mut stderr), ExitCode::SUCCESS);
+            let output: serde_json::Value = serde_json::from_slice(&stdout).unwrap();
+            assert_eq!(output["error"]["code"], code);
+        }
+    }
+
+    #[test]
+    // req: REP-006
+    fn follower_cli_refuses_noncanonical_or_zero_hold_identity() {
+        let selection = |hold: String| FollowerSelectionArgs {
+            database_id: "018f22a1-7b3c-7def-8123-456789abcdef".into(),
+            history_incarnation: std::num::NonZeroU64::MIN,
+            leadership_epoch: std::num::NonZeroU64::MIN, hold_id: hold,
+        };
+        assert!(follower_selection(selection("71".repeat(16))).is_ok());
+        for hold in ["00".repeat(16), "AA".repeat(16), "71".repeat(15), "71".repeat(17), "private-path".into()] {
+            assert!(follower_selection(selection(hold)).is_err());
+        }
+    }
 
     #[test]
     fn export_page_writer_is_private_create_only_canonical_jsonl() {

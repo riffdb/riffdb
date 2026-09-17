@@ -687,6 +687,15 @@ fn fixed_charge(fields: usize) -> Result<ServiceResponseChargeV1, ServiceRespons
     Ok(charge.finish())
 }
 
+impl sealed::Sealed for crate::FollowerAdministrationResult {}
+impl ServiceResponseCharge for crate::FollowerAdministrationResult {
+    fn service_response_charge_v1(
+        &self,
+    ) -> Result<ServiceResponseChargeV1, ServiceResponseChargeOverflow> {
+        fixed_charge(4)
+    }
+}
+
 fn apply_type_local_charge_limit(
     charge: ServiceResponseChargeV1,
     limit: usize,

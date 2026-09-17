@@ -6470,6 +6470,72 @@ fn submitted_decimal(value: &v1::Decimal) -> Result<SubmittedDecimal, Status> {
     .map_err(|_| invalid_request())
 }
 
+fn follower_target_from_proto(target: Option<v1::ReplicationFollowerTarget>) -> Result<riffdb_types::ReplicationFollowerAuditTargetV1, Status> {
+    let target = target.ok_or_else(invalid_request)?;
+    riffdb_types::ReplicationFollowerAuditTargetV1::new(
+        riffdb_types::DatabaseId::from_bytes(target.database_id.try_into().map_err(|_| invalid_request())?).map_err(|_| invalid_request())?,
+        target.history_incarnation,
+        riffdb_types::LeadershipEpochV1::new(target.leadership_epoch).ok_or_else(invalid_request)?,
+        riffdb_types::ReplicationSourceHoldIdV1::new(target.hold_id.try_into().map_err(|_| invalid_request())?).ok_or_else(invalid_request)?,
+    ).ok_or_else(invalid_request)
+}
+
+/// Converts a bounded immutable registration policy without granting authority.
+pub fn register_follower_request_from_proto(request: v1::RegisterFollowerRequest) -> Result<(RequestId, riffdb_service::RegisterFollowerRequest), Status> {
+    riffdb_proto::validate_public_message(&request).map_err(|_| invalid_request())?;
+    Ok((request_id_from_bytes(&request.request_id)?, riffdb_service::RegisterFollowerRequest::new(
+        follower_target_from_proto(request.target)?,
+        riffdb_auth::FollowerHoldBudget::new(request.hold_budget_sequences).ok_or_else(invalid_request)?,
+        request.expires_at_application_sequence.map(|sequence| riffdb_types::CommitSequence::new(sequence).ok_or_else(invalid_request)).transpose()?,
+    )))
+}
+
+/// Converts exact retirement selection without exposing a generic hold writer.
+pub fn retire_follower_request_from_proto(request: v1::RetireFollowerRequest) -> Result<(RequestId, riffdb_service::RetireFollowerRequest), Status> {
+    riffdb_proto::validate_public_message(&request).map_err(|_| invalid_request())?;
+    Ok((request_id_from_bytes(&request.request_id)?, riffdb_service::RetireFollowerRequest::new(
+        follower_target_from_proto(request.target)?,
+        riffdb_auth::ChangelogTransactionSequence::new(request.registration_generation).ok_or_else(invalid_request)?,
+    )))
+}
+
+fn follower_refusal_to_proto(refusal: riffdb_service::FollowerAdministrationRefusal) -> i32 {
+    use riffdb_service::FollowerAdministrationRefusal as Refusal;
+    let wire = match refusal {
+        Refusal::LineageMismatch => v1::FollowerAdministrationRefusal::LineageMismatch,
+        Refusal::RegistrationConflict => v1::FollowerAdministrationRefusal::RegistrationConflict,
+        Refusal::RegistrationMissingOrStale => v1::FollowerAdministrationRefusal::RegistrationMissingOrStale,
+        Refusal::ExpiryReached => v1::FollowerAdministrationRefusal::ExpiryReached,
+        Refusal::CapacityExhausted => v1::FollowerAdministrationRefusal::CapacityExhausted,
+    };
+    wire as i32
+}
+fn follower_receipt_to_proto(receipt: riffdb_service::FollowerAdministrationReceipt, replayed: bool) -> v1::FollowerAdministrationReceipt {
+    v1::FollowerAdministrationReceipt { administration_sequence: receipt.administration_sequence().get(), registration_generation: receipt.generation().get(), replayed }
+}
+/// Converts only a safe receipt summary or closed registration refusal.
+#[must_use]
+pub fn register_follower_result_to_proto(result: riffdb_service::RegisterFollowerResult) -> v1::RegisterFollowerResponse {
+    use riffdb_service::FollowerAdministrationResult as Result;
+    use v1::register_follower_response::Result as Wire;
+    v1::RegisterFollowerResponse { result: Some(match result {
+        Result::Applied(receipt) => Wire::Receipt(follower_receipt_to_proto(receipt, false)),
+        Result::Replayed(receipt) => Wire::Receipt(follower_receipt_to_proto(receipt, true)),
+        Result::Refused(refusal) => Wire::Refusal(follower_refusal_to_proto(refusal)),
+    }) }
+}
+/// Converts only a safe receipt summary or closed retirement refusal.
+#[must_use]
+pub fn retire_follower_result_to_proto(result: riffdb_service::RetireFollowerResult) -> v1::RetireFollowerResponse {
+    use riffdb_service::FollowerAdministrationResult as Result;
+    use v1::retire_follower_response::Result as Wire;
+    v1::RetireFollowerResponse { result: Some(match result {
+        Result::Applied(receipt) => Wire::Receipt(follower_receipt_to_proto(receipt, false)),
+        Result::Replayed(receipt) => Wire::Receipt(follower_receipt_to_proto(receipt, true)),
+        Result::Refused(refusal) => Wire::Refusal(follower_refusal_to_proto(refusal)),
+    }) }
+}
+
 #[cfg(test)]
 mod tests {
     use std::collections::BTreeMap;

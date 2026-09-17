@@ -153,14 +153,15 @@ observation. Decoding it does not authorize a registration or fence release.
 The registry digest changes: prior exact registry markers require their matching
 binary. Internal registration and retirement now write V2 through the audited
 coordinator path described below. Archive and bootstrap jobs retain V1.
-Automatic migration and public lifecycle operations remain WP-748 work.
+Automatic registry migration remains unavailable. Operator registration and
+retirement use the shared service, gRPC, Rust client and CLI.
 
 The accepted WP-748 audit successor adds `ServiceAuditRecordV3` (tag 22,
 revision 3) in a separate schema. It preserves existing target fields and adds
 one source-lineage-scoped follower target. V1/V2 bytes and readers remain
 unchanged; existing audits still write V2. The bounded V3 codec and mixed audit
-reader are implemented, but registration/retirement, configured expiry and
-promotion are not yet enabled. The exact registry digest changes; earlier
+reader, registration/retirement and configured expiry are implemented.
+Promotion remains unavailable. The exact registry digest changes; earlier
 markers still require their matching binary until an explicit migration is
 implemented and proven. An older binary refuses the V3 identity.
 
@@ -220,15 +221,27 @@ Retirement selects the original generation and removes only its matching
 bootstrap job; independent archive custody remains held. Legacy adoption keeps
 the exact existing follower fence. Conflicting policies, stale generations,
 reached expiry for a new registration and full hold capacity refuse without
-allocating a sequence. These internal transitions do not yet expose public
-lifecycle RPCs or automatic registry migration.
+allocating a sequence. The public `RegisterFollower` and `RetireFollower` RPCs expose these transitions
+through current global administrative authority; automatic registry migration
+remains unavailable.
 
 The production audit writer selects `ServiceAuditRecordV3` only for the accepted
 follower target; existing targets continue to produce identical V2 bytes. Mixed
 V2/V3 audit groups use the existing atomic journal and direct-commit paths.
 Started and terminal records retain the same complete follower target; changing
 its database, incarnation, epoch or hold ID refuses the terminal append. This
-codec wiring does not enable public registration or retirement operations.
+success is additionally checked against the exact registration/retirement action
+and target of its linked authoritative receipt, including new-request-ID replay.
+
+The additive public lifecycle requests select the source lineage, opaque hold ID
+and immutable policy or exact registration generation. They return a checked
+receipt or closed refusal. Service operation tags 0x3a and 0x3b are appended;
+all prior tags and frozen audit schemas retain their identities. The operation
+registry allows gRPC and in-process comparison only; the CLI and Rust client
+use gRPC. No MCP tool or application-role grant is added. Strict older clients
+cannot invoke these methods; regenerate or use matching updated bindings.
+New success audits require the exact follower target and a control-plane link;
+linkless success is refused on append and reconstruction.
 
 The coordinator also admits a closed continuation of stored registration policy,
 with one transition per turn. Reached budget or sequence expiry first persists a

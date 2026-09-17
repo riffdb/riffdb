@@ -85,8 +85,8 @@ fn generated_adapters_reproduce_frozen_public_fixtures_byte_for_byte() {
 #[test]
 fn generated_inventory_covers_every_registry_operation_in_tag_order() {
     assert_eq!(riffdb_proto::GENERATED_OPERATION_REGISTRY_VERSION, 1);
-    assert_eq!(riffdb_proto::GENERATED_PUBLIC_OPERATION_COUNT, 57);
-    assert_eq!(riffdb_proto::GENERATED_PUBLIC_VALIDATION_MESSAGES.len(), 57);
+    assert_eq!(riffdb_proto::GENERATED_PUBLIC_OPERATION_COUNT, 59);
+    assert_eq!(riffdb_proto::GENERATED_PUBLIC_VALIDATION_MESSAGES.len(), 59);
     for (index, entry) in riffdb_proto::GENERATED_PUBLIC_VALIDATION_MESSAGES
         .iter()
         .enumerate()

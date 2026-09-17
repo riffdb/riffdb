@@ -100,6 +100,9 @@ impl ServiceAuditAppendIntentV1 {
             link,
             ServiceAuditShapeEnforcement::Append,
         )?;
+        if !targets.is_valid_for_operation(operation) {
+            return Err(StorageValueError::InvalidShape);
+        }
         let semantic_bytes =
             service_audit_semantic_bytes(Some(&principal), &targets, approval_id.as_ref(), link)?;
         if semantic_bytes > MAX_SERVICE_AUDIT_BYTES {
@@ -337,6 +340,9 @@ impl StoredServiceAuditRecordV1 {
             ingress,
             link,
         )?;
+        if !targets.is_valid_for_operation(operation) {
+            return Err(StorageValueError::InvalidShape);
+        }
         let semantic_bytes =
             service_audit_semantic_bytes(principal.as_ref(), &targets, approval_id.as_ref(), link)?;
         if semantic_bytes > MAX_SERVICE_AUDIT_BYTES {
@@ -828,6 +834,8 @@ fn validate_service_audit_phase_link(
                         | ServiceOperationV1::ApplyContractMigration
                         | ServiceOperationV1::CreateCapability
                         | ServiceOperationV1::RevokeCapability
+                        | ServiceOperationV1::RegisterFollower
+                        | ServiceOperationV1::RetireFollower
                 ) =>
             {
                 false
@@ -852,6 +860,8 @@ fn validate_service_audit_phase_link(
                     | ServiceOperationV1::ApplyContractMigration
                     | ServiceOperationV1::CreateCapability
                     | ServiceOperationV1::RevokeCapability
+                    | ServiceOperationV1::RegisterFollower
+                    | ServiceOperationV1::RetireFollower
             ),
         },
     };
@@ -1414,6 +1424,8 @@ mod tests {
         ServiceOperationV1::ApplyContractMigration,
         ServiceOperationV1::CreateCapability,
         ServiceOperationV1::RevokeCapability,
+        ServiceOperationV1::RegisterFollower,
+        ServiceOperationV1::RetireFollower,
     ];
 
     /// Operations that may never APPEND a success without an authoritative link.
@@ -1433,6 +1445,8 @@ mod tests {
         ServiceOperationV1::ApplyContractMigration,
         ServiceOperationV1::CreateCapability,
         ServiceOperationV1::RevokeCapability,
+        ServiceOperationV1::RegisterFollower,
+        ServiceOperationV1::RetireFollower,
     ];
 
     /// Operations whose linkless success may not even RECONSTRUCT from durable
@@ -1453,6 +1467,8 @@ mod tests {
         ServiceOperationV1::ApplyContractMigration,
         ServiceOperationV1::CreateCapability,
         ServiceOperationV1::RevokeCapability,
+        ServiceOperationV1::RegisterFollower,
+        ServiceOperationV1::RetireFollower,
     ];
 
     fn command_link() -> ServiceAuditLinkV1 {

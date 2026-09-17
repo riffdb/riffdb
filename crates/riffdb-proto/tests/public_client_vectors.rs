@@ -65,6 +65,10 @@ fn every_client_vector_passes_its_strict_public_boundary() {
             visible_rpcs.insert(rpc);
         }
         match message_type {
+            "riffdb.v1.RegisterFollowerRequest" => decode::<v1::RegisterFollowerRequest>(&bytes),
+            "riffdb.v1.RegisterFollowerResponse" => decode::<v1::RegisterFollowerResponse>(&bytes),
+            "riffdb.v1.RetireFollowerRequest" => decode::<v1::RetireFollowerRequest>(&bytes),
+            "riffdb.v1.RetireFollowerResponse" => decode::<v1::RetireFollowerResponse>(&bytes),
             "riffdb.v1.ValidateContractRequest" => decode::<v1::ValidateContractRequest>(&bytes),
             "riffdb.v1.ValidateContractResponse" => decode::<v1::ValidateContractResponse>(&bytes),
             "riffdb.v1.ExplainCommandRequest" => decode::<v1::ExplainCommandRequest>(&bytes),
@@ -159,8 +163,8 @@ fn every_client_vector_passes_its_strict_public_boundary() {
         }
         count += 1;
     }
-    assert_eq!(count, 149);
-    assert_eq!(rpcs.len(), 27);
+    assert_eq!(count, 166);
+    assert_eq!(rpcs.len(), 29);
     assert_eq!(request_rpcs, rpcs);
     assert_eq!(visible_rpcs, rpcs);
 }
@@ -425,6 +429,36 @@ fn descriptor_delta() -> (BTreeSet<String>, BTreeSet<String>) {
 
 fn expected_enum_values() -> BTreeSet<String> {
     let mut values = [
+        (
+            "riffdb.v1.FollowerAdministrationRefusal",
+            0,
+            "FOLLOWER_ADMINISTRATION_REFUSAL_UNSPECIFIED",
+        ),
+        (
+            "riffdb.v1.FollowerAdministrationRefusal",
+            1,
+            "FOLLOWER_ADMINISTRATION_REFUSAL_LINEAGE_MISMATCH",
+        ),
+        (
+            "riffdb.v1.FollowerAdministrationRefusal",
+            2,
+            "FOLLOWER_ADMINISTRATION_REFUSAL_REGISTRATION_CONFLICT",
+        ),
+        (
+            "riffdb.v1.FollowerAdministrationRefusal",
+            3,
+            "FOLLOWER_ADMINISTRATION_REFUSAL_REGISTRATION_MISSING_OR_STALE",
+        ),
+        (
+            "riffdb.v1.FollowerAdministrationRefusal",
+            4,
+            "FOLLOWER_ADMINISTRATION_REFUSAL_EXPIRY_REACHED",
+        ),
+        (
+            "riffdb.v1.FollowerAdministrationRefusal",
+            5,
+            "FOLLOWER_ADMINISTRATION_REFUSAL_CAPACITY_EXHAUSTED",
+        ),
         (
             "riffdb.v1.ReplicationRefusal",
             0,
@@ -1660,6 +1694,11 @@ fn expected_enum_values() -> BTreeSet<String> {
 fn expected_optional_registry() -> BTreeSet<String> {
     [
         (
+            "riffdb.v1.RegisterFollowerRequest.expires_at_application_sequence",
+            "AdminService.RegisterFollower:request:no-expiry",
+            "AdminService.RegisterFollower:request:configured-expiry",
+        ),
+        (
             "riffdb.v1.RestoreArchivedBackupRequest.stop_at_sequence",
             "AdminService.RestoreArchivedBackup:request:last-archived",
             "AdminService.RestoreArchivedBackup:request:at-sequence",
@@ -1833,6 +1872,14 @@ fn strict_decode<M: PublicMessage>(vector: &FixtureVector<'_>, message_type: &st
 
 fn optional_field_present(field: &str, vector: &FixtureVector<'_>) -> bool {
     match field {
+        "riffdb.v1.RegisterFollowerRequest.expires_at_application_sequence" => {
+            strict_decode::<v1::RegisterFollowerRequest>(
+                vector,
+                "riffdb.v1.RegisterFollowerRequest",
+            )
+            .expires_at_application_sequence
+            .is_some()
+        }
         "riffdb.v1.RestoreArchivedBackupRequest.stop_at_sequence" => {
             strict_decode::<v1::RestoreArchivedBackupRequest>(
                 vector,
@@ -2158,7 +2205,7 @@ fn assert_unspecified_enum_rejected(enumeration: &str, message_type: &str, bytes
 #[test]
 fn wp137_enum_optional_and_page_registry_is_complete() {
     let (vectors, registry) = fixture_sections();
-    assert_eq!(vectors.len(), 149);
+    assert_eq!(vectors.len(), 166);
 
     let expected_enums = expected_enum_values();
     let expected_optionals = expected_optional_registry();
