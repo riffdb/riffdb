@@ -653,7 +653,16 @@ pub(crate) fn encode_administration_audit_record_v1(
             encode_capability_administration_v1(value)
         }
         storage::StoredAdministrationAuditRecordV1::Service(value) => {
-            encode_service_audit_record_v2(value)
+            if value.targets().as_slice().iter().any(|target| {
+                matches!(
+                    target,
+                    riffdb_types::ServiceAuditTargetV1::ReplicationFollower(_)
+                )
+            }) {
+                storage::encode_service_audit_record_v3(value).map_err(codec_error)
+            } else {
+                encode_service_audit_record_v2(value)
+            }
         }
         storage::StoredAdministrationAuditRecordV1::Retention(value) => {
             storage::encode_retention_administration_v1(value).map_err(codec_error)

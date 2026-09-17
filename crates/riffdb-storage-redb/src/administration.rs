@@ -3896,6 +3896,9 @@ fn bootstrap_replay(
 
 #[cfg(test)]
 mod tests {
+    mod audit_generations {
+        include!("service_audit_generation_tests.rs");
+    }
     mod replication_writes {
         include!("replication_administration_write_tests.rs");
     }
