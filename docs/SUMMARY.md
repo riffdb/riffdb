@@ -191,3 +191,4 @@
 - [Errors and Outcomes](reference/ERRORS.md)
 - [Rust API](reference/RUST-API.md)
 - [Release Verification](release.md)
+- [September 16 Runtime Review Disposition](reviews/2026-09-16-runtime-findings.md)

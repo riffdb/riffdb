@@ -8,6 +8,8 @@ use riffdb_types::{
     AdministrationSequence, CapabilityId, DigestKeyId, Environment, ServiceAuditLinkV1,
     ServiceAuditPhaseV1, ServiceAuditTargetsV1, ServiceIngressKindV1, ServiceOperationV1,
 };
+use std::collections::BTreeMap;
+use std::sync::Arc;
 
 fn capsule(sequence: CommitSequence) -> StoredCommandCapsuleV2 {
     let (commit, _) = command_graph_at(sequence, 1);
@@ -132,7 +134,11 @@ fn apply(
         crate::changelog_v3_write::check_predecessor(&write, mutation).unwrap();
         crate::changelog_v3_write::apply_mutation(&write, mutation).unwrap();
     }
+    indexes.evict_payloads();
     indexes.apply_follower_receipt(&write, &mutations).unwrap();
+    let (entries, bytes) = indexes.payload_stats();
+    assert!(entries <= 64 && bytes <= 64 * 1024 * 1024);
+    indexes.evict_payloads();
     write.commit().unwrap();
 }
 
@@ -142,13 +148,21 @@ fn compare(
     all: &StoredCommandSegmentV1,
     present: &[u64],
 ) {
-    let rebuilt = TransientIndexes::rebuild(&ports.shared.database.begin_read().unwrap()).unwrap();
+    let pin = ports.shared.database.begin_read().unwrap();
+    let rebuilt = TransientIndexes::rebuild(&pin).unwrap();
+    let load = |first| {
+        let table = pin.open_table(crate::layout::COMMITS).unwrap();
+        Ok(table
+            .get(encode_application_sequence_key(first).as_slice())
+            .unwrap()
+            .map(|row| row.value().to_vec()))
+    };
     for entry in all.manifest().entries() {
         let actual = indexes
-            .command_derived_member(entry.kind(), entry.exact_key())
+            .command_derived_member(entry.kind(), entry.exact_key(), load)
             .unwrap();
         let expected = rebuilt
-            .command_derived_member(entry.kind(), entry.exact_key())
+            .command_derived_member(entry.kind(), entry.exact_key(), load)
             .unwrap();
         assert_eq!(
             actual
@@ -326,4 +340,228 @@ fn follower_event_membership_matches_rebuild_without_manifest_lookup_assumptions
         indexes.pending_outbox_page(None, 8).unwrap().0,
         vec![EventId::new(CommitSequence::first(), 0)]
     );
+}
+
+// req: OUT-001, REP-002
+#[test]
+fn review_payload_eviction_preserves_exact_members_and_rejects_bad_cold_authority() {
+    let mut indexes = TransientIndexes::default();
+    let mut snapshots = BTreeMap::new();
+    let mut commands = Vec::new();
+    let mut prior = None;
+    for sequence in 1..=80 {
+        let command = capsule(CommitSequence::new(sequence).unwrap());
+        let (segment, encoded) = segment(vec![command.clone()], prior);
+        prior = Some(segment.segment_digest());
+        snapshots.insert(segment.first_commit_sequence(), encoded.as_bytes().to_vec());
+        let prior_cache = indexes.payload_stats();
+        indexes.apply(
+            crate::transient::TransientIndexDelta::CommandSegmentPublished(Arc::new(segment)),
+        );
+        assert_eq!(
+            indexes.payload_stats(),
+            prior_cache,
+            "publication retains no decoded payload"
+        );
+        assert_eq!(
+            indexes
+                .command_at(command.commit_sequence(), |first| Ok(snapshots
+                    .get(&first)
+                    .cloned()))
+                .unwrap(),
+            Some(command.clone())
+        );
+        commands.push(command);
+        let (entries, bytes) = indexes.payload_stats();
+        assert!(entries <= 64 && bytes <= 64 * 1024 * 1024);
+    }
+    assert!(
+        indexes.payload_stats().0 > 0,
+        "small normalized payloads are cacheable"
+    );
+    assert!(
+        indexes.payload_stats().0 < snapshots.len(),
+        "history outlives resident payloads"
+    );
+    for command in &commands {
+        assert_eq!(
+            indexes
+                .command_at(command.commit_sequence(), |first| Ok(snapshots
+                    .get(&first)
+                    .cloned()))
+                .unwrap()
+                .as_ref(),
+            Some(command)
+        );
+        indexes.evict_payloads();
+        let key = crate::keys::encode_provenance_key(command.base().provenance().provenance_id());
+        let (actual, locator) = indexes
+            .command_derived_member(CommandDerivedIndexKindV1::Provenance, &key, |first| {
+                Ok(snapshots.get(&first).cloned())
+            })
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            &actual.commands()[usize::from(locator.command_ordinal)],
+            command
+        );
+        let id = command.base().outcome().identity().storage_key().unwrap();
+        assert!(
+            indexes
+                .command_derived_member(
+                    CommandDerivedIndexKindV1::Idempotency,
+                    crate::keys::encode_idempotency_key(&id),
+                    |first| Ok(snapshots.get(&first).cloned())
+                )
+                .unwrap()
+                .is_some()
+        );
+        let audit = command.base().terminal_audit();
+        assert_eq!(
+            indexes
+                .command_audit_record(audit.administration_sequence(), |first| Ok(snapshots
+                    .get(&first)
+                    .cloned()))
+                .unwrap()
+                .as_ref(),
+            Some(audit)
+        );
+    }
+    let first = CommitSequence::first();
+    let barrier = std::sync::Barrier::new(2);
+    std::thread::scope(|scope| {
+        let reader = scope.spawn(|| {
+            indexes.command_at(first, |key| {
+                let bytes = snapshots.get(&key).cloned();
+                barrier.wait();
+                barrier.wait();
+                Ok(bytes)
+            })
+        });
+        barrier.wait();
+        // Eviction and another lookup complete while the first reader holds its
+        // captured bytes. Cache locking must not encompass its storage loader.
+        indexes.evict_payloads();
+        indexes
+            .command_at(CommitSequence::new(2).unwrap(), |key| {
+                Ok(snapshots.get(&key).cloned())
+            })
+            .unwrap();
+        barrier.wait();
+        assert_eq!(reader.join().unwrap().unwrap(), Some(commands[0].clone()));
+    });
+    assert!(indexes.command_at(first, |_| Ok(None)).is_err());
+    let wrong = snapshots[&CommitSequence::new(2).unwrap()].clone();
+    assert!(indexes.command_at(first, |_| Ok(Some(wrong))).is_err());
+    let mut corrupt = snapshots[&first].clone();
+    corrupt[0] ^= 0xff;
+    assert!(indexes.command_at(first, |_| Ok(Some(corrupt))).is_err());
+    assert!(
+        indexes
+            .command_at(first, |_| Err(StorageError::new(
+                StorageErrorKind::Unavailable,
+                None
+            )))
+            .is_err()
+    );
+    assert_eq!(
+        indexes
+            .command_at(first, |key| Ok(snapshots.get(&key).cloned()))
+            .unwrap()
+            .as_ref(),
+        Some(&commands[0])
+    );
+}
+
+// req: REP-002, OUT-001
+#[test]
+fn review_cold_payload_lookup_keeps_its_old_redb_pin_after_physical_overwrite() {
+    let (_path, ports) = operational("review-old-payload-pin");
+    let mut indexes = TransientIndexes::default();
+    let command = capsule(CommitSequence::first());
+    let (_, encoded) = segment(vec![command.clone()], None);
+    let key = encode_application_sequence_key(CommitSequence::first());
+    apply(
+        &ports,
+        &mut indexes,
+        vec![
+            AuthoritativeMutationV3::put(
+                AuthoritativeNamespaceV1::Commits,
+                &key,
+                None,
+                encoded.as_bytes(),
+            )
+            .unwrap(),
+        ],
+    );
+    let old = ports.shared.database.begin_read().unwrap();
+    indexes = TransientIndexes::rebuild(&old).unwrap();
+    assert_eq!(indexes.payload_stats().0, 0);
+    let write = ports.shared.database.begin_write().unwrap();
+    {
+        let mut table = write.open_table(crate::layout::COMMITS).unwrap();
+        table
+            .insert(key.as_slice(), b"corrupt successor".as_slice())
+            .unwrap();
+    }
+    write.commit().unwrap();
+    let latest = ports.shared.database.begin_read().unwrap();
+    let load = |pin: &redb::ReadTransaction, first| {
+        let table = pin.open_table(crate::layout::COMMITS).unwrap();
+        Ok(table
+            .get(encode_application_sequence_key(first).as_slice())
+            .unwrap()
+            .map(|value| value.value().to_vec()))
+    };
+    assert_eq!(
+        indexes
+            .command_at(CommitSequence::first(), |first| load(&old, first))
+            .unwrap(),
+        Some(command.clone())
+    );
+    assert!(
+        indexes
+            .command_at(CommitSequence::first(), |first| load(&latest, first))
+            .is_err()
+    );
+    indexes.evict_payloads();
+    // Cold lookup uses the identical pinned authority.
+    assert!(
+        indexes
+            .command_at(CommitSequence::first(), |first| load(&latest, first))
+            .is_err()
+    );
+    assert_eq!(
+        indexes
+            .command_at(CommitSequence::first(), |first| load(&old, first))
+            .unwrap(),
+        Some(command)
+    );
+}
+
+// req: REP-002, OUT-001
+#[test]
+fn review_multi_command_payload_is_cached_with_its_decoded_ownership_charge() {
+    let commands = (1..=64)
+        .map(|value| capsule(CommitSequence::new(value).unwrap()))
+        .collect::<Vec<_>>();
+    let (segment, encoded) = segment(commands.clone(), None);
+    let mut indexes = TransientIndexes::default();
+    indexes
+        .apply(crate::transient::TransientIndexDelta::CommandSegmentPublished(Arc::new(segment)));
+    assert_eq!(indexes.payload_stats(), (0, 0));
+    for command in &commands {
+        assert_eq!(
+            indexes
+                .command_at(command.commit_sequence(), |_| Ok(Some(
+                    encoded.as_bytes().to_vec()
+                )))
+                .unwrap(),
+            Some(command.clone())
+        );
+    }
+    let (entries, bytes) = indexes.payload_stats();
+    assert_eq!(entries, 1);
+    assert!(bytes <= 64 * 1024 * 1024);
+    assert!(bytes > 64 * std::mem::size_of::<StoredCommandCapsuleV2>());
 }

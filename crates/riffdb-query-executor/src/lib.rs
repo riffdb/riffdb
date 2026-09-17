@@ -2670,7 +2670,7 @@ fn execute_operational_page_in_snapshot_with_policy<V: QueryReadView>(
                         policy,
                     )?
                 } else {
-                    let mut merged = Vec::new();
+                    let mut streams = Vec::with_capacity(routes.len());
                     let mut has_more = false;
                     let mut observations = Vec::new();
                     for route in routes {
@@ -2697,17 +2697,11 @@ fn execute_operational_page_in_snapshot_with_policy<V: QueryReadView>(
                         )?;
                         append_partition_observation(&mut observations, route, epoch)?;
                         has_more |= stream_has_more;
-                        let (next, discarded) = merge_partition_streams(
-                            merged,
-                            stream,
-                            merge_limit,
-                            fields,
-                            order,
-                            key_fields,
-                        )?;
-                        merged = next;
-                        has_more |= discarded;
+                        streams.push(stream);
                     }
+                    let (merged, discarded) =
+                        merge_partition_runs(streams, merge_limit, fields, order, key_fields)?;
+                    has_more |= discarded;
                     (merged, observations, has_more)
                 };
                 insert_partition_set_observation(
@@ -3681,15 +3675,6 @@ fn aggregate_scalar_order(
         (CanonicalValue::Null, CanonicalValue::Null) => Ok(Ordering::Equal),
         (CanonicalValue::Null, _) => Ok(Ordering::Less),
         (_, CanonicalValue::Null) => Ok(Ordering::Greater),
-        (CanonicalValue::Bool(left), CanonicalValue::Bool(right)) => Ok(left.cmp(right)),
-        (CanonicalValue::Bytes(left), CanonicalValue::Bytes(right)) => {
-            Ok(left.as_bytes().cmp(right.as_bytes()))
-        }
-        (CanonicalValue::Decimal(left), CanonicalValue::Decimal(right))
-            if left.spec() == right.spec() =>
-        {
-            Ok(left.coefficient().cmp(&right.coefficient()))
-        }
         (CanonicalValue::Money(left), CanonicalValue::Money(right))
             if left.currency() == right.currency() =>
         {
@@ -4828,6 +4813,97 @@ fn partition_set_physical_row_order(
     Ok(Ordering::Equal)
 }
 
+fn merge_partition_runs(
+    streams: Vec<Vec<QueryRow>>,
+    limit: usize,
+    fields: &[String],
+    order: &[QueryRootOrderTermV1],
+    key_fields: &[String],
+) -> Result<(Vec<QueryRow>, bool), QueryExecutionError> {
+    let mut heap = Vec::with_capacity(streams.len());
+    for rows in streams {
+        let mut buffered = rows.into_iter();
+        let row = buffered.next();
+        if row.is_some() {
+            partition_heap_push(
+                &mut heap,
+                PartitionMergeStream {
+                    route: CanonicalValue::Null,
+                    predicates: Vec::new(),
+                    row,
+                    resume: None,
+                    after_inclusive: false,
+                    started: true,
+                    epoch: None,
+                    scanned_rows: 0,
+                    buffered,
+                },
+                fields,
+                order,
+                key_fields,
+            )?;
+        }
+    }
+    let mut result = Vec::with_capacity(limit);
+    while result.len() < limit {
+        let Some(mut stream) = partition_heap_pop(&mut heap, fields, order, key_fields)? else {
+            break;
+        };
+        result.push(
+            stream
+                .row
+                .take()
+                .ok_or(QueryExecutionError::BackendIntegrity)?,
+        );
+        stream.row = stream.buffered.next();
+        if stream.row.is_some() {
+            partition_heap_push(&mut heap, stream, fields, order, key_fields)?;
+        }
+    }
+    Ok((result, !heap.is_empty()))
+}
+
+fn sort_partition_rows(
+    rows: &mut [QueryRow],
+    fields: &[String],
+    order: &[QueryRootOrderTermV1],
+    key_fields: &[String],
+) -> Result<(), QueryExecutionError> {
+    fn sift(
+        rows: &mut [QueryRow],
+        mut root: usize,
+        fields: &[String],
+        order: &[QueryRootOrderTermV1],
+        keys: &[String],
+    ) -> Result<(), QueryExecutionError> {
+        while root < rows.len() / 2 {
+            let mut child = root * 2 + 1;
+            if child + 1 < rows.len()
+                && partition_set_row_order(&rows[child], &rows[child + 1], fields, order, keys)?
+                    == Ordering::Less
+            {
+                child += 1;
+            }
+            if partition_set_row_order(&rows[root], &rows[child], fields, order, keys)?
+                != Ordering::Less
+            {
+                break;
+            }
+            rows.swap(root, child);
+            root = child;
+        }
+        Ok(())
+    }
+    for root in (0..rows.len() / 2).rev() {
+        sift(rows, root, fields, order, key_fields)?;
+    }
+    for end in (1..rows.len()).rev() {
+        rows.swap(0, end);
+        sift(&mut rows[..end], 0, fields, order, key_fields)?;
+    }
+    Ok(())
+}
+
 fn merge_partition_streams(
     left: Vec<QueryRow>,
     right: Vec<QueryRow>,
@@ -5020,6 +5096,7 @@ struct PartitionMergeStream {
     started: bool,
     epoch: Option<u64>,
     scanned_rows: u64,
+    buffered: std::vec::IntoIter<QueryRow>,
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -5039,6 +5116,10 @@ fn execute_partition_set_uniform_merge<V: QueryReadView>(
     policy: Option<&AuthorizedQueryRowPolicyContextV1>,
 ) -> Result<(Vec<QueryRow>, Vec<u8>, bool), QueryExecutionError> {
     let output_limit = usize::try_from(limit).map_err(|_| QueryExecutionError::BoundExceeded)?;
+    // The compiler grants maximum_rows + one head per route. Only the
+    // request's unused row allowance may fund speculative prefetch. At the
+    // maximum bound, retain lazy heads until just one stream remains.
+    let mut prefetch_spare = step.maximum_rows().saturating_sub(limit);
     let mut heap = Vec::<PartitionMergeStream>::with_capacity(routes.len());
     let mut observations = Vec::new();
     for route in routes {
@@ -5059,6 +5140,7 @@ fn execute_partition_set_uniform_merge<V: QueryReadView>(
             started: false,
             epoch: None,
             scanned_rows: 0,
+            buffered: Vec::new().into_iter(),
         };
         load_partition_merge_row(
             view,
@@ -5071,6 +5153,9 @@ fn execute_partition_set_uniform_merge<V: QueryReadView>(
             scan_ceiling,
             prior_marker,
             policy,
+            &mut prefetch_spare,
+            1,
+            limit.saturating_add(1),
         )?;
         append_partition_observation(
             &mut observations,
@@ -5108,6 +5193,13 @@ fn execute_partition_set_uniform_merge<V: QueryReadView>(
             scan_ceiling,
             prior_marker,
             policy,
+            &mut prefetch_spare,
+            if heap.is_empty() {
+                (output_limit - rows.len()) as u64 + 1
+            } else {
+                1
+            },
+            limit.saturating_add(1),
         )?;
         if stream.row.is_some() {
             partition_heap_push(&mut heap, stream, fields, order, key_fields)?;
@@ -5128,9 +5220,23 @@ fn load_partition_merge_row<V: QueryReadView>(
     scan_ceiling: u32,
     prior_marker: Option<&[CanonicalValue]>,
     policy: Option<&AuthorizedQueryRowPolicyContextV1>,
+    prefetch_spare: &mut u64,
+    guaranteed_rows: u64,
+    page_target: u64,
 ) -> Result<(), QueryExecutionError> {
     stream.row = None;
     loop {
+        if let Some(row) = stream.buffered.next() {
+            if prior_marker.is_some_and(|marker| {
+                partition_set_marker_values(&row, fields, order, key_fields).and_then(|values| {
+                    partition_set_value_order(&values, marker, order, key_fields)
+                }) != Ok(Ordering::Greater)
+            }) {
+                continue;
+            }
+            stream.row = Some(row);
+            return Ok(());
+        }
         if stream.started && stream.resume.is_none() {
             return Ok(());
         }
@@ -5140,18 +5246,26 @@ fn load_partition_merge_row<V: QueryReadView>(
         if remaining == 0 {
             return Err(QueryExecutionError::BoundExceeded);
         }
+        let page_limit = guaranteed_rows
+            .saturating_add(*prefetch_spare)
+            .min(64)
+            .min(page_target)
+            .min(remaining.saturating_sub(1).max(1))
+            .min(fuel.point_reads)
+            .min(fuel.intermediate_rows)
+            .max(1);
         let page = view
             .scan(
                 step,
                 &stream.predicates,
-                1,
+                page_limit,
                 stream.resume.as_deref(),
                 stream.after_inclusive,
                 policy,
             )
             .map_err(|error| map_view_error(view, &error))?;
         if page.scanned_rows > remaining
-            || page.rows.len() > 1
+            || page.rows.len() as u64 > page_limit
             || page.point_reads != page.rows.len() as u64
             || page.rows.len() as u64 > page.scanned_rows
             || page
@@ -5178,25 +5292,11 @@ fn load_partition_merge_row<V: QueryReadView>(
             .ok_or(QueryExecutionError::BoundExceeded)?;
         fuel.scans(page.scanned_rows)?;
         fuel.points(page.point_reads)?;
+        fuel.intermediates(page.rows.len() as u64)?;
+        *prefetch_spare =
+            prefetch_spare.saturating_sub((page.rows.len() as u64).saturating_sub(guaranteed_rows));
         stream.resume = page.continuation;
-        let Some(row) = page.rows.into_iter().next() else {
-            if stream.resume.is_none() {
-                return Ok(());
-            }
-            continue;
-        };
-        if prior_marker.is_some_and(|marker| {
-            partition_set_marker_values(&row, fields, order, key_fields)
-                .and_then(|values| partition_set_value_order(&values, marker, order, key_fields))
-                != Ok(Ordering::Greater)
-        }) {
-            if stream.resume.is_none() {
-                return Ok(());
-            }
-            continue;
-        }
-        stream.row = Some(row);
-        return Ok(());
+        stream.buffered = page.rows.into_iter();
     }
 }
 
@@ -5369,17 +5469,23 @@ fn execute_partition_set_stream<V: QueryReadView>(
         fuel.scans(page.scanned_rows)?;
         fuel.points(page.point_reads)?;
         fuel.intermediates(page.rows.len() as u64)?;
-        rows.extend(page.rows);
+        if mixed {
+            let mut incoming = page.rows;
+            sort_partition_rows(&mut incoming, fields, order, key_fields)?;
+            let total = rows
+                .len()
+                .checked_add(incoming.len())
+                .ok_or(QueryExecutionError::BoundExceeded)?;
+            rows = merge_partition_streams(rows, incoming, total, fields, order, key_fields)?.0;
+        } else {
+            rows.extend(page.rows);
+        }
 
         let next = page.continuation;
         if !mixed {
             stopped_with_more = next.is_some();
             break;
         }
-        rows.sort_by(|left, right| {
-            partition_set_row_order(left, right, fields, order, key_fields)
-                .unwrap_or(Ordering::Equal)
-        });
         if rows.windows(2).any(|pair| {
             partition_set_row_order(&pair[0], &pair[1], fields, order, key_fields)
                 != Ok(Ordering::Less)
@@ -5416,15 +5522,12 @@ fn execute_partition_set_stream<V: QueryReadView>(
         resume = Some((next_physical, false));
     }
 
-    if mixed {
-        rows.sort_by(|left, right| {
-            partition_set_row_order(left, right, fields, order, key_fields)
-                .unwrap_or(Ordering::Equal)
-        });
-    } else if rows.windows(2).any(|pair| {
-        partition_set_physical_row_order(&pair[0], &pair[1], fields, key_fields, direction)
-            != Ok(Ordering::Less)
-    }) {
+    if !mixed
+        && rows.windows(2).any(|pair| {
+            partition_set_physical_row_order(&pair[0], &pair[1], fields, key_fields, direction)
+                != Ok(Ordering::Less)
+        })
+    {
         return Err(QueryExecutionError::BackendIntegrity);
     }
     if let Some(marker) = prior_marker {
@@ -5733,6 +5836,25 @@ fn predicate_values_match<'a>(
 
 fn scalar_order(left: &CanonicalValue, right: &CanonicalValue) -> Option<Ordering> {
     match (left, right) {
+        (CanonicalValue::Bool(left), CanonicalValue::Bool(right)) => Some(left.cmp(right)),
+        (CanonicalValue::Bytes(left), CanonicalValue::Bytes(right)) => {
+            Some(left.as_bytes().cmp(right.as_bytes()))
+        }
+        (CanonicalValue::Decimal(left), CanonicalValue::Decimal(right))
+            if left.spec() == right.spec() =>
+        {
+            Some(left.coefficient().cmp(&right.coefficient()))
+        }
+        (CanonicalValue::Money(left), CanonicalValue::Money(right))
+            if left.currency() == right.currency()
+                && left.amount().spec() == right.amount().spec() =>
+        {
+            Some(
+                left.amount()
+                    .coefficient()
+                    .cmp(&right.amount().coefficient()),
+            )
+        }
         (CanonicalValue::I64(left), CanonicalValue::I64(right)) => left.partial_cmp(right),
         (CanonicalValue::U64(left), CanonicalValue::U64(right)) => left.partial_cmp(right),
         (CanonicalValue::String(left), CanonicalValue::String(right)) => {
@@ -6199,6 +6321,226 @@ query OptionalMinimumSummary($organization_id: Ticket.organization_id) {
             bundle,
             family.select(&[]).expect("sole member").program().steps()[0].clone(),
         )
+    }
+
+    struct PagedView {
+        rows: Vec<QueryRow>,
+        limits: Vec<u64>,
+    }
+    impl QueryReadView for PagedView {
+        type Error = ();
+        fn fault(&self, _: &()) -> QueryBackendFault {
+            QueryBackendFault::Unavailable
+        }
+        fn application_head(&self) -> u64 {
+            1
+        }
+        fn point(
+            &mut self,
+            _: &QueryAccessStep,
+            _: &[BoundPredicate],
+            _: Option<&AuthorizedQueryRowPolicyContextV1>,
+        ) -> Result<Option<QueryRow>, ()> {
+            Ok(None)
+        }
+        fn dependent_point_batch(
+            &mut self,
+            _: &QueryAccessStep,
+            _: &[Vec<BoundPredicate>],
+            _: Option<&AuthorizedQueryRowPolicyContextV1>,
+        ) -> Result<Vec<Option<QueryRow>>, ()> {
+            Err(())
+        }
+        fn nearest(
+            &mut self,
+            _: &QueryAccessStep,
+            _: &[BoundPredicate],
+            _: u32,
+            _: Option<&AuthorizedQueryRowPolicyContextV1>,
+        ) -> Result<QueryNearestPage, ()> {
+            Err(())
+        }
+        fn scan(
+            &mut self,
+            _: &QueryAccessStep,
+            _: &[BoundPredicate],
+            limit: u64,
+            after: Option<&[u8]>,
+            _: bool,
+            _: Option<&AuthorizedQueryRowPolicyContextV1>,
+        ) -> Result<QueryScanPage, ()> {
+            self.limits.push(limit);
+            let start = after
+                .map(|bytes| u64::from_be_bytes(bytes.try_into().unwrap()) as usize)
+                .unwrap_or(0);
+            let end = (start + limit as usize).min(self.rows.len());
+            let rows = self.rows[start..end].to_vec();
+            if end < self.rows.len() {
+                QueryScanPage::continued(rows, 1, limit + 1, (end as u64).to_be_bytes().to_vec())
+                    .ok_or(())
+            } else {
+                Ok(QueryScanPage::exact_end(rows, 1))
+            }
+        }
+    }
+
+    // req: OQ-019
+    #[test]
+    fn review_partition_buffering_preserves_order_and_maximum_point_budget() {
+        let bundle = compile_contract_source(PARTITION_SET_CONTRACT).unwrap();
+        let catalog = SymbolicCatalog::from_bundle(&bundle).unwrap();
+        let source = PARTITION_SET_QUERY
+            .replace("Limit<3>", "Limit<128>")
+            .replace("start_time desc", "start_time asc");
+        let family =
+            compile_operational_query_family(&parse_query(&source).unwrap(), &catalog).unwrap();
+        let program = family.select(&[]).unwrap().program();
+        let step = &program.steps()[0];
+        let QueryAccessKind::PartitionSetIndex {
+            fields,
+            order,
+            key_fields,
+            scan_ceiling,
+            ..
+        } = step.access()
+        else {
+            panic!("partition step")
+        };
+        let rows = (0..129)
+            .map(|id| {
+                row(
+                    "Run",
+                    &[
+                        ("experiment_id", CanonicalValue::U64(1)),
+                        (
+                            "run_id",
+                            CanonicalValue::string(format!("{id:04}")).unwrap(),
+                        ),
+                        ("start_time", CanonicalValue::I64(id)),
+                    ],
+                )
+            })
+            .collect::<Vec<_>>();
+        let routes = [CanonicalValue::U64(1)];
+        let predicates = [BoundPredicate {
+            field: "experiment_id".to_owned(),
+            operator: QueryPredicateOperator::In,
+            value: CanonicalValue::list(routes.to_vec()).unwrap(),
+        }];
+        for limit in [1, 2, 63, 64, 127, 128] {
+            let mut view = PagedView {
+                rows: rows.clone(),
+                limits: Vec::new(),
+            };
+            let mut fuel = QueryExecutionFuel::from_cost(program.cost());
+            // Exactly the compiler's row allowance plus one route head.
+            fuel.point_reads = 129;
+            let (actual, _, more) = execute_partition_set_uniform_merge(
+                &mut view,
+                &mut fuel,
+                step,
+                &predicates,
+                "experiment_ids",
+                &routes,
+                fields,
+                order,
+                key_fields,
+                *scan_ceiling,
+                limit,
+                None,
+                None,
+            )
+            .unwrap();
+            assert_eq!(actual, rows[..limit as usize]);
+            assert!(more);
+            assert!(view.limits.iter().all(|limit| *limit <= 64));
+            assert!(view.limits.len() <= 4, "{:?}", view.limits);
+            assert!(129 - fuel.point_reads > limit);
+            assert!(129 - fuel.point_reads <= 129);
+            if limit == 128 {
+                assert_eq!(fuel.point_reads, 0);
+            }
+        }
+    }
+
+    // req: OQ-019
+    #[test]
+    fn review_mixed_partition_heap_matches_independent_sort_and_refuses_bad_comparisons() {
+        let bundle = compile_contract_source(PARTITION_SET_CONTRACT).unwrap();
+        let catalog = SymbolicCatalog::from_bundle(&bundle).unwrap();
+        let family =
+            compile_operational_query_family(&parse_query(PARTITION_SET_QUERY).unwrap(), &catalog)
+                .unwrap();
+        let program = family.select(&[]).unwrap().program();
+        let QueryAccessKind::PartitionSetIndex {
+            fields,
+            order,
+            key_fields,
+            ..
+        } = program.steps()[0].access()
+        else {
+            panic!("partition step")
+        };
+        let make = |route, id: i64| {
+            row(
+                "Run",
+                &[
+                    ("experiment_id", CanonicalValue::U64(route)),
+                    (
+                        "run_id",
+                        CanonicalValue::string(format!("{id:04}")).unwrap(),
+                    ),
+                    ("start_time", CanonicalValue::I64(id % 3)),
+                ],
+            )
+        };
+        let mut runs = (1..=4)
+            .map(|route| (0..33).map(|id| make(route, id)).collect::<Vec<_>>())
+            .collect::<Vec<_>>();
+        let mut expected = runs.iter().flatten().cloned().collect::<Vec<_>>();
+        expected.sort_by_key(|row| {
+            let CanonicalValue::I64(time) = row.field("start_time").unwrap() else {
+                panic!("time")
+            };
+            let CanonicalValue::U64(route) = row.field("experiment_id").unwrap() else {
+                panic!("route")
+            };
+            (
+                std::cmp::Reverse(*time),
+                riffdb_types::encode_canonical_value(row.field("run_id").unwrap()).unwrap(),
+                *route,
+            )
+        });
+        for run in &mut runs {
+            sort_partition_rows(run, fields, order, key_fields).unwrap();
+        }
+        runs.push(Vec::new());
+        for limit in [0, 1, 3, 64, 131, 132, 133] {
+            let (actual, discarded) =
+                merge_partition_runs(runs.clone(), limit, fields, order, key_fields).unwrap();
+            assert_eq!(actual, expected[..limit.min(expected.len())]);
+            assert_eq!(discarded, limit < expected.len());
+        }
+        let invalid = row(
+            "Run",
+            &[
+                ("run_id", CanonicalValue::string("0001").unwrap()),
+                ("start_time", CanonicalValue::I64(1)),
+            ],
+        );
+        assert!(
+            merge_partition_runs(
+                vec![vec![make(1, 1)], vec![invalid.clone()]],
+                2,
+                fields,
+                order,
+                key_fields
+            )
+            .is_err()
+        );
+        assert!(
+            sort_partition_rows(&mut [make(1, 1), invalid], fields, order, key_fields).is_err()
+        );
     }
 
     fn matching_range(schedule: &BoundIndexRangeScheduleV1, key: &[u8]) -> bool {
@@ -7365,4 +7707,67 @@ query OptionalMinimumSummary($organization_id: Ticket.organization_id) {
 
     #[cfg(not(feature = "test-fixtures"))]
     fn capture_error(_name: &str, _error: &QueryExecutionError) {}
+}
+
+#[cfg(test)]
+mod review_regressions {
+    use super::*;
+    use riffdb_types::{CurrencyCode, Decimal, DecimalSpec, Money};
+
+    // req: OQ-019
+    #[test]
+    fn review_scalar_ranges_use_typed_business_order() {
+        let spec = DecimalSpec::new(12, 2).unwrap();
+        let negative = Decimal::new(spec, -100).unwrap();
+        let positive = Decimal::new(spec, 200).unwrap();
+        let currency = CurrencyCode::new("USD").unwrap();
+        for (low, high) in [
+            (CanonicalValue::Bool(false), CanonicalValue::Bool(true)),
+            (
+                CanonicalValue::bytes(vec![1]).unwrap(),
+                CanonicalValue::bytes(vec![2]).unwrap(),
+            ),
+            (
+                CanonicalValue::Decimal(negative),
+                CanonicalValue::Decimal(positive),
+            ),
+            (
+                CanonicalValue::Money(Money::new(currency, negative)),
+                CanonicalValue::Money(Money::new(currency, positive)),
+            ),
+        ] {
+            for (operator, expected) in [
+                (QueryPredicateOperator::Less, true),
+                (QueryPredicateOperator::LessEqual, true),
+                (QueryPredicateOperator::Greater, false),
+                (QueryPredicateOperator::GreaterEqual, false),
+            ] {
+                let predicate = BoundPredicate {
+                    field: "value".into(),
+                    operator,
+                    value: high.clone(),
+                };
+                assert_eq!(
+                    predicate_values_match("Entity", &[predicate], |_| Some(&low)),
+                    Ok(expected)
+                );
+            }
+            assert_eq!(scalar_order(&low, &high), Some(Ordering::Less));
+            assert_eq!(scalar_order(&high, &low), Some(Ordering::Greater));
+            assert_eq!(scalar_order(&low, &low), Some(Ordering::Equal));
+        }
+        assert_eq!(
+            scalar_order(&CanonicalValue::Null, &CanonicalValue::I64(1)),
+            None
+        );
+        assert_eq!(
+            scalar_order(
+                &CanonicalValue::Decimal(negative),
+                &CanonicalValue::Decimal(
+                    Decimal::new(DecimalSpec::new(12, 3).unwrap(), 200).unwrap()
+                )
+            ),
+            None
+        );
+    }
 }

@@ -1,6 +1,6 @@
 //! Exact bounded tokenized-text execution over maintained postings (ADR-0173).
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::error::Error;
 use std::fmt;
 
@@ -106,7 +106,8 @@ pub fn execute_tokenized_text_v1(
     if terms.is_empty() {
         return Err(TokenizedTextExecutionErrorV1::EmptyQuery);
     }
-    let statistics_identity = tokenized_statistics_identity(plan, provider, &terms)?;
+    let statistics = CorpusStatistics::new(plan, provider, &terms)?;
+    let statistics_identity = tokenized_statistics_identity(plan, &statistics)?;
 
     let candidates = match plan.kind() {
         TokenizedMatchKindV1::Conjunction => conjunction_candidates(plan, provider, &terms),
@@ -131,7 +132,7 @@ pub fn execute_tokenized_text_v1(
             let score = match plan.ranking() {
                 TokenizedRankingV1::Boolean => 0,
                 TokenizedRankingV1::RiffBm25V1 => {
-                    riff_bm25_v1_score(plan, provider, candidate, &terms)?
+                    score_with_statistics(plan, provider, candidate, &terms, &statistics)?
                 }
             };
             Ok((
@@ -169,40 +170,71 @@ pub fn execute_tokenized_text_v1(
     })
 }
 
+struct CorpusStatistics<'a> {
+    documents: u64,
+    lengths: BTreeMap<riffdb_types::FieldId, u64>,
+    frequencies: BTreeMap<&'a str, u32>,
+}
+
+impl<'a> CorpusStatistics<'a> {
+    fn new(
+        plan: &TokenizedTextPlanV1,
+        provider: &TokenizedTextPartitionIndexV1,
+        terms: &'a [String],
+    ) -> Result<Self, TokenizedTextExecutionErrorV1> {
+        #[cfg(test)]
+        STATISTICS_BUILDS.with(|count| count.set(count.get() + 1));
+        let overflow = TokenizedTextExecutionErrorV1::ScoreOverflow;
+        let documents = u64::try_from(provider.document_count()).map_err(|_| overflow)?;
+        let lengths = plan
+            .fields()
+            .iter()
+            .map(|field| {
+                Ok((
+                    field.field(),
+                    provider
+                        .total_field_length(field.field())
+                        .map_err(|_| overflow)?,
+                ))
+            })
+            .collect::<Result<_, _>>()?;
+        let mut frequencies = BTreeMap::new();
+        for term in terms {
+            if !frequencies.contains_key(term.as_str()) {
+                frequencies.insert(
+                    term.as_str(),
+                    u32::try_from(term_documents(plan, provider, term).len())
+                        .map_err(|_| overflow)?,
+                );
+            }
+        }
+        Ok(Self {
+            documents,
+            lengths,
+            frequencies,
+        })
+    }
+}
+
 fn tokenized_statistics_identity(
     plan: &TokenizedTextPlanV1,
-    provider: &TokenizedTextPartitionIndexV1,
-    terms: &[String],
+    statistics: &CorpusStatistics<'_>,
 ) -> Result<[u8; 32], TokenizedTextExecutionErrorV1> {
-    let mut bytes = Vec::with_capacity(64 + plan.fields().len() * (12 + terms.len() * 4));
+    let mut bytes = Vec::new();
     bytes.extend_from_slice(b"RTSTATS\x01");
-    bytes.extend_from_slice(
-        &u64::try_from(provider.document_count())
-            .map_err(|_| TokenizedTextExecutionErrorV1::ScoreOverflow)?
-            .to_be_bytes(),
-    );
+    bytes.extend_from_slice(&statistics.documents.to_be_bytes());
     for field in plan.fields() {
         bytes.extend_from_slice(&field.field().get().to_be_bytes());
-        bytes.extend_from_slice(
-            &provider
-                .total_field_length(field.field())
-                .map_err(|_| TokenizedTextExecutionErrorV1::ScoreOverflow)?
-                .to_be_bytes(),
-        );
+        bytes.extend_from_slice(&statistics.lengths[&field.field()].to_be_bytes());
     }
-    let unique = terms.iter().collect::<BTreeSet<_>>();
-    for term in unique {
+    for (term, frequency) in &statistics.frequencies {
         bytes.extend_from_slice(
             &u32::try_from(term.len())
                 .map_err(|_| TokenizedTextExecutionErrorV1::ScoreOverflow)?
                 .to_be_bytes(),
         );
         bytes.extend_from_slice(term.as_bytes());
-        bytes.extend_from_slice(
-            &u32::try_from(term_documents(plan, provider, term).len())
-                .map_err(|_| TokenizedTextExecutionErrorV1::ScoreOverflow)?
-                .to_be_bytes(),
-        );
+        bytes.extend_from_slice(&frequency.to_be_bytes());
     }
     Ok(*hash(HashDomain::QueryParameters, &bytes).as_bytes())
 }
@@ -221,15 +253,24 @@ pub fn riff_bm25_v1_score(
     candidate: EntityKeyHash,
     terms: &[String],
 ) -> Result<u64, TokenizedTextExecutionErrorV1> {
-    let documents = u128::try_from(provider.document_count())
-        .map_err(|_| TokenizedTextExecutionErrorV1::ScoreOverflow)?;
+    let statistics = CorpusStatistics::new(plan, provider, terms)?;
+    score_with_statistics(plan, provider, candidate, terms, &statistics)
+}
+
+fn score_with_statistics(
+    plan: &TokenizedTextPlanV1,
+    provider: &TokenizedTextPartitionIndexV1,
+    candidate: EntityKeyHash,
+    terms: &[String],
+    statistics: &CorpusStatistics<'_>,
+) -> Result<u64, TokenizedTextExecutionErrorV1> {
+    let documents = u128::from(statistics.documents);
     if documents == 0 {
         return Err(TokenizedTextExecutionErrorV1::ProviderCorrupt);
     }
     let mut score = 0_u128;
     for term in terms {
-        let document_frequency = u128::try_from(term_documents(plan, provider, term).len())
-            .map_err(|_| TokenizedTextExecutionErrorV1::ScoreOverflow)?;
+        let document_frequency = u128::from(statistics.frequencies[term.as_str()]);
         if document_frequency == 0 || document_frequency > documents {
             continue;
         }
@@ -257,11 +298,7 @@ pub fn riff_bm25_v1_score(
                     .field_length(candidate, field.field())
                     .ok_or(TokenizedTextExecutionErrorV1::ProviderCorrupt)?,
             );
-            let total_length = u128::from(
-                provider
-                    .total_field_length(field.field())
-                    .map_err(|_| TokenizedTextExecutionErrorV1::ScoreOverflow)?,
-            );
+            let total_length = u128::from(statistics.lengths[&field.field()]);
             if total_length == 0 {
                 return Err(TokenizedTextExecutionErrorV1::ProviderCorrupt);
             }
@@ -337,6 +374,8 @@ fn term_documents(
     provider: &TokenizedTextPartitionIndexV1,
     term: &str,
 ) -> BTreeSet<EntityKeyHash> {
+    #[cfg(test)]
+    POSTING_ENUMERATIONS.with(|count| count.set(count.get() + 1));
     plan.fields()
         .iter()
         .filter_map(|field| provider.posting(field.field(), term))
@@ -416,20 +455,39 @@ fn positions_match(
     if positions.len() != terms.len() {
         return false;
     }
-    positions[0].iter().copied().any(|start| {
-        let mut frontier = start;
-        for next_positions in &positions[1..] {
-            let Some(next) = next_positions
-                .iter()
-                .copied()
-                .find(|position| *position > frontier && *position - frontier <= distance)
-            else {
-                return false;
-            };
-            frontier = next;
+    ordered_positions_match(&positions, distance)
+}
+
+fn ordered_positions_match(positions: &[&[u32]], distance: u32) -> bool {
+    let Some(first) = positions.first() else {
+        return false;
+    };
+    // Keep every reachable position. A later occurrence can reach the next
+    // term even when the earliest occurrence cannot. Each posting is sorted;
+    // the predecessor cursor advances once per lane, without backtracking.
+    let mut reachable = first.to_vec();
+    let mut next_reachable = Vec::new();
+    for next_positions in &positions[1..] {
+        next_reachable.clear();
+        let mut predecessor = 0;
+        for &position in *next_positions {
+            let lower = position.saturating_sub(distance);
+            while predecessor < reachable.len() && reachable[predecessor] < lower {
+                predecessor += 1;
+            }
+            if reachable
+                .get(predecessor)
+                .is_some_and(|previous| *previous < position)
+            {
+                next_reachable.push(position);
+            }
         }
-        true
-    })
+        if next_reachable.is_empty() {
+            return false;
+        }
+        std::mem::swap(&mut reachable, &mut next_reachable);
+    }
+    !reachable.is_empty()
 }
 
 fn check_candidates(
@@ -483,3 +541,110 @@ impl fmt::Display for TokenizedTextExecutionErrorV1 {
 }
 
 impl Error for TokenizedTextExecutionErrorV1 {}
+
+#[cfg(test)]
+mod positional_tests {
+    use super::ordered_positions_match;
+
+    fn reference(lanes: &[&[u32]], previous: Option<u32>, distance: u32) -> bool {
+        match lanes.split_first() {
+            None => true,
+            Some((lane, rest)) => lane.iter().any(|&position| {
+                previous.is_none_or(|prior| position > prior && position - prior <= distance)
+                    && reference(rest, Some(position), distance)
+            }),
+        }
+    }
+
+    // req: OQ-019
+    #[test]
+    fn review_positional_matching_agrees_with_exhaustive_paths() {
+        let lanes = (0..16)
+            .map(|mask| {
+                (0..4)
+                    .filter(|position| mask & (1 << position) != 0)
+                    .collect::<Vec<u32>>()
+            })
+            .collect::<Vec<_>>();
+        for first in &lanes {
+            for second in &lanes {
+                for third in &lanes {
+                    for distance in 1..=4 {
+                        let positions = [first.as_slice(), second.as_slice(), third.as_slice()];
+                        assert_eq!(
+                            ordered_positions_match(&positions, distance),
+                            reference(&positions, None, distance),
+                            "{positions:?} distance {distance}"
+                        );
+                    }
+                }
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+thread_local! { static STATISTICS_BUILDS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) }; static POSTING_ENUMERATIONS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) }; }
+
+#[cfg(test)]
+mod statistics_tests {
+    use super::*;
+    #[allow(dead_code)]
+    mod fixture {
+        include!("../tests/support/tokenized_fixture.rs");
+    }
+
+    // req: OQ-019
+    #[test]
+    fn review_statistics_are_snapshot_scoped_and_duplicate_terms_keep_exact_scores() {
+        let provider = fixture::provider();
+        let plan = fixture::plan_with_ranking(
+            TokenizedMatchKindV1::Disjunction,
+            TokenizedRankingV1::RiffBm25V1,
+            16,
+            16,
+        );
+        STATISTICS_BUILDS.with(|count| count.set(0));
+        POSTING_ENUMERATIONS.with(|count| count.set(0));
+        let page = execute_tokenized_text_v1(
+            &plan,
+            &provider,
+            fixture::generation(),
+            fixture::sequence(11),
+            "rust database",
+            0,
+            16,
+        )
+        .unwrap();
+        assert_eq!(STATISTICS_BUILDS.with(std::cell::Cell::get), 1);
+        assert_eq!(POSTING_ENUMERATIONS.with(std::cell::Cell::get), 4);
+        let repeated = execute_tokenized_text_v1(
+            &plan,
+            &provider,
+            fixture::generation(),
+            fixture::sequence(11),
+            "rust database rust database",
+            0,
+            16,
+        )
+        .unwrap();
+        assert_eq!(STATISTICS_BUILDS.with(std::cell::Cell::get), 2);
+        assert_eq!(POSTING_ENUMERATIONS.with(std::cell::Cell::get), 10);
+        assert_eq!(page.statistics_identity(), repeated.statistics_identity());
+        assert_eq!(page.rows.len(), 3);
+        for (single, twice) in page.rows.iter().zip(&repeated.rows) {
+            assert_eq!(single.key, twice.key);
+            let key = riffdb_types::hash_entity_key(single.key.as_bytes());
+            let terms = vec!["rust".to_owned(), "database".to_owned()];
+            let doubled = [terms.clone(), terms.clone()].concat();
+            assert_eq!(
+                riff_bm25_v1_score(&plan, &provider, key, &terms).unwrap() * 2,
+                riff_bm25_v1_score(&plan, &provider, key, &doubled).unwrap()
+            );
+        }
+        let terms = vec!["rust".to_owned(), "database".to_owned(), "rust".to_owned()];
+        let statistics = CorpusStatistics::new(&plan, &provider, &terms).unwrap();
+        assert_eq!(statistics.frequencies.len(), 2);
+        assert_eq!(statistics.lengths.len(), 2);
+    }
+}

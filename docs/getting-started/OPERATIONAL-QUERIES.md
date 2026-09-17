@@ -47,6 +47,12 @@ and exact integer/decimal carriage. Aggregate sums that do not assert a wire
 precision are decoded under the generated result schema; a conflicting wire
 precision or scale is rejected.
 
+Runtime predicate checks compare same-type decimal coefficients numerically
+and money amounts numerically within the same currency and decimal type.
+Byte values use lexicographic byte order and Boolean values order false before
+true. These checks apply to compiler-admitted access paths; they do not add new
+physical range families to the closed access matrix below.
+
 ## Cursor rule
 
 Persist the opaque `next_cursor` returned with a page and submit it only to the
@@ -325,3 +331,10 @@ each response stays within its declared page bound. It scans the application
 runners for kernel, storage, numeric-ID, raw-transaction, and client-filter
 escape hatches. External adapter repositories own their separate route-level
 compatibility matrices.
+
+Partition queries buffer at most 64 rows per stream refill within their existing
+compiled fuel. Speculative reads use only unused row allowance; requests at the
+maximum bound retain lazy stream heads until remaining output is guaranteed.
+Mixed-direction queries sort each incoming page, merge ordered runs, and retain
+the physical-prefix boundary needed for safe cursors. These changes preserve
+query limits, authorization, snapshot epochs and continuation formats.

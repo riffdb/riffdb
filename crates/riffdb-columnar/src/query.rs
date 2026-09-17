@@ -709,7 +709,11 @@ pub fn nearest_query_snapshot_with_cache<A: NearestCandidateAdmission>(
         .into());
     }
 
-    let merged = snapshot.merged_org(&org);
+    let merged = snapshot
+        .merged_org_bounded(&org, request.budget.max_scanned_rows)
+        .ok_or(QueryError::ScanBudgetExceeded {
+            max: request.budget.max_scanned_rows,
+        })?;
     let mut scanned = 0usize;
 
     // Collect only candidates admitted by both scalar predicates and the
@@ -1080,42 +1084,43 @@ fn execute_group_by(
     let mut groups =
         BTreeMap::<Vec<u8>, (Vec<CanonicalValue>, Vec<row_aggregate::Accumulator>)>::new();
     let mut fuel = ColumnarAggregateFuel::new();
+    let mut scratch = Vec::new();
     for (_, _, row) in matched {
-        let key_cells: Vec<CanonicalValue> = key_indexes
-            .iter()
-            .map(|idx| row.cells[*idx].clone())
-            .collect();
-        let encoded = encode_group_key(&key_cells)?;
-        let group_count = groups.len();
-        let (_, states) = match groups.entry(encoded) {
-            std::collections::btree_map::Entry::Occupied(entry) => entry.into_mut(),
-            std::collections::btree_map::Entry::Vacant(entry) => {
-                if group_count >= budget.max_group_cardinality {
-                    return Err(QueryError::GroupCardinalityExceeded {
-                        max: budget.max_group_cardinality,
-                    });
-                }
-                let group_state = key_cells.iter().try_fold(32_usize, |bytes, value| {
-                    riffdb_types::canonical_value_encoded_len(value)
-                        .map_err(|_| QueryError::InvalidAggregate("group key encoding"))
-                        .and_then(|encoded_len| {
-                            bytes.checked_add(encoded_len).ok_or(
-                                QueryError::AggregateBudgetExceeded {
-                                    resource: "state bytes",
-                                    max: MAX_AGGREGATE_STATE_BYTES_V1 as usize,
-                                },
-                            )
-                        })
-                })?;
-                fuel.consume_state(group_state)?;
-                let states = group
-                    .aggregates
-                    .iter()
-                    .map(|op| row_aggregate::Accumulator::new(definition, op))
-                    .collect::<Result<Vec<_>, _>>()?;
-                entry.insert((key_cells, states))
+        encode_group_key_into(&mut scratch, key_indexes.iter().map(|idx| &row.cells[*idx]))?;
+        if !groups.contains_key(scratch.as_slice()) {
+            let group_count = groups.len();
+            let key_cells: Vec<_> = key_indexes
+                .iter()
+                .map(|idx| row.cells[*idx].clone())
+                .collect();
+            if group_count >= budget.max_group_cardinality {
+                return Err(QueryError::GroupCardinalityExceeded {
+                    max: budget.max_group_cardinality,
+                });
             }
-        };
+            let group_state = key_cells.iter().try_fold(32_usize, |bytes, value| {
+                riffdb_types::canonical_value_encoded_len(value)
+                    .map_err(|_| QueryError::InvalidAggregate("group key encoding"))
+                    .and_then(|encoded_len| {
+                        bytes
+                            .checked_add(encoded_len)
+                            .ok_or(QueryError::AggregateBudgetExceeded {
+                                resource: "state bytes",
+                                max: MAX_AGGREGATE_STATE_BYTES_V1 as usize,
+                            })
+                    })
+            })?;
+            fuel.consume_state(group_state)?;
+            let states = group
+                .aggregates
+                .iter()
+                .map(|op| row_aggregate::Accumulator::new(definition, op))
+                .collect::<Result<Vec<_>, _>>()?;
+            groups.insert(scratch.clone(), (key_cells, states));
+        }
+        let (_, states) = groups
+            .get_mut(scratch.as_slice())
+            .ok_or(QueryError::InvalidAggregate("group key"))?;
         for state in states {
             state.push(row, &mut fuel)?;
         }
@@ -1225,6 +1230,9 @@ fn predicates_match(
         let ok = match predicate {
             ColumnPredicate::Eq { value, .. } => cell == value,
             ColumnPredicate::Range { low, high, .. } => {
+                if matches!(cell, CanonicalValue::Null) {
+                    return Ok(false);
+                }
                 let ge_low = low
                     .as_ref()
                     .is_none_or(|bound| compare_values(cell, bound) != Ordering::Less);
@@ -1415,24 +1423,27 @@ fn compare_values(left: &CanonicalValue, right: &CanonicalValue) -> Ordering {
     }
 }
 
+#[cfg(test)]
 fn encode_group_key(cells: &[CanonicalValue]) -> Result<Vec<u8>, QueryError> {
+    let mut out = Vec::new();
+    encode_group_key_into(&mut out, cells.iter())?;
+    Ok(out)
+}
+
+fn encode_group_key_into<'a>(
+    out: &mut Vec<u8>,
+    cells: impl Iterator<Item = &'a CanonicalValue>,
+) -> Result<(), QueryError> {
     let invalid = || QueryError::InvalidAggregate("group key");
-    let capacity = cells.iter().try_fold(0usize, |bytes, value| {
-        let len = riffdb_types::canonical_value_encoded_len(value).map_err(|_| invalid())?;
-        bytes
-            .checked_add(4)
-            .and_then(|bytes| bytes.checked_add(len))
-            .ok_or_else(invalid)
-    })?;
-    let mut out = Vec::with_capacity(capacity);
+    out.clear();
     for cell in cells {
         let prefix = out.len();
         out.extend_from_slice(&[0; 4]);
-        riffdb_types::encode_canonical_value_into(&mut out, cell).map_err(|_| invalid())?;
+        riffdb_types::encode_canonical_value_into(out, cell).map_err(|_| invalid())?;
         let len = u32::try_from(out.len() - prefix - 4).map_err(|_| invalid())?;
         out[prefix..prefix + 4].copy_from_slice(&len.to_be_bytes());
     }
-    Ok(out)
+    Ok(())
 }
 
 #[cfg(test)]
@@ -1461,6 +1472,17 @@ mod order_proof_tests {
             expected.extend_from_slice(&encoded);
         }
         assert_eq!(super::encode_group_key(&cells).unwrap(), expected);
+        let mut scratch = Vec::new();
+        super::encode_group_key_into(&mut scratch, cells.iter()).unwrap();
+        let pointer = scratch.as_ptr();
+        let capacity = scratch.capacity();
+        for _ in 0..100 {
+            super::encode_group_key_into(&mut scratch, cells.iter()).unwrap();
+            assert_eq!(scratch, expected);
+            assert_eq!(scratch.as_ptr(), pointer);
+            assert_eq!(scratch.capacity(), capacity);
+        }
+
         assert!(super::encode_group_key(&[]).unwrap().is_empty());
     }
 

@@ -10,6 +10,11 @@ an approximate-search threshold and recall floor; RiffDB then uses exact search
 for small admitted partitions. Above the threshold it can reuse a matching
 first-party HNSW graph; a cold or unavailable graph falls back to exact search.
 
+The scan ceiling also bounds materialization of the organization’s merged
+candidate rows, before policy admission and distance calculations. Oversized
+partitions return a typed scan-budget refusal. Scalar range filters exclude
+null cells; null does not satisfy an upper-bound comparison.
+
 ## Declare the vector field
 
 ```riff
