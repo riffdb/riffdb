@@ -2,6 +2,8 @@ name: Driver distribution
 
 on:
   push:
+    branches: [main]
+    tags: ["**"]
   pull_request:
   workflow_dispatch:
 
@@ -52,6 +54,8 @@ jobs:
           [[ "$(go env GOVERSION)" =~ ^go1\.(2[4-9]|[3-9][0-9])([.].*)?$ ]]
       - name: Build native CLI
         run: cargo +1.97.0 build --release --locked -p riffdb-cli
+      - name: Check current and stale Go package protocol admission
+        run: python3 scripts/tests/test_go_package_arrival.py
       - name: Build pinned manylinux Python runtime
         uses: PyO3/maturin-action@e83996d129638aa358a18fbd1dfb82f0b0fb5d3b # v1
         with:

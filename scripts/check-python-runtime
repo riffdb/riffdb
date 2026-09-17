@@ -19,6 +19,7 @@ task_tmp_root="${RIFFDB_TMP_ROOT:-$HOME/tmp}"
 mkdir -p "$task_tmp_root"
 temporary="$(mktemp -d "$task_tmp_root/riffdb-python-runtime.XXXXXX")"
 trap 'rm -rf "$temporary"' EXIT
+export TMPDIR="$temporary"
 export UV_CACHE_DIR="$temporary/uv-cache"
 
 cargo test -p riffdb-client-python-native --all-features

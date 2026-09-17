@@ -185,6 +185,10 @@ separate bootstrap command:
 6. with `--register-codex`, runs `codex mcp add riffdb -- ...` only after the
    database and MCP credential are ready.
 
+Successful bootstrap checks the exact empty-catalog health state, including a
+healthy primary replication component with no registered followers. Projection
+and outbox workers may still report degraded readiness during startup.
+
 These are authoritative database operations, not local file setup. A failure
 after owner bootstrap may leave the database successfully bootstrapped even
 when later MCP-capability creation or Codex registration failed. Rerun the same
