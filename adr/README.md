@@ -268,6 +268,7 @@ record with no front matter.
 | [0233](0233-typed-boolean-operands-in-row-policy-evaluation.md) | Typed Boolean Operands In Row Policy Evaluation | Accepted | guarantee |
 | [0234](0234-bounded-repairs-for-reviewed-runtime-resource-costs.md) | Bounded Repairs For Reviewed Runtime Resource Costs | Accepted | guarantee |
 | [0235](0235-fresh-locator-coverage-proven-at-staging.md) | Retire Fresh Locator Coverage Once The Derived Index Covers | Accepted | guarantee |
+| [0236](0236-remove-fresh-locator-coverage.md) | Remove Fresh Locator Coverage | Proposed | guarantee |
 <!-- adr-index:end -->
 
 The human architecture review on 2026-07-12 approved the direction represented
