@@ -3166,6 +3166,10 @@ work_packages:
       exact fresh-primary bootstrap health validation without changing runtime semantics.
     - Patched the separate fuzz lockfile to h2 0.4.16 and rustls 0.23.45, already used
       by the main workspace; fuzz cargo deny, cargo audit, and parser smoke pass.
+    - Publication staging includes the six canonical generator templates in the query-module
+      crate and rewrites only their include paths; installed-package checks verify exact bytes.
+    - CI installs its explicit generator and registry prerequisites, uses a fresh pinned
+      host toolchain for source archives, and places package consumers outside the checkout.
 
 - id: WP-724
   name: Real adapter workload comprehensiveness

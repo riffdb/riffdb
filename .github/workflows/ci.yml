@@ -199,7 +199,7 @@ jobs:
       - name: Install generated-artifact tools
         run: |
           sudo apt-get update
-          sudo apt-get install --yes graphviz ripgrep
+          sudo apt-get install --yes graphviz ripgrep protobuf-compiler
       - name: Install pinned Rust toolchain
         run: rustup toolchain install "$RUST_TOOLCHAIN" --profile minimal --component rustfmt,clippy
       - name: Install Node.js

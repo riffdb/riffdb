@@ -90,6 +90,18 @@ def assert_editor_assets(installed: Path) -> None:
             fail("installed CLI editor grammar asset differs from the canonical package input")
 
 
+def assert_generator_assets(installed: Path) -> None:
+    source = ROOT / "templates/generators"
+    expected = sorted(path.relative_to(source) for path in source.rglob("*.j2"))
+    actual = sorted(path.relative_to(installed) for path in installed.rglob("*") if path.is_file())
+    if len(expected) != 6 or actual != expected:
+        fail("installed generator template inventory is not exact")
+    for relative in expected:
+        candidate = installed / relative
+        if candidate.is_symlink() or candidate.read_bytes() != (source / relative).read_bytes():
+            fail("installed generator template differs from the canonical package input")
+
+
 def assert_native_python_runtime(distribution: Path, prefix: Path) -> None:
     source = select_one(
         distribution / "pypi", f"riffdb_application-{VERSION}-cp313-abi3-*.whl"
@@ -307,6 +319,7 @@ def smoke_rust(distribution: Path, scratch: Path) -> None:
             fail(f"Rust package artifact is absent: {name}")
         roots[name] = safe_extract_crate(archive, unpacked, f"{name}-{VERSION}")
     assert_editor_assets(roots["riffdb-cli"] / "assets/editor")
+    assert_generator_assets(roots["riffdb-query-module"] / "assets/generators")
     config = scratch / ".cargo/config.toml"
     patches = ["[patch.crates-io]"]
     for name in order:

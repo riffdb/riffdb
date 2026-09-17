@@ -42,12 +42,23 @@ The first hosted runs exposed independent stale packaging and tooling checks:
 - The Python sdist omitted the shared driver host and operation registry.
   Its staged sources and exact archive inventory now cover the current closure.
   Runtime checks use a private scratch directory; hosted wheel builds create
-  the artifact directory before the container writes its files.
+  the artifact directory before the container writes its files. Source-package
+  creation installs its pinned Rust toolchain into a fresh temporary toolchain
+  directory rather than depending on the runner image's preinstalled toolchain.
 - Installed Go package tests expected driver protocol 3 despite the accepted
   version topology requiring 4. The current artifact passes; an artifact
   altered back to protocol 3 is rejected by the regression test.
-- Native registry acceptance uses portable grep for its literal checks.
-- Generated artifacts install Graphviz, ripgrep, and the repository-pinned
+- Native registry acceptance uses portable grep for its literal checks and
+  installs the pinned TypeScript checker. All four fresh registry consumers
+  pass locally using the hosted manylinux wheel.
+- Signed package arrival creates its consumer projects outside the checkout,
+  so Cargo cannot accidentally treat them as undeclared workspace members.
+  The staged query-module crate includes the six canonical generator templates
+  and uses package-local include paths. Installed-crate acceptance checks their
+  exact bytes before compiling the Rust CLI offline. The full signed native,
+  TypeScript, Python, Go, and Rust package-arrival check passes locally with a
+  clean Cargo cache populated from the workspace lockfile.
+- Generated artifacts install Graphviz, ripgrep, protoc, and the repository-pinned
   TypeScript checker. Node syntax checking alone does not validate TypeScript.
   All 28 generated-artifact checks pass locally.
 - Bootstrap checks require the exact six-component fresh-primary health state,
