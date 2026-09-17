@@ -1,7 +1,7 @@
 # WP-748 lifecycle, health and expiry verification
 
 Package: WP-748. Tier: guarantee. Status: lifecycle full validation passed;
-public operator increment full validation passed; fixture review pending;
+public operator increment full validation passed; fixture review accepted;
 WP-748 remains open. Benchmark qualification remains paused at the maintainer's
 request; this report makes no performance-qualification claim.
 
@@ -115,8 +115,8 @@ additive surface. Public implementation revision `43a88c7e` passed all 12 full
 acceptance checks on 2026-09-17 with
 `./scripts/acceptance --base 6510d052 --full`; its `ci-all` run took 2,906.1
 seconds. The full suite includes the daemon lifecycle regression and all service
-policy, audit-link, wire and CLI checks. Human fixture review remains required
-before integration. The implementation and generated artifacts are fixed at
+policy, audit-link, wire and CLI checks. The maintainer accepted the exact public fixture and adapter diff on
+2026-09-17 with "i approve"; see the linked review for the acceptance record. The implementation and generated artifacts are fixed at
 that revision; this report is a documentation follow-up.
 
 Primary fencing, authenticated fence proof, offline promotion,
