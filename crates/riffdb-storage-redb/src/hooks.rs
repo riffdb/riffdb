@@ -60,7 +60,7 @@ pub enum RedbTestOperation {
     GracefulCloseBarrierSuffix,
     /// Logical start/end of immutable checkpoint classification.
     GracefulCheckpointClassification,
-    /// Offline retention hold add/remove (ADR-0085 A2).
+    /// Retention hold add/remove and registered follower policy (ADR-0085 A2, ADR-0178).
     RetentionHold,
     /// Offline retention prune: first transaction deletes the validated-prefix checkpoint.
     RetentionPruneCheckpointDelete,

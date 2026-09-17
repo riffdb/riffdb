@@ -907,11 +907,15 @@ subset. Invalid keys, lineage, hashes, positions or unreadable hold bytes refuse
 rather than removing a fence. Other existing retention inputs still bind.
 
 This is separate from the physical V3 receipt retention floor above. Neither lag
-nor an exhausted future hold budget permits removal. The real-storage test in
+nor an exhausted hold budget permits removal. The real-storage test in
 `tests/replication_promotion.rs` proves that a lagging follower blocks prune even
 when another is current, then permits prune after the remaining acknowledgement
-advances durably. Administrative registration/retirement, budget/expiry policy,
-health reporting and promotion are still incomplete WP-748 work.
+advances durably. Internal audited registration/retirement, health degradation
+and configured-expiry continuation are implemented; the latter first requires a
+durable degradation observation and then atomically records the release linked
+to its original registration. Budget exhaustion alone cannot release custody.
+Public lifecycle operations, background expiry scheduling and promotion remain
+incomplete WP-748 work.
 
 ## Proofs and fixture review
 

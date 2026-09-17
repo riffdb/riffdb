@@ -1518,6 +1518,15 @@ impl riffdb_storage_api::ReplicationAdministrationTransactionPort for SharedRedb
     }
 }
 
+impl riffdb_storage_api::ReplicationRegistrationMaintenancePort for SharedRedbOperationalPorts {
+    fn maintain_replication_registration(
+        &self,
+        timestamp: riffdb_types::Timestamp,
+    ) -> Result<riffdb_storage_api::ReplicationRegistrationMaintenanceResultV1, StorageError> {
+        riffdb_storage_api::ReplicationRegistrationMaintenancePort::maintain_replication_registration(&self.shared, timestamp)
+    }
+}
+
 impl CapabilityCreateCandidateTransaction for SharedCapabilityCreateCandidate {
     type AwaitingDecision = SharedCapabilityCreateAwaiting;
 

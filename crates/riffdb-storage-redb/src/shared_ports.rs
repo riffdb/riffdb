@@ -552,6 +552,15 @@ impl riffdb_storage_api::ReplicationAdministrationTransactionPort for RedbShared
     }
 }
 
+impl riffdb_storage_api::ReplicationRegistrationMaintenancePort for RedbSharedPorts {
+    fn maintain_replication_registration(
+        &self,
+        timestamp: riffdb_types::Timestamp,
+    ) -> Result<riffdb_storage_api::ReplicationRegistrationMaintenanceResultV1, StorageError> {
+        riffdb_storage_api::ReplicationRegistrationMaintenancePort::maintain_replication_registration(&self.operational(), timestamp)
+    }
+}
+
 impl AuthoritativePointReader for RedbSharedPorts {
     fn read_entity(
         &self,

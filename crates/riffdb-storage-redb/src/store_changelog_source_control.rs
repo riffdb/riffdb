@@ -32,6 +32,8 @@ mod administration;
 mod bootstrap_attachment;
 #[path = "changelog_registered_ack.rs"]
 mod registered_ack;
+#[path = "replication_registration_maintenance.rs"]
+mod registration_maintenance;
 #[path = "changelog_source_control_retention.rs"]
 mod retention;
 

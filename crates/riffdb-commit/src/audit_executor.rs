@@ -31,11 +31,15 @@ use tokio::sync::{OwnedSemaphorePermit, Semaphore, mpsc, oneshot};
 
 use crate::control_plane::{
     ReplicationAdministrationExecutionResult, drive_replication_administration,
+    drive_replication_maintenance,
 };
 use riffdb_conflict::ConflictManager;
 use riffdb_idempotency::IdempotencyDigestProvider;
 use riffdb_policy::{AuthorizationClock, AuthorizedReplicationAdministrationPreparation};
-use riffdb_storage_api::ReplicationAdministrationTransactionPort;
+use riffdb_storage_api::{
+    ReplicationAdministrationTransactionPort, ReplicationRegistrationMaintenancePort,
+    ReplicationRegistrationMaintenanceResultV1,
+};
 
 use crate::{
     AdministrationAuditInputView, AdministrationClock, AdministrationClockError, AdmissionClock,
@@ -897,6 +901,18 @@ impl ControlPlaneExecutionCapacityPermit {
         Ok(ReactiveModulePublicationReceipt { receiver })
     }
 
+    /// Submits one bounded continuation of persisted registration policy.
+    pub fn submit_replication_maintenance(
+        self,
+    ) -> Result<ReplicationRegistrationMaintenanceReceipt, ControlPlaneExecutionAdmissionError>
+    {
+        let (permit, submission) = self.into_submission()?;
+        let (completion, receiver) = oneshot::channel();
+        let _sender = permit.send(CoordinatorMessage::ReplicationMaintenance { completion });
+        drop(submission);
+        Ok(ReplicationRegistrationMaintenanceReceipt { receiver })
+    }
+
     /// Submits an explicitly authorized follower registration or retirement.
     pub fn submit_replication_administration(
         self,
@@ -1029,6 +1045,10 @@ control_plane_receipt!(
     ReactiveModulePublicationExecutionResult
 );
 control_plane_receipt!(CapabilityCreateReceipt, CapabilityCreateExecutionResult);
+control_plane_receipt!(
+    ReplicationRegistrationMaintenanceReceipt,
+    ReplicationRegistrationMaintenanceResultV1
+);
 control_plane_receipt!(
     ReplicationAdministrationReceipt,
     ReplicationAdministrationExecutionResult
@@ -1596,6 +1616,7 @@ impl RunningCommandCoordinator {
             + ReactiveModuleAdministrationRepository
             + CapabilityAdministrationTransactionPort
             + ReplicationAdministrationTransactionPort
+            + ReplicationRegistrationMaintenancePort
             + CapabilityBootstrapAdministrationRepository
             + Send
             + 'static,
@@ -1649,6 +1670,7 @@ impl RunningCommandCoordinator {
             + ReactiveModuleAdministrationRepository
             + CapabilityAdministrationTransactionPort
             + ReplicationAdministrationTransactionPort
+            + ReplicationRegistrationMaintenancePort
             + CapabilityBootstrapAdministrationRepository
             + Clone
             + Send
@@ -1709,6 +1731,7 @@ impl RunningCommandCoordinator {
             + ReactiveModuleAdministrationRepository
             + CapabilityAdministrationTransactionPort
             + ReplicationAdministrationTransactionPort
+            + ReplicationRegistrationMaintenancePort
             + CapabilityBootstrapAdministrationRepository
             + Send
             + 'static,
@@ -1757,6 +1780,7 @@ impl RunningCommandCoordinator {
             + ReactiveModuleAdministrationRepository
             + CapabilityAdministrationTransactionPort
             + ReplicationAdministrationTransactionPort
+            + ReplicationRegistrationMaintenancePort
             + CapabilityBootstrapAdministrationRepository
             + Send
             + 'static,
@@ -2170,6 +2194,11 @@ enum CoordinatorMessage {
             Result<ReplicationAdministrationExecutionResult, ControlPlaneExecutionError>,
         >,
     },
+    ReplicationMaintenance {
+        completion: oneshot::Sender<
+            Result<ReplicationRegistrationMaintenanceResultV1, ControlPlaneExecutionError>,
+        >,
+    },
     CapabilityRevoke {
         preparation: Box<CapabilityRevokePreparation>,
         completion:
@@ -2228,6 +2257,9 @@ enum PendingCommandPublication {
 }
 
 trait CoordinatorActorOperations: Send {
+    fn maintain_replication(
+        &mut self,
+    ) -> Result<ReplicationRegistrationMaintenanceResultV1, ControlPlaneExecutionError>;
     fn administer_replication(
         &mut self,
         preparation: AuthorizedReplicationAdministrationPreparation,
@@ -2356,6 +2388,7 @@ where
         + ReactiveModuleAdministrationRepository
         + CapabilityAdministrationTransactionPort
         + ReplicationAdministrationTransactionPort
+        + ReplicationRegistrationMaintenancePort
         + CapabilityBootstrapAdministrationRepository
         + Send,
 {
@@ -2527,6 +2560,15 @@ where
             preparation,
         )
     }
+    fn maintain_replication(
+        &mut self,
+    ) -> Result<ReplicationRegistrationMaintenanceResultV1, ControlPlaneExecutionError> {
+        drive_replication_maintenance(
+            &self.repository,
+            self.administration_clock.as_ref(),
+            &self.lifecycle,
+        )
+    }
 
     fn revoke_capability(
         &mut self,
@@ -2642,6 +2684,11 @@ where
         &mut self,
         _: AuthorizedReplicationAdministrationPreparation,
     ) -> Result<ReplicationAdministrationExecutionResult, ControlPlaneExecutionError> {
+        Err(ControlPlaneExecutionError::coordinator_stopped())
+    }
+    fn maintain_replication(
+        &mut self,
+    ) -> Result<ReplicationRegistrationMaintenanceResultV1, ControlPlaneExecutionError> {
         Err(ControlPlaneExecutionError::coordinator_stopped())
     }
 
@@ -3713,6 +3760,10 @@ impl CommandWriter {
                 let result = self.operations.administer_replication(*preparation);
                 let _receiver_may_be_dropped = completion.send(result);
             }
+            CoordinatorMessage::ReplicationMaintenance { completion } => {
+                let result = self.operations.maintain_replication();
+                let _receiver_may_be_dropped = completion.send(result);
+            }
             CoordinatorMessage::CapabilityRevoke {
                 preparation,
                 completion,
@@ -4398,6 +4449,9 @@ fn reject_message_fenced(message: CoordinatorMessage) {
         CoordinatorMessage::ReplicationAdministration { completion, .. } => {
             let _ = completion.send(Err(ControlPlaneExecutionError::coordinator_fenced()));
         }
+        CoordinatorMessage::ReplicationMaintenance { completion } => {
+            let _ = completion.send(Err(ControlPlaneExecutionError::coordinator_fenced()));
+        }
         CoordinatorMessage::CapabilityRevoke { completion, .. } => {
             let _ = completion.send(Err(ControlPlaneExecutionError::coordinator_fenced()));
         }
@@ -4440,6 +4494,9 @@ fn reject_message_stopped(message: CoordinatorMessage) {
         CoordinatorMessage::ReplicationAdministration { completion, .. } => {
             let _ = completion.send(Err(ControlPlaneExecutionError::coordinator_stopped()));
         }
+        CoordinatorMessage::ReplicationMaintenance { completion } => {
+            let _ = completion.send(Err(ControlPlaneExecutionError::coordinator_stopped()));
+        }
         CoordinatorMessage::CapabilityRevoke { completion, .. } => {
             let _ = completion.send(Err(ControlPlaneExecutionError::coordinator_stopped()));
         }
@@ -4473,6 +4530,7 @@ fn command_grouping_class(message: &CoordinatorMessage) -> CommandGroupingClass 
         | CoordinatorMessage::ReactiveModulePublication { .. }
         | CoordinatorMessage::CapabilityCreate { .. }
         | CoordinatorMessage::ReplicationAdministration { .. }
+        | CoordinatorMessage::ReplicationMaintenance { .. }
         | CoordinatorMessage::CapabilityRevoke { .. }
         | CoordinatorMessage::CapabilityBootstrap { .. }
         | CoordinatorMessage::CapabilityBootstrapTerminal { .. }

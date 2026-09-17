@@ -232,3 +232,43 @@ fn follower_lifecycle_rechecks_expiry_and_clock_failure_after_opening_transactio
         assert_eq!(records(&database.open()).len(), 1);
     }
 }
+
+#[test]
+fn registration_maintenance_uses_fresh_administration_time_and_refuses_clock_outage() {
+    for failing in [false, true] {
+        let database = TestDatabase::create("registration-maintenance-clock");
+        let clock = Arc::new(if failing {
+            CountingAdministrationClock::failing()
+        } else {
+            CountingAdministrationClock::working()
+        });
+        let coordinator = start_coordinator(
+            database.open(),
+            clock.clone(),
+            Arc::new(CountingAuthorizationClock::new()),
+        );
+        for call in 1..=2 {
+            let result = block_on(
+                block_on(coordinator.control_plane_executor().reserve_capacity())
+                    .unwrap()
+                    .submit_replication_maintenance()
+                    .unwrap()
+                    .completion(),
+            );
+            if failing {
+                assert_eq!(
+                    result.unwrap_err().kind(),
+                    ControlPlaneExecutionErrorKind::StorageUnavailable
+                );
+            } else {
+                assert_eq!(
+                    result.unwrap(),
+                    riffdb_storage_api::ReplicationRegistrationMaintenanceResultV1::Idle
+                );
+            }
+            assert_eq!(clock.calls(), call);
+        }
+        coordinator.shutdown().unwrap();
+        assert!(records(&database.open()).is_empty());
+    }
+}

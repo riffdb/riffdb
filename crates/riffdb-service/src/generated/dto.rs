@@ -4974,6 +4974,20 @@ impl ComponentHealth {
             replication: Some(progress),
         }
     }
+    /// Includes the source's checked registration-policy observation. Configured
+    /// expiry may degrade a caught-up follower before its audited release.
+    pub fn replication_with_retention_degradation(
+        progress: crate::ReplicationStatistics,
+        degraded: bool,
+    ) -> Result<Self, ServiceDtoError> {
+        if degraded && (progress.role() != crate::ReplicationRole::Primary
+            || progress.registered_followers().is_none_or(|count| count == 0)) {
+            return Err(ServiceDtoError::OutOfRange);
+        }
+        let mut component = Self::replication(progress);
+        if degraded { component.status = HealthComponentStatus::Degraded; }
+        Ok(component)
+    }
     /// Replication-only fixed counters; other component identities have none.
     #[must_use]
     pub const fn replication_statistics(self) -> Option<crate::ReplicationStatistics> {

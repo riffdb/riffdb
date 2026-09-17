@@ -35,6 +35,7 @@ pub(crate) fn observe(
         return Err(limit().into());
     }
     let mut count = 0_u32;
+    let mut degraded = 0_u32;
     let mut oldest: Option<ChangelogHistoryPointV3> = None;
     for (index, row) in table.iter().map_err(precommit_storage_error)?.enumerate() {
         if u64::try_from(index).map_err(|_| limit())? >= MAX_REPLICATION_SOURCE_HOLDS_V1 {
@@ -64,6 +65,17 @@ pub(crate) fn observe(
             if policy.phase() == riffdb_storage_api::FollowerRegistrationPhaseV1::Retired {
                 continue;
             }
+            let exhausted = policy
+                .budget()
+                .observe(hold, history)
+                .map_err(value_error)?
+                .is_exhausted();
+            let expired = policy
+                .expires_at()
+                .is_some_and(|expiry| Some(expiry) <= history.tail().frontier().application());
+            if exhausted || expired {
+                degraded = degraded.checked_add(1).ok_or_else(limit)?;
+            }
         }
         // Startup and the source-control writer prove exact receipt ancestry.
         // This observational read checks shape/frontiers, never upgrades decoded
@@ -86,5 +98,7 @@ pub(crate) fn observe(
             }
         }
     }
-    ReplicationSourceProgressV3::new(history, count, oldest).map_err(|e| value_error(e).into())
+    ReplicationSourceProgressV3::new(history, count, oldest)
+        .and_then(|progress| progress.with_degraded_followers(degraded))
+        .map_err(|e| value_error(e).into())
 }

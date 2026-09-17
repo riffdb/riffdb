@@ -9,6 +9,7 @@
 mod replication_administration;
 pub use replication_administration::ReplicationAdministrationExecutionResult;
 pub(crate) use replication_administration::drive_replication_administration;
+pub(crate) use replication_administration::drive_replication_maintenance;
 
 use std::{error::Error, fmt, num::NonZeroU32, num::NonZeroU64};
 

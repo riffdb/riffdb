@@ -105,13 +105,31 @@ impl ControlWrite {
             .ok_or_else(|| storage_error(StorageErrorKind::CorruptData))?;
         Ok(())
     }
-    pub(super) fn commit(mut self) -> Result<Observation, StorageError> {
+    pub(super) fn commit(self) -> Result<Observation, StorageError> {
+        self.commit_with_test_operation(None)
+    }
+    pub(super) fn commit_retention(self) -> Result<Observation, StorageError> {
+        self.commit_with_test_operation(Some(RedbTestOperation::RetentionHold))
+    }
+    fn commit_with_test_operation(
+        mut self,
+        operation: Option<RedbTestOperation>,
+    ) -> Result<Observation, StorageError> {
+        if let Some(operation) = operation {
+            self.barrier.shared.before_test_commit(operation)?;
+        }
         let raw = self
             .raw
             .take()
             .ok_or_else(|| storage_error(StorageErrorKind::InvariantViolation))?;
         let shared = &self.barrier.shared;
         if let Err(error) = shared.commit_durable(raw) {
+            shared.fence_writes();
+            return Err(error);
+        }
+        if let Some(operation) = operation
+            && let Err(error) = shared.after_test_commit(operation)
+        {
             shared.fence_writes();
             return Err(error);
         }

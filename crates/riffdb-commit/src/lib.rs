@@ -53,7 +53,8 @@ pub use audit_executor::{
     ControlPlaneExecutionCapacityPermit, ControlPlaneExecutor, CoordinatorLifecycleState,
     CoordinatorShutdownError, CoordinatorStartError, CoordinatorWorkloadCapacity,
     QueryModuleDeploymentReceipt, ReactiveModulePublicationReceipt, ReadOnlyExecutionReceipt,
-    ReplicationAdministrationReceipt, RunningCommandCoordinator,
+    ReplicationAdministrationReceipt, ReplicationRegistrationMaintenanceReceipt,
+    RunningCommandCoordinator,
 };
 pub use clock::{
     AdministrationClock, AdministrationClockError, AdmissionClock, AdmissionClockError,

@@ -153,8 +153,8 @@ observation. Decoding it does not authorize a registration or fence release.
 The registry digest changes: prior exact registry markers require their matching
 binary. Internal registration and retirement now write V2 through the audited
 coordinator path described below. Archive and bootstrap jobs retain V1.
-Automatic migration, configured expiry and public lifecycle operations remain
-WP-748 work.
+Automatic migration, maintenance scheduling and public lifecycle operations
+remain WP-748 work.
 
 The accepted WP-748 audit successor adds `ServiceAuditRecordV3` (tag 22,
 revision 3) in a separate schema. It preserves existing target fields and adds
@@ -220,7 +220,25 @@ bootstrap job; independent archive custody remains held. Legacy adoption keeps
 the exact existing follower fence. Conflicting policies, stale generations,
 reached expiry for a new registration and full hold capacity refuse without
 allocating a sequence. These internal transitions do not yet expose public
-lifecycle RPCs, configured-expiry release or automatic registry migration.
+lifecycle RPCs or automatic registry migration.
+
+The coordinator also admits a closed continuation of stored registration policy,
+with one transition per turn. Reached budget or sequence expiry first persists a
+checked degradation point without advancing application or administration heads.
+A later turn may release an expired registration only after revalidating that
+point, its immutable policy and the original authorized registration receipt.
+The expiry record, retired hold and retention-attributed receipt commit atomically.
+Budget exhaustion alone never releases a hold. Crash recovery retains either the
+complete old or complete new state; retries do not allocate another expiry.
+Background scheduling of this continuation is not yet enabled.
+
+Primary Health reports degraded replication when a live registration reaches its
+budget or configured expiry, including a caught-up registration at expiry.
+Statistics retains its existing exact sequence counters. The bounded observation
+uses one published source snapshot and grants no retention-release authority.
+The existing Health status enum and wire fields are unchanged; validators now
+admit degraded primary health with live registrations and zero sequence lag.
+Follower health and the zero-registration primary case retain their prior rules.
 
 WP-749 registers successor command capsule V7 (tag 54, revision 6) and segment
 V6 (tag 55, revision 6) for exact command-prefix evidence. Earlier record bytes

@@ -178,6 +178,34 @@ fn apply(write: ControlWrite, intent: Intent) -> Result<ResultV1, StorageError> 
         }
         (None, _) => return Ok(ResultV1::Refused(Refused::RegistrationMissingOrStale)),
     };
+    commit_transition(
+        write,
+        intent.timestamp(),
+        request.action(),
+        target,
+        before,
+        after,
+        Origin::Explicit {
+            request_id: request.request_id(),
+            principal: intent.candidate().principal().clone(),
+            approval_id: None,
+        },
+    )
+    .map(ResultV1::Applied)
+}
+
+pub(super) fn commit_transition(
+    write: ControlWrite,
+    timestamp: riffdb_types::Timestamp,
+    action: Action,
+    target: riffdb_types::ReplicationFollowerAuditTargetV1,
+    before: Option<State>,
+    after: Policy,
+    origin: Origin,
+) -> Result<Box<Record>, StorageError> {
+    let history = write.history();
+    let lineage = history.lineage();
+    let key = after.hold().storage_key();
     let transaction = write.transaction()?;
     let allocator_bytes = transaction
         .open_table(META)
@@ -196,17 +224,13 @@ fn apply(write: ControlWrite, intent: Intent) -> Result<ResultV1, StorageError> 
     let sequence = allocation.assigned()[0];
     let record = Record::new(
         sequence,
-        intent.timestamp(),
-        request.action(),
+        timestamp,
+        action,
         target,
         before,
         after,
         history.tail(),
-        Origin::Explicit {
-            request_id: request.request_id(),
-            principal: intent.candidate().principal().clone(),
-            approval_id: None,
-        },
+        origin,
     )
     .map_err(|_| invariant())?;
     let audit = encode_replication_administration_v1(&record).map_err(crate::error::codec_error)?;
@@ -280,9 +304,9 @@ fn apply(write: ControlWrite, intent: Intent) -> Result<ResultV1, StorageError> 
     advance.stage(transaction)?;
     write.validate()?;
     crash_edge("administration-receipted");
-    write.commit()?;
+    write.commit_retention()?;
     crash_edge("administration-committed");
-    Ok(ResultV1::Applied(Box::new(record)))
+    Ok(Box::new(record))
 }
 
 fn replay(write: &ControlWrite, policy: Policy, action: Action) -> Result<ResultV1, StorageError> {

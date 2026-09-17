@@ -153,8 +153,13 @@ omits lag instead of reporting zero. MCP and CLI present 64-bit sequences and
 lag as decimal strings to preserve their full range.
 
 Other replication observations are healthy only when both lag counters are
-zero and acknowledgement is present; otherwise they are degraded. A follower
-requires an available replication component, catalog, and authoritative read
+zero and acknowledgement is present; otherwise they are degraded. A primary
+also reports degradation when a live registration reaches its hold budget or
+configured sequence expiry, even if both lag counters are zero. This health
+observation never releases retention by itself. The internal expiry continuation
+requires a previously persisted degradation point and an atomic audited release;
+its background scheduling and public registration operations remain WP-748 work.
+A follower requires an available replication component, catalog, and authoritative read
 storage for readiness. It has no primary commit-coordinator component. An
 unavailable replication component makes follower health `not_ready`.
 

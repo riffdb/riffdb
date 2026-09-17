@@ -33,17 +33,17 @@ impl ProductionOperationalStatusPort {
             let replication = if base.runtime.stop_reason().is_some() {
                 Err(OperationalStatusError::Unavailable)
             } else {
-                observe(source.as_ref())
+                observe(source.as_ref()).and_then(|(progress, degraded)| {
+                    ComponentHealth::replication_with_retention_degradation(progress, degraded)
+                        .map_err(|_| OperationalStatusError::Integrity)
+                })
             };
-            components.push(replication.map_or_else(
-                |_| {
-                    ComponentHealth::new(
-                        HealthComponentKind::Replication,
-                        HealthComponentStatus::Unavailable,
-                    )
-                },
-                ComponentHealth::replication,
-            ));
+            components.push(replication.unwrap_or_else(|_| {
+                ComponentHealth::new(
+                    HealthComponentKind::Replication,
+                    HealthComponentStatus::Unavailable,
+                )
+            }));
             OperationalHealthSnapshot::new(components)
                 .map_err(|_| OperationalStatusError::Integrity)
         });
@@ -53,7 +53,7 @@ impl ProductionOperationalStatusPort {
             self.notifications
                 .latest_sequence()
                 .map_err(map_notification_status_error)?;
-            let progress = observe(publications.as_ref())?;
+            let (progress, _) = observe(publications.as_ref())?;
             Ok(OperationalStatisticsSnapshot::new(
                 progress.applied_frontier().application(),
                 None,
@@ -67,7 +67,7 @@ impl ProductionOperationalStatusPort {
 
 fn observe(
     source: Option<&ReplicationPublishedSnapshots>,
-) -> Result<ReplicationStatistics, OperationalStatusError> {
+) -> Result<(ReplicationStatistics, bool), OperationalStatusError> {
     let mut source = source.cloned().ok_or(OperationalStatusError::Unavailable)?;
     let pin = source
         .latest()
@@ -88,6 +88,7 @@ fn observe(
         progress.follower_count(),
         progress.oldest_acknowledged().map(|point| point.frontier()),
     )
+    .map(|statistics| (statistics, progress.degraded_followers() > 0))
     .map_err(|_| OperationalStatusError::Integrity)
 }
 
