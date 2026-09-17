@@ -18,4 +18,5 @@ pub use current::*;
 pub use digest_keys::*;
 pub use entropy::*;
 pub use principal_facts::*;
+pub use riffdb_storage_api::ReplicationAdministrationRequestV1;
 pub use token::*;

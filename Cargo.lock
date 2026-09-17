@@ -2016,6 +2016,7 @@ dependencies = [
  "riffdb-auth",
  "riffdb-contract-ir",
  "riffdb-observability",
+ "riffdb-storage-api",
  "riffdb-testkit",
  "riffdb-types",
  "serde",

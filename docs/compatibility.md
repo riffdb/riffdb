@@ -209,6 +209,13 @@ These source updates do not enable audited registration, retirement, expiry
 release or automatic registry migration. Those operations still require complete
 authorization and recovery proof.
 
+The internal lifecycle authorization preparation binds the entire request and
+requires current global administrative authority, as offline maintenance does.
+Permission to consume replication bytes alone does not authorize registration
+or retention-fence release. Preparations grant no write permission: a future
+coordinator transition must recheck authority from its drained transaction,
+including on exact retries. No public lifecycle RPC is activated by these types.
+
 WP-749 registers successor command capsule V7 (tag 54, revision 6) and segment
 V6 (tag 55, revision 6) for exact command-prefix evidence. Earlier record bytes
 remain readable by their own codecs and do not acquire intermediate values.
