@@ -115,10 +115,10 @@ lines = registry.lines(chomp: true)
 version = lines.shift&.split("\t", 2)
 abort "operation registry has no version" unless version == ["version", "1"]
 operations = lines.map { |line| line.split("\t", -1) }
-abort "operation registry must contain exactly 57 declarations" unless operations.length == 57
+abort "operation registry must contain exactly 59 declarations" unless operations.length == 59
 tags = operations.map { |fields| Integer(fields.fetch(1), 10) }
-abort "operation registry tags are not exact and ordered" unless tags == (1..57).to_a
-abort "operation registry contains a duplicate semantic operation" unless operations.map { |fields| fields.fetch(2) }.uniq.length == 57
+abort "operation registry tags are not exact and ordered" unless tags == (1..59).to_a
+abort "operation registry contains a duplicate semantic operation" unless operations.map { |fields| fields.fetch(2) }.uniq.length == 59
 
 descriptor_path = root.join("fixtures/proto/descriptors/riffdb-v1-descriptor-set.bin")
 descriptor_text, descriptor_error, descriptor_status = Open3.capture3(

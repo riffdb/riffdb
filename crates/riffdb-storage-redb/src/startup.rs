@@ -7743,6 +7743,10 @@ fn service_link_is_valid(
             };
             let operation_matches = match (&target, record.operation()) {
                 (
+                    riffdb_storage_api::StoredAdministrationAuditRecordV1::Replication(target),
+                    operation,
+                ) => target.matches_service_result(operation, record.targets()),
+                (
                     riffdb_storage_api::StoredAdministrationAuditRecordV1::Catalog(_),
                     riffdb_types::ServiceOperationV1::DeployContract,
                 ) => true,

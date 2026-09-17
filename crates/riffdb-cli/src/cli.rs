@@ -147,6 +147,11 @@ pub(crate) enum TopLevel {
         #[command(subcommand)]
         command: CapabilityCommand,
     },
+    /// Registers or retires one audited follower retention policy.
+    Follower {
+        #[command(subcommand)]
+        command: FollowerCommand,
+    },
     Server {
         #[command(subcommand)]
         command: ServerCommand,
@@ -1173,6 +1178,38 @@ pub(crate) enum ServerCommand {
     Health,
 }
 
+#[derive(Debug, Args)]
+pub(crate) struct FollowerSelectionArgs {
+    #[arg(long, value_name = "SOURCE_DATABASE_UUIDV7")]
+    pub(crate) database_id: String,
+    #[arg(long, value_name = "NONZERO_U64")]
+    pub(crate) history_incarnation: std::num::NonZeroU64,
+    #[arg(long, value_name = "NONZERO_U64")]
+    pub(crate) leadership_epoch: std::num::NonZeroU64,
+    #[arg(long, value_name = "32_LOWERCASE_HEX_DIGITS")]
+    pub(crate) hold_id: String,
+}
+
+#[derive(Debug, Subcommand)]
+pub(crate) enum FollowerCommand {
+    /// Registers or exactly replays the selected immutable policy.
+    Register {
+        #[command(flatten)]
+        target: FollowerSelectionArgs,
+        #[arg(long, value_name = "NONZERO_U64")]
+        hold_budget_sequences: std::num::NonZeroU64,
+        #[arg(long, value_name = "NONZERO_APPLICATION_SEQUENCE")]
+        expires_at_sequence: Option<std::num::NonZeroU64>,
+    },
+    /// Retires only the original generation reported by registration.
+    Retire {
+        #[command(flatten)]
+        target: FollowerSelectionArgs,
+        #[arg(long, value_name = "NONZERO_U64")]
+        registration_generation: std::num::NonZeroU64,
+    },
+}
+
 #[derive(Debug, Subcommand)]
 pub(crate) enum BackupCommand {
     Create {
@@ -1329,6 +1366,43 @@ impl BudgetCase {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    // req: REP-006
+    fn follower_lifecycle_requires_explicit_lineage_and_positive_policy() {
+        let base = [
+            "riffdb",
+            "follower",
+            "register",
+            "--database-id",
+            "018f22a1-7b3c-7def-8123-456789abcdef",
+            "--history-incarnation",
+            "1",
+            "--leadership-epoch",
+            "1",
+            "--hold-id",
+            "71717171717171717171717171717171",
+        ];
+        let mut args = base.to_vec();
+        args.extend(["--hold-budget-sequences", "10"]);
+        let parsed = Cli::try_parse_from(&args).unwrap();
+        assert!(
+            matches!(parsed.command, TopLevel::Follower { command: FollowerCommand::Register { hold_budget_sequences, expires_at_sequence: None, .. } } if hold_budget_sequences.get() == 10)
+        );
+        args.extend(["--expires-at-sequence", "100"]);
+        assert!(Cli::try_parse_from(&args).is_ok());
+        args[12] = "0";
+        assert!(Cli::try_parse_from(&args).is_err());
+        assert!(Cli::try_parse_from(base).is_err());
+        let mut args = base.to_vec();
+        args[2] = "retire";
+        assert!(Cli::try_parse_from(&args).is_err());
+        args.extend(["--registration-generation", "9"]);
+        assert!(matches!(Cli::try_parse_from(&args).unwrap().command,
+            TopLevel::Follower { command: FollowerCommand::Retire { registration_generation, .. } } if registration_generation.get() == 9));
+        args[12] = "0";
+        assert!(Cli::try_parse_from(&args).is_err());
+    }
 
     #[test]
     fn exact_command_tree_and_snake_case_values_parse() {

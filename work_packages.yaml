@@ -22824,6 +22824,19 @@ work_packages:
   closure:
     status: open
     decisions_taken:
+    - Expose the accepted registration and retirement operations through the
+      shared service, gRPC, Rust client and CLI. Append operation tags 0x3a/0x3b;
+      require one exact follower target and linked success in both audit validators.
+      Validate the linked authoritative action and target on append and reopen,
+      while allowing a new request ID to replay the original result. Reauthorize
+      before Started, after capacity admission and inside the coordinator;
+      cancellation drops pending admission but accepted receipts drain. Permit
+      these operator calls before contract deployment, require a primary writer,
+      retain default fail-closed policy adapters and expose no MCP tool. Return
+      bounded receipt summaries and closed refusals; CLI sequences are decimal
+      strings. Preserve historical registration replay after retirement without
+      restoring custody. Fencing, promotion and automatic migration remain open.
+
     - Forward the exact lifecycle authorization request through CurrentPolicyPort
       and the production capability-reader adapter into the existing checked
       preparation. Unsupported adapters remain fail-closed. Re-read authority

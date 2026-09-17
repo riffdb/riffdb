@@ -7,12 +7,69 @@ use riffdb_storage_api::{
     ReplicationAdministrationResultV1, ReplicationAdministrationTransactionPort,
 };
 
+pub use riffdb_storage_api::ReplicationAdministrationRefusalV1 as ReplicationAdministrationRefusal;
+
+/// Safe lifecycle receipt summary, never a fence proof or mutation authority.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct ReplicationAdministrationResultReceipt {
+    administration_sequence: riffdb_types::AdministrationSequence,
+    generation: riffdb_storage_api::ChangelogTransactionSequence,
+}
+impl ReplicationAdministrationResultReceipt {
+    /// Exact original control-plane result sequence, including on replay.
+    #[must_use]
+    pub const fn administration_sequence(self) -> riffdb_types::AdministrationSequence {
+        self.administration_sequence
+    }
+    /// Immutable registration generation used for retirement.
+    #[must_use]
+    pub const fn generation(self) -> riffdb_storage_api::ChangelogTransactionSequence {
+        self.generation
+    }
+    fn from_record(record: &riffdb_storage_api::StoredReplicationAdministrationV1) -> Self {
+        Self {
+            administration_sequence: record.administration_sequence(),
+            generation: record.generation(),
+        }
+    }
+}
+
+/// Closed service outcome without raw principal or durable-record payloads.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ReplicationAdministrationOutcome {
+    /// This invocation committed the transition.
+    Applied(ReplicationAdministrationResultReceipt),
+    /// An authorized exact retry selected its original transition.
+    Replayed(ReplicationAdministrationResultReceipt),
+    /// The selected policy or generation could not be admitted.
+    Refused(ReplicationAdministrationRefusal),
+}
+
 /// Checked storage outcome and exact service-audit result linkage.
 #[derive(Debug)]
 pub struct ReplicationAdministrationExecutionResult {
     outcome: ReplicationAdministrationResultV1,
 }
 impl ReplicationAdministrationExecutionResult {
+    /// Releases only the checked operator-facing result summary.
+    #[must_use]
+    pub fn public_outcome(&self) -> ReplicationAdministrationOutcome {
+        match &self.outcome {
+            ReplicationAdministrationResultV1::Applied(record) => {
+                ReplicationAdministrationOutcome::Applied(
+                    ReplicationAdministrationResultReceipt::from_record(record),
+                )
+            }
+            ReplicationAdministrationResultV1::Replayed(record) => {
+                ReplicationAdministrationOutcome::Replayed(
+                    ReplicationAdministrationResultReceipt::from_record(record),
+                )
+            }
+            ReplicationAdministrationResultV1::Refused(refusal) => {
+                ReplicationAdministrationOutcome::Refused(*refusal)
+            }
+        }
+    }
     /// Original receipt on both a new operation and an authorized exact retry.
     #[must_use]
     pub const fn outcome(&self) -> &ReplicationAdministrationResultV1 {

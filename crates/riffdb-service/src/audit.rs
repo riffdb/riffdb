@@ -45,6 +45,9 @@ impl ServiceAuditInput {
         link: ServiceAuditLinkV1,
     ) -> Result<Self, ServiceAuditInputError> {
         validate_phase_link(operation, phase, link)?;
+        if !targets.is_valid_for_operation(operation) {
+            return Err(ServiceAuditInputError::InvalidTargets);
+        }
         Ok(Self {
             request_id: context.request_id(),
             operation,
@@ -70,7 +73,13 @@ fn validate_phase_link(
         return Err(ServiceAuditInputError::InvalidPhaseLink);
     }
     let operation_accepts_link = match link {
-        ServiceAuditLinkV1::None => true,
+        ServiceAuditLinkV1::None => {
+            !(phase == ServiceAuditPhaseV1::Succeeded
+                && matches!(
+                    operation,
+                    ServiceOperationV1::RegisterFollower | ServiceOperationV1::RetireFollower
+                ))
+        }
         ServiceAuditLinkV1::Command { .. } => matches!(
             operation,
             ServiceOperationV1::ExecuteCommand | ServiceOperationV1::ResolveCommandOutcome
@@ -82,6 +91,8 @@ fn validate_phase_link(
                 | ServiceOperationV1::DeployReactiveModule
                 | ServiceOperationV1::CreateCapability
                 | ServiceOperationV1::RevokeCapability
+                | ServiceOperationV1::RegisterFollower
+                | ServiceOperationV1::RetireFollower
         ),
     };
     if !operation_accepts_link {
@@ -145,6 +156,8 @@ impl fmt::Debug for ServiceAuditInput {
 /// Safe structural rejection before an audit input can reach the coordinator.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum ServiceAuditInputError {
+    /// The operation lacks its complete request-selected target.
+    InvalidTargets,
     /// A non-success phase attempted to claim an authoritative result link.
     InvalidPhaseLink,
     /// The closed operation cannot produce the selected authoritative link kind.
@@ -154,6 +167,7 @@ pub enum ServiceAuditInputError {
 impl fmt::Display for ServiceAuditInputError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         formatter.write_str(match self {
+            Self::InvalidTargets => "service audit target shape is invalid",
             Self::InvalidPhaseLink => "service audit phase and result link are inconsistent",
             Self::InvalidOperationLink => {
                 "service audit operation and result link are inconsistent"
@@ -172,6 +186,13 @@ impl std::error::Error for ServiceAuditInputError {}
 pub(crate) struct ServiceAuditTargetMap;
 
 impl ServiceAuditTargetMap {
+    /// Exact lineage-scoped target for registration and retirement.
+    pub(crate) fn replication_follower(
+        target: riffdb_types::ReplicationFollowerAuditTargetV1,
+    ) -> Result<ServiceAuditTargetsV1, ServiceAuditTargetsError> {
+        ServiceAuditTargetsV1::new([ServiceAuditTargetV1::ReplicationFollower(target)])
+    }
+
     /// Targets for contract validation.
     #[must_use]
     pub(crate) const fn validate_contract() -> ServiceAuditTargetsV1 {
@@ -872,6 +893,8 @@ mod tests {
                 ServiceAuditTargetMap::symbolic_query(lineage.clone(), version)
                     .expect("canonical targets"),
             ),
+            (ServiceOperationV1::RegisterFollower, follower_targets()),
+            (ServiceOperationV1::RetireFollower, follower_targets()),
         ];
 
         let public_operations = ServiceOperationV1::ALL
@@ -889,7 +912,7 @@ mod tests {
 
         let expected_nonempty_lengths = [
             0, 2, 1, 0, 1, 2, 1, 2, 2, 2, 2, 1, 0, 0, 1, 0, 0, 1, 1, 0, 0, 0, 1, 1, 1, 1, 1, 1, 1,
-            1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 0, 1, 0, 1, 1, 0, 0, 1, 1, 0, 0, 1,
+            1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 0, 1, 0, 1, 1, 0, 0, 1, 1, 0, 0, 1, 1, 1,
         ];
         assert_eq!(
             mapped.each_ref().map(|(_, targets)| targets.len()),
@@ -932,6 +955,19 @@ mod tests {
         bytes
     }
 
+    fn follower_targets() -> ServiceAuditTargetsV1 {
+        ServiceAuditTargetMap::replication_follower(
+            riffdb_types::ReplicationFollowerAuditTargetV1::new(
+                riffdb_types::DatabaseId::from_bytes(uuid_bytes(0x75)).unwrap(),
+                1,
+                riffdb_types::LeadershipEpochV1::initial(),
+                riffdb_types::ReplicationSourceHoldIdV1::new([0x76; 16]).unwrap(),
+            )
+            .unwrap(),
+        )
+        .unwrap()
+    }
+
     /// Probes the durable storage validator through its only public entry point.
     fn storage_accepts(
         operation: ServiceOperationV1,
@@ -950,7 +986,14 @@ mod tests {
                 NonZeroU64::MIN,
             ),
             ServiceIngressKindV1::Grpc,
-            ServiceAuditTargetsV1::empty(),
+            if matches!(
+                operation,
+                ServiceOperationV1::RegisterFollower | ServiceOperationV1::RetireFollower
+            ) {
+                follower_targets()
+            } else {
+                ServiceAuditTargetsV1::empty()
+            },
             None,
             link,
         )
@@ -999,9 +1042,9 @@ mod tests {
 
     /// Pin the one remaining asymmetry so it cannot silently grow.
     ///
-    /// The service pre-check permits a linkless success for every operation; the
-    /// durable validator additionally forbids it for operations whose success is
-    /// always linked. That direction is safe (storage stays authoritative), but
+    /// The new lifecycle operations require links in both validators. For older
+    /// operations the service pre-check permits a linkless success; the durable
+    /// validator additionally forbids it where success is always linked. That direction is safe (storage stays authoritative), but
     /// every storage rejection must correspond to an operation that really does
     /// produce a link, otherwise a reachable success shape is unwritable.
     #[test]
@@ -1015,14 +1058,18 @@ mod tests {
         };
 
         for operation in ServiceOperationV1::ALL {
-            assert!(
+            assert_eq!(
                 validate_phase_link(
                     operation,
                     ServiceAuditPhaseV1::Succeeded,
-                    ServiceAuditLinkV1::None,
+                    ServiceAuditLinkV1::None
                 )
                 .is_ok(),
-                "the service pre-check must stay a superset for linkless success"
+                !matches!(
+                    operation,
+                    ServiceOperationV1::RegisterFollower | ServiceOperationV1::RetireFollower
+                ),
+                "lifecycle requires a link; preserve legacy service pre-checks"
             );
             if storage_accepts(
                 operation,

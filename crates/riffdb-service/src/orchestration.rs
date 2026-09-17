@@ -1,5 +1,8 @@
 //! Shared authorization and durable service-audit orchestration.
 
+#[path = "orchestration_replication_administration.rs"]
+mod replication_administration;
+
 use std::cell::RefCell;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};

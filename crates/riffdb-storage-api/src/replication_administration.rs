@@ -78,6 +78,27 @@ pub struct StoredReplicationAdministrationV1 {
     origin: ReplicationAdministrationOriginV1,
 }
 impl StoredReplicationAdministrationV1 {
+    /// Checks an exact service-success link without granting mutation authority.
+    /// Replays may have a new request identity, but never another target or action.
+    #[must_use]
+    pub fn matches_service_result(
+        &self,
+        operation: riffdb_types::ServiceOperationV1,
+        targets: &riffdb_types::ServiceAuditTargetsV1,
+    ) -> bool {
+        use riffdb_types::{ServiceAuditTargetV1, ServiceOperationV1};
+        matches!(
+            (operation, self.action),
+            (
+                ServiceOperationV1::RegisterFollower,
+                ReplicationAdministrationActionV1::RegisterFollower
+            ) | (
+                ServiceOperationV1::RetireFollower,
+                ReplicationAdministrationActionV1::RetireFollower
+            )
+        ) && matches!(targets.as_slice(), [ServiceAuditTargetV1::ReplicationFollower(target)] if *target == self.target)
+    }
+
     /// Checks a complete transition without granting permission to perform it.
     /// The administration sequence must immediately follow the drained source
     /// predecessor. Exact retries return the old receipt instead of a new value.

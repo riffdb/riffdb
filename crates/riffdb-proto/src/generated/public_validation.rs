@@ -11709,6 +11709,80 @@ mod application_export_tests {
     }
 }
 
+/// Checks that a retirement receipt names the exact requested registration generation.
+pub fn validate_retire_follower_exchange(
+    request: &v1::RetireFollowerRequest,
+    response: &v1::RetireFollowerResponse,
+) -> Result<(), PublicWireError> {
+    validate_public_message(request)?;
+    validate_public_message(response)?;
+    if let Some(v1::retire_follower_response::Result::Receipt(receipt)) = &response.result
+        && receipt.registration_generation != request.registration_generation {
+        return Err(PublicWireError::InconsistentFields);
+    }
+    Ok(())
+}
+
+fn preflight_follower_target(input: &[u8]) -> Result<(), PublicWireError> {
+    preflight_nested_message(input, 4, &[], &[], &[], &[])
+}
+fn preflight_register_follower(input: &[u8]) -> Result<(), PublicWireError> {
+    preflight_nested_message(input, 4, &[], &[], &[NestedRule { field: 2, preflight: preflight_follower_target }], &[])
+}
+fn preflight_retire_follower(input: &[u8]) -> Result<(), PublicWireError> {
+    preflight_nested_message(input, 3, &[], &[], &[NestedRule { field: 2, preflight: preflight_follower_target }], &[])
+}
+fn preflight_follower_receipt(input: &[u8]) -> Result<(), PublicWireError> {
+    preflight_nested_message(input, 3, &[], &[], &[], &[])
+}
+fn preflight_follower_response(input: &[u8]) -> Result<(), PublicWireError> {
+    preflight_nested_message(input, 2, &[], &[&[1, 2]], &[NestedRule { field: 1, preflight: preflight_follower_receipt }], &[])
+}
+fn validate_follower_target(target: Option<&v1::ReplicationFollowerTarget>) -> Result<(), PublicWireError> {
+    let target = target.ok_or(PublicWireError::MissingRequiredField)?;
+    if !valid_uuid(&target.database_id, DatabaseId::from_bytes) || target.history_incarnation == 0
+        || target.leadership_epoch == 0 || target.hold_id.len() != 16 || target.hold_id.iter().all(|byte| *byte == 0) {
+        return Err(PublicWireError::InvalidIdentity);
+    }
+    Ok(())
+}
+fn validate_register_follower(message: &v1::RegisterFollowerRequest) -> Result<(), PublicWireError> {
+    request_id(&message.request_id)?;
+    validate_follower_target(message.target.as_ref())?;
+    if message.hold_budget_sequences == 0 || message.expires_at_application_sequence == Some(0) {
+        return Err(PublicWireError::InvalidIdentity);
+    }
+    Ok(())
+}
+fn validate_retire_follower(message: &v1::RetireFollowerRequest) -> Result<(), PublicWireError> {
+    request_id(&message.request_id)?;
+    validate_follower_target(message.target.as_ref())?;
+    if message.registration_generation == 0 { return Err(PublicWireError::InvalidIdentity); }
+    Ok(())
+}
+fn validate_follower_receipt(receipt: &v1::FollowerAdministrationReceipt) -> Result<(), PublicWireError> {
+    if receipt.administration_sequence == 0 || receipt.registration_generation == 0 { return Err(PublicWireError::InvalidIdentity); }
+    Ok(())
+}
+fn validate_register_follower_response(message: &v1::RegisterFollowerResponse) -> Result<(), PublicWireError> {
+    match message.result.as_ref().ok_or(PublicWireError::MissingRequiredField)? {
+        v1::register_follower_response::Result::Receipt(receipt) => validate_follower_receipt(receipt),
+        v1::register_follower_response::Result::Refusal(1..=5) => Ok(()),
+        v1::register_follower_response::Result::Refusal(_) => Err(PublicWireError::InvalidEnum),
+    }
+}
+fn validate_retire_follower_response(message: &v1::RetireFollowerResponse) -> Result<(), PublicWireError> {
+    match message.result.as_ref().ok_or(PublicWireError::MissingRequiredField)? {
+        v1::retire_follower_response::Result::Receipt(receipt) => validate_follower_receipt(receipt),
+        v1::retire_follower_response::Result::Refusal(1..=5) => Ok(()),
+        v1::retire_follower_response::Result::Refusal(_) => Err(PublicWireError::InvalidEnum),
+    }
+}
+impl_public_message!(v1::RegisterFollowerRequest, MAX_PUBLIC_REQUEST_BYTES, 4, &[], &[], preflight_register_follower, validate_register_follower);
+impl_public_message!(v1::RetireFollowerRequest, MAX_PUBLIC_REQUEST_BYTES, 3, &[], &[], preflight_retire_follower, validate_retire_follower);
+impl_public_message!(v1::RegisterFollowerResponse, MAX_PUBLIC_RESPONSE_BYTES, 2, &[], &[&[1, 2]], preflight_follower_response, validate_register_follower_response);
+impl_public_message!(v1::RetireFollowerResponse, MAX_PUBLIC_RESPONSE_BYTES, 2, &[], &[&[1, 2]], preflight_follower_response, validate_retire_follower_response);
+
 #[cfg(test)]
 mod application_reimport_tests {
     use super::*;
@@ -11853,7 +11927,7 @@ mod application_reimport_tests {
 /// Registry schema version used for this generated validation inventory.
 pub const GENERATED_OPERATION_REGISTRY_VERSION: u32 = 1;
 /// Number of public semantic operations covered by generated validation.
-pub const GENERATED_PUBLIC_OPERATION_COUNT: usize = 57;
+pub const GENERATED_PUBLIC_OPERATION_COUNT: usize = 59;
 /// Descriptor-checked registry row used by generated validation.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct GeneratedPublicValidationMessage {
@@ -11933,5 +12007,7 @@ pub const GENERATED_PUBLIC_VALIDATION_MESSAGES: &[GeneratedPublicValidationMessa
     GeneratedPublicValidationMessage { tag: 55, operation: "GetApplicationReimport", request: "riffdb.v1.GetApplicationReimportRequest", request_fields: 2, response: "riffdb.v1.GetApplicationReimportResponse", response_fields: 2, request_bytes: 1048576, response_bytes: 4194304 },
     GeneratedPublicValidationMessage { tag: 56, operation: "CancelApplicationReimport", request: "riffdb.v1.CancelApplicationReimportRequest", request_fields: 2, response: "riffdb.v1.CancelApplicationReimportResponse", response_fields: 2, request_bytes: 1048576, response_bytes: 4194304 },
     GeneratedPublicValidationMessage { tag: 57, operation: "InspectVectorState", request: "riffdb.app.v1.InspectVectorStateRequest", request_fields: 7, response: "riffdb.app.v1.InspectVectorStateResponse", response_fields: 4, request_bytes: 1048576, response_bytes: 4194304 },
+    GeneratedPublicValidationMessage { tag: 58, operation: "RegisterFollower", request: "riffdb.v1.RegisterFollowerRequest", request_fields: 4, response: "riffdb.v1.RegisterFollowerResponse", response_fields: 2, request_bytes: 1048576, response_bytes: 4194304 },
+    GeneratedPublicValidationMessage { tag: 59, operation: "RetireFollower", request: "riffdb.v1.RetireFollowerRequest", request_fields: 3, response: "riffdb.v1.RetireFollowerResponse", response_fields: 2, request_bytes: 1048576, response_bytes: 4194304 },
 ];
 

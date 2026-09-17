@@ -34,6 +34,7 @@ Commands:
   query
   role         Checks, describes, binds, or revokes an exact symbolic application role
   capability
+  follower     Registers or retires one audited follower retention policy
   server
   backup
   export       Exports one authorized symbolic application snapshot as canonical JSONL pages
@@ -546,6 +547,27 @@ Commands:
   bootstrap
   create
   revoke
+
+Options:
+      --config <PATH>
+      --endpoint <HTTP_OR_HTTPS_ENDPOINT>
+      --database <DATABASE>
+      --output <human|json>                [possible values: human, json]
+      --max-attempts <1..10>
+      --credential-file <PATH>
+  -h, --help                               Print help
+```
+
+### `riffdb follower`
+
+```text
+Registers or retires one audited follower retention policy
+
+Usage: riffdb follower [OPTIONS] <COMMAND>
+
+Commands:
+  register  Registers or exactly replays the selected immutable policy
+  retire    Retires only the original generation reported by registration
 
 Options:
       --config <PATH>
@@ -2186,6 +2208,51 @@ Options:
 
   -h, --help
           Print help
+```
+
+#### `riffdb follower register`
+
+```text
+Registers or exactly replays the selected immutable policy
+
+Usage: riffdb follower register [OPTIONS] --database-id <SOURCE_DATABASE_UUIDV7> --history-incarnation <NONZERO_U64> --leadership-epoch <NONZERO_U64> --hold-id <32_LOWERCASE_HEX_DIGITS> --hold-budget-sequences <NONZERO_U64>
+
+Options:
+      --config <PATH>
+      --database-id <SOURCE_DATABASE_UUIDV7>
+      --endpoint <HTTP_OR_HTTPS_ENDPOINT>
+      --history-incarnation <NONZERO_U64>
+      --database <DATABASE>
+      --leadership-epoch <NONZERO_U64>
+      --hold-id <32_LOWERCASE_HEX_DIGITS>
+      --output <human|json>                                 [possible values: human, json]
+      --hold-budget-sequences <NONZERO_U64>
+      --max-attempts <1..10>
+      --credential-file <PATH>
+      --expires-at-sequence <NONZERO_APPLICATION_SEQUENCE>
+  -h, --help                                                Print help
+```
+
+#### `riffdb follower retire`
+
+```text
+Retires only the original generation reported by registration
+
+Usage: riffdb follower retire [OPTIONS] --database-id <SOURCE_DATABASE_UUIDV7> --history-incarnation <NONZERO_U64> --leadership-epoch <NONZERO_U64> --hold-id <32_LOWERCASE_HEX_DIGITS> --registration-generation <NONZERO_U64>
+
+Options:
+      --config <PATH>
+      --database-id <SOURCE_DATABASE_UUIDV7>
+      --endpoint <HTTP_OR_HTTPS_ENDPOINT>
+      --history-incarnation <NONZERO_U64>
+      --database <DATABASE>
+      --leadership-epoch <NONZERO_U64>
+      --hold-id <32_LOWERCASE_HEX_DIGITS>
+      --output <human|json>                    [possible values: human, json]
+      --max-attempts <1..10>
+      --registration-generation <NONZERO_U64>
+      --credential-file <PATH>
+  -h, --help                                   Print help
 ```
 
 #### `riffdb server health`

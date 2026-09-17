@@ -42,6 +42,40 @@ use crate::{
 const MAX_CAPABILITY_REVOKE_PREPARATION_ATTEMPTS: usize = 3;
 
 impl AdministrationApplication for RiffDbService {
+    fn register_follower(
+        &self,
+        context: RequestContext,
+        request: crate::RegisterFollowerRequest,
+    ) -> ServiceFuture<'_, crate::RegisterFollowerResult> {
+        let service = Arc::clone(&self.inner);
+        let ingress = context.ingress();
+        self.spawn_operation(ServiceOperationV1::RegisterFollower, ingress, async move {
+            let request = riffdb_auth::ReplicationAdministrationRequestV1::register(
+                context.request_id(),
+                request.target(),
+                request.budget(),
+                request.expires_at(),
+            );
+            crate::replication_administration_operations::execute(service, context, request).await
+        })
+    }
+    fn retire_follower(
+        &self,
+        context: RequestContext,
+        request: crate::RetireFollowerRequest,
+    ) -> ServiceFuture<'_, crate::RetireFollowerResult> {
+        let service = Arc::clone(&self.inner);
+        let ingress = context.ingress();
+        self.spawn_operation(ServiceOperationV1::RetireFollower, ingress, async move {
+            let request = riffdb_auth::ReplicationAdministrationRequestV1::retire(
+                context.request_id(),
+                request.target(),
+                request.generation(),
+            );
+            crate::replication_administration_operations::execute(service, context, request).await
+        })
+    }
+
     fn health(
         &self,
         context: HealthContext,

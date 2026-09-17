@@ -398,6 +398,28 @@ impl AdministrationApplication for LifecycleApplicationService {
         Box::pin(async move { service.create_capability(invocation).await })
     }
 
+    fn register_follower(
+        &self,
+        context: RequestContext,
+        request: riffdb_service::RegisterFollowerRequest,
+    ) -> ServiceFuture<'_, riffdb_service::RegisterFollowerResult> {
+        let Some(service) = self.admit(ServiceOperationV1::RegisterFollower) else {
+            return unavailable();
+        };
+        Box::pin(async move { service.register_follower(context, request).await })
+    }
+
+    fn retire_follower(
+        &self,
+        context: RequestContext,
+        request: riffdb_service::RetireFollowerRequest,
+    ) -> ServiceFuture<'_, riffdb_service::RetireFollowerResult> {
+        let Some(service) = self.admit(ServiceOperationV1::RetireFollower) else {
+            return unavailable();
+        };
+        Box::pin(async move { service.retire_follower(context, request).await })
+    }
+
     fn revoke_capability(
         &self,
         context: RequestContext,

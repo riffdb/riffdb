@@ -670,6 +670,8 @@ impl RiffDbClient {
         v1::ExecuteContextualReactionRequest,
         v1::ExecuteCommandResponse
     );
+    unary!(register_follower, admin, register_follower, v1::RegisterFollowerRequest, v1::RegisterFollowerResponse);
+    unary_exchange!(retire_follower, admin, retire_follower, v1::RetireFollowerRequest, v1::RetireFollowerResponse, riffdb_proto::validate_retire_follower_exchange);
     unary!(health, admin, health, v1::HealthRequest, v1::HealthResponse);
     unary!(stats, admin, stats, v1::StatsRequest, v1::StatsResponse);
     unary!(

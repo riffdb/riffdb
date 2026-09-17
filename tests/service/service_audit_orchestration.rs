@@ -2,6 +2,8 @@
 
 //! Fail-closed application-service audit orchestration evidence.
 
+#[path = "follower_lifecycle.rs"]
+mod follower_lifecycle;
 mod support;
 
 use std::task::{Context, Poll, Waker};

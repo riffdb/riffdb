@@ -80,6 +80,8 @@ pub use control_plane::{
     QueryModuleDeploymentOutcome, QueryModuleDeploymentPreparation, QueryModuleDeploymentResult,
     ReactiveModulePublicationExecutionResult, ReactiveModulePublicationOutcome,
     ReactiveModulePublicationPreparation, ReplicationAdministrationExecutionResult,
+    ReplicationAdministrationOutcome, ReplicationAdministrationRefusal,
+    ReplicationAdministrationResultReceipt,
 };
 #[doc(hidden)]
 pub use coordinator_time::CoordinatorMonotonicClock;

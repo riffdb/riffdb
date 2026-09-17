@@ -30,7 +30,8 @@ minimum. Unreadable or inconsistent V3 hold evidence refuses collection and
 prune. Budget exhaustion degrades typed Health and never releases a hold by
 itself. The internal coordinator supports audited retirement and configured
 sequence expiry, with durable degradation before expiry release and bounded
-background scheduling. Public registration/retirement and promotion ceremonies
+background scheduling. [Follower registration and retirement](operations/FOLLOWER-ADMINISTRATION.md)
+are available through the primary operator interfaces. Fencing and promotion
 remain WP-748 work; see the [lifecycle verification](architecture/WP-748-LIFECYCLE-VERIFICATION.md).
 
 `riffdbd` requires an absolute `--backup-root` path. The path must be lexically

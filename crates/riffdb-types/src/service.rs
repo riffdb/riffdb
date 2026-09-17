@@ -127,11 +127,15 @@ pub enum ServiceOperationV1 {
     CancelApplicationReimport,
     /// Inspect one exact compiler-declared production vector field.
     InspectVectorState,
+    /// Register one lineage-scoped follower retention policy.
+    RegisterFollower,
+    /// Retire one exact follower registration generation.
+    RetireFollower,
 }
 
 impl ServiceOperationV1 {
     /// Every accepted v1 service operation, in tag order.
-    pub const ALL: [Self; 57] = [
+    pub const ALL: [Self; 59] = [
         Self::ValidateContract,
         Self::ExplainCommand,
         Self::DeployContract,
@@ -189,6 +193,8 @@ impl ServiceOperationV1 {
         Self::GetApplicationReimport,
         Self::CancelApplicationReimport,
         Self::InspectVectorState,
+        Self::RegisterFollower,
+        Self::RetireFollower,
     ];
 
     /// Returns the stable v1 semantic tag.
@@ -252,6 +258,8 @@ impl ServiceOperationV1 {
             Self::GetApplicationReimport => 0x37,
             Self::CancelApplicationReimport => 0x38,
             Self::InspectVectorState => 0x39,
+            Self::RegisterFollower => 0x3a,
+            Self::RetireFollower => 0x3b,
         }
     }
 
@@ -316,6 +324,8 @@ impl ServiceOperationV1 {
             0x37 => Some(Self::GetApplicationReimport),
             0x38 => Some(Self::CancelApplicationReimport),
             0x39 => Some(Self::InspectVectorState),
+            0x3a => Some(Self::RegisterFollower),
+            0x3b => Some(Self::RetireFollower),
             _ => None,
         }
     }
@@ -632,6 +642,21 @@ impl Error for ServiceAuditTargetsError {}
 pub struct ServiceAuditTargetsV1(Vec<ServiceAuditTargetV1>);
 
 impl ServiceAuditTargetsV1 {
+    /// Checks operation-specific target shape without granting authority.
+    /// Follower lifecycle audits identify exactly their selected registration.
+    #[must_use]
+    pub fn is_valid_for_operation(&self, operation: ServiceOperationV1) -> bool {
+        match operation {
+            ServiceOperationV1::RegisterFollower | ServiceOperationV1::RetireFollower => {
+                matches!(
+                    self.as_slice(),
+                    [ServiceAuditTargetV1::ReplicationFollower(_)]
+                )
+            }
+            _ => true,
+        }
+    }
+
     /// Validates, canonicalizes, and constructs a list of zero through 16 targets.
     pub fn new(
         targets: impl IntoIterator<Item = ServiceAuditTargetV1>,
@@ -760,7 +785,7 @@ mod tests {
 
     #[test]
     fn service_operation_registry_is_exact_and_closed() {
-        let expected: Vec<u8> = (0x01..=0x39).collect();
+        let expected: Vec<u8> = (0x01..=0x3b).collect();
         assert_eq!(
             ServiceOperationV1::ALL
                 .into_iter()
@@ -799,8 +824,20 @@ mod tests {
             ServiceOperationV1::from_tag(0x39),
             Some(ServiceOperationV1::InspectVectorState)
         );
-        assert_eq!(ServiceOperationV1::from_tag(0x3a), None);
+        assert_eq!(ServiceOperationV1::from_tag(0x3c), None);
         assert_eq!(ServiceOperationV1::from_tag(u8::MAX), None);
+    }
+
+    #[test]
+    // req: REP-006
+    fn follower_lifecycle_operations_have_distinct_additive_audit_tags() {
+        for (tag, name) in [(0x3a, "RegisterFollower"), (0x3b, "RetireFollower")] {
+            let operation =
+                ServiceOperationV1::from_tag(tag).expect("approved lifecycle operation");
+            assert_eq!(format!("{operation:?}"), name);
+            assert_eq!(operation.tag(), tag);
+        }
+        assert_eq!(ServiceOperationV1::InspectVectorState.tag(), 0x39);
     }
 
     #[test]

@@ -42,6 +42,8 @@ mod query_discovery_operations;
 mod read_retry;
 mod reimport;
 mod reimport_operations;
+mod replication_administration;
+mod replication_administration_operations;
 mod response;
 mod service;
 mod submitted;
@@ -68,6 +70,7 @@ pub use maintenance_operations::{
 pub use ports::*;
 pub use projected_query::*;
 pub use reimport::*;
+pub use replication_administration::*;
 pub use response::*;
 mod replication;
 pub use replication::*;

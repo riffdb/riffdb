@@ -91,4 +91,6 @@ service AdminService {
   rpc ApplyApplicationReimportPage(ApplyApplicationReimportPageRequest) returns (ApplyApplicationReimportPageResponse);
   rpc GetApplicationReimport(GetApplicationReimportRequest) returns (GetApplicationReimportResponse);
   rpc CancelApplicationReimport(CancelApplicationReimportRequest) returns (CancelApplicationReimportResponse);
+  rpc RegisterFollower(RegisterFollowerRequest) returns (RegisterFollowerResponse);
+  rpc RetireFollower(RetireFollowerRequest) returns (RetireFollowerResponse);
 }

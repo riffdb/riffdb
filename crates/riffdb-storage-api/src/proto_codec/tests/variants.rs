@@ -703,7 +703,24 @@ fn service_audit_with(
         phase,
         Some(sample::audit_principal()),
         ingress,
-        ServiceAuditTargetsV1::empty(),
+        if matches!(
+            operation,
+            ServiceOperationV1::RegisterFollower | ServiceOperationV1::RetireFollower
+        ) {
+            ServiceAuditTargetsV1::new([riffdb_types::ServiceAuditTargetV1::ReplicationFollower(
+                riffdb_types::ReplicationFollowerAuditTargetV1::new(
+                    riffdb_types::DatabaseId::from_unix_milliseconds_and_random(1, [1; 10])
+                        .unwrap(),
+                    1,
+                    riffdb_types::LeadershipEpochV1::initial(),
+                    riffdb_types::ReplicationSourceHoldIdV1::new([1; 16]).unwrap(),
+                )
+                .unwrap(),
+            )])
+            .unwrap()
+        } else {
+            ServiceAuditTargetsV1::empty()
+        },
         None,
         ServiceAuditLinkV1::None,
     )
@@ -713,14 +730,28 @@ fn service_audit_with(
 #[test]
 fn every_service_operation_round_trips() {
     for operation in ServiceOperationV1::ALL {
+        let (encode, decode) = if matches!(
+            operation,
+            ServiceOperationV1::RegisterFollower | ServiceOperationV1::RetireFollower
+        ) {
+            (
+                encode_service_audit_record_v3 as fn(&StoredServiceAuditRecordV1) -> _,
+                decode_service_audit_record_v3 as fn(&[u8]) -> _,
+            )
+        } else {
+            (
+                encode_service_audit_record_v2 as fn(&StoredServiceAuditRecordV1) -> _,
+                decode_service_audit_record_v2 as fn(&[u8]) -> _,
+            )
+        };
         assert_round_trip(
             service_audit_with(
                 operation,
                 ServiceAuditPhaseV1::Started,
                 ServiceIngressKindV1::Grpc,
             ),
-            encode_service_audit_record_v2,
-            decode_service_audit_record_v2,
+            encode,
+            decode,
         );
     }
 }

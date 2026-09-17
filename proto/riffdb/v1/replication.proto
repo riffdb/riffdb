@@ -89,3 +89,54 @@ message StreamChangelogResponse {
   // Optional only on a frame. Durable V3 frame bytes are unchanged.
   ReplicationSourceHead source_head = 5;
 }
+
+// Exact operator-selected registration. No field is an authorization capability.
+message ReplicationFollowerTarget {
+  bytes database_id = 1;
+  uint64 history_incarnation = 2;
+  uint64 leadership_epoch = 3;
+  bytes hold_id = 4;
+}
+
+message RegisterFollowerRequest {
+  bytes request_id = 1;
+  ReplicationFollowerTarget target = 2;
+  uint64 hold_budget_sequences = 3;
+  optional uint64 expires_at_application_sequence = 4;
+}
+
+message RetireFollowerRequest {
+  bytes request_id = 1;
+  ReplicationFollowerTarget target = 2;
+  uint64 registration_generation = 3;
+}
+
+// A receipt summary cannot prove primary fencing or authorize promotion.
+message FollowerAdministrationReceipt {
+  uint64 administration_sequence = 1;
+  uint64 registration_generation = 2;
+  bool replayed = 3;
+}
+
+enum FollowerAdministrationRefusal {
+  FOLLOWER_ADMINISTRATION_REFUSAL_UNSPECIFIED = 0;
+  FOLLOWER_ADMINISTRATION_REFUSAL_LINEAGE_MISMATCH = 1;
+  FOLLOWER_ADMINISTRATION_REFUSAL_REGISTRATION_CONFLICT = 2;
+  FOLLOWER_ADMINISTRATION_REFUSAL_REGISTRATION_MISSING_OR_STALE = 3;
+  FOLLOWER_ADMINISTRATION_REFUSAL_EXPIRY_REACHED = 4;
+  FOLLOWER_ADMINISTRATION_REFUSAL_CAPACITY_EXHAUSTED = 5;
+}
+
+message RegisterFollowerResponse {
+  oneof result {
+    FollowerAdministrationReceipt receipt = 1;
+    FollowerAdministrationRefusal refusal = 2;
+  }
+}
+
+message RetireFollowerResponse {
+  oneof result {
+    FollowerAdministrationReceipt receipt = 1;
+    FollowerAdministrationRefusal refusal = 2;
+  }
+}

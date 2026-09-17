@@ -2262,6 +2262,9 @@ fn service_link_is_valid(
                 return Ok(false);
             };
             Ok(match (intent.operation(), target) {
+                (operation, StoredAdministrationAuditRecordV1::Replication(record)) => {
+                    record.matches_service_result(operation, intent.targets())
+                }
                 (
                     ServiceOperationV1::DeployContract,
                     StoredAdministrationAuditRecordV1::Catalog(_),
@@ -2382,6 +2385,9 @@ fn service_link_is_valid_access(
             };
             let target = decoded_value(decode_administration_audit_record_v1(&encoded)?);
             Ok(match (intent.operation(), target) {
+                (operation, StoredAdministrationAuditRecordV1::Replication(record)) => {
+                    record.matches_service_result(operation, intent.targets())
+                }
                 (
                     ServiceOperationV1::DeployContract,
                     StoredAdministrationAuditRecordV1::Catalog(_),

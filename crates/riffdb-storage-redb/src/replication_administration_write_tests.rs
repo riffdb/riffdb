@@ -10,6 +10,105 @@ use riffdb_storage_api::{
 };
 use riffdb_types::ReplicationFollowerAuditTargetV1;
 
+#[test]
+fn lifecycle_service_result_links_exact_action_and_target_on_new_request_replay() {
+    let (_scope, mut ports, selected) = fixture();
+    let ResultV1::Applied(registration) = execute(
+        &ports,
+        Request::register(
+            request_id(30),
+            selected,
+            FollowerHoldBudget::new(3).unwrap(),
+            None,
+        ),
+    ) else {
+        panic!("registration");
+    };
+    let other = ReplicationFollowerAuditTargetV1::new(
+        selected.database_id(),
+        selected.history_incarnation(),
+        selected.leadership_epoch(),
+        ReplicationSourceHoldIdV1::new([0x73; 16]).unwrap(),
+    )
+    .unwrap();
+    for (index, (operation, target, sequence, expected)) in [
+        (
+            ServiceOperationV1::RegisterFollower,
+            selected,
+            registration.administration_sequence(),
+            true,
+        ),
+        (
+            ServiceOperationV1::RetireFollower,
+            selected,
+            registration.administration_sequence(),
+            false,
+        ),
+        (
+            ServiceOperationV1::RegisterFollower,
+            other,
+            registration.administration_sequence(),
+            false,
+        ),
+        (
+            ServiceOperationV1::RegisterFollower,
+            selected,
+            AdministrationSequence::first(),
+            false,
+        ),
+        (
+            ServiceOperationV1::RegisterFollower,
+            selected,
+            AdministrationSequence::new(999).unwrap(),
+            false,
+        ),
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let request = request_id(40 + u8::try_from(index).unwrap());
+        let targets =
+            ServiceAuditTargetsV1::new([ServiceAuditTargetV1::ReplicationFollower(target)])
+                .unwrap();
+        let audit = |phase, link| {
+            ServiceAuditAppendIntentV1::new(
+                request,
+                Timestamp::new(20, 0).unwrap(),
+                operation,
+                phase,
+                principal(capability_id(3)),
+                ServiceIngressKindV1::Grpc,
+                targets.clone(),
+                None,
+                link,
+            )
+            .unwrap()
+        };
+        assert!(matches!(
+            ports
+                .append_service_audit_group(&[audit(
+                    ServiceAuditPhaseV1::Started,
+                    ServiceAuditLinkV1::None
+                )])
+                .unwrap()
+                .as_slice(),
+            [ServiceAuditAppendResult::Appended(_)]
+        ));
+        let result = ports
+            .append_service_audit_group(&[audit(
+                ServiceAuditPhaseV1::Succeeded,
+                ServiceAuditLinkV1::ControlPlane {
+                    administration_sequence: sequence,
+                },
+            )])
+            .unwrap();
+        assert_eq!(
+            matches!(result.as_slice(), [ServiceAuditAppendResult::Appended(_)]),
+            expected
+        );
+    }
+}
+
 fn fixture() -> (
     TestPath,
     RedbOperationalPorts,
