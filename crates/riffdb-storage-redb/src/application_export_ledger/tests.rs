@@ -333,11 +333,6 @@ fn compact_export_head_and_page_are_atomic_retry_safe_and_recoverable() {
     let directory = crate::test_path::ScopedDirectory::new("export-ledger");
     let path = directory.join("db.redb");
     let mut ports = open(&path);
-    assert!(
-        ports
-            .arm_exact_empty_fresh_locator_coverage_for_test()
-            .unwrap()
-    );
     let initial = initial(0x61);
     let first = Head::Compact(initial.clone());
     assert_eq!(

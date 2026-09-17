@@ -525,9 +525,6 @@ impl ApplicationExportOperationRepository for RedbOperationalPorts {
             return Ok(ApplicationExportOperationWriteResultV1::CompareMismatch);
         }
         let encoded = encode_application_export_operation_v1(replacement)?;
-        access.expect_fresh_locator_byte_insert(APPLICATION_EXPORT_OPERATIONS, key)?;
-        access.close_fresh_locator_mutation_expectations()?;
-        access.record_actual_fresh_locator_byte_insert(APPLICATION_EXPORT_OPERATIONS, key)?;
         table
             .insert(key.as_slice(), encoded.as_bytes())
             .map_err(precommit_storage_error)?;
@@ -818,11 +815,6 @@ mod tests {
         let mut ports = dormant
             .into_operational_after_catalog_validation()
             .expect("activate");
-        assert!(
-            ports
-                .arm_exact_empty_fresh_locator_coverage_for_test()
-                .expect("arm exact empty coverage")
-        );
         let first = record(3, b"state-one\n");
         let next = record(3, b"state-two\n");
         let earlier = record(2, b"state-earlier\n");

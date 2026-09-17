@@ -59,18 +59,15 @@ impl Barrier {
     }
 
     pub(super) fn begin(self) -> Result<ControlWrite, StorageError> {
-        let rebase = self.shared.begin_fresh_locator_rebase()?;
         let raw = match self.shared.database.begin_write() {
             Ok(raw) => raw,
             Err(error) => {
-                self.shared.abort_fresh_locator_rebase(rebase)?;
                 return Err(transaction_error(error));
             }
         };
         let mut write = ControlWrite {
             barrier: self,
             raw: Some(raw),
-            rebase,
         };
         let raw = write
             .raw
@@ -91,7 +88,6 @@ impl Barrier {
 pub(super) struct ControlWrite {
     barrier: Barrier,
     raw: Option<WriteTransaction>,
-    rebase: Option<crate::fresh_locator_coverage::CoverageRebaseWitness>,
 }
 
 impl ControlWrite {
@@ -116,25 +112,20 @@ impl ControlWrite {
             .ok_or_else(|| storage_error(StorageErrorKind::InvariantViolation))?;
         let shared = &self.barrier.shared;
         if let Err(error) = shared.commit_durable(raw) {
-            self.rebase.take();
-            shared.disable_and_fence_fresh_locator_coverage();
+            shared.fence_writes();
             return Err(error);
         }
-        let published = finish_publication(shared, self.rebase.take());
+        let published = finish_publication(shared);
         if published.is_err() {
-            shared.disable_and_fence_fresh_locator_coverage();
+            shared.fence_writes();
             return Err(storage_error(StorageErrorKind::CommitStatusUnknown));
         }
         published
     }
 }
 
-fn finish_publication(
-    shared: &SharedRedb,
-    rebase: Option<crate::fresh_locator_coverage::CoverageRebaseWitness>,
-) -> Result<Observation, StorageError> {
+fn finish_publication(shared: &SharedRedb) -> Result<Observation, StorageError> {
     shared.refresh_durable_read_frontier()?;
-    shared.finish_fresh_locator_rebase(rebase)?;
     let root = shared.capture_checkpoint_root()?;
     let history = crate::changelog_v3_roots::read_checkpoint_roots(&root)?
         .ok_or_else(|| storage_error(StorageErrorKind::CorruptData))?;
@@ -150,10 +141,8 @@ impl Drop for ControlWrite {
     fn drop(&mut self) {
         if let Some(raw) = self.raw.take() {
             let shared = &self.barrier.shared;
-            let aborted = raw.abort();
-            let restored = shared.abort_fresh_locator_rebase(self.rebase.take());
-            if aborted.is_err() || restored.is_err() {
-                shared.disable_and_fence_fresh_locator_coverage();
+            if raw.abort().is_err() {
+                shared.fence_writes();
             }
         }
     }
