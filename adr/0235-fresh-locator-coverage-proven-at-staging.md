@@ -74,6 +74,31 @@ proof against the command-derived index, and once that index covers the
 captured frontier it answers every absence coverage would have answered. From
 that point the witness maintains a proof nothing consults.
 
+That claim is measured, not inferred. A counting build of the same write-only
+smoke arm, eight clients over twenty seconds on a fresh database reaching
+readiness by clean certificate, reports which branch answered every absence:
+
+| branch | count |
+|---|---|
+| operational absence resolutions | 60901 |
+| answered by coverage | 0 |
+| answered by the command-derived index | 60868 |
+| answered by checkpoint equality | 32 |
+| bounded history fallback scans | 0 |
+| admission misses reaching coverage | 29099 |
+| admission misses coverage allowed | 0 |
+
+The dormant transient index a bounded clean-close start leaves behind is a
+startup state, not a steady state: the first operational use arms it, after
+which the derived branch answers. Coverage answered nothing in either path.
+
+The same build also counts the coverage state each seal observed: of 7503
+seals, 7503 found coverage already disabled and none found it armed. Coverage
+disables itself on the first admission miss whose private stamp does not match
+and never re-arms within a process, so in steady state the seal is not merely
+maintaining a proof nothing consults, it is computing an exactness proof to
+feed a state machine that has already terminally disabled itself.
+
 ## Decision
 
 1. Admit this one repair as a narrow amendment to ADR-0183, on the ADR-0234
@@ -138,6 +163,20 @@ that point the witness maintains a proof nothing consults.
   writes are already fenced.
 - Two terminal states must be told apart in evidence and tests, which is new
   surface in the coverage state machine.
+- Skipping the witness also stops running the structural checks it performs on
+  the way to its answer: retained command counts against the sealed count, span
+  endpoints against the frame, and segment adjacency, seven of which fail the
+  seal outright today. They are incidental to coverage but load-bearing while
+  they run. Retirement must not be the only thing standing between a malformed
+  staged segment and a journal submit, so the implementing package has to
+  establish that each check is either redundant with a check that still runs or
+  is preserved independently of coverage.
+- Because coverage is already disabled at every steady-state seal, a predicate
+  narrower than Decision 3 would capture the same measured win: skipping the
+  witness when coverage is already disabled needs no new terminal state and no
+  amendment to ADR-0197. It is not taken here because Decision 3 is accepted
+  text and this record does not change accepted text on its own; it is recorded
+  so the maintainer can choose it.
 
 ## Standing design tests
 
