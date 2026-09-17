@@ -234,8 +234,9 @@ published snapshots and the existing bounded coordinator queue. It submits at
 most 16 one-registration steps before a one-second scheduling delay. A policy
 whose budget degradation is already persisted and has no reached expiry needs
 no further writer turn. Clock or proven-not-committed storage outages retry after
-the delay; corrupt, uncertain or stopped-coordinator outcomes stop the worker
-and preserve custody. Shutdown cancels capacity waits, drains accepted work and
+the delay; corrupt, uncertain or stopped-coordinator outcomes stop the worker.
+An uncertain expiry may already have committed its complete audited release;
+recovery validates the persisted state before further work. Shutdown cancels capacity waits, drains accepted work and
 joins the observer before closing the coordinator. These delays schedule work;
 only application sequences determine expiry.
 
@@ -245,7 +246,8 @@ Statistics retains its existing exact sequence counters. The bounded observation
 uses one published source snapshot and grants no retention-release authority.
 The existing Health status enum and wire fields are unchanged; validators now
 admit degraded primary health with live registrations and zero sequence lag.
-Follower health and the zero-registration primary case retain their prior rules.
+Older clients that require Healthy whenever those counters are zero refuse this
+newly admitted Health shape; use matching updated validators. Follower health and the zero-registration primary case retain their prior rules.
 
 WP-749 registers successor command capsule V7 (tag 54, revision 6) and segment
 V6 (tag 55, revision 6) for exact command-prefix evidence. Earlier record bytes

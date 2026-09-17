@@ -27,8 +27,11 @@ application frontier. A follower that has acknowledged no application commit
 pins the watermark at zero; a faster follower cannot release a slower follower's
 fence. Retention status reports `FollowerLowWater` when this is the binding
 minimum. Unreadable or inconsistent V3 hold evidence refuses collection and
-prune. Lag does not expire a hold automatically. The administrative retirement,
-configured expiry, hold-budget health and promotion ceremonies remain WP-748 work.
+prune. Budget exhaustion degrades typed Health and never releases a hold by
+itself. The internal coordinator supports audited retirement and configured
+sequence expiry, with durable degradation before expiry release and bounded
+background scheduling. Public registration/retirement and promotion ceremonies
+remain WP-748 work; see the [lifecycle verification](architecture/WP-748-LIFECYCLE-VERIFICATION.md).
 
 `riffdbd` requires an absolute `--backup-root` path. The path must be lexically
 disjoint from the database file, capability digest keys, and idempotency digest

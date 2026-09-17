@@ -88,8 +88,8 @@ impl RunningRegistrationMaintenance {
                         &stop,
                     ));
                     if result.is_err() && !stop.is_stopped() {
-                        // No identities or storage sources enter telemetry. Failure
-                        // leaves custody in place; restart observes persisted policy.
+                        // No identities or storage sources enter telemetry. Do not
+                        // infer an uncertain outcome; restart validates persisted policy.
                         eprintln!("riffdb-registration-v1\tstate=worker unavailable");
                     }
                 });

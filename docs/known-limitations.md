@@ -61,10 +61,13 @@ These limits are part of the POC release posture, not hidden roadmap promises.
   join engine, distributed transaction, failover, or consensus. WP-746 implements
   the administrative V3 stream, staged bootstrap, follower daemon and repeated
   crash proofs, verified through full CI. WP-747 adds verified follower reads,
-  freshness and sequence-lag reporting. Promotion remains WP-748 work and
-  archives remain WP-749 work. The accepted WP-748 registration-audit and
-  promotion-fencing amendments are recorded in SPEC §13.5; registration, retirement,
-  source fencing and promotion are not yet available operator operations.
+  freshness and sequence-lag reporting. WP-748 implements internal audited
+  registration/retirement, health degradation and scheduled configured expiry;
+  [verification and remaining work](architecture/WP-748-LIFECYCLE-VERIFICATION.md)
+  are recorded separately. Registration, retirement, source fencing and promotion
+  are not yet available operator operations. WP-749 remains open for qualification.
+  The accepted registration-audit and promotion-fencing amendments are recorded
+  in SPEC §13.5.
 - Compiler-sealed command decisions support bounded branch-local entity field
   assignments, embeddings, creates, and durable events. Workflow transition
   and lease instructions retain their existing dedicated command forms and are
