@@ -22,6 +22,9 @@ acceptance: >-
   Exact durable primary fencing and audited promotion amendment accepted by the maintainer
   in session 2026-09-16: "Approve exact text", referring to
   docs/architecture/WP-748-PROMOTION-FENCING-REVIEW.md.
+  Exact replication administration tag correction accepted by the maintainer
+  in session 2026-09-16: "Approve exact correction", referring to
+  docs/architecture/WP-748-ADMINISTRATION-TAG-REVIEW.md.
 requires: [ADR-0019, ADR-0050, ADR-0061, ADR-0072, ADR-0082, ADR-0083, ADR-0085,
   ADR-0086, ADR-0093, ADR-0100, ADR-0101, ADR-0104, ADR-0112, ADR-0124]
 # ADR-0085 is required at Amendments 2 and 3; ADR-0100 at Amendments 1 and 2.
@@ -107,6 +110,13 @@ is incorporated here in full and qualifies the original decision below.
 Maintainer, in session, 2026-09-16: "Approve exact text", referring to
 `docs/architecture/WP-748-REGISTRATION-AUDIT-REVIEW.md`. WP-748 owns implementation,
 compatibility fixtures and proof before activation.
+
+The maintainer accepted the exact tag correction in session 2026-09-16:
+"Approve exact correction", referring to
+`docs/architecture/WP-748-ADMINISTRATION-TAG-REVIEW.md`. The incorporated SPEC
+text assigns replication administration tag 75/revision 1 and preserves export
+page tag 74/revision 1; all other accepted requirements and existing bytes remain
+unchanged.
 
 ### Accepted amendment: durable primary fencing and audited promotion
 

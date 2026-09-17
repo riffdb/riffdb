@@ -5722,6 +5722,14 @@ authoritative transition already known durable.
 Maintainer, in session, 2026-09-16: "Approve exact text", referring to
 `docs/architecture/WP-748-REGISTRATION-AUDIT-REVIEW.md`. The exact accepted text follows.
 
+The maintainer accepted the exact tag correction in session 2026-09-16:
+"Approve exact correction", referring to
+`docs/architecture/WP-748-ADMINISTRATION-TAG-REVIEW.md`. The unimplemented
+`StoredReplicationAdministrationV1` uses tag 75, revision 1; tag 74, revision 1
+remains reserved for `StoredApplicationExportPageCommitmentV1`. Every other
+field, action, authority boundary, atomicity, retry, expiry, audit and compatibility
+requirement below is unchanged. No existing record bytes are reinterpreted.
+
 Add one closed semantic audit target, `ReplicationFollower`, at tag `0x0b`.
 Its payload is the request-selected source database ID, nonzero history
 incarnation, nonzero leadership epoch, and existing nonzero opaque 16-byte
@@ -5744,7 +5752,7 @@ schema hashes, wire fixtures and readers; never reinterpret their bytes as
 containing the new target. New follower-target audits use V3; existing audits
 continue to use V2. Unknown or malformed target fields remain refused.
 
-Add `StoredReplicationAdministrationV1` at durable record tag 74, revision 1,
+Add `StoredReplicationAdministrationV1` at durable record tag 75, revision 1,
 in the existing administration-audit namespace. Its closed actions are
 `RegisterFollower`, `RetireFollower`, and `ExpireFollower`. One record binds
 its coordinator-assigned administration sequence and timestamp, the exact follower target,
