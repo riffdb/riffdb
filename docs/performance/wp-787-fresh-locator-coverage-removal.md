@@ -46,12 +46,26 @@ carried forward from ADR-0235.
 The coverage-disabled arm is the ceiling this removal aims at: 25 to 31 percent
 faster group commit with 16 to 21 percent more throughput.
 
-## What this note does not claim
+## What the implemented removal measured
 
-The implemented removal has not been measured on the bench hosts. No speedup is
-claimed here beyond the arms above, which measured a diagnostic build rather
-than this change. The measurement to take is a fresh interleaved A/B of this
-branch against its merge base on E2, at 1, 8 and 32 clients.
+Interleaved A/B on the E2 bench host, write-only smoke, two rounds at each
+client level, 20 second load with a 5 second warmup. The base is the merge base
+`ffd761c5`, which already carries the staged-locator repair. Each figure is the
+mean of the two rounds.
+
+| clients | mean group commit | throughput | p50 |
+|---|---|---|---|
+| 1 | 2668 us to 2248 us, 15.8 percent faster | 149 to 158 ops/s, 6.0 percent more | 6.81 ms to 6.42 ms |
+| 8 | 4186 us to 3420 us, 18.3 percent faster | 746 to 857 ops/s, 14.9 percent more | 10.23 ms to 9.18 ms |
+| 32 | 10145 us to 8577 us, 15.5 percent faster | 1073 to 1184 ops/s, 10.3 percent more | 27.79 ms to 25.69 ms |
+
+The realized gain is smaller than the coverage-disabled diagnostic arm
+suggested, and the reason is the base. That arm was measured against `main`
+before the staged-locator repair landed, so it included work the base here has
+already taken. The two together account for the difference; neither figure is
+revised.
+
+## What this note does not claim
 
 The bounded history fallback is now the only absence backstop. Its proof
 asserts that the measured workloads never reach it and bounds what a scan may
