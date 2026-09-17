@@ -46,6 +46,13 @@ Maintainer, in session, 2026-09-16: "Approve exact text", referring to
 `docs/architecture/WP-748-REGISTRATION-AUDIT-REVIEW.md`. WP-748 owns implementation,
 compatibility fixtures and proof before activation.
 
+The maintainer accepted the exact tag correction in session 2026-09-16:
+"Approve exact correction", referring to
+`docs/architecture/WP-748-ADMINISTRATION-TAG-REVIEW.md`. The incorporated SPEC
+text assigns replication administration tag 75/revision 1 and preserves export
+page tag 74/revision 1; all other accepted requirements and existing bytes remain
+unchanged.
+
 ### Closed v1 registry
 
 `riffdb-types` owns this exact value registry. Tag zero and every unlisted tag
