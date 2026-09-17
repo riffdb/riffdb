@@ -22784,6 +22784,7 @@ work_packages:
     adr/0178-follower-activation-and-changelog-derived-backup.md,
     proto/**, crates/riffdb-proto/**, crates/riffdb-types/**, crates/riffdb-auth/**,
     crates/riffdb-operation-registry/**,
+    crates/riffdb-observability/**,
     crates/riffdb-policy/**, crates/riffdb-storage-api/**, crates/riffdb-storage-redb/**,
     crates/riffdb-commit/**, crates/riffdb-service/**, crates/riffdb-client-rust/**,
     crates/riffdb-api-grpc/**, crates/riffdb-server/**, crates/riffdb-cli/**,
