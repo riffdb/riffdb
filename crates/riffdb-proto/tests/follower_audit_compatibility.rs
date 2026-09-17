@@ -1,10 +1,11 @@
-//! Frozen registry immediately before the accepted follower audit V3 successor.
+//! Frozen schemas before follower audit V3 and the administration successor.
 // req: REP-005, REP-006, STO-012
 use riffdb_proto::durable::READABLE_RECORD_SCHEMAS;
 
 #[test]
 fn follower_audit_successor_preserves_every_preexisting_schema_identity() {
-    // Source literals from 4bf5eef6 and export successors from 60509ee2, not regenerated with current descriptors.
+    // Source literals from 4bf5eef6, export successors from 60509ee2, and audit V3
+    // from ffd4b04a. These are not regenerated with current descriptors.
     const FROZEN: &[(&str, &str)] = &[
         (
             "riffdb.storage.v1.StoredStorageFormatVersionV1",
@@ -442,8 +443,12 @@ fn follower_audit_successor_preserves_every_preexisting_schema_identity() {
             "riffdb.storage.v1.StoredApplicationExportPageCommitmentV1",
             "67189f097e5d611ea936d929641b9a009dcc1393b4fdf8e430c331c030d53812",
         ),
+        (
+            "riffdb.storage.v1.ServiceAuditRecordV3",
+            "c96941fbde4b88d6691c514792c409ddfa5248b60859fe8627dee97508db997b",
+        ),
     ];
-    assert_eq!(FROZEN.len(), 109);
+    assert_eq!(FROZEN.len(), 110);
     for (name, digest) in FROZEN {
         assert!(
             READABLE_RECORD_SCHEMAS.iter().any(|schema| {

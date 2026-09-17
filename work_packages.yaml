@@ -22823,6 +22823,15 @@ work_packages:
   closure:
     status: open
     decisions_taken:
+    - Implement the accepted administration receipt at tag 75 revision 1 after
+      the exact tag correction accepted in 83a4a23e. Preserve tag 74 export pages
+      and all 110 prior schema identities. Bound the payload to 2 KiB and require
+      exact target, generation, predecessor, before/after policy and explicit
+      invocation or original registration receipt. Legacy registration preserves
+      its fence; retirement changes only phase; expiry also requires configured
+      application expiry and prior degradation. Mixed hold decoding retains
+      tombstones distinctly. These values and codecs grant no runtime authority;
+      atomic writers, current authorization, recovery and migration remain open.
     - Register the accepted ServiceAuditRecordV3 at tag 22 revision 3 in its
       own schema. Preserve all 109 prior schema identities and frozen target
       fields; reuse V2 target semantics for the old variants. Existing audit

@@ -3735,6 +3735,102 @@ pub struct StoredRecordRegistryV2 {
     pub registry_digest: ::prost::alloc::vec::Vec<u8>,
 }
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct StoredReplicationAdministrationV1 {
+    #[prost(uint64, tag = "1")]
+    pub administration_sequence: u64,
+    #[prost(message, optional, tag = "2")]
+    pub timestamp: ::core::option::Option<TimestampV1>,
+    #[prost(enumeration = "stored_replication_administration_v1::Action", tag = "3")]
+    pub action: i32,
+    #[prost(message, optional, tag = "4")]
+    pub target: ::core::option::Option<ReplicationFollowerAuditTargetV3>,
+    #[prost(uint64, tag = "5")]
+    pub registration_generation: u64,
+    #[prost(message, optional, tag = "6")]
+    pub observed: ::core::option::Option<stored_changelog_history_state_v3::Position>,
+    #[prost(message, optional, tag = "10")]
+    pub after: ::core::option::Option<StoredReplicationSourceHoldV2>,
+    #[prost(oneof = "stored_replication_administration_v1::Before", tags = "7, 8, 9")]
+    pub before: ::core::option::Option<stored_replication_administration_v1::Before>,
+    #[prost(oneof = "stored_replication_administration_v1::Origin", tags = "11, 12")]
+    pub origin: ::core::option::Option<stored_replication_administration_v1::Origin>,
+}
+/// Nested message and enum types in `StoredReplicationAdministrationV1`.
+pub mod stored_replication_administration_v1 {
+    #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+    pub struct Explicit {
+        #[prost(bytes = "vec", tag = "1")]
+        pub request_id: ::prost::alloc::vec::Vec<u8>,
+        #[prost(message, optional, tag = "2")]
+        pub principal: ::core::option::Option<super::AuditPrincipalV1>,
+        #[prost(string, optional, tag = "3")]
+        pub approval_id: ::core::option::Option<::prost::alloc::string::String>,
+    }
+    #[derive(Clone, Copy, PartialEq, Eq, Hash, ::prost::Message)]
+    pub struct ConfiguredExpiry {
+        #[prost(uint64, tag = "1")]
+        pub registration_administration_sequence: u64,
+    }
+    #[derive(
+        Clone,
+        Copy,
+        Debug,
+        PartialEq,
+        Eq,
+        Hash,
+        PartialOrd,
+        Ord,
+        ::prost::Enumeration
+    )]
+    #[repr(i32)]
+    pub enum Action {
+        Unspecified = 0,
+        RegisterFollower = 1,
+        RetireFollower = 2,
+        ExpireFollower = 3,
+    }
+    impl Action {
+        /// String value of the enum field names used in the ProtoBuf definition.
+        ///
+        /// The values are not transformed in any way and thus are considered stable
+        /// (if the ProtoBuf definition does not change) and safe for programmatic use.
+        pub fn as_str_name(&self) -> &'static str {
+            match self {
+                Self::Unspecified => "ACTION_UNSPECIFIED",
+                Self::RegisterFollower => "ACTION_REGISTER_FOLLOWER",
+                Self::RetireFollower => "ACTION_RETIRE_FOLLOWER",
+                Self::ExpireFollower => "ACTION_EXPIRE_FOLLOWER",
+            }
+        }
+        /// Creates an enum from field names used in the ProtoBuf definition.
+        pub fn from_str_name(value: &str) -> ::core::option::Option<Self> {
+            match value {
+                "ACTION_UNSPECIFIED" => Some(Self::Unspecified),
+                "ACTION_REGISTER_FOLLOWER" => Some(Self::RegisterFollower),
+                "ACTION_RETIRE_FOLLOWER" => Some(Self::RetireFollower),
+                "ACTION_EXPIRE_FOLLOWER" => Some(Self::ExpireFollower),
+                _ => None,
+            }
+        }
+    }
+    #[derive(Clone, PartialEq, Eq, Hash, ::prost::Oneof)]
+    pub enum Before {
+        #[prost(message, tag = "7")]
+        Absent(super::UnitV1),
+        #[prost(message, tag = "8")]
+        Legacy(super::StoredReplicationSourceHoldV1),
+        #[prost(message, tag = "9")]
+        Registered(super::StoredReplicationSourceHoldV2),
+    }
+    #[derive(Clone, PartialEq, Eq, Hash, ::prost::Oneof)]
+    pub enum Origin {
+        #[prost(message, tag = "11")]
+        Explicit(Explicit),
+        #[prost(message, tag = "12")]
+        ConfiguredExpiry(ConfiguredExpiry),
+    }
+}
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct StoredReplicationFollowerStateV3 {
     #[prost(oneof = "stored_replication_follower_state_v3::State", tags = "1, 2")]
     pub state: ::core::option::Option<stored_replication_follower_state_v3::State>,

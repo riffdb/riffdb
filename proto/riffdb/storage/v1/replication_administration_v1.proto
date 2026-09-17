@@ -1,0 +1,42 @@
+syntax = "proto3";
+package riffdb.storage.v1;
+import "riffdb/storage/v1/common.proto";
+import "riffdb/storage/v1/changelog_history_state_v3.proto";
+import "riffdb/storage/v1/replication_source_hold_v1.proto";
+import "riffdb/storage/v1/replication_source_hold_v2.proto";
+import "riffdb/storage/v1/service_audit_v3.proto";
+
+// SPEC 13.5: source-only follower lifecycle receipt in the existing
+// administration-audit namespace, tag 75/revision 1. Bytes grant no authority.
+message StoredReplicationAdministrationV1 {
+  enum Action {
+    ACTION_UNSPECIFIED = 0;
+    ACTION_REGISTER_FOLLOWER = 1;
+    ACTION_RETIRE_FOLLOWER = 2;
+    ACTION_EXPIRE_FOLLOWER = 3;
+  }
+  message Explicit {
+    bytes request_id = 1;
+    AuditPrincipalV1 principal = 2;
+    optional string approval_id = 3;
+  }
+  message ConfiguredExpiry {
+    uint64 registration_administration_sequence = 1;
+  }
+  uint64 administration_sequence = 1;
+  TimestampV1 timestamp = 2;
+  Action action = 3;
+  ReplicationFollowerAuditTargetV3 target = 4;
+  uint64 registration_generation = 5;
+  StoredChangelogHistoryStateV3.Position observed = 6;
+  oneof before {
+    UnitV1 absent = 7;
+    StoredReplicationSourceHoldV1 legacy = 8;
+    StoredReplicationSourceHoldV2 registered = 9;
+  }
+  StoredReplicationSourceHoldV2 after = 10;
+  oneof origin {
+    Explicit explicit = 11;
+    ConfiguredExpiry configured_expiry = 12;
+  }
+}

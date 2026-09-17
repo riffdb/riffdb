@@ -661,6 +661,54 @@
       "durable_manifest": {"readable_key":"readable_redb_layout_versions","writable_key":"writable_redb_layout_versions"}
     },
     {
+      "id": "durable.replication_administration",
+      "title": "Source follower registration, retirement and expiry receipt",
+      "classification": "durable",
+      "owner": "riffdb-storage-api",
+      "source_assertions": [
+        {
+          "kind": "literal",
+          "path": "proto/riffdb/storage/v1/replication_administration_v1.proto",
+          "literal": "message StoredReplicationAdministrationV1 {"
+        }
+      ],
+      "readable_identities": [
+        "tag-75/revision-1"
+      ],
+      "writable_identities": [
+        "tag-75/revision-1"
+      ],
+      "current_identities": [
+        "tag-75/revision-1"
+      ],
+      "writer_policy": "single_current",
+      "compatibility_rule": "Checked target, generation, predecessor and before/after hold policy bind explicit invocation authority or original registration provenance. The 2 KiB codec refuses contradictory transitions; no decoded value grants release or writer authority. Tag 74 remains the existing export-page record.",
+      "breaking_when": "Tag 75, revision 1, field numbers, action meanings, policy preservation or expiry provenance changes.",
+      "supported_release_posture": "WP-748 implements bounded values and codecs only. Atomic administration writers, mixed-state storage validation, migration and public activation remain unimplemented. Earlier exact registry markers require their matching binary.",
+      "lifecycle": {
+        "active": [
+          "tag-75/revision-1"
+        ],
+        "read_only": [],
+        "retirement_candidate": [],
+        "retired": []
+      },
+      "reserved_identity_policy": "Administration tags, revisions, action values and fields are never reused.",
+      "evidence": [
+        "fixtures/proto/durable-replication-administration-v1.hex",
+        "crates/riffdb-storage-api/tests/replication_administration.rs",
+        "crates/riffdb-proto/tests/follower_audit_compatibility.rs"
+      ],
+      "checks": [
+        "./scripts/check-version-topology",
+        "./scripts/check-durable-format-manifest"
+      ],
+      "last_change": {
+        "classification": "new_domain_identity",
+        "decision": "ADR-0021/0178 and SPEC 13.5 / WP-748 registration audit and exact tag correction accepted in 83a4a23e"
+      }
+    },
+    {
       "id": "durable.replication_bootstrap_receipt",
       "title": "External V3 bootstrap pages, snapshot manifest, and progress",
       "classification": "durable",

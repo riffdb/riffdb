@@ -164,6 +164,15 @@ promotion are not yet enabled. The exact registry digest changes; earlier
 markers still require their matching binary until an explicit migration is
 implemented and proven. An older binary refuses the V3 identity.
 
+WP-748 also registers `StoredReplicationAdministrationV1` at tag 75, revision 1,
+with a 2 KiB payload bound. Tag 74, revision 1 remains the existing export-page
+record. Checked administration values bind the exact target, generation, source
+predecessor, policy images and explicit principal/request/approval or original
+registration receipt for expiry. Malformed transitions fail closed. The mixed
+hold reader preserves V1 holds, V2 policies and retired tombstones distinctly.
+These codecs activate no lifecycle writer, release authority or automatic
+registry migration; atomic runtime transitions and recovery proof remain required.
+
 WP-749 registers successor command capsule V7 (tag 54, revision 6) and segment
 V6 (tag 55, revision 6) for exact command-prefix evidence. Earlier record bytes
 remain readable by their own codecs and do not acquire intermediate values.

@@ -27,7 +27,7 @@
   "writable_format_upgrade_receipt_versions": [1],
   "readable_format_marker_versions": [1],
   "writable_format_marker_versions": [1],
-  "record_registry_digest": "f1f0926637edada2e9a27c567ecb5e96e24d2d86772a6562a733dd3d16f0cb61",
+  "record_registry_digest": "aafe827e9f5dd0ac327cea6e61071501201cffcd455f0d49c0a3c4f91284e97d",
   "readable_records": [
     {"record_type":"riffdb.storage.v1.StoredStorageFormatVersionV1","tag":1,"revision":1,"schema_hash":"07371c0b9eba9bfcad3118b345064b3d33a20a13641c6bde017e5c99dc6020ab"},
     {"record_type":"riffdb.storage.v1.StoredDatabaseIdentityV1","tag":2,"revision":1,"schema_hash":"de6f4f35fa52ca7664a85d9ffaa0041c506f3c5eb22632ba0ecd757dc6df1dea"},
@@ -134,6 +134,7 @@
     {"record_type":"riffdb.storage.v1.StoredApplicationExportOperationV2","tag":60,"revision":2,"schema_hash":"20cfe90b07db3206737761306b718660fd6e9c63c3ba73e2eb1384286652fc5d"},
     {"record_type":"riffdb.storage.v1.StoredApplicationExportPageCommitmentV1","tag":74,"revision":1,"schema_hash":"67189f097e5d611ea936d929641b9a009dcc1393b4fdf8e430c331c030d53812"},
     {"record_type":"riffdb.storage.v1.ServiceAuditRecordV3","tag":22,"revision":3,"schema_hash":"c96941fbde4b88d6691c514792c409ddfa5248b60859fe8627dee97508db997b"},
+    {"record_type":"riffdb.storage.v1.StoredReplicationAdministrationV1","tag":75,"revision":1,"schema_hash":"06ec2dcfbce5316142fa66ec954e75623382fae5e4e98eaed793871f862fd46d"},
     {"record_type":"riffdb.storage.v1.CapabilityRecordV1","tag":18,"revision":1,"schema_hash":"cb42c4ebbce8280123f8b34d4dcde74ca9483406847531f34d5fb3f18d40b342"},
     {"record_type":"riffdb.storage.v1.CapabilityRecordV1","tag":18,"revision":2,"schema_hash":"dee2398ebbc71824471fe5a5f96fcbebdde09e511fe6c11531c2b30210f9e6bf"},
     {"record_type":"riffdb.storage.v1.CapabilityTokenLookupV1","tag":19,"revision":1,"schema_hash":"e00696f3d2c110c5b2b99685e7987f7204d2f9576f8b41c5fcd5a894c746bc86"},
@@ -227,9 +228,10 @@
     {"record_type":"riffdb.storage.v1.StoredReplicationSourceHoldV2","tag":73,"revision":2,"schema_hash":"be8a329f7233292ae16e605e6a8d2b547ba19b848b878a2161cde5878f95155e"},
     {"record_type":"riffdb.storage.v1.StoredApplicationExportOperationV2","tag":60,"revision":2,"schema_hash":"20cfe90b07db3206737761306b718660fd6e9c63c3ba73e2eb1384286652fc5d"},
     {"record_type":"riffdb.storage.v1.StoredApplicationExportPageCommitmentV1","tag":74,"revision":1,"schema_hash":"67189f097e5d611ea936d929641b9a009dcc1393b4fdf8e430c331c030d53812"},
-    {"record_type":"riffdb.storage.v1.ServiceAuditRecordV3","tag":22,"revision":3,"schema_hash":"c96941fbde4b88d6691c514792c409ddfa5248b60859fe8627dee97508db997b"}
+    {"record_type":"riffdb.storage.v1.ServiceAuditRecordV3","tag":22,"revision":3,"schema_hash":"c96941fbde4b88d6691c514792c409ddfa5248b60859fe8627dee97508db997b"},
+    {"record_type":"riffdb.storage.v1.StoredReplicationAdministrationV1","tag":75,"revision":1,"schema_hash":"06ec2dcfbce5316142fa66ec954e75623382fae5e4e98eaed793871f862fd46d"}
   ],
-  "compatibility_fixture_digest": "b03704d9d77b6f603e06e4c6af087f6242c3b3baf7d897cbb7ceb040f2a3d3c7",
+  "compatibility_fixture_digest": "fa041b4790b5a66a10288af4a120f58362221c606e36c0d972b8af90f9ec2385",
   "upgrade_table": "compatibility/release-pairs-v1.json",
   "physical_format_inventory": "compatibility/physical-formats-v1.json",
   "backup_required_before_upgrade": true,

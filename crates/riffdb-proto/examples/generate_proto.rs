@@ -80,6 +80,7 @@ const STORAGE_SOURCES: &[&str] = &[
     "riffdb/storage/v1/service_audit_request_index_v1.proto",
     "riffdb/storage/v1/service_audit_v2.proto",
     "riffdb/storage/v1/service_audit_v3.proto",
+    "riffdb/storage/v1/replication_administration_v1.proto",
     "riffdb/storage/v1/validated_prefix_checkpoint_v1.proto",
     "riffdb/storage/v1/retention_watermark_v1.proto",
     "riffdb/storage/v1/vector_evidence_v1.proto",
@@ -140,6 +141,7 @@ const PRODUCTION_SOURCES: &[&str] = &[
     "riffdb/storage/v1/service_audit_request_index_v1.proto",
     "riffdb/storage/v1/service_audit_v2.proto",
     "riffdb/storage/v1/service_audit_v3.proto",
+    "riffdb/storage/v1/replication_administration_v1.proto",
     "riffdb/storage/v1/validated_prefix_checkpoint_v1.proto",
     "riffdb/storage/v1/retention_watermark_v1.proto",
     "riffdb/storage/v1/vector_evidence_v1.proto",
@@ -748,6 +750,11 @@ const DURABLE_RECORDS: &[DurableRecord] = &[
         "ServiceAuditRecordV3",
         PayloadBound::Admission,
     ),
+    durable(
+        "replication_administration_v1.proto",
+        "StoredReplicationAdministrationV1",
+        PayloadBound::Exact(2048),
+    ),
 ];
 
 const LEGACY_DURABLE_RECORD_COUNT: usize = 26;
@@ -1293,6 +1300,11 @@ fn main() -> Result<(), Box<dyn Error>> {
     let source_hold_record = durable_registry
         .get(current_v1_record_count + 69)
         .ok_or_else(|| io::Error::other("durable source hold registry is incomplete"))?;
+    let replication_administration_record = durable_registry
+        .get(current_v1_record_count + 76)
+        .ok_or_else(|| {
+            io::Error::other("durable replication administration registry is incomplete")
+        })?;
     let service_audit_v3_record = durable_registry
         .get(current_v1_record_count + 75)
         .ok_or_else(|| io::Error::other("durable service audit V3 registry is incomplete"))?;
@@ -1432,56 +1444,6 @@ fn main() -> Result<(), Box<dyn Error>> {
         &output_root,
         "fixtures/proto/durable-migration-v1-record-bounds.bin",
         &durable_record_bounds(migration_v1_records),
-    )?;
-    write_artifact(
-        &output_root,
-        "fixtures/proto/durable-capability-v2-schema-hash.bin",
-        &capability_v2_record.schema_hash,
-    )?;
-    write_artifact(
-        &output_root,
-        "fixtures/proto/durable-capability-v2-record-bound.bin",
-        &durable_record_bounds(std::slice::from_ref(capability_v2_record)),
-    )?;
-    write_artifact(
-        &output_root,
-        "fixtures/proto/durable-capability-v3-schema-hash.bin",
-        &capability_v3_record.schema_hash,
-    )?;
-    write_artifact(
-        &output_root,
-        "fixtures/proto/durable-capability-v3-record-bound.bin",
-        &durable_record_bounds(std::slice::from_ref(capability_v3_record)),
-    )?;
-    write_artifact(
-        &output_root,
-        "fixtures/proto/durable-capability-v4-schema-hash.bin",
-        &capability_v4_record.schema_hash,
-    )?;
-    write_artifact(
-        &output_root,
-        "fixtures/proto/durable-capability-v4-record-bound.bin",
-        &durable_record_bounds(std::slice::from_ref(capability_v4_record)),
-    )?;
-    write_artifact(
-        &output_root,
-        "fixtures/proto/durable-event-v2-schema-hash.bin",
-        &durable_event_v2_record.schema_hash,
-    )?;
-    write_artifact(
-        &output_root,
-        "fixtures/proto/durable-event-v2-record-bound.bin",
-        &durable_record_bounds(std::slice::from_ref(durable_event_v2_record)),
-    )?;
-    write_artifact(
-        &output_root,
-        "fixtures/proto/durable-capability-v5-schema-hash.bin",
-        &capability_v5_record.schema_hash,
-    )?;
-    write_artifact(
-        &output_root,
-        "fixtures/proto/durable-capability-v5-record-bound.bin",
-        &durable_record_bounds(std::slice::from_ref(capability_v5_record)),
     )?;
     write_artifact(
         &output_root,
@@ -1830,6 +1792,15 @@ fn main() -> Result<(), Box<dyn Error>> {
             retention_administration_record,
         ),
         ("service-audit-v3", service_audit_v3_record),
+        ("event-v2", durable_event_v2_record),
+        ("capability-v5", capability_v5_record),
+        ("capability-v4", capability_v4_record),
+        ("capability-v3", capability_v3_record),
+        ("capability-v2", capability_v2_record),
+        (
+            "replication-administration-v1",
+            replication_administration_record,
+        ),
     ] {
         for prefix in ["fixtures/proto", "crates/riffdb-proto/fixtures"] {
             write_artifact(
@@ -2121,7 +2092,7 @@ struct BuiltDurableRecord {
 fn build_durable_registry(
     storage: &FileDescriptorSet,
 ) -> Result<Vec<BuiltDurableRecord>, Box<dyn Error>> {
-    if DURABLE_RECORDS.len() != 105 {
+    if DURABLE_RECORDS.len() != 106 {
         return Err(
             io::Error::other("readable durable registry must contain exactly 105 records").into(),
         );
@@ -2147,9 +2118,9 @@ fn build_durable_registry(
         .iter()
         .map(|file| file.enum_type.len())
         .sum::<usize>();
-    if message_count != 204 || enum_count != 30 {
+    if message_count != 205 || enum_count != 30 {
         return Err(io::Error::other(format!(
-            "storage schema must contain exactly 204 messages and 30 enums; found {message_count} messages and {enum_count} enums"
+            "storage schema must contain exactly 205 messages and 30 enums; found {message_count} messages and {enum_count} enums"
         ))
         .into());
     }
@@ -2503,6 +2474,10 @@ fn durable_writable_registry_fixture(
     let command_prefix = records
         .get(current_v1_record_count + 70..current_v1_record_count + 72)
         .ok_or_else(|| io::Error::other("durable registry is missing command-prefix authority"))?;
+    let replication_administration =
+        records.get(current_v1_record_count + 76).ok_or_else(|| {
+            io::Error::other("durable registry is missing replication administration")
+        })?;
     let service_audit_v3 = records
         .get(current_v1_record_count + 75)
         .ok_or_else(|| io::Error::other("durable registry is missing service audit V3"))?;
@@ -2566,10 +2541,11 @@ fn durable_writable_registry_fixture(
         .chain(command_prefix.iter())
         .chain(std::iter::once(source_hold_v2))
         .chain(export_ledger.iter())
-        .chain(std::iter::once(service_audit_v3));
+        .chain(std::iter::once(service_audit_v3))
+        .chain(std::iter::once(replication_administration));
 
     let mut output = String::from("riffdb-durable-writable-registry-v1\n");
-    let _ = writeln!(output, "records {}", current_v1_record_count + 58);
+    let _ = writeln!(output, "records {}", current_v1_record_count + 59);
     for record in writable {
         let _ = write!(output, "{} schema-hash=", record.record_type);
         for byte in record.schema_hash {
