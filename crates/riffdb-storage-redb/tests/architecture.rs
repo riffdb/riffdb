@@ -556,7 +556,6 @@ fn sha256_dependency_is_confined_to_reviewed_integrity_boundaries() {
                     "backup.rs"
                         | "benchmark_support.rs"
                         | "changelog_v3.rs" // ADR-0186 exact allocator precondition, no new primitive.
-                        | "fresh_locator_coverage.rs"
                         | "format_upgrade.rs"
                         | "journal.rs"
                         | "migration_stage.rs"
@@ -1229,7 +1228,7 @@ fn every_live_database_engine_commit_routes_through_the_epoch_boundary() {
     assert_eq!(control.matches(".commit()").count(), 0);
     assert!(control.contains("set_durability(Durability::Immediate)"));
     assert!(control.contains("shared.mutation_gate.acquire()?"));
-    assert!(control.contains("shared.disable_and_fence_fresh_locator_coverage()"));
+    assert!(control.contains("shared.fence_writes()"));
     let deferred = store
         .split_once("fnapply_unpublished(")
         .expect("closed deferred commit path")
@@ -1331,7 +1330,7 @@ fn captured_immediate_owner_keeps_one_transaction_and_no_raw_mutation_escape() {
         .split_once("pub(crate)fnbegin_attributed_write(")
         .unwrap()
         .1
-        .split_once("pub(crate)fnarm_exact_empty_fresh_locator_coverage_for_test(")
+        .split_once("pub(crate)fnbegin_write(")
         .unwrap()
         .0;
     assert_eq!(direct.matches("database.begin_write()").count(), 1);
@@ -1913,8 +1912,6 @@ fn source_controls_are_crate_private_closed_barrier_owners_without_application_e
         "checkpoint_published_journal_suffix_for_barrier()",
         "shared.commit_durable(raw)",
         "refresh_durable_read_frontier()",
-        "abort_fresh_locator_rebase",
-        "finish_fresh_locator_rebase",
         "validate_retained_history_for_write",
         "CleanCloseState::Clean(_)",
     ] {
@@ -2615,56 +2612,36 @@ fn production_functions(source: &str) -> Vec<(String, String)> {
     functions
 }
 
-// req: OUT-001, OUT-002, TXN-042, REC-004, PERF-019
+// req: OUT-001, OUT-002, TXN-042, REC-004
+/// ADR-0236 removed fresh-locator coverage. What survives is the absence order
+/// the operational lookup must keep, and the bounded history fallback's scan
+/// count staying crate-private evidence rather than a public surface.
 #[test]
-fn fresh_locator_roles_are_private_affine_and_bound_to_existing_publication_edges() {
+fn absence_resolution_keeps_its_order_and_its_evidence_private() {
     let source_dir = crate_root().join("src");
-    let coverage = production_source(source_dir.join("fresh_locator_coverage.rs"));
-    for role in [
-        "PrivateChainWitness",
-        "CommandPublicationWitness",
-        "PreservePublicationWitness",
-        "DirectCommandWitness",
-        "PreservingImmediatePermit",
-        "PreservingImmediateWitness",
-        "CoverageRebaseWitness",
-    ] {
-        let declaration = coverage
-            .find(&format!("struct {role}"))
-            .expect("affine coverage role");
-        let attributes = &coverage[declaration.saturating_sub(160)..declaration];
-        assert!(!attributes.contains("derive(Clone"));
-        assert!(!attributes.contains("derive(Copy"));
-        assert!(!attributes.contains("derive(Default"));
-    }
-    assert!(!coverage.contains("pub struct FreshLocatorCoverage"));
-    assert!(!coverage.contains("serde"));
+    let store = production_source(source_dir.join("store.rs"));
     assert!(
-        !production_source(source_dir.join("store.rs"))
-            .contains("pub fn fresh_locator_history_fallback_scans"),
+        !store.contains("pub fn fresh_locator_history_fallback_scans"),
         "scan-count evidence must remain crate-private"
     );
+    assert!(
+        !source_dir.join("fresh_locator_coverage.rs").exists(),
+        "ADR-0236 removed the coverage module"
+    );
+    for retired in [
+        "fresh_locator_proves_absence",
+        "fresh_locator_allows_miss",
+        "arm_fresh_locator_coverage",
+        "fresh_locator_queued_segments_are_exact",
+        "fresh_locator_expected_mutations",
+    ] {
+        assert!(
+            !store.contains(retired),
+            "ADR-0236 removed {retired} with the coverage mechanism"
+        );
+    }
 
     let application = without_whitespace(&production_source(source_dir.join("application.rs")));
-    let admission = application
-        .split_once("fnadmit_or_resolve_group(")
-        .expect("grouped admission entry")
-        .1
-        .split_once("fnlookup_admission(")
-        .expect("grouped admission end")
-        .0;
-    let begin = admission
-        .find("self.begin_attributed_write(")
-        .expect("mutation gate");
-    let arm = admission
-        .find("access.arm_fresh_locator_coverage()?")
-        .expect("fresh proof arm");
-    let stage = admission
-        .find("stage_admission_group(&access")
-        .expect("admission staging");
-    assert!(begin < arm && arm < stage);
-    assert!(admission[begin..arm].contains("ChangelogAttributionV3::CommandAdmission"));
-
     let operational = application
         .split_once("fncommand_outcome_from_operational_indexes(")
         .expect("operational lookup")
@@ -2675,53 +2652,14 @@ fn fresh_locator_roles_are_private_affine_and_bound_to_existing_publication_edge
     let locator = operational
         .find("JournalTable::IdempotencyLocators")
         .expect("exact durable locator");
-    let proof = operational
-        .find("fresh_locator_proves_absence")
-        .expect("public-prefix absence proof");
+    let covers = operational
+        .find("command_derived_index_covers(")
+        .expect("command-derived coverage predicate");
     let scan = operational
         .find("JournalTable::Commits")
         .expect("bounded history fallback");
-    assert!(locator < proof && proof < scan);
-
-    let store = without_whitespace(&production_source(source_dir.join("store.rs")));
-    let publish = store
-        .split_once("fnpublish_pending_command(")
-        .expect("queued command publication")
-        .1
-        .split_once("fnpublish_pending_service_audit(")
-        .expect("queued command publication end")
-        .0;
-    let successor = publish
-        .find("publish_composite_successor")
-        .expect("ADR-0100 successor publication");
-    let coverage = publish
-        .find(".publish_command(witness)")
-        .expect("queued coverage publication");
-    let observation = publish
-        .find("observe_changelog_publication")
-        .expect("ADR-0100 observation");
-    assert!(successor < coverage && coverage < observation);
-
-    for excluded in [
-        "commits",
-        "idempotency_locators",
-        "provenance_locators",
-        "audit_by_request_locators",
-        "META_APPLICATION_SEQUENCE.as_bytes()",
-    ] {
-        assert!(
-            store.contains(excluded),
-            "the closed permit validator must reject {excluded}"
-        );
-    }
     assert!(
-        production_source(source_dir.join("fresh_locator_coverage.rs"))
-            .contains("riffdb-fresh-locator-preserving-permit-v1")
+        locator < covers && covers < scan,
+        "the exact locator read precedes the derived-index predicate, which precedes the scan"
     );
-    assert!(store.contains("canonical.windows(2).any"));
-    assert!(store.contains("publication_queue.lock()"));
-
-    assert!(store.contains("fresh_locator_expected_mutations"));
-    assert!(store.contains("fresh_locator_actual_mutations"));
-    assert!(store.contains("close_fresh_locator_mutation_expectations"));
 }

@@ -188,11 +188,6 @@ mod tests {
                 .expect("read"),
             Some(next.clone())
         );
-        assert!(
-            ports
-                .fresh_locator_public_and_private_roles_match_for_test()
-                .expect("installation lane preserves both roles")
-        );
         drop(ports);
 
         let mut reopened = RedbStore::open(&path.0).expect("reopen");

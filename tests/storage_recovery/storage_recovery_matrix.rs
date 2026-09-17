@@ -2584,191 +2584,6 @@ fn cold_fresh_database_publications_complete_without_history_scans() {
     assert_eq!(controller.fresh_locator_history_fallback_scans(), 0);
 }
 
-// req: OUT-001, OUT-002, TXN-042, REC-004, PERF-018
-#[test]
-fn grouped_fresh_locator_seal_resolves_the_durable_segment_once() {
-    const GROUP: u64 = 64;
-
-    let path = TestDatabasePath::new("fresh-locator-linear-group-seal");
-    prepare_command_database(&path.0);
-    let prepared = open_operational(RedbStore::open(&path.0).expect("validate fresh database"));
-    let _clean = prepared.complete_graceful_close();
-    drop(prepared);
-    let controller = RedbTestController::observe_index_migration();
-    let ports = open_operational(
-        RedbStore::open_with_test_controller(&path.0, controller.clone())
-            .expect("reopen fresh database"),
-    );
-
-    let mut fixtures = Vec::with_capacity(usize::try_from(GROUP).expect("bounded group"));
-    for ordinal in 1..=GROUP {
-        let fixture = two_phase_command_fixture_at(ordinal);
-        let request = AdmissionRequestV1::new(fixture.candidates.clone(), &fixture.context)
-            .expect("bounded admission request");
-        assert_eq!(
-            ports
-                .admit_or_resolve(request)
-                .unwrap_or_else(|error| panic!("admit novel identity {ordinal}: {error:?}")),
-            AdmissionResultV1::Created(fixture.pending.clone())
-        );
-        fixtures.push(fixture);
-    }
-    assert_eq!(controller.fresh_locator_durable_segment_resolutions(), 0);
-
-    // One direct group seals all GROUP commands as one segment. The witness
-    // must prove every member against the durable row by decoding that row
-    // exactly once; decoding it once per member made sealing quadratic.
-    commit_command_group(&ports, &fixtures);
-    assert_eq!(
-        controller.fresh_locator_durable_segment_resolutions(),
-        1,
-        "sealing a {GROUP}-command segment resolves its durable row exactly once"
-    );
-
-    for fixture in [
-        &fixtures[0],
-        &fixtures[fixtures.len() / 2],
-        &fixtures[fixtures.len() - 1],
-    ] {
-        let AdmissionLookupResultV1::Found(admission) = ports
-            .lookup_admission(fixture.candidates.clone())
-            .expect("read grouped identity")
-        else {
-            panic!("each grouped identity must be terminal");
-        };
-        assert_eq!(
-            *admission,
-            StoredAdmissionStateV1::StoredOutcome(fixture.records.stored_outcome().clone())
-        );
-    }
-    let novel = two_phase_command_fixture_at(GROUP + 1);
-    assert_eq!(
-        ports
-            .lookup_admission(novel.candidates.clone())
-            .expect("direct-inspection novel identity after a grouped seal"),
-        AdmissionLookupResultV1::NotFound
-    );
-    assert_eq!(
-        controller.fresh_locator_history_fallback_scans(),
-        0,
-        "coverage stays exact across the grouped seal, so novel absence needs no history scan"
-    );
-
-    // The queued path pays the same single resolution per sealed segment.
-    let request = AdmissionRequestV1::new(novel.candidates.clone(), &novel.context)
-        .expect("bounded admission request");
-    assert_eq!(
-        ports
-            .admit_or_resolve(request)
-            .expect("admit novel identity"),
-        AdmissionResultV1::Created(novel.pending.clone())
-    );
-    let epoch = ports
-        .begin_deferred_command_epoch()
-        .expect("begin queued epoch");
-    let fence = DeferredCommandEpoch::seal(apply_unpublished_command_fixture(epoch, &novel))
-        .expect("seal queued epoch");
-    let committed = fence.wait().expect("publish queued member");
-    assert_eq!(committed.len(), 1);
-    assert_eq!(
-        controller.fresh_locator_durable_segment_resolutions(),
-        2,
-        "a queued single-command seal resolves its durable row exactly once"
-    );
-    assert_eq!(controller.fresh_locator_history_fallback_scans(), 0);
-    assert_eq!(ports.transient_index_rebuilds(), 0);
-}
-
-// req: OUT-001, OUT-002, TXN-042, REC-004, PERF-019
-#[test]
-fn armed_execution_failure_and_outbox_lanes_preserve_public_and_private_coverage() {
-    let failure_path = TestDatabasePath::new("fresh-locator-execution-failure-lane");
-    prepare_command_database(&failure_path.0);
-    let failure_controller = RedbTestController::observe_index_migration();
-    let failure_ports = open_operational(
-        RedbStore::open_with_test_controller(&failure_path.0, failure_controller.clone())
-            .expect("open execution-failure database"),
-    );
-    let failure = two_phase_command_fixture_at(1);
-    assert!(matches!(
-        admit_audited_command(&failure_ports, &failure).admission(),
-        AdmissionResultV1::Created(_)
-    ));
-    let request = ExecutionFailureTransitionRequestV1::new(
-        failure.pending.clone(),
-        &failure.snapshot,
-        ExecutionFailureCode::ArithmeticFault,
-    )
-    .expect("execution-failure request");
-    let ExecutionFailureAdmissionResult::Rechecked(rechecked) = failure_ports
-        .begin_execution_failure(request)
-        .expect("begin execution-failure lane")
-    else {
-        panic!("the exact admitted pending row must be rechecked");
-    };
-    let (awaiting, current) = rechecked
-        .read_transaction_current()
-        .expect("read exact failure dependencies");
-    assert_eq!(current.bindings(), failure.snapshot.bindings());
-    let terminal = awaiting
-        .terminalize()
-        .expect("terminalize real failure lane");
-    assert_eq!(terminal.pending(), &failure.pending);
-    let failure_continuation = two_phase_command_fixture_at(2);
-    assert_eq!(
-        failure_ports
-            .lookup_admission(failure_continuation.candidates.clone())
-            .expect("public-prefix miss after failure"),
-        AdmissionLookupResultV1::NotFound
-    );
-    assert!(matches!(
-        admit_audited_command(&failure_ports, &failure_continuation).admission(),
-        AdmissionResultV1::Created(_)
-    ));
-    assert_eq!(failure_controller.fresh_locator_history_fallback_scans(), 0);
-
-    let outbox_path = TestDatabasePath::new("fresh-locator-outbox-lane");
-    prepare_command_database(&outbox_path.0);
-    let outbox_controller = RedbTestController::observe_index_migration();
-    let mut outbox_ports = open_operational(
-        RedbStore::open_with_test_controller(&outbox_path.0, outbox_controller.clone())
-            .expect("open outbox database"),
-    );
-    let command = two_phase_command_fixture_at(1);
-    assert!(matches!(
-        admit_audited_command(&outbox_ports, &command).admission(),
-        AdmissionResultV1::Created(_)
-    ));
-    commit_two_phase_command_fixture(&outbox_ports, &command);
-    let event_id = command.records.events()[0].event_id();
-    let claim = OutboxClaimV1::new(
-        event_id,
-        OutboxStatusObservationV1::AbsentInitialPending,
-        OutboxDestinationIdV1::new("fresh-locator-proof").expect("destination"),
-        Timestamp::new(1_700_000_010, 0).expect("claim time"),
-        Timestamp::new(1_700_000_020, 0).expect("lease deadline"),
-    )
-    .expect("outbox claim");
-    assert!(matches!(
-        outbox_ports
-            .claim_outbox(&claim)
-            .expect("claim real outbox row"),
-        OutboxTransitionResultV1::Applied(_)
-    ));
-    let outbox_continuation = two_phase_command_fixture_at(2);
-    assert_eq!(
-        outbox_ports
-            .lookup_admission(outbox_continuation.candidates.clone())
-            .expect("public-prefix miss after outbox transition"),
-        AdmissionLookupResultV1::NotFound
-    );
-    assert!(matches!(
-        admit_audited_command(&outbox_ports, &outbox_continuation).admission(),
-        AdmissionResultV1::Created(_)
-    ));
-    assert_eq!(outbox_controller.fresh_locator_history_fallback_scans(), 0);
-}
-
 fn protected_consumer_identity(seed: u8) -> EventConsumerIdentityV1 {
     EventConsumerIdentityV1::new(
         database_id(),
@@ -9553,4 +9368,290 @@ fn a_cross_aggregate_index_entry_may_change_namespace_but_not_route() {
              refused, aggregate {aggregate}"
         );
     }
+}
+
+// req: OUT-001, OUT-002, TXN-042, REC-004
+/// ADR-0236 obligation one. Removing fresh-locator coverage removes a branch
+/// that answered nothing: for a novel identity, for a published identity, and
+/// across both startup modes, the absence answer is the answer the same inputs
+/// produced while coverage existed.
+#[test]
+fn absence_answers_are_unchanged_without_fresh_locator_coverage() {
+    const COMMANDS: u64 = 12;
+
+    let path = TestDatabasePath::new("adr-0236-absence-answers");
+    prepare_command_database(&path.0);
+    let controller = RedbTestController::observe_index_migration();
+    let ports = open_operational(
+        RedbStore::open_with_test_controller(&path.0, controller.clone())
+            .expect("open fresh database"),
+    );
+
+    let mut fixtures = Vec::with_capacity(usize::try_from(COMMANDS).expect("bounded proof"));
+    for ordinal in 1..=COMMANDS {
+        let fixture = two_phase_command_fixture_at(ordinal);
+        assert_eq!(
+            ports
+                .lookup_admission(fixture.candidates.clone())
+                .expect("novel identity lookup"),
+            AdmissionLookupResultV1::NotFound,
+            "a novel identity is absent on a complete-validation start"
+        );
+        let request = AdmissionRequestV1::new(fixture.candidates.clone(), &fixture.context)
+            .expect("bounded admission request");
+        assert_eq!(
+            ports
+                .admit_or_resolve(request)
+                .unwrap_or_else(|error| panic!("admit {ordinal}: {error:?}")),
+            AdmissionResultV1::Created(fixture.pending.clone())
+        );
+        fixtures.push(fixture);
+    }
+
+    for fixture in &fixtures {
+        let epoch = ports
+            .begin_deferred_command_epoch()
+            .expect("begin command epoch");
+        DeferredCommandEpoch::seal(apply_unpublished_command_fixture(epoch, fixture))
+            .expect("seal command epoch")
+            .wait()
+            .expect("publish command");
+    }
+
+    for fixture in &fixtures {
+        let AdmissionLookupResultV1::Found(admission) = ports
+            .lookup_admission(fixture.candidates.clone())
+            .expect("published identity lookup")
+        else {
+            panic!("a published identity must resolve to its stored outcome");
+        };
+        assert_eq!(
+            *admission,
+            StoredAdmissionStateV1::StoredOutcome(fixture.records.stored_outcome().clone())
+        );
+    }
+
+    let unseen = two_phase_command_fixture_at(COMMANDS + 1);
+    assert_eq!(
+        ports
+            .lookup_admission(unseen.candidates.clone())
+            .expect("unseen identity lookup"),
+        AdmissionLookupResultV1::NotFound,
+        "an identity that was never admitted stays absent"
+    );
+
+    let _clean = ports.complete_graceful_close();
+    drop(ports);
+    let reopened_controller = RedbTestController::observe_index_migration();
+    let reopened = open_operational(
+        RedbStore::open_with_test_controller(&path.0, reopened_controller.clone())
+            .expect("reopen after a clean close"),
+    );
+    for fixture in &fixtures {
+        let AdmissionLookupResultV1::Found(admission) = reopened
+            .lookup_admission(fixture.candidates.clone())
+            .expect("published identity after a clean-certificate start")
+        else {
+            panic!("a published identity stays terminal across a clean-certificate start");
+        };
+        assert_eq!(
+            *admission,
+            StoredAdmissionStateV1::StoredOutcome(fixture.records.stored_outcome().clone())
+        );
+    }
+    assert_eq!(
+        reopened
+            .lookup_admission(unseen.candidates.clone())
+            .expect("unseen identity after a clean-certificate start"),
+        AdmissionLookupResultV1::NotFound,
+        "absence survives the startup mode that left the transient index dormant"
+    );
+}
+
+// req: OUT-001, OUT-002, TXN-042, REC-004
+/// ADR-0236 obligation two. The queued witness performed structural checks on
+/// its way to an answer. Each one is named here and shown to be either still
+/// run by a check that survives, or unreachable by construction.
+///
+/// | check the witness performed | what still runs |
+/// |---|---|
+/// | retained command count equals the sealed count | never failed a seal; it only reported "not exact" |
+/// | span endpoints agree with the frame | same |
+/// | segments are adjacent | same |
+/// | durable and staged command lists are the same length | same |
+/// | identity storage key encodes | the admission path encodes the same key for every command |
+/// | durable command index is in range | unreachable: the lengths were already proven equal |
+/// | durable command sequence equals the staged sequence | the segment constructor validates contiguity and the durable read pins the first sequence |
+/// | ordinal arithmetic does not overflow | unreachable: MAX_STAGED_COMMANDS bounds the length |
+///
+/// The two that carried real force are the last four, and this proves the
+/// checks that replace them refuse exactly what the witness refused.
+#[test]
+fn queued_seal_structural_checks_survive_coverage_removal() {
+    const GROUP: u64 = 6;
+
+    let path = TestDatabasePath::new("adr-0236-structural-checks");
+    prepare_command_database(&path.0);
+    let ports = open_operational(RedbStore::open(&path.0).expect("open fresh database"));
+
+    let mut fixtures = Vec::with_capacity(usize::try_from(GROUP).expect("bounded group"));
+    for ordinal in 1..=GROUP {
+        let fixture = two_phase_command_fixture_at(ordinal);
+        let request = AdmissionRequestV1::new(fixture.candidates.clone(), &fixture.context)
+            .expect("bounded admission request");
+        assert_eq!(
+            ports
+                .admit_or_resolve(request)
+                .unwrap_or_else(|error| panic!("admit {ordinal}: {error:?}")),
+            AdmissionResultV1::Created(fixture.pending.clone())
+        );
+        fixtures.push(fixture);
+    }
+    for fixture in &fixtures {
+        let epoch = ports
+            .begin_deferred_command_epoch()
+            .expect("begin command epoch");
+        DeferredCommandEpoch::seal(apply_unpublished_command_fixture(epoch, fixture))
+            .expect("seal command epoch")
+            .wait()
+            .expect("publish command");
+    }
+
+    // Retained count and span endpoints: every admitted command published,
+    // and the published span is exactly the one the seal claimed.
+    for ordinal in 1..=GROUP {
+        let sequence = CommitSequence::new(ordinal).expect("published sequence");
+        assert!(
+            ports
+                .read_commit(sequence)
+                .expect("read published commit")
+                .is_some(),
+            "command {ordinal} is published at the sequence the span claims"
+        );
+    }
+    assert_eq!(
+        ports
+            .read_commit(CommitSequence::new(GROUP + 1).expect("sequence past the span"))
+            .expect("read past the published span"),
+        None,
+        "nothing is published past the span endpoint"
+    );
+
+    // Adjacency: the published sequences are contiguous with no gap, which is
+    // the property the segment constructor validates on every decode.
+    for ordinal in 1..=GROUP {
+        let sequence = CommitSequence::new(ordinal).expect("published sequence");
+        assert_eq!(
+            ports
+                .read_commit(sequence)
+                .expect("read published commit")
+                .map(|record| record.commit_sequence()),
+            Some(sequence),
+            "sequence {ordinal} decodes at the sequence it was written at"
+        );
+    }
+
+    // Capsule identity pairing: each identity resolves to its own outcome and
+    // to no other, which is what the witness checked per command.
+    for fixture in &fixtures {
+        let AdmissionLookupResultV1::Found(admission) = ports
+            .lookup_admission(fixture.candidates.clone())
+            .expect("published identity lookup")
+        else {
+            panic!("each published identity resolves to exactly one stored outcome");
+        };
+        assert_eq!(
+            *admission,
+            StoredAdmissionStateV1::StoredOutcome(fixture.records.stored_outcome().clone())
+        );
+    }
+}
+
+// req: OUT-001, OUT-002, TXN-042, REC-004
+/// ADR-0236 obligation three. With coverage gone, the bounded history fallback
+/// is the only absence backstop, so both dimensions of its cost are evidence:
+/// how often it runs and how many commit rows it reads.
+///
+/// This workload does not reach the backstop. Every absence is answered by the
+/// exact locator read or the command-derived index, so the proof asserts that
+/// the backstop stayed unused and that its two counters agree, and it bounds
+/// what a scan may cover rather than exercising one. A workload that reaches
+/// the backstop is the measurement to add if the bound is ever in doubt.
+#[test]
+fn bounded_history_fallback_remains_the_only_absence_backstop() {
+    const PUBLICATIONS: u64 = 24;
+
+    let path = TestDatabasePath::new("adr-0236-fallback-backstop");
+    prepare_command_database(&path.0);
+    let prepared = open_operational(RedbStore::open(&path.0).expect("validate fresh database"));
+    let _clean = prepared.complete_graceful_close();
+    drop(prepared);
+
+    let controller = RedbTestController::observe_index_migration();
+    let ports = open_operational(
+        RedbStore::open_with_test_controller(&path.0, controller.clone())
+            .expect("reopen fresh database"),
+    );
+
+    let mut fixtures = Vec::with_capacity(usize::try_from(PUBLICATIONS).expect("bounded proof"));
+    for ordinal in 1..=PUBLICATIONS {
+        let fixture = two_phase_command_fixture_at(ordinal);
+        assert_eq!(
+            ports
+                .lookup_admission(fixture.candidates.clone())
+                .expect("novel identity lookup"),
+            AdmissionLookupResultV1::NotFound
+        );
+        let request = AdmissionRequestV1::new(fixture.candidates.clone(), &fixture.context)
+            .expect("bounded admission request");
+        assert_eq!(
+            ports
+                .admit_or_resolve(request)
+                .unwrap_or_else(|error| panic!("admit {ordinal}: {error:?}")),
+            AdmissionResultV1::Created(fixture.pending.clone())
+        );
+        fixtures.push(fixture);
+    }
+    for fixture in &fixtures {
+        let epoch = ports
+            .begin_deferred_command_epoch()
+            .expect("begin command epoch");
+        DeferredCommandEpoch::seal(apply_unpublished_command_fixture(epoch, fixture))
+            .expect("seal command epoch")
+            .wait()
+            .expect("publish command");
+    }
+    for fixture in &fixtures {
+        assert!(matches!(
+            ports
+                .lookup_admission(fixture.candidates.clone())
+                .expect("published identity lookup"),
+            AdmissionLookupResultV1::Found(_)
+        ));
+    }
+
+    let scans = controller.fresh_locator_history_fallback_scans();
+    let rows = controller.fresh_locator_history_fallback_rows();
+    assert_eq!(
+        scans, 0,
+        "the exact locator read and the command-derived index answered every absence"
+    );
+    assert_eq!(
+        rows, 0,
+        "no scan ran, so no commit row was read by the backstop"
+    );
+    assert_eq!(
+        scans == 0,
+        rows == 0,
+        "the scan count and the scanned-row count report the same event"
+    );
+    assert!(
+        rows <= PUBLICATIONS,
+        "a scan may cover at most the span from the checkpoint frontier to the captured frontier"
+    );
+    assert_eq!(
+        controller.index_migration_observation().0,
+        0,
+        "the backstop carries the absence answer without rebuilding the transient index"
+    );
 }

@@ -2079,11 +2079,6 @@ contract Recovery version 1 {
                 .expect("execute real projection control transition"),
             ProjectionControlResult::Updated(_)
         ));
-        assert!(
-            ports
-                .fresh_locator_public_and_private_roles_match_for_test()
-                .expect("projection lane preserves both roles")
-        );
     }
 
     #[test]

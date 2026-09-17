@@ -1082,8 +1082,6 @@ impl CatalogAdministrationRepository for RedbOperationalPorts {
         let encoded_active = encode_active_catalog_pointer_v1(&requested)?;
         let audit_record = StoredAdministrationAuditRecordV1::Catalog(record);
 
-        if existing.is_none() {}
-
         if existing.is_none() {
             let key = encode_contract_bundle_key(
                 intent.bundle().lineage(),
@@ -1398,7 +1396,6 @@ impl QueryModuleAdministrationRepository for RedbOperationalPorts {
         let encoded_module = encode_query_module_v1(intent.module())?;
         let encoded_active = encode_query_module_administration_v1(&record)?;
         let audit_record = StoredAdministrationAuditRecordV1::QueryModule(record.clone());
-        if existing.is_none() {}
         if existing.is_none() {
             let key = encode_query_module_key(intent.module().module_hash());
             let mut table = transaction.open_table(QUERY_MODULES).map_err(table_error)?;
@@ -4117,7 +4114,6 @@ mod tests {
     /// returns the ports, the module, and the publication's own sequence.
     fn published_reactive_module(
         label: &str,
-        arm_coverage: bool,
     ) -> (
         TestPath,
         RedbOperationalPorts,
@@ -4125,7 +4121,6 @@ mod tests {
         AdministrationSequence,
     ) {
         let (path, mut ports) = initialized_ports(label);
-        if arm_coverage {}
         let contract = bundle("reactive-hygiene", 1, 0x51);
         assert!(matches!(
             ports
@@ -5345,11 +5340,6 @@ mod tests {
             .expect("detect bundle conflict");
         assert_eq!(conflict, CatalogActivationResult::BundleConflict);
         assert_eq!(audit_count(&ports), 2);
-        assert!(
-            ports
-                .fresh_locator_public_and_private_roles_match_for_test()
-                .expect("catalog and service-audit lanes preserve both roles")
-        );
     }
 
     // req: OUT-001, OUT-002, TXN-042
@@ -5405,11 +5395,6 @@ mod tests {
             } if administration_sequence == AdministrationSequence::new(2).expect("sequence two")
         ));
         assert_eq!(audit_count(&ports), 2);
-        assert!(
-            ports
-                .fresh_locator_public_and_private_roles_match_for_test()
-                .expect("query-module lane preserves both roles")
-        );
 
         drop(ports);
         let store = RedbStore::open(&path.0).expect("reopen database");
@@ -5508,11 +5493,6 @@ mod tests {
             ServiceAuditAppendResult::Appended(_)
         ));
         assert_eq!(audit_count(&ports), 4);
-        assert!(
-            ports
-                .fresh_locator_public_and_private_roles_match_for_test()
-                .expect("capability bootstrap lane preserves both roles")
-        );
     }
 
     // req: OUT-001, OUT-002, TXN-042
@@ -5632,11 +5612,6 @@ mod tests {
             } if administration_sequence == AdministrationSequence::new(4).expect("sequence four")
         ));
         assert_eq!(audit_count(&ports), 4);
-        assert!(
-            ports
-                .fresh_locator_public_and_private_roles_match_for_test()
-                .expect("capability administration lane preserves both roles")
-        );
     }
 
     #[test]
@@ -5760,7 +5735,7 @@ mod tests {
     #[test]
     fn redb_reactive_republish_answers_without_taking_the_write_lock() {
         let (_path, mut ports, module, administration_sequence) =
-            published_reactive_module("reactive-republish-read", true);
+            published_reactive_module("reactive-republish-read");
         let records_before = audit_count(&ports);
 
         // The exclusive mutation gate is the operationally significant cost:
@@ -5791,17 +5766,12 @@ mod tests {
             records_before,
             "a republish writes nothing durable"
         );
-        assert!(
-            ports
-                .fresh_locator_public_and_private_roles_match_for_test()
-                .expect("reactive-module lane preserves both roles")
-        );
     }
 
     #[test]
     fn redb_reactive_republish_under_the_write_lock_serves_the_original_sequence() {
         let (_path, mut ports, module, administration_sequence) =
-            published_reactive_module("reactive-republish-locked", false);
+            published_reactive_module("reactive-republish-locked");
         let records_before = audit_count(&ports);
 
         // Simulates the lost race at the API level: a racing publish landed
@@ -5832,7 +5802,7 @@ mod tests {
     #[test]
     fn redb_reactive_republish_fails_closed_on_an_allocator_skewed_stream() {
         let (_path, mut ports, module, _sequence) =
-            published_reactive_module("reactive-republish-skew", false);
+            published_reactive_module("reactive-republish-skew");
 
         // Skew the allocator one ahead of the stream it owns. The write path has
         // always refused this through `validate_administration_tail` before
