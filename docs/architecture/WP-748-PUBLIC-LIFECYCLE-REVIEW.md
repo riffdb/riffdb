@@ -1,8 +1,15 @@
 # WP-748 public registration and retirement fixture review
 
 Package: WP-748. Tier: guarantee. Review range: `6510d052..43a88c7e`.
-Status: implementation and full validation complete; human fixture review pending. This implements the already accepted registration-audit
+Status: implementation and full validation complete; human fixture review accepted. This implements the already accepted registration-audit
 amendment; it does not propose another guarantee amendment or close WP-748.
+
+## Human fixture acceptance
+
+Maintainer, in session, 2026-09-17: "i approve", in response to the exact fixture
+and adapter review for `6510d052..43a88c7e`, summarized here and supplied as
+`WP-748-public-fixtures-43a88c7e.patch`. This acceptance authorizes integration
+of the validated public registration and retirement increment.
 
 ## Behavior
 
