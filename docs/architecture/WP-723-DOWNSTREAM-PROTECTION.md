@@ -67,6 +67,16 @@ The first hosted runs exposed independent stale packaging and tooling checks:
 - The fuzz lockfile adopts the main workspace's patched h2 0.4.16 and rustls
   0.23.45, and reconciles existing manifest dependencies. Dependency policy and
   security audit remain enforced; no advisory is ignored.
+- The 32-cycle recovery-stage cleanup test gets an exclusive runner slot and
+  a bounded 240-second campaign limit after timing out at 120 seconds alongside
+  other storage campaigns. It passes unchanged in isolation in 51 seconds.
+  The complete migration gate passes in isolation in 15 seconds but also stalled
+  under the generic ceiling locally. Its synthetic nextest wrapper now allows
+  720 seconds, covering the gate's existing 600-second terminal-state hang
+  ceiling and bounded startup/shutdown phases, and reserves an exclusive slot.
+  The two replication campaigns that missed progress/outer deadlines also run
+  exclusively with a 240-second outer bound. All iterations, assertions, and
+  in-test deadlines remain; retries stay zero.
 - Core workflows run on pull requests, main pushes, tags, and manual dispatch,
   avoiding duplicate branch-push and pull-request runs for the same change.
 
@@ -77,7 +87,11 @@ offline installation, all 17 Python runtime tests and strict type checks;
 real-process source bootstrap smoke; positive and negative Go package arrival;
 workflow syntax; fuzz dependency policy and security audit; and package acceptance.
 The parser smoke completed 235,011 executions in 31 seconds without a failure.
-Package acceptance passed all nine steps; unscoped acceptance passed all eight.
+Initial package acceptance passed all nine steps; unscoped acceptance passed
+all eight. Removing the obsolete script-specific Rust test expanded acceptance:
+all 11 steps now pass, including strict Clippy and all 155 testkit-server tests.
+Both previously failing replication campaigns pass with unchanged progress
+assertions (52 and 71 seconds in isolation).
 Adapter-owned hosted runs passed independently:
 
 - [OpenFGA](https://github.com/riffdb/riffdb-openfga/actions/runs/35284107855)
