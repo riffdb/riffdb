@@ -1507,6 +1507,17 @@ impl CapabilityAdministrationTransactionPort for SharedRedbOperationalPorts {
     }
 }
 
+impl riffdb_storage_api::ReplicationAdministrationTransactionPort for SharedRedbOperationalPorts {
+    type Candidate = <riffdb_storage_redb::RedbOperationalPorts as riffdb_storage_api::ReplicationAdministrationTransactionPort>::Candidate;
+
+    fn begin_replication_administration(
+        &self,
+        candidate: riffdb_storage_api::ReplicationAdministrationCandidateV1,
+    ) -> Result<Self::Candidate, StorageError> {
+        riffdb_storage_api::ReplicationAdministrationTransactionPort::begin_replication_administration(&self.shared, candidate)
+    }
+}
+
 impl CapabilityCreateCandidateTransaction for SharedCapabilityCreateCandidate {
     type AwaitingDecision = SharedCapabilityCreateAwaiting;
 

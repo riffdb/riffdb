@@ -53,7 +53,7 @@ pub use audit_executor::{
     ControlPlaneExecutionCapacityPermit, ControlPlaneExecutor, CoordinatorLifecycleState,
     CoordinatorShutdownError, CoordinatorStartError, CoordinatorWorkloadCapacity,
     QueryModuleDeploymentReceipt, ReactiveModulePublicationReceipt, ReadOnlyExecutionReceipt,
-    RunningCommandCoordinator,
+    ReplicationAdministrationReceipt, RunningCommandCoordinator,
 };
 pub use clock::{
     AdministrationClock, AdministrationClockError, AdmissionClock, AdmissionClockError,
@@ -78,7 +78,7 @@ pub use control_plane::{
     ControlPlanePreparationError, ControlPlaneTerminalAudit, PublishedReactiveModule,
     QueryModuleDeploymentOutcome, QueryModuleDeploymentPreparation, QueryModuleDeploymentResult,
     ReactiveModulePublicationExecutionResult, ReactiveModulePublicationOutcome,
-    ReactiveModulePublicationPreparation,
+    ReactiveModulePublicationPreparation, ReplicationAdministrationExecutionResult,
 };
 #[doc(hidden)]
 pub use coordinator_time::CoordinatorMonotonicClock;

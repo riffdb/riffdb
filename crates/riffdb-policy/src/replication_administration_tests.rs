@@ -233,6 +233,16 @@ fn follower_lifecycle_preparation_binds_request_and_reloads_before_every_retry()
             format!("{proof:?}"),
             "AuthorizedReplicationAdministrationPreparation([REDACTED])"
         );
+        let current = inner
+            .resolve_current(fixture.authenticated_principal())
+            .unwrap();
+        let current = transaction_current_facts(&current).unwrap();
+        let (final_preparation, now) = proof
+            .reauthorize(&current, timestamp(250))
+            .unwrap()
+            .into_parts();
+        assert_eq!(final_preparation.request(), request);
+        assert_eq!(now, timestamp(250));
     }
     assert_eq!(resolver.calls.load(Ordering::Relaxed), 2);
     assert_eq!(clock.calls.load(Ordering::Relaxed), 2);
@@ -247,4 +257,56 @@ fn follower_lifecycle_preparation_binds_request_and_reloads_before_every_retry()
     }
     assert_eq!(resolver.calls.load(Ordering::Relaxed), 4);
     assert_eq!(clock.calls.load(Ordering::Relaxed), 4);
+
+    // Final authorization cannot trust the earlier grant, environment or actor,
+    // even when initial preparation still succeeds through its old resolver.
+    clock.now.store(200, Ordering::Relaxed);
+    for request in requests {
+        for changed in 0..8 {
+            let ReplicationAdministrationDecision::Allow(proof) = authorizer
+                .authorize_replication_administration(fixture.authenticated_principal(), request)
+                .unwrap()
+            else {
+                panic!("initial grant");
+            };
+            let current = inner
+                .resolve_current(fixture.authenticated_principal())
+                .unwrap();
+            let mut current = transaction_current_facts(&current).unwrap();
+            match changed {
+                0 => current.activity = CapabilityActivity::Revoked,
+                1 => current.revision = NonZeroU64::new(2).unwrap(),
+                2 => current.environment = Environment::new("another-environment").unwrap(),
+                3 => current.audiences = vec![Audience::new("another-audience").unwrap()],
+                4 => current.principal_id = ActorId::new("another-operator").unwrap(),
+                5 => {
+                    current.grant = administrative_grant(
+                        vec![
+                            CapabilityPermissionV1::unparameterized(
+                                CapabilityPermissionKindV1::ReplicateChangelog,
+                            )
+                            .unwrap(),
+                        ],
+                        Vec::new(),
+                    )
+                }
+                6 => {
+                    current.grant = administrative_grant(
+                        vec![
+                            CapabilityPermissionV1::unparameterized(
+                                CapabilityPermissionKindV1::AdministerCapabilities,
+                            )
+                            .unwrap(),
+                        ],
+                        vec![CapabilityPermissionKindV1::AdministerCapabilities],
+                    )
+                }
+                _ => current.expires_at = timestamp(250),
+            }
+            assert!(
+                proof.reauthorize(&current, timestamp(250)).is_err(),
+                "changed fact {changed}"
+            );
+        }
+    }
 }

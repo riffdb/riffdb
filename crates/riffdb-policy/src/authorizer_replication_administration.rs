@@ -13,6 +13,43 @@ pub struct AuthorizedReplicationAdministrationPreparation {
 }
 
 impl AuthorizedReplicationAdministrationPreparation {
+    /// Consumes initial preparation at the drained transaction's safe point.
+    /// Commit supplies digest-free facts from that transaction and samples its
+    /// clock after opening it. No resolver, I/O or cache participates here.
+    pub fn reauthorize(
+        self,
+        current: &TransactionCurrentCapabilityFacts,
+        now: Timestamp,
+    ) -> Result<AuthorizedReplicationAdministration, PolicyCode> {
+        let facts = CurrentFacts {
+            capability_id: current.capability_id(),
+            revision: current.revision(),
+            activity: match current.activity() {
+                CapabilityActivity::Active => CurrentCapabilityActivity::Active,
+                CapabilityActivity::Revoked => CurrentCapabilityActivity::Revoked,
+            },
+            database_id: current.database_id(),
+            environment: current.environment().clone(),
+            principal_id: current.principal_id().clone(),
+            actor_kind: current.actor_kind(),
+            audiences: current.audiences().to_vec(),
+            issued_at: current.issued_at(),
+            expires_at: current.expires_at(),
+            grant: current.grant().clone(),
+        };
+        evaluate(
+            &PrincipalFacts::from(&self.principal),
+            &facts,
+            self.request.target().database_id(),
+            &self.environment,
+            now,
+            self.request.target().database_id(),
+        )?;
+        Ok(AuthorizedReplicationAdministration {
+            preparation: self,
+            timestamp: now,
+        })
+    }
     /// Exact request whose target and policy/generation were admitted.
     #[must_use]
     pub const fn request(&self) -> ReplicationAdministrationRequestV1 {
@@ -35,6 +72,20 @@ impl AuthorizedReplicationAdministrationPreparation {
     #[must_use]
     pub const fn authorized_at(&self) -> Timestamp {
         self.authorized_at
+    }
+}
+
+/// Move-only successful final decision; only pure reauthorization constructs it.
+#[derive(Debug)]
+pub struct AuthorizedReplicationAdministration {
+    preparation: AuthorizedReplicationAdministrationPreparation,
+    timestamp: Timestamp,
+}
+impl AuthorizedReplicationAdministration {
+    /// Lowers the unchanged request/principal and the one final audit timestamp.
+    #[must_use]
+    pub fn into_parts(self) -> (AuthorizedReplicationAdministrationPreparation, Timestamp) {
+        (self.preparation, self.timestamp)
     }
 }
 

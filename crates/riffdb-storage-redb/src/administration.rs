@@ -4045,6 +4045,9 @@ fn bootstrap_replay(
 
 #[cfg(test)]
 mod tests {
+    mod replication_writes {
+        include!("replication_administration_write_tests.rs");
+    }
     use std::num::{NonZeroU16, NonZeroU32};
     use std::path::PathBuf;
 

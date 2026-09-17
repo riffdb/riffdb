@@ -4,6 +4,8 @@
 
 #[path = "control_plane_replication.rs"]
 mod replication;
+#[path = "control_plane_replication_administration.rs"]
+mod replication_administration;
 
 use std::num::{NonZeroU16, NonZeroU32, NonZeroU64};
 use std::path::PathBuf;

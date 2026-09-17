@@ -22823,6 +22823,18 @@ work_packages:
   closure:
     status: open
     decisions_taken:
+    - Route explicit follower registration and retirement through the existing
+      sole-writer actor and a closed consuming source-barrier transaction port.
+      Reauthorize digest-free transaction-current capability facts with a fresh
+      clock sample even on exact replay, and atomically commit the accepted
+      retention-attributed audit, V2 hold and V3 receipt. Normalize registration
+      replay by lineage, hold ID and immutable policy, and retirement by the
+      original generation; a fresh invocation ID still returns the original
+      authoritative sequence. Registration replay after retirement returns that
+      original evidence without resurrecting the hold. Retirement drops only
+      matching bootstrap custody and preserves independent archive holds. Preserve
+      legacy adoption and bounded capacity, including tombstones; no new durable
+      identity, public RPC, configured-expiry continuation or migration is added.
     - Bind explicit follower lifecycle preparation to the entire request,
       including its exact lineage target and retirement generation. Reuse the
       existing global administrative authority used by offline maintenance;
