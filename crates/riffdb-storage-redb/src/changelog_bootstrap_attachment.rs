@@ -36,16 +36,44 @@ impl ReplicationSourceControl {
                 .transpose()
         };
         let old_bootstrap = read_hold(bootstrap)?;
-        let old_follower = read_hold(follower)?;
-        match (old_bootstrap, old_follower) {
-            (None, Some(exact)) if exact == follower => return Ok(false),
-            (Some(exact), None) if exact == bootstrap => {}
-            (Some(exact), Some(attached)) if exact == bootstrap && attached == follower => {}
+        let old_follower = table
+            .get(follower.storage_key().as_slice())
+            .map_err(precommit_storage_error)?
+            .map(|row| {
+                decode_replication_source_hold(row.value())
+                    .map(|decoded| *decoded.value())
+                    .map_err(crate::error::codec_error)
+            })
+            .transpose()?;
+        let policy = match (old_bootstrap, old_follower) {
+            (None, Some(State::Registered(policy)))
+                if policy.phase() == Phase::Attached && policy.hold() == follower =>
+            {
+                return Ok(false);
+            }
+            (Some(exact), Some(State::Registered(policy)))
+                if exact == bootstrap && registered_ack::permits_bootstrap(policy, bootstrap) =>
+            {
+                Some(
+                    registered_ack::attach(policy, bootstrap, barrier.observation().history)
+                        .map_err(value_error)?,
+                )
+            }
+            (None, Some(State::Legacy(exact))) if exact == follower => return Ok(false),
+            (Some(exact), None) if exact == bootstrap => None,
+            (Some(exact), Some(State::Legacy(attached)))
+                if exact == bootstrap && attached == follower =>
+            {
+                None
+            }
             _ => return Err(Refusal::InvalidPosition),
-        }
+        };
         drop(table);
-        let encoded =
-            encode_replication_source_hold_v1(follower).map_err(crate::error::codec_error)?;
+        let encoded = match policy {
+            Some(policy) => encode_replication_source_hold_v2(policy),
+            None => encode_replication_source_hold_v1(follower),
+        }
+        .map_err(crate::error::codec_error)?;
         let write = barrier.begin()?;
         let (receipt, _) = prepare_control_receipt(
             write.transaction()?,

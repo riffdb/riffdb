@@ -22823,6 +22823,19 @@ work_packages:
   closure:
     status: open
     decisions_taken:
+    - Preserve pending V2 registration policy and generation through existing
+      bootstrap custody and atomic attachment. Permit its exact registered
+      predecessor cut or a later validated cut; registration audit and the
+      non-reusable source identity bind the generation without changing artifact
+      bytes. Require the exact held bootstrap job before attachment, preserve
+      adopted legacy followers' exact attachment retries, and refuse retired
+      identities even on equal job retries. Artifact cleanup excludes retired
+      policy only after full same-pin registration and release validation;
+      a separate bootstrap or archive job remains held. Held artifact handles
+      revalidate current custody before outbound manifests or pages, including
+      after page I/O, so retirement refuses transfers through old handles.
+      No public registration,
+      retirement, expiry release or migration is activated by these updates.
     - Preserve V2 policy and its original registration receipt when an attached
       follower advances its exact acknowledgement through the existing drained
       SourceHold lane. Keep its empty physical receipt and unchanged application

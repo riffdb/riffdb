@@ -6,7 +6,7 @@ use riffdb_storage_api::{
     proto_codec::decode_replication_source_hold,
 };
 
-fn history(ports: &crate::RedbOperationalPorts) -> History {
+pub(super) fn history(ports: &crate::RedbOperationalPorts) -> History {
     crate::changelog_v3_roots::validate_retained_history(
         &ports.shared.database.begin_read().unwrap(),
     )
@@ -14,7 +14,7 @@ fn history(ports: &crate::RedbOperationalPorts) -> History {
     .unwrap()
 }
 
-fn current(ports: &crate::RedbOperationalPorts, id: Hold) -> Policy {
+pub(super) fn current(ports: &crate::RedbOperationalPorts, id: Hold) -> Policy {
     let pin = ports.shared.database.begin_read().unwrap();
     let table = pin
         .open_table(crate::changelog_v3_activation::SOURCE_HOLDS)

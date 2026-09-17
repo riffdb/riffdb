@@ -49,6 +49,43 @@ pub(crate) struct ReplicationSourceControl {
 }
 
 impl RedbOperationalPorts {
+    /// A retained artifact handle is not permission to continue after retirement
+    /// or custody loss. Outbound bytes use one current, completely validated pin.
+    pub(crate) fn validate_bootstrap_custody(&self, bootstrap: Hold) -> Result<(), StorageError> {
+        if self.shared.write_fenced.load(Ordering::Acquire) || self.shared.is_follower_mode() {
+            return Err(storage_error(StorageErrorKind::Unavailable));
+        }
+        let root = self.shared.capture_checkpoint_root()?;
+        let history = crate::changelog_v3_roots::validate_retained_history(&root)?
+            .ok_or_else(|| storage_error(StorageErrorKind::IncompatibleFormat))?;
+        if bootstrap.kind() != Kind::Bootstrap || bootstrap.lineage() != history.lineage() {
+            return Err(storage_error(StorageErrorKind::Unavailable));
+        }
+        let table = root.open_table(SOURCE_HOLDS).map_err(table_error)?;
+        let row = table
+            .get(bootstrap.storage_key().as_slice())
+            .map_err(precommit_storage_error)?
+            .ok_or_else(|| storage_error(StorageErrorKind::Unavailable))?;
+        let held = *decode_replication_source_hold_v1(row.value())
+            .map_err(crate::error::codec_error)?
+            .value();
+        if held != bootstrap {
+            return Err(storage_error(StorageErrorKind::Unavailable));
+        }
+        let key = Hold::storage_key_for(bootstrap.id(), Kind::FollowerAcknowledgement);
+        if let Some(row) = table.get(key.as_slice()).map_err(precommit_storage_error)? {
+            let state = *decode_replication_source_hold(row.value())
+                .map_err(crate::error::codec_error)?
+                .value();
+            if let State::Registered(policy) = state
+                && !registered_ack::permits_bootstrap(policy, bootstrap)
+            {
+                return Err(storage_error(StorageErrorKind::Unavailable));
+            }
+        }
+        Ok(())
+    }
+
     /// Bounded source-only custody probe. Cleanup already owns the artifact's
     /// actual engine exclusion, so its registration cannot race this read.
     pub(crate) fn bootstrap_id_is_held(
@@ -59,6 +96,10 @@ impl RedbOperationalPorts {
             return Err(storage_error(StorageErrorKind::Unavailable));
         }
         let root = self.shared.capture_checkpoint_root()?;
+        // Excluding a retired policy can permit artifact cleanup. Prove the
+        // original registration and exact release from this same pin first.
+        crate::changelog_v3_roots::validate_retained_history(&root)?
+            .ok_or_else(|| storage_error(StorageErrorKind::IncompatibleFormat))?;
         let table = root.open_table(SOURCE_HOLDS).map_err(table_error)?;
         for kind in [
             Kind::Bootstrap,
@@ -67,11 +108,18 @@ impl RedbOperationalPorts {
         ] {
             let key = Hold::storage_key_for(id, kind);
             if let Some(row) = table.get(key.as_slice()).map_err(precommit_storage_error)? {
-                let hold = *decode_replication_source_hold_v1(row.value())
+                let state = *decode_replication_source_hold(row.value())
                     .map_err(crate::error::codec_error)?
                     .value();
+                let (hold, retired) = match state {
+                    State::Legacy(hold) => (hold, false),
+                    State::Registered(policy) => (policy.hold(), policy.phase() == Phase::Retired),
+                };
                 if hold.id() != id || hold.kind() != kind {
                     return Err(storage_error(StorageErrorKind::CorruptData));
+                }
+                if retired {
+                    continue;
                 }
                 return Ok(true);
             }
@@ -132,28 +180,36 @@ impl ReplicationSourceControl {
                 (Some(policy.hold()), Some(policy))
             }
         };
+        if hold.kind() == Kind::Bootstrap {
+            let key = Hold::storage_key_for(hold.id(), Kind::FollowerAcknowledgement);
+            let follower = table
+                .get(key.as_slice())
+                .map_err(precommit_storage_error)?
+                .map(|row| {
+                    decode_replication_source_hold(row.value())
+                        .map(|decoded| *decoded.value())
+                        .map_err(crate::error::codec_error)
+                })
+                .transpose()?;
+            match follower {
+                Some(State::Registered(policy)) => {
+                    // Check even an equal job retry: retirement must never
+                    // renew custody or expose an old artifact under this ID.
+                    if !registered_ack::permits_bootstrap(policy, hold) {
+                        return Err(Refusal::InvalidPosition);
+                    }
+                }
+                Some(State::Legacy(_)) if prior.is_none() => {
+                    return Err(Refusal::InvalidPosition);
+                }
+                _ => {}
+            }
+        }
         if prior == Some(hold) {
             return Ok(false);
         }
         match (advancing, prior) {
             (false, None) => {
-                if hold.kind() == Kind::Bootstrap {
-                    // This ID has already crossed into follower custody. An
-                    // old artifact must not recreate its completed source job.
-                    let attached = Hold::new(
-                        hold.id(),
-                        Kind::FollowerAcknowledgement,
-                        hold.lineage(),
-                        hold.fence(),
-                    );
-                    if table
-                        .get(attached.storage_key().as_slice())
-                        .map_err(precommit_storage_error)?
-                        .is_some()
-                    {
-                        return Err(Refusal::InvalidPosition);
-                    }
-                }
                 if table.len().map_err(precommit_storage_error)? >= MAX_REPLICATION_SOURCE_HOLDS_V1
                 {
                     return Err(storage_error(StorageErrorKind::LimitExceeded).into());
