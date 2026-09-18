@@ -31,6 +31,321 @@
         ],
         "type": "object"
       },
+      "mcp_descriptor": {
+        "annotations": {
+          "destructiveHint": false,
+          "idempotentHint": true,
+          "openWorldHint": false,
+          "readOnlyHint": false
+        },
+        "inputSchema": {
+          "$schema": "https://json-schema.org/draft/2020-12/schema",
+          "additionalProperties": false,
+          "properties": {
+            "organization_id": {
+              "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
+              "type": "string"
+            },
+            "request_id": {
+              "minLength": 1,
+              "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
+              "type": "string",
+              "x-riffdb-minUtf8Bytes": 1
+            },
+            "token_id": {
+              "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
+              "type": "string"
+            }
+          },
+          "required": [
+            "token_id",
+            "request_id",
+            "organization_id"
+          ],
+          "type": "object"
+        },
+        "name": "riffdb_cmd_driverconformance_consumetoken",
+        "outputSchema": {
+          "$defs": {
+            "outcome": {
+              "oneOf": [
+                {
+                  "additionalProperties": false,
+                  "properties": {
+                    "type": {
+                      "const": "TokenExpired"
+                    }
+                  },
+                  "required": [
+                    "type"
+                  ],
+                  "type": "object"
+                },
+                {
+                  "additionalProperties": false,
+                  "properties": {
+                    "type": {
+                      "const": "TokenMissing"
+                    }
+                  },
+                  "required": [
+                    "type"
+                  ],
+                  "type": "object"
+                },
+                {
+                  "additionalProperties": false,
+                  "properties": {
+                    "expires_at": {
+                      "additionalProperties": false,
+                      "properties": {
+                        "nanos": {
+                          "maximum": 999999999,
+                          "minimum": 0,
+                          "type": "integer"
+                        },
+                        "seconds": {
+                          "pattern": "^-?(0|[1-9][0-9]*)$",
+                          "type": "string",
+                          "x-riffdb-integerType": "i64"
+                        }
+                      },
+                      "required": [
+                        "seconds",
+                        "nanos"
+                      ],
+                      "type": "object"
+                    },
+                    "identifier": {
+                      "type": "string",
+                      "x-riffdb-maxUtf8Bytes": 256
+                    },
+                    "issued_at": {
+                      "additionalProperties": false,
+                      "properties": {
+                        "nanos": {
+                          "maximum": 999999999,
+                          "minimum": 0,
+                          "type": "integer"
+                        },
+                        "seconds": {
+                          "pattern": "^-?(0|[1-9][0-9]*)$",
+                          "type": "string",
+                          "x-riffdb-integerType": "i64"
+                        }
+                      },
+                      "required": [
+                        "seconds",
+                        "nanos"
+                      ],
+                      "type": "object"
+                    },
+                    "token_id": {
+                      "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
+                      "type": "string"
+                    },
+                    "type": {
+                      "const": "TokenConsumed"
+                    },
+                    "value": {
+                      "type": "string",
+                      "x-riffdb-maxUtf8Bytes": 512
+                    }
+                  },
+                  "required": [
+                    "type",
+                    "value",
+                    "token_id",
+                    "issued_at",
+                    "expires_at",
+                    "identifier"
+                  ],
+                  "type": "object"
+                }
+              ]
+            }
+          },
+          "$schema": "https://json-schema.org/draft/2020-12/schema",
+          "oneOf": [
+            {
+              "additionalProperties": false,
+              "properties": {
+                "commit_sequence": {
+                  "maxLength": 20,
+                  "pattern": "^[1-9][0-9]*$",
+                  "type": "string",
+                  "x-riffdb-integerType": "u64"
+                },
+                "contract_version": {
+                  "maximum": 18446744073709551615,
+                  "minimum": 1,
+                  "type": "integer"
+                },
+                "durability_mode": {
+                  "enum": [
+                    "sync",
+                    "group"
+                  ],
+                  "type": "string"
+                },
+                "outcome": {
+                  "$ref": "#/$defs/outcome"
+                },
+                "outcome_uri": {
+                  "maxLength": 1745,
+                  "pattern": "^riffdb://outcome/(?:[A-Za-z0-9._~-]|%[0-9A-F]{2})+/(?:[A-Za-z0-9._~-]|%[0-9A-F]{2})+/[1-9][0-9]*/riffdb_cmd_[a-z][a-z0-9_]*_[a-z][a-z0-9_]*/[A-Za-z0-9_-]{50}$",
+                  "type": "string",
+                  "x-riffdb-maxUtf8Bytes": 1745
+                },
+                "plan_hash": {
+                  "pattern": "^[0-9a-f]{64}$",
+                  "type": "string"
+                },
+                "provenance_uri": {
+                  "pattern": "^riffdb://provenance/[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+                  "type": "string"
+                },
+                "status": {
+                  "const": "committed"
+                }
+              },
+              "required": [
+                "status",
+                "commit_sequence",
+                "contract_version",
+                "plan_hash",
+                "outcome",
+                "provenance_uri",
+                "durability_mode",
+                "outcome_uri"
+              ],
+              "type": "object"
+            },
+            {
+              "additionalProperties": false,
+              "properties": {
+                "commit_sequence": {
+                  "maxLength": 20,
+                  "pattern": "^[1-9][0-9]*$",
+                  "type": "string",
+                  "x-riffdb-integerType": "u64"
+                },
+                "contract_version": {
+                  "maximum": 18446744073709551615,
+                  "minimum": 1,
+                  "type": "integer"
+                },
+                "durability_mode": {
+                  "enum": [
+                    "sync",
+                    "group"
+                  ],
+                  "type": "string"
+                },
+                "outcome": {
+                  "$ref": "#/$defs/outcome"
+                },
+                "outcome_uri": {
+                  "maxLength": 1745,
+                  "pattern": "^riffdb://outcome/(?:[A-Za-z0-9._~-]|%[0-9A-F]{2})+/(?:[A-Za-z0-9._~-]|%[0-9A-F]{2})+/[1-9][0-9]*/riffdb_cmd_[a-z][a-z0-9_]*_[a-z][a-z0-9_]*/[A-Za-z0-9_-]{50}$",
+                  "type": "string",
+                  "x-riffdb-maxUtf8Bytes": 1745
+                },
+                "plan_hash": {
+                  "pattern": "^[0-9a-f]{64}$",
+                  "type": "string"
+                },
+                "provenance_uri": {
+                  "pattern": "^riffdb://provenance/[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+                  "type": "string"
+                },
+                "status": {
+                  "const": "replayed"
+                }
+              },
+              "required": [
+                "status",
+                "commit_sequence",
+                "contract_version",
+                "plan_hash",
+                "outcome",
+                "provenance_uri",
+                "durability_mode",
+                "outcome_uri"
+              ],
+              "type": "object"
+            },
+            {
+              "additionalProperties": false,
+              "properties": {
+                "commit_sequence": {
+                  "type": "null"
+                },
+                "contract_version": {
+                  "maximum": 18446744073709551615,
+                  "minimum": 1,
+                  "type": "integer"
+                },
+                "durability_mode": {
+                  "type": "null"
+                },
+                "outcome": {
+                  "$ref": "#/$defs/outcome"
+                },
+                "outcome_uri": {
+                  "type": "null"
+                },
+                "plan_hash": {
+                  "pattern": "^[0-9a-f]{64}$",
+                  "type": "string"
+                },
+                "provenance_uri": {
+                  "type": "null"
+                },
+                "status": {
+                  "const": "executed_read_only"
+                }
+              },
+              "required": [
+                "status",
+                "commit_sequence",
+                "contract_version",
+                "plan_hash",
+                "outcome",
+                "provenance_uri",
+                "durability_mode",
+                "outcome_uri"
+              ],
+              "type": "object"
+            }
+          ],
+          "type": "object"
+        }
+      },
+      "mcp_identity": {
+        "command_id": 3,
+        "composed_output": {
+          "schema_hash": "901ce73b50aafb278036f91694269073c25b787c3b059e1d77382790eb49d1d0",
+          "schema_id": "riffdb.command-operation-envelope/v1+compiler-outcome"
+        },
+        "input_schema": {
+          "command_id": 3,
+          "key": "command_input",
+          "schema_hash": "8e1b30fd142aa7784b791be63c2d908c60fbe1711e8c0bfdd325c0844c0fdf7a",
+          "schema_id": "riffdb.generated-schema/command-input/3/v1"
+        },
+        "operation_envelope": {
+          "schema_hash": "1f83b878c052f53c6eb733b67cd7926fb7ea3729f1d469e0fd9aa8a13f6b44d2",
+          "schema_id": "riffdb.command-operation-envelope/v1"
+        },
+        "outcome_schema": {
+          "command_id": 3,
+          "key": "command_outcome_union",
+          "schema_hash": "69ffc672fe8491d3fda0c1da29239fa50a53937cebed5a612f9644212823e45d",
+          "schema_id": "riffdb.generated-schema/command-outcome-union/3/v1"
+        },
+        "tool_name": "riffdb_cmd_driverconformance_consumetoken"
+      },
       "name": "driver_conformance_consume_token",
       "operation_name": "ConsumeToken",
       "plan_hash": "da9bd3f011355d787c5939e270ee331aea5e20560887d9e3591fb62b0e7ebe8f",
@@ -146,6 +461,267 @@
         ],
         "type": "object"
       },
+      "mcp_descriptor": {
+        "annotations": {
+          "destructiveHint": false,
+          "idempotentHint": true,
+          "openWorldHint": false,
+          "readOnlyHint": false
+        },
+        "inputSchema": {
+          "$schema": "https://json-schema.org/draft/2020-12/schema",
+          "additionalProperties": false,
+          "properties": {
+            "idempotency_key": {
+              "minLength": 1,
+              "type": "string",
+              "x-riffdb-maxUtf8Bytes": 128,
+              "x-riffdb-minUtf8Bytes": 1
+            },
+            "item_id": {
+              "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
+              "type": "string"
+            },
+            "organization_id": {
+              "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
+              "type": "string"
+            },
+            "title": {
+              "type": "string",
+              "x-riffdb-maxUtf8Bytes": 128
+            },
+            "token_digest": {
+              "type": "string",
+              "x-riffdb-maxUtf8Bytes": 128
+            }
+          },
+          "required": [
+            "title",
+            "item_id",
+            "token_digest",
+            "idempotency_key",
+            "organization_id"
+          ],
+          "type": "object"
+        },
+        "name": "riffdb_cmd_driverconformance_createitem",
+        "outputSchema": {
+          "$defs": {
+            "outcome": {
+              "oneOf": [
+                {
+                  "additionalProperties": false,
+                  "properties": {
+                    "type": {
+                      "const": "Created"
+                    }
+                  },
+                  "required": [
+                    "type"
+                  ],
+                  "type": "object"
+                },
+                {
+                  "additionalProperties": false,
+                  "properties": {
+                    "item_id": {
+                      "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
+                      "type": "string"
+                    },
+                    "type": {
+                      "const": "ItemExists"
+                    }
+                  },
+                  "required": [
+                    "type",
+                    "item_id"
+                  ],
+                  "type": "object"
+                }
+              ]
+            }
+          },
+          "$schema": "https://json-schema.org/draft/2020-12/schema",
+          "oneOf": [
+            {
+              "additionalProperties": false,
+              "properties": {
+                "commit_sequence": {
+                  "maxLength": 20,
+                  "pattern": "^[1-9][0-9]*$",
+                  "type": "string",
+                  "x-riffdb-integerType": "u64"
+                },
+                "contract_version": {
+                  "maximum": 18446744073709551615,
+                  "minimum": 1,
+                  "type": "integer"
+                },
+                "durability_mode": {
+                  "enum": [
+                    "sync",
+                    "group"
+                  ],
+                  "type": "string"
+                },
+                "outcome": {
+                  "$ref": "#/$defs/outcome"
+                },
+                "outcome_uri": {
+                  "maxLength": 1745,
+                  "pattern": "^riffdb://outcome/(?:[A-Za-z0-9._~-]|%[0-9A-F]{2})+/(?:[A-Za-z0-9._~-]|%[0-9A-F]{2})+/[1-9][0-9]*/riffdb_cmd_[a-z][a-z0-9_]*_[a-z][a-z0-9_]*/[A-Za-z0-9_-]{50}$",
+                  "type": "string",
+                  "x-riffdb-maxUtf8Bytes": 1745
+                },
+                "plan_hash": {
+                  "pattern": "^[0-9a-f]{64}$",
+                  "type": "string"
+                },
+                "provenance_uri": {
+                  "pattern": "^riffdb://provenance/[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+                  "type": "string"
+                },
+                "status": {
+                  "const": "committed"
+                }
+              },
+              "required": [
+                "status",
+                "commit_sequence",
+                "contract_version",
+                "plan_hash",
+                "outcome",
+                "provenance_uri",
+                "durability_mode",
+                "outcome_uri"
+              ],
+              "type": "object"
+            },
+            {
+              "additionalProperties": false,
+              "properties": {
+                "commit_sequence": {
+                  "maxLength": 20,
+                  "pattern": "^[1-9][0-9]*$",
+                  "type": "string",
+                  "x-riffdb-integerType": "u64"
+                },
+                "contract_version": {
+                  "maximum": 18446744073709551615,
+                  "minimum": 1,
+                  "type": "integer"
+                },
+                "durability_mode": {
+                  "enum": [
+                    "sync",
+                    "group"
+                  ],
+                  "type": "string"
+                },
+                "outcome": {
+                  "$ref": "#/$defs/outcome"
+                },
+                "outcome_uri": {
+                  "maxLength": 1745,
+                  "pattern": "^riffdb://outcome/(?:[A-Za-z0-9._~-]|%[0-9A-F]{2})+/(?:[A-Za-z0-9._~-]|%[0-9A-F]{2})+/[1-9][0-9]*/riffdb_cmd_[a-z][a-z0-9_]*_[a-z][a-z0-9_]*/[A-Za-z0-9_-]{50}$",
+                  "type": "string",
+                  "x-riffdb-maxUtf8Bytes": 1745
+                },
+                "plan_hash": {
+                  "pattern": "^[0-9a-f]{64}$",
+                  "type": "string"
+                },
+                "provenance_uri": {
+                  "pattern": "^riffdb://provenance/[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+                  "type": "string"
+                },
+                "status": {
+                  "const": "replayed"
+                }
+              },
+              "required": [
+                "status",
+                "commit_sequence",
+                "contract_version",
+                "plan_hash",
+                "outcome",
+                "provenance_uri",
+                "durability_mode",
+                "outcome_uri"
+              ],
+              "type": "object"
+            },
+            {
+              "additionalProperties": false,
+              "properties": {
+                "commit_sequence": {
+                  "type": "null"
+                },
+                "contract_version": {
+                  "maximum": 18446744073709551615,
+                  "minimum": 1,
+                  "type": "integer"
+                },
+                "durability_mode": {
+                  "type": "null"
+                },
+                "outcome": {
+                  "$ref": "#/$defs/outcome"
+                },
+                "outcome_uri": {
+                  "type": "null"
+                },
+                "plan_hash": {
+                  "pattern": "^[0-9a-f]{64}$",
+                  "type": "string"
+                },
+                "provenance_uri": {
+                  "type": "null"
+                },
+                "status": {
+                  "const": "executed_read_only"
+                }
+              },
+              "required": [
+                "status",
+                "commit_sequence",
+                "contract_version",
+                "plan_hash",
+                "outcome",
+                "provenance_uri",
+                "durability_mode",
+                "outcome_uri"
+              ],
+              "type": "object"
+            }
+          ],
+          "type": "object"
+        }
+      },
+      "mcp_identity": {
+        "command_id": 1,
+        "composed_output": {
+          "schema_hash": "ffefdf75c7f5e4ed9e77c1c303f1b9a74526b44728d52ecc376ccdaea71aae7b",
+          "schema_id": "riffdb.command-operation-envelope/v1+compiler-outcome"
+        },
+        "input_schema": {
+          "command_id": 1,
+          "key": "command_input",
+          "schema_hash": "33c283a54ac1d32d647a8c42f87f13664ee03c62f25e058c74c8757ce682e46b",
+          "schema_id": "riffdb.generated-schema/command-input/1/v1"
+        },
+        "operation_envelope": {
+          "schema_hash": "1f83b878c052f53c6eb733b67cd7926fb7ea3729f1d469e0fd9aa8a13f6b44d2",
+          "schema_id": "riffdb.command-operation-envelope/v1"
+        },
+        "outcome_schema": {
+          "command_id": 1,
+          "key": "command_outcome_union",
+          "schema_hash": "7bd724f291d9aaee280bf46f33fee80127cc2330a9fd27b8b013adff36e0e474",
+          "schema_id": "riffdb.generated-schema/command-outcome-union/1/v1"
+        },
+        "tool_name": "riffdb_cmd_driverconformance_createitem"
+      },
       "name": "driver_conformance_create_item",
       "operation_name": "CreateItem",
       "plan_hash": "87a5eec76b98cff7209bae2bb535864c4ba5c259770db96dd159c8c407dc3273",
@@ -228,6 +804,309 @@
         ],
         "type": "object"
       },
+      "mcp_descriptor": {
+        "annotations": {
+          "destructiveHint": false,
+          "idempotentHint": true,
+          "openWorldHint": false,
+          "readOnlyHint": false
+        },
+        "inputSchema": {
+          "$schema": "https://json-schema.org/draft/2020-12/schema",
+          "additionalProperties": false,
+          "properties": {
+            "expires_at": {
+              "additionalProperties": false,
+              "properties": {
+                "nanos": {
+                  "maximum": 999999999,
+                  "minimum": 0,
+                  "type": "integer"
+                },
+                "seconds": {
+                  "pattern": "^-?(0|[1-9][0-9]*)$",
+                  "type": "string",
+                  "x-riffdb-integerType": "i64"
+                }
+              },
+              "required": [
+                "seconds",
+                "nanos"
+              ],
+              "type": "object"
+            },
+            "identifier": {
+              "type": "string",
+              "x-riffdb-maxUtf8Bytes": 256
+            },
+            "organization_id": {
+              "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
+              "type": "string"
+            },
+            "request_id": {
+              "minLength": 1,
+              "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
+              "type": "string",
+              "x-riffdb-minUtf8Bytes": 1
+            },
+            "token_id": {
+              "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
+              "type": "string"
+            },
+            "value": {
+              "type": "string",
+              "x-riffdb-maxUtf8Bytes": 512
+            }
+          },
+          "required": [
+            "value",
+            "token_id",
+            "expires_at",
+            "identifier",
+            "request_id",
+            "organization_id"
+          ],
+          "type": "object"
+        },
+        "name": "riffdb_cmd_driverconformance_issuetoken",
+        "outputSchema": {
+          "$defs": {
+            "outcome": {
+              "oneOf": [
+                {
+                  "additionalProperties": false,
+                  "properties": {
+                    "issued_at": {
+                      "additionalProperties": false,
+                      "properties": {
+                        "nanos": {
+                          "maximum": 999999999,
+                          "minimum": 0,
+                          "type": "integer"
+                        },
+                        "seconds": {
+                          "pattern": "^-?(0|[1-9][0-9]*)$",
+                          "type": "string",
+                          "x-riffdb-integerType": "i64"
+                        }
+                      },
+                      "required": [
+                        "seconds",
+                        "nanos"
+                      ],
+                      "type": "object"
+                    },
+                    "token_id": {
+                      "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
+                      "type": "string"
+                    },
+                    "type": {
+                      "const": "TokenIssued"
+                    }
+                  },
+                  "required": [
+                    "type",
+                    "token_id",
+                    "issued_at"
+                  ],
+                  "type": "object"
+                },
+                {
+                  "additionalProperties": false,
+                  "properties": {
+                    "type": {
+                      "const": "TokenAlreadyExists"
+                    }
+                  },
+                  "required": [
+                    "type"
+                  ],
+                  "type": "object"
+                }
+              ]
+            }
+          },
+          "$schema": "https://json-schema.org/draft/2020-12/schema",
+          "oneOf": [
+            {
+              "additionalProperties": false,
+              "properties": {
+                "commit_sequence": {
+                  "maxLength": 20,
+                  "pattern": "^[1-9][0-9]*$",
+                  "type": "string",
+                  "x-riffdb-integerType": "u64"
+                },
+                "contract_version": {
+                  "maximum": 18446744073709551615,
+                  "minimum": 1,
+                  "type": "integer"
+                },
+                "durability_mode": {
+                  "enum": [
+                    "sync",
+                    "group"
+                  ],
+                  "type": "string"
+                },
+                "outcome": {
+                  "$ref": "#/$defs/outcome"
+                },
+                "outcome_uri": {
+                  "maxLength": 1745,
+                  "pattern": "^riffdb://outcome/(?:[A-Za-z0-9._~-]|%[0-9A-F]{2})+/(?:[A-Za-z0-9._~-]|%[0-9A-F]{2})+/[1-9][0-9]*/riffdb_cmd_[a-z][a-z0-9_]*_[a-z][a-z0-9_]*/[A-Za-z0-9_-]{50}$",
+                  "type": "string",
+                  "x-riffdb-maxUtf8Bytes": 1745
+                },
+                "plan_hash": {
+                  "pattern": "^[0-9a-f]{64}$",
+                  "type": "string"
+                },
+                "provenance_uri": {
+                  "pattern": "^riffdb://provenance/[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+                  "type": "string"
+                },
+                "status": {
+                  "const": "committed"
+                }
+              },
+              "required": [
+                "status",
+                "commit_sequence",
+                "contract_version",
+                "plan_hash",
+                "outcome",
+                "provenance_uri",
+                "durability_mode",
+                "outcome_uri"
+              ],
+              "type": "object"
+            },
+            {
+              "additionalProperties": false,
+              "properties": {
+                "commit_sequence": {
+                  "maxLength": 20,
+                  "pattern": "^[1-9][0-9]*$",
+                  "type": "string",
+                  "x-riffdb-integerType": "u64"
+                },
+                "contract_version": {
+                  "maximum": 18446744073709551615,
+                  "minimum": 1,
+                  "type": "integer"
+                },
+                "durability_mode": {
+                  "enum": [
+                    "sync",
+                    "group"
+                  ],
+                  "type": "string"
+                },
+                "outcome": {
+                  "$ref": "#/$defs/outcome"
+                },
+                "outcome_uri": {
+                  "maxLength": 1745,
+                  "pattern": "^riffdb://outcome/(?:[A-Za-z0-9._~-]|%[0-9A-F]{2})+/(?:[A-Za-z0-9._~-]|%[0-9A-F]{2})+/[1-9][0-9]*/riffdb_cmd_[a-z][a-z0-9_]*_[a-z][a-z0-9_]*/[A-Za-z0-9_-]{50}$",
+                  "type": "string",
+                  "x-riffdb-maxUtf8Bytes": 1745
+                },
+                "plan_hash": {
+                  "pattern": "^[0-9a-f]{64}$",
+                  "type": "string"
+                },
+                "provenance_uri": {
+                  "pattern": "^riffdb://provenance/[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+                  "type": "string"
+                },
+                "status": {
+                  "const": "replayed"
+                }
+              },
+              "required": [
+                "status",
+                "commit_sequence",
+                "contract_version",
+                "plan_hash",
+                "outcome",
+                "provenance_uri",
+                "durability_mode",
+                "outcome_uri"
+              ],
+              "type": "object"
+            },
+            {
+              "additionalProperties": false,
+              "properties": {
+                "commit_sequence": {
+                  "type": "null"
+                },
+                "contract_version": {
+                  "maximum": 18446744073709551615,
+                  "minimum": 1,
+                  "type": "integer"
+                },
+                "durability_mode": {
+                  "type": "null"
+                },
+                "outcome": {
+                  "$ref": "#/$defs/outcome"
+                },
+                "outcome_uri": {
+                  "type": "null"
+                },
+                "plan_hash": {
+                  "pattern": "^[0-9a-f]{64}$",
+                  "type": "string"
+                },
+                "provenance_uri": {
+                  "type": "null"
+                },
+                "status": {
+                  "const": "executed_read_only"
+                }
+              },
+              "required": [
+                "status",
+                "commit_sequence",
+                "contract_version",
+                "plan_hash",
+                "outcome",
+                "provenance_uri",
+                "durability_mode",
+                "outcome_uri"
+              ],
+              "type": "object"
+            }
+          ],
+          "type": "object"
+        }
+      },
+      "mcp_identity": {
+        "command_id": 2,
+        "composed_output": {
+          "schema_hash": "c9ca89eacae5d6f27ffc480af2baedf0ea1e12ac7ae5d826de88a060aba69f12",
+          "schema_id": "riffdb.command-operation-envelope/v1+compiler-outcome"
+        },
+        "input_schema": {
+          "command_id": 2,
+          "key": "command_input",
+          "schema_hash": "4188a0527076c6180668d5b271d0ad2f8982f503f3acedac7f7677caf6dc8b9a",
+          "schema_id": "riffdb.generated-schema/command-input/2/v1"
+        },
+        "operation_envelope": {
+          "schema_hash": "1f83b878c052f53c6eb733b67cd7926fb7ea3729f1d469e0fd9aa8a13f6b44d2",
+          "schema_id": "riffdb.command-operation-envelope/v1"
+        },
+        "outcome_schema": {
+          "command_id": 2,
+          "key": "command_outcome_union",
+          "schema_hash": "9a7ab3ba3906af026580c7d38c4c40384cc1fda96af463a4972af5f8bbbecb86",
+          "schema_id": "riffdb.generated-schema/command-outcome-union/2/v1"
+        },
+        "tool_name": "riffdb_cmd_driverconformance_issuetoken"
+      },
       "name": "driver_conformance_issue_token",
       "operation_name": "IssueToken",
       "plan_hash": "dcb17bcfe14d85d58fc46e49c031b1bd3642c8f9beca51101c1e368fb05eba86",
@@ -273,8 +1152,9 @@
       "title": "Run IssueToken"
     }
   ],
+  "predecessor_schema": "riffdb-generated-application-operations/v3",
   "reactive_tools": [],
-  "schema": "riffdb-generated-application-operations/v3",
+  "schema": "riffdb-generated-application-operations/v6",
   "sdk_tools": [
     {
       "annotations": {
@@ -376,6 +1256,88 @@
           "item_id"
         ],
         "type": "object"
+      },
+      "mcp_descriptor": {
+        "annotations": {
+          "destructiveHint": false,
+          "idempotentHint": true,
+          "openWorldHint": false,
+          "readOnlyHint": true
+        },
+        "inputSchema": {
+          "$schema": "https://json-schema.org/draft/2020-12/schema",
+          "additionalProperties": false,
+          "properties": {
+            "item_id": {
+              "type": "string"
+            },
+            "organization_id": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "organization_id",
+            "item_id"
+          ],
+          "type": "object"
+        },
+        "name": "driver_conformance_item_page",
+        "outputSchema": {
+          "$schema": "https://json-schema.org/draft/2020-12/schema",
+          "oneOf": [
+            {
+              "additionalProperties": false,
+              "properties": {
+                "item": {
+                  "additionalProperties": false,
+                  "properties": {
+                    "created_at": {
+                      "type": "string"
+                    },
+                    "item_id": {
+                      "type": "string"
+                    },
+                    "organization_id": {
+                      "type": "string"
+                    },
+                    "title": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "item_id",
+                    "organization_id",
+                    "title",
+                    "created_at"
+                  ],
+                  "type": "object"
+                },
+                "outcome": {
+                  "const": "Found",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "outcome",
+                "item"
+              ],
+              "type": "object"
+            },
+            {
+              "additionalProperties": false,
+              "properties": {
+                "outcome": {
+                  "const": "NotFound",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "outcome"
+              ],
+              "type": "object"
+            }
+          ]
+        }
       },
       "module_hash": "86063e5371ce90e9ef93b7ba8c80f9b82a88a5e976b35149064095cacb51306e",
       "name": "driver_conformance_item_page",
@@ -480,6 +1442,110 @@
           "needle"
         ],
         "type": "object"
+      },
+      "mcp_descriptor": {
+        "annotations": {
+          "destructiveHint": false,
+          "idempotentHint": true,
+          "openWorldHint": false,
+          "readOnlyHint": true
+        },
+        "inputSchema": {
+          "$schema": "https://json-schema.org/draft/2020-12/schema",
+          "additionalProperties": false,
+          "properties": {
+            "item_id": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "limit": {
+              "maximum": 499,
+              "minimum": 1,
+              "type": "integer"
+            },
+            "needle": {
+              "type": "string"
+            },
+            "offset": {
+              "type": "string"
+            },
+            "organization_id": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "organization_id",
+            "needle"
+          ],
+          "type": "object"
+        },
+        "name": "driver_conformance_search_items",
+        "outputSchema": {
+          "$schema": "https://json-schema.org/draft/2020-12/schema",
+          "oneOf": [
+            {
+              "additionalProperties": false,
+              "properties": {
+                "items": {
+                  "items": {
+                    "additionalProperties": false,
+                    "properties": {
+                      "created_at": {
+                        "type": "string"
+                      },
+                      "item_id": {
+                        "type": "string"
+                      },
+                      "organization_id": {
+                        "type": "string"
+                      },
+                      "title": {
+                        "type": "string"
+                      }
+                    },
+                    "required": [
+                      "organization_id",
+                      "item_id",
+                      "title",
+                      "created_at"
+                    ],
+                    "type": "object"
+                  },
+                  "maxItems": 499,
+                  "type": "array"
+                },
+                "outcome": {
+                  "const": "Found",
+                  "type": "string"
+                },
+                "total": {
+                  "additionalProperties": false,
+                  "properties": {
+                    "value": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "value"
+                  ],
+                  "type": "object"
+                }
+              },
+              "required": [
+                "outcome",
+                "items",
+                "total"
+              ],
+              "type": "object"
+            }
+          ]
+        }
       },
       "module_hash": "86063e5371ce90e9ef93b7ba8c80f9b82a88a5e976b35149064095cacb51306e",
       "name": "driver_conformance_search_items",

@@ -9464,7 +9464,7 @@ fn application_role_grant_to_proto(grant: &CapabilityGrantV1) -> Result<v1::Capa
                         .collect(),
                 })
                 .collect();
-            Ok(v1::CapabilityRowPolicyGrant {
+            Ok::<v1::CapabilityRowPolicyGrant, ()>(v1::CapabilityRowPolicyGrant {
                 application_role_hash: row_policy.application_role_hash().as_bytes().to_vec(),
                 principal_facts,
                 policies,
@@ -10258,7 +10258,7 @@ fn capability_grant(input: CapabilityGrantInput) -> Result<v1::CapabilityGrant, 
         .collect::<Result<_, _>>()?;
     let row_policy = row_policy
         .map(|row_policy| {
-            Ok(v1::CapabilityRowPolicyGrant {
+            Ok::<v1::CapabilityRowPolicyGrant, ()>(v1::CapabilityRowPolicyGrant {
                 application_role_hash: parse_lower_hash(&row_policy.application_role_hash)?
                     .to_vec(),
                 principal_facts: row_policy
@@ -10329,7 +10329,8 @@ fn capability_grant(input: CapabilityGrantInput) -> Result<v1::CapabilityGrant, 
     });
     let reimport = reimport
         .map(|reimport| {
-            Ok(v1::CapabilityApplicationReimportGrant {
+            Ok::<v1::CapabilityApplicationReimportGrant, ()>(
+                v1::CapabilityApplicationReimportGrant {
                 contract_lineage: reimport.contract_lineage,
                 campaign_id: parse_application_installation_campaign_id(&reimport.campaign_id)?
                     .into_bytes()
@@ -10349,7 +10350,7 @@ fn capability_grant(input: CapabilityGrantInput) -> Result<v1::CapabilityGrant, 
         .transpose()?;
     let vector_inspection = vector_inspection
         .map(|inspection| {
-            Ok(v1::CapabilityVectorInspectionGrant {
+            Ok::<v1::CapabilityVectorInspectionGrant, ()>(v1::CapabilityVectorInspectionGrant {
                 application_role_hash: parse_lower_hash(&inspection.application_role_hash)?
                     .to_vec(),
                 targets: inspection

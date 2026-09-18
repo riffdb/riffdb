@@ -66,13 +66,22 @@ protocol V2 `handshake`. Both sides prove:
 The local protocol never carries the endpoint or bearer credential itself. A
 mismatch closes the application session before any remote operation runs.
 
-`generated/mcp/tools.json` now uses
-`riffdb-generated-application-operations/v2`. In addition to JSON schemas and
-transport-safe names, each entry carries its exact contract/query/reactive
-source symbol. Reactive entries also carry their closed operation kind and
-action; contextual reaction entries pin the declared reaction and target
-command identity. Descriptions and normalized names are not dispatch
-authority.
+`generated/mcp/tools.json` retains the least-sufficient V2 through V5 profile
+when no generated command is present. A nonempty command registry selects the
+strict V6 successor and records that predecessor profile. V6 command entries
+bind the compiler's command ID and underscore MCP name, exact input and outcome
+schemas, the service-owned operation envelope, and the mechanically composed
+hosted output schema. Command and visible-query `mcp_descriptor` objects contain
+only `name`, `inputSchema`, `outputSchema`, and the four standard safety hints.
+The catalog is a generated expectation for parity checking; the live policy
+grant still decides visibility and the service still owns dispatch.
+
+Moving an exact package to V6 changes its MCP artifact hash and enclosing lock
+identity but not the application-lock schema. Preview and review that hash
+change before `application lock --write`; old V2 through V5 catalogs remain
+readable and carry no V6 parity claim. Reactive entries retain their closed
+operation kind and action, and contextual reactions still pin the declared
+reaction and target command identity.
 
 ## Calls, batches, and backpressure
 

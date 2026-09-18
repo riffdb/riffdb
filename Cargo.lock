@@ -1778,6 +1778,7 @@ version = "0.1.0"
 dependencies = [
  "base64",
  "clap",
+ "riffdb-api-mcp",
  "riffdb-application",
  "riffdb-auth",
  "riffdb-client-rust",

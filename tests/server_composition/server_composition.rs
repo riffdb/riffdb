@@ -16,7 +16,11 @@ use std::sync::mpsc::{self, Receiver, RecvTimeoutError, SyncSender};
 use std::thread::{self, JoinHandle};
 use std::time::Duration;
 
-use riffdb_api_mcp::{MCP_PROTOCOL_VERSION, MCP_ROUTE};
+use riffdb_api_mcp::{
+    MCP_PROTOCOL_VERSION, MCP_ROUTE, McpDynamicToolDefinition, McpFullSchemaParityVerifier,
+    McpGeneratedSchemaKind, SchemaDocument, fixed_tool_registry,
+    validate_expected_mcp_descriptor_order,
+};
 use riffdb_auth::bootstrap_secret::{
     BootstrapCredential as RetainedBootstrapCredential, SystemEntropy,
     generate_bootstrap_credential, load_bootstrap_credential_file,
@@ -27,8 +31,11 @@ use riffdb_client_rust::generated::legal_spend::{
 use riffdb_client_rust::{
     AttemptBudget, BearerCredential, BootstrapCallMetadata,
     BootstrapCredential as TransportBootstrapCredential, CallMetadata, CanonicalVector,
-    RiffDbClient, StableApplicationClient, VectorStateInspectionResult, generate_request_id,
+    RiffDbClient, StableApplicationClient, VectorStateInspectionResult, generate_capability_id,
+    generate_request_id,
 };
+use riffdb_contract_compiler::compile_contract_source;
+use riffdb_contract_ir::SchemaArtifactKey;
 use riffdb_proto::{app::v1 as app_v1, decimal_from_proto, v1};
 use riffdb_types::DecimalSpec;
 use tokio::time::timeout;
@@ -297,6 +304,301 @@ async fn real_process_hosts_policy_filtered_mcp_and_stops_on_sigterm() -> TestRe
     process.signal_sigterm()?;
     process.wait_for_successful_exit(PROCESS_STOP_TIMEOUT)?;
     Ok(())
+}
+
+// req: MCP-001, MCP-020, MCP-021, MCP-026, MCP-040, MCP-043, MCP-045, DX-044, DX-047, DX-049
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn generated_mcp_catalog_matches_complete_hosted_descriptor_pages() -> TestResult<()> {
+    let temporary = TemporaryDirectory::new()?;
+    let database_path = temporary.path().join("riffdb.redb");
+    let capability_keys_path = temporary.path().join("capability.keys");
+    let idempotency_keys_path = temporary.path().join("idempotency.keys");
+    let bootstrap_path = temporary.path().join("bootstrap.credential");
+
+    write_protected_file(&capability_keys_path, CAPABILITY_KEY_DOCUMENT)?;
+    write_protected_file(&idempotency_keys_path, IDEMPOTENCY_KEY_DOCUMENT)?;
+    let generated_bootstrap =
+        generate_bootstrap_credential(BOOTSTRAP_UNIX_MILLISECONDS, &SystemEntropy)?;
+    write_protected_file(
+        &bootstrap_path,
+        generated_bootstrap.render_document().expose_secret(),
+    )?;
+    drop(generated_bootstrap);
+    let retained_bootstrap = load_bootstrap_credential_file(&bootstrap_path)?;
+
+    let reservation = TcpListener::bind("127.0.0.1:0")?;
+    let mcp_address = reservation.local_addr()?;
+    if !mcp_address.ip().is_loopback() || mcp_address.port() == 0 {
+        return Err(test_failure("MCP test reservation was not loopback"));
+    }
+    drop(reservation);
+    let mcp_audience = format!("http://{mcp_address}{MCP_ROUTE}");
+
+    let mut process = ServerProcess::spawn(
+        &database_path,
+        &capability_keys_path,
+        &idempotency_keys_path,
+        mcp_address,
+    )?;
+    let grpc_address = process.wait_for_ready_address()?;
+    process.close_stdin()?;
+
+    let mut client = connect(grpc_address).await?;
+    let bootstrap = bounded_rpc(
+        "bootstrap capability creation",
+        client.create_bootstrap_capability(
+            bootstrap_request(&retained_bootstrap, &mcp_audience)?,
+            &bootstrap_metadata(&retained_bootstrap)?,
+        ),
+    )
+    .await?;
+    assert_created_bootstrap(bootstrap)?;
+
+    let bearer = bearer_credential(&retained_bootstrap)?;
+    let authenticated = CallMetadata::authenticated(bearer);
+    let deployment = bounded_rpc(
+        "budget contract deployment",
+        client.deploy_contract(
+            v1::DeployContractRequest {
+                request_id: fresh_request_id_bytes()?,
+                source: BUDGET_CONTRACT.to_owned(),
+                expected_active_version: None,
+                expected_active_bundle_hash: Vec::new(),
+                expected_candidate_bundle_hash: Vec::new(),
+            },
+            &authenticated,
+        ),
+    )
+    .await?;
+    assert_activated_budget_contract(deployment)?;
+
+    let catalog_capability = bounded_rpc(
+        "catalog-test capability creation",
+        client.create_capability(catalog_capability_request(&mcp_audience)?, &authenticated),
+    )
+    .await?;
+    let catalog_token = normal_capability_token(catalog_capability)?;
+
+    let initialize_body = initialize_request();
+    let initialized = mcp_post(
+        mcp_address,
+        Some(ALLOWED_ORIGIN),
+        Some(&catalog_token),
+        None,
+        initialize_body.as_bytes(),
+    )
+    .map_err(|error| test_failure(format!("catalog MCP initialize failed: {error}")))?;
+    assert_eq!(initialized.status, 200);
+    let session_id = initialized
+        .single_header("mcp-session-id")?
+        .ok_or_else(|| test_failure("catalog MCP initialization omitted its session ID"))?
+        .to_owned();
+    assert_valid_session_id(&session_id)?;
+
+    let notification = mcp_post(
+        mcp_address,
+        Some(ALLOWED_ORIGIN),
+        Some(&catalog_token),
+        Some(&session_id),
+        br#"{"jsonrpc":"2.0","method":"notifications/initialized"}"#,
+    )
+    .map_err(|error| {
+        test_failure(format!(
+            "catalog MCP initialized notification failed: {error}"
+        ))
+    })?;
+    if !(200..300).contains(&notification.status) {
+        return Err(test_failure(
+            "catalog MCP initialized notification was not accepted",
+        ));
+    }
+
+    let tools = mcp_post(
+        mcp_address,
+        Some(ALLOWED_ORIGIN),
+        Some(&catalog_token),
+        Some(&session_id),
+        br#"{"id":2,"jsonrpc":"2.0","method":"tools/list","params":{"limit":500}}"#,
+    )
+    .map_err(|error| test_failure(format!("catalog MCP tools/list failed: {error}")))?;
+    assert_eq!(tools.status, 200);
+    let tools_payload = single_mcp_json_payload(tools.body_text()?)?;
+    let expected = expected_budget_mcp_descriptors()?;
+    let mut stream = expected.iter().cloned().peekable();
+    let mut verifier = McpFullSchemaParityVerifier::new();
+    verifier
+        .verify_response(tools_payload.as_bytes(), &mut stream)
+        .map_err(|error| test_failure(error.to_string()))?;
+    assert!(verifier.is_complete());
+    assert_eq!(verifier.compared_items(), expected.len());
+
+    drop(client);
+    process.signal_sigterm()?;
+    process.wait_for_successful_exit(PROCESS_STOP_TIMEOUT)?;
+    Ok(())
+}
+
+fn single_mcp_json_payload(body: &str) -> TestResult<&str> {
+    if body.starts_with('{') {
+        return Ok(body);
+    }
+    let mut payloads = body.lines().filter_map(|line| line.strip_prefix("data: "));
+    let payload = payloads
+        .next()
+        .ok_or_else(|| test_failure("MCP response omitted its JSON payload"))?;
+    if payloads.next().is_some() {
+        return Err(test_failure(
+            "MCP response contained multiple JSON payloads",
+        ));
+    }
+    Ok(payload)
+}
+
+fn expected_budget_mcp_descriptors() -> TestResult<Vec<serde_json::Value>> {
+    let registry = fixed_tool_registry()?;
+    let fixed = registry
+        .tools()
+        .iter()
+        .filter(|tool| tool.kind() != 31)
+        .map(|tool| serde_json::to_value(tool.to_mcp_tool()))
+        .collect::<Result<Vec<_>, _>>()?;
+    let bundle = compile_contract_source(BUDGET_CONTRACT)?;
+    let mut dynamic = bundle
+        .commands()
+        .iter()
+        .filter(|command| !command.is_reimport())
+        .map(|command| {
+            let input = bundle
+                .schema_artifacts()
+                .iter()
+                .find(|artifact| {
+                    artifact.key() == SchemaArtifactKey::CommandInput(command.command_id())
+                })
+                .ok_or_else(|| test_failure("compiler input schema missing"))?;
+            let outcome = bundle
+                .schema_artifacts()
+                .iter()
+                .find(|artifact| {
+                    artifact.key() == SchemaArtifactKey::CommandOutcomeUnion(command.command_id())
+                })
+                .ok_or_else(|| test_failure("compiler outcome schema missing"))?;
+            let name = bundle
+                .mcp_command_names()
+                .get(command.command_id())
+                .ok_or_else(|| test_failure("compiler MCP name missing"))?;
+            let input = SchemaDocument::from_public_generated(
+                McpGeneratedSchemaKind::CommandInput,
+                command.command_id().get(),
+                input.hash().as_bytes(),
+                input.canonical_json(),
+            )?;
+            let outcome = SchemaDocument::from_public_generated(
+                McpGeneratedSchemaKind::CommandOutcomeUnion,
+                command.command_id().get(),
+                outcome.hash().as_bytes(),
+                outcome.canonical_json(),
+            )?;
+            let descriptor = McpDynamicToolDefinition::from_discovered_command(
+                name.tool_name().as_str(),
+                input,
+                outcome,
+            )?
+            .descriptor_json()?;
+            Ok::<_, Box<dyn Error + Send + Sync>>(descriptor)
+        })
+        .collect::<TestResult<Vec<_>>>()?;
+    dynamic.sort_by(|left, right| left["name"].as_str().cmp(&right["name"].as_str()));
+    validate_expected_mcp_descriptor_order(&fixed, &dynamic)?;
+    let mut descriptors = fixed;
+    descriptors.extend(dynamic);
+    Ok(descriptors)
+}
+
+fn catalog_capability_request(mcp_audience: &str) -> TestResult<v1::CreateCapabilityRequest> {
+    Ok(v1::CreateCapabilityRequest {
+        request_id: fresh_request_id_bytes()?,
+        mode: v1::CapabilityCreateMode::Normal as i32,
+        capability_id: generate_capability_id()?.into_bytes().to_vec(),
+        principal_id: "wp779-catalog-parity".to_owned(),
+        actor_kind: v1::ActorKind::Service as i32,
+        requested_lifetime_seconds: CAPABILITY_LIFETIME_SECONDS / 2,
+        audiences: vec![mcp_audience.to_owned()],
+        grant: Some(v1::CapabilityGrant {
+            tenant_scope: Some(v1::TenantScope {
+                scope: Some(v1::tenant_scope::Scope::Global(v1::Unit {})),
+            }),
+            partition_scope: Some(v1::PartitionScope {
+                scope: Some(v1::partition_scope::Scope::All(v1::Unit {})),
+            }),
+            permissions: catalog_test_permissions(),
+            field_visibility: Vec::new(),
+            max_scan_rows: u16::MAX.into(),
+            approval_required: Vec::new(),
+            row_policy: None,
+            export: None,
+            reimport: None,
+            vector_inspection: None,
+        }),
+    })
+}
+
+fn catalog_test_permissions() -> Vec<v1::CapabilityPermission> {
+    use v1::capability_permission::Permission;
+
+    let scoped = |stable_id| v1::LineageScopedStableId {
+        contract_lineage: CONTRACT_LINEAGE.to_owned(),
+        stable_id,
+    };
+    let reactive = || v1::ReactiveOperationPermission {
+        contract_lineage: CONTRACT_LINEAGE.to_owned(),
+        reactive_module_hash: vec![0x51; 32],
+        operation_name: "CatalogWitness".to_owned(),
+    };
+    [
+        Permission::ValidateContract(v1::Unit {}),
+        Permission::ReadContract(v1::Unit {}),
+        Permission::ExplainCommand(scoped(1)),
+        Permission::DeployContract(v1::Unit {}),
+        Permission::InvokeCommand(scoped(1)),
+        Permission::InvokeCommand(scoped(2)),
+        Permission::ReadEntity(scoped(1)),
+        Permission::ScanIndex(scoped(1)),
+        Permission::QueryProjection(scoped(1)),
+        Permission::ReadProjectionStatus(scoped(1)),
+        Permission::ReadCommit(v1::Unit {}),
+        Permission::ScanCommits(v1::Unit {}),
+        Permission::ReadProvenance(v1::Unit {}),
+        Permission::InspectOutbox(v1::Unit {}),
+        Permission::ReadHealth(v1::Unit {}),
+        Permission::CheckAdHocQuery(v1::Unit {}),
+        Permission::ExplainAdHocQuery(v1::Unit {}),
+        Permission::ExecuteAdHocQuery(v1::Unit {}),
+        Permission::ConsumeEventStream(reactive()),
+        Permission::SeekEventStreamConsumer(reactive()),
+        Permission::WatchNamedQuery(reactive()),
+        Permission::ConsumeContextualSubscription(reactive()),
+        Permission::InspectVectorState(v1::Unit {}),
+    ]
+    .into_iter()
+    .map(|permission| v1::CapabilityPermission {
+        permission: Some(permission),
+    })
+    .collect()
+}
+
+fn normal_capability_token(response: v1::CreateCapabilityResponse) -> TestResult<String> {
+    let Some(v1::create_capability_response::Result::Normal(result)) = response.result else {
+        return Err(test_failure(
+            "catalog capability used the wrong result family",
+        ));
+    };
+    let Some(v1::normal_create_capability_result::Result::Created(created)) = result.result else {
+        return Err(test_failure("catalog capability was not newly created"));
+    };
+    if created.transition.is_none() || created.token.is_empty() {
+        return Err(test_failure("catalog capability response was incomplete"));
+    }
+    Ok(created.token)
 }
 
 // req: PRJ-002, PRJ-004, PRJ-005, PRJ-006, PRJ-007, PRJ-010, OQ-022

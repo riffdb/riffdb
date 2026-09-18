@@ -44,11 +44,19 @@ authority. It grants nothing. Binding is a separate authenticated operation.
 
 The Rust and TypeScript generated clients expose typed parameter structures,
 result/outcome unions, cursor types, retry-safe commands, and checked public
-errors. `generated/mcp/tools.json` carries the V2 generated application
-operation catalog for the same operation set: exact source symbols, immutable
-module/plan identities, input and result schemas, and closed reactive actions.
-The catalog is shared by MCP and the target-language driver host; descriptive
-text is never dispatch authority.
+errors. `generated/mcp/tools.json` uses the least-sufficient V2 through V5
+profile when it has no command and V6 whenever its retained command registry is
+nonempty. V6 records the exact predecessor profile and adds the hosted MCP name,
+compiler input/outcome identities, service envelope identity, composed output
+identity, and closed discovery descriptor to each command. Its visible named
+queries carry the same closed hosted descriptor. The catalog remains generated
+expectation evidence, never dispatch or authorization authority.
+
+Regenerating an older command-bearing package rotates the MCP artifact hash and
+therefore its enclosing application-lock identity without advancing the lock
+schema. Review `riffdb application preview`, accept with `application lock
+--write`, and verify with `application lock --check`. Existing exact V2 through
+V5 catalogs remain readable but make no hosted-descriptor parity claim.
 Application code imports those operations, not Protobuf or kernel requests.
 
 The exact compatibility manifest at

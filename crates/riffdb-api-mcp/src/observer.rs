@@ -3091,6 +3091,7 @@ mod tests {
         );
     }
 
+    // req: MCP-001, MCP-020, MCP-021, MCP-026, MCP-040, MCP-043, MCP-045
     #[test]
     fn changed_inventory_accepts_exact_500_500_24_sequence() {
         let backend = Arc::new(ScriptedBackend::default());
@@ -3211,6 +3212,7 @@ mod tests {
         );
     }
 
+    // req: MCP-001, MCP-020, MCP-021, MCP-026, MCP-040, MCP-043, MCP-045
     #[test]
     fn item_1025_and_cursor_after_1024_abort_without_partial_refresh() {
         for terminal_count in [25, 24] {

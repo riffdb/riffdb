@@ -11,6 +11,7 @@ mod application_guidance;
 mod bounded_json;
 #[cfg(feature = "stdio")]
 mod builder;
+mod catalog_parity;
 mod conversion;
 mod cursor;
 mod handler;
@@ -42,6 +43,7 @@ pub use admission::*;
 pub use application_guidance::*;
 #[cfg(feature = "stdio")]
 pub use builder::{BuilderMcpConfiguration, BuilderMcpServer};
+pub use catalog_parity::*;
 pub use conversion::*;
 pub use cursor::{
     APPLICATION_QUERY_CURSOR_TEXT_BYTES, MCP_CURSOR_BYTES, MCP_CURSOR_TEXT_BYTES, McpCursorError,
@@ -91,7 +93,7 @@ pub use registry::{
 pub use request_id::{McpRequestId, RequestIdSource, RequestIdSourceError};
 pub use resource_presentation::*;
 pub use schema::{GeneratedNamedQueryPagination, generated_named_query_pagination};
-pub use schema::{SchemaCompositionError, SchemaValidationError};
+pub use schema::{SchemaCompositionError, SchemaValidationError, compose_command_result_schema};
 pub use schema_bound::*;
 #[cfg(feature = "streamable-http")]
 pub use service_backend::{HostedServiceInvocation, HostedServiceMcpBackend};

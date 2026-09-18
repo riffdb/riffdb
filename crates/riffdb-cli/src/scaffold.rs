@@ -5,6 +5,9 @@ use std::fs;
 use std::io::{self, Write as _};
 use std::path::{Path, PathBuf};
 
+use riffdb_api_mcp::{
+    McpDynamicToolDefinition, McpGeneratedSchemaKind, SchemaDocument, fixed_tool_registry,
+};
 use riffdb_contract_compiler::{compile_contract_source, compile_migration_source};
 use riffdb_contract_ir::ContractBundle;
 use riffdb_diagnostics::{
@@ -23,7 +26,7 @@ use riffdb_query_module::{
     generate_sdk_only_query_tools, generate_typescript_application_client,
     generate_typescript_client, generate_vector_inspection_tools,
 };
-use riffdb_types::{TenantId, hash_generated_artifact, hash_source};
+use riffdb_types::{TenantId, hash_generated_artifact, hash_schema, hash_source};
 use serde_json::json;
 
 const CONTRACT_TEMPLATE: &str = include_str!("../assets/scaffold/application/contract.riff");
@@ -271,8 +274,15 @@ fn generate_legacy_application(manifest_path: &Path) -> Result<(), ScaffoldError
         generate_mcp_commands(&module, &contract).map_err(|_| ScaffoldError::GenerateMcp)?;
     let vector_tools = generate_vector_inspection_tools(&module, &contract)
         .map_err(|_| ScaffoldError::GenerateMcp)?;
-    let generated_mcp =
-        render_mcp_manifest(&manifest, &tools, &sdk_tools, &commands, &[], &vector_tools)?;
+    let generated_mcp = render_mcp_manifest(
+        &manifest,
+        &contract,
+        &tools,
+        &sdk_tools,
+        &commands,
+        &[],
+        &vector_tools,
+    )?;
     write_file(
         root,
         manifest
@@ -1951,8 +1961,15 @@ pub(crate) fn create_application(
         generate_mcp_commands(&module, &contract).map_err(|_| ScaffoldError::GenerateMcp)?;
     let vector_tools = generate_vector_inspection_tools(&module, &contract)
         .map_err(|_| ScaffoldError::GenerateMcp)?;
-    let generated_mcp =
-        render_mcp_manifest(&manifest, &tools, &sdk_tools, &commands, &[], &vector_tools)?;
+    let generated_mcp = render_mcp_manifest(
+        &manifest,
+        &contract,
+        &tools,
+        &sdk_tools,
+        &commands,
+        &[],
+        &vector_tools,
+    )?;
     let generated_rust = generate_rust_client(&module, &contract);
     let generated_typescript = generate_typescript_client(&module, &contract);
     let generated_go = generate_go_application_client(&module, &contract, &[]);
@@ -2876,6 +2893,7 @@ fn render_application_operation_catalog(
         .map_err(|_| ScaffoldError::GenerateMcp)?;
     render_mcp_manifest(
         manifest,
+        contract,
         &tools,
         &sdk_tools,
         &commands,
@@ -2886,6 +2904,7 @@ fn render_application_operation_catalog(
 
 fn render_mcp_manifest(
     manifest: &ApplicationManifest,
+    contract: &ContractBundle,
     tools: &[GeneratedMcpTool],
     sdk_tools: &[GeneratedMcpTool],
     commands: &[GeneratedMcpCommand],
@@ -2897,36 +2916,22 @@ fn render_mcp_manifest(
             .map_err(|_| ScaffoldError::GenerateMcp)?;
         Ok::<_, ScaffoldError>(found || input.get("x-riffdb-continuationParameter").is_some())
     })?;
+    let has_sdk_tools = !sdk_tools.is_empty();
+    let has_vector_tools = !vector_tools.is_empty();
+    let has_commands = !commands.is_empty();
+    let predecessor_schema =
+        generated_operations_schema(has_pagination, has_sdk_tools, has_vector_tools, false);
     let tools = tools
         .iter()
-        .map(render_query_registry_entry)
+        .map(|tool| render_query_registry_entry(tool, has_commands))
         .collect::<Result<Vec<_>, ScaffoldError>>()?;
     let sdk_tools = sdk_tools
         .iter()
-        .map(render_query_registry_entry)
+        .map(|tool| render_query_registry_entry(tool, false))
         .collect::<Result<Vec<_>, ScaffoldError>>()?;
     let commands = commands
         .iter()
-        .map(|command| {
-            Ok(json!({
-                "name": command.name,
-                "operation_name": command.operation_name,
-                "title": command.title,
-                "description": command.description,
-                "contract_bundle_hash": hex(&command.contract_bundle_hash),
-                "plan_hash": hex(&command.plan_hash),
-                "input_schema": serde_json::from_str::<serde_json::Value>(&command.input_schema)
-                    .map_err(|_| ScaffoldError::GenerateMcp)?,
-                "result_schema": serde_json::from_str::<serde_json::Value>(&command.result_schema)
-                    .map_err(|_| ScaffoldError::GenerateMcp)?,
-                "annotations": {
-                    "readOnlyHint": false,
-                    "destructiveHint": true,
-                    "idempotentHint": true,
-                    "openWorldHint": false,
-                },
-            }))
-        })
+        .map(|command| render_command_registry_entry(command, contract))
         .collect::<Result<Vec<_>, ScaffoldError>>()?;
     let reactive_tools = reactive_tools
         .iter()
@@ -2981,8 +2986,6 @@ fn render_mcp_manifest(
             }))
         })
         .collect::<Result<Vec<_>, ScaffoldError>>()?;
-    let has_sdk_tools = !sdk_tools.is_empty();
-    let has_vector_tools = !vector_tools.is_empty();
     let mut value = json!({
         "schema": GENERATED_OPERATIONS_V2,
         "application_manifest_hash": hex(manifest.identity().as_bytes()),
@@ -3005,8 +3008,23 @@ fn render_mcp_manifest(
                 serde_json::Value::Array(vector_tools),
             );
     }
+    if has_commands {
+        value
+            .as_object_mut()
+            .ok_or(ScaffoldError::GenerateMcp)?
+            .insert(
+                "predecessor_schema".to_owned(),
+                serde_json::Value::String(predecessor_schema.to_owned()),
+            );
+    }
     value["schema"] = serde_json::Value::String(
-        generated_operations_schema(has_pagination, has_sdk_tools, has_vector_tools).to_owned(),
+        generated_operations_schema(
+            has_pagination,
+            has_sdk_tools,
+            has_vector_tools,
+            has_commands,
+        )
+        .to_owned(),
     );
     let mut output =
         serde_json::to_string_pretty(&value).map_err(|_| ScaffoldError::GenerateMcp)?;
@@ -3018,8 +3036,11 @@ const fn generated_operations_schema(
     has_pagination: bool,
     has_sdk_tools: bool,
     has_vector_tools: bool,
+    has_commands: bool,
 ) -> &'static str {
-    if has_pagination {
+    if has_commands {
+        GENERATED_OPERATIONS_V6
+    } else if has_pagination {
         GENERATED_OPERATIONS_V5
     } else if has_vector_tools {
         GENERATED_OPERATIONS_V4
@@ -3034,11 +3055,127 @@ const GENERATED_OPERATIONS_V2: &str = "riffdb-generated-application-operations/v
 const GENERATED_OPERATIONS_V3: &str = "riffdb-generated-application-operations/v3";
 const GENERATED_OPERATIONS_V4: &str = "riffdb-generated-application-operations/v4";
 const GENERATED_OPERATIONS_V5: &str = "riffdb-generated-application-operations/v5";
+const GENERATED_OPERATIONS_V6: &str = "riffdb-generated-application-operations/v6";
+
+fn render_command_registry_entry(
+    command: &GeneratedMcpCommand,
+    contract: &ContractBundle,
+) -> Result<serde_json::Value, ScaffoldError> {
+    let plan = contract
+        .commands()
+        .iter()
+        .find(|plan| plan.command_id().get() == command.command_id)
+        .ok_or(ScaffoldError::IdentityMismatch)?;
+    let input_artifact = contract
+        .schema_artifacts()
+        .iter()
+        .find(|artifact| {
+            artifact.key() == riffdb_contract_ir::SchemaArtifactKey::CommandInput(plan.command_id())
+        })
+        .ok_or(ScaffoldError::IdentityMismatch)?;
+    let outcome_artifact = contract
+        .schema_artifacts()
+        .iter()
+        .find(|artifact| {
+            artifact.key()
+                == riffdb_contract_ir::SchemaArtifactKey::CommandOutcomeUnion(plan.command_id())
+        })
+        .ok_or(ScaffoldError::IdentityMismatch)?;
+    let mcp_name = contract
+        .mcp_command_names()
+        .get(plan.command_id())
+        .filter(|entry| entry.source_command_name() == plan.name())
+        .ok_or(ScaffoldError::IdentityMismatch)?;
+    if command.operation_name != plan.name()
+        || command.contract_bundle_hash != *contract.bundle_hash().as_bytes()
+        || command.plan_hash != *plan.plan_hash().as_bytes()
+        || command.mcp_tool_name != mcp_name.tool_name().as_str()
+        || command.compiler_input_schema != input_artifact.canonical_json()
+        || command.compiler_outcome_schema != outcome_artifact.canonical_json()
+        || command.input_schema_hash != *input_artifact.hash().as_bytes()
+        || command.outcome_schema_hash != *outcome_artifact.hash().as_bytes()
+    {
+        return Err(ScaffoldError::IdentityMismatch);
+    }
+    let input_schema = SchemaDocument::from_public_generated(
+        McpGeneratedSchemaKind::CommandInput,
+        command.command_id,
+        &command.input_schema_hash,
+        command.compiler_input_schema.clone(),
+    )
+    .map_err(|_| ScaffoldError::GenerateMcp)?;
+    let outcome_schema = SchemaDocument::from_public_generated(
+        McpGeneratedSchemaKind::CommandOutcomeUnion,
+        command.command_id,
+        &command.outcome_schema_hash,
+        command.compiler_outcome_schema.clone(),
+    )
+    .map_err(|_| ScaffoldError::GenerateMcp)?;
+    let definition = McpDynamicToolDefinition::from_discovered_command(
+        command.mcp_tool_name.clone(),
+        input_schema.clone(),
+        outcome_schema.clone(),
+    )
+    .map_err(|_| ScaffoldError::GenerateMcp)?;
+    let operation_envelope = fixed_tool_registry()
+        .map_err(|_| ScaffoldError::GenerateMcp)?
+        .operation_schemas()
+        .iter()
+        .find(|schema| schema.schema_id() == "riffdb.command-operation-envelope/v1")
+        .ok_or(ScaffoldError::GenerateMcp)?;
+    let result_schema = definition.result_schema();
+    Ok(json!({
+        "name": command.name,
+        "operation_name": command.operation_name,
+        "title": command.title,
+        "description": command.description,
+        "contract_bundle_hash": hex(&command.contract_bundle_hash),
+        "plan_hash": hex(&command.plan_hash),
+        "input_schema": serde_json::from_str::<serde_json::Value>(&command.input_schema)
+            .map_err(|_| ScaffoldError::GenerateMcp)?,
+        "result_schema": serde_json::from_str::<serde_json::Value>(&command.result_schema)
+            .map_err(|_| ScaffoldError::GenerateMcp)?,
+        "annotations": {
+            "readOnlyHint": false,
+            "destructiveHint": true,
+            "idempotentHint": true,
+            "openWorldHint": false,
+        },
+        "mcp_identity": {
+            "command_id": command.command_id,
+            "composed_output": {
+                "schema_hash": hex(&result_schema.schema_hash_bytes()),
+                "schema_id": result_schema.schema_id(),
+            },
+            "input_schema": {
+                "command_id": command.command_id,
+                "key": "command_input",
+                "schema_hash": hex(&input_schema.schema_hash_bytes()),
+                "schema_id": input_schema.schema_id(),
+            },
+            "operation_envelope": {
+                "schema_hash": hex(&operation_envelope.schema_hash_bytes()),
+                "schema_id": operation_envelope.schema_id(),
+            },
+            "outcome_schema": {
+                "command_id": command.command_id,
+                "key": "command_outcome_union",
+                "schema_hash": hex(&outcome_schema.schema_hash_bytes()),
+                "schema_id": outcome_schema.schema_id(),
+            },
+            "tool_name": command.mcp_tool_name,
+        },
+        "mcp_descriptor": definition
+            .descriptor_json()
+            .map_err(|_| ScaffoldError::GenerateMcp)?,
+    }))
+}
 
 fn render_query_registry_entry(
     tool: &GeneratedMcpTool,
+    include_mcp_descriptor: bool,
 ) -> Result<serde_json::Value, ScaffoldError> {
-    Ok(json!({
+    let mut entry = json!({
         "name": tool.name,
         "operation_name": tool.operation_name,
         "title": tool.title,
@@ -3054,7 +3191,52 @@ fn render_query_registry_entry(
             "idempotentHint": true,
             "openWorldHint": false,
         },
-    }))
+    });
+    if include_mcp_descriptor {
+        let module_hash = hex(&tool.module_hash);
+        let input_version = if serde_json::from_str::<serde_json::Value>(&tool.input_schema)
+            .map_err(|_| ScaffoldError::GenerateMcp)?
+            .get("x-riffdb-continuationParameter")
+            .is_some()
+        {
+            "v2"
+        } else {
+            "v1"
+        };
+        let input_hash = hash_schema(tool.input_schema.as_bytes());
+        let result_hash = hash_schema(tool.result_schema.as_bytes());
+        let input = SchemaDocument::from_public_parts(
+            format!(
+                "riffdb.named-query/{}/{}/input/{input_version}",
+                module_hash, tool.operation_name
+            ),
+            input_hash.as_bytes(),
+            tool.input_schema.clone(),
+        )
+        .map_err(|_| ScaffoldError::GenerateMcp)?;
+        let result = SchemaDocument::from_public_parts(
+            format!(
+                "riffdb.named-query/{}/{}/result/{input_version}",
+                module_hash, tool.operation_name
+            ),
+            result_hash.as_bytes(),
+            tool.result_schema.clone(),
+        )
+        .map_err(|_| ScaffoldError::GenerateMcp)?;
+        let definition =
+            McpDynamicToolDefinition::from_discovered_query(tool.name.clone(), input, result)
+                .map_err(|_| ScaffoldError::GenerateMcp)?;
+        entry
+            .as_object_mut()
+            .ok_or(ScaffoldError::GenerateMcp)?
+            .insert(
+                "mcp_descriptor".to_owned(),
+                definition
+                    .descriptor_json()
+                    .map_err(|_| ScaffoldError::GenerateMcp)?,
+            );
+    }
+    Ok(entry)
 }
 
 fn create_temporary_directory(parent: &Path, application: &str) -> Result<PathBuf, ScaffoldError> {
@@ -3327,29 +3509,542 @@ mod tests {
     #[test]
     fn generated_application_operations_v5_topology_and_selection_are_exact() {
         assert_eq!(
-            generated_operations_schema(false, false, false),
+            generated_operations_schema(false, false, false, false),
             GENERATED_OPERATIONS_V2
         );
         assert_eq!(
-            generated_operations_schema(false, true, false),
+            generated_operations_schema(false, true, false, false),
             GENERATED_OPERATIONS_V3
         );
         assert_eq!(
-            generated_operations_schema(false, false, true),
+            generated_operations_schema(false, false, true, false),
             GENERATED_OPERATIONS_V4
         );
         assert_eq!(
-            generated_operations_schema(false, true, true),
+            generated_operations_schema(false, true, true, false),
             GENERATED_OPERATIONS_V4
         );
         for sdk in [false, true] {
             for vector in [false, true] {
                 assert_eq!(
-                    generated_operations_schema(true, sdk, vector),
+                    generated_operations_schema(true, sdk, vector, false),
                     GENERATED_OPERATIONS_V5
                 );
             }
         }
+        for pagination in [false, true] {
+            for sdk in [false, true] {
+                for vector in [false, true] {
+                    assert_eq!(
+                        generated_operations_schema(pagination, sdk, vector, true),
+                        GENERATED_OPERATIONS_V6
+                    );
+                }
+            }
+        }
+    }
+
+    // req: MCP-020, MCP-021, MCP-026, MCP-040, MCP-045, DX-044, DX-047, VER-001, VER-002, VER-003, VER-004
+    #[test]
+    fn generated_mcp_command_catalog_v6_composes_authoritative_schemas() {
+        let parent =
+            tempfile::TempDir::with_prefix("riffdb-wp779-v6-test-").expect("scratch directory");
+        let base = parent.path().join("app");
+        create_application("v6-catalog", ScaffoldLanguage::Rust, &base).expect("scaffold");
+        let catalog: serde_json::Value = serde_json::from_slice(
+            &fs::read(base.join("generated/mcp/tools.json")).expect("generated MCP catalog"),
+        )
+        .expect("catalog JSON");
+        assert_eq!(catalog["schema"], GENERATED_OPERATIONS_V6);
+        let predecessor = generated_operations_schema(
+            catalog["tools"]
+                .as_array()
+                .expect("query registry")
+                .iter()
+                .any(|entry| {
+                    entry["input_schema"]
+                        .get("x-riffdb-continuationParameter")
+                        .is_some()
+                }),
+            catalog.get("sdk_tools").is_some(),
+            catalog.get("vector_tools").is_some(),
+            false,
+        );
+        assert_eq!(catalog["predecessor_schema"], predecessor);
+
+        let contract_source = fs::read_to_string(base.join("riffdb/contract.riff"))
+            .expect("generated contract source");
+        let bundle = compile_contract_source(&contract_source).expect("compiled contract");
+        let fixed = fixed_tool_registry().expect("fixed registry");
+        let envelope = fixed
+            .operation_schemas()
+            .iter()
+            .find(|schema| schema.schema_id() == "riffdb.command-operation-envelope/v1")
+            .expect("accepted operation envelope");
+        let commands = catalog["commands"].as_array().expect("commands");
+        assert!(!commands.is_empty());
+        for command in commands {
+            let identity = command["mcp_identity"]
+                .as_object()
+                .expect("closed identity");
+            assert_eq!(
+                identity.keys().map(String::as_str).collect::<Vec<_>>(),
+                [
+                    "command_id",
+                    "composed_output",
+                    "input_schema",
+                    "operation_envelope",
+                    "outcome_schema",
+                    "tool_name",
+                ]
+            );
+            let command_id = u32::try_from(identity["command_id"].as_u64().expect("command id"))
+                .expect("u32 command id");
+            assert_ne!(command_id, 0);
+            let plan = bundle
+                .commands()
+                .iter()
+                .find(|plan| plan.command_id().get() == command_id)
+                .expect("bound command");
+            assert_eq!(command["operation_name"], plan.name());
+            let exact_name = bundle
+                .mcp_command_names()
+                .get(plan.command_id())
+                .expect("compiler name");
+            assert_eq!(identity["tool_name"], exact_name.tool_name().as_str());
+
+            let input_artifact = bundle
+                .schema_artifacts()
+                .iter()
+                .find(|artifact| {
+                    artifact.key()
+                        == riffdb_contract_ir::SchemaArtifactKey::CommandInput(plan.command_id())
+                })
+                .expect("compiler input schema");
+            let outcome_artifact = bundle
+                .schema_artifacts()
+                .iter()
+                .find(|artifact| {
+                    artifact.key()
+                        == riffdb_contract_ir::SchemaArtifactKey::CommandOutcomeUnion(
+                            plan.command_id(),
+                        )
+                })
+                .expect("compiler outcome schema");
+            let compiler_input =
+                serde_json::from_str::<serde_json::Value>(input_artifact.canonical_json())
+                    .expect("compiler input JSON");
+            let compiler_outcome =
+                serde_json::from_str::<serde_json::Value>(outcome_artifact.canonical_json())
+                    .expect("compiler outcome JSON");
+            assert_compiler_identity_child(
+                &identity["input_schema"],
+                command_id,
+                "command_input",
+                &format!("riffdb.generated-schema/command-input/{command_id}/v1"),
+                input_artifact.hash().as_bytes(),
+            );
+            assert_compiler_identity_child(
+                &identity["outcome_schema"],
+                command_id,
+                "command_outcome_union",
+                &format!("riffdb.generated-schema/command-outcome-union/{command_id}/v1"),
+                outcome_artifact.hash().as_bytes(),
+            );
+            assert_schema_identity_child(
+                &identity["operation_envelope"],
+                "riffdb.command-operation-envelope/v1",
+                &envelope.schema_hash_bytes(),
+            );
+
+            let descriptor = command["mcp_descriptor"]
+                .as_object()
+                .expect("closed descriptor");
+            assert_eq!(
+                descriptor.keys().map(String::as_str).collect::<Vec<_>>(),
+                ["annotations", "inputSchema", "name", "outputSchema"]
+            );
+            assert_eq!(descriptor["name"], identity["tool_name"]);
+            assert_eq!(descriptor["inputSchema"], compiler_input);
+            assert_eq!(
+                descriptor["annotations"],
+                json!({
+                    "destructiveHint": false,
+                    "idempotentHint": true,
+                    "openWorldHint": false,
+                    "readOnlyHint": false,
+                })
+            );
+            let composed_bytes =
+                serde_json::to_vec(&descriptor["outputSchema"]).expect("canonical composed schema");
+            let composed_hash = hash_schema(&composed_bytes);
+            assert_schema_identity_child(
+                &identity["composed_output"],
+                "riffdb.command-operation-envelope/v1+compiler-outcome",
+                composed_hash.as_bytes(),
+            );
+            let mut expected_outcome = compiler_outcome;
+            expected_outcome
+                .as_object_mut()
+                .expect("outcome object")
+                .remove("$schema");
+            assert_eq!(
+                descriptor["outputSchema"]["$defs"]["outcome"],
+                expected_outcome
+            );
+        }
+
+        for query in catalog["tools"].as_array().expect("query registry") {
+            let descriptor = query["mcp_descriptor"]
+                .as_object()
+                .expect("closed query descriptor");
+            assert_eq!(
+                descriptor.keys().map(String::as_str).collect::<Vec<_>>(),
+                ["annotations", "inputSchema", "name", "outputSchema"]
+            );
+            assert_eq!(descriptor["name"], query["name"]);
+            assert_eq!(descriptor["inputSchema"], query["input_schema"]);
+            assert_eq!(descriptor["outputSchema"], query["result_schema"]);
+            assert_eq!(
+                descriptor["annotations"],
+                json!({
+                    "destructiveHint": false,
+                    "idempotentHint": true,
+                    "openWorldHint": false,
+                    "readOnlyHint": true,
+                })
+            );
+        }
+
+        let first = &commands[0];
+        let first_id = first["mcp_identity"]["command_id"]
+            .as_u64()
+            .expect("command id");
+        let first_command_id = u32::try_from(first_id).expect("u32 command id");
+        let first_artifact = bundle
+            .schema_artifacts()
+            .iter()
+            .find(|artifact| {
+                artifact.key()
+                    == riffdb_contract_ir::SchemaArtifactKey::CommandOutcomeUnion(
+                        bundle
+                            .commands()
+                            .iter()
+                            .find(|plan| plan.command_id().get() == first_command_id)
+                            .expect("first command")
+                            .command_id(),
+                    )
+            })
+            .expect("first compiler outcome");
+        let valid_outcome = SchemaDocument::from_public_generated(
+            McpGeneratedSchemaKind::CommandOutcomeUnion,
+            first_command_id,
+            first_artifact.hash().as_bytes(),
+            first_artifact.canonical_json(),
+        )
+        .expect("valid compiler outcome schema");
+        let mut outcome_with_definitions =
+            serde_json::from_str::<serde_json::Value>(first_artifact.canonical_json())
+                .expect("compiler outcome JSON");
+        outcome_with_definitions
+            .as_object_mut()
+            .expect("outcome object")
+            .insert("$defs".to_owned(), json!({"forbidden": {"type": "string"}}));
+        let canonical = serde_json::to_string(&outcome_with_definitions).expect("canonical JSON");
+        let rejected_outcome = SchemaDocument::from_public_parts(
+            format!("riffdb.generated-schema/command-outcome-union/{first_id}/v1"),
+            hash_schema(canonical.as_bytes()).as_bytes(),
+            canonical,
+        )
+        .expect("individually valid outcome schema");
+        assert!(
+            riffdb_api_mcp::compose_command_result_schema(&rejected_outcome, envelope).is_err()
+        );
+
+        let wrong_envelope_id = SchemaDocument::from_public_parts(
+            "riffdb.command-operation-envelope/v2",
+            &envelope.schema_hash_bytes(),
+            envelope.canonical_json(),
+        )
+        .expect("individually valid wrong envelope identity");
+        assert!(
+            riffdb_api_mcp::compose_command_result_schema(&valid_outcome, &wrong_envelope_id)
+                .is_err()
+        );
+        let mut wrong_envelope_body =
+            serde_json::from_str::<serde_json::Value>(envelope.canonical_json())
+                .expect("envelope JSON");
+        wrong_envelope_body["$defs"]["outcome"] = json!({"type": "object"});
+        let wrong_envelope_body =
+            serde_json::to_string(&wrong_envelope_body).expect("canonical envelope JSON");
+        let wrong_envelope_body = SchemaDocument::from_public_parts(
+            envelope.schema_id(),
+            hash_schema(wrong_envelope_body.as_bytes()).as_bytes(),
+            wrong_envelope_body,
+        )
+        .expect("individually valid wrong envelope body");
+        assert!(
+            riffdb_api_mcp::compose_command_result_schema(&valid_outcome, &wrong_envelope_body,)
+                .is_err()
+        );
+        assert!(
+            SchemaDocument::from_public_parts(
+                envelope.schema_id(),
+                &[0; 32],
+                envelope.canonical_json(),
+            )
+            .is_err()
+        );
+        assert!(
+            SchemaDocument::from_public_generated(
+                McpGeneratedSchemaKind::CommandInput,
+                0,
+                first_artifact.hash().as_bytes(),
+                first_artifact.canonical_json(),
+            )
+            .is_err()
+        );
+
+        let budget =
+            compile_contract_source(include_str!("../../../contracts/examples/budget.riff"))
+                .expect("budget contract");
+        let empty_module = QueryModule::compile(
+            QueryModuleCandidate::new(
+                QueryModuleName::new("catalog_parity").expect("module name"),
+                QueryModuleVersion::new(1).expect("module version"),
+                Vec::new(),
+            )
+            .expect("empty module candidate"),
+            &budget,
+        )
+        .expect("empty module");
+        let budget_commands =
+            generate_mcp_commands(&empty_module, &budget).expect("budget commands");
+        assert!(budget_commands.len() >= 2);
+        let mut rebound = budget_commands[0].clone();
+        rebound.command_id = budget_commands[1].command_id;
+        assert!(render_command_registry_entry(&rebound, &budget).is_err());
+        let mut stale_name = budget_commands[0].clone();
+        stale_name.mcp_tool_name = stale_name.mcp_tool_name.replace('_', ".");
+        assert!(render_command_registry_entry(&stale_name, &budget).is_err());
+        let mut substituted_schema = budget_commands[0].clone();
+        substituted_schema.compiler_input_schema = budget_commands[1].compiler_input_schema.clone();
+        substituted_schema.input_schema_hash = budget_commands[1].input_schema_hash;
+        assert!(render_command_registry_entry(&substituted_schema, &budget).is_err());
+    }
+
+    fn assert_compiler_identity_child(
+        value: &serde_json::Value,
+        command_id: u32,
+        key: &str,
+        schema_id: &str,
+        schema_hash: &[u8; 32],
+    ) {
+        let child = value.as_object().expect("compiler identity child");
+        assert_eq!(
+            child.keys().map(String::as_str).collect::<Vec<_>>(),
+            ["command_id", "key", "schema_hash", "schema_id"]
+        );
+        assert_eq!(child["command_id"], command_id);
+        assert_eq!(child["key"], key);
+        assert_eq!(child["schema_id"], schema_id);
+        assert_eq!(child["schema_hash"], hex(schema_hash));
+        assert_lower_hex_hash(&child["schema_hash"]);
+    }
+
+    fn assert_schema_identity_child(
+        value: &serde_json::Value,
+        schema_id: &str,
+        schema_hash: &[u8; 32],
+    ) {
+        let child = value.as_object().expect("schema identity child");
+        assert_eq!(
+            child.keys().map(String::as_str).collect::<Vec<_>>(),
+            ["schema_hash", "schema_id"]
+        );
+        assert_eq!(child["schema_id"], schema_id);
+        assert_eq!(child["schema_hash"], hex(schema_hash));
+        assert_lower_hex_hash(&child["schema_hash"]);
+    }
+
+    fn assert_lower_hex_hash(value: &serde_json::Value) {
+        let value = value.as_str().expect("hash text");
+        assert_eq!(value.len(), 64);
+        assert!(
+            value
+                .bytes()
+                .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+        );
+    }
+
+    // req: MCP-001, MCP-020, MCP-021, MCP-026, MCP-040, MCP-043, MCP-045, DX-044, DX-047, DX-049, VER-001, VER-002, VER-003, VER-004, VER-008
+    #[test]
+    fn generated_mcp_catalog_v6_topology_and_lock_migration_are_exact() {
+        let repository = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../..");
+        let cli_manifest = fs::read_to_string(repository.join("crates/riffdb-cli/Cargo.toml"))
+            .expect("CLI manifest");
+        assert!(cli_manifest.contains(
+            "riffdb-api-mcp = { version = \"0.1.0\", path = \"../riffdb-api-mcp\", default-features = false }"
+        ));
+        let lock = fs::read_to_string(repository.join("Cargo.lock")).expect("workspace lock");
+        let cli_package = lock
+            .split("[[package]]")
+            .find(|package| package.contains("name = \"riffdb-cli\""))
+            .expect("CLI lock package");
+        assert!(cli_package.contains(" \"riffdb-api-mcp\","));
+
+        let topology: serde_json::Value = serde_json::from_slice(
+            &fs::read(repository.join("release/version-topology-v1.json"))
+                .expect("version topology"),
+        )
+        .expect("version topology JSON");
+        let generated_catalog = topology["domains"]
+            .as_array()
+            .expect("topology domains")
+            .iter()
+            .find(|domain| domain["id"] == "generated_surface.application_operations")
+            .expect("generated catalog topology");
+        let exact_identities = json!([
+            GENERATED_OPERATIONS_V2,
+            GENERATED_OPERATIONS_V3,
+            GENERATED_OPERATIONS_V4,
+            GENERATED_OPERATIONS_V5,
+            GENERATED_OPERATIONS_V6,
+        ]);
+        assert_eq!(generated_catalog["readable_identities"], exact_identities);
+        assert_eq!(generated_catalog["writable_identities"], exact_identities);
+        assert_eq!(generated_catalog["current_identities"], exact_identities);
+        assert_eq!(generated_catalog["writer_policy"], "least_sufficient");
+
+        for (application, schema, predecessor, artifact_hash) in [
+            (
+                "agent-alpha",
+                riffdb_query_module::APPLICATION_LOCK_SCHEMA_V3,
+                GENERATED_OPERATIONS_V2,
+                "6764a4aef3745c3c7eabaf26060fec25940a7149edce6a530fcaafb465c9ae68",
+            ),
+            (
+                "ticketdesk",
+                riffdb_query_module::APPLICATION_LOCK_SCHEMA_V6,
+                GENERATED_OPERATIONS_V5,
+                "d74a3de8c3d10ca503803578a24dbc636a3c1d2fe663259443938b939407d70b",
+            ),
+        ] {
+            let root = repository.join("examples").join(application);
+            let catalog_bytes =
+                fs::read(root.join("generated/mcp/tools.json")).expect("generated MCP catalog");
+            let catalog: serde_json::Value =
+                serde_json::from_slice(&catalog_bytes).expect("generated catalog JSON");
+            assert_eq!(catalog["schema"], GENERATED_OPERATIONS_V6);
+            assert_eq!(catalog["predecessor_schema"], predecessor);
+            assert!(
+                catalog["commands"]
+                    .as_array()
+                    .is_some_and(|commands| !commands.is_empty())
+            );
+            assert!(
+                catalog["commands"]
+                    .as_array()
+                    .expect("commands")
+                    .iter()
+                    .all(|command| command.get("mcp_identity").is_some()
+                        && command.get("mcp_descriptor").is_some())
+            );
+            assert!(
+                catalog["tools"]
+                    .as_array()
+                    .expect("queries")
+                    .iter()
+                    .all(|query| query.get("mcp_descriptor").is_some())
+            );
+
+            let lock_bytes =
+                fs::read(root.join(DEFAULT_LOCK_PATH)).expect("exact application lock");
+            let decoded = ApplicationLock::decode_canonical(&lock_bytes).expect("canonical lock");
+            assert_eq!(decoded.schema(), schema);
+            let mcp_artifact = decoded
+                .artifacts()
+                .iter()
+                .find(|artifact| artifact.kind() == GeneratedApplicationArtifactKind::Mcp)
+                .expect("MCP artifact");
+            assert_eq!(mcp_artifact.path(), "generated/mcp/tools.json");
+            assert_eq!(hex(mcp_artifact.content_hash().as_bytes()), artifact_hash);
+            assert_eq!(
+                mcp_artifact.content_hash(),
+                hash_generated_artifact(&catalog_bytes)
+            );
+            assert_eq!(
+                preview_application_lock(&root.join("riffdb.application.json"))
+                    .expect("read-only migration preview"),
+                lock_bytes
+            );
+            check_application_lock(&root.join("riffdb.application.json"), None)
+                .expect("explicit exact acceptance");
+        }
+
+        let old_root = repository.join("fixtures/compatibility/wp779-pre-v6-better-auth");
+        let old_catalog_bytes =
+            fs::read(old_root.join("generated/mcp/tools.json")).expect("old exact catalog");
+        let old_catalog: serde_json::Value =
+            serde_json::from_slice(&old_catalog_bytes).expect("old catalog JSON");
+        assert_ne!(old_catalog["schema"], GENERATED_OPERATIONS_V6);
+        assert!(old_catalog.get("predecessor_schema").is_none());
+        assert!(
+            old_catalog["commands"]
+                .as_array()
+                .expect("old commands")
+                .iter()
+                .all(|command| command.get("mcp_identity").is_none()
+                    && command.get("mcp_descriptor").is_none())
+        );
+        let old_lock = ApplicationLock::decode_canonical(
+            &fs::read(old_root.join(DEFAULT_LOCK_PATH)).expect("old exact lock"),
+        )
+        .expect("old lock remains readable");
+        let old_mcp_artifact = old_lock
+            .artifacts()
+            .iter()
+            .find(|artifact| artifact.kind() == GeneratedApplicationArtifactKind::Mcp)
+            .expect("old MCP artifact");
+        assert_eq!(
+            old_mcp_artifact.content_hash(),
+            hash_generated_artifact(&old_catalog_bytes)
+        );
+
+        let temporary =
+            tempfile::TempDir::with_prefix("riffdb-wp779-v8-migration-").expect("scratch");
+        let migrated = temporary.path().join("application");
+        create_application("v8-migration", ScaffoldLanguage::Rust, &migrated)
+            .expect("predecessor scaffold");
+        let source_path = migrated.join("riffdb.application.json");
+        let predecessor_lock = ApplicationLock::decode_canonical(
+            &fs::read(migrated.join(DEFAULT_LOCK_PATH)).expect("predecessor lock"),
+        )
+        .expect("predecessor lock decode");
+        let mut source: serde_json::Value =
+            serde_json::from_slice(&fs::read(&source_path).expect("source")).expect("source JSON");
+        source["schema"] = json!(riffdb_query_module::APPLICATION_SOURCE_SCHEMA_V7);
+        source["generation"] = json!({"mcp": "generated/mcp/tools.json"});
+        for role in source["roles"].as_array_mut().expect("roles") {
+            role["row_policies"] = json!([]);
+        }
+        let source =
+            ApplicationSourceManifest::parse(&serde_json::to_string(&source).expect("source JSON"))
+                .expect("V7 source");
+        fs::write(&source_path, source.canonical_bytes()).expect("write V7 source");
+        let preview = preview_application_lock(&source_path).expect("V8 lock preview");
+        let preview_lock = ApplicationLock::decode_canonical(&preview).expect("V8 preview");
+        assert_eq!(
+            preview_lock.schema(),
+            riffdb_query_module::APPLICATION_LOCK_SCHEMA_V8
+        );
+        assert_ne!(preview_lock.identity(), predecessor_lock.identity());
+        write_application_lock(&source_path, None).expect("accept V8 lock migration");
+        assert_eq!(
+            fs::read(migrated.join(DEFAULT_LOCK_PATH)).expect("written V8 lock"),
+            preview
+        );
+        check_application_lock(&source_path, None).expect("exact migrated V8 closure");
     }
 
     #[test]

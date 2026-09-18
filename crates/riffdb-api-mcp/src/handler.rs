@@ -346,6 +346,11 @@ impl McpDynamicToolDefinition {
         &self.result_schema
     }
 
+    /// Serializes the private hosted projection as an inert presentation value.
+    pub fn descriptor_json(&self) -> Result<Value, McpHandlerContractError> {
+        serde_json::to_value(self.to_mcp_tool()).map_err(|_| McpHandlerContractError)
+    }
+
     fn to_mcp_tool(&self) -> Tool {
         let mut tool = Tool::new_with_raw(
             self.name.clone(),

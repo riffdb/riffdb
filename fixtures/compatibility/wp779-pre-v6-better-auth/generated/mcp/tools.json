@@ -1,0 +1,915 @@
+{
+  "application_manifest_hash": "6c3edb5c5e208f3cbade3548c2bf6002eb79b31a80dbd8ea1d01acd02d84879e",
+  "commands": [
+    {
+      "annotations": {
+        "destructiveHint": true,
+        "idempotentHint": true,
+        "openWorldHint": false,
+        "readOnlyHint": false
+      },
+      "contract_bundle_hash": "c1376f90ceda166ba326ed7e389d3c474224f18d07740b3d5e299cafc94e94d4",
+      "description": "Execute the exact ConsumeVerificationToken compiled command from contract BetterAuthAcceptance.",
+      "input_schema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "additionalProperties": false,
+        "properties": {
+          "organization_id": {
+            "type": "string"
+          },
+          "request_id": {
+            "type": "string"
+          },
+          "user_id": {
+            "type": "string"
+          },
+          "verification_token_id": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "user_id",
+          "request_id",
+          "organization_id",
+          "verification_token_id"
+        ],
+        "type": "object"
+      },
+      "name": "better_auth_acceptance_consume_verification_token",
+      "operation_name": "ConsumeVerificationToken",
+      "plan_hash": "d3e6b696c3909e8d19de9441e0c25c410656e0daa40b9e7a6bc8738d62ff17dc",
+      "result_schema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "oneOf": [
+          {
+            "additionalProperties": false,
+            "properties": {
+              "outcome": {
+                "const": "VerificationTokenExpired",
+                "type": "string"
+              }
+            },
+            "required": [
+              "outcome"
+            ],
+            "type": "object"
+          },
+          {
+            "additionalProperties": false,
+            "properties": {
+              "outcome": {
+                "const": "VerificationTokenMissing",
+                "type": "string"
+              }
+            },
+            "required": [
+              "outcome"
+            ],
+            "type": "object"
+          },
+          {
+            "additionalProperties": false,
+            "properties": {
+              "outcome": {
+                "const": "VerificationTokenConsumed",
+                "type": "string"
+              },
+              "user_id": {
+                "type": "string"
+              },
+              "verification_token_id": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "user_id",
+              "verification_token_id",
+              "outcome"
+            ],
+            "type": "object"
+          },
+          {
+            "additionalProperties": false,
+            "properties": {
+              "outcome": {
+                "const": "VerificationTokenAlreadyConsumed",
+                "type": "string"
+              }
+            },
+            "required": [
+              "outcome"
+            ],
+            "type": "object"
+          }
+        ]
+      },
+      "title": "Run ConsumeVerificationToken"
+    },
+    {
+      "annotations": {
+        "destructiveHint": true,
+        "idempotentHint": true,
+        "openWorldHint": false,
+        "readOnlyHint": false
+      },
+      "contract_bundle_hash": "c1376f90ceda166ba326ed7e389d3c474224f18d07740b3d5e299cafc94e94d4",
+      "description": "Execute the exact CreateUserAccountSessions compiled command from contract BetterAuthAcceptance.",
+      "input_schema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "additionalProperties": false,
+        "properties": {
+          "request_id": {
+            "type": "string"
+          },
+          "signups": {
+            "items": {
+              "additionalProperties": false,
+              "properties": {
+                "account_id": {
+                  "type": "string"
+                },
+                "email": {
+                  "type": "string"
+                },
+                "expires_at": {
+                  "type": "string"
+                },
+                "organization_id": {
+                  "type": "string"
+                },
+                "provider": {
+                  "type": "string"
+                },
+                "provider_account_id": {
+                  "type": "string"
+                },
+                "session_id": {
+                  "type": "string"
+                },
+                "token_digest": {
+                  "type": "string"
+                },
+                "user_id": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "email",
+                "user_id",
+                "provider",
+                "account_id",
+                "expires_at",
+                "session_id",
+                "token_digest",
+                "organization_id",
+                "provider_account_id"
+              ],
+              "type": "object"
+            },
+            "maxItems": 8,
+            "minItems": 1,
+            "type": "array"
+          }
+        },
+        "required": [
+          "signups",
+          "request_id"
+        ],
+        "type": "object"
+      },
+      "name": "better_auth_acceptance_create_user_account_sessions",
+      "operation_name": "CreateUserAccountSessions",
+      "plan_hash": "e35be7f9877e51a21f27f7371679dfaedb2cbdabad7e13c228ecacbe612c1126",
+      "result_schema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "oneOf": [
+          {
+            "additionalProperties": false,
+            "properties": {
+              "outcome": {
+                "const": "SignupUserExists",
+                "type": "string"
+              }
+            },
+            "required": [
+              "outcome"
+            ],
+            "type": "object"
+          },
+          {
+            "additionalProperties": false,
+            "properties": {
+              "outcome": {
+                "const": "SignupAccountExists",
+                "type": "string"
+              }
+            },
+            "required": [
+              "outcome"
+            ],
+            "type": "object"
+          },
+          {
+            "additionalProperties": false,
+            "properties": {
+              "outcome": {
+                "const": "SignupSessionExists",
+                "type": "string"
+              }
+            },
+            "required": [
+              "outcome"
+            ],
+            "type": "object"
+          },
+          {
+            "additionalProperties": false,
+            "properties": {
+              "outcome": {
+                "const": "UserAccountSessionsCreated",
+                "type": "string"
+              }
+            },
+            "required": [
+              "outcome"
+            ],
+            "type": "object"
+          }
+        ]
+      },
+      "title": "Run CreateUserAccountSessions"
+    },
+    {
+      "annotations": {
+        "destructiveHint": true,
+        "idempotentHint": true,
+        "openWorldHint": false,
+        "readOnlyHint": false
+      },
+      "contract_bundle_hash": "c1376f90ceda166ba326ed7e389d3c474224f18d07740b3d5e299cafc94e94d4",
+      "description": "Execute the exact DeleteUsers compiled command from contract BetterAuthAcceptance.",
+      "input_schema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "additionalProperties": false,
+        "properties": {
+          "organization_id": {
+            "type": "string"
+          },
+          "request_id": {
+            "type": "string"
+          },
+          "user_ids": {
+            "items": {
+              "type": "string"
+            },
+            "maxItems": 8,
+            "minItems": 1,
+            "type": "array"
+          }
+        },
+        "required": [
+          "user_ids",
+          "request_id",
+          "organization_id"
+        ],
+        "type": "object"
+      },
+      "name": "better_auth_acceptance_delete_users",
+      "operation_name": "DeleteUsers",
+      "plan_hash": "8b97f43474cf0ff07c3831985bf5150af485762356d05ecef79dc666b6431307",
+      "result_schema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "oneOf": [
+          {
+            "additionalProperties": false,
+            "properties": {
+              "outcome": {
+                "const": "DeleteUserMissing",
+                "type": "string"
+              }
+            },
+            "required": [
+              "outcome"
+            ],
+            "type": "object"
+          },
+          {
+            "additionalProperties": false,
+            "properties": {
+              "outcome": {
+                "const": "UserAccountsDeleted",
+                "type": "string"
+              }
+            },
+            "required": [
+              "outcome"
+            ],
+            "type": "object"
+          },
+          {
+            "additionalProperties": false,
+            "properties": {
+              "outcome": {
+                "const": "CascadeLimitExceeded",
+                "type": "string"
+              }
+            },
+            "required": [
+              "outcome"
+            ],
+            "type": "object"
+          }
+        ]
+      },
+      "title": "Run DeleteUsers"
+    },
+    {
+      "annotations": {
+        "destructiveHint": true,
+        "idempotentHint": true,
+        "openWorldHint": false,
+        "readOnlyHint": false
+      },
+      "contract_bundle_hash": "c1376f90ceda166ba326ed7e389d3c474224f18d07740b3d5e299cafc94e94d4",
+      "description": "Execute the exact IssueVerificationToken compiled command from contract BetterAuthAcceptance.",
+      "input_schema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "additionalProperties": false,
+        "properties": {
+          "expires_at": {
+            "type": "string"
+          },
+          "organization_id": {
+            "type": "string"
+          },
+          "request_id": {
+            "type": "string"
+          },
+          "token_digest": {
+            "type": "string"
+          },
+          "user_id": {
+            "type": "string"
+          },
+          "verification_token_id": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "user_id",
+          "expires_at",
+          "request_id",
+          "token_digest",
+          "organization_id",
+          "verification_token_id"
+        ],
+        "type": "object"
+      },
+      "name": "better_auth_acceptance_issue_verification_token",
+      "operation_name": "IssueVerificationToken",
+      "plan_hash": "9d226908f0f69a90f763b7dc7829b5fe9ff717a36f9f607a3162c0f0faed75ba",
+      "result_schema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "oneOf": [
+          {
+            "additionalProperties": false,
+            "properties": {
+              "outcome": {
+                "const": "VerificationTokenExists",
+                "type": "string"
+              }
+            },
+            "required": [
+              "outcome"
+            ],
+            "type": "object"
+          },
+          {
+            "additionalProperties": false,
+            "properties": {
+              "issuance_id": {
+                "type": "string"
+              },
+              "issued_at": {
+                "type": "string"
+              },
+              "outcome": {
+                "const": "VerificationTokenIssued",
+                "type": "string"
+              },
+              "verification_token_id": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "issued_at",
+              "issuance_id",
+              "verification_token_id",
+              "outcome"
+            ],
+            "type": "object"
+          },
+          {
+            "additionalProperties": false,
+            "properties": {
+              "outcome": {
+                "const": "VerificationTokenUserMissing",
+                "type": "string"
+              }
+            },
+            "required": [
+              "outcome"
+            ],
+            "type": "object"
+          }
+        ]
+      },
+      "title": "Run IssueVerificationToken"
+    },
+    {
+      "annotations": {
+        "destructiveHint": true,
+        "idempotentHint": true,
+        "openWorldHint": false,
+        "readOnlyHint": false
+      },
+      "contract_bundle_hash": "c1376f90ceda166ba326ed7e389d3c474224f18d07740b3d5e299cafc94e94d4",
+      "description": "Execute the exact RefreshSession compiled command from contract BetterAuthAcceptance.",
+      "input_schema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "additionalProperties": false,
+        "properties": {
+          "expected_revision": {
+            "type": "integer"
+          },
+          "organization_id": {
+            "type": "string"
+          },
+          "request_id": {
+            "type": "string"
+          },
+          "session_id": {
+            "type": "string"
+          },
+          "successor_token_digest": {
+            "type": "string"
+          },
+          "user_id": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "user_id",
+          "request_id",
+          "session_id",
+          "organization_id",
+          "expected_revision",
+          "successor_token_digest"
+        ],
+        "type": "object"
+      },
+      "name": "better_auth_acceptance_refresh_session",
+      "operation_name": "RefreshSession",
+      "plan_hash": "bec158663a6511372e7f497f3d0ed5ae9ffa45a0a39b7b54d71a817d9fd31067",
+      "result_schema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "oneOf": [
+          {
+            "additionalProperties": false,
+            "properties": {
+              "outcome": {
+                "const": "SessionRefreshed",
+                "type": "string"
+              },
+              "session": {
+                "additionalProperties": false,
+                "properties": {
+                  "expires_at": {
+                    "type": "string"
+                  },
+                  "organization_id": {
+                    "type": "string"
+                  },
+                  "session_id": {
+                    "type": "string"
+                  },
+                  "state": {
+                    "type": "string"
+                  },
+                  "token_digest": {
+                    "type": "string"
+                  },
+                  "user_id": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "state",
+                  "user_id",
+                  "expires_at",
+                  "session_id",
+                  "token_digest",
+                  "organization_id"
+                ],
+                "type": "object"
+              }
+            },
+            "required": [
+              "session",
+              "outcome"
+            ],
+            "type": "object"
+          },
+          {
+            "additionalProperties": false,
+            "properties": {
+              "outcome": {
+                "const": "RefreshSessionStale",
+                "type": "string"
+              }
+            },
+            "required": [
+              "outcome"
+            ],
+            "type": "object"
+          },
+          {
+            "additionalProperties": false,
+            "properties": {
+              "outcome": {
+                "const": "RefreshSessionExpired",
+                "type": "string"
+              }
+            },
+            "required": [
+              "outcome"
+            ],
+            "type": "object"
+          },
+          {
+            "additionalProperties": false,
+            "properties": {
+              "outcome": {
+                "const": "RefreshSessionMissing",
+                "type": "string"
+              }
+            },
+            "required": [
+              "outcome"
+            ],
+            "type": "object"
+          },
+          {
+            "additionalProperties": false,
+            "properties": {
+              "outcome": {
+                "const": "RefreshSessionRevoked",
+                "type": "string"
+              }
+            },
+            "required": [
+              "outcome"
+            ],
+            "type": "object"
+          }
+        ],
+        "x-riffdb-secretOutputs": [
+          {
+            "entity": "Session",
+            "field": "session",
+            "outcome": "SessionRefreshed",
+            "sourceField": "token_digest"
+          }
+        ]
+      },
+      "title": "Run RefreshSession"
+    },
+    {
+      "annotations": {
+        "destructiveHint": true,
+        "idempotentHint": true,
+        "openWorldHint": false,
+        "readOnlyHint": false
+      },
+      "contract_bundle_hash": "c1376f90ceda166ba326ed7e389d3c474224f18d07740b3d5e299cafc94e94d4",
+      "description": "Execute the exact RevokeSession compiled command from contract BetterAuthAcceptance.",
+      "input_schema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "additionalProperties": false,
+        "properties": {
+          "expected_revision": {
+            "type": "integer"
+          },
+          "organization_id": {
+            "type": "string"
+          },
+          "request_id": {
+            "type": "string"
+          },
+          "session_id": {
+            "type": "string"
+          },
+          "user_id": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "user_id",
+          "request_id",
+          "session_id",
+          "organization_id",
+          "expected_revision"
+        ],
+        "type": "object"
+      },
+      "name": "better_auth_acceptance_revoke_session",
+      "operation_name": "RevokeSession",
+      "plan_hash": "309062f50ee35eea4b2ab7393c8a3be74547a3d7e05995eb6b8c6cecc9f39813",
+      "result_schema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "oneOf": [
+          {
+            "additionalProperties": false,
+            "properties": {
+              "outcome": {
+                "const": "SessionRevoked",
+                "type": "string"
+              },
+              "session": {
+                "additionalProperties": false,
+                "properties": {
+                  "expires_at": {
+                    "type": "string"
+                  },
+                  "organization_id": {
+                    "type": "string"
+                  },
+                  "session_id": {
+                    "type": "string"
+                  },
+                  "state": {
+                    "type": "string"
+                  },
+                  "token_digest": {
+                    "type": "string"
+                  },
+                  "user_id": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "state",
+                  "user_id",
+                  "expires_at",
+                  "session_id",
+                  "token_digest",
+                  "organization_id"
+                ],
+                "type": "object"
+              }
+            },
+            "required": [
+              "session",
+              "outcome"
+            ],
+            "type": "object"
+          },
+          {
+            "additionalProperties": false,
+            "properties": {
+              "outcome": {
+                "const": "RevokeSessionStale",
+                "type": "string"
+              }
+            },
+            "required": [
+              "outcome"
+            ],
+            "type": "object"
+          },
+          {
+            "additionalProperties": false,
+            "properties": {
+              "outcome": {
+                "const": "RevokeSessionMissing",
+                "type": "string"
+              }
+            },
+            "required": [
+              "outcome"
+            ],
+            "type": "object"
+          },
+          {
+            "additionalProperties": false,
+            "properties": {
+              "outcome": {
+                "const": "SessionAlreadyRevoked",
+                "type": "string"
+              }
+            },
+            "required": [
+              "outcome"
+            ],
+            "type": "object"
+          }
+        ],
+        "x-riffdb-secretOutputs": [
+          {
+            "entity": "Session",
+            "field": "session",
+            "outcome": "SessionRevoked",
+            "sourceField": "token_digest"
+          }
+        ]
+      },
+      "title": "Run RevokeSession"
+    }
+  ],
+  "reactive_tools": [],
+  "schema": "riffdb-generated-application-operations/v3",
+  "sdk_tools": [
+    {
+      "annotations": {
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "openWorldHint": false,
+        "readOnlyHint": true
+      },
+      "description": "Execute the exact GetSession named query from immutable module better_auth_acceptance.",
+      "input_schema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "additionalProperties": false,
+        "properties": {
+          "organization_id": {
+            "type": "string"
+          },
+          "session_id": {
+            "type": "string"
+          },
+          "user_id": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "organization_id",
+          "user_id",
+          "session_id"
+        ],
+        "type": "object"
+      },
+      "module_hash": "fdf5340bae520590d297856e698dd6f097d9c120c5e0f265db82f650f948145f",
+      "name": "better_auth_acceptance_get_session",
+      "operation_name": "GetSession",
+      "result_schema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "oneOf": [
+          {
+            "additionalProperties": false,
+            "properties": {
+              "outcome": {
+                "const": "Found",
+                "type": "string"
+              },
+              "session": {
+                "additionalProperties": false,
+                "properties": {
+                  "expires_at": {
+                    "type": "string"
+                  },
+                  "organization_id": {
+                    "type": "string"
+                  },
+                  "session_id": {
+                    "type": "string"
+                  },
+                  "state": {
+                    "type": "string"
+                  },
+                  "token_digest": {
+                    "type": "string"
+                  },
+                  "user_id": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "organization_id",
+                  "user_id",
+                  "session_id",
+                  "state",
+                  "token_digest",
+                  "expires_at"
+                ],
+                "type": "object"
+              }
+            },
+            "required": [
+              "outcome",
+              "session"
+            ],
+            "type": "object"
+          },
+          {
+            "additionalProperties": false,
+            "properties": {
+              "outcome": {
+                "const": "Missing",
+                "type": "string"
+              }
+            },
+            "required": [
+              "outcome"
+            ],
+            "type": "object"
+          }
+        ]
+      },
+      "title": "Run GetSession"
+    }
+  ],
+  "tools": [
+    {
+      "annotations": {
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "openWorldHint": false,
+        "readOnlyHint": true
+      },
+      "description": "Execute the exact GetUser named query from immutable module better_auth_acceptance.",
+      "input_schema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "additionalProperties": false,
+        "properties": {
+          "organization_id": {
+            "type": "string"
+          },
+          "user_id": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "organization_id",
+          "user_id"
+        ],
+        "type": "object"
+      },
+      "module_hash": "fdf5340bae520590d297856e698dd6f097d9c120c5e0f265db82f650f948145f",
+      "name": "better_auth_acceptance_get_user",
+      "operation_name": "GetUser",
+      "result_schema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "oneOf": [
+          {
+            "additionalProperties": false,
+            "properties": {
+              "outcome": {
+                "const": "Found",
+                "type": "string"
+              },
+              "user": {
+                "additionalProperties": false,
+                "properties": {
+                  "email": {
+                    "type": "string"
+                  },
+                  "organization_id": {
+                    "type": "string"
+                  },
+                  "user_id": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "organization_id",
+                  "user_id",
+                  "email"
+                ],
+                "type": "object"
+              }
+            },
+            "required": [
+              "outcome",
+              "user"
+            ],
+            "type": "object"
+          },
+          {
+            "additionalProperties": false,
+            "properties": {
+              "outcome": {
+                "const": "Missing",
+                "type": "string"
+              }
+            },
+            "required": [
+              "outcome"
+            ],
+            "type": "object"
+          }
+        ]
+      },
+      "title": "Run GetUser"
+    }
+  ]
+}

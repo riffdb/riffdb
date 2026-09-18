@@ -266,6 +266,7 @@ impl ApplicationCatalog {
                 | "riffdb-generated-application-operations/v3"
                 | "riffdb-generated-application-operations/v4"
                 | "riffdb-generated-application-operations/v5"
+                | "riffdb-generated-application-operations/v6"
         ) || (tools.schema == "riffdb-generated-application-operations/v2"
             && (!tools.sdk_tools.is_empty() || !tools.vector_tools.is_empty() || has_pagination))
             || (tools.schema == "riffdb-generated-application-operations/v3"
@@ -273,6 +274,7 @@ impl ApplicationCatalog {
             || (tools.schema == "riffdb-generated-application-operations/v4"
                 && (tools.vector_tools.is_empty() || has_pagination))
             || (tools.schema == "riffdb-generated-application-operations/v5" && !has_pagination)
+            || generated_catalog_predecessor_mismatch(&tools, has_pagination)
             || lock.exact_manifest_hash != tools.application_manifest_hash
             || manifest.contract.lineage != lock.contract.lineage
             || manifest.contract.version != lock.contract.version
@@ -740,6 +742,8 @@ struct ManifestReactiveModule {
 struct GeneratedCatalog {
     schema: String,
     application_manifest_hash: String,
+    #[serde(default)]
+    predecessor_schema: Option<String>,
     tools: Vec<GeneratedTool>,
     #[serde(default)]
     sdk_tools: Vec<GeneratedTool>,
@@ -747,6 +751,23 @@ struct GeneratedCatalog {
     reactive_tools: Vec<GeneratedReactiveTool>,
     #[serde(default)]
     vector_tools: Vec<GeneratedVectorTool>,
+}
+
+fn generated_catalog_predecessor_mismatch(tools: &GeneratedCatalog, has_pagination: bool) -> bool {
+    let predecessor = if has_pagination {
+        "riffdb-generated-application-operations/v5"
+    } else if !tools.vector_tools.is_empty() {
+        "riffdb-generated-application-operations/v4"
+    } else if !tools.sdk_tools.is_empty() {
+        "riffdb-generated-application-operations/v3"
+    } else {
+        "riffdb-generated-application-operations/v2"
+    };
+    if tools.schema == "riffdb-generated-application-operations/v6" {
+        tools.commands.is_empty() || tools.predecessor_schema.as_deref() != Some(predecessor)
+    } else {
+        tools.predecessor_schema.is_some()
+    }
 }
 #[derive(Deserialize)]
 struct GeneratedTool {

@@ -70,7 +70,7 @@ impl crate::presentation::StructuredContentValidator for RiffDbSchemaValidator {
 
 /// Mechanically composes one compiler-owned outcome union into the accepted
 /// service-owned command-operation envelope.
-pub(crate) fn compose_command_result_schema(
+pub fn compose_command_result_schema(
     outcome_schema: &SchemaDocument,
     operation_envelope: &SchemaDocument,
 ) -> Result<SchemaDocument, SchemaCompositionError> {
