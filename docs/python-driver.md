@@ -164,7 +164,8 @@ scripts/build-python-distribution dist/python
 The build also writes `riffdb-python-artifacts-v1.json`, a deterministic receipt
 containing the platform-matrix digest and the name, SHA-256, and byte length of
 each artifact. The sdist contains only the pinned Rust application-client
-closure, required persistent Protobuf fixtures, licenses, and Python package;
+closure (including the shared driver host and operation registry), required
+persistent Protobuf fixtures, licenses, and Python package;
 it does not copy the repository or depend on a checkout. The release checks
 install the wheel with Rust absent from `PATH` and install the sdist with Cargo
 network access disabled.

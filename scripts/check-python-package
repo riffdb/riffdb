@@ -81,6 +81,8 @@ with tarfile.open(sys.argv[1], "r:gz") as archive:
         root + "LICENSE-MIT",
         root + "crates/riffdb-client-python-native/src/lib.rs",
         root + "crates/riffdb-client-rust/src/lib.rs",
+        root + "crates/riffdb-driver-host/src/lib.rs",
+        root + "crates/riffdb-operation-registry/Cargo.toml",
         root + "fixtures/proto/descriptors/riffdb-v1-descriptor-set.bin",
         root + "fixtures/proto/descriptors/riffdb-storage-v1-descriptor-set.bin",
         root + "fixtures/proto/durable-schema-hashes.bin",
@@ -98,13 +100,14 @@ with tarfile.open(sys.argv[1], "r:gz") as archive:
         if name.startswith(root + "crates/") and len(name.split("/", 3)) >= 4
     }
     assert crates == {
-        "riffdb-api-grpc",
         "riffdb-application",
         "riffdb-client-python-native",
         "riffdb-client-rust",
         "riffdb-config",
         "riffdb-contract-ir",
+        "riffdb-driver-host",
         "riffdb-errors",
+        "riffdb-operation-registry",
         "riffdb-proto",
         "riffdb-types",
     }, crates

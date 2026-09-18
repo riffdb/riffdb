@@ -168,8 +168,10 @@ hold_id = "01010101010101010101010101010101"
 
     pub(super) fn start(&self, name: &str, mode: Option<&str>) -> ChildProcessController {
         let process = self.spawn(name, mode);
+        // Debug recovery on hosted runners can exceed 30s after a populated
+        // primary is killed. This bounds fixture startup, not a product SLA.
         process
-            .wait_for_readiness("riffdbd-ready-v1\t", TIMEOUT)
+            .wait_for_readiness("riffdbd-ready-v1\t", Duration::from_secs(60))
             .unwrap();
         process
     }

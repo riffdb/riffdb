@@ -226,19 +226,33 @@ unproven.
 | `./scripts/check-test-partition-coverage` | Prove every Cargo test target belongs to exactly one whole-target SHA-256 partition |
 | `./scripts/run-test-partition --mode whole-target --partition N` | Run CI partition `N`, from 1 through 4, through its exact nextest binary filterset |
 
-`./scripts/acceptance` runs the path-triggered checks itself. Three of them are
-worth knowing by name, because each exists for a failure that otherwise lands
-green: `./scripts/handbook check` builds the book and verifies generated
-references, links, snippets, and the published Rust API surface;
-`./scripts/check-container-startup` actually starts the release container,
-because rendering and YAML checks start nothing and a shipped
-`projections_root` under a read-only path once made the server unstartable;
-and `./scripts/downstream-adapter-check` compiles the out-of-tree adapter
-repositories, which are the only end-to-end consumers of the contract and
-RiffQL languages, because nothing in this repository compiles them and ADR-0167
-broke them silently. The adapter check is read-only, offline, never writes to a
-repository it checks, and is outside CI because those repositories have no
-remote.
+`./scripts/acceptance` runs the path-triggered checks itself.
+`./scripts/handbook check` verifies generated references, links, snippets,
+and the published Rust API surface. `./scripts/check-container-startup`
+starts the release container, because rendering checks alone cannot detect
+startup failures.
+
+### External adapter compatibility
+
+RiffDB builds, tests, releases, and merges independently of sample adapter
+repositories. Its first-party Rust runtime, language fixtures, SDK conformance,
+and package tests remain core responsibilities. A sample adapter's availability
+or compatibility cannot block those checks.
+
+Each adapter repository owns a **RiffDB compatibility** workflow. Its
+`.github/riffdb-revision` file selects an immutable RiffDB commit for normal
+pull-request checks. A scheduled run checks RiffDB `main` and reports drift in
+the adapter repository. Manual dispatch can test a proposed RiffDB revision.
+These checks compile the adapter's application sources, exact locks, and
+existing generated artifacts with the selected Rust CLI; framework-runtime
+conformance remains the adapter's separate responsibility.
+
+When upgrading an adapter, select the new RiffDB commit in the adapter
+repository, migrate its sources, review regenerated artifacts, and run
+`riffdb application check`. Commit the pin and migration together in the
+adapter's pull request. Intentional language changes are governed by RiffDB's
+own specification, accepted ADRs, and compatibility tests; sample adapters
+update on their own schedule.
 
 CI runs the required unit and integration battery as four whole-target
 cargo-nextest jobs. The SHA-256 assignment is stable from each canonical

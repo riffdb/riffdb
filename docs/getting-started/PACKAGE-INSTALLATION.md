@@ -28,6 +28,8 @@ The Python `riffdb` package is an exact install alias for the normative
 `riffdb-application==0.1.0` implementation package. Generated Python modules
 therefore continue to import `riffdb_application`. Go and TypeScript generated
 modules use their published runtimes; Rust uses `riffdb-client-rust`.
+The Rust CLI distribution includes its generator templates inside the packaged
+query-module crate, so compiling the installed CLI needs no RiffDB source checkout.
 
 The signed native binary installer also places the one architecture-matching
 `riffdb-application` wheel under its installation prefix at `public/python`.

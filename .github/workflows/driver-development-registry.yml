@@ -2,6 +2,8 @@ name: Driver development registries
 
 on:
   push:
+    branches: [main]
+    tags: ["**"]
   pull_request:
   workflow_dispatch:
 
@@ -15,7 +17,6 @@ concurrency:
 env:
   CARGO_INCREMENTAL: "0"
   SOURCE_DATE_EPOCH: "1735689600"
-  RIFFDB_TMP_ROOT: ${{ runner.temp }}/riffdb-wp611
 
 jobs:
   native-registry-consumers:
@@ -39,6 +40,8 @@ jobs:
         run: |
           go version
           [[ "$(go env GOVERSION)" =~ ^go1\.(2[4-9]|[3-9][0-9])([.].*)?$ ]]
+      - name: Install pinned TypeScript checker
+        run: npm ci --prefix clients/typescript/runtime --ignore-scripts
       - name: Install pinned loopback npm registry
         run: npm install --prefix target/wp611-tools --ignore-scripts verdaccio@6.9.2
       - name: Build native CLI
@@ -67,6 +70,7 @@ jobs:
         run: ./scripts/check-driver-development-registry
       - name: Prove four fresh native consumers
         env:
+          RIFFDB_TMP_ROOT: ${{ runner.temp }}/riffdb-wp611
           RIFFDB_DRIVER_DISTRIBUTION: ${{ github.workspace }}/target/wp611-distribution
           RIFFDB_VERDACCIO_BIN: ${{ github.workspace }}/target/wp611-tools/node_modules/verdaccio/bin/verdaccio
         run: ./scripts/driver-development-registry-acceptance --all-ecosystems

@@ -3129,26 +3129,51 @@ work_packages:
       authoring renders without help text stating what a working source would look like.
 
 - id: WP-723
-  name: Continuous downstream adapter protection
+  name: Adapter-owned compatibility checks
+  tier: internal
   depends_on: [WP-569]
-  objective: Make a contract or RiffQL language change unable to land green while it breaks an
-    out-of-tree adapter. The adapter repositories are the only consumers exercising those languages
-    end to end and no test in this repository compiles them, which is how ADR-0167 shipped and left
-    riffdb-better-auth failing RDB-QS003.
+  objective: Keep RiffDB independently buildable, testable, and releasable. Each external
+    adapter owns its compatibility checks against a pinned RiffDB revision and tracks
+    upstream main separately. Maintainer direction on 2026-09-17 supersedes the original
+    requirement to block RiffDB changes on sample adapters.
   requirements: [VER-003, DRV-014]
   required_adrs: [ADR-0148]
   allowed_paths: [work_packages.yaml, .github/workflows/**, scripts/**, docs/**]
   deliverables:
-  - Adapter repositories reachable from CI with pinned revisions, so scripts/downstream-adapter-check
-    runs on every pull request rather than only on a developer workstation
-  - A required CI job that compiles every pinned adapter against the working tree and fails the
-    change rather than the adapter
-  - A recorded procedure for the intended break, where a language change updates the pinned adapter
-    revision in the same reviewed change
+  - RiffDB core CI, acceptance, and merge protection require no external sample adapter
+  - Each public adapter repository owns a pinned RiffDB compatibility workflow
+  - Adapter-owned scheduled checks track RiffDB main and report compatibility failures there
+  - Contributor documentation records the dependency direction and adapter upgrade procedure
   acceptance_commands:
-  - ./scripts/downstream-adapter-check
-  exit_gate: A language change that breaks a pinned adapter fails CI on the change that caused it,
-    demonstrated by a deliberate reproduction of the ADR-0167 break.
+  - ./scripts/acceptance
+  exit_gate: RiffDB's standard checks run without sample adapter repositories; each adapter
+    independently compiles its applications against its selected RiffDB revision.
+  closure:
+    status: complete
+    completed_at: "2026-09-17"
+    requirements_satisfied: [VER-003, DRV-014]
+    evidence: docs/architecture/WP-723-DOWNSTREAM-PROTECTION.md. All three published
+      adapter-owned compatibility workflows passed on GitHub; core branch protection
+      requires only core checks. Package and unscoped acceptance pass. Independent CI
+      repairs pass local regression checks; the full hosted merge battery remains
+      required and is not implied by this package closure.
+    decisions_taken:
+    - The maintainer explicitly rejected making RiffDB depend on sample adapters in
+      session on 2026-09-17; compatibility ownership moves into those repositories.
+    - First-party SDK and package tests remain part of RiffDB CI. External sample
+      adapters are consumers and cannot block core build, testing, release, or merge.
+    - Restored current Python source-package closure, driver protocol 4 checks, and
+      exact fresh-primary bootstrap health validation without changing runtime semantics.
+    - Patched the separate fuzz lockfile to h2 0.4.16 and rustls 0.23.45, already used
+      by the main workspace; fuzz cargo deny, cargo audit, and parser smoke pass.
+    - Publication staging includes the six canonical generator templates in the query-module
+      crate and rewrites only their include paths; installed-package checks verify exact bytes.
+    - CI installs its explicit generator and registry prerequisites, uses a fresh pinned
+      host toolchain for source archives, and places package consumers outside the checkout.
+    - Removed the obsolete downstream-script test. Scoped nextest overrides reserve
+      exclusive slots for the observed storage-heavy campaigns; their assertions and
+      internal progress deadlines remain unchanged. The migration wrapper allows its
+      existing 600-second terminal hang ceiling to complete; retries remain disabled.
 
 - id: WP-724
   name: Real adapter workload comprehensiveness
@@ -3179,7 +3204,6 @@ work_packages:
   - ./scripts/check-adapter-evidence-claims
   - ./scripts/check-adapter-evidence-claims --self-test
   - ./scripts/adapter-conformance --all-domains --all-languages
-  - ./scripts/downstream-adapter-check
   exit_gate: Every named claim maps to one exact scoped inventory record; only OpenFGA carries a
     complete upstream-suite claim, each external, RiffDB-live, or matrix record remains truthful and
     narrow, and no gate sentence overstates what its evidence covers.
@@ -3196,8 +3220,8 @@ work_packages:
       72-hour evidence boundary. Package acceptance, generated and handbook checks, the complete
       adapter-conformance matrix, and local sibling compilation checks against `riffdb-openfga`,
       `riffdb-better-auth`, and `riffdb-mlflow` pass with `--repo-root /home/kevin/dev`. These are
-      workstation checks, not immutable pinned CI evidence. WP-723 remains open and separately owns
-      adapter revision locks and required CI enforcement.
+      workstation checks, not immutable pinned CI evidence. WP-723 assigns compatibility checks to the adapter repositories; these historical
+      workstation results do not become core CI requirements.
     decision: Classification and release wording now match retained evidence. Only OpenFGA carries
       a complete upstream-suite claim; external, RiffDB-live, matrix, and post-alpha records remain
       separate and exact. No runtime, public, durable, protocol, storage, authorization,
@@ -3456,7 +3480,6 @@ work_packages:
   - ./scripts/check-version-topology
   - ./scripts/check-generated
   - ./scripts/handbook check
-  - ./scripts/downstream-adapter-check
   - cargo fmt --all -- --check
   - cargo clippy --workspace --all-targets --all-features -- -D warnings
   - cargo test --workspace --all-features
@@ -3587,7 +3610,6 @@ work_packages:
   - ./scripts/check-generated
   - ./scripts/check-requirement-coverage
   - ./scripts/handbook check
-  - ./scripts/downstream-adapter-check
   - cargo fmt --all -- --check
   - cargo clippy --workspace --all-targets --all-features -- -D warnings
   exit_gate: Every admitted named boolean operation equals the reference evaluator at one authorized
@@ -3658,7 +3680,6 @@ work_packages:
   - ./scripts/check-generated
   - ./scripts/check-requirement-coverage
   - ./scripts/handbook check
-  - ./scripts/downstream-adapter-check
   - cargo fmt --all -- --check
   - cargo clippy --workspace --all-targets --all-features -- -D warnings
   - cargo test --workspace --all-features
@@ -3932,7 +3953,6 @@ work_packages:
   - ./scripts/check-generated
   - ./scripts/check-requirement-coverage
   - ./scripts/handbook check
-  - ./scripts/downstream-adapter-check
   - cargo fmt --all -- --check
   - cargo clippy --workspace --all-targets --all-features -- -D warnings
   exit_gate: Narrow queries return through 65,534 exact rows with one probe and cursor parity while
@@ -4000,7 +4020,6 @@ work_packages:
   - ./scripts/check-generated
   - ./scripts/check-requirement-coverage
   - ./scripts/handbook check
-  - ./scripts/downstream-adapter-check
   - cargo fmt --all -- --check
   - cargo clippy --workspace --all-targets --all-features -- -D warnings
   exit_gate: Every accepted literal/wildcard pattern is exact and bounded through 8,000 source
@@ -4066,7 +4085,6 @@ work_packages:
   - ./scripts/check-workspace-policy
   - ./scripts/check-adr-obligations
   - ./scripts/handbook check
-  - ./scripts/downstream-adapter-check
   - cargo fmt --all -- --check
   - cargo clippy --workspace --all-targets --all-features -- -D warnings
   exit_gate: The generic and downstream corpora prove exact complete filtering before order/page,
@@ -4346,7 +4364,6 @@ work_packages:
   - ./scripts/check-workspace-policy
   - ./scripts/check-adr-obligations
   - ./scripts/handbook check
-  - ./scripts/downstream-adapter-check
   - cargo fmt --all -- --check
   - cargo clippy --workspace --all-targets --all-features -- -D warnings
   exit_gate: Real MLflow Run search over multiple experiment partitions passes one global ordered
@@ -4421,7 +4438,6 @@ work_packages:
   - ./scripts/check-workspace-policy
   - ./scripts/check-adr-obligations
   - ./scripts/handbook check
-  - ./scripts/downstream-adapter-check
   - cargo +1.97.0 fmt --all -- --check
   - cargo +1.97.0 clippy --workspace --all-targets --all-features -- -D warnings
   exit_gate: A legal MLflow-sized atomic command commits and replays one complete 100-tag graph
@@ -4491,7 +4507,6 @@ work_packages:
   - ./scripts/check-workspace-policy
   - ./scripts/check-adr-obligations
   - ./scripts/handbook check
-  - ./scripts/downstream-adapter-check
   - cargo +1.97.0 fmt --all -- --check
   - cargo +1.97.0 clippy --workspace --all-targets --all-features -- -D warnings
   exit_gate: One compiler-sealed 1,000-element command plus a fixed root mutation commits,
@@ -4588,7 +4603,6 @@ work_packages:
   acceptance_commands:
   - cargo +1.97.0 test --workspace --all-features
   - ./scripts/check-adr-obligations
-  - ./scripts/downstream-adapter-check
   - cargo +1.97.0 fmt --all -- --check
   - cargo +1.97.0 clippy --workspace --all-targets --all-features -- -D warnings
   exit_gate: A partition-local command writing two aggregates compiles, commits atomically, and

@@ -213,7 +213,7 @@ REQUIRED_SOURCE_TEXT = {
         "Only `alpha.openfga.general` has `complete_upstream_suite: true`.",
         "--repo-root /home/kevin/dev",
         "workstation checks are not pinned CI evidence",
-        "WP-723 remains open",
+        "WP-723 assigns compatibility checks to the adapter repositories",
     ),
     "docs/integrations/COMPILED-FRAMEWORK-PROFILES.md": (
         "profile-bound dispatcher to exact generated commands and named queries",
@@ -249,7 +249,7 @@ REQUIRED_SOURCE_TEXT = {
         "local sibling compilation checks against `riffdb-openfga`",
         "`--repo-root /home/kevin/dev`",
         "workstation checks, not immutable pinned CI evidence",
-        "WP-723 remains open",
+        "WP-723 assigns compatibility checks to the adapter repositories",
     ),
 }
 

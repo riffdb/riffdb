@@ -32,7 +32,9 @@ for crate in \
     riffdb-client-rust \
     riffdb-config \
     riffdb-contract-ir \
+    riffdb-driver-host \
     riffdb-errors \
+    riffdb-operation-registry \
     riffdb-proto \
     riffdb-types
 do

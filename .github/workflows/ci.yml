@@ -2,6 +2,8 @@ name: CI
 
 on:
   push:
+    branches: [main]
+    tags: ["**"]
   pull_request:
   workflow_dispatch:
 
@@ -194,8 +196,18 @@ jobs:
     steps:
       - name: Check out repository
         uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - name: Install generated-artifact tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes graphviz ripgrep protobuf-compiler
       - name: Install pinned Rust toolchain
         run: rustup toolchain install "$RUST_TOOLCHAIN" --profile minimal --component rustfmt,clippy
+      - name: Install Node.js
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: "26.7.0"
+      - name: Install pinned TypeScript checker
+        run: npm ci --prefix clients/typescript/runtime --ignore-scripts
       - name: Check generated artifacts
         run: |
           ./scripts/check-generated

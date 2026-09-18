@@ -387,10 +387,32 @@ def rust_closure() -> tuple[list[str], dict[str, str]]:
     return order, manifests
 
 
+def stage_generator_templates(workspace: Path) -> None:
+    """Keep compile-time template inputs inside the published query-module crate."""
+    crate = workspace / "crates/riffdb-query-module"
+    source = crate / "src/template_generation.rs"
+    content = source.read_text(encoding="utf-8")
+    pattern = r'include_str!\("\.\./\.\./\.\./templates/generators/([^"\n]+)"\)'
+    names = re.findall(pattern, content)
+    templates = workspace / "templates/generators"
+    expected = sorted(path.relative_to(templates).as_posix() for path in templates.rglob("*.j2"))
+    if len(names) != 6 or sorted(names) != expected or len(set(names)) != len(names):
+        fail("generator template includes do not match the exact canonical inventory")
+    for name in names:
+        relative = safe_relative(name)
+        template = templates / relative
+        if template.is_symlink() or not template.is_file() or template.stat().st_size > MAX_ARTIFACT_BYTES:
+            fail("generator template is not a bounded regular file")
+        write(crate / "assets/generators" / relative, template.read_bytes())
+    content = re.sub(pattern, lambda match: f'include_str!("../assets/generators/{match[1]}")', content)
+    source.write_text(content, encoding="utf-8")
+
+
 def rust_packages(output: Path, scratch: Path) -> None:
     order, manifests = rust_closure()
     staged = scratch / "rust-workspace"
     copy_repository(staged)
+    stage_generator_templates(staged)
     workspace = staged / "Cargo.toml"
     content = workspace.read_text(encoding="utf-8")
     marker = "publish = false"

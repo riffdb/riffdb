@@ -608,7 +608,12 @@ if ! jq -s -e '
        | $health.status == "not_ready"
        and $health.active_contract_version == null
        and $health.last_commit_sequence == null
-       and ($health.components | length) == 5
+       and ([$health.components[].component] | sort) ==
+           ["authoritative_storage", "catalog", "commit_coordinator",
+            "outbox", "projection", "replication"]
+       and all($health.components[] | select(.component == "replication");
+               .status == "healthy" and .replication.role == "primary"
+               and .replication.registered_followers == 0)
        and ([$health.components[]
              | select(.component == "authoritative_storage"
                       or .component == "catalog"
@@ -675,7 +680,7 @@ if ! jq -s -e '
           health.status == "not_ready"
           and health.active_contract_version == null
           and health.last_commit_sequence == null
-          and (health.components | length) == 5
+          and (health.components | length) == 6
         ),
         required_components: [
           health.components[]
