@@ -73,7 +73,7 @@ jobs:
           RUSTUP_HOME: ${{ runner.temp }}/riffdb-sdist-rustup
         shell: bash
         run: |
-          rustup toolchain install 1.97.0 --profile minimal
+          rustup toolchain install 1.97.0 --profile minimal --component rustfmt,clippy
           "${{ steps.py313.outputs.python-path }}" -m pip install maturin==1.14.1
           ./scripts/build-python-sdist dist
       - name: Validate exact platform claims
