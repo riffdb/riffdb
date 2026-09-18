@@ -43,6 +43,417 @@
         ],
         "type": "object"
       },
+      "mcp_descriptor": {
+        "annotations": {
+          "destructiveHint": false,
+          "idempotentHint": true,
+          "openWorldHint": false,
+          "readOnlyHint": false
+        },
+        "inputSchema": {
+          "$schema": "https://json-schema.org/draft/2020-12/schema",
+          "additionalProperties": false,
+          "properties": {
+            "duration": {
+              "maximum": 18446744073709551615,
+              "minimum": 0,
+              "type": "integer"
+            },
+            "expected_revision": {
+              "maximum": 18446744073709551615,
+              "minimum": 0,
+              "type": "integer"
+            },
+            "organization_id": {
+              "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
+              "type": "string"
+            },
+            "owner_id": {
+              "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
+              "type": "string"
+            },
+            "pipeline_id": {
+              "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
+              "type": "string"
+            },
+            "request_key": {
+              "minLength": 1,
+              "type": "string",
+              "x-riffdb-maxUtf8Bytes": 128,
+              "x-riffdb-minUtf8Bytes": 1
+            }
+          },
+          "required": [
+            "duration",
+            "owner_id",
+            "pipeline_id",
+            "request_key",
+            "organization_id",
+            "expected_revision"
+          ],
+          "type": "object"
+        },
+        "name": "riffdb_cmd_woodpeckerscheduler_claimpipeline",
+        "outputSchema": {
+          "$defs": {
+            "outcome": {
+              "oneOf": [
+                {
+                  "additionalProperties": false,
+                  "properties": {
+                    "type": {
+                      "const": "ClaimStale"
+                    }
+                  },
+                  "required": [
+                    "type"
+                  ],
+                  "type": "object"
+                },
+                {
+                  "additionalProperties": false,
+                  "properties": {
+                    "type": {
+                      "const": "ClaimInvalid"
+                    }
+                  },
+                  "required": [
+                    "type"
+                  ],
+                  "type": "object"
+                },
+                {
+                  "additionalProperties": false,
+                  "properties": {
+                    "type": {
+                      "const": "ClaimExhausted"
+                    }
+                  },
+                  "required": [
+                    "type"
+                  ],
+                  "type": "object"
+                },
+                {
+                  "additionalProperties": false,
+                  "properties": {
+                    "pipeline": {
+                      "additionalProperties": false,
+                      "properties": {
+                        "due_at": {
+                          "additionalProperties": false,
+                          "properties": {
+                            "nanos": {
+                              "maximum": 999999999,
+                              "minimum": 0,
+                              "type": "integer"
+                            },
+                            "seconds": {
+                              "pattern": "^-?(0|[1-9][0-9]*)$",
+                              "type": "string",
+                              "x-riffdb-integerType": "i64"
+                            }
+                          },
+                          "required": [
+                            "seconds",
+                            "nanos"
+                          ],
+                          "type": "object"
+                        },
+                        "lease_attempts": {
+                          "maximum": 18446744073709551615,
+                          "minimum": 0,
+                          "type": "integer"
+                        },
+                        "lease_expires_at": {
+                          "oneOf": [
+                            {
+                              "additionalProperties": false,
+                              "properties": {
+                                "nanos": {
+                                  "maximum": 999999999,
+                                  "minimum": 0,
+                                  "type": "integer"
+                                },
+                                "seconds": {
+                                  "pattern": "^-?(0|[1-9][0-9]*)$",
+                                  "type": "string",
+                                  "x-riffdb-integerType": "i64"
+                                }
+                              },
+                              "required": [
+                                "seconds",
+                                "nanos"
+                              ],
+                              "type": "object"
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        },
+                        "lease_fence": {
+                          "maximum": 18446744073709551615,
+                          "minimum": 0,
+                          "type": "integer"
+                        },
+                        "lease_owner": {
+                          "oneOf": [
+                            {
+                              "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
+                              "type": "string"
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        },
+                        "organization_id": {
+                          "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
+                          "type": "string"
+                        },
+                        "pipeline_id": {
+                          "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
+                          "type": "string"
+                        },
+                        "state": {
+                          "enum": [
+                            "Queued",
+                            "Running"
+                          ],
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "state",
+                        "due_at",
+                        "lease_fence",
+                        "lease_owner",
+                        "pipeline_id",
+                        "lease_attempts",
+                        "organization_id",
+                        "lease_expires_at"
+                      ],
+                      "type": "object"
+                    },
+                    "type": {
+                      "const": "PipelineClaimed"
+                    }
+                  },
+                  "required": [
+                    "type",
+                    "pipeline"
+                  ],
+                  "type": "object"
+                },
+                {
+                  "additionalProperties": false,
+                  "properties": {
+                    "type": {
+                      "const": "PipelineMissing"
+                    }
+                  },
+                  "required": [
+                    "type"
+                  ],
+                  "type": "object"
+                },
+                {
+                  "additionalProperties": false,
+                  "properties": {
+                    "type": {
+                      "const": "ClaimUnavailable"
+                    }
+                  },
+                  "required": [
+                    "type"
+                  ],
+                  "type": "object"
+                }
+              ]
+            }
+          },
+          "$schema": "https://json-schema.org/draft/2020-12/schema",
+          "oneOf": [
+            {
+              "additionalProperties": false,
+              "properties": {
+                "commit_sequence": {
+                  "maxLength": 20,
+                  "pattern": "^[1-9][0-9]*$",
+                  "type": "string",
+                  "x-riffdb-integerType": "u64"
+                },
+                "contract_version": {
+                  "maximum": 18446744073709551615,
+                  "minimum": 1,
+                  "type": "integer"
+                },
+                "durability_mode": {
+                  "enum": [
+                    "sync",
+                    "group"
+                  ],
+                  "type": "string"
+                },
+                "outcome": {
+                  "$ref": "#/$defs/outcome"
+                },
+                "outcome_uri": {
+                  "maxLength": 1745,
+                  "pattern": "^riffdb://outcome/(?:[A-Za-z0-9._~-]|%[0-9A-F]{2})+/(?:[A-Za-z0-9._~-]|%[0-9A-F]{2})+/[1-9][0-9]*/riffdb_cmd_[a-z][a-z0-9_]*_[a-z][a-z0-9_]*/[A-Za-z0-9_-]{50}$",
+                  "type": "string",
+                  "x-riffdb-maxUtf8Bytes": 1745
+                },
+                "plan_hash": {
+                  "pattern": "^[0-9a-f]{64}$",
+                  "type": "string"
+                },
+                "provenance_uri": {
+                  "pattern": "^riffdb://provenance/[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+                  "type": "string"
+                },
+                "status": {
+                  "const": "committed"
+                }
+              },
+              "required": [
+                "status",
+                "commit_sequence",
+                "contract_version",
+                "plan_hash",
+                "outcome",
+                "provenance_uri",
+                "durability_mode",
+                "outcome_uri"
+              ],
+              "type": "object"
+            },
+            {
+              "additionalProperties": false,
+              "properties": {
+                "commit_sequence": {
+                  "maxLength": 20,
+                  "pattern": "^[1-9][0-9]*$",
+                  "type": "string",
+                  "x-riffdb-integerType": "u64"
+                },
+                "contract_version": {
+                  "maximum": 18446744073709551615,
+                  "minimum": 1,
+                  "type": "integer"
+                },
+                "durability_mode": {
+                  "enum": [
+                    "sync",
+                    "group"
+                  ],
+                  "type": "string"
+                },
+                "outcome": {
+                  "$ref": "#/$defs/outcome"
+                },
+                "outcome_uri": {
+                  "maxLength": 1745,
+                  "pattern": "^riffdb://outcome/(?:[A-Za-z0-9._~-]|%[0-9A-F]{2})+/(?:[A-Za-z0-9._~-]|%[0-9A-F]{2})+/[1-9][0-9]*/riffdb_cmd_[a-z][a-z0-9_]*_[a-z][a-z0-9_]*/[A-Za-z0-9_-]{50}$",
+                  "type": "string",
+                  "x-riffdb-maxUtf8Bytes": 1745
+                },
+                "plan_hash": {
+                  "pattern": "^[0-9a-f]{64}$",
+                  "type": "string"
+                },
+                "provenance_uri": {
+                  "pattern": "^riffdb://provenance/[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+                  "type": "string"
+                },
+                "status": {
+                  "const": "replayed"
+                }
+              },
+              "required": [
+                "status",
+                "commit_sequence",
+                "contract_version",
+                "plan_hash",
+                "outcome",
+                "provenance_uri",
+                "durability_mode",
+                "outcome_uri"
+              ],
+              "type": "object"
+            },
+            {
+              "additionalProperties": false,
+              "properties": {
+                "commit_sequence": {
+                  "type": "null"
+                },
+                "contract_version": {
+                  "maximum": 18446744073709551615,
+                  "minimum": 1,
+                  "type": "integer"
+                },
+                "durability_mode": {
+                  "type": "null"
+                },
+                "outcome": {
+                  "$ref": "#/$defs/outcome"
+                },
+                "outcome_uri": {
+                  "type": "null"
+                },
+                "plan_hash": {
+                  "pattern": "^[0-9a-f]{64}$",
+                  "type": "string"
+                },
+                "provenance_uri": {
+                  "type": "null"
+                },
+                "status": {
+                  "const": "executed_read_only"
+                }
+              },
+              "required": [
+                "status",
+                "commit_sequence",
+                "contract_version",
+                "plan_hash",
+                "outcome",
+                "provenance_uri",
+                "durability_mode",
+                "outcome_uri"
+              ],
+              "type": "object"
+            }
+          ],
+          "type": "object"
+        }
+      },
+      "mcp_identity": {
+        "command_id": 1,
+        "composed_output": {
+          "schema_hash": "ba87129fa74aec0369a113ca971c8bcce2a44d7bdbcb5e0dedb6790ca9b99517",
+          "schema_id": "riffdb.command-operation-envelope/v1+compiler-outcome"
+        },
+        "input_schema": {
+          "command_id": 1,
+          "key": "command_input",
+          "schema_hash": "c2b9045d6a845b06515d8555676639dda75f93ad2ea1b813d6f71f690bdf41ce",
+          "schema_id": "riffdb.generated-schema/command-input/1/v1"
+        },
+        "operation_envelope": {
+          "schema_hash": "1f83b878c052f53c6eb733b67cd7926fb7ea3729f1d469e0fd9aa8a13f6b44d2",
+          "schema_id": "riffdb.command-operation-envelope/v1"
+        },
+        "outcome_schema": {
+          "command_id": 1,
+          "key": "command_outcome_union",
+          "schema_hash": "e6defe04d3890e397261e5dd4a019775460424ae5e6cf88d7129de2c5b37aa80",
+          "schema_id": "riffdb.generated-schema/command-outcome-union/1/v1"
+        },
+        "tool_name": "riffdb_cmd_woodpeckerscheduler_claimpipeline"
+      },
       "name": "woodpecker_scheduler_claim_pipeline",
       "operation_name": "ClaimPipeline",
       "plan_hash": "d772226a1aa832ad4e805920412c432d80de54363cb89f30826e7d54ebaebf0a",
@@ -228,6 +639,393 @@
         ],
         "type": "object"
       },
+      "mcp_descriptor": {
+        "annotations": {
+          "destructiveHint": false,
+          "idempotentHint": true,
+          "openWorldHint": false,
+          "readOnlyHint": false
+        },
+        "inputSchema": {
+          "$schema": "https://json-schema.org/draft/2020-12/schema",
+          "additionalProperties": false,
+          "properties": {
+            "expected_revision": {
+              "maximum": 18446744073709551615,
+              "minimum": 0,
+              "type": "integer"
+            },
+            "fencing_token": {
+              "maximum": 18446744073709551615,
+              "minimum": 0,
+              "type": "integer"
+            },
+            "organization_id": {
+              "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
+              "type": "string"
+            },
+            "owner_id": {
+              "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
+              "type": "string"
+            },
+            "pipeline_id": {
+              "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
+              "type": "string"
+            },
+            "request_key": {
+              "minLength": 1,
+              "type": "string",
+              "x-riffdb-maxUtf8Bytes": 128,
+              "x-riffdb-minUtf8Bytes": 1
+            }
+          },
+          "required": [
+            "owner_id",
+            "pipeline_id",
+            "request_key",
+            "fencing_token",
+            "organization_id",
+            "expected_revision"
+          ],
+          "type": "object"
+        },
+        "name": "riffdb_cmd_woodpeckerscheduler_releasepipeline",
+        "outputSchema": {
+          "$defs": {
+            "outcome": {
+              "oneOf": [
+                {
+                  "additionalProperties": false,
+                  "properties": {
+                    "type": {
+                      "const": "ReleaseStale"
+                    }
+                  },
+                  "required": [
+                    "type"
+                  ],
+                  "type": "object"
+                },
+                {
+                  "additionalProperties": false,
+                  "properties": {
+                    "type": {
+                      "const": "ReleaseInvalid"
+                    }
+                  },
+                  "required": [
+                    "type"
+                  ],
+                  "type": "object"
+                },
+                {
+                  "additionalProperties": false,
+                  "properties": {
+                    "type": {
+                      "const": "PipelineMissing"
+                    }
+                  },
+                  "required": [
+                    "type"
+                  ],
+                  "type": "object"
+                },
+                {
+                  "additionalProperties": false,
+                  "properties": {
+                    "pipeline": {
+                      "additionalProperties": false,
+                      "properties": {
+                        "due_at": {
+                          "additionalProperties": false,
+                          "properties": {
+                            "nanos": {
+                              "maximum": 999999999,
+                              "minimum": 0,
+                              "type": "integer"
+                            },
+                            "seconds": {
+                              "pattern": "^-?(0|[1-9][0-9]*)$",
+                              "type": "string",
+                              "x-riffdb-integerType": "i64"
+                            }
+                          },
+                          "required": [
+                            "seconds",
+                            "nanos"
+                          ],
+                          "type": "object"
+                        },
+                        "lease_attempts": {
+                          "maximum": 18446744073709551615,
+                          "minimum": 0,
+                          "type": "integer"
+                        },
+                        "lease_expires_at": {
+                          "oneOf": [
+                            {
+                              "additionalProperties": false,
+                              "properties": {
+                                "nanos": {
+                                  "maximum": 999999999,
+                                  "minimum": 0,
+                                  "type": "integer"
+                                },
+                                "seconds": {
+                                  "pattern": "^-?(0|[1-9][0-9]*)$",
+                                  "type": "string",
+                                  "x-riffdb-integerType": "i64"
+                                }
+                              },
+                              "required": [
+                                "seconds",
+                                "nanos"
+                              ],
+                              "type": "object"
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        },
+                        "lease_fence": {
+                          "maximum": 18446744073709551615,
+                          "minimum": 0,
+                          "type": "integer"
+                        },
+                        "lease_owner": {
+                          "oneOf": [
+                            {
+                              "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
+                              "type": "string"
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        },
+                        "organization_id": {
+                          "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
+                          "type": "string"
+                        },
+                        "pipeline_id": {
+                          "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
+                          "type": "string"
+                        },
+                        "state": {
+                          "enum": [
+                            "Queued",
+                            "Running"
+                          ],
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "state",
+                        "due_at",
+                        "lease_fence",
+                        "lease_owner",
+                        "pipeline_id",
+                        "lease_attempts",
+                        "organization_id",
+                        "lease_expires_at"
+                      ],
+                      "type": "object"
+                    },
+                    "type": {
+                      "const": "PipelineReleased"
+                    }
+                  },
+                  "required": [
+                    "type",
+                    "pipeline"
+                  ],
+                  "type": "object"
+                }
+              ]
+            }
+          },
+          "$schema": "https://json-schema.org/draft/2020-12/schema",
+          "oneOf": [
+            {
+              "additionalProperties": false,
+              "properties": {
+                "commit_sequence": {
+                  "maxLength": 20,
+                  "pattern": "^[1-9][0-9]*$",
+                  "type": "string",
+                  "x-riffdb-integerType": "u64"
+                },
+                "contract_version": {
+                  "maximum": 18446744073709551615,
+                  "minimum": 1,
+                  "type": "integer"
+                },
+                "durability_mode": {
+                  "enum": [
+                    "sync",
+                    "group"
+                  ],
+                  "type": "string"
+                },
+                "outcome": {
+                  "$ref": "#/$defs/outcome"
+                },
+                "outcome_uri": {
+                  "maxLength": 1745,
+                  "pattern": "^riffdb://outcome/(?:[A-Za-z0-9._~-]|%[0-9A-F]{2})+/(?:[A-Za-z0-9._~-]|%[0-9A-F]{2})+/[1-9][0-9]*/riffdb_cmd_[a-z][a-z0-9_]*_[a-z][a-z0-9_]*/[A-Za-z0-9_-]{50}$",
+                  "type": "string",
+                  "x-riffdb-maxUtf8Bytes": 1745
+                },
+                "plan_hash": {
+                  "pattern": "^[0-9a-f]{64}$",
+                  "type": "string"
+                },
+                "provenance_uri": {
+                  "pattern": "^riffdb://provenance/[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+                  "type": "string"
+                },
+                "status": {
+                  "const": "committed"
+                }
+              },
+              "required": [
+                "status",
+                "commit_sequence",
+                "contract_version",
+                "plan_hash",
+                "outcome",
+                "provenance_uri",
+                "durability_mode",
+                "outcome_uri"
+              ],
+              "type": "object"
+            },
+            {
+              "additionalProperties": false,
+              "properties": {
+                "commit_sequence": {
+                  "maxLength": 20,
+                  "pattern": "^[1-9][0-9]*$",
+                  "type": "string",
+                  "x-riffdb-integerType": "u64"
+                },
+                "contract_version": {
+                  "maximum": 18446744073709551615,
+                  "minimum": 1,
+                  "type": "integer"
+                },
+                "durability_mode": {
+                  "enum": [
+                    "sync",
+                    "group"
+                  ],
+                  "type": "string"
+                },
+                "outcome": {
+                  "$ref": "#/$defs/outcome"
+                },
+                "outcome_uri": {
+                  "maxLength": 1745,
+                  "pattern": "^riffdb://outcome/(?:[A-Za-z0-9._~-]|%[0-9A-F]{2})+/(?:[A-Za-z0-9._~-]|%[0-9A-F]{2})+/[1-9][0-9]*/riffdb_cmd_[a-z][a-z0-9_]*_[a-z][a-z0-9_]*/[A-Za-z0-9_-]{50}$",
+                  "type": "string",
+                  "x-riffdb-maxUtf8Bytes": 1745
+                },
+                "plan_hash": {
+                  "pattern": "^[0-9a-f]{64}$",
+                  "type": "string"
+                },
+                "provenance_uri": {
+                  "pattern": "^riffdb://provenance/[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+                  "type": "string"
+                },
+                "status": {
+                  "const": "replayed"
+                }
+              },
+              "required": [
+                "status",
+                "commit_sequence",
+                "contract_version",
+                "plan_hash",
+                "outcome",
+                "provenance_uri",
+                "durability_mode",
+                "outcome_uri"
+              ],
+              "type": "object"
+            },
+            {
+              "additionalProperties": false,
+              "properties": {
+                "commit_sequence": {
+                  "type": "null"
+                },
+                "contract_version": {
+                  "maximum": 18446744073709551615,
+                  "minimum": 1,
+                  "type": "integer"
+                },
+                "durability_mode": {
+                  "type": "null"
+                },
+                "outcome": {
+                  "$ref": "#/$defs/outcome"
+                },
+                "outcome_uri": {
+                  "type": "null"
+                },
+                "plan_hash": {
+                  "pattern": "^[0-9a-f]{64}$",
+                  "type": "string"
+                },
+                "provenance_uri": {
+                  "type": "null"
+                },
+                "status": {
+                  "const": "executed_read_only"
+                }
+              },
+              "required": [
+                "status",
+                "commit_sequence",
+                "contract_version",
+                "plan_hash",
+                "outcome",
+                "provenance_uri",
+                "durability_mode",
+                "outcome_uri"
+              ],
+              "type": "object"
+            }
+          ],
+          "type": "object"
+        }
+      },
+      "mcp_identity": {
+        "command_id": 3,
+        "composed_output": {
+          "schema_hash": "9d2c518c216dc18e6f17803a2a86aca9a5aad414db9fa97d75f6ddf95d065ebd",
+          "schema_id": "riffdb.command-operation-envelope/v1+compiler-outcome"
+        },
+        "input_schema": {
+          "command_id": 3,
+          "key": "command_input",
+          "schema_hash": "4dba04aaf69396bd145b3a1af12c37370bd8b0bef812f44a48795f9a225b9ebf",
+          "schema_id": "riffdb.generated-schema/command-input/3/v1"
+        },
+        "operation_envelope": {
+          "schema_hash": "1f83b878c052f53c6eb733b67cd7926fb7ea3729f1d469e0fd9aa8a13f6b44d2",
+          "schema_id": "riffdb.command-operation-envelope/v1"
+        },
+        "outcome_schema": {
+          "command_id": 3,
+          "key": "command_outcome_union",
+          "schema_hash": "ea0656f59fcc1aadc86abe1572b4d62aed5c4832ea1a075722970eba97deb3c9",
+          "schema_id": "riffdb.generated-schema/command-outcome-union/3/v1"
+        },
+        "tool_name": "riffdb_cmd_woodpeckerscheduler_releasepipeline"
+      },
       "name": "woodpecker_scheduler_release_pipeline",
       "operation_name": "ReleasePipeline",
       "plan_hash": "d0b0de194872c07734a81e9cbf5c8c09372dfab9e19dd3307651252ff76e0892",
@@ -387,6 +1185,429 @@
         ],
         "type": "object"
       },
+      "mcp_descriptor": {
+        "annotations": {
+          "destructiveHint": false,
+          "idempotentHint": true,
+          "openWorldHint": false,
+          "readOnlyHint": false
+        },
+        "inputSchema": {
+          "$schema": "https://json-schema.org/draft/2020-12/schema",
+          "additionalProperties": false,
+          "properties": {
+            "expected_revision": {
+              "maximum": 18446744073709551615,
+              "minimum": 0,
+              "type": "integer"
+            },
+            "fencing_token": {
+              "maximum": 18446744073709551615,
+              "minimum": 0,
+              "type": "integer"
+            },
+            "organization_id": {
+              "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
+              "type": "string"
+            },
+            "owner_id": {
+              "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
+              "type": "string"
+            },
+            "pipeline_id": {
+              "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
+              "type": "string"
+            },
+            "request_key": {
+              "minLength": 1,
+              "type": "string",
+              "x-riffdb-maxUtf8Bytes": 128,
+              "x-riffdb-minUtf8Bytes": 1
+            }
+          },
+          "required": [
+            "owner_id",
+            "pipeline_id",
+            "request_key",
+            "fencing_token",
+            "organization_id",
+            "expected_revision"
+          ],
+          "type": "object"
+        },
+        "name": "riffdb_cmd_woodpeckerscheduler_startpipeline",
+        "outputSchema": {
+          "$defs": {
+            "outcome": {
+              "oneOf": [
+                {
+                  "additionalProperties": false,
+                  "properties": {
+                    "type": {
+                      "const": "FenceStale"
+                    }
+                  },
+                  "required": [
+                    "type"
+                  ],
+                  "type": "object"
+                },
+                {
+                  "additionalProperties": false,
+                  "properties": {
+                    "type": {
+                      "const": "StartStale"
+                    }
+                  },
+                  "required": [
+                    "type"
+                  ],
+                  "type": "object"
+                },
+                {
+                  "additionalProperties": false,
+                  "properties": {
+                    "type": {
+                      "const": "FenceExpired"
+                    }
+                  },
+                  "required": [
+                    "type"
+                  ],
+                  "type": "object"
+                },
+                {
+                  "additionalProperties": false,
+                  "properties": {
+                    "type": {
+                      "const": "FenceInvalid"
+                    }
+                  },
+                  "required": [
+                    "type"
+                  ],
+                  "type": "object"
+                },
+                {
+                  "additionalProperties": false,
+                  "properties": {
+                    "type": {
+                      "const": "StartIllegal"
+                    }
+                  },
+                  "required": [
+                    "type"
+                  ],
+                  "type": "object"
+                },
+                {
+                  "additionalProperties": false,
+                  "properties": {
+                    "type": {
+                      "const": "PipelineMissing"
+                    }
+                  },
+                  "required": [
+                    "type"
+                  ],
+                  "type": "object"
+                },
+                {
+                  "additionalProperties": false,
+                  "properties": {
+                    "pipeline": {
+                      "additionalProperties": false,
+                      "properties": {
+                        "due_at": {
+                          "additionalProperties": false,
+                          "properties": {
+                            "nanos": {
+                              "maximum": 999999999,
+                              "minimum": 0,
+                              "type": "integer"
+                            },
+                            "seconds": {
+                              "pattern": "^-?(0|[1-9][0-9]*)$",
+                              "type": "string",
+                              "x-riffdb-integerType": "i64"
+                            }
+                          },
+                          "required": [
+                            "seconds",
+                            "nanos"
+                          ],
+                          "type": "object"
+                        },
+                        "lease_attempts": {
+                          "maximum": 18446744073709551615,
+                          "minimum": 0,
+                          "type": "integer"
+                        },
+                        "lease_expires_at": {
+                          "oneOf": [
+                            {
+                              "additionalProperties": false,
+                              "properties": {
+                                "nanos": {
+                                  "maximum": 999999999,
+                                  "minimum": 0,
+                                  "type": "integer"
+                                },
+                                "seconds": {
+                                  "pattern": "^-?(0|[1-9][0-9]*)$",
+                                  "type": "string",
+                                  "x-riffdb-integerType": "i64"
+                                }
+                              },
+                              "required": [
+                                "seconds",
+                                "nanos"
+                              ],
+                              "type": "object"
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        },
+                        "lease_fence": {
+                          "maximum": 18446744073709551615,
+                          "minimum": 0,
+                          "type": "integer"
+                        },
+                        "lease_owner": {
+                          "oneOf": [
+                            {
+                              "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
+                              "type": "string"
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        },
+                        "organization_id": {
+                          "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
+                          "type": "string"
+                        },
+                        "pipeline_id": {
+                          "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
+                          "type": "string"
+                        },
+                        "state": {
+                          "enum": [
+                            "Queued",
+                            "Running"
+                          ],
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "state",
+                        "due_at",
+                        "lease_fence",
+                        "lease_owner",
+                        "pipeline_id",
+                        "lease_attempts",
+                        "organization_id",
+                        "lease_expires_at"
+                      ],
+                      "type": "object"
+                    },
+                    "type": {
+                      "const": "PipelineStarted"
+                    }
+                  },
+                  "required": [
+                    "type",
+                    "pipeline"
+                  ],
+                  "type": "object"
+                }
+              ]
+            }
+          },
+          "$schema": "https://json-schema.org/draft/2020-12/schema",
+          "oneOf": [
+            {
+              "additionalProperties": false,
+              "properties": {
+                "commit_sequence": {
+                  "maxLength": 20,
+                  "pattern": "^[1-9][0-9]*$",
+                  "type": "string",
+                  "x-riffdb-integerType": "u64"
+                },
+                "contract_version": {
+                  "maximum": 18446744073709551615,
+                  "minimum": 1,
+                  "type": "integer"
+                },
+                "durability_mode": {
+                  "enum": [
+                    "sync",
+                    "group"
+                  ],
+                  "type": "string"
+                },
+                "outcome": {
+                  "$ref": "#/$defs/outcome"
+                },
+                "outcome_uri": {
+                  "maxLength": 1745,
+                  "pattern": "^riffdb://outcome/(?:[A-Za-z0-9._~-]|%[0-9A-F]{2})+/(?:[A-Za-z0-9._~-]|%[0-9A-F]{2})+/[1-9][0-9]*/riffdb_cmd_[a-z][a-z0-9_]*_[a-z][a-z0-9_]*/[A-Za-z0-9_-]{50}$",
+                  "type": "string",
+                  "x-riffdb-maxUtf8Bytes": 1745
+                },
+                "plan_hash": {
+                  "pattern": "^[0-9a-f]{64}$",
+                  "type": "string"
+                },
+                "provenance_uri": {
+                  "pattern": "^riffdb://provenance/[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+                  "type": "string"
+                },
+                "status": {
+                  "const": "committed"
+                }
+              },
+              "required": [
+                "status",
+                "commit_sequence",
+                "contract_version",
+                "plan_hash",
+                "outcome",
+                "provenance_uri",
+                "durability_mode",
+                "outcome_uri"
+              ],
+              "type": "object"
+            },
+            {
+              "additionalProperties": false,
+              "properties": {
+                "commit_sequence": {
+                  "maxLength": 20,
+                  "pattern": "^[1-9][0-9]*$",
+                  "type": "string",
+                  "x-riffdb-integerType": "u64"
+                },
+                "contract_version": {
+                  "maximum": 18446744073709551615,
+                  "minimum": 1,
+                  "type": "integer"
+                },
+                "durability_mode": {
+                  "enum": [
+                    "sync",
+                    "group"
+                  ],
+                  "type": "string"
+                },
+                "outcome": {
+                  "$ref": "#/$defs/outcome"
+                },
+                "outcome_uri": {
+                  "maxLength": 1745,
+                  "pattern": "^riffdb://outcome/(?:[A-Za-z0-9._~-]|%[0-9A-F]{2})+/(?:[A-Za-z0-9._~-]|%[0-9A-F]{2})+/[1-9][0-9]*/riffdb_cmd_[a-z][a-z0-9_]*_[a-z][a-z0-9_]*/[A-Za-z0-9_-]{50}$",
+                  "type": "string",
+                  "x-riffdb-maxUtf8Bytes": 1745
+                },
+                "plan_hash": {
+                  "pattern": "^[0-9a-f]{64}$",
+                  "type": "string"
+                },
+                "provenance_uri": {
+                  "pattern": "^riffdb://provenance/[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+                  "type": "string"
+                },
+                "status": {
+                  "const": "replayed"
+                }
+              },
+              "required": [
+                "status",
+                "commit_sequence",
+                "contract_version",
+                "plan_hash",
+                "outcome",
+                "provenance_uri",
+                "durability_mode",
+                "outcome_uri"
+              ],
+              "type": "object"
+            },
+            {
+              "additionalProperties": false,
+              "properties": {
+                "commit_sequence": {
+                  "type": "null"
+                },
+                "contract_version": {
+                  "maximum": 18446744073709551615,
+                  "minimum": 1,
+                  "type": "integer"
+                },
+                "durability_mode": {
+                  "type": "null"
+                },
+                "outcome": {
+                  "$ref": "#/$defs/outcome"
+                },
+                "outcome_uri": {
+                  "type": "null"
+                },
+                "plan_hash": {
+                  "pattern": "^[0-9a-f]{64}$",
+                  "type": "string"
+                },
+                "provenance_uri": {
+                  "type": "null"
+                },
+                "status": {
+                  "const": "executed_read_only"
+                }
+              },
+              "required": [
+                "status",
+                "commit_sequence",
+                "contract_version",
+                "plan_hash",
+                "outcome",
+                "provenance_uri",
+                "durability_mode",
+                "outcome_uri"
+              ],
+              "type": "object"
+            }
+          ],
+          "type": "object"
+        }
+      },
+      "mcp_identity": {
+        "command_id": 2,
+        "composed_output": {
+          "schema_hash": "4fe53692819086637178958aaeffae5572d027501e8c8029af0da42b2e3a9a2a",
+          "schema_id": "riffdb.command-operation-envelope/v1+compiler-outcome"
+        },
+        "input_schema": {
+          "command_id": 2,
+          "key": "command_input",
+          "schema_hash": "4dba04aaf69396bd145b3a1af12c37370bd8b0bef812f44a48795f9a225b9ebf",
+          "schema_id": "riffdb.generated-schema/command-input/2/v1"
+        },
+        "operation_envelope": {
+          "schema_hash": "1f83b878c052f53c6eb733b67cd7926fb7ea3729f1d469e0fd9aa8a13f6b44d2",
+          "schema_id": "riffdb.command-operation-envelope/v1"
+        },
+        "outcome_schema": {
+          "command_id": 2,
+          "key": "command_outcome_union",
+          "schema_hash": "7c929aed4954218cb0f31c01e4efe1d2c40846e0abca78d91eae7c740f86b4e2",
+          "schema_id": "riffdb.generated-schema/command-outcome-union/2/v1"
+        },
+        "tool_name": "riffdb_cmd_woodpeckerscheduler_startpipeline"
+      },
       "name": "woodpecker_scheduler_start_pipeline",
       "operation_name": "StartPipeline",
       "plan_hash": "c753ddcf3b99c45a069a0be94d51397ae088229eea334cf0d4f5f437854791f5",
@@ -544,6 +1765,7 @@
       "title": "Run StartPipeline"
     }
   ],
+  "predecessor_schema": "riffdb-generated-application-operations/v2",
   "reactive_tools": [
     {
       "action": "ack",
@@ -919,7 +2141,7 @@
       "title": "status PipelineTransitions"
     }
   ],
-  "schema": "riffdb-generated-application-operations/v2",
+  "schema": "riffdb-generated-application-operations/v6",
   "tools": [
     {
       "annotations": {
@@ -945,6 +2167,118 @@
           "pipeline_id"
         ],
         "type": "object"
+      },
+      "mcp_descriptor": {
+        "annotations": {
+          "destructiveHint": false,
+          "idempotentHint": true,
+          "openWorldHint": false,
+          "readOnlyHint": true
+        },
+        "inputSchema": {
+          "$schema": "https://json-schema.org/draft/2020-12/schema",
+          "additionalProperties": false,
+          "properties": {
+            "organization_id": {
+              "type": "string"
+            },
+            "pipeline_id": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "organization_id",
+            "pipeline_id"
+          ],
+          "type": "object"
+        },
+        "name": "woodpecker_scheduler_get_pipeline",
+        "outputSchema": {
+          "$schema": "https://json-schema.org/draft/2020-12/schema",
+          "oneOf": [
+            {
+              "additionalProperties": false,
+              "properties": {
+                "outcome": {
+                  "const": "Found",
+                  "type": "string"
+                },
+                "pipeline": {
+                  "additionalProperties": false,
+                  "properties": {
+                    "due_at": {
+                      "type": "string"
+                    },
+                    "lease_attempts": {
+                      "type": "string"
+                    },
+                    "lease_expires_at": {
+                      "anyOf": [
+                        {
+                          "type": "string"
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    },
+                    "lease_fence": {
+                      "type": "string"
+                    },
+                    "lease_owner": {
+                      "anyOf": [
+                        {
+                          "type": "string"
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    },
+                    "organization_id": {
+                      "type": "string"
+                    },
+                    "pipeline_id": {
+                      "type": "string"
+                    },
+                    "state": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "organization_id",
+                    "pipeline_id",
+                    "state",
+                    "due_at",
+                    "lease_owner",
+                    "lease_expires_at",
+                    "lease_fence",
+                    "lease_attempts"
+                  ],
+                  "type": "object"
+                }
+              },
+              "required": [
+                "outcome",
+                "pipeline"
+              ],
+              "type": "object"
+            },
+            {
+              "additionalProperties": false,
+              "properties": {
+                "outcome": {
+                  "const": "Missing",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "outcome"
+              ],
+              "type": "object"
+            }
+          ]
+        }
       },
       "module_hash": "d1744fe62d302f90d3ff03feb86b07f975acc8f82b19c3bb61f8b386bc83995a",
       "name": "woodpecker_scheduler_get_pipeline",

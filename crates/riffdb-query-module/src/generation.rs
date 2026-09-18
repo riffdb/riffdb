@@ -6,7 +6,7 @@ use std::fmt::Write as _;
 use crate::infallible_string_write::InfallibleStringWrite as _;
 
 use riffdb_contract_ir::{
-    CommandPlan, ContractBundle, ExpressionKind, Instruction, RecordTypeRef,
+    CommandPlan, ContractBundle, ExpressionKind, Instruction, RecordTypeRef, SchemaArtifactKey,
     SecretRevealDestinationV1, ValueType, ValueTypeTag, WorkflowLeaseOperation,
 };
 use riffdb_query_ir::{
@@ -320,6 +320,8 @@ pub struct GeneratedMcpTool {
 /// One compiler-owned generated MCP command operation.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct GeneratedMcpCommand {
+    /// Stable compiler-owned command identity.
+    pub command_id: u32,
     /// Exact source-level command symbol.
     pub operation_name: String,
     /// Stable module-qualified tool name.
@@ -332,6 +334,16 @@ pub struct GeneratedMcpCommand {
     pub input_schema: String,
     /// Canonical declared-outcome JSON Schema.
     pub result_schema: String,
+    /// Exact compiler-owned input schema used by hosted MCP discovery.
+    pub compiler_input_schema: String,
+    /// Exact compiler-owned outcome union used by hosted MCP discovery.
+    pub compiler_outcome_schema: String,
+    /// Domain-separated hash of the compiler-owned input schema.
+    pub input_schema_hash: [u8; 32],
+    /// Domain-separated hash of the compiler-owned outcome-union schema.
+    pub outcome_schema_hash: [u8; 32],
+    /// Exact ADR-0064 compiler-owned hosted MCP name.
+    pub mcp_tool_name: String,
     /// Exact contract bundle identity.
     pub contract_bundle_hash: [u8; 32],
     /// Exact command plan identity.
@@ -1215,7 +1227,27 @@ pub fn generate_mcp_commands(
                         Value::Array(secret_outputs),
                     );
             }
+            let input = contract
+                .schema_artifacts()
+                .iter()
+                .find(|artifact| {
+                    artifact.key() == SchemaArtifactKey::CommandInput(command.command_id())
+                })
+                .ok_or(McpToolGenerationError::InvalidSchema)?;
+            let outcome = contract
+                .schema_artifacts()
+                .iter()
+                .find(|artifact| {
+                    artifact.key() == SchemaArtifactKey::CommandOutcomeUnion(command.command_id())
+                })
+                .ok_or(McpToolGenerationError::InvalidSchema)?;
+            let name = contract
+                .mcp_command_names()
+                .get(command.command_id())
+                .filter(|entry| entry.source_command_name() == command.name())
+                .ok_or(McpToolGenerationError::InvalidSchema)?;
             Ok(GeneratedMcpCommand {
+                command_id: command.command_id().get(),
                 operation_name: command.name().to_owned(),
                 name: format!(
                     "{}_{}",
@@ -1238,6 +1270,11 @@ pub fn generate_mcp_commands(
                 .map_err(|_| McpToolGenerationError::InvalidSchema)?,
                 result_schema: serde_json::to_string(&result_schema)
                     .map_err(|_| McpToolGenerationError::InvalidSchema)?,
+                compiler_input_schema: input.canonical_json().to_owned(),
+                compiler_outcome_schema: outcome.canonical_json().to_owned(),
+                input_schema_hash: *input.hash().as_bytes(),
+                outcome_schema_hash: *outcome.hash().as_bytes(),
+                mcp_tool_name: name.tool_name().as_str().to_owned(),
                 contract_bundle_hash: *contract.bundle_hash().as_bytes(),
                 plan_hash: *command.plan_hash().as_bytes(),
             })

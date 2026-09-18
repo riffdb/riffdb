@@ -213,14 +213,14 @@
   "repository_closure": [
     {
       "artifact_hashes": [
-        "84ccb0a6009a88afa583bf300c6a0df57d7ed931fd0825686e73382d2fff7605",
+        "6764a4aef3745c3c7eabaf26060fec25940a7149edce6a530fcaafb465c9ae68",
         "4d0245689b82f7498d0fc5189cca42dea82c76354b17e6b10fce1eed598c77c5",
         "ca4a0d3bdef9c76f46c9ef0d2a381767095c128ead5bc89cbeaabea62fcafa76",
         "5118951200261ccff8cee2cd4426f5c96ea3ea0a201888a53a3e32f4a7151ae8",
         "53f94210e6da3f1986d24c3714c7f3d4ae6b4a6027988c88ef4a2c901e74337c"
       ],
       "contract_bundle_hash": "0e7d234414fd9da7ca189b1f96038b7d05c033503fe76a3c96e24a603021c7bf",
-      "lock_hash": "58cd46540d8b5e9994483bfca2631718c7e2cd1847df97538b80f6d18f551a34",
+      "lock_hash": "0740f150df9c893dd29ed3aabd310943867636d80b30acb2b921da721316672a",
       "manifest_hash": "8eb9e714737e86065d145cab0db1b5c1fc1d8b94c3e7daa3468b45ed1771d874",
       "module_hashes": [
         "f594471a8843b1e30effbb50cb4b75f239482926128ffb59c71675bae6a1c8bb"
@@ -236,7 +236,7 @@
     {
       "artifact_hashes": [
         "15c0b1604a4573db6e109532b5a68c63489c05e71dc29a4ad18395bb57ad8b2d",
-        "50cfbe50d381903005ce96bb852aab3dc659a7401a85e2649e9506b822d96cfa",
+        "d74a3de8c3d10ca503803578a24dbc636a3c1d2fe663259443938b939407d70b",
         "15bbf412cf4b72097e64ef7010f030101b88d8b29a9220d6ac2fbb5c02ffd746",
         "fc0308538a8557f855c88b81b40ca0024b99be35f04fca1544b291b9dc54517b",
         "a0058bbe931b15fa5fac53eda8d058477a75a4b888f830b0257f5c72f1c70edd",
@@ -245,7 +245,7 @@
         "5dc3739308e6a84fe995b8d5782ea913e0d898f4b396a4dfb54b5bc3b552a4bc"
       ],
       "contract_bundle_hash": "7cae1122f8daad0469b74e1e40473f7cfcd9ea8474c39e1ddc510218b2ac0999",
-      "lock_hash": "874bb9a8d45863a8440561bfc296afe6e2a9601799ce6ef5486c6747863c4d70",
+      "lock_hash": "fd31219688becb1b1abbde50c6ee4d8e4e1a78527d8e297ca84df76ce7a7c8b6",
       "manifest_hash": "0966179f42a10673d1ba3e2604f1588ea0ed228cd44f1fea2ebdb1c94231acb5",
       "module_hashes": [
         "07e927f735f4b4501c8c6d06458716ebca1ffbd451ec72a517c2b968e71612b4"

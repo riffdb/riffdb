@@ -8,12 +8,21 @@ require "set"
 
 ROOT = Pathname.new(File.expand_path("..", __dir__)).realpath
 BATCH_ARCHITECTURE_CHECKER = ROOT.join("scripts", "check-columnar-batch-architecture")
+MCP_PROJECTION_OWNER_CHECKER = ROOT.join("scripts", "check-generated-mcp-projection-owner")
 [
   [],
   ["--self-test"]
 ].each do |arguments|
   unless system(BATCH_ARCHITECTURE_CHECKER.to_s, *arguments, chdir: ROOT.to_s)
     abort "columnar batch architecture policy is invalid"
+  end
+end
+[
+  [],
+  ["--self-test"]
+].each do |arguments|
+  unless system(MCP_PROJECTION_OWNER_CHECKER.to_s, *arguments, chdir: ROOT.to_s)
+    abort "generated MCP projection owner policy is invalid"
   end
 end
 unless system(ROOT.join("scripts/check-crate-graph").to_s, chdir: ROOT.to_s)

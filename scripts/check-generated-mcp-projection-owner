@@ -1,0 +1,205 @@
+#!/usr/bin/env ruby
+# frozen_string_literal: true
+
+require "digest"
+require "pathname"
+
+ROOT = Pathname.new(File.expand_path("..", __dir__)).realpath
+HANDLER_PATH = "crates/riffdb-api-mcp/src/handler.rs"
+SCAFFOLD_PATH = "crates/riffdb-cli/src/scaffold.rs"
+MAX_SOURCE_BYTES = 1024 * 1024
+MAX_SOURCE_FILES = 256
+MAX_INVENTORY_BYTES = 16 * 1024 * 1024
+EXPECTED_HANDLER_PRODUCTION_SHA256 =
+  "804bb6c6311dff721541c068f0aa4b2af54522bcb27fac5f813724a18b6d8125"
+EXPECTED_V6_PROJECTION_SHA256 =
+  "4f29c1e29e86eca65fa462fed486bdb90d9feb35db0a15040bb4ea8f2693b435"
+TEST_MODULE_MARKER = "\n#[cfg(test)]\nmod tests {"
+PROJECTION_START = "fn render_command_registry_entry("
+PROJECTION_END = "\nfn create_temporary_directory("
+
+def read_source(relative)
+  path = ROOT.join(relative)
+  stat = path.lstat
+  raise "#{relative}: source must be a regular non-symlink file" if stat.symlink? || !stat.file?
+  raise "#{relative}: source path traverses a symlink" unless path.realpath == path.expand_path
+  raise "#{relative}: source exceeds #{MAX_SOURCE_BYTES} bytes" if stat.size > MAX_SOURCE_BYTES
+
+  source = path.binread
+  source.force_encoding(Encoding::UTF_8)
+  raise "#{relative}: source is not UTF-8" unless source.valid_encoding?
+
+  source
+end
+
+def production_prefix(source, relative)
+  markers = source.enum_for(:scan, TEST_MODULE_MARKER).map { Regexp.last_match.begin(0) }
+  raise "#{relative}: expected one final cfg(test) module" unless markers.length == 1
+
+  source.byteslice(0, markers.fetch(0))
+end
+
+def projection_slice(source)
+  starts = source.enum_for(:scan, PROJECTION_START).map { Regexp.last_match.begin(0) }
+  ends = source.enum_for(:scan, PROJECTION_END).map { Regexp.last_match.begin(0) }
+  return nil unless starts.length == 1 && ends.length == 1 && starts.fetch(0) < ends.fetch(0)
+
+  source.byteslice(starts.fetch(0), ends.fetch(0) - starts.fetch(0))
+end
+
+def rust_inventory
+  roots = %w[crates/riffdb-api-mcp/src crates/riffdb-cli/src]
+  paths = roots.flat_map { |root| ROOT.join(root).glob("**/*.rs") }.sort
+  raise "projection inventory exceeds #{MAX_SOURCE_FILES} Rust files" if paths.length > MAX_SOURCE_FILES
+
+  total = paths.sum { |path| path.lstat.size }
+  raise "projection inventory exceeds #{MAX_INVENTORY_BYTES} bytes" if total > MAX_INVENTORY_BYTES
+
+  paths.to_h do |path|
+    relative = path.relative_path_from(ROOT).to_s
+    [relative, read_source(relative)]
+  end
+end
+
+def violations(handler, scaffold, inventory)
+  failures = []
+  handler_production = production_prefix(handler, HANDLER_PATH)
+  scaffold_production = production_prefix(scaffold, SCAFFOLD_PATH)
+
+  if Digest::SHA256.hexdigest(handler_production) != EXPECTED_HANDLER_PRODUCTION_SHA256
+    failures << "handler-production-digest"
+  end
+
+  exact_delegation =
+    "    pub fn descriptor_json(&self) -> Result<Value, McpHandlerContractError> {\n" \
+    "        serde_json::to_value(self.to_mcp_tool()).map_err(|_| McpHandlerContractError)\n" \
+    "    }"
+  failures << "descriptor-delegation" unless handler_production.scan(exact_delegation).length == 1
+  if handler_production.match?(/\bpub(?:\s*\([^)]*\))?\s+(?:async\s+)?fn\s+to_mcp_tool\b/)
+    failures << "private-hosted-projection"
+  end
+  failures << "hosted-projection-count" unless handler_production.scan(/\bfn\s+to_mcp_tool\b/).length == 1
+
+  projection = projection_slice(scaffold_production)
+  if projection.nil?
+    failures << "v6-projection-boundary"
+  else
+    failures << "v6-projection-digest" unless Digest::SHA256.hexdigest(projection) == EXPECTED_V6_PROJECTION_SHA256
+    failures << "checked-command-constructor" unless projection.scan(
+      "McpDynamicToolDefinition::from_discovered_command("
+    ).length == 1
+    failures << "checked-query-constructor" unless projection.scan(
+      "McpDynamicToolDefinition::from_discovered_query("
+    ).length == 1
+    failures << "descriptor-call-count" unless projection.scan(/\.descriptor_json\s*\(\s*\)/).length == 2
+    failures << "generic-constructor" if projection.include?("McpDynamicToolDefinition::new(")
+  end
+
+  forbidden_cli = {
+    "copied-projection" => ["\"inputSchema\"", "\"outputSchema\"", "Tool::new_with_raw"],
+    "inverse-adoption" => [
+      "serde_json::from_value",
+      "register_descriptor",
+      "adopt_descriptor",
+      "dispatch_descriptor"
+    ],
+    "generic-constructor" => ["McpDynamicToolDefinition::new("]
+  }
+  cli_production = inventory.filter_map do |relative, source|
+    next unless relative.start_with?("crates/riffdb-cli/src/")
+
+    relative == SCAFFOLD_PATH ? scaffold_production : source
+  end.join("\n")
+  forbidden_cli.each do |code, needles|
+    failures << code if needles.any? { |needle| cli_production.include?(needle) }
+  end
+
+  descriptor_uses = inventory.each_with_object(Hash.new(0)) do |(relative, source), counts|
+    counts[relative] = source.scan(/\bdescriptor_json\b/).length
+  end.reject { |_relative, count| count.zero? }
+  expected_uses = {HANDLER_PATH => 1, SCAFFOLD_PATH => 2}
+  failures << "descriptor-owner-inventory" unless descriptor_uses == expected_uses
+
+  failures.uniq.sort
+end
+
+def expect_mutation(label, handler, scaffold, inventory, expected)
+  found = violations(handler, scaffold, inventory)
+  return if found.include?(expected)
+
+  raise "negative self-test #{label} missed #{expected}; got #{found.inspect}"
+end
+
+def self_test(handler, scaffold, inventory)
+  baseline = violations(handler, scaffold, inventory)
+  raise "self-test baseline failed: #{baseline.join(', ')}" unless baseline.empty?
+
+  changed = handler.sub(
+    "serde_json::to_value(self.to_mcp_tool()).map_err(|_| McpHandlerContractError)",
+    "Ok(Value::Null)"
+  )
+  expect_mutation("changed delegation", changed, scaffold, inventory.merge(HANDLER_PATH => changed),
+                  "descriptor-delegation")
+
+  changed = handler.sub("    fn to_mcp_tool(&self) -> Tool {", "    pub fn to_mcp_tool(&self) -> Tool {")
+  expect_mutation("public hosted projection", changed, scaffold, inventory.merge(HANDLER_PATH => changed),
+                  "private-hosted-projection")
+
+  changed = handler.sub(TEST_MODULE_MARKER, "\nfn unrelated_production_change() {}#{TEST_MODULE_MARKER}")
+  expect_mutation("second handler change", changed, scaffold, inventory.merge(HANDLER_PATH => changed),
+                  "handler-production-digest")
+
+  changed = scaffold.sub(
+    "McpDynamicToolDefinition::from_discovered_command(",
+    "McpDynamicToolDefinition::new("
+  )
+  expect_mutation("generic command constructor", handler, changed, inventory.merge(SCAFFOLD_PATH => changed),
+                  "checked-command-constructor")
+
+  changed = scaffold.sub(
+    "McpDynamicToolDefinition::from_discovered_query(",
+    "McpDynamicToolDefinition::from_discovered_command("
+  )
+  expect_mutation("wrong query constructor", handler, changed, inventory.merge(SCAFFOLD_PATH => changed),
+                  "checked-query-constructor")
+
+  changed = scaffold.sub(".descriptor_json()", ".result_schema()")
+  expect_mutation("projection bypass", handler, changed, inventory.merge(SCAFFOLD_PATH => changed),
+                  "descriptor-call-count")
+
+  copied = <<~RUST
+
+    fn copied_descriptor() {
+        let _ = ("inputSchema", "outputSchema", Tool::new_with_raw);
+    }
+  RUST
+  changed = scaffold.sub(TEST_MODULE_MARKER, "#{copied}#{TEST_MODULE_MARKER}")
+  expect_mutation("copied owner", handler, changed, inventory.merge(SCAFFOLD_PATH => changed),
+                  "copied-projection")
+
+  inverse = "\nfn adopt_descriptor(value: Value) { let _ = serde_json::from_value(value); }\n"
+  changed = scaffold.sub(TEST_MODULE_MARKER, "#{inverse}#{TEST_MODULE_MARKER}")
+  expect_mutation("inverse adoption", handler, changed, inventory.merge(SCAFFOLD_PATH => changed),
+                  "inverse-adoption")
+
+  extra_path = "crates/riffdb-cli/src/alternate_projection.rs"
+  changed_inventory = inventory.merge(extra_path => "fn use_it(x: &McpDynamicToolDefinition) { x.descriptor_json(); }")
+  expect_mutation("second descriptor user", handler, scaffold, changed_inventory,
+                  "descriptor-owner-inventory")
+
+  puts "generated MCP projection owner negative self-test: passed"
+end
+
+handler = read_source(HANDLER_PATH)
+scaffold = read_source(SCAFFOLD_PATH)
+inventory = rust_inventory
+
+if ARGV.empty?
+  failures = violations(handler, scaffold, inventory)
+  abort "generated MCP projection owner check failed: #{failures.join(', ')}" unless failures.empty?
+  puts "generated MCP projection owner: passed"
+elsif ARGV == ["--self-test"]
+  self_test(handler, scaffold, inventory)
+else
+  abort "usage: #{File.basename($PROGRAM_NAME)} [--self-test]"
+end

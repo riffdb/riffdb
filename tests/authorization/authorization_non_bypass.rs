@@ -8,19 +8,20 @@ use riffdb_policy::{
     AgentSessionAdmissionPolicy, ApplicationQueryAccessRequirement, ApplicationQueryTarget,
     AuthorizationClock, AuthorizationClockError, AuthorizationError, CommandExecutionClass,
     CommandToolCandidate, CurrentAuthorizer, Decision, DiscoveryVisibility, FixedToolCandidate,
-    NoopAuthorizationTelemetry, OperationRequest, OperationTenantScope, PolicyCode,
-    admit_invocation_claims,
+    NamedQueryToolCandidate, NoopAuthorizationTelemetry, OperationRequest, OperationTenantScope,
+    PolicyCode, admit_invocation_claims,
 };
 use riffdb_testkit::authorization::{
     AuthorizationFixture, AuthorizationFixtureConfig, AuthorizationFixtureTimes,
 };
 use riffdb_types::{
-    ActorId, ActorKind, AgentSessionId, AggregateTypeId, Audience, CapabilityGrantV1,
-    CapabilityPermissionV1, CapabilityPermissionsV1, CommandId, ContractBundleHash,
-    ContractLineage, ContractVersion, DatabaseId, EntityFieldVisibilityV1, EntityTypeId,
-    Environment, FieldId, PartitionKey, PartitionKeyBuilder, PartitionScopeV1, ProvenanceReason,
-    QueryCostVectorV1, QueryModuleHash, QueryOperationName, QueryPlanHash, ServiceIngressKindV1,
-    SourceCommit, SourceRepository, TenantScope, Timestamp,
+    ActorId, ActorKind, AgentSessionId, AggregateTypeId, ApplicationRoleHash, Audience,
+    CapabilityGrantV1, CapabilityPermissionKindV1, CapabilityPermissionV1, CapabilityPermissionsV1,
+    CommandId, ContractBundleHash, ContractLineage, ContractVersion, DatabaseId,
+    EntityFieldVisibilityV1, EntityTypeId, Environment, FieldId, IndexId, PartitionKey,
+    PartitionKeyBuilder, PartitionScopeV1, ProjectionId, ProvenanceReason, QueryCostVectorV1,
+    QueryModuleHash, QueryOperationName, QueryPlanHash, ReactiveModuleHash, ReactiveOperationName,
+    ServiceIngressKindV1, SourceCommit, SourceRepository, TenantScope, Timestamp,
 };
 
 const POLICY_MANIFEST: &str = include_str!("../../crates/riffdb-policy/Cargo.toml");
@@ -124,6 +125,75 @@ fn stable_application_grant() -> CapabilityGrantV1 {
         Vec::new(),
     )
     .expect("stable application grant")
+}
+
+fn catalog_test_permissions() -> CapabilityPermissionsV1 {
+    use CapabilityPermissionKindV1 as Kind;
+
+    let lineage = lineage();
+    let module_hash = QueryModuleHash::from_bytes([0x31; 32]);
+    let query_name = QueryOperationName::new("TicketPage").expect("query name");
+    let reactive_hash = ReactiveModuleHash::from_bytes([0x51; 32]);
+    let reactive_name = ReactiveOperationName::new("CatalogWitness").expect("reactive name");
+    let mut permissions = [
+        Kind::ValidateContract,
+        Kind::ReadContract,
+        Kind::DeployContract,
+        Kind::ReadCommit,
+        Kind::ScanCommits,
+        Kind::ReadProvenance,
+        Kind::InspectOutbox,
+        Kind::ReadHealth,
+        Kind::CheckAdHocQuery,
+        Kind::ExplainAdHocQuery,
+        Kind::ExecuteAdHocQuery,
+        Kind::InspectVectorState,
+    ]
+    .into_iter()
+    .map(|kind| CapabilityPermissionV1::unparameterized(kind).expect("fixed-kind witness"))
+    .collect::<Vec<_>>();
+    permissions.extend([
+        CapabilityPermissionV1::ExplainCommand(lineage.clone(), CommandId::first()),
+        CapabilityPermissionV1::InvokeCommand(lineage.clone(), CommandId::first()),
+        CapabilityPermissionV1::ReadEntity(lineage.clone(), EntityTypeId::first()),
+        CapabilityPermissionV1::ScanIndex(lineage.clone(), IndexId::first()),
+        CapabilityPermissionV1::QueryProjection(lineage.clone(), ProjectionId::first()),
+        CapabilityPermissionV1::ReadProjectionStatus(lineage.clone(), ProjectionId::first()),
+        CapabilityPermissionV1::ConsumeEventStream(
+            lineage.clone(),
+            reactive_hash,
+            reactive_name.clone(),
+        ),
+        CapabilityPermissionV1::SeekEventStreamConsumer(
+            lineage.clone(),
+            reactive_hash,
+            reactive_name.clone(),
+        ),
+        CapabilityPermissionV1::WatchNamedQuery(
+            lineage.clone(),
+            reactive_hash,
+            reactive_name.clone(),
+        ),
+        CapabilityPermissionV1::ConsumeContextualSubscription(
+            lineage.clone(),
+            reactive_hash,
+            reactive_name,
+        ),
+        CapabilityPermissionV1::ExecuteNamedQuery(lineage, module_hash, query_name),
+    ]);
+    CapabilityPermissionsV1::new(permissions).expect("canonical exact catalog permissions")
+}
+
+fn catalog_test_grant() -> CapabilityGrantV1 {
+    CapabilityGrantV1::new(
+        TenantScope::Global,
+        PartitionScopeV1::All,
+        catalog_test_permissions(),
+        Vec::new(),
+        NonZeroU16::new(u16::MAX).expect("nonzero maximum"),
+        Vec::new(),
+    )
+    .expect("closed catalog test grant")
 }
 
 fn application_query_target() -> ApplicationQueryTarget {
@@ -374,6 +444,94 @@ fn stable_application_authority_and_catalog_are_named_only() {
         assert_eq!(discovery.fixed_tools()[index], DiscoveryVisibility::Hidden);
     }
     assert_eq!(discovery.command_tools(), &[DiscoveryVisibility::Visible]);
+}
+
+// req: MCP-001, MCP-020, MCP-021, MCP-026, MCP-040, MCP-043, MCP-045, DX-044, DX-047, DX-049
+#[test]
+fn generated_catalog_role_identity_and_test_capability_have_separate_authority() {
+    let command = CommandToolCandidate::new(lineage(), CommandId::first());
+    let query = NamedQueryToolCandidate::new(
+        lineage(),
+        QueryModuleHash::from_bytes([0x31; 32]),
+        QueryOperationName::new("TicketPage").expect("query name"),
+    );
+    let role_only = CapabilityGrantV1::new(
+        TenantScope::Global,
+        PartitionScopeV1::All,
+        CapabilityPermissionsV1::new(vec![CapabilityPermissionV1::ApplicationRoleIdentity(
+            ApplicationRoleHash::from_bytes([0x44; 32]),
+        )])
+        .expect("role identity"),
+        Vec::new(),
+        NonZeroU16::new(u16::MAX).expect("nonzero maximum"),
+        Vec::new(),
+    )
+    .expect("role-only grant");
+    let role_visibility = allowed(
+        authorize(
+            &fixture_with_grant(ActorKind::Service, role_only),
+            environment(),
+            timestamp(160),
+            OperationRequest::discover_command_tools(),
+        )
+        .expect("role-only discovery"),
+    )
+    .into_discovery()
+    .expect("discovery proof")
+    .tool_catalog(
+        FixedToolCandidate::ALL.as_slice(),
+        std::slice::from_ref(&command),
+        std::slice::from_ref(&query),
+    )
+    .expect("role candidate catalog");
+    assert!(
+        role_visibility
+            .fixed_tools()
+            .iter()
+            .all(|visibility| *visibility == DiscoveryVisibility::Hidden)
+    );
+    assert_eq!(
+        role_visibility.command_tools(),
+        &[DiscoveryVisibility::Hidden]
+    );
+    assert_eq!(
+        role_visibility.named_query_tools(),
+        &[DiscoveryVisibility::Hidden]
+    );
+
+    let grant = catalog_test_grant();
+    assert_eq!(grant.tenant_scope(), &TenantScope::Global);
+    assert_eq!(grant.partition_scope(), &PartitionScopeV1::All);
+    assert!(grant.field_visibility().is_empty());
+    assert_eq!(grant.max_scan_rows().get(), u16::MAX);
+    assert!(grant.approval_required().is_empty());
+    assert!(grant.internal_row_policy().is_none());
+    assert!(grant.internal_export().is_none());
+    assert!(grant.internal_reimport().is_none());
+    assert!(grant.internal_vector_inspection().is_none());
+
+    let visibility = allowed(
+        authorize(
+            &fixture_with_grant(ActorKind::Service, grant),
+            environment(),
+            timestamp(160),
+            OperationRequest::discover_command_tools(),
+        )
+        .expect("exact catalog discovery"),
+    )
+    .into_discovery()
+    .expect("discovery proof")
+    .tool_catalog(FixedToolCandidate::ALL.as_slice(), &[command], &[query])
+    .expect("policy-filtered catalog");
+    assert_eq!(
+        visibility.fixed_tools(),
+        vec![DiscoveryVisibility::Visible; FixedToolCandidate::ALL.len()]
+    );
+    assert_eq!(visibility.command_tools(), &[DiscoveryVisibility::Visible]);
+    assert_eq!(
+        visibility.named_query_tools(),
+        &[DiscoveryVisibility::Visible]
+    );
 }
 
 #[test]

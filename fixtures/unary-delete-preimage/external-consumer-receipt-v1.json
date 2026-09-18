@@ -43,7 +43,7 @@
     {
       "kind": "mcp",
       "path": "fixtures/driver/conformance-app/generated/mcp/tools.json",
-      "sha256": "21b8c2006bca18cffdcb9250b7b96b6366ee14e14656235dd681340125bbc801"
+      "sha256": "1f4026efdaf99793bc90de41c00937b0dc291ca43be03105e852e6936fa473d4"
     },
     {
       "kind": "python",
@@ -81,7 +81,7 @@
   "schema": "riffdb.unary-delete-preimage-external-acceptance/v1",
   "source_lock": {
     "path": "fixtures/driver/conformance-app/riffdb.application.lock.json",
-    "sha256": "639addcb4c262b5cc60cc880cea625eb5c7e59696ccbc8f06461f427154b548d"
+    "sha256": "66747e7300648ba9ecbdeb26d147979f1ec99076d4063118af893e59a2587c1b"
   },
   "status": "passed",
   "verified_semantics": {
