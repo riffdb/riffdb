@@ -355,6 +355,29 @@ Do not treat these as passing because the JSON says they are evidence.
 | POC-009 / “complete checked failpoint inventory has no unresolved production gap” | Inventory is 41; WP-190 binaries execute 18. `production_gap_cases` is empty by classification, not because 41 process-kill cases ran. |
 | Whole file `attestation: candidate_not_executed` | No requirement in this file is `verified` on disk. |
 
+## What the repaired gate exposed (2026-09-18)
+
+`scripts/demo --assert` had been unrunnable behind three stale nested lockfiles
+(`examples/budget-comparison`, `benchmarks/command-growth`,
+`benchmarks/storage-fjall`). With those repaired the gate runs to completion for
+the first time and fails on a real assertion, not on tooling:
+
+`benchmarks/storage-fjall/tests/conformance.rs`,
+`accepted_registry_is_exactly_ninety_four_readable_and_seventy_one_writable`,
+freezes the durable record-schema registry at 94 readable and 71 writable.
+`crates/riffdb-proto/src/durable.rs` now declares 111 readable and 88 writable,
+so the freeze is 17 behind on each side.
+
+The growth is recent and ongoing: the registry last grew in WP-748's replication
+administration receipt codec and bounded follower audit V3 codec, and WP-748 is
+still adding codecs. The number will keep moving while that package is open.
+
+This audit does not change that assertion. Updating a frozen durable-format
+conformance count asserts that every added schema is legitimately accepted, which
+is a durable-format governance decision owned by whoever owns the registry
+growth, not by a lockfile repair. It is recorded here as the next blocker on
+POC-010 and on the demo gate.
+
 ## What remaining WP-200 work this sizes
 
 1. Make `./scripts/demo --assert` produce `target/wp200/demo-report.json`
