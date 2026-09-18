@@ -143,6 +143,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "caseless"
+version = "0.2.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "8b6fd507454086c8edfd769ca6ada439193cdb209c7681712ef6275cccbfe5d8"
+dependencies = [
+ "unicode-normalization",
+]
+
+[[package]]
 name = "cc"
 version = "1.4.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -770,6 +779,22 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "cf8baf1c55e62ffcace7a9f06f4bd9cd3f0c4beb022d3b367256b91b87513d98"
 
 [[package]]
+name = "memo-map"
+version = "0.3.4"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "5449c8c750f1a07ea702bbd212bd999fceece9b3d1508b17023b3e174583124b"
+
+[[package]]
+name = "minijinja"
+version = "2.24.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "86886cf6dbf4e614b19c9a1eec9775f021869d7eadde0fc73921a81b90c9b4c9"
+dependencies = [
+ "memo-map",
+ "serde",
+]
+
+[[package]]
 name = "mio"
 version = "1.2.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1106,19 +1131,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "d6f6ff9a378485b298a5286656da665ba74413d36db0979633275d2e708145d4"
 
 [[package]]
-name = "riffdb-api-grpc"
-version = "0.1.0"
-dependencies = [
- "base64",
- "prost",
- "prost-types",
- "riffdb-proto",
- "tonic",
- "tonic-prost",
- "tonic-prost-build",
-]
-
-[[package]]
 name = "riffdb-application"
 version = "0.1.0"
 dependencies = [
@@ -1134,6 +1146,7 @@ version = "0.1.0"
 dependencies = [
  "base64",
  "getrandom 0.3.4",
+ "riffdb-observability",
  "riffdb-storage-api",
  "riffdb-types",
  "zeroize",
@@ -1232,6 +1245,7 @@ version = "0.1.0"
 dependencies = [
  "riffdb-contract-ir",
  "riffdb-invariant",
+ "riffdb-observability",
  "riffdb-query-module",
  "riffdb-storage-api",
  "riffdb-types",
@@ -1243,8 +1257,6 @@ version = "0.1.0"
 dependencies = [
  "futures-util",
  "getrandom 0.3.4",
- "riffdb-api-grpc",
- "riffdb-application",
  "riffdb-config",
  "riffdb-errors",
  "riffdb-proto",
@@ -1276,6 +1288,7 @@ dependencies = [
  "riffdb-contract-ir",
  "riffdb-idempotency",
  "riffdb-invariant",
+ "riffdb-observability",
  "riffdb-policy",
  "riffdb-projection",
  "riffdb-runtime",
@@ -1292,6 +1305,7 @@ version = "0.1.0"
 name = "riffdb-conflict"
 version = "0.1.0"
 dependencies = [
+ "riffdb-observability",
  "riffdb-types",
 ]
 
@@ -1344,11 +1358,21 @@ dependencies = [
 ]
 
 [[package]]
+name = "riffdb-observability"
+version = "0.1.0"
+dependencies = [
+ "riffdb-errors",
+ "riffdb-types",
+ "tracing",
+]
+
+[[package]]
 name = "riffdb-policy"
 version = "0.1.0"
 dependencies = [
  "riffdb-auth",
  "riffdb-contract-ir",
+ "riffdb-observability",
  "riffdb-types",
 ]
 
@@ -1371,8 +1395,12 @@ dependencies = [
  "base64",
  "crc",
  "prost",
+ "prost-types",
  "riffdb-errors",
  "riffdb-types",
+ "tonic",
+ "tonic-prost",
+ "tonic-prost-build",
 ]
 
 [[package]]
@@ -1381,7 +1409,7 @@ version = "0.1.0"
 dependencies = [
  "riffdb-contract-ir",
  "riffdb-query-ir",
- "riffdb-query-syntax",
+ "riffdb-reactive-syntax",
  "riffdb-riffql-syntax",
  "riffdb-types",
 ]
@@ -1396,6 +1424,7 @@ dependencies = [
  "riffdb-projection",
  "riffdb-query-ir",
  "riffdb-riffql-syntax",
+ "riffdb-storage-api",
  "riffdb-types",
 ]
 
@@ -1412,11 +1441,12 @@ dependencies = [
 name = "riffdb-query-module"
 version = "0.1.0"
 dependencies = [
+ "minijinja",
  "riffdb-contract-ir",
  "riffdb-contract-syntax",
  "riffdb-query-compiler",
  "riffdb-query-ir",
- "riffdb-query-syntax",
+ "riffdb-reactive-syntax",
  "riffdb-riffql-syntax",
  "riffdb-types",
  "serde_json",
@@ -1424,12 +1454,15 @@ dependencies = [
 ]
 
 [[package]]
-name = "riffdb-query-syntax"
+name = "riffdb-reactive-syntax"
 version = "0.1.0"
 
 [[package]]
 name = "riffdb-riffql-syntax"
 version = "0.1.0"
+dependencies = [
+ "riffdb-types",
+]
 
 [[package]]
 name = "riffdb-runtime"
@@ -1438,13 +1471,6 @@ dependencies = [
  "riffdb-contract-ir",
  "riffdb-invariant",
  "riffdb-storage-api",
- "riffdb-types",
-]
-
-[[package]]
-name = "riffdb-scheduler"
-version = "0.1.0"
-dependencies = [
  "riffdb-types",
 ]
 
@@ -1462,7 +1488,9 @@ dependencies = [
  "riffdb-contract-ir",
  "riffdb-errors",
  "riffdb-invariant",
+ "riffdb-observability",
  "riffdb-policy",
+ "riffdb-projection",
  "riffdb-query-compiler",
  "riffdb-query-executor",
  "riffdb-query-ir",
@@ -1479,6 +1507,7 @@ version = "0.1.0"
 dependencies = [
  "prost",
  "riffdb-contract-ir",
+ "riffdb-errors",
  "riffdb-proto",
  "riffdb-types",
  "sha2",
@@ -1491,12 +1520,12 @@ dependencies = [
  "cap-std",
  "redb",
  "riffdb-catalog",
- "riffdb-policy",
- "riffdb-query-executor",
- "riffdb-query-ir",
+ "riffdb-columnar",
+ "riffdb-proto",
  "riffdb-storage-api",
  "riffdb-types",
  "sha2",
+ "tempfile",
 ]
 
 [[package]]
@@ -1509,7 +1538,6 @@ dependencies = [
  "riffdb-contract-ir",
  "riffdb-invariant",
  "riffdb-runtime",
- "riffdb-scheduler",
  "riffdb-storage-api",
  "riffdb-storage-redb",
  "riffdb-types",
@@ -1519,8 +1547,13 @@ dependencies = [
 name = "riffdb-types"
 version = "0.1.0"
 dependencies = [
+ "caseless",
  "hmac",
+ "serde",
+ "serde_json",
  "sha2",
+ "unicode-normalization",
+ "unicode-segmentation",
 ]
 
 [[package]]
@@ -1586,9 +1619,9 @@ dependencies = [
 
 [[package]]
 name = "rustls-webpki"
-version = "0.103.13"
+version = "0.103.14"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "61c429a8649f110dddef65e2a5ad240f747e85f7758a6bccc7e5777bd33f756e"
+checksum = "0527518605e68109d875e248ea259b6758801cf165e4b2c2733ae3b51f12535a"
 dependencies = [
  "ring",
  "rustls-pki-types",
@@ -1773,12 +1806,12 @@ checksum = "0bf256ce5efdfa370213c1dabab5935a12e49f2c58d15e9eac2870d3b4f27263"
 
 [[package]]
 name = "tempfile"
-version = "3.27.0"
+version = "3.24.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "32497e9a4c7b38532efcdebeef879707aa9f794296a4f0244f6f69e9bc8574bd"
+checksum = "655da9c7eb6305c55742045d5a8d2037996d61d8de95806335c7c86ce0f82e9c"
 dependencies = [
  "fastrand",
- "getrandom 0.4.3",
+ "getrandom 0.3.4",
  "once_cell",
  "rustix",
  "windows-sys 0.61.2",
@@ -2061,6 +2094,12 @@ name = "unicode-properties"
 version = "0.1.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "7df058c713841ad818f1dc5d3fd88063241cc61f49f5fbea4b951e8cf5a8d71d"
+
+[[package]]
+name = "unicode-segmentation"
+version = "1.13.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "c6f5d3c3b1bf09027a88a6bc961fc00497d651009560b5463668dc81b0fa87a8"
 
 [[package]]
 name = "unicode-xid"
