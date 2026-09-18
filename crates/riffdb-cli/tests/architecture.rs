@@ -7,9 +7,13 @@ use std::fs;
 use std::path::PathBuf;
 use std::process::Command;
 
-const DIRECT_DEPENDENCIES: [&str; 20] = [
+const DIRECT_DEPENDENCIES: [&str; 21] = [
     "base64",
     "clap",
+    // ADR-0211 authorizes one trusted MCP descriptor projection reused by CLI
+    // artifact assembly; the edge is default-feature-disabled and enables no
+    // stdio, HTTP, service or auth feature.
+    "riffdb-api-mcp",
     // WP-568 canonical installation plans are decoded at the operator boundary.
     "riffdb-application",
     "riffdb-auth",
@@ -37,6 +41,7 @@ const EXACT_DEPENDENCY_ROWS: &str = concat!(
     "clap = { version = \"=4.6.3\", default-features = false, features = [\"derive\", \"std\", \"help\", \"usage\", \"error-context\"] }\n",
     "riffdb-auth = { version = \"0.1.0\", path = \"../riffdb-auth\", default-features = false }\n",
     "riffdb-application = { version = \"0.1.0\", path = \"../riffdb-application\", default-features = false }\n",
+    "riffdb-api-mcp = { version = \"0.1.0\", path = \"../riffdb-api-mcp\", default-features = false }\n",
     "riffdb-client-rust = { version = \"0.1.0\", path = \"../riffdb-client-rust\", default-features = false }\n",
     "riffdb-config = { version = \"0.1.0\", path = \"../riffdb-config\", default-features = false }\n",
     "riffdb-contract-compiler = { version = \"0.1.0\", path = \"../riffdb-contract-compiler\", default-features = false }\n",
