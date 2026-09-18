@@ -14,10 +14,10 @@ slow-timeout = { period = "30s", terminate-after = 4, grace-period = "10s" }
 [[profile.ci.overrides]]
 # This campaign performs several complete bootstrap/recovery cycles. A pristine
 # baseline takes about 117s, leaving no margin under the general 120s ceiling.
-# Keep every in-test 30s readiness/progress deadline and every crash assertion.
+# Keep bounded in-test readiness/progress waits and every crash assertion.
 filter = 'binary_id(=riffdb-server::replication_follower) & test(=bootstrap_to_tail_fence_is_gap_free_across_crash)'
 # Repeated immediate-durability recovery competes with other crash campaigns
-# for storage. Reserve the runner while exercising the unchanged 30s deadlines.
+# for storage. Reserve the runner while exercising the bounded lifecycle waits.
 threads-required = "num-test-threads"
 priority = 100
 slow-timeout = { period = "30s", terminate-after = 8, grace-period = "10s" }
@@ -42,12 +42,20 @@ slow-timeout = { period = "30s", terminate-after = 24, grace-period = "10s" }
 
 [[profile.ci.overrides]]
 # These two complete replication campaigns contend for durable I/O with other
-# recovery tests. Preserve their internal 30s progress deadlines and exact
-# frontier assertions while giving each campaign the runner and a bounded budget.
+# recovery tests. Preserve their exact frontier assertions and bounded progress
+# waits while giving each campaign the runner and a bounded budget.
 filter = 'binary_id(=riffdb-server::replication_follower) & (test(=follower_applies_exact_prefix_byte_faithfully) | test(=replication_stream_resumes_gap_free_after_repeated_kills))'
 threads-required = "num-test-threads"
 priority = 100
 slow-timeout = { period = "30s", terminate-after = 8, grace-period = "10s" }
+
+[[profile.ci.overrides]]
+# These process tests reuse their selected TCP ports across offline maintenance
+# and server restarts. Reserve the runner so another process test cannot claim
+# a temporarily unbound port; keep every lifecycle deadline and restore assertion.
+filter = 'binary_id(=riffdb-server::replication_archive_restore)'
+threads-required = "num-test-threads"
+priority = 100
 
 [[profile.ci.scripts]]
 filter = 'binary_id(=riffdb-testkit-server::full_recovery_matrix) | binary_id(=riffdb-testkit-server::offline_maintenance_matrix) | binary_id(=riffdb-testkit-server::contract_migration_gate_a) | binary_id(=riffdb-testkit-server::remote_ingress) | binary_id(=riffdb-testkit-server::remote_deployment_rotation)'
