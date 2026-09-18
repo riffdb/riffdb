@@ -57,6 +57,16 @@ filter = 'binary_id(=riffdb-server::replication_archive_restore)'
 threads-required = "num-test-threads"
 priority = 100
 
+[[profile.ci.overrides]]
+# The recovery matrix performs real durable copies, archive reconstruction,
+# and per-event status transactions. Concurrent campaigns exhausted the generic
+# 120s watchdog on hosted storage. Keep all crash schedules and assertions,
+# reserve the runner's I/O, and retain a bounded per-campaign hang guard.
+filter = 'binary_id(=riffdb-storage-redb::storage_recovery_matrix)'
+threads-required = "num-test-threads"
+priority = 100
+slow-timeout = { period = "30s", terminate-after = 8, grace-period = "10s" }
+
 [[profile.ci.scripts]]
 filter = 'binary_id(=riffdb-testkit-server::full_recovery_matrix) | binary_id(=riffdb-testkit-server::offline_maintenance_matrix) | binary_id(=riffdb-testkit-server::contract_migration_gate_a) | binary_id(=riffdb-testkit-server::remote_ingress) | binary_id(=riffdb-testkit-server::remote_deployment_rotation)'
 list-wrapper = "harnessless"

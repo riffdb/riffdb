@@ -55,7 +55,9 @@ The first hosted runs exposed independent stale packaging and tooling checks:
 - Signed package arrival creates its consumer projects outside the checkout,
   so Cargo cannot accidentally treat them as undeclared workspace members.
   The package-only conformance story uses the same isolation and installs its
-  pinned TypeScript and uv tools; all four installed language facades pass.
+  pinned TypeScript, uv, and protoc tools and a complete isolated Rust toolchain;
+  all four installed language facades pass. Its short scratch root leaves room
+  for nested Unix-socket paths on hosted runners.
   The staged query-module crate includes the six canonical generator templates
   and uses package-local include paths. Installed-crate acceptance checks their
   exact bytes before compiling the Rust CLI offline. The full signed native,
@@ -85,7 +87,12 @@ The first hosted runs exposed independent stale packaging and tooling checks:
   production deadlines remain unchanged. These semantic tests assert no debug
   throughput SLA. Archive restore process tests also reserve the runner because
   their selected TCP ports are temporarily unbound during restarts. All
-  iterations remain and retries stay zero.
+  iterations remain and retries stay zero. Four additional storage-recovery
+  matrix campaigns exhausted the generic 120-second watchdog while competing
+  for durable I/O on GitHub. That matrix now reserves the runner and uses the
+  same bounded 240-second campaign guard, with every crash schedule, recovery
+  assertion, transaction, and fixture iteration unchanged. The four affected
+  campaigns pass in isolation in 47, 71, 71, and 75 seconds.
 - Core workflows run on pull requests, main pushes, tags, and manual dispatch,
   avoiding duplicate branch-push and pull-request runs for the same change.
 
