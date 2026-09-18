@@ -294,16 +294,6 @@ fn development_runners_bind_native_configuration_and_sealed_typescript_tooling()
 }
 
 #[test]
-fn downstream_adapter_check_uses_cargos_effective_target_directory() {
-    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
-    let source = fs::read_to_string(root.join("scripts/downstream-adapter-check"))
-        .expect("downstream adapter check");
-    assert!(source.contains("cargo metadata --quiet --format-version 1 --no-deps"));
-    assert!(source.contains("$cargo_target_dir/release/riffdb"));
-    assert!(!source.contains("$repo_root/target/release/riffdb"));
-}
-
-#[test]
 fn package_first_campaign_adds_metrics_without_rewriting_predecessor_schemas() {
     let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
     let evaluations = root.join("evaluations/agent-application-alpha");

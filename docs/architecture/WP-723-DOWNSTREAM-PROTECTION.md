@@ -1,0 +1,129 @@
+# WP-723 adapter compatibility ownership
+
+Package: WP-723. Tier: internal. WP-569 is complete in the inherited main history.
+
+## Decision and behavior
+
+The maintainer directed on 2026-09-17 that RiffDB must not depend on sample
+adapter implementations. Core builds, tests, releases, and merge protection
+therefore require no external adapter repository. This supersedes WP-723's
+original blocking downstream objective. First-party SDK, compiler, runtime,
+and installed-package conformance remain core responsibilities.
+
+All four repositories are public under the `riffdb` organization. Pending
+adapter implementation work was committed before publication. Each adapter
+now owns `.github/workflows/riffdb-compatibility.yml` and its exact upstream
+pin in `.github/riffdb-revision`:
+
+- [OpenFGA](https://github.com/riffdb/riffdb-openfga/commit/4224898)
+- [Better Auth](https://github.com/riffdb/riffdb-better-auth/commit/d952cee),
+  including its materialized administrative profile
+- [MLflow](https://github.com/riffdb/riffdb-mlflow/commit/f608a36)
+
+Push and pull-request checks build the pinned RiffDB CLI and check application
+sources, locks, and generated artifacts. Scheduled checks track upstream main;
+manual dispatch permits an explicit revision. Failures belong to the adapter
+repository and cannot block RiffDB. These checks prove application compilation,
+not complete framework behavior or published driver release conformance.
+
+Core-owned adapter pins, fetch/check scripts, the downstream CI job, and
+acceptance hooks are removed. GitHub main protection retains the existing core
+checks, strict up-to-date enforcement, and administrator enforcement, with no
+Downstream adapters requirement. [CONTRIBUTING.md](../CONTRIBUTING.md#external-adapter-compatibility)
+documents adapter upgrades. The old AGENTS.md checker reference is superseded
+by the maintainer's explicit direction and is no longer an executable gate.
+The sealed, inert WP-579 definition also retains historical downstream wording;
+it must be reconciled with this direction when that frozen package is reopened.
+
+## CI corrections
+
+The first hosted runs exposed independent stale packaging and tooling checks:
+
+- The Python sdist omitted the shared driver host and operation registry.
+  Its staged sources and exact archive inventory now cover the current closure.
+  Runtime checks use a private scratch directory; hosted wheel builds create
+  the artifact directory before the container writes its files. Source-package
+  creation installs its pinned Rust toolchain into a fresh temporary toolchain
+  directory, including the declared Rustfmt and Clippy components, rather than
+  depending on the runner image's preinstalled toolchain.
+- Installed Go package tests expected driver protocol 3 despite the accepted
+  version topology requiring 4. The current artifact passes; an artifact
+  altered back to protocol 3 is rejected by the regression test.
+- Native registry acceptance uses portable grep for its literal checks and
+  installs the pinned TypeScript checker. All four fresh registry consumers
+  pass locally using the hosted manylinux wheel.
+- Signed package arrival creates its consumer projects outside the checkout,
+  so Cargo cannot accidentally treat them as undeclared workspace members.
+  The package-only conformance story uses the same isolation and installs its
+  pinned TypeScript, uv, and protoc tools and a complete isolated Rust toolchain;
+  all four installed language facades pass. Its short scratch root leaves room
+  for nested Unix-socket paths on hosted runners.
+  The staged query-module crate includes the six canonical generator templates
+  and uses package-local include paths. Installed-crate acceptance checks their
+  exact bytes before compiling the Rust CLI offline. The full signed native,
+  TypeScript, Python, Go, and Rust package-arrival check passes locally with a
+  clean Cargo cache populated from the workspace lockfile.
+- Generated artifacts install Graphviz, ripgrep, protoc, and the repository-pinned
+  TypeScript checker. Node syntax checking alone does not validate TypeScript.
+  All 28 generated-artifact checks pass locally.
+- Bootstrap checks require the exact six-component fresh-primary health state,
+  including healthy replication with zero registered followers. Unknown,
+  missing, duplicated, or unhealthy required components remain failures.
+- The fuzz lockfile adopts the main workspace's patched h2 0.4.16 and rustls
+  0.23.45, and reconciles existing manifest dependencies. Dependency policy and
+  security audit remain enforced; no advisory is ignored.
+- The 32-cycle recovery-stage cleanup test gets an exclusive runner slot and
+  a bounded 240-second campaign limit after timing out at 120 seconds alongside
+  other storage campaigns. It passes unchanged in isolation in 51 seconds.
+  The complete migration gate passes in isolation in 15 seconds but also stalled
+  under the generic ceiling locally. Its synthetic nextest wrapper now allows
+  720 seconds, covering the gate's existing 600-second terminal-state hang
+  ceiling and bounded startup/shutdown phases, and reserves an exclusive slot.
+  The two replication campaigns that missed progress/outer deadlines also run
+  exclusively with a 240-second outer bound. Hosted isolation alone still left
+  one follower at commit 381 of 408 after 30 seconds and one populated-primary
+  restart waiting past 30 seconds. Only the fixture startup and catch-up guards
+  increase to 60 seconds; exact state, byte, crash, and frontier assertions and
+  production deadlines remain unchanged. These semantic tests assert no debug
+  throughput SLA. Archive restore process tests also reserve the runner because
+  their selected TCP ports are temporarily unbound during restarts. All
+  iterations remain and retries stay zero. Four additional storage-recovery
+  matrix campaigns exhausted the generic 120-second watchdog while competing
+  for durable I/O on GitHub. That matrix now reserves the runner and uses the
+  same bounded 240-second campaign guard, with every crash schedule, recovery
+  assertion, transaction, and fixture iteration unchanged. The four affected
+  campaigns pass in isolation in 47, 71, 71, and 75 seconds.
+- Core workflows run on pull requests, main pushes, tags, and manual dispatch,
+  avoiding duplicate branch-push and pull-request runs for the same change.
+
+## Validation and limits
+
+Local verification includes Python wheel/sdist inventory, reproducibility and
+offline installation, all 17 Python runtime tests and strict type checks;
+real-process source bootstrap smoke; positive and negative Go package arrival;
+workflow syntax; fuzz dependency policy and security audit; and package acceptance.
+The parser smoke completed 235,011 executions in 31 seconds without a failure.
+Initial package acceptance passed all nine steps; unscoped acceptance passed
+all eight. Removing the obsolete script-specific Rust test expanded acceptance:
+all 11 steps now pass, including strict Clippy and all 155 testkit-server tests.
+The bootstrap/crash, byte-faithful follower, and repeated-kill replication
+campaigns pass with exact state assertions (123, 52, and 71 seconds in
+isolation). All six archive restore cases passed three isolated stress
+iterations, for 18 successful executions.
+Adapter-owned hosted runs passed independently:
+
+- [OpenFGA](https://github.com/riffdb/riffdb-openfga/actions/runs/35284107855)
+- [Better Auth](https://github.com/riffdb/riffdb-better-auth/actions/runs/35284109106)
+- [MLflow](https://github.com/riffdb/riffdb-mlflow/actions/runs/35284110767)
+
+WP-723 is complete under the corrected ownership direction. The complete hosted
+merge battery remains required separately; this closure does not claim that
+pending GitHub jobs have passed.
+
+The adapter commits preserve their existing framework-test limitations:
+Better Auth's dev.16 registry packages were unavailable locally, and MLflow's
+full upstream conformance target remains unimplemented. Neither limitation is
+misrepresented by the application compilation checks.
+
+The [original implementation](https://github.com/riffdb/riffdb/commit/91d13095f1e8eccc08d9da1ffb5048f4f7a6257e)
+retains historical evidence for the superseded downstream gate.

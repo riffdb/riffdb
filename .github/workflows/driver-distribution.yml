@@ -2,6 +2,8 @@ name: Driver distribution
 
 on:
   push:
+    branches: [main]
+    tags: ["**"]
   pull_request:
   workflow_dispatch:
 
@@ -52,6 +54,8 @@ jobs:
           [[ "$(go env GOVERSION)" =~ ^go1\.(2[4-9]|[3-9][0-9])([.].*)?$ ]]
       - name: Build native CLI
         run: cargo +1.97.0 build --release --locked -p riffdb-cli
+      - name: Check current and stale Go package protocol admission
+        run: python3 scripts/tests/test_go_package_arrival.py
       - name: Build pinned manylinux Python runtime
         uses: PyO3/maturin-action@e83996d129638aa358a18fbd1dfb82f0b0fb5d3b # v1
         with:
@@ -88,19 +92,29 @@ jobs:
             --identity wp601-ci \
             "$GITHUB_WORKSPACE/target/wp601-distribution"
       - name: Prove clean package arrival
+        env:
+          RIFFDB_TMP_ROOT: ${{ runner.temp }}/riffdb-wp601-arrival
         run: |
           ./scripts/driver-package-arrival \
             --distribution "$GITHUB_WORKSPACE/target/wp601-distribution" \
-            --allowed-signers "$RIFFDB_TMP_ROOT/signing/allowed-signers" \
+            --allowed-signers "$GITHUB_WORKSPACE/target/wp601-tmp/signing/allowed-signers" \
             --identity wp601-ci \
             --receipt "$GITHUB_WORKSPACE/target/wp601-package-arrival.json"
       - name: Prove one package-only four-driver story
         if: matrix.arch == 'x86_64'
         env:
+          # Leave room for nested fixture names within the Unix-socket path bound.
+          RIFFDB_TMP_ROOT: ${{ runner.temp }}/r604
+          RUSTUP_HOME: ${{ runner.temp }}/riffdb-conformance-rustup
           RIFFDB_PACKAGE_CONFORMANCE_DISTRIBUTION: ${{ github.workspace }}/target/wp601-distribution
-          RIFFDB_PACKAGE_CONFORMANCE_ALLOWED_SIGNERS: ${{ env.RIFFDB_TMP_ROOT }}/signing/allowed-signers
+          RIFFDB_PACKAGE_CONFORMANCE_ALLOWED_SIGNERS: ${{ github.workspace }}/target/wp601-tmp/signing/allowed-signers
           RIFFDB_PACKAGE_CONFORMANCE_IDENTITY: wp601-ci
         run: |
+          rustup toolchain install 1.97.0 --profile minimal --component rustfmt,clippy
+          sudo apt-get update
+          sudo apt-get install -y protobuf-compiler
+          python -m pip install uv==0.12.14
+          npm ci --prefix clients/typescript/runtime --ignore-scripts
           ./scripts/check-driver-package-matrix
           ./scripts/driver-package-conformance-acceptance
       - name: Upload checked distribution

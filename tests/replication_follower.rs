@@ -379,7 +379,10 @@ async fn assert_replication_lag_while_delivery_is_held(
 async fn wait_for_commit(fixture: &Fixture, metadata: &CallMetadata, expected: u64) {
     let mut reader = fixture.client("follower").await;
     let mut observed = None;
-    tokio::time::timeout(std::time::Duration::from_secs(30), async {
+    // One-frame-per-transaction durable replay reached 381/408 on a hosted
+    // runner before the former 30s guard expired, even without competing tests.
+    // Bound the semantic wait without treating debug throughput as a product SLA.
+    tokio::time::timeout(std::time::Duration::from_secs(60), async {
         // The deadline bounds this wait. A fixed poll count can expire much
         // earlier when local Statistics calls overtake durable follower replay.
         loop {
@@ -404,7 +407,7 @@ async fn wait_for_commit(fixture: &Fixture, metadata: &CallMetadata, expected: u
     })
     .await
     .unwrap_or_else(|_| {
-        panic!("follower frontier {observed:?} did not reach workload frontier {expected} in 30s")
+        panic!("follower frontier {observed:?} did not reach workload frontier {expected} in 60s")
     });
 }
 

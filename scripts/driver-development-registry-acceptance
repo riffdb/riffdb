@@ -84,7 +84,7 @@ if ./scripts/build-driver-development-publication \
     echo 'development publication was accepted as a production distribution' >&2
     exit 1
 fi
-rg -q 'input is not the production distribution base' "$work_root/production-boundary.err"
+grep -qF 'input is not the production distribution base' "$work_root/production-boundary.err"
 
 ./scripts/serve-driver-development-registries \
     --publication "$publication" \
@@ -291,14 +291,14 @@ for package in lock["package"]:
         raise SystemExit(f"Rust package did not resolve through the development registry: {package['name']}")
 PY
 
-if rg -n -F "$repo_root" \
+if grep -nF "$repo_root" \
     "$work_root/typescript/package-lock.json" \
     "$work_root/go-consumer/go.mod" \
     "$work_root/rust-consumer/Cargo.lock"; then
     echo 'external consumer metadata contains a repository source path' >&2
     exit 1
 fi
-if rg -n 'path\+' "$work_root/rust-consumer/Cargo.lock"; then
+if grep -nF 'path+' "$work_root/rust-consumer/Cargo.lock"; then
     echo 'Rust consumer lock contains a path dependency' >&2
     exit 1
 fi
@@ -316,7 +316,7 @@ if ./scripts/build-driver-development-publication \
     echo 'an existing development build identity accepted different bytes' >&2
     exit 1
 fi
-rg -q 'existing immutable publication differs from the requested bytes' \
+grep -qF 'existing immutable publication differs from the requested bytes' \
     "$work_root/immutable-boundary.err"
 
 printf '%s\n' 'WP-611 native loopback registry acceptance: passed'

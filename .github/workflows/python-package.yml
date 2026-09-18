@@ -2,6 +2,8 @@ name: Python package
 
 on:
   push:
+    branches: [main]
+    tags: ["**"]
   pull_request:
   workflow_dispatch:
 
@@ -33,6 +35,8 @@ jobs:
     steps:
       - name: Check out repository
         uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - name: Prepare runner-owned artifact directory
+        run: mkdir -p dist
       - name: Build pinned manylinux wheel
         uses: PyO3/maturin-action@e83996d129638aa358a18fbd1dfb82f0b0fb5d3b # v1
         with:
@@ -66,8 +70,10 @@ jobs:
         if: matrix.arch == 'x86_64'
         env:
           PYTHON: ${{ steps.py313.outputs.python-path }}
+          RUSTUP_HOME: ${{ runner.temp }}/riffdb-sdist-rustup
         shell: bash
         run: |
+          rustup toolchain install 1.97.0 --profile minimal --component rustfmt,clippy
           "${{ steps.py313.outputs.python-path }}" -m pip install maturin==1.14.1
           ./scripts/build-python-sdist dist
       - name: Validate exact platform claims

@@ -434,7 +434,12 @@ if ! jq -e '
     and .result.status == "not_ready"
     and .result.active_contract_version == null
     and .result.last_commit_sequence == null
-    and (.result.components | length) == 5
+    and ([.result.components[].component] | sort) ==
+        ["authoritative_storage", "catalog", "commit_coordinator",
+         "outbox", "projection", "replication"]
+    and all(.result.components[] | select(.component == "replication");
+            .status == "healthy" and .replication.role == "primary"
+            and .replication.registered_followers == 0)
     and ([.result.components[]
           | select(.component == "authoritative_storage"
                    or .component == "catalog"
@@ -599,7 +604,12 @@ if ! jq -e '
     and .result.status == "not_ready"
     and .result.active_contract_version == null
     and .result.last_commit_sequence == null
-    and (.result.components | length) == 5
+    and ([.result.components[].component] | sort) ==
+        ["authoritative_storage", "catalog", "commit_coordinator",
+         "outbox", "projection", "replication"]
+    and all(.result.components[] | select(.component == "replication");
+            .status == "healthy" and .replication.role == "primary"
+            and .replication.registered_followers == 0)
     and ([.result.components[]
           | select(.component == "authoritative_storage"
                    or .component == "catalog"
