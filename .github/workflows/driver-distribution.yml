@@ -103,11 +103,14 @@ jobs:
       - name: Prove one package-only four-driver story
         if: matrix.arch == 'x86_64'
         env:
-          RIFFDB_TMP_ROOT: ${{ runner.temp }}/riffdb-wp604-conformance
+          # Leave room for nested fixture names within the Unix-socket path bound.
+          RIFFDB_TMP_ROOT: ${{ runner.temp }}/r604
           RIFFDB_PACKAGE_CONFORMANCE_DISTRIBUTION: ${{ github.workspace }}/target/wp601-distribution
           RIFFDB_PACKAGE_CONFORMANCE_ALLOWED_SIGNERS: ${{ github.workspace }}/target/wp601-tmp/signing/allowed-signers
           RIFFDB_PACKAGE_CONFORMANCE_IDENTITY: wp601-ci
         run: |
+          sudo apt-get update
+          sudo apt-get install -y protobuf-compiler
           python -m pip install uv==0.12.14
           npm ci --prefix clients/typescript/runtime --ignore-scripts
           ./scripts/check-driver-package-matrix
