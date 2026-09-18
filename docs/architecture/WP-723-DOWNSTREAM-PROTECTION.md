@@ -44,7 +44,8 @@ The first hosted runs exposed independent stale packaging and tooling checks:
   Runtime checks use a private scratch directory; hosted wheel builds create
   the artifact directory before the container writes its files. Source-package
   creation installs its pinned Rust toolchain into a fresh temporary toolchain
-  directory rather than depending on the runner image's preinstalled toolchain.
+  directory, including the declared Rustfmt and Clippy components, rather than
+  depending on the runner image's preinstalled toolchain.
 - Installed Go package tests expected driver protocol 3 despite the accepted
   version topology requiring 4. The current artifact passes; an artifact
   altered back to protocol 3 is rejected by the regression test.
@@ -53,6 +54,8 @@ The first hosted runs exposed independent stale packaging and tooling checks:
   pass locally using the hosted manylinux wheel.
 - Signed package arrival creates its consumer projects outside the checkout,
   so Cargo cannot accidentally treat them as undeclared workspace members.
+  The package-only conformance story uses the same isolation and installs its
+  pinned TypeScript and uv tools; all four installed language facades pass.
   The staged query-module crate includes the six canonical generator templates
   and uses package-local include paths. Installed-crate acceptance checks their
   exact bytes before compiling the Rust CLI offline. The full signed native,
@@ -75,8 +78,14 @@ The first hosted runs exposed independent stale packaging and tooling checks:
   720 seconds, covering the gate's existing 600-second terminal-state hang
   ceiling and bounded startup/shutdown phases, and reserves an exclusive slot.
   The two replication campaigns that missed progress/outer deadlines also run
-  exclusively with a 240-second outer bound. All iterations, assertions, and
-  in-test deadlines remain; retries stay zero.
+  exclusively with a 240-second outer bound. Hosted isolation alone still left
+  one follower at commit 381 of 408 after 30 seconds and one populated-primary
+  restart waiting past 30 seconds. Only the fixture startup and catch-up guards
+  increase to 60 seconds; exact state, byte, crash, and frontier assertions and
+  production deadlines remain unchanged. These semantic tests assert no debug
+  throughput SLA. Archive restore process tests also reserve the runner because
+  their selected TCP ports are temporarily unbound during restarts. All
+  iterations remain and retries stay zero.
 - Core workflows run on pull requests, main pushes, tags, and manual dispatch,
   avoiding duplicate branch-push and pull-request runs for the same change.
 
@@ -90,8 +99,10 @@ The parser smoke completed 235,011 executions in 31 seconds without a failure.
 Initial package acceptance passed all nine steps; unscoped acceptance passed
 all eight. Removing the obsolete script-specific Rust test expanded acceptance:
 all 11 steps now pass, including strict Clippy and all 155 testkit-server tests.
-Both previously failing replication campaigns pass with unchanged progress
-assertions (52 and 71 seconds in isolation).
+The bootstrap/crash, byte-faithful follower, and repeated-kill replication
+campaigns pass with exact state assertions (123, 52, and 71 seconds in
+isolation). All six archive restore cases passed three isolated stress
+iterations, for 18 successful executions.
 Adapter-owned hosted runs passed independently:
 
 - [OpenFGA](https://github.com/riffdb/riffdb-openfga/actions/runs/35284107855)
