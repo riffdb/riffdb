@@ -26221,6 +26221,9 @@ work_packages:
     - The lift was enumerated rather than granted by weakening the premature-lift guard. The
       guard and its self-test exist to prevent exactly this action; removing them would have
       converted one accepted deviation into a permanent hole.
+    - A reason offered for the lift at acceptance, that the workstream owning WP-750 and WP-760
+      had not advanced since 2026-09-17, was wrong and is withdrawn. Those branches carry commits
+      from 2026-09-19. The lift rests on the banked baseline now existing, not on that claim.
     - The bank records that read_only and interactive have no prior comparison, because those
       loads had never been run on this host, and that this host's run-to-run variance is 2 to 4
       percent rather than the 1 percent assumed for most of the programme.

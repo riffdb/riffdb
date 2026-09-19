@@ -125,10 +125,16 @@ than kept.
 Leaving the freeze in force was drafted first and is the conservative option:
 it needs no deviation, and the freeze was demonstrably not blocking this
 programme, which registers no PERF package and passes the checker with the
-freeze in force. It was rejected because it leaves a constraint standing whose
-stated prerequisites depend on a workstream that has not advanced since
-2026-09-17, and because the thing the freeze protects -- a banked baseline that
-nobody moves quietly -- is what this record supplies.
+freeze in force. It was rejected because the thing the freeze protects
+-- a banked baseline that nobody moves quietly -- is what this record supplies,
+so the constraint now guards something that exists.
+
+A second reason given when this record was accepted was that WP-750 and WP-760
+depend on a workstream that had not advanced since 2026-09-17. That was wrong
+and is withdrawn: WP-748 and WP-749 branches carry commits from 2026-09-19,
+including N1 latency and archive-cost work. The lift stands on the first reason
+alone. Anyone re-reading this decision should weigh it knowing those
+prerequisites are being actively worked, not abandoned.
 
 Deleting the premature-lift guard was rejected. The guard and its self-test
 exist precisely to prevent this action, and removing them would convert one
@@ -136,8 +142,8 @@ accepted deviation into a permanent hole. Extending the guard by one named
 exception keeps the mechanism, keeps every other early lift rejected, and
 leaves the deviation enumerated where a reader will find it.
 
-Waiting for WP-750 and WP-760 to close was rejected as open-ended on the
-evidence of that workstream's activity.
+Waiting for WP-750 and WP-760 to close was rejected as open-ended. Both remain
+open, with dependencies still in flight, and neither has a closure date.
 
 Keeping all three hosts as the per-change standard was rejected under decision
 2. Banking only the write path was rejected because it would have left the
