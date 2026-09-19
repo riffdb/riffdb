@@ -14,13 +14,25 @@ have compounded that rather than helped.
 
 ## Why these are dormant
 
-- **Tokenized text.** `text_index` is declaration-only in this build. The
-  declaration maintains durable provider state on writes, but public named
-  tokenized queries are not activated, so no contract surface reaches the
-  executor. A server adapter does exist
+- **Tokenized text.** `text_index` is declaration-only in this build, and
+  public named tokenized queries are not activated, so no contract surface
+  reaches the executor. A server adapter does exist
   (`crates/riffdb-server/src/exact_text_adapter.rs:1202` calls
   `execute_tokenized_text_v1`), so the path is dormant rather than dead: it
   becomes live the moment a contract can name a tokenized query.
+
+  An earlier revision of this page stated that the declaration "maintains
+  durable provider state on writes, which is the part that is measurable now".
+  That was taken from `docs/contracts/AUTHORING.md` rather than from a
+  measurement, and the measurement does not support it. Publishing documents
+  against a contract that declares the index, versus one that does not, moves
+  no server-side counter: frame bytes per command differ by 0.0, segment bytes
+  by 0.0, and writer-busy microseconds by less than the run-to-run spread
+  (`benchmarks/perf-surface`). So in this build the declaration has no
+  measurable per-write cost, at least at one client with the provider never
+  queried; whether population is simply deferred until activation is not
+  established either way, and is one more reason to re-measure before the
+  feature is switched on.
 - **Projection index providers.** Reached whenever a contract declares a
   projection carrying these index types. No contract in the repository
   declares a projection at all, so nothing exercises them.

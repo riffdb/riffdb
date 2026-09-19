@@ -1,5 +1,14 @@
 //! Runs one variant and reports what a write cost under it.
 //!
+//! Read the byte figures at one client and the CPU figures under load. Group
+//! size is not constant across variants -- one run grouped 7.8 documents per
+//! commit on the baseline and 4.8 with a tokenized index -- and per-group
+//! framing overhead spreads over however many documents a group happens to
+//! carry, so a byte-per-document delta measured under concurrency mixes the
+//! mechanism with the grouping. At one client every command is its own commit,
+//! which removes the confound. Writer-busy microseconds per document are work
+//! per document rather than per group, so they survive concurrency.
+//!
 //! Throughput alone would attribute poorly: the differences between these
 //! variants are small relative to host noise, and a percent of throughput is
 //! not evidence on a host whose run-to-run spread is several percent. The
@@ -26,6 +35,9 @@ pub struct VariantMeasurement {
     pub name: String,
     /// Documents published.
     pub documents: u64,
+    /// Concurrent publishers. Group commit barely engages at one, so a single
+    /// client measures per-command cost in isolation rather than under load.
+    pub concurrency: usize,
     /// Wall time for the publish phase only, excluding setup and seeding.
     pub elapsed: Duration,
     /// Commands the writer committed, from the shutdown census.
@@ -55,50 +67,63 @@ impl VariantMeasurement {
         self.documents as f64 / seconds
     }
 
-    /// Frame bytes per committed command, the figure a mechanism moves most
-    /// directly and the one that does not depend on host load.
+    /// Documents per committed group.
+    ///
+    /// Reported because it is the reason every other figure is normalised per
+    /// document rather than per commit: group size is not constant across
+    /// variants, so a per-commit figure compares different amounts of work.
     #[must_use]
-    pub fn frame_bytes_per_command(&self) -> f64 {
+    pub fn documents_per_commit(&self) -> f64 {
         if self.committed_commands == 0 {
             return 0.0;
         }
-        self.frame_bytes as f64 / self.committed_commands as f64
+        self.documents as f64 / self.committed_commands as f64
     }
 
-    /// Segment bytes per committed command.
+    /// Frame bytes per published document.
     #[must_use]
-    pub fn segment_bytes_per_command(&self) -> f64 {
-        if self.committed_commands == 0 {
-            return 0.0;
-        }
-        self.segment_bytes as f64 / self.committed_commands as f64
+    pub fn frame_bytes_per_document(&self) -> f64 {
+        self.per_document(self.frame_bytes)
     }
 
-    /// Writer-busy microseconds per committed command. Measured inside the
+    /// Segment bytes per published document.
+    #[must_use]
+    pub fn segment_bytes_per_document(&self) -> f64 {
+        self.per_document(self.segment_bytes)
+    }
+
+    /// Writer-busy microseconds per published document. Measured inside the
     /// server, so it excludes client and transport noise that dominates wall
     /// clock on a host running anything else.
     #[must_use]
-    pub fn writer_busy_us_per_command(&self) -> f64 {
-        self.per_command(self.writer_busy_us)
+    pub fn writer_busy_us_per_document(&self) -> f64 {
+        self.per_document(self.writer_busy_us)
     }
 
-    /// Group-commit microseconds per committed command.
+    /// Group-commit microseconds per published document.
     #[must_use]
-    pub fn commit_us_per_command(&self) -> f64 {
-        self.per_command(self.commit_us)
+    pub fn commit_us_per_document(&self) -> f64 {
+        self.per_document(self.commit_us)
     }
 
-    /// Final-apply microseconds per committed command.
+    /// Final-apply microseconds per published document.
     #[must_use]
-    pub fn final_apply_us_per_command(&self) -> f64 {
-        self.per_command(self.final_apply_us)
+    pub fn final_apply_us_per_document(&self) -> f64 {
+        self.per_document(self.final_apply_us)
     }
 
-    fn per_command(&self, total: u64) -> f64 {
-        if self.committed_commands == 0 {
+    /// Normalises by documents published, never by committed groups.
+    ///
+    /// Group size varies between variants -- one run produced 101 commits for
+    /// 400 documents on the baseline and 60 for the same 400 with a projection
+    /// -- so dividing by commits reports a mechanism that packs more documents
+    /// per group as though it cost more per unit of work. Documents published
+    /// is fixed by the caller and is the same for every variant.
+    fn per_document(&self, total: u64) -> f64 {
+        if self.documents == 0 {
             return 0.0;
         }
-        total as f64 / self.committed_commands as f64
+        total as f64 / self.documents as f64
     }
 }
 
@@ -113,7 +138,9 @@ pub async fn measure_variant(
     name: &str,
     source: &str,
     documents: u64,
+    concurrency: usize,
 ) -> Result<VariantMeasurement, SessionError> {
+    let concurrency = concurrency.max(1);
     let daemon = Daemon::start(binary, run_dir)
         .map_err(|error| SessionError::Rpc(format!("daemon start: {error}")))?;
     let endpoint = daemon.endpoint();
@@ -146,25 +173,54 @@ pub async fn measure_variant(
     let title = "perf surface document title";
     let body = "lorem ipsum ".repeat(64);
 
+    // Each publisher owns its own connection: sharing one would serialise the
+    // clients on a single channel and measure the harness instead of the
+    // server. The workspace is created once above and shared, so every
+    // publisher contends on the same conflict key, which is what makes group
+    // commit engage.
+    let mut publishers = Vec::with_capacity(concurrency);
+    for _ in 0..concurrency {
+        publishers.push(application_client(&endpoint).await?);
+    }
+
     // Timed phase: publishes only. Setup above and shutdown below are excluded
     // so the figure is the cost of the writes rather than of the harness.
     let started = Instant::now();
-    for index in 0..documents {
-        let mut document = [0_u8; 16];
-        document[..8].copy_from_slice(&index.to_be_bytes());
-        document[8] = 0x5A;
-        let input = publish_document_input(
-            workspace,
-            document,
-            format!("document-{index}"),
-            title.to_owned(),
-            body.clone(),
-            body.len() as i64,
-        );
-        client
-            .execute_command(command("PublishDocument", input)?, attempts(), &metadata)
-            .await
-            .map_err(|error| SessionError::Rpc(format!("PublishDocument {index}: {error:?}")))?;
+    let mut tasks = Vec::with_capacity(concurrency);
+    for (slot, mut publisher) in publishers.into_iter().enumerate() {
+        let metadata = metadata.clone();
+        let title = title.to_owned();
+        let body = body.clone();
+        let stride = u64::try_from(concurrency).unwrap_or(1);
+        let start = u64::try_from(slot).unwrap_or(0);
+        tasks.push(tokio::spawn(async move {
+            let mut index = start;
+            while index < documents {
+                let mut document = [0_u8; 16];
+                document[..8].copy_from_slice(&index.to_be_bytes());
+                document[8] = 0x5A;
+                let input = publish_document_input(
+                    workspace,
+                    document,
+                    format!("document-{index}"),
+                    title.clone(),
+                    body.clone(),
+                    body.len() as i64,
+                );
+                publisher
+                    .execute_command(command("PublishDocument", input)?, attempts(), &metadata)
+                    .await
+                    .map_err(|error| {
+                        SessionError::Rpc(format!("PublishDocument {index}: {error:?}"))
+                    })?;
+                index += stride;
+            }
+            Ok::<(), SessionError>(())
+        }));
+    }
+    for task in tasks {
+        task.await
+            .map_err(|error| SessionError::Rpc(format!("publisher panicked: {error}")))??;
     }
     let elapsed = started.elapsed();
 
@@ -182,6 +238,7 @@ pub async fn measure_variant(
     Ok(VariantMeasurement {
         name: name.to_owned(),
         documents,
+        concurrency,
         elapsed,
         committed_commands: census.0,
         frame_bytes: census.1,

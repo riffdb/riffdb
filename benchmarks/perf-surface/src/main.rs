@@ -13,6 +13,10 @@ fn main() -> std::process::ExitCode {
         .ok()
         .and_then(|value| value.parse().ok())
         .unwrap_or(2_000);
+    let concurrency: usize = std::env::var("PERF_SURFACE_CONCURRENCY")
+        .ok()
+        .and_then(|value| value.parse().ok())
+        .unwrap_or(1);
 
     let Some(binary) = riffdbd_binary() else {
         eprintln!(
@@ -40,7 +44,7 @@ fn main() -> std::process::ExitCode {
         let run_dir = root.join(&name);
         let source = contract_source(&mechanisms);
         match runtime.block_on(measure_variant(
-            &binary, &run_dir, &name, &source, documents,
+            &binary, &run_dir, &name, &source, documents, concurrency,
         )) {
             Ok(measurement) => {
                 report_row(&measurement);
@@ -60,23 +64,25 @@ fn main() -> std::process::ExitCode {
 
 fn report_row(measurement: &VariantMeasurement) {
     println!(
-        "perf-surface {name} documents={documents} \
+        "perf-surface {name} documents={documents} clients={clients} \
          docs_per_s={rate:.0} \
-         commands={commands} \
-         frame_bytes_per_command={frame:.1} \
-         segment_bytes_per_command={segment:.1} \
-         writer_busy_us_per_command={busy:.1} \
-         commit_us_per_command={commit:.1} \
-         final_apply_us_per_command={apply:.1}",
+         commits={commits} docs_per_commit={batch:.1} \
+         frame_bytes_per_doc={frame:.1} \
+         segment_bytes_per_doc={segment:.1} \
+         writer_busy_us_per_doc={busy:.1} \
+         commit_us_per_doc={commit:.1} \
+         final_apply_us_per_doc={apply:.1}",
         name = measurement.name,
         documents = measurement.documents,
+        clients = measurement.concurrency,
         rate = measurement.documents_per_second(),
-        commands = measurement.committed_commands,
-        frame = measurement.frame_bytes_per_command(),
-        segment = measurement.segment_bytes_per_command(),
-        busy = measurement.writer_busy_us_per_command(),
-        commit = measurement.commit_us_per_command(),
-        apply = measurement.final_apply_us_per_command(),
+        commits = measurement.committed_commands,
+        batch = measurement.documents_per_commit(),
+        frame = measurement.frame_bytes_per_document(),
+        segment = measurement.segment_bytes_per_document(),
+        busy = measurement.writer_busy_us_per_document(),
+        commit = measurement.commit_us_per_document(),
+        apply = measurement.final_apply_us_per_document(),
     );
 }
 
@@ -89,8 +95,8 @@ fn report_deltas(measurements: &[VariantMeasurement]) {
     };
     println!();
     for row in measurements.iter().filter(|row| row.name != "base") {
-        let frame = row.frame_bytes_per_command() - base.frame_bytes_per_command();
-        let segment = row.segment_bytes_per_command() - base.segment_bytes_per_command();
+        let frame = row.frame_bytes_per_document() - base.frame_bytes_per_document();
+        let segment = row.segment_bytes_per_document() - base.segment_bytes_per_document();
         let rate = if base.documents_per_second() > 0.0 {
             (row.documents_per_second() / base.documents_per_second() - 1.0) * 100.0
         } else {
@@ -98,14 +104,14 @@ fn report_deltas(measurements: &[VariantMeasurement]) {
         };
         println!(
             "perf-surface delta {name} vs base: \
-             frame_bytes_per_command={frame:+.1} \
-             segment_bytes_per_command={segment:+.1} \
-             writer_busy_us_per_command={busy:+.1} \
-             final_apply_us_per_command={apply:+.1} \
+             frame_bytes_per_doc={frame:+.1} \
+             segment_bytes_per_doc={segment:+.1} \
+             writer_busy_us_per_doc={busy:+.1} \
+             final_apply_us_per_doc={apply:+.1} \
              throughput={rate:+.1}%",
             name = row.name,
-            busy = row.writer_busy_us_per_command() - base.writer_busy_us_per_command(),
-            apply = row.final_apply_us_per_command() - base.final_apply_us_per_command(),
+            busy = row.writer_busy_us_per_document() - base.writer_busy_us_per_document(),
+            apply = row.final_apply_us_per_document() - base.final_apply_us_per_document(),
         );
     }
 }
