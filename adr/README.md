@@ -270,6 +270,7 @@ record with no front matter.
 | [0235](0235-fresh-locator-coverage-proven-at-staging.md) | Retire Fresh Locator Coverage Once The Derived Index Covers | Superseded | guarantee |
 | [0236](0236-remove-fresh-locator-coverage.md) | Remove Fresh Locator Coverage | Accepted | guarantee |
 | [0237](0237-input-derived-command-facts-reuse.md) | (untitled) | (unknown) | legacy |
+| [0238](0238-server-global-allocator-selection.md) | Server Global Allocator Selection | Proposed | guarantee |
 <!-- adr-index:end -->
 
 The human architecture review on 2026-07-12 approved the direction represented
