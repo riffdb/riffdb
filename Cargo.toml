@@ -77,6 +77,17 @@ pyo3-async-runtimes = { version = "=0.29.0", default-features = false, features 
 # off drops tempfile's `getrandom` feature, whose only effect is re-seeding
 # the name generator after repeated collisions — irrelevant for scratch dirs.
 tempfile = { version = "=3.24.0", default-features = false }
+# Build configuration, not code: ADR-0183's freeze governs PERF work-package
+# registrations, and this programme registers none, so check-performance-freeze
+# is satisfied and the freeze remains in force. The hot paths are
+# aggressively cross-crate (proto codec to envelope to CRC and hash to storage),
+# which is what thin LTO inlines best; one codegen unit removes the remaining
+# per-unit boundaries. This changes no semantics and no wire bytes, but it does
+# change every binary hash, so the banked baseline must be retaken under it.
+[profile.release]
+lto = "thin"
+codegen-units = 1
+
 
 # Release code with symbols and frame pointers, for profiling only.
 #

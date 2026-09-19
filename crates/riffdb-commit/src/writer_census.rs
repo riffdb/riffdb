@@ -141,6 +141,10 @@ pub(crate) const DRIVE_TOTAL: usize = 32;
 /// Level-2 stage: conflict-attempt acquisition on the serial path.
 pub(crate) const SERIAL_ACQUIRE: usize = 33;
 /// Level-2 stage: deriving input command facts from the frozen request.
+/// Retained slot: the input-derived proof is now carried from preparation
+/// rather than re-derived on the writer, so this stage reports zero. The slot
+/// stays in the census so the emitted stage vector keeps its fixed shape.
+#[allow(dead_code)]
 pub(crate) const SERIAL_INPUT_FACTS: usize = 34;
 /// Level-2 stage: reading the declared dependency snapshot.
 pub(crate) const SERIAL_DEPENDENCY_READ: usize = 35;

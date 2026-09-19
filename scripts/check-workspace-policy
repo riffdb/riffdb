@@ -7,6 +7,13 @@ require "pathname"
 require "set"
 
 ROOT = Pathname.new(File.expand_path("..", __dir__)).realpath
+
+
+# ADR-0238: exactly one package and one compilation unit may sit below the
+# workspace `forbid(unsafe_code)`, and only to select a global allocator.
+# Widening either constant is a guarantee-tier decision, not a fix.
+ALLOCATOR_PACKAGE = "riffdb-server"
+ALLOCATOR_BINARY_ROOT = "crates/riffdb-server/src/main.rs"
 BATCH_ARCHITECTURE_CHECKER = ROOT.join("scripts", "check-columnar-batch-architecture")
 MCP_PROJECTION_OWNER_CHECKER = ROOT.join("scripts", "check-generated-mcp-projection-owner")
 [
@@ -145,7 +152,19 @@ packages.each do |package|
   errors << "#{name} default features must remain empty" unless package.fetch("features").fetch("default", []) == []
 
   manifest = File.read(manifest_path, encoding: "UTF-8")
-  unless manifest.match?(/^\[lints\]\s*$\n^workspace\s*=\s*true\s*$/)
+  if name == ALLOCATOR_PACKAGE
+    # ADR-0238: this package selects the global allocator, which is an unsafe
+    # item. A `forbid` cannot be relaxed by an `#[allow]` on that item, so this
+    # one package restates the workspace lints with `unsafe_code = "deny"`.
+    # The substitute is checked here rather than merely tolerated, and "allow"
+    # is rejected: the exception lowers the lint one step, never further.
+    unless manifest.include?('unsafe_code = "deny"')
+      errors << "#{name} must restate the lints with unsafe_code = \"deny\""
+    end
+    if manifest.include?('unsafe_code = "allow"')
+      errors << "#{name} must not lower unsafe_code below deny"
+    end
+  elsif !manifest.match?(/^\[lints\]\s*$\n^workspace\s*=\s*true\s*$/)
     errors << "#{name} does not inherit workspace lints"
   end
 
@@ -171,9 +190,21 @@ packages.each do |package|
     next unless (target.fetch("kind") & %w[lib bin]).any?
 
     source = Pathname.new(target.fetch("src_path"))
+    relative = source.relative_path_from(ROOT).to_s
     contents = File.read(source, encoding: "UTF-8")
-    errors << "#{source.relative_path_from(ROOT)} lacks #![forbid(unsafe_code)]" \
-      unless contents.include?("#![forbid(unsafe_code)]")
+    if relative == ALLOCATOR_BINARY_ROOT
+      # The one compilation unit below `forbid`, and only for the allocator.
+      errors << "#{relative} must carry #![deny(unsafe_code)]" \
+        unless contents.include?("#![deny(unsafe_code)]")
+      errors << "#{relative} must declare the global allocator" \
+        unless contents.include?("#[global_allocator]")
+      allowances = contents.scan("#[allow(unsafe_code)]").length
+      errors << "#{relative} must relax the lint for exactly one item, found #{allowances}" \
+        unless allowances == 1
+    else
+      errors << "#{relative} lacks #![forbid(unsafe_code)]" \
+        unless contents.include?("#![forbid(unsafe_code)]")
+    end
   end
 end
 

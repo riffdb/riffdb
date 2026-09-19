@@ -269,6 +269,9 @@ record with no front matter.
 | [0234](0234-bounded-repairs-for-reviewed-runtime-resource-costs.md) | Bounded Repairs For Reviewed Runtime Resource Costs | Accepted | guarantee |
 | [0235](0235-fresh-locator-coverage-proven-at-staging.md) | Retire Fresh Locator Coverage Once The Derived Index Covers | Superseded | guarantee |
 | [0236](0236-remove-fresh-locator-coverage.md) | Remove Fresh Locator Coverage | Accepted | guarantee |
+| [0237](0237-input-derived-command-facts-reuse.md) | Input-Derived Command Facts Reuse | Accepted | guarantee |
+| [0238](0238-server-global-allocator-selection.md) | Server Global Allocator Selection | Accepted | guarantee |
+| [0239](0239-performance-programme-baseline-and-measurement-discipline.md) | Performance Programme Baseline And Measurement Discipline | Accepted | guarantee |
 <!-- adr-index:end -->
 
 The human architecture review on 2026-07-12 approved the direction represented

@@ -23,7 +23,7 @@ use riffdb_contract_ir::{
     GRAMMAR_VERSION_V19, GRAMMAR_VERSION_V20, GRAMMAR_VERSION_V21, GRAMMAR_VERSION_V22,
     GRAMMAR_VERSION_V23, IndexSchema, SchemaIr,
 };
-use riffdb_invariant::{InputDerivedCommandFacts, derive_input_command_facts};
+use riffdb_invariant::InputDerivedCommandFacts;
 #[cfg(test)]
 use riffdb_storage_api::command_write_set_upper_bound_v1;
 use riffdb_storage_api::{
@@ -405,6 +405,7 @@ pub(super) fn prepare_command_body(
     let decision = crate::command_validation::validate_transaction_current_command_parts(
         attempt.resolved_plan(),
         attempt.normalized_input(),
+        attempt.input_facts(),
         attempt.commit_context().pending().logical_time(),
         attempt.evaluated(),
         &current,
@@ -426,7 +427,7 @@ pub(super) fn prepare_command_body(
     } else {
         derive_grammar_v1_indexes(
             attempt.resolved_plan(),
-            attempt.normalized_input(),
+            attempt.input_facts(),
             attempt.evaluated(),
             &current,
             &mutation_positions,
@@ -675,7 +676,7 @@ where
     } else {
         derive_grammar_v1_indexes(
             checked.resolved(),
-            checked.attempt().normalized_input(),
+            checked.attempt().input_facts(),
             checked.evaluated(),
             checked.current(),
             checked.mutation_positions(),
@@ -1622,7 +1623,7 @@ const fn index_derivation_version_supported(grammar: u32, ir: u32) -> bool {
 
 fn derive_grammar_v1_indexes(
     resolved: &ResolvedExecutablePlan,
-    normalized_input: &CanonicalRecord,
+    facts: &InputDerivedCommandFacts,
     evaluated: &EvaluatedCommand,
     current: &TransactionCurrentState,
     mutation_positions: &[Option<usize>],
@@ -1631,8 +1632,6 @@ fn derive_grammar_v1_indexes(
     let bundle = resolved.bundle().bundle();
     let plan = resolved.plan();
     let request = evaluated.validation_request();
-    let facts = derive_input_command_facts(plan, normalized_input.clone())
-        .map_err(|_| CommandIndexError::internal_defect())?;
     if !index_derivation_version_supported(bundle.grammar_version(), bundle.ir_version())
         || plan.execution_class() != ExecutionClass::IdempotentMutation
         || resolved.reference() != evaluated.plan()
@@ -2880,7 +2879,8 @@ contract DeleteRestrict version 1 {
         let fixture = fixture("CreateRow", "create-1", ([0x21; 16], "new", 10), None);
         let derived = derive_grammar_v1_indexes(
             &fixture.resolved,
-            &fixture.input,
+            &derive_input_command_facts(fixture.resolved.plan(), fixture.input.clone())
+                .expect("fixture input facts"),
             &fixture.evaluated,
             &fixture.current,
             &[Some(0)],
@@ -2960,7 +2960,8 @@ contract DeleteRestrict version 1 {
         );
         let derived = derive_grammar_v1_indexes(
             &fixture.resolved,
-            &fixture.input,
+            &derive_input_command_facts(fixture.resolved.plan(), fixture.input.clone())
+                .expect("fixture input facts"),
             &fixture.evaluated,
             &fixture.current,
             &[Some(0)],
@@ -3010,7 +3011,8 @@ contract DeleteRestrict version 1 {
         );
         let derived = derive_grammar_v1_indexes(
             &fixture.resolved,
-            &fixture.input,
+            &derive_input_command_facts(fixture.resolved.plan(), fixture.input.clone())
+                .expect("fixture input facts"),
             &fixture.evaluated,
             &fixture.current,
             &[Some(0)],
@@ -3128,7 +3130,8 @@ contract ProductionEmbeddingIndexedRows version 1 {
 
         let derived = derive_grammar_v1_indexes(
             &fixture.resolved,
-            &fixture.input,
+            &derive_input_command_facts(fixture.resolved.plan(), fixture.input.clone())
+                .expect("fixture input facts"),
             &fixture.evaluated,
             &fixture.current,
             &[Some(0)],
@@ -3185,7 +3188,8 @@ contract ProductionEmbeddingIndexedRows version 1 {
         );
         let derived = derive_grammar_v1_indexes(
             &fixture.resolved,
-            &fixture.input,
+            &derive_input_command_facts(fixture.resolved.plan(), fixture.input.clone())
+                .expect("fixture input facts"),
             &fixture.evaluated,
             &fixture.current,
             &[Some(0)],
@@ -3266,7 +3270,8 @@ contract AnchoredEventRows version 1 {
         );
         let derived = derive_grammar_v1_indexes(
             &fixture.resolved,
-            &fixture.input,
+            &derive_input_command_facts(fixture.resolved.plan(), fixture.input.clone())
+                .expect("fixture input facts"),
             &fixture.evaluated,
             &fixture.current,
             &[Some(0)],
@@ -3363,7 +3368,8 @@ contract SecretIndexedRows version 1 {
         );
         let derived = derive_grammar_v1_indexes(
             &secret.resolved,
-            &secret.input,
+            &derive_input_command_facts(secret.resolved.plan(), secret.input.clone())
+                .expect("fixture input facts"),
             &secret.evaluated,
             &secret.current,
             &[Some(0)],
@@ -3382,7 +3388,8 @@ contract SecretIndexedRows version 1 {
         );
         let twin_derived = derive_grammar_v1_indexes(
             &twin.resolved,
-            &twin.input,
+            &derive_input_command_facts(twin.resolved.plan(), twin.input.clone())
+                .expect("fixture input facts"),
             &twin.evaluated,
             &twin.current,
             &[Some(0)],
@@ -3459,7 +3466,8 @@ contract SecretRevealIndexedRows version 1 {
         assert_eq!(fixture.resolved.plan().secret_reveals().len(), 1);
         let derived = derive_grammar_v1_indexes(
             &fixture.resolved,
-            &fixture.input,
+            &derive_input_command_facts(fixture.resolved.plan(), fixture.input.clone())
+                .expect("fixture input facts"),
             &fixture.evaluated,
             &fixture.current,
             &[Some(0)],
@@ -3531,7 +3539,8 @@ contract VectorAnnIndexedRows version 1 {
         );
         let derived = derive_grammar_v1_indexes(
             &fixture.resolved,
-            &fixture.input,
+            &derive_input_command_facts(fixture.resolved.plan(), fixture.input.clone())
+                .expect("fixture input facts"),
             &fixture.evaluated,
             &fixture.current,
             &[Some(0)],
@@ -3559,7 +3568,8 @@ contract VectorAnnIndexedRows version 1 {
     fn assert_provider_era_preserves_indexes(fixture: &Fixture) {
         let derived = derive_grammar_v1_indexes(
             &fixture.resolved,
-            &fixture.input,
+            &derive_input_command_facts(fixture.resolved.plan(), fixture.input.clone())
+                .expect("fixture input facts"),
             &fixture.evaluated,
             &fixture.current,
             &[Some(0)],
@@ -3660,7 +3670,8 @@ contract SecretDeleteRows version 1 {
         );
         let derived = derive_grammar_v1_indexes(
             &fixture.resolved,
-            &fixture.input,
+            &derive_input_command_facts(fixture.resolved.plan(), fixture.input.clone())
+                .expect("fixture input facts"),
             &fixture.evaluated,
             &fixture.current,
             &[Some(0)],
@@ -3758,7 +3769,8 @@ contract WorkflowInitializedRows version 1 {
         );
         let derived = derive_grammar_v1_indexes(
             &fixture.resolved,
-            &fixture.input,
+            &derive_input_command_facts(fixture.resolved.plan(), fixture.input.clone())
+                .expect("fixture input facts"),
             &fixture.evaluated,
             &fixture.current,
             &[Some(0)],
@@ -3874,7 +3886,8 @@ contract ReimportEraRows version 1 {
         );
         let derived = derive_grammar_v1_indexes(
             &fixture.resolved,
-            &fixture.input,
+            &derive_input_command_facts(fixture.resolved.plan(), fixture.input.clone())
+                .expect("fixture input facts"),
             &fixture.evaluated,
             &fixture.current,
             &[Some(0)],
@@ -3930,7 +3943,8 @@ contract ReimportEraRows version 1 {
         );
         let unchanged = derive_grammar_v1_indexes(
             &unchanged.resolved,
-            &unchanged.input,
+            &derive_input_command_facts(unchanged.resolved.plan(), unchanged.input.clone())
+                .expect("fixture input facts"),
             &unchanged.evaluated,
             &unchanged.current,
             &[Some(0)],
@@ -3948,7 +3962,8 @@ contract ReimportEraRows version 1 {
         );
         let derived = derive_grammar_v1_indexes(
             &changed.resolved,
-            &changed.input,
+            &derive_input_command_facts(changed.resolved.plan(), changed.input.clone())
+                .expect("fixture input facts"),
             &changed.evaluated,
             &changed.current,
             &[Some(0)],
@@ -4266,7 +4281,8 @@ contract ReimportEraRows version 1 {
             |index_id: IndexId| PartitionIndexTarget::new(fixture.partition.clone(), index_id);
         let derived = derive_grammar_v1_indexes(
             &fixture.resolved,
-            &fixture.input,
+            &derive_input_command_facts(fixture.resolved.plan(), fixture.input.clone())
+                .expect("fixture input facts"),
             &fixture.evaluated,
             &fixture.current,
             &[Some(0)],
@@ -4372,7 +4388,8 @@ contract ReimportEraRows version 1 {
         assert_eq!(
             derive_grammar_v1_indexes(
                 &fixture.resolved,
-                &fixture.input,
+                &derive_input_command_facts(fixture.resolved.plan(), fixture.input.clone())
+                    .expect("fixture input facts"),
                 &empty,
                 &fixture.current,
                 &[None],

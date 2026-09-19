@@ -145,6 +145,32 @@ pub(super) fn encode_message<M: Message + riffdb_proto::durable::WritableRecordM
     Ok(CanonicalStoredEnvelopeV1 { bytes, charge })
 }
 
+/// Computes the exact durable charge for one current-schema message without
+/// materializing its envelope.
+///
+/// The charge `encode_message` records is the framed envelope length, which is
+/// the fixed compact V2 header plus the payload. `Message::encoded_len` gives
+/// that payload length without allocating, so a caller that needs only the
+/// charge can skip the payload allocation, the preflight pass, the envelope
+/// allocation, the copy, and the CRC. The arithmetic and every bound are the
+/// same ones `encode_message` would apply, so the value is byte-identical to
+/// the charge of a full encode.
+pub(super) fn encoded_message_charge<M: Message + riffdb_proto::durable::WritableRecordMessage>(
+    record_type: &'static str,
+    message: &M,
+) -> Result<EncodedContentCharge, DurableCodecError> {
+    let schema = current_record_schema(record_type).ok_or_else(DurableCodecError::invariant)?;
+    if M::record_schema().record_type() != schema.record_type() {
+        return Err(DurableCodecError::invariant());
+    }
+    let framed = riffdb_proto::envelope::maximum_encoded_compact_record_bytes(
+        M::record_schema(),
+        message.encoded_len(),
+    )
+    .map_err(DurableCodecError::from_encode_envelope)?;
+    EncodedContentCharge::new(framed).ok_or_else(DurableCodecError::invariant)
+}
+
 /// Frames bytes emitted by a checked first-party structural encoder.
 ///
 /// Callers must already have proved the generated durable-wire shape and
@@ -294,29 +320,44 @@ pub(super) fn decode_record_variant(
     current_record_type: &'static str,
     legacy_record_type: &'static str,
 ) -> Result<bool, DurableCodecError> {
-    let decoded = readable_record_registry()
-        .decode(encoded)
-        .map_err(DurableCodecError::from_decode_envelope)?;
-    match decoded.record_type() {
+    let classify = |record_type: &str| match record_type {
         record_type if record_type == current_record_type => Ok(true),
         record_type if record_type == legacy_record_type => Ok(false),
         _ => Err(DurableCodecError::new(
             DurableCodecErrorKind::UnexpectedRecordType,
         )),
+    };
+    // The caller decodes again as the chosen variant, so learning the identity
+    // does not need a full validating decode of a payload that is about to be
+    // decoded anyway. The header carries it; anything the header cannot answer
+    // falls back to the decode this replaced.
+    if let Some(record_type) = readable_record_registry().peek_compact_record_type(encoded) {
+        return classify(record_type);
     }
+    let decoded = readable_record_registry()
+        .decode(encoded)
+        .map_err(DurableCodecError::from_decode_envelope)?;
+    classify(decoded.record_type())
 }
 
 pub(super) fn decode_record_variant_chain(
     encoded: &[u8],
     accepted_record_types: &[&'static str],
 ) -> Result<usize, DurableCodecError> {
+    let position = |record_type: &str| {
+        accepted_record_types
+            .iter()
+            .position(|accepted| *accepted == record_type)
+            .ok_or_else(|| DurableCodecError::new(DurableCodecErrorKind::UnexpectedRecordType))
+    };
+    // As above: the chosen variant is decoded in full immediately afterwards.
+    if let Some(record_type) = readable_record_registry().peek_compact_record_type(encoded) {
+        return position(record_type);
+    }
     let decoded = readable_record_registry()
         .decode(encoded)
         .map_err(DurableCodecError::from_decode_envelope)?;
-    accepted_record_types
-        .iter()
-        .position(|record_type| *record_type == decoded.record_type())
-        .ok_or_else(|| DurableCodecError::new(DurableCodecErrorKind::UnexpectedRecordType))
+    position(decoded.record_type())
 }
 
 pub(super) fn require<T>(value: Option<T>) -> Result<T, DurableCodecError> {
