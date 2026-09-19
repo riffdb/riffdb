@@ -6,6 +6,11 @@ use std::path::PathBuf;
 use std::process::Command;
 
 // req: DEP-005
+/// Root test targets this package owns that link no daemon: they inspect the
+/// workspace itself rather than a running server, so they are not part of the
+/// daemon-linked inventory the assertion below pins.
+const NON_DAEMON_TEST_TARGETS: [&str; 2] = ["architecture", "unsafe_code_boundary"];
+
 #[test]
 fn testkit_core_excludes_daemon_edges_and_server_kit_owns_root_targets() {
     let crate_root = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
@@ -55,7 +60,7 @@ fn testkit_core_excludes_daemon_edges_and_server_kit_owns_root_targets() {
             target["kind"]
                 .as_array()
                 .is_some_and(|kinds| kinds.iter().any(|kind| kind.as_str() == Some("test")))
-                && target["name"].as_str() != Some("architecture")
+                && !NON_DAEMON_TEST_TARGETS.contains(&target["name"].as_str().unwrap_or_default())
         })
         .count();
     assert_eq!(daemon_linked_targets, 30);
