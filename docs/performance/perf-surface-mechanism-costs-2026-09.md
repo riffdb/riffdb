@@ -67,13 +67,52 @@ projection). So the counter moves in the same direction as throughput and by a
 similar order, but "N times the writer CPU" is not a claim this measurement
 supports. The throughput figures are measured directly and do not depend on it.
 
-**Why the projection cost grows with concurrency is not explained here.** The
-measurement locates the cost; it does not diagnose it. That wants a profile of
-the writer under the projection variant, which is the obvious next step.
+**One workload shape.** See below.
 
 **One workload, one host, one document shape.** Publishing into a single
 workspace, so every publisher contends on one conflict key. A workload spread
 across many partitions could behave differently.
+
+## Where the projection cost actually is
+
+The writer batch-stage census (`RIFFDB_WRITER_BATCH_DIAGNOSTICS=1`) locates it
+in one stage. Base against projection, 500 documents at 32 clients, 501
+commands each:
+
+| stage | base us/cmd | projection us/cmd | delta |
+|---|---|---|---|
+| `unit_execute` | 263.3 | 596.8 | +333.4 |
+| `exec_batch_begin` | 0.3 | 330.5 | **+330.2** |
+| `exec_apply` | 30.9 | 31.5 | +0.6 |
+| `exec_evaluate` | 11.4 | 11.8 | +0.4 |
+
+`exec_batch_begin` accounts for 99 percent of the added time. Evaluation and
+apply are unchanged, so the command path is not doing more work; it is waiting
+before it starts.
+
+`exec_batch_begin` wraps `port.begin_empty_batch()`, which reaches
+`begin_attributed_write` in `crates/riffdb-storage-redb/src/store.rs:5061`.
+That acquires `shared.mutation_gate` and then `database.begin_write()`, and
+redb permits one write transaction at a time. Projection application is not
+part of the command's transaction: `apply_projection`
+(`crates/riffdb-storage-redb/src/derived.rs:648`) opens its **own**
+`begin_attributed_write`, through the same gate.
+
+So the cost is contention, not projection arithmetic. The command writer
+serialises behind the projection worker's write transaction on a single-writer
+store. Four observations agree with that and none contradicts it: the whole
+delta is in gate acquisition; per-command evaluation and apply are flat; the
+projection adds no bytes to the command frame, because its rows are written in
+a different transaction; and the cost grows with concurrency, which is what
+contention does and what per-command work does not.
+
+What is measured is the stage attribution and the call path. The exact
+interleaving of the two writers is inferred from them rather than traced, and
+a contention trace would settle it.
+
+This points at the shape of any fix -- batching projection applies, sharing the
+command's transaction, or applying less often -- rather than at making
+projection evaluation faster, which the census says costs almost nothing.
 
 ## Reproducing
 

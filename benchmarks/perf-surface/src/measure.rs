@@ -54,6 +54,9 @@ pub struct VariantMeasurement {
     /// rather than in the command frame, which is why bytes alone do not
     /// attribute it.
     pub final_apply_us: u64,
+    /// Census lines the daemon emitted as it closed, retained so a diagnostic
+    /// run can read stage attribution without re-running the workload.
+    pub stdout_tail: Vec<String>,
 }
 
 impl VariantMeasurement {
@@ -246,6 +249,11 @@ pub async fn measure_variant(
         writer_busy_us: evidence.0,
         commit_us: evidence.1,
         final_apply_us: evidence.2,
+        stdout_tail: stdout
+            .iter()
+            .filter(|line| line.starts_with("riffdb-"))
+            .cloned()
+            .collect(),
     })
 }
 

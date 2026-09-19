@@ -87,6 +87,14 @@ impl Daemon {
             .arg("--idempotency-keys")
             .arg(&idempotency_keys)
             .env("RUST_BACKTRACE", "1")
+            // Stage attribution is opt-in and off by default: it is a
+            // thread-local charge on a hot path, so leaving it on would make
+            // the harness measure the instrumentation.
+            .envs(
+                std::env::var("RIFFDB_WRITER_BATCH_DIAGNOSTICS")
+                    .ok()
+                    .map(|value| ("RIFFDB_WRITER_BATCH_DIAGNOSTICS".to_owned(), value)),
+            )
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
