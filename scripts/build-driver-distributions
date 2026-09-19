@@ -338,7 +338,7 @@ def copy_repository(destination: Path) -> None:
 
 
 def rust_closure() -> tuple[list[str], dict[str, str]]:
-    metadata = json.loads(run(["cargo", "+1.97.0", "metadata", "--format-version", "1", "--locked"]))
+    metadata = json.loads(run(["cargo", "+1.98.1", "metadata", "--format-version", "1", "--locked"]))
     packages = {package["id"]: package for package in metadata["packages"]}
     by_name = {package["name"]: package["id"] for package in metadata["packages"] if package["source"] is None}
     roots = [by_name["riffdb-cli"], by_name["riffdb-client-rust"]]
@@ -441,7 +441,7 @@ def rust_packages(output: Path, scratch: Path) -> None:
     run(
         [
             "cargo",
-            "+1.97.0",
+            "+1.98.1",
             "vendor",
             "--locked",
             "--versioned-dirs",
@@ -462,7 +462,7 @@ def rust_packages(output: Path, scratch: Path) -> None:
         run(
             [
                 "cargo",
-                "+1.97.0",
+                "+1.98.1",
                 "package",
                 "-p",
                 name,

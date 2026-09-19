@@ -31,12 +31,12 @@ case "$work_root" in
 esac
 trap 'rm -rf "$work_root"' EXIT
 
-cargo +1.97.0 test -p riffdb-query-module \
+cargo +1.98.1 test -p riffdb-query-module \
     --test workflow_application_generation --all-features --quiet
 
 for adapter in mlflow woodpecker; do
     root="$repo_root/fixtures/adapters/$adapter"
-    cargo +1.97.0 run --quiet -p riffdb-cli --bin riffdb -- \
+    cargo +1.98.1 run --quiet -p riffdb-cli --bin riffdb -- \
         application check "$root/riffdb.application.json" --output json >/dev/null
 
     case "$adapter" in

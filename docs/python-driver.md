@@ -3,7 +3,7 @@
 RiffDB's Python package is `riffdb-application`; application code imports
 `riffdb_application`. Wheels use the stable `cp313-abi3` interface, so
 installing a wheel does not require Rust. Building the source distribution
-requires Rust 1.97.0.
+requires Rust 1.98.1.
 
 The alpha release matrix is deliberately finite:
 
@@ -149,7 +149,7 @@ Source installation is conventional but compiles the bundled Rust dependency
 graph:
 
 ```bash
-RUSTUP_TOOLCHAIN=1.97.0 python3 -m pip install ./riffdb_application-0.1.0.tar.gz
+RUSTUP_TOOLCHAIN=1.98.1 python3 -m pip install ./riffdb_application-0.1.0.tar.gz
 ```
 
 Publishing to PyPI is intentionally a separate maintainer action. The POC

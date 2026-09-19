@@ -148,7 +148,7 @@ packages.each do |package|
   errors << "#{name} has an external source" unless package["source"].nil?
   errors << "#{name} does not inherit version 0.1.0" unless package.fetch("version") == "0.1.0"
   errors << "#{name} does not use edition 2024" unless package.fetch("edition") == "2024"
-  errors << "#{name} does not require Rust 1.97.0" unless package.fetch("rust_version") == "1.97.0"
+  errors << "#{name} does not require Rust 1.98.1" unless package.fetch("rust_version") == "1.98.1"
   errors << "#{name} default features must remain empty" unless package.fetch("features").fetch("default", []) == []
 
   manifest = File.read(manifest_path, encoding: "UTF-8")

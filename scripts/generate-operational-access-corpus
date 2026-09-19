@@ -13,6 +13,6 @@ cargo_bin="${CARGO:-cargo}"
 if [[ -x "${HOME}/.cargo/bin/cargo" ]]; then
     cargo_bin="${CARGO:-${HOME}/.cargo/bin/cargo}"
 fi
-"$cargo_bin" +1.97.0 run --quiet \
+"$cargo_bin" +1.98.1 run --quiet \
     --manifest-path "$repo_root/Cargo.toml" \
     -p riffdb-cli -- application lock "$mode"

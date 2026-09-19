@@ -185,7 +185,7 @@ printf 'fn main() {}\n' >"$work_root/rust-package-smoke/src/main.rs"
 (
     cd "$work_root/rust-package-smoke"
     CARGO_HOME="$legacy/.cargo" CARGO_NET_OFFLINE=true \
-        cargo +1.97.0 metadata --offline --format-version 1 >/dev/null
+        cargo +1.98.1 metadata --offline --format-version 1 >/dev/null
 )
 
 # The generated Rust project is itself a package-arrival artifact. Prove its
@@ -197,7 +197,7 @@ rust_scaffold_smoke="$work_root/rust-scaffold-smoke"
 (
     cd "$rust_scaffold_smoke"
     CARGO_HOME="$legacy/.cargo" CARGO_NET_OFFLINE=true RUSTC_WRAPPER= \
-        cargo +1.97.0 metadata --offline --locked --format-version 1 >/dev/null
+        cargo +1.98.1 metadata --offline --locked --format-version 1 >/dev/null
 )
 cp "$rust_scaffold_smoke/Cargo.lock" "$work_root/rust-scaffold.Cargo.lock.expected"
 CARGO_HOME="$legacy/.cargo" CARGO_NET_OFFLINE=true RUSTC_WRAPPER= \

@@ -330,7 +330,7 @@ export PATH="${CARGO_HOME:-$HOME/.cargo}/bin:$PATH"
 ./scripts/developer-tools check
 ```
 
-The check also verifies that `cargo +1.97.0` resolves through rustup. A
+The check also verifies that `cargo +1.98.1` resolves through rustup. A
 configured `rustc-wrapper` such as `sccache` is optional, but if a Cargo config
 names one it must be installed or that stale setting must be removed. RiffDB
 does not silently change user Cargo configuration.

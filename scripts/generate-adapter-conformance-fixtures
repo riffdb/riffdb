@@ -7,7 +7,7 @@ cd "$repo_root"
 case "${1:-}" in
     --write)
         [[ "$#" -eq 1 ]] || { echo "usage: ./scripts/generate-adapter-conformance-fixtures --check|--write" >&2; exit 2; }
-        cargo +1.97.0 run --quiet -p riffdb-testkit-server --example generate_adapter_conformance -- \
+        cargo +1.98.1 run --quiet -p riffdb-testkit-server --example generate_adapter_conformance -- \
             "$repo_root" "$repo_root"
         echo "Generated four general-alpha workload fixtures plus the Payload regression."
         ;;
@@ -23,7 +23,7 @@ case "${1:-}" in
             esac
         }
         trap cleanup EXIT INT TERM
-        cargo +1.97.0 run --quiet -p riffdb-testkit-server --example generate_adapter_conformance -- \
+        cargo +1.98.1 run --quiet -p riffdb-testkit-server --example generate_adapter_conformance -- \
             "$repo_root" "$generated"
         diff -ru -- \
             "$repo_root/fixtures/adapters/conformance" \

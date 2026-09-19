@@ -29,7 +29,7 @@
 | Primary application API | RiffQL and generated named operations over gRPC |
 | Native agent API | Model Context Protocol (MCP) |
 | Storage baseline | `redb`, behind a narrow internal storage interface |
-| Rust baseline | Rust 1.97.0 |
+| Rust baseline | Rust 1.98.1 |
 | MCP baseline | MCP specification 2025-11-25 |
 | MCP Rust SDK baseline | `rmcp` 2.2.0 exactly |
 
@@ -799,7 +799,7 @@ effect. Epoch two MUST offer no predecessor conversion or compatibility path.
 `PYD-010` Release artifacts MUST include reproducible CPython limited-API
 manylinux wheels for x86_64 and aarch64 plus a self-contained source
 distribution. Wheels MUST install without a Rust toolchain; source builds MUST
-pin Rust 1.97.0 and every native/build dependency. Publication to PyPI is a
+pin Rust 1.98.1 and every native/build dependency. Publication to PyPI is a
 separate human-controlled release action.
 
 `PYD-011` `riffdb new --language python` MUST create an offline-buildable
@@ -2133,7 +2133,7 @@ Versions are the verified July 2026 starting point, not a promise to track every
 
 | Area | Baseline | Use |
 |---|---|---|
-| Toolchain | Rust 1.97.0 | Workspace toolchain and CI baseline |
+| Toolchain | Rust 1.98.1 | Workspace toolchain and CI baseline |
 | Async runtime | Tokio 1.52.x | Networking, service tasks, channels, timeouts |
 | gRPC | Tonic 0.14.6 with crate-specific default-disabled features fixed by ADR-0009 | Public RPC server and client without TLS or compression in the POC |
 | Hosted HTTP | Axum 0.8.9, default features disabled, `http1` and `tokio` only | WP-185 loopback hosting of WP-140's accepted MCP Tower service |
@@ -10450,7 +10450,7 @@ The implementation MUST prefer primary project documentation and pin reviewed ve
    ADR-0008 feature, source, registry-fallback, framing/logging, build-script,
    native, unsafe, cryptographic, license, advisory, and lock-graph review. Any
    different real resolution requires renewed human review before merge.
-4. Rust release channel and Rust 1.97.0 release notes.
+4. Rust release channel and Rust 1.98.1 release notes.
 5. Tokio asynchronous runtime documentation.
 6. Tonic gRPC implementation documentation.
 7. Prost Protocol Buffers implementation documentation.

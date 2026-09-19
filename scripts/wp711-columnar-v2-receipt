@@ -16,12 +16,12 @@ SAMPLES = 31
 CPU_METHOD = "single-thread elapsed ns"
 ALLOCATION_METHOD = "WP-710 modeled-owned-allocation metric (not actual allocator calls)"
 MECHANICS_COMMAND = [
-  "cargo", "+1.97.0", "test", "--release", "-p", "riffdb-columnar",
+  "cargo", "+1.98.1", "test", "--release", "-p", "riffdb-columnar",
   "wp710_fixed_corpus_mechanics_receipt", "--", "--ignored", "--nocapture",
   "--test-threads=1"
 ].freeze
 ACTIVATION_COMMAND = [
-  "cargo", "+1.97.0", "test", "--release", "-p", "riffdb-server", "--lib",
+  "cargo", "+1.98.1", "test", "--release", "-p", "riffdb-server", "--lib",
   "columnar_adapter::tests::wp711_production_v2_activation_receipt", "--", "--ignored",
   "--exact", "--nocapture", "--test-threads=1"
 ].freeze
@@ -68,7 +68,7 @@ end
 def pinned_cargo?(candidate)
   return false unless candidate
 
-  stdout, _stderr, status = Open3.capture3(candidate, "+1.97.0", "--version")
+  stdout, _stderr, status = Open3.capture3(candidate, "+1.98.1", "--version")
   status.success? && stdout.start_with?("cargo 1.97.0 ")
 rescue Errno::ENOENT
   false
@@ -88,7 +88,7 @@ end
 
 def pinned_rustc
   candidate = Pathname.new(pinned_cargo).dirname.join("rustc")
-  stdout, _stderr, status = Open3.capture3(candidate.to_s, "+1.97.0", "--version")
+  stdout, _stderr, status = Open3.capture3(candidate.to_s, "+1.98.1", "--version")
   unless status.success? && stdout.start_with?("rustc 1.97.0 ")
     raise ReceiptError, "the selected rustup proxy directory lacks pinned rustc 1.97.0"
   end
@@ -296,7 +296,7 @@ def receipt(mechanics_line, activation_line, revision, before_host, after_load)
     "implementation_revision" => revision,
     "configuration" => {
       "cargo_profile" => "release",
-      "rust_toolchain" => capture!(pinned_rustc, "+1.97.0", "--version", "--verbose").strip,
+      "rust_toolchain" => capture!(pinned_rustc, "+1.98.1", "--version", "--verbose").strip,
       "rows" => ROWS,
       "partitions" => 2,
       "rows_per_partition" => 8_192,
@@ -572,7 +572,7 @@ def self_test
     selected = resolve_pinned_cargo(path: directory, home: cargo_home, explicit: nil)
     raise ReceiptError, "self-test selected poisoned system cargo" if Pathname.new(selected).realpath == poison.realpath
 
-    stdout, _stderr, status = Open3.capture3(selected, "+1.97.0", "--version")
+    stdout, _stderr, status = Open3.capture3(selected, "+1.98.1", "--version")
     unless status.success? && stdout.start_with?("cargo 1.97.0 ")
       raise ReceiptError, "self-test did not invoke exact cargo 1.97.0"
     end

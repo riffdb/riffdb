@@ -14,7 +14,7 @@ case "${1:-}" in
             echo "usage: ./scripts/generate-portability-fixtures --check|--write" >&2
             exit 2
         }
-        cargo +1.97.0 run --quiet -p riffdb-application \
+        cargo +1.98.1 run --quiet -p riffdb-application \
             --example generate_portability_fixtures -- --write
         echo "Generated compiler-owned application portability fixtures."
         ;;
@@ -23,7 +23,7 @@ case "${1:-}" in
             echo "usage: ./scripts/generate-portability-fixtures --check|--write" >&2
             exit 2
         }
-        cargo +1.97.0 run --quiet -p riffdb-application \
+        cargo +1.98.1 run --quiet -p riffdb-application \
             --example generate_portability_fixtures
         echo "Application portability fixtures are current."
         ;;

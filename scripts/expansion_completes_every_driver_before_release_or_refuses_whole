@@ -2,7 +2,7 @@
 # req: OQ-114
 set -euo pipefail
 
-cargo +1.97.0 test -p riffdb-query-executor \
+cargo +1.98.1 test -p riffdb-query-executor \
   --test expansion_execution \
   expansion_completes_every_driver_before_release_or_refuses_whole \
   --all-features

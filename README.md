@@ -157,7 +157,7 @@ bound to only its selected database.
 
 ## Manual Build
 
-The workspace pins Rust 1.97.0. On Linux with rustup:
+The workspace pins Rust 1.98.1. On Linux with rustup:
 
 ```bash
 export PATH="${CARGO_HOME:-$HOME/.cargo}/bin:$PATH"

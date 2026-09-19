@@ -330,7 +330,7 @@ def smoke_rust(distribution: Path, scratch: Path) -> None:
     write(
         project / "Cargo.toml",
         "[package]\nname = \"riffdb-arrival\"\nversion = \"0.0.0\"\nedition = \"2024\"\n"
-        f"rust-version = \"1.97.0\"\n\n[dependencies]\nriffdb-client-rust = \"={VERSION}\"\n",
+        f"rust-version = \"1.98.1\"\n\n[dependencies]\nriffdb-client-rust = \"={VERSION}\"\n",
     )
     write(
         project / "src/main.rs",
@@ -352,12 +352,12 @@ def smoke_rust(distribution: Path, scratch: Path) -> None:
             "CARGO_TARGET_DIR": str(target_directory),
         }
     )
-    run(["cargo", "+1.97.0", "check", "--offline"], cwd=project, environment=environment)
+    run(["cargo", "+1.98.1", "check", "--offline"], cwd=project, environment=environment)
     install_root = scratch / "rust-install"
     run(
         [
             "cargo",
-            "+1.97.0",
+            "+1.98.1",
             "install",
             "--path",
             str(roots["riffdb-cli"]),

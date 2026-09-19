@@ -11338,9 +11338,7 @@ fn natural_decimal_text(value: &str) -> Result<v1::Decimal, ()> {
     let (negative, unsigned) = value
         .strip_prefix('-')
         .map_or((false, value), |value| (true, value));
-    let (whole, fraction) = unsigned
-        .split_once('.')
-        .map_or((unsigned, ""), |parts| parts);
+    let (whole, fraction) = unsigned.split_once('.').unwrap_or((unsigned, ""));
     if whole.is_empty()
         || !whole.bytes().all(|byte| byte.is_ascii_digit())
         || (!fraction.is_empty() && !fraction.bytes().all(|byte| byte.is_ascii_digit()))
@@ -12534,7 +12532,6 @@ mod tests {
     use std::fs;
     use std::io::Cursor;
     use std::net::TcpListener;
-    use std::os::unix::fs::PermissionsExt as _;
     use std::path::PathBuf;
 
     use super::*;

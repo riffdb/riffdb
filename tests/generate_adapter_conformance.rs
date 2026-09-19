@@ -607,7 +607,7 @@ fn role_hash(lock: &Value, role: &str) -> ApplicationRoleHash {
 
 fn driver_requirements(hash: GeneratedArtifactHash) -> Vec<AdapterDriverRequirement> {
     [
-        (InstallationDriver::Rust, "rust1.97.0"),
+        (InstallationDriver::Rust, "rust1.98.1"),
         (InstallationDriver::Go, "go1.24"),
         (InstallationDriver::TypeScript, "node22"),
         (InstallationDriver::Python, "python3.13"),

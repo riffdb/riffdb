@@ -18,7 +18,7 @@ Copyright © 2026 Kevin O'Shea and O'Shea & Sons, LLC.
 ## Source Checkout Convenience Install
 
 Run the convenience commands from the repository root so Cargo reads
-`.cargo/config.toml` and its `riffdb` alias. Rust 1.97.0, Linux, systemd, Git,
+`.cargo/config.toml` and its `riffdb` alias. Rust 1.98.1, Linux, systemd, Git,
 `jq`, a util-linux `uuidgen` with UUIDv7 support, and the ordinary utilities
 checked by the installer are required.
 
@@ -501,7 +501,7 @@ from the private installed layout before creating the archive.
 
 ## Advanced: Manual Build and Install From Source
 
-Install rustup, let `rust-toolchain.toml` select Rust 1.97.0, and build the
+Install rustup, let `rust-toolchain.toml` select Rust 1.98.1, and build the
 three product binaries:
 
 ```bash

@@ -16,7 +16,7 @@ case "$(uname -m)" in
     *) echo 'driver distribution acceptance requires a supported Linux architecture' >&2; exit 1 ;;
 esac
 
-cargo +1.97.0 build --release --locked -p riffdb-cli
+cargo +1.98.1 build --release --locked -p riffdb-cli
 
 python_wheel="${RIFFDB_APPLICATION_WHEEL:-}"
 if [[ -z "$python_wheel" ]]; then

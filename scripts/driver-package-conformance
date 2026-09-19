@@ -135,7 +135,7 @@ def prepare_rust_runner(distribution: Path, application: Path, scratch: Path) ->
         'name = "riffdb-package-conformance"\n'
         'version = "0.0.0"\n'
         'edition = "2024"\n'
-        'rust-version = "1.97.0"\n\n'
+        'rust-version = "1.98.1"\n\n'
         "[dependencies]\n"
         f'riffdb-client-rust = "={VERSION}"\n'
         f'riffdb-config = "={VERSION}"\n'
@@ -169,7 +169,7 @@ def prepare_rust_runner(distribution: Path, application: Path, scratch: Path) ->
             "CARGO_TARGET_DIR": str(scratch / "rust-target"),
         }
     )
-    run(["cargo", "+1.97.0", "build", "--offline"], cwd=project, environment=environment)
+    run(["cargo", "+1.98.1", "build", "--offline"], cwd=project, environment=environment)
     binary = scratch / "rust-target/debug/riffdb-package-conformance"
     if not regular(binary) or not os.access(binary, os.X_OK):
         fail("Rust package conformance runner was not built")
