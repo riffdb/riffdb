@@ -26229,3 +26229,27 @@ work_packages:
       percent rather than the 1 percent assumed for most of the programme.
     - Projection, tokenized-text and row-policy coverage is absent because no contract in the
       repository declares them; closing that gap is required before any public performance claim.
+- id: WP-793
+  name: Formatting drift repair
+  tier: guarantee
+  depends_on: []
+  objective: Restore `cargo fmt --all -- --check` to green on main by reformatting the four
+    drifted files and nothing else, per ADR-0242.
+  requirements: []
+  required_adrs: [ADR-0242]
+  allowed_paths: [work_packages.yaml, adr/0242-formatting-drift-repair.md, adr/README.md,
+    crates/riffdb-commit/src/command_attempt.rs,
+    crates/riffdb-commit/src/command_validation.rs,
+    crates/riffdb-proto/src/durable.rs, tests/unsafe_code_boundary.rs]
+  deliverables:
+  - The four drifted files reformatted, with no token change beyond the trailing commas
+    rustfmt adds when breaking arguments across lines
+  acceptance_commands:
+  - ./scripts/acceptance --wp WP-793
+  exit_gate: cargo fmt --all -- --check passes on main, and the change touches no file
+    beyond the four that drifted.
+  standing_design_tests:
+    interface_safety: No interface changes. Ignoring whitespace and trailing commas the
+      files are byte-identical to their committed versions.
+    scale: Not applicable; the change adds no runtime behaviour.
+  human_review_triggers: *id001

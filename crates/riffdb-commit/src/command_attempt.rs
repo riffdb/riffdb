@@ -1231,7 +1231,7 @@ fn finish_acquired_discovery(
         &state.input_facts,
         &discovery,
     )
-        .map_err(|_| CommandAttemptError::Integrity)?
+    .map_err(|_| CommandAttemptError::Integrity)?
     {
         crate::command_index::CascadeDiscoveryDecision::Complete => {
             finish_acquired_evaluation(state, lease, discovery)

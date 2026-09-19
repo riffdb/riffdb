@@ -2845,7 +2845,10 @@ mod tests {
                 );
             }
         }
-        assert!(accepted > 0, "the sweep proved nothing if every size was rejected");
+        assert!(
+            accepted > 0,
+            "the sweep proved nothing if every size was rejected"
+        );
     }
 
     #[test]

@@ -19,8 +19,7 @@ use riffdb_contract_ir::{
 };
 use riffdb_invariant::{
     CommitCheckResult, EvaluationError, ExpressionValueSource, InputDerivedCommandFacts,
-    derive_input_command_facts,
-    evaluate_commit_checks, evaluate_expression,
+    derive_input_command_facts, evaluate_commit_checks, evaluate_expression,
 };
 use riffdb_policy::AuthorizedCommandRowPolicyContextV1;
 use riffdb_storage_api::{
@@ -2682,8 +2681,11 @@ contract UnaryDeleteValidation version 1 {
             validate_transaction_current_command_parts(
                 &fixture.prepared.resolved,
                 &fixture.prepared.input,
-                &derive_input_command_facts(fixture.prepared.resolved.plan(), fixture.prepared.input.clone())
-                    .expect("fixture input facts"),
+                &derive_input_command_facts(
+                    fixture.prepared.resolved.plan(),
+                    fixture.prepared.input.clone(),
+                )
+                .expect("fixture input facts"),
                 fixture.prepared.logical_time,
                 &fixture.evaluated,
                 &fixture.current,
@@ -2744,8 +2746,16 @@ contract UnaryDeleteValidation version 1 {
                 ),
             ]
         };
-        let prepared = prepare(BULK_TUPLE_SOURCE, "WriteTuples", &input_for(0x21, 0x41, 0x42));
-        let foreign = prepare(BULK_TUPLE_SOURCE, "WriteTuples", &input_for(0x71, 0x91, 0x92));
+        let prepared = prepare(
+            BULK_TUPLE_SOURCE,
+            "WriteTuples",
+            &input_for(0x21, 0x41, 0x42),
+        );
+        let foreign = prepare(
+            BULK_TUPLE_SOURCE,
+            "WriteTuples",
+            &input_for(0x71, 0x91, 0x92),
+        );
         assert_ne!(prepared.input, foreign.input);
 
         let bindings = prepared
@@ -2829,8 +2839,11 @@ contract UnaryDeleteValidation version 1 {
             validate_transaction_current_command_parts(
                 &fixture.prepared.resolved,
                 &fixture.prepared.input,
-                &derive_input_command_facts(fixture.prepared.resolved.plan(), fixture.prepared.input.clone())
-                    .expect("fixture input facts"),
+                &derive_input_command_facts(
+                    fixture.prepared.resolved.plan(),
+                    fixture.prepared.input.clone()
+                )
+                .expect("fixture input facts"),
                 fixture.prepared.logical_time,
                 &fixture.evaluated,
                 &fixture.current,
@@ -2883,8 +2896,11 @@ contract UnaryDeleteValidation version 1 {
             validate_transaction_current_command_parts(
                 &fixture.prepared.resolved,
                 &fixture.prepared.input,
-                &derive_input_command_facts(fixture.prepared.resolved.plan(), fixture.prepared.input.clone())
-                    .expect("fixture input facts"),
+                &derive_input_command_facts(
+                    fixture.prepared.resolved.plan(),
+                    fixture.prepared.input.clone()
+                )
+                .expect("fixture input facts"),
                 fixture.prepared.logical_time,
                 &fixture.evaluated,
                 &fixture.current,
@@ -2928,8 +2944,11 @@ contract UnaryDeleteValidation version 1 {
             validate_transaction_current_command_parts(
                 &fixture.prepared.resolved,
                 &fixture.prepared.input,
-                &derive_input_command_facts(fixture.prepared.resolved.plan(), fixture.prepared.input.clone())
-                    .expect("fixture input facts"),
+                &derive_input_command_facts(
+                    fixture.prepared.resolved.plan(),
+                    fixture.prepared.input.clone()
+                )
+                .expect("fixture input facts"),
                 fixture.prepared.logical_time,
                 &fixture.evaluated,
                 &fixture.current,
@@ -3395,8 +3414,11 @@ contract ReadOnlyValidation version 1 {
         validate_transaction_current_command_parts(
             &fixture.prepared.resolved,
             &fixture.prepared.input,
-            &derive_input_command_facts(fixture.prepared.resolved.plan(), fixture.prepared.input.clone())
-                .expect("fixture input facts"),
+            &derive_input_command_facts(
+                fixture.prepared.resolved.plan(),
+                fixture.prepared.input.clone(),
+            )
+            .expect("fixture input facts"),
             fixture.prepared.logical_time,
             &fixture.evaluated,
             &fixture.current,
@@ -3657,8 +3679,11 @@ contract ReadOnlyValidation version 1 {
         assert_integrity(validate_transaction_current_command_parts(
             &ordinary.prepared.resolved,
             &ordinary.prepared.input,
-            &derive_input_command_facts(ordinary.prepared.resolved.plan(), ordinary.prepared.input.clone())
-                .expect("fixture input facts"),
+            &derive_input_command_facts(
+                ordinary.prepared.resolved.plan(),
+                ordinary.prepared.input.clone(),
+            )
+            .expect("fixture input facts"),
             ordinary.prepared.logical_time,
             &forged_evaluated,
             &forged_current,
@@ -3893,8 +3918,11 @@ contract ReadOnlyValidation version 1 {
         assert_integrity(validate_transaction_current_command_parts(
             &fixture.prepared.resolved,
             &fixture.prepared.input,
-            &derive_input_command_facts(fixture.prepared.resolved.plan(), fixture.prepared.input.clone())
-                .expect("fixture input facts"),
+            &derive_input_command_facts(
+                fixture.prepared.resolved.plan(),
+                fixture.prepared.input.clone(),
+            )
+            .expect("fixture input facts"),
             fixture.prepared.logical_time,
             &fixture.evaluated,
             &malformed_current,
@@ -3932,8 +3960,11 @@ contract ReadOnlyValidation version 1 {
         assert_integrity(validate_transaction_current_command_parts(
             &fixture.prepared.resolved,
             &fixture.prepared.input,
-            &derive_input_command_facts(fixture.prepared.resolved.plan(), fixture.prepared.input.clone())
-                .expect("fixture input facts"),
+            &derive_input_command_facts(
+                fixture.prepared.resolved.plan(),
+                fixture.prepared.input.clone(),
+            )
+            .expect("fixture input facts"),
             fixture.prepared.logical_time,
             &fixture.evaluated,
             &malformed_current,
@@ -3941,8 +3972,11 @@ contract ReadOnlyValidation version 1 {
 
         let coverage = prove_mutation_coverage(
             &fixture.prepared.resolved,
-            &derive_input_command_facts(fixture.prepared.resolved.plan(), fixture.prepared.input.clone())
-                .expect("fixture input facts"),
+            &derive_input_command_facts(
+                fixture.prepared.resolved.plan(),
+                fixture.prepared.input.clone(),
+            )
+            .expect("fixture input facts"),
             &fixture.evaluated,
             &fixture.current,
         )
