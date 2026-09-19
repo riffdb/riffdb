@@ -226,6 +226,39 @@ impl<'a> RecordRegistry<'a> {
         Ok(Self { schemas })
     }
 
+    /// Resolves a compact V2 record type from its header, without decoding.
+    ///
+    /// Callers that only need to learn which variant a record is paid a full
+    /// validating decode, then decoded again as the chosen type. The compact
+    /// header already carries the identity, so this selects exactly the schema
+    /// `decode_compact_v2` would select from the same bytes.
+    ///
+    /// This deliberately validates nothing beyond the identity it reads:
+    /// `None` means "cannot resolve from the header alone", including legacy
+    /// V1 framing, and the caller must fall back to the full decode. Every
+    /// payload check still happens when the caller decodes as the chosen type,
+    /// so a corrupt header yields a decode failure rather than an acceptance.
+    #[must_use]
+    pub fn peek_compact_record_type(&self, encoded: &[u8]) -> Option<&'a str> {
+        if encoded.len() < COMPACT_RECORD_HEADER_V2_BYTES
+            || !encoded.starts_with(&COMPACT_RECORD_MAGIC_V2)
+            || encoded[4] != u8::try_from(STORAGE_FORMAT_VERSION_V2).ok()?
+        {
+            return None;
+        }
+        let compact_tag = encoded[5];
+        let schema_revision = u16::from_be_bytes([encoded[6], encoded[7]]);
+        if compact_tag == 0 || schema_revision == 0 {
+            return None;
+        }
+        self.schemas
+            .iter()
+            .find(|schema| {
+                schema.compact_tag == compact_tag && schema.schema_revision == schema_revision
+            })
+            .map(|schema| schema.record_type)
+    }
+
     /// Strictly decodes an envelope through its registered semantic validator.
     pub fn decode(&self, encoded: &[u8]) -> Result<DecodedEnvelope, EnvelopeError> {
         if encoded.len() > MAX_STORED_ENVELOPE_BYTES {
@@ -1206,6 +1239,129 @@ mod tests {
         assert_eq!(
             RecordRegistry::new(&schemas).expect_err("oversized registry must fail"),
             RecordRegistryError::TooManySchemas
+        );
+    }
+}
+
+#[cfg(test)]
+mod peek_record_type_tests {
+    use super::*;
+
+    fn readable() -> RecordRegistry<'static> {
+        crate::durable::readable_record_registry()
+    }
+
+    /// The peek must select the same schema `decode_compact_v2` selects from
+    /// the same header, for every registered readable schema.
+    #[test]
+    fn peek_matches_the_schema_decode_would_select() {
+        for schema in crate::durable::READABLE_RECORD_SCHEMAS.iter() {
+            let mut header = Vec::with_capacity(COMPACT_RECORD_HEADER_V2_BYTES);
+            header.extend_from_slice(&COMPACT_RECORD_MAGIC_V2);
+            header.push(u8::try_from(STORAGE_FORMAT_VERSION_V2).expect("V2 fits u8"));
+            header.push(schema.compact_tag);
+            header.extend_from_slice(&schema.schema_revision.to_be_bytes());
+            header.extend_from_slice(&0_u32.to_be_bytes());
+            header.extend_from_slice(&payload_crc32c(&[]).to_be_bytes());
+
+            let peeked = readable()
+                .peek_compact_record_type(&header)
+                .expect("a registered identity resolves from its header");
+            // decode resolves by the same (tag, revision) pair; first match wins
+            // in both, so the peek must agree with that resolution exactly.
+            let resolved = crate::durable::READABLE_RECORD_SCHEMAS
+                .iter()
+                .find(|candidate| {
+                    candidate.compact_tag == schema.compact_tag
+                        && candidate.schema_revision == schema.schema_revision
+                })
+                .expect("present by construction");
+            assert_eq!(peeked, resolved.record_type);
+        }
+    }
+
+    /// Anything the header cannot answer must fall back, never guess.
+    #[test]
+    fn peek_declines_everything_it_cannot_resolve() {
+        let registry = readable();
+        let schema = &crate::durable::READABLE_RECORD_SCHEMAS[0];
+        let good = |tag: u8, revision: u16, magic: [u8; 4], version: u8| {
+            let mut header = Vec::new();
+            header.extend_from_slice(&magic);
+            header.push(version);
+            header.push(tag);
+            header.extend_from_slice(&revision.to_be_bytes());
+            header.extend_from_slice(&0_u32.to_be_bytes());
+            header.extend_from_slice(&payload_crc32c(&[]).to_be_bytes());
+            header
+        };
+        let version = u8::try_from(STORAGE_FORMAT_VERSION_V2).expect("V2 fits u8");
+        // Too short.
+        assert!(registry.peek_compact_record_type(&[]).is_none());
+        assert!(
+            registry
+                .peek_compact_record_type(
+                    &good(
+                        schema.compact_tag,
+                        schema.schema_revision,
+                        COMPACT_RECORD_MAGIC_V2,
+                        version
+                    )[..8]
+                )
+                .is_none()
+        );
+        // Legacy framing.
+        assert!(
+            registry
+                .peek_compact_record_type(&good(
+                    schema.compact_tag,
+                    schema.schema_revision,
+                    *b"RDB1",
+                    version
+                ))
+                .is_none()
+        );
+        // Wrong storage format version.
+        assert!(
+            registry
+                .peek_compact_record_type(&good(
+                    schema.compact_tag,
+                    schema.schema_revision,
+                    COMPACT_RECORD_MAGIC_V2,
+                    version.wrapping_add(1)
+                ))
+                .is_none()
+        );
+        // Zero identity, and an unregistered tag.
+        assert!(
+            registry
+                .peek_compact_record_type(&good(
+                    0,
+                    schema.schema_revision,
+                    COMPACT_RECORD_MAGIC_V2,
+                    version
+                ))
+                .is_none()
+        );
+        assert!(
+            registry
+                .peek_compact_record_type(&good(
+                    schema.compact_tag,
+                    0,
+                    COMPACT_RECORD_MAGIC_V2,
+                    version
+                ))
+                .is_none()
+        );
+        assert!(
+            registry
+                .peek_compact_record_type(&good(
+                    u8::MAX,
+                    u16::MAX,
+                    COMPACT_RECORD_MAGIC_V2,
+                    version
+                ))
+                .is_none()
         );
     }
 }
