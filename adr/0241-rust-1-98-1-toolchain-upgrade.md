@@ -1,11 +1,12 @@
 ---
 adr: "0241"
 title: Rust 1.98.1 Toolchain Upgrade
-status: proposed
+status: accepted
 tier: surface
 date: 2026-09-19
-accepted: null
-acceptance: null
+accepted: 2026-09-19
+acceptance: 'maintainer, in session, 2026-09-19: "i approve the text"
+  (ADR-0241 as written)'
 requires: [ADR-0171, ADR-0239]
 amends: []
 supersedes: []
