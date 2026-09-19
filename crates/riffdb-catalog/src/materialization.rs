@@ -8,7 +8,7 @@ use riffdb_contract_ir::{
     BindingMode, DeleteCheckModeV1, EntitySchema, KeySchema, MAX_DECLARATIONS_PER_KIND,
     RecordSchema, SchemaIr, ValueType,
 };
-use riffdb_invariant::InputDerivedCommandFacts;
+use riffdb_invariant::derive_input_command_facts;
 use riffdb_storage_api::{
     EntityObservation, EntityObservationPosition, ReadDependencies, ReadDependency, ReadSnapshot,
     StorageValueError, StoredEntityRecordV1, TransactionCurrentState,
@@ -270,17 +270,15 @@ impl ResolvedExecutablePlan {
     /// concrete binding positions.
     ///
     /// Collection plans have one compiler template but many concrete snapshot
-    /// slots. The position map is derived here from the sealed plan and the
-    /// caller's input-derived proof; callers still cannot submit binding
-    /// indices, keys, or range counts, and the proof is rejected unless it is
-    /// bound to this exact plan and canonical input.
+    /// slots. The position map is re-derived here from the sealed plan and
+    /// canonical input; callers cannot submit binding indices, keys, or range
+    /// counts.
     pub fn materialize_command_snapshot_for_input(
         self,
         input: &CanonicalRecord,
-        facts: &InputDerivedCommandFacts,
         raw: ReadSnapshot,
     ) -> Result<CommandSnapshotMaterialization, CommandSnapshotMaterializationError> {
-        let positions = SnapshotPositionMap::from_input(&self, input, facts)?;
+        let positions = SnapshotPositionMap::from_input(&self, input)?;
         self.materialize_command_snapshot_with_positions(positions, raw)
     }
 
@@ -411,14 +409,9 @@ impl SnapshotPositionMap {
     fn from_input(
         resolved: &ResolvedExecutablePlan,
         input: &CanonicalRecord,
-        facts: &InputDerivedCommandFacts,
     ) -> Result<Self, CommandSnapshotMaterializationError> {
-        // The proof used to be derived here, so it agreed with the plan and
-        // input by construction. It now arrives from the caller, so that bind
-        // is checked before any position is read out of it.
-        if !facts.matches_command(resolved.plan(), input) {
-            return Err(CommandSnapshotMaterializationError::integrity());
-        }
+        let facts = derive_input_command_facts(resolved.plan(), input.clone())
+            .map_err(|_| CommandSnapshotMaterializationError::integrity())?;
         if facts.binding_plan_indices().len() != facts.binding_entity_keys().len()
             || facts.root_validation_plan_indices().len()
                 != facts.root_validation_entity_keys().len()
@@ -1708,57 +1701,6 @@ contract SnapshotMaterialization version {version} {{
                 .key_schema()
                 .encode_index(&logical_values, raw.target().key().clone())
                 .unwrap()
-        );
-    }
-
-    fn command_input(resolved: &ResolvedExecutablePlan, id_seed: u8) -> CanonicalRecord {
-        let schema = resolved.plan().input().record();
-        let mut fields = Vec::new();
-        for field in schema.fields() {
-            match field.name() {
-                "tenant" => fields.push((field.id(), CanonicalValue::Uuid(uuid(0xaa)))),
-                name if name.starts_with("id_") => {
-                    fields.push((field.id(), CanonicalValue::Uuid(uuid(id_seed))));
-                }
-                unexpected => panic!("unexpected command input field {unexpected}"),
-            }
-        }
-        CanonicalRecord::new(fields).expect("command input")
-    }
-
-    /// Snapshot materialization takes the caller's input-derived proof rather
-    /// than deriving its own, so the guarantee that callers cannot submit
-    /// binding indices, keys, or range counts now rests on the bind check: a
-    /// proof belonging to a different input must be refused, and a bound proof
-    /// must produce exactly what deriving it here produced.
-    #[test]
-    fn supplied_input_facts_are_rejected_unless_bound_to_the_materialized_command() {
-        let bundles = lineage(1);
-        let resolved = resolved_at(bundles, 1);
-        let input = command_input(&resolved, 1);
-        let foreign_input = command_input(&resolved, 2);
-        assert_ne!(input, foreign_input);
-
-        let facts = riffdb_invariant::derive_input_command_facts(resolved.plan(), input.clone())
-            .expect("input facts");
-        let foreign_facts =
-            riffdb_invariant::derive_input_command_facts(resolved.plan(), foreign_input.clone())
-                .expect("foreign input facts");
-
-        let bound = SnapshotPositionMap::from_input(&resolved, &input, &facts)
-            .expect("bound proof yields positions");
-        assert_eq!(
-            bound.binding_keys.as_deref(),
-            Some(facts.binding_entity_keys())
-        );
-
-        assert!(
-            SnapshotPositionMap::from_input(&resolved, &input, &foreign_facts).is_err(),
-            "a proof derived from different input must not be used"
-        );
-        assert!(
-            SnapshotPositionMap::from_input(&resolved, &foreign_input, &facts).is_err(),
-            "a proof must not be used against different input"
         );
     }
 
