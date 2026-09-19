@@ -796,10 +796,6 @@ impl CommandDerivedIndexes {
         }
     }
 
-    fn apply_segment(&mut self, segment: &StoredCommandSegmentV1) -> Result<(), StorageError> {
-        self.apply_segment_arc(Arc::new(segment.clone()))
-    }
-
     fn apply_segment_arc(
         &mut self,
         segment: Arc<StoredCommandSegmentV1>,
@@ -946,7 +942,10 @@ fn rebuild_command_derived_indexes(
                 if physical != segment.first_commit_sequence() {
                     return Err(corrupt());
                 }
-                indexes.apply_segment(&segment)?;
+                // The replay loop owns each decoded segment and does not read it
+                // again, so it moves into the index instead of being deep-cloned
+                // once per segment. This loop dominates restart recovery.
+                indexes.apply_segment_arc(Arc::new(segment))?;
             }
             Err(error)
                 if error.kind()
