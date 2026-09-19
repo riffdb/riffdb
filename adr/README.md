@@ -272,6 +272,7 @@ record with no front matter.
 | [0237](0237-input-derived-command-facts-reuse.md) | Input-Derived Command Facts Reuse | Accepted | guarantee |
 | [0238](0238-server-global-allocator-selection.md) | Server Global Allocator Selection | Accepted | guarantee |
 | [0239](0239-performance-programme-baseline-and-measurement-discipline.md) | Performance Programme Baseline And Measurement Discipline | Accepted | guarantee |
+| [0242](0242-formatting-drift-repair.md) | Formatting Drift Repair | Accepted | guarantee |
 <!-- adr-index:end -->
 
 The human architecture review on 2026-07-12 approved the direction represented

@@ -19,12 +19,13 @@ fn workspace_root() -> PathBuf {
     let mut candidate = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
     loop {
         let manifest = candidate.join("Cargo.toml");
-        if fs::read_to_string(&manifest)
-            .is_ok_and(|manifest| manifest.contains("[workspace]"))
-        {
+        if fs::read_to_string(&manifest).is_ok_and(|manifest| manifest.contains("[workspace]")) {
             return candidate;
         }
-        assert!(candidate.pop(), "no workspace manifest above the test package");
+        assert!(
+            candidate.pop(),
+            "no workspace manifest above the test package"
+        );
     }
 }
 
