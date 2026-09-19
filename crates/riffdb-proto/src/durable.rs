@@ -554,7 +554,7 @@ where
 {
     preflight_payload::<RECORD_INDEX>(payload)?;
     let message = M::decode(payload).map_err(|_| PayloadValidationError::Malformed)?;
-    if message.encode_to_vec() != payload {
+    if !crate::envelope::is_canonical_encoding(&message, payload) {
         return Err(PayloadValidationError::NonCanonical);
     }
     Ok(())
@@ -587,7 +587,7 @@ fn validate_pre_wp280_capability_payload(payload: &[u8]) -> Result<(), PayloadVa
     }) {
         return Err(PayloadValidationError::Malformed);
     }
-    if message.encode_to_vec() != payload {
+    if !crate::envelope::is_canonical_encoding(&message, payload) {
         return Err(PayloadValidationError::NonCanonical);
     }
     Ok(())
@@ -2364,7 +2364,7 @@ writable_message!(v1::StoredValidatedPrefixCheckpointV2);
 pub fn encode_current_message<M: WritableRecordMessage>(
     message: &M,
 ) -> Result<Vec<u8>, crate::envelope::EnvelopeError> {
-    crate::envelope::encode_preflighted(M::record_schema(), &message.encode_to_vec())
+    crate::envelope::encode_message_preflighted(M::record_schema(), message)
 }
 
 /// Frames already-canonical bytes for one sealed current record type.
@@ -2810,6 +2810,42 @@ mod tests {
             "riffdb.storage.v1.StoredRecordRegistryV2"
         );
         assert_eq!(decoded.payload(), message.encode_to_vec());
+    }
+
+    /// The typed encoder writes the payload straight into the envelope behind
+    /// the fixed header and patches the CRC in place. That must stay
+    /// indistinguishable from framing a separately encoded payload at every
+    /// size -- identical bytes when accepted, and the identical rejection when
+    /// the preflight or a bound refuses the payload.
+    #[test]
+    fn in_place_typed_encoding_matches_separate_payload_framing_at_every_size() {
+        let mut accepted = 0_usize;
+        for digest_bytes in [0_usize, 1, 31, 32, 33, 127, 128, 1024, 8192] {
+            let message = v1::StoredRecordRegistryV2 {
+                registry_digest: vec![0x3C; digest_bytes],
+            };
+            let payload = message.encode_to_vec();
+            let in_place = encode_current_message(&message);
+            let separate = encode_current_payload::<v1::StoredRecordRegistryV2>(&payload);
+
+            assert_eq!(
+                in_place, separate,
+                "in-place framing diverged at {digest_bytes} digest bytes"
+            );
+
+            if let Ok(bytes) = in_place {
+                accepted += 1;
+                assert_eq!(
+                    bytes.len(),
+                    crate::envelope::COMPACT_RECORD_HEADER_V2_BYTES + payload.len()
+                );
+                assert_eq!(
+                    &bytes[crate::envelope::COMPACT_RECORD_HEADER_V2_BYTES..],
+                    &payload[..]
+                );
+            }
+        }
+        assert!(accepted > 0, "the sweep proved nothing if every size was rejected");
     }
 
     #[test]

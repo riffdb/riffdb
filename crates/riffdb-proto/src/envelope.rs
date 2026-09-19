@@ -1,5 +1,6 @@
 //! Strict validation for versioned durable Protobuf envelopes.
 
+use std::cell::RefCell;
 use std::time::Instant;
 use std::{error::Error, fmt};
 
@@ -336,7 +337,7 @@ impl<'a> RecordRegistry<'a> {
         (schema.preflight_payload)(payload).map_err(EnvelopeError::InvalidPayload)?;
         let message = M::decode(payload)
             .map_err(|_| EnvelopeError::InvalidPayload(PayloadValidationError::Malformed))?;
-        if message.encode_to_vec() != payload {
+        if !is_canonical_encoding(&message, payload) {
             return Err(EnvelopeError::InvalidPayload(
                 PayloadValidationError::NonCanonical,
             ));
@@ -423,7 +424,7 @@ impl<'a> RecordRegistry<'a> {
             .map_err(|_| EnvelopeError::InvalidPayload(PayloadValidationError::Malformed))?;
         let prost_decode_ns = elapsed_nanos(prost_started);
         let canonical_started = Instant::now();
-        if message.encode_to_vec() != payload {
+        if !is_canonical_encoding(&message, payload) {
             return Err(EnvelopeError::InvalidPayload(
                 PayloadValidationError::NonCanonical,
             ));
@@ -533,7 +534,7 @@ impl<'a> RecordRegistry<'a> {
         // wire slices before Prost allocates the owned envelope fields.
         let envelope = StoredEnvelope::decode(encoded).map_err(|_| EnvelopeError::Malformed)?;
 
-        if envelope.encode_to_vec() != encoded {
+        if !is_canonical_encoding(&envelope, encoded) {
             return Err(EnvelopeError::NonCanonicalEnvelope);
         }
 
@@ -750,11 +751,86 @@ impl fmt::Display for EnvelopeError {
 
 impl Error for EnvelopeError {}
 
+/// Proves a payload is the canonical encoding of the message decoded from it.
+///
+/// The byte-for-byte compare *is* the canonicality proof and is unchanged. Only
+/// the buffer is: `encode_to_vec` allocated a fresh payload-sized `Vec` on every
+/// decode purely to throw it away after the compare. Re-encoding into a reused
+/// per-thread scratch buffer gives the identical answer with no allocation, and
+/// the length pre-check rejects a mismatch before re-encoding at all.
+pub(crate) fn is_canonical_encoding<M: Message>(message: &M, payload: &[u8]) -> bool {
+    if message.encoded_len() != payload.len() {
+        return false;
+    }
+    CANONICAL_SCRATCH.with(|scratch| {
+        let Ok(mut scratch) = scratch.try_borrow_mut() else {
+            // Re-entrant compare: fall back to a private buffer rather than
+            // sharing one, so the proof still runs.
+            return message.encode_to_vec() == payload;
+        };
+        scratch.clear();
+        scratch.reserve(payload.len());
+        if message.encode(&mut *scratch).is_err() {
+            return false;
+        }
+        let canonical = scratch.as_slice() == payload;
+        if scratch.capacity() > CANONICAL_SCRATCH_RETAINED_BYTES {
+            scratch.shrink_to(CANONICAL_SCRATCH_RETAINED_BYTES);
+        }
+        canonical
+    })
+}
+
+/// Scratch capacity kept between canonicality proofs. Larger payloads still
+/// compare exactly; their buffer is released instead of held per thread.
+const CANONICAL_SCRATCH_RETAINED_BYTES: usize = 64 * 1024;
+
+thread_local! {
+    static CANONICAL_SCRATCH: RefCell<Vec<u8>> = const { RefCell::new(Vec::new()) };
+}
+
 /// Encodes one semantically canonical payload in compact V2 framing.
 pub fn encode(schema: &RecordSchema<'_>, payload: &[u8]) -> Result<Vec<u8>, EnvelopeError> {
     maximum_encoded_compact_record_bytes(schema, payload.len())?;
     (schema.validate_payload)(payload).map_err(EnvelopeError::InvalidPayload)?;
     encode_compact_checked_payload(schema, payload)
+}
+
+/// Frames one generated message straight into its compact V2 envelope.
+///
+/// The compact V2 header is a fixed 16 bytes and `Message::encoded_len` gives
+/// the exact payload length, so the payload can be written once at its final
+/// offset instead of being materialised in an intermediate buffer and copied
+/// in. The same framing bounds apply, the same preflight runs over the exact
+/// payload slice, and the CRC-32C still covers exactly those bytes, so the
+/// output is byte-identical to framing a separately encoded payload.
+pub(crate) fn encode_message_preflighted<M: Message>(
+    schema: &RecordSchema<'_>,
+    message: &M,
+) -> Result<Vec<u8>, EnvelopeError> {
+    let payload_bytes = message.encoded_len();
+    let total = maximum_encoded_compact_record_bytes(schema, payload_bytes)?;
+    let payload_length =
+        u32::try_from(payload_bytes).map_err(|_| EnvelopeError::PayloadTooLarge)?;
+    let mut encoded = Vec::with_capacity(total);
+    encoded.extend_from_slice(&COMPACT_RECORD_MAGIC_V2);
+    encoded.push(u8::try_from(STORAGE_FORMAT_VERSION_V2).expect("V2 fits u8"));
+    encoded.push(schema.compact_tag);
+    encoded.extend_from_slice(&schema.schema_revision.to_be_bytes());
+    encoded.extend_from_slice(&payload_length.to_be_bytes());
+    encoded.extend_from_slice(&0_u32.to_be_bytes());
+    message
+        .encode(&mut encoded)
+        .map_err(|_| EnvelopeError::Malformed)?;
+    if encoded.len() != total {
+        return Err(EnvelopeError::Malformed);
+    }
+    let payload = &encoded[COMPACT_RECORD_HEADER_V2_BYTES..];
+    (schema.preflight_payload)(payload).map_err(EnvelopeError::InvalidPayload)?;
+    let checksum = payload_crc32c(payload).to_be_bytes();
+    encoded[COMPACT_RECORD_HEADER_V2_BYTES - checksum.len()..COMPACT_RECORD_HEADER_V2_BYTES]
+        .copy_from_slice(&checksum);
+    Ok(encoded)
 }
 
 pub(crate) fn encode_preflighted(
@@ -918,6 +994,69 @@ mod tests {
     use super::*;
     use riffdb_types::hash_schema;
 
+    /// The scratch buffer behind `is_canonical_encoding` is reused across calls,
+    /// so a large payload must not leave a tail that a later shorter payload
+    /// could compare against, and a shorter one must not leave the buffer short.
+    #[test]
+    fn reused_canonicality_scratch_does_not_leak_between_payloads() {
+        let large = crate::storage::v1::StoredRecordRegistryV2 {
+            registry_digest: vec![0xAB; 4096],
+        };
+        let small = crate::storage::v1::StoredRecordRegistryV2 {
+            registry_digest: vec![0xCD; 8],
+        };
+        let large_payload = large.encode_to_vec();
+        let small_payload = small.encode_to_vec();
+
+        for _ in 0..3 {
+            assert!(is_canonical_encoding(&large, &large_payload));
+            assert!(is_canonical_encoding(&small, &small_payload));
+            assert!(!is_canonical_encoding(&large, &small_payload));
+            assert!(!is_canonical_encoding(&small, &large_payload));
+        }
+    }
+
+    /// The compare is the canonicality proof: any payload that is not exactly
+    /// what the decoded message re-encodes to must still be rejected.
+    #[test]
+    fn canonicality_compare_rejects_noncanonical_payload_bytes() {
+        let message = crate::storage::v1::StoredRecordRegistryV2 {
+            registry_digest: vec![0x11; 32],
+        };
+        let canonical = message.encode_to_vec();
+        assert!(is_canonical_encoding(&message, &canonical));
+
+        let mut trailing = canonical.clone();
+        trailing.push(0);
+        assert!(!is_canonical_encoding(&message, &trailing));
+
+        let mut truncated = canonical.clone();
+        truncated.pop();
+        assert!(!is_canonical_encoding(&message, &truncated));
+
+        let mut flipped = canonical.clone();
+        let last = flipped.len() - 1;
+        flipped[last] ^= 0xFF;
+        assert!(!is_canonical_encoding(&message, &flipped));
+    }
+
+    /// A payload sitting above the retained scratch capacity still compares
+    /// exactly, and the shrink afterwards must not disturb the next call.
+    #[test]
+    fn canonicality_compare_handles_payloads_above_the_retained_scratch() {
+        let message = crate::storage::v1::StoredRecordRegistryV2 {
+            registry_digest: vec![0x5A; CANONICAL_SCRATCH_RETAINED_BYTES + 1024],
+        };
+        let payload = message.encode_to_vec();
+        assert!(payload.len() > CANONICAL_SCRATCH_RETAINED_BYTES);
+        assert!(is_canonical_encoding(&message, &payload));
+
+        let small = crate::storage::v1::StoredRecordRegistryV2 {
+            registry_digest: vec![0x5A; 16],
+        };
+        assert!(is_canonical_encoding(&small, &small.encode_to_vec()));
+    }
+
     const RECORD_TYPE: &str = "riffdb.testing.v1.CompatibilityProbe";
     const OTHER_RECORD_TYPE: &str = "riffdb.testing.v1.OtherProbe";
     const DESCRIPTOR: &[u8] = include_bytes!(concat!(
@@ -961,7 +1100,7 @@ mod tests {
     fn validate_probe(payload: &[u8]) -> Result<(), PayloadValidationError> {
         let probe =
             CompatibilityProbe::decode(payload).map_err(|_| PayloadValidationError::Malformed)?;
-        if probe.encode_to_vec() != payload {
+        if !is_canonical_encoding(&probe, payload) {
             return Err(PayloadValidationError::NonCanonical);
         }
         Ok(())
