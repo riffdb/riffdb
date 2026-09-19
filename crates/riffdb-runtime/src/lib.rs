@@ -183,6 +183,10 @@ impl Error for ExecutionFault {}
 /// snapshot materialization before this synchronous call. A returned
 /// [`EvaluatedCommand`] still requires transaction-current dependency and
 /// commit-check validation by the commit coordinator.
+///
+/// This derives the input facts itself, so the caller supplies only the
+/// command. A caller that already holds the proof should use
+/// [`execute_command_with_facts`] instead of paying for a second derivation.
 pub fn execute_command(
     bundle: &ContractBundle,
     input: &CanonicalRecord,
@@ -192,14 +196,40 @@ pub fn execute_command(
 ) -> Result<ExecutionResult, ExecutionFault> {
     let plan = validate_execution_identity(bundle, snapshot, context)?;
     validate_record_exact(bundle.schema(), plan.input().record(), input)?;
+    let facts =
+        derive_input_command_facts(plan, input.clone()).map_err(map_prepared_evaluation_error)?;
+    execute_command_with_facts(bundle, input, &facts, snapshot, context, budget)
+}
+
+/// Executes one exact checked command plan against a complete owned snapshot,
+/// reusing an input-derived proof the caller already holds.
+///
+/// This is [`execute_command`] without the derivation. The proof is rejected
+/// unless it is bound to this exact plan and canonical input, so a caller
+/// cannot supply partition, binding, or range facts that disagree with the
+/// input it also supplies; the facts are otherwise treated exactly as a
+/// locally derived proof would be.
+pub fn execute_command_with_facts(
+    bundle: &ContractBundle,
+    input: &CanonicalRecord,
+    facts: &InputDerivedCommandFacts,
+    snapshot: &ReadSnapshot,
+    context: &TransactionContext,
+    budget: EvaluationBudget,
+) -> Result<ExecutionResult, ExecutionFault> {
+    let plan = validate_execution_identity(bundle, snapshot, context)?;
+    validate_record_exact(bundle.schema(), plan.input().record(), input)?;
+    if !facts.matches_command(plan, input) {
+        return Err(ExecutionFault::Integrity);
+    }
     if plan.requires_ir_v18() {
-        return execute_decision_command(bundle, plan, input, snapshot, context, budget);
+        return execute_decision_command(bundle, plan, input, facts, snapshot, context, budget);
     }
     if plan.collection_expansion().is_some() {
-        return execute_collection_command(bundle, plan, input, snapshot, context, budget);
+        return execute_collection_command(bundle, plan, input, facts, snapshot, context, budget);
     }
     let mut evaluator = ExpressionEvaluator::new(plan.expressions());
-    validate_snapshot_targets(plan, input, snapshot, context, &mut evaluator)?;
+    validate_snapshot_targets(plan, input, facts, snapshot, context, &mut evaluator)?;
 
     let mut records = Vec::with_capacity(plan.bindings().len());
     for (binding, observation) in plan.bindings().iter().zip(snapshot.bindings()) {
@@ -932,16 +962,19 @@ fn execute_decision_command(
     bundle: &ContractBundle,
     plan: &CommandPlan,
     input: &CanonicalRecord,
+    facts: &InputDerivedCommandFacts,
     snapshot: &ReadSnapshot,
     context: &TransactionContext,
     budget: EvaluationBudget,
 ) -> Result<ExecutionResult, ExecutionFault> {
     if plan.collection_expansion().is_some() {
-        return execute_collection_decision_command(bundle, plan, input, snapshot, context, budget);
+        return execute_collection_decision_command(
+            bundle, plan, input, facts, snapshot, context, budget,
+        );
     }
 
     let mut evaluator = ExpressionEvaluator::new(plan.expressions());
-    validate_snapshot_targets(plan, input, snapshot, context, &mut evaluator)?;
+    validate_snapshot_targets(plan, input, facts, snapshot, context, &mut evaluator)?;
     let branch_bindings = decision_branch_bindings(plan);
     let mut records = vec![None; plan.bindings().len()];
 
@@ -1440,6 +1473,7 @@ fn execute_collection_decision_command(
     bundle: &ContractBundle,
     plan: &CommandPlan,
     input: &CanonicalRecord,
+    facts: &InputDerivedCommandFacts,
     snapshot: &ReadSnapshot,
     context: &TransactionContext,
     budget: EvaluationBudget,
@@ -1469,9 +1503,7 @@ fn execute_collection_decision_command(
             return Err(ExecutionFault::ResourceLimit);
         }
     }
-    let facts =
-        derive_input_command_facts(plan, input.clone()).map_err(map_prepared_evaluation_error)?;
-    validate_collection_decision_snapshot(plan, snapshot, context, &facts)?;
+    validate_collection_decision_snapshot(plan, snapshot, context, facts)?;
 
     let first_binding = expansion.first_binding().get() as usize;
     let binding_end = first_binding
@@ -1525,7 +1557,7 @@ fn execute_collection_decision_command(
             return finish_declared(plan, snapshot, budget, outcome, vec![], vec![], vec![]);
         }
     }
-    materialize_collection_roots(bundle, plan, snapshot, &facts, None, &mut roots)?;
+    materialize_collection_roots(bundle, plan, snapshot, facts, None, &mut roots)?;
 
     let mut mutations = Vec::new();
     let mut events = Vec::new();
@@ -1553,7 +1585,7 @@ fn execute_collection_decision_command(
             snapshot,
             context,
             budget,
-            &facts,
+            facts,
             &mut evaluator,
             &mut records,
             &roots,
@@ -1571,7 +1603,7 @@ fn execute_collection_decision_command(
             input,
             snapshot,
             context,
-            &facts,
+            facts,
             &mut evaluator,
             &mut records,
             &roots,
@@ -1626,7 +1658,7 @@ fn execute_collection_decision_command(
                 return finish_declared(plan, snapshot, budget, outcome, vec![], vec![], vec![]);
             }
         }
-        materialize_collection_roots(bundle, plan, snapshot, &facts, Some(ordinal), &mut roots)?;
+        materialize_collection_roots(bundle, plan, snapshot, facts, Some(ordinal), &mut roots)?;
 
         let mut selected_local = BTreeSet::new();
         for decision in plan
@@ -1652,7 +1684,7 @@ fn execute_collection_decision_command(
                 snapshot,
                 context,
                 budget,
-                &facts,
+                facts,
                 &mut evaluator,
                 &mut records,
                 &roots,
@@ -1670,7 +1702,7 @@ fn execute_collection_decision_command(
                 input,
                 snapshot,
                 context,
-                &facts,
+                facts,
                 &mut evaluator,
                 &mut records,
                 &roots,
@@ -1681,7 +1713,7 @@ fn execute_collection_decision_command(
             )?;
         }
         for binding_id in selected_local {
-            let slot = collection_binding_slot(&facts, binding_id, Some(ordinal))?;
+            let slot = collection_binding_slot(facts, binding_id, Some(ordinal))?;
             let index = binding_id.get() as usize;
             mutations.push(collection_binding_mutation(
                 bundle,
@@ -1703,7 +1735,7 @@ fn execute_collection_decision_command(
 
     records[first_binding..binding_end].fill(None);
     for binding_id in selected_shared {
-        let slot = collection_binding_slot(&facts, binding_id, None)?;
+        let slot = collection_binding_slot(facts, binding_id, None)?;
         let index = binding_id.get() as usize;
         mutations.push(collection_binding_mutation(
             bundle,
@@ -2274,6 +2306,7 @@ fn execute_collection_command(
     bundle: &ContractBundle,
     plan: &CommandPlan,
     input: &CanonicalRecord,
+    facts: &InputDerivedCommandFacts,
     snapshot: &ReadSnapshot,
     context: &TransactionContext,
     budget: EvaluationBudget,
@@ -2301,12 +2334,10 @@ fn execute_collection_command(
             }
         }
     }
-    let facts =
-        derive_input_command_facts(plan, input.clone()).map_err(map_prepared_evaluation_error)?;
     if facts.partition_key() != context.partition_key()
         || facts.binding_entity_keys().len() != snapshot.bindings().len()
         || facts.root_validation_entity_keys().len() != snapshot.root_validations().len()
-        || snapshot.ranges().len() != delete_range_count(plan, &facts)?
+        || snapshot.ranges().len() != delete_range_count(plan, facts)?
     {
         return Err(ExecutionFault::Integrity);
     }
@@ -2361,7 +2392,7 @@ fn execute_collection_command(
     let delete_evidence = validate_collection_delete_evidence(
         bundle,
         plan,
-        &facts,
+        facts,
         snapshot,
         context.partition_key(),
     )?;
@@ -3219,15 +3250,14 @@ fn validate_execution_identity<'a>(
 fn validate_snapshot_targets(
     plan: &CommandPlan,
     input: &CanonicalRecord,
+    facts: &InputDerivedCommandFacts,
     snapshot: &ReadSnapshot,
     context: &TransactionContext,
     evaluator: &mut ExpressionEvaluator<'_>,
 ) -> Result<(), ExecutionFault> {
-    let facts =
-        derive_input_command_facts(plan, input.clone()).map_err(map_prepared_evaluation_error)?;
     if snapshot.bindings().len() != plan.bindings().len()
         || snapshot.root_validations().len() != plan.root_validation_reads().len()
-        || snapshot.ranges().len() != delete_range_count(plan, &facts)?
+        || snapshot.ranges().len() != delete_range_count(plan, facts)?
         || !snapshot.cascade_predecessors().is_empty()
     {
         return Err(ExecutionFault::Integrity);

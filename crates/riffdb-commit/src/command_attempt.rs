@@ -19,7 +19,9 @@ use riffdb_invariant::InputDerivedCommandFacts;
 use riffdb_policy::{
     AuthorizedCommandRowPolicyContextV1, resolve_authorized_command_row_policy_context,
 };
-use riffdb_runtime::{ExecutionFault, ExecutionResult, TransactionContext, execute_command};
+use riffdb_runtime::{
+    ExecutionFault, ExecutionResult, TransactionContext, execute_command_with_facts,
+};
 use riffdb_storage_api::{
     AdmissionLookupResultV1, AdmissionRepository, CandidateValidationRejection,
     CommandCandidateAwaitingValidation, CommitIntent, EvaluatedCommand, EvaluationBudget,
@@ -297,9 +299,10 @@ impl EvaluatedCommandAttempt {
             return true;
         }
         matches!(
-            execute_command(
+            execute_command_with_facts(
                 self.resolved_plan().bundle().bundle(),
                 self.normalized_input(),
+                self.input_facts(),
                 self.materialized_snapshot().snapshot(),
                 &transaction_context(self.commit_context()),
                 EvaluationBudget::v1(),
@@ -1320,7 +1323,11 @@ fn finish_acquired_evaluation(
     let materialization = state
         .resolved_plan
         .clone()
-        .materialize_command_snapshot_for_input(&state.normalized_input, raw_snapshot)
+        .materialize_command_snapshot_for_input(
+            &state.normalized_input,
+            &state.input_facts,
+            raw_snapshot,
+        )
         .map_err(|_| CommandAttemptError::Integrity)?;
     let snapshot = match materialization {
         CommandSnapshotMaterialization::Ready(snapshot) => snapshot,
@@ -1339,9 +1346,10 @@ fn finish_acquired_evaluation(
     let context = transaction_context(&state.commit_context);
     let evaluate_started = crate::writer_census::stage_start();
     let execution = catch_unwind(AssertUnwindSafe(|| {
-        execute_command(
+        execute_command_with_facts(
             snapshot.resolved_plan().bundle().bundle(),
             &state.normalized_input,
+            &state.input_facts,
             snapshot.snapshot(),
             &context,
             state.commit_context.evaluation_budget(),
