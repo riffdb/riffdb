@@ -226,3 +226,99 @@ pub fn attempts() -> AttemptBudget {
 pub fn endpoint_of(daemon: &Daemon) -> String {
     daemon.endpoint()
 }
+
+/// Mints a capability that may invoke exactly the two commands the harness
+/// runs, scoped to this contract's lineage.
+///
+/// Scoped rather than broad on purpose: a capability wide enough to do anything
+/// would let a mistake in the harness exercise a path the measurement does not
+/// name, and the permission is per-command by design.
+pub async fn issue_command_capability(
+    endpoint: &str,
+    bootstrap_token: &str,
+    source: &str,
+) -> Result<String, SessionError> {
+    use riffdb_client_rust::generate_capability_id;
+    use riffdb_contract_compiler::compile_contract_source;
+    use v1::capability_permission::Permission;
+
+    let bundle = compile_contract_source(source)
+        .map_err(|error| SessionError::Input(format!("variant must compile: {error:?}")))?;
+    let lineage = bundle.lineage().as_str().to_owned();
+
+    let mut permissions = Vec::new();
+    for command in bundle.commands() {
+        permissions.push(v1::CapabilityPermission {
+            permission: Some(Permission::InvokeCommand(v1::LineageScopedStableId {
+                contract_lineage: lineage.clone(),
+                stable_id: command.command_id().get(),
+            })),
+        });
+    }
+    if permissions.is_empty() {
+        return Err(SessionError::Input("no commands to invoke".to_owned()));
+    }
+
+    let mut client = RiffDbClient::connect(transport_endpoint(endpoint)?)
+        .await
+        .map_err(|error| SessionError::Connect(format!("{error:?}")))?;
+    let admin = CallMetadata::authenticated(
+        BearerCredential::new(bootstrap_token)
+            .map_err(|_| SessionError::Bootstrap("bearer".to_owned()))?,
+    );
+    let capability_id =
+        generate_capability_id().map_err(|_| SessionError::Bootstrap("capability id".to_owned()))?;
+
+    let created = client
+        .create_capability(
+            v1::CreateCapabilityRequest {
+                request_id: request_id_bytes()?,
+                mode: v1::CapabilityCreateMode::Normal as i32,
+                capability_id: capability_id.into_bytes().to_vec(),
+                principal_id: "perf-surface-runner".to_owned(),
+                actor_kind: v1::ActorKind::Service as i32,
+                requested_lifetime_seconds: CAPABILITY_LIFETIME_SECONDS,
+                audiences: vec![AUDIENCE.to_owned()],
+                grant: Some(v1::CapabilityGrant {
+                    tenant_scope: Some(v1::TenantScope {
+                        scope: Some(v1::tenant_scope::Scope::Global(v1::Unit {})),
+                    }),
+                    partition_scope: Some(v1::PartitionScope {
+                        scope: Some(v1::partition_scope::Scope::All(v1::Unit {})),
+                    }),
+                    permissions,
+                    field_visibility: Vec::new(),
+                    max_scan_rows: 1,
+                    approval_required: Vec::new(),
+                    row_policy: None,
+                    export: None,
+                    reimport: None,
+                    vector_inspection: None,
+                }),
+            },
+            &admin,
+        )
+        .await
+        .map_err(|error| SessionError::Rpc(format!("create_capability: {error:?}")))?;
+
+    match created.result {
+        Some(v1::create_capability_response::Result::Normal(normal)) => match normal.result {
+            Some(v1::normal_create_capability_result::Result::Created(created)) => {
+                Ok(created.token)
+            }
+            other => Err(SessionError::Rpc(format!(
+                "capability was not newly created: {other:?}"
+            ))),
+        },
+        other => Err(SessionError::Rpc(format!(
+            "create_capability returned an unexpected shape: {other:?}"
+        ))),
+    }
+}
+
+/// Metadata for a bearer token.
+pub fn bearer(token: &str) -> Result<CallMetadata, SessionError> {
+    Ok(CallMetadata::authenticated(
+        BearerCredential::new(token).map_err(|_| SessionError::Bootstrap("bearer".to_owned()))?,
+    ))
+}
