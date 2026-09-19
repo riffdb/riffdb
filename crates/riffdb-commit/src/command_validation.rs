@@ -2695,6 +2695,98 @@ contract UnaryDeleteValidation version 1 {
         assert_eq!(positions.as_ref(), &[Some(0), Some(1)]);
     }
 
+    /// ADR-0237: transaction-current validation takes the input proof from the
+    /// attempt rather than deriving its own, so a proof belonging to a
+    /// different command must still be refused. Enforcement is in depth: the
+    /// explicit `matches_command` bind rejects it first, and the identity and
+    /// position comparisons against the evaluated request reject it even with
+    /// that bind removed. This pins the refusal, not one line of it.
+    #[test]
+    fn transaction_current_validation_refuses_a_foreign_input_proof() {
+        let compiled = compile_contract_source(BULK_TUPLE_SOURCE).expect("bulk fixture compiles");
+        let tuple = compiled
+            .schema()
+            .entities()
+            .iter()
+            .find(|entity| entity.name() == "Tuple")
+            .expect("tuple entity");
+        let tuple_value = |id: u8, object: &str| {
+            CanonicalValue::Record(named_record(
+                tuple.record(),
+                &[
+                    ("store_id", CanonicalValue::Uuid([0x31; 16])),
+                    ("tuple_id", CanonicalValue::Uuid([id; 16])),
+                    ("object", CanonicalValue::string(object).expect("object")),
+                    (
+                        "relation",
+                        CanonicalValue::string("reader").expect("relation"),
+                    ),
+                    (
+                        "subject",
+                        CanonicalValue::string("user:alice").expect("subject"),
+                    ),
+                ],
+                &[],
+            ))
+        };
+        let input_for = |request: u8, first: u8, second: u8| {
+            vec![
+                ("request_id", CanonicalValue::Uuid([request; 16])),
+                (
+                    "tuples",
+                    CanonicalValue::List(
+                        CanonicalList::new(vec![
+                            tuple_value(first, "document:first"),
+                            tuple_value(second, "document:second"),
+                        ])
+                        .expect("tuple list"),
+                    ),
+                ),
+            ]
+        };
+        let prepared = prepare(BULK_TUPLE_SOURCE, "WriteTuples", &input_for(0x21, 0x41, 0x42));
+        let foreign = prepare(BULK_TUPLE_SOURCE, "WriteTuples", &input_for(0x71, 0x91, 0x92));
+        assert_ne!(prepared.input, foreign.input);
+
+        let bindings = prepared
+            .binding_targets
+            .iter()
+            .cloned()
+            .map(EntityObservation::Absent)
+            .collect();
+        let fixture = evaluate(prepared, bindings, vec![]);
+
+        let bound = derive_input_command_facts(
+            fixture.prepared.resolved.plan(),
+            fixture.prepared.input.clone(),
+        )
+        .expect("bound input facts");
+        let foreign_facts =
+            derive_input_command_facts(foreign.resolved.plan(), foreign.input.clone())
+                .expect("foreign input facts");
+
+        // The bound proof validates.
+        validate_transaction_current_command_parts(
+            &fixture.prepared.resolved,
+            &fixture.prepared.input,
+            &bound,
+            fixture.prepared.logical_time,
+            &fixture.evaluated,
+            &fixture.current,
+        )
+        .expect("the command validates under its own proof");
+
+        // A proof derived from different input does not.
+        assert_integrity(validate_transaction_current_command_parts(
+            &fixture.prepared.resolved,
+            &fixture.prepared.input,
+            &foreign_facts,
+            fixture.prepared.logical_time,
+            &fixture.evaluated,
+            &fixture.current,
+        ));
+    }
+
     #[test]
     fn collection_commit_checks_revalidate_each_submitted_element() {
         let compiled = compile_contract_source(BULK_INVARIANT_SOURCE).expect("bulk compiles");
