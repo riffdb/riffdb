@@ -29,7 +29,8 @@ have compounded that rather than helped.
   no server-side counter: frame bytes per command differ by 0.0, segment bytes
   by 0.0, and writer-busy microseconds by less than the run-to-run spread
   (`benchmarks/perf-surface`). So in this build the declaration has no
-  measurable per-write cost, at least at one client with the provider never
+  measurable per-write cost -- confirmed at one and thirty-two clients in
+  `perf-surface-mechanism-costs-2026-09.md` -- at least with the provider never
   queried; whether population is simply deferred until activation is not
   established either way, and is one more reason to re-measure before the
   feature is switched on.
