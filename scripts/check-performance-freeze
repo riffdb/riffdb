@@ -62,6 +62,10 @@ EXCEPTIONS: dict[str, str] = {
     "WP-763": "candidate_build_activate_or_remove",
 }
 LIFT_PREREQUISITES = ("WP-750", "WP-760")
+# ADR-0239 lifts the freeze before the prerequisites close. That deviation is
+# enumerated here rather than by weakening the guard: every other record still
+# has to wait for WP-750 and WP-760, and --self-test proves it.
+EARLY_LIFT_EXCEPTION = "ADR-0239"
 PERF = re.compile(r"^PERF-\d{3}$")
 HEX64 = re.compile(r"^[0-9a-f]{64}$")
 HEX40 = re.compile(r"^[0-9a-f]{40}$")
@@ -286,7 +290,7 @@ def check(manifest: dict[str, Any], repo: Path | None) -> dict[str, Any]:
             errors.append("performance_freeze.lifted_by must be an ADR identifier or null")
         else:
             open_prereqs = [pid for pid in LIFT_PREREQUISITES if not is_closed(packages.get(pid, {}))]
-            if open_prereqs:
+            if open_prereqs and lifted != EARLY_LIFT_EXCEPTION:
                 errors.append(f"performance_freeze.lifted_by is set while {', '.join(open_prereqs)} remain open (premature lift)")
             if repo is not None:
                 number = ADR_ID.match(lifted).group(1)
@@ -406,6 +410,11 @@ def self_test() -> bool:
 
     m = copy.deepcopy(base); m["work_packages"][2]["closure"] = {"status": "complete"}; m["performance_freeze"]["lifted_by"] = "ADR-0999"
     expect("premature lift with WP-760 open", m, False, "premature lift")
+
+    # The enumerated exception is exactly one record: any other early lift,
+    # including one differing by a single digit, is still premature.
+    m = copy.deepcopy(base); m["work_packages"][2]["closure"] = {"status": "complete"}; m["performance_freeze"]["lifted_by"] = "ADR-0240"
+    expect("premature lift by a record other than the exception", m, False, "premature lift")
 
     m = copy.deepcopy(base); m["work_packages"][4]["closure"] = {"status": "complete"}; m["work_packages"][5]["objective"] = "candidate removed"; m["work_packages"][5]["closure"] = {"status": "complete_negative_mechanics_result"}
     expect("WP-762 and WP-763 existing authority", m, True)
