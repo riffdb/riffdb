@@ -2722,9 +2722,22 @@ pub fn maximum_current_envelope_bytes(record_type: &str) -> Option<usize> {
     })
 }
 
+static RECORD_REGISTRY_DIGEST: OnceLock<SchemaHash> = OnceLock::new();
+
 /// Returns the immutable digest of every readable compact tag/revision binding.
+///
+/// The registry is a compile-time constant, so the digest is invariant for the
+/// life of the process. It is computed once and reused: the canonical ordering
+/// is still established by that first computation, never skipped. Callers on
+/// the journal and checkpoint-root validation paths reach this per operation,
+/// and each uncached call sorted the whole registry, rebuilt a multi-kilobyte
+/// canonical buffer and hashed it.
 #[must_use]
 pub fn record_registry_digest() -> SchemaHash {
+    *RECORD_REGISTRY_DIGEST.get_or_init(compute_record_registry_digest)
+}
+
+fn compute_record_registry_digest() -> SchemaHash {
     let mut schemas = READABLE_RECORD_SCHEMAS.iter().collect::<Vec<_>>();
     schemas.sort_by_key(|schema| (schema.compact_tag(), schema.schema_revision()));
     let mut canonical = Vec::with_capacity(schemas.len() * 48);
@@ -2804,5 +2817,19 @@ mod tests {
             encode_current_payload_after_structural_proof::<v1::StoredRecordRegistryV2>(&oversized)
                 .is_err()
         );
+    }
+
+    // req: GOV-001
+    /// The registry digest is compared against digests already written into
+    /// durable roots, so memoizing it may only ever return the value a fresh
+    /// computation produces. A drift here would reject existing databases.
+    #[test]
+    fn memoized_registry_digest_equals_a_fresh_computation() {
+        let fresh = super::compute_record_registry_digest();
+        let cached = super::record_registry_digest();
+        assert_eq!(cached, fresh);
+        // Stable across repeated reads, and still equal after the cache is warm.
+        assert_eq!(super::record_registry_digest(), fresh);
+        assert_eq!(super::compute_record_registry_digest(), fresh);
     }
 }
