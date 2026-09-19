@@ -269,6 +269,7 @@ record with no front matter.
 | [0234](0234-bounded-repairs-for-reviewed-runtime-resource-costs.md) | Bounded Repairs For Reviewed Runtime Resource Costs | Accepted | guarantee |
 | [0235](0235-fresh-locator-coverage-proven-at-staging.md) | Retire Fresh Locator Coverage Once The Derived Index Covers | Superseded | guarantee |
 | [0236](0236-remove-fresh-locator-coverage.md) | Remove Fresh Locator Coverage | Accepted | guarantee |
+| [0237](0237-input-derived-command-facts-reuse.md) | (untitled) | (unknown) | legacy |
 <!-- adr-index:end -->
 
 The human architecture review on 2026-07-12 approved the direction represented
