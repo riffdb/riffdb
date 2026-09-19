@@ -1,11 +1,12 @@
 ---
 adr: "0242"
 title: Formatting Drift Repair
-status: proposed
+status: accepted
 tier: guarantee
 date: 2026-09-19
-accepted: null
-acceptance: null
+accepted: 2026-09-19
+acceptance: 'maintainer, in session, 2026-09-19: "i approve the text"
+  (ADR-0242 as written)'
 requires: []
 amends: []
 supersedes: []
