@@ -272,6 +272,7 @@ record with no front matter.
 | [0237](0237-input-derived-command-facts-reuse.md) | Input-Derived Command Facts Reuse | Accepted | guarantee |
 | [0238](0238-server-global-allocator-selection.md) | Server Global Allocator Selection | Accepted | guarantee |
 | [0239](0239-performance-programme-baseline-and-measurement-discipline.md) | Performance Programme Baseline And Measurement Discipline | Accepted | guarantee |
+| [0240](0240-derived-state-sinks-must-not-block-the-primary-writer.md) | Derived State Sinks Must Not Block The Primary Writer | Proposed | guarantee |
 | [0241](0241-rust-1-98-1-toolchain-upgrade.md) | Rust 1.98.1 Toolchain Upgrade | Accepted | surface |
 | [0242](0242-formatting-drift-repair.md) | Formatting Drift Repair | Accepted | guarantee |
 | [0243](0243-public-repository-disclosure-guards.md) | Public Repository Disclosure Guards | Accepted | guarantee |
