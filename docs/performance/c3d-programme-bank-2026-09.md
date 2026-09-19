@@ -40,6 +40,54 @@ p95 at 128 clients fell from 88.1 ms on main to 54.5 ms.
 | 8 | 10,303 | 10,888 | 0.38 ms | 2.62 ms |
 | 32 | 16,121 | 17,348 | 0.75 ms | 7.60 ms |
 
+## PostgreSQL comparison, gate cell
+
+`interactive` at 32 clients against the safe-app PostgreSQL 18.4 comparator,
+`--full`, three repetitions, counterbalanced phase order, revision `3f244c545`.
+
+| | RiffDB | PostgreSQL | ratio | gate | |
+|---|---|---|---|---|---|
+| throughput ops/s | 15,818 | 15,711 | 1.007 | >= 0.90 | pass |
+| p95 | 8.91 ms | 8.13 ms | 1.097 | <= 1.25 | pass |
+| p50 | 0.72 ms | 1.18 ms | 0.611 | none | RiffDB 39% faster |
+
+The harness reports this cell `eligible: true`, `non_evidentiary_window: false`,
+`correctness_clean: true`, `same_device_comparable: true`. Repetition spread is
+1.0027 on RiffDB and 1.0143 on PostgreSQL, both well inside ADR-0171's 1.20
+stability rule. The comparator is genuinely durable: `fsync=on`,
+`full_page_writes=on`, `synchronous_commit=on`, `wal_sync_method=fdatasync`.
+Dataset is 19,220 rows across 10 organizations.
+
+The previously banked figures for this cell were 0.88 throughput against the
+0.90 gate and 1.38/1.23 p95 against the 1.25 ceiling. Throughput was the
+failing criterion and now clears. **This clears the gate on C3D, which is not
+where the gate is defined.** PERF-018 fixes the comparator on the N1 and E2
+profiles, and ratios do not port between hosts, which is also why the 0.88
+figure is not directly comparable to the 1.007 above. Confirming this requires
+the same cell on N1 and E2.
+
+### The smoke reading of the same cell was wrong by 2.3x
+
+Run at `--smoke` first, the same cell reported a throughput ratio of 2.30
+rather than 1.007, and `write_only` reported 2.55. Smoke seeds 404 rows against
+full's 19,220, and at that size the comparison means nothing: the harness marks
+smoke runs `eligible: false` for exactly this reason. Recorded here because the
+smoke number looks like good news and is not, and because the gap is scale, not
+host.
+
+For reference, the smoke cells were: interactive minimal 1.91, interactive
+safe-app 2.30, write_only minimal 2.36, write_only safe-app 2.55.
+
+### Where the write-path advantage is real
+
+On `write_only` the advantage is structural rather than an artifact of scale.
+The harness measures this device at about 1,030 fdatasync per second.
+PostgreSQL at `synchronous_commit=on` pays one WAL fsync per transaction, which
+puts a ceiling near that figure, and it lands at 1,394 to 1,427 ops/s. RiffDB
+group-commits roughly 16 commands per flush and is not bound by it. That is the
+durable-group mechanism ADR-0183 describes. `interactive` is read-heavy, which
+is why the two engines land level there while diverging on writes.
+
 ## What these numbers do and do not say
 
 **No prior comparison exists for read_only or interactive.** Those loads had
