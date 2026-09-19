@@ -134,7 +134,7 @@ impl ProjectionBatchBuilder {
         .map_err(map_storage_value_error)?;
         let snapshot = ProjectionApplySnapshot::new(&snapshot_request, self.frontier, rows)
             .map_err(map_storage_value_error)?;
-        let member = prepare_projection_apply(evaluated, &PreparedSnapshot(snapshot))?;
+        let member = prepare_projection_apply(evaluated, &PreparedSnapshot::new(snapshot))?;
         let observation_bytes = base_rows.rows().iter().try_fold(0usize, |total, row| {
             total
                 .checked_add(
@@ -196,19 +196,39 @@ impl ProjectionBatchBuilder {
     }
 }
 
-struct PreparedSnapshot(ProjectionApplySnapshot);
+/// Hands an already-read snapshot to one checked preparation.
+///
+/// `prepare_projection_apply` reads through this exactly once, so the rows move
+/// into its construction rather than being copied into an identical snapshot.
+/// The validation is unchanged: the receiving `ProjectionApplySnapshot::new`
+/// still checks every row against the request it was given. Only the copy is
+/// gone, and a second read fails closed rather than silently re-reading.
+struct PreparedSnapshot(core::cell::RefCell<Option<ProjectionApplySnapshot>>);
+
+impl PreparedSnapshot {
+    fn new(snapshot: ProjectionApplySnapshot) -> Self {
+        Self(core::cell::RefCell::new(Some(snapshot)))
+    }
+}
+
 impl ProjectionApplySnapshotReader for PreparedSnapshot {
     fn read_apply_snapshot(
         &self,
         request: &ProjectionApplySnapshotRequest,
     ) -> Result<ProjectionApplySnapshot, StorageError> {
-        ProjectionApplySnapshot::new(request, self.0.expected_frontier(), self.0.rows().to_vec())
-            .map_err(|_| {
-                StorageError::new(
-                    riffdb_storage_api::StorageErrorKind::InvariantViolation,
-                    None,
-                )
-            })
+        let invariant = || {
+            StorageError::new(
+                riffdb_storage_api::StorageErrorKind::InvariantViolation,
+                None,
+            )
+        };
+        let (frontier, rows) = self
+            .0
+            .borrow_mut()
+            .take()
+            .ok_or_else(invariant)?
+            .into_parts();
+        ProjectionApplySnapshot::new(request, frontier, rows).map_err(|_| invariant())
     }
 }
 fn integrity() -> ProjectionEvaluationError {
