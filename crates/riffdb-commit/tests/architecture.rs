@@ -1091,11 +1091,14 @@ fn command_attempt_owns_sealed_authority_around_synchronous_recheck_snapshot_and
         ".lookup_admission(acquired.lookup_candidates().clone())",
         ".read_snapshot(state.snapshot_request.clone())",
         "if !snapshot_matches_request(&state.snapshot_request, &raw_snapshot)",
-        ".materialize_command_snapshot_for_input(&state.normalized_input, raw_snapshot)",
+        ".materialize_command_snapshot_for_input(",
         "state.completed_attempts >= MAX_COMMAND_EVALUATION_ATTEMPTS_V1",
         "state.completed_attempts = state",
         "let execution = catch_unwind(AssertUnwindSafe(|| {",
-        "execute_command(",
+        // The attempt evaluates through the proof-carrying runtime entry: it
+        // already holds the one input-derived proof, and the runtime rejects a
+        // proof that is not bound to this exact plan and input.
+        "execute_command_with_facts(",
         ".map_err(|_| CommandAttemptError::EvaluationPanicked)?",
         "snapshot.resolved_plan().bundle().bundle()",
         "snapshot.snapshot()",
@@ -1156,7 +1159,7 @@ fn command_attempt_owns_sealed_authority_around_synchronous_recheck_snapshot_and
         .find("if !snapshot_matches_request(&state.snapshot_request, &raw_snapshot)")
         .expect("exact adapter target check");
     let materialization = production_source
-        .find(".materialize_command_snapshot_for_input(&state.normalized_input, raw_snapshot)")
+        .find(".materialize_command_snapshot_for_input(")
         .expect("catalog materialization");
     let attempt_counter = production_source
         .find("state.completed_attempts = state")
