@@ -191,6 +191,11 @@ pub fn evaluate_projection_commit(
 
     let transaction_date = transaction_date(commit.logical_time())?;
     let mut grouped_deltas = BTreeMap::new();
+    // Every event materialized below reports this same resolved plan, so the
+    // expression arena is identical for the whole pass and the memo cache is
+    // allocated once rather than once per event. Each batch clears the entries
+    // it recorded, on both start and drop, so no value crosses between events.
+    let mut evaluator = ExpressionEvaluator::new(plan.expressions());
     for event in commit
         .events()
         .iter()
@@ -214,6 +219,7 @@ pub fn evaluate_projection_commit(
             generation,
             commit.logical_time(),
             transaction_date,
+            &mut evaluator,
         )?
         else {
             continue;
@@ -300,6 +306,7 @@ fn evaluate_materialized_event(
     generation: ProjectionGeneration,
     logical_time: LogicalTime,
     transaction_date: Date,
+    evaluator: &mut ExpressionEvaluator<'_>,
 ) -> Result<Option<(ProjectionGroupKey, CanonicalRecord)>, ProjectionEvaluationError> {
     let plan = view.projection_plan();
     let values = ProjectionExpressionValues {
@@ -307,7 +314,6 @@ fn evaluate_materialized_event(
         logical_time,
         transaction_date,
     };
-    let mut evaluator = ExpressionEvaluator::new(plan.expressions());
     let mut batch = evaluator.batch(&values);
     if let Some(filter) = plan.filter()
         && !batch
