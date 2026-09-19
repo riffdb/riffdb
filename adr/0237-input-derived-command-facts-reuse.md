@@ -1,28 +1,29 @@
 ---
 adr: "0237"
 title: Input-Derived Command Facts Reuse
-status: proposed
+status: accepted
 tier: guarantee
 date: 2026-09-19
-accepted: null
-acceptance: null
+accepted: 2026-09-19
+acceptance: 'maintainer, in session, 2026-09-19: "Accept all three as written"
+  (ADR-0237 as written)'
 requires: [ADR-0107, ADR-0126, ADR-0183]
 amends:
-  - ADR-0107 only to the extent described below: transaction-current command
-    validation derives the input proof once per attempt and proves its bind,
-    rather than re-deriving it at each stage.
+  - ADR-0107 only to this extent, that transaction-current command validation
+    derives the input proof once per attempt and proves its bind, rather than
+    re-deriving it at each stage.
 supersedes: []
 requirements: []
-packages: []
+packages: [WP-788]
 obligations:
   - id: OBL-0237-1
-    package: null
+    package: WP-788
     proof: command_validation_seals_one_exact_attempt_before_index_or_record_authority
     says: Transaction-current validation proves the supplied input proof is
       bound to the exact plan and normalized input in hand before reading any
       position, key, or range out of it.
   - id: OBL-0237-2
-    package: null
+    package: WP-788
     proof: transaction_current_validation_refuses_a_foreign_input_proof
     says: An input proof derived from a different command is refused by
       transaction-current validation rather than acted on.
