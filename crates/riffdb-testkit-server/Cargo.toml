@@ -199,6 +199,10 @@ name = "deployable_alpha_gate"
 path = "../../tests/deployable_alpha_gate.rs"
 
 [[test]]
+name = "unsafe_code_boundary"
+path = "../../tests/unsafe_code_boundary.rs"
+
+[[test]]
 name = "release_format_compatibility"
 path = "../../tests/release_format_compatibility.rs"
 
