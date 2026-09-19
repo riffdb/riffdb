@@ -13,12 +13,13 @@ use riffdb_budget_comparison_core::{
 use riffdb_commit::CoordinatorDurability;
 use riffdb_projection::{
     ProjectionController, ProjectionInitializationResult, ProjectionNotifier,
-    ProjectionSchemaRegistry, evaluate_and_prepare_projection_commit,
+    ProjectionBatchBuilder, ProjectionSchemaRegistry, evaluate_projection_commit,
 };
 use riffdb_service::{CommandDurability, JournaledCompletion};
 use riffdb_storage_api::{
     AuthoritativeScanReader, CheckedProjectionSchema, CommitScanPageV1, CommitScanRequest,
-    DurabilityMode, ProjectionApplyResult, ProjectionControlResult, ProjectionGenerationPosition,
+    DurabilityMode, ProjectionApplyBatchResult, ProjectionApplySnapshotReader,
+    ProjectionControlResult, ProjectionGenerationPosition,
     ProjectionLifecycleV1, ProjectionQueryReader, StorageScanLimit,
 };
 use riffdb_types::{CommitSequence, FrontierPosition, ProjectionGeneration};
@@ -685,21 +686,43 @@ fn apply_projection_log(
             .scan_commits(request)
             .expect("scan projection source commits");
         let upper = page.inclusive_upper();
-        for charged in page.records() {
-            let apply = evaluate_and_prepare_projection_commit(
-                resolved,
-                schema.clone(),
-                generation,
-                charged.value(),
-                controller.repository(),
-            )
-            .expect("evaluate checked projection commit");
-            changed_rows += apply.row_updates().len();
+        // Catch-up is measured through the batched path the projection worker
+        // uses in production (`ProjectionBatchBuilder` + `apply_batch`). The
+        // earlier per-record `evaluate_and_prepare_projection_commit` +
+        // `apply` loop measured a path production does not take, so every
+        // catch-up number it produced was scored against the wrong work.
+        let mut position = 0_usize;
+        while position < page.records().len() {
+            let base = controller
+                .repository()
+                .capture_apply_batch_snapshot(schema.identity())
+                .expect("capture projection apply snapshot");
+            let mut batch = ProjectionBatchBuilder::new(base, schema.clone(), generation)
+                .expect("bounded projection batch");
+            while position < page.records().len() && !batch.is_full() {
+                let evaluated = evaluate_projection_commit(
+                    resolved,
+                    schema.clone(),
+                    generation,
+                    page.records()[position].value(),
+                )
+                .expect("evaluate checked projection commit");
+                if !batch.try_push(&evaluated).expect("push projection member") {
+                    break;
+                }
+                changed_rows += evaluated.changed_group_count();
+                position += 1;
+                count += 1;
+            }
+            assert!(!batch.is_empty(), "every batch admits at least one member");
+            let batch_request = batch.finish().expect("finish projection batch");
             assert!(matches!(
-                controller.apply(&apply).expect("apply derived sequence"),
-                ProjectionApplyResult::Applied { .. }
+                controller
+                    .apply_batch(&batch_request)
+                    .expect("apply projection batch"),
+                ProjectionApplyBatchResult::Applied(_)
+                    | ProjectionApplyBatchResult::AlreadyApplied
             ));
-            count += 1;
         }
         match page {
             CommitScanPageV1::Page {

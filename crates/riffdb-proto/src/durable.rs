@@ -5,6 +5,7 @@
 
 use prost::Message;
 use riffdb_types::{SchemaHash, hash_schema};
+use std::collections::HashMap;
 use std::sync::OnceLock;
 
 use crate::durable_wire::DurablePreflightError;
@@ -553,7 +554,7 @@ where
 {
     preflight_payload::<RECORD_INDEX>(payload)?;
     let message = M::decode(payload).map_err(|_| PayloadValidationError::Malformed)?;
-    if message.encode_to_vec() != payload {
+    if !crate::envelope::is_canonical_encoding(&message, payload) {
         return Err(PayloadValidationError::NonCanonical);
     }
     Ok(())
@@ -586,7 +587,7 @@ fn validate_pre_wp280_capability_payload(payload: &[u8]) -> Result<(), PayloadVa
     }) {
         return Err(PayloadValidationError::Malformed);
     }
-    if message.encode_to_vec() != payload {
+    if !crate::envelope::is_canonical_encoding(&message, payload) {
         return Err(PayloadValidationError::NonCanonical);
     }
     Ok(())
@@ -2363,7 +2364,7 @@ writable_message!(v1::StoredValidatedPrefixCheckpointV2);
 pub fn encode_current_message<M: WritableRecordMessage>(
     message: &M,
 ) -> Result<Vec<u8>, crate::envelope::EnvelopeError> {
-    crate::envelope::encode_preflighted(M::record_schema(), &message.encode_to_vec())
+    crate::envelope::encode_message_preflighted(M::record_schema(), message)
 }
 
 /// Frames already-canonical bytes for one sealed current record type.
@@ -2679,9 +2680,10 @@ pub fn readable_record_registry() -> RecordRegistry<'static> {
 /// Finds one readable schema by its exact durable record-type FQN.
 #[must_use]
 pub fn readable_record_schema(record_type: &str) -> Option<&'static RecordSchema<'static>> {
-    READABLE_RECORD_SCHEMAS
-        .iter()
-        .find(|schema| schema.record_type() == record_type)
+    READABLE_RECORD_INDEX
+        .get_or_init(|| schema_index(&READABLE_RECORD_SCHEMAS))
+        .get(record_type)
+        .copied()
 }
 
 /// Returns the closed registry of current writable roles.
@@ -2696,9 +2698,10 @@ pub fn writable_record_registry() -> RecordRegistry<'static> {
 /// Finds one current writable schema by its exact durable record-type FQN.
 #[must_use]
 pub fn writable_record_schema(record_type: &str) -> Option<&'static RecordSchema<'static>> {
-    WRITABLE_RECORD_SCHEMAS
-        .iter()
-        .find(|schema| schema.record_type() == record_type)
+    WRITABLE_RECORD_INDEX
+        .get_or_init(|| schema_index(&WRITABLE_RECORD_SCHEMAS))
+        .get(record_type)
+        .copied()
 }
 
 /// Returns the current closed durable-record registry.
@@ -2722,9 +2725,47 @@ pub fn maximum_current_envelope_bytes(record_type: &str) -> Option<usize> {
     })
 }
 
+static READABLE_RECORD_INDEX: OnceLock<HashMap<&'static str, &'static RecordSchema<'static>>> =
+    OnceLock::new();
+static WRITABLE_RECORD_INDEX: OnceLock<HashMap<&'static str, &'static RecordSchema<'static>>> =
+    OnceLock::new();
+
+/// Indexes a closed registry by record type, keeping the first entry.
+///
+/// Record types are NOT unique in the readable registry: four capability types
+/// carry more than one compact tag, and `CapabilityRecordV1` carries three. The
+/// linear scan this replaces resolved by `find`, which answers the first
+/// matching entry, so the index must do the same or every decode of those types
+/// would resolve a different schema. First-wins is the whole contract here.
+///
+/// Every encode and decode resolves a schema by name, and the scan compared up
+/// to 111 long strings that share a common prefix.
+fn schema_index(
+    schemas: &'static [RecordSchema<'static>],
+) -> HashMap<&'static str, &'static RecordSchema<'static>> {
+    let mut index = HashMap::with_capacity(schemas.len());
+    for schema in schemas {
+        index.entry(schema.record_type()).or_insert(schema);
+    }
+    index
+}
+
+static RECORD_REGISTRY_DIGEST: OnceLock<SchemaHash> = OnceLock::new();
+
 /// Returns the immutable digest of every readable compact tag/revision binding.
+///
+/// The registry is a compile-time constant, so the digest is invariant for the
+/// life of the process. It is computed once and reused: the canonical ordering
+/// is still established by that first computation, never skipped. Callers on
+/// the journal and checkpoint-root validation paths reach this per operation,
+/// and each uncached call sorted the whole registry, rebuilt a multi-kilobyte
+/// canonical buffer and hashed it.
 #[must_use]
 pub fn record_registry_digest() -> SchemaHash {
+    *RECORD_REGISTRY_DIGEST.get_or_init(compute_record_registry_digest)
+}
+
+fn compute_record_registry_digest() -> SchemaHash {
     let mut schemas = READABLE_RECORD_SCHEMAS.iter().collect::<Vec<_>>();
     schemas.sort_by_key(|schema| (schema.compact_tag(), schema.schema_revision()));
     let mut canonical = Vec::with_capacity(schemas.len() * 48);
@@ -2771,6 +2812,42 @@ mod tests {
         assert_eq!(decoded.payload(), message.encode_to_vec());
     }
 
+    /// The typed encoder writes the payload straight into the envelope behind
+    /// the fixed header and patches the CRC in place. That must stay
+    /// indistinguishable from framing a separately encoded payload at every
+    /// size -- identical bytes when accepted, and the identical rejection when
+    /// the preflight or a bound refuses the payload.
+    #[test]
+    fn in_place_typed_encoding_matches_separate_payload_framing_at_every_size() {
+        let mut accepted = 0_usize;
+        for digest_bytes in [0_usize, 1, 31, 32, 33, 127, 128, 1024, 8192] {
+            let message = v1::StoredRecordRegistryV2 {
+                registry_digest: vec![0x3C; digest_bytes],
+            };
+            let payload = message.encode_to_vec();
+            let in_place = encode_current_message(&message);
+            let separate = encode_current_payload::<v1::StoredRecordRegistryV2>(&payload);
+
+            assert_eq!(
+                in_place, separate,
+                "in-place framing diverged at {digest_bytes} digest bytes"
+            );
+
+            if let Ok(bytes) = in_place {
+                accepted += 1;
+                assert_eq!(
+                    bytes.len(),
+                    crate::envelope::COMPACT_RECORD_HEADER_V2_BYTES + payload.len()
+                );
+                assert_eq!(
+                    &bytes[crate::envelope::COMPACT_RECORD_HEADER_V2_BYTES..],
+                    &payload[..]
+                );
+            }
+        }
+        assert!(accepted > 0, "the sweep proved nothing if every size was rejected");
+    }
+
     #[test]
     fn prebuilt_current_payload_matches_the_typed_current_encoder_exactly() {
         let message = v1::StoredRecordRegistryV2 {
@@ -2804,5 +2881,94 @@ mod tests {
             encode_current_payload_after_structural_proof::<v1::StoredRecordRegistryV2>(&oversized)
                 .is_err()
         );
+    }
+
+    // req: GOV-001
+    /// The registry digest is compared against digests already written into
+    /// durable roots, so memoizing it may only ever return the value a fresh
+    /// computation produces. A drift here would reject existing databases.
+    #[test]
+    fn memoized_registry_digest_equals_a_fresh_computation() {
+        let fresh = super::compute_record_registry_digest();
+        let cached = super::record_registry_digest();
+        assert_eq!(cached, fresh);
+        // Stable across repeated reads, and still equal after the cache is warm.
+        assert_eq!(super::record_registry_digest(), fresh);
+        assert_eq!(super::compute_record_registry_digest(), fresh);
+    }
+
+    // req: GOV-001
+    /// Indexing the registries may only ever answer what the linear scan did,
+    /// including for absent and near-miss record types, since every encode and
+    /// decode resolves its schema through these lookups.
+    #[test]
+    fn schema_indexes_answer_exactly_what_a_linear_scan_answers() {
+        for schema in &READABLE_RECORD_SCHEMAS {
+            let scanned = READABLE_RECORD_SCHEMAS
+                .iter()
+                .find(|candidate| candidate.record_type() == schema.record_type())
+                .expect("present by construction");
+            let indexed = super::readable_record_schema(schema.record_type())
+                .expect("index must find every readable schema");
+            assert_eq!(indexed.record_type(), scanned.record_type());
+            assert_eq!(indexed.compact_tag(), scanned.compact_tag());
+            assert_eq!(indexed.schema_revision(), scanned.schema_revision());
+        }
+        for schema in &WRITABLE_RECORD_SCHEMAS {
+            let indexed = super::writable_record_schema(schema.record_type())
+                .expect("index must find every writable schema");
+            assert_eq!(indexed.compact_tag(), schema.compact_tag());
+        }
+        // Absent and near-miss names still answer None.
+        for absent in [
+            "",
+            "riffdb.storage.v1.StoredCommandCapsuleV999",
+            "riffdb.storage.v1.StoredCommandCapsuleV",
+            "unrelated",
+        ] {
+            assert!(super::readable_record_schema(absent).is_none());
+            assert!(super::writable_record_schema(absent).is_none());
+        }
+        // Record types are not unique in the readable registry: four capability
+        // types carry more than one compact tag. The lookup must answer the
+        // first, exactly as the linear scan did.
+        let mut first_seen: std::collections::BTreeMap<&str, u8> =
+            std::collections::BTreeMap::new();
+        let mut duplicated = 0_usize;
+        for schema in &READABLE_RECORD_SCHEMAS {
+            // or_insert keeps the FIRST tag, which is exactly what `find`
+            // answered before the index existed.
+            let before = first_seen.len();
+            first_seen
+                .entry(schema.record_type())
+                .or_insert(schema.compact_tag());
+            if first_seen.len() == before {
+                duplicated += 1;
+            }
+        }
+        assert!(
+            duplicated > 0,
+            "the first-wins contract is only meaningful while duplicates exist"
+        );
+        for (record_type, first_tag) in first_seen {
+            assert_eq!(
+                super::readable_record_schema(record_type)
+                    .expect("indexed")
+                    .compact_tag(),
+                first_tag,
+                "{record_type} must resolve to its first registered tag"
+            );
+        }
+
+        // A readable-only type must still be absent from the writable registry.
+        let readable_only = READABLE_RECORD_SCHEMAS.iter().find(|schema| {
+            !WRITABLE_RECORD_SCHEMAS
+                .iter()
+                .any(|writable| writable.record_type() == schema.record_type())
+        });
+        if let Some(schema) = readable_only {
+            assert!(super::readable_record_schema(schema.record_type()).is_some());
+            assert!(super::writable_record_schema(schema.record_type()).is_none());
+        }
     }
 }

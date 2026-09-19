@@ -74,11 +74,15 @@ where
                 .commands()
                 .iter()
                 .map(|command| {
-                    let encoded = riffdb_storage_api::encode_command_capsule_v2(command)
+                    // The page budget needs the charge, not the bytes. Deriving it
+                    // from the encoded length skips the payload allocation, the
+                    // preflight, the envelope copy and the CRC that a full encode
+                    // pays here once per scanned command.
+                    let charge = riffdb_storage_api::command_capsule_v2_encoded_charge(command)
                         .map_err(crate::error::codec_error)?;
                     Ok(EncodedPageItem::new(
                         command.base().commit().clone(),
-                        encoded.encoded_content_charge(),
+                        charge,
                     ))
                 })
                 .collect();
@@ -157,11 +161,15 @@ fn modern_commits_in_physical_row(
                 .commands()
                 .iter()
                 .map(|command| {
-                    let encoded = riffdb_storage_api::encode_command_capsule_v2(command)
+                    // The page budget needs the charge, not the bytes. Deriving it
+                    // from the encoded length skips the payload allocation, the
+                    // preflight, the envelope copy and the CRC that a full encode
+                    // pays here once per scanned command.
+                    let charge = riffdb_storage_api::command_capsule_v2_encoded_charge(command)
                         .map_err(crate::error::codec_error)?;
                     Ok(EncodedPageItem::new(
                         command.base().commit().clone(),
-                        encoded.encoded_content_charge(),
+                        charge,
                     ))
                 })
                 .collect::<Result<Vec<_>, _>>()

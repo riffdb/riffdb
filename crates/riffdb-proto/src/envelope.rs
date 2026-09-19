@@ -1,5 +1,6 @@
 //! Strict validation for versioned durable Protobuf envelopes.
 
+use std::cell::RefCell;
 use std::time::Instant;
 use std::{error::Error, fmt};
 
@@ -226,6 +227,39 @@ impl<'a> RecordRegistry<'a> {
         Ok(Self { schemas })
     }
 
+    /// Resolves a compact V2 record type from its header, without decoding.
+    ///
+    /// Callers that only need to learn which variant a record is paid a full
+    /// validating decode, then decoded again as the chosen type. The compact
+    /// header already carries the identity, so this selects exactly the schema
+    /// `decode_compact_v2` would select from the same bytes.
+    ///
+    /// This deliberately validates nothing beyond the identity it reads:
+    /// `None` means "cannot resolve from the header alone", including legacy
+    /// V1 framing, and the caller must fall back to the full decode. Every
+    /// payload check still happens when the caller decodes as the chosen type,
+    /// so a corrupt header yields a decode failure rather than an acceptance.
+    #[must_use]
+    pub fn peek_compact_record_type(&self, encoded: &[u8]) -> Option<&'a str> {
+        if encoded.len() < COMPACT_RECORD_HEADER_V2_BYTES
+            || !encoded.starts_with(&COMPACT_RECORD_MAGIC_V2)
+            || encoded[4] != u8::try_from(STORAGE_FORMAT_VERSION_V2).ok()?
+        {
+            return None;
+        }
+        let compact_tag = encoded[5];
+        let schema_revision = u16::from_be_bytes([encoded[6], encoded[7]]);
+        if compact_tag == 0 || schema_revision == 0 {
+            return None;
+        }
+        self.schemas
+            .iter()
+            .find(|schema| {
+                schema.compact_tag == compact_tag && schema.schema_revision == schema_revision
+            })
+            .map(|schema| schema.record_type)
+    }
+
     /// Strictly decodes an envelope through its registered semantic validator.
     pub fn decode(&self, encoded: &[u8]) -> Result<DecodedEnvelope, EnvelopeError> {
         if encoded.len() > MAX_STORED_ENVELOPE_BYTES {
@@ -303,7 +337,7 @@ impl<'a> RecordRegistry<'a> {
         (schema.preflight_payload)(payload).map_err(EnvelopeError::InvalidPayload)?;
         let message = M::decode(payload)
             .map_err(|_| EnvelopeError::InvalidPayload(PayloadValidationError::Malformed))?;
-        if message.encode_to_vec() != payload {
+        if !is_canonical_encoding(&message, payload) {
             return Err(EnvelopeError::InvalidPayload(
                 PayloadValidationError::NonCanonical,
             ));
@@ -390,7 +424,7 @@ impl<'a> RecordRegistry<'a> {
             .map_err(|_| EnvelopeError::InvalidPayload(PayloadValidationError::Malformed))?;
         let prost_decode_ns = elapsed_nanos(prost_started);
         let canonical_started = Instant::now();
-        if message.encode_to_vec() != payload {
+        if !is_canonical_encoding(&message, payload) {
             return Err(EnvelopeError::InvalidPayload(
                 PayloadValidationError::NonCanonical,
             ));
@@ -500,7 +534,7 @@ impl<'a> RecordRegistry<'a> {
         // wire slices before Prost allocates the owned envelope fields.
         let envelope = StoredEnvelope::decode(encoded).map_err(|_| EnvelopeError::Malformed)?;
 
-        if envelope.encode_to_vec() != encoded {
+        if !is_canonical_encoding(&envelope, encoded) {
             return Err(EnvelopeError::NonCanonicalEnvelope);
         }
 
@@ -717,11 +751,86 @@ impl fmt::Display for EnvelopeError {
 
 impl Error for EnvelopeError {}
 
+/// Proves a payload is the canonical encoding of the message decoded from it.
+///
+/// The byte-for-byte compare *is* the canonicality proof and is unchanged. Only
+/// the buffer is: `encode_to_vec` allocated a fresh payload-sized `Vec` on every
+/// decode purely to throw it away after the compare. Re-encoding into a reused
+/// per-thread scratch buffer gives the identical answer with no allocation, and
+/// the length pre-check rejects a mismatch before re-encoding at all.
+pub(crate) fn is_canonical_encoding<M: Message>(message: &M, payload: &[u8]) -> bool {
+    if message.encoded_len() != payload.len() {
+        return false;
+    }
+    CANONICAL_SCRATCH.with(|scratch| {
+        let Ok(mut scratch) = scratch.try_borrow_mut() else {
+            // Re-entrant compare: fall back to a private buffer rather than
+            // sharing one, so the proof still runs.
+            return message.encode_to_vec() == payload;
+        };
+        scratch.clear();
+        scratch.reserve(payload.len());
+        if message.encode(&mut *scratch).is_err() {
+            return false;
+        }
+        let canonical = scratch.as_slice() == payload;
+        if scratch.capacity() > CANONICAL_SCRATCH_RETAINED_BYTES {
+            scratch.shrink_to(CANONICAL_SCRATCH_RETAINED_BYTES);
+        }
+        canonical
+    })
+}
+
+/// Scratch capacity kept between canonicality proofs. Larger payloads still
+/// compare exactly; their buffer is released instead of held per thread.
+const CANONICAL_SCRATCH_RETAINED_BYTES: usize = 64 * 1024;
+
+thread_local! {
+    static CANONICAL_SCRATCH: RefCell<Vec<u8>> = const { RefCell::new(Vec::new()) };
+}
+
 /// Encodes one semantically canonical payload in compact V2 framing.
 pub fn encode(schema: &RecordSchema<'_>, payload: &[u8]) -> Result<Vec<u8>, EnvelopeError> {
     maximum_encoded_compact_record_bytes(schema, payload.len())?;
     (schema.validate_payload)(payload).map_err(EnvelopeError::InvalidPayload)?;
     encode_compact_checked_payload(schema, payload)
+}
+
+/// Frames one generated message straight into its compact V2 envelope.
+///
+/// The compact V2 header is a fixed 16 bytes and `Message::encoded_len` gives
+/// the exact payload length, so the payload can be written once at its final
+/// offset instead of being materialised in an intermediate buffer and copied
+/// in. The same framing bounds apply, the same preflight runs over the exact
+/// payload slice, and the CRC-32C still covers exactly those bytes, so the
+/// output is byte-identical to framing a separately encoded payload.
+pub(crate) fn encode_message_preflighted<M: Message>(
+    schema: &RecordSchema<'_>,
+    message: &M,
+) -> Result<Vec<u8>, EnvelopeError> {
+    let payload_bytes = message.encoded_len();
+    let total = maximum_encoded_compact_record_bytes(schema, payload_bytes)?;
+    let payload_length =
+        u32::try_from(payload_bytes).map_err(|_| EnvelopeError::PayloadTooLarge)?;
+    let mut encoded = Vec::with_capacity(total);
+    encoded.extend_from_slice(&COMPACT_RECORD_MAGIC_V2);
+    encoded.push(u8::try_from(STORAGE_FORMAT_VERSION_V2).expect("V2 fits u8"));
+    encoded.push(schema.compact_tag);
+    encoded.extend_from_slice(&schema.schema_revision.to_be_bytes());
+    encoded.extend_from_slice(&payload_length.to_be_bytes());
+    encoded.extend_from_slice(&0_u32.to_be_bytes());
+    message
+        .encode(&mut encoded)
+        .map_err(|_| EnvelopeError::Malformed)?;
+    if encoded.len() != total {
+        return Err(EnvelopeError::Malformed);
+    }
+    let payload = &encoded[COMPACT_RECORD_HEADER_V2_BYTES..];
+    (schema.preflight_payload)(payload).map_err(EnvelopeError::InvalidPayload)?;
+    let checksum = payload_crc32c(payload).to_be_bytes();
+    encoded[COMPACT_RECORD_HEADER_V2_BYTES - checksum.len()..COMPACT_RECORD_HEADER_V2_BYTES]
+        .copy_from_slice(&checksum);
+    Ok(encoded)
 }
 
 pub(crate) fn encode_preflighted(
@@ -885,6 +994,69 @@ mod tests {
     use super::*;
     use riffdb_types::hash_schema;
 
+    /// The scratch buffer behind `is_canonical_encoding` is reused across calls,
+    /// so a large payload must not leave a tail that a later shorter payload
+    /// could compare against, and a shorter one must not leave the buffer short.
+    #[test]
+    fn reused_canonicality_scratch_does_not_leak_between_payloads() {
+        let large = crate::storage::v1::StoredRecordRegistryV2 {
+            registry_digest: vec![0xAB; 4096],
+        };
+        let small = crate::storage::v1::StoredRecordRegistryV2 {
+            registry_digest: vec![0xCD; 8],
+        };
+        let large_payload = large.encode_to_vec();
+        let small_payload = small.encode_to_vec();
+
+        for _ in 0..3 {
+            assert!(is_canonical_encoding(&large, &large_payload));
+            assert!(is_canonical_encoding(&small, &small_payload));
+            assert!(!is_canonical_encoding(&large, &small_payload));
+            assert!(!is_canonical_encoding(&small, &large_payload));
+        }
+    }
+
+    /// The compare is the canonicality proof: any payload that is not exactly
+    /// what the decoded message re-encodes to must still be rejected.
+    #[test]
+    fn canonicality_compare_rejects_noncanonical_payload_bytes() {
+        let message = crate::storage::v1::StoredRecordRegistryV2 {
+            registry_digest: vec![0x11; 32],
+        };
+        let canonical = message.encode_to_vec();
+        assert!(is_canonical_encoding(&message, &canonical));
+
+        let mut trailing = canonical.clone();
+        trailing.push(0);
+        assert!(!is_canonical_encoding(&message, &trailing));
+
+        let mut truncated = canonical.clone();
+        truncated.pop();
+        assert!(!is_canonical_encoding(&message, &truncated));
+
+        let mut flipped = canonical.clone();
+        let last = flipped.len() - 1;
+        flipped[last] ^= 0xFF;
+        assert!(!is_canonical_encoding(&message, &flipped));
+    }
+
+    /// A payload sitting above the retained scratch capacity still compares
+    /// exactly, and the shrink afterwards must not disturb the next call.
+    #[test]
+    fn canonicality_compare_handles_payloads_above_the_retained_scratch() {
+        let message = crate::storage::v1::StoredRecordRegistryV2 {
+            registry_digest: vec![0x5A; CANONICAL_SCRATCH_RETAINED_BYTES + 1024],
+        };
+        let payload = message.encode_to_vec();
+        assert!(payload.len() > CANONICAL_SCRATCH_RETAINED_BYTES);
+        assert!(is_canonical_encoding(&message, &payload));
+
+        let small = crate::storage::v1::StoredRecordRegistryV2 {
+            registry_digest: vec![0x5A; 16],
+        };
+        assert!(is_canonical_encoding(&small, &small.encode_to_vec()));
+    }
+
     const RECORD_TYPE: &str = "riffdb.testing.v1.CompatibilityProbe";
     const OTHER_RECORD_TYPE: &str = "riffdb.testing.v1.OtherProbe";
     const DESCRIPTOR: &[u8] = include_bytes!(concat!(
@@ -928,7 +1100,7 @@ mod tests {
     fn validate_probe(payload: &[u8]) -> Result<(), PayloadValidationError> {
         let probe =
             CompatibilityProbe::decode(payload).map_err(|_| PayloadValidationError::Malformed)?;
-        if probe.encode_to_vec() != payload {
+        if !is_canonical_encoding(&probe, payload) {
             return Err(PayloadValidationError::NonCanonical);
         }
         Ok(())
@@ -1206,6 +1378,129 @@ mod tests {
         assert_eq!(
             RecordRegistry::new(&schemas).expect_err("oversized registry must fail"),
             RecordRegistryError::TooManySchemas
+        );
+    }
+}
+
+#[cfg(test)]
+mod peek_record_type_tests {
+    use super::*;
+
+    fn readable() -> RecordRegistry<'static> {
+        crate::durable::readable_record_registry()
+    }
+
+    /// The peek must select the same schema `decode_compact_v2` selects from
+    /// the same header, for every registered readable schema.
+    #[test]
+    fn peek_matches_the_schema_decode_would_select() {
+        for schema in crate::durable::READABLE_RECORD_SCHEMAS.iter() {
+            let mut header = Vec::with_capacity(COMPACT_RECORD_HEADER_V2_BYTES);
+            header.extend_from_slice(&COMPACT_RECORD_MAGIC_V2);
+            header.push(u8::try_from(STORAGE_FORMAT_VERSION_V2).expect("V2 fits u8"));
+            header.push(schema.compact_tag);
+            header.extend_from_slice(&schema.schema_revision.to_be_bytes());
+            header.extend_from_slice(&0_u32.to_be_bytes());
+            header.extend_from_slice(&payload_crc32c(&[]).to_be_bytes());
+
+            let peeked = readable()
+                .peek_compact_record_type(&header)
+                .expect("a registered identity resolves from its header");
+            // decode resolves by the same (tag, revision) pair; first match wins
+            // in both, so the peek must agree with that resolution exactly.
+            let resolved = crate::durable::READABLE_RECORD_SCHEMAS
+                .iter()
+                .find(|candidate| {
+                    candidate.compact_tag == schema.compact_tag
+                        && candidate.schema_revision == schema.schema_revision
+                })
+                .expect("present by construction");
+            assert_eq!(peeked, resolved.record_type);
+        }
+    }
+
+    /// Anything the header cannot answer must fall back, never guess.
+    #[test]
+    fn peek_declines_everything_it_cannot_resolve() {
+        let registry = readable();
+        let schema = &crate::durable::READABLE_RECORD_SCHEMAS[0];
+        let good = |tag: u8, revision: u16, magic: [u8; 4], version: u8| {
+            let mut header = Vec::new();
+            header.extend_from_slice(&magic);
+            header.push(version);
+            header.push(tag);
+            header.extend_from_slice(&revision.to_be_bytes());
+            header.extend_from_slice(&0_u32.to_be_bytes());
+            header.extend_from_slice(&payload_crc32c(&[]).to_be_bytes());
+            header
+        };
+        let version = u8::try_from(STORAGE_FORMAT_VERSION_V2).expect("V2 fits u8");
+        // Too short.
+        assert!(registry.peek_compact_record_type(&[]).is_none());
+        assert!(
+            registry
+                .peek_compact_record_type(
+                    &good(
+                        schema.compact_tag,
+                        schema.schema_revision,
+                        COMPACT_RECORD_MAGIC_V2,
+                        version
+                    )[..8]
+                )
+                .is_none()
+        );
+        // Legacy framing.
+        assert!(
+            registry
+                .peek_compact_record_type(&good(
+                    schema.compact_tag,
+                    schema.schema_revision,
+                    *b"RDB1",
+                    version
+                ))
+                .is_none()
+        );
+        // Wrong storage format version.
+        assert!(
+            registry
+                .peek_compact_record_type(&good(
+                    schema.compact_tag,
+                    schema.schema_revision,
+                    COMPACT_RECORD_MAGIC_V2,
+                    version.wrapping_add(1)
+                ))
+                .is_none()
+        );
+        // Zero identity, and an unregistered tag.
+        assert!(
+            registry
+                .peek_compact_record_type(&good(
+                    0,
+                    schema.schema_revision,
+                    COMPACT_RECORD_MAGIC_V2,
+                    version
+                ))
+                .is_none()
+        );
+        assert!(
+            registry
+                .peek_compact_record_type(&good(
+                    schema.compact_tag,
+                    0,
+                    COMPACT_RECORD_MAGIC_V2,
+                    version
+                ))
+                .is_none()
+        );
+        assert!(
+            registry
+                .peek_compact_record_type(&good(
+                    u8::MAX,
+                    u16::MAX,
+                    COMPACT_RECORD_MAGIC_V2,
+                    version
+                ))
+                .is_none()
         );
     }
 }

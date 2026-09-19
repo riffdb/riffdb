@@ -717,6 +717,32 @@ pub fn encode_command_capsule_v2(
     }
 }
 
+/// Returns the exact durable charge one V2 command capsule would encode to,
+/// without materializing its envelope.
+///
+/// Commit scan pages are budgeted by this charge and discard the bytes, so the
+/// scan pays a full proto encode, preflight, copy and CRC per command purely to
+/// learn a length. The value is byte-identical to
+/// `encode_command_capsule_v2(value)?.encoded_content_charge()`.
+pub fn command_capsule_v2_encoded_charge(
+    value: &StoredCommandCapsuleV2,
+) -> Result<crate::EncodedContentCharge, DurableCodecError> {
+    match command_capsule_wire_version_v1(value) {
+        CommandCapsuleWireVersionV1::V4 => {
+            super::encoded_message_charge(COMMAND_CAPSULE_V4, &capsule_v4_to_proto(value))
+        }
+        CommandCapsuleWireVersionV1::V5 => {
+            super::encoded_message_charge(COMMAND_CAPSULE_V5, &capsule_v5_to_proto(value))
+        }
+        CommandCapsuleWireVersionV1::V6 => {
+            super::encoded_message_charge(COMMAND_CAPSULE_V6, &capsule_v6_to_proto(value))
+        }
+        CommandCapsuleWireVersionV1::V7 => {
+            super::encoded_message_charge(COMMAND_CAPSULE_V7, &capsule_v7_to_proto(value))
+        }
+    }
+}
+
 /// Decodes one complete V2 command capsule.
 pub fn decode_command_capsule_v2(
     encoded: &[u8],
