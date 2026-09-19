@@ -1,11 +1,11 @@
 ---
 adr: "0240"
 title: Derived State Sinks Must Not Block The Primary Writer
-status: proposed
+status: accepted
 tier: guarantee
 date: 2026-09-19
-accepted: null
-acceptance: null
+accepted: 2026-09-19
+acceptance: 'maintainer, in session, 2026-09-19: "Approved" (ADR-0240 as written)'
 requires: [ADR-0010, ADR-0017, ADR-0093, ADR-0171, ADR-0239]
 amends:
   - ADR-0010 by requiring that projection application hold no lock the primary
