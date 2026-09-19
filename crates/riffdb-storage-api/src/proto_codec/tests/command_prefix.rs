@@ -249,3 +249,44 @@ fn command_prefix_successor_wire_vectors_are_exact() {
         assert_eq!(std::fs::read_to_string(path).unwrap(), output);
     }
 }
+
+// req: REP-007, AFC-007
+/// The commit-scan page budget needs only the charge, so it derives it from the
+/// encoded length instead of materializing an envelope it discards. That is
+/// only safe while the derived value is byte-identical to the charge a full
+/// encode records, for every capsule wire version the scan can meet.
+#[test]
+fn derived_capsule_charge_equals_the_full_encode_charge_for_every_wire_version() {
+    use crate::proto_codec::command_segment::{
+        command_capsule_v2_encoded_charge, command_capsule_wire_version_v1,
+    };
+
+    let legacy = capsule(1);
+    let successor = capsule(2)
+        .with_prefix_evidence(evidence(2, b"intermediate"))
+        .unwrap();
+
+    let mut seen = std::collections::BTreeSet::new();
+    for value in [&legacy, &successor] {
+        let version = command_capsule_wire_version_v1(value);
+        let encoded = encode_command_capsule_v2(value).expect("full encode");
+        let derived = command_capsule_v2_encoded_charge(value).expect("derived charge");
+        assert_eq!(
+            derived,
+            encoded.encoded_content_charge(),
+            "derived charge must equal the full-encode charge for {version:?}"
+        );
+        // The charge is the framed envelope length, so it is also exactly what
+        // the encoder produced, not merely a value that compares equal.
+        assert_eq!(derived.get(), encoded.as_bytes().len());
+        seen.insert(format!("{version:?}"));
+    }
+    assert!(
+        seen.len() >= 2,
+        "the proof must span more than one wire version, saw {seen:?}"
+    );
+    assert!(
+        seen.contains("V7"),
+        "the successor capsule must exercise V7"
+    );
+}

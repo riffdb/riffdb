@@ -145,6 +145,32 @@ pub(super) fn encode_message<M: Message + riffdb_proto::durable::WritableRecordM
     Ok(CanonicalStoredEnvelopeV1 { bytes, charge })
 }
 
+/// Computes the exact durable charge for one current-schema message without
+/// materializing its envelope.
+///
+/// The charge `encode_message` records is the framed envelope length, which is
+/// the fixed compact V2 header plus the payload. `Message::encoded_len` gives
+/// that payload length without allocating, so a caller that needs only the
+/// charge can skip the payload allocation, the preflight pass, the envelope
+/// allocation, the copy, and the CRC. The arithmetic and every bound are the
+/// same ones `encode_message` would apply, so the value is byte-identical to
+/// the charge of a full encode.
+pub(super) fn encoded_message_charge<M: Message + riffdb_proto::durable::WritableRecordMessage>(
+    record_type: &'static str,
+    message: &M,
+) -> Result<EncodedContentCharge, DurableCodecError> {
+    let schema = current_record_schema(record_type).ok_or_else(DurableCodecError::invariant)?;
+    if M::record_schema().record_type() != schema.record_type() {
+        return Err(DurableCodecError::invariant());
+    }
+    let framed = riffdb_proto::envelope::maximum_encoded_compact_record_bytes(
+        M::record_schema(),
+        message.encoded_len(),
+    )
+    .map_err(DurableCodecError::from_encode_envelope)?;
+    EncodedContentCharge::new(framed).ok_or_else(DurableCodecError::invariant)
+}
+
 /// Frames bytes emitted by a checked first-party structural encoder.
 ///
 /// Callers must already have proved the generated durable-wire shape and
