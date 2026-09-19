@@ -320,29 +320,44 @@ pub(super) fn decode_record_variant(
     current_record_type: &'static str,
     legacy_record_type: &'static str,
 ) -> Result<bool, DurableCodecError> {
-    let decoded = readable_record_registry()
-        .decode(encoded)
-        .map_err(DurableCodecError::from_decode_envelope)?;
-    match decoded.record_type() {
+    let classify = |record_type: &str| match record_type {
         record_type if record_type == current_record_type => Ok(true),
         record_type if record_type == legacy_record_type => Ok(false),
         _ => Err(DurableCodecError::new(
             DurableCodecErrorKind::UnexpectedRecordType,
         )),
+    };
+    // The caller decodes again as the chosen variant, so learning the identity
+    // does not need a full validating decode of a payload that is about to be
+    // decoded anyway. The header carries it; anything the header cannot answer
+    // falls back to the decode this replaced.
+    if let Some(record_type) = readable_record_registry().peek_compact_record_type(encoded) {
+        return classify(record_type);
     }
+    let decoded = readable_record_registry()
+        .decode(encoded)
+        .map_err(DurableCodecError::from_decode_envelope)?;
+    classify(decoded.record_type())
 }
 
 pub(super) fn decode_record_variant_chain(
     encoded: &[u8],
     accepted_record_types: &[&'static str],
 ) -> Result<usize, DurableCodecError> {
+    let position = |record_type: &str| {
+        accepted_record_types
+            .iter()
+            .position(|accepted| *accepted == record_type)
+            .ok_or_else(|| DurableCodecError::new(DurableCodecErrorKind::UnexpectedRecordType))
+    };
+    // As above: the chosen variant is decoded in full immediately afterwards.
+    if let Some(record_type) = readable_record_registry().peek_compact_record_type(encoded) {
+        return position(record_type);
+    }
     let decoded = readable_record_registry()
         .decode(encoded)
         .map_err(DurableCodecError::from_decode_envelope)?;
-    accepted_record_types
-        .iter()
-        .position(|record_type| *record_type == decoded.record_type())
-        .ok_or_else(|| DurableCodecError::new(DurableCodecErrorKind::UnexpectedRecordType))
+    position(decoded.record_type())
 }
 
 pub(super) fn require<T>(value: Option<T>) -> Result<T, DurableCodecError> {
