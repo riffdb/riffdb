@@ -245,7 +245,7 @@ fn tail(lines: &Arc<Mutex<Vec<String>>>) -> String {
         .unwrap_or_default()
 }
 
-fn write_protected(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
+pub(crate) fn write_protected(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
     use std::os::unix::fs::OpenOptionsExt;
     let mut file = std::fs::OpenOptions::new()
         .write(true)
