@@ -8,6 +8,10 @@ publish = false
 [workspace]
 resolver = "3"
 
+[[bin]]
+name = "riffdb-perf-surface"
+path = "src/main.rs"
+
 [dependencies]
 riffdb-contract-compiler = { path = "../../crates/riffdb-contract-compiler", version = "0.1.0", default-features = false }
 riffdb-contract-ir = { path = "../../crates/riffdb-contract-ir", version = "0.1.0", default-features = false }

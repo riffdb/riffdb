@@ -164,3 +164,4 @@ pub fn contract_source(mechanisms: &[Mechanism]) -> String {
 
 pub mod daemon;
 pub mod session;
+pub mod measure;
