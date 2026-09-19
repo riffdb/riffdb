@@ -1122,6 +1122,17 @@ impl ProjectionApplySnapshot {
     pub fn rows(&self) -> &[ProjectionApplyRowObservation] {
         &self.rows
     }
+
+    /// Separates the observed frontier from its rows without copying them.
+    ///
+    /// A caller that must hand the same observations to a second checked
+    /// construction can move them instead of cloning the whole vector. The
+    /// receiving `new` still validates them against its own request, so the
+    /// check is preserved and only its allocation is not repeated.
+    #[must_use]
+    pub fn into_parts(self) -> (FrontierPosition, Vec<ProjectionApplyRowObservation>) {
+        (self.expected_frontier, self.rows)
+    }
 }
 
 fn projection_snapshot_fixed_semantic_bytes(
