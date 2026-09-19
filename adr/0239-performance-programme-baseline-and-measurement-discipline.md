@@ -1,17 +1,28 @@
 ---
 adr: "0239"
 title: Performance Programme Baseline And Measurement Discipline
-status: proposed
+status: accepted
 tier: guarantee
 date: 2026-09-19
-accepted: null
-acceptance: null
+accepted: 2026-09-19
+acceptance: 'maintainer, in session, 2026-09-19: "Accept all three as written",
+  then "Lift it now as a recorded override" for decision 5, which amended this
+  record from banking-without-lifting to lifting ADR-0183 early'
 requires: [ADR-0171, ADR-0183, ADR-0237, ADR-0238]
-amends: []
+amends:
+  - ADR-0183 by lifting its performance-package freeze before WP-750 and
+    WP-760 close, which that record requires and which its checker rejects
+    except for the single enumerated exception named below.
 supersedes: []
 requirements: []
-packages: []
-obligations: []
+packages: [WP-790]
+obligations:
+  - id: OBL-0239-1
+    package: WP-790
+    proof: scripts/check-performance-freeze
+    says: The freeze lifts only under the one enumerated early-lift exception
+      naming this record; any other lift while WP-750 or WP-760 is open is
+      still rejected as premature.
 review_triggers:
   - A performance claim would be made publicly, or in a release note or
     benchmark publication, before the coverage gap named below is closed.
@@ -22,7 +33,11 @@ review_triggers:
     named index types, or contract row policies would be activated without
     first revisiting docs/performance/deferred-dormant-path-optimizations.md.
   - A release would be cut without re-banking on the N1 and E2 profiles.
-  - ADR-0183's freeze would lift, which this record deliberately does not do.
+  - A second early lift would be enumerated, or the premature-lift guard in
+    check-performance-freeze would be weakened rather than extended by one
+    named exception.
+  - A PERF-* work package would be registered relying on the lift, without the
+    measurement discipline in decisions 2 and 3 applying to it.
 ---
 # ADR-0239: Performance Programme Baseline And Measurement Discipline
 
@@ -42,6 +57,10 @@ Second, the benchmark contract declares no projection, no text index and no row
 policy, so whole subsystems have never been measured at all. A banked number
 that does not say what it covers invites the reader to assume it covers
 everything.
+
+ADR-0183 froze performance-package registration until a banked baseline existed
+and WP-750 and WP-760 closed. The baseline now exists; those two packages do
+not. This record supplies the first and accepts the deviation on the second.
 
 ## Decision
 
@@ -63,11 +82,19 @@ everything.
    of them. Coverage for those paths must exist before any public performance
    claim is made, and the baseline must say what it covers wherever it is
    quoted.
-5. This record does **not** lift ADR-0183's freeze. That freeze lifts only
-   after WP-750 and WP-760 close, through a separately accepted record, and
-   both packages are open. The freeze was never what gated this programme: it
-   governs PERF work-package registrations, this programme registers none, and
-   `check-performance-freeze` passes with the freeze in force.
+5. ADR-0183's performance-package freeze is lifted by this record, before
+   WP-750 and WP-760 close. ADR-0183 requires both to close first and names an
+   early lift as a review trigger, so this is a deliberate, accepted deviation
+   rather than an oversight.
+6. The lift is enumerated, not general. `check-performance-freeze` keeps its
+   premature-lift guard and gains one named exception permitting exactly this
+   record to lift with those two packages open. Any other early lift, by any
+   other record, is still rejected, and the self-test proves it. Weakening the
+   guard instead of extending it by one named exception is a review trigger.
+7. Lifting the freeze does not lift the discipline. Decisions 2 and 3 apply to
+   every performance package registered after the lift: measured on C3D
+   against the previous banked revision, and a delta smaller than this host's
+   run-to-run variance is not a result.
 
 ## Standing design tests
 
@@ -95,10 +122,22 @@ than kept.
 
 ## Options considered
 
-Lifting ADR-0183's freeze in this record was the original intent and was
-rejected on the facts: WP-750 and WP-760 are open, and ADR-0183 names lifting
-before they close as a review trigger. The freeze also turned out not to be
-blocking anything, so lifting it would have bought nothing.
+Leaving the freeze in force was drafted first and is the conservative option:
+it needs no deviation, and the freeze was demonstrably not blocking this
+programme, which registers no PERF package and passes the checker with the
+freeze in force. It was rejected because it leaves a constraint standing whose
+stated prerequisites depend on a workstream that has not advanced since
+2026-09-17, and because the thing the freeze protects -- a banked baseline that
+nobody moves quietly -- is what this record supplies.
+
+Deleting the premature-lift guard was rejected. The guard and its self-test
+exist precisely to prevent this action, and removing them would convert one
+accepted deviation into a permanent hole. Extending the guard by one named
+exception keeps the mechanism, keeps every other early lift rejected, and
+leaves the deviation enumerated where a reader will find it.
+
+Waiting for WP-750 and WP-760 to close was rejected as open-ended on the
+evidence of that workstream's activity.
 
 Keeping all three hosts as the per-change standard was rejected under decision
 2. Banking only the write path was rejected because it would have left the
@@ -106,8 +145,9 @@ first read and interactive measurements this project has ever taken unrecorded.
 
 ## Checks
 
-- `scripts/check-performance-freeze` passes with ADR-0183's freeze in force,
-  which is the evidence for decision 5.
+- `scripts/check-performance-freeze` records the lift by this record and
+  rejects any other early lift; `--self-test` covers both the permitted
+  exception and a premature lift by a different record.
 - The banked receipts and their stated limits are
   `docs/performance/c3d-programme-bank-2026-09.md`; the deferred findings on
   unreachable paths are `docs/performance/deferred-dormant-path-optimizations.md`.

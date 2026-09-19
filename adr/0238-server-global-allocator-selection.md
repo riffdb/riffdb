@@ -1,24 +1,25 @@
 ---
 adr: "0238"
 title: Server Global Allocator Selection
-status: proposed
+status: accepted
 tier: guarantee
 date: 2026-09-19
-accepted: null
-acceptance: null
+accepted: 2026-09-19
+acceptance: 'maintainer, in session, 2026-09-19: "Accept all three as written"
+  (ADR-0238 as written)'
 requires: [ADR-0171]
 amends: []
 supersedes: []
 requirements: []
-packages: []
+packages: [WP-789]
 obligations:
   - id: OBL-0238-1
-    package: null
+    package: WP-789
     proof: scripts/check-workspace-policy
     says: Exactly one package may restate the workspace lints, and only with
       unsafe_code at deny; every other package inherits the workspace forbid.
   - id: OBL-0238-2
-    package: null
+    package: WP-789
     proof: exactly_one_file_allows_unsafe_code_and_only_for_the_global_allocator
     says: Exactly one file in the workspace carries an allow(unsafe_code), it
       relaxes the lint for exactly one item, and that file declares the global

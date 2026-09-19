@@ -629,7 +629,7 @@ performance_freeze:
     state: closed
   - id: WP-784
     state: closed
-  lifted_by: null
+  lifted_by: ADR-0239
 work_packages:
 - id: WP-000
   closure:
@@ -26092,3 +26092,137 @@ work_packages:
     stop being reported.
   - A durable byte, storage key, encoding, transaction ordering, acknowledgement or public
     surface would change.
+- id: WP-788
+  name: Input-derived command facts reuse
+  tier: guarantee
+  depends_on: []
+  objective: Carry one input-derived proof per command from preparation through
+    admission into the attempt, so no stage in riffdb-commit re-derives it, and
+    prove the bind between the proof and the command wherever a stage acts on a
+    proof it did not derive, per ADR-0237 decisions 1 through 5.
+  requirements: []
+  required_adrs: [ADR-0237, ADR-0107, ADR-0126, ADR-0183]
+  allowed_paths: [SPEC.md, work_packages.yaml, adr/0237-input-derived-command-facts-reuse.md,
+    crates/riffdb-commit/src/command_admission.rs, crates/riffdb-commit/src/command_attempt.rs,
+    crates/riffdb-commit/src/command_index.rs, crates/riffdb-commit/src/command_validation.rs,
+    crates/riffdb-commit/src/writer_census.rs, crates/riffdb-commit/tests/architecture.rs]
+  deliverables:
+  - The proof travels preparation to admission to attempt, and riffdb-commit derives none of its own
+  - An explicit matches_command bind wherever a stage acts on a proof it did not derive
+  - A test proving a foreign proof is refused by transaction-current validation
+  acceptance_commands:
+  - ./scripts/acceptance --wp WP-788
+  exit_gate: riffdb-commit performs no input-facts derivation of its own, and a proof
+    derived from different input is refused rather than acted on.
+  standing_design_tests:
+    interface_safety: The proof stays crate-private to the sealed admission chain; no
+      application developer or agent can construct, clone, or supply one.
+    scale: Work and allocations are removed from a per-command path; no retained state is added.
+  human_review_triggers: *id001
+  closure:
+    status: complete
+    completed_at: '2026-09-19'
+    evidence: Measured on the running server, one command drove eight derivations of the same
+      input facts from eight call sites across four crates. The proof now travels from
+      preparation through admission into the attempt and riffdb-commit derives none of its own,
+      leaving three per command, all outside this crate. transaction_current_validation_refuses_a_foreign_input_proof
+      and command_validation_seals_one_exact_attempt_before_index_or_record_authority pass.
+    decisions_taken:
+    - Threading the proof across the catalog and runtime boundaries as well was implemented,
+      measured at roughly one percent with the highest concurrency level flat inside this host's
+      run-to-run variance, and reverted rather than kept, because it relaxed two further reviewed
+      contracts and changed a public signature for a result inside the noise floor.
+    - The record initially claimed matches_command was what refused a foreign proof. Removing
+      that line and re-running showed the refusal survives, because the identity and position
+      comparisons reject the proof independently. Both the record and the test were corrected to
+      say that enforcement is in depth and the guard is an explicit early failure.
+- id: WP-789
+  name: Server global allocator selection and the unsafe-code boundary
+  tier: guarantee
+  depends_on: []
+  objective: Select jemalloc as the riffdbd global allocator and enumerate, in machine-checked
+    form, the one package, one compilation unit, and one item that sit below the workspace
+    forbid(unsafe_code), per ADR-0238 decisions 1 through 5.
+  requirements: []
+  required_adrs: [ADR-0238, ADR-0171]
+  allowed_paths: [SPEC.md, work_packages.yaml, adr/0238-server-global-allocator-selection.md,
+    Cargo.lock, crates/riffdb-server/Cargo.toml, crates/riffdb-server/src/main.rs,
+    crates/riffdb-testkit-server/Cargo.toml, crates/riffdb-testkit-server/tests/architecture.rs,
+    scripts/check-workspace-policy, tests/unsafe_code_boundary.rs]
+  deliverables:
+  - jemalloc selected in the riffdbd binary at an exact pinned version
+  - check-workspace-policy permitting exactly one named package and one named file, and rejecting any other
+  - tests/unsafe_code_boundary.rs asserting the boundary independently from the source tree
+  acceptance_commands:
+  - ./scripts/acceptance --wp WP-789
+  - ./scripts/check-workspace-policy
+  exit_gate: Exactly one package, one compilation unit, and one item sit below the workspace
+    forbid, and both the policy checker and the boundary test fail when that is violated.
+  standing_design_tests:
+    interface_safety: The allocator is process configuration in the server binary; no public
+      surface changes and no guarantee can be opted out of through it.
+    scale: A per-thread-arena allocator reduces contention on a shared allocator and assumes
+      nothing about storage topology.
+  human_review_triggers: *id001
+  closure:
+    status: complete
+    completed_at: '2026-09-19'
+    evidence: Measured on the C3D bench host across two runs each, jemalloc raised write
+      throughput by 2.5 percent at one client and 11.5, 13.0 and 15.6 percent at 8, 32 and 128
+      concurrent clients, and cut c=128 p95 from 80 ms to 55 ms; mimalloc trailed by 1 to 2
+      percent at every level on the same harness. The riffdbd binary root alone drops to deny,
+      the riffdb-server library re-forbids itself, and all other crates inherit the workspace
+      forbid. Each of the five checker failure modes and each of the four boundary-test
+      assertions was confirmed to fail when its boundary is violated.
+    decisions_taken:
+    - forbid was not lowered workspace-wide. A forbid cannot be relaxed by an allow on the item,
+      so the exception is one package restating the lints at deny and one binary root, both
+      named as constants in the checker so widening them is a visible edit.
+    - The allocator was not made a build feature, which would have doubled the configuration
+      matrix for a choice that is cheap to revisit by changing one static and one dependency.
+- id: WP-790
+  name: Performance programme baseline and measurement discipline
+  tier: guarantee
+  depends_on: []
+  objective: Bank the C3D baseline with its stated limits, record the measurement discipline,
+    and lift ADR-0183's freeze through one enumerated early-lift exception, per ADR-0239
+    decisions 1 through 7.
+  requirements: []
+  required_adrs: [ADR-0239, ADR-0171, ADR-0183, ADR-0237, ADR-0238]
+  allowed_paths: [SPEC.md, work_packages.yaml,
+    adr/0239-performance-programme-baseline-and-measurement-discipline.md,
+    docs/performance/c3d-programme-bank-2026-09.md,
+    docs/performance/deferred-dormant-path-optimizations.md,
+    scripts/check-performance-freeze]
+  deliverables:
+  - A banked baseline naming the revision, load, client count, and the limits of each figure
+  - One enumerated early-lift exception in check-performance-freeze, with the guard intact
+  - A record of the deferred findings on paths no application can reach today
+  acceptance_commands:
+  - ./scripts/acceptance --wp WP-790
+  - ./scripts/check-performance-freeze --self-test
+  exit_gate: The freeze is lifted by ADR-0239 and by no other record, the banked baseline states
+    what it does and does not cover, and any other early lift is still rejected as premature.
+  standing_design_tests:
+    interface_safety: Not applicable; the record adds no surface and changes no runtime behaviour.
+    scale: Not applicable to storage. It does assume one bench host as the development standard,
+      recorded as a deliberate and reversible choice.
+  human_review_triggers: *id001
+  closure:
+    status: complete
+    completed_at: '2026-09-19'
+    evidence: The banked receipts are docs/performance/c3d-programme-bank-2026-09.md, covering
+      write_only, read_only and interactive on C3D. Write throughput rose 13.2, 22.5, 29.1 and
+      30.6 percent at 1, 8, 32 and 128 clients against pre-programme main, with c=128 p95 falling
+      from 88 ms to 55 ms. check-performance-freeze reports the freeze lifted by ADR-0239, and
+      both the self-test and a direct trial with an existing accepted record other than ADR-0239
+      confirm any other early lift is still rejected as premature.
+    decisions_taken:
+    - The lift was enumerated rather than granted by weakening the premature-lift guard. The
+      guard and its self-test exist to prevent exactly this action; removing them would have
+      converted one accepted deviation into a permanent hole.
+    - The bank records that read_only and interactive have no prior comparison, because those
+      loads had never been run on this host, and that this host's run-to-run variance is 2 to 4
+      percent rather than the 1 percent assumed for most of the programme.
+    - Projection, tokenized-text and row-policy coverage is absent because no contract in the
+      repository declares them; closing that gap is required before any public performance claim.
