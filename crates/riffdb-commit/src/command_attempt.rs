@@ -15,7 +15,7 @@ use riffdb_catalog::{
 };
 use riffdb_conflict::{CancellationToken, ConflictError, ConflictManager, MutationLease};
 use riffdb_contract_ir::BindingMode;
-use riffdb_invariant::derive_input_command_facts;
+use riffdb_invariant::InputDerivedCommandFacts;
 use riffdb_policy::{
     AuthorizedCommandRowPolicyContextV1, resolve_authorized_command_row_policy_context,
 };
@@ -41,6 +41,10 @@ pub(crate) const MAX_COMMAND_EVALUATION_ATTEMPTS_V1: usize = 3;
 pub(crate) struct PendingCommandAttempts {
     resolved_plan: ResolvedExecutablePlan,
     normalized_input: CanonicalRecord,
+    /// Derived once from the plan and input this state retains, both of which
+    /// are immutable for the attempt's lifetime, so every later stage borrows
+    /// this one proof instead of re-deriving an identical copy.
+    input_facts: InputDerivedCommandFacts,
     commit_context: PreEvaluationCommitContext,
     raw_conflict_keys: Vec<ConflictKey>,
     snapshot_request: SnapshotRequest,
@@ -68,6 +72,7 @@ impl PendingCommandAttempts {
         let CommandExecutionCandidateParts {
             resolved_plan,
             normalized_input,
+            input_facts,
             commit_context,
             raw_conflict_keys,
             snapshot_request,
@@ -83,9 +88,12 @@ impl PendingCommandAttempts {
         if lookup_candidates != retained_lookup_candidates {
             return Err(CommandAttemptError::Integrity);
         }
-        let input_facts =
-            derive_input_command_facts(resolved_plan.plan(), normalized_input.clone())
-                .map_err(|_| CommandAttemptError::Integrity)?;
+        // The proof travels from preparation rather than being re-derived; the
+        // bind to this exact plan and input is what re-derivation used to give
+        // by construction, so it is checked explicitly here instead.
+        if !input_facts.matches_command(resolved_plan.plan(), &normalized_input) {
+            return Err(CommandAttemptError::Integrity);
+        }
         if input_facts.binding_plan_indices().len() != snapshot_request.binding_targets().len() {
             return Err(CommandAttemptError::Integrity);
         }
@@ -104,6 +112,7 @@ impl PendingCommandAttempts {
         Ok(Self {
             resolved_plan,
             normalized_input,
+            input_facts,
             commit_context,
             raw_conflict_keys,
             snapshot_request,
@@ -265,6 +274,11 @@ impl EvaluatedCommandAttempt {
 
     pub(super) const fn normalized_input(&self) -> &CanonicalRecord {
         &self.state.normalized_input
+    }
+
+    /// Borrows the one input-derived proof this attempt retains.
+    pub(super) const fn input_facts(&self) -> &InputDerivedCommandFacts {
+        &self.state.input_facts
     }
 
     pub(super) const fn materialized_snapshot(&self) -> &MaterializedCommandSnapshot {
@@ -464,6 +478,10 @@ impl ProvenanceBoundCommandAttempt {
 
     pub(super) const fn normalized_input(&self) -> &CanonicalRecord {
         self.attempt.normalized_input()
+    }
+
+    pub(super) const fn input_facts(&self) -> &InputDerivedCommandFacts {
+        self.attempt.input_facts()
     }
 
     pub(super) const fn materialized_snapshot(&self) -> &MaterializedCommandSnapshot {
@@ -1093,16 +1111,9 @@ impl AcquiredCommandAttempt {
         if !snapshot_matches_request(&self.state.snapshot_request, &discovery) {
             return Err(CommandAttemptError::Integrity);
         }
-        let facts_started = crate::writer_census::stage_start();
-        let facts = derive_input_command_facts(
-            self.state.resolved_plan.plan(),
-            self.state.normalized_input.clone(),
-        )
-        .map_err(|_| CommandAttemptError::Integrity)?;
-        crate::writer_census::charge(crate::writer_census::SERIAL_INPUT_FACTS, facts_started);
         match crate::command_index::lower_cascade_discovery(
             &self.state.resolved_plan,
-            &facts,
+            &self.state.input_facts,
             &discovery,
         )
         .map_err(|_| CommandAttemptError::Integrity)?
@@ -1215,10 +1226,11 @@ fn finish_acquired_discovery(
     if !snapshot_matches_request(&state.snapshot_request, &discovery) {
         return Err(CommandAttemptError::Integrity);
     }
-    let facts =
-        derive_input_command_facts(state.resolved_plan.plan(), state.normalized_input.clone())
-            .map_err(|_| CommandAttemptError::Integrity)?;
-    match crate::command_index::lower_cascade_discovery(&state.resolved_plan, &facts, &discovery)
+    match crate::command_index::lower_cascade_discovery(
+        &state.resolved_plan,
+        &state.input_facts,
+        &discovery,
+    )
         .map_err(|_| CommandAttemptError::Integrity)?
     {
         crate::command_index::CascadeDiscoveryDecision::Complete => {
@@ -1995,6 +2007,7 @@ contract AttemptMaterialization version {version} {{
         PendingCommandAttempts {
             resolved_plan,
             normalized_input,
+            input_facts: facts,
             commit_context,
             raw_conflict_keys,
             snapshot_request,
@@ -2130,6 +2143,7 @@ contract AttemptMaterialization version {version} {{
             PendingCommandAttempts {
                 resolved_plan,
                 normalized_input,
+                input_facts: facts,
                 commit_context,
                 raw_conflict_keys,
                 snapshot_request,

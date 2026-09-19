@@ -18,7 +18,8 @@ use riffdb_contract_ir::{
     RecordSchema, RecordTypeRef, RootValidationReadId, SchemaIr, ValueType,
 };
 use riffdb_invariant::{
-    CommitCheckResult, EvaluationError, ExpressionValueSource, derive_input_command_facts,
+    CommitCheckResult, EvaluationError, ExpressionValueSource, InputDerivedCommandFacts,
+    derive_input_command_facts,
     evaluate_commit_checks, evaluate_expression,
 };
 use riffdb_policy::AuthorizedCommandRowPolicyContextV1;
@@ -1223,6 +1224,7 @@ where
     let decision = validate_transaction_current_command_parts(
         attempt.resolved_plan(),
         attempt.normalized_input(),
+        attempt.input_facts(),
         pending.logical_time(),
         attempt.evaluated(),
         current.state(),
@@ -1274,17 +1276,25 @@ where
 pub(super) fn validate_transaction_current_command_parts(
     resolved: &ResolvedExecutablePlan,
     normalized_input: &CanonicalRecord,
+    facts: &InputDerivedCommandFacts,
     logical_time: LogicalTime,
     evaluated: &EvaluatedCommand,
     current: &TransactionCurrentState,
 ) -> Result<CheckedCommandDecision, CommandValidationError> {
-    validate_identity_positions_and_output(resolved, normalized_input, evaluated, current)?;
+    // The facts used to be derived here from `normalized_input`, so the two
+    // agreed by construction. They are now supplied by the caller, so the bind
+    // between the proof and this exact plan and input is checked explicitly
+    // instead. This is the same coupling, made enforceable.
+    if !facts.matches_command(resolved.plan(), normalized_input) {
+        return Err(CommandValidationError::integrity());
+    }
+    validate_identity_positions_and_output(resolved, normalized_input, facts, evaluated, current)?;
 
     if evaluated.mutations().is_empty() {
         return Ok(CheckedCommandDecision::ZeroMutation);
     }
 
-    let coverage = prove_mutation_coverage(resolved, normalized_input, evaluated, current)?;
+    let coverage = prove_mutation_coverage(resolved, facts, evaluated, current)?;
     if resolved.plan().commit_checks().is_empty() {
         return Ok(CheckedCommandDecision::NonZero(coverage));
     }
@@ -1305,8 +1315,6 @@ pub(super) fn validate_transaction_current_command_parts(
     } else {
         vec![None]
     };
-    let facts = derive_input_command_facts(resolved.plan(), normalized_input.clone())
-        .map_err(|_| CommandValidationError::integrity())?;
     for ordinal in element_ordinals {
         let active_bindings = facts
             .binding_plan_indices()
@@ -1369,15 +1377,14 @@ pub(super) fn validate_transaction_current_command_parts(
 fn validate_identity_positions_and_output(
     resolved: &ResolvedExecutablePlan,
     normalized_input: &CanonicalRecord,
+    facts: &InputDerivedCommandFacts,
     evaluated: &EvaluatedCommand,
     current: &TransactionCurrentState,
 ) -> Result<(), CommandValidationError> {
     let reference = resolved.reference();
     let plan = resolved.plan();
     let request = evaluated.validation_request();
-    let facts = derive_input_command_facts(plan, normalized_input.clone())
-        .map_err(|_| CommandValidationError::integrity())?;
-    let expected_ranges = crate::command_index::derive_delete_ranges(resolved, &facts)
+    let expected_ranges = crate::command_index::derive_delete_ranges(resolved, facts)
         .map_err(|_| CommandValidationError::integrity())?
         .into_iter()
         .map(|(target, _)| target)
@@ -1739,14 +1746,12 @@ pub(super) fn dependencies_from_current(
 
 fn prove_mutation_coverage(
     resolved: &ResolvedExecutablePlan,
-    normalized_input: &CanonicalRecord,
+    facts: &InputDerivedCommandFacts,
     evaluated: &EvaluatedCommand,
     current: &TransactionCurrentState,
 ) -> Result<Box<[Option<usize>]>, CommandValidationError> {
     let plan = resolved.plan();
     let request = evaluated.validation_request();
-    let facts = derive_input_command_facts(plan, normalized_input.clone())
-        .map_err(|_| CommandValidationError::integrity())?;
     let maximum_mutation_count = facts
         .binding_plan_indices()
         .iter()
@@ -2677,6 +2682,8 @@ contract UnaryDeleteValidation version 1 {
             validate_transaction_current_command_parts(
                 &fixture.prepared.resolved,
                 &fixture.prepared.input,
+                &derive_input_command_facts(fixture.prepared.resolved.plan(), fixture.prepared.input.clone())
+                    .expect("fixture input facts"),
                 fixture.prepared.logical_time,
                 &fixture.evaluated,
                 &fixture.current,
@@ -2730,6 +2737,8 @@ contract UnaryDeleteValidation version 1 {
             validate_transaction_current_command_parts(
                 &fixture.prepared.resolved,
                 &fixture.prepared.input,
+                &derive_input_command_facts(fixture.prepared.resolved.plan(), fixture.prepared.input.clone())
+                    .expect("fixture input facts"),
                 fixture.prepared.logical_time,
                 &fixture.evaluated,
                 &fixture.current,
@@ -2782,6 +2791,8 @@ contract UnaryDeleteValidation version 1 {
             validate_transaction_current_command_parts(
                 &fixture.prepared.resolved,
                 &fixture.prepared.input,
+                &derive_input_command_facts(fixture.prepared.resolved.plan(), fixture.prepared.input.clone())
+                    .expect("fixture input facts"),
                 fixture.prepared.logical_time,
                 &fixture.evaluated,
                 &fixture.current,
@@ -2825,6 +2836,8 @@ contract UnaryDeleteValidation version 1 {
             validate_transaction_current_command_parts(
                 &fixture.prepared.resolved,
                 &fixture.prepared.input,
+                &derive_input_command_facts(fixture.prepared.resolved.plan(), fixture.prepared.input.clone())
+                    .expect("fixture input facts"),
                 fixture.prepared.logical_time,
                 &fixture.evaluated,
                 &fixture.current,
@@ -3290,6 +3303,8 @@ contract ReadOnlyValidation version 1 {
         validate_transaction_current_command_parts(
             &fixture.prepared.resolved,
             &fixture.prepared.input,
+            &derive_input_command_facts(fixture.prepared.resolved.plan(), fixture.prepared.input.clone())
+                .expect("fixture input facts"),
             fixture.prepared.logical_time,
             &fixture.evaluated,
             &fixture.current,
@@ -3478,6 +3493,8 @@ contract ReadOnlyValidation version 1 {
         assert_integrity(validate_transaction_current_command_parts(
             &read_only.resolved,
             &read_only.input,
+            &derive_input_command_facts(read_only.resolved.plan(), read_only.input.clone())
+                .expect("fixture input facts"),
             read_only.logical_time,
             &forged,
             &current,
@@ -3548,6 +3565,8 @@ contract ReadOnlyValidation version 1 {
         assert_integrity(validate_transaction_current_command_parts(
             &ordinary.prepared.resolved,
             &ordinary.prepared.input,
+            &derive_input_command_facts(ordinary.prepared.resolved.plan(), ordinary.prepared.input.clone())
+                .expect("fixture input facts"),
             ordinary.prepared.logical_time,
             &forged_evaluated,
             &forged_current,
@@ -3782,6 +3801,8 @@ contract ReadOnlyValidation version 1 {
         assert_integrity(validate_transaction_current_command_parts(
             &fixture.prepared.resolved,
             &fixture.prepared.input,
+            &derive_input_command_facts(fixture.prepared.resolved.plan(), fixture.prepared.input.clone())
+                .expect("fixture input facts"),
             fixture.prepared.logical_time,
             &fixture.evaluated,
             &malformed_current,
@@ -3819,6 +3840,8 @@ contract ReadOnlyValidation version 1 {
         assert_integrity(validate_transaction_current_command_parts(
             &fixture.prepared.resolved,
             &fixture.prepared.input,
+            &derive_input_command_facts(fixture.prepared.resolved.plan(), fixture.prepared.input.clone())
+                .expect("fixture input facts"),
             fixture.prepared.logical_time,
             &fixture.evaluated,
             &malformed_current,
@@ -3826,7 +3849,8 @@ contract ReadOnlyValidation version 1 {
 
         let coverage = prove_mutation_coverage(
             &fixture.prepared.resolved,
-            &fixture.prepared.input,
+            &derive_input_command_facts(fixture.prepared.resolved.plan(), fixture.prepared.input.clone())
+                .expect("fixture input facts"),
             &fixture.evaluated,
             &fixture.current,
         )
@@ -4233,6 +4257,11 @@ contract ReadOnlyValidation version 1 {
         assert_integrity(validate_transaction_current_command_parts(
             &fixture.prepared.resolved,
             &bad_input,
+            &derive_input_command_facts(
+                fixture.prepared.resolved.plan(),
+                fixture.prepared.input.clone(),
+            )
+            .expect("fixture input facts"),
             fixture.prepared.logical_time,
             &fixture.evaluated,
             &fixture.current,

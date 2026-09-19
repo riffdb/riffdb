@@ -435,20 +435,24 @@ fn command_validation_seals_one_exact_attempt_before_index_or_record_authority()
     for required in [
         "plan.execution_class() != ExecutionClass::IdempotentMutation",
         // ADR-0107/ADR-0126 checked deletes are the only command path allowed
-        // to carry range dependencies. Validation independently re-derives
-        // exact reverse-index prefixes and cascade bounds from plan and input;
-        // accepting caller-selected ranges would create storage authority.
-        "derive_delete_ranges(resolved, &facts)",
+        // to carry range dependencies. Validation still derives the exact
+        // reverse-index prefixes and cascade bounds itself, from the one
+        // input-derived proof the attempt retains; accepting caller-selected
+        // ranges would create storage authority.
+        "derive_delete_ranges(resolved, facts)",
         "request.range_targets() != expected_ranges",
         "current.ranges().len() != expected_ranges.len()",
         "target != observation.target()",
         "validate_evaluated_output(",
         "validate_post_image_and_project(",
         "materialize_current_entity_record(",
-        // ADR-0107 collection slots are re-derived from the exact normalized
-        // input through the pure invariant evaluator. This is semantic
-        // validation, not a second admission or storage authority.
-        "derive_input_command_facts",
+        // ADR-0107 collection slots resolve against the exact normalized input
+        // through the pure invariant evaluator. The proof is derived once per
+        // attempt rather than re-derived here, so validation must prove the
+        // supplied facts are bound to this exact plan and input before using
+        // them. This is semantic validation, not a second admission or storage
+        // authority.
+        "facts.matches_command(resolved.plan(), normalized_input)",
         "struct TransactionCurrentValues",
         "input: CanonicalRecord",
         "bindings: Box<[PositionedBindingRecord]>",
