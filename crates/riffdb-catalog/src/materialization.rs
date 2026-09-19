@@ -1711,6 +1711,57 @@ contract SnapshotMaterialization version {version} {{
         );
     }
 
+    fn command_input(resolved: &ResolvedExecutablePlan, id_seed: u8) -> CanonicalRecord {
+        let schema = resolved.plan().input().record();
+        let mut fields = Vec::new();
+        for field in schema.fields() {
+            match field.name() {
+                "tenant" => fields.push((field.id(), CanonicalValue::Uuid(uuid(0xaa)))),
+                name if name.starts_with("id_") => {
+                    fields.push((field.id(), CanonicalValue::Uuid(uuid(id_seed))));
+                }
+                unexpected => panic!("unexpected command input field {unexpected}"),
+            }
+        }
+        CanonicalRecord::new(fields).expect("command input")
+    }
+
+    /// Snapshot materialization takes the caller's input-derived proof rather
+    /// than deriving its own, so the guarantee that callers cannot submit
+    /// binding indices, keys, or range counts now rests on the bind check: a
+    /// proof belonging to a different input must be refused, and a bound proof
+    /// must produce exactly what deriving it here produced.
+    #[test]
+    fn supplied_input_facts_are_rejected_unless_bound_to_the_materialized_command() {
+        let bundles = lineage(1);
+        let resolved = resolved_at(bundles, 1);
+        let input = command_input(&resolved, 1);
+        let foreign_input = command_input(&resolved, 2);
+        assert_ne!(input, foreign_input);
+
+        let facts = riffdb_invariant::derive_input_command_facts(resolved.plan(), input.clone())
+            .expect("input facts");
+        let foreign_facts =
+            riffdb_invariant::derive_input_command_facts(resolved.plan(), foreign_input.clone())
+                .expect("foreign input facts");
+
+        let bound = SnapshotPositionMap::from_input(&resolved, &input, &facts)
+            .expect("bound proof yields positions");
+        assert_eq!(
+            bound.binding_keys.as_deref(),
+            Some(facts.binding_entity_keys())
+        );
+
+        assert!(
+            SnapshotPositionMap::from_input(&resolved, &input, &foreign_facts).is_err(),
+            "a proof derived from different input must not be used"
+        );
+        assert!(
+            SnapshotPositionMap::from_input(&resolved, &foreign_input, &facts).is_err(),
+            "a proof must not be used against different input"
+        );
+    }
+
     #[test]
     // req: REP-007
     fn prefix_index_materialization_keeps_raw_identity_and_requires_lineage_eligibility() {
