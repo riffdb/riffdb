@@ -210,6 +210,8 @@ impl fmt::Debug for CommandSnapshotRequestProof {
 pub(crate) struct CommandExecutionCandidate {
     resolved_plan: ResolvedExecutablePlan,
     normalized_input: CanonicalRecord,
+    /// The one proof derived at preparation, carried instead of re-derived.
+    input_facts: InputDerivedCommandFacts,
     commit_context: PreEvaluationCommitContext,
     raw_conflict_keys: Vec<ConflictKey>,
     snapshot: CommandSnapshotRequestProof,
@@ -226,6 +228,7 @@ pub(crate) struct CommandExecutionCandidate {
 pub(crate) struct CommandExecutionCandidateParts {
     pub(crate) resolved_plan: ResolvedExecutablePlan,
     pub(crate) normalized_input: CanonicalRecord,
+    pub(crate) input_facts: InputDerivedCommandFacts,
     pub(crate) commit_context: PreEvaluationCommitContext,
     pub(crate) raw_conflict_keys: Vec<ConflictKey>,
     pub(crate) snapshot_request: SnapshotRequest,
@@ -273,6 +276,7 @@ impl CommandExecutionCandidate {
         CommandExecutionCandidateParts {
             resolved_plan: self.resolved_plan,
             normalized_input: self.normalized_input,
+            input_facts: self.input_facts,
             commit_context: self.commit_context,
             raw_conflict_keys: self.raw_conflict_keys,
             snapshot_request: self.snapshot.request,
@@ -327,6 +331,7 @@ impl fmt::Debug for CommandExecutionCandidate {
 struct LoweredPreparation {
     resolved_plan: ResolvedExecutablePlan,
     normalized_input: CanonicalRecord,
+    input_facts: InputDerivedCommandFacts,
     raw_conflict_keys: Vec<ConflictKey>,
     conflict_hashes: Vec<ConflictKeyHash>,
     snapshot: CommandSnapshotRequestProof,
@@ -835,6 +840,7 @@ fn lower_preparation(
     Ok(LoweredPreparation {
         resolved_plan: parts.resolved_plan,
         normalized_input,
+        input_facts: parts.input_facts,
         raw_conflict_keys,
         conflict_hashes,
         snapshot,
@@ -857,6 +863,7 @@ fn candidate(
     CommandExecutionCandidate {
         resolved_plan: lowered.resolved_plan,
         normalized_input: lowered.normalized_input,
+        input_facts: lowered.input_facts,
         commit_context,
         raw_conflict_keys: lowered.raw_conflict_keys,
         snapshot: lowered.snapshot,
