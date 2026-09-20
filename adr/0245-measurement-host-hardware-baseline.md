@@ -7,7 +7,9 @@ date: 2026-09-19
 accepted: 2026-09-19
 acceptance: 'maintainer, in session, 2026-09-19: "yes, do this"; the hardware
   position stated as "this is a next generation database, it is acceptable to
-  require modern hardware" (ADR-0245 as written)'
+  require modern hardware"; the extension beyond SHA-2 to AES, carry-less
+  multiply and SSE4.2 accepted in the same session as "Add AES-NI + PCLMULQDQ
+  + SSE4.2" (ADR-0245 as written)'
 requires: [ADR-0171, ADR-0239]
 amends:
   - ADR-0239 by retiring N1 from the release profile set its decision 2 names.
@@ -64,11 +66,22 @@ note.
 
 ## Decision
 
-1. A host admitted as a measurement profile must carry hardware SHA-2
-   acceleration, verified from the host rather than assumed from its instance
-   name. The requirement is stated as hardware SHA-2, not as SHA-NI, because
-   the ARMv8 cryptographic extensions are the same capability on the ARM
+1. A host admitted as a measurement profile must carry hardware **SHA-2**,
+   **AES**, **carry-less multiply** and **SSE4.2** acceleration, verified from
+   the host rather than assumed from its instance name. The capabilities are
+   named by what they accelerate rather than by their x86 spellings, because
+   the ARMv8 cryptographic extensions are the same capabilities on the ARM
    hosts RiffDB expects to support.
+
+   Each is named for a cost this workload actually pays. SHA-2 hashes every
+   mutation. AES and carry-less multiply carry TLS, which every client
+   connection uses and which rustls selects hardware implementations for at
+   runtime, so a host without them distorts TLS-bound attribution exactly as
+   N1 distorted hashing. SSE4.2 carries CRC-32C, the checksum on every
+   envelope. AVX-512 and VAES are deliberately **not** required: nothing in
+   RiffDB has been measured to depend on them, E2 lacks VAES already, and
+   requiring a capability on speculation narrows host selection for no
+   measured reason.
 2. N1 is retired from the release profile set ADR-0239 decision 2 names.
 3. The release profile set stays at two hosts. It is not reduced to one:
    two profiles exist to separate a real regression from a single host's
@@ -96,10 +109,19 @@ time pressure. It was already written down once and still cost days.
 and it removes the ability to tell a regression from a host artifact, which is
 the reason a second profile exists.
 
-**Require AES-NI and AVX-512 as well** was not taken. Only SHA-2 has been shown
-to divide these hosts non-uniformly for this workload. Extending the
-requirement on evidence is a review trigger; extending it on speculation would
-constrain host selection for no measured reason.
+**Requiring only SHA-2** was the first draft and was extended before
+acceptance. SHA-2 is the capability that demonstrably misled a measurement, but
+AES, carry-less multiply and SSE4.2 each carry a cost this workload pays on
+every connection or every frame, and all three surviving hosts already provide
+them, so the requirement excludes no host we use. **AVX-512 and VAES were
+still not taken**, on the same evidence rule: neither has been measured to
+matter here.
+
+One consequence surfaced while checking this. RiffDB computes CRC-32C, the
+polynomial SSE4.2 implements directly, through a software lookup table
+(`riffdb-proto/src/envelope.rs:33`), so the SSE4.2 requirement describes
+hardware the code does not yet use. That is recorded as available headroom,
+not as a claim that the requirement is already earning its keep.
 
 ## Consequences
 
