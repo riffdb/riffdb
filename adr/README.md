@@ -275,7 +275,7 @@ record with no front matter.
 | [0241](0241-rust-1-98-1-toolchain-upgrade.md) | Rust 1.98.1 Toolchain Upgrade | Accepted | surface |
 | [0242](0242-formatting-drift-repair.md) | Formatting Drift Repair | Accepted | guarantee |
 | [0243](0243-public-repository-disclosure-guards.md) | Public Repository Disclosure Guards | Accepted | guarantee |
-| [0244](0244-retire-durable-command-derived-locator-tables.md) | Retire Durable Command Derived Locator Tables | Proposed | guarantee |
+| [0244](0244-retire-durable-command-derived-locator-tables.md) | Retire Durable Command Derived Locator Tables | Accepted | guarantee |
 <!-- adr-index:end -->
 
 The human architecture review on 2026-07-12 approved the direction represented

@@ -1,11 +1,12 @@
 ---
 adr: "0244"
 title: Retire Durable Command Derived Locator Tables
-status: proposed
+status: accepted
 tier: guarantee
 date: 2026-09-19
-accepted: null
-acceptance: null
+accepted: 2026-09-19
+acceptance: 'maintainer, in session, 2026-09-19: "Approved"
+  (ADR-0244 as written)'
 requires: [ADR-0102, ADR-0165, ADR-0234, ADR-0236, ADR-0239]
 amends:
   - ADR-0165 by removing the three durable locator tables it added, while
