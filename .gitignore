@@ -3,8 +3,11 @@
 /examples/app-baseline/target/
 /examples/**/target/
 
-# Rebuildable local exact-query provider checkpoints
+# Rebuildable local exact-query provider checkpoints. The daemon resolves its
+# projections root against the current directory when none is configured, so a
+# tool run from a subdirectory drops one there too.
 /projections/
+projections/
 
 # Public marketing website
 /website/node_modules/
