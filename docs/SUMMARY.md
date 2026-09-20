@@ -139,6 +139,7 @@
 
 - [Benchmark Integrity](performance/benchmark-integrity.md)
 - [Sub-variance Wins Register](performance/sub-variance-wins-register.md)
+- [Columnar Measurability Gap](performance/columnar-measurability-gap.md)
 - [App-baseline Alpha Evidence](performance/app-baseline-alpha.md)
 - [Alpha Endurance Harness](performance/alpha-endurance.md)
 - [WP-449 Writer Evidence](performance/wp-449-writer-evidence.md)
