@@ -1,11 +1,12 @@
 ---
 adr: "0243"
 title: Public Repository Disclosure Guards
-status: proposed
+status: accepted
 tier: guarantee
 date: 2026-09-19
-accepted: null
-acceptance: null
+accepted: 2026-09-19
+acceptance: 'maintainer, in session, 2026-09-19: "Approved"
+  (ADR-0243 as written)'
 requires: []
 amends: []
 supersedes: []
