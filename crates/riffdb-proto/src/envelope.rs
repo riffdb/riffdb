@@ -29,8 +29,6 @@ pub const MAX_RECORD_TYPE_BYTES: usize = 256;
 /// Maximum number of entries accepted in one closed record registry.
 pub const MAX_REGISTERED_RECORD_SCHEMAS: usize = 256;
 
-
-
 /// Safe semantic failures returned by a record-specific payload validator.
 ///
 /// A validator must decode a supported payload and deterministically re-encode
@@ -1528,7 +1526,9 @@ mod crc_equivalence {
         // agree with each other. The first candidate tried for this swap,
         // crc32fast, is exactly that: it computes CRC-32/IEEE, not CRC-32C.
         // This test is the reason that would be caught.
-        for size in [0usize, 1, 2, 3, 7, 8, 15, 16, 31, 63, 64, 127, 255, 512, 1024, 4096, 6393] {
+        for size in [
+            0usize, 1, 2, 3, 7, 8, 15, 16, 31, 63, 64, 127, 255, 512, 1024, 4096, 6393,
+        ] {
             let ascending: Vec<u8> = (0..size).map(|index| (index % 251) as u8).collect();
             let uniform = vec![0x5a_u8; size];
             let sparse: Vec<u8> = (0..size).map(|index| u8::from(index % 97 == 0)).collect();
