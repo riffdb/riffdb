@@ -689,7 +689,7 @@ pub(crate) struct ColumnarRuntime {
     engines: RwLock<BTreeMap<String, Arc<ColumnarEngineSlot>>>,
     notifier: ColumnarNotifier,
     names: RwLock<Vec<String>>,
-    control_bindings: BTreeMap<String, ColumnarControlBinding>,
+    control_bindings: RwLock<BTreeMap<String, ColumnarControlBinding>>,
     projections_root: PathBuf,
     history_incarnation: u64,
     process_generation: [u8; 16],
@@ -745,7 +745,7 @@ impl ColumnarRuntime {
             engines: RwLock::new(BTreeMap::new()),
             notifier: ColumnarNotifier::from_names(Vec::new()),
             names: RwLock::new(Vec::new()),
-            control_bindings: BTreeMap::new(),
+            control_bindings: RwLock::new(BTreeMap::new()),
             projections_root,
             history_incarnation,
             process_generation,
@@ -902,7 +902,7 @@ impl ColumnarRuntime {
             engines: RwLock::new(engines),
             notifier,
             names: RwLock::new(names),
-            control_bindings,
+            control_bindings: RwLock::new(control_bindings),
             projections_root: projections_root.to_path_buf(),
             history_incarnation,
             process_generation,
@@ -1090,12 +1090,18 @@ impl ColumnarRuntime {
             .map_err(|_| ColumnarPortError::Unavailable)
     }
 
-    fn control_binding(&self, name: &str) -> Option<&ColumnarControlBinding> {
-        self.control_bindings.get(name)
+    fn control_binding(&self, name: &str) -> Option<ColumnarControlBinding> {
+        self.control_bindings
+            .read()
+            .ok()
+            .and_then(|bindings| bindings.get(name).cloned())
     }
 
     pub(crate) fn control_bindings(&self) -> Vec<ColumnarControlBinding> {
-        self.control_bindings.values().cloned().collect()
+        self.control_bindings
+            .read()
+            .map(|bindings| bindings.values().cloned().collect())
+            .unwrap_or_default()
     }
 
     pub(crate) fn open_controlled_generation(
@@ -4237,7 +4243,7 @@ contract VectorBoard version 1 {
             ));
             crate::columnar_worker::advance_one_published_v1_for_test(
                 &runtime,
-                runtime.control_binding("ticket_board").expect("binding"),
+                &runtime.control_binding("ticket_board").expect("binding"),
             );
             panic!("child did not abort at the requested V1 publication boundary");
         }
@@ -5658,7 +5664,7 @@ contract VectorBoard version 1 {
             .expect("durable selection");
         let selected = durable.servable_generation().expect("selected generation");
         let successor = runtime
-            .open_controlled_generation(binding, selected)
+            .open_controlled_generation(&binding, selected)
             .expect("open exact successor");
         let slot = runtime
             .engine("ticket_board")
