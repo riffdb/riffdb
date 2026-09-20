@@ -26524,3 +26524,47 @@ work_packages:
     scale: Analytical derived state stops being bounded by the transactional writer's
       exclusive gate, and a sink may be a separate file, a separate store, or remote.
   human_review_triggers: *id001
+  closure:
+    status: complete
+    completed_at: '2026-09-20'
+    evidence: docs/performance/wp-791-derived-sinks-c3d-2026-09.md
+    decision: ADR-0240 is implemented. Derived-state apply writes a sibling redb engine
+      and takes no primary mutation-gate ticket, derived state that disagrees with the
+      primary is discarded and rebuilt rather than served, and follower projection control
+      is derived from the catalog per ADR-0248. OBL-0240-3 is discharged on the C3D
+      measurement of 2026-09-20 recorded in the evidence page. Twelve repetitions at 32
+      clients put the projection variant 3.27 percent below base against a baseline
+      run-to-run spread of 3.5 percent, where the same contract cost 80 percent when the
+      record was written, and the one-client cost is gone outright.
+    outstanding:
+    - About 2.6 points of residual projection cost, real rather than noise. A
+      declaration-only control measured in the same twelve repetitions sits at -0.64
+      percent against the projection cell's -3.27 percent, a difference of 2.62 points at
+      t of -3.6. Below the bar OBL-0240-3 sets and above what the sharper instrument can
+      call free. Not investigated, and owned by no package.
+    - Columnar control records remain on the primary gate, the scoped alternative ADR-0240
+      permits, on the cadence argument recorded in the local measurement page.
+- id: WP-800
+  name: Vector field write cost
+  tier: guarantee
+  depends_on: []
+  objective: Attribute and reduce the write-throughput cost of declaring a vector field,
+    measured at 19.95 percent at 32 clients on the C3D bench host and owned by no package.
+  requirements: []
+  required_adrs: [ADR-0239, ADR-0171, ADR-0245]
+  allowed_paths: [work_packages.yaml, benchmarks/perf-surface/**, docs/performance/**]
+  deliverables:
+  - An attribution of where the cost is spent, from instrumented stage counters rather than
+    from reading the code, on the same harness and host that measured it
+  - A decision record proposing whatever change the attribution warrants, or a recorded
+    finding that the cost is inherent to the work a vector field does
+  acceptance_commands:
+  - ./scripts/acceptance --wp WP-800
+  exit_gate: The cost of declaring a vector field is attributed to named stages whose
+    measured total accounts for it, and is either reduced or recorded as inherent with the
+    measurement that shows why.
+  standing_design_tests:
+    interface_safety: No attribution instrument may change what the write path does when it
+      is switched off.
+    scale: The cost is characterised as a function of concurrency, not at one point.
+  human_review_triggers: *id001
