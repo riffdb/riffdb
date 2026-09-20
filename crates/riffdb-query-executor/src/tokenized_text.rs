@@ -123,7 +123,14 @@ pub fn execute_tokenized_text_v1(
         return Err(TokenizedTextExecutionErrorV1::ResultLimit);
     }
 
-    let mut rows = candidates
+    // Rank over borrowed rows and copy only the page that is returned. Every
+    // candidate must still be scored, because the ranking is total over the
+    // candidate set and an offset cannot be applied before the order exists;
+    // but a candidate outside the page never needed its key and output cloned,
+    // and `output` is a whole `CanonicalRecord`. The comparator, the exact
+    // total and the page bounds are unchanged, so the bytes returned are the
+    // bytes the previous shape returned.
+    let mut ranked = candidates
         .into_iter()
         .map(|candidate| {
             let (key, output) = provider
@@ -135,31 +142,28 @@ pub fn execute_tokenized_text_v1(
                     score_with_statistics(plan, provider, candidate, &terms, &statistics)?
                 }
             };
-            Ok((
-                score,
-                TokenizedTextResultRowV1 {
-                    key: key.clone(),
-                    output: output.clone(),
-                },
-            ))
+            Ok((score, key, output))
         })
         .collect::<Result<Vec<_>, _>>()?;
-    rows.sort_unstable_by(|left, right| match plan.ranking() {
-        TokenizedRankingV1::Boolean => left.1.key.as_bytes().cmp(right.1.key.as_bytes()),
+    ranked.sort_unstable_by(|left, right| match plan.ranking() {
+        TokenizedRankingV1::Boolean => left.1.as_bytes().cmp(right.1.as_bytes()),
         TokenizedRankingV1::RiffBm25V1 => right
             .0
             .cmp(&left.0)
-            .then_with(|| left.1.key.as_bytes().cmp(right.1.key.as_bytes())),
+            .then_with(|| left.1.as_bytes().cmp(right.1.as_bytes())),
     });
     let exact_total =
-        u32::try_from(rows.len()).map_err(|_| TokenizedTextExecutionErrorV1::ResultLimit)?;
+        u32::try_from(ranked.len()).map_err(|_| TokenizedTextExecutionErrorV1::ResultLimit)?;
     let start = usize::try_from(offset)
         .map_err(|_| TokenizedTextExecutionErrorV1::ResultLimit)?
-        .min(rows.len());
-    let end = start.saturating_add(limit as usize).min(rows.len());
-    let rows = rows[start..end]
+        .min(ranked.len());
+    let end = start.saturating_add(limit as usize).min(ranked.len());
+    let rows = ranked[start..end]
         .iter()
-        .map(|(_, row)| row.clone())
+        .map(|(_, key, output)| TokenizedTextResultRowV1 {
+            key: (*key).clone(),
+            output: (*output).clone(),
+        })
         .collect();
     Ok(TokenizedTextResultPageV1 {
         rows,
@@ -592,6 +596,72 @@ mod statistics_tests {
     #[allow(dead_code)]
     mod fixture {
         include!("../tests/support/tokenized_fixture.rs");
+    }
+
+    #[test]
+    fn paging_returns_the_same_order_and_rows_as_one_unpaged_page() {
+        // Ranking borrows rows and copies only the returned page, so paging is
+        // the thing that change could break. Walking one row at a time has to
+        // reconstruct the unpaged page exactly: same order, same bytes, and the
+        // same exact_total at every offset, which is what a caller pages on.
+        let provider = fixture::provider();
+        for ranking in [TokenizedRankingV1::RiffBm25V1, TokenizedRankingV1::Boolean] {
+            let plan =
+                fixture::plan_with_ranking(TokenizedMatchKindV1::Disjunction, ranking, 16, 16);
+            let whole = execute_tokenized_text_v1(
+                &plan,
+                &provider,
+                fixture::generation(),
+                fixture::sequence(11),
+                "rust database",
+                0,
+                16,
+            )
+            .unwrap();
+            assert!(whole.rows.len() > 1, "fixture must page to be meaningful");
+
+            let mut walked = Vec::new();
+            for offset in 0..u32::try_from(whole.rows.len()).unwrap() {
+                let page = execute_tokenized_text_v1(
+                    &plan,
+                    &provider,
+                    fixture::generation(),
+                    fixture::sequence(11),
+                    "rust database",
+                    offset,
+                    1,
+                )
+                .unwrap();
+                assert_eq!(page.rows.len(), 1, "offset {offset}");
+                assert_eq!(
+                    page.exact_total, whole.exact_total,
+                    "exact_total must not depend on the page at offset {offset}"
+                );
+                walked.push(page.rows[0].clone());
+            }
+            assert_eq!(walked.len(), whole.rows.len());
+            for (index, (paged, unpaged)) in walked.iter().zip(&whole.rows).enumerate() {
+                assert_eq!(paged.key, unpaged.key, "key diverged at rank {index}");
+                assert_eq!(
+                    paged.output, unpaged.output,
+                    "output diverged at rank {index}"
+                );
+            }
+
+            // Past the end returns nothing rather than clamping into the page.
+            let beyond = execute_tokenized_text_v1(
+                &plan,
+                &provider,
+                fixture::generation(),
+                fixture::sequence(11),
+                "rust database",
+                u32::try_from(whole.rows.len()).unwrap() + 5,
+                4,
+            )
+            .unwrap();
+            assert!(beyond.rows.is_empty());
+            assert_eq!(beyond.exact_total, whole.exact_total);
+        }
     }
 
     // req: OQ-019
