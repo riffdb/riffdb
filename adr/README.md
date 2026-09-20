@@ -272,11 +272,13 @@ record with no front matter.
 | [0237](0237-input-derived-command-facts-reuse.md) | Input-Derived Command Facts Reuse | Accepted | guarantee |
 | [0238](0238-server-global-allocator-selection.md) | Server Global Allocator Selection | Accepted | guarantee |
 | [0239](0239-performance-programme-baseline-and-measurement-discipline.md) | Performance Programme Baseline And Measurement Discipline | Accepted | guarantee |
+| [0240](0240-derived-state-sinks-must-not-block-the-primary-writer.md) | Derived State Sinks Must Not Block The Primary Writer | Accepted | guarantee |
 | [0241](0241-rust-1-98-1-toolchain-upgrade.md) | Rust 1.98.1 Toolchain Upgrade | Accepted | surface |
 | [0242](0242-formatting-drift-repair.md) | Formatting Drift Repair | Accepted | guarantee |
 | [0243](0243-public-repository-disclosure-guards.md) | Public Repository Disclosure Guards | Accepted | guarantee |
 | [0244](0244-retire-durable-command-derived-locator-tables.md) | Retire Durable Command Derived Locator Tables | Accepted | guarantee |
 | [0245](0245-measurement-host-hardware-baseline.md) | Measurement Host Hardware Baseline | Accepted | guarantee |
+| [0246](0246-derived-sink-exemptions-and-restore.md) | Derived Sink Exemptions And Restore | Accepted | guarantee |
 <!-- adr-index:end -->
 
 The human architecture review on 2026-07-12 approved the direction represented

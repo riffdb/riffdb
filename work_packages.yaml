@@ -26398,4 +26398,43 @@ work_packages:
     scale: Not applicable to storage. The measurement is one bench host with two
       repetitions per cell; it resolves effects of roughly 2 percent and larger and does
       not establish that the ratio ports to another host.
+- id: WP-791
+  name: Derived-state sinks off the primary writer's gate
+  tier: guarantee
+  depends_on: []
+  objective: Move derived-state application off the primary store's exclusive mutation gate,
+    so a projection, columnar population or search index can neither slow nor fail a command
+    commit, per ADR-0240 decisions 1 through 6.
+  requirements: []
+  required_adrs: [ADR-0240, ADR-0246, ADR-0010, ADR-0017, ADR-0171, ADR-0239]
+  allowed_paths: [SPEC.md, work_packages.yaml,
+    adr/0240-derived-state-sinks-must-not-block-the-primary-writer.md,
+    docs/performance/perf-surface-mechanism-costs-2026-09.md,
+    crates/riffdb-storage-redb/src/derived.rs, crates/riffdb-storage-redb/src/derived/batch.rs,
+    crates/riffdb-storage-redb/src/store.rs, crates/riffdb-storage-redb/src/gate.rs,
+    crates/riffdb-storage-redb/src/columnar_projection_control.rs,
+    crates/riffdb-server/src/projection_worker.rs, crates/riffdb-server/src/columnar_worker.rs,
+    benchmarks/perf-surface/**]
+  deliverables:
+  - Derived-state application writing outside the primary store's write transaction, with
+    commits and events read through a read transaction the primary writer does not wait on
+  - A checked boundary proving no derived-state path reaches the primary mutation gate
+  - Rebuild-on-disagreement as the repair for derived state that is stale, torn, absent or
+    ahead of the primary, with no derived state served in preference to the primary
+  - Measured evidence that declaring a projection costs no write throughput, on the same
+    perf-surface contract and bench host that measured the 62 percent cost
+  - Columnar control records moved off the gate, or evidence that their cadence makes them
+    immaterial, since they are the remaining first-party derived writer that takes it
+  acceptance_commands:
+  - ./scripts/acceptance --wp WP-791
+  - ./scripts/ci-all
+  exit_gate: A contract declaring a projection sustains write throughput within the bench
+    host's run-to-run spread of one that declares none, no derived-state path acquires the
+    primary mutation gate, and derived state that disagrees with the primary is rebuilt
+    rather than served.
+  standing_design_tests:
+    interface_safety: No declaration and no sink can place itself on the command commit path;
+      the coupling is a property of the apply, not of anything a contract can express.
+    scale: Analytical derived state stops being bounded by the transactional writer's
+      exclusive gate, and a sink may be a separate file, a separate store, or remote.
   human_review_triggers: *id001
