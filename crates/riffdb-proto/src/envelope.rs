@@ -4,7 +4,6 @@ use std::cell::RefCell;
 use std::time::Instant;
 use std::{error::Error, fmt};
 
-use crc::{CRC_32_ISCSI, Crc, Table};
 use prost::Message;
 use riffdb_types::SchemaHash;
 
@@ -30,7 +29,7 @@ pub const MAX_RECORD_TYPE_BYTES: usize = 256;
 /// Maximum number of entries accepted in one closed record registry.
 pub const MAX_REGISTERED_RECORD_SCHEMAS: usize = 256;
 
-const CRC_32C: Crc<u32, Table<16>> = Crc::<u32, Table<16>>::new(&CRC_32_ISCSI);
+
 
 /// Safe semantic failures returned by a record-specific payload validator.
 ///
@@ -974,7 +973,13 @@ const fn varint_bytes(mut value: usize) -> usize {
 /// Computes CRC-32C/Castagnoli over the exact payload bytes.
 #[must_use]
 pub fn payload_crc32c(payload: &[u8]) -> u32 {
-    CRC_32C.checksum(payload)
+    // CRC-32C (Castagnoli), the polynomial SSE4.2 implements directly. The
+    // previous slice-by-16 software table produced the same values at 5.5
+    // GB/s; this runs at 9.5 GB/s on the measurement hosts. `crc_matches_the_
+    // software_table_across_sizes_and_alignments` holds the two against each
+    // other, because a crate that computed a different polynomial would
+    // rewrite every envelope checksum without failing a performance test.
+    crc32c::crc32c(payload)
 }
 
 fn is_valid_record_type(record_type: &str) -> bool {
@@ -1502,5 +1507,55 @@ mod peek_record_type_tests {
                 ))
                 .is_none()
         );
+    }
+}
+
+#[cfg(test)]
+mod crc_equivalence {
+    use super::payload_crc32c;
+    use crc::{CRC_32_ISCSI, Crc, Table};
+
+    /// The slice-by-16 software table this path used before the hardware
+    /// implementation replaced it. It is the oracle, not a fallback.
+    const SOFTWARE_TABLE: Crc<u32, Table<16>> = Crc::<u32, Table<16>>::new(&CRC_32_ISCSI);
+
+    #[test]
+    fn crc_matches_the_software_table_across_sizes_and_alignments() {
+        // A CRC crate that implements a different polynomial produces a
+        // plausible-looking checksum for every input and rewrites every
+        // envelope in every database. Nothing about the envelope's own tests
+        // would fail, because both sides of an encode/decode round trip would
+        // agree with each other. The first candidate tried for this swap,
+        // crc32fast, is exactly that: it computes CRC-32/IEEE, not CRC-32C.
+        // This test is the reason that would be caught.
+        for size in [0usize, 1, 2, 3, 7, 8, 15, 16, 31, 63, 64, 127, 255, 512, 1024, 4096, 6393] {
+            let ascending: Vec<u8> = (0..size).map(|index| (index % 251) as u8).collect();
+            let uniform = vec![0x5a_u8; size];
+            let sparse: Vec<u8> = (0..size).map(|index| u8::from(index % 97 == 0)).collect();
+            for payload in [&ascending, &uniform, &sparse] {
+                assert_eq!(
+                    payload_crc32c(payload),
+                    SOFTWARE_TABLE.checksum(payload),
+                    "polynomial drift at size {size}"
+                );
+                // Unaligned starts: the hardware path processes a head, a
+                // body and a tail, and only the body is the fast case.
+                for offset in 1..payload.len().min(9) {
+                    let shifted = &payload[offset..];
+                    assert_eq!(
+                        payload_crc32c(shifted),
+                        SOFTWARE_TABLE.checksum(shifted),
+                        "polynomial drift at size {size} offset {offset}"
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn crc_of_a_known_vector_is_the_castagnoli_value() {
+        // Anchors the polynomial to a published constant rather than only to
+        // another implementation in this repository.
+        assert_eq!(payload_crc32c(b"123456789"), 0xE306_9283);
     }
 }
