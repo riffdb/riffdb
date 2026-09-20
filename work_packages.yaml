@@ -26229,6 +26229,35 @@ work_packages:
       percent rather than the 1 percent assumed for most of the programme.
     - Projection, tokenized-text and row-policy coverage is absent because no contract in the
       repository declares them; closing that gap is required before any public performance claim.
+- id: WP-794
+  name: Public repository disclosure guards
+  tier: guarantee
+  depends_on: []
+  objective: Remove machine addresses, developer home paths and committed build artifacts
+    from the public repository and its history, and close the mechanisms that admitted
+    them, per ADR-0243.
+  requirements: []
+  required_adrs: [ADR-0243]
+  allowed_paths: [AGENTS.md, .gitignore, work_packages.yaml, adr/README.md,
+    adr/0243-public-repository-disclosure-guards.md, .cowboy/agent.yaml,
+    .cowboy/security.yaml, docs/performance/**]
+  deliverables:
+  - Machine addresses and absolute developer home paths absent from every reachable
+    object, with hosts recorded by specification instead
+  - Unanchored ignore rules for build output at any depth, secret-shaped filenames, and
+    agent session state, with the cowboy configuration files allowed back by exception
+  - The prohibition stated in AGENTS.md, including the ban on blanket `git add`
+  acceptance_commands:
+  - ./scripts/acceptance --wp WP-794
+  exit_gate: No tracked file and no reachable history object contains a bench host
+    address or an absolute developer home path, no build artifact is tracked, and the
+    ignore rules reject a target directory at any depth.
+  standing_design_tests:
+    interface_safety: No runtime surface changes. The change governs what may be
+      committed, not what an application can express.
+    scale: Not applicable. Removing committed build artifacts reduced the repository
+      from 204 MB to 66 MB, which is a side effect rather than the objective.
+  human_review_triggers: *id001
 - id: WP-793
   name: Formatting drift repair
   tier: guarantee
