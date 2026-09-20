@@ -228,13 +228,13 @@ performance_freeze:
     source_revision: 48bcb5ced552b7a19d6ac431f05432ae70deeaa2
     receipts:
     - path: release/evidence/wp-762/n1/interactive-c32.json
-      sha256: 7adeb3d63e5ab16a9fed7870e643304f1b6d095725f421eb10bd637c5ee7ba5f
+      sha256: 694a031cb1f25b3ef499776c252e30fb2b7aa371eed7b7d44683b8c9482518cd
     - path: release/evidence/wp-762/n1/write-only-sweep.json
-      sha256: 6e7cb3368b694c6d69302b452e380d9ccf28d5ff03a7b7a944944210386af63f
+      sha256: 39f2366bc44bccbaf2ab17868ad6715f2e540347ab453ad6c876b7381a7fa549
     - path: release/evidence/wp-762/e2/interactive-c32.json
-      sha256: 5db6f775395f38fd380b92308237169b284006559b42591edfb39f13606834fc
+      sha256: bdaa7721f37542082c9428f05b873f7a0506e79be2cba8a2c927419345ed1ab5
     - path: release/evidence/wp-762/e2/write-only-sweep.json
-      sha256: 86b4a17c5876f2d9396920f049b8428ea2ef8037e70dead4e7fcd30a3b535942
+      sha256: 6bdf075f0e3c3a71261b277bdf0e66f44b9c8d0da2c9d28cf27364497f38332c
     - path: release/evidence/wp-674/manifest-v1.json
       sha256: a819d507025a1b48dfc1d29259eef28c8787a11e75a82328889f9b241504fd0a
     - path: release/evidence/wp-674/baseline-v1.json
@@ -26229,6 +26229,35 @@ work_packages:
       percent rather than the 1 percent assumed for most of the programme.
     - Projection, tokenized-text and row-policy coverage is absent because no contract in the
       repository declares them; closing that gap is required before any public performance claim.
+- id: WP-794
+  name: Public repository disclosure guards
+  tier: guarantee
+  depends_on: []
+  objective: Remove machine addresses, developer home paths and committed build artifacts
+    from the public repository and its history, and close the mechanisms that admitted
+    them, per ADR-0243.
+  requirements: []
+  required_adrs: [ADR-0243]
+  allowed_paths: [AGENTS.md, .gitignore, work_packages.yaml, adr/README.md,
+    adr/0243-public-repository-disclosure-guards.md, .cowboy/agent.yaml,
+    .cowboy/security.yaml, docs/performance/**]
+  deliverables:
+  - Machine addresses and absolute developer home paths absent from every reachable
+    object, with hosts recorded by specification instead
+  - Unanchored ignore rules for build output at any depth, secret-shaped filenames, and
+    agent session state, with the cowboy configuration files allowed back by exception
+  - The prohibition stated in AGENTS.md, including the ban on blanket `git add`
+  acceptance_commands:
+  - ./scripts/acceptance --wp WP-794
+  exit_gate: No tracked file and no reachable history object contains a bench host
+    address or an absolute developer home path, no build artifact is tracked, and the
+    ignore rules reject a target directory at any depth.
+  standing_design_tests:
+    interface_safety: No runtime surface changes. The change governs what may be
+      committed, not what an application can express.
+    scale: Not applicable. Removing committed build artifacts reduced the repository
+      from 204 MB to 66 MB, which is a side effect rather than the objective.
+  human_review_triggers: *id001
 - id: WP-793
   name: Formatting drift repair
   tier: guarantee

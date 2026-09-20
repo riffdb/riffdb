@@ -39,3 +39,42 @@ __pycache__/
 
 # Compiled Go harness binary (built by benchmarks/run-app-baseline-golang).
 /examples/app-baseline/golang/app-baseline-golang
+
+# Build artifacts, anywhere in the tree. The anchored rules above missed nested
+# crates (benchmarks/*/target, examples/*/postgres/target), and compiled output
+# was committed into history as a result. It carried absolute developer paths
+# into a public repo and more than doubled the repository size. These unanchored
+# rules match a target directory at any depth; do not replace them with anchored
+# ones.
+target/
+build/
+*.rlib
+*.rmeta
+*.rcgu.o
+*.pdb
+*.pyc
+*.pyo
+
+# Compiled binaries produced by the benchmark launchers.
+/examples/app-baseline/golang/app-baseline-golang
+
+# Secrets and local environment. Never commit a real value for any of these.
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+*.p12
+*.pfx
+id_rsa*
+id_ed25519*
+*.keytab
+.netrc
+credentials.json
+service-account*.json
+
+# cowboy: agent.yaml and security.yaml are checked in; everything else is
+# per-session local state and may contain transcripts, host paths and addresses.
+.cowboy/*
+!.cowboy/agent.yaml
+!.cowboy/security.yaml

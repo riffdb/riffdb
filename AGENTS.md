@@ -40,6 +40,39 @@ The specification and accepted architecture decision records are authoritative. 
     compatibility evidence. The V3 changelog substrate and supported application
     export remain intact; application export behavior is unchanged.
 
+## This repository is public
+
+`github.com/riffdb/riffdb` is a public repository. Everything committed here is
+world-readable, permanently, including in history after a file is deleted.
+
+**Never commit any of the following, in code, docs, evidence, fixtures, test
+data, commit messages, or generated output:**
+
+- IP addresses, hostnames, DNS names or URLs of real machines — bench hosts,
+  VPS instances, internal services, anything routable. Record a machine by its
+  **specifications only**: `8 vCPU, AMD EPYC 9B14`, never its address.
+- Credentials of any kind: API keys, tokens, passwords, private keys,
+  certificates, connection strings, cloud service-account files, `.netrc`.
+- Personal information: real names beyond repository authorship, email
+  addresses, accounts, absolute home directory paths (`/home/<user>/...`).
+  Use `~`, a relative path, or a placeholder.
+- Build artifacts and compiled output. They embed absolute developer paths and
+  bloat history. `.gitignore` covers them; do not override it with `git add -f`.
+- Session transcripts, agent logs, or tool output captured verbatim, which
+  routinely contain all of the above.
+
+Use documentation ranges when an address is genuinely needed in an example:
+`192.0.2.0/24`, `198.51.100.0/24`, `203.0.113.0/24` (RFC 5737), `example.com`.
+
+**Never `git add -A` or `git add .`** in this repository. Multiple agents and
+worktrees share this checkout; a blanket add sweeps up other sessions' untracked
+files, which has repeatedly captured agent transcripts and machine addresses.
+Stage explicit paths, and read `git status --short` before every commit.
+
+Before committing, confirm your diff introduces none of the above. This is not
+recoverable by a later deletion: removing a disclosure requires rewriting public
+history and rotating whatever leaked.
+
 ## Authoritative files
 
 - `SPEC.md`, `work_packages.yaml`, and `governance/tiers.yaml` (the tiers, the
