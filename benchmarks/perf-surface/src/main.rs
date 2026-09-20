@@ -74,6 +74,7 @@ fn report_row(measurement: &VariantMeasurement) {
     println!(
         "perf-surface {name} documents={documents} clients={clients} \
          docs_per_s={rate:.0} \
+         drain_ms={drain:.0} \
          commits={commits} docs_per_commit={batch:.1} \
          frame_bytes_per_doc={frame:.1} \
          segment_bytes_per_doc={segment:.1} \
@@ -84,6 +85,7 @@ fn report_row(measurement: &VariantMeasurement) {
         documents = measurement.documents,
         clients = measurement.concurrency,
         rate = measurement.documents_per_second(),
+        drain = measurement.drain.as_secs_f64() * 1000.0,
         commits = measurement.committed_commands,
         batch = measurement.documents_per_commit(),
         frame = measurement.frame_bytes_per_document(),

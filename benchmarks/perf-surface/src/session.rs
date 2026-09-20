@@ -338,6 +338,17 @@ pub async fn issue_command_capability(
             })),
         });
     }
+    // Reading projection status is its own permission. The measurement drains
+    // through it, so without this the projection arm cannot prove it caught up
+    // and the drain fails with AuthorizationDenied rather than a real lag.
+    for plan in bundle.projections() {
+        permissions.push(v1::CapabilityPermission {
+            permission: Some(Permission::ReadProjectionStatus(v1::LineageScopedStableId {
+                contract_lineage: lineage.clone(),
+                stable_id: plan.projection_id().get(),
+            })),
+        });
+    }
     if permissions.is_empty() {
         return Err(SessionError::Input("no commands to invoke".to_owned()));
     }
@@ -417,4 +428,83 @@ pub fn bearer(token: &str) -> Result<CallMetadata, SessionError> {
     Ok(CallMetadata::authenticated(
         BearerCredential::new(token).map_err(|_| SessionError::Bootstrap("bearer".to_owned()))?,
     ))
+}
+
+/// Blocks until the projection has consumed everything the primary has, or the
+/// budget expires.
+///
+/// A throughput figure taken without this measures how fast writes were
+/// accepted while the projection fell behind, which is a faster number for
+/// doing less work. OBL-0240-3 compares a contract that declares a projection
+/// against one that does not, so both arms have to have finished the work
+/// before either is timed.
+pub async fn drain_projection(
+    endpoint: &str,
+    token: &str,
+    projection_id: u32,
+    budget: std::time::Duration,
+) -> Result<std::time::Duration, SessionError> {
+    let mut client = RiffDbClient::connect(transport_endpoint(endpoint)?)
+        .await
+        .map_err(|error| SessionError::Connect(format!("{error:?}")))?;
+    let metadata = bearer(token)?;
+    let started = std::time::Instant::now();
+
+    loop {
+        let response = client
+            .get_projection_status(
+                v1::GetProjectionStatusRequest {
+                    request_id: request_id_bytes()?,
+                    // The harness deploys exactly one contract and never
+                    // rotates it, so the active selection is the one under test.
+                    contract: Some(v1::ContractSelection {
+                        selection: Some(v1::contract_selection::Selection::Active(v1::Unit {})),
+                    }),
+                    projection_id,
+                },
+                &metadata,
+            )
+            .await
+            .map_err(|error| SessionError::Rpc(format!("get_projection_status: {error:?}")))?;
+
+        let Some(v1::get_projection_status_response::Result::Found(status)) = response.result
+        else {
+            return Err(SessionError::Rpc(
+                "projection status not found; the drain would never complete".to_owned(),
+            ));
+        };
+
+        if let Some(failure) = status.failure {
+            return Err(SessionError::Rpc(format!(
+                "projection failed while draining: {failure:?}"
+            )));
+        }
+
+        let head = frontier_value(status.authoritative_head.as_ref());
+        let published = status
+            .published
+            .as_ref()
+            .and_then(|generation| frontier_value(generation.frontier.as_ref()));
+
+        // Caught up when the published frontier has reached the authoritative
+        // head. Both absent means nothing was written, which is also caught up.
+        if head.is_none() || (published.is_some() && published >= head) {
+            return Ok(started.elapsed());
+        }
+
+        if started.elapsed() > budget {
+            return Err(SessionError::Rpc(format!(
+                "projection did not drain within {budget:?}: published {published:?}, head {head:?}"
+            )));
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+    }
+}
+
+fn frontier_value(position: Option<&v1::FrontierPosition>) -> Option<u64> {
+    match position.and_then(|position| position.position.as_ref()) {
+        Some(v1::frontier_position::Position::AppliedThrough(sequence)) => Some(*sequence),
+        Some(v1::frontier_position::Position::BeforeFirst(_)) => Some(0),
+        None => None,
+    }
 }

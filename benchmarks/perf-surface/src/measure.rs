@@ -25,7 +25,7 @@ use riffdb_client_rust::{ApplicationUuid, ApplicationValue};
 use crate::daemon::Daemon;
 use crate::session::{
     SessionError, application_client, attempts, bearer, bootstrap_and_deploy, command,
-    issue_command_capability, publish_document_input,
+    drain_projection, issue_command_capability, publish_document_input,
 };
 
 /// What one variant cost.
@@ -40,6 +40,11 @@ pub struct VariantMeasurement {
     pub concurrency: usize,
     /// Wall time for the publish phase only, excluding setup and seeding.
     pub elapsed: Duration,
+    /// Wall time spent waiting for the projection to reach the authoritative
+    /// head after the publish phase. Zero for a variant that declares none.
+    /// Reported rather than folded into `elapsed`, so a throughput figure and
+    /// the lag behind it stay separable.
+    pub drain: Duration,
     /// Commands the writer committed, from the shutdown census.
     pub committed_commands: u64,
     /// Total command frame bytes the writer wrote.
@@ -236,6 +241,35 @@ pub async fn measure_variant(
     }
     let elapsed = started.elapsed();
 
+    // Wait for the projection to consume what was just written, and charge that
+    // wait separately rather than folding it into `elapsed`.
+    //
+    // OBL-0240-3 asks whether declaring a projection costs *write throughput*.
+    // Folding catch-up into the timed phase would charge the projection arm for
+    // asynchronous work that, if the decoupling is real, never blocked a write
+    // — and would report a cost the obligation is not about. Keeping them apart
+    // means the obligation needs both: throughput within the host's spread, and
+    // a drain that actually completes. An arm that posts a fast figure by
+    // falling behind shows up in the second number rather than hiding in the
+    // first. Without it the projection arm can post a faster figure
+    // by falling behind: the writes are accepted, the apply is not done, and
+    // the comparison OBL-0240-3 makes becomes a comparison of how much work
+    // each arm skipped. A variant that declares no projection has nothing to
+    // drain and reports zero.
+    let drain = if source.contains("projection PublishedBytesDaily") {
+        drain_projection(
+            &endpoint,
+            &runner,
+            // The perf-surface contract declares exactly one projection, so it
+            // is the first identifier the compiler assigns.
+            1,
+            Duration::from_secs(120),
+        )
+        .await?
+    } else {
+        Duration::ZERO
+    };
+
     let stdout = daemon
         .shutdown()
         .map_err(|error| SessionError::Rpc(format!("shutdown: {error}")))?;
@@ -247,6 +281,7 @@ pub async fn measure_variant(
 
     Ok(VariantMeasurement {
         name: name.to_owned(),
+        drain,
         documents,
         concurrency,
         elapsed,
