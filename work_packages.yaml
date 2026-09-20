@@ -26476,14 +26476,30 @@ work_packages:
     so a projection, columnar population or search index can neither slow nor fail a command
     commit, per ADR-0240 decisions 1 through 6.
   requirements: []
-  required_adrs: [ADR-0240, ADR-0246, ADR-0010, ADR-0017, ADR-0171, ADR-0239]
+  required_adrs: [ADR-0240, ADR-0246, ADR-0248, ADR-0010, ADR-0017, ADR-0171, ADR-0239]
+  # Widened 2026-09-20 for ADR-0248. Moving derived state to a sidecar removed
+  # the ProjectionFrontier mutations the follower tail planned from, so the
+  # replication paths that consumed them and the startup validation that treated
+  # a missing control as a structural defect both have to change with it.
+  # startup.rs is guarantee tier and is named deliberately rather than covered by
+  # a glob: the change there makes a stored frontier optional, which ADR-0248
+  # decision 4 requires, and no other startup behaviour is in scope.
   allowed_paths: [SPEC.md, work_packages.yaml,
     adr/0240-derived-state-sinks-must-not-block-the-primary-writer.md,
+    adr/0246-derived-sink-exemptions-and-restore.md,
+    adr/0248-followers-rebuild-derived-state.md,
     docs/performance/perf-surface-mechanism-costs-2026-09.md,
     crates/riffdb-storage-redb/src/derived.rs, crates/riffdb-storage-redb/src/derived/batch.rs,
     crates/riffdb-storage-redb/src/store.rs, crates/riffdb-storage-redb/src/gate.rs,
     crates/riffdb-storage-redb/src/columnar_projection_control.rs,
+    crates/riffdb-storage-redb/src/projection_replay.rs,
+    crates/riffdb-storage-redb/src/startup.rs,
     crates/riffdb-server/src/projection_worker.rs, crates/riffdb-server/src/columnar_worker.rs,
+    crates/riffdb-server/src/replication_bootstrap.rs,
+    crates/riffdb-server/src/replication_follower_receiver.rs,
+    crates/riffdb-server/src/replication_projection_tail.rs,
+    crates/riffdb-server/src/replication_archive_projection_tests.rs,
+    crates/riffdb-server/src/replication_projection_recovery_tests.rs,
     benchmarks/perf-surface/**]
   deliverables:
   - Derived-state application writing outside the primary store's write transaction, with
