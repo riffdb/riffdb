@@ -1,11 +1,13 @@
 ---
 adr: "0247"
 title: Hardware CRC32C And Sub Variance Wins
-status: proposed
+status: accepted
 tier: surface
 date: 2026-09-19
-accepted: null
-acceptance: null
+accepted: 2026-09-19
+acceptance: 'maintainer, in session, 2026-09-19: "I accept"; the principle stated
+  as "in general we should not leave anything on the table. in a database, at
+  scale, these things can truly add up" (ADR-0247 as written)'
 requires: [ADR-0239, ADR-0245]
 amends: []
 supersedes: []
