@@ -280,7 +280,7 @@ record with no front matter.
 | [0245](0245-measurement-host-hardware-baseline.md) | Measurement Host Hardware Baseline | Accepted | guarantee |
 | [0246](0246-derived-sink-exemptions-and-restore.md) | Derived Sink Exemptions And Restore | Accepted | guarantee |
 | [0247](0247-hardware-crc32c-and-sub-variance-wins.md) | Hardware CRC32C And Sub Variance Wins | Accepted | surface |
-| [0248](0248-followers-rebuild-derived-state.md) | Follower Projection Control Without A Replicated Frontier | Proposed | guarantee |
+| [0248](0248-followers-rebuild-derived-state.md) | Follower Projection Control Without A Replicated Frontier | Accepted | guarantee |
 <!-- adr-index:end -->
 
 The human architecture review on 2026-07-12 approved the direction represented

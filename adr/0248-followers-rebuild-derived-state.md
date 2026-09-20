@@ -1,11 +1,14 @@
 ---
 adr: "0248"
 title: Follower Projection Control Without A Replicated Frontier
-status: proposed
+status: accepted
 tier: guarantee
 date: 2026-09-20
-accepted: null
-acceptance: null
+accepted: 2026-09-20
+acceptance: 'maintainer, in session, 2026-09-20: "I approve", after the record was
+  rewritten in response to "is there a better option? i assume this is only
+  after an unsafe shutdown?", which corrected the diagnosis (ADR-0248 as
+  written)'
 requires: [ADR-0240, ADR-0246, ADR-0017]
 amends:
   - ADR-0240 by naming what supplies a follower's projection control signal,
