@@ -444,6 +444,7 @@ impl RedbSealedStagedRestore {
         // marker for new bytes and therefore forces startup to refuse rather
         // than trusting a partially published restore.
         format_marker_temporary.publish(target_format_marker_name)?;
+        crate::store::discard_replaced_derived_sidecar(&self.configured_database_file)?;
         self.stage_cleanup.disarm();
         self.hit(RedbMaintenanceFailpoint::AfterTargetPublication, true)?;
         if self.configured_parent_guard.sync().is_err()

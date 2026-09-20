@@ -189,6 +189,7 @@
 - [WP-756 Crate-graph Repair Receipt](performance/wp-756-crate-graph-repair.md)
 - [WP-773 Bounded Columnar Shutdown](performance/wp-773-columnar-shutdown.md)
 - [WP-777 Demand-activated Columnar Runtime](performance/wp-777-demand-activated-columnar.md)
+- [WP-791 Derived Sinks Local Measurement](performance/wp-791-derived-sinks-local-2026-09.md)
 - [App-baseline Production Profile](performance/app-baseline-production-profile.md)
 
 # Reference

@@ -36,6 +36,7 @@ fn setup(path: &std::path::Path) -> (ChangelogHistoryStateV3, StoredProjectionCo
     )
     .unwrap();
     install_control(&ports, schema.identity(), &control);
+    install_control_on_primary(&ports, schema.identity(), &control);
     let history = crate::changelog_v3_activation::activate_validated(
         ports.shared.database.begin_write().unwrap(),
         ChangelogLineageV3::new(database_id(), 1, LeadershipEpochV1::initial()).unwrap(),

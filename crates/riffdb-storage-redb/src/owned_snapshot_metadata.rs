@@ -104,7 +104,11 @@ impl ProjectionApplySnapshotReader for RedbOwnedSnapshot {
         &self,
         request: &ProjectionApplySnapshotRequest,
     ) -> Result<ProjectionApplySnapshot, StorageError> {
-        crate::projection_replay::read_projection_replay_snapshot(&self.access, request)
+        if let Some(derived) = self.derived_transaction() {
+            crate::projection_replay::read_projection_replay_snapshot_from(derived, request)
+        } else {
+            crate::projection_replay::read_projection_replay_snapshot(&self.access, request)
+        }
     }
 }
 impl ProjectionQueryReader for RedbOwnedSnapshot {
@@ -113,31 +117,47 @@ impl ProjectionQueryReader for RedbOwnedSnapshot {
         request: &ProjectionQueryRequest,
     ) -> Result<ProjectionQueryResult, StorageError> {
         self.require_replayed_projection(request.selector().identity())?;
-        crate::derived::query_projection_at(&self.access, request)
+        let head = self.access.application_frontier()?.map_or(
+            FrontierPosition::BeforeFirst,
+            FrontierPosition::AppliedThrough,
+        );
+        if let Some(derived) = self.derived_transaction() {
+            crate::derived::query_projection_from(derived, request, Some(head))
+        } else {
+            crate::derived::query_projection_at(&self.access, request)
+        }
     }
     fn read_projection_status(
         &self,
         identity: &ProjectionIdentity,
     ) -> Result<ProjectionStatus, StorageError> {
         self.require_replayed_projection(identity)?;
-        crate::derived::read_projection_status_at(&self.access, identity)
+        if let Some(derived) = self.derived_transaction() {
+            crate::derived::read_projection_status_from(&self.access, derived, identity)
+        } else {
+            crate::derived::read_projection_status_at(&self.access, identity)
+        }
     }
 }
 impl RedbOwnedSnapshot {
+    fn projection_tables(&self) -> &redb::ReadTransaction {
+        self.derived_transaction()
+            .unwrap_or_else(|| std::ops::Deref::deref(&self.access))
+    }
+
     fn require_replayed_projection(
         &self,
         identity: &ProjectionIdentity,
     ) -> Result<(), StorageError> {
+        let tables = self.projection_tables();
         let control = crate::derived::read_projection_control(
-            &self
-                .access
+            &tables
                 .open_table(crate::layout::PROJECTION_FRONTIER)
                 .map_err(table_error)?,
             identity,
         )?;
         if let Some(control) = control {
-            let markers = self
-                .access
+            let markers = tables
                 .open_table(crate::layout::PROJECTION_APPLIED)
                 .map_err(table_error)?;
             for position in [control.published(), control.candidate()]

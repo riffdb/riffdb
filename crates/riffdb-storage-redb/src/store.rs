@@ -114,14 +114,15 @@ use crate::keys::{
     encode_vector_observation_key,
 };
 use crate::layout::{
-    AUDIT, AUDIT_BY_REQUEST, BYTE_TABLES, COMMITS, ENTITIES, ENTITY_CHAIN_HEADS, EVENT_ROUTES,
-    EVENTS, INDEX_EPOCHS, META, META_ADMINISTRATION_SEQUENCE, META_APPLICATION_SEQUENCE,
-    META_CAPABILITY_BOOTSTRAP, META_CHANGELOG_V2_ROTATION_RECEIPT, META_CLEAN_CLOSE_LIFECYCLE,
-    META_DATABASE_ID, META_FORMAT_VERSION, META_HISTORY_INCARNATION,
+    AUDIT, AUDIT_BY_REQUEST, BYTE_TABLES, COLUMNAR_PROJECTION_CONTROLS, COMMITS, ENTITIES,
+    ENTITY_CHAIN_HEADS, EVENT_ROUTES, EVENTS, INDEX_EPOCHS, META, META_ADMINISTRATION_SEQUENCE,
+    META_APPLICATION_SEQUENCE, META_CAPABILITY_BOOTSTRAP, META_CHANGELOG_V2_ROTATION_RECEIPT,
+    META_CLEAN_CLOSE_LIFECYCLE, META_DATABASE_ID, META_FORMAT_VERSION, META_HISTORY_INCARNATION,
     META_INDEX_EPOCH_ROWS_REPAIRED, META_KEYS, META_RECORD_REGISTRY, META_RETENTION_HOLDS,
     META_RETENTION_WATERMARK, META_VALIDATED_PREFIX_CHECKPOINT, OUTBOX, OUTBOX_STATUS,
-    SECONDARY_INDEXES, TABLE_NAMES, VALIDATED_PREFIX_ENTITY_HEADS, VECTOR_EVIDENCE,
-    VECTOR_EVIDENCE_INDEX, VECTOR_OBSERVATIONS, VECTOR_PROJECTION_CONTROLS, create_all_tables,
+    PROJECTION_APPLIED, PROJECTION_FRONTIER, PROJECTION_STATE, SECONDARY_INDEXES, TABLE_NAMES,
+    VALIDATED_PREFIX_ENTITY_HEADS, VECTOR_EVIDENCE, VECTOR_EVIDENCE_INDEX, VECTOR_OBSERVATIONS,
+    VECTOR_PROJECTION_CONTROLS, create_all_tables,
 };
 use crate::media::{DynStorageBackend, JournalMedia, RealJournalMedia, RedbStorageMedia};
 use crate::transient::{
@@ -136,6 +137,59 @@ use crate::transient::{
 /// reads and writes. This is an internal performance bound; it does not alter
 /// the durable format or transaction semantics.
 const REDB_CACHE_SIZE_BYTES: usize = 4 * 1024 * 1024;
+
+/// Sibling file that holds rebuildable derived state for a primary redb path.
+pub(crate) fn derived_store_path(path: &Path) -> PathBuf {
+    let mut name = path
+        .file_name()
+        .unwrap_or_else(|| std::ffi::OsStr::new("db"))
+        .to_os_string();
+    name.push(".derived");
+    path.with_file_name(name)
+}
+
+/// Every file this database owns, including rebuildable derived state.
+///
+/// Restore, retirement and publication must account for this set rather than a
+/// fixed three-file list (ADR-0246). The sidecar is rebuildable: removing it is
+/// always correct.
+pub(crate) fn owned_store_files(database: &Path) -> Vec<PathBuf> {
+    vec![
+        database.to_path_buf(),
+        crate::journal::journal_path(database),
+        crate::durable_format_marker_path(database),
+        derived_store_path(database),
+    ]
+}
+
+/// Drops derived state that belonged to a replaced timeline.
+pub(crate) fn discard_replaced_derived_sidecar(database: &Path) -> Result<(), StorageError> {
+    let sidecar = derived_store_path(database);
+    if !owned_store_files(database)
+        .iter()
+        .any(|file| file == &sidecar)
+    {
+        return Err(storage_error(StorageErrorKind::InvariantViolation));
+    }
+    match std::fs::remove_file(sidecar) {
+        Ok(()) => Ok(()),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(_) => Err(storage_error(StorageErrorKind::Unavailable)),
+    }
+}
+
+fn empty_derived_read() -> Result<redb::ReadTransaction, StorageError> {
+    static EMPTY: std::sync::OnceLock<Database> = std::sync::OnceLock::new();
+    if EMPTY.get().is_none() {
+        let opened = RedbStore::open_derived_database(Path::new("empty-derived"), true)?;
+        let _ = EMPTY.set(opened);
+    }
+    EMPTY
+        .get()
+        .ok_or_else(|| storage_error(StorageErrorKind::Unavailable))?
+        .begin_read()
+        .map_err(transaction_error)
+}
 
 #[cfg(feature = "test-fixtures")]
 struct ExternalKillBarrierFileBackend {
@@ -252,6 +306,17 @@ pub(crate) struct SharedRedb {
     open_mode: OpenMode,
     follower_namespace: Mutex<Option<crate::maintenance::FollowerNamespace>>,
     pub(crate) database: Database,
+    /// Sidecar redb for rebuildable derived state (ADR-0240). Writes here never
+    /// acquire `mutation_gate` or the primary store's write transaction.
+    /// Opened on first derived read or write so archive inventories that never
+    /// touch derived state keep their closed three-file sets.
+    derived: std::sync::OnceLock<Database>,
+    /// Serialises the first open of `derived`. redb takes an exclusive file
+    /// lock, so two threads racing to open the sidecar leave one holding an
+    /// `Unavailable` that says nothing about the store's health. Only the
+    /// holder of this opens; everyone else waits and then reads the `OnceLock`.
+    derived_open: std::sync::Mutex<()>,
+    derived_in_memory: bool,
     #[allow(dead_code, reason = "WP-070 offline backup consumes the source path")]
     path: PathBuf,
     /// The journal media port serving every side-file operation of this
@@ -410,6 +475,34 @@ impl RedbCommitProfile {
 impl SharedRedb {
     pub(crate) fn is_follower_mode(&self) -> bool {
         self.open_mode == OpenMode::Follower
+    }
+
+    pub(crate) fn cannot_serve_command_commit(&self) -> bool {
+        self.open_mode != OpenMode::Source
+    }
+
+    pub(crate) fn derived_database(&self) -> Result<&Database, StorageError> {
+        if let Some(database) = self.derived.get() {
+            return Ok(database);
+        }
+        // Serialise the open. Retrying on `Unavailable` while the winner has
+        // not yet published is not sufficient: between a loser's failed open
+        // and the winner's `set`, `get` is still empty, and the loser returns
+        // an `Unavailable` that describes a race rather than the store. Holding
+        // this guard means exactly one thread ever calls `open_derived_database`
+        // for a handle, so `Unavailable` from it is always real.
+        let _open = self
+            .derived_open
+            .lock()
+            .map_err(|_| storage_error(StorageErrorKind::InvariantViolation))?;
+        if let Some(database) = self.derived.get() {
+            return Ok(database);
+        }
+        let opened = RedbStore::open_derived_database(&self.path, self.derived_in_memory)?;
+        let _ = self.derived.set(opened);
+        self.derived
+            .get()
+            .ok_or_else(|| storage_error(StorageErrorKind::InvariantViolation))
     }
 
     pub(crate) fn before_test_commit(
@@ -1150,7 +1243,7 @@ impl SharedRedb {
     /// no capture can be in flight and none can start afterwards. Holding the
     /// root past that point would keep a redb read transaction alive that no
     /// reader can ever be handed again, pinning every page freed after it.
-    fn retire_current_read_root(&self) {
+    pub(crate) fn retire_current_read_root(&self) {
         if !self.current_read_root_live.load(Ordering::Acquire) {
             return;
         }
@@ -1256,6 +1349,53 @@ pub(crate) struct RedbWriteAccess {
     composite_predecessor: Option<Arc<crate::composite_view::RedbCompositeReadView>>,
     composite_stage: Option<RefCell<crate::composite_view::RedbCompositeMutationStage>>,
     command_prefix_capture: RefCell<crate::command_prefix::CommandMutationCapture>,
+}
+
+/// Write transaction against the derived-state sidecar (ADR-0240).
+///
+/// Holds no primary mutation lease and does not open a primary write
+/// transaction. Failpoints still observe `RedbTestOperation` so crash tests
+/// retain their existing before/after-commit edges.
+pub(crate) struct DerivedWriteAccess {
+    shared: Arc<SharedRedb>,
+    transaction: Option<WriteTransaction>,
+}
+
+impl DerivedWriteAccess {
+    pub(crate) fn transaction(&self) -> Result<&WriteTransaction, StorageError> {
+        self.transaction
+            .as_ref()
+            .ok_or_else(|| storage_error(StorageErrorKind::Unavailable))
+    }
+
+    pub(crate) fn commit_for(mut self, operation: RedbTestOperation) -> Result<(), StorageError> {
+        self.shared.before_test_commit(operation)?;
+        let sidecar = self
+            .transaction
+            .take()
+            .ok_or_else(|| storage_error(StorageErrorKind::Unavailable))?;
+        match sidecar.commit() {
+            Ok(()) => self.shared.after_test_commit(operation),
+            Err(error) => Err(commit_error(error)),
+        }
+    }
+
+    pub(crate) fn abort(mut self) -> Result<(), StorageError> {
+        if let Some(transaction) = self.transaction.take() {
+            transaction
+                .abort()
+                .map_err(crate::error::precommit_storage_error)?;
+        }
+        Ok(())
+    }
+}
+
+impl Drop for DerivedWriteAccess {
+    fn drop(&mut self) {
+        if let Some(transaction) = self.transaction.take() {
+            let _ = transaction.abort();
+        }
+    }
 }
 
 enum RedbWriteOwnership {
@@ -2098,6 +2238,37 @@ impl RedbStore {
         )
     }
 
+    fn open_derived_database(path: &Path, memory: bool) -> Result<Database, StorageError> {
+        let mut sidecar_builder = Builder::new();
+        let sidecar_cache = REDB_CACHE_SIZE_BYTES;
+        sidecar_builder.set_cache_size(sidecar_cache);
+        let database = if memory {
+            sidecar_builder.create_with_backend(redb::backends::InMemoryBackend::new())
+        } else {
+            sidecar_builder.create(derived_store_path(path))
+        }
+        .map_err(database_error)?;
+        let sidecar = database.begin_write().map_err(transaction_error)?;
+        drop(sidecar.open_table(PROJECTION_STATE).map_err(table_error)?);
+        drop(
+            sidecar
+                .open_table(PROJECTION_FRONTIER)
+                .map_err(table_error)?,
+        );
+        drop(
+            sidecar
+                .open_table(PROJECTION_APPLIED)
+                .map_err(table_error)?,
+        );
+        drop(
+            sidecar
+                .open_table(COLUMNAR_PROJECTION_CONTROLS)
+                .map_err(table_error)?,
+        );
+        sidecar.commit().map_err(commit_error)?;
+        Ok(database)
+    }
+
     #[allow(clippy::too_many_arguments)]
     fn open_after_format_preflight(
         open_mode: OpenMode,
@@ -2127,6 +2298,10 @@ impl RedbStore {
         });
         // The builder configuration above is shared by both arms; only the
         // storage medium differs (ADR-0113 backend-parameterized open).
+        // Sidecar durability follows the primary path, not the backend
+        // wrapper: a FileBackend kill-barrier still has to observe the
+        // sidecar after process death (ADR-0240 two-store crash).
+        let derived_in_memory = false;
         let database = match engine_backend {
             Some(backend) => builder.create_with_backend(DynStorageBackend(backend)),
             None => builder.create(path),
@@ -2158,6 +2333,9 @@ impl RedbStore {
                 open_mode: open_mode.clone(),
                 follower_namespace: Mutex::new(None),
                 database,
+                derived: std::sync::OnceLock::new(),
+                derived_open: std::sync::Mutex::new(()),
+                derived_in_memory,
                 path: path.to_path_buf(),
                 journal_media,
                 application_commit_profile,
@@ -5049,6 +5227,39 @@ impl RedbOperationalPorts {
 
     pub(crate) fn begin_composite_read(&self) -> Result<RedbReadAccess, StorageError> {
         self.shared.begin_composite_operational_read()
+    }
+
+    /// Read transaction over the derived-state sidecar. The primary writer does
+    /// not wait for this transaction. A missing sidecar is an empty read, not a
+    /// create, so a read-only mount does not grow a sibling file.
+    pub(crate) fn begin_derived_read(&self) -> Result<redb::ReadTransaction, StorageError> {
+        if let Some(database) = self.shared.derived.get() {
+            return database.begin_read().map_err(transaction_error);
+        }
+        if !self.shared.derived_in_memory && !derived_store_path(&self.shared.path).exists() {
+            return empty_derived_read();
+        }
+        self.shared
+            .derived_database()?
+            .begin_read()
+            .map_err(transaction_error)
+    }
+
+    /// Write transaction over the derived-state sidecar. Does not acquire the
+    /// primary mutation gate or the primary store's write transaction.
+    pub(crate) fn begin_derived_write(&self) -> Result<DerivedWriteAccess, StorageError> {
+        let mut transaction = self
+            .shared
+            .derived_database()?
+            .begin_write()
+            .map_err(transaction_error)?;
+        transaction
+            .set_durability(Durability::Immediate)
+            .map_err(|_| storage_error(StorageErrorKind::InvariantViolation))?;
+        Ok(DerivedWriteAccess {
+            shared: Arc::clone(&self.shared),
+            transaction: Some(transaction),
+        })
     }
 
     #[cfg(any(test, feature = "test-fixtures", feature = "benchmark-support"))]

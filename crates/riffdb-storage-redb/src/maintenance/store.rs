@@ -796,6 +796,7 @@ impl RedbMaintenanceStorage {
         self.database_parent_guard.sync()?;
         fs::rename(&stage, &self.database_file).map_err(io_unavailable)?;
         fs::rename(&stage_format_marker, &target_format_marker).map_err(io_unavailable)?;
+        crate::store::discard_replaced_derived_sidecar(&self.database_file)?;
         self.hit(RedbMaintenanceFailpoint::AfterTargetPublication, true)?;
         self.database_parent_guard.sync()?;
         self.hit(RedbMaintenanceFailpoint::AfterTargetParentSync, true)?;
@@ -846,6 +847,7 @@ impl RedbMaintenanceStorage {
         self.database_parent_guard.sync()?;
         fs::rename(&rollback, &self.database_file).map_err(io_unavailable)?;
         fs::rename(&rollback_format_marker, &target_format_marker).map_err(io_unavailable)?;
+        crate::store::discard_replaced_derived_sidecar(&self.database_file)?;
         self.database_parent_guard.sync()?;
         self.verify_path_ownership()
     }

@@ -33,14 +33,18 @@ pub(crate) fn stage_projection_replay(
     expected: &StoredProjectionControlV1,
     request: &ProjectionApplyRequestV1,
 ) -> Result<ProjectionReplayStage, StorageError> {
-    let control = read_projection_control(
-        &write.open_table(PROJECTION_FRONTIER).map_err(invalid)?,
-        request.identity(),
-    )?
-    .ok_or_else(corrupt)?;
-    if &control != expected {
+    let stored = {
+        let table = write.open_table(PROJECTION_FRONTIER).map_err(invalid)?;
+        read_projection_control(&table, request.identity())?
+    };
+    if stored.as_ref().is_some_and(|control| control != expected) {
         return Err(corrupt());
     }
+    // ADR-0248: follower/bootstrap/archive replay synthesizes catalog-derived
+    // control in memory and never persists a FRONTIER row (decision 2; a
+    // primary frontier write is also forbidden). Unpublished apply therefore
+    // has stored == None; the expected control is the catch-up target.
+    let control = stored.unwrap_or_else(|| expected.clone());
     let target = control
         .frontier_for(request.generation())
         .ok_or_else(corrupt)?;
@@ -168,14 +172,41 @@ pub(crate) fn read_projection_replay_snapshot(
     access: &RedbReadAccess,
     request: &ProjectionApplySnapshotRequest,
 ) -> Result<ProjectionApplySnapshot, StorageError> {
+    read_projection_replay_snapshot_from(access, request)
+}
+
+pub(crate) fn read_projection_replay_snapshot_from(
+    access: &redb::ReadTransaction,
+    request: &ProjectionApplySnapshotRequest,
+) -> Result<ProjectionApplySnapshot, StorageError> {
     let control = read_projection_control(
         &access.open_table(PROJECTION_FRONTIER).map_err(invalid)?,
         request.schema().identity(),
-    )?
-    .ok_or_else(corrupt)?;
-    let target = control
-        .frontier_for(request.generation())
-        .ok_or_else(corrupt)?;
+    )?;
+    let target = match control.as_ref() {
+        Some(control) => control
+            .frontier_for(request.generation())
+            .ok_or_else(corrupt)?,
+        // ADR-0248: catalog-derived control is not stored. Incremental catch-up
+        // reads progress from local markers; treating a missing FRONTIER as
+        // "rebuild from empty" would violate decision 4.
+        //
+        // The `u64::MAX` below is a discovery cap, not a bound: with no stored
+        // control there is nothing here to bound the markers against, so
+        // `local_frontier`'s own `frontier > target` check is vacuous on this
+        // call. What actually bounds it is downstream and must stay there —
+        // replay compares the resulting position against the follower's own
+        // durable head (`replay_projection_commit`), and the serving path
+        // compares against the pinned primary head before answering
+        // (`RedbOwnedSnapshot::query_projection`). Removing either of those
+        // leaves markers trusted with no ceiling.
+        None => local_frontier(
+            &access.open_table(PROJECTION_APPLIED).map_err(invalid)?,
+            request.schema().identity(),
+            request.generation(),
+            FrontierPosition::AppliedThrough(CommitSequence::new(u64::MAX).ok_or_else(corrupt)?),
+        )?,
+    };
     let frontier = local_frontier(
         &access.open_table(PROJECTION_APPLIED).map_err(invalid)?,
         request.schema().identity(),

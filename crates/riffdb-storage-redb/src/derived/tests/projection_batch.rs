@@ -251,7 +251,7 @@ fn projection_batch_retry_and_unknown_resolution_reject_missing_or_substituted_m
             ProjectionGeneration::first(),
             CommitSequence::first(),
         );
-        let access = ports.begin_write().unwrap();
+        let access = ports.begin_derived_write().unwrap();
         {
             let mut markers = access
                 .transaction()
@@ -272,7 +272,7 @@ fn projection_batch_retry_and_unknown_resolution_reject_missing_or_substituted_m
             }
         }
         access
-            .commit_for(RedbTestOperation::Initialization)
+            .commit_for(RedbTestOperation::ProjectionMutation)
             .unwrap();
         assert_eq!(
             ports.resolve_projection_batch(&request).unwrap_err().kind(),
@@ -311,14 +311,14 @@ fn projection_batch_1024_irrelevant_commits_use_16_transactions_and_preserve_eve
         };
         control = next;
     }
-    assert_eq!(ports.mutation_gate_tickets() - tickets, 16);
+    assert_eq!(ports.mutation_gate_tickets() - tickets, 0);
     assert_eq!(
         control.frontier_for(ProjectionGeneration::first()),
         Some(FrontierPosition::AppliedThrough(
             CommitSequence::new(1024).unwrap()
         ))
     );
-    let access = ports.begin_composite_read().unwrap();
+    let access = ports.begin_derived_read().unwrap();
     let markers = access.open_table(PROJECTION_APPLIED).unwrap();
     for (sequence, hash) in expected_markers {
         let marker = read_projection_marker(
@@ -359,7 +359,7 @@ fn projection_batch_overlap_matches_single_commit_reference_and_keeps_pinned_bas
     else {
         panic!("batch applies");
     };
-    assert_eq!(ports.mutation_gate_tickets() - tickets, 1);
+    assert_eq!(ports.mutation_gate_tickets() - tickets, 0);
     for member in request.members() {
         assert!(matches!(
             oracle.apply_projection(member).unwrap(),
@@ -432,7 +432,7 @@ fn projection_batch_mixed_prefix_and_missing_source_never_apply_a_suffix() {
         ports.read_projection_status(schema.identity()).unwrap(),
         before
     );
-    let access = ports.begin_composite_read().unwrap();
+    let access = ports.begin_derived_read().unwrap();
     let markers = access.open_table(PROJECTION_APPLIED).unwrap();
     assert!(
         read_projection_marker(
@@ -571,7 +571,7 @@ fn projection_batch_crash_and_unknown_outcome_recover_only_complete_prefixes() {
             })
         );
         let request = batch(control, &schema, 1, 64, true);
-        let access = ports.begin_composite_read().unwrap();
+        let access = ports.begin_derived_read().unwrap();
         let markers = access.open_table(PROJECTION_APPLIED).unwrap();
         for member in request.members() {
             let marker = read_projection_marker(
@@ -656,7 +656,7 @@ fn projection_batch_checks_complete_base_rows_and_full_control_not_only_frontier
     )
     .unwrap();
     for row in [&changed, &old] {
-        let access = ports.begin_write().unwrap();
+        let access = ports.begin_derived_write().unwrap();
         let encoded = encode_projection_state_v1(row).unwrap();
         access
             .transaction()
@@ -666,7 +666,7 @@ fn projection_batch_checks_complete_base_rows_and_full_control_not_only_frontier
             .insert(encode_projection_group_key(&key), encoded.as_bytes())
             .unwrap();
         access
-            .commit_for(RedbTestOperation::Initialization)
+            .commit_for(RedbTestOperation::ProjectionMutation)
             .unwrap();
         if row == &changed {
             assert_eq!(

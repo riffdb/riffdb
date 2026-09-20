@@ -356,12 +356,11 @@ impl FollowerReceiver {
                 receipt.attribution() != ChangelogAttributionV3::ReplicationSourceHold
             });
             let changes = projection.plan(&frame)?;
-            let changed = changes.identities();
             drop(frame);
             check_cancel(cancellation)?;
             let applied = applier.apply_frame(&bytes)?;
             check_cancel(cancellation)?;
-            projection.replay(&mut applier, changes, cancellation)?;
+            let changed = projection.replay(&mut applier, changes, cancellation)?;
             if applied != covered || applier.acknowledge_durable_position()? != applied {
                 return Err(corrupt());
             }

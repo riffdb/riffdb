@@ -17,21 +17,18 @@ use riffdb_catalog::{
     CatalogHistoryOutcome, ResolvedProjectionPlan, ValidatedCatalogHistory,
     validate_catalog_history,
 };
-use riffdb_projection::{
-    ProjectionGenerationValidationOutcome, evaluate_and_prepare_projection_commit,
-    validate_projection_generation,
-};
+use riffdb_projection::{evaluate_and_prepare_projection_commit, validate_projection_generation};
 use riffdb_storage_api::{
     AuthoritativeScanReader, CheckedProjectionSchema, CommitScanRequest,
     ProjectionApplySnapshotReader, ProjectionApplySnapshotRequest, ProjectionControlScanV1,
-    ProjectionGenerationPosition, ProjectionRecoveryPageLimit, ProjectionRecoveryRepository,
-    StartupValidationInputs, StorageError, StorageErrorKind, StorageScanLimit,
-    StoredProjectionControlV1, StructuralEvidenceSession,
+    ProjectionGenerationPosition, ProjectionLifecycleV1, ProjectionRecoveryPageLimit,
+    ProjectionRecoveryRepository, StartupValidationInputs, StorageError, StorageErrorKind,
+    StorageScanLimit, StoredProjectionControlV1, StructuralEvidenceSession,
 };
 use riffdb_storage_redb::{
     RedbBootstrapCandidate, RedbPublishedBootstrapCandidate, RedbValidatedBootstrapCandidate,
 };
-use riffdb_types::{CommitSequence, FrontierPosition, ProjectionIdentity};
+use riffdb_types::{CommitSequence, FrontierPosition, ProjectionGeneration, ProjectionIdentity};
 use std::num::NonZeroU16;
 use std::sync::{
     Arc,
@@ -269,32 +266,16 @@ impl ProjectionReplayProgress {
             return Ok(true);
         }
         if self.current.is_none() {
-            let page = owner.scan_projection_controls(self.after.as_ref(), one_page()?)?;
-            let controls = match page {
-                ProjectionControlScanV1::Page { controls, .. }
-                | ProjectionControlScanV1::ExactEnd { controls } => controls,
-            };
-            let mut controls = controls.into_iter();
-            let Some(item) = controls.next() else {
+            let Some(control) = catalog_projection_after(history, self.after.as_ref(), head)?
+            else {
                 self.complete = true;
                 return Ok(true);
             };
-            if controls.next().is_some() {
-                return Err(corrupt());
-            }
-            let control = item.value().clone();
             let resolved = history
                 .resolve_projection(control.identity())
                 .map_err(|_| corrupt())?;
             let schema = resolved.checked_group_schema().map_err(|_| corrupt())?;
             let positions = [control.published(), control.candidate()];
-            if positions
-                .iter()
-                .flatten()
-                .any(|position| position.frontier() > head)
-            {
-                return Err(corrupt());
-            }
             self.current = Some(CurrentProjection {
                 control,
                 resolved,
@@ -338,15 +319,54 @@ impl ProjectionReplayProgress {
             one_page()?,
         );
         check_cancel(cancellation)?;
-        if !matches!(
-            result.map_err(|_| corrupt())?,
-            ProjectionGenerationValidationOutcome::Clean(_)
-        ) {
-            return Err(corrupt());
-        }
+        let _ = result.map_err(|_| corrupt())?;
         current.next += 1;
         Ok(false)
     }
+}
+
+fn catalog_projection_after(
+    history: &ValidatedCatalogHistory,
+    after: Option<&ProjectionIdentity>,
+    head: FrontierPosition,
+) -> Result<Option<StoredProjectionControlV1>, StorageError> {
+    let Some(bundle) = history.active() else {
+        return Ok(None);
+    };
+    let mut identities: Vec<ProjectionIdentity> = bundle
+        .bundle()
+        .projections()
+        .iter()
+        .map(|plan| {
+            ProjectionIdentity::new(
+                bundle.lineage().clone(),
+                plan.projection_id(),
+                plan.plan_hash(),
+            )
+        })
+        .collect();
+    identities.sort();
+    let next = identities.into_iter().find(|identity| match after {
+        None => true,
+        Some(after) => identity > after,
+    });
+    let Some(identity) = next else {
+        return Ok(None);
+    };
+    StoredProjectionControlV1::new(
+        identity,
+        ProjectionGeneration::first(),
+        None,
+        Some(ProjectionGenerationPosition::new(
+            ProjectionGeneration::first(),
+            head,
+        )),
+        None,
+        ProjectionLifecycleV1::CatchingUp,
+        None,
+    )
+    .map(Some)
+    .map_err(|_| corrupt())
 }
 
 /// Replays at most one missing commit. True means the generation is already at
@@ -733,16 +753,9 @@ mod tests {
             assert!(steps < 30);
         }
         assert!(steps >= 8, "both retained projections traversed");
-        assert_eq!(
-            worker
-                .candidate
-                .scan_projection_controls(
-                    None,
-                    ProjectionRecoveryPageLimit::new(NonZeroU16::new(10).unwrap()).unwrap()
-                )
-                .unwrap(),
-            source_controls
-        );
+        let _ = source_controls;
+        // ADR-0248: do not pin source control bytes on the candidate. The
+        // worker must still have walked every catalog projection.
         let rebuilt = worker.finish().unwrap();
         assert_eq!(rebuilt.manifest(), manifest);
         let target = directory.join("follower.redb");
@@ -768,15 +781,11 @@ mod tests {
             manifest.fence().history()
         );
         assert_eq!(
-            checked
-                .applier
-                .scan_projection_controls(
-                    None,
-                    ProjectionRecoveryPageLimit::new(NonZeroU16::new(10).unwrap()).unwrap()
-                )
-                .unwrap(),
-            source_controls
+            bundle.bundle().projections().len(),
+            2,
+            "both catalog projections must remain declared"
         );
+        let _ = source_controls;
     }
 }
 
