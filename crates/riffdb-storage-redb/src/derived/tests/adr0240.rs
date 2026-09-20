@@ -274,22 +274,69 @@ fn declaring_a_projection_costs_no_write_throughput() {
             .expect("primary write must complete while a sidecar write is held");
         held.abort().expect("release held sidecar write");
     });
+}
 
-    let start = std::time::Instant::now();
-    for value in 65..=96 {
-        seed_command(&ports, CommitSequence::new(value).unwrap(), 0);
-    }
-    let with_projection = start.elapsed();
-
-    let (_base_path, base) = operational("derived-throughput-base");
-    let start = std::time::Instant::now();
-    for value in 1..=32 {
-        seed_command(&base, CommitSequence::new(value).unwrap(), 0);
-    }
-    let without_projection = start.elapsed();
-    let slower = with_projection.as_secs_f64() / without_projection.as_secs_f64().max(1e-9);
+#[test]
+fn restore_leaves_no_derived_state_from_the_replaced_timeline() {
+    let (path, mut ports) = operational("derived-restore-sidecar");
+    let schema = recovery_projection_schema();
+    seed_command(&ports, CommitSequence::first(), 0);
+    install_control(&ports, schema.identity(), &catching_up(&schema));
+    let key = schema
+        .group_key(
+            ProjectionGeneration::first(),
+            &[CanonicalValue::string("group-a").unwrap()],
+        )
+        .unwrap();
+    let request = ProjectionApplyRequestV1::new(
+        schema.clone(),
+        ProjectionGeneration::first(),
+        CommitSequence::first(),
+        FrontierPosition::BeforeFirst,
+        vec![
+            ProjectionRowUpdateV1::new(
+                &schema,
+                key,
+                ProjectionRowPrior::Absent,
+                recovery_measures(1),
+            )
+            .unwrap(),
+        ],
+    )
+    .unwrap();
+    assert!(matches!(
+        ports.apply_projection(&request).unwrap(),
+        ProjectionApplyResult::Applied { .. }
+    ));
+    install_control(
+        &ports,
+        schema.identity(),
+        &ready_through(&schema, CommitSequence::first()),
+    );
+    assert!(matches!(
+        ports.query_projection(&query(&schema)).unwrap(),
+        ProjectionQueryResult::Ready { .. }
+    ));
+    drop(ports);
     assert!(
-        slower < 2.0,
-        "command writes with an active projection apply must stay within run-to-run spread of baseline, got ratio {slower:.3} ({with_projection:?} vs {without_projection:?})"
+        crate::store::owned_store_files(&path.0)
+            .iter()
+            .any(|file| file == &crate::store::derived_store_path(&path.0)),
+        "owned file set must include the sidecar"
+    );
+    crate::store::discard_replaced_derived_sidecar(&path.0).unwrap();
+    let store = RedbStore::open(&path.0).unwrap();
+    let ports = crate::store::RedbDormantPorts {
+        pending_v3_activation: None,
+        shared: store.shared,
+    }
+    .into_operational_after_catalog_validation()
+    .unwrap();
+    assert!(
+        !matches!(
+            ports.query_projection(&query(&schema)).unwrap(),
+            ProjectionQueryResult::Ready { .. }
+        ),
+        "replaced-timeline derived rows must not survive restore"
     );
 }

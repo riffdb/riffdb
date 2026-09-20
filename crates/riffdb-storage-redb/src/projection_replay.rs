@@ -183,9 +183,12 @@ pub(crate) fn read_projection_replay_snapshot_from(
         Some(control) => control
             .frontier_for(request.generation())
             .ok_or_else(corrupt)?,
-        None => {
-            FrontierPosition::AppliedThrough(CommitSequence::new(u64::MAX).ok_or_else(corrupt)?)
-        }
+        None => local_frontier(
+            &access.open_table(PROJECTION_APPLIED).map_err(invalid)?,
+            request.schema().identity(),
+            request.generation(),
+            FrontierPosition::AppliedThrough(CommitSequence::new(u64::MAX).ok_or_else(corrupt)?),
+        )?,
     };
     let frontier = local_frontier(
         &access.open_table(PROJECTION_APPLIED).map_err(invalid)?,

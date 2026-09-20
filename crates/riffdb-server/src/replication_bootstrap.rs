@@ -24,14 +24,14 @@ use riffdb_projection::{
 use riffdb_storage_api::{
     AuthoritativeScanReader, CheckedProjectionSchema, CommitScanRequest,
     ProjectionApplySnapshotReader, ProjectionApplySnapshotRequest, ProjectionControlScanV1,
-    ProjectionGenerationPosition, ProjectionRecoveryPageLimit, ProjectionRecoveryRepository,
-    StartupValidationInputs, StorageError, StorageErrorKind, StorageScanLimit,
-    StoredProjectionControlV1, StructuralEvidenceSession,
+    ProjectionGenerationPosition, ProjectionLifecycleV1, ProjectionRecoveryPageLimit,
+    ProjectionRecoveryRepository, StartupValidationInputs, StorageError, StorageErrorKind,
+    StorageScanLimit, StoredProjectionControlV1, StructuralEvidenceSession,
 };
 use riffdb_storage_redb::{
     RedbBootstrapCandidate, RedbPublishedBootstrapCandidate, RedbValidatedBootstrapCandidate,
 };
-use riffdb_types::{CommitSequence, FrontierPosition, ProjectionIdentity};
+use riffdb_types::{CommitSequence, FrontierPosition, ProjectionGeneration, ProjectionIdentity};
 use std::num::NonZeroU16;
 use std::sync::{
     Arc,
@@ -130,6 +130,7 @@ struct CurrentProjection {
     schema: CheckedProjectionSchema,
     positions: [Option<ProjectionGenerationPosition>; 2],
     next: usize,
+    from_catalog: bool,
 }
 impl BootstrapProjectionRebuild {
     /// Validates the candidate's real historical evidence before evaluating rows.
@@ -276,6 +277,23 @@ impl ProjectionReplayProgress {
             };
             let mut controls = controls.into_iter();
             let Some(item) = controls.next() else {
+                if let Some(control) = catalog_projection_after(history, self.after.as_ref(), head)?
+                {
+                    let resolved = history
+                        .resolve_projection(control.identity())
+                        .map_err(|_| corrupt())?;
+                    let schema = resolved.checked_group_schema().map_err(|_| corrupt())?;
+                    let positions = [control.published(), control.candidate()];
+                    self.current = Some(CurrentProjection {
+                        control,
+                        resolved,
+                        schema,
+                        positions,
+                        next: 0,
+                        from_catalog: true,
+                    });
+                    return Ok(false);
+                }
                 self.complete = true;
                 return Ok(true);
             };
@@ -301,6 +319,7 @@ impl ProjectionReplayProgress {
                 schema,
                 positions,
                 next: 0,
+                from_catalog: false,
             });
             return Ok(false);
         }
@@ -338,15 +357,61 @@ impl ProjectionReplayProgress {
             one_page()?,
         );
         check_cancel(cancellation)?;
-        if !matches!(
-            result.map_err(|_| corrupt())?,
-            ProjectionGenerationValidationOutcome::Clean(_)
-        ) {
+        if !current.from_catalog
+            && !matches!(
+                result.map_err(|_| corrupt())?,
+                ProjectionGenerationValidationOutcome::Clean(_)
+            )
+        {
             return Err(corrupt());
         }
         current.next += 1;
         Ok(false)
     }
+}
+
+fn catalog_projection_after(
+    history: &ValidatedCatalogHistory,
+    after: Option<&ProjectionIdentity>,
+    head: FrontierPosition,
+) -> Result<Option<StoredProjectionControlV1>, StorageError> {
+    let Some(bundle) = history.active() else {
+        return Ok(None);
+    };
+    let mut identities: Vec<ProjectionIdentity> = bundle
+        .bundle()
+        .projections()
+        .iter()
+        .map(|plan| {
+            ProjectionIdentity::new(
+                bundle.lineage().clone(),
+                plan.projection_id(),
+                plan.plan_hash(),
+            )
+        })
+        .collect();
+    identities.sort();
+    let next = identities.into_iter().find(|identity| match after {
+        None => true,
+        Some(after) => identity > after,
+    });
+    let Some(identity) = next else {
+        return Ok(None);
+    };
+    StoredProjectionControlV1::new(
+        identity,
+        ProjectionGeneration::first(),
+        None,
+        Some(ProjectionGenerationPosition::new(
+            ProjectionGeneration::first(),
+            head,
+        )),
+        None,
+        ProjectionLifecycleV1::CatchingUp,
+        None,
+    )
+    .map(Some)
+    .map_err(|_| corrupt())
 }
 
 /// Replays at most one missing commit. True means the generation is already at

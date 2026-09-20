@@ -3,7 +3,7 @@ use super::*;
 use riffdb_catalog::ActiveCatalogSnapshot;
 use riffdb_storage_api::{AuthoritativeNamespaceV1 as N, ChangelogFrameV3};
 use riffdb_storage_redb::RedbFollowerApplier;
-use riffdb_types::ProjectionFrontierKey;
+use riffdb_types::{ProjectionFrontierKey, ProjectionIdentity};
 use std::collections::BTreeMap;
 
 /// A frame-bounded final control set. It retains only decoded controls, never
@@ -127,7 +127,41 @@ impl FollowerProjectionTail {
                 FrontierPosition::BeforeFirst,
                 FrontierPosition::AppliedThrough,
             );
-        for control in changes.controls.into_values() {
+        let mut controls = changes.controls;
+        if controls.is_empty() {
+            if !self.loaded {
+                self.catalog = ActiveCatalogSnapshot::read(owner).map_err(|_| corrupt())?;
+                self.loaded = true;
+                #[cfg(test)]
+                {
+                    self.catalog_loads += 1;
+                }
+            }
+            if let Some(catalog) = &self.catalog {
+                for plan in catalog.bundle().bundle().projections() {
+                    let identity = ProjectionIdentity::new(
+                        catalog.bundle().lineage().clone(),
+                        plan.projection_id(),
+                        plan.plan_hash(),
+                    );
+                    let control = StoredProjectionControlV1::new(
+                        identity,
+                        riffdb_types::ProjectionGeneration::first(),
+                        None,
+                        Some(riffdb_storage_api::ProjectionGenerationPosition::new(
+                            riffdb_types::ProjectionGeneration::first(),
+                            head,
+                        )),
+                        None,
+                        riffdb_storage_api::ProjectionLifecycleV1::CatchingUp,
+                        None,
+                    )
+                    .map_err(|_| corrupt())?;
+                    controls.insert(control.identity().clone(), control);
+                }
+            }
+        }
+        for control in controls.into_values() {
             check_cancel(cancellation)?;
             let resolved = self
                 .catalog

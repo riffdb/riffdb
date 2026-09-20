@@ -148,6 +148,49 @@ pub(crate) fn derived_store_path(path: &Path) -> PathBuf {
     path.with_file_name(name)
 }
 
+/// Every file this database owns, including rebuildable derived state.
+///
+/// Restore, retirement and publication must account for this set rather than a
+/// fixed three-file list (ADR-0246). The sidecar is rebuildable: removing it is
+/// always correct.
+pub(crate) fn owned_store_files(database: &Path) -> Vec<PathBuf> {
+    vec![
+        database.to_path_buf(),
+        crate::journal::journal_path(database),
+        crate::durable_format_marker_path(database),
+        derived_store_path(database),
+    ]
+}
+
+/// Drops derived state that belonged to a replaced timeline.
+pub(crate) fn discard_replaced_derived_sidecar(database: &Path) -> Result<(), StorageError> {
+    let sidecar = derived_store_path(database);
+    if !owned_store_files(database)
+        .iter()
+        .any(|file| file == &sidecar)
+    {
+        return Err(storage_error(StorageErrorKind::InvariantViolation));
+    }
+    match std::fs::remove_file(sidecar) {
+        Ok(()) => Ok(()),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(_) => Err(storage_error(StorageErrorKind::Unavailable)),
+    }
+}
+
+fn empty_derived_read() -> Result<redb::ReadTransaction, StorageError> {
+    static EMPTY: std::sync::OnceLock<Database> = std::sync::OnceLock::new();
+    if EMPTY.get().is_none() {
+        let opened = RedbStore::open_derived_database(Path::new("empty-derived"), true)?;
+        let _ = EMPTY.set(opened);
+    }
+    EMPTY
+        .get()
+        .ok_or_else(|| storage_error(StorageErrorKind::Unavailable))?
+        .begin_read()
+        .map_err(transaction_error)
+}
+
 #[cfg(feature = "test-fixtures")]
 struct ExternalKillBarrierFileBackend {
     inner: redb::backends::FileBackend,
@@ -429,15 +472,28 @@ impl SharedRedb {
         self.open_mode == OpenMode::Follower
     }
 
+    pub(crate) fn cannot_serve_command_commit(&self) -> bool {
+        self.open_mode != OpenMode::Source
+    }
+
     pub(crate) fn derived_database(&self) -> Result<&Database, StorageError> {
-        if let Some(database) = self.derived.get() {
-            return Ok(database);
+        loop {
+            if let Some(database) = self.derived.get() {
+                return Ok(database);
+            }
+            match RedbStore::open_derived_database(&self.path, self.derived_in_memory) {
+                Ok(opened) => {
+                    let _ = self.derived.set(opened);
+                }
+                Err(error)
+                    if error.kind() == StorageErrorKind::Unavailable
+                        && self.derived.get().is_some() =>
+                {
+                    continue;
+                }
+                Err(error) => return Err(error),
+            }
         }
-        let opened = RedbStore::open_derived_database(&self.path, self.derived_in_memory)?;
-        let _ = self.derived.set(opened);
-        self.derived
-            .get()
-            .ok_or_else(|| storage_error(StorageErrorKind::Unavailable))
     }
 
     pub(crate) fn before_test_commit(
@@ -2233,7 +2289,10 @@ impl RedbStore {
         });
         // The builder configuration above is shared by both arms; only the
         // storage medium differs (ADR-0113 backend-parameterized open).
-        let derived_in_memory = engine_backend.is_some();
+        // Sidecar durability follows the primary path, not the backend
+        // wrapper: a FileBackend kill-barrier still has to observe the
+        // sidecar after process death (ADR-0240 two-store crash).
+        let derived_in_memory = false;
         let database = match engine_backend {
             Some(backend) => builder.create_with_backend(DynStorageBackend(backend)),
             None => builder.create(path),
@@ -5161,8 +5220,15 @@ impl RedbOperationalPorts {
     }
 
     /// Read transaction over the derived-state sidecar. The primary writer does
-    /// not wait for this transaction.
+    /// not wait for this transaction. A missing sidecar is an empty read, not a
+    /// create, so a read-only mount does not grow a sibling file.
     pub(crate) fn begin_derived_read(&self) -> Result<redb::ReadTransaction, StorageError> {
+        if let Some(database) = self.shared.derived.get() {
+            return database.begin_read().map_err(transaction_error);
+        }
+        if !self.shared.derived_in_memory && !derived_store_path(&self.shared.path).exists() {
+            return empty_derived_read();
+        }
         self.shared
             .derived_database()?
             .begin_read()

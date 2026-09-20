@@ -37,9 +37,7 @@ use crate::codec::{
     encode_durable_event_v1, encode_outbox_intent_v1, encode_outbox_status_v1,
     encode_projection_apply_v1, encode_projection_control_v1, encode_projection_state_v1,
 };
-use crate::command_authority::{
-    command_authority_head, command_member_at_access, commit_at, commit_at_access,
-};
+use crate::command_authority::{command_member_at_access, commit_at, commit_at_access};
 use crate::error::{precommit_storage_error, storage_error, table_error};
 use crate::hooks::RedbTestOperation;
 use crate::journal::JournalTable;
@@ -662,25 +660,14 @@ impl ProjectionMutationRepository for RedbOperationalPorts {
             return Err(storage_error(StorageErrorKind::InvariantViolation));
         }
 
-        let (commit_present, primary_head) = {
-            let primary = self.begin_read()?;
-            let commits = primary.open_table(COMMITS).map_err(table_error)?;
-            let events = primary.open_table(EVENTS).map_err(table_error)?;
-            let result = (
-                read_commit(&commits, &events, request.sequence())?.is_some(),
-                authoritative_head(&commits, &events)?,
-            );
-            drop(commits);
-            drop(events);
-            drop(primary);
-            self.shared.retire_current_read_root();
-            result
-        };
+        let access = self.begin_derived_write()?;
+        let primary = self.begin_composite_read()?;
+        let commit_present = commit_at_access(&primary, request.sequence())?.is_some();
+        let primary_head = overlay_head(&primary)?;
         if !commit_present {
+            access.abort()?;
             return Err(corrupt());
         }
-
-        let access = self.begin_derived_write()?;
         let transaction = access.transaction()?;
         let current_control = {
             let controls = transaction
@@ -856,18 +843,9 @@ impl ProjectionMutationRepository for RedbOperationalPorts {
         operation: ProjectionControlOperation,
     ) -> Result<ProjectionControlResult, StorageError> {
         let identity = projection_operation_identity(&operation).clone();
-        let head = {
-            let primary = self.begin_read()?;
-            let commits = primary.open_table(COMMITS).map_err(table_error)?;
-            let events = primary.open_table(EVENTS).map_err(table_error)?;
-            let head = authoritative_head(&commits, &events)?;
-            drop(commits);
-            drop(events);
-            drop(primary);
-            self.shared.retire_current_read_root();
-            head
-        };
         let access = self.begin_derived_write()?;
+        let primary = self.begin_composite_read()?;
+        let head = overlay_head(&primary)?;
         let transaction = access.transaction()?;
         let current = {
             let controls = transaction
@@ -943,12 +921,8 @@ impl ProjectionQueryReader for RedbOperationalPorts {
         &self,
         request: &ProjectionQueryRequest,
     ) -> Result<ProjectionQueryResult, StorageError> {
-        let primary = self.begin_read()?;
-        let head = {
-            let commits = primary.open_table(COMMITS).map_err(table_error)?;
-            let events = primary.open_table(EVENTS).map_err(table_error)?;
-            authoritative_head(&commits, &events)?
-        };
+        let primary = self.begin_composite_read()?;
+        let head = overlay_head(&primary)?;
         let derived = self.begin_derived_read()?;
         query_projection_from(&derived, request, Some(head))
     }
@@ -1096,9 +1070,9 @@ impl ProjectionRecoveryRepository for RedbOperationalPorts {
         &self,
         request: &ProjectionRecoveryValidationRequestV1,
     ) -> Result<ProjectionRecoveryValidationResultV1, StorageError> {
-        let primary = self.begin_read()?;
+        let primary = self.begin_composite_read()?;
         let derived = self.begin_derived_read()?;
-        validate_projection_recovery_page_from(primary.deref(), &derived, request)
+        validate_projection_recovery_page_from(&primary, &derived, request)
     }
 }
 pub(crate) fn scan_projection_controls_at(
@@ -1163,19 +1137,17 @@ pub(crate) fn validate_projection_recovery_page_at(
     transaction: &crate::store::RedbReadAccess,
     request: &ProjectionRecoveryValidationRequestV1,
 ) -> Result<ProjectionRecoveryValidationResultV1, StorageError> {
-    validate_projection_recovery_page_from(transaction.deref(), transaction.deref(), request)
+    validate_projection_recovery_page_from(transaction, transaction.deref(), request)
 }
 
 fn validate_projection_recovery_page_from(
-    primary: &redb::ReadTransaction,
+    primary: &RedbReadAccess,
     derived: &redb::ReadTransaction,
     request: &ProjectionRecoveryValidationRequestV1,
 ) -> Result<ProjectionRecoveryValidationResultV1, StorageError> {
     let controls = derived
         .open_table(PROJECTION_FRONTIER)
         .map_err(table_error)?;
-    let commits = primary.open_table(COMMITS).map_err(table_error)?;
-    let events = primary.open_table(EVENTS).map_err(table_error)?;
     let markers = derived
         .open_table(PROJECTION_APPLIED)
         .map_err(table_error)?;
@@ -1190,10 +1162,8 @@ fn validate_projection_recovery_page_from(
         }
         Err(error) => return Err(error),
     };
-    if authoritative_head(&commits, &events)? != request.expected_authoritative_head()
-        || control
-            .as_ref()
-            .is_some_and(|control| control != request.expected_control())
+    if overlay_head(primary)? != request.expected_authoritative_head()
+        || control.as_ref() != Some(request.expected_control())
     {
         return Ok(ProjectionRecoveryValidationResultV1::FenceChanged);
     }
@@ -1224,25 +1194,22 @@ fn validate_projection_recovery_page_from(
 
     match request.expected_page() {
         ProjectionRecoveryExpectedPageV1::Markers(expected) => {
-            validate_redb_projection_marker_page(&markers, &commits, &events, request, expected)
+            validate_redb_projection_marker_page(&markers, primary, request, expected)
         }
-        ProjectionRecoveryExpectedPageV1::Rows(expected) => validate_redb_projection_state_page(
-            &rows, &markers, &commits, &events, request, expected,
-        ),
+        ProjectionRecoveryExpectedPageV1::Rows(expected) => {
+            validate_redb_projection_state_page(&rows, &markers, primary, request, expected)
+        }
     }
 }
 
-fn validate_redb_projection_marker_page<M, C, E>(
+fn validate_redb_projection_marker_page<M>(
     markers: &M,
-    commits: &C,
-    events: &E,
+    primary: &RedbReadAccess,
     request: &ProjectionRecoveryValidationRequestV1,
     expected: &[StoredProjectionApplyV1],
 ) -> Result<ProjectionRecoveryValidationResultV1, StorageError>
 where
     M: ReadableTable<&'static [u8], &'static [u8]>,
-    C: ReadableTable<&'static [u8], &'static [u8]>,
-    E: ReadableTable<&'static [u8], &'static [u8]>,
 {
     let after = match request.continuation() {
         None => None,
@@ -1349,11 +1316,8 @@ where
                 ProjectionRecoveryFindingCodeV1::MarkerAboveFrontier,
             ));
         }
-        if read_commit(commits, events, sequence)?.is_none() {
-            return Ok(redb_projection_recovery_finding(
-                request,
-                ProjectionRecoveryFindingCodeV1::MarkerMismatch,
-            ));
+        if commit_at_access(primary, sequence)?.is_none() {
+            return Err(corrupt());
         }
         if actual != expected {
             return Ok(redb_projection_recovery_finding(
@@ -1398,19 +1362,16 @@ where
     })
 }
 
-fn validate_redb_projection_state_page<S, M, C, E>(
+fn validate_redb_projection_state_page<S, M>(
     rows: &S,
     markers: &M,
-    commits: &C,
-    events: &E,
+    primary: &RedbReadAccess,
     request: &ProjectionRecoveryValidationRequestV1,
     expected: &[StoredProjectionStateV1],
 ) -> Result<ProjectionRecoveryValidationResultV1, StorageError>
 where
     S: ReadableTable<&'static [u8], &'static [u8]>,
     M: ReadableTable<&'static [u8], &'static [u8]>,
-    C: ReadableTable<&'static [u8], &'static [u8]>,
-    E: ReadableTable<&'static [u8], &'static [u8]>,
 {
     let (after, validated_rows) = match request.continuation() {
         Some(ProjectionRecoveryContinuationV1::Rows {
@@ -1521,11 +1482,8 @@ where
             }
             Err(error) => return Err(error),
         }
-        if read_commit(commits, events, actual.last_changed_sequence())?.is_none() {
-            return Ok(redb_projection_recovery_finding(
-                request,
-                ProjectionRecoveryFindingCodeV1::StateLinkMismatch,
-            ));
+        if commit_at_access(primary, actual.last_changed_sequence())?.is_none() {
+            return Err(corrupt());
         }
         if actual != expected {
             return Ok(redb_projection_recovery_finding(
@@ -1797,14 +1755,8 @@ where
     commit_at(table, events, sequence)
 }
 
-pub(super) fn authoritative_head<T>(
-    table: &T,
-    events: &impl ReadableTable<&'static [u8], &'static [u8]>,
-) -> Result<FrontierPosition, StorageError>
-where
-    T: ReadableTable<&'static [u8], &'static [u8]>,
-{
-    Ok(command_authority_head(table, events)?.map_or(
+pub(super) fn overlay_head(access: &RedbReadAccess) -> Result<FrontierPosition, StorageError> {
+    Ok(access.application_frontier()?.map_or(
         FrontierPosition::BeforeFirst,
         FrontierPosition::AppliedThrough,
     ))

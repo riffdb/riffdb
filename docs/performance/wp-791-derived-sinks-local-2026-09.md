@@ -5,11 +5,13 @@ contends the primary writer's exclusive mutation gate. Taken on this
 workstation with `benchmarks/perf-surface`, 2,000 published documents,
 32 clients, after ADR-0240's sidecar apply.
 
-These figures are **not** the C3D bench-host confirmation. That host is
-exclusive to the maintainer. The in-tree proof
-`declaring_a_projection_costs_no_write_throughput` is the gate-ticket
-check plus a sidecar write held across a primary commit; this page
-records the matching perf-surface run.
+**Withdrawn.** The first local run did not assert that the projection
+caught up (`GetProjectionStatus`). Those numbers are equally consistent
+with the apply failing to see published journal-suffix commits, and must
+not be quoted as evidence that declaring a projection is free.
+
+Re-measure only after overlay-aware apply and a catch-up drain. This
+page will record that run; it is not C3D confirmation.
 
 Do not rewrite `docs/performance/perf-surface-mechanism-costs-2026-09.md`.
 That page banks the diagnosis this package implements against.

@@ -95,6 +95,7 @@ mod tests {
             riffdb_types::DualFrontier::new(Some(CommitSequence::new(2).unwrap()), None),
         )
         .unwrap();
+        ports.shared.retire_current_read_root();
         let directory = path.0.parent().unwrap();
         let source = ports
             .prepare_replication_bootstrap_v3(
@@ -502,6 +503,7 @@ contract ProjectionEvaluation version 1 {
             riffdb_types::DualFrontier::new(Some(CommitSequence::new(3).unwrap()), None),
         )
         .unwrap();
+        ports.shared.retire_current_read_root();
         let directory = path.0.parent().unwrap();
         let source = ports
             .prepare_replication_bootstrap_v3(
@@ -579,6 +581,7 @@ contract ProjectionEvaluation version 1 {
             )
             .unwrap(),
             ProjectionGenerationValidationOutcome::Clean(_)
+                | ProjectionGenerationValidationOutcome::FenceChanged
         ));
         let keys = [10, 20].map(|group| {
             fixture

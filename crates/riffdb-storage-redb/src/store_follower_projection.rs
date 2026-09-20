@@ -113,6 +113,9 @@ impl RedbFollowerApplier {
         request: &ProjectionApplyRequestV1,
     ) -> Result<StoredProjectionApplyV1, StorageError> {
         self.ensure_live()?;
+        if !self.shared.cannot_serve_command_commit() {
+            return Err(storage_error(StorageErrorKind::InvariantViolation));
+        }
         self.failed = true;
         let _lease = self.shared.mutation_gate.acquire()?;
         let mut write = self

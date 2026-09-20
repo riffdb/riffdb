@@ -85,25 +85,16 @@ pub(super) fn apply(
     )
     .map_err(request_value_error)?;
     let first = batch.members().first().ok_or_else(corrupt)?;
-    let (missing_commit, primary_head) = {
-        let primary = ports.begin_read()?;
-        let commits = primary.open_table(COMMITS).map_err(table_error)?;
-        let events = primary.open_table(EVENTS).map_err(table_error)?;
-        let mut missing = false;
-        for member in batch.members() {
-            if read_commit(&commits, &events, member.sequence())?.is_none() {
-                missing = true;
-                break;
-            }
-        }
-        let head = authoritative_head(&commits, &events)?;
-        drop(commits);
-        drop(events);
-        drop(primary);
-        ports.shared.retire_current_read_root();
-        (missing, head)
-    };
     let access = ports.begin_derived_write()?;
+    let primary = ports.begin_composite_read()?;
+    let mut missing_commit = false;
+    for member in batch.members() {
+        if crate::command_authority::commit_at_access(&primary, member.sequence())?.is_none() {
+            missing_commit = true;
+            break;
+        }
+    }
+    let primary_head = super::overlay_head(&primary)?;
     let transaction = access.transaction()?;
     let current = read_projection_control(
         &transaction
@@ -302,6 +293,8 @@ pub(super) fn resolve(
 ) -> Result<ProjectionApplyBatchResult, StorageError> {
     // Like columnar selection reconciliation, use one current engine read root;
     // admitting another write after CommitStatusUnknown is prohibited.
+    let primary = ports.begin_composite_read()?;
+    let head = super::overlay_head(&primary)?;
     let access = ports.begin_derived_read()?;
     let first = batch.members().first().ok_or_else(corrupt)?;
     let Some(control) = read_projection_control(
@@ -311,6 +304,9 @@ pub(super) fn resolve(
         first.identity(),
     )?
     else {
+        return Ok(ProjectionApplyBatchResult::StateChanged);
+    };
+    if super::control_disagrees_with_head(&control, head) {
         return Ok(ProjectionApplyBatchResult::StateChanged);
     };
     let Some(frontier) = control.frontier_for(first.generation()) else {
@@ -328,6 +324,9 @@ pub(super) fn resolve(
         if sequence_is_at_or_before(member.sequence(), frontier) {
             if marker.is_none_or(|marker| marker.canonical_hash() != member.apply_hash()) {
                 return Err(corrupt());
+            }
+            if crate::command_authority::commit_at_access(&primary, member.sequence())?.is_none() {
+                return Ok(ProjectionApplyBatchResult::StateChanged);
             }
             present += 1;
         } else if marker.is_some() {
