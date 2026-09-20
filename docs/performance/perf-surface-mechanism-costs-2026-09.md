@@ -122,7 +122,7 @@ projection evaluation faster, which the census says costs almost nothing.
 
 ## Reproducing
 
-```
+```console
 cargo build --release --bin riffdbd
 cd benchmarks/perf-surface && cargo build --release
 PERF_SURFACE_DOCUMENTS=2000 PERF_SURFACE_CONCURRENCY=32 \

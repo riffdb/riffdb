@@ -10,8 +10,12 @@ caught up (`GetProjectionStatus`). Those numbers are equally consistent
 with the apply failing to see published journal-suffix commits, and must
 not be quoted as evidence that declaring a projection is free.
 
-Re-measure only after overlay-aware apply and a catch-up drain. This
-page will record that run; it is not C3D confirmation.
+Re-measure only after overlay-aware apply and a catch-up drain. The
+table below is that re-measure, taken on this workstation, and it is not
+C3D confirmation: the bench-host run OBL-0240-3 defers to is
+[WP-791 derived sinks: C3D](wp-791-derived-sinks-c3d-2026-09.md), which
+supersedes this page for the obligation and reads a smaller residual cost
+than this host's spread can see.
 
 Do not rewrite `docs/performance/perf-surface-mechanism-costs-2026-09.md`.
 That page banks the diagnosis this package implements against.
