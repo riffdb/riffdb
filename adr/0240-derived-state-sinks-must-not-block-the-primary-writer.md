@@ -5,7 +5,8 @@ status: accepted
 tier: guarantee
 date: 2026-09-19
 accepted: 2026-09-19
-acceptance: 'maintainer, in session, 2026-09-19: "Approved" (ADR-0240 as written)'
+acceptance: 'maintainer, in session, 2026-09-19: "Approved" (ADR-0240 as written);
+  amended 2026-09-20, maintainer, in session: "i approve" (Amendment 1)'
 requires: [ADR-0010, ADR-0017, ADR-0093, ADR-0171, ADR-0239]
 amends:
   - ADR-0010 by requiring that projection application hold no lock the primary
@@ -28,7 +29,10 @@ obligations:
     package: WP-791
     proof: declaring_a_projection_costs_no_write_throughput
     says: A contract declaring a projection sustains write throughput within the
-      bench host's run-to-run spread of one that declares none.
+      bench host's run-to-run spread of one that declares none, where that spread
+      is the range of the baseline variant across repetitions of the same run as a
+      percentage of its mean. A declaration-only control measured beside it is the
+      sharper instrument and is reported alongside, but does not set the bar.
 review_triggers:
   - A derived-state path would acquire the primary store's mutation gate, or any
     lock a command commit waits on.
@@ -142,6 +146,39 @@ requirement 2 even where it would measure well.
 - `derived_state_disagreeing_with_the_primary_is_rebuilt_not_trusted` plants a
   derived store claiming commits the primary does not have and requires a
   rebuild rather than a read.
-- `declaring_a_projection_costs_no_write_throughput` runs the perf-surface
-  contract with and without a projection and requires the two to agree within
-  the host's spread, which is the measurement this record exists to change.
+- `declaring_a_projection_costs_no_write_throughput` holds the boundary where a
+  unit test can hold it: an apply batch takes no primary mutation-gate ticket,
+  and a sidecar write held open does not delay a command commit. It does not
+  compare throughput, and no unit test can. The throughput claim is a bench-host
+  measurement, carried by OBL-0240-3 and recorded in
+  `docs/performance/wp-791-derived-sinks-c3d-2026-09.md`.
+
+## Amendment 1 — proof description, named estimator, and OBL-0240-3 discharged (Accepted 2026-09-20)
+
+The maintainer accepted this exact text on 2026-09-20. Two corrections and one
+discharge.
+
+The description of `declaring_a_projection_costs_no_write_throughput` said the
+proof runs the perf-surface contract with and without a projection and requires
+the two to agree. It never did: it asserts gate tickets and non-blocking, which
+is the part a unit test can own. `check-adr-obligations` did not catch the
+mismatch because it verifies that a test of that name exists, not that the test
+does what the record says. The description is corrected above.
+
+"The bench host's run-to-run spread" was not defined, and the measurement it
+gates turns on which spread is meant. It is now named in the obligation: the
+baseline variant's range across repetitions.
+
+OBL-0240-3 is discharged on the C3D measurement of 2026-09-20, twelve
+repetitions at 32 clients on revision `c29722f1e`. Declaring a projection cost
+-80.4%, -79.9% and -81.0% of write throughput on this host when this record was
+written; it costs 3.27% on average now, against a baseline run-to-run spread of
+3.5%, and the -33% one-client cost is gone. Inside the bar this record sets.
+
+A declaration-only control measured beside it disagrees, and the record says so
+rather than leaving it to be rediscovered: `tokenized_text` does no work and
+sits at -0.64%, so the projection cell is distinguishable from free by 2.62
+points at t = -3.6 on about 22 degrees of freedom. About 2.6 points of real
+residual cost remain, 96% of the original coupling having been removed. The
+residual is named as outstanding in WP-791's closure and is not held against
+this record.

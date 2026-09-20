@@ -141,6 +141,7 @@
 - [Sub-variance Wins Register](performance/sub-variance-wins-register.md)
 - [Choosing Measurement Hosts](performance/benchmark-host-selection.md)
 - [Columnar Measurability Gap](performance/columnar-measurability-gap.md)
+- [Per-mechanism Write Cost](performance/perf-surface-mechanism-costs-2026-09.md)
 - [App-baseline Alpha Evidence](performance/app-baseline-alpha.md)
 - [Alpha Endurance Harness](performance/alpha-endurance.md)
 - [WP-449 Writer Evidence](performance/wp-449-writer-evidence.md)
@@ -190,6 +191,7 @@
 - [WP-773 Bounded Columnar Shutdown](performance/wp-773-columnar-shutdown.md)
 - [WP-777 Demand-activated Columnar Runtime](performance/wp-777-demand-activated-columnar.md)
 - [WP-791 Derived Sinks Local Measurement](performance/wp-791-derived-sinks-local-2026-09.md)
+- [WP-791 Derived Sinks C3D Measurement](performance/wp-791-derived-sinks-c3d-2026-09.md)
 - [App-baseline Production Profile](performance/app-baseline-production-profile.md)
 
 # Reference
