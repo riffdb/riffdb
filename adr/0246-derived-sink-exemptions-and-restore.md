@@ -1,11 +1,12 @@
 ---
 adr: "0246"
 title: Derived Sink Exemptions And Restore
-status: proposed
+status: accepted
 tier: guarantee
 date: 2026-09-19
-accepted: null
-acceptance: null
+accepted: 2026-09-19
+acceptance: 'maintainer, in session, 2026-09-19: "Approved"
+  (ADR-0246 as written)'
 requires: [ADR-0240, ADR-0102]
 amends:
   - ADR-0240 by naming the one structural exemption to its decision 2 gate
