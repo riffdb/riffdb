@@ -287,9 +287,9 @@ surface as a process defect rather than as diligence.
 ## Performance measurements
 
 Read [measurement-host selection](performance/benchmark-host-selection.md) before
-choosing a host or reusing a baseline. Hardware SHA-2 is required for future
-measurements by maintainer direction; N1 results are historical and testing there
-has stopped. Host/profile enforcement is being recorded separately. Coordinate
+choosing a host or reusing a baseline. ADR-0245 requires hardware SHA-2 and the
+other named accelerators; N1 results are historical and testing there has stopped.
+WP-797 owns profile validation and N1's replacement. Coordinate
 exclusive use and compare matching toolchains and build profiles. Keep P99 as a
 hard selection gate. The [writer-census defects](performance/wp749-writer-census-defects.md)
 require independent wall-time reconciliation with an explicit remainder;

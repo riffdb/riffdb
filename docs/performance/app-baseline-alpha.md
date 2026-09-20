@@ -7,10 +7,10 @@ application surface, then separately tests sustained demand and recovery.
 
 For future measurements, follow the
 [hardware SHA-2 and host-selection guidance](benchmark-host-selection.md).
-N1 is retired from testing by maintainer direction; references to it in existing
-profile evidence describe historical qualification. The profile/enforcement
-change is being recorded separately and this note does not reinterpret a frozen
-gate. Writer attribution must account for the
+ADR-0245 retires N1 from testing and the release profile set; references to it in
+existing profile evidence describe historical qualification. WP-797 owns host
+validation and the replacement required to retain two release profiles. Writer
+attribution must account for the
 [known wall-time undercount](wp749-writer-census-defects.md).
 
 ## Canonical commands

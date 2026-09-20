@@ -23348,6 +23348,9 @@ work_packages:
       separate changes. Document the writer busy-plus-idle undercount of 15.30%
       on N1 and 20.54% on C3D, signed independent-wall reconciliation and explicit
       remainders in the handbook. The producer defects remain open, not repaired.
+      Align host guidance with the subsequently merged ADR-0245's full hardware
+      baseline and two-release-profile requirement; WP-797 owns validation and
+      the replacement, and runtime startup enforcement is not claimed.
     - Re-aim the next WP-749 review at identifying the remaining current-baseline
       gate gap outside capture or explicitly re-deriving the gate for maintainer
       review. Historical throughput of 1291 versus 1220 ops/s used Rust 1.97.0

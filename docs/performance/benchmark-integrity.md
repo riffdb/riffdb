@@ -6,12 +6,12 @@ about durable media and not RAM-flattered by tmpfs.
 
 ## Host selection and attribution
 
-Follow the [measurement-host guidance](benchmark-host-selection.md): the
-maintainer requires hardware SHA-2 for future measurements and has retired N1
-from testing. Its historical hashing cost was 7.8 times C3D's with identical
+Follow the [measurement-host guidance](benchmark-host-selection.md) and
+ADR-0245's accepted hardware baseline, including SHA-2 acceleration. N1 is
+retired from testing. Its historical hashing cost was 7.8 times C3D's with identical
 binaries; accelerator differences can reverse optimization priorities. Coordinate
 exclusive host use, refresh controls after toolchain/build changes, and keep P99
-as a selection gate. Profile retirement and enforcement are recorded separately.
+as a selection gate. WP-797 owns profile validation and N1's replacement.
 
 Before using writer stages, read the
 [open census defects and reconciliation method](wp749-writer-census-defects.md).

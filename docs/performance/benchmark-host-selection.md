@@ -1,10 +1,15 @@
 # Choosing performance measurement hosts
 
-Hardware SHA-2 acceleration is required for future RiffDB measurements by the
-maintainer's 2026-09-19 direction. Stop testing on N1; its existing measurements
-remain historical evidence. The profile retirement and enforcement changes are
-being recorded separately. This guidance does not claim that the current daemon
-enforces a CPU requirement at startup or amend an existing release gate.
+Accepted ADR-0245 defines the measurement and deployment hardware baseline:
+**SHA-2, AES, carry-less multiply and SSE4.2 acceleration**, verified on the host.
+N1 is retired from testing and the release profile set; its existing measurements
+remain historical evidence. WP-797 owns profile validation and N1's replacement.
+Release qualification still requires two profiles. Using C3D for a diagnostic
+does not itself admit it as a release profile.
+
+ADR-0245 explicitly separates this baseline from runtime startup requirements.
+The current daemon does not refuse startup solely because hardware SHA-2 is
+absent. This guidance adds no startup enforcement or further gate amendment.
 
 ## Accelerator support can change the conclusion
 
@@ -30,9 +35,10 @@ ranking between them. Keep hardware-specific findings beside each result.
 
 ## Before choosing a host or a baseline
 
-- Verify hardware SHA-2 support exposed to the measured process: SHA-NI on
-  x86-64 or the corresponding ARMv8 crypto support. Record CPU specifications,
-  architecture and relevant feature flags, without real machine addresses.
+- Verify every hardware capability in ADR-0245 as exposed to the measured
+  process, including SHA-NI on x86-64 or the corresponding ARMv8 crypto support
+  for SHA-2. Record CPU specifications, architecture and relevant feature flags,
+  without real machine addresses. Do not infer support from an instance name.
 - Verify the actual hashing dependency and backend dispatch. The investigation
   used `sha2 0.11.0` and `cpufeatures 0.3.0`; its x86 dispatch required SHA,
   SSE2, SSSE3 and SSE4.1. Record compiler flags and any backend override. Hardware
