@@ -26640,3 +26640,39 @@ work_packages:
     scale: The breaker's cost is constant per defect and holds no per-caller state, so it
       cannot itself become a resource a caller can exhaust.
   human_review_triggers: *id001
+- id: WP-802
+  name: Columnar source admitted without a restart
+  tier: guarantee
+  depends_on: []
+  objective: Admit a contract-derived columnar source when its contract is deployed, refuse
+    a deploy the running process cannot serve, and answer a query against an unregistered
+    source with a typed refusal, per ADR-0251 decisions 1 through 5.
+  requirements: []
+  required_adrs: [ADR-0251, ADR-0250]
+  allowed_paths: [work_packages.yaml,
+    adr/0251-a-declared-columnar-source-is-admitted-without-a-restart.md,
+    crates/riffdb-server/src/columnar_adapter.rs,
+    crates/riffdb-server/src/columnar_admission.rs,
+    crates/riffdb-service/src/ports.rs,
+    crates/riffdb-service/src/symbolic_query.rs,
+    crates/riffdb-service/src/contract_operations.rs,
+    benchmarks/perf-surface/**,
+    docs/performance/**]
+  deliverables:
+  - A typed refusal for a projected query against a source the engine does not hold,
+    replacing the internal defect that path returns today
+  - Runtime admission of a contract-derived source at deploy, installing the control,
+    verifying the history it needs is retained, and registering a cold slot
+  - A deploy refused with a typed reason when its declared source cannot be admitted
+  - The three named proofs
+  acceptance_commands:
+  - ./scripts/acceptance --wp WP-802
+  - ./scripts/ci-all
+  exit_gate: A vector field deployed into a running daemon becomes queryable without a
+    restart, a source whose history was pruned is refused at the deploy rather than after
+    it, and no projected query against an unregistered source returns an opaque incident.
+  standing_design_tests:
+    interface_safety: A source the engine does not hold is a condition the caller is told
+      about, never one it has to infer from an opaque incident.
+    scale: Admission is per declared source and runs at deploy, not per query.
+  human_review_triggers: *id001
