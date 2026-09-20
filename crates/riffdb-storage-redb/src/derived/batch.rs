@@ -6,7 +6,7 @@ use riffdb_storage_api::{
 use std::collections::BTreeMap;
 
 struct CapturedBase {
-    access: RedbReadAccess,
+    access: redb::ReadTransaction,
     control: StoredProjectionControlV1,
 }
 impl ProjectionBatchSnapshot for CapturedBase {
@@ -49,7 +49,7 @@ pub(super) fn capture(
     ports: &RedbOperationalPorts,
     identity: &ProjectionIdentity,
 ) -> Result<Box<dyn ProjectionBatchSnapshot>, StorageError> {
-    let access = ports.begin_composite_read()?;
+    let access = ports.begin_derived_read()?;
     let control = read_projection_control(
         &access
             .open_table(PROJECTION_FRONTIER)
@@ -85,8 +85,25 @@ pub(super) fn apply(
     )
     .map_err(request_value_error)?;
     let first = batch.members().first().ok_or_else(corrupt)?;
-    let access = ports
-        .begin_attributed_write(riffdb_storage_api::ChangelogAttributionV3::ProjectionControl)?;
+    let (missing_commit, primary_head) = {
+        let primary = ports.begin_read()?;
+        let commits = primary.open_table(COMMITS).map_err(table_error)?;
+        let events = primary.open_table(EVENTS).map_err(table_error)?;
+        let mut missing = false;
+        for member in batch.members() {
+            if read_commit(&commits, &events, member.sequence())?.is_none() {
+                missing = true;
+                break;
+            }
+        }
+        let head = authoritative_head(&commits, &events)?;
+        drop(commits);
+        drop(events);
+        drop(primary);
+        ports.shared.retire_current_read_root();
+        (missing, head)
+    };
+    let access = ports.begin_derived_write()?;
     let transaction = access.transaction()?;
     let current = read_projection_control(
         &transaction
@@ -98,6 +115,11 @@ pub(super) fn apply(
         access.abort()?;
         return Ok(ProjectionApplyBatchResult::StateChanged);
     };
+    if super::control_disagrees_with_head(&current, primary_head) {
+        super::discard_projection_identity(transaction, first.identity())?;
+        access.commit_for(RedbTestOperation::ProjectionMutation)?;
+        return Ok(ProjectionApplyBatchResult::StateChanged);
+    }
     let Some(retained) = current.frontier_for(first.generation()) else {
         // Generation retirement is a concurrent control change, not evidence
         // that an otherwise canonical prepared batch is corrupt.
@@ -106,15 +128,10 @@ pub(super) fn apply(
     };
     let mut historical = 0usize;
     {
-        let commits = transaction.open_table(COMMITS).map_err(table_error)?;
-        let events = transaction.open_table(EVENTS).map_err(table_error)?;
         let markers = transaction
             .open_table(PROJECTION_APPLIED)
             .map_err(table_error)?;
         for member in batch.members() {
-            if read_commit(&commits, &events, member.sequence())?.is_none() {
-                return Err(corrupt());
-            }
             let key = ProjectionApplyKey::new(
                 member.identity().clone(),
                 member.generation(),
@@ -138,6 +155,9 @@ pub(super) fn apply(
     if historical != 0 || &current != batch.expected() {
         access.abort()?;
         return Ok(ProjectionApplyBatchResult::StateChanged);
+    }
+    if missing_commit {
+        return Err(corrupt());
     }
     let mut base = BTreeMap::new();
     {
@@ -282,7 +302,7 @@ pub(super) fn resolve(
 ) -> Result<ProjectionApplyBatchResult, StorageError> {
     // Like columnar selection reconciliation, use one current engine read root;
     // admitting another write after CommitStatusUnknown is prohibited.
-    let access = ports.begin_read()?;
+    let access = ports.begin_derived_read()?;
     let first = batch.members().first().ok_or_else(corrupt)?;
     let Some(control) = read_projection_control(
         &access

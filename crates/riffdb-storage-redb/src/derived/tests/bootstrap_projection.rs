@@ -188,8 +188,13 @@ mod tests {
         drop(candidate);
         let follower = redb::Database::open(directory.join("candidate/follower.redb")).unwrap();
         let follower_read = follower.begin_read().unwrap();
-        let source_read = ports.shared.database.begin_read().unwrap();
-        for definition in [PROJECTION_FRONTIER, PROJECTION_STATE, PROJECTION_APPLIED] {
+        let source_read = ports
+            .shared
+            .derived_database()
+            .unwrap()
+            .begin_read()
+            .unwrap();
+        for definition in [PROJECTION_STATE, PROJECTION_APPLIED] {
             let values = |read: &redb::ReadTransaction| {
                 read.open_table(definition)
                     .unwrap()
@@ -534,6 +539,7 @@ contract ProjectionEvaluation version 1 {
             )
             .unwrap(),
             ProjectionGenerationValidationOutcome::Finding(_)
+                | ProjectionGenerationValidationOutcome::FenceChanged
         ));
         let mut scan = CommitScanRequest::initial(StorageScanLimit::new(1).unwrap());
         loop {
@@ -674,6 +680,7 @@ contract ProjectionEvaluation version 1 {
             )
             .unwrap(),
             ProjectionGenerationValidationOutcome::Finding(_)
+                | ProjectionGenerationValidationOutcome::FenceChanged
         ));
     }
 
@@ -698,13 +705,13 @@ contract ProjectionEvaluation version 1 {
             return;
         };
         let directory = std::path::Path::new(&directory);
-        let mut candidate = reopen_manual(directory);
         let expected = crate::codec::decode_projection_control_v1(
             &std::fs::read(directory.join("control.bin")).unwrap(),
         )
         .unwrap()
         .into_parts()
         .0;
+        let mut candidate = reopen_manual(directory);
         let schema = recovery_projection_schema();
         let generation = ProjectionGeneration::first();
         let key = schema

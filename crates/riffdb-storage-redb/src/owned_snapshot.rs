@@ -51,6 +51,7 @@ use crate::store::{RedbOperationalPorts, RedbReadAccess};
 #[derive(Clone)]
 pub struct RedbOwnedSnapshot {
     access: RedbReadAccess,
+    derived: Option<std::sync::Arc<redb::ReadTransaction>>,
     source_pins: Option<std::sync::Arc<crate::derived_source_pin::DerivedSourcePins>>,
 }
 
@@ -58,8 +59,13 @@ impl RedbOwnedSnapshot {
     pub(crate) fn from_read_access(access: RedbReadAccess) -> Self {
         Self {
             access,
+            derived: None,
             source_pins: None,
         }
+    }
+
+    pub(crate) fn derived_transaction(&self) -> Option<&redb::ReadTransaction> {
+        self.derived.as_deref()
     }
 
     pub(crate) fn with_source_pins(
@@ -89,6 +95,7 @@ impl OwnedSnapshotReader for RedbOperationalPorts {
     fn open_owned_snapshot(&self) -> Result<Self::Snapshot<'_>, StorageError> {
         Ok(RedbOwnedSnapshot {
             access: self.begin_composite_read()?,
+            derived: Some(std::sync::Arc::new(self.begin_derived_read()?)),
             source_pins: Some(std::sync::Arc::clone(&self.shared.derived_source_pins)),
         })
     }

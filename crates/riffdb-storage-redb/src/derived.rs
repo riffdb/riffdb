@@ -3,6 +3,7 @@
 mod batch;
 
 use std::ops::Bound::{Excluded, Unbounded};
+use std::ops::Deref;
 
 use redb::ReadableTable;
 use riffdb_storage_api::{
@@ -604,7 +605,7 @@ impl ProjectionApplySnapshotReader for RedbOperationalPorts {
         &self,
         request: &ProjectionApplySnapshotRequest,
     ) -> Result<ProjectionApplySnapshot, StorageError> {
-        let transaction = self.begin_composite_read()?;
+        let transaction = self.begin_derived_read()?;
         let controls = transaction
             .open_table(PROJECTION_FRONTIER)
             .map_err(table_error)?;
@@ -661,17 +662,26 @@ impl ProjectionMutationRepository for RedbOperationalPorts {
             return Err(storage_error(StorageErrorKind::InvariantViolation));
         }
 
-        let access = self.begin_attributed_write(
-            riffdb_storage_api::ChangelogAttributionV3::ProjectionControl,
-        )?;
-        let transaction = access.transaction()?;
-        {
-            let commits = transaction.open_table(COMMITS).map_err(table_error)?;
-            let events = transaction.open_table(EVENTS).map_err(table_error)?;
-            if read_commit(&commits, &events, request.sequence())?.is_none() {
-                return Err(corrupt());
-            }
+        let (commit_present, primary_head) = {
+            let primary = self.begin_read()?;
+            let commits = primary.open_table(COMMITS).map_err(table_error)?;
+            let events = primary.open_table(EVENTS).map_err(table_error)?;
+            let result = (
+                read_commit(&commits, &events, request.sequence())?.is_some(),
+                authoritative_head(&commits, &events)?,
+            );
+            drop(commits);
+            drop(events);
+            drop(primary);
+            self.shared.retire_current_read_root();
+            result
+        };
+        if !commit_present {
+            return Err(corrupt());
         }
+
+        let access = self.begin_derived_write()?;
+        let transaction = access.transaction()?;
         let current_control = {
             let controls = transaction
                 .open_table(PROJECTION_FRONTIER)
@@ -682,6 +692,11 @@ impl ProjectionMutationRepository for RedbOperationalPorts {
             access.abort()?;
             return Ok(ProjectionApplyResult::StateChanged);
         };
+        if control_disagrees_with_head(&current_control, primary_head) {
+            discard_projection_identity(transaction, request.identity())?;
+            access.commit_for(RedbTestOperation::ProjectionMutation)?;
+            return Ok(ProjectionApplyResult::StateChanged);
+        }
         let retained = current_control
             .frontier_for(request.generation())
             .ok_or_else(|| storage_error(StorageErrorKind::InvariantViolation))?;
@@ -841,9 +856,18 @@ impl ProjectionMutationRepository for RedbOperationalPorts {
         operation: ProjectionControlOperation,
     ) -> Result<ProjectionControlResult, StorageError> {
         let identity = projection_operation_identity(&operation).clone();
-        let access = self.begin_attributed_write(
-            riffdb_storage_api::ChangelogAttributionV3::ProjectionControl,
-        )?;
+        let head = {
+            let primary = self.begin_read()?;
+            let commits = primary.open_table(COMMITS).map_err(table_error)?;
+            let events = primary.open_table(EVENTS).map_err(table_error)?;
+            let head = authoritative_head(&commits, &events)?;
+            drop(commits);
+            drop(events);
+            drop(primary);
+            self.shared.retire_current_read_root();
+            head
+        };
+        let access = self.begin_derived_write()?;
         let transaction = access.transaction()?;
         let current = {
             let controls = transaction
@@ -851,11 +875,14 @@ impl ProjectionMutationRepository for RedbOperationalPorts {
                 .map_err(table_error)?;
             read_projection_control(&controls, &identity)?
         };
-        let head = {
-            let commits = transaction.open_table(COMMITS).map_err(table_error)?;
-            let events = transaction.open_table(EVENTS).map_err(table_error)?;
-            authoritative_head(&commits, &events)?
-        };
+        if current
+            .as_ref()
+            .is_some_and(|control| control_disagrees_with_head(control, head))
+        {
+            discard_projection_identity(transaction, &identity)?;
+            access.commit_for(RedbTestOperation::ProjectionMutation)?;
+            return Ok(ProjectionControlResult::StateChanged);
+        }
         let result = evaluate_projection_control_operation(current.as_ref(), &operation, head)
             .map_err(request_value_error)?;
         let ProjectionControlResult::Updated(updated) = result else {
@@ -916,18 +943,35 @@ impl ProjectionQueryReader for RedbOperationalPorts {
         &self,
         request: &ProjectionQueryRequest,
     ) -> Result<ProjectionQueryResult, StorageError> {
-        query_projection_at(&self.begin_read()?, request)
+        let primary = self.begin_read()?;
+        let head = {
+            let commits = primary.open_table(COMMITS).map_err(table_error)?;
+            let events = primary.open_table(EVENTS).map_err(table_error)?;
+            authoritative_head(&commits, &events)?
+        };
+        let derived = self.begin_derived_read()?;
+        query_projection_from(&derived, request, Some(head))
     }
     fn read_projection_status(
         &self,
         identity: &ProjectionIdentity,
     ) -> Result<ProjectionStatus, StorageError> {
-        read_projection_status_at(&self.begin_composite_read()?, identity)
+        let primary = self.begin_composite_read()?;
+        let derived = self.begin_derived_read()?;
+        read_projection_status_from(&primary, &derived, identity)
     }
 }
 pub(crate) fn query_projection_at(
     transaction: &crate::store::RedbReadAccess,
     request: &ProjectionQueryRequest,
+) -> Result<ProjectionQueryResult, StorageError> {
+    query_projection_from(transaction.deref(), request, None)
+}
+
+pub(crate) fn query_projection_from(
+    transaction: &redb::ReadTransaction,
+    request: &ProjectionQueryRequest,
+    primary_head: Option<FrontierPosition>,
 ) -> Result<ProjectionQueryResult, StorageError> {
     let controls = transaction
         .open_table(PROJECTION_FRONTIER)
@@ -942,6 +986,30 @@ pub(crate) fn query_projection_at(
             reason: ProjectionUnavailableReason::Building,
         });
     };
+    if primary_head.is_some_and(|head| control_disagrees_with_head(&control, head)) {
+        return Ok(ProjectionQueryResult::Degraded {
+            generation: None,
+            current: FrontierPosition::BeforeFirst,
+            reason: ProjectionUnavailableReason::Building,
+        });
+    }
+    if matches!(control.lifecycle(), ProjectionLifecycleV1::Ready)
+        && let Some(published) = control.published()
+        && let FrontierPosition::AppliedThrough(sequence) = published.frontier()
+    {
+        let markers = transaction
+            .open_table(PROJECTION_APPLIED)
+            .map_err(table_error)?;
+        let key =
+            ProjectionApplyKey::new(control.identity().clone(), published.generation(), sequence);
+        if read_projection_marker(&markers, &key)?.is_none() {
+            return Ok(ProjectionQueryResult::Degraded {
+                generation: None,
+                current: FrontierPosition::BeforeFirst,
+                reason: ProjectionUnavailableReason::Building,
+            });
+        }
+    }
     match control.lifecycle() {
         ProjectionLifecycleV1::Building | ProjectionLifecycleV1::CatchingUp => {
             let candidate = control.candidate().ok_or_else(corrupt)?;
@@ -988,14 +1056,29 @@ pub(crate) fn read_projection_status_at(
     transaction: &crate::store::RedbReadAccess,
     identity: &ProjectionIdentity,
 ) -> Result<ProjectionStatus, StorageError> {
-    let controls = transaction
+    read_projection_status_from(transaction, transaction.deref(), identity)
+}
+
+pub(crate) fn read_projection_status_from(
+    primary: &RedbReadAccess,
+    derived: &redb::ReadTransaction,
+    identity: &ProjectionIdentity,
+) -> Result<ProjectionStatus, StorageError> {
+    let controls = derived
         .open_table(PROJECTION_FRONTIER)
         .map_err(table_error)?;
-    let head = transaction.application_frontier()?.map_or(
+    let head = primary.application_frontier()?.map_or(
         FrontierPosition::BeforeFirst,
         FrontierPosition::AppliedThrough,
     );
-    Ok(read_projection_control(&controls, identity)?.map_or_else(
+    let control = read_projection_control(&controls, identity)?;
+    if control
+        .as_ref()
+        .is_some_and(|control| control_disagrees_with_head(control, head))
+    {
+        return Ok(ProjectionStatus::uninitialized(identity.clone(), head));
+    }
+    Ok(control.map_or_else(
         || ProjectionStatus::uninitialized(identity.clone(), head),
         |control| ProjectionStatus::from_control(&control, head),
     ))
@@ -1007,17 +1090,27 @@ impl ProjectionRecoveryRepository for RedbOperationalPorts {
         after: Option<&ProjectionIdentity>,
         limit: ProjectionRecoveryPageLimit,
     ) -> Result<ProjectionControlScanV1, StorageError> {
-        scan_projection_controls_at(&self.begin_read()?, after, limit)
+        scan_projection_controls_from(&self.begin_derived_read()?, after, limit)
     }
     fn validate_projection_recovery_page(
         &self,
         request: &ProjectionRecoveryValidationRequestV1,
     ) -> Result<ProjectionRecoveryValidationResultV1, StorageError> {
-        validate_projection_recovery_page_at(&self.begin_read()?, request)
+        let primary = self.begin_read()?;
+        let derived = self.begin_derived_read()?;
+        validate_projection_recovery_page_from(primary.deref(), &derived, request)
     }
 }
 pub(crate) fn scan_projection_controls_at(
     transaction: &crate::store::RedbReadAccess,
+    after: Option<&ProjectionIdentity>,
+    limit: ProjectionRecoveryPageLimit,
+) -> Result<ProjectionControlScanV1, StorageError> {
+    scan_projection_controls_from(transaction.deref(), after, limit)
+}
+
+fn scan_projection_controls_from(
+    transaction: &redb::ReadTransaction,
     after: Option<&ProjectionIdentity>,
     limit: ProjectionRecoveryPageLimit,
 ) -> Result<ProjectionControlScanV1, StorageError> {
@@ -1070,17 +1163,23 @@ pub(crate) fn validate_projection_recovery_page_at(
     transaction: &crate::store::RedbReadAccess,
     request: &ProjectionRecoveryValidationRequestV1,
 ) -> Result<ProjectionRecoveryValidationResultV1, StorageError> {
-    let controls = transaction
+    validate_projection_recovery_page_from(transaction.deref(), transaction.deref(), request)
+}
+
+fn validate_projection_recovery_page_from(
+    primary: &redb::ReadTransaction,
+    derived: &redb::ReadTransaction,
+    request: &ProjectionRecoveryValidationRequestV1,
+) -> Result<ProjectionRecoveryValidationResultV1, StorageError> {
+    let controls = derived
         .open_table(PROJECTION_FRONTIER)
         .map_err(table_error)?;
-    let commits = transaction.open_table(COMMITS).map_err(table_error)?;
-    let events = transaction.open_table(EVENTS).map_err(table_error)?;
-    let markers = transaction
+    let commits = primary.open_table(COMMITS).map_err(table_error)?;
+    let events = primary.open_table(EVENTS).map_err(table_error)?;
+    let markers = derived
         .open_table(PROJECTION_APPLIED)
         .map_err(table_error)?;
-    let rows = transaction
-        .open_table(PROJECTION_STATE)
-        .map_err(table_error)?;
+    let rows = derived.open_table(PROJECTION_STATE).map_err(table_error)?;
     let control = match read_projection_control(&controls, request.schema().identity()) {
         Ok(control) => control,
         Err(error) if error.kind() == StorageErrorKind::CorruptData => {
@@ -1091,8 +1190,10 @@ pub(crate) fn validate_projection_recovery_page_at(
         }
         Err(error) => return Err(error),
     };
-    if control.as_ref() != Some(request.expected_control())
-        || authoritative_head(&commits, &events)? != request.expected_authoritative_head()
+    if authoritative_head(&commits, &events)? != request.expected_authoritative_head()
+        || control
+            .as_ref()
+            .is_some_and(|control| control != request.expected_control())
     {
         return Ok(ProjectionRecoveryValidationResultV1::FenceChanged);
     }
@@ -1249,7 +1350,10 @@ where
             ));
         }
         if read_commit(commits, events, sequence)?.is_none() {
-            return Err(corrupt());
+            return Ok(redb_projection_recovery_finding(
+                request,
+                ProjectionRecoveryFindingCodeV1::MarkerMismatch,
+            ));
         }
         if actual != expected {
             return Ok(redb_projection_recovery_finding(
@@ -1418,7 +1522,10 @@ where
             Err(error) => return Err(error),
         }
         if read_commit(commits, events, actual.last_changed_sequence())?.is_none() {
-            return Err(corrupt());
+            return Ok(redb_projection_recovery_finding(
+                request,
+                ProjectionRecoveryFindingCodeV1::StateLinkMismatch,
+            ));
         }
         if actual != expected {
             return Ok(redb_projection_recovery_finding(
@@ -1690,7 +1797,7 @@ where
     commit_at(table, events, sequence)
 }
 
-fn authoritative_head<T>(
+pub(super) fn authoritative_head<T>(
     table: &T,
     events: &impl ReadableTable<&'static [u8], &'static [u8]>,
 ) -> Result<FrontierPosition, StorageError>
@@ -1719,7 +1826,77 @@ fn sequence_is_at_or_before(sequence: CommitSequence, frontier: FrontierPosition
     matches!(frontier, FrontierPosition::AppliedThrough(applied) if sequence <= applied)
 }
 
-fn request_value_error(error: StorageValueError) -> StorageError {
+pub(super) fn control_disagrees_with_head(
+    control: &StoredProjectionControlV1,
+    head: FrontierPosition,
+) -> bool {
+    [control.published(), control.candidate()]
+        .into_iter()
+        .flatten()
+        .any(|position| match (position.frontier(), head) {
+            (FrontierPosition::AppliedThrough(_), FrontierPosition::BeforeFirst) => true,
+            (
+                FrontierPosition::AppliedThrough(claimed),
+                FrontierPosition::AppliedThrough(available),
+            ) => claimed > available,
+            (FrontierPosition::BeforeFirst, _) => false,
+        })
+}
+
+fn projection_identity_marker_prefix(identity: &ProjectionIdentity) -> Vec<u8> {
+    let first = ProjectionApplyKey::new(
+        identity.clone(),
+        ProjectionGeneration::first(),
+        CommitSequence::first(),
+    );
+    first.as_bytes()[..first.as_bytes().len() - 16].to_vec()
+}
+
+fn projection_identity_state_prefix(identity: &ProjectionIdentity) -> Vec<u8> {
+    let prefix = riffdb_types::ProjectionGroupPrefixBuilder::new(
+        identity.clone(),
+        ProjectionGeneration::first(),
+    )
+    .finish();
+    let bytes = prefix.as_bytes();
+    bytes[..bytes.len() - 8].to_vec()
+}
+
+pub(super) fn discard_projection_identity(
+    transaction: &redb::WriteTransaction,
+    identity: &ProjectionIdentity,
+) -> Result<(), StorageError> {
+    let frontier = ProjectionFrontierKey::new(identity.clone());
+    let frontier_key = encode_projection_frontier_key(&frontier);
+    {
+        let mut controls = transaction
+            .open_table(PROJECTION_FRONTIER)
+            .map_err(table_error)?;
+        let _ = controls
+            .remove(frontier_key)
+            .map_err(precommit_storage_error)?;
+    }
+    let marker_prefix = projection_identity_marker_prefix(identity);
+    {
+        let mut markers = transaction
+            .open_table(PROJECTION_APPLIED)
+            .map_err(table_error)?;
+        markers
+            .retain(|key, _| !key.starts_with(&marker_prefix))
+            .map_err(precommit_storage_error)?;
+    }
+    let state_prefix = projection_identity_state_prefix(identity);
+    {
+        let mut rows = transaction
+            .open_table(PROJECTION_STATE)
+            .map_err(table_error)?;
+        rows.retain(|key, _| !key.starts_with(&state_prefix))
+            .map_err(precommit_storage_error)?;
+    }
+    Ok(())
+}
+
+pub(super) fn request_value_error(error: StorageValueError) -> StorageError {
     match error {
         StorageValueError::LimitExceeded | StorageValueError::SizeOverflow => {
             storage_error(StorageErrorKind::LimitExceeded)
@@ -1751,6 +1928,7 @@ const fn corrupt() -> StorageError {
 
 #[cfg(test)]
 mod tests {
+    mod adr0240;
     mod bootstrap_projection;
     mod follower_indexes;
     mod follower_projection;
@@ -2024,18 +2202,43 @@ contract Recovery version 1 {
     ) {
         let encoded = encode_projection_control_v1(control).expect("encode control");
         let key = ProjectionFrontierKey::new(physical_identity.clone());
-        let access = ports.begin_write().expect("begin control transaction");
+        let encoded_key = encode_projection_frontier_key(&key);
+        let access = ports.begin_derived_write().expect("begin derived control");
         {
             let mut controls = access
                 .transaction()
-                .expect("control transaction")
+                .expect("derived control transaction")
                 .open_table(PROJECTION_FRONTIER)
-                .expect("control table");
+                .expect("derived control table");
             controls
-                .insert(encode_projection_frontier_key(&key), encoded.as_bytes())
-                .expect("insert control");
+                .insert(encoded_key, encoded.as_bytes())
+                .expect("insert derived control");
         }
-        access.commit().expect("commit control transaction");
+        access
+            .commit_for(RedbTestOperation::ProjectionMutation)
+            .expect("commit derived control");
+    }
+
+    fn install_control_on_primary(
+        ports: &RedbOperationalPorts,
+        physical_identity: &ProjectionIdentity,
+        control: &StoredProjectionControlV1,
+    ) {
+        let encoded = encode_projection_control_v1(control).expect("encode control");
+        let key = ProjectionFrontierKey::new(physical_identity.clone());
+        let encoded_key = encode_projection_frontier_key(&key);
+        let access = ports.begin_write().expect("begin primary control");
+        {
+            let mut controls = access
+                .transaction()
+                .expect("primary control transaction")
+                .open_table(PROJECTION_FRONTIER)
+                .expect("primary control table");
+            controls
+                .insert(encoded_key, encoded.as_bytes())
+                .expect("insert primary control");
+        }
+        access.commit().expect("commit primary control");
     }
 
     // req: OUT-001, OUT-002, TXN-042
@@ -2051,9 +2254,10 @@ contract Recovery version 1 {
         let encoded = encode_projection_control_v1(&initial).expect("encode control");
         let transaction = store
             .shared
-            .database
+            .derived_database()
+            .expect("open derived sidecar")
             .begin_write()
-            .expect("raw setup write");
+            .expect("raw derived setup write");
         transaction
             .open_table(PROJECTION_FRONTIER)
             .expect("control table")
@@ -2597,7 +2801,7 @@ contract Recovery version 1 {
         );
 
         let access = reopened
-            .begin_write()
+            .begin_derived_write()
             .expect("begin derived corruption transaction");
         {
             let mut markers = access
@@ -2612,7 +2816,9 @@ contract Recovery version 1 {
                 )
                 .expect("corrupt marker");
         }
-        access.commit().expect("commit derived corruption");
+        access
+            .commit_for(RedbTestOperation::ProjectionMutation)
+            .expect("commit derived corruption");
         assert!(matches!(
             reopened
                 .validate_projection_recovery_page(&marker_request)

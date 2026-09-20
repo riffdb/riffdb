@@ -33,14 +33,14 @@ pub(crate) fn stage_projection_replay(
     expected: &StoredProjectionControlV1,
     request: &ProjectionApplyRequestV1,
 ) -> Result<ProjectionReplayStage, StorageError> {
-    let control = read_projection_control(
-        &write.open_table(PROJECTION_FRONTIER).map_err(invalid)?,
-        request.identity(),
-    )?
-    .ok_or_else(corrupt)?;
-    if &control != expected {
+    let stored = {
+        let table = write.open_table(PROJECTION_FRONTIER).map_err(invalid)?;
+        read_projection_control(&table, request.identity())?
+    };
+    if stored.as_ref().is_some_and(|control| control != expected) {
         return Err(corrupt());
     }
+    let control = stored.unwrap_or_else(|| expected.clone());
     let target = control
         .frontier_for(request.generation())
         .ok_or_else(corrupt)?;
@@ -168,14 +168,25 @@ pub(crate) fn read_projection_replay_snapshot(
     access: &RedbReadAccess,
     request: &ProjectionApplySnapshotRequest,
 ) -> Result<ProjectionApplySnapshot, StorageError> {
+    read_projection_replay_snapshot_from(access, request)
+}
+
+pub(crate) fn read_projection_replay_snapshot_from(
+    access: &redb::ReadTransaction,
+    request: &ProjectionApplySnapshotRequest,
+) -> Result<ProjectionApplySnapshot, StorageError> {
     let control = read_projection_control(
         &access.open_table(PROJECTION_FRONTIER).map_err(invalid)?,
         request.schema().identity(),
-    )?
-    .ok_or_else(corrupt)?;
-    let target = control
-        .frontier_for(request.generation())
-        .ok_or_else(corrupt)?;
+    )?;
+    let target = match control.as_ref() {
+        Some(control) => control
+            .frontier_for(request.generation())
+            .ok_or_else(corrupt)?,
+        None => {
+            FrontierPosition::AppliedThrough(CommitSequence::new(u64::MAX).ok_or_else(corrupt)?)
+        }
+    };
     let frontier = local_frontier(
         &access.open_table(PROJECTION_APPLIED).map_err(invalid)?,
         request.schema().identity(),

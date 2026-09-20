@@ -2519,6 +2519,10 @@ fn only_commit_durable_advances_a_root_an_operational_reader_can_select() {
         ("fixtures.rs", "downgrade_all_index_rows_to_v1_fixture"),
         // Journal recovery, which runs before operational readiness is claimed.
         ("journal.rs", "replay_frames"),
+        // Sidecar create for rebuildable derived state (ADR-0240). It is a
+        // separate redb engine; operational readers of the primary never
+        // select its roots, and command commits never wait on it.
+        ("store.rs", "open_derived_database"),
     ];
 
     let source_root = crate_root().join("src");
