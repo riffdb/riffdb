@@ -26260,6 +26260,35 @@ work_packages:
       percent rather than the 1 percent assumed for most of the programme.
     - Projection, tokenized-text and row-policy coverage is absent because no contract in the
       repository declares them; closing that gap is required before any public performance claim.
+- id: WP-799
+  name: Tail latency disclosure and its measured spread
+  tier: guarantee
+  depends_on: []
+  objective: Publish p99 as disclosure with a named mechanism rather than as an ungated
+    standard packages block themselves on, and measure its run-to-run spread so a threshold
+    can be derived rather than chosen, per ADR-0249.
+  requirements: [PERF-018]
+  required_adrs: [ADR-0249, ADR-0171, ADR-0239, ADR-0146]
+  allowed_paths: [SPEC.md, work_packages.yaml, adr/README.md,
+    adr/0249-tail-latency-is-disclosure-with-a-named-mechanism.md,
+    docs/performance/**, benchmarks/**]
+  deliverables:
+  - p99 published alongside p50 and p95 on every campaign that publishes them
+  - The measured run-to-run spread of p99 on the bench host, from five generations of
+    identical code, banked so a threshold can be derived from it
+  - A recorded rule that an unexplained tail movement blocks at any size while an
+    explained one is disclosed
+  acceptance_commands:
+  - ./scripts/acceptance --wp WP-799
+  exit_gate: No package is blocked on a tail figure no accepted record gates, every
+    published tail regression names its mechanism, and the p99 spread is measured rather
+    than assumed.
+  standing_design_tests:
+    interface_safety: No surface changes. The record governs what measurement evidence must
+      say, not what an application can express.
+    scale: Not applicable. It changes how a statistic is reported and gated, and adds no
+      runtime behaviour.
+  human_review_triggers: *id001
 - id: WP-798
   name: Hardware CRC-32C and the sub-variance wins register
   tier: surface
