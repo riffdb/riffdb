@@ -1,11 +1,13 @@
 ---
 adr: "0245"
 title: Measurement Host Hardware Baseline
-status: proposed
+status: accepted
 tier: guarantee
 date: 2026-09-19
-accepted: null
-acceptance: null
+accepted: 2026-09-19
+acceptance: 'maintainer, in session, 2026-09-19: "yes, do this"; the hardware
+  position stated as "this is a next generation database, it is acceptable to
+  require modern hardware" (ADR-0245 as written)'
 requires: [ADR-0171, ADR-0239]
 amends:
   - ADR-0239 by retiring N1 from the release profile set its decision 2 names.
