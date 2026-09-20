@@ -26649,8 +26649,16 @@ work_packages:
     source with a typed refusal, per ADR-0251 decisions 1 through 5.
   requirements: []
   required_adrs: [ADR-0251, ADR-0250]
+  # Widened 2026-09-20. Admitting a source at runtime has to reach two places the
+  # package first named around. ColumnarNotifier's name set is built once from
+  # startup registration, so a source admitted later would have no name to wait
+  # on; its state is already behind a mutex, so this adds a registration entry
+  # rather than changing the shape. columnar_worker walks control_bindings, which
+  # moves behind the lock engines already uses.
   allowed_paths: [work_packages.yaml,
     adr/0251-a-declared-columnar-source-is-admitted-without-a-restart.md,
+    crates/riffdb-service/src/columnar_notification.rs,
+    crates/riffdb-server/src/columnar_worker.rs,
     crates/riffdb-server/src/columnar_adapter.rs,
     crates/riffdb-server/src/columnar_admission.rs,
     crates/riffdb-service/src/ports.rs,
