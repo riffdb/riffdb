@@ -81,6 +81,47 @@ Either mistake alone produces a confident, wrong conclusion that columnar is
 unreachable — the same shape as reading an absence of signal as an absence of
 behaviour.
 
+## Progress, 2026-09-20 continued: the query module deploys
+
+`deploy_query_module` is now wired into the harness and **a `nearest` query
+module deploys successfully against the vector contract**. The compiler accepts
+a projected vector query over the perf-surface schema, which was the piece
+previously recorded as a separate work package.
+
+Getting there cost three wrong turns, each recorded because each looks like a
+different failure than it is:
+
+- **`RiffDbClient` cannot do this.** Its generated surface carries
+  `deploy_contract` but not `deploy_query_module`, and its service clients are
+  private fields in generator-owned code. The tonic client type is public, so
+  the harness constructs its own; no generated code was edited.
+- **`CallMetadata::apply` is crate-private**, so the bearer header is set
+  directly and must match what `bearer` produces.
+- **A missing `ContractSelector` surfaces as an HTTP/2 stream reset**, not a
+  typed error. The server's wire validation returns `MissingRequiredField`,
+  which resets the stream, so an absent selector looks exactly like a transport
+  fault and points at the wrong layer entirely.
+
+## What still blocks execution
+
+Executing the deployed query is refused with `AuthorizationDenied`, and the
+obvious cause has been ruled out. The runner capability now carries an
+`ExecuteNamedQuery` permission with the correct contract lineage, the 32-byte
+module hash the deployment returned, and the exact query name, under a global
+tenant scope and an all-partitions partition scope. It is still refused.
+
+So a projected vector query requires **something beyond the named-query
+permission**, and identifying it is the next step. The candidates visible in
+`CapabilityPermission` are `query_projection` (which takes a
+`LineageScopedStableId`, so it needs a projection identifier the harness does
+not currently obtain) and `inspect_vector_state`. The capability's
+`max_scan_rows: 1` is also worth ruling out, though a scan bound should surface
+as a limit rather than an authorization refusal.
+
+This is a narrow, well-defined question rather than an open design problem: the
+deployment works, the permission shape is right, and what remains is finding
+which additional grant a projected source requires.
+
 ## What still blocks the analytical half
 
 Activation needs a projected query, and the harness cannot issue one yet. It

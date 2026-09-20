@@ -18,6 +18,7 @@ riffdb-contract-ir = { path = "../../crates/riffdb-contract-ir", version = "0.1.
 riffdb-client-rust = { path = "../../crates/riffdb-client-rust", version = "0.1.0", default-features = false }
 riffdb-auth = { path = "../../crates/riffdb-auth", version = "0.1.0", default-features = false }
 riffdb-types = { path = "../../crates/riffdb-types", version = "0.1.0", default-features = false }
+riffdb-proto = { path = "../../crates/riffdb-proto", version = "0.1.0", default-features = false }
 tonic = { version = "=0.14.6", default-features = false, features = ["channel", "codegen"] }
 tokio = { version = "1", default-features = false, features = ["rt-multi-thread", "macros", "time"] }
 
@@ -29,3 +30,5 @@ missing_docs = "warn"
 [lints.clippy]
 correctness = { level = "warn", priority = -1 }
 await_holding_lock = "deny"
+
+[dev-dependencies]

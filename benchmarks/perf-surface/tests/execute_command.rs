@@ -34,7 +34,7 @@ fn a_document_publishes_through_the_real_daemon() {
     let outcome = runtime.block_on(async {
         let bootstrap_token =
             bootstrap_and_deploy(&endpoint, &run_dir.join("bootstrap.credential"), &source).await?;
-        let runner = issue_command_capability(&endpoint, &bootstrap_token, &source).await?;
+        let runner = issue_command_capability(&endpoint, &bootstrap_token, &source, &[]).await?;
         let metadata = bearer(&runner)?;
         let mut client = application_client(&endpoint).await?;
 

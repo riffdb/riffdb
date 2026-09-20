@@ -150,7 +150,7 @@ pub async fn measure_variant(
 
     let bootstrap_token =
         bootstrap_and_deploy(&endpoint, &run_dir.join("bootstrap.credential"), source).await?;
-    let runner = issue_command_capability(&endpoint, &bootstrap_token, source).await?;
+    let runner = issue_command_capability(&endpoint, &bootstrap_token, source, &[]).await?;
     let metadata = bearer(&runner)?;
     let mut client = application_client(&endpoint).await?;
 

@@ -944,6 +944,7 @@ dependencies = [
  "riffdb-client-rust",
  "riffdb-contract-compiler",
  "riffdb-contract-ir",
+ "riffdb-proto",
  "riffdb-types",
  "tokio",
  "tonic",

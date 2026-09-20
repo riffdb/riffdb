@@ -16,7 +16,7 @@ use riffdb_auth::bootstrap_secret::{
 use riffdb_client_rust::{
     ApplicationCommand, ApplicationUuid, ApplicationValue, AttemptBudget, BearerCredential,
     BootstrapCallMetadata, BootstrapCredential as TransportBootstrapCredential, CallMetadata,
-    RiffDbClient, StableApplicationClient, generate_request_id, v1,
+    RiffDbClient, StableApplicationClient, app_v1, generate_request_id, v1,
 };
 
 /// Connect and per-call ceiling. Long enough for a cold start, short enough
@@ -233,6 +233,68 @@ fn transport_endpoint(endpoint: &str) -> Result<Endpoint, SessionError> {
         .map_err(|error| SessionError::Connect(format!("{error:?}")))
 }
 
+/// Deploys one RiffQL query module against the active contract.
+///
+/// `RiffDbClient` does not expose `deploy_query_module`: its generated surface
+/// carries `deploy_contract` and its service clients are private fields, and
+/// that file is generator-owned. The tonic client type is public, so the
+/// harness constructs its own rather than editing generated code. This is the
+/// only way to reach a `nearest` binding, which is how a projected vector query
+/// demands the columnar source WP-777 keeps cold.
+pub async fn deploy_query_module(
+    endpoint: &str,
+    token: &str,
+    lineage: &str,
+    module_name: &str,
+    queries: Vec<(String, String)>,
+) -> Result<Vec<u8>, SessionError> {
+    use riffdb_proto::generated_app::application_query_service_client::ApplicationQueryServiceClient;
+
+    let channel = transport_endpoint(endpoint)?
+        .connect()
+        .await
+        .map_err(|error| SessionError::Connect(format!("{error:?}")))?;
+    let mut client = ApplicationQueryServiceClient::new(channel);
+    let request = app_v1::DeployQueryModuleRequest {
+        // The selector is required: the server's wire validation refuses a
+        // missing one with MissingRequiredField, which surfaces as an HTTP/2
+        // stream reset rather than a typed error, so an absent selector looks
+        // like a transport fault.
+        contract: Some(app_v1::ContractSelector {
+            lineage: lineage.to_owned(),
+            version: 1,
+            bundle_hash: Vec::new(),
+        }),
+        module_name: module_name.to_owned(),
+        module_version: 1,
+        queries: queries
+            .into_iter()
+            .map(|(name, source)| app_v1::NamedQuerySource { name, source })
+            .collect(),
+        expected_active: Some(app_v1::deploy_query_module_request::ExpectedActive::AnyActive(true)),
+        request_id: request_id_bytes()?,
+    };
+    let mut call = tonic::Request::new(request);
+    // `CallMetadata::apply` is crate-private, so the header is set directly.
+    // It must match what `bearer` produces or the server refuses the call.
+    let authorization: tonic::metadata::MetadataValue<tonic::metadata::Ascii> =
+        format!("Bearer {token}")
+            .parse()
+            .map_err(|_| SessionError::Bootstrap("authorization header".to_owned()))?;
+    call.metadata_mut().insert("authorization", authorization);
+    let response = client
+        .deploy_query_module(call)
+        .await
+        .map_err(|error| SessionError::Rpc(format!("deploy_query_module: {error:?}")))?
+        .into_inner();
+    // The module hash is what a named-query capability is scoped to, so it must
+    // come back out of the deployment rather than be guessed.
+    let module = response
+        .module
+        .ok_or_else(|| SessionError::Rpc("deploy_query_module returned no module".to_owned()))?;
+    Ok(module.module_hash)
+}
+
 /// The attempt budget for one command. One submission: a retry would fold a
 /// recovery path into a measurement meant to time the ordinary commit.
 #[must_use]
@@ -252,10 +314,12 @@ pub fn endpoint_of(daemon: &Daemon) -> String {
 /// Scoped rather than broad on purpose: a capability wide enough to do anything
 /// would let a mistake in the harness exercise a path the measurement does not
 /// name, and the permission is per-command by design.
+#[allow(clippy::too_many_arguments)]
 pub async fn issue_command_capability(
     endpoint: &str,
     bootstrap_token: &str,
     source: &str,
+    named_queries: &[(String, Vec<u8>)],
 ) -> Result<String, SessionError> {
     use riffdb_client_rust::generate_capability_id;
     use riffdb_contract_compiler::compile_contract_source;
@@ -276,6 +340,19 @@ pub async fn issue_command_capability(
     }
     if permissions.is_empty() {
         return Err(SessionError::Input("no commands to invoke".to_owned()));
+    }
+    // A named query is a separate permission from a command, scoped to the
+    // module hash the deployment returned. Without it the query is refused with
+    // AuthorizationDenied, which is indistinguishable from a cold source in the
+    // error text and easy to mistake for one.
+    for (query_name, module_hash) in named_queries {
+        permissions.push(v1::CapabilityPermission {
+            permission: Some(Permission::ExecuteNamedQuery(v1::NamedQueryPermission {
+                contract_lineage: lineage.clone(),
+                query_module_hash: module_hash.clone(),
+                query_name: query_name.clone(),
+            })),
+        });
     }
 
     let mut client = RiffDbClient::connect(transport_endpoint(endpoint)?)
