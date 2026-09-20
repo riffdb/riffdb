@@ -64,6 +64,8 @@ const WRITER_FRAME_CENSUS_PREFIX: &str = "riffdb-writer-frame-census-v1\t";
 const WRITER_FLUSH_CENSUS_PREFIX: &str = "riffdb-writer-flush-census-v1\t";
 const WRITER_JOURNAL_STAGES_PREFIX: &str = "riffdb-writer-journal-stages-v1\t";
 const WRITER_PUBLICATION_STAGES_PREFIX: &str = "riffdb-writer-publication-stages-v1\t";
+const WRITER_PUBLICATION_STAGES_V2_PREFIX: &str = "riffdb-writer-publication-stages-v2\t";
+const WRITER_CHECKPOINT_CENSUS_PREFIX: &str = "riffdb-writer-checkpoint-census-v1\t";
 const COMPLETION_LANE_PREFIX: &str = "riffdb-completion-lane-v1\t";
 const QUERY_EXECUTE_WINDOWS_PREFIX: &str = "riffdb-query-execute-windows-v1\t";
 const SHUTDOWN_STAGES_PREFIX: &str = "riffdb-shutdown-stages-v1\t";
@@ -264,6 +266,37 @@ pub struct RiffDbServerSession {
     pub backend: RiffDbPublicBackend,
 }
 
+/// Version-aware diagnostic evidence; V1 cannot report complete receipt waits.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct RiffDbWriterPublicationEvidence {
+    /// Publications, residence, receipt wait, durable-to-publish and work.
+    pub stages: [u64; 9],
+    /// All blocking wait-method calls and errors. Missing for legacy V1.
+    pub receipt_wait_counts: Option<[u64; 2]>,
+}
+
+fn parse_publication_stages(
+    encoded: &str,
+    complete_waits: bool,
+) -> io::Result<RiffDbWriterPublicationEvidence> {
+    if complete_waits {
+        let [a, b, c, d, e, f, g, h, i, calls, errors] =
+            parse_fixed_counts(encoded, "writer-publication-stages-v2", 11)?;
+        if errors > calls {
+            return Err(io::Error::other("invalid receipt wait counts"));
+        }
+        Ok(RiffDbWriterPublicationEvidence {
+            stages: [a, b, c, d, e, f, g, h, i],
+            receipt_wait_counts: Some([calls, errors]),
+        })
+    } else {
+        Ok(RiffDbWriterPublicationEvidence {
+            stages: parse_fixed_counts(encoded, "writer-publication-stages-v1", 9)?,
+            receipt_wait_counts: None,
+        })
+    }
+}
+
 /// Redaction-safe fixed-cardinality server telemetry emitted at clean shutdown.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct RiffDbShutdownEvidence {
@@ -307,7 +340,9 @@ pub struct RiffDbShutdownEvidence {
     /// Journal queue, encode, positional-write, and sync stage totals.
     pub writer_journal_stages: Option<[u64; 10]>,
     /// Ordered publication residence, wait, readiness, and work totals.
-    pub writer_publication_stages: Option<[u64; 9]>,
+    pub writer_publication_stages: Option<RiffDbWriterPublicationEvidence>,
+    /// Actual checkpoint selection counts, sizes and lifecycle progress.
+    pub writer_checkpoint_census: Option<[u64; 15]>,
     /// Ordered completion phase counts/times and bounded depth maxima.
     pub completion_lane: Option<RiffDbCompletionLaneEvidence>,
     /// Optional fixed-cardinality query-execute ordinal windows.
@@ -2398,6 +2433,7 @@ fn read_server_stdout(
     let mut writer_flush_census = None;
     let mut writer_journal_stages = None;
     let mut writer_publication_stages = None;
+    let mut writer_checkpoint_census = None;
     let mut completion_lane = None;
     let mut query_execute = None;
     let mut shutdown_stages_us = None;
@@ -2437,8 +2473,18 @@ fn read_server_stdout(
             .trim_end()
             .strip_prefix(WRITER_PUBLICATION_STAGES_PREFIX)
         {
-            writer_publication_stages =
-                Some(parse_fixed_counts(encoded, "writer-publication-stages", 9));
+            writer_publication_stages = Some(parse_publication_stages(encoded, false));
+        } else if let Some(encoded) = line
+            .trim_end()
+            .strip_prefix(WRITER_PUBLICATION_STAGES_V2_PREFIX)
+        {
+            writer_publication_stages = Some(parse_publication_stages(encoded, true));
+        } else if let Some(encoded) = line
+            .trim_end()
+            .strip_prefix(WRITER_CHECKPOINT_CENSUS_PREFIX)
+        {
+            writer_checkpoint_census =
+                Some(parse_fixed_counts(encoded, "writer-checkpoint-census", 15));
         } else if let Some(encoded) = line.trim_end().strip_prefix(COMPLETION_LANE_PREFIX) {
             completion_lane = Some(parse_completion_lane(encoded));
         } else if let Some(encoded) = line.trim_end().strip_prefix(QUERY_EXECUTE_WINDOWS_PREFIX) {
@@ -2471,6 +2517,7 @@ fn read_server_stdout(
                         writer_journal_stages.transpose().and_then(|writer_journal_stages| {
                             writer_publication_stages.transpose().and_then(
                                 |writer_publication_stages| {
+                                    writer_checkpoint_census.transpose().and_then(|writer_checkpoint_census| {
                                     completion_lane.transpose().and_then(|completion_lane| {
                                         query_execute.transpose().and_then(|query_execute| {
                                             optional_shutdown_stages(shutdown_stages_us).map(|(graph_shutdown_elapsed_us, shutdown_stages_us)| RiffDbShutdownEvidence {
@@ -2494,6 +2541,7 @@ fn read_server_stdout(
                                                 writer_flush_census,
                                                 writer_journal_stages,
                                                 writer_publication_stages,
+                                                writer_checkpoint_census,
                                                 completion_lane,
                                                 query_execute,
                                                 table_inventory_before_measurement: None,
@@ -2501,6 +2549,7 @@ fn read_server_stdout(
                                                 recovery_authority_snapshot_after_measurement: None,
                                             })
                                         })
+                                    })
                                     })
                                 },
                             )
@@ -3322,6 +3371,19 @@ mod tests {
             ),
             "configured_budget_ms=1000 elapsed_us=9 shutdown_stage_receipt=present"
         );
+    }
+
+    // req: REP-007
+    #[test]
+    fn publication_parser_distinguishes_missing_first_wait_from_corrected_coverage() {
+        let legacy = parse_publication_stages("1,2,3,0,0,6,7,8,9", false).expect("legacy");
+        assert_eq!(legacy.receipt_wait_counts, None);
+        let current =
+            parse_publication_stages("1,2,3,25000,25000,6,7,8,9,2,0", true).expect("current");
+        assert_eq!(current.receipt_wait_counts, Some([2, 0]));
+        assert_eq!(&current.stages[3..5], &[25_000, 25_000]);
+        assert!(parse_publication_stages("1,2,3,4,5,6,7,8,9", true).is_err());
+        assert!(parse_publication_stages("1,2,3,4,5,6,7,8,9,1,2", true).is_err());
     }
 
     #[test]

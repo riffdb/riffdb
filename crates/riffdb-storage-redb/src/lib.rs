@@ -37,6 +37,7 @@ mod changelog_v3_cursor;
 mod changelog_v3_journal;
 mod changelog_v3_roots;
 mod changelog_v3_write;
+mod checkpoint_census;
 mod checkpoint_root;
 mod clean_close;
 mod codec;
@@ -117,12 +118,46 @@ pub fn writer_journal_stage_census_v1() -> [u64; 10] {
 
 /// Fixed-cardinality ordered command-publication stage census.
 ///
-/// Values are command publications followed by residence, receipt-block,
-/// durable-to-publication, and publication-work sum/max microseconds.
+/// Legacy V1: the receipt-block slots cover only the wait inside publication,
+/// after the normal command completion path already waited once. They cannot
+/// attribute the full journal wait. Use V2 for complete wait-call coverage.
+/// Other slots are publications, residence, durable-to-publication and work.
 #[doc(hidden)]
 #[must_use]
 pub fn writer_publication_stage_census_v1() -> [u64; 9] {
     store::command_publication_stage_census()
+}
+
+/// Corrected command-publication and journal-receipt wait census.
+///
+/// The first nine slots retain V1 order, but receipt-wait sum/max now cover
+/// every blocking-method invocation on command-bearing receipts, including
+/// the first wait, ready rechecks and errors. Final slots are wait-call and
+/// wait-error counts. Polling is excluded. Concurrent waits may overlap, so
+/// their sum is not a partition of writer wall or a per-publication duration.
+/// Diagnostic only: no persistent identity, protocol or durability changes.
+#[doc(hidden)]
+#[must_use]
+pub fn writer_publication_stage_census_v2() -> [u64; 11] {
+    let mut stages = store::command_publication_stage_census();
+    let [calls, errors, sum_us, max_us] = journal::command_receipt_wait_census();
+    stages[3] = sum_us;
+    stages[4] = max_us;
+    [
+        stages[0], stages[1], stages[2], stages[3], stages[4], stages[5], stages[6], stages[7],
+        stages[8], calls, errors,
+    ]
+}
+
+/// Actual asynchronous checkpoint starts, selected transition/command/byte
+/// totals, transition min/max, byte min/max, nonexclusive trigger counts
+/// (transitions/bytes/physical/reanchor), materializations, installations and
+/// failures. Process generation totals; a shutdown snapshot can retain an
+/// unfinished checkpoint. These are counts, not inferred checkpoint rates.
+#[doc(hidden)]
+#[must_use]
+pub fn writer_checkpoint_census_v1() -> [u64; 15] {
+    checkpoint_census::CHECKPOINTS.snapshot()
 }
 
 /// Fixed execute-stage order for the bounded query-growth diagnostic.

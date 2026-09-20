@@ -184,6 +184,12 @@ impl SharedRedb {
         {
             return Ok(());
         }
+        let checkpoint_triggers = [
+            runtime.suffix_transitions >= JOURNAL_CHECKPOINT_START_TRANSITIONS,
+            runtime.suffix_bytes >= JOURNAL_CHECKPOINT_START_BYTES,
+            runtime.suffix_physical_bytes >= start_physical_bytes,
+            runtime.reanchor_required,
+        ];
         let covered_view = self
             .composite_publication
             .read()
@@ -308,6 +314,12 @@ impl SharedRedb {
             completion: Some(receiver),
             result: None,
         });
+        crate::checkpoint_census::CHECKPOINTS.started(
+            batch.transition_count,
+            batch.command_count,
+            batch.encoded_bytes,
+            checkpoint_triggers,
+        );
         let worker_shared = Arc::clone(self);
         let worker_batch = batch.clone();
         if std::thread::Builder::new()
@@ -315,10 +327,16 @@ impl SharedRedb {
             .stack_size(crate::PRODUCTION_THREAD_STACK_BYTES)
             .spawn(move || {
                 let result = worker_shared.materialize_checkpoint_batch(&worker_batch);
+                if result.is_ok() {
+                    crate::checkpoint_census::CHECKPOINTS.materialized();
+                } else {
+                    crate::checkpoint_census::CHECKPOINTS.failed();
+                }
                 let _ = sender.send(result);
             })
             .is_err()
         {
+            crate::checkpoint_census::CHECKPOINTS.failed();
             let error = storage_error(StorageErrorKind::Unavailable);
             if let Some(checkpoint) = checkpoint_guard.as_mut() {
                 checkpoint.completion = None;
