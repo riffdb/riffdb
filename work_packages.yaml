@@ -26257,6 +26257,57 @@ work_packages:
       committed, not what an application can express.
     scale: Not applicable. Removing committed build artifacts reduced the repository
       from 204 MB to 66 MB, which is a side effect rather than the objective.
+- id: WP-796
+  name: Retire durable command-derived locator tables
+  tier: guarantee
+  depends_on: []
+  objective: Remove ADR-0165's three durable locator tables, make ADR-0102's derived index
+    the locator, and measure the write path the retirement is justified by, per ADR-0244.
+  requirements: []
+  required_adrs: [ADR-0244, ADR-0102, ADR-0165, ADR-0236, ADR-0239]
+  allowed_paths: [SPEC.md, work_packages.yaml, adr/README.md,
+    adr/0244-retire-durable-command-derived-locator-tables.md,
+    crates/riffdb-storage-redb/**, crates/riffdb-storage-api/**, tests/**,
+    docs/performance/**]
+  deliverables:
+  - The three durable locator tables removed, with the ADR-0102 derived index serving as
+    the locator, snapshot-loaded or rebuilt within a bounded scan before readiness
+  - A proof that a missing or mismatched locator is typed corruption and never absence
+  - A measured write-path result on the bench host against the previous banked revision,
+    reported with its repetition spread, whatever the result
+  acceptance_commands:
+  - ./scripts/acceptance --wp WP-796
+  exit_gate: No durable locator table remains, a locator is never served from an index
+    that has not been proven complete against the segment frontier, and the write-path
+    change is measured and banked rather than assumed.
+  standing_design_tests:
+    interface_safety: No public surface changes. A failed locator lookup remains typed
+      corruption, so no consumer can observe a present record as absent.
+    scale: Removes three durable rows per command and 180 bytes of journal frame per
+      command; adds a bounded startup rebuild when the index snapshot cannot be proven.
+  human_review_triggers: *id001
+- id: WP-795
+  name: Append-only export page commitments
+  tier: guarantee
+  depends_on: []
+  objective: Implement ADR-0232's append-only export page commitments, which was accepted
+    on 2026-09-16 with no implementing package registered and so had no owner.
+  requirements: [EXP-002, EXP-006, EXP-007, EXP-008, EXP-009, EXP-010]
+  required_adrs: [ADR-0232, ADR-0115, ADR-0207, ADR-0217]
+  allowed_paths: [work_packages.yaml, adr/0232-append-only-export-page-commitments.md,
+    adr/README.md, crates/riffdb-application/**, crates/riffdb-storage-redb/**,
+    crates/riffdb-service/**, fixtures/export/**, tests/**]
+  deliverables:
+  - The page commitments ADR-0232 specifies, covering every requirement it binds
+  - Evidence that an export page commitment is append-only and cannot be restated
+  acceptance_commands:
+  - ./scripts/acceptance --wp WP-795
+  exit_gate: Every requirement ADR-0232 binds is covered by a code-derived proof, and the
+    record is no longer an accepted decision without an owner.
+  standing_design_tests:
+    interface_safety: Export is a supported surface; the commitments constrain what an
+      export page may claim and cannot let a consumer express an unsafe read.
+    scale: Append-only commitments are bounded per page and add no unbounded state.
   human_review_triggers: *id001
 - id: WP-793
   name: Formatting drift repair

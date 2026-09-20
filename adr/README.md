@@ -200,7 +200,7 @@ record with no front matter.
 | [0163](0163-compiler-sealed-command-decisions.md) | Compiler-Sealed Command Decisions with Exact No-Effect Arms | Accepted | legacy |
 | [0164](0164-admission-head-fenced-query-consistency.md) | Admission-Head-Fenced Query Consistency | Accepted | legacy |
 | [0165](0165-durable-command-derived-locator-tables.md) | Durable Command-Derived Locator Tables | Accepted | legacy |
-| [0166](0166-interruptible-columnar-catch-up-and-shutdown-abandonment.md) | Interruptible Columnar Catch-Up and Graceful-Stop Abandonment | Proposed | legacy |
+| [0166](0166-interruptible-columnar-catch-up-and-shutdown-abandonment.md) | Interruptible Columnar Catch-Up and Graceful-Stop Abandonment | Superseded | legacy |
 | [0167](0167-required-bounded-limit-maximum.md) | Required Bounded Limit Maximum | Accepted | legacy |
 | [0168](0168-index-cover-evolution-through-migration.md) | Index Cover Evolution Through Migration | Accepted | legacy |
 | [0169](0169-optional-aggregate-root-materialization.md) | Optional Aggregate Root Materialization | Accepted | legacy |
@@ -275,6 +275,7 @@ record with no front matter.
 | [0241](0241-rust-1-98-1-toolchain-upgrade.md) | Rust 1.98.1 Toolchain Upgrade | Accepted | surface |
 | [0242](0242-formatting-drift-repair.md) | Formatting Drift Repair | Accepted | guarantee |
 | [0243](0243-public-repository-disclosure-guards.md) | Public Repository Disclosure Guards | Accepted | guarantee |
+| [0244](0244-retire-durable-command-derived-locator-tables.md) | Retire Durable Command Derived Locator Tables | Proposed | guarantee |
 <!-- adr-index:end -->
 
 The human architecture review on 2026-07-12 approved the direction represented
