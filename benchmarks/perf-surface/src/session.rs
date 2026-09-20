@@ -338,20 +338,96 @@ pub async fn issue_command_capability(
             })),
         });
     }
+    // A query's authority is not just "may run this query": its compiled proof
+    // carries one access requirement per entity and index it touches, and the
+    // capability has to satisfy each. Granting read/scan per declared entity
+    // and index is what lets a projected vector query reach its rows; without
+    // it the query is refused with AuthorizationDenied, which reads like a cold
+    // source rather than a missing grant.
+    for entity in bundle.schema().entities() {
+        permissions.push(v1::CapabilityPermission {
+            permission: Some(Permission::ReadEntity(v1::LineageScopedStableId {
+                contract_lineage: lineage.clone(),
+                stable_id: entity.id().get(),
+            })),
+        });
+        for index in entity.indexes() {
+            permissions.push(v1::CapabilityPermission {
+                permission: Some(Permission::ScanIndex(v1::LineageScopedStableId {
+                    contract_lineage: lineage.clone(),
+                    stable_id: index.id().get(),
+                })),
+            });
+        }
+    }
+
     // Reading projection status is its own permission. The measurement drains
     // through it, so without this the projection arm cannot prove it caught up
     // and the drain fails with AuthorizationDenied rather than a real lag.
     for plan in bundle.projections() {
         permissions.push(v1::CapabilityPermission {
-            permission: Some(Permission::ReadProjectionStatus(v1::LineageScopedStableId {
-                contract_lineage: lineage.clone(),
-                stable_id: plan.projection_id().get(),
-            })),
+            permission: Some(Permission::ReadProjectionStatus(
+                v1::LineageScopedStableId {
+                    contract_lineage: lineage.clone(),
+                    stable_id: plan.projection_id().get(),
+                },
+            )),
         });
     }
     if permissions.is_empty() {
         return Err(SessionError::Input("no commands to invoke".to_owned()));
     }
+    // The wire requires permissions in strictly ascending canonical order and
+    // refuses the whole request as NonCanonical otherwise — which surfaces as
+    // InvalidOutboundMessage and says nothing about which permission or why.
+    // The key is (kind tag, lineage, stable id, bytes, name); every permission
+    // here shares one lineage, so sorting by tag then stable id is sufficient.
+    // Tags come from the oneof field numbers: invoke_command 5, read_entity 6,
+    // scan_index 7, read_projection_status 9, execute_named_query 24.
+    let mut visibility = Vec::new();
+    for entity in bundle.schema().entities() {
+        let mut field_ids: Vec<u32> = entity
+            .record()
+            .fields()
+            .iter()
+            .map(|field| field.id().get())
+            .filter(|id| {
+                !entity
+                    .primary_key_fields()
+                    .iter()
+                    .any(|key| key.get() == *id)
+            })
+            .collect();
+        field_ids.sort_unstable();
+        field_ids.dedup();
+        if field_ids.is_empty() {
+            continue;
+        }
+        visibility.push(v1::EntityFieldVisibility {
+            contract_lineage: lineage.clone(),
+            entity_type_id: entity.id().get(),
+            field_ids,
+            secret_field_ids: Vec::new(),
+        });
+    }
+    // Canonical order is framed: lineage length before lineage bytes, then the
+    // entity id.
+    visibility.sort_by_key(|entry| {
+        (
+            entry.contract_lineage.len(),
+            entry.contract_lineage.clone(),
+            entry.entity_type_id,
+        )
+    });
+
+    permissions.sort_by_key(|permission| match permission.permission.as_ref() {
+        Some(Permission::InvokeCommand(value)) => (5_u8, value.stable_id, String::new()),
+        Some(Permission::ReadEntity(value)) => (6, value.stable_id, String::new()),
+        Some(Permission::ScanIndex(value)) => (7, value.stable_id, String::new()),
+        Some(Permission::ReadProjectionStatus(value)) => (9, value.stable_id, String::new()),
+        Some(Permission::ExecuteNamedQuery(value)) => (24, 0, value.query_name.clone()),
+        _ => (u8::MAX, 0, String::new()),
+    });
     // A named query is a separate permission from a command, scoped to the
     // module hash the deployment returned. Without it the query is refused with
     // AuthorizationDenied, which is indistinguishable from a cold source in the
@@ -394,8 +470,21 @@ pub async fn issue_command_capability(
                         scope: Some(v1::partition_scope::Scope::All(v1::Unit {})),
                     }),
                     permissions,
-                    field_visibility: Vec::new(),
-                    max_scan_rows: 1,
+                    // A query that returns a non-key field needs visibility
+                    // for it: the compiled proof lists the field in its access
+                    // requirement, and a capability without it is refused.
+                    // Entries must be ordered by (lineage, entity) and each
+                    // field list strictly increasing, or the request is
+                    // NonCanonical.
+                    field_visibility: visibility,
+                    // A nearest binding is charged the provider's compiled
+                    // partition-scan ceiling rather than k, so a ceiling of one
+                    // refuses every projected query. The commands the harness
+                    // runs still scan nothing.
+                    // A nearest binding is charged the provider's compiled
+                    // partition-scan ceiling rather than k, so a ceiling of one
+                    // refuses every projected query.
+                    max_scan_rows: 4_096,
                     approval_required: Vec::new(),
                     row_policy: None,
                     export: None,

@@ -6,8 +6,14 @@
 //! WP-777 keeps every admitted source cold until a projected query demands it,
 //! so writes alone must NOT activate one. A run that shows a cold source and
 //! zero activations is the expected result and the prerequisite for measuring
-//! activation; a run that shows no source at all means the declaration never
-//! reached the engine.
+//! activation.
+//!
+//! The first process of each pair reports no source at all, and that is not a
+//! failed declaration: `ColumnarRuntime` resolves its source set at startup
+//! from the active catalog, so a contract deployed into a running daemon is
+//! invisible to the engine until the process restarts. The reopen below is
+//! what gives the declaration a startup to be seen at. `columnar_activation`
+//! carries the rest of that route, through to a served query.
 use riffdb_perf_surface::daemon::riffdbd_binary;
 use riffdb_perf_surface::measure::measure_variant;
 use riffdb_perf_surface::{Mechanism, contract_source};

@@ -66,6 +66,8 @@ impl Daemon {
         let database = run_dir.join("riffdb.redb");
         let backups = run_dir.join("backups");
         std::fs::create_dir_all(&backups).map_err(io)?;
+        let projections = run_dir.join("projections");
+        std::fs::create_dir_all(&projections).map_err(io)?;
         let capability_keys = run_dir.join("capability.keys");
         let idempotency_keys = run_dir.join("idempotency.keys");
         write_protected(&capability_keys, CAPABILITY_KEY_DOCUMENT).map_err(io)?;
@@ -76,6 +78,11 @@ impl Daemon {
             .arg(&database)
             .arg("--backup-root")
             .arg(&backups)
+            // Without this the daemon resolves its projections root against
+            // the current directory, so a columnar run leaves segment files
+            // inside the checkout.
+            .arg("--projections-root")
+            .arg(&projections)
             .arg("--listen")
             .arg("127.0.0.1:0")
             .arg("--environment")
@@ -172,6 +179,14 @@ impl Daemon {
             .map(|lines| lines.clone())
             .unwrap_or_default();
         all.iter().rev().take(lines).rev().cloned().collect()
+    }
+
+    /// The live stderr collector. `shutdown` consumes the handle, and the
+    /// shutdown census is written after that call begins, so a caller that
+    /// wants those lines takes this first and reads it afterwards.
+    #[must_use]
+    pub fn stderr_collector(&self) -> Arc<Mutex<Vec<String>>> {
+        Arc::clone(&self.stderr_lines)
     }
 
     /// Asks the daemon to close cleanly and returns its stdout, which carries
