@@ -1358,6 +1358,38 @@ impl ColumnarObservation {
     }
 }
 
+/// What admitting the active catalog's declared columnar sources did.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ColumnarAdmissionOutcome {
+    /// Every declared source is registered, whether by this call or already.
+    Admitted,
+    /// A declared source cannot replay the history it needs, so it was not
+    /// registered and the deploy that declared it must be refused.
+    HistoryPruned,
+}
+
+/// Service-facing port for admitting contract-derived columnar sources into a
+/// running process (ADR-0251).
+///
+/// Separate from [`ColumnarProjectionPort`], which serves sources that already
+/// exist. This one is how a source comes to exist without a restart.
+pub trait ColumnarAdmissionPort: Send + Sync {
+    /// Whether a source freshly declared now could replay from the beginning.
+    ///
+    /// Asked before a deploy commits, so a contract whose sources could never
+    /// be built is refused at the point the operator acted rather than at the
+    /// first query. Pruning is an offline operation and the running process
+    /// holds the store's exclusive lock, so an answer here cannot go stale
+    /// while that deploy completes.
+    fn fresh_source_is_replayable(&self) -> Result<bool, ColumnarPortError>;
+
+    /// Admits every source the active catalog declares that is not registered.
+    ///
+    /// Called after the deploy commits, when the active catalog is the contract
+    /// just deployed. Idempotent: a redeploy admits nothing new.
+    fn admit_active_catalog_sources(&self) -> Result<ColumnarAdmissionOutcome, ColumnarPortError>;
+}
+
 /// Service-facing port over published columnar projection state.
 ///
 /// Implementations must release any engine lock before returning

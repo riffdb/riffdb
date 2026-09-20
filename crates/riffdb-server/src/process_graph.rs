@@ -701,6 +701,8 @@ impl ProductionGraphBuilder {
         let columnar_status = columnar_worker.status();
         let columnar_adapter = Arc::new(ServerColumnarProjectionPort::new(columnar_runtime));
         let columnar: Arc<dyn ColumnarProjectionPort> = columnar_adapter.clone();
+        let columnar_admission: Arc<dyn riffdb_service::ColumnarAdmissionPort> =
+            columnar_adapter.clone();
         let vector_projection: Arc<dyn riffdb_service::VectorProjectionPort> = columnar_adapter;
         let initial_exact_generation = exact_generation_from_process(&server_generation);
         let exact_runtime = match ExactTextRuntime::open(
@@ -826,6 +828,7 @@ impl ProductionGraphBuilder {
         .with_event_consumers(event_consumers, consumer_clock, event_lease_tokens)
         .with_live_query_clock(live_query_clock)
         .with_columnar(columnar)
+        .with_columnar_admission(columnar_admission)
         .with_exact_text(exact_text)
         .with_long_pattern(long_pattern)
         .with_exact_predicate(exact_predicate)

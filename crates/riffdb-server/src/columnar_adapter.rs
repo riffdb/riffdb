@@ -1205,7 +1205,9 @@ impl ColumnarRuntime {
     /// A fresh source replays from `BeforeFirst`, so a vector index over
     /// documents that already exist is wrong if history has been pruned out
     /// from under it. An empty log is replayable: there is nothing to miss.
-    fn history_is_replayable_from_the_beginning(&self) -> Result<bool, ColumnarRegistrationError> {
+    pub(crate) fn history_is_replayable_from_the_beginning(
+        &self,
+    ) -> Result<bool, ColumnarRegistrationError> {
         let limit =
             StorageScanLimit::new(1).ok_or_else(ColumnarRegistrationError::synchronization)?;
         let page = AuthoritativeScanReader::scan_commits(
@@ -2006,6 +2008,47 @@ impl ColumnarProjectionPort for ServerColumnarProjectionPort {
 
     fn known_names(&self) -> Vec<String> {
         self.runtime.names().unwrap_or_default()
+    }
+}
+
+impl riffdb_service::ColumnarAdmissionPort for ServerColumnarProjectionPort {
+    fn fresh_source_is_replayable(&self) -> Result<bool, ColumnarPortError> {
+        self.runtime
+            .history_is_replayable_from_the_beginning()
+            .map_err(|_| ColumnarPortError::Integrity)
+    }
+
+    fn admit_active_catalog_sources(
+        &self,
+    ) -> Result<riffdb_service::ColumnarAdmissionOutcome, ColumnarPortError> {
+        // Resolved from the active catalog, exactly as startup resolves it, so
+        // the two paths cannot disagree about what a source is.
+        let active = ActiveCatalogSnapshot::read(self.runtime.storage())
+            .map_err(|_| ColumnarPortError::Integrity)?;
+        let Some(active) = active else {
+            return Ok(riffdb_service::ColumnarAdmissionOutcome::Admitted);
+        };
+        let bindings = admission::resolve_columnar_bindings(&[], Some(active.bundle().bundle()))
+            .map_err(|_| ColumnarPortError::Integrity)?;
+        for binding in bindings {
+            // Configured scalar projections are not contract-derived and cannot
+            // appear from a deploy; admitting only what the catalog declares
+            // keeps this path to the sources a contract can introduce.
+            if !binding.is_vector {
+                continue;
+            }
+            match self
+                .runtime
+                .admit_source(binding)
+                .map_err(|_| ColumnarPortError::Integrity)?
+            {
+                SourceAdmission::Admitted | SourceAdmission::AlreadyAdmitted => {}
+                SourceAdmission::HistoryPruned => {
+                    return Ok(riffdb_service::ColumnarAdmissionOutcome::HistoryPruned);
+                }
+            }
+        }
+        Ok(riffdb_service::ColumnarAdmissionOutcome::Admitted)
     }
 }
 
