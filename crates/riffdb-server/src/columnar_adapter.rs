@@ -1104,6 +1104,126 @@ impl ColumnarRuntime {
             .unwrap_or_default()
     }
 
+    /// Admits one contract-derived source into a running process (ADR-0251).
+    ///
+    /// Startup admission runs before the writer exists, so its all-or-nothing
+    /// batch installs every retention fence before anything can advance or
+    /// prune the log. This path has no such quiet point, so it does the two
+    /// things that make a fence meaningful without one: it installs the fence
+    /// first, and only then asks whether the history the source needs is still
+    /// there. Checking first would prove nothing, because the fence is what
+    /// stops the next pruning pass.
+    ///
+    /// Nothing here touches an existing control. A fresh source reconciles to a
+    /// no-op, so the reconciliation that startup performs over the whole set --
+    /// the part that would be unsafe against a live writer -- is not reached.
+    pub(crate) fn admit_source(
+        &self,
+        binding: ColumnarControlBinding,
+    ) -> Result<SourceAdmission, ColumnarRegistrationError> {
+        let name = binding.name.clone();
+        if self.control_binding(&name).is_some() {
+            return Ok(SourceAdmission::AlreadyAdmitted);
+        }
+
+        // Install the fence.
+        let fresh = FreshColumnarProjectionControlV1::new(
+            binding.spec.source().clone(),
+            binding.spec.definition_fingerprint(),
+            binding.spec.hash(),
+            binding.spec.replay_limits(),
+            self.history_incarnation,
+        )
+        .map_err(|_| ColumnarRegistrationError::definition(&name))?;
+        let _ = self
+            .storage()
+            .initialize_fresh_v1(std::slice::from_ref(&fresh))
+            .map_err(|error| ColumnarRegistrationError::control_storage(error, &name))?;
+        let control = self
+            .storage()
+            .recover_expected_control(binding.spec.source())
+            .map_err(|error| ColumnarRegistrationError::control_storage(error, &name))?
+            .ok_or_else(ColumnarRegistrationError::synchronization)?;
+        if !common_control_matches(&control, &binding.spec)
+            || !common_control_history_incarnation_matches(&control, self.history_incarnation)
+        {
+            return Err(ColumnarRegistrationError::synchronization());
+        }
+
+        // Only now is the question worth asking.
+        if !self.history_is_replayable_from_the_beginning()? {
+            return Ok(SourceAdmission::HistoryPruned);
+        }
+
+        let allocation = control
+            .servable_generation()
+            .or_else(|| control.candidate())
+            .ok_or_else(ColumnarRegistrationError::synchronization)?;
+        let slot = Arc::new(ColumnarEngineSlot::cold_controlled(
+            binding.definition.clone(),
+            controlled_generation_directory(
+                &self.projections_root,
+                binding.spec.hash(),
+                allocation.generation(),
+            ),
+            allocation.generation(),
+            FrontierPosition::BeforeFirst,
+            None,
+        ));
+
+        // The notifier learns the name before the slot is published, so a
+        // register-before-read wait cannot miss the source it is waiting for.
+        let mut names = self
+            .names
+            .write()
+            .map_err(|_| ColumnarRegistrationError::synchronization())?;
+        let mut engines = self
+            .engines
+            .write()
+            .map_err(|_| ColumnarRegistrationError::synchronization())?;
+        let mut bindings = self
+            .control_bindings
+            .write()
+            .map_err(|_| ColumnarRegistrationError::synchronization())?;
+        if bindings.contains_key(&name) {
+            return Ok(SourceAdmission::AlreadyAdmitted);
+        }
+        names.push(name.clone());
+        names.sort();
+        self.notifier
+            .synchronize_names(names.iter().cloned())
+            .map_err(|_| ColumnarRegistrationError::synchronization())?;
+        engines.insert(name.clone(), slot);
+        bindings.insert(name, binding);
+        self.admitted_cold_sources
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        Ok(SourceAdmission::Admitted)
+    }
+
+    /// Whether the commit log still begins where a fresh source must start.
+    ///
+    /// A fresh source replays from `BeforeFirst`, so a vector index over
+    /// documents that already exist is wrong if history has been pruned out
+    /// from under it. An empty log is replayable: there is nothing to miss.
+    fn history_is_replayable_from_the_beginning(&self) -> Result<bool, ColumnarRegistrationError> {
+        let limit =
+            StorageScanLimit::new(1).ok_or_else(ColumnarRegistrationError::synchronization)?;
+        let page = AuthoritativeScanReader::scan_commits(
+            self.storage(),
+            CommitScanRequest::initial(limit),
+        )
+        .map_err(|error| ColumnarRegistrationError::control_storage(error, "columnar-control"))?;
+        let records = match &page {
+            CommitScanPageV1::Page { records, .. } | CommitScanPageV1::ExactEnd { records, .. } => {
+                records
+            }
+        };
+        let Some(first) = records.first() else {
+            return Ok(true);
+        };
+        Ok(first.value().commit_sequence().get() == 1)
+    }
+
     pub(crate) fn open_controlled_generation(
         &self,
         binding: &ColumnarControlBinding,
@@ -2011,6 +2131,18 @@ impl fmt::Debug for ServerColumnarProjectionPort {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         formatter.write_str("ServerColumnarProjectionPort([PUBLISHED_SNAPSHOT])")
     }
+}
+
+/// What admitting one source into a running process did (ADR-0251).
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum SourceAdmission {
+    /// The source is now registered and cold, awaiting its first demand.
+    Admitted,
+    /// A source of that name was already registered; nothing changed.
+    AlreadyAdmitted,
+    /// History the source must replay was pruned before its fence landed, so it
+    /// cannot be built here and the deploy that declared it is refused.
+    HistoryPruned,
 }
 
 /// Closed startup failure while resolving or opening one columnar projection.
@@ -6794,6 +6926,60 @@ contract VectorBoard version 1 {
             0,
             "the real vector port must use the gate-installed generation authority"
         );
+    }
+
+    /// OBL-0251-1, at the layer that owns it. A source the process did not know
+    /// about at startup is admitted into the running runtime and becomes a
+    /// registered cold source, which is what the first demand then activates.
+    ///
+    /// The end-to-end sequence -- deploy into a live daemon, write, query --
+    /// is driven by `benchmarks/perf-surface`; this pins the mechanism that
+    /// makes it possible, on a runtime that opened with no source at all.
+    #[test]
+    fn a_source_is_admitted_into_a_running_runtime() {
+        let (runtime, _scope) = empty_columnar_runtime("runtime-admission");
+        assert!(
+            runtime.names().expect("names").is_empty(),
+            "the runtime opens holding no source"
+        );
+
+        let checked = ValidatedContractBundle::from_compiler_bundle(
+            riffdb_contract_compiler::compile_contract_source(PRODUCTION_VECTOR_CONTRACT)
+                .expect("compile production vector contract"),
+        )
+        .expect("validate production vector contract");
+        let binding = super::admission::resolve_columnar_bindings(&[], Some(checked.bundle()))
+            .expect("resolve the contract's columnar bindings")
+            .into_iter()
+            .next()
+            .expect("the vector contract declares one source");
+        let name = binding.name.clone();
+
+        assert_eq!(
+            runtime.admit_source(binding.clone()).expect("admit"),
+            SourceAdmission::Admitted
+        );
+        assert_eq!(
+            runtime.names().expect("names"),
+            vec![name.clone()],
+            "the admitted source is registered under its contract-derived name"
+        );
+        assert!(
+            runtime.engine(&name).expect("engine read").is_some(),
+            "admission publishes a cold engine slot"
+        );
+        assert!(
+            runtime.control_binding(&name).is_some(),
+            "admission publishes the binding the worker walks"
+        );
+
+        // Admission is idempotent: a redeploy of the same contract must not
+        // install a second control or a second slot.
+        assert_eq!(
+            runtime.admit_source(binding).expect("re-admit"),
+            SourceAdmission::AlreadyAdmitted
+        );
+        assert_eq!(runtime.names().expect("names").len(), 1);
     }
 
     /// OBL-0251-3. A projected query against a source this node does not hold
