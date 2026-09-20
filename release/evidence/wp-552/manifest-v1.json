@@ -4,12 +4,12 @@
     {
       "profile": "interactive",
       "path": "release/evidence/wp-552/interactive-90s-reps3.json",
-      "sha256": "18022333a18622c6b4347116bb7806def34d39285347f1e54b9edbb6b78dec07"
+      "sha256": "8865cdac9737e030572df0c3a32dbbcc9d97e928a23bf368507f0915a20ab3e2"
     },
     {
       "profile": "write_only",
       "path": "release/evidence/wp-552/write-only-90s-reps3.json",
-      "sha256": "dd9f5c13cdddb8925c656ac7e8e4e0216e156b06b05f9f6a06d406cad1be6f2e"
+      "sha256": "6ce3b9ca056661fd18fe489a666e13c4aafda5c9e2c9ada774719f6d78762dda"
     }
   ],
   "backends": ["postgres_safe_app", "riffdb_public_grpc"],

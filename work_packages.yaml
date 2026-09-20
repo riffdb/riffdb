@@ -26314,6 +26314,16 @@ work_packages:
       committed, not what an application can express.
     scale: Not applicable. Removing committed build artifacts reduced the repository
       from 204 MB to 66 MB, which is a side effect rather than the objective.
+  closure:
+    status: open
+    decisions_taken:
+    - Repair WP-552's two retained report digest references after the 2026-09-19
+      public-history redaction. Verify the original reports against the old
+      frozen digests and prove each public report differs only in six filesystem
+      path fields. Rebind the manifest and evidence note to those public bytes;
+      preserve every measurement, eligibility field and fail-closed verifier.
+      This repairs historical evidence custody and makes no fresh qualification
+      or package-completion claim.
 - id: WP-796
   name: Retire durable command-derived locator tables
   tier: guarantee
