@@ -26662,8 +26662,10 @@ work_packages:
     crates/riffdb-server/src/columnar_adapter.rs,
     crates/riffdb-server/src/columnar_admission.rs,
     crates/riffdb-service/src/ports.rs,
+    crates/riffdb-service/src/service.rs,
     crates/riffdb-service/src/symbolic_query.rs,
     crates/riffdb-service/src/contract_operations.rs,
+    crates/riffdb-server/src/process_graph.rs,
     benchmarks/perf-surface/**,
     docs/performance/**]
   deliverables:
