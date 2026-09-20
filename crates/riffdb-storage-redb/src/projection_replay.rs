@@ -190,6 +190,16 @@ pub(crate) fn read_projection_replay_snapshot_from(
         // ADR-0248: catalog-derived control is not stored. Incremental catch-up
         // reads progress from local markers; treating a missing FRONTIER as
         // "rebuild from empty" would violate decision 4.
+        //
+        // The `u64::MAX` below is a discovery cap, not a bound: with no stored
+        // control there is nothing here to bound the markers against, so
+        // `local_frontier`'s own `frontier > target` check is vacuous on this
+        // call. What actually bounds it is downstream and must stay there —
+        // replay compares the resulting position against the follower's own
+        // durable head (`replay_projection_commit`), and the serving path
+        // compares against the pinned primary head before answering
+        // (`RedbOwnedSnapshot::query_projection`). Removing either of those
+        // leaves markers trusted with no ceiling.
         None => local_frontier(
             &access.open_table(PROJECTION_APPLIED).map_err(invalid)?,
             request.schema().identity(),
