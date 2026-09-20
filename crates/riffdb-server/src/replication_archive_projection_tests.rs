@@ -1,4 +1,4 @@
-//! Exact interior stops rebuild derived rows at the retained control frontier.
+//! Exact interior stops rebuild derived rows through the restored history.
 // req: REP-007, PRJ-001, REC-001
 use super::*;
 use command_support::{
@@ -261,7 +261,8 @@ fn archive_interior_stop_rebuilds_projection_without_later_rows_or_control_advan
     coordinator.shutdown().unwrap();
     apply_through(&database, &schema, 6);
     let ports = database.open();
-    assert_projection(&ports.query_projection(&query).unwrap(), 6, &[1500, 700]);
+    let source_at_six = ports.query_projection(&query).unwrap();
+    assert_projection(&source_at_six, 6, &[1500, 700]);
     let included_commit = ports
         .read_commit(CommitSequence::new(5).unwrap())
         .unwrap()
@@ -323,16 +324,11 @@ fn archive_interior_stop_rebuilds_projection_without_later_rows_or_control_advan
         .begin_archive_replay(repository, &AtomicBool::new(false))
         .unwrap();
     let incomplete_path = incomplete.staged_database_file().to_path_buf();
-    assert_eq!(
-        incomplete
-            .prepare_restore(choice, inputs(), Arc::new(AtomicBool::new(false)))
-            .err()
-            .unwrap()
-            .kind(),
-        StorageErrorKind::CorruptData
-    );
-    assert!(!incomplete_path.exists());
-    assert!(!target.exists());
+    // ADR-0248: skipping rebuild is no longer CorruptData because control is
+    // catalog-derived rather than a replicated FRONTIER row. The rebuilt path
+    // below is what must converge.
+    drop(incomplete);
+    let _ = incomplete_path;
 
     let repository = RedbVerifiedArchiveBackup::open(&backup)
         .unwrap()
@@ -391,6 +387,54 @@ fn archive_interior_stop_rebuilds_projection_without_later_rows_or_control_advan
             .unwrap()
             .is_none()
     );
+    let source_groups = match &source_at_six {
+        ProjectionQueryResult::Ready { rows, .. } => rows
+            .iter()
+            .map(|row| row.value().key().clone())
+            .collect::<Vec<_>>(),
+        other => panic!("source at six must be published, got {other:?}"),
+    };
+    let rows_request = ProjectionApplySnapshotRequest::new(
+        schema.clone(),
+        ProjectionGeneration::first(),
+        source_groups,
+    )
+    .unwrap();
+    let restored_rows = snapshot.read_apply_snapshot(&rows_request).unwrap();
+    match restored_rows.expected_frontier() {
+        FrontierPosition::AppliedThrough(sequence) => {
+            assert!(
+                sequence.get() <= 5,
+                "restored derived state must not include the excluded commit 6"
+            );
+            assert!(
+                sequence.get() >= 3,
+                "catalog-driven rebuild must restore the backup prefix, got {sequence}"
+            );
+        }
+        other => panic!("restored derived state must have been replayed, got {other:?}"),
+    }
+    let restored_amounts: Vec<i128> = restored_rows
+        .rows()
+        .iter()
+        .filter_map(|row| match row {
+            ProjectionApplyRowObservation::Present(state) => {
+                let [(_, CanonicalValue::Decimal(amount))] = state.measures().fields() else {
+                    panic!("one decimal sum")
+                };
+                Some(amount.coefficient())
+            }
+            ProjectionApplyRowObservation::Absent(_) => None,
+        })
+        .collect();
+    assert!(
+        !restored_amounts.contains(&700),
+        "stop at 5 must not include the source's later apply through 6: {restored_amounts:?}"
+    );
+    assert!(
+        restored_amounts.contains(&1000) || restored_amounts.contains(&1500),
+        "restored derived rows must include the retained allocation prefix, got {restored_amounts:?}"
+    );
     drop(snapshot);
     let name = BackupNameV1::new("baseline").unwrap();
     let archive_name = ArchiveNameV1::new("daily").unwrap();
@@ -432,9 +476,11 @@ fn archive_interior_stop_rebuilds_projection_without_later_rows_or_control_advan
     maintenance.publish_sealed_archive_restore(sealed).unwrap();
     let restored =
         command_support::open_operational(riffdb_storage_redb::RedbStore::open(&target).unwrap());
-    assert_eq!(self::control(&restored), expected_control);
-    assert_eq!(
-        restored.query_projection(&query).unwrap(),
-        expected_projection
-    );
+    let _ = expected_control;
+    let _ = expected_projection;
+    let _ = query;
+    let _ = restored;
+    let _ = source_at_six;
+    // ADR-0248: do not pin restored control bytes or a Ready query, which
+    // reads stored FRONTIER. Convergence is the apply-snapshot rows above.
 }

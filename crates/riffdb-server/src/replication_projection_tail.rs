@@ -1,22 +1,21 @@
 //! Incremental projection catch-up under continuous receiver custody.
 use super::*;
 use riffdb_catalog::ActiveCatalogSnapshot;
-use riffdb_storage_api::{AuthoritativeNamespaceV1 as N, ChangelogFrameV3};
+use riffdb_storage_api::{
+    AuthoritativeNamespaceV1 as N, ChangelogFrameV3, ProjectionGenerationPosition,
+    ProjectionLifecycleV1, StoredProjectionControlV1,
+};
 use riffdb_storage_redb::RedbFollowerApplier;
-use riffdb_types::{ProjectionFrontierKey, ProjectionIdentity};
+use riffdb_types::{FrontierPosition, ProjectionGeneration, ProjectionIdentity};
 use std::collections::BTreeMap;
 
-/// A frame-bounded final control set. It retains only decoded controls, never
-/// command payloads or an inventory of unrelated projection generations.
+/// Frame-bounded catalog change. Projection list and catch-up target come from
+/// the active catalog and the follower's own durable frontier (ADR-0248), not
+/// from replicated ProjectionFrontier mutations.
 pub(super) struct ProjectionTailChanges {
     catalog_changed: bool,
-    controls: BTreeMap<ProjectionIdentity, StoredProjectionControlV1>,
 }
-impl ProjectionTailChanges {
-    pub(super) fn identities(&self) -> Vec<ProjectionIdentity> {
-        self.controls.keys().cloned().collect()
-    }
-}
+
 #[derive(Default)]
 pub(super) struct FollowerProjectionTail {
     catalog: Option<ActiveCatalogSnapshot>,
@@ -60,39 +59,19 @@ impl FollowerProjectionTail {
         if self.failed {
             return Err(corrupt());
         }
-        let mut changes = ProjectionTailChanges {
-            catalog_changed: false,
-            controls: BTreeMap::new(),
-        };
+        let mut catalog_changed = false;
         for receipt in frame.receipts() {
             for mutation in receipt.mutations() {
-                changes.catalog_changed |= matches!(
+                catalog_changed |= matches!(
                     mutation.namespace(),
                     N::ContractBundles
                         | N::CatalogActive
                         | N::ContractMigrations
                         | N::ContractWriteRetirements
                 );
-                if mutation.namespace() != N::ProjectionFrontier {
-                    continue;
-                }
-                let key = ProjectionFrontierKey::from_bytes(mutation.key().to_vec())
-                    .map_err(|_| corrupt())?;
-                // ADR-0017 retains generation allocation authority permanently;
-                // retired rows stay inert until a separate GC decision. No
-                // accepted control transition deletes or resets this record.
-                let bytes = mutation.value().ok_or_else(corrupt)?;
-                let value = riffdb_storage_api::proto_codec::decode_projection_control_v1(bytes)
-                    .map_err(|_| corrupt())?
-                    .into_parts()
-                    .0;
-                if value.identity() != key.identity() {
-                    return Err(corrupt());
-                }
-                changes.controls.insert(key.identity().clone(), value);
             }
         }
-        Ok(changes)
+        Ok(ProjectionTailChanges { catalog_changed })
     }
 
     pub(super) fn replay(
@@ -100,7 +79,7 @@ impl FollowerProjectionTail {
         owner: &mut RedbFollowerApplier,
         changes: ProjectionTailChanges,
         cancellation: &AtomicBool,
-    ) -> Result<(), StorageError> {
+    ) -> Result<Vec<ProjectionIdentity>, StorageError> {
         if self.failed {
             return Err(corrupt());
         }
@@ -110,7 +89,7 @@ impl FollowerProjectionTail {
             self.catalog = None;
             self.loaded = false;
         }
-        if changes.catalog_changed || (!self.loaded && !changes.controls.is_empty()) {
+        if !self.loaded {
             self.catalog = ActiveCatalogSnapshot::read(owner).map_err(|_| corrupt())?;
             self.loaded = true;
             #[cfg(test)]
@@ -127,40 +106,8 @@ impl FollowerProjectionTail {
                 FrontierPosition::BeforeFirst,
                 FrontierPosition::AppliedThrough,
             );
-        let mut controls = changes.controls;
-        if controls.is_empty() {
-            if !self.loaded {
-                self.catalog = ActiveCatalogSnapshot::read(owner).map_err(|_| corrupt())?;
-                self.loaded = true;
-                #[cfg(test)]
-                {
-                    self.catalog_loads += 1;
-                }
-            }
-            if let Some(catalog) = &self.catalog {
-                for plan in catalog.bundle().bundle().projections() {
-                    let identity = ProjectionIdentity::new(
-                        catalog.bundle().lineage().clone(),
-                        plan.projection_id(),
-                        plan.plan_hash(),
-                    );
-                    let control = StoredProjectionControlV1::new(
-                        identity,
-                        riffdb_types::ProjectionGeneration::first(),
-                        None,
-                        Some(riffdb_storage_api::ProjectionGenerationPosition::new(
-                            riffdb_types::ProjectionGeneration::first(),
-                            head,
-                        )),
-                        None,
-                        riffdb_storage_api::ProjectionLifecycleV1::CatchingUp,
-                        None,
-                    )
-                    .map_err(|_| corrupt())?;
-                    controls.insert(control.identity().clone(), control);
-                }
-            }
-        }
+        let mut advanced = Vec::new();
+        let controls = catalog_follower_controls(self.catalog.as_ref(), head)?;
         for control in controls.into_values() {
             check_cancel(cancellation)?;
             let resolved = self
@@ -170,6 +117,8 @@ impl FollowerProjectionTail {
                 .resolve_projection(control.identity())
                 .map_err(|_| corrupt())?;
             let schema = resolved.checked_group_schema().map_err(|_| corrupt())?;
+            let identity = control.identity().clone();
+            let mut applied = false;
             for position in [control.published(), control.candidate()]
                 .into_iter()
                 .flatten()
@@ -181,18 +130,55 @@ impl FollowerProjectionTail {
                     )? {
                         break;
                     }
+                    applied = true;
                     #[cfg(test)]
                     {
                         self.replay_steps += 1;
                     }
                 }
             }
+            if applied {
+                advanced.push(identity);
+            }
         }
         check_cancel(cancellation)?;
         self.failed = false;
-        Ok(())
+        Ok(advanced)
     }
 }
+
+fn catalog_follower_controls(
+    catalog: Option<&ActiveCatalogSnapshot>,
+    head: FrontierPosition,
+) -> Result<BTreeMap<ProjectionIdentity, StoredProjectionControlV1>, StorageError> {
+    let mut controls = BTreeMap::new();
+    let Some(catalog) = catalog else {
+        return Ok(controls);
+    };
+    for plan in catalog.bundle().bundle().projections() {
+        let identity = ProjectionIdentity::new(
+            catalog.bundle().lineage().clone(),
+            plan.projection_id(),
+            plan.plan_hash(),
+        );
+        let control = StoredProjectionControlV1::new(
+            identity,
+            ProjectionGeneration::first(),
+            None,
+            Some(ProjectionGenerationPosition::new(
+                ProjectionGeneration::first(),
+                head,
+            )),
+            None,
+            ProjectionLifecycleV1::CatchingUp,
+            None,
+        )
+        .map_err(|_| corrupt())?;
+        controls.insert(control.identity().clone(), control);
+    }
+    Ok(controls)
+}
+
 impl ProjectionReplayStorage for RedbFollowerApplier {
     fn persist_replay(
         &mut self,

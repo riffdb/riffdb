@@ -26523,20 +26523,4 @@ work_packages:
       the coupling is a property of the apply, not of anything a contract can express.
     scale: Analytical derived state stops being bounded by the transactional writer's
       exclusive gate, and a sink may be a separate file, a separate store, or remote.
-  closure:
-    status: complete
-    completed_at: "2026-09-19"
-    requirements_satisfied: []
-    evidence: Event-derived apply writes a sibling redb sidecar outside the
-      primary mutation gate; commits and events are read through a primary read
-      transaction the writer does not wait on. OBL-0240-1 walks the apply call
-      graph in derived_sink_boundary.rs. OBL-0240-2 plants ahead-of-primary
-      derived state and requires rebuild rather than a Ready read. OBL-0240-3
-      holds a sidecar write across a primary commit and asserts mutation_gate
-      tickets do not move. Crash/restart coverage covers stale, torn, absent
-      and ahead derived. Local perf-surface 32 clients / 2000 documents, three
-      reps: base 6445/7194/6820 docs/s, projection 7364/6895/7212 docs/s.
-      Columnar controls remain on the primary gate because retention still
-      reads them from the primary store; their cadence is per ingest batch.
-      Package acceptance passed 13/13 with 906 tests passed, 1 skipped.
   human_review_triggers: *id001

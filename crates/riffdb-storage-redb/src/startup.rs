@@ -4165,32 +4165,32 @@ fn inspect_projection_state_row(
         )));
     }
     let control = match projection_control(transaction, state.identity())? {
-        Ok(Some(value)) => value,
-        Ok(None) => {
-            return Ok(Some(derived_projection(
-                StructuralFindingCode::MissingCrossLink,
-            )));
-        }
+        Ok(Some(value)) => Some(value),
+        Ok(None) => None,
         Err(code) => return Ok(Some(derived_projection(code))),
     };
-    if state.generation() > control.highest_allocated_generation() {
-        return Ok(Some(derived_projection(
-            StructuralFindingCode::ProjectionStateMismatch,
-        )));
-    }
-    let Some(frontier) = control.frontier_for(state.generation()) else {
-        // Rows from retired generations are canonical but inert.
-        return Ok(None);
-    };
-    let FrontierPosition::AppliedThrough(frontier) = frontier else {
-        return Ok(Some(derived_projection(
-            StructuralFindingCode::ProjectionStateMismatch,
-        )));
-    };
-    if state.last_changed_sequence() > frontier {
-        return Ok(Some(derived_projection(
-            StructuralFindingCode::ProjectionStateMismatch,
-        )));
+    // ADR-0248: a stored frontier is optional. Catalog-derived control plus
+    // local markers are enough; missing control is not a cross-link defect.
+    if let Some(control) = control.as_ref() {
+        if state.generation() > control.highest_allocated_generation() {
+            return Ok(Some(derived_projection(
+                StructuralFindingCode::ProjectionStateMismatch,
+            )));
+        }
+        let Some(frontier) = control.frontier_for(state.generation()) else {
+            // Rows from retired generations are canonical but inert.
+            return Ok(None);
+        };
+        let FrontierPosition::AppliedThrough(frontier) = frontier else {
+            return Ok(Some(derived_projection(
+                StructuralFindingCode::ProjectionStateMismatch,
+            )));
+        };
+        if state.last_changed_sequence() > frontier {
+            return Ok(Some(derived_projection(
+                StructuralFindingCode::ProjectionStateMismatch,
+            )));
+        }
     }
     if let Some(finding) =
         missing_projection_source_finding(transaction, state.last_changed_sequence())?
@@ -4298,45 +4298,43 @@ fn inspect_projection_apply_row(
         )));
     }
     let control = match projection_control(transaction, key.identity())? {
-        Ok(Some(value)) => value,
-        Ok(None) => {
-            return Ok(Some(derived_projection(
-                StructuralFindingCode::MissingCrossLink,
-            )));
-        }
+        Ok(Some(value)) => Some(value),
+        Ok(None) => None,
         Err(code) => return Ok(Some(derived_projection(code))),
     };
-    if key.generation() > control.highest_allocated_generation() {
-        return Ok(Some(derived_projection(
-            StructuralFindingCode::ProjectionStateMismatch,
-        )));
-    }
-    if let Some(frontier) = control.frontier_for(key.generation()) {
-        match frontier {
-            FrontierPosition::BeforeFirst => {
-                return Ok(Some(derived_projection(
-                    StructuralFindingCode::ProjectionStateMismatch,
-                )));
-            }
-            FrontierPosition::AppliedThrough(frontier) if key.commit_sequence() > frontier => {
-                return Ok(Some(derived_projection(
-                    StructuralFindingCode::ProjectionStateMismatch,
-                )));
-            }
-            FrontierPosition::AppliedThrough(_) => {}
+    if let Some(control) = control.as_ref() {
+        if key.generation() > control.highest_allocated_generation() {
+            return Ok(Some(derived_projection(
+                StructuralFindingCode::ProjectionStateMismatch,
+            )));
         }
-        if key.commit_sequence() != CommitSequence::first() {
-            let previous =
-                CommitSequence::new(key.commit_sequence().get() - 1).ok_or_else(invariant)?;
-            let predecessor = riffdb_types::ProjectionApplyKey::new(
-                key.identity().clone(),
-                key.generation(),
-                previous,
-            );
-            if !projection_marker_exists(transaction, &predecessor)? {
-                return Ok(Some(derived_projection(
-                    StructuralFindingCode::ProjectionStateMismatch,
-                )));
+        if let Some(frontier) = control.frontier_for(key.generation()) {
+            match frontier {
+                FrontierPosition::BeforeFirst => {
+                    return Ok(Some(derived_projection(
+                        StructuralFindingCode::ProjectionStateMismatch,
+                    )));
+                }
+                FrontierPosition::AppliedThrough(frontier) if key.commit_sequence() > frontier => {
+                    return Ok(Some(derived_projection(
+                        StructuralFindingCode::ProjectionStateMismatch,
+                    )));
+                }
+                FrontierPosition::AppliedThrough(_) => {}
+            }
+            if key.commit_sequence() != CommitSequence::first() {
+                let previous =
+                    CommitSequence::new(key.commit_sequence().get() - 1).ok_or_else(invariant)?;
+                let predecessor = riffdb_types::ProjectionApplyKey::new(
+                    key.identity().clone(),
+                    key.generation(),
+                    previous,
+                );
+                if !projection_marker_exists(transaction, &predecessor)? {
+                    return Ok(Some(derived_projection(
+                        StructuralFindingCode::ProjectionStateMismatch,
+                    )));
+                }
             }
         }
     }

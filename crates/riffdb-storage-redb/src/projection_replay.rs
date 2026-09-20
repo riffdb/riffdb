@@ -40,6 +40,10 @@ pub(crate) fn stage_projection_replay(
     if stored.as_ref().is_some_and(|control| control != expected) {
         return Err(corrupt());
     }
+    // ADR-0248: follower/bootstrap/archive replay synthesizes catalog-derived
+    // control in memory and never persists a FRONTIER row (decision 2; a
+    // primary frontier write is also forbidden). Unpublished apply therefore
+    // has stored == None; the expected control is the catch-up target.
     let control = stored.unwrap_or_else(|| expected.clone());
     let target = control
         .frontier_for(request.generation())
@@ -183,6 +187,9 @@ pub(crate) fn read_projection_replay_snapshot_from(
         Some(control) => control
             .frontier_for(request.generation())
             .ok_or_else(corrupt)?,
+        // ADR-0248: catalog-derived control is not stored. Incremental catch-up
+        // reads progress from local markers; treating a missing FRONTIER as
+        // "rebuild from empty" would violate decision 4.
         None => local_frontier(
             &access.open_table(PROJECTION_APPLIED).map_err(invalid)?,
             request.schema().identity(),
