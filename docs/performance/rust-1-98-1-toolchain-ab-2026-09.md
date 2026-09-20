@@ -65,8 +65,9 @@ no regression was found at this resolution.
 
 - Two repetitions per cell resolve effects of roughly 2% and larger. A
   sub-1% systematic change would not be detected.
-- One host. C3D has neither the workstation's SHA-NI nor its slow disk, so the
-  ratio is not portable to N1, E2 or the workstation.
+- One host. C3D's AMD EPYC 9B14 exposes SHA-NI; the earlier statement that it
+  lacked SHA-NI was incorrect. CPU and disk differences still prevent transferring
+  this ratio to other hosts. See [measurement-host selection](benchmark-host-selection.md).
 - The write_only c=1 cell (+1.7%) is the largest single ratio and also carries a
   1.018 repetition spread. It is noise, not a finding.
 - Latency percentiles were recorded but are not compared here; p50 was identical

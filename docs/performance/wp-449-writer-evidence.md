@@ -1,5 +1,10 @@
 # WP-449 writer evidence
 
+**Known instrumentation defect:** `busy_us + idle_us` does not tile writer
+wall. Later independent measurements found 15.30% missing on N1 and 20.54% on
+C3D. Use the [signed reconciliation and explicit remainder](wp749-writer-census-defects.md)
+before making utilization or cost claims. These counters are not CPU time.
+
 Status: diagnostic instrumentation implemented; PostgreSQL parity remains an
 unchanged `PERF-008` alpha gate.
 
@@ -51,10 +56,10 @@ the report to normalize process-scope bytes by every command committed by that
 daemon generation. Keep the WP-449 values only as historical evidence; do not
 compare them directly with corrected WP-452 output.
 
-The evidence rejects two earlier guesses:
+The historical evidence and its interpretation have these limits:
 
-- the writer was not under-fed; it was busy for effectively the complete
-  warmup-plus-measure process interval; and
+- busy time was close to the warmup-plus-measure interval, but the incomplete
+  counters do not establish full utilization or rule out under-feeding;
 - exact entity read/write overlap was not causing the observed group cuts in
   the uniform smoke probe. Every measured compatibility cut was caused by a
   declared aggregate conflict key.

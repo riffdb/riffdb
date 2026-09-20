@@ -284,6 +284,17 @@ of those commits touching a governance path. Re-run it after a program to see
 whether the share moved, and treat a rise without a matching rise in reviewed
 surface as a process defect rather than as diligence.
 
+## Performance measurements
+
+Read [measurement-host selection](performance/benchmark-host-selection.md) before
+choosing a host or reusing a baseline. ADR-0245 requires hardware SHA-2 and the
+other named accelerators; N1 results are historical and testing there has stopped.
+WP-797 owns profile validation and N1's replacement. Coordinate
+exclusive use and compare matching toolchains and build profiles. Keep P99 as a
+hard selection gate. The [writer-census defects](performance/wp749-writer-census-defects.md)
+require independent wall-time reconciliation with an explicit remainder;
+`busy + idle` does not cover the writer's full interval.
+
 ## Build hygiene
 
 - A session running several package worktrees should export one shared

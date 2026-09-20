@@ -10,8 +10,8 @@ itself eligible.
 
 | Evidence | SHA-256 |
 |---|---|
-| `interactive-90s-reps3.json` | `18022333a18622c6b4347116bb7806def34d39285347f1e54b9edbb6b78dec07` |
-| `write-only-90s-reps3.json` | `dd9f5c13cdddb8925c656ac7e8e4e0216e156b06b05f9f6a06d406cad1be6f2e` |
+| `interactive-90s-reps3.json` | `8865cdac9737e030572df0c3a32dbbcc9d97e928a23bf368507f0915a20ab3e2` |
+| `write-only-90s-reps3.json` | `6ce3b9ca056661fd18fe489a666e13c4aafda5c9e2c9ada774719f6d78762dda` |
 
 Both corpora contain three counterbalanced repetitions and are stable,
 correctness-clean, same-device comparable, host-idle, and eligible under the
@@ -25,6 +25,17 @@ benchmark:
 ```bash
 ./scripts/check-alpha-performance-evidence --verify
 ```
+
+## Public redaction and retained digests
+
+On 2026-09-19 the manifest and table digests were refreshed to bind the public
+reports after ADR-0243's filesystem-path redaction. The original reports matched
+the previously frozen digests. Each public report differs only in six path
+fields: the environment database root and mount, RiffDB database root and mount,
+and PostgreSQL data path and mount. Measurements, eligibility, host validity,
+durability, comparator and repetition data are unchanged, and the existing
+semantic verifier passes. This is a digest repair for historical evidence, not
+a new measurement or current release qualification.
 
 ## Earlier fail-closed receipts
 

@@ -23330,6 +23330,37 @@ work_packages:
       unchanged-incarnation reopen, and exact outcome/provenance retry without a
       second entity change. This adds evidence only; no production behavior,
       boundary or bytes change.
+    - Close the minimal-evidence and capture-optimization investigation by
+      maintainer direction on 2026-09-19. C3D capture is 3.75% of independent
+      writer wall and all capture hashing caps at 1.41%; the physical-sharing
+      prototype saved 2.22% mean group latency but worsened P99 by 7.89%, and
+      checked-hash reuse has no valid candidate timing or tail verdict. Passing
+      the initial approximate 3% investigation screen does not select a redesign.
+      Bank byte headroom without funding another representation or its retained
+      value-source lifetime obligation. Select no prototype and schedule no
+      further capture experiment. Record the evidence and closed investigation
+      at docs/performance/wp749-capture-attribution-2026-09.md; WP-749 stays open.
+    - Bank hardware asymmetry independently of capture closure. Identical
+      Rust 1.98.1 binaries measured 491.040 us/group capture hashing on N1
+      without SHA-NI and 63.294 on C3D with it; do not pool or normalize hosts.
+      Per maintainer direction, stop N1 testing and require hardware SHA-2 for
+      future measurements, leaving profile retirement and enforcement to their
+      separate changes. Document the writer busy-plus-idle undercount of 15.30%
+      on N1 and 20.54% on C3D, signed independent-wall reconciliation and explicit
+      remainders in the handbook. The producer defects remain open, not repaired.
+      Align host guidance with the subsequently merged ADR-0245's full hardware
+      baseline and two-release-profile requirement; WP-797 owns validation and
+      the replacement, and runtime startup enforcement is not claimed.
+    - Re-aim the next WP-749 review at identifying the remaining current-baseline
+      gate gap outside capture or explicitly re-deriving the gate for maintainer
+      review. Historical throughput of 1291 versus 1220 ops/s used Rust 1.97.0
+      in both arms and includes intervening runtime/build changes; it is no
+      Rust 1.98.1 gate pass. Require refreshed controls before any future campaign
+      and retain absolute write-path evidence beside archive-presence comparisons
+      so unconditional costs cannot cancel out. Keep the accepted gate and
+      REP-007 unchanged pending any accepted amendment; P99 remains a hard gate.
+      WP-748 promotion and lifecycle consolidation remain paused, and their
+      correctness cannot discharge WP-749's performance gate.
   human_review_triggers: *id0178
 
 - id: WP-750
@@ -26315,6 +26346,16 @@ work_packages:
       committed, not what an application can express.
     scale: Not applicable. Removing committed build artifacts reduced the repository
       from 204 MB to 66 MB, which is a side effect rather than the objective.
+  closure:
+    status: open
+    decisions_taken:
+    - Repair WP-552's two retained report digest references after the 2026-09-19
+      public-history redaction. Verify the original reports against the old
+      frozen digests and prove each public report differs only in six filesystem
+      path fields. Rebind the manifest and evidence note to those public bytes;
+      preserve every measurement, eligibility field and fail-closed verifier.
+      This repairs historical evidence custody and makes no fresh qualification
+      or package-completion claim.
 - id: WP-796
   name: Retire durable command-derived locator tables
   tier: guarantee

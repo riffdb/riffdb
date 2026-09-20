@@ -56,6 +56,12 @@ to the decimal and approximately the sum of the writer-time deltas.
 
 ## What this does not establish
 
+The [writer-instrumentation defect record](wp749-writer-census-defects.md)
+documents the repeated attribution failure and independent reconciliation:
+`busy + idle` missed 15.30% of writer wall on N1 and 20.54% on C3D in later
+c32 capture probes. Those are host/workload observations, not correction factors
+for this table. Future attribution must retain its signed unnamed remainder.
+
 **The writer-busy figures are corroboration, not a CPU multiple.**
 `crates/riffdb-commit/src/writer_census.rs` states that `busy_us` and `idle_us`
 do not tile the writer's wall clock: completion draining after submission lands

@@ -1047,7 +1047,7 @@ server_pid=
 ./scripts/generated_mcp_query_cursor_round_trip_preserves_authority_and_redaction "$work_root"
 
 jq -e '
-  .schema == "riffdb-generated-application-operations/v5"
+  .schema == "riffdb-generated-application-operations/v6"
   and (.tools | length) == 18
   and ([.tools[].operation_name] | sort) == ["ExactDocumentsContainsAsc", "ExactDocumentsEndsWithDesc", "ExactDocumentsStartsWithAsc", "FgaObjectsWithRelations", "GetAuthSession", "InventoryByObservedAscNullsLast", "InventoryByObservedDescNullsFirst", "InventoryBySubtitleAscNullsFirst", "InventoryBySubtitleDescNullsLast", "ListDraftDocuments", "ListFgaTuples", "ListPipelines", "MetricDashboard", "MlflowRunsWithTags", "ReviewedDirectoryUsers", "SearchDirectoryUsers", "SearchDocuments", "TicketPageWithComments"]
   and ([.tools[] | select(.operation_name | startswith("ExactDocuments"))] | length) == 3

@@ -1,0 +1,267 @@
+{
+  "status": "capture_optimization_line_closed",
+  "closed_at": "2026-09-19",
+  "scope": "Investigation only; WP-749 remains open; no runtime or gate change",
+  "toolchain": "Rust 1.98.1",
+  "pooled_across_hosts": false,
+  "hardware_dispatch": "sha2 0.11.0; cpufeatures 0.3.0; normal runtime dispatch",
+  "hosts": {
+    "N1": {
+      "sha_ni": false,
+      "probe_on": {
+        "groups": 3415,
+        "commands": 54108,
+        "mean_commit_us": 8203.644509516836,
+        "mean_throughput_ops_s": 1287.5,
+        "mean_p95_ms": 31.981567,
+        "mean_p99_ms": 79.691775,
+        "writer_wall_seconds": 42.093511024,
+        "writer_wall_us_per_group": 12326.064721522695,
+        "capture_us_per_group": 696.4651396778917,
+        "capture_percent_group_latency": 8.489704043976312,
+        "capture_percent_writer_wall": 5.650344659165916,
+        "frame_bytes_per_command": 5485.221020921121,
+        "segment_bytes_per_command": 3499.8042803282324,
+        "busy_plus_idle_vs_writer_wall_ns": {
+          "total_seconds": -6.442015024,
+          "us_per_group": -1886.388001171303,
+          "percent_writer_wall": -15.304057246084858
+        },
+        "group_commit_after_apply_and_seal_unattributed_ns": {
+          "total_seconds": 10.323415037,
+          "us_per_group": 3022.9619434846268,
+          "percent_writer_wall": 24.52495595131993
+        }
+      },
+      "probe_off": {
+        "groups": 3428,
+        "commands": 54418,
+        "mean_commit_us": 8191.0452158693115,
+        "mean_throughput_ops_s": 1292.5,
+        "mean_p95_ms": 32.505855,
+        "mean_p99_ms": 77.59462300000001
+      },
+      "capture_exclusive_us_per_group": {
+        "inventory": 86.76336310395315,
+        "allocation_copy": 19.017723865300148,
+        "hash": 491.04008609077596,
+        "validation_attach": 29.077484919472912,
+        "logical_epoch": 58.37718389458273,
+        "encoding": 12.189297803806737
+      },
+      "unattributed_writer_us_per_group": 77.22037276720351,
+      "unattributed_writer_percent": 0.6264803447962436,
+      "observer_delta_percent": {
+        "mean_commit_us": 0.1538178988820027,
+        "mean_throughput_ops_s": -0.3868471953578312,
+        "mean_p95_ms": -1.6129032754253037,
+        "mean_p99_ms": 2.7027027375337465
+      },
+      "cells": [
+        {
+          "name": "01-off",
+          "commands": 27304,
+          "commits": 1720,
+          "mean_group_commit_us": 8164.447093023256,
+          "throughput_ops_s": 1296,
+          "p95_ns": 31457279,
+          "p99_ns": 79691775,
+          "capture_writer_us_per_group": 0.0,
+          "capture_normalized_group_latency_percent": 0.0,
+          "capture_writer_wall_percent": 0.0,
+          "level0_reconciliation_error_ns": 0,
+          "level1_reconciliation_error_ns": 0,
+          "level2_advertised_parent_reconciliation_error_ns": -717619864
+        },
+        {
+          "name": "02-on",
+          "commands": 27072,
+          "commits": 1704,
+          "mean_group_commit_us": 8248.663145539906,
+          "throughput_ops_s": 1288,
+          "p95_ns": 33554431,
+          "p99_ns": 79691775,
+          "capture_writer_us_per_group": 702.3973679577465,
+          "capture_normalized_group_latency_percent": 8.515287332802968,
+          "capture_writer_wall_percent": 5.686340832342734,
+          "level0_reconciliation_error_ns": 0,
+          "level1_reconciliation_error_ns": 0,
+          "level2_advertised_parent_reconciliation_error_ns": -713222909
+        },
+        {
+          "name": "03-on",
+          "commands": 27036,
+          "commits": 1711,
+          "mean_group_commit_us": 8158.810052600818,
+          "throughput_ops_s": 1287,
+          "p95_ns": 30408703,
+          "p99_ns": 79691775,
+          "capture_writer_us_per_group": 690.5571811805961,
+          "capture_normalized_group_latency_percent": 8.463944824410568,
+          "capture_writer_wall_percent": 5.614342779132086,
+          "level0_reconciliation_error_ns": 0,
+          "level1_reconciliation_error_ns": 0,
+          "level2_advertised_parent_reconciliation_error_ns": -706574345
+        },
+        {
+          "name": "04-off",
+          "commands": 27114,
+          "commits": 1708,
+          "mean_group_commit_us": 8217.830210772834,
+          "throughput_ops_s": 1289,
+          "p95_ns": 33554431,
+          "p99_ns": 75497471,
+          "capture_writer_us_per_group": 0.0,
+          "capture_normalized_group_latency_percent": 0.0,
+          "capture_writer_wall_percent": 0.0,
+          "level0_reconciliation_error_ns": 0,
+          "level1_reconciliation_error_ns": 0,
+          "level2_advertised_parent_reconciliation_error_ns": -711908647
+        }
+      ],
+      "specifications": "8 vCPU, Intel Xeon 2.30 GHz, family 6/model 63, persistent disk",
+      "testing_status": "Retired from testing by maintainer direction; results are historical"
+    },
+    "C3D": {
+      "sha_ni": true,
+      "probe_on": {
+        "groups": 9367,
+        "commands": 148704,
+        "mean_commit_us": 2884.361161524501,
+        "mean_throughput_ops_s": 3509.5,
+        "mean_p95_ms": 10.747903,
+        "mean_p99_ms": 83.886079,
+        "writer_wall_seconds": 42.138019947,
+        "writer_wall_us_per_group": 4498.560899647699,
+        "capture_us_per_group": 168.49095046439626,
+        "capture_percent_group_latency": 5.841534434451407,
+        "capture_percent_writer_wall": 3.7454411360217774,
+        "frame_bytes_per_command": 5496.089553744351,
+        "segment_bytes_per_command": 3507.132632612438,
+        "busy_plus_idle_vs_writer_wall_ns": {
+          "total_seconds": -8.654267947,
+          "us_per_group": -923.9103178178713,
+          "percent_writer_wall": -20.537908420673517
+        },
+        "group_commit_after_apply_and_seal_unattributed_ns": {
+          "total_seconds": 13.779332922,
+          "us_per_group": 1471.050808369809,
+          "percent_writer_wall": 32.7004755784236
+        }
+      },
+      "probe_off": {
+        "groups": 9470,
+        "commands": 149671,
+        "mean_commit_us": 2916.502428722281,
+        "mean_throughput_ops_s": 3537,
+        "mean_p95_ms": 10.747903,
+        "mean_p99_ms": 83.886079
+      },
+      "capture_exclusive_us_per_group": {
+        "inventory": 47.272610761182875,
+        "allocation_copy": 8.229951959005017,
+        "hash": 63.29365997651329,
+        "validation_attach": 14.853035657094054,
+        "logical_epoch": 30.319387210419556,
+        "encoding": 4.522304900181488
+      },
+      "unattributed_writer_us_per_group": 35.28250026689442,
+      "unattributed_writer_percent": 0.784306382729142,
+      "observer_delta_percent": {
+        "mean_commit_us": -1.1020483604349707,
+        "mean_throughput_ops_s": -0.7774950523042112,
+        "mean_p95_ms": 0.0,
+        "mean_p99_ms": 0.0
+      },
+      "cells": [
+        {
+          "name": "01-off",
+          "commands": 75110,
+          "commits": 4744,
+          "mean_group_commit_us": 2856.62521079258,
+          "throughput_ops_s": 3554,
+          "p95_ns": 10485759,
+          "p99_ns": 83886079,
+          "capture_writer_us_per_group": 0.0,
+          "capture_normalized_group_latency_percent": 0.0,
+          "capture_writer_wall_percent": 0.0,
+          "level0_reconciliation_error_ns": 0,
+          "level1_reconciliation_error_ns": 0,
+          "level2_advertised_parent_reconciliation_error_ns": -916130305
+        },
+        {
+          "name": "02-on",
+          "commands": 74186,
+          "commits": 4670,
+          "mean_group_commit_us": 2887.6428265524623,
+          "throughput_ops_s": 3510,
+          "p95_ns": 10485759,
+          "p99_ns": 75497471,
+          "capture_writer_us_per_group": 170.12523597430405,
+          "capture_normalized_group_latency_percent": 5.891491648827478,
+          "capture_writer_wall_percent": 3.7792347701625735,
+          "level0_reconciliation_error_ns": 0,
+          "level1_reconciliation_error_ns": 0,
+          "level2_advertised_parent_reconciliation_error_ns": -919398851
+        },
+        {
+          "name": "03-on",
+          "commands": 74518,
+          "commits": 4697,
+          "mean_group_commit_us": 2881.0983606557375,
+          "throughput_ops_s": 3509,
+          "p95_ns": 11010047,
+          "p99_ns": 92274687,
+          "capture_writer_us_per_group": 166.8660593996168,
+          "capture_normalized_group_latency_percent": 5.791751565248125,
+          "capture_writer_wall_percent": 3.7117967763154285,
+          "level0_reconciliation_error_ns": 0,
+          "level1_reconciliation_error_ns": 0,
+          "level2_advertised_parent_reconciliation_error_ns": -919982301
+        },
+        {
+          "name": "04-off",
+          "commands": 74561,
+          "commits": 4726,
+          "mean_group_commit_us": 2976.607702073635,
+          "throughput_ops_s": 3520,
+          "p95_ns": 11010047,
+          "p99_ns": 83886079,
+          "capture_writer_us_per_group": 0.0,
+          "capture_normalized_group_latency_percent": 0.0,
+          "capture_writer_wall_percent": 0.0,
+          "level0_reconciliation_error_ns": 0,
+          "level1_reconciliation_error_ns": 0,
+          "level2_advertised_parent_reconciliation_error_ns": -903771048
+        }
+      ],
+      "specifications": "8 vCPU, AMD EPYC 9B14, persistent disk"
+    }
+  },
+  "historical_prototype": {
+    "toolchain": "Rust 1.97.0, both compared arms",
+    "mean_group_commit_change_percent": -2.22,
+    "p99_change_percent": 7.89,
+    "frame_byte_change_percent": -25.78,
+    "selected": false,
+    "host": "N1 (historical; retired from testing)"
+  },
+  "checked_hash_prototype": {
+    "selected_tests_passed": 332,
+    "valid_candidate_timing_cells": 0,
+    "latency_verdict": null,
+    "p99_verdict": null,
+    "status": "banked, unselected; investigation closed"
+  },
+  "historical_absolute_throughput": {
+    "toolchain": "Rust 1.97.0, both compared arms",
+    "current_at_measurement_ops_s": 1291,
+    "pre_capture_parent_ops_s": 1220,
+    "release_gate_pass": false,
+    "host": "N1 (historical; retired from testing)"
+  },
+  "observed_hashing_time_ratio_n1_to_c3d": 7.758124372535713,
+  "interpretation": "Cross-host observation, not an isolated SHA-NI instruction benchmark; no normalization between hosts",
+  "same_daemon_sha256": "8129000401d89d3b001807b44a817073bb7bd5270896bd08ca36b0c2eb4f15f8",
+  "same_runner_sha256": "cc368a445b193e76c891ea43733f2cfcb88abfb1a720d7592d0d6a29c865c7d2"
+}

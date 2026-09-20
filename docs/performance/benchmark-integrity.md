@@ -4,6 +4,21 @@ This note freezes the placement, leak-hygiene, and measurement protocol that
 every RiffDB performance harness must follow so published numbers are honest
 about durable media and not RAM-flattered by tmpfs.
 
+## Host selection and attribution
+
+Follow the [measurement-host guidance](benchmark-host-selection.md) and
+ADR-0245's accepted hardware baseline, including SHA-2 acceleration. N1 is
+retired from testing. Its historical hashing cost was 7.8 times C3D's with identical
+binaries; accelerator differences can reverse optimization priorities. Coordinate
+exclusive host use, refresh controls after toolchain/build changes, and keep P99
+as a selection gate. WP-797 owns profile validation and N1's replacement.
+
+Before using writer stages, read the
+[open census defects and reconciliation method](wp749-writer-census-defects.md).
+`busy_us + idle_us` undercounted independent writer wall by 15.30% on N1 and
+20.54% on C3D. These are observed errors, not correction factors. Report signed
+stage reconciliation and the unattributed remainder against independent wall.
+
 ## Placement rules
 
 1. **Never put multi-GB database files on `/tmp` or any other tmpfs/ramfs**
