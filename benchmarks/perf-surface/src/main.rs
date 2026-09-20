@@ -31,7 +31,10 @@ fn main() -> std::process::ExitCode {
         .unwrap_or_else(|_| std::env::temp_dir().join("perf-surface-run"));
     let _ = std::fs::remove_dir_all(&root);
 
-    let runtime = match tokio::runtime::Builder::new_multi_thread().enable_all().build() {
+    let runtime = match tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .build()
+    {
         Ok(runtime) => runtime,
         Err(error) => {
             eprintln!("runtime: {error}");
@@ -44,7 +47,12 @@ fn main() -> std::process::ExitCode {
         let run_dir = root.join(&name);
         let source = contract_source(&mechanisms);
         match runtime.block_on(measure_variant(
-            &binary, &run_dir, &name, &source, documents, concurrency,
+            &binary,
+            &run_dir,
+            &name,
+            &source,
+            documents,
+            concurrency,
         )) {
             Ok(measurement) => {
                 report_row(&measurement);
@@ -66,6 +74,7 @@ fn report_row(measurement: &VariantMeasurement) {
     println!(
         "perf-surface {name} documents={documents} clients={clients} \
          docs_per_s={rate:.0} \
+         drain_ms={drain:.0} \
          commits={commits} docs_per_commit={batch:.1} \
          frame_bytes_per_doc={frame:.1} \
          segment_bytes_per_doc={segment:.1} \
@@ -76,6 +85,7 @@ fn report_row(measurement: &VariantMeasurement) {
         documents = measurement.documents,
         clients = measurement.concurrency,
         rate = measurement.documents_per_second(),
+        drain = measurement.drain.as_secs_f64() * 1000.0,
         commits = measurement.committed_commands,
         batch = measurement.documents_per_commit(),
         frame = measurement.frame_bytes_per_document(),

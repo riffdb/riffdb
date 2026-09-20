@@ -15,7 +15,8 @@ fn the_daemon_starts_becomes_ready_and_shuts_down_cleanly() {
          or set RIFFDB_PERF_SURFACE_RIFFDBD_BIN",
     );
 
-    let run_dir = std::env::temp_dir().join(format!("perf-surface-lifecycle-{}", std::process::id()));
+    let run_dir =
+        std::env::temp_dir().join(format!("perf-surface-lifecycle-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&run_dir);
 
     let daemon = Daemon::start(&binary, &run_dir).expect("daemon starts and becomes ready");

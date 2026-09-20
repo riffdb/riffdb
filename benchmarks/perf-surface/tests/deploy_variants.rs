@@ -20,10 +20,8 @@ fn every_variant_deploys_to_a_real_daemon() {
         .expect("runtime");
 
     for (name, mechanisms) in variants() {
-        let run_dir = std::env::temp_dir().join(format!(
-            "perf-surface-deploy-{}-{name}",
-            std::process::id()
-        ));
+        let run_dir =
+            std::env::temp_dir().join(format!("perf-surface-deploy-{}-{name}", std::process::id()));
         let _ = std::fs::remove_dir_all(&run_dir);
 
         let daemon = Daemon::start(&binary, &run_dir)

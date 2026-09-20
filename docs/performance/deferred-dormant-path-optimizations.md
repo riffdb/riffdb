@@ -82,9 +82,33 @@ have compounded that rather than helped.
 
 - `crates/riffdb-query-executor/src/storage_executor.rs:928` —
   `indexed_relationship_exists` performs a full paged index range scan per
-  relationship lookup, and `allows_policy_record` calls it once per lookup per
+  relationship lookup, and `authorize_candidates` calls it once per lookup per
   candidate row. With a row policy active this is a scan per row, bounded only
   by `MAX_QUERY_SCANNED_ROWS`.
+
+  **Attempted and reverted, 2026-09-20.** The fix is small and sound: a row's
+  lookups derive from its field values, so under an org-scoped policy every row
+  of one organization produces the identical lookup and repeats the identical
+  scan. The snapshot is a pinned owned read view for the whole call, so one
+  lookup cannot change its answer between rows, and `Eq` on
+  `AuthorizedIndexedRelationshipLookupV1` covers exactly the fields the scan
+  result depends on — target entity, index, partition and prefix — so equal
+  lookups genuinely have equal answers. Resolving each distinct lookup once is
+  behaviour-preserving.
+
+  It was reverted anyway, because **no test in this repository exercises
+  `authorize_candidates`**. The row-policy suites cover the evaluator
+  (`evaluate_row_policy`) and the compiler's lowering; the one query-executor
+  test that implements the trait passes `_policy: None`. A green suite therefore
+  says nothing about a change here, and this is authorization: the failure mode
+  is serving a row a policy should have denied.
+
+  Writing the missing test is the real blocker. `OwnedSnapshotHandle` composes
+  seven supertraits, so a counting or fixture snapshot is a substantial piece of
+  work rather than a helper — which is why the coverage does not exist. **That
+  gap is worth closing on its own merit, independently of this optimisation:**
+  an authorization path with no execution-level test is a larger problem than a
+  redundant scan on a dormant path.
 
 ## What must happen before activation
 

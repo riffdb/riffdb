@@ -25,7 +25,7 @@ use riffdb_client_rust::{ApplicationUuid, ApplicationValue};
 use crate::daemon::Daemon;
 use crate::session::{
     SessionError, application_client, attempts, bearer, bootstrap_and_deploy, command,
-    issue_command_capability, publish_document_input,
+    drain_projection, issue_command_capability, publish_document_input,
 };
 
 /// What one variant cost.
@@ -40,6 +40,11 @@ pub struct VariantMeasurement {
     pub concurrency: usize,
     /// Wall time for the publish phase only, excluding setup and seeding.
     pub elapsed: Duration,
+    /// Wall time spent waiting for the projection to reach the authoritative
+    /// head after the publish phase. Zero for a variant that declares none.
+    /// Reported rather than folded into `elapsed`, so a throughput figure and
+    /// the lag behind it stay separable.
+    pub drain: Duration,
     /// Commands the writer committed, from the shutdown census.
     pub committed_commands: u64,
     /// Total command frame bytes the writer wrote.
@@ -150,7 +155,7 @@ pub async fn measure_variant(
 
     let bootstrap_token =
         bootstrap_and_deploy(&endpoint, &run_dir.join("bootstrap.credential"), source).await?;
-    let runner = issue_command_capability(&endpoint, &bootstrap_token, source).await?;
+    let runner = issue_command_capability(&endpoint, &bootstrap_token, source, &[]).await?;
     let metadata = bearer(&runner)?;
     let mut client = application_client(&endpoint).await?;
 
@@ -175,6 +180,13 @@ pub async fn measure_variant(
 
     let title = "perf surface document title";
     let body = "lorem ipsum ".repeat(64);
+    // The vector variant's command declares the embed inputs and the others do
+    // not, so the input must match the contract actually deployed. Reading it
+    // from the deployed source keeps the two from drifting apart: a variant
+    // that gains the field gains the input in the same place.
+    let embedding: Option<Vec<f32>> = source
+        .contains("input embedding: vector<4>")
+        .then(|| vec![0.5_f32, 0.25, 0.125, 0.0625]);
 
     // Each publisher owns its own connection: sharing one would serialise the
     // clients on a single channel and measure the harness instead of the
@@ -194,6 +206,7 @@ pub async fn measure_variant(
         let metadata = metadata.clone();
         let title = title.to_owned();
         let body = body.clone();
+        let embedding = embedding.clone();
         let stride = u64::try_from(concurrency).unwrap_or(1);
         let start = u64::try_from(slot).unwrap_or(0);
         tasks.push(tokio::spawn(async move {
@@ -209,6 +222,7 @@ pub async fn measure_variant(
                     title.clone(),
                     body.clone(),
                     body.len() as i64,
+                    embedding.clone(),
                 );
                 publisher
                     .execute_command(command("PublishDocument", input)?, attempts(), &metadata)
@@ -227,19 +241,47 @@ pub async fn measure_variant(
     }
     let elapsed = started.elapsed();
 
+    // Wait for the projection to consume what was just written, and charge that
+    // wait separately rather than folding it into `elapsed`.
+    //
+    // OBL-0240-3 asks whether declaring a projection costs *write throughput*.
+    // Folding catch-up into the timed phase would charge the projection arm for
+    // asynchronous work that, if the decoupling is real, never blocked a write
+    // — and would report a cost the obligation is not about. Keeping them apart
+    // means the obligation needs both: throughput within the host's spread, and
+    // a drain that actually completes. An arm that posts a fast figure by
+    // falling behind shows up in the second number rather than hiding in the
+    // first. Without it the projection arm can post a faster figure
+    // by falling behind: the writes are accepted, the apply is not done, and
+    // the comparison OBL-0240-3 makes becomes a comparison of how much work
+    // each arm skipped. A variant that declares no projection has nothing to
+    // drain and reports zero.
+    let drain = if source.contains("projection PublishedBytesDaily") {
+        drain_projection(
+            &endpoint,
+            &runner,
+            // The perf-surface contract declares exactly one projection, so it
+            // is the first identifier the compiler assigns.
+            1,
+            Duration::from_secs(120),
+        )
+        .await?
+    } else {
+        Duration::ZERO
+    };
+
     let stdout = daemon
         .shutdown()
         .map_err(|error| SessionError::Rpc(format!("shutdown: {error}")))?;
-    let census = parse_frame_census(&stdout).ok_or_else(|| {
-        SessionError::Rpc("shutdown emitted no writer frame census".to_owned())
-    })?;
+    let census = parse_frame_census(&stdout)
+        .ok_or_else(|| SessionError::Rpc("shutdown emitted no writer frame census".to_owned()))?;
 
-    let evidence = parse_writer_evidence(&stdout).ok_or_else(|| {
-        SessionError::Rpc("shutdown emitted no writer evidence".to_owned())
-    })?;
+    let evidence = parse_writer_evidence(&stdout)
+        .ok_or_else(|| SessionError::Rpc("shutdown emitted no writer evidence".to_owned()))?;
 
     Ok(VariantMeasurement {
         name: name.to_owned(),
+        drain,
         documents,
         concurrency,
         elapsed,
