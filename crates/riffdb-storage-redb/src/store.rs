@@ -311,6 +311,11 @@ pub(crate) struct SharedRedb {
     /// Opened on first derived read or write so archive inventories that never
     /// touch derived state keep their closed three-file sets.
     derived: std::sync::OnceLock<Database>,
+    /// Serialises the first open of `derived`. redb takes an exclusive file
+    /// lock, so two threads racing to open the sidecar leave one holding an
+    /// `Unavailable` that says nothing about the store's health. Only the
+    /// holder of this opens; everyone else waits and then reads the `OnceLock`.
+    derived_open: std::sync::Mutex<()>,
     derived_in_memory: bool,
     #[allow(dead_code, reason = "WP-070 offline backup consumes the source path")]
     path: PathBuf,
@@ -477,23 +482,27 @@ impl SharedRedb {
     }
 
     pub(crate) fn derived_database(&self) -> Result<&Database, StorageError> {
-        loop {
-            if let Some(database) = self.derived.get() {
-                return Ok(database);
-            }
-            match RedbStore::open_derived_database(&self.path, self.derived_in_memory) {
-                Ok(opened) => {
-                    let _ = self.derived.set(opened);
-                }
-                Err(error)
-                    if error.kind() == StorageErrorKind::Unavailable
-                        && self.derived.get().is_some() =>
-                {
-                    continue;
-                }
-                Err(error) => return Err(error),
-            }
+        if let Some(database) = self.derived.get() {
+            return Ok(database);
         }
+        // Serialise the open. Retrying on `Unavailable` while the winner has
+        // not yet published is not sufficient: between a loser's failed open
+        // and the winner's `set`, `get` is still empty, and the loser returns
+        // an `Unavailable` that describes a race rather than the store. Holding
+        // this guard means exactly one thread ever calls `open_derived_database`
+        // for a handle, so `Unavailable` from it is always real.
+        let _open = self
+            .derived_open
+            .lock()
+            .map_err(|_| storage_error(StorageErrorKind::InvariantViolation))?;
+        if let Some(database) = self.derived.get() {
+            return Ok(database);
+        }
+        let opened = RedbStore::open_derived_database(&self.path, self.derived_in_memory)?;
+        let _ = self.derived.set(opened);
+        self.derived
+            .get()
+            .ok_or_else(|| storage_error(StorageErrorKind::InvariantViolation))
     }
 
     pub(crate) fn before_test_commit(
@@ -2325,6 +2334,7 @@ impl RedbStore {
                 follower_namespace: Mutex::new(None),
                 database,
                 derived: std::sync::OnceLock::new(),
+                derived_open: std::sync::Mutex::new(()),
                 derived_in_memory,
                 path: path.to_path_buf(),
                 journal_media,

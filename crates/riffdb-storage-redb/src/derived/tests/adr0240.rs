@@ -340,3 +340,44 @@ fn restore_leaves_no_derived_state_from_the_replaced_timeline() {
         "replaced-timeline derived rows must not survive restore"
     );
 }
+
+#[test]
+fn concurrent_first_touch_of_the_sidecar_never_reports_unavailable() {
+    // redb takes an exclusive file lock, so two threads racing to open the
+    // sidecar leave one holding an Unavailable that describes the race rather
+    // than the store. Under nextest's parallel profile that surfaced as a
+    // projection query failing with storage_unavailable while the same test
+    // passed in isolation, which is the shape that gets dismissed as flake.
+    //
+    // Every thread here touches the sidecar for the first time at once. All of
+    // them must succeed: an Unavailable from this path has to mean the store is
+    // actually unavailable, or it cannot be acted on.
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    let (path, ports) = operational("derived-open-race");
+    let shared = Arc::clone(&ports.shared);
+    let barrier = Arc::new(std::sync::Barrier::new(8));
+    let failures = Arc::new(AtomicUsize::new(0));
+    let mut threads = Vec::with_capacity(8);
+    for _ in 0..8 {
+        let shared = Arc::clone(&shared);
+        let barrier = Arc::clone(&barrier);
+        let failures = Arc::clone(&failures);
+        threads.push(std::thread::spawn(move || {
+            barrier.wait();
+            if shared.derived_database().is_err() {
+                failures.fetch_add(1, Ordering::SeqCst);
+            }
+        }));
+    }
+    for thread in threads {
+        thread.join().expect("racing opener must not panic");
+    }
+    assert_eq!(
+        failures.load(Ordering::SeqCst),
+        0,
+        "a concurrent first touch reported the sidecar unavailable"
+    );
+    drop(path);
+}
