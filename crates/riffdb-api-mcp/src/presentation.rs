@@ -371,8 +371,8 @@ mod tests {
 
     use riffdb_errors::{
         ApplicationError, ApplicationErrorCode, ApplicationErrorContext, ApplicationOperation,
-        ApplicationSourceSpan, InternalError, PublicError, PublicErrorKind, ValidationCode,
-        ValidationIssue, ValidationIssues, ValidationPath, ValidationPathSegment,
+        ApplicationSourceSpan, DefectScope, InternalError, PublicError, PublicErrorKind,
+        ValidationCode, ValidationIssue, ValidationIssues, ValidationPath, ValidationPathSegment,
     };
     use riffdb_types::{
         ContractLineage, ContractVersion, ExecutionFailureCode, FieldId, IncidentId, RequestId,
@@ -624,7 +624,8 @@ mod tests {
 
     #[test]
     fn public_error_renderer_cannot_expose_peer_or_internal_source_text() {
-        let public = InternalError::new(incident_id(), SecretPeerFailure).into_public();
+        let public = InternalError::new(incident_id(), DefectScope::Process, SecretPeerFailure)
+            .into_public();
         let result = render_public_error(&public).expect("redacted MCP tool error");
         let encoded = serde_json::to_string(&result).expect("SDK result");
 

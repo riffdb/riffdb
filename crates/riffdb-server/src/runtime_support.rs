@@ -16,9 +16,9 @@ use std::pin::Pin;
 use std::sync::atomic::{AtomicU8, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard};
 use std::task::{Context, Poll};
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
-use riffdb_errors::InternalError;
+use riffdb_errors::{DefectScope, InternalError};
 use riffdb_observability::Observability;
 use riffdb_service::{
     AuthoritativeReadinessFailure, RequestDeadlineFuture, RequestDeadlineScheduler,
@@ -31,6 +31,10 @@ use tokio::task::JoinHandle;
 
 /// Maximum trusted internal sources retained before diagnostics fail readiness.
 pub(crate) const MAX_RETAINED_INTERNAL_DIAGNOSTICS: usize = 256;
+/// Process-scoped defects the breaker tolerates back to back (ADR-0250 decision 4).
+pub(crate) const DEFECT_BURST_CAPACITY: u32 = 16;
+/// How often one unit of that burst comes back.
+pub(crate) const DEFECT_REFILL_INTERVAL: Duration = Duration::from_secs(60);
 
 const ROUTING_RUNNING: u8 = 0;
 
@@ -567,21 +571,87 @@ struct RetainedDiagnostics {
     errors: VecDeque<InternalError>,
 }
 
+/// Monotonic time for the defect budget, injectable so a test can advance it
+/// rather than sleep for a refill interval.
+pub(crate) trait DefectClock: Send + Sync {
+    fn now(&self) -> Instant;
+}
+
+/// The process clock.
+pub(crate) struct SystemDefectClock;
+
+impl DefectClock for SystemDefectClock {
+    fn now(&self) -> Instant {
+        Instant::now()
+    }
+}
+
+/// A refilling allowance of process-scoped defects (ADR-0250 decision 3).
+///
+/// A lifetime count cannot tell a broken process from a broken request: a
+/// daemon that sees 256 unrelated defects across weeks of uptime reaches the
+/// same total as one that sees them in a minute. The budget spends on a burst
+/// and recovers with time, so only a rate trips it.
+struct DefectBudget {
+    remaining: u32,
+    last_refill: Instant,
+}
+
+impl DefectBudget {
+    fn new(now: Instant) -> Self {
+        Self {
+            remaining: DEFECT_BURST_CAPACITY,
+            last_refill: now,
+        }
+    }
+
+    /// Spends one unit, refilling first. Returns false when the budget is spent,
+    /// which is the condition that trips the breaker.
+    fn spend(&mut self, now: Instant) -> bool {
+        let elapsed = now.saturating_duration_since(self.last_refill);
+        let refills = u32::try_from(elapsed.as_secs() / DEFECT_REFILL_INTERVAL.as_secs().max(1))
+            .unwrap_or(u32::MAX);
+        if refills > 0 {
+            self.remaining = self
+                .remaining
+                .saturating_add(refills)
+                .min(DEFECT_BURST_CAPACITY);
+            // Carry the remainder so a defect every 59 seconds still refills at
+            // the stated rate rather than never.
+            self.last_refill += DEFECT_REFILL_INTERVAL * refills;
+        }
+        if self.remaining == 0 {
+            return false;
+        }
+        self.remaining -= 1;
+        true
+    }
+}
+
 /// Bounded trusted retention for internal sources before P2 observability exists.
 pub(crate) struct ProductionServiceDiagnostics {
     routing: RuntimeRoutingState,
     retained: Mutex<RetainedDiagnostics>,
     dropped: AtomicU64,
+    budget: Mutex<DefectBudget>,
+    clock: Arc<dyn DefectClock>,
 }
 
 impl ProductionServiceDiagnostics {
     pub(crate) fn new(routing: RuntimeRoutingState) -> Self {
+        Self::with_clock(routing, Arc::new(SystemDefectClock))
+    }
+
+    pub(crate) fn with_clock(routing: RuntimeRoutingState, clock: Arc<dyn DefectClock>) -> Self {
+        let started = clock.now();
         Self {
             routing,
             retained: Mutex::new(RetainedDiagnostics {
                 errors: VecDeque::with_capacity(MAX_RETAINED_INTERNAL_DIAGNOSTICS),
             }),
             dropped: AtomicU64::new(0),
+            budget: Mutex::new(DefectBudget::new(started)),
+            clock,
         }
     }
 
@@ -598,6 +668,17 @@ impl ProductionServiceDiagnostics {
         self.lock_retained().errors.drain(..).collect()
     }
 
+    fn lock_budget(&self) -> MutexGuard<'_, DefectBudget> {
+        match self.budget.lock() {
+            Ok(budget) => budget,
+            Err(poisoned) => {
+                self.routing
+                    .stop(RuntimeStopReason::SupervisionStateCorrupted);
+                poisoned.into_inner()
+            }
+        }
+    }
+
     fn lock_retained(&self) -> MutexGuard<'_, RetainedDiagnostics> {
         match self.retained.lock() {
             Ok(retained) => retained,
@@ -612,14 +693,33 @@ impl ProductionServiceDiagnostics {
 
 impl ServiceDiagnostics for ProductionServiceDiagnostics {
     fn record_internal(&self, error: InternalError) {
+        // Retention and the breaker are separate concerns (ADR-0250 decision 5).
+        // Conflating them is what let a request-scoped defect stop the process:
+        // the ring rotated correctly and the stop fired anyway, on a count.
+        let scope = error.scope();
         let mut retained = self.lock_retained();
         if retained.errors.len() == MAX_RETAINED_INTERNAL_DIAGNOSTICS {
-            self.routing
-                .stop(RuntimeStopReason::DiagnosticCapacityExceeded);
             retained.errors.pop_front();
             saturating_increment(&self.dropped);
         }
         retained.errors.push_back(error);
+        drop(retained);
+
+        // Only a process-scoped defect draws on the budget. A request-scoped one
+        // says this request could not be completed and nothing about the next,
+        // so no number of them stops the runtime (ADR-0250 decision 2).
+        if scope != DefectScope::Process {
+            return;
+        }
+        let now = self.clock.now();
+        let spent = {
+            let mut budget = self.lock_budget();
+            !budget.spend(now)
+        };
+        if spent {
+            self.routing
+                .stop(RuntimeStopReason::DiagnosticCapacityExceeded);
+        }
     }
 }
 
@@ -655,14 +755,44 @@ mod tests {
     impl std::error::Error for TestInternalSource {}
 
     fn internal_error(seed: u8) -> InternalError {
+        scoped_internal_error(seed, DefectScope::Process)
+    }
+
+    fn scoped_internal_error(seed: u8, scope: DefectScope) -> InternalError {
         let mut bytes = [0_u8; 16];
         bytes[6] = 0x70;
         bytes[8] = 0x80;
         bytes[15] = seed;
         InternalError::new(
             IncidentId::from_bytes(bytes).expect("valid UUIDv7 incident fixture"),
+            scope,
             TestInternalSource,
         )
+    }
+
+    /// A clock the test moves by hand, so a refill is asserted rather than
+    /// waited for.
+    struct ManualClock {
+        now: Mutex<Instant>,
+    }
+
+    impl ManualClock {
+        fn new() -> Arc<Self> {
+            Arc::new(Self {
+                now: Mutex::new(Instant::now()),
+            })
+        }
+
+        fn advance(&self, by: Duration) {
+            let mut now = self.now.lock().expect("manual clock");
+            *now += by;
+        }
+    }
+
+    impl DefectClock for ManualClock {
+        fn now(&self) -> Instant {
+            *self.now.lock().expect("manual clock")
+        }
     }
 
     #[tokio::test(start_paused = true)]
@@ -895,34 +1025,95 @@ mod tests {
         );
     }
 
+    /// OBL-0250-1. A defect one client can reach, repeated far past both the
+    /// retention bound and the burst capacity, leaves the runtime routing.
+    ///
+    /// This is the shape that killed a daemon on the bench host: a projected
+    /// query against an unregistered columnar source failed as an internal
+    /// defect, and repeating it stopped the process at demand 258.
     #[test]
-    fn diagnostics_are_bounded_and_overflow_fails_readiness_closed() {
+    fn a_client_reachable_defect_path_cannot_stop_the_runtime() {
         let routing = RuntimeRoutingState::new();
         let diagnostics = ProductionServiceDiagnostics::new(routing.clone());
 
-        for seed in 0..MAX_RETAINED_INTERNAL_DIAGNOSTICS {
-            diagnostics.record_internal(internal_error(seed as u8));
+        for round in 0..2 {
+            for seed in 0..=u8::MAX {
+                diagnostics
+                    .record_internal(scoped_internal_error(seed ^ round, DefectScope::Request));
+            }
         }
+
+        assert!(
+            routing.is_routing_allowed(),
+            "no number of request-scoped defects may stop the runtime"
+        );
+        assert_eq!(routing.stop_reason(), None);
         assert_eq!(
             diagnostics.retained_count(),
-            MAX_RETAINED_INTERNAL_DIAGNOSTICS
+            MAX_RETAINED_INTERNAL_DIAGNOSTICS,
+            "retention still bounds memory"
         );
-        assert_eq!(diagnostics.dropped_count(), 0);
-        assert!(routing.is_routing_allowed());
+        assert!(
+            diagnostics.dropped_count() > 0,
+            "the ring rotated rather than growing"
+        );
+    }
+
+    /// OBL-0250-2. Narrowing what feeds the breaker must not make it fail open:
+    /// a burst of process-scoped defects still stops the runtime.
+    #[test]
+    fn a_burst_of_process_scoped_defects_still_stops_the_runtime() {
+        let routing = RuntimeRoutingState::new();
+        let diagnostics = ProductionServiceDiagnostics::new(routing.clone());
+
+        for seed in 0..DEFECT_BURST_CAPACITY {
+            diagnostics.record_internal(internal_error(seed as u8));
+            assert!(
+                routing.is_routing_allowed(),
+                "the budget covers exactly its burst capacity"
+            );
+        }
 
         diagnostics.record_internal(internal_error(0xff));
         assert_eq!(
-            diagnostics.retained_count(),
-            MAX_RETAINED_INTERNAL_DIAGNOSTICS
+            routing.stop_reason(),
+            Some(RuntimeStopReason::DiagnosticCapacityExceeded),
+            "the defect past the burst capacity trips the breaker"
         );
-        assert_eq!(diagnostics.dropped_count(), 1);
+    }
+
+    /// OBL-0250-3. A spent budget recovers with time, so defects spread across a
+    /// long uptime never accumulate into a shutdown. The clock is advanced
+    /// rather than slept on.
+    #[test]
+    fn the_defect_budget_refills_over_time() {
+        let clock = ManualClock::new();
+        let routing = RuntimeRoutingState::new();
+        let diagnostics = ProductionServiceDiagnostics::with_clock(
+            routing.clone(),
+            Arc::clone(&clock) as Arc<dyn DefectClock>,
+        );
+
+        for seed in 0..DEFECT_BURST_CAPACITY {
+            diagnostics.record_internal(internal_error(seed as u8));
+        }
+        assert!(routing.is_routing_allowed(), "the burst is exactly covered");
+
+        clock.advance(DEFECT_REFILL_INTERVAL);
+        diagnostics.record_internal(internal_error(0xfe));
+        assert!(
+            routing.is_routing_allowed(),
+            "one refill interval returns one unit of budget"
+        );
+
+        // Spending the single refilled unit leaves the budget empty again, so
+        // the next defect with no further time trips it. Without this the test
+        // would also pass against a breaker that never trips at all.
+        diagnostics.record_internal(internal_error(0xfd));
         assert_eq!(
             routing.stop_reason(),
-            Some(RuntimeStopReason::DiagnosticCapacityExceeded)
-        );
-        assert_eq!(
-            format!("{diagnostics:?}"),
-            "ProductionServiceDiagnostics([REDACTED])"
+            Some(RuntimeStopReason::DiagnosticCapacityExceeded),
+            "the refill is one unit, not a reset"
         );
     }
 }

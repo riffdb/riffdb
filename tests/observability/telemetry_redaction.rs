@@ -6,7 +6,7 @@ use std::fmt::{self, Write};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use riffdb_errors::{IncidentIdSource, IncidentIdSourceError, InternalError};
+use riffdb_errors::{DefectScope, IncidentIdSource, IncidentIdSourceError, InternalError};
 use riffdb_observability::{
     AgentSessionTelemetryHash, AuthenticationRejection, AuthenticationTelemetry,
     AuthenticationTelemetryEvent, AuthoritativeComponent, AuthoritativeCondition,
@@ -134,7 +134,7 @@ fn internal_error_sources_never_enter_exported_telemetry() {
 
     ServiceDiagnostics::record_internal(
         &observability,
-        InternalError::new(internal_id, SecretSource),
+        InternalError::new(internal_id, DefectScope::Process, SecretSource),
     );
     ServiceTelemetry::record(
         &observability,
@@ -757,7 +757,7 @@ fn supported_api_redacts_before_both_subscriber_layers() {
     tracing::subscriber::with_default(subscriber, || {
         ServiceDiagnostics::record_internal(
             &observability,
-            InternalError::new(incident(50, 5), SecretSource),
+            InternalError::new(incident(50, 5), DefectScope::Process, SecretSource),
         );
         ServiceTelemetry::record(&observability, ServiceTelemetryEvent::CursorUnavailable);
         ServiceTelemetry::record(

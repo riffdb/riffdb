@@ -1529,6 +1529,24 @@ impl fmt::Display for PublicError {
 
 impl Error for PublicError {}
 
+/// What a defect puts in doubt (ADR-0250).
+///
+/// The scope is a judgment made where the defect is raised, because that is the
+/// only place that knows it. A supervision sink receives a boxed source and can
+/// recover nothing from it, so a defect that does not carry its scope is
+/// indistinguishable from every other, and a process-level breaker fed by all of
+/// them counts requests as though they were process faults.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum DefectScope {
+    /// The process's own state is in doubt: a contained panic, an omitted
+    /// terminal audit, a lower-integrity failure. These feed the runtime's
+    /// defect breaker.
+    Process,
+    /// This request could not be completed, and nothing follows about the next
+    /// one. These never stop the runtime, however often a caller repeats them.
+    Request,
+}
+
 /// An internal failure retaining its source for trusted tracing.
 ///
 /// Its default [`fmt::Display`] and [`fmt::Debug`] representations are
@@ -1536,16 +1554,32 @@ impl Error for PublicError {}
 /// the source.
 pub struct InternalError {
     incident_id: IncidentId,
+    scope: DefectScope,
     source: Box<dyn Error + Send + Sync + 'static>,
 }
 
 impl InternalError {
     /// Creates an internal failure associated with an opaque incident.
-    pub fn new(incident_id: IncidentId, source: impl Error + Send + Sync + 'static) -> Self {
+    ///
+    /// There is deliberately no scope default and no second constructor that
+    /// omits it: a new defect path must decide what its defect implies rather
+    /// than inherit an answer nobody made (ADR-0250 decision 1).
+    pub fn new(
+        incident_id: IncidentId,
+        scope: DefectScope,
+        source: impl Error + Send + Sync + 'static,
+    ) -> Self {
         Self {
             incident_id,
+            scope,
             source: Box::new(source),
         }
+    }
+
+    /// Returns what this defect puts in doubt.
+    #[must_use]
+    pub const fn scope(&self) -> DefectScope {
+        self.scope
     }
 
     /// Returns the opaque identifier used to correlate trusted diagnostics.
@@ -2038,7 +2072,7 @@ mod tests {
 
     #[test]
     fn internal_conversion_redacts_secret_source_everywhere_public() {
-        let internal = InternalError::new(incident_id(), SecretSource);
+        let internal = InternalError::new(incident_id(), DefectScope::Process, SecretSource);
         assert!(internal.source().is_some());
         assert!(!internal.to_string().contains("secret-canary"));
         assert!(!format!("{internal:?}").contains("SecretSource"));

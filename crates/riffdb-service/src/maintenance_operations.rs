@@ -928,9 +928,11 @@ fn restore_retry_internal_failure(
     }
     match service.incident_ids.next_incident_id() {
         Ok(incident_id) => {
-            service
-                .diagnostics
-                .record_internal(InternalError::new(incident_id, defect));
+            service.diagnostics.record_internal(InternalError::new(
+                incident_id,
+                defect.scope(),
+                defect,
+            ));
             PublicError::internal_defect(incident_id).into()
         }
         Err(error) => {
@@ -953,9 +955,11 @@ fn recovery_internal_failure(
     }
     match service.incident_ids.next_incident_id() {
         Ok(incident_id) => {
-            service
-                .diagnostics
-                .record_internal(InternalError::new(incident_id, defect));
+            service.diagnostics.record_internal(InternalError::new(
+                incident_id,
+                defect.scope(),
+                defect,
+            ));
             PublicError::internal_defect(incident_id).into()
         }
         Err(error) => {
