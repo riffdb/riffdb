@@ -24,7 +24,7 @@ assert matrix["import"] == "riffdb_application"
 assert matrix["python_implementations"] == ["CPython"]
 assert matrix["python_versions"] == ["3.13", "3.14"]
 assert matrix["abi"] == "cp313-abi3"
-assert matrix["rust_source_toolchain"] == "1.97.0"
+assert matrix["rust_source_toolchain"] == "1.98.1"
 
 supported = matrix["supported_wheels"]
 expected_supported = {

@@ -227,7 +227,7 @@ chmod 0600 "$work_root/"*.json "$work_root/bootstrap-client.toml"
 chmod 0600 "$runtime_root/bootstrap/"*.toml "$runtime_root/bootstrap/"*.json
 
 cd "$workspace"
-TMPDIR="$temporary_parent" cargo +1.97.0 build --release -p riffdb-cli -p riffdb-server
+TMPDIR="$temporary_parent" cargo +1.98.1 build --release -p riffdb-cli -p riffdb-server
 docker build \
     --build-arg RIFFDB_PROFILE=release \
     -t "$image" -f release/container/Dockerfile . >/dev/null
@@ -349,7 +349,7 @@ if [[ "$backup_restore" == true ]]; then
     RIFFDB_CONFORMANCE_ENDPOINT="https://127.0.0.1:$proxy_port" \
     RIFFDB_CONFORMANCE_TRUST_ROOT="$runtime_root/riffdb-ca.pem" \
     RIFFDB_CONFORMANCE_CREDENTIAL="$adapter_credential" \
-        cargo +1.97.0 run --quiet -p riffdb-testkit-server \
+        cargo +1.98.1 run --quiet -p riffdb-testkit-server \
             --example adapter_operational_remote_client -- \
             >"$work_root/adapter-before.json"
     jq -e '
@@ -425,7 +425,7 @@ if [[ "$backup_restore" == true ]]; then
     RIFFDB_CONFORMANCE_ENDPOINT="https://127.0.0.1:$proxy_port" \
     RIFFDB_CONFORMANCE_TRUST_ROOT="$runtime_root/riffdb-ca.pem" \
     RIFFDB_CONFORMANCE_CREDENTIAL="$adapter_credential" \
-        cargo +1.97.0 run --quiet -p riffdb-testkit-server \
+        cargo +1.98.1 run --quiet -p riffdb-testkit-server \
             --example adapter_operational_remote_client -- \
             >"$work_root/adapter-after.json"
     cmp -s "$work_root/adapter-before.json" "$work_root/adapter-after.json" \

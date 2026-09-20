@@ -8,7 +8,7 @@ languages=(rust go typescript python)
 
 (
     cd "$repo_root/fixtures/driver/conformance-app"
-    cargo +1.97.0 run --quiet --manifest-path "$repo_root/Cargo.toml" \
+    cargo +1.98.1 run --quiet --manifest-path "$repo_root/Cargo.toml" \
         -p riffdb-cli --bin riffdb -- application lock --check >/dev/null
 )
 

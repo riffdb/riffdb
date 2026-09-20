@@ -124,7 +124,7 @@ import sys
 receipt = json.loads(pathlib.Path(sys.argv[1]).read_text(encoding="utf-8"))
 wheel = pathlib.Path(sys.argv[2])
 assert receipt["schema"] == "riffdb.python-artifact-receipt/v1"
-assert receipt["rust_source_toolchain"] == "1.97.0"
+assert receipt["rust_source_toolchain"] == "1.98.1"
 assert receipt["source_date_epoch"] == 1735689600
 assert receipt["artifacts"] == [{
     "name": wheel.name,

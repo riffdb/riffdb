@@ -2,5 +2,5 @@
 set -eu
 repo_root=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
 cd "$repo_root"
-exec cargo +1.97.0 run -p riffdb-storage-redb --features test-fixtures \
+exec cargo +1.98.1 run -p riffdb-storage-redb --features test-fixtures \
   --example generate_archive_receipt_fixtures -- "$@"

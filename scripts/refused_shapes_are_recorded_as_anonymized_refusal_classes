@@ -4,5 +4,5 @@ set -euo pipefail
 repo_root="$(git rev-parse --show-toplevel)"
 cd "$repo_root"
 
-cargo +1.97.0 test -p riffdb-query-compiler --test expansion_plans \
+cargo +1.98.1 test -p riffdb-query-compiler --test expansion_plans \
     refused_shapes_are_recorded_as_anonymized_refusal_classes --all-features

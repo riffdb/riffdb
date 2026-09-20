@@ -54,7 +54,7 @@ members = [
 [workspace.package]
 version = "0.1.0"
 edition = "2024"
-rust-version = "1.97.0"
+rust-version = "1.98.1"
 license = "MIT OR Apache-2.0"
 publish = false
 
@@ -67,6 +67,11 @@ unreachable_pub = "warn"
 [workspace.lints.clippy]
 correctness = { level = "warn", priority = -1 }
 await_holding_lock = "deny"
+# New in Rust 1.98: suggests `as_chunks::<N>().0.iter()` over `chunks_exact(N)`
+# at 72 sites. Adopting it is a reasonable change but a separate one: applying
+# it during the toolchain bump would mean measuring a code change and a
+# compiler change together, and the bump is being measured. Revisit on its own.
+chunks_exact_to_as_chunks = "allow"
 
 [workspace.dependencies]
 pyo3 = { version = "=0.29.0", default-features = false, features = ["extension-module", "abi3-py313"] }
@@ -103,7 +108,7 @@ inherits = "release"
 debug = "line-tables-only"
 strip = false
 # `-C force-frame-pointers` cannot live here: the `profile-rustflags` cargo
-# feature is unstable in the pinned 1.97.0 toolchain. `benchmarks/profile-read-path`
+# feature is unstable in the pinned 1.98.1 toolchain. `benchmarks/profile-read-path`
 # exports it via RUSTFLAGS instead, so `perf --call-graph fp` resolves. A build of
 # this profile WITHOUT that variable gives symbols but empty fp call graphs; use
 # `--call-graph dwarf` in that case.

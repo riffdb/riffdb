@@ -45,7 +45,7 @@ case "$(uname -m)" in
     *) echo 'development registry acceptance requires a supported Linux architecture' >&2; exit 1 ;;
 esac
 if [[ -z "$distribution" ]]; then
-    cargo +1.97.0 build --release --locked -p riffdb-cli
+    cargo +1.98.1 build --release --locked -p riffdb-cli
     RIFFDB_PYTHON_COMPATIBILITY=manylinux_2_28 \
         ./scripts/build-python-distribution "$work_root/python"
     python_wheel="$(find "$work_root/python" -maxdepth 1 -type f \
@@ -240,14 +240,14 @@ GO
     [[ "$(GOPATH="$work_root/go-cache" GOCACHE="$work_root/go-build-cache" GOPROXY=http://127.0.0.1:4874/go,off GOSUMDB=off go list -m -f '{{.Version}}' riffdb.dev/application)" == "$go_version" ]]
 )
 
-cargo +1.97.0 new --quiet --bin "$work_root/rust-consumer"
+cargo +1.98.1 new --quiet --bin "$work_root/rust-consumer"
 mkdir "$work_root/cargo-home"
-CARGO_HOME="$work_root/cargo-home" cargo +1.97.0 add \
+CARGO_HOME="$work_root/cargo-home" cargo +1.98.1 add \
     --manifest-path "$work_root/rust-consumer/Cargo.toml" \
     "riffdb-client-rust@=$rust_version" \
     --registry riffdb-dev \
     --config 'registries.riffdb-dev.index="sparse+http://127.0.0.1:4874/cargo/index/"'
-CARGO_HOME="$work_root/cargo-home" cargo +1.97.0 check \
+CARGO_HOME="$work_root/cargo-home" cargo +1.98.1 check \
     --manifest-path "$work_root/rust-consumer/Cargo.toml" \
     --locked \
     --config 'registries.riffdb-dev.index="sparse+http://127.0.0.1:4874/cargo/index/"'
@@ -269,7 +269,7 @@ fn main() {
     ));
 }
 RS
-CARGO_HOME="$work_root/cargo-home" cargo +1.97.0 check \
+CARGO_HOME="$work_root/cargo-home" cargo +1.98.1 check \
     --manifest-path "$work_root/rust-consumer/Cargo.toml" \
     --locked \
     --config 'registries.riffdb-dev.index="sparse+http://127.0.0.1:4874/cargo/index/"'

@@ -131,6 +131,9 @@ unreachable_pub = "warn"
 [lints.clippy]
 correctness = { level = "warn", priority = -1 }
 await_holding_lock = "deny"
+# Mirrors the workspace deferral; this package restates its lints and so does
+# not inherit it. See the note in the workspace manifest.
+chunks_exact_to_as_chunks = "allow"
 
 [[bin]]
 name = "riffdbd-archive-fixture"

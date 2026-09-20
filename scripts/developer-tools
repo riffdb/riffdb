@@ -15,7 +15,7 @@ cargo_home="${CARGO_HOME:-${HOME:?HOME must be set}/.cargo}"
 rustup_cargo="$cargo_home/bin/cargo"
 
 rustup_cargo_works() {
-    "$1" +1.97.0 --version >/dev/null 2>&1
+    "$1" +1.98.1 --version >/dev/null 2>&1
 }
 
 resolve_install_cargo() {
@@ -43,7 +43,7 @@ check_cargo_path() {
     fi
     selected="$(command -v cargo)"
     if ! rustup_cargo_works "$selected"; then
-        printf 'cargo on PATH does not support the required +1.97.0 selector: %s\n' "$selected" >&2
+        printf 'cargo on PATH does not support the required +1.98.1 selector: %s\n' "$selected" >&2
         if [[ -x "$rustup_cargo" ]] && rustup_cargo_works "$rustup_cargo"; then
             printf '%s\n' \
                 'prepend the installed rustup proxies, then retry:' \
@@ -135,9 +135,9 @@ install_all() {
     cargo_bin="$(resolve_install_cargo)"
     # A stale optional user wrapper must not prevent installation of the tools
     # that diagnose it. This override is limited to these two cargo invocations.
-    RUSTC_WRAPPER= "$cargo_bin" +1.97.0 install --locked \
+    RUSTC_WRAPPER= "$cargo_bin" +1.98.1 install --locked \
         --version "$RIFFDB_MDBOOK_VERSION" mdbook
-    RUSTC_WRAPPER= "$cargo_bin" +1.97.0 install --locked \
+    RUSTC_WRAPPER= "$cargo_bin" +1.98.1 install --locked \
         --version "$RIFFDB_LYCHEE_VERSION" lychee
     printf '%s\n' \
         'Pinned developer tools are installed.' \

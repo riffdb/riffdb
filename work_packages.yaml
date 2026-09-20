@@ -26252,4 +26252,41 @@ work_packages:
     interface_safety: No interface changes. Ignoring whitespace and trailing commas the
       files are byte-identical to their committed versions.
     scale: Not applicable; the change adds no runtime behaviour.
+- id: WP-792
+  name: Rust 1.98.1 toolchain upgrade
+  tier: surface
+  depends_on: []
+  objective: Move the pinned workspace toolchain from Rust 1.97.0 to 1.98.1, carry every
+    declaration that names the toolchain with it, and measure the compiler's effect before
+    the pin is kept, per ADR-0241.
+  requirements: []
+  required_adrs: [ADR-0241, ADR-0171, ADR-0239]
+  allowed_paths: [SPEC.md, PLAN.md, README.md, Cargo.toml, rust-toolchain.toml,
+    work_packages.yaml, adr/0241-rust-1-98-1-toolchain-upgrade.md, adr/README.md,
+    clients/python/runtime/rust-toolchain.toml, crates/**, xtask/**, benchmarks/**,
+    examples/**, scripts/**, tests/**, .github/workflows/**, fixtures/**,
+    docs/installation.md, docs/CONTRIBUTING.md, docs/python-driver.md,
+    docs/performance/rust-1-98-1-toolchain-ab-2026-09.md,
+    release/python/platform-matrix-v1.json,
+    release/agent-application-alpha/riffdb-api-grpc-client.Cargo.toml,
+    release/agent-application-alpha/sdk-Cargo.toml]
+  deliverables:
+  - One pinned toolchain named identically by rust-toolchain.toml, every package
+    rust-version, every script and workflow that selects a toolchain, the shipped SDK
+    manifests, and the published Rust driver runtime declaration
+  - A paired A/B at one fixed revision that varies only the compiler, counterbalanced,
+    with the binary digests that prove the arms differed
+  - New lints either fixed at their real source or deferred by an allow that records why
+  acceptance_commands:
+  - ./scripts/acceptance --wp WP-792
+  exit_gate: No live path names the superseded toolchain, the workspace is clean under
+    1.98.1 fmt, clippy with warnings denied and the full suite, and the measured effect is
+    banked with its repetition spread so the pin rests on evidence.
+  standing_design_tests:
+    interface_safety: The published Rust driver runtime declaration and the shipped SDK
+      manifests both move with the pin, so no consumer is told a version that will not
+      build. The change is consumer-visible and is recorded as such.
+    scale: Not applicable to storage. The measurement is one bench host with two
+      repetitions per cell; it resolves effects of roughly 2 percent and larger and does
+      not establish that the ratio ports to another host.
   human_review_triggers: *id001

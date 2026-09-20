@@ -59,14 +59,14 @@ trap cleanup EXIT INT TERM
 cd "$repo_root"
 # Cargo's metadata reflects both CARGO_TARGET_DIR and repository configuration.
 # Launch the exact artifacts built below, including in isolated CI checkouts.
-runtime_bin_dir="$(cargo +1.97.0 metadata --no-deps --format-version 1 \
+runtime_bin_dir="$(cargo +1.98.1 metadata --no-deps --format-version 1 \
     | jq -er '.target_directory')/debug"
-cargo +1.97.0 build --quiet \
+cargo +1.98.1 build --quiet \
     -p riffdb-server --bin riffdbd \
     -p riffdb-cli --bin riffdb \
     -p riffdb-mcp-stdio --bin riffdb-mcp \
     -p riffdb-driver-host --bin riffdb-driverd
-cargo +1.97.0 test --quiet -p riffdb-client-rust application_catalog_preflight --all-features
+cargo +1.98.1 test --quiet -p riffdb-client-rust application_catalog_preflight --all-features
 npm --prefix clients/typescript/runtime run build >/dev/null
 (
     cd clients/python/runtime
@@ -269,7 +269,7 @@ tls_server_name = "127.0.0.1"
 EOF
 module_hash="$(jq -r '.modules[0].module_hash' "$work_root/application/riffdb.application.lock.json")"
 RIFFDB_WP701_BINARY_INTERVAL=1 RIFFDB_CONFORMANCE_SEED_ONLY=1 \
-    cargo +1.97.0 run --quiet -p riffdb-testkit-server --example adapter_operational_remote_client -- \
+    cargo +1.98.1 run --quiet -p riffdb-testkit-server --example adapter_operational_remote_client -- \
     >"$work_root/rust-seed.json"
 cat >"$work_root/binary-interval-parameters.json" <<'EOF'
 {
@@ -431,7 +431,7 @@ done
 
 WP701_GENERATED_ROOT="$work_root/application/generated" \
     CARGO_TARGET_DIR="$work_root/wp701-rust-target" \
-    cargo +1.97.0 run --quiet \
+    cargo +1.98.1 run --quiet \
         --manifest-path fixtures/riffql/wp701-binary-text-interval/runner/rust/Cargo.toml \
         >"$work_root/binary_interval_rust.json"
 

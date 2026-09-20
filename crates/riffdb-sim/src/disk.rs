@@ -343,9 +343,7 @@ impl SimDisk {
         let mut inner = self.lock();
         inner.config.capacity_bytes = capacity;
         inner.trace.fold_u64(TRACE_CAPACITY_CHANGED);
-        inner
-            .trace
-            .fold_u64(capacity.map_or(u64::MAX, |bytes| bytes));
+        inner.trace.fold_u64(capacity.unwrap_or(u64::MAX));
     }
 
     /// Replaces the crash schedule and immediately redraws the countdown, so

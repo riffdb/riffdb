@@ -17,16 +17,16 @@ for forbidden in 'Better Auth' BetterAuth better_auth payload Payload; do
     fi
 done
 
-cargo +1.97.0 test -p riffdb-contract-compiler --test framework_profile --quiet
-cargo +1.97.0 test -p riffdb-runtime --test runtime framework_profile --quiet
-cargo +1.97.0 test -p riffdb-client-rust \
+cargo +1.98.1 test -p riffdb-contract-compiler --test framework_profile --quiet
+cargo +1.98.1 test -p riffdb-runtime --test runtime framework_profile --quiet
+cargo +1.98.1 test -p riffdb-client-rust \
     adapter_minted_idempotency_survives_driver_retries_with_fresh_transport_ids \
     --quiet
 # An exact filter that matches nothing still exits 0, so every named
 # schedule must prove its triggering set is non-empty.
 run_exact_concurrency_test() {
     local name="$1" output
-    output="$(cargo +1.97.0 test --test command_concurrency "$name" --quiet -- --exact 2>&1)" || {
+    output="$(cargo +1.98.1 test --test command_concurrency "$name" --quiet -- --exact 2>&1)" || {
         printf '%s\n' "$output" >&2
         return 1
     }

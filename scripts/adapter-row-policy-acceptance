@@ -44,7 +44,7 @@ cleanup() {
 trap cleanup EXIT INT TERM
 
 cd "$repo_root"
-cargo +1.97.0 build --quiet \
+cargo +1.98.1 build --quiet \
     -p riffdb-server --bin riffdbd \
     -p riffdb-cli --bin riffdb \
     -p riffdb-driver-host --bin riffdb-driverd \
@@ -342,7 +342,7 @@ for mode in owner outsider; do
     else
         unset RIFFDB_ROW_POLICY_MUTATOR_CREDENTIAL
     fi
-    cargo +1.97.0 run --quiet -p riffdb-testkit-server --example adapter_row_policy_remote_client -- \
+    cargo +1.98.1 run --quiet -p riffdb-testkit-server --example adapter_row_policy_remote_client -- \
         >"$work_root/$mode-rust.json"
     PYTHONPATH="$work_root/application/generated/python" \
         "$work_root/python-venv/bin/python" fixtures/adapters/row-policy-conformance/runner/python.py \

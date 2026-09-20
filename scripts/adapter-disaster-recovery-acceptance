@@ -21,7 +21,7 @@ for tool in cargo jq; do
 done
 
 ./scripts/generate-adapter-conformance-fixtures --check
-cargo +1.97.0 build --quiet --release -p riffdb-cli --bin riffdb
+cargo +1.98.1 build --quiet --release -p riffdb-cli --bin riffdb
 
 for domain in openfga mlflow better-auth woodpecker; do
     root="fixtures/adapters/conformance/$domain"

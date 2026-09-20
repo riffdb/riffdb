@@ -28,7 +28,7 @@ trap cleanup EXIT INT TERM
 npm --prefix "$runtime" run build
 npm --prefix "$runtime" test
 
-cargo +1.97.0 build --quiet -p riffdb-cli --bin riffdb
+cargo +1.98.1 build --quiet -p riffdb-cli --bin riffdb
 install_root="$work_root/install"
 generated_app="$work_root/generated-app"
 mkdir -p "$install_root/bin" "$install_root/public/typescript" "$generated_app"
@@ -46,6 +46,6 @@ rg -q 'DriverApplicationTransport\.connect' "$generated_app/src/main.ts"
 [[ -f "$generated_app/vendor/riffdb-application/dist/driver.d.ts" ]]
 
 "$repo_root/scripts/check-application-boundary" "$generated_app"
-cargo +1.97.0 test -p riffdb-testkit-server --test driver_host --all-features
+cargo +1.98.1 test -p riffdb-testkit-server --test driver_host --all-features
 
 echo "TypeScript long-lived driver and offline generated scaffold acceptance passed"

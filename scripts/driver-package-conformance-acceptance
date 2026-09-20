@@ -32,7 +32,7 @@ if [[ -z "$distribution" ]]; then
         echo 'allowed signers require an injected signed distribution' >&2
         exit 1
     }
-    cargo +1.97.0 build --release --locked -p riffdb-cli
+    cargo +1.98.1 build --release --locked -p riffdb-cli
     python_wheel="${RIFFDB_APPLICATION_WHEEL:-}"
     if [[ -z "$python_wheel" ]]; then
         RIFFDB_PYTHON_COMPATIBILITY=manylinux_2_28 \

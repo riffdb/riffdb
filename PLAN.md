@@ -33,7 +33,7 @@ and adding the remote can wait until publication.
 
 ### Rust and host environment
 
-The host is x86-64 Linux with the pinned Rust 1.97.0 toolchain, rustfmt, Clippy,
+The host is x86-64 Linux with the pinned Rust 1.98.1 toolchain, rustfmt, Clippy,
 Git, Graphviz, `cargo-deny`, `cargo-audit`, `cargo-machete`, and `cargo-fuzz`.
 The pinned nightly used only for parser fuzzing is also installed. Tool versions
 and CI installation policy are recorded by the workspace bootstrap.
@@ -184,7 +184,7 @@ isolated Fjall comparison, and WP-140 owns its Inspector script.
    paths are authoritative as amended by explicit maintainer approval. Soft
    sequencing below never removes a declared dependency.
 3. All first-party crates are private Rust 2024 workspace packages on the fixed
-   Rust 1.97.0 baseline. Linux CI is gating; macOS is best effort and Windows is
+   Rust 1.98.1 baseline. Linux CI is gating; macOS is best effort and Windows is
    outside the POC gate.
 4. Redb 4.2.0 with default features disabled and no optional features is the
    reviewed production POC backend behind the semantic storage API (advanced
@@ -407,7 +407,7 @@ examples/budget-comparison/
   tests/
 ```
 
-Keep this as one isolated private Rust example package, not another RiffDB semantic crate. Give it a nested standalone workspace and lockfile so PostgreSQL dependencies do not enter the root workspace lockfile or ordinary RiffDB builds; dedicated CI must still enforce Rust 1.97.0, workspace-equivalent lints, `#![forbid(unsafe_code)]`, formatting, Clippy, tests, and dependency policy. Use only the accepted PostgreSQL baseline recorded in the planning assumptions and WP-045: `postgres =0.19.14` without default features through synchronous `NoTls`, `serde_json =1.0.150` with only `std`, and the exact pinned PostgreSQL 18.4 Bookworm CI image. Any version, feature, container, native-code, or transitive-graph change requires another dependency review. SQL files are permitted only inside this comparison boundary and are outside the POC critical path.
+Keep this as one isolated private Rust example package, not another RiffDB semantic crate. Give it a nested standalone workspace and lockfile so PostgreSQL dependencies do not enter the root workspace lockfile or ordinary RiffDB builds; dedicated CI must still enforce Rust 1.98.1, workspace-equivalent lints, `#![forbid(unsafe_code)]`, formatting, Clippy, tests, and dependency policy. Use only the accepted PostgreSQL baseline recorded in the planning assumptions and WP-045: `postgres =0.19.14` without default features through synchronous `NoTls`, `serde_json =1.0.150` with only `std`, and the exact pinned PostgreSQL 18.4 Bookworm CI image. Any version, feature, container, native-code, or transitive-graph change requires another dependency review. SQL files are permitted only inside this comparison boundary and are outside the POC critical path.
 
 **Phased delivery:**
 
@@ -1121,7 +1121,7 @@ request to recreate or replace the existing workspace.
 The reconciled WP-000 scope includes `.gitignore`, every crate manifest, and
 minimal `crates/*/src/**` targets, so no path exception is required. Do not use
 its broad `scripts/**` or `adr/**` permission to preempt later package semantics.
-A baseline commit, provisioned Rust 1.97.0/Cargo tools, confirmed CI provider,
+A baseline commit, provisioned Rust 1.98.1/Cargo tools, confirmed CI provider,
 and human-approved dependency license/source policy are required for final
 acceptance.
 
@@ -1186,11 +1186,11 @@ same test from multiple manifests.
 
 ### 7.4 Cargo and lint policy
 
-- `rust-toolchain.toml`: exact channel `1.97.0`, `profile = "minimal"`, components `rustfmt` and `clippy`.
-- Root workspace: Rust 2024 edition, explicit `rust-version = "1.97.0"`, `version = "0.1.0"`, `publish = false`, resolver 3, explicit members, and committed `Cargo.lock`. Do not invent authors, repository URLs, or a project license before those metadata decisions exist.
+- `rust-toolchain.toml`: exact channel `1.98.1`, `profile = "minimal"`, components `rustfmt` and `clippy`.
+- Root workspace: Rust 2024 edition, explicit `rust-version = "1.98.1"`, `version = "0.1.0"`, `publish = false`, resolver 3, explicit members, and committed `Cargo.lock`. Do not invent authors, repository URLs, or a project license before those metadata decisions exist.
 - Workspace Rust lints: `unsafe_code = "forbid"`, `unused_must_use = "deny"`, and warnings for missing docs and unreachable public items. Workspace Clippy enables its standard correctness group and denies holding a synchronous lock guard across await. Every package uses `[lints] workspace = true`, while every crate root independently contains `#![forbid(unsafe_code)]` so the policy is visible and cannot be weakened accidentally.
 - Clippy: the acceptance command makes warnings fatal. Do not enable a large opinionated lint group that creates churn before code exists; add targeted lints when they enforce a documented invariant.
-- Formatting: use the pinned rustfmt defaults unless a later approved `.rustfmt.toml` scope is added. Formatting output must be stable on 1.97.0.
+- Formatting: use the pinned rustfmt defaults unless a later approved `.rustfmt.toml` scope is added. Formatting output must be stable on 1.98.1.
 - Features: empty default feature sets; features are additive; no feature may silently change correctness, durability, authorization, record format, or public protocol. Loom, Shuttle, failpoint, and memory-only server behavior are explicit test-only features owned later. Every all-features build must compile.
 - Dependencies: WP-000 adds none. Future manifests disable broad default features when practical and document every critical dependency per `AGENTS.md`.
 - `.gitignore`: initially ignore the root `/target/` only; later packages add narrowly justified generated runtime/fuzz/database output patterns without ignoring checked-in fixtures.
@@ -1503,7 +1503,7 @@ You are implementing WP-000 only in /home/user/dev/riffdb.
 
 Before claiming completion:
 1. A maintainer has created a baseline Git revision containing the authoritative inputs so the PR can name its upstream revision and a fresh checkout can be tested.
-2. Rust 1.97.0 with rustfmt/Clippy and pinned compatible cargo-deny, cargo-audit, and cargo-machete are available in the acceptance environment.
+2. Rust 1.98.1 with rustfmt/Clippy and pinned compatible cargo-deny, cargo-audit, and cargo-machete are available in the acceptance environment.
 
 Authoritative inputs:
 - AGENTS.md
@@ -1545,7 +1545,7 @@ Required deliverables:
 - A virtual Cargo workspace containing all 29 crates listed in SPEC Section 5.1.
 - Minimal non-semantic library roots; no public domain types, traits, fake modules, or placeholder services.
 - Thin bootstrap binary targets: riffdbd from riffdb-server, riffdb from riffdb-cli, and riffdb-mcp from riffdb-mcp-stdio.
-- Rust 1.97.0, edition 2024, resolver 3, explicit rust-version, private packages, workspace lint inheritance, and committed Cargo.lock.
+- Rust 1.98.1, edition 2024, resolver 3, explicit rust-version, private packages, workspace lint inheritance, and committed Cargo.lock.
 - `#![forbid(unsafe_code)]` in every first-party crate root.
 - Empty default/additive feature policy and no Cargo dependencies added for future convenience.
 - deny.toml and GitHub CI for formatting, Clippy, tests, docs, dependency policy, workspace policy, and generated-artifact cleanliness.
