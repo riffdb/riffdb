@@ -26597,3 +26597,37 @@ work_packages:
       is switched off.
     scale: The cost is characterised as a function of concurrency, not at one point.
   human_review_triggers: *id001
+- id: WP-801
+  name: Defect breaker trips on rate, not lifetime count
+  tier: guarantee
+  depends_on: []
+  objective: Give internal defects a scope, feed only process-scoped ones to the runtime
+    breaker, and make that breaker a refilling budget rather than a lifetime count, per
+    ADR-0250 decisions 1 through 6.
+  requirements: []
+  required_adrs: [ADR-0250]
+  allowed_paths: [work_packages.yaml,
+    adr/0250-a-defect-breaker-trips-on-rate-not-on-lifetime-count.md,
+    crates/riffdb-errors/src/lib.rs,
+    crates/riffdb-service/src/service.rs,
+    crates/riffdb-service/src/application_error.rs,
+    crates/riffdb-server/src/runtime_support.rs,
+    docs/performance/**]
+  deliverables:
+  - A defect scope on InternalError, set at every construction site with no default, so a
+    new defect path cannot inherit a judgment nobody made
+  - A runtime breaker fed only by process-scoped defects, drawing on a burst capacity that
+    refills with time, against an injected clock the tests can advance
+  - The three named proofs, replacing the test that pinned the lifetime bound
+  acceptance_commands:
+  - ./scripts/acceptance --wp WP-801
+  - ./scripts/ci-all
+  exit_gate: A repeatable defect one client can reach does not stop the runtime however
+    often it is repeated, a burst of process-scoped defects still stops it, and a budget
+    driven to empty recovers with time rather than staying spent for the process's life.
+  standing_design_tests:
+    interface_safety: A defect's scope is a decision made where it is raised, and no
+      construction site can omit it.
+    scale: The breaker's cost is constant per defect and holds no per-caller state, so it
+      cannot itself become a resource a caller can exhaust.
+  human_review_triggers: *id001
