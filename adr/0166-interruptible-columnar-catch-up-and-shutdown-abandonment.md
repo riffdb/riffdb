@@ -1,8 +1,11 @@
 # ADR-0166: Interruptible Columnar Catch-Up and Graceful-Stop Abandonment
 
-- **Status:** Proposed
+- **Status:** Superseded by ADR-0187
 - **Direction approved:** No
 - **Exact text accepted:** No
+- **Superseded:** ADR-0187 was accepted and records `supersedes: [ADR-0166]`.
+  This record was never accepted and is retained as planning history only;
+  read ADR-0187 for the decision that governs.
 - **Decision deadline:** Before any package bounds, interrupts, or abandons
   columnar catch-up at a graceful stop
 - **Requires:** ADR-0007, ADR-0010, ADR-0049, ADR-0085, ADR-0086, ADR-0156

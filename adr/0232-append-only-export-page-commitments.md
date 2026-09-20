@@ -10,7 +10,7 @@ requires: [ADR-0115, ADR-0207, ADR-0217]
 amends: []
 supersedes: []
 requirements: [EXP-002, EXP-006, EXP-007, EXP-008, EXP-009, EXP-010]
-packages: []
+packages: [WP-795]
 # One entry per deferred obligation. `proof` is a test function name or a
 # scripts/<name>; ./scripts/check-adr-obligations requires it to exist as a
 # definition once the owning package is complete.
