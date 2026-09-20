@@ -63,6 +63,9 @@ census sees the deployed contract:
 | base | 0 | 0 | 2,273-2,764 |
 | **vector** | **1** | 0 | 2,163-2,813 |
 
+The `cold_sources` column is the finding; see below for why the throughput
+column is not yet a result.
+
 **A declared vector field registers a columnar source.** Activations remaining
 at zero is correct rather than a failure: WP-777 keeps a source cold until a
 projected query demands it, and this workload only writes. Declaring the field
@@ -101,6 +104,27 @@ different failure than it is:
   typed error. The server's wire validation returns `MissingRequiredField`,
   which resets the stream, so an absent selector looks exactly like a transport
   fault and points at the wrong layer entirely.
+
+## The write-path figure is not yet settled
+
+Two local runs disagree about what declaring a vector field costs:
+
+| run | base docs/s | vector docs/s |
+|---|---:|---:|
+| columnar probe, 200 docs, 8 clients | 2,764 / 2,273 | 2,163 / 2,244 |
+| full variant sweep, 200 docs, 8 clients | 2,862 | 1,445 |
+
+The first says the cost is inside the spread; the second says roughly half. Both
+are 200-document runs on a workstation whose base spread has been measured at
+11 percent, which is wide enough that neither settles it and short enough that a
+single slow start distorts the whole figure.
+
+**Neither number is evidence.** The earlier entry above recorded "costs nothing
+detectable on the write path" from the first pair; that claim is withdrawn until
+it is taken on the bench host at a workload size where the spread is 2 to 4
+percent rather than 11. It is recorded here rather than deleted because the
+first reading was quoted once already, and a withdrawn number that quietly
+disappears is worse than one that says why it went.
 
 ## What still blocks execution
 
