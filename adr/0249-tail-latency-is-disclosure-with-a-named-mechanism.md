@@ -1,11 +1,12 @@
 ---
 adr: "0249"
 title: Tail Latency Is Disclosure With A Named Mechanism
-status: proposed
+status: accepted
 tier: guarantee
 date: 2026-09-20
-accepted: null
-acceptance: null
+accepted: 2026-09-20
+acceptance: 'maintainer, in session, 2026-09-20: "ADR-0249 is approved"
+  (ADR-0249 as written)'
 requires: [ADR-0171, ADR-0239, ADR-0146]
 amends:
   - ADR-0171 by stating what p99 is, which its stability rule leaves unsaid
