@@ -1,6 +1,7 @@
 # WP-749: repair first-wait evidence before testing checkpoint attribution
 
-Date: 2026-09-20. Status: instrument repair; checkpoint rerun pending.
+Date: 2026-09-20. Status: instrument repair passed acceptance; the bounded
+checkpoint rerun stopped at host preflight before either measurement.
 WP-748 feature work remains paused. This does not close WP-749 or attribute its
 P99 regression to checkpoints.
 
@@ -53,13 +54,38 @@ while the child's byte trigger wins earlier. These are **estimates, not recorded
 checkpoint sizes or counts**. Group boundaries, quiescence and physical extent
 limits can change the selection.
 
-One bounded parent/child rerun will retain actual checkpoint counts, selected
+The prepared bounded parent/child rerun retains actual checkpoint counts, selected
 sizes and crossed limits, the repaired receipt counters, existing writer-batch
 stages and raw request durations. Both binaries use Rust 1.98.1 and the same
 instrumentation. A failed cell stops the comparison; every attempt is retained.
 The counts can confirm or reject the threshold estimate. They cannot establish
 which individual requests a checkpoint delayed. The checkpoint-installation
 drain remains intact, and unexplained P99 movement remains blocking.
+
+### Bounded attempt: no checkpoint measurements collected
+
+The two repaired daemons and shared raw-sample runner built successfully on the
+8-vCPU AMD EPYC 9B14 host with the required hardware accelerators. The build
+receipt verifies distinct daemon digests, identical instrument sources and
+lockfiles, and Rust 1.98.1. All seven local acceptance steps passed first,
+including **1,539 tests** (nine skipped by the existing profile), scoped Clippy,
+formatting and handbook checks. The workspace all-target/all-feature build,
+instrument regression tests and 26 benchmark-runner tests also passed.
+
+The first cell's three-second host preflight then returned `valid: false`,
+`reason: host_interference`: **one process exited during observation**. It
+reported no active or interfering processes, no started processes or PID reuse,
+and zero steal ticks. This receipt does not identify the exited process or
+establish resource contention; it does fail the declared stable-process check.
+The supervisor stopped before launching the benchmark. Neither measurement
+cell started, and there was no retry.
+
+The [retained attempt summary](https://github.com/riffdb/riffdb/blob/main/release/evidence/wp-749/checkpoint-counts-20260920/summary.json)
+binds the binary and preflight digests. **No checkpoint count or new latency
+verdict exists.** The threshold estimate remains unverified. A fresh bounded
+attempt is needed to answer it; the failed preflight must remain in the record.
+All 33 retained files, including the three frozen binaries, have verified local
+second copies. The remote source checkouts were removed and the host released.
 
 ## The broader build failure belonged to the paused branch
 
@@ -75,6 +101,11 @@ branch then passed `cargo check --workspace --all-targets --all-features` and al
 20 tests in the affected suites. No promotion behavior was resumed. The receipt
 repair is a separate branch from current main (`68f696b50`), which already
 contains ADR-0250's `DefectScope` API; no obsolete branch rebase was attempted.
+The earlier report correction also passes scoped acceptance with its own build
+directory. A shared-directory attempt picked up mismatched dependency artifacts;
+isolated compilation passed without a source change. The paused worktree was
+removed after verifying a separate bundle containing its complete history; its
+branch remains retained.
 
 ## Review note
 
@@ -83,7 +114,8 @@ contains ADR-0250's `DefectScope` API; no obsolete branch rebase was attempted.
 - Behavior: version complete receipt-wait diagnostics; count actual asynchronous
   checkpoint selection and lifecycle; distinguish old incomplete reports.
 - Checks: deterministic missing-first-wait regression reproduced, then corrected;
-  ready-recheck/error/noncommand coverage and parser version checks pass.
+  ready-recheck/error/noncommand coverage, parser checks, workspace build and all
+  seven scoped acceptance steps pass. The remote attempt failed preflight.
 - Handbook: this page and the writer-evidence defect warning.
 - Compatibility: existing durable bytes, public API and checkpoint decisions
   unchanged; diagnostic readers must recognize the V2 publication line.
