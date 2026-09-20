@@ -1,5 +1,11 @@
 # WP-639 batch writer ledger and stronger-candidate bounds
 
+**Historical ledger warning:** matching client seed wall within two percent
+does not prove that writer counters tile independent writer wall. Subsequent
+c32 measurements found `busy + idle` undercounts of 15.30% on N1 and 20.54% on
+C3D. Read the [open defects and reconciliation method](wp749-writer-census-defects.md)
+before reusing this attribution; preserve the values below as historical data.
+
 WP-639 measures the full generated-command seed path at one exact boundary and
 designs, but does not implement, the next coordinator candidate. The
 `--seed-only` diagnostic shuts the public app-baseline process down immediately
@@ -124,4 +130,3 @@ semantic change. The older mean is retained as history but is not a target.
 | old workstation RiffDB | `a0b7fe786f90cc2ca3f6db1c680fac2b4f8f61999fe4d3cd63787bddfcb1d918` |
 | current workstation safe PG | `3d99d61734082b54e2731a87e76c547e3fad18b32f5e6930fea40298685db057` |
 | current workstation RiffDB | `aa2f0e70b090568f235025acd3fd46950f37f476658f6b8c721d66e1b9db209e` |
-

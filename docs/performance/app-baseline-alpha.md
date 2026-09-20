@@ -5,6 +5,14 @@ microbenchmark and not a single leaderboard number. It compares the same
 TicketDesk operations through PostgreSQL and RiffDB's public symbolic
 application surface, then separately tests sustained demand and recovery.
 
+For future measurements, follow the
+[hardware SHA-2 and host-selection guidance](benchmark-host-selection.md).
+N1 is retired from testing by maintainer direction; references to it in existing
+profile evidence describe historical qualification. The profile/enforcement
+change is being recorded separately and this note does not reinterpret a frozen
+gate. Writer attribution must account for the
+[known wall-time undercount](wp749-writer-census-defects.md).
+
 ## Canonical commands
 
 ```bash
