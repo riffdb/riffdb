@@ -82,6 +82,13 @@ pyo3-async-runtimes = { version = "=0.29.0", default-features = false, features 
 # off drops tempfile's `getrandom` feature, whose only effect is re-seeding
 # the name generator after repeated collisions — irrelevant for scratch dirs.
 tempfile = { version = "=3.24.0", default-features = false }
+# Hardware CRC-32C. `crc`'s slice-by-16 table runs 5.5 GB/s; this crate's
+# SSE4.2 path runs 9.5 GB/s on the measurement hosts, for byte-identical
+# output on the same CRC_32_ISCSI polynomial. `crc` is retained as the
+# dev-dependency oracle the equivalence test compares against, so a future
+# swap that changed the polynomial would fail rather than silently rewrite
+# every envelope checksum. Pinned exact per house style.
+crc32c = { version = "=0.6.8", default-features = false }
 # Build configuration, not code: ADR-0183's freeze governs PERF work-package
 # registrations, and this programme registers none, so check-performance-freeze
 # is satisfied and the freeze remains in force. The hot paths are

@@ -26229,6 +26229,35 @@ work_packages:
       percent rather than the 1 percent assumed for most of the programme.
     - Projection, tokenized-text and row-policy coverage is absent because no contract in the
       repository declares them; closing that gap is required before any public performance claim.
+- id: WP-798
+  name: Hardware CRC-32C and the sub-variance wins register
+  tier: surface
+  depends_on: []
+  objective: Use hardware CRC-32C for envelope checksums, prove the polynomial is unchanged,
+    and establish the register that lets improvements too small to measure alone be taken
+    without weakening ADR-0239's discipline, per ADR-0247.
+  requirements: []
+  required_adrs: [ADR-0247, ADR-0239, ADR-0245]
+  allowed_paths: [Cargo.toml, Cargo.lock, work_packages.yaml, adr/README.md,
+    adr/0247-hardware-crc32c-and-sub-variance-wins.md, crates/riffdb-proto/**,
+    docs/performance/**, docs/SUMMARY.md, examples/**]
+  deliverables:
+  - Hardware CRC-32C on the envelope path, with the software table retained as the test
+    oracle it is compared against
+  - A test holding the two against each other across sizes and unaligned offsets, and
+    against a published Castagnoli check vector
+  - The sub-variance wins register, with its entries and the condition for measuring them
+  acceptance_commands:
+  - ./scripts/acceptance --wp WP-798
+  exit_gate: The envelope checksum is byte-identical to the implementation it replaced on
+    every tested payload and matches a published check vector, and no register entry is
+    quoted as a system-level result.
+  standing_design_tests:
+    interface_safety: No surface changes. The checksum value is unchanged, so no consumer
+      can observe a difference; a change in polynomial would fail the equivalence test.
+    scale: The saving is per frame, so it grows with throughput rather than with stored
+      size, and it adds no state.
+  human_review_triggers: *id001
 - id: WP-797
   name: Measurement host hardware baseline
   tier: guarantee
