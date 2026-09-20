@@ -1892,7 +1892,7 @@ impl VectorProjectionPort for ServerColumnarProjectionPort {
             .runtime
             .engine(request.source_name())
             .map_err(map_vector_port_error)?
-            .ok_or(VectorProjectionPortError::Integrity)?;
+            .ok_or(VectorProjectionPortError::NotRegistered)?;
         let must_return_building = self
             .runtime
             .request_activation(&slot)
@@ -1903,7 +1903,7 @@ impl VectorProjectionPort for ServerColumnarProjectionPort {
         let binding = self
             .runtime
             .control_binding(request.source_name())
-            .ok_or(VectorProjectionPortError::Integrity)?;
+            .ok_or(VectorProjectionPortError::NotRegistered)?;
         if !binding.is_vector {
             return Err(VectorProjectionPortError::Integrity);
         }
@@ -2302,8 +2302,9 @@ pub(crate) mod tests {
         ActorId, ActorKind, AdmittedActorContext, AggregateTypeId, CanonicalInputHash,
         CanonicalRecord, CanonicalValue, CanonicalVector, CapabilityId, CommitSequence,
         ContractLineage, DatabaseId, DigestKeyId, DistanceMetric, EmbeddingMetadata,
-        EntityKeyBuilder, EntityVersion, Environment, LogicalTime, OutcomeId, PartitionKeyBuilder,
-        PartitionKeyHash, ProvenanceId, RequestId, TenantScope, Timestamp, hash_partition_key,
+        EntityKeyBuilder, EntityTypeId, EntityVersion, Environment, FieldId, LogicalTime,
+        OutcomeId, PartitionKeyBuilder, PartitionKeyHash, ProvenanceId, RequestId, TenantScope,
+        Timestamp, hash_partition_key,
     };
 
     use super::*;
@@ -6786,6 +6787,54 @@ contract VectorBoard version 1 {
             crate::storage::columnar_control_recovery_reads(),
             0,
             "the real vector port must use the gate-installed generation authority"
+        );
+    }
+
+    /// OBL-0251-3. A projected query against a source this node does not hold
+    /// answers with a typed refusal, not an opaque internal defect.
+    ///
+    /// Before ADR-0251 this path returned `Integrity`, which the service maps to
+    /// an internal defect with an opaque incident: the caller learned nothing,
+    /// and repeating it drew on the runtime's defect budget. A source can be
+    /// absent for an ordinary reason -- it has not been admitted on this node --
+    /// so the condition is reported rather than treated as a fault.
+    #[test]
+    fn an_unregistered_source_answers_with_a_typed_refusal() {
+        let (runtime, _scope) = empty_columnar_runtime("unregistered-source");
+        assert!(
+            runtime.names().expect("names").is_empty(),
+            "the runtime under test holds no source"
+        );
+
+        let organization = uuid_bytes(0x41);
+        let mut partition = PartitionKeyBuilder::new(AggregateTypeId::first());
+        partition
+            .push_uuid(&organization)
+            .expect("partition organization");
+        let request = VectorProjectionRequest::new(
+            "Document.embedding".to_owned(),
+            ContractLineage::new("VectorBoard").expect("lineage"),
+            partition.finish().expect("partition"),
+            CanonicalValue::Uuid(organization),
+            EntityTypeId::first(),
+            FieldId::new(1).expect("field"),
+            EmbeddingMetadata::new("embed-v1", "2026-08-21").expect("model"),
+            0,
+            CanonicalVector::new(vec![1.0, 0.0, 0.0, 0.0]).expect("query vector"),
+            1,
+            DistanceMetric::Cosine,
+            Vec::new(),
+            None,
+            None,
+            None,
+        );
+
+        assert!(
+            matches!(
+                VectorProjectionPort::execute(&ServerColumnarProjectionPort::new(runtime), request),
+                Err(VectorProjectionPortError::NotRegistered)
+            ),
+            "an absent source is reported, never returned as an integrity failure"
         );
     }
 

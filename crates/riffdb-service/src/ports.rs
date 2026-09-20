@@ -1561,6 +1561,13 @@ pub enum VectorProjectionPortError {
     Unavailable,
     /// Source, evidence, policy proof, or snapshot failed integrity.
     Integrity,
+    /// This node holds no columnar source of that name (ADR-0251 decision 4).
+    ///
+    /// Distinct from [`Self::Integrity`], which says something is wrong. A
+    /// source can be absent for an ordinary reason -- it has not been admitted
+    /// on this node yet -- and the caller is told that rather than handed an
+    /// opaque incident.
+    NotRegistered,
 }
 
 /// Least-authority production vector projection execution boundary.
