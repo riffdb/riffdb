@@ -26606,12 +26606,21 @@ work_packages:
     ADR-0250 decisions 1 through 6.
   requirements: []
   required_adrs: [ADR-0250]
+  # Widened 2026-09-20. ADR-0250 decision 1 puts the scope on InternalError with
+  # no default, so every construction site must state it. Two sit outside the
+  # crates the package first named: the offline-maintenance failure helpers, and
+  # one redaction test in the MCP presentation layer that builds an InternalError
+  # to prove the renderer cannot leak its source. Both are consequences of the
+  # constructor's shape rather than new scope, and the MCP file is surface tier,
+  # so it is named rather than reached by a glob.
   allowed_paths: [work_packages.yaml,
     adr/0250-a-defect-breaker-trips-on-rate-not-on-lifetime-count.md,
     crates/riffdb-errors/src/lib.rs,
     crates/riffdb-service/src/service.rs,
     crates/riffdb-service/src/application_error.rs,
+    crates/riffdb-service/src/maintenance_operations.rs,
     crates/riffdb-server/src/runtime_support.rs,
+    crates/riffdb-api-mcp/src/presentation.rs,
     docs/performance/**]
   deliverables:
   - A defect scope on InternalError, set at every construction site with no default, so a
