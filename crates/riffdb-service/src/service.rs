@@ -903,7 +903,7 @@ impl RiffDbServiceInner {
             Ok(incident_id) => {
                 self.providers
                     .diagnostics
-                    .record_internal(InternalError::new(incident_id, defect));
+                    .record_internal(InternalError::new(incident_id, defect.scope(), defect));
                 PublicError::internal_defect(incident_id).into()
             }
             Err(error) => {
@@ -927,7 +927,7 @@ pub(crate) fn contained_internal_failure(
     telemetry.record(ServiceTelemetryEvent::InternalIntegrity { operation });
     match incident_ids.next_incident_id() {
         Ok(incident_id) => {
-            diagnostics.record_internal(InternalError::new(incident_id, defect));
+            diagnostics.record_internal(InternalError::new(incident_id, defect.scope(), defect));
             PublicError::internal_defect(incident_id).into()
         }
         Err(error) => {
@@ -997,6 +997,21 @@ pub(crate) enum InternalDefect {
     LowerIntegrity,
 }
 
+impl InternalDefect {
+    /// What this defect puts in doubt (ADR-0250 decision 1).
+    ///
+    /// A failed proof join means this request could not be completed; the
+    /// others mean the process's own state is in doubt.
+    pub(crate) const fn scope(self) -> riffdb_errors::DefectScope {
+        match self {
+            Self::Panic | Self::UnterminatedAudit | Self::LowerIntegrity => {
+                riffdb_errors::DefectScope::Process
+            }
+            Self::ProofMismatch => riffdb_errors::DefectScope::Request,
+        }
+    }
+}
+
 impl fmt::Display for InternalDefect {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         formatter.write_str(match self {
@@ -1015,6 +1030,16 @@ pub(crate) enum MaintenanceInternalDefect {
     Panic,
     ProofMismatch,
     LowerIntegrity,
+}
+
+impl MaintenanceInternalDefect {
+    /// What this defect puts in doubt, on the same rule as [`InternalDefect`].
+    pub(crate) const fn scope(self) -> riffdb_errors::DefectScope {
+        match self {
+            Self::Panic | Self::LowerIntegrity => riffdb_errors::DefectScope::Process,
+            Self::ProofMismatch => riffdb_errors::DefectScope::Request,
+        }
+    }
 }
 
 impl fmt::Display for MaintenanceInternalDefect {
