@@ -88,13 +88,43 @@ deploys a contract through `deploy_contract` only; a `nearest` binding lives in
 a RiffQL **query module**, which is a separate deployment path
 (`docs/riffql/LANGUAGE.md` §Nearest-neighbor bindings). Closing the gap needs:
 
-1. Query-module deployment in the harness, declaring
-   `source projected Document.embedding` and a `nearest(embedding, $q, $k)`
-   binding with the required partition equality predicate.
-2. An activation wait: the first query returns `Building` with no rows, so the
-   harness must poll until the typed result stops being `Building`, or observe
-   the `projection` health component. A fixed sleep would measure a cold source.
-3. Query latency measured after activation, alongside the write figure above.
+1. **Query-module deployment.** The blocker is specific: the Rust client's
+   generated surface has `deploy_contract` but **no `deploy_query_module`**
+   (`riffdb-client-rust/src/generated/client.rs`), and that file is
+   generator-owned. Two routes avoid editing it — call the RPC through raw
+   tonic, as the harness already does for `DeployContractRequest`, or shell out
+   to the CLI, which has the whole path: `riffdb query deploy --module-name X
+   --module-version 1 <dir>`, `query run-named`, `query projected`, and
+   `query inspect-vector`. The CLI route needs a credential file where the
+   harness currently holds an in-process bootstrap token.
+2. **The query itself**, verified to parse against the grammar on 2026-09-20:
+
+   ```riffql
+   query SimilarDocuments(
+       $workspace_id: Document.workspace_id,
+       $query_vec: Document.embedding,
+       $k: Limit<64>,
+   ) {
+       source projected Document.embedding
+       freshness available
+
+       many results from Document
+           where workspace_id == $workspace_id
+           nearest(embedding, $query_vec, $k)
+       return Found { results: results { title } }
+       outcomes Found
+   }
+   ```
+
+   The partition equality predicate is mandatory: a nearest query without it
+   does not compile (`RDB-QP002`). Parsing is not compilation — this still has
+   to bind against the deployed bundle's `source projected` declaration.
+3. **An activation wait, not a sleep.** The first query returns `Building` with
+   no rows, so the harness must poll until the typed result stops being
+   `Building`, or observe the `projection` health component. A fixed sleep
+   measures a cold source and reports it as a fast one.
+4. **Query latency measured after activation**, alongside the write figure
+   above. The thesis needs both shapes, not either alone.
 
 ## What it must not claim until then
 
