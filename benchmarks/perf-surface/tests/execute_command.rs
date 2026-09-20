@@ -5,13 +5,13 @@
 //! daemon, on the variant carrying every mechanism, so the path the harness
 //! will measure is proven before any timing is reported.
 
+use riffdb_client_rust::ApplicationValue;
 use riffdb_perf_surface::daemon::{Daemon, riffdbd_binary};
 use riffdb_perf_surface::session::{
-    application_client, attempts, bearer, bootstrap_and_deploy, command,
-    issue_command_capability, publish_document_input,
+    application_client, attempts, bearer, bootstrap_and_deploy, command, issue_command_capability,
+    publish_document_input,
 };
 use riffdb_perf_surface::{Mechanism, contract_source};
-use riffdb_client_rust::ApplicationValue;
 use std::collections::BTreeMap;
 
 #[test]
@@ -56,7 +56,9 @@ fn a_document_publishes_through_the_real_daemon() {
             .execute_command(command("CreateWorkspace", create)?, attempts(), &metadata)
             .await
             .map_err(|error| {
-                riffdb_perf_surface::session::SessionError::Rpc(format!("CreateWorkspace: {error:?}"))
+                riffdb_perf_surface::session::SessionError::Rpc(format!(
+                    "CreateWorkspace: {error:?}"
+                ))
             })?;
 
         let publish = publish_document_input(
@@ -66,12 +68,17 @@ fn a_document_publishes_through_the_real_daemon() {
             "a title".to_owned(),
             "a body".to_owned(),
             4_096,
+            // This test deploys Mechanism::ALL, which declares the vector field,
+            // so the command requires the embed inputs.
+            Some(vec![0.5_f32, 0.25, 0.125, 0.0625]),
         );
         client
             .execute_command(command("PublishDocument", publish)?, attempts(), &metadata)
             .await
             .map_err(|error| {
-                riffdb_perf_surface::session::SessionError::Rpc(format!("PublishDocument: {error:?}"))
+                riffdb_perf_surface::session::SessionError::Rpc(format!(
+                    "PublishDocument: {error:?}"
+                ))
             })
     });
 

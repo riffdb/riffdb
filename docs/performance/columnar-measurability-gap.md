@@ -50,6 +50,52 @@ largest instance of it.
    source admitted **and** analytical query latency against it — not either
    alone.
 
+## Progress, 2026-09-20: the engine is now reachable from a benchmark
+
+A `Vector` mechanism was added to the perf-surface harness, declaring
+`vector_field embedding(4, cosine, (title, body), ...)` on `Document` with the
+`embed ... from (model, version)` inputs its command needs. Measured on this
+workstation, 200 documents at 8 clients, reopening the database so the startup
+census sees the deployed contract:
+
+| variant | `columnar_cold_sources` | `columnar_activations` | docs/s |
+|---|---:|---:|---:|
+| base | 0 | 0 | 2,273-2,764 |
+| **vector** | **1** | 0 | 2,163-2,813 |
+
+**A declared vector field registers a columnar source.** Activations remaining
+at zero is correct rather than a failure: WP-777 keeps a source cold until a
+projected query demands it, and this workload only writes. Declaring the field
+costs nothing detectable on the write path — both ranges sit inside this host's
+spread, which the cold-source design predicts.
+
+Two observability traps cost time and are recorded so they do not again:
+
+- **The columnar counters are emitted only in the startup census**, so a process
+  can never report on a source its own run admitted by deploying a contract. The
+  database must be reopened and the second process's census read.
+- **That census goes to stderr, not stdout.** A probe reading the shutdown
+  stdout sees nothing and looks exactly like an engine that was never reached.
+
+Either mistake alone produces a confident, wrong conclusion that columnar is
+unreachable — the same shape as reading an absence of signal as an absence of
+behaviour.
+
+## What still blocks the analytical half
+
+Activation needs a projected query, and the harness cannot issue one yet. It
+deploys a contract through `deploy_contract` only; a `nearest` binding lives in
+a RiffQL **query module**, which is a separate deployment path
+(`docs/riffql/LANGUAGE.md` §Nearest-neighbor bindings). Closing the gap needs:
+
+1. Query-module deployment in the harness, declaring
+   `source projected Document.embedding` and a `nearest(embedding, $q, $k)`
+   binding with the required partition equality predicate.
+2. An activation wait: the first query returns `Building` with no rows, so the
+   harness must poll until the typed result stops being `Building`, or observe
+   the `projection` health component. A fixed sleep would measure a cold source.
+3. Query latency measured after activation, alongside the write figure above.
+
 ## What it must not claim until then
 
 No public performance claim about analytical or mixed workloads is supported by

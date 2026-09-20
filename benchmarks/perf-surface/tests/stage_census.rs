@@ -10,10 +10,17 @@ use riffdb_perf_surface::{Mechanism, contract_source};
 fn capture_stage_census() {
     let binary = riffdbd_binary().expect("riffdbd");
     let documents: u64 = std::env::var("PERF_SURFACE_DOCUMENTS")
-        .ok().and_then(|v| v.parse().ok()).unwrap_or(500);
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(500);
     let concurrency: usize = std::env::var("PERF_SURFACE_CONCURRENCY")
-        .ok().and_then(|v| v.parse().ok()).unwrap_or(32);
-    let runtime = tokio::runtime::Builder::new_multi_thread().enable_all().build().expect("rt");
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(32);
+    let runtime = tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .build()
+        .expect("rt");
     for (name, mechanisms) in [
         ("base", Vec::new()),
         ("projection", vec![Mechanism::Projection]),
@@ -22,7 +29,14 @@ fn capture_stage_census() {
         let _ = std::fs::remove_dir_all(&dir);
         let source = contract_source(&mechanisms);
         let m = runtime
-            .block_on(measure_variant(&binary, &dir, name, &source, documents, concurrency))
+            .block_on(measure_variant(
+                &binary,
+                &dir,
+                name,
+                &source,
+                documents,
+                concurrency,
+            ))
             .unwrap_or_else(|e| panic!("{name}: {e}"));
         println!("STAGES {name} docs_per_s={:.0}", m.documents_per_second());
         for line in &m.stdout_tail {

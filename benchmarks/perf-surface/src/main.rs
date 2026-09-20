@@ -31,7 +31,10 @@ fn main() -> std::process::ExitCode {
         .unwrap_or_else(|_| std::env::temp_dir().join("perf-surface-run"));
     let _ = std::fs::remove_dir_all(&root);
 
-    let runtime = match tokio::runtime::Builder::new_multi_thread().enable_all().build() {
+    let runtime = match tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .build()
+    {
         Ok(runtime) => runtime,
         Err(error) => {
             eprintln!("runtime: {error}");
@@ -44,7 +47,12 @@ fn main() -> std::process::ExitCode {
         let run_dir = root.join(&name);
         let source = contract_source(&mechanisms);
         match runtime.block_on(measure_variant(
-            &binary, &run_dir, &name, &source, documents, concurrency,
+            &binary,
+            &run_dir,
+            &name,
+            &source,
+            documents,
+            concurrency,
         )) {
             Ok(measurement) => {
                 report_row(&measurement);

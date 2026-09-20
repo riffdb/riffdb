@@ -175,6 +175,13 @@ pub async fn measure_variant(
 
     let title = "perf surface document title";
     let body = "lorem ipsum ".repeat(64);
+    // The vector variant's command declares the embed inputs and the others do
+    // not, so the input must match the contract actually deployed. Reading it
+    // from the deployed source keeps the two from drifting apart: a variant
+    // that gains the field gains the input in the same place.
+    let embedding: Option<Vec<f32>> = source
+        .contains("input embedding: vector<4>")
+        .then(|| vec![0.5_f32, 0.25, 0.125, 0.0625]);
 
     // Each publisher owns its own connection: sharing one would serialise the
     // clients on a single channel and measure the harness instead of the
@@ -194,6 +201,7 @@ pub async fn measure_variant(
         let metadata = metadata.clone();
         let title = title.to_owned();
         let body = body.clone();
+        let embedding = embedding.clone();
         let stride = u64::try_from(concurrency).unwrap_or(1);
         let start = u64::try_from(slot).unwrap_or(0);
         tasks.push(tokio::spawn(async move {
@@ -209,6 +217,7 @@ pub async fn measure_variant(
                     title.clone(),
                     body.clone(),
                     body.len() as i64,
+                    embedding.clone(),
                 );
                 publisher
                     .execute_command(command("PublishDocument", input)?, attempts(), &metadata)
@@ -230,13 +239,11 @@ pub async fn measure_variant(
     let stdout = daemon
         .shutdown()
         .map_err(|error| SessionError::Rpc(format!("shutdown: {error}")))?;
-    let census = parse_frame_census(&stdout).ok_or_else(|| {
-        SessionError::Rpc("shutdown emitted no writer frame census".to_owned())
-    })?;
+    let census = parse_frame_census(&stdout)
+        .ok_or_else(|| SessionError::Rpc("shutdown emitted no writer frame census".to_owned()))?;
 
-    let evidence = parse_writer_evidence(&stdout).ok_or_else(|| {
-        SessionError::Rpc("shutdown emitted no writer evidence".to_owned())
-    })?;
+    let evidence = parse_writer_evidence(&stdout)
+        .ok_or_else(|| SessionError::Rpc("shutdown emitted no writer evidence".to_owned()))?;
 
     Ok(VariantMeasurement {
         name: name.to_owned(),

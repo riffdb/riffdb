@@ -89,8 +89,7 @@ pub async fn bootstrap_and_deploy(
             .map_err(|_| SessionError::Bootstrap("transport credential".to_owned()))?,
     );
     let authenticated = CallMetadata::authenticated(
-        BearerCredential::new(&token)
-            .map_err(|_| SessionError::Bootstrap("bearer".to_owned()))?,
+        BearerCredential::new(&token).map_err(|_| SessionError::Bootstrap("bearer".to_owned()))?,
     );
 
     let created = client
@@ -176,17 +175,39 @@ pub fn publish_document_input(
     title: String,
     body: String,
     size_bytes: i64,
+    embedding: Option<Vec<f32>>,
 ) -> BTreeMap<String, ApplicationValue> {
     let mut input = BTreeMap::new();
     input.insert(
         "idempotency_key".to_owned(),
         ApplicationValue::String(idempotency_key),
     );
-    input.insert("workspace_id".to_owned(), ApplicationValue::Uuid(ApplicationUuid::from_bytes(workspace)));
-    input.insert("document_id".to_owned(), ApplicationValue::Uuid(ApplicationUuid::from_bytes(document)));
+    input.insert(
+        "workspace_id".to_owned(),
+        ApplicationValue::Uuid(ApplicationUuid::from_bytes(workspace)),
+    );
+    input.insert(
+        "document_id".to_owned(),
+        ApplicationValue::Uuid(ApplicationUuid::from_bytes(document)),
+    );
     input.insert("title".to_owned(), ApplicationValue::String(title));
     input.insert("body".to_owned(), ApplicationValue::String(body));
     input.insert("size_bytes".to_owned(), ApplicationValue::I64(size_bytes));
+    // Only the vector variant declares the field, and only its command accepts
+    // these, so the other variants must send exactly what they sent before.
+    if let Some(components) = embedding {
+        let vector = riffdb_types::CanonicalVector::new(components)
+            .expect("perf-surface embedding is a fixed valid dimension");
+        input.insert("embedding".to_owned(), ApplicationValue::Vector(vector));
+        input.insert(
+            "submitted_model".to_owned(),
+            ApplicationValue::String("perf-surface-v1".to_owned()),
+        );
+        input.insert(
+            "submitted_version".to_owned(),
+            ApplicationValue::String("2026-09-20".to_owned()),
+        );
+    }
     input
 }
 
@@ -200,9 +221,7 @@ pub fn command(
 }
 
 /// Connects an application client bound to `token`.
-pub async fn application_client(
-    endpoint: &str,
-) -> Result<StableApplicationClient, SessionError> {
+pub async fn application_client(endpoint: &str) -> Result<StableApplicationClient, SessionError> {
     StableApplicationClient::connect(transport_endpoint(endpoint)?)
         .await
         .map_err(|error| SessionError::Connect(format!("{error:?}")))
@@ -266,8 +285,8 @@ pub async fn issue_command_capability(
         BearerCredential::new(bootstrap_token)
             .map_err(|_| SessionError::Bootstrap("bearer".to_owned()))?,
     );
-    let capability_id =
-        generate_capability_id().map_err(|_| SessionError::Bootstrap("capability id".to_owned()))?;
+    let capability_id = generate_capability_id()
+        .map_err(|_| SessionError::Bootstrap("capability id".to_owned()))?;
 
     let created = client
         .create_capability(
