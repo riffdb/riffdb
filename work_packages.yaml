@@ -26406,7 +26406,7 @@ work_packages:
     so a projection, columnar population or search index can neither slow nor fail a command
     commit, per ADR-0240 decisions 1 through 6.
   requirements: []
-  required_adrs: [ADR-0240, ADR-0010, ADR-0017, ADR-0171, ADR-0239]
+  required_adrs: [ADR-0240, ADR-0246, ADR-0010, ADR-0017, ADR-0171, ADR-0239]
   allowed_paths: [SPEC.md, work_packages.yaml,
     adr/0240-derived-state-sinks-must-not-block-the-primary-writer.md,
     docs/performance/perf-surface-mechanism-costs-2026-09.md,
