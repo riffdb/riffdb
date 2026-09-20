@@ -49,11 +49,23 @@ have compounded that rather than helped.
   `CorpusStatistics` per query; `:188` reads `provider.document_count()` and
   folds per-field lengths. The statistics are a function of the provider epoch,
   not of the query, so they can be computed once per epoch and reused.
-- `crates/riffdb-query-executor/src/tokenized_text.rs:126` materializes every
-  candidate row before applying offset and limit, so a deep page pays for the
-  whole candidate set.
-- `crates/riffdb-query-executor/src/tokenized_text.rs:253` recomputes
-  `CorpusStatistics` again inside per-candidate scoring.
+- `crates/riffdb-query-executor/src/tokenized_text.rs:126` materialized every
+  candidate row before applying offset and limit, so a deep page paid to clone
+  the key and the whole `CanonicalRecord` output of every candidate.
+  **Repaired 2026-09-19**: ranking now borrows the rows and clones only the
+  page that is returned. Every candidate is still scored, because the ranking
+  is total over the candidate set and an offset cannot be applied before the
+  order exists. `paging_returns_the_same_order_and_rows_as_one_unpaged_page`
+  holds a one-row-at-a-time walk against the unpaged page.
+- `crates/riffdb-query-executor/src/tokenized_text.rs:253` was recorded here as
+  recomputing `CorpusStatistics` inside per-candidate scoring. **That is wrong
+  and is withdrawn.** `riff_bm25_v1_score` is a `#[doc(hidden)]` helper whose
+  only callers are tests (`tests/tokenized_text.rs:27` and the in-module test
+  at `:641`). The production path builds the statistics once in
+  `execute_tokenized_text_v1` and threads them through
+  `score_with_statistics`, which `review_statistics_are_snapshot_scoped_...`
+  already pins at one build per query. Caching across queries by provider
+  epoch remains open and is the only live part of this finding.
 
 ### Projection index providers — O(N^2) construction
 
