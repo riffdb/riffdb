@@ -26229,6 +26229,35 @@ work_packages:
       percent rather than the 1 percent assumed for most of the programme.
     - Projection, tokenized-text and row-policy coverage is absent because no contract in the
       repository declares them; closing that gap is required before any public performance claim.
+- id: WP-797
+  name: Measurement host hardware baseline
+  tier: guarantee
+  depends_on: []
+  objective: Retire N1 from the release profile set, require hardware SHA-2 acceleration of
+    every measurement profile, and provision an accelerated replacement so the release gate
+    keeps two profiles, per ADR-0245.
+  requirements: [PERF-018]
+  required_adrs: [ADR-0245, ADR-0171, ADR-0239]
+  allowed_paths: [SPEC.md, work_packages.yaml, adr/README.md,
+    adr/0245-measurement-host-hardware-baseline.md, docs/performance/**,
+    docs/installation.md, scripts/**, benchmarks/**]
+  deliverables:
+  - N1 retired from the release profile set, with the retirement reflected wherever the
+    profiles are named
+  - A second accelerated profile provisioned, so the release gate is not left on one host
+  - A check that every admitted measurement profile reports hardware SHA-2 acceleration,
+    read from the host rather than assumed from its instance name
+  acceptance_commands:
+  - ./scripts/acceptance --wp WP-797
+  exit_gate: Every host admitted as a measurement profile reports hardware SHA-2
+    acceleration, the release gate runs on two such profiles, and no cost attribution is
+    drawn from a host whose accelerator profile differs from the deployment target.
+  standing_design_tests:
+    interface_safety: No runtime surface changes. RiffDB does not refuse to start without
+      hardware SHA-2; the baseline governs measurement and the documented target.
+    scale: Not applicable to storage. It narrows the hardware the project measures on to
+      the hardware its users run.
+  human_review_triggers: *id001
 - id: WP-794
   name: Public repository disclosure guards
   tier: guarantee

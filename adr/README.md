@@ -276,6 +276,7 @@ record with no front matter.
 | [0242](0242-formatting-drift-repair.md) | Formatting Drift Repair | Accepted | guarantee |
 | [0243](0243-public-repository-disclosure-guards.md) | Public Repository Disclosure Guards | Accepted | guarantee |
 | [0244](0244-retire-durable-command-derived-locator-tables.md) | Retire Durable Command Derived Locator Tables | Accepted | guarantee |
+| [0245](0245-measurement-host-hardware-baseline.md) | Measurement Host Hardware Baseline | Proposed | guarantee |
 <!-- adr-index:end -->
 
 The human architecture review on 2026-07-12 approved the direction represented
