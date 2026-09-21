@@ -22801,7 +22801,8 @@ work_packages:
   allowed_paths: [SPEC.md, work_packages.yaml,
     adr/0178-follower-activation-and-changelog-derived-backup.md,
     proto/**, crates/riffdb-proto/**, crates/riffdb-types/**, crates/riffdb-auth/**,
-    crates/riffdb-operation-registry/**,
+    crates/riffdb-operation-registry/**, crates/riffdb-errors/**,
+    crates/riffdb-query-module/**, crates/riffdb-api-mcp/**,
     crates/riffdb-observability/**,
     crates/riffdb-policy/**, crates/riffdb-storage-api/**, crates/riffdb-storage-redb/**,
     crates/riffdb-commit/**, crates/riffdb-service/**, crates/riffdb-client-rust/**,
@@ -22842,6 +22843,9 @@ work_packages:
   closure:
     status: open
     decisions_taken:
+    - Re-establish the separately reviewed scope for riffdb-errors,
+      riffdb-query-module and riffdb-api-mcp before integrating the accepted
+      primary_fenced refusal. This changes no MCP visibility or authority.
     - Expose the accepted registration and retirement operations through the
       shared service, gRPC, Rust client and CLI. Append operation tags 0x3a/0x3b;
       require one exact follower target and linked success in both audit validators.
