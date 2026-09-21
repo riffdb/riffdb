@@ -23365,6 +23365,18 @@ work_packages:
       REP-007 unchanged pending any accepted amendment; P99 remains a hard gate.
       WP-748 promotion and lifecycle consolidation remain paused, and their
       correctness cannot discharge WP-749's performance gate.
+    - End the tail investigation after the one maintainer-authorized correlated
+      release run on 2026-09-21 UTC. All 313174 measured requests join uniquely;
+      116 checkpoints select on bytes below 4096 transitions. The existing
+      checkpoint-conditioned pipeline drain carries long journal sync through
+      first receipt waits to the writer. Retain the request-time remainder and
+      avoid claiming the entire historical P99 delta is attributed. Apply
+      ADR-0249 disclosure with a named mechanism instead of the earlier numeric
+      P99 hold. Resume WP-748 independently; lifecycle consolidation stays on hold.
+      Archive off/on qualification and final merge checks remain required before
+      formal package closure. No new tail hypothesis or capture redesign follows.
+      Record the production-capture sync regression separately as issue 2 and the
+      final result in docs/performance/wp749-correlated-tail-2026-09.md.
   human_review_triggers: *id0178
 
 - id: WP-750

@@ -4,8 +4,8 @@ Date: 2026-09-20. Status: instrument repair passed acceptance; the remote
 checkpoint rerun stopped at host preflight before either measurement. Follow-up
 forensics distinguish that observation from a daemon failure. A local counter-only
 exercise subsequently retained 12 actual byte-triggered checkpoint selections.
-WP-748 feature work remains paused. This does not close WP-749 or attribute its
-P99 regression to checkpoints.
+At that checkpoint, WP-748 feature work remained paused and the tail was
+unattributed. The final disposition below supersedes that investigation status.
 
 ## Headline: the old receipt counter omitted the wait that matters
 
@@ -177,6 +177,15 @@ The load log SHA-256 is
 `a2f5c61296ddaa5befae0140d072d79ffc306c1f6b03b1ec9ff700348f5087aa`;
 the final report SHA-256 is
 `7467027ab8345fb0ea1f8b583aeb1d6f7660d266aff54f99042c777672608c7a`.
+
+## Final disposition
+
+The [single correlated release run](wp749-correlated-tail-2026-09.md) completed on
+2026-09-21 UTC. It names the checkpoint-conditioned pipeline drain and long
+journal-sync wait path, preserves the unassigned request-time remainder, and
+ends this tail investigation. The maintainer lifted the WP-748 pause. The
+production-capture sync cost is tracked separately in
+[issue #2](https://github.com/riffdb/riffdb/issues/2).
 
 ## The broader build failure belonged to the paused branch
 
