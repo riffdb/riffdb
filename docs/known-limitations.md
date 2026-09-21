@@ -147,17 +147,14 @@ These limits are part of the POC release posture, not hidden roadmap promises.
   Cold or unavailable graphs fall back to exact execution; callers cannot choose
   a tier or weaken the declared recall target. Primary providers use bounded
   background builds and memory-only reuse; followers currently stay exact.
-  This POC does not claim persistent-graph latency for large partitions. The
-  current production candidate ceiling is 500 rows per organization
-  (`PRODUCTION_VECTOR_CANDIDATE_CEILING`), well below the 65,536 a contract may
-  declare, and two consequences follow. A declared threshold of 500 or more can
-  never engage the ANN tier, because ANN engages only above the declared
-  threshold and a merge that large is refused before it. And an organization
-  holding more than 500 rows in a vector-projected entity receives a typed
-  `ScanBudgetExceeded` refusal rather than an exact answer: the ceiling is a
-  bound on what is answerable, not a fallback to exact search. A declared
-  `recall_target_bps` is therefore unmeasured in production, since the tier it
-  describes does not run there. The native and typed Protobuf value branches, gRPC and
+  This POC does not claim persistent-graph latency for large partitions. A
+  field that declares an approximate tier is served up to 65,536 rows per
+  organization, the unit its own `ann_threshold` is expressed in (ADR-0255); a
+  field that declares none keeps the server's smaller 500-row ceiling. Above
+  the applicable ceiling an organization receives a typed `ScanBudgetExceeded`
+  refusal rather than an exact answer: the ceiling bounds what is answerable
+  and is not a fallback to exact search.
+  The native and typed Protobuf value branches, gRPC and
   hosted MCP conversions, and CLI numeric component arrays now preserve finite
   binary32 vectors without bytes punning. Contract IR V15 now seals one exact
   model identity/current version and bounded replay ceilings per production
