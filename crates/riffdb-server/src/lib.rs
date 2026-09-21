@@ -72,6 +72,11 @@ pub use daemon::riffdbd_main;
 pub mod test_fixtures {
     //! Closed process-level recovery fixtures unavailable to normal builds.
 
+    /// Observes bounded promotion-recovery edges in the fixture daemon only.
+    pub fn install_promotion_recovery_probe(probe: fn(&'static str)) -> bool {
+        crate::daemon::promotion_retry::install_probe(probe)
+    }
+
     pub use crate::archive_worker::install_archive_progress_probe;
     pub use crate::exact_text_probe::{ExactProviderTestPoint, install_exact_provider_probe};
     pub use crate::maintenance_recovery_controller::MaintenanceRecoveryTestPoint;

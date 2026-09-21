@@ -263,7 +263,7 @@ fn verify_retry_audit(fixture: &Fixture, receipt: &v1::FollowerPromotionReceipt)
     assert_eq!(owner.promotion_receipts().unwrap(), before);
 }
 
-fn set_profile(fixture: &Fixture, name: &str, profile: &str) {
+pub(super) fn set_profile(fixture: &Fixture, name: &str, profile: &str) {
     let path = fixture.config(name);
     let document = std::fs::read_to_string(&path).unwrap().replacen(
         "[server]\n",

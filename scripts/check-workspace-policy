@@ -115,6 +115,10 @@ EXPECTED_FIXTURE_BINS = {
     "package" => "riffdb-server",
     "required_features" => ["test-fixtures"]
   },
+  "riffdbd-promotion-recovery-fixture" => {
+    "package" => "riffdb-server",
+    "required_features" => ["test-fixtures"]
+  },
   "riffdbd-maintenance-fixture" => {
     "package" => "riffdb-server",
     "required_features" => ["test-fixtures"]

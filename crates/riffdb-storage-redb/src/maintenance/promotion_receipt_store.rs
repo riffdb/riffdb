@@ -46,6 +46,47 @@ impl RedbMaintenanceStorage {
         Ok(inventory)
     }
 
+    /// Selects the sole unresolved pre-cutover operation under pinned custody.
+    /// This is audit inventory, never authorization, a follower-open proof or
+    /// permission to cut over. The caller must independently validate local
+    /// attached state and reconcile any already committed promotion first.
+    pub fn pending_promotion_request(
+        &self,
+    ) -> Result<Option<riffdb_storage_api::ReplicationPromotionRequestV1>, StorageError> {
+        let inventory = self.promotion_receipts()?;
+        let mut pending = None;
+        for receipt in inventory.receipts() {
+            if matches!(
+                receipt.phase(),
+                Phase::CutoverCommitted | Phase::Validated | Phase::Succeeded
+            ) {
+                return Err(invariant());
+            }
+            if !receipt.is_terminal() || receipt.selection().is_some() {
+                if pending.is_some_and(|request| request != receipt.request()) {
+                    return Err(invariant());
+                }
+                pending = Some(receipt.request());
+            }
+        }
+        if pending.is_some() {
+            // Attached followers cannot originate ordinary backup, restore,
+            // retirement or migration operations. Never use promotion recovery
+            // to waive an ordinary maintenance operation or its artifact custody.
+            for directory in [
+                &self.receipts_directory_guard,
+                &self.staged_directory_guard,
+                &self.retired_directory_guard,
+                &self.migrations_directory_guard,
+            ] {
+                directory.verify()?;
+                directory.visit_entries_bounded(1, |_, _| Err(invariant()))?;
+            }
+        }
+        self.verify_path_custody()?;
+        Ok(pending)
+    }
+
     /// Publishes one exact new attempt or monotonic replacement under exclusive
     /// ownership. The full proposed inventory freezes selection across attempts.
     /// Callers must await success before any lifecycle action or terminal reply.
@@ -140,12 +181,14 @@ impl RedbMaintenanceStorage {
                     .any(|receipt| proof.matches(receipt))
             })
             || inventory.receipts().iter().any(|receipt| {
-                !receipt.is_terminal()
+                let resolved =
+                    joined.is_some_and(|proof| proof.covers_pre_cutover_attempt(receipt));
+                (!receipt.is_terminal() && !resolved)
                     || (receipt.phase() == Phase::Succeeded
                         && !joined.is_some_and(|proof| proof.matches(receipt)))
                     || (receipt.phase() != Phase::Succeeded
                         && receipt.selection().is_some()
-                        && !joined.is_some_and(|proof| proof.covers_failed_selection(receipt)))
+                        && !resolved)
             })
         {
             return Err(invariant());

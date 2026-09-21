@@ -78,11 +78,38 @@ impl PromotionTrigger {
         expected_target: ReplicationFollowerAuditTargetV1,
         environment: &Environment,
     ) -> Result<Option<AuditedPromotion>, StorageError> {
+        self.audit_scoped(storage, expected_target, environment, None)
+    }
+
+    pub(crate) fn audit_retry(
+        self,
+        storage: &mut RedbMaintenanceStorage,
+        request: riffdb_service::PromoteFollowerRequest,
+        environment: &Environment,
+    ) -> Result<Option<AuditedPromotion>, StorageError> {
+        self.audit_scoped(storage, request.target(), environment, Some(request))
+    }
+
+    fn audit_scoped(
+        self,
+        storage: &mut RedbMaintenanceStorage,
+        expected_target: ReplicationFollowerAuditTargetV1,
+        environment: &Environment,
+        retry: Option<riffdb_service::PromoteFollowerRequest>,
+    ) -> Result<Option<AuditedPromotion>, StorageError> {
         let Self {
             submission,
             completion,
         } = self;
         let (request, request_id, principal, ingress, admission) = submission.into_parts();
+        let admission = if retry.is_some_and(|expected| expected != request) {
+            // This host admits fresh authentication solely for the frozen
+            // operation. Record other invocations without reserving a second
+            // operation or revealing the frozen selection.
+            FollowerPromotionAdmission::Denied
+        } else {
+            admission
+        };
         let mut attempt = Receipt::attempted(
             request,
             request_id,

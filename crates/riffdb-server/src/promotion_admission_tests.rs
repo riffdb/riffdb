@@ -22,6 +22,58 @@ use std::{
 };
 
 struct Policy(AuthorizationFixture);
+
+#[tokio::test]
+async fn restricted_retry_audits_foreign_generation_without_reserving_or_retargeting_it() {
+    let root = tempfile::tempdir().unwrap();
+    let mut storage = RedbMaintenanceStorage::open_for_promotion_recovery(
+        root.path().join("follower.redb"),
+        root.path().join("backups"),
+    )
+    .unwrap();
+    let (controller, mut receiver) = PromotionController::channel();
+    let policy = policy();
+    let service =
+        FollowerPromotionService::new(database(), environment(), policy.clone(), controller);
+    let original = service.promote_follower(context(&policy, 31), request(1));
+    let admitted = receiver
+        .try_recv()
+        .unwrap()
+        .audit_retry(&mut storage, request(1), &environment())
+        .unwrap()
+        .unwrap();
+    let retained = admitted.attempt.clone();
+    drop(admitted);
+    assert!(original.await.is_err());
+    let foreign = service.promote_follower(context(&policy, 32), request(2));
+    assert!(
+        receiver
+            .try_recv()
+            .unwrap()
+            .audit_retry(&mut storage, request(1), &environment())
+            .unwrap()
+            .is_none()
+    );
+    assert_eq!(
+        foreign.await.unwrap_err().public_error().unwrap().kind(),
+        PublicErrorKind::AuthorizationDenied
+    );
+    let inventory = storage.promotion_receipts().unwrap();
+    assert!(inventory.receipts().contains(&retained));
+    assert_eq!(
+        inventory.request_for(request(1).operation_id()),
+        Some(request(1))
+    );
+    assert_eq!(inventory.receipts().len(), 2);
+    assert!(
+        inventory
+            .receipts()
+            .iter()
+            .any(|row| row.request() == request(2)
+                && row.steps().last() == Some(&Step::Denied(Failure::AuthorizationDenied)))
+    );
+}
+
 struct Clock;
 impl AuthorizationClock for Clock {
     fn now(&self) -> Result<Timestamp, AuthorizationClockError> {

@@ -405,9 +405,12 @@ recovery path to check its exact fence and destination before replacement.
 Tail reception uses the supervised worker's bounded retry and shutdown rules.
 A committed promotion is reconciled from local authoritative control and external
 audit before loading former-source credentials. Once completely validated, it
-starts as a source even with its existing follower configuration. Failed selected
-attempts continue to refuse ordinary startup; pre-cutover retry hosting remains
-in progress. See [follower administration](operations/FOLLOWER-ADMINISTRATION.md).
+starts as a source even with its existing follower configuration. Unresolved
+pre-cutover attempts enter restricted promotion-retry hosting after full local
+validation, without connecting to the former source at boot. Ordinary readiness
+stays fenced. A freshly authorized exact retry requires that source's
+authenticated fence proof before cutover. See
+[follower administration](operations/FOLLOWER-ADMINISTRATION.md).
 
 After validation, the daemon activates a writer-free application service for each
 configured alias, binds configured hosted MCP routes, and emits the ordinary

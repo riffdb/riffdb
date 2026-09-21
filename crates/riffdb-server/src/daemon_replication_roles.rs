@@ -10,6 +10,16 @@ pub(super) struct PreparedMaintenanceStartup {
     pub(super) promoted: Option<CheckedRedbStartup>,
 }
 
+pub(super) enum PreparedReplicationRole {
+    Ready(Box<PreparedMaintenanceStartup>),
+    Retry(Box<PendingPromotionStartup>),
+}
+
+pub(super) struct PendingPromotionStartup {
+    pub(super) owner: RedbMaintenanceStorage,
+    pub(super) request: riffdb_storage_api::ReplicationPromotionRequestV1,
+}
+
 pub(super) fn prepare(
     path: &Path,
     backup_root: &Path,
@@ -17,6 +27,19 @@ pub(super) fn prepare(
     inputs: StartupValidationInputs,
     profile: RedbCommitProfile,
 ) -> Result<PreparedMaintenanceStartup, DaemonError> {
+    match prepare_role(path, backup_root, source, inputs, profile)? {
+        PreparedReplicationRole::Ready(prepared) => Ok(*prepared),
+        PreparedReplicationRole::Retry(_) => Err(DaemonError::MaintenanceDriver),
+    }
+}
+
+pub(super) fn prepare_role(
+    path: &Path,
+    backup_root: &Path,
+    source: Option<&FollowerSourceConfig>,
+    inputs: StartupValidationInputs,
+    profile: RedbCommitProfile,
+) -> Result<PreparedReplicationRole, DaemonError> {
     let mut owner = RedbMaintenanceStorage::open_for_promotion_recovery(path, backup_root)
         .map_err(DaemonError::MaintenanceStorage)?;
     let promotions = owner
@@ -75,6 +98,28 @@ pub(super) fn prepare(
             )
         }
         None if needs_reconciliation => {
+            if !promotions
+                .receipts()
+                .iter()
+                .any(|r| r.phase() == riffdb_storage_api::ReplicationPromotionPhaseV1::Succeeded)
+            {
+                let source = source.ok_or(DaemonError::MaintenanceDriver)?;
+                let request = owner
+                    .pending_promotion_request()
+                    .map_err(DaemonError::MaintenanceStorage)?
+                    .ok_or(DaemonError::MaintenanceDriver)?;
+                let target = request.target();
+                if target.database_id() != source.lineage.database_id()
+                    || target.history_incarnation() != source.lineage.history_incarnation()
+                    || target.leadership_epoch() != source.lineage.leadership_epoch()
+                    || target.hold_id() != source.hold
+                {
+                    return Err(DaemonError::MaintenanceDriver);
+                }
+                return Ok(PreparedReplicationRole::Retry(Box::new(
+                    PendingPromotionStartup { owner, request },
+                )));
+            }
             let attempt = promotions
                 .receipts()
                 .iter()
@@ -105,11 +150,13 @@ pub(super) fn prepare(
     let reconciliation = owner
         .reconcile_for_startup()
         .map_err(DaemonError::MaintenanceStorage)?;
-    Ok(PreparedMaintenanceStartup {
-        owner,
-        reconciliation,
-        promoted,
-    })
+    Ok(PreparedReplicationRole::Ready(Box::new(
+        PreparedMaintenanceStartup {
+            owner,
+            reconciliation,
+            promoted,
+        },
+    )))
 }
 
 #[cfg(test)]

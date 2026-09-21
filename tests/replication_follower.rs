@@ -23,6 +23,9 @@ mod oracle;
 mod primary_fence;
 #[path = "replication_follower/promoted_restart.rs"]
 mod promoted_restart;
+#[cfg(feature = "test-fixtures")]
+#[path = "replication_follower/promotion_retry.rs"]
+mod promotion_retry;
 #[path = "replication_follower/proxy.rs"]
 mod proxy;
 #[path = "replication_follower/support.rs"]

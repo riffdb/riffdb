@@ -140,6 +140,31 @@ struct TailStream {
     frames: u8,
 }
 impl FollowerReceiver {
+    /// Pins checked local authority for restricted promotion recovery. This
+    /// neither connects nor publishes ordinary reads or projection workers.
+    pub(crate) async fn prepare_promotion_retry(
+        &mut self,
+    ) -> Result<
+        (
+            riffdb_storage_api::ChangelogHistoryStateV3,
+            riffdb_storage_api::ReplicationFollowerStateV3,
+            riffdb_storage_redb::RedbOwnedSnapshot,
+        ),
+        StorageError,
+    > {
+        let mut owner = self.owner.take().ok_or_else(unavailable)?;
+        owner.deadline = Instant::now() + LIFETIME;
+        let returned = run_step(owner, |applier, cancellation| {
+            check_cancel(cancellation)?;
+            let captured = applier.capture_read_progress_snapshot()?;
+            Ok((applier, captured))
+        })
+        .await?;
+        let (owner, captured) = returned.separate();
+        self.owner = Some(owner);
+        Ok(captured)
+    }
+
     fn new(
         owner: Custody<crate::startup::CheckedRedbFollowerStartup>,
         lineage: ChangelogLineageV3,

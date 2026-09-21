@@ -16,8 +16,10 @@ process/request defect scoping remain in force.
 A regression test reproduced an ordinary-startup hole: a terminal failed attempt
 retained its immutable selection but passed maintenance reconciliation. The
 repair keeps every selected attempt fenced until this exclusive owner has
-completely reconciled an exact successful retry. That proof covers only terminal
-attempts with the same request and selection. A fresh owner must validate again;
+completely reconciled an exact successful retry. That proof covers earlier
+pre-cutover attempts with the same request and, when present, selection, without
+rewriting their audit rows. A second invocation claiming committed or validated
+authority remains contradictory. A fresh owner must validate again;
 removing the successful receipt or adding another operation's failed selection
 refuses. Denial before selection retains ordinary-open behavior.
 
@@ -43,9 +45,9 @@ Generated client changes propagate through application locks, adapter and
 portability fixtures, and driver manifests. Their regeneration is a fixture
 refresh, not a new external-consumer or performance qualification result.
 
-Remaining work: restricted pre-cutover startup that exposes only a freshly
-authorized exact-operation retry; whole-operation custody and failure/cancellation
-proofs; under-load zero/nonzero-RPO drills; final CI and fixture review. The
+Restricted pre-cutover startup is now implemented and exercised below. Remaining
+work: complete whole-operation failure/cancellation qualification; under-load
+zero/nonzero-RPO drills; final CI and fixture review. The
 passing lifecycle path is preserved rather than consolidated. Follower-derived
 projection generation and lifecycle belong to the follower under ADR-0248.
 
@@ -65,8 +67,51 @@ projection generation and lifecycle belong to the follower under ADR-0248.
   merge.
 - **Updated handbook:** follower administration, configuration, compatibility,
   backup/restore, remote ingress, errors and known limitations.
-- **Hazards and follow-ups:** restricted pre-cutover retry hosting, operation
-  custody/failure proofs and under-load zero/nonzero-RPO qualification remain.
+- **Hazards and follow-ups:** complete operation custody/failure qualification,
+  under-load zero/nonzero-RPO drills and final CI/fixture review remain.
+
+### Restricted pre-cutover recovery
+
+Startup distinguishes a pending operation from ordinary maintenance readiness.
+The exclusive maintenance owner validates the complete promotion ledger and
+refuses unrelated maintenance inventory. The managed receiver reopens the local
+follower with its retained bootstrap custody, full structural/catalog checks and
+a pinned authority snapshot. It opens no peer connection, starts no replication
+or derived worker, and publishes no application-ready receipt.
+
+A separate private gRPC route supplies only checked authentication and promotion
+admission. A foreign operation or generation is externally audited as denied.
+An allowed exact invocation gets fresh source fence proof and a fresh clock and
+current-capability check. Closing admission drains the bounded queued requests
+with durable outcomes before releasing every local reader and applier. Cutover
+and complete source validation retain the same maintenance owner on a blocking
+worker. The completion waits for normal source graph installation and readiness.
+This does not consolidate or refactor the existing live TLS promotion path.
+
+The storage regression matrix reproduces why preserving an interrupted row used
+to block even a later exact success. It covers Attempted, Draining, Offline,
+Selected and uncertain CutoverPending, preserves each original row, and requires
+a new owner to revalidate success. Negative cases retain the fence for another
+operation, a second claimed cutover, or unknown maintenance inventory.
+
+The production TLS process proof passes in both Standard and Hardened profiles:
+startup with the old source stopped and its credential absent; no ordinary
+Health; durable foreign-operation and insufficient-authority denials; exact
+authorized retry; one new incarnation/epoch; unchanged frozen selection; a new
+idempotent command; and restart without the old source. Ten crash cells cover
+Draining, Offline, Selected, CutoverPending and committed cutover in both profiles.
+Each recovers through the same selection and retains one committed cutover.
+Two signal-driven shutdown cells additionally prove clean custody release and
+fresh retry, with an explicit entity read before and after source restart.
+An authorized retry while source credentials are unavailable records
+FenceUnavailable, reopens restricted admission and preserves the selection;
+restoring source access then permits the same operation to finish.
+
+This increment adds no durable format, operation identity or public RPC. The
+fixture daemon's observation/crash hooks are unavailable in normal builds.
+Changed handbook pages are follower administration, configuration, backup/restore
+and known limitations. These correctness results do not qualify a performance
+gate or close either package.
 
 ## Implemented behavior
 

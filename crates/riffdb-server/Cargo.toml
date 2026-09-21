@@ -22,6 +22,11 @@ test-fixtures = [
 ]
 
 [[bin]]
+name = "riffdbd-promotion-recovery-fixture"
+path = "tests/fixtures/promotion_recovery_daemon.rs"
+required-features = ["test-fixtures"]
+
+[[bin]]
 name = "riffdbd-causal-wait-fixture"
 path = "tests/fixtures/causal_wait_daemon.rs"
 required-features = ["test-fixtures"]

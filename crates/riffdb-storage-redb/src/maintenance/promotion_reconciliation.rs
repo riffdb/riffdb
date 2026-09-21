@@ -33,17 +33,25 @@ impl ReconciledPromotionReceipt {
         &self.receipt == receipt
     }
 
-    // A later exact success under this owner can discharge an earlier failed
-    // selection. Terminal status alone cannot allow the old follower to advance.
-    pub(super) fn covers_failed_selection(
+    // Exact committed success resolves the operation without rewriting an older
+    // invocation's audit. Before selection it could not have cut over; after
+    // selection it must name the same immutable choice. A second invocation
+    // claiming committed/validated authority is contradictory, never covered.
+    pub(super) fn covers_pre_cutover_attempt(
         &self,
         receipt: &riffdb_storage_api::ReplicationPromotionReceiptV1,
     ) -> bool {
-        receipt.is_terminal()
-            && receipt.phase() != Phase::Succeeded
-            && receipt.request() == self.receipt.request()
-            && receipt.selection().is_some()
-            && receipt.selection() == self.receipt.selection()
+        matches!(
+            receipt.phase(),
+            Phase::Attempted
+                | Phase::Draining
+                | Phase::Offline
+                | Phase::Selected
+                | Phase::CutoverPending
+        ) && receipt.request() == self.receipt.request()
+            && receipt
+                .selection()
+                .is_none_or(|selection| self.receipt.selection() == Some(selection))
     }
 
     pub(super) fn verify_restores(

@@ -457,6 +457,164 @@ fn exact_success_does_not_release_another_operations_failed_selection() {
     assert!(owner.reconcile_for_startup().is_err());
 }
 
+#[test]
+fn exact_success_resolves_interrupted_attempts_without_rewriting_their_audit() {
+    for prefix_len in 1..=5 {
+        let scope = crate::test_path::ScopedDirectory::new("promotion-interrupted-retry");
+        let (path, mut owner, record, _) = fixture(&scope);
+        let original = record.attempt();
+        let initial = ReplicationPromotionReceiptV1::attempted(
+            original.request(),
+            RequestId::from_unix_milliseconds_and_random(1234, [0x66; 10]).unwrap(),
+            original.principal().clone(),
+            original.approval_id().cloned(),
+            original.timestamp(),
+        );
+        owner.persist_promotion_receipt(&initial).unwrap();
+        let mut interrupted = ReplicationPromotionReceiptV1::from_canonical_parts(
+            initial.request(),
+            initial.request_id(),
+            initial.principal().clone(),
+            initial.approval_id().cloned(),
+            initial.timestamp(),
+            (prefix_len >= 4).then(|| original.selection().unwrap().clone()),
+            original.steps()[..prefix_len].to_vec(),
+        )
+        .unwrap();
+        if prefix_len == 5 {
+            interrupted
+                .advance(ReplicationPromotionStepV1::Uncertain(
+                    riffdb_storage_api::ReplicationPromotionFailureV1::StorageUnavailable,
+                ))
+                .unwrap();
+        }
+        owner.persist_promotion_receipt(&interrupted).unwrap();
+        assert!(owner.reconcile_for_startup().is_err());
+        owner.apply_promotion_cutover(&record).unwrap();
+        assert!(owner.reconcile_for_startup().is_err());
+        drop(reconcile(&mut owner, &record).unwrap());
+        assert!(
+            owner.reconcile_for_startup().is_ok(),
+            "validated exact success resolves the operation, preserving attempt {prefix_len}"
+        );
+        assert!(
+            owner
+                .promotion_receipts()
+                .unwrap()
+                .receipts()
+                .contains(&interrupted)
+        );
+        assert!(!interrupted.is_terminal());
+        drop(owner);
+        let mut owner =
+            RedbMaintenanceStorage::open_for_promotion_recovery(&path, scope.join("backups"))
+                .unwrap();
+        assert!(owner.reconcile_for_startup().is_err());
+        drop(reconcile(&mut owner, &record).unwrap());
+        assert!(owner.reconcile_for_startup().is_ok());
+        assert!(
+            owner
+                .promotion_receipts()
+                .unwrap()
+                .receipts()
+                .contains(&interrupted)
+        );
+    }
+}
+
+#[test]
+fn exact_success_never_resolves_a_second_claimed_cutover() {
+    for phase in [
+        ReplicationPromotionPhaseV1::CutoverCommitted,
+        ReplicationPromotionPhaseV1::Validated,
+    ] {
+        let scope = crate::test_path::ScopedDirectory::new("promotion-conflicting-cutover");
+        let (_, mut owner, record, _) = fixture(&scope);
+        owner.apply_promotion_cutover(&record).unwrap();
+        drop(reconcile(&mut owner, &record).unwrap());
+        assert!(owner.reconcile_for_startup().is_ok());
+        let original = record.attempt();
+        let initial = ReplicationPromotionReceiptV1::attempted(
+            original.request(),
+            RequestId::from_unix_milliseconds_and_random(1234, [0x67; 10]).unwrap(),
+            original.principal().clone(),
+            original.approval_id().cloned(),
+            original.timestamp(),
+        );
+        owner.persist_promotion_receipt(&initial).unwrap();
+        let mut contradictory = ReplicationPromotionReceiptV1::from_canonical_parts(
+            initial.request(),
+            initial.request_id(),
+            initial.principal().clone(),
+            initial.approval_id().cloned(),
+            initial.timestamp(),
+            original.selection().cloned(),
+            original.steps().to_vec(),
+        )
+        .unwrap();
+        contradictory
+            .advance(ReplicationPromotionStepV1::Phase(
+                ReplicationPromotionPhaseV1::CutoverCommitted,
+            ))
+            .unwrap();
+        if phase == ReplicationPromotionPhaseV1::Validated {
+            contradictory
+                .advance(ReplicationPromotionStepV1::Phase(phase))
+                .unwrap();
+        }
+        owner.persist_promotion_receipt(&contradictory).unwrap();
+
+        assert!(owner.reconcile_for_startup().is_err());
+        assert!(
+            owner
+                .promotion_receipts()
+                .unwrap()
+                .receipts()
+                .contains(&contradictory)
+        );
+    }
+}
+
+#[test]
+fn pending_promotion_checks_ordinary_inventory_without_cleaning_it_up() {
+    for directory in ["receipts", "staged", "retired", "migrations"] {
+        let scope = crate::test_path::ScopedDirectory::new("promotion-unknown-maintenance");
+        let (_, mut owner, record, _) = fixture(&scope);
+        assert_eq!(
+            owner.pending_promotion_request().unwrap(),
+            Some(record.attempt().request())
+        );
+        let unexpected = scope
+            .join("backups/.maintenance")
+            .join(directory)
+            .join("unrecognized-entry");
+        std::fs::write(&unexpected, b"retained-unknown-custody").unwrap();
+        let before = owner.promotion_receipts().unwrap();
+        assert!(owner.pending_promotion_request().is_err());
+        assert!(owner.reconcile_for_startup().is_err());
+        assert_eq!(
+            std::fs::read(&unexpected).unwrap(),
+            b"retained-unknown-custody"
+        );
+        assert_eq!(owner.promotion_receipts().unwrap(), before);
+    }
+}
+
+#[test]
+fn pending_promotion_refuses_another_operations_selected_failure() {
+    let scope = crate::test_path::ScopedDirectory::new("promotion-multiple-pending");
+    let (_, mut owner, record, _) = fixture(&scope);
+    let failed = retain_failed_selection(&mut owner, &record, true);
+    assert!(owner.pending_promotion_request().is_err());
+    assert!(
+        owner
+            .promotion_receipts()
+            .unwrap()
+            .receipts()
+            .contains(&failed)
+    );
+}
+
 fn retain_failed_selection(
     owner: &mut RedbMaintenanceStorage,
     record: &StoredPromotionAdministrationV1,

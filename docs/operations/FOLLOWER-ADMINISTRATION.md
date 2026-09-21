@@ -138,13 +138,27 @@ maintenance receipts. Missing or contradictory evidence fences readiness.
 A failed or denied attempt that already froze a selection continues to fence
 ordinary startup; terminal failure does not release its selected frontier.
 Only complete reconciliation of an exact successful retry under the current
-exclusive owner can discharge that selection. Denial before selection does
-not leave this fence. Never delete receipts to bypass recovery.
+exclusive owner can discharge that selection. Earlier interrupted attempts for
+that exact operation retain their original audit rows; a successful retry does
+not fabricate terminal replies for them. Denial before selection does not leave
+this fence. Never delete receipts to bypass recovery.
 
 After committed cutover, restart validates the exact local control, audit and
 external receipt before starting as a source, without loading the former
-source's credentials. Pre-cutover restart still refuses ordinary startup:
-a restricted, freshly authorized retry route remains to be implemented.
+source's credentials. Pre-cutover restart fully validates the local follower and
+hosts only authenticated `PromoteFollower` retries. It neither connects to the
+source nor advances replication at boot, and emits no application-ready receipt.
+Health, application reads/writes, bootstrap, replication and maintenance remain
+unavailable. Use the same promotion operation, fence operation, target and
+registration generation with a fresh request ID and current authority. Other
+authenticated attempts are durably denied without changing the selection.
+
+An authorized retry requires the configured source to be available for fresh
+authenticated fence proof. It drains local readers, rechecks current capability
+facts and expiry, and preserves the selected frontier before cutover. Success
+is returned only after complete source validation and service activation. If
+interrupted, retain the same configuration and evidence and retry; shutdown
+does not imply that an uncertain cutover failed.
 Follower projection generation and lifecycle remain locally owned derived
 state under ADR-0248; authoritative commit/entity zero-RPO claims do not extend
 to derived state.

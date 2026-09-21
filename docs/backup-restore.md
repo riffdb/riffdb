@@ -475,5 +475,5 @@ frozen selection and refuses ordinary startup until an exact successful retry
 has been completely reconciled under the current owner. Deleting this evidence
 is not a recovery procedure. A V2 source always receives complete validation,
 even after CLEAN; V1 clean-start behavior is unchanged. The experimental
-[follower administration path](operations/FOLLOWER-ADMINISTRATION.md) lists
-remaining pre-cutover recovery limitations.
+[follower administration path](operations/FOLLOWER-ADMINISTRATION.md) describes
+restricted pre-cutover retries and the required fresh source fence proof.

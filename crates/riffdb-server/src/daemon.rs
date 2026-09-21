@@ -9,6 +9,8 @@
 mod follower;
 #[path = "daemon_promotion.rs"]
 mod promotion;
+#[path = "daemon_promotion_retry.rs"]
+pub(crate) mod promotion_retry;
 
 #[path = "daemon_replication_roles.rs"]
 pub(crate) mod replication_roles;
@@ -1157,19 +1159,48 @@ async fn run_multi_database_server(
     drop(application);
 
     let mut graphs = Vec::with_capacity(pending.len());
+    let mut promotion_completions = Vec::with_capacity(pending.len());
     for (database, mut pending) in config.databases().iter().zip(pending) {
         let replication_roles::PreparedMaintenanceStartup {
             owner: mut maintenance_storage,
             reconciliation,
             promoted: mut promoted_startup,
-        } = match replication_roles::prepare(
+        } = match replication_roles::prepare_role(
             database.database_path(),
             database.backup_root(),
             database.follower(),
             startup_inputs.clone(),
             config.redb_commit_profile(),
         ) {
-            Ok(value) => value,
+            Ok(replication_roles::PreparedReplicationRole::Ready(value)) => *value,
+            Ok(replication_roles::PreparedReplicationRole::Retry(value)) => {
+                match promotion_retry::await_retry(
+                    &config,
+                    database,
+                    *value,
+                    startup_inputs.clone(),
+                    &digest_keys,
+                    &process_clocks,
+                    &routes,
+                    &mut transport,
+                    process_signal,
+                )
+                .await
+                {
+                    Ok(Some((prepared, completion))) => {
+                        promotion_completions.push(completion);
+                        prepared
+                    }
+                    Ok(None) => {
+                        shutdown_multi_before_ready(&mut transport, graphs).await?;
+                        return Ok(());
+                    }
+                    Err(source) => {
+                        shutdown_multi_before_ready(&mut transport, graphs).await?;
+                        return Err(source);
+                    }
+                }
+            }
             Err(source) => {
                 shutdown_multi_before_ready(&mut transport, graphs).await?;
                 return Err(source);
@@ -1666,6 +1697,9 @@ async fn run_multi_database_server(
     };
 
     publish_readiness(transport.endpoint())?;
+    for completion in promotion_completions {
+        completion.complete();
+    }
     let (shutdown_input, shutdown_thread) = spawn_shutdown_reader()?;
     let mut shutdown_input = Some(shutdown_input);
     let (event_sender, mut event_receiver) =

@@ -90,6 +90,21 @@ fn daemon_does_not_resume_old_applier_over_an_unfinished_promotion_attempt() {
     );
     let owner = RedbMaintenanceStorage::open_for_promotion_recovery(&path, &backups).unwrap();
     assert_eq!(owner.promotion_receipts().unwrap(), before);
+    drop(owner);
+    let PreparedReplicationRole::Retry(mut pending) = prepare_role(
+        &path,
+        &backups,
+        Some(&source),
+        inputs(),
+        RedbCommitProfile::Standard,
+    )
+    .unwrap() else {
+        panic!("pending cutover must select restricted admission")
+    };
+    assert_eq!(pending.request, record.attempt().request());
+    assert_eq!(pending.owner.promotion_receipts().unwrap(), before);
+    assert!(pending.owner.reconcile_for_startup().is_err());
+    assert!(RedbMaintenanceStorage::open_for_promotion_recovery(&path, &backups).is_err());
 }
 
 #[test]
