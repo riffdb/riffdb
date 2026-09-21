@@ -177,6 +177,35 @@ const ADDS_A_VECTOR_VIA_A_NEW_COMMAND: &str = r#"contract Live version 2 {
   }
 }"#;
 
+/// An optional field added to an existing command's input record, alongside an
+/// optional entity field it sets. Nothing here is required.
+const ADDS_AN_OPTIONAL_INPUT: &str = r#"contract Live version 2 {
+  entity Document {
+    key (org_id: uuid, document_id: uuid)
+    field title: string<200>
+    field note: optional<string<64>>
+    index by_org (org_id, document_id)
+  }
+  aggregate Documents {
+    root Document
+    partition_by org_id
+    conflict_key (org_id)
+  }
+  command CreateDocument {
+    input idempotency_key: string<128>
+    input org_id: uuid
+    input document_id: uuid
+    input title: string<200>
+    input note: optional<string<64>>
+    idempotency_key idempotency_key
+    create Document(org_id, document_id) as document
+      else DocumentExists { document_id: document_id }
+    set document.title = title
+    set document.note = note
+    return Created { document: document }
+  }
+}"#;
+
 /// Compiles `successor` against the genesis contract and reports its overall
 /// compatibility class, printing every finding so a failure shows which change
 /// drove the class rather than only the class.
@@ -240,6 +269,52 @@ fn an_optional_field_needs_no_command_change() {
         class,
         CompatibilityClass::Incompatible,
         "an optional field changes no command surface, so nothing refuses it"
+    );
+}
+
+/// An existing command's input list is not frozen, and the finding that
+/// refuses is not about the input at all.
+///
+/// The optional input reports `RDB-K013`, `Compatible` -- the same code an
+/// optional entity field gets. What refuses is `RDB-K110`, an existing plan
+/// change, because the command gained the instruction that uses the input.
+///
+/// This is deliberately asserted at the level of findings rather than the
+/// overall class. "Adding an optional input is incompatible" would be the
+/// wrong summary of a run whose input finding is Compatible, and the earlier
+/// draft of this file said exactly that about required inputs.
+#[test]
+fn an_optional_input_is_compatible_and_the_plan_change_is_what_refuses() {
+    let parent =
+        riffdb_contract_compiler::compile_contract_source(GENESIS).expect("genesis compiles");
+    let candidate =
+        riffdb_contract_compiler::compile_contract_successor(ADDS_AN_OPTIONAL_INPUT, &parent)
+            .expect("successor compiles");
+    let checked = ContractCandidateV1::new(
+        candidate.schema(),
+        candidate.commands(),
+        candidate.projections(),
+        candidate.mcp_command_names(),
+    )
+    .expect("checked candidate");
+    let report = compare_successor(&parent, checked).expect("comparable successor");
+
+    let input_finding = report
+        .entries()
+        .iter()
+        .find(|entry| entry.affected_path().contains("/input/"))
+        .expect("a finding about the added input");
+    assert_eq!(
+        input_finding.class(),
+        CompatibilityClass::Compatible,
+        "an optional input is a compatible addition"
+    );
+    assert!(
+        report
+            .entries()
+            .iter()
+            .any(|entry| entry.code().as_str() == "RDB-K110"),
+        "what refuses is the plan change that uses it"
     );
 }
 
