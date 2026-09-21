@@ -26902,8 +26902,10 @@ work_packages:
     green tests.
   requirements: []
   required_adrs: [ADR-0156]
+  # Widened 2026-09-21. Both silent failures come from one rescue in the shared
+  # record parser, not from either tool, so the fix belongs there.
   allowed_paths: [work_packages.yaml, scripts/check-adr-obligations, scripts/adr-index,
-    docs/**, adr/**]
+    scripts/lib/riffdb_adr.rb, docs/**, adr/**]
   deliverables:
   - A recorded characterisation of what check-adr-obligations can and cannot establish
     today, driven by reproducing each of the three instances against it
