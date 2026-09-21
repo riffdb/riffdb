@@ -26857,3 +26857,54 @@ work_packages:
     scale: The answer holds for an application whose data is too large to rewrite in a
       maintenance window, or the record says plainly that it does not.
   human_review_triggers: *id001
+- id: WP-806
+  name: Checkpoint-coupled journal tail latency
+  tier: guarantee
+  depends_on: []
+  objective: Own and resolve the shared Standard-profile writer delay caused by
+    checkpoint-conditioned journal durability and ordered publication waits. The
+    archive-disabled evidence already establishes the mechanism; registration does
+    not require another measurement and is independent of WP-749 completion.
+    Preserve ADR-0101, ADR-0104 and ADR-0132 authority, installation, acknowledgement,
+    recovery and bounded-backpressure decisions throughout investigation and repair.
+  requirements: [STO-001, STO-002, REC-001, REC-002, PERF-018]
+  required_adrs: [ADR-0101, ADR-0104, ADR-0132, ADR-0171, ADR-0239, ADR-0245, ADR-0249]
+  allowed_paths: [work_packages.yaml, crates/riffdb-storage-redb/**,
+    crates/riffdb-commit/**, docs/**, scripts/**, tests/**, release/evidence/**,
+    benchmarks/**, examples/app-baseline/**]
+  deliverables:
+  - Standalone storage/journal finding at docs/performance/wp-806-checkpoint-journal-tail.md,
+    retaining the valid archive-disabled trace, source/binary identities, checkpoint
+    counts, first-wait and sync evidence, and explicit timing limitations
+  - A deterministic production-path reproduction controlling checkpoint materialization,
+    journal durability and ordered publication separately, proving which wait the writer
+    takes and that no response or dependent effect precedes its durable published frontier
+  - A reviewed disposition of the shared delay, with any mitigation preserving exact
+    checkpoint installation, suffix/extent/overlay bounds, fail-closed I/O handling and
+    bounded backpressure; changing an accepted decision requires a separately accepted
+    amendment before implementation, not an implicit permission to remove POST_DRAIN_ALL
+  - Recovery and process-crash coverage across durability, checkpoint installation and
+    journal reclamation, including immediate reads after acknowledgement and idempotent
+    restart without invented commits, events or outcomes
+  - For a later runtime mitigation, same-source-control and same-toolchain measurements
+    under ADR-0239 on an exclusively reserved admitted hardware profile, with all attempts,
+    p50/p95/p99, throughput, corrected wait counters, checkpoint counts and explicit wall
+    reconciliation retained; no new measurements are part of this registration
+  acceptance_commands:
+  - ./scripts/acceptance --wp WP-806
+  - ./scripts/ci-all
+  exit_gate: The shared checkpoint/journal delay has a maintainer-reviewed resolution
+    supported by a production-path schedule proof and recovery evidence. Any mitigation
+    has a measured effect against its unchanged control and preserves every durability,
+    publication, installation and boundedness guarantee. A finding, renamed owner or
+    unexplained residual alone does not close this package, and WP-749's archive gate
+    is assessed separately.
+  closure:
+    status: open
+    evidence: docs/performance/wp-806-checkpoint-journal-tail.md
+  standing_design_tests:
+    interface_safety: No application or operator can bypass a journal fence, publish a
+      hole, acknowledge before publication, or opt out of checkpoint-installation safety.
+    scale: Checkpoint pressure retains the existing encoded-byte, transition, physical
+      extent, overlay-memory and retained-root bounds; diagnostics and waits stay bounded.
+  human_review_triggers: *id001

@@ -7,6 +7,10 @@ Archive does not introduce this blocking dependency. The existing storage
 checkpoint/journal path owns it, including the checkpoint-installation guarantee
 that the drain preserves.
 
+The shared finding is now independently registered as
+[WP-806: checkpoint-coupled journal tail latency](wp-806-checkpoint-journal-tail.md).
+Its scope and resolution are separate from WP-749's archive gate.
+
 The single authorized replacement pair passed all host and correctness checks.
 It also reproduced substantially longer positional journal writes with archive
 enabled. This distinguishes a shared blocking path from an additional observed
