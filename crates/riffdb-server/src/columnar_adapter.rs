@@ -7025,6 +7025,27 @@ contract VectorBoard version 1 {
         assert_eq!(runtime.names().expect("names").len(), 1);
     }
 
+    /// The replayability probe admission refuses on, on the one state a unit
+    /// test can build honestly.
+    ///
+    /// A fresh source replays from `BeforeFirst`, so it is admissible exactly
+    /// when the commit log still begins at sequence one, and an empty log is
+    /// admissible because there is nothing to miss. The refusal itself is
+    /// proven end to end against a genuinely pruned database in
+    /// `benchmarks/perf-surface`, because the commit fixture here enforces
+    /// contiguity from the sequence allocator and so cannot manufacture a log
+    /// that starts above one.
+    #[test]
+    fn an_empty_log_is_replayable_by_a_fresh_source() {
+        let (runtime, _scope) = empty_columnar_runtime("replayable-empty-log");
+        assert!(
+            runtime
+                .history_is_replayable_from_the_beginning()
+                .expect("probe an empty log"),
+            "an empty log is replayable: there is nothing for a fresh source to miss"
+        );
+    }
+
     /// OBL-0251-3. A projected query against a source this node does not hold
     /// answers with a typed refusal, not an opaque internal defect.
     ///
