@@ -26715,6 +26715,7 @@ work_packages:
     crates/riffdb-service/src/maintenance_operations.rs,
     crates/riffdb-server/src/runtime_support.rs,
     crates/riffdb-api-mcp/src/presentation.rs,
+    crates/riffdb-observability/src/telemetry.rs,
     docs/performance/**]
   deliverables:
   - A defect scope on InternalError, set at every construction site with no default, so a

@@ -4,7 +4,7 @@ use std::collections::{BTreeSet, VecDeque};
 use std::fmt;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use riffdb_errors::{IncidentIdSource, InternalError};
 use riffdb_types::{ConflictKeyHash, IncidentId};
@@ -24,7 +24,15 @@ use crate::{
 };
 
 /// Maximum redacted incidents retained for operator correlation.
+///
+/// A bound on memory, not a budget for the process's life. Reaching it drops
+/// the oldest record and counts the drop; it never fails readiness (ADR-0250
+/// decision 5).
 pub const MAX_RETAINED_INCIDENTS: usize = 256;
+/// Process-scoped defects the runtime tolerates back to back (ADR-0250 decision 4).
+pub const DEFECT_BURST_CAPACITY: u32 = 16;
+/// How often one unit of that burst comes back.
+pub const DEFECT_REFILL_INTERVAL: Duration = Duration::from_secs(60);
 /// Maximum distinct queued conflict-key hashes retained for hot-key cardinality.
 pub const MAX_HOT_CONFLICT_KEYS: usize = 1_024;
 /// Closed production completion-group sizes.
@@ -124,6 +132,64 @@ struct IncidentState {
     records: VecDeque<IncidentRecord>,
 }
 
+/// Monotonic time for the defect budget, injectable so a test can advance it
+/// rather than sleep for a refill interval.
+pub trait DefectClock: Send + Sync {
+    /// The current instant.
+    fn now(&self) -> Instant;
+}
+
+/// The process clock.
+pub struct SystemDefectClock;
+
+impl DefectClock for SystemDefectClock {
+    fn now(&self) -> Instant {
+        Instant::now()
+    }
+}
+
+/// A refilling allowance of process-scoped defects (ADR-0250 decision 3).
+///
+/// A lifetime count cannot tell a broken process from a broken request: a
+/// daemon that sees 256 unrelated defects across weeks of uptime reaches the
+/// same total as one that sees them in a minute. The budget spends on a burst
+/// and recovers with time, so only a rate trips it.
+struct DefectBudget {
+    remaining: u32,
+    last_refill: Instant,
+}
+
+impl DefectBudget {
+    fn new(now: Instant) -> Self {
+        Self {
+            remaining: DEFECT_BURST_CAPACITY,
+            last_refill: now,
+        }
+    }
+
+    /// Spends one unit, refilling first. Returns false when the budget is
+    /// spent, which is the condition that fails readiness.
+    fn spend(&mut self, now: Instant) -> bool {
+        let elapsed = now.saturating_duration_since(self.last_refill);
+        let refills = u32::try_from(elapsed.as_secs() / DEFECT_REFILL_INTERVAL.as_secs().max(1))
+            .unwrap_or(u32::MAX);
+        if refills > 0 {
+            self.remaining = self
+                .remaining
+                .saturating_add(refills)
+                .min(DEFECT_BURST_CAPACITY);
+            // Carry the remainder so a defect every 59 seconds still refills at
+            // the stated rate rather than never.
+            self.last_refill += DEFECT_REFILL_INTERVAL * refills;
+        }
+        if self.remaining == 0 {
+            return false;
+        }
+        self.remaining -= 1;
+        true
+    }
+}
+
 /// Process-local aggregation of safe telemetry and incident correlation.
 ///
 /// The injected source is synchronous and is the only way this type creates an
@@ -154,6 +220,8 @@ pub struct Observability {
     metrics: MetricRegistry,
     traces: TraceCollector,
     health: HealthRegistry,
+    defect_budget: Mutex<DefectBudget>,
+    defect_clock: Arc<dyn DefectClock>,
 }
 
 impl Observability {
@@ -161,6 +229,16 @@ impl Observability {
     pub fn new(
         incident_ids: Arc<dyn IncidentIdSource>,
         trace_capacity: usize,
+    ) -> Result<Self, ObservabilityBuildError> {
+        Self::with_defect_clock(incident_ids, trace_capacity, Arc::new(SystemDefectClock))
+    }
+
+    /// Creates the integration against an injected defect clock, so a test can
+    /// advance time rather than sleep for a refill interval.
+    pub fn with_defect_clock(
+        incident_ids: Arc<dyn IncidentIdSource>,
+        trace_capacity: usize,
+        defect_clock: Arc<dyn DefectClock>,
     ) -> Result<Self, ObservabilityBuildError> {
         let traces = TraceCollector::new(trace_capacity)
             .map_err(|_| ObservabilityBuildError::TraceCapacity)?;
@@ -191,6 +269,8 @@ impl Observability {
             metrics: MetricRegistry::new(),
             traces,
             health: HealthRegistry::new(),
+            defect_budget: Mutex::new(DefectBudget::new(defect_clock.now())),
+            defect_clock,
         })
     }
 
@@ -358,22 +438,45 @@ impl Observability {
             self.record_trace(TraceRecord::incident_source_unavailable(class));
             IncidentReportError::SourceUnavailable
         })?;
-        self.retain_incident(IncidentRecord { incident_id, class })?;
+        self.retain_incident(IncidentRecord { incident_id, class });
         Ok(incident_id)
     }
 
-    fn retain_incident(&self, record: IncidentRecord) -> Result<(), IncidentReportError> {
+    /// Retains one record, dropping the oldest when full.
+    ///
+    /// Retention bounds memory; it is not a budget for the process's life. A
+    /// full registry means the oldest correlation is gone, not that the process
+    /// is unfit to serve, and conflating the two is what let a repeatable
+    /// request-scoped defect end a daemon (ADR-0250 decision 5).
+    fn retain_incident(&self, record: IncidentRecord) {
         let mut incidents = self.lock_incidents();
         if incidents.records.len() == MAX_RETAINED_INCIDENTS {
+            incidents.records.pop_front();
             self.metrics.increment(MetricKey::TelemetryDropped);
-            self.health.fail_authoritative_readiness();
-            return Err(IncidentReportError::CapacityExceeded);
         }
         incidents.records.push_back(record);
         drop(incidents);
         self.metrics.increment(MetricKey::Incident(record.class));
         self.record_trace(TraceRecord::incident(record.class, record.incident_id));
-        Ok(())
+    }
+
+    /// Draws one process-scoped defect against the refilling budget, failing
+    /// readiness when it is spent (ADR-0250 decision 3).
+    fn charge_defect_budget(&self) {
+        let now = self.defect_clock.now();
+        let spent = {
+            let mut budget = match self.defect_budget.lock() {
+                Ok(budget) => budget,
+                Err(poisoned) => {
+                    self.health.fail_authoritative_readiness();
+                    poisoned.into_inner()
+                }
+            };
+            !budget.spend(now)
+        };
+        if spent {
+            self.health.fail_authoritative_readiness();
+        }
     }
 
     fn record_trace(&self, record: TraceRecord) {
@@ -768,15 +871,18 @@ pub fn parse_read_stages_v1_payload(payload: &str) -> Result<Vec<ParsedReadStage
 impl ServiceDiagnostics for Observability {
     fn record_internal(&self, error: InternalError) {
         let incident_id = *error.incident_id();
+        let scope = error.scope();
         drop(error);
-        if self
-            .retain_incident(IncidentRecord {
-                incident_id,
-                class: IncidentClass::InternalError,
-            })
-            .is_err()
-        {
-            self.health.fail_authoritative_readiness();
+        // Retention and the breaker are separate concerns. Every defect is
+        // retained; only a process-scoped one draws on the budget, because a
+        // request-scoped defect says this request could not be completed and
+        // nothing about the next (ADR-0250 decision 2).
+        self.retain_incident(IncidentRecord {
+            incident_id,
+            class: IncidentClass::InternalError,
+        });
+        if scope == riffdb_errors::DefectScope::Process {
+            self.charge_defect_budget();
         }
     }
 }
