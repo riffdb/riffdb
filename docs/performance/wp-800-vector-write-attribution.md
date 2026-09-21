@@ -216,6 +216,39 @@ slower host makes the same work a larger share of a longer command.
 attribution below the leading stage needs to name the host it was taken
 on.
 
+## The staging decomposition ports
+
+The same level-3 probe on E2, three repetitions, against the workstation's
+figures. E2 charges about three times per command throughout, so the shares
+are what compare:
+
+| stage | E2 | share | workstation | share |
+|---|---:|---:|---:|---:|
+| `exec_stage_serial` | +43,813 | | +14,145 | |
+| &nbsp;&nbsp;`stage_attach` | +28,665 | 65% | +8,888 | 63% |
+| &nbsp;&nbsp;&nbsp;&nbsp;`attach_storage_stage` | +28,743 | ~all | +8,865 | ~all |
+| &nbsp;&nbsp;`append_epoch` | +8,920 | 20% | +3,380 | 24% |
+| &nbsp;&nbsp;&nbsp;&nbsp;`epoch_reserve_assign` | +6,278 | 70% of parent | +2,373 | 70% of parent |
+| &nbsp;&nbsp;&nbsp;&nbsp;`epoch_derive_indexes` | +2,724 | 31% of parent | +955 | 28% of parent |
+| &nbsp;&nbsp;`stage_build_records` | below the top rows | | +366 | |
+
+Every structural claim holds on both hosts. Attach is about two thirds of
+the added staging; the storage stage is effectively all of attach, so the
+reserved-candidate check costs nothing on either; reserve-and-assign is
+70 percent of the epoch phase on both, to within a tenth of a percentage
+point; and building the record set is small on both.
+
+This is a stronger result than the earlier caution allowed for. That
+caution was about `exec_apply`, which is a third of the added time on E2
+and noise on the workstation -- and `exec_apply` is a **sibling** of
+`exec_stage_serial`, not part of its decomposition. The decomposition
+itself ports; the stage next to it does not, and the two should not be
+confused.
+
+What still differs by host is how much of the total sits outside staging.
+On E2, `exec_apply` is comparable to staging itself, so the same cost
+attribution describes a smaller fraction of a larger whole.
+
 ## What this does not establish
 
 **The attribution is this workstation's; the figure is C3D's.** The two
