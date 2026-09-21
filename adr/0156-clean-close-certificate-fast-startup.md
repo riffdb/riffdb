@@ -539,3 +539,38 @@ for WP-705. It does not claim or satisfy WP-760's production-scale dirty
 readiness or 64 MiB recovery-owned-state guarantee, WP-578's uninterrupted
 `END-009` endurance campaign, or any 72-hour receipt. Those remain separate
 work packages and are not WP-705 closure conditions.
+
+
+## Amendment 6 — V2 source clean-start eligibility (Accepted 2026-09-18)
+
+- **Status:** Accepted
+- **Accepted:** 2026-09-18
+- **Acceptance reference:** Maintainer, in this Codex session on 2026-09-18,
+  quoted `docs/architecture/WP-748-CLEAN-START-REVIEW.md` and answered
+  “Approve exact amendment”. The exact accepted text follows.
+
+> Qualify ADR-0156's automatic clean-start selection, ADR-0157's lifecycle
+> eligibility, and PERF-019 for AuthoritativeStateCatalogV2 source databases.
+> A V1 clean-close certificate does not establish complete source-admission
+> evidence for such a database. V2 source startup must decline that certificate
+> and perform complete ordinary validation, including retained fence evidence,
+> before granting source authority. Missing or contradictory admission remains
+> corruption; validation must never synthesize Active or clear a fence.
+>
+> V2 sources may retain the existing V1 DIRTY/CLEAN lifecycle and its exact
+> transitions and bytes. CLEAN cannot select a bounded fast startup for a V2
+> source. V1 database behavior and every existing hash, key, record, registry
+> identity and compatibility fixture remain unchanged. Attached followers keep
+> their existing lifecycle rules and gain no local lifecycle writer.
+>
+> V2 source startup therefore has the cost of complete validation. Documentation
+> and evidence must state this limit and must not claim population-independent
+> clean startup for V2. This is an explicit qualification of PERF-019 for V2,
+> not permission to weaken validation or reinterpret the V1 hash. Restoring a
+> bounded V2 clean-start path requires a separately accepted successor lifecycle
+> design and its durable-format and crash proofs; this amendment authorizes no
+> successor record and no implementation of one.
+
+WP-748 owns the correction and the acceptance evidence in the review document.
+The interface gains no bypass, authority, option, or caller-controlled selector.
+The tradeoff is complete-validation startup cost for V2 sources.

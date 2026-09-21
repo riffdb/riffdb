@@ -357,3 +357,19 @@ Exact human acceptance, followed by acceptance of the generator-derived
 successor registry digest in WP-704's interface-first commit, is required before
 the meta key, Protobuf file, semantic lifecycle type, codec, migration, or
 startup/shutdown transition is implemented.
+
+
+## Amendment 1 — V2 source lifecycle eligibility (Accepted 2026-09-18)
+
+- **Status:** Accepted
+- **Accepted:** 2026-09-18
+- **Acceptance reference:** Maintainer, in this Codex session on 2026-09-18,
+  quoted `docs/architecture/WP-748-CLEAN-START-REVIEW.md` and answered
+  “Approve exact amendment”.
+
+The exact accepted amendment is incorporated in ADR-0156 Amendment 6. It
+qualifies lifecycle eligibility for AuthoritativeStateCatalogV2 sources: V1
+CLEAN cannot select bounded startup; complete ordinary validation including
+retained fence evidence is required before source authority. Every V1 hash,
+key, record, transition and compatibility fixture remains unchanged. No
+successor lifecycle record is authorized. WP-748 owns the implementation.

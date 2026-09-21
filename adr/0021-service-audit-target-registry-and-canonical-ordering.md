@@ -38,6 +38,15 @@ or an unbounded result log.
 
 ## Decision
 
+### Accepted amendment: administrative replication stream audit
+
+The exact "Accepted amendment: administrative replication stream audit" text
+in SPEC §13.5 is incorporated here in full and qualifies this decision.
+Maintainer, in session, 2026-09-18: "Approve exact revised amendment", referring
+to `docs/architecture/WP-748-REPLICATION-STREAM-AUDIT-REVIEW.md`. This revised text
+supersedes the earlier draft's extra late-denial audit row. WP-748 owns
+implementation, compatibility evidence and proof before activation.
+
 ### Accepted amendment: registration audit authority
 
 The exact "Accepted amendment: registration audit authority" text in SPEC §13.5

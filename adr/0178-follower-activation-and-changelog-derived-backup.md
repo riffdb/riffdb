@@ -25,6 +25,9 @@ acceptance: >-
   Exact replication administration tag correction accepted by the maintainer
   in session 2026-09-16: "Approve exact correction", referring to
   docs/architecture/WP-748-ADMINISTRATION-TAG-REVIEW.md.
+  Exact revised administrative replication stream audit amendment accepted by
+  the maintainer in session 2026-09-18: "Approve exact revised amendment",
+  referring to docs/architecture/WP-748-REPLICATION-STREAM-AUDIT-REVIEW.md.
 requires: [ADR-0019, ADR-0050, ADR-0061, ADR-0072, ADR-0082, ADR-0083, ADR-0085,
   ADR-0086, ADR-0093, ADR-0100, ADR-0101, ADR-0104, ADR-0112, ADR-0124]
 # ADR-0085 is required at Amendments 2 and 3; ADR-0100 at Amendments 1 and 2.
@@ -102,6 +105,15 @@ Three facts make activation tractable without new design. There is one total ord
 Incremental backup falls out of the same stream. A consumer that persists checksummed frames to a configured sink beside periodic full backups gives restore-to-last-archived-sequence without a second durable format, which the limitations page today lists as absent.
 
 ## Decision
+
+### Accepted amendment: administrative replication stream audit
+
+The exact "Accepted amendment: administrative replication stream audit" text
+in SPEC §13.5 is incorporated here in full and qualifies this decision.
+Maintainer, in session, 2026-09-18: "Approve exact revised amendment", referring
+to `docs/architecture/WP-748-REPLICATION-STREAM-AUDIT-REVIEW.md`. This revised text
+supersedes the earlier draft's extra late-denial audit row. WP-748 owns
+implementation, compatibility evidence and proof before activation.
 
 ### Accepted amendment: registration audit authority
 

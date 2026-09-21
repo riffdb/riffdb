@@ -5717,6 +5717,73 @@ with no protected output. A committed or uncertain control-plane transition uses
 its typed unavailable/uncertain recovery result. No audit failure rolls back an
 authoritative transition already known durable.
 
+### Accepted amendment: administrative replication stream audit
+
+Maintainer, in session, 2026-09-18: "Approve exact revised amendment", referring
+to `docs/architecture/WP-748-REPLICATION-STREAM-AUDIT-REVIEW.md`. This revised text
+supersedes the earlier draft's extra late-denial audit row. WP-748 owns
+implementation, compatibility evidence and proof before activation.
+
+Add `ServiceOperationV1::StreamChangelog` at unused tag `0x3d` to ADR-0007's
+closed service-operation inventory. It identifies the existing single
+`ReplicationService.StreamChangelog` RPC, including its bootstrap, attachment,
+follower acknowledgement, tail and accepted fence-evidence phases. Classify it
+as an intrinsically audited administrative stream with operator-protected
+output. It uses the existing administrative `ReplicateChangelog` permission
+and its current global/all-partition, no-application-role and approval checks.
+No new permission, application operation, MCP tool or separate RPC is added.
+
+The shared API-neutral service owns authenticated context, current-policy
+decisions and audit sequencing. Durable audit goes through the existing sole
+coordinator and service-audit executor. An explicit initial policy denial
+appends standalone `Denied` before returning that denial. An allowed
+establishment appends `Started` before opening the source or changing source
+retention custody. After constructing a bounded, policy-filtered stream
+handle, append `Succeeded` before releasing that handle, including for an
+empty stream. Cancellation, known failure and
+uncertainty use the existing exact phase meanings; a dropped transport future
+cannot turn a possibly committed source-control action into proven cancellation.
+Required audit failure withholds data and returns the existing unavailable
+outcome. There is no unaudited success fallback.
+
+Audit establishment once, not every replicated frame or bootstrap page.
+Continue current-policy checks before and after source admission, waits and
+framing. Preserve ADR-0007 and SPEC §13.5 establishment-only audit: later
+policy denial or failure closes the stream and emits bounded redacted security
+telemetry; it does not append a second terminal record or start another audit
+invocation. The fused stream releases no further items. This creates no
+per-frame audit feedback loop and does not relax freshness, cancellation or
+bounded admission.
+
+Apply ADR-0021's existing request-selected target rule: an explicitly selected
+follower uses the existing lineage-scoped `ReplicationFollower` target; a plain
+tail request uses an empty target list. Derive any attachment target from the
+bounded, checked request manifest before `Started`, never from returned rows
+or source observations. Every record for the invocation retains the same
+checked targets and authenticated principal/capability reference. Result links
+are `None`: source custody or evidence reads do not claim an application commit
+or a fence-administration mutation. No credential, history hash, receipt bytes,
+cursor, business value, network address or transport object enters audit.
+
+Fence evidence travels as one bounded terminal phase/item on the existing
+`StreamChangelog` exchange. It binds the exact selected operation, source
+lineage, follower registration/generation and drained applied position under
+the already accepted promotion-fencing rules. Plain record bytes remain
+unauthenticated evidence. Only the configured exact-CA/name TLS peer path can
+supply authenticated source proof to the promotion owner. The existing
+1024-byte request and 32 MiB + 1024-byte stream-item ceilings remain; the fence
+evidence item has an additional 2048-byte ceiling and emits once before EOF.
+
+Preserve all existing service-operation tags, record/envelope bytes and their
+meanings. The additive tag is carried by existing versioned service-audit
+records with their existing target codec selection and compatibility rules;
+register it in the policy, operation, wire, telemetry and compatibility
+inventories before activation. Older readers must refuse the unknown tag.
+No metadata domain, frame identity, cryptography or migration is added.
+This amendment does not authorize a follower service-audit writer or change
+its already accepted local telemetry exceptions. External promotion-attempt
+audit and offline cutover remain separately required by the accepted amendment.
+
 ### Accepted amendment: registration audit authority
 
 Maintainer, in session, 2026-09-16: "Approve exact text", referring to
@@ -10043,6 +10110,16 @@ behavior:
   PERF-013/PERF-014. A PostgreSQL comparison is non-evidentiary unless the
   harness owns equivalent server lifecycle and integrity work for both
   backends.
+  Accepted V2 source qualification (ADR-0156 Amendment 6 and ADR-0157
+  Amendment 1, 2026-09-18): AuthoritativeStateCatalogV2 source startup MUST
+  decline V1 CLEAN for bounded startup and perform complete ordinary validation,
+  including retained fence evidence, before granting source authority. Missing
+  or contradictory admission remains corruption; validation MUST NOT synthesize
+  Active or clear a fence. V2 startup evidence MUST state this complete-validation
+  cost and MUST NOT claim population-independent clean startup. Existing V1
+  bytes, hashes, transitions and behavior and attached-follower lifecycle rules
+  remain unchanged. A bounded V2 path requires a separately accepted successor
+  design and its durable-format and crash proofs.
 
 ### 24.5.11 Secret field classification and display-surface redaction
 
