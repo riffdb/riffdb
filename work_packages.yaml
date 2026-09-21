@@ -26967,3 +26967,44 @@ work_packages:
       example and states the construction as CMP-014. Four tests enumerate the categories of
       name a component could hold, so a grammar change admitting a wider component fails and
       names the pass it would then owe.
+- id: WP-806
+  name: Close the semantic write-path gap against the comparison baseline
+  tier: guarantee
+  depends_on: [WP-790]
+  objective: The project's own comparison harness measures RiffDB at 0.17-0.22x Postgres on
+    an application workload, with create_comment 7.6x slower at p50 and the aggregate set by
+    writes. SPEC section 262 makes that a go/no-go input to the POC-exit decision, and the
+    evidence is published but unworked. Attribute the write-path cost to its components and
+    close what can be closed without weakening a guarantee.
+  requirements: []
+  required_adrs: [ADR-0239, ADR-0238]
+  allowed_paths: [work_packages.yaml, docs/performance/**, benchmarks/**,
+    scripts/check-performance-freeze]
+  deliverables:
+  - A per-component attribution of one write, measured rather than reasoned, covering at
+    least provenance record construction, audit, journal append and fsync, canonical
+    encoding, and allocator traffic. The existing profile already names libc malloc/free
+    plus drop glue for CanonicalValue, CommandDerivedIndexes and StoredProvenanceRecordV1,
+    and the E2/N1 pair already separates fsync cost from hashing; start there rather than
+    re-deriving it
+  - For each component, whether its cost is inherent to a stated guarantee, inherent to the
+    current representation, or incidental, with the evidence for the classification
+  - The incidental cost removed, or a recorded finding that none is, measured on the banked
+    baseline under ADR-0239's discipline
+  - A statement of what ratio is achievable without weakening provenance, audit,
+    durability of acknowledged writes, or canonical ordering, so the POC-exit review has a
+    number rather than an intention
+  acceptance_commands:
+  - ./scripts/acceptance --wp WP-806
+  exit_gate: The write-path cost is attributed to components with measurements rather than
+    reasoning, each component is classified as guarantee-inherent, representation-inherent
+    or incidental with evidence, and the POC-exit review can read what ratio is reachable
+    without weakening a guarantee.
+  standing_design_tests:
+    interface_safety: No optimization may make a guarantee optional, add a fast path that
+      skips provenance, audit or durability, or expose a tuning knob that lets an
+      application trade one away. A cost found to be guarantee-inherent is reported as
+      such, not removed.
+    scale: Attribution holds at the banked load and client count, and any change is measured
+      at the same concurrency rather than only unary.
+  human_review_triggers: *id001
