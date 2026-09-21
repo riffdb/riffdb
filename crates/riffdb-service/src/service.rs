@@ -341,9 +341,8 @@ impl ServiceProviders {
         self
     }
 
-    /// Installs published columnar projection observation for projected queries.
-    #[must_use]
     /// Supplies the deploy-time columnar admission capability (ADR-0251).
+    #[must_use]
     pub fn with_columnar_admission(
         mut self,
         admission: Arc<dyn crate::ColumnarAdmissionPort>,
@@ -352,6 +351,8 @@ impl ServiceProviders {
         self
     }
 
+    /// Installs published columnar projection observation for projected queries.
+    #[must_use]
     pub fn with_columnar(mut self, columnar: Arc<dyn ColumnarProjectionPort>) -> Self {
         self.columnar = Some(columnar);
         self
