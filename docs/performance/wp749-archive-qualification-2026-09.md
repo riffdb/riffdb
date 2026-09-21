@@ -51,11 +51,12 @@ stability is not between-arm parity and does not grant 20% archive overhead.**
 Disclose each paired difference and the median contrast against the same-source
 disabled arm. The existing acknowledgement/write-gate requirement remains.
 
-P99 is disclosed under ADR-0249, with the already named checkpoint-conditioned
-durability/publication drain and the limits of that attribution. There is no
-new numeric P99 threshold, no claim that every tail movement has that cause, and
-no new tail hypothesis or representation work follows from this comparison.
-Unresolved evidence remains unresolved; this protocol does not pre-award a pass.
+Throughput is disclosed; this package's exit gate binds acknowledgement latency
+and the write gate. ADR-0249 sets no numeric P99 threshold, but requires a named
+mechanism for a published tail regression. The earlier checkpoint-conditioned
+durability/publication drain does not automatically explain an additional
+archive-presence effect. An unexplained movement cannot be discharged by naming
+a follow-up owner. This protocol does not pre-award a pass.
 
 ## Result recorded on 2026-09-21
 
@@ -80,6 +81,14 @@ a script that independently verifies the arithmetic.
 | Interactive | Request P99 (ms) | 12.059 | 12.583 | +4.35% |
 | Interactive | Mean group commit (ms) | 2.938 | 2.890 | -1.62% |
 
+For write-only, these request percentiles directly measure client-observed
+command acknowledgement. `time_call` in `examples/app-baseline/core/src/timing.rs`
+starts before the generated command call; the RiffDB backend returns after the
+gRPC response is received and decoded. Thus P50, P95 and P99 all moved in this
+comparison; there is no separate unchanged acknowledgement figure. Interactive
+percentiles aggregate reads and writes and are not a write-only acknowledgement
+measurement. Mean group-commit time is also a different population and boundary.
+
 All twenty replacement cells passed host and correctness checks, with zero
 whole-cell CPU steal, errors or unavailable outcomes. Every arm passed the
 P50/P95 central-three stability rule. Every paired comparison had lower
@@ -103,13 +112,26 @@ used to restart the complete twenty-cell set. No initial cell was imported, no
 performance result selected a retry, and host policy was unchanged. The
 replacement completed at 14:11:35 UTC; the host was released at 14:12:32 UTC.
 
-P99 remains disclosure under ADR-0249. The earlier correlated investigation
-named checkpoint-conditioned durability/publication drains; this comparison
-does not attribute its additional archive tail movement to that mechanism and
-does not open another tail hypothesis. The present closure issue is the measured
-write-only acknowledgement cost. The existing gate's word "unchanged" is not
-established by these results. Reducing that cost or explicitly accepting a gate
-clarification remains separate work; no completion is recorded here.
+The existing gate's word "unchanged" is not established by these results. On
+2026-09-21 the maintainer authorized one bounded archive off/on attribution,
+using repaired receipt-wait and checkpoint counters joined to actual command
+responses. It must verify the production construction and execution paths,
+retain raw samples, and distinguish overlapping wait/sync intervals from the
+unattributed client-duration remainder. It is not a new qualification campaign
+or a reopening of capture representation work.
+
+If that evidence establishes the mechanism and unchanged acknowledgement
+latency, throughput cost is disclosed beside the gate verdict. If latency
+genuinely moved, the required decision is an exact amendment to the latency
+clause naming the mechanism, not an exception for throughput. Until then the
+additional archive tail movement remains unresolved and WP-749 stays open.
+
+The [bounded attribution attempt](wp749-archive-ack-attribution-2026-09.md)
+subsequently completed both workloads but stopped at enabled-cell host postflight
+after unauthenticated SSH activity. Its trace identifies long positional journal
+writes before sync on the checkpoint-conditioned drain path; the host-invalid
+pair does not settle the archive-specific cause. There was no retry, amendment
+or completion claim.
 
 ## Local integration checks
 
