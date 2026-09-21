@@ -179,6 +179,22 @@ pub(crate) const APPEND_EPOCH: usize = 44;
 /// Level 2: building the candidate and staging it onto the open batch.
 pub(crate) const APPEND_BUILD_STAGE: usize = 45;
 
+// Level 3. The staging three cover every call to `stage_checked_candidate`,
+// which is a superset of `append_build_stage`: the once-per-group first-on-empty
+// path charges them too. The epoch three decompose `append_epoch` exactly.
+/// Level 3: extracting the checked record-graph input from the candidate.
+pub(crate) const STAGE_GRAPH_INPUT: usize = 46;
+/// Level 3: building the atomic command record set.
+pub(crate) const STAGE_BUILD_RECORDS: usize = 47;
+/// Level 3: attaching the built records to the candidate.
+pub(crate) const STAGE_ATTACH: usize = 48;
+/// Level 3: deriving the checked command indexes.
+pub(crate) const EPOCH_DERIVE_INDEXES: usize = 49;
+/// Level 3: reading the affected epoch as of transaction current.
+pub(crate) const EPOCH_READ_AFFECTED: usize = 50;
+/// Level 3: reserving capacity and assigning the commit sequence.
+pub(crate) const EPOCH_RESERVE_ASSIGN: usize = 51;
+
 /// First and exclusive-end index of the run nested inside `exec_alternate_path`.
 const SERIAL_NESTED_START: usize = 33;
 const SERIAL_NESTED_END: usize = 40;
@@ -211,7 +227,7 @@ const DRIVE_NESTED_END: usize = 30;
 /// `serial_residual` derived. They are already inside it and must never be
 /// added to the level-1 total.
 #[doc(hidden)]
-pub const WRITER_BATCH_STAGE_LABELS_V1: [&str; 46] = [
+pub const WRITER_BATCH_STAGE_LABELS_V1: [&str; 52] = [
     "loop_drain_ready",
     "loop_work_recv",
     "loop_admit_gate",
@@ -258,6 +274,12 @@ pub const WRITER_BATCH_STAGE_LABELS_V1: [&str; 46] = [
     "append_current",
     "append_epoch",
     "append_build_stage",
+    "stage_graph_input",
+    "stage_build_records",
+    "stage_attach",
+    "epoch_derive_indexes",
+    "epoch_read_affected",
+    "epoch_reserve_assign",
 ];
 
 /// Number of writer loop iterations merged into one ordinal window.
@@ -566,7 +588,7 @@ mod tests {
         );
         assert_eq!(
             WRITER_BATCH_STAGE_LABELS_V1.len(),
-            APPEND_BUILD_STAGE + 1,
+            EPOCH_RESERVE_ASSIGN + 1,
             "every declared index must have a label"
         );
         // The level-2 append stages are children of `exec_stage_serial`, which
@@ -579,6 +601,12 @@ mod tests {
             APPEND_CURRENT,
             APPEND_EPOCH,
             APPEND_BUILD_STAGE,
+            STAGE_GRAPH_INPUT,
+            STAGE_BUILD_RECORDS,
+            STAGE_ATTACH,
+            EPOCH_DERIVE_INDEXES,
+            EPOCH_READ_AFFECTED,
+            EPOCH_RESERVE_ASSIGN,
         ] {
             assert!(
                 !(DRIVE_NESTED_START..DRIVE_NESTED_END).contains(&level2),

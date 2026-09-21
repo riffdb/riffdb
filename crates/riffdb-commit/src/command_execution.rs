@@ -4913,8 +4913,11 @@ where
     };
     crate::writer_census::charge(crate::writer_census::APPEND_CURRENT, append_phase);
     let append_phase = crate::writer_census::stage_start();
+    let append_epoch_parent = crate::writer_census::stage_start();
     let indexed = derive_checked_command_indexes(validated)
         .map_err(|error| command_index_failure(error, lifecycle))?;
+    crate::writer_census::charge(crate::writer_census::EPOCH_DERIVE_INDEXES, append_phase);
+    let append_phase = crate::writer_census::stage_start();
     let indexed = match indexed.read_affected_epoch_current() {
         CheckedAffectedEpochDecision::Ready(indexed) => indexed,
         CheckedAffectedEpochDecision::Rejected(rejected) => {
@@ -4930,6 +4933,8 @@ where
             return Err(proven_storage_failure(error, lifecycle));
         }
     };
+    crate::writer_census::charge(crate::writer_census::EPOCH_READ_AFFECTED, append_phase);
+    let append_phase = crate::writer_census::stage_start();
     let reserved = resolve_checked_reserve_decision(indexed.reserve_capacity(), lifecycle)?;
     let assigned = match reserved.assign_sequence() {
         CheckedAssignDecision::Assigned(assigned) => assigned,
@@ -4938,7 +4943,8 @@ where
         }
         CheckedAssignDecision::Integrity => return Err(internal_defect(lifecycle)),
     };
-    crate::writer_census::charge(crate::writer_census::APPEND_EPOCH, append_phase);
+    crate::writer_census::charge(crate::writer_census::EPOCH_RESERVE_ASSIGN, append_phase);
+    crate::writer_census::charge(crate::writer_census::APPEND_EPOCH, append_epoch_parent);
     let append_phase = crate::writer_census::stage_start();
     let staged_result = build_and_stage_checked_candidate_on_prior(
         assigned,
