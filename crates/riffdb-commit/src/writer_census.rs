@@ -194,6 +194,10 @@ pub(crate) const EPOCH_DERIVE_INDEXES: usize = 49;
 pub(crate) const EPOCH_READ_AFFECTED: usize = 50;
 /// Level 3: reserving capacity and assigning the commit sequence.
 pub(crate) const EPOCH_RESERVE_ASSIGN: usize = 51;
+/// Level 4: proving the built records match the reserved candidate.
+pub(crate) const ATTACH_MATCH_RESERVED: usize = 52;
+/// Level 4: the storage stage of the matched candidate.
+pub(crate) const ATTACH_STORAGE_STAGE: usize = 53;
 
 /// First and exclusive-end index of the run nested inside `exec_alternate_path`.
 const SERIAL_NESTED_START: usize = 33;
@@ -227,7 +231,7 @@ const DRIVE_NESTED_END: usize = 30;
 /// `serial_residual` derived. They are already inside it and must never be
 /// added to the level-1 total.
 #[doc(hidden)]
-pub const WRITER_BATCH_STAGE_LABELS_V1: [&str; 52] = [
+pub const WRITER_BATCH_STAGE_LABELS_V1: [&str; 54] = [
     "loop_drain_ready",
     "loop_work_recv",
     "loop_admit_gate",
@@ -280,6 +284,8 @@ pub const WRITER_BATCH_STAGE_LABELS_V1: [&str; 52] = [
     "epoch_derive_indexes",
     "epoch_read_affected",
     "epoch_reserve_assign",
+    "attach_match_reserved",
+    "attach_storage_stage",
 ];
 
 /// Number of writer loop iterations merged into one ordinal window.
@@ -588,7 +594,7 @@ mod tests {
         );
         assert_eq!(
             WRITER_BATCH_STAGE_LABELS_V1.len(),
-            EPOCH_RESERVE_ASSIGN + 1,
+            ATTACH_STORAGE_STAGE + 1,
             "every declared index must have a label"
         );
         // The level-2 append stages are children of `exec_stage_serial`, which
@@ -607,6 +613,8 @@ mod tests {
             EPOCH_DERIVE_INDEXES,
             EPOCH_READ_AFFECTED,
             EPOCH_RESERVE_ASSIGN,
+            ATTACH_MATCH_RESERVED,
+            ATTACH_STORAGE_STAGE,
         ] {
             assert!(
                 !(DRIVE_NESTED_START..DRIVE_NESTED_END).contains(&level2),
