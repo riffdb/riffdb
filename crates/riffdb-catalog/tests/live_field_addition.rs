@@ -129,6 +129,54 @@ fn vector_successor_source() -> String {
     )
 }
 
+/// A vector field added alongside a whole new command that initialises it,
+/// leaving the original command untouched. A successor may introduce a command
+/// freely, so if anything rescues a vector field on a live application this is
+/// it.
+const ADDS_A_VECTOR_VIA_A_NEW_COMMAND: &str = r#"contract Live version 2 {
+  entity Document {
+    key (org_id: uuid, document_id: uuid)
+    field title: string<200>
+    vector_field embedding(4, cosine, (title), staleness_slo 60,
+      model "m", current_version "2026-09-21",
+      replay_age_seconds 86400, replay_bytes 1073741824,
+      replay_backlog 100000)
+    index by_org (org_id, document_id)
+  }
+  aggregate Documents {
+    root Document
+    partition_by org_id
+    conflict_key (org_id)
+  }
+  command CreateDocument {
+    input idempotency_key: string<128>
+    input org_id: uuid
+    input document_id: uuid
+    input title: string<200>
+    idempotency_key idempotency_key
+    create Document(org_id, document_id) as document
+      else DocumentExists { document_id: document_id }
+    set document.title = title
+    return Created { document: document }
+  }
+  command CreateDocumentWithEmbedding {
+    input idempotency_key: string<128>
+    input org_id: uuid
+    input document_id: uuid
+    input title: string<200>
+    input embedding: vector<4>
+    input submitted_model: string<256>
+    input submitted_version: string<256>
+    idempotency_key idempotency_key
+    create Document(org_id, document_id) as document
+      else DocumentExists { document_id: document_id }
+    set document.title = title
+    embed document.embedding = embedding
+      from (submitted_model, submitted_version)
+    return Created { document: document }
+  }
+}"#;
+
 /// Compiles `successor` against the genesis contract and reports its overall
 /// compatibility class, printing every finding so a failure shows which change
 /// drove the class rather than only the class.
@@ -192,6 +240,31 @@ fn an_optional_field_needs_no_command_change() {
         class,
         CompatibilityClass::Incompatible,
         "an optional field changes no command surface, so nothing refuses it"
+    );
+}
+
+/// A new command does not rescue it, and the reason is the old command.
+///
+/// A successor may introduce a command freely, so the new one is not what
+/// refuses. The original `CreateDocument` still creates a `Document`, and that
+/// entity now has a required vector field it does not initialise, so the
+/// binding it always had stops compiling. Adding a required field breaks every
+/// existing command that creates the entity, whatever else the successor does.
+#[test]
+fn a_new_command_does_not_rescue_a_vector_field() {
+    let parent =
+        riffdb_contract_compiler::compile_contract_source(GENESIS).expect("genesis compiles");
+    let outcome = riffdb_contract_compiler::compile_contract_successor(
+        ADDS_A_VECTOR_VIA_A_NEW_COMMAND,
+        &parent,
+    );
+    let rendered = format!(
+        "{:?}",
+        outcome.expect_err("a new command does not make the old one compile")
+    );
+    assert!(
+        rendered.contains("InvalidCreation"),
+        "the untouched command's create binding is what refuses, found {rendered}"
     );
 }
 
