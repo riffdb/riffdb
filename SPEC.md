@@ -7130,9 +7130,25 @@ row, redb key, or backup artifact.
 Restore preserves `DatabaseId` and rewinds both authoritative sequence spaces
 to the backup. Every observation/locator/idempotency/audit assumption from the
 destroyed suffix is invalid, and a destroyed application or administration
-sequence may later be reused for a different record. The POC has no
-incarnation/history-epoch fence; documentation and destructive confirmation
-must state that limitation.
+sequence may later be reused for a different record.
+
+The `history_incarnation/v1` fence (ADR-0072, section 10.2) distinguishes that
+history from the one before it. Destructive restore is the only operation that
+changes it: the offline phase computes `max(target incarnation, staged
+incarnation) + 1` and records it in the maintenance receipt, and the published
+phase stamps it idempotently before post-publication validation, so a
+crash-resume re-applies it exactly once in effect. Ordinary startup,
+non-destructive maintenance, and an already-stamped resume never change it. A
+backup manifest without the field is treated as incarnation 0 for that
+computation, so the fence still advances from a pre-fence backup.
+
+The residual limitation is narrower than the absence of a fence, and
+documentation and destructive confirmation must still state it: the fence
+makes a stale assumption *detectable*, it does not preserve one. A sequence
+from the destroyed suffix is still reused for an unrelated record, and a
+holder of a locator, cursor, subscription position, read-after-sequence
+expectation, or idempotency key from that suffix must obtain new ones rather
+than reconcile the old.
 
 Encrypted backup and wall-clock point-in-time recovery remain MVP work. ADR-0178
 (`REP-007`, section 4.10) moves changelog-derived incremental backup and the
