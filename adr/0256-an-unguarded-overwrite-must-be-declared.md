@@ -1,16 +1,19 @@
 ---
 adr: "0256"
 title: An Unguarded Overwrite Must Be Declared
-status: proposed
+status: accepted
 tier: guarantee
 date: 2026-09-21
-accepted: null
-acceptance: null
+accepted: 2026-09-21
+acceptance: 'maintainer, in session, 2026-09-21, choosing the distinct keyword over an
+  additive declaration or a deploy-time report, and choosing that the classification
+  participates in the plan hash (ADR-0256 as written, after both questions were put
+  with their migration costs stated)'
 requires: [ADR-0252]
 amends: []
 supersedes: []
 requirements: []
-packages: []
+packages: [WP-807]
 obligations: []
 review_triggers:
   - Any change to how a mutation's precondition is analysed or declared.
@@ -51,29 +54,39 @@ writes exist; it is that a blind write and a proven one look the same.
 
 ## Decision
 
-Proposed, not accepted. The shape is:
-
 1. The compiler classifies every field write on a `mutate`, `init_or_mutate`,
    or `observe_or_initialize` binding as **guarded** -- the command declares a
    `require`, or the aggregate an invariant, that reads that binding's
    pre-image -- or **unguarded**.
-2. An unguarded write must be declared as such in the contract. Its spelling is
-   the open question in Options below.
-3. The compiler proves the declaration against the command: a write declared
-   guarded that is not, or undeclared and unguarded, is a diagnostic. A field
-   whose write becomes unguarded because a `require` was deleted fails to
-   compile rather than silently changing concurrency semantics.
-4. `riffdb contract explain` reports each write's classification, so the
+2. An unguarded write is spelled `overwrite`, distinct from `set`. `set` on
+   such a binding requires a precondition on the field's prior value; a write
+   with none must say `overwrite` at the point of use. This is a breaking
+   grammar change and selects a new grammar, executable IR, and bundle version.
+3. The compiler proves the spelling against the command. A `set` whose field
+   has no precondition is a diagnostic naming the field and what would satisfy
+   it; an `overwrite` that is in fact guarded is a diagnostic telling the
+   author to use `set`. Deleting a `require` therefore fails to compile rather
+   than silently changing concurrency semantics, which is the property this
+   record exists for.
+4. The classification participates in the plan hash. Moving a write between
+   guarded and unguarded is a change in concurrency semantics, so it moves the
+   contract's identity and trips the application lock like any other semantic
+   change, and a deployed plan can be audited for the property rather than only
+   a compiling source.
+5. `riffdb contract explain` reports each write's classification, so the
    property is legible without reading the lowering.
 
 ## Options considered
 
-1. **A distinct spelling for the unguarded write**, for example `overwrite
-   slot.held_by = holder` beside the guarded `set`. Clearest at the point of
-   use and impossible to miss in review. It is a breaking grammar change: every
+1. **A distinct spelling for the unguarded write**: `overwrite slot.held_by =
+   holder` beside the guarded `set`. Chosen. Clearest at the point of use and
+   impossible to miss in review. It is a breaking grammar change: every
    existing contract's unguarded writes stop compiling until respelled, and
    every one must be classified by a human as part of the migration. That
-   migration is the point, and it is also the cost.
+   migration is the point, and it is also the cost. It is cheapest now:
+   ADR-0072 made the same argument for the incarnation fence, that before alpha
+   an additive change becomes, after alpha, a breaking migration against live
+   client assumptions.
 2. **A binding- or command-level declaration** naming the fields written
    without a precondition, leaving `set` unchanged. Additive, so existing
    contracts keep their identity until they opt in, and it puts the whole list
@@ -96,10 +109,11 @@ Proposed, not accepted. The shape is:
 - This does not make application-side selection unnecessary, and does not add
   a range read. It makes the command that follows a selection prove the
   condition the selection assumed, which is the part that was optional.
-- The compatibility surface is the plan: a classification that participates in
-  the plan hash moves every affected contract's identity, and one that does not
-  is not provable at deploy time. That trade needs deciding before this record
-  is accepted.
+- Every affected contract's identity moves, by decision 4 and again by the
+  grammar version decision 2 selects. Both were weighed: the classification is
+  a semantic property, and a plan whose write semantics changed should not keep
+  its old hash. Contracts using only `set` on guarded writes are unaffected in
+  meaning but still recompile under the new grammar version.
 
 ## Standing design tests
 

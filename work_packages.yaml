@@ -27008,3 +27008,46 @@ work_packages:
     scale: Attribution holds at the banked load and client count, and any change is measured
       at the same concurrency rather than only unary.
   human_review_triggers: *id001
+- id: WP-807
+  name: An unguarded overwrite is spelled overwrite
+  tier: guarantee
+  depends_on: []
+  objective: A command may today overwrite a field without declaring anything about its
+    prior value, and the guarded and unguarded forms are indistinguishable in source, in
+    commit checks, in conflict ownership and in the plan. Make the two forms distinct at
+    the point of use, prove the spelling against the command, and carry the classification
+    in the plan, per ADR-0256.
+  requirements: []
+  required_adrs: [ADR-0256, ADR-0252, ADR-0002]
+  allowed_paths: [SPEC.md, work_packages.yaml, adr/0256-an-unguarded-overwrite-must-be-declared.md,
+    crates/riffdb-contract-syntax/**, crates/riffdb-contract-compiler/**,
+    crates/riffdb-contract-ir/**, crates/riffdb-cli/src/output.rs, fixtures/**, docs/**,
+    templates/**, clients/**, examples/**]
+  deliverables:
+  - A per-write guarded/unguarded classification derived from the command's requires and
+    the aggregate's invariants over the binding's pre-image, with the analysis stated
+    precisely enough that a reader can predict it
+  - The `overwrite` keyword, and a diagnostic pair with source-span snapshots and semantic
+    assertions - a `set` with no precondition naming the field and what would satisfy it,
+    and an `overwrite` that is in fact guarded telling the author to use `set`
+  - A regression proving that deleting a `require` from a guarded command fails to compile
+    rather than changing concurrency semantics silently
+  - The classification carried in the executable plan and folded into the plan hash, with
+    the least-sufficient grammar, IR and bundle version selected for a contract that uses
+    the new spelling, and compatibility fixtures for the version boundary
+  - "`riffdb contract explain` reporting each write's classification"
+  - Every first-party contract, template, example, and generated-client fixture migrated,
+    and every unguarded write classified by a human rather than mechanically respelled
+  acceptance_commands:
+  - ./scripts/acceptance --wp WP-807
+  - ./scripts/downstream-adapter-check
+  exit_gate: A silent lost update is not expressible. A deliberate overwrite still is, but
+    only where a reviewer reads it, and `an_unguarded_overwrite_is_accepted_and_unmarked`
+    has been replaced by its inverse.
+  standing_design_tests:
+    interface_safety: An application cannot express a write whose concurrency semantics are
+      last-writer-wins without saying so at the point of use. No flag, binding mode, or
+      option restores the silent form.
+    scale: Classification is a local analysis over a command's already-bounded bindings and
+      requires. It adds no runtime work and no unbounded compile-time work.
+  human_review_triggers: *id001
