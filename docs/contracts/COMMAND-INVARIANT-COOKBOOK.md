@@ -1,8 +1,16 @@
 # Command and invariant cookbook
 
-These grammar-v1 patterns preserve RiffDB’s application safety rule: writes are
+These patterns preserve RiffDB's application safety rule: writes are
 accepted only through compiled commands whose complete data dependencies,
 conflicts, invariants, outcomes, and partition route are known before runtime.
+
+A contract does not pick a grammar version. The compiler assigns the least
+sufficient one for the constructs the contract actually uses, so a contract
+built only from the patterns below keeps the V1 identity, and one that reaches
+for a newer construct — partition-local cross-aggregate writes, high-cardinality
+atomic collections — selects the version that admits it. The current maximum is
+V23. `SPEC.md` §7 defines the base surface and its changelog records what each
+later version added.
 
 ## Create an aggregate root
 
