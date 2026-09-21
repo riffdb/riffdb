@@ -67,8 +67,9 @@ These limits are part of the POC release posture, not hidden roadmap promises.
   are recorded separately. [Registration and retirement](operations/FOLLOWER-ADMINISTRATION.md)
   are available through gRPC, the Rust client and CLI. Fencing and promotion are
   experimental: restricted pre-cutover retry and crash recovery are implemented;
-  local failure/cancellation and under-load proofs pass; final CI and review
-  remain open.
+  failure/cancellation and under-load proofs and the complete CI battery pass;
+  [human implementation review](architecture/WP-748-PROMOTION-IMPLEMENTATION-REVIEW.md)
+  remains open.
   WP-749 remains open for qualification.
   The accepted registration-audit and promotion-fencing amendments are recorded
   in SPEC §13.5.

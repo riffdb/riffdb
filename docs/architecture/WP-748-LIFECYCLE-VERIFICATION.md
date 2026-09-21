@@ -1,14 +1,15 @@
 # WP-748 lifecycle, health and expiry verification
 
-Package: WP-748. Tier: guarantee. Status: earlier registration/retirement
-increments qualified; promotion integration checkpoint verified locally;
-WP-748 remains open. Promotion correctness resumed independently of the closed
+Package: WP-748. Tier: guarantee. Status: registration/retirement and promotion
+correctness verified through the complete CI battery; human implementation and
+fixture review pending. WP-748 remains open. Promotion resumed independently of the closed
 WP-749 tail investigation. This report makes no performance-qualification claim.
 
 ## Promotion integration and recovery guard
 
-The saved approved promotion implementation is integrated onto main revision
-`395e2b693` without its private benchmark evidence or compact-prefix experiments.
+The saved approved promotion implementation was initially integrated onto main
+revision `395e2b693` without its private benchmark evidence or compact-prefix
+experiments. Final implementation `6cba6e8c` uses public main `05501ec07` as its base.
 The already accepted V2 complete-startup and revised establishment-only stream
 amendments are restored in an authority-only commit. Main's Rust 1.98.1 and
 process/request defect scoping remain in force.
@@ -37,16 +38,16 @@ tests passed in a focused, serial rerun of 765 tests. The two daemon crash
 campaigns finished in 38.1 and 34.2 seconds against unchanged 120-second limits.
 Nextest now reserves the runner for follower lifecycle and promotion crash
 campaigns; no readiness deadline, crash schedule or assertion was relaxed.
-All 19 non-test acceptance steps pass, including scoped all-feature Clippy and
-all 30 generators, handbook, dependencies and governance. A fresh full CI run remains required
-before merge. The checkpoint makes no package completion or merge claim.
+The earlier 19 non-test acceptance steps passed, including scoped all-feature
+Clippy and all 30 generators, handbook, dependencies and governance. The final
+complete battery is recorded below. Human review still precedes merge and closure.
 
 Generated client changes propagate through application locks, adapter and
 portability fixtures, and driver manifests. Their regeneration is a fixture
 refresh, not a new external-consumer or performance qualification result.
 
 Restricted pre-cutover startup and the under-load zero/nonzero-RPO drills are
-implemented and exercised below. Final CI and fixture review remain. The
+implemented and exercised below. Final fixture review remains. The
 passing lifecycle path is preserved rather than consolidated. Follower-derived
 projection generation and lifecycle belong to the follower under ADR-0248.
 
@@ -57,17 +58,49 @@ projection generation and lifecycle belong to the follower under ADR-0248.
 - **Behavior:** recover the approved live TLS promotion and committed restart
   path; keep failed or denied selected attempts fenced until exact successful
   reconciliation under the current owner.
-- **Checks:** workspace all-target/all-feature build, scoped all-feature Clippy,
-  40 focused storage promotion tests, 765 repair/recovery tests and all 19
-  non-test acceptance steps; the initial scoped run and its failures are
-  disclosed above.
+- **Checks:** the complete CI battery at `6cba6e8c`, including workspace
+  all-target/all-feature Clippy, tests/doctests, real archive CLI, operator
+  conformance, generators and installation; 17 non-CI acceptance checks passed.
+  Initial failed attempts and environment repairs are disclosed below.
 - **Compatibility:** no pre-existing durable identity or V1 bound changed; no
-  compact-prefix format is activated. Public fixture review and full CI precede
-  merge.
+  compact-prefix format is activated. Public fixture review precedes merge.
 - **Updated handbook:** follower administration, configuration, compatibility,
   backup/restore, remote ingress, errors and known limitations.
-- **Hazards and follow-ups:** final CI/fixture review remain; the process
-  recovery and under-load evidence below does not substitute for either.
+- **Hazards and follow-ups:** human implementation/fixture review remains;
+  fencing may leave both nodes unavailable until exact recovery succeeds.
+
+### Final promotion validation
+
+On 2026-09-21, all `scripts/ci-all` steps completed successfully at fixed
+implementation `6cba6e8c`, using Rust 1.98.1. The initial command was
+`./scripts/acceptance --wp WP-748 --range 8c025c549..HEAD --full`.
+Its 17 non-CI checks passed. Workspace lint, tests and doctests, both real
+archive CLI cases, documentation, dependency checks and expansion-oracle
+checks also passed before operator conformance stopped at the TypeScript build.
+
+That stop was an isolated-worktree environment error: TypeScript was on PATH,
+but the worktree lacked its locked `@types/node` package. `npm ci` installed
+the unchanged lockfile dependencies. The exact remaining `ci-all` commands then
+passed through source installation. Operator conformance was additionally
+rerun successfully with the project's pinned Maturin 1.14.1, replacing the
+global 1.15.0 used by the first completed attempt. No runtime source or lockfile
+changed during these repairs. The complete result uses those retained attempts;
+the original uninterrupted invocation is recorded as failed, not relabeled.
+
+The full-run follower binary passed all 25 tests in 672.59 seconds. Storage unit
+tests passed 730 with zero failures and one existing ignored scale diagnostic
+in 798.76 seconds. Both named WP-748 obligation proofs passed. Existing opt-in
+diagnostics, fixture generators and process tests retain their ignore markers;
+the two archive CLI cases are explicitly executed later by `ci-all` and passed.
+Cargo-machete's two missing-source notices concern unchanged template and
+negative-fixture manifests that explicitly document their non-compilable layout.
+
+The final checks also cover Rust, Go, TypeScript, Python, CLI and MCP operational
+queries; hosted/stdio cursor authority and redaction; generated fixtures and
+topology; requirement/ADR proofs; Helm render, operator and upgrade/rollback
+checks; public-source authoring; and source installation. See the
+[implementation and fixture review](WP-748-PROMOTION-IMPLEMENTATION-REVIEW.md)
+for the exact review range and compatibility inventory.
 
 ### Restricted pre-cutover recovery
 
@@ -275,6 +308,7 @@ policy, audit-link, wire and CLI checks. The maintainer accepted the exact publi
 2026-09-17 with "i approve"; see the linked review for the acceptance record. The implementation and generated artifacts are fixed at
 that revision; this report is a documentation follow-up.
 
-Primary fencing, authenticated fence proof, offline promotion,
-incarnation/epoch advancement and exact RPO remain WP-748 work. WP-749 still
-requires its held qualification; WP-750 depends on both open packages.
+Primary fencing, authenticated fence proof, promotion, incarnation/epoch
+advancement and exact RPO are implemented and verified above. Human review and
+the resulting closure record remain for WP-748. WP-749 still requires archive
+qualification; WP-750 depends on both open packages.

@@ -88,8 +88,10 @@ current facts before the coordinator commits.
 
 Old audit generations retain their bytes. Use matching updated clients for the
 new RPCs; see [compatibility](../compatibility.md). Automatic registry migration
-is not provided. The experimental fencing and promotion path below has local
-recovery and under-load proofs; final CI and review remain before WP-748 closes.
+is not provided. The experimental fencing and promotion path below has recovery
+and under-load proofs and a completed CI battery;
+[human implementation review](../architecture/WP-748-PROMOTION-IMPLEMENTATION-REVIEW.md)
+remains before WP-748 closes.
 
 ## Experimental fencing and promotion
 

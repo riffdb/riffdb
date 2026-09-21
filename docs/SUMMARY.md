@@ -113,6 +113,7 @@
     - [V2 complete startup amendment](architecture/WP-748-CLEAN-START-REVIEW.md)
     - [Replication stream audit amendment](architecture/WP-748-REPLICATION-STREAM-AUDIT-REVIEW.md)
   - [WP-748 Public Lifecycle Fixture Review](architecture/WP-748-PUBLIC-LIFECYCLE-REVIEW.md)
+  - [WP-748 Promotion Implementation Review](architecture/WP-748-PROMOTION-IMPLEMENTATION-REVIEW.md)
   - [WP-746 Scope Review](architecture/WP-746-SCOPE-REVIEW.md)
   - [WP-746 Follower Lifecycle Review](architecture/WP-746-FOLLOWER-LIFECYCLE-REVIEW.md)
   - [WP-746 Follower Audit Proposal](architecture/WP-746-FOLLOWER-AUDIT-REVIEW.md)
