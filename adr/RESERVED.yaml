@@ -1,0 +1,41 @@
+# Numbers with no record in this directory.
+#
+# A generated index cannot show a number that is absent: the table skips it, and
+# a reader cannot tell whether the decision exists somewhere else or was never
+# written. ./scripts/adr-index refuses a gap that is not declared here.
+#
+# ./scripts/adr-new allocates max+1, so a number listed here is never reused;
+# what a reservation buys is legibility, not collision safety. An entry is
+# removed when its record lands, and the check fails if a reservation and a
+# record both exist.
+reserved:
+  - adr: "0067"
+    status: abandoned
+    note: >-
+      No record was ever written under this number, in any branch or any commit
+      in this repository's history, and nothing references it.
+  - adr: "0068"
+    status: abandoned
+    note: >-
+      As ADR-0067.
+  - adr: "0069"
+    status: abandoned
+    note: >-
+      As ADR-0067.
+  - adr: "0224"
+    title: Compiler-Sealed Folded Inputs For Exact Provider V5
+    status: accepted elsewhere
+    where: branch codex/wp757-integration-safe
+    note: >-
+      Accepted 2026-09-11 as a guarantee-tier record owned by WP-757, which is
+      still open. The decision cannot be read on main, so a reader here sees
+      only a gap. It merges with the WP-757 work or is withdrawn.
+  - adr: "0225"
+    title: Directory-Anchored Bounded Columnar Candidate Cleanup
+    status: accepted elsewhere
+    where: branch codex/wp757-integration-safe
+    note: >-
+      Accepted 2026-09-12, also owned by WP-757. Its acceptance date falls on
+      governance/tiers.yaml's reference_required_since, and its front matter
+      carries no `acceptance:` reference, so ./scripts/check-acceptance-commits
+      will refuse it as written. That must be resolved before it merges.
