@@ -6,7 +6,9 @@ tier: guarantee
 date: 2026-09-20
 accepted: 2026-09-20
 acceptance: 'maintainer, in session, 2026-09-20: "i approve of ADR-0251"
-  (ADR-0251 as written)'
+  (ADR-0251 as written); amended 2026-09-21, maintainer, in session, choosing
+  "Amend ADR-0251 to record it unreachable" (Amendment 1, on the action as
+  described)'
 requires: [ADR-0250]
 amends: []
 supersedes: []
@@ -20,10 +22,12 @@ obligations:
       query against it servable without restarting the process.
   - id: OBL-0251-2
     package: WP-802
-    proof: a_source_whose_history_was_pruned_is_refused_at_deploy
-    says: A source that cannot replay the history it needs is refused when the
-      contract is deployed, with a typed reason, rather than accepted and left
-      unservable.
+    proof: a_vector_field_is_refused_before_compatibility_is_consulted
+    says: Discharged as unreachable by Amendment 1. A source that cannot replay
+      the history it needs is still refused at deploy in the implementation, but
+      the scenario cannot arise. Reaching it needs a deploy that adds a
+      columnar source to a database that already holds history, and no such
+      deploy compiles. The named proof is the one that establishes that.
   - id: OBL-0251-3
     package: WP-802
     proof: an_unregistered_source_answers_with_a_typed_refusal
@@ -137,3 +141,40 @@ never had this coupling.
 This record does not change what a cold source costs to activate, or when.
 Demand activation, the population pass and the building result are ADR-0240 and
 WP-777's, and admission hands off to them unchanged.
+
+## Amendment 1 — OBL-0251-2 is unreachable, not unproven (Accepted 2026-09-21)
+
+The maintainer accepted this amendment on 2026-09-21, on the action as
+described rather than on this exact text.
+
+Decision 2 requires that a source which cannot replay the history it needs be
+refused when its contract is deployed. That is implemented, and the runtime
+returns the refusal. What cannot happen is the deploy that would reach it.
+
+WP-803 established, by driving the compiler and the compatibility comparison
+rather than reading the policy, that a vector field cannot be added to an
+existing contract at all:
+
+- `VectorFieldDeclaration` has no nullability, so a vector field is always
+  required and every create binding must initialise it.
+- A production embedding is written by an `embed` effect needing three
+  caller-supplied values, so initialising it needs three new required command
+  inputs, each `RDB-K111` and `Incompatible`.
+- A new command does not help, because the original command still creates the
+  entity and now fails to initialise its new required field.
+- The migration path does not relax any of this, which was measured rather than
+  inferred from the shared compile call.
+
+So OBL-0251-2's scenario requires a deploy that adds a columnar source to a
+database that already holds history, and no such deploy compiles. The obligation
+is discharged as unreachable, and its named proof is now the test that
+establishes the unreachability.
+
+This is a discharge, not a repeal. Decision 2 stands, and the guard it describes
+becomes reachable again the moment a vector field can be added to an existing
+contract — for instance if vector fields gain an optional form, or if the
+command-evolution policy admits the inputs an embed effect needs. WP-803 records
+that policy as unmapped.
+
+`docs/performance/wp-803-live-field-addition.md` carries the evidence, and
+`crates/riffdb-catalog/tests/live_field_addition.rs` the proofs.
