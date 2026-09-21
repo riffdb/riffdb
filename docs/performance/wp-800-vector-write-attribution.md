@@ -67,11 +67,36 @@ and `append_evaluated_command` -- where the evaluated command body is put
 onto the open batch. A vector field makes that body about 1,940 bytes
 larger, measured, and steady across every run on both hosts.
 
-So the cost is, to a first approximation, the cost of carrying a bigger
-command through staging. That is a different claim from "computing an
-embedding is expensive", and the evidence separates them: `exec_evaluate`,
-which is where deterministic runtime evaluation happens, moves 1.2 us
-against staging's 12.4.
+The obvious reading is that staging costs what it costs because the body
+is bigger. That reading is wrong, and the next section is how.
+
+## Staging does not scale with the payload
+
+Widening the embedding and re-measuring, three repetitions per width, on
+this workstation:
+
+| width | added bytes | added staging | run-to-run spread | added `unit_execute` |
+|---|---:|---:|---:|---:|
+| 4 | +1,939 | +14,064 ns | 2,036 | +23,873 ns |
+| 16 | +2,082 | +16,141 ns | 2,010 | +30,424 ns |
+| 64 | +2,657 | +16,258 ns | 1,962 | +32,226 ns |
+
+Sixteen times the vector, 37% more bytes, and **16% more staging** -- a
+step comparable to the spread between repetitions of the same width. From
+16 to 64 the added staging moves 117 ns while the body grows 28%.
+
+So the added staging is dominated by a **fixed cost of the entity having a
+vector field at all**, not by carrying its payload. Whatever it is, it is
+paid per command and is nearly indifferent to how much vector there is.
+
+`unit_execute` tells the other half: it rises 35% from width 4 to 64, so a
+genuinely width-dependent cost does exist -- just not in staging. The
+first reading had the largest stage and the obvious mechanism and put them
+together, which is what made it wrong.
+
+This is what the attribution was for. A fixed per-command cost and a
+carriage cost want different fixes, and nothing in the first table
+distinguishes them.
 
 ## What this does not establish
 
@@ -86,7 +111,12 @@ the stable named children sum to about +17.6, leaving roughly 3 us in
 residuals that flip sign. That remainder is honest noise at this sample
 size, not a hidden stage, but it is not nothing either.
 
-**Nothing here says the cost is avoidable.** A vector of four f32 with its
-model metadata is real payload. Whether 1,940 bytes per document is the
-right size for it, and whether staging must copy it the way it does, are
-the questions the attribution makes askable.
+**What the fixed staging cost is has not been identified.** The scaling
+result says it is not carriage; it does not say what it is. Finding that
+means instrumenting inside staging, not reading it -- the first reading of
+this data was wrong in exactly the way code-reading is wrong, by pairing
+the biggest number with the likeliest story.
+
+**The widths were measured on one host and one rep count.** Three
+repetitions resolve a 16% step against a 14% spread only just. The
+direction is clear and the magnitude is not.

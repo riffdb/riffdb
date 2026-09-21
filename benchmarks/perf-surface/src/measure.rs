@@ -135,6 +135,12 @@ impl VariantMeasurement {
     }
 }
 
+/// The dimension of the command's declared embedding input, when it has one.
+fn declared_embedding_dimension(source: &str) -> Option<usize> {
+    let rest = source.split("input embedding: vector<").nth(1)?;
+    rest.split('>').next()?.trim().parse().ok()
+}
+
 /// Measures one variant: deploy, seed a workspace, publish `documents`, and
 /// read the census the daemon emits as it closes.
 ///
@@ -184,9 +190,15 @@ pub async fn measure_variant(
     // not, so the input must match the contract actually deployed. Reading it
     // from the deployed source keeps the two from drifting apart: a variant
     // that gains the field gains the input in the same place.
-    let embedding: Option<Vec<f32>> = source
-        .contains("input embedding: vector<4>")
-        .then(|| vec![0.5_f32, 0.25, 0.125, 0.0625]);
+    // The dimension is read rather than matched, so a contract that declares a
+    // wider vector is sent a wider one. Matching the literal `vector<4>` would
+    // silently stop sending an embedding at all if the dimension ever changed,
+    // and the variant would measure as though it had no vector field.
+    let embedding: Option<Vec<f32>> = declared_embedding_dimension(source).map(|dimension| {
+        (0..dimension)
+            .map(|index| 1.0 / (index + 2) as f32)
+            .collect()
+    });
 
     // Each publisher owns its own connection: sharing one would serialise the
     // clients on a single channel and measure the harness instead of the
