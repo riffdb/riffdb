@@ -96,7 +96,7 @@ contract OptionalArithmetic version 1 {
     input amount: i64
     idempotency_key idempotency_key
     mutate Row(id) as row else Missing { id: id }
-    set row.calculated = amount + 1
+    overwrite row.calculated = amount + 1
     return Updated { row: row }
   }
 }
@@ -127,7 +127,7 @@ contract RootValidationFieldFixture version 1 {
     input amount: i64
     idempotency_key request_key
     mutate Child(tenant, root_id, child_id) as child_row else MissingChild {}
-    set child_row.amount = amount
+    overwrite child_row.amount = amount
     return Changed { child_row: child_row }
   }
 }
@@ -157,7 +157,7 @@ contract RootValidationConstantFixture version 1 {
     input amount: i64
     idempotency_key request_key
     mutate Child(tenant, root_id, child_id) as child_row else MissingChild {}
-    set child_row.amount = amount
+    overwrite child_row.amount = amount
     return Changed { child_row: child_row }
   }
 }
@@ -2857,7 +2857,7 @@ fn diagnostic_snapshots() -> Result<String, Box<dyn Error>> {
                 "entity Row { key (id: uuid) field value: i64 } ",
                 "aggregate Rows { root Row partition_by id conflict_key (id) } ",
                 "command Change { input id: uuid mutate Row(id) as row else Missing { id: id } ",
-                "set row.value = 1 return Changed { row: row } } }",
+                "overwrite row.value = 1 return Changed { row: row } } }",
             )
             .to_owned(),
         )?;
@@ -2870,7 +2870,7 @@ fn diagnostic_snapshots() -> Result<String, Box<dyn Error>> {
             "aggregate Rows { root Row partition_by id conflict_key (id) } ",
             "command Change { input idempotency_key: string<128> input id: uuid ",
             "idempotency_key idempotency_key mutate Row(id) as row else Missing { id: id } ",
-            "set row.value = 1 emit Changed { leaked: idempotency_key } ",
+            "overwrite row.value = 1 emit Changed { leaked: idempotency_key } ",
             "return ChangedOutcome { row: row } } }",
         )
         .to_owned(),
@@ -2895,7 +2895,7 @@ fn diagnostic_snapshots() -> Result<String, Box<dyn Error>> {
             "contract KeyMutation version 1 { entity Row { key (id: uuid) } ",
             "aggregate Rows { root Row partition_by id conflict_key (id) } ",
             "command Change { input request: string<128> input id: uuid idempotency_key request ",
-            "mutate Row(id) as row else Missing { id: id } set row.id = id ",
+            "mutate Row(id) as row else Missing { id: id } overwrite row.id = id ",
             "return Changed { id: id } } }",
         )
         .to_owned(),
@@ -2944,7 +2944,7 @@ fn diagnostic_snapshots() -> Result<String, Box<dyn Error>> {
             "input first_row: uuid input second_tenant: uuid input second_row: uuid ",
             "idempotency_key request mutate Row(first_tenant, first_row) as first else MissingFirst {} ",
             "mutate Row(second_tenant, second_row) as second else MissingSecond {} ",
-            "set first.value = 1 set second.value = 1 return Changed { first: first, second: second } } }",
+            "overwrite first.value = 1 overwrite second.value = 1 return Changed { first: first, second: second } } }",
         )
         .to_owned(),
     )?;
@@ -3236,6 +3236,39 @@ fn diagnostic_snapshots() -> Result<String, Box<dyn Error>> {
             )
             .to_owned(),
         ),
+        (
+            "RDB-C048-unguarded-set",
+            CompilerDiagnosticCode::UnguardedSet,
+            concat!(
+                "contract UnguardedSet version 1 { ",
+                "entity Slot { key (tenant_id: uuid, slot_id: uuid) field held_by: uuid } ",
+                "aggregate Slots { root Slot partition_by tenant_id ",
+                "conflict_key (tenant_id, slot_id) } ",
+                "command ClaimSlot { input idempotency_key: string<128> input tenant_id: uuid ",
+                "input slot_id: uuid input holder: uuid idempotency_key idempotency_key ",
+                "mutate Slot(tenant_id, slot_id) as slot else Missing {} ",
+                "set slot.held_by = holder ",
+                "return Claimed { slot: slot } } }",
+            )
+            .to_owned(),
+        ),
+        (
+            "RDB-C049-guarded-overwrite",
+            CompilerDiagnosticCode::GuardedOverwrite,
+            concat!(
+                "contract GuardedOverwrite version 1 { ",
+                "entity Slot { key (tenant_id: uuid, slot_id: uuid) field free: bool } ",
+                "aggregate Slots { root Slot partition_by tenant_id ",
+                "conflict_key (tenant_id, slot_id) } ",
+                "command ClaimSlot { input idempotency_key: string<128> input tenant_id: uuid ",
+                "input slot_id: uuid idempotency_key idempotency_key ",
+                "mutate Slot(tenant_id, slot_id) as slot else Missing {} ",
+                "require is_free: slot.free else Taken {} ",
+                "overwrite slot.free = false ",
+                "return Claimed { slot: slot } } }",
+            )
+            .to_owned(),
+        ),
     ] {
         let error = validate_contract_source(&source).expect_err("invalid row-policy fixture");
         require_semantic_code(name, code, &error)?;
@@ -3306,7 +3339,7 @@ fn diagnostic_snapshots() -> Result<String, Box<dyn Error>> {
         "input status: string<16> idempotency_key request ",
         "read Row by by_status(tenant_id, status) as matches else MissingRange {} ",
         "mutate Row(tenant_id, row_id) as target else MissingTarget {} ",
-        "set target.value = matches.value return Changed { row: target } } }",
+        "overwrite target.value = matches.value return Changed { row: target } } }",
     );
     let indexed_range = validate_contract_source(indexed_range)
         .expect_err("write-influencing indexed range grammar must reject");
