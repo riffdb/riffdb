@@ -285,6 +285,7 @@ record with no front matter.
 | [0250](0250-a-defect-breaker-trips-on-rate-not-on-lifetime-count.md) | A Defect Breaker Trips On Rate, Not On Lifetime Count | Accepted | guarantee |
 | [0251](0251-a-declared-columnar-source-is-admitted-without-a-restart.md) | A Declared Columnar Source Is Admitted Without A Restart | Accepted | guarantee |
 | [0252](0252-invariants-are-owed-to-every-aggregate-a-command-writes.md) | Invariants Are Owed To Every Aggregate A Command Writes | Accepted | guarantee |
+| [0253](0253-enforcement-decisions-and-the-tier-table-are-guarantee-tier.md) | Enforcement Decisions And The Tier Table Are Guarantee Tier | Accepted | guarantee |
 <!-- adr-index:end -->
 
 The human architecture review on 2026-07-12 approved the direction represented
