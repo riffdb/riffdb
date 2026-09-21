@@ -26902,19 +26902,23 @@ work_packages:
     green tests.
   requirements: []
   required_adrs: [ADR-0156]
-  allowed_paths: [work_packages.yaml, scripts/check-adr-obligations, docs/**, adr/**]
+  allowed_paths: [work_packages.yaml, scripts/check-adr-obligations, scripts/adr-index,
+    docs/**, adr/**]
   deliverables:
   - A recorded characterisation of what check-adr-obligations can and cannot establish
     today, driven by reproducing each of the three instances against it
-  - A check that a record whose front matter fails to parse cannot silently declare fewer
-    obligations than it did, since that one is a correctness bug rather than a limit
+  - A malformed record must fail its tools rather than degrade quietly. Two were observed
+    from one mistyped colon. check-adr-obligations reported three fewer obligations and
+    passed, and adr-index rendered the record as untitled, unknown status and legacy tier
+    without complaint. Both are correctness bugs rather than limits of what a check can
+    establish.
   - Whatever strengthening the characterisation warrants for the other two, or a recorded
     finding that naming the production symbol a proof must reach is the wrong shape
   acceptance_commands:
   - ./scripts/acceptance --wp WP-804
-  exit_gate: A malformed record cannot reduce the obligation count without failing, and a
-    reader can tell from the check's own output which of the three failure shapes it
-    detects.
+  exit_gate: A malformed record fails every tool that reads it rather than degrading
+    quietly in any of them, and a reader can tell from a check's own output which failure
+    shapes it detects and which it cannot.
   standing_design_tests:
     interface_safety: A check that cannot detect a class of failure says so, rather than
       passing and leaving the reader to infer coverage it does not have.
