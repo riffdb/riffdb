@@ -163,6 +163,22 @@ pub(crate) const SERIAL_EVALUATE: usize = 39;
 /// unattributed bucket.
 pub(crate) const SERIAL_RESIDUAL: usize = 40;
 
+// Level 2, inside `exec_stage_serial`'s append path. These are children of a
+// stage that already has a total, not siblings of it: they are appended past
+// every residual range on purpose, so adding them cannot change what any
+// existing residual means. They do not tile the append path exactly; what they
+// leave out is its own control flow.
+/// Level 2: post-evaluation authorization, request recheck, and provenance bind.
+pub(crate) const APPEND_AUTHORIZE: usize = 41;
+/// Level 2: beginning the bound candidate on the prior staged command.
+pub(crate) const APPEND_BEGIN: usize = 42;
+/// Level 2: reading transaction-current state and rechecking the row policy.
+pub(crate) const APPEND_CURRENT: usize = 43;
+/// Level 2: reading the affected epoch and assigning the sequence.
+pub(crate) const APPEND_EPOCH: usize = 44;
+/// Level 2: building the candidate and staging it onto the open batch.
+pub(crate) const APPEND_BUILD_STAGE: usize = 45;
+
 /// First and exclusive-end index of the run nested inside `exec_alternate_path`.
 const SERIAL_NESTED_START: usize = 33;
 const SERIAL_NESTED_END: usize = 40;
@@ -195,7 +211,7 @@ const DRIVE_NESTED_END: usize = 30;
 /// `serial_residual` derived. They are already inside it and must never be
 /// added to the level-1 total.
 #[doc(hidden)]
-pub const WRITER_BATCH_STAGE_LABELS_V1: [&str; 41] = [
+pub const WRITER_BATCH_STAGE_LABELS_V1: [&str; 46] = [
     "loop_drain_ready",
     "loop_work_recv",
     "loop_admit_gate",
@@ -237,6 +253,11 @@ pub const WRITER_BATCH_STAGE_LABELS_V1: [&str; 41] = [
     "serial_snapshot",
     "serial_evaluate",
     "serial_residual",
+    "append_authorize",
+    "append_begin",
+    "append_current",
+    "append_epoch",
+    "append_build_stage",
 ];
 
 /// Number of writer loop iterations merged into one ordinal window.
@@ -545,9 +566,33 @@ mod tests {
         );
         assert_eq!(
             WRITER_BATCH_STAGE_LABELS_V1.len(),
-            SERIAL_RESIDUAL + 1,
+            APPEND_BUILD_STAGE + 1,
             "every declared index must have a label"
         );
+        // The level-2 append stages are children of `exec_stage_serial`, which
+        // already has a total, so they must sit outside every run a residual
+        // subtracts. Inside one, they would be counted twice and the residual
+        // they fell into would read as attributed when it is not.
+        for level2 in [
+            APPEND_AUTHORIZE,
+            APPEND_BEGIN,
+            APPEND_CURRENT,
+            APPEND_EPOCH,
+            APPEND_BUILD_STAGE,
+        ] {
+            assert!(
+                !(DRIVE_NESTED_START..DRIVE_NESTED_END).contains(&level2),
+                "a level-2 stage must not fall inside the drive run"
+            );
+            assert!(
+                !(SERIAL_NESTED_START..SERIAL_NESTED_END).contains(&level2),
+                "a level-2 stage must not fall inside the serial run"
+            );
+            assert!(
+                level2 > SERIAL_RESIDUAL,
+                "a level-2 stage is appended past every derived residual"
+            );
+        }
     }
 
     #[test]

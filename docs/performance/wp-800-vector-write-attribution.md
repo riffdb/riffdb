@@ -98,6 +98,41 @@ This is what the attribution was for. A fixed per-command cost and a
 carriage cost want different fixes, and nothing in the first table
 distinguishes them.
 
+## Inside staging
+
+`exec_stage_serial` was one number, so the append path it charges was given
+five level-2 counters. They are appended past every residual range in the
+census, because they are children of a stage that already has a total: put
+inside one, they would be double counted and the residual they fell into
+would read as attributed when it is not.
+
+Three repetitions, nanoseconds per command, vector against base:
+
+| level-2 stage | added | spread |
+|---|---:|---|
+| **`append_build_stage`** | **+8,828** | 8,127-9,723 |
+| `append_epoch` | +3,434 | 3,402-3,457 |
+| `append_current` | +842 | 713-1,061 |
+| `append_authorize` | +401 | 364-440 |
+| `append_begin` | below the top twelve | |
+
+Against `exec_stage_serial` at +15,364, the named children account for
+about 88 percent. What remains is `stage_first_evaluated_command_on_empty`,
+which runs once per group rather than once per command, and the path's own
+control flow.
+
+So the fixed per-command cost of declaring a vector field is, in order:
+
+1. **Building the candidate and staging it onto the open batch, +8.8 us**,
+   57 percent of the added staging.
+2. **Deriving the command indexes, reading the affected epoch and assigning
+   the sequence, +3.4 us**, 22 percent -- and the steadiest number in this
+   whole investigation, varying by one percent of its mean across
+   repetitions where throughput varied by ten points.
+
+Neither scales with the vector's width. Both are paid per command by an
+entity that declares a vector field, whatever it puts in it.
+
 ## A second admitted profile
 
 E2 (`instance-20260815-e2`, AMD EPYC 7B12, 8 vCPU) was admitted against
@@ -166,11 +201,13 @@ the stable named children sum to about +17.6, leaving roughly 3 us in
 residuals that flip sign. That remainder is honest noise at this sample
 size, not a hidden stage, but it is not nothing either.
 
-**What the fixed staging cost is has not been identified.** The scaling
-result says it is not carriage; it does not say what it is. Finding that
-means instrumenting inside staging, not reading it -- the first reading of
-this data was wrong in exactly the way code-reading is wrong, by pairing
-the biggest number with the likeliest story.
+**Why those two phases cost what they do is still unidentified.** The
+level-2 split says where the fixed cost is paid, not what is being done
+there. `append_epoch` covering index derivation is the obvious next thread
+-- an entity with a vector field may derive a different index set -- but
+that is a hypothesis to instrument, not a finding, and the first reading of
+this data was already wrong in exactly the way that pairing the biggest
+number with the likeliest story is wrong.
 
 **The widths were measured on one host and one rep count.** Three
 repetitions resolve a 16% step against a 14% spread only just. The

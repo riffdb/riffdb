@@ -4814,6 +4814,7 @@ where
     BatchCapacityReserved<B>: CommandCandidateCapacityReserved<Prior = B>,
     BatchSequenceAssigned<B>: CommandCandidateSequenceAssigned<Prior = B, Staged = B>,
 {
+    let append_phase = crate::writer_census::stage_start();
     let attempt = match attempt.authorize_after_evaluation() {
         Ok(attempt) => attempt,
         Err(error) => {
@@ -4843,6 +4844,8 @@ where
             return Err(internal_defect(lifecycle));
         }
     };
+    crate::writer_census::charge(crate::writer_census::APPEND_AUTHORIZE, append_phase);
+    let append_phase = crate::writer_census::stage_start();
     let bound = match begin_bound_command_candidate_on_prior(prior, attempt) {
         CommandCandidateChainStart::Ready(bound) => bound,
         CommandCandidateChainStart::OutcomeReplay(outcome) => {
@@ -4861,6 +4864,8 @@ where
         }
         CommandCandidateChainStart::Integrity => return Err(internal_defect(lifecycle)),
     };
+    crate::writer_census::charge(crate::writer_census::APPEND_BEGIN, append_phase);
+    let append_phase = crate::writer_census::stage_start();
     let current = match bound.read_transaction_current() {
         TransactionCurrentAttemptDecision::Ready(current) => current,
         TransactionCurrentAttemptDecision::DependencyChanged(changed) => {
@@ -4906,6 +4911,8 @@ where
         }
         CheckedRowPolicyDecision::Integrity => return Err(internal_defect(lifecycle)),
     };
+    crate::writer_census::charge(crate::writer_census::APPEND_CURRENT, append_phase);
+    let append_phase = crate::writer_census::stage_start();
     let indexed = derive_checked_command_indexes(validated)
         .map_err(|error| command_index_failure(error, lifecycle))?;
     let indexed = match indexed.read_affected_epoch_current() {
@@ -4931,12 +4938,18 @@ where
         }
         CheckedAssignDecision::Integrity => return Err(internal_defect(lifecycle)),
     };
-    build_and_stage_checked_candidate_on_prior(assigned, durability.storage_mode()).map_err(
-        |error| match error {
-            CheckedCommandStageError::Storage(error) => proven_storage_failure(error, lifecycle),
-            CheckedCommandStageError::InternalDefect(_) => internal_defect(lifecycle),
-        },
+    crate::writer_census::charge(crate::writer_census::APPEND_EPOCH, append_phase);
+    let append_phase = crate::writer_census::stage_start();
+    let staged_result = build_and_stage_checked_candidate_on_prior(
+        assigned,
+        durability.storage_mode(),
     )
+    .map_err(|error| match error {
+        CheckedCommandStageError::Storage(error) => proven_storage_failure(error, lifecycle),
+        CheckedCommandStageError::InternalDefect(_) => internal_defect(lifecycle),
+    });
+    crate::writer_census::charge(crate::writer_census::APPEND_BUILD_STAGE, append_phase);
+    staged_result
 }
 
 fn resolve_checked_reserve_decision<C>(
