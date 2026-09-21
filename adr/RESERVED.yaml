@@ -22,20 +22,15 @@ reserved:
     status: abandoned
     note: >-
       As ADR-0067.
-  - adr: "0224"
-    title: Compiler-Sealed Folded Inputs For Exact Provider V5
-    status: accepted elsewhere
-    where: branch codex/wp757-integration-safe
-    note: >-
-      Accepted 2026-09-11 as a guarantee-tier record owned by WP-757, which is
-      still open. The decision cannot be read on main, so a reader here sees
-      only a gap. It merges with the WP-757 work or is withdrawn.
   - adr: "0225"
     title: Directory-Anchored Bounded Columnar Candidate Cleanup
     status: accepted elsewhere
     where: branch codex/wp757-integration-safe
     note: >-
-      Accepted 2026-09-12, also owned by WP-757. Its acceptance date falls on
-      governance/tiers.yaml's reference_required_since, and its front matter
+      Accepted 2026-09-12, also owned by WP-757. ADR-0224 was brought to main on
+      2026-09-21; this one could not follow it. Its acceptance date falls on
+      governance/tiers.yaml's reference_required_since and its front matter
       carries no `acceptance:` reference, so ./scripts/check-acceptance-commits
-      will refuse it as written. That must be resolved before it merges.
+      refuses it as written. It lands once someone who was there records who
+      accepted it and how; that reference is not reconstructable from the
+      repository.
