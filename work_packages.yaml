@@ -27019,10 +27019,16 @@ work_packages:
     in the plan, per ADR-0256.
   requirements: []
   required_adrs: [ADR-0256, ADR-0252, ADR-0002]
+  # Widened 2026-09-21. Adding the classification to Instruction::SetField makes
+  # every exhaustive match on that variant a compile error, and the runtime and
+  # the explain renderer both match it. The runtime change is the mechanical
+  # `guard: _`: execution applies the assignment either way, because the
+  # classification is a compile-time property.
   allowed_paths: [SPEC.md, work_packages.yaml, adr/0256-an-unguarded-overwrite-must-be-declared.md,
     crates/riffdb-contract-syntax/**, crates/riffdb-contract-compiler/**,
-    crates/riffdb-contract-ir/**, crates/riffdb-cli/src/output.rs, fixtures/**, docs/**,
-    templates/**, clients/**, examples/**]
+    crates/riffdb-contract-ir/**, crates/riffdb-runtime/src/**,
+    crates/riffdb-cli/src/output.rs, crates/riffdb-cli/src/contract_explain.rs,
+    fixtures/**, docs/**, templates/**, clients/**, examples/**]
   deliverables:
   - A per-write guarded/unguarded classification derived from the command's requires and
     the aggregate's invariants over the binding's pre-image, with the analysis stated
