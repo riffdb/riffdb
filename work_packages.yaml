@@ -26585,7 +26585,15 @@ work_packages:
     measured at 19.95 percent at 32 clients on the C3D bench host and owned by no package.
   requirements: []
   required_adrs: [ADR-0239, ADR-0171, ADR-0245]
-  allowed_paths: [work_packages.yaml, benchmarks/perf-surface/**, docs/performance/**]
+  # Widened 2026-09-20. The attribution reached the resolution the existing
+  # census offers and stopped: exec_stage_serial is one number. Splitting it
+  # needs counters inside the writer's append path, which is where the stage is
+  # charged. The census is diagnostic-only, gated behind an environment
+  # variable, carries its own labels in the emitted line, and is read by nothing
+  # durable, so adding stages to it is an implementation choice under D-003.
+  allowed_paths: [work_packages.yaml, benchmarks/perf-surface/**, docs/performance/**,
+    crates/riffdb-commit/src/writer_census.rs,
+    crates/riffdb-commit/src/command_execution.rs]
   deliverables:
   - An attribution of where the cost is spent, from instrumented stage counters rather than
     from reading the code, on the same harness and host that measured it
