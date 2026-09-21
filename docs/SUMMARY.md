@@ -196,6 +196,7 @@
 - [WP-791 Derived Sinks Local Measurement](performance/wp-791-derived-sinks-local-2026-09.md)
 - [WP-791 Derived Sinks C3D Measurement](performance/wp-791-derived-sinks-c3d-2026-09.md)
 - [WP-800 Vector Write Attribution](performance/wp-800-vector-write-attribution.md)
+- [WP-803 Live Field Addition](performance/wp-803-live-field-addition.md)
 - [App-baseline Production Profile](performance/app-baseline-production-profile.md)
 
 # Reference

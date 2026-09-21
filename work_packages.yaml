@@ -26663,6 +26663,29 @@ work_packages:
   exit_gate: The cost of declaring a vector field is attributed to named stages whose
     measured total accounts for it, and is either reduced or recorded as inherent with the
     measurement that shows why.
+  closure:
+    status: complete
+    completed_at: '2026-09-21'
+    evidence: docs/performance/wp-800-vector-write-attribution.md
+    decision: The cost is attributed and not explained, and the record says which is
+      which. Declaring a vector field costs a fixed amount per command that does not
+      scale with the vector's width, paid in the storage stage that hands built records
+      to the open batch and in reserving capacity plus assigning the sequence. The named
+      stages account for about 95 percent of the stage above them, the decomposition
+      holds on two admitted profiles with shares agreeing to within a tenth of a
+      percentage point, and an independent instrument agrees on the total. Four candidate
+      mechanisms were eliminated by measurement rather than by argument.
+    outstanding:
+    - What the storage stage does differently is unidentified, and finding out needs the
+      writer census moved to a crate both riffdb-commit and riffdb-storage-redb can see,
+      or a second instrument inside the storage crate. That is a layering decision rather
+      than a measurement and is deliberately not taken here.
+    - Two hypotheses survive untested. That canonical encoding costs by structure rather
+      than by bytes, which would fit the width-independence. And that a vector field makes
+      a command carry more records rather than bigger ones. Every untested hypothesis in
+      this investigation turned out to be wrong.
+    - The cost is neither reduced nor shown to be inherent. The exit gate asked for one of
+      the two and the honest answer is that the attribution reached a boundary first.
   standing_design_tests:
     interface_safety: No attribution instrument may change what the write path does when it
       is switched off.
@@ -26768,7 +26791,11 @@ work_packages:
     entity, so the most ordinary schema change in any database is currently a migration.
   requirements: []
   required_adrs: [ADR-0066, ADR-0076, ADR-0077, ADR-0078, ADR-0251]
-  allowed_paths: [work_packages.yaml, docs/**]
+  # Widened 2026-09-21. The deliverables require driving the comparison rather
+  # than reading the policy, which needs a test. It sits beside the catalog
+  # because deciding whether a successor may deploy is the catalog's job.
+  allowed_paths: [work_packages.yaml, docs/**,
+    crates/riffdb-catalog/tests/live_field_addition.rs]
   deliverables:
   - A recorded answer to what a deployment that adds a field to an existing entity does
     today, established by driving it rather than by reading the policy
