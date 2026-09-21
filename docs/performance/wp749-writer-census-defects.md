@@ -1,9 +1,63 @@
-# Open writer-evidence defects: incomplete wall time and nested stage accounting
+# Writer-evidence defects: incomplete wall time, nesting and receipt waits
 
-Status: **open; documented, not repaired**. Package: WP-749 investigation.
+Status: **W1/W2 open; W3 repaired by receipt-wait instrument V2**.
+Package: WP-749 investigation.
 These limitations have misled interpretation in both the mechanism-cost review
 and capture-cost investigation. The warning belongs in the writer evidence
 documentation, not only in a benchmark handoff.
+
+## W3: publication V1 misses the initial journal receipt wait
+
+**Do not use V1 `receipt_block` as total journal waiting.** The completion owner
+first waits in `RedbSubmittedCommandFence::wait`; publication later rechecks the
+same, normally ready receipt in `publish_through`. V1 times only that recheck.
+A small V1 value cannot rule out journal waiting or apportion `POST_DRAIN_ALL`.
+Historical values remain recheck measurements; they cannot be repaired from
+their aggregates. Independent journal-thread write/sync timers are unaffected.
+
+The repaired `riffdb-writer-publication-stages-v2` line measures at
+`JournalFenceCompletion::wait`, starting before its result mutex acquisition.
+It retains the initial wait, ready rechecks and failed calls for command-bearing
+receipts, and adds call/error counts. Nonblocking polls and noncommand receipts
+are excluded. These are **method invocations**, not one sample per publication;
+concurrent callers may overlap. Neither their sum nor the journal-thread sum is
+a partition of writer wall. Counters are process-generation totals, including
+warmup, captured before graceful close; a wait still running at snapshot is
+not yet recorded.
+
+The benchmark reader distinguishes V1 from V2. For V1, complete
+`receipt_block_sum_us`/`receipt_block_max_us` are null; the old numbers remain
+under `legacy_publication_recheck_*`. V2 includes `receipt_wait_calls`,
+`receipt_wait_errors` and an explicit coverage label. Missing counts are never
+silently treated as complete coverage.
+
+An explicitly scheduled regression test holds the first receipt pending for
+25 ms on an injected monotonic clock, releases it, then performs the ready
+publication recheck. It requires 25 ms retained across two calls. Removing the
+recording reproduces the failure; restoring it passes. A second test covers
+failed and noncommand waits. Neither test uses sleeps as synchronization.
+
+The accompanying fixed-size checkpoint census records actual asynchronous
+checkpoint selections: starts, summed/minimum/maximum selected transitions and
+bytes, selected commands, nonexclusive limit-crossing counts, materializations,
+installations and worker/spawn failures. It does not count synchronous close
+checkpoints. Snapshots are independent atomics; in-flight checkpoints can leave
+starts, materializations and installations different. `failures` does not cover
+every possible rotation/installation error. No checkpoint ordering, drain,
+limit or durable bytes change.
+
+When writer-batch diagnostics are enabled, bounded checkpoint snapshots also
+appear on stderr while the daemon runs (`riffdb-checkpoint-progress-v1`). Retain
+that stream before starting the workload; a failed run may never return a final
+JSON report. The ready supervisor samples immediately and once per second, at
+most 600 times, skipping missed ticks. Each row includes PID, sample/limit,
+monotonic elapsed milliseconds and the same 15 counters as the final census.
+Successive rows are cumulative and must not be added together. They can lag a
+crash or stalled supervisor, stop at the sample cap, and straddle atomic updates.
+No observer-overhead verdict exists; hold settings constant in timing arms.
+
+See [receipt repair and checkpoint investigation](wp749-receipt-wait-repair-2026-09.md)
+for the production-capture distinction and bounded rerun disposition.
 
 ## W1: busy plus idle omits writer intervals
 

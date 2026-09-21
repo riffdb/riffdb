@@ -1816,7 +1816,52 @@ impl Drop for JournalSubmission {
 struct JournalFenceCompletion {
     result: Mutex<Option<Result<JournalFence, JournalIoError>>>,
     ready: Condvar,
+    command_bearing: bool,
 }
+
+/// Counts blocking-method invocations, including ready rechecks and errors.
+/// Concurrent callers can overlap: this is not a partition of writer wall.
+#[derive(Default)]
+struct CommandReceiptWaitCensus {
+    calls: AtomicU64,
+    errors: AtomicU64,
+    sum_us: AtomicU64,
+    max_us: AtomicU64,
+}
+
+static COMMAND_RECEIPT_WAITS: CommandReceiptWaitCensus = CommandReceiptWaitCensus {
+    calls: AtomicU64::new(0),
+    errors: AtomicU64::new(0),
+    sum_us: AtomicU64::new(0),
+    max_us: AtomicU64::new(0),
+};
+
+impl CommandReceiptWaitCensus {
+    fn record(&self, elapsed: Duration, failed: bool) {
+        saturating_atomic_add(&self.calls, 1);
+        if failed {
+            saturating_atomic_add(&self.errors, 1);
+        }
+        record_duration(&self.sum_us, &self.max_us, elapsed);
+    }
+
+    fn snapshot(&self) -> [u64; 4] {
+        [
+            self.calls.load(Ordering::Relaxed),
+            self.errors.load(Ordering::Relaxed),
+            self.sum_us.load(Ordering::Relaxed),
+            self.max_us.load(Ordering::Relaxed),
+        ]
+    }
+}
+
+pub(crate) fn command_receipt_wait_census() -> [u64; 4] {
+    COMMAND_RECEIPT_WAITS.snapshot()
+}
+
+#[cfg(test)]
+#[path = "journal_wait_tests.rs"]
+mod wait_tests;
 
 impl JournalFenceCompletion {
     fn complete(&self, result: Result<JournalFence, JournalIoError>) {
@@ -1837,11 +1882,28 @@ impl JournalFenceCompletion {
     }
 
     fn wait(&self) -> Result<JournalFence, JournalIoError> {
-        let mut slot = self.result.lock().map_err(|_| JournalIoError::Stopped)?;
-        while slot.is_none() {
-            slot = self.ready.wait(slot).map_err(|_| JournalIoError::Stopped)?;
+        self.wait_observed(&COMMAND_RECEIPT_WAITS, Instant::now, || {})
+    }
+
+    fn wait_observed(
+        &self,
+        census: &CommandReceiptWaitCensus,
+        now: impl Fn() -> Instant,
+        before_park: impl Fn(),
+    ) -> Result<JournalFence, JournalIoError> {
+        let started = self.command_bearing.then(&now);
+        let result = (|| {
+            let mut slot = self.result.lock().map_err(|_| JournalIoError::Stopped)?;
+            while slot.is_none() {
+                before_park();
+                slot = self.ready.wait(slot).map_err(|_| JournalIoError::Stopped)?;
+            }
+            slot.clone().expect("journal completion is present")
+        })();
+        if let Some(started) = started {
+            census.record(now().saturating_duration_since(started), result.is_err());
         }
-        slot.clone().expect("journal completion is present")
+        result
     }
 }
 
@@ -1902,7 +1964,10 @@ impl JournalLane {
         &self,
         frame: EncodedJournalFrame,
     ) -> Result<JournalFenceReceipt, JournalIoError> {
-        let completion = Arc::new(JournalFenceCompletion::default());
+        let completion = Arc::new(JournalFenceCompletion {
+            command_bearing: frame.command_count() > 0,
+            ..JournalFenceCompletion::default()
+        });
         self.sender
             .as_ref()
             .ok_or(JournalIoError::Stopped)?

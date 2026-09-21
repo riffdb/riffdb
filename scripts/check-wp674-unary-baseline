@@ -23,6 +23,7 @@ from wp674_host_policy import (
     validate_host_invalid_receipt,
     validate_campaign_identity_value,
     validate_valid_host_pair,
+    validate_host_observation,
 )
 
 
@@ -1968,6 +1969,19 @@ def run_self_test(root: Path) -> None:
         "requirements": sorted(REQUIREMENTS),
         "profiles": [],
     }
+    # Optional identity evidence must preserve old exact V2 receipts while
+    # allowing the producer's bounded supplement; unrelated keys still fail.
+    old_host = fake_report(manifest, "workstation", SCENARIO_ORDER[0])["host_validity"]["preflight"]
+    details = {"maximum_per_endpoint": 32, "started": [], "exited": [], "started_omitted": 0, "exited_omitted": 0}
+    for host in (old_host, {**old_host, "process_identity_evidence": details}):
+        validate_host_observation(host, "workstation", boundary="preflight", expected_valid=True)
+    for extra in ({"unexpected": []}, {"process_identity_evidence": {**details, "exited_omitted": 1}}):
+        try:
+            validate_host_observation({**old_host, **extra}, "workstation", boundary="preflight", expected_valid=True)
+        except ValueError:
+            pass
+        else:
+            raise AssertionError("unknown or contradictory host evidence was accepted")
     for profile_id, hardware_class in PROFILE_CLASSES.items():
         references = []
         for scenario in SCENARIO_ORDER:

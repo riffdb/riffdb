@@ -1,0 +1,69 @@
+{
+  "schema": "riffdb.wp749.checkpoint-counts-attempt/v1",
+  "date": "2026-09-20",
+  "status": "stopped_before_measurement",
+  "reason": "host preflight observed one process exit; no automatic retry",
+  "host": "8 vCPU AMD EPYC 9B14; SHA-NI, AES, PCLMULQDQ, SSE4.2",
+  "toolchain": "Rust 1.98.1; thin LTO; one codegen unit; target-cpu=x86-64; production default features",
+  "instrument_commit": "2ba8a948d2b38659c89e153332c4c9c23b094bf5",
+  "instrument_patch_sha256": "325bf092571e354a630f6274994e907e1ab923bded6af2070c87ee2dd434796a",
+  "build_receipt_sha256": "a4c897b894ecbc9d6556d27cc7d4dbc1d8773736647dd793673ea1001307a16a",
+  "runner_sha256": "0014700fe86f70547103072e55c32cede8b84b491a8eb18ff30295cea92f0188",
+  "variants": {
+    "parent": {
+      "revision": "325513c18aeb51cb211551237cc0641045e99bfd",
+      "daemon_sha256": "dea1f7602f00436efdef75c526930de76baf3afe850098e98474f6f5f52a7141"
+    },
+    "capture-child": {
+      "revision": "5a7b8054c14d06c308082a0ba920fdb10fb83748",
+      "daemon_sha256": "936be4374c73e2a4714813cc3d227eb1f3a022e8fec6613a712cbc9b76686d63"
+    }
+  },
+  "preflight": {
+    "sha256": "4f797512853ca687ebabdd2a1bcaa0ed5bb5bceb20f31cf699ca5f65a6c6de83",
+    "valid": false,
+    "reason": "host_interference",
+    "interval_ms": 3000,
+    "process_interval": {
+      "exited_processes": 1,
+      "kernel_thread_events_excluded": 0,
+      "pid_reuses": 0,
+      "stable_identity_required": true,
+      "started_processes": 0
+    },
+    "reported_active_processes": 0,
+    "reported_interfering_processes": 0,
+    "steal_ticks": 0,
+    "load_average_before": [
+      0.0,
+      0.14,
+      0.55
+    ],
+    "load_average_after": [
+      0.0,
+      0.14,
+      0.55
+    ]
+  },
+  "measurement_cells_started": 0,
+  "checkpoint_counts": null,
+  "latency_verdict": null,
+  "checkpoint_threshold_verdict": "unmeasured; 3046-versus-4096 remains an estimate",
+  "checks": {
+    "workspace_all_targets_all_features": "passed",
+    "wait_regression": "missing recording failed; corrected initial-wait/ready-recheck and error/noncommand tests passed",
+    "checkpoint_census_unit_test": "passed",
+    "benchmark_publication_parser": "passed",
+    "benchmark_runner_tests_passed": 26,
+    "repair_acceptance_steps_passed": 7,
+    "repair_acceptance_tests_passed": 1539,
+    "existing_profile_skipped_tests": 9,
+    "paused_branch_audit_tests_passed": 20,
+    "paused_report_acceptance_steps_passed": 3
+  },
+  "scope": "diagnostic instrument repair and bounded rerun disposition; no merge, qualification, package completion, codec work or resumed promotion feature work",
+  "protocol_sha256": "a89e18e6404ee75530aaa80072355008c8d4403da97f4fca23f8cde3cb3a4496",
+  "supervisor_sha256": "ca44956ccc36f01af357ef68426ed5ba3509415c3f420e0429e3d0e9bd75db6b",
+  "retained_manifest_sha256": "c6f4743dfe07b2fb522f48f2afb43a21a185c00e12251e659672a9783399442e",
+  "retained_files_verified": 33
+}

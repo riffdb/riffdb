@@ -1436,7 +1436,8 @@ fn riffdb_shutdown_evidence_json(evidence: &RiffDbShutdownEvidence) -> serde_jso
         },
     );
     let writer_publication_stages = evidence.writer_publication_stages.map(
-        |[
+        |publication| {
+            let [
             publications,
             residence_sum_us,
             residence_max_us,
@@ -1446,18 +1447,57 @@ fn riffdb_shutdown_evidence_json(evidence: &RiffDbShutdownEvidence) -> serde_jso
             durable_to_publish_max_us,
             publication_work_sum_us,
             publication_work_max_us,
-        ]| {
+        ] = publication.stages;
+            let counts = publication.receipt_wait_counts;
             json!({
+                "instrument_version": if counts.is_some() { 2 } else { 1 },
+                "receipt_wait_coverage": if counts.is_some() { "all_command_receipt_wait_calls_including_ready_rechecks_and_errors" } else { "legacy_publication_recheck_only_initial_wait_missing" },
+                "receipt_wait_calls": counts.map(|v| v[0]),
+                "receipt_wait_errors": counts.map(|v| v[1]),
+                "legacy_publication_recheck_sum_us": counts.is_none().then_some(receipt_block_sum_us),
+                "legacy_publication_recheck_max_us": counts.is_none().then_some(receipt_block_max_us),
                 "publications": publications,
                 "residence_sum_us": residence_sum_us,
                 "residence_max_us": residence_max_us,
-                "receipt_block_sum_us": receipt_block_sum_us,
-                "receipt_block_max_us": receipt_block_max_us,
+                "receipt_block_sum_us": counts.map(|_| receipt_block_sum_us),
+                "receipt_block_max_us": counts.map(|_| receipt_block_max_us),
                 "durable_to_publish_sum_us": durable_to_publish_sum_us,
                 "durable_to_publish_max_us": durable_to_publish_max_us,
                 "publication_work_sum_us": publication_work_sum_us,
                 "publication_work_max_us": publication_work_max_us,
                 "labels": "closed_fixed_cardinality",
+            })
+        },
+    );
+    let writer_checkpoint_census = evidence.writer_checkpoint_census.map(
+        |[
+            starts,
+            transitions,
+            commands,
+            bytes,
+            min_transitions,
+            max_transitions,
+            min_bytes,
+            max_bytes,
+            transition_trigger,
+            byte_trigger,
+            physical_trigger,
+            reanchor_trigger,
+            materialized,
+            installed,
+            failures,
+        ]| {
+            json!({
+                "scope": "actual_async_checkpoint_selections_before_graceful_close",
+                "starts": starts, "selected_transitions": transitions,
+                "selected_commands": commands, "selected_bytes": bytes,
+                "min_transitions": min_transitions, "max_transitions": max_transitions,
+                "min_bytes": min_bytes, "max_bytes": max_bytes,
+                "trigger_counts_nonexclusive": {
+                    "transitions": transition_trigger, "bytes": byte_trigger,
+                    "physical": physical_trigger, "reanchor": reanchor_trigger,
+                },
+                "materialized": materialized, "installed": installed, "failures": failures,
             })
         },
     );
@@ -1629,6 +1669,7 @@ fn riffdb_shutdown_evidence_json(evidence: &RiffDbShutdownEvidence) -> serde_jso
         "writer_flush_census": writer_flush_census,
         "writer_journal_stages": writer_journal_stages,
         "writer_publication_stages": writer_publication_stages,
+        "writer_checkpoint_census": writer_checkpoint_census,
         "completion_lane": completion_lane,
         "query_execute": query_execute,
         "authoritative_table_inventory": table_inventory,
