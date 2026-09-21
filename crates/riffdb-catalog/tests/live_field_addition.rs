@@ -206,6 +206,47 @@ const ADDS_AN_OPTIONAL_INPUT: &str = r#"contract Live version 2 {
   }
 }"#;
 
+/// An optional field added, with a brand new command that populates it on rows
+/// that already exist. The original command is untouched.
+///
+/// This is the shape an application would actually reach for: adding a field
+/// you can add is only useful if something can eventually write it.
+const ADDS_AN_OPTIONAL_FIELD_AND_A_WRITER: &str = r#"contract Live version 2 {
+  entity Document {
+    key (org_id: uuid, document_id: uuid)
+    field title: string<200>
+    field note: optional<string<64>>
+    index by_org (org_id, document_id)
+  }
+  aggregate Documents {
+    root Document
+    partition_by org_id
+    conflict_key (org_id)
+  }
+  command CreateDocument {
+    input idempotency_key: string<128>
+    input org_id: uuid
+    input document_id: uuid
+    input title: string<200>
+    idempotency_key idempotency_key
+    create Document(org_id, document_id) as document
+      else DocumentExists { document_id: document_id }
+    set document.title = title
+    return Created { document: document }
+  }
+  command AnnotateDocument {
+    input idempotency_key: string<128>
+    input org_id: uuid
+    input document_id: uuid
+    input note: string<64>
+    idempotency_key idempotency_key
+    mutate Document(org_id, document_id) as document
+      else DocumentMissing { document_id: document_id }
+    set document.note = note
+    return Annotated { document: document }
+  }
+}"#;
+
 /// Compiles `successor` against the genesis contract and reports its overall
 /// compatibility class, printing every finding so a failure shows which change
 /// drove the class rather than only the class.
@@ -269,6 +310,22 @@ fn an_optional_field_needs_no_command_change() {
         class,
         CompatibilityClass::Incompatible,
         "an optional field changes no command surface, so nothing refuses it"
+    );
+}
+
+/// The supported shape: add an optional field, leave every existing command
+/// alone, and add a new command that writes it.
+///
+/// Nothing touches an existing command, so no plan change and no input change
+/// can fire. This is what makes the optional-field route useful rather than
+/// merely permitted -- a field you can add but never populate would not be.
+#[test]
+fn an_optional_field_can_be_populated_by_a_new_command() {
+    let class = classify(ADDS_AN_OPTIONAL_FIELD_AND_A_WRITER);
+    assert_ne!(
+        class,
+        CompatibilityClass::Incompatible,
+        "adding a field and a command that writes it touches no existing command"
     );
 }
 
