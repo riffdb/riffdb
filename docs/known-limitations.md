@@ -318,15 +318,27 @@ and they compose:
   admitting them into a write decision would make a write depend on a
   watermark.
 
-Patterns these exclude include allocating one of a set of free slots, enforcing
-a limit that sums rows the command does not name, and deciding from a rollup.
-The available shape is for the application to read a bounded page, choose a
-target, and invoke a command naming that target by complete key. That works and
-is the intended idiom, but the choice is made outside the command: RiffDB proves
-the write, not the selection. Two callers may select the same target and one
-loses on a declared outcome, which is a correct result an application must still
-handle. Where the choice itself must be serialized, model it as an entity whose
-key the command names, so the conflict key covers it.
+Less follows from this than it appears, and the part that does follow is worth
+stating exactly.
+
+A limit over rows a command does not name *is* expressible: maintain the total
+on the aggregate root in the same command and put the invariant on the root.
+The conflict key covers the root, so concurrent writers serialize and the
+invariant is checked at commit against the value the command wrote. A rollup
+maintained this way is a first-class pattern, not a workaround.
+
+Choosing a target -- a free slot, the next item -- happens in the application:
+read a bounded page, choose, then invoke a command naming that target by
+complete key. That is the intended idiom and it is safe *when the command
+re-checks the condition the choice depended on*, because a losing choice then
+becomes a declared outcome rather than a lost update. Write the `require`. The
+compiler does not yet oblige you to: a command that overwrites a field without
+declaring anything about its prior value compiles, and is indistinguishable
+from a guarded one in its plan. ADR-0256 proposes closing that, and until it
+lands the discipline is yours to keep.
+
+What remains genuinely unavailable is allocating an unspecified free row in one
+round trip. That is a contention and round-trip cost, not a safety gap.
 
 The specification's risk register names durable workflows outside commands as
 the answer for logic a command cannot hold (`R-01`). No such facility exists in
