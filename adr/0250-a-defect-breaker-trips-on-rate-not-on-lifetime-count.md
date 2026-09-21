@@ -6,7 +6,9 @@ tier: guarantee
 date: 2026-09-20
 accepted: 2026-09-20
 acceptance: 'maintainer, in session, 2026-09-20: "i approve" (ADR-0250 as
-  written, with the amends entry corrected before acceptance)'
+  written, with the amends entry corrected before acceptance); amended
+  2026-09-21, maintainer, in session: "lets do it" (Amendment 1, on the plan
+  as described)'
 requires: []
 amends: []
 supersedes: []
@@ -145,3 +147,39 @@ exposed the defect. Deploying a vector contract into a running daemon still
 registers no columnar source, and a projected query against it still fails as an
 internal defect rather than saying so. That is a separate defect in a separate
 crate, and after this record it is a request-scoped one.
+
+## Amendment 1 — the decisions were applied to a sink production never wired (Accepted 2026-09-21)
+
+The maintainer accepted this amendment on 2026-09-21, on the plan as
+described rather than on this exact text.
+
+This record's decisions were implemented in
+`ProductionServiceDiagnostics`. That type was constructed only inside a
+test module. No running server ever built one: the graph, the follower
+service and the restore host all wire
+`ProductionObservabilityDiagnostics`, which forwards `record_internal` to
+`Observability` and its own bounded registry.
+
+So the denial of service this record exists to close stayed live after the
+record was implemented, and the three obligation proofs passed against a
+path no request can reach. Both registries are capped at 256, so the daemon
+observed dying at demand 258 fitted either one, and the reproduction could
+not distinguish them.
+
+Nothing in the Decision section changes. What changes is where it is
+implemented and what the obligations point at:
+
+1. `Observability::record_internal` carries decisions 2, 3 and 5. Retention
+   rings rather than refusing, only process-scoped defects draw on the
+   budget, and the budget's burst and refill constants live in
+   `riffdb-observability` so they have one home.
+2. `ProductionServiceDiagnostics` is removed, with the retention ring,
+   budget and clock that existed only to serve it.
+3. OBL-0250-1, OBL-0250-2 and OBL-0250-3 name tests that exercise the wired
+   sink.
+
+The general lesson is the one ADR-0240's Amendment 1 recorded about a
+different check on the same morning. `check-adr-obligations` verifies that
+a test of the named proof's name exists; it cannot verify that the test
+exercises the path production runs, and a type named `Production…` that
+only tests construct is exactly the shape that defeats it.
