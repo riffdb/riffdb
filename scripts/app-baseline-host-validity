@@ -322,6 +322,42 @@ def run_self_test() -> None:
     }
     assert process_interval_is_stable(unavailable_churn) is False
 
+    # Preserve identity evidence even when a task exits before the after
+    # inventory. Arguments, environment and paths are never part of it.
+    exited = {7: {"starttime_ticks": 100, "comm": "sshd-session", "argv": "secret"}}
+    detail = interval_identity_evidence(exited, {})
+    assert detail["exited"] == [
+        {"pid": 7, "starttime_ticks": 100, "comm": "sshd-session", "identity_available": True}
+    ]
+    assert detail["started"] == [] and detail["exited_omitted"] == 0
+    reused_detail = interval_identity_evidence(exited, {7: {"starttime_ticks": 101}})
+    assert reused_detail["started"][0]["starttime_ticks"] == 101
+    assert reused_detail["exited"][0]["starttime_ticks"] == 100
+    assert interval_identity_evidence(kernel_before, kernel_after)["exited"] == []
+    unavailable_detail = interval_identity_evidence(unavailable_before, unavailable_after)
+    assert unavailable_detail["exited"][0]["identity_available"] is False
+    crowded = {pid: {"starttime_ticks": pid, "comm": "x" * 100} for pid in range(1, 41)}
+    bounded_detail = interval_identity_evidence(crowded, {})
+    assert len(bounded_detail["exited"]) == MAX_REPORTED_PROCESSES
+    assert bounded_detail["exited_omitted"] == 40 - MAX_REPORTED_PROCESSES
+    assert len(bounded_detail["exited"][0]["comm"]) == 64
+    from wp674_host_policy import validate_process_identity_evidence
+
+    for before, after in ((exited, {}), (unavailable_before, unavailable_after), (crowded, {})):
+        validate_process_identity_evidence(interval_identity_evidence(before, after), interval_churn(before, after))
+    for bad_detail in (
+        {**detail, "exited_omitted": 1},
+        {**detail, "exited": [{**detail["exited"][0], "argv": "secret"}]},
+        {**detail, "exited": [{**detail["exited"][0], "identity_available": False}]},
+        {**bounded_detail, "exited": bounded_detail["exited"][:1], "exited_omitted": 39},
+    ):
+        try:
+            validate_process_identity_evidence(bad_detail, interval_churn(exited, {}))
+        except ValueError:
+            pass
+        else:
+            raise AssertionError("malformed identity evidence was accepted")
+
 
 def ancestors(pid: int) -> set[int]:
     result: set[int] = set()
@@ -482,6 +518,40 @@ def process_interval_is_stable(value: dict[str, int | bool]) -> bool:
         value[key] == 0
         for key in ("started_processes", "exited_processes", "pid_reuses")
     )
+
+
+def interval_identity_evidence(
+    before: dict[int, dict[str, int | str]],
+    after: dict[int, dict[str, int | str]],
+) -> dict[str, Any]:
+    """Bounded endpoint differences, not proof of an OS exit or its cause.
+
+    An unavailable /proc read also changes identity. Preserve that distinction
+    and report omissions; neither truncation nor missing identity can make the
+    separate, full-inventory churn verdict pass.
+    """
+    def identities(rows: dict[int, dict[str, int | str]]) -> dict[tuple[int, int], dict[str, Any]]:
+        return {
+            (pid, int(row["starttime_ticks"])): {
+                "pid": pid,
+                "starttime_ticks": int(row["starttime_ticks"]),
+                "comm": str(row.get("comm", "unavailable"))[:64],
+                "identity_available": int(row["starttime_ticks"]) >= 0,
+            }
+            for pid, row in rows.items()
+            if not row.get("kernel_thread", False)
+        }
+
+    before_rows, after_rows = identities(before), identities(after)
+    result: dict[str, Any] = {"maximum_per_endpoint": MAX_REPORTED_PROCESSES}
+    for name, rows, other in (
+        ("started", after_rows, before_rows),
+        ("exited", before_rows, after_rows),
+    ):
+        changed = sorted(rows.keys() - other.keys())
+        result[name] = [rows[key] for key in changed[:MAX_REPORTED_PROCESSES]]
+        result[name + "_omitted"] = max(0, len(changed) - MAX_REPORTED_PROCESSES)
+    return result
 
 
 def bounded_active_inventory(
@@ -666,6 +736,7 @@ def main() -> int:
             "process_arguments_included": False,
         },
         "process_interval": process_interval,
+        "process_identity_evidence": interval_identity_evidence(before, after),
     }
     print(json.dumps(report, sort_keys=True))
     return 0 if valid else 3

@@ -46,6 +46,16 @@ starts, materializations and installations different. `failures` does not cover
 every possible rotation/installation error. No checkpoint ordering, drain,
 limit or durable bytes change.
 
+When writer-batch diagnostics are enabled, bounded checkpoint snapshots also
+appear on stderr while the daemon runs (`riffdb-checkpoint-progress-v1`). Retain
+that stream before starting the workload; a failed run may never return a final
+JSON report. The ready supervisor samples immediately and once per second, at
+most 600 times, skipping missed ticks. Each row includes PID, sample/limit,
+monotonic elapsed milliseconds and the same 15 counters as the final census.
+Successive rows are cumulative and must not be added together. They can lag a
+crash or stalled supervisor, stop at the sample cap, and straddle atomic updates.
+No observer-overhead verdict exists; hold settings constant in timing arms.
+
 See [receipt repair and checkpoint investigation](wp749-receipt-wait-repair-2026-09.md)
 for the production-capture distinction and bounded rerun disposition.
 

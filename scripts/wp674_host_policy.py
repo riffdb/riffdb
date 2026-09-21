@@ -169,6 +169,43 @@ def checked_process(value: Any, label: str) -> dict[str, Any]:
     return process
 
 
+def validate_process_identity_evidence(value: Any, interval: dict[str, Any]) -> None:
+    evidence = exact_keys(
+        value,
+        {"maximum_per_endpoint", "started", "exited", "started_omitted", "exited_omitted"},
+        "process identity evidence",
+    )
+    strict_equal(evidence["maximum_per_endpoint"], MAX_REPORTED_PROCESSES, "identity bound")
+    for endpoint, unavailable_marker in (("started", -2), ("exited", -1)):
+        rows = evidence[endpoint]
+        if not isinstance(rows, list) or len(rows) > MAX_REPORTED_PROCESSES:
+            raise ValueError("process identity inventory exceeds its bound")
+        omitted = nonnegative_integer(evidence[endpoint + "_omitted"], "omitted identities")
+        total = nonnegative_integer(interval[endpoint + "_processes"], "identity total")
+        if total > MAX_SCANNED_PROCESSES or len(rows) + omitted != total:
+            raise ValueError("process identity inventory disagrees with churn counts")
+        if len(rows) != min(total, MAX_REPORTED_PROCESSES):
+            raise ValueError("process identity inventory omitted rows before its bound")
+        keys = []
+        for item in rows:
+            row = exact_keys(
+                item, {"pid", "starttime_ticks", "comm", "identity_available"}, "identity row"
+            )
+            pid = nonnegative_integer(row["pid"], "identity PID")
+            if not 0 < pid <= 2**31 - 1:
+                raise ValueError("process identity PID is invalid")
+            ticks = row["starttime_ticks"]
+            if type(ticks) is not int or not (ticks == unavailable_marker or 0 <= ticks < 2**64):
+                raise ValueError("process identity start time is invalid")
+            strict_equal(row["identity_available"], ticks >= 0, "identity availability")
+            bounded_optional_text(row["comm"], 64, "identity name")
+            if not isinstance(row["comm"], str):
+                raise ValueError("process identity name is absent")
+            keys.append((pid, ticks))
+        if keys != sorted(set(keys)) or len({pid for pid, _ticks in keys}) != len(keys):
+            raise ValueError("process identity inventory is unordered or duplicated")
+
+
 def validate_host_observation(
     value: Any,
     profile: str,
@@ -176,6 +213,13 @@ def validate_host_observation(
     boundary: str,
     expected_valid: bool,
 ) -> dict[str, Any]:
+    # Historical V2 receipts lack these diagnostic details. Current receipts
+    # retain a bounded supplement; its shape/counts must validate, not be ignored.
+    identity_fields = (
+        {"process_identity_evidence"}
+        if isinstance(value, dict) and "process_identity_evidence" in value
+        else set()
+    )
     observation = exact_keys(
         value,
         {
@@ -197,7 +241,7 @@ def validate_host_observation(
             "interfering_processes",
             "inventory_bounds",
             "process_interval",
-        },
+        } | identity_fields,
         f"V2 {boundary}",
     )
     if (
@@ -341,6 +385,8 @@ def validate_host_observation(
         process_interval[key] == 0
         for key in ("started_processes", "exited_processes", "pid_reuses")
     )
+    if identity_fields:
+        validate_process_identity_evidence(observation["process_identity_evidence"], process_interval)
     active_value = observation["active_processes"]
     interfering_value = observation["interfering_processes"]
     if (

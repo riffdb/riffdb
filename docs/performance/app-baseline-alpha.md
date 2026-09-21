@@ -77,7 +77,7 @@ All temporary build/test roots honor `RIFFDB_TMP_ROOT` and default to
 | `riffdb.app-baseline-alpha-matrix/v1` | required cells and evidence hashes |
 | `riffdb.app-baseline-qualified-candidate/v1` | clean source, lock, harness, runner, and daemon identity attached to an evidentiary report |
 | `riffdb.app-baseline-host-validity/v1` | immutable historical bounded endpoint host inventory |
-| `riffdb.app-baseline-host-validity/v2` | bounded endpoint inventory plus exact whole-cell CPU-steal evidence |
+| `riffdb.app-baseline-host-validity/v2` | bounded endpoint inventory plus exact whole-cell CPU-steal evidence; current receipts also retain bounded changed process identities |
 | `riffdb.wp-674-unary-profile/v2` | one fixed host profile and every retained attempt |
 | `riffdb.wp-674-unary-manifest/v2` | exact three-profile unary evidence inventory |
 | `riffdb.wp-674-unary-baseline/v2` | frozen absolute and low-water unary baseline |

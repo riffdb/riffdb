@@ -8,6 +8,8 @@
 #[path = "daemon_follower.rs"]
 mod follower;
 
+mod checkpoint_progress;
+
 #[path = "replication_peer.rs"]
 pub(crate) mod replication_peer;
 
@@ -3174,8 +3176,19 @@ async fn supervise_ready_process(
     maintenance_receiver: &mut tokio::sync::mpsc::Receiver<MaintenanceTrigger>,
     recovery: &MaintenanceRecoveryController,
 ) -> Result<ReadyProcessCompletion, DaemonError> {
+    // Live diagnostic copies survive a later harness/daemon failure. They do
+    // not run on the writer, change checkpoint selection, or replace the final
+    // shutdown census. Preserve the same observer settings in compared arms.
+    let mut checkpoint_progress = checkpoint_progress::CheckpointProgress::new(
+        std::env::var_os("RIFFDB_WRITER_BATCH_DIAGNOSTICS").is_some_and(|value| value == "1"),
+    );
     let trigger = loop {
         let selected = tokio::select! {
+            line = checkpoint_progress.next_line(riffdb_storage_redb::writer_checkpoint_census_v1),
+                if checkpoint_progress.enabled() => {
+                let _ = writeln!(std::io::stderr().lock(), "{line}");
+                None
+            },
             command = wait_for_shutdown_input(shutdown) => command,
             signal = process_signal.received() => Some(ReadyProcessTrigger::Signal(signal)),
             reason = routing.stopped() => Some(ReadyProcessTrigger::Runtime(reason)),
