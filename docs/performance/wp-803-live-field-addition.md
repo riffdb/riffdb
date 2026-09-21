@@ -93,11 +93,26 @@ between `RequiresExplicitVersion` and `Incompatible`, with a migration
 design behind it (ADR-0076 through ADR-0078), and the field addition sits
 squarely in it.
 
-And the binding constraint is not about fields at all. It is that an
-existing command's input list is frozen. Any change needing new caller
-input is refused however ordinary the schema change behind it looks, which
-is a sharper and more consequential statement than the one the package
-started from.
+And the binding constraint is not about fields at all -- though an earlier
+draft of this page got its shape wrong twice before landing on it.
+
+That draft said an existing command's input list is frozen. **It is not.**
+An optional input reports `RDB-K013`, `Compatible`, the same code an
+optional entity field gets; only a *required* input is `RDB-K111`. An
+application can ask its callers for something new, provided it can proceed
+without it.
+
+What refuses in that case is a third thing again: `RDB-K110`, an existing
+plan change, because the command gained the instruction that uses the input.
+Nor is the plan categorically frozen -- `instructions_compatible` admits
+some added requirements under dependency rules this page has not mapped.
+What is recorded here is what was measured, and the honest summary is
+narrower than any of the three sentences that preceded it:
+
+> A required field must be initialised by every existing command that
+> creates the entity. Whether a given successor can arrange that is decided
+> by a policy with at least three distinct refusal codes, and the overall
+> class alone does not say which one fired.
 
 ## What this does not establish
 
@@ -108,11 +123,12 @@ the deploy that first declared it, which is the path ADR-0251 already
 covers. The question the package opened with has an answer only because the
 answer to the previous one closed it off.
 
-**Whether the command-input constraint is intended at this strength.**
-`RDB-K111` is `Incompatible` rather than `RequiresMigration`, so no
-migration rescues it. Whether that is deliberate, or an artefact of
-treating every command-surface change alike, is a question for whoever owns
-the evolution policy rather than something this measurement answers.
+**What the command evolution policy actually permits.** Three refusal
+codes were seen -- `RDB-K111` for a required input, `RDB-K110` for a plan
+change, `InvalidCreation` from the compiler before either -- and
+`instructions_compatible` admits some added requirements this page did not
+characterise. Mapping that policy is its own work, and every summary of it
+attempted here has been wrong at least once.
 
 **How wide the blast radius is on a real contract.** These are
 single-entity contracts with one or two commands. An entity created by many
