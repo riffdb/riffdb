@@ -26810,6 +26810,34 @@ work_packages:
   exit_gate: The supported path for adding a field to an application holding data is
     recorded, driven rather than inferred, and a reader can tell whether adopting vector
     search on a live application requires downtime.
+  closure:
+    status: complete
+    completed_at: '2026-09-21'
+    evidence: docs/performance/wp-803-live-field-addition.md
+    decision: A field can be added to an application that already holds data, and the
+      working idiom is routine rather than a migration. Add the field as optional, leave
+      every existing command alone, and add a new command that mutates it; that successor
+      classifies RequiresExplicitVersion, because the only finding above Compatible is the
+      existing command's outcome shape. A required field is migratable when every existing
+      command that creates the entity can set it from what it already has, and incompatible
+      when it cannot. Adopting vector search on a live application is not a downtime
+      question at all. A vector field has no optional form, so every existing create binding
+      breaks, and neither a migration nor a new command changes that. All three findings
+      are pinned in crates/riffdb-catalog/tests/live_field_addition.rs.
+    outstanding:
+    - The command evolution policy is unmapped. Three refusal codes were observed --
+      RDB-K111 for a required input, RDB-K110 for a plan change, and InvalidCreation from
+      the compiler before either -- and instructions_compatible admits some added
+      requirements this package did not characterise. Every summary of that policy
+      attempted here was wrong at least once before the findings were read individually
+      rather than through the overall class.
+    - ADR-0251's OBL-0251-2 is unreachable rather than untested, since its scenario needs a
+      deploy that adds a columnar source to an existing database and no such deploy can
+      compile. The obligation still reads as outstanding work.
+    decisions_taken:
+    - The drive test lives in riffdb-catalog rather than riffdb-contract-compiler because
+      deciding whether a successor may deploy is the catalog's job, and the tier followed
+      from that placement rather than the placement from the tier.
   standing_design_tests:
     interface_safety: A deployment that cannot be served is refused where the operator
       acted, never accepted and left to fail later.
