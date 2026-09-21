@@ -98,6 +98,61 @@ This is what the attribution was for. A fixed per-command cost and a
 carriage cost want different fixes, and nothing in the first table
 distinguishes them.
 
+## A second admitted profile
+
+E2 (`instance-20260815-e2`, AMD EPYC 7B12, 8 vCPU) was admitted against
+ADR-0245 by reading its capabilities from the host rather than its name:
+SHA-2, AES, carry-less multiply and SSE4.2 all present. Six repetitions,
+2,000 documents at 32 clients, revision `17bebc236`:
+
+| rep | base docs/s | vector docs/s | delta |
+|---|---:|---:|---:|
+| 1 | 2,216 | 1,937 | -12.6% |
+| 2 | 2,228 | 1,971 | -11.5% |
+| 3 | 2,110 | 1,879 | -11.0% |
+| 4 | 2,270 | 1,993 | -12.2% |
+| 5 | 2,278 | 1,797 | -21.1% |
+| 6 | 2,327 | 1,836 | -21.1% |
+
+**The run is bimodal and the mean hides it.** The first four cluster
+between 11.0 and 12.6 percent; the last two sit at 21.1. Reporting -14.9
+percent as the figure would describe no repetition that happened. Whatever
+moves between the fourth and fifth repetition is unexplained and is the
+first thing a further E2 run should hold still.
+
+The two 21.1 percent cells are not a duplicated row: they come from
+different pairs, 1,797 against 2,278 and 1,836 against 2,327, which agree
+to one decimal by coincidence.
+
+Taken with C3D's -19.95 percent over twelve repetitions, two admitted
+profiles agree that declaring a vector field costs write throughput
+materially, in the same direction, at the same order of magnitude.
+
+## The leading attribution ports; the ranking below it does not
+
+The same probe on E2, three repetitions, nanoseconds per command:
+
+| stage | E2 | this workstation |
+|---|---:|---:|
+| `unit_execute` | +91,124 | +20,923 |
+| **`exec_stage_serial`** | **+49,552 (54%)** | **+12,395 (59%)** |
+| `exec_apply` | +32,311 (35%) | +2,032 (sign-flipping) |
+| `exec_seal` | +9,730 | +3,307 |
+| `exec_evaluate` | +3,000 | +1,195 |
+
+Serial staging is the largest added stage on both hosts and takes a
+similar share of the total, which is the part of the attribution that
+ports. `exec_apply` does not: it is a third of the added time on E2 and
+indistinguishable from noise on the workstation.
+
+E2 charges about four times the workstation per command throughout, which
+is also why it resolves a throughput effect the workstation cannot. A
+slower host makes the same work a larger share of a longer command.
+
+**So the headline holds on two hosts and the second place does not.** Any
+attribution below the leading stage needs to name the host it was taken
+on.
+
 ## What this does not establish
 
 **The attribution is this workstation's; the figure is C3D's.** The two
