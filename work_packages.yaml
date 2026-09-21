@@ -26798,6 +26798,31 @@ work_packages:
   exit_gate: A vector field deployed into a running daemon becomes queryable without a
     restart, a source whose history was pruned is refused at the deploy rather than after
     it, and no projected query against an unregistered source returns an opaque incident.
+  closure:
+    status: complete
+    completed_at: '2026-09-21'
+    evidence: benchmarks/perf-surface/tests/columnar_activation.rs
+    decision: ADR-0251 is implemented. A vector field deployed into a running daemon is
+      queryable in that same process, proven end to end with the restart deleted from the
+      activation diagnostic; with the admission call disabled the same test times out after
+      thirty seconds, so it is the deploy that makes the query servable. A projected query
+      against a source the engine does not hold answers with a typed refusal rather than an
+      opaque incident. OBL-0251-2 is discharged as unreachable by Amendment 1, since no
+      deploy that adds a columnar source to a database holding history can compile.
+    decisions_taken:
+    - The unregistered-source refusal maps to QueryUnavailable, whose registry meaning is a
+      checked query that cannot currently be executed, rather than adding a twenty-seventh
+      member to the public application error registry. That shares a wire code with the
+      building state and the page says so.
+    - Runtime admission installs the control first and verifies replayability after,
+      because the fence is what stops the next pruning pass. Pruning is offline only and a
+      running process holds the store's exclusive lock, so the window is empty in practice.
+    outstanding:
+    - The replayability probe first read the commit log, which cannot answer the question.
+      An unbounded initial scan is defined to begin at sequence one, so a pruned store fails
+      that read rather than returning a page that starts higher. It reads the retention
+      watermark now. The false branch is still not driven by a test, and after Amendment 1
+      it cannot be reached from a deploy.
   standing_design_tests:
     interface_safety: A source the engine does not hold is a condition the caller is told
       about, never one it has to infer from an opaque incident.
