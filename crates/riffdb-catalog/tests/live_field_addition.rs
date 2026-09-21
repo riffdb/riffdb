@@ -92,6 +92,43 @@ const ADDS_A_FIELD_WITHOUT_A_NEW_INPUT: &str = r#"contract Live version 2 {
   }
 }"#;
 
+/// The genesis contract with an explicitly nullable field added and no command
+/// change at all, since an optional field needs no initialisation.
+const ADDS_AN_OPTIONAL_FIELD: &str = r#"contract Live version 2 {
+  entity Document {
+    key (org_id: uuid, document_id: uuid)
+    field title: string<200>
+    field body: optional<string<4096>>
+    index by_org (org_id, document_id)
+  }
+  aggregate Documents {
+    root Document
+    partition_by org_id
+    conflict_key (org_id)
+  }
+  command CreateDocument {
+    input idempotency_key: string<128>
+    input org_id: uuid
+    input document_id: uuid
+    input title: string<200>
+    idempotency_key idempotency_key
+    create Document(org_id, document_id) as document
+      else DocumentExists { document_id: document_id }
+    set document.title = title
+    return Created { document: document }
+  }
+}"#;
+
+/// The field-adding successor with a production vector field alongside.
+fn vector_successor_source() -> String {
+    ADDS_A_FIELD.replace(
+        "    field body: string<4096>\n",
+        "    field body: string<4096>\n    vector_field embedding(4, cosine, (title, body), \
+         staleness_slo 60, model \"m\", current_version \"2026-09-21\", \
+         replay_age_seconds 86400, replay_bytes 1073741824, replay_backlog 100000)\n",
+    )
+}
+
 /// Compiles `successor` against the genesis contract and reports its overall
 /// compatibility class, printing every finding so a failure shows which change
 /// drove the class rather than only the class.
@@ -146,18 +183,59 @@ fn a_field_needing_no_new_command_input_is_migratable() {
     );
 }
 
+/// An optional field needs no initialisation, so it needs no command change,
+/// so nothing in the successor touches the frozen command surface.
+#[test]
+fn an_optional_field_needs_no_command_change() {
+    let class = classify(ADDS_AN_OPTIONAL_FIELD);
+    assert_ne!(
+        class,
+        CompatibilityClass::Incompatible,
+        "an optional field changes no command surface, so nothing refuses it"
+    );
+}
+
+/// The migration path does not relax the create binding either.
+///
+/// `compile_contract_migration_successor` compiles the candidate through the
+/// same path a plain successor takes, with identity renames bound first, and a
+/// rename cannot make a required field initialised. So a vector field cannot be
+/// introduced by a migration any more than by a deploy -- which makes WP-803's
+/// third question moot: a migration cannot bring a columnar source into
+/// existence, so any source present after one was admitted at the deploy that
+/// first declared it.
+#[test]
+fn a_migration_cannot_introduce_a_vector_field_either() {
+    let with_vector = vector_successor_source();
+    let parent =
+        riffdb_contract_compiler::compile_contract_source(GENESIS).expect("genesis compiles");
+    let migration = r#"
+migration Evolution from 1 to 2 {
+  transform Document {
+    set title = old.title
+  }
+}
+"#;
+    let outcome = riffdb_contract_compiler::compile_contract_migration_successor(
+        &with_vector,
+        migration,
+        &parent,
+    );
+    let error = outcome.err().map(|error| format!("{error:?}"));
+    let rendered = error.expect("a vector successor does not compile as a migration either");
+    assert!(
+        rendered.contains("InvalidCreation"),
+        "the create binding still refuses under migration, found {rendered}"
+    );
+}
+
 /// A vector field cannot even reach that classification, because the create
 /// binding must initialise the new field and a vector field's value is embedded
 /// rather than supplied. The refusal is a compile error, before compatibility
 /// is consulted at all.
 #[test]
 fn a_vector_field_is_refused_before_compatibility_is_consulted() {
-    let with_vector = ADDS_A_FIELD.replace(
-        "    field body: string<4096>\n",
-        "    field body: string<4096>\n    vector_field embedding(4, cosine, (title, body), \
-         staleness_slo 60, model \"m\", current_version \"2026-09-21\", \
-         replay_age_seconds 86400, replay_bytes 1073741824, replay_backlog 100000)\n",
-    );
+    let with_vector = vector_successor_source();
     let parent =
         riffdb_contract_compiler::compile_contract_source(GENESIS).expect("genesis compiles");
     let outcome = riffdb_contract_compiler::compile_contract_successor(&with_vector, &parent);

@@ -1,20 +1,31 @@
 # WP-803: what adding a field to a live application actually does
 
 Established by driving the compiler and the compatibility comparison, not
-by reading ADR-0066. The three cases below are pinned by
-`crates/riffdb-contract-compiler/tests/live_field_addition.rs`.
+by reading ADR-0066. Every case below is pinned by
+`crates/riffdb-catalog/tests/live_field_addition.rs`, which sits beside the
+catalog because deciding whether a successor may deploy is the catalog's
+job: `validate_successor_compatibility` runs exactly this comparison and
+refuses an `Incompatible` report.
 
 ## The answer
 
-**A field can be added to an application that already holds data.** It
-classifies `RequiresMigration`, which is a supported path. What cannot be
-added is a *command input*, and that is what refuses most attempts.
+**A field can be added to an application that already holds data, and an
+optional one is routine.** What cannot be added is a *command input*, and
+that is what refuses most attempts.
 
 | successor | findings | overall |
 |---|---|---|
-| adds a field, set from an input the command already had | `RDB-K030` on the field, `RequiresMigration` | **RequiresMigration** |
-| adds a field and the input to initialise it | `RDB-K030` on the field, plus `RDB-K111` on the input, `Incompatible` | **Incompatible** |
-| adds a vector field | does not compile | -- |
+| adds an optional field, no command change | `RDB-K013` on the field, **`Compatible`**; `RDB-K021` on the outcome shape | **RequiresExplicitVersion** |
+| adds a required field, set from an input the command already had | `RDB-K030` on the field, `RequiresMigration` | **RequiresMigration** |
+| adds a required field and the input to initialise it | `RDB-K030` on the field, plus `RDB-K111` on the input, `Incompatible` | **Incompatible** |
+| adds a vector field | does not compile, by deploy or by migration | -- |
+
+The first row is the headline and it took three attempts to find. An
+optional field needs no initialisation, so it needs no command change, so
+nothing touches the frozen command surface: the field itself is
+`Compatible`, and the only friction is that the outcome shape changed,
+which asks for an explicit successor version. That is the mildest class
+above `Compatible` and entirely routine.
 
 The second row is the important one. Two findings, and the overall class is
 the more restrictive: the field is migratable and the **command surface
@@ -30,10 +41,21 @@ caller-supplied values: the vector, the model identity and the model
 version. Supplying them means three new command inputs, each of which is
 `RDB-K111`.
 
-So the chain closes: a vector field needs caller input, new caller input is
-incompatible, and therefore **a vector field cannot be added to an existing
-contract by ordinary evolution**. The refusal arrives as `InvalidCreation`
-from the compiler, before the compatibility policy is consulted at all.
+There is no optional form to escape into. `VectorFieldDeclaration` carries a
+name, dimension, metric, source fields, staleness and optional production
+and ANN clauses -- and no nullability, so a vector field is always required
+and always needs initialising.
+
+So the chain closes: a vector field cannot be optional, every create
+binding must therefore initialise it, initialising needs caller input, and
+new caller input is incompatible. **A vector field cannot be added to an
+existing contract at all.** The refusal arrives as `InvalidCreation` from
+the compiler, before the compatibility policy is consulted.
+
+The migration path does not relax it. `compile_contract_migration_successor`
+compiles the candidate through the same path with identity renames bound
+first, and a rename cannot make a required field initialised. That is
+measured rather than inferred from the shared call.
 
 This is why WP-802's OBL-0251-2 could not be driven end to end. Reaching a
 pruned-history refusal needs a database with history that does not yet
@@ -61,9 +83,12 @@ started from.
 
 ## What this does not establish
 
-**Whether the migration path admits a columnar source.** ADR-0251 registers
-one at deploy, and a migration is not a deploy. Untested, and the third
-deliverable of this package.
+**Whether the migration path admits a columnar source is moot.** A
+migration cannot introduce a vector field, so it cannot bring a columnar
+source into existence. Any source present after a migration was admitted at
+the deploy that first declared it, which is the path ADR-0251 already
+covers. The question the package opened with has an answer only because the
+answer to the previous one closed it off.
 
 **Whether the command-input constraint is intended at this strength.**
 `RDB-K111` is `Incompatible` rather than `RequiresMigration`, so no
