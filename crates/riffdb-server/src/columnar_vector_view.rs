@@ -105,7 +105,7 @@ pub(super) fn execute(
         metric: request.metric(),
         predicates: request.predicates().to_vec(),
         budget: QueryBudget {
-            max_scanned_rows: 500,
+            max_scanned_rows: PRODUCTION_VECTOR_CANDIDATE_CEILING,
             max_group_cardinality: 1,
         },
     };
@@ -127,6 +127,17 @@ pub(super) fn execute(
         observation.head().clone(),
     ))
 }
+
+/// Rows one organization may merge before a production vector query refuses.
+///
+/// Two consequences follow from this being below the declarable ANN threshold
+/// ceiling (`MAX_VECTOR_ANN_THRESHOLD_ROWS_PER_ORG`, 65,536). A contract may
+/// declare a `row_threshold` at or above this number, and its ANN tier can then
+/// never engage, because ANN engages only above the declared threshold and a
+/// merge that large is refused first. And an organization holding more rows
+/// than this in a vector-projected entity gets `ScanBudgetExceeded` rather than
+/// an exact answer. `docs/known-limitations.md` states both.
+const PRODUCTION_VECTOR_CANDIDATE_CEILING: usize = 500;
 
 fn trusted_commit_lag_ms(
     storage: &(impl AuthoritativePointReader + ?Sized),
