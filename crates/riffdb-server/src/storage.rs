@@ -1386,6 +1386,10 @@ impl PreparedColumnarGenerationRepository for SharedRedbOperationalPorts {
 }
 
 impl ColumnarProjectionRetentionRepository for SharedRedbOperationalPorts {
+    fn retention_watermark_sequence(&self) -> Result<u64, riffdb_storage_api::StorageError> {
+        ColumnarProjectionRetentionRepository::retention_watermark_sequence(&self.shared)
+    }
+
     fn columnar_projection_retention_frontiers(
         &self,
     ) -> Result<Vec<(ColumnarProjectionSourceV1, Option<FrontierPosition>)>, StorageError> {

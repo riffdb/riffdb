@@ -44,10 +44,11 @@ use riffdb_service::{
 use riffdb_storage_api::{
     AuthoritativeIndexScanPage, AuthoritativeIndexScanRequest, AuthoritativePointReader,
     AuthoritativeScanReader, ColumnarProjectionControlRepository, ColumnarProjectionLayoutV1,
-    CommitScanPageV1, CommitScanRequest, EntityTarget, FreshColumnarProjectionControlV1,
-    IdempotencyIdentity, StorageError, StorageErrorKind, StorageScanLimit,
-    StoredColumnarProjectionControlV1, StoredColumnarProjectionGenerationV1, StoredCommitRecordV1,
-    StoredDurableEventV1, StoredEntityRecordV1, StoredOutcomeV1, StoredProvenanceRecordV1,
+    ColumnarProjectionRetentionRepository, CommitScanPageV1, CommitScanRequest, EntityTarget,
+    FreshColumnarProjectionControlV1, IdempotencyIdentity, StorageError, StorageErrorKind,
+    StorageScanLimit, StoredColumnarProjectionControlV1, StoredColumnarProjectionGenerationV1,
+    StoredCommitRecordV1, StoredDurableEventV1, StoredEntityRecordV1, StoredOutcomeV1,
+    StoredProvenanceRecordV1,
 };
 use riffdb_types::{
     CommitSequence, EntityKey, EventId, FieldId, FrontierPosition, ProjectionFrontier,
@@ -1200,30 +1201,27 @@ impl ColumnarRuntime {
         Ok(SourceAdmission::Admitted)
     }
 
-    /// Whether the commit log still begins where a fresh source must start.
+    /// Whether history still reaches back to where a fresh source must start.
     ///
     /// A fresh source replays from `BeforeFirst`, so a vector index over
-    /// documents that already exist is wrong if history has been pruned out
-    /// from under it. An empty log is replayable: there is nothing to miss.
+    /// documents that already exist is wrong if the commits that created them
+    /// were pruned. The retention watermark is the signal: zero means nothing
+    /// has been pruned, and an unpruned log is replayable whether it is empty
+    /// or not.
+    ///
+    /// The commit log cannot answer this. An unbounded initial scan is defined
+    /// to begin at sequence one, so a pruned store fails that read with
+    /// `CorruptData` rather than returning a page that starts higher, and a
+    /// predicate built on it can return true or error but never false.
     pub(crate) fn history_is_replayable_from_the_beginning(
         &self,
     ) -> Result<bool, ColumnarRegistrationError> {
-        let limit =
-            StorageScanLimit::new(1).ok_or_else(ColumnarRegistrationError::synchronization)?;
-        let page = AuthoritativeScanReader::scan_commits(
-            self.storage(),
-            CommitScanRequest::initial(limit),
-        )
-        .map_err(|error| ColumnarRegistrationError::control_storage(error, "columnar-control"))?;
-        let records = match &page {
-            CommitScanPageV1::Page { records, .. } | CommitScanPageV1::ExactEnd { records, .. } => {
-                records
-            }
-        };
-        let Some(first) = records.first() else {
-            return Ok(true);
-        };
-        Ok(first.value().commit_sequence().get() == 1)
+        let watermark =
+            ColumnarProjectionRetentionRepository::retention_watermark_sequence(self.storage())
+                .map_err(|error| {
+                    ColumnarRegistrationError::control_storage(error, "columnar-control")
+                })?;
+        Ok(watermark == 0)
     }
 
     pub(crate) fn open_controlled_generation(
