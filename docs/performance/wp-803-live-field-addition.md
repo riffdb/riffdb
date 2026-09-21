@@ -57,6 +57,24 @@ compiles the candidate through the same path with identity renames bound
 first, and a rename cannot make a required field initialised. That is
 measured rather than inferred from the shared call.
 
+Nor does a new command. A successor may introduce a command freely, so
+`CreateDocumentWithEmbedding` is not what refuses -- the **original**
+command is. It still creates a `Document`, and that entity now has a
+required vector field it does not initialise, so a binding that compiled
+yesterday stops compiling today.
+
+That last point is the general rule these cases keep circling, and it is
+wider than vectors:
+
+> **Adding a required field breaks every existing command that creates the
+> entity.** It compiles only if every one of those bindings can set the new
+> field from what it already has.
+
+The migratable case earlier in this page passes precisely because it could:
+`subtitle` was set from the `title` input the command already took. A vector
+field can never be set that way, because its value must come from the
+caller.
+
 This is why WP-802's OBL-0251-2 could not be driven end to end. Reaching a
 pruned-history refusal needs a database with history that does not yet
 declare a columnar source, and then a deploy that adds one. The second half
@@ -96,7 +114,7 @@ migration rescues it. Whether that is deliberate, or an artefact of
 treating every command-surface change alike, is a question for whoever owns
 the evolution policy rather than something this measurement answers.
 
-**Anything about versioned or additive command surfaces.** A successor may
-introduce a whole new command freely; only changing an existing one is
-refused. Whether adding `CreateDocumentV2` beside `CreateDocument` is the
-intended idiom for this situation has not been tested.
+**How wide the blast radius is on a real contract.** These are
+single-entity contracts with one or two commands. An entity created by many
+commands multiplies the work of adding a required field to it, and none of
+that is measured here.
