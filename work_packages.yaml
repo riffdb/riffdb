@@ -19737,7 +19737,11 @@ work_packages:
   requirements: [PERF-007, PERF-008, PERF-018, REC-001, STO-001, STO-002]
   required_adrs: [ADR-0019, ADR-0085, ADR-0100, ADR-0104, ADR-0123]
   allowed_paths: [work_packages.yaml, crates/riffdb-storage-redb/**,
-    crates/riffdb-server/src/process_graph.rs, crates/riffdb-server/src/daemon.rs,
+    crates/riffdb-server/src/process_graph.rs,
+    crates/riffdb-server/src/storage.rs,
+    crates/riffdb-storage-api/src/columnar_control.rs,
+    crates/riffdb-storage-redb/src/columnar_projection_control.rs,
+    crates/riffdb-storage-redb/src/shared_ports.rs, crates/riffdb-server/src/daemon.rs,
     examples/app-baseline/**, tests/**, docs/performance/**]
   deliverables:
   - A closed checkpoint ledger separating journal-suffix barrier, retained-state read, checkpoint
