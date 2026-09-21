@@ -26892,3 +26892,32 @@ work_packages:
     scale: The answer holds for an application whose data is too large to rewrite in a
       maintenance window, or the record says plainly that it does not.
   human_review_triggers: *id001
+- id: WP-804
+  name: A named proof must exercise what it claims
+  tier: guarantee
+  depends_on: []
+  objective: Close the gap between an obligation naming a proof and that proof testing the
+    thing the record says. Three instances were found in two days, each by accident rather
+    than by a check, and one of them left a reproduced denial of service live behind three
+    green tests.
+  requirements: []
+  required_adrs: [ADR-0156]
+  allowed_paths: [work_packages.yaml, scripts/check-adr-obligations, docs/**, adr/**]
+  deliverables:
+  - A recorded characterisation of what check-adr-obligations can and cannot establish
+    today, driven by reproducing each of the three instances against it
+  - A check that a record whose front matter fails to parse cannot silently declare fewer
+    obligations than it did, since that one is a correctness bug rather than a limit
+  - Whatever strengthening the characterisation warrants for the other two, or a recorded
+    finding that naming the production symbol a proof must reach is the wrong shape
+  acceptance_commands:
+  - ./scripts/acceptance --wp WP-804
+  exit_gate: A malformed record cannot reduce the obligation count without failing, and a
+    reader can tell from the check's own output which of the three failure shapes it
+    detects.
+  standing_design_tests:
+    interface_safety: A check that cannot detect a class of failure says so, rather than
+      passing and leaving the reader to infer coverage it does not have.
+    scale: The characterisation holds for the 188 declared obligations, not only the three
+      that produced it.
+  human_review_triggers: *id001
