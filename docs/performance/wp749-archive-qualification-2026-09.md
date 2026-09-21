@@ -1,8 +1,9 @@
 # WP-749: remaining archive-presence qualification
 
-Status: protocol prepared; **no new remote measurement yet**. The
+Status: the fixed archive comparison is complete; **WP-749 remains open on
+measured acknowledgement overhead**. The
 [correlated tail investigation](wp749-correlated-tail-2026-09.md) is closed.
-WP-748 promotion correctness proceeds independently. Capture representation,
+WP-748 promotion is complete independently. Capture representation,
 hashing and allocation experiments remain closed.
 
 ## Bounded comparison
@@ -56,6 +57,60 @@ new numeric P99 threshold, no claim that every tail movement has that cause, and
 no new tail hypothesis or representation work follows from this comparison.
 Unresolved evidence remains unresolved; this protocol does not pre-award a pass.
 
+## Result recorded on 2026-09-21
+
+The measured source is `11f1ffbc3f1ee1d579e971c3a0e694317ebc1a7d`, tree
+`150c4c0d1e84c62bca15e5d053c47e1a6df9d921`. Both arms used identical daemon and
+runner binaries. The repository evidence bank at
+`release/evidence/wp-749/archive-presence-20260921/README.md`
+contains their digests, every attempted cell, raw-report and exported-report
+digests, the host observations, all five values per arm, paired differences and
+a script that independently verifies the arithmetic.
+
+| Workload | Metric | Archive off median | Archive on median | Change |
+| --- | --- | ---: | ---: | ---: |
+| Write-only | Throughput (ops/s) | 2,933 | 2,684 | -8.49% |
+| Write-only | Request P50 (ms) | 9.437 | 9.961 | +5.56% |
+| Write-only | Request P95 (ms) | 12.059 | 12.583 | +4.35% |
+| Write-only | Request P99 (ms) | 96.469 | 121.635 | +26.09% |
+| Write-only | Mean group commit (ms) | 3.219 | 3.482 | +8.19% |
+| Interactive | Throughput (ops/s) | 15,304 | 14,599 | -4.61% |
+| Interactive | Request P50 (ms) | 0.688 | 0.754 | +9.52% |
+| Interactive | Request P95 (ms) | 9.961 | 9.961 | 0.00% |
+| Interactive | Request P99 (ms) | 12.059 | 12.583 | +4.35% |
+| Interactive | Mean group commit (ms) | 2.938 | 2.890 | -1.62% |
+
+All twenty replacement cells passed host and correctness checks, with zero
+whole-cell CPU steal, errors or unavailable outcomes. Every arm passed the
+P50/P95 central-three stability rule. Every paired comparison had lower
+archive-enabled throughput; every write-only pair also had higher P95. Stability
+does not establish parity, and PERF-018's comparator thresholds are not an
+archive-overhead allowance.
+
+All ten enabled cells confirmed archive progress and retained a manifest digest,
+with no observed collector terminal failure. Inferred terminal application lag
+was zero in eight cells, 32 in one and 49 in one. The source frontier is inferred
+from the backup frontier plus all process command commits, including warmup;
+this is not an independent caught-up proof.
+
+The first host attempt stopped at its fifth cell because postflight observed two
+new SSH authentication/session processes. It reported neither an active
+interfering process nor CPU steal, but the process-identity rule still failed.
+Its five attempted reports, including four completed valid cells, are retained.
+The SSH journal records a preauthentication close; the responsible actor is not
+identified. ADR-0143 section 3's single host-invalid replacement allowance was
+used to restart the complete twenty-cell set. No initial cell was imported, no
+performance result selected a retry, and host policy was unchanged. The
+replacement completed at 14:11:35 UTC; the host was released at 14:12:32 UTC.
+
+P99 remains disclosure under ADR-0249. The earlier correlated investigation
+named checkpoint-conditioned durability/publication drains; this comparison
+does not attribute its additional archive tail movement to that mechanism and
+does not open another tail hypothesis. The present closure issue is the measured
+write-only acknowledgement cost. The existing gate's word "unchanged" is not
+established by these results. Reducing that cost or explicitly accepting a gate
+clarification remains separate work; no completion is recorded here.
+
 ## Local integration checks
 
 On 2026-09-21, revision `65101f19` completed all 14 non-test package acceptance
@@ -84,9 +139,11 @@ CLI archive cases passed, as did the source/sink crash, exact-stop, corruption,
 compatibility and promotion proofs. See the
 [combined verification record](../architecture/WP-748-LIFECYCLE-VERIFICATION.md#final-combined-integration-verification).
 This settles final integration verification at that source identity; the
-candidate remains unmerged. No remote measurement has started and no
-archive-latency result is inferred from correctness tests. The remaining
-measurement requires a fresh explicit exclusive host interval.
+WP-748 implementation was subsequently approved and landed independently.
+WP-749 changes remain on the review branch. The measured revision adds only
+documentation to that qualified runtime; subsequent main integration changed
+only catalog tests, documentation and package metadata. The added catalog test
+passed separately. No archive-latency result is inferred from correctness tests.
 
 ## Readiness repair and PR note
 
@@ -102,4 +159,8 @@ This linked handbook page records the protocol and integration result.
 that archive restore rewinds to its selected restored frontier and supports
 exact sequence recovery; it removes the stale blanket exclusion of incremental
 backup while preserving the absence of a wall-clock recovery promise.
-Measurement, review and landing remain required before completion.
+The measurement is now recorded above. This evidence increment is surface-tier under the `release/**` path rule,
+following unchanged ADR-0143/0171/0249 decisions. It changes no runtime behavior
+or durable bytes. It updates this page and the qualification
+status in backup/restore; archive acknowledgement overhead, review and landing
+remain required before completion.

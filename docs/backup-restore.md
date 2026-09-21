@@ -377,9 +377,13 @@ prefix. The collector never reports its uncertain frame as confirmed.
 
 Full CI at `71ae34a7` and the later sink-failure matrix checks passed;
 the repository bundle at
-`release/evidence/wp-749/verification-71ae34a7/README.md` records their exact scope. WP-749 remains incomplete because host-qualified
-write-path measurements are still pending. The local host preflight refused
-measurement due to interference. WP-750's full replication campaign is also
+`release/evidence/wp-749/verification-71ae34a7/README.md` records their exact scope.
+The later combined implementation also passed full integration CI. The
+[same-binary archive comparison](performance/wp749-archive-qualification-2026-09.md#result-recorded-on-2026-09-21)
+completed twenty valid cells and found measurable archive overhead: write-only
+median throughput fell 8.49% and request P95 rose 4.35%. WP-749 remains incomplete
+because unchanged acknowledgement latency has not been established.
+WP-750's full replication campaign is also
 outstanding, so these paths do not yet constitute a qualified disaster-recovery
 deployment.
 
