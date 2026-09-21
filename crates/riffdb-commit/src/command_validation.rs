@@ -1105,19 +1105,24 @@ where
             current,
             mutation_positions,
         } = self;
-        if !records.matches_reserved_candidate(
+        let attach_phase = crate::writer_census::stage_start();
+        let matched = records.matches_reserved_candidate(
             candidate.assignment(),
             candidate.intent(),
             candidate.write_plan(),
-        ) || candidate.intent() != attempt.commit_intent()
-        {
+        ) && candidate.intent() == attempt.commit_intent();
+        crate::writer_census::charge(crate::writer_census::ATTACH_MATCH_RESERVED, attach_phase);
+        if !matched {
             drop(candidate);
             drop(current);
             drop(mutation_positions);
             drop(attempt);
             return CheckedStorageStage::Integrity;
         }
-        match candidate.stage(records) {
+        let attach_phase = crate::writer_census::stage_start();
+        let staged = candidate.stage(records);
+        crate::writer_census::charge(crate::writer_census::ATTACH_STORAGE_STAGE, attach_phase);
+        match staged {
             Ok(storage) => CheckedStorageStage::Staged {
                 storage,
                 evidence: Box::new(StagedValidatedCommand {

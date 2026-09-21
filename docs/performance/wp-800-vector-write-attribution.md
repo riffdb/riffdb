@@ -141,6 +141,22 @@ The cost is in two places:
    batch: +8.7 us**, 60 percent of the added staging.
 2. **Reserving capacity and assigning the sequence: +2.4 us**, 17 percent.
 
+Attach was split again, because it covers two different things: an
+equality check proving the built records match the reserved candidate, and
+the storage stage itself. The check compares the commit intent and the
+write-set plan structurally, so its cost follows entry count rather than
+payload size -- exactly the shape the width-independence pointed at, and a
+tidy story.
+
+It is not the cost. `stage_attach` is +8,888 and `attach_storage_stage` is
++8,865, leaving about 23 ns for the comparison. **The storage stage is the
+whole of it**: handing the built records to the batch, not any checking
+that precedes it.
+
+That is the fourth plausible mechanism this investigation has killed, and
+the third that was killed by measuring the thing rather than by reasoning
+about it.
+
 Both are batch accounting rather than payload work, and both are paid per
 command by an entity that declares a vector field, whatever it puts in it
 and however wide that is.
@@ -213,14 +229,17 @@ the stable named children sum to about +17.6, leaving roughly 3 us in
 residuals that flip sign. That remainder is honest noise at this sample
 size, not a hidden stage, but it is not nothing either.
 
-**Why attaching and reserving cost what they do is still unidentified.**
-The split says where the fixed cost is paid and rules out the payload; it
-does not say what attach and reserve are doing differently. That both are
-batch accounting, and that neither moves with the vector's width, points at
-the number of records or entries a vector field adds rather than their
-size -- but that is a hypothesis to instrument, not a finding. The first
-reading of this data was already wrong in exactly the way that pairing the
-biggest number with the likeliest story is wrong.
+**What the storage stage does differently is still unidentified.** The
+split has ruled out encoding, the reserved-candidate check, and payload
+size, and localised the cost to handing records to the storage batch and to
+reserving capacity. Going further means instrumenting inside
+`riffdb-storage-redb`, which is a bigger surface than this package has
+touched so far.
+
+The surviving hypothesis is that a vector field makes a command carry more
+records rather than bigger ones, and that both remaining costs follow
+record count. It has not been tested. Every hypothesis in this
+investigation that was not tested turned out to be wrong.
 
 **The widths were measured on one host and one rep count.** Three
 repetitions resolve a 16% step against a 14% spread only just. The
