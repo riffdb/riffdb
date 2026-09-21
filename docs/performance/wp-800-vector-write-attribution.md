@@ -166,7 +166,7 @@ and however wide that is.
 E2 (`instance-20260815-e2`, AMD EPYC 7B12, 8 vCPU) was admitted against
 ADR-0245 by reading its capabilities from the host rather than its name:
 SHA-2, AES, carry-less multiply and SSE4.2 all present. Six repetitions,
-2,000 documents at 32 clients, revision `17bebc236`:
+2,000 documents at 32 clients, revision `035e8ce55`:
 
 | rep | base docs/s | vector docs/s | delta |
 |---|---:|---:|---:|
