@@ -19,6 +19,16 @@
 require_relative "lib/riffdb_adr"
 
 ROOT = RiffdbAdr.root
+
+# A record whose front matter does not parse is corrupt, not legacy. Report it
+# the way a check reports a finding rather than as an interpreter backtrace.
+def guard_malformed_records
+  yield
+rescue RiffdbAdr::MalformedFrontMatter => error
+  warn error.message
+  exit 1
+end
+
 README_PATH = File.join(ROOT, "adr", "README.md")
 START_MARKER = "<!-- adr-index:start -->"
 END_MARKER = "<!-- adr-index:end -->"
@@ -104,7 +114,7 @@ if range.nil?
 end
 
 current = readme[range]
-generated = "\n#{render(ROOT)}\n"
+generated = guard_malformed_records { "\n#{render(ROOT)}\n" }
 
 if mode == "write"
   if current == generated
