@@ -192,6 +192,7 @@
 - [WP-777 Demand-activated Columnar Runtime](performance/wp-777-demand-activated-columnar.md)
 - [WP-791 Derived Sinks Local Measurement](performance/wp-791-derived-sinks-local-2026-09.md)
 - [WP-791 Derived Sinks C3D Measurement](performance/wp-791-derived-sinks-c3d-2026-09.md)
+- [WP-800 Vector Write Attribution](performance/wp-800-vector-write-attribution.md)
 - [App-baseline Production Profile](performance/app-baseline-production-profile.md)
 
 # Reference
