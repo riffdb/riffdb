@@ -993,6 +993,7 @@ fn stage_checked_candidate<S>(
 where
     S: CommandCandidateSequenceAssigned,
 {
+    let stage_phase = crate::writer_census::stage_start();
     let input = match CheckedRecordGraphInput::from_assigned_candidate(&mut candidate) {
         Ok(input) => input,
         Err(error) => {
@@ -1000,6 +1001,8 @@ where
             return Err(CheckedCommandStageError::InternalDefect(error));
         }
     };
+    crate::writer_census::charge(crate::writer_census::STAGE_GRAPH_INPUT, stage_phase);
+    let stage_phase = crate::writer_census::stage_start();
     let records = match build_atomic_command_record_set(input, durability_mode) {
         Ok(records) => records,
         Err(error) => {
@@ -1007,6 +1010,8 @@ where
             return Err(CheckedCommandStageError::InternalDefect(error));
         }
     };
+    crate::writer_census::charge(crate::writer_census::STAGE_BUILD_RECORDS, stage_phase);
+    let stage_phase = crate::writer_census::stage_start();
     let expected_outcome = records.stored_outcome().clone();
     let (staged, candidate) = match candidate.stage(records) {
         CheckedCandidateStage::Staged { storage, evidence } => (storage, evidence),
@@ -1026,6 +1031,7 @@ where
             ));
         }
     };
+    crate::writer_census::charge(crate::writer_census::STAGE_ATTACH, stage_phase);
     Ok((
         staged,
         CheckedStagedCommandEntry {

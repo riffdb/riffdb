@@ -101,37 +101,49 @@ distinguishes them.
 ## Inside staging
 
 `exec_stage_serial` was one number, so the append path it charges was given
-five level-2 counters. They are appended past every residual range in the
-census, because they are children of a stage that already has a total: put
-inside one, they would be double counted and the residual they fell into
-would read as attributed when it is not.
+level-2 counters, and the two that mattered were split again. They are all
+appended past every residual range in the census, because they are children
+of stages that already have totals: put inside a residual's run they would
+be double counted, and the residual they fell into would read as attributed
+when it is not.
 
 Three repetitions, nanoseconds per command, vector against base:
 
-| level-2 stage | added | spread |
+| stage | added | spread |
 |---|---:|---|
-| **`append_build_stage`** | **+8,828** | 8,127-9,723 |
-| `append_epoch` | +3,434 | 3,402-3,457 |
-| `append_current` | +842 | 713-1,061 |
-| `append_authorize` | +401 | 364-440 |
-| `append_begin` | below the top twelve | |
+| `exec_stage_serial` (level 1) | +14,336 | 13,352-14,990 |
+| &nbsp;&nbsp;`append_build_stage` | +8,224 | 7,585-8,636 |
+| &nbsp;&nbsp;&nbsp;&nbsp;**`stage_attach`** | **+8,710** | 8,162-9,139 |
+| &nbsp;&nbsp;&nbsp;&nbsp;`stage_build_records` | +442 | 345-502 |
+| &nbsp;&nbsp;`append_epoch` | +3,380 | 3,303-3,433 |
+| &nbsp;&nbsp;&nbsp;&nbsp;`epoch_reserve_assign` | +2,373 | 2,322-2,458 |
+| &nbsp;&nbsp;&nbsp;&nbsp;`epoch_derive_indexes` | +955 | 918-1,023 |
+| &nbsp;&nbsp;&nbsp;&nbsp;`epoch_read_affected` | +47 | 36-57 |
+| &nbsp;&nbsp;`append_current` | +785 | 661-940 |
+| &nbsp;&nbsp;`append_authorize` | +457 | 406-490 |
+| &nbsp;&nbsp;`append_begin` | +325 | 197-412 |
 
-Against `exec_stage_serial` at +15,364, the named children account for
-about 88 percent. What remains is `stage_first_evaluated_command_on_empty`,
-which runs once per group rather than once per command, and the path's own
-control flow.
+The named children account for about 95 percent of the stage above them.
+`stage_attach` exceeds `append_build_stage` because it charges every call to
+`stage_checked_candidate`, including the once-per-group first-on-empty path
+that `append_build_stage` does not cover.
 
-So the fixed per-command cost of declaring a vector field is, in order:
+**Building the record set is not the cost.** `stage_build_records` is where
+the atomic command record set is built -- where a vector's bytes are
+encoded -- and it adds 442 ns against attach's 8,710. Reading the affected
+epoch adds 47. Whatever declaring a vector field costs the writer, it is
+not encoding the vector, which is what the width-independence already
+implied and this measures directly.
 
-1. **Building the candidate and staging it onto the open batch, +8.8 us**,
-   57 percent of the added staging.
-2. **Deriving the command indexes, reading the affected epoch and assigning
-   the sequence, +3.4 us**, 22 percent -- and the steadiest number in this
-   whole investigation, varying by one percent of its mean across
-   repetitions where throughput varied by ten points.
+The cost is in two places:
 
-Neither scales with the vector's width. Both are paid per command by an
-entity that declares a vector field, whatever it puts in it.
+1. **`candidate.stage(records)`, attaching the built records to the open
+   batch: +8.7 us**, 60 percent of the added staging.
+2. **Reserving capacity and assigning the sequence: +2.4 us**, 17 percent.
+
+Both are batch accounting rather than payload work, and both are paid per
+command by an entity that declares a vector field, whatever it puts in it
+and however wide that is.
 
 ## A second admitted profile
 
@@ -201,13 +213,14 @@ the stable named children sum to about +17.6, leaving roughly 3 us in
 residuals that flip sign. That remainder is honest noise at this sample
 size, not a hidden stage, but it is not nothing either.
 
-**Why those two phases cost what they do is still unidentified.** The
-level-2 split says where the fixed cost is paid, not what is being done
-there. `append_epoch` covering index derivation is the obvious next thread
--- an entity with a vector field may derive a different index set -- but
-that is a hypothesis to instrument, not a finding, and the first reading of
-this data was already wrong in exactly the way that pairing the biggest
-number with the likeliest story is wrong.
+**Why attaching and reserving cost what they do is still unidentified.**
+The split says where the fixed cost is paid and rules out the payload; it
+does not say what attach and reserve are doing differently. That both are
+batch accounting, and that neither moves with the vector's width, points at
+the number of records or entries a vector field adds rather than their
+size -- but that is a hypothesis to instrument, not a finding. The first
+reading of this data was already wrong in exactly the way that pairing the
+biggest number with the likeliest story is wrong.
 
 **The widths were measured on one host and one rep count.** Three
 repetitions resolve a 16% step against a 14% spread only just. The

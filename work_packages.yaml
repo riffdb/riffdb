@@ -26593,7 +26593,8 @@ work_packages:
   # durable, so adding stages to it is an implementation choice under D-003.
   allowed_paths: [work_packages.yaml, benchmarks/perf-surface/**, docs/performance/**,
     crates/riffdb-commit/src/writer_census.rs,
-    crates/riffdb-commit/src/command_execution.rs]
+    crates/riffdb-commit/src/command_execution.rs,
+    crates/riffdb-commit/src/command_records.rs]
   deliverables:
   - An attribution of where the cost is spent, from instrumented stage counters rather than
     from reading the code, on the same harness and host that measured it

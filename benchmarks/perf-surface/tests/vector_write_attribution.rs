@@ -119,7 +119,7 @@ fn the_writer_census_attribution_of_a_vector_field_is_reproducible() {
         })
         .collect();
     ranked.sort_by(|left, right| right.1.abs().partial_cmp(&left.1.abs()).expect("finite"));
-    for (label, mean, min, max) in ranked.iter().take(12) {
+    for (label, mean, min, max) in ranked.iter().take(22) {
         println!("VECATTR {label:<28} mean={mean:>10.0}ns min={min:>10.0} max={max:>10.0}");
     }
 }
