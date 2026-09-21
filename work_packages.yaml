@@ -26711,7 +26711,11 @@ work_packages:
     entity, so the most ordinary schema change in any database is currently a migration.
   requirements: []
   required_adrs: [ADR-0066, ADR-0076, ADR-0077, ADR-0078, ADR-0251]
-  allowed_paths: [work_packages.yaml, docs/**]
+  # Widened 2026-09-21. The deliverables require driving the comparison rather
+  # than reading the policy, which needs a test. It sits beside the catalog
+  # because deciding whether a successor may deploy is the catalog's job.
+  allowed_paths: [work_packages.yaml, docs/**,
+    crates/riffdb-catalog/tests/live_field_addition.rs]
   deliverables:
   - A recorded answer to what a deployment that adds a field to an existing entity does
     today, established by driving it rather than by reading the policy
