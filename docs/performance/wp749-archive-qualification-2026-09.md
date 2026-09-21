@@ -142,6 +142,16 @@ parity or settle the resource-level cause of the incremental blocking. The
 authorized bounded measurement is finished, with no further run or completion
 claim. The twenty-cell results above remain the qualification evidence.
 
+The [retained-request decomposition](wp749-archive-p99-decomposition-2026-09.md)
+then calculated the isolated pair's 26.582760 ms P99 movement without another
+run. Subtracting each request's own checkpoint pre-sync wait reduces that
+contrast by 14.895930 ms and leaves 11.686830 ms. This is a fixed-trace
+sensitivity, not a causal archive residual; drain-exposure standardization also
+leaves a substantial within-state movement. The shared mechanism is now owned
+by [WP-806](wp-806-checkpoint-journal-tail.md). A small named archive cost is
+not established, so the unchanged-latency gate remains unmet and no amendment
+or completion is justified by this arithmetic.
+
 ## Local integration checks
 
 On 2026-09-21, revision `65101f19` completed all 14 non-test package acceptance

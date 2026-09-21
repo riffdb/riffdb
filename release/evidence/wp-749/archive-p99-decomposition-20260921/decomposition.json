@@ -1,0 +1,142 @@
+{
+  "schema": "riffdb.wp749.archive-p99-decomposition/v1",
+  "source_summary_sha256": "1526a78155ed6516c9c9448f58f78f58991c5f28177b8042fddbff38fba9bd65",
+  "source_revision": "be189cac4325c77303c5b4fe749ef9b73f4e4b42",
+  "execution_receipt_digests": {
+    "01-disabled": "d7ef1f440b5ce1c9cddf978b311f319310a8c3efe210e2fbac80484137200cbc",
+    "02-enabled": "39a739dfd1a4f1de820b9e3b986a96804a3fc5a3e1247bb47b546df7e54d4360"
+  },
+  "source_file_digests": {
+    "01-disabled": {
+      "report.json": "e4a42a39025012f5c9609a1c9a23c6a3d214dc2534c10f87263c4ccb63871d43",
+      "run.log": "58489bb75f9acf2f42471f5c71de514cd6dede96ed99ec869f2538883ee1990d",
+      "raw/raw-request-tail.json": "298ce116700279af304f47a4c14d881d2fd4309d3460340dfc1c18104bb17e50",
+      "joined-requests.json": "bfbf6658cb247366a9b3010a0cdaf6e3d4d9f7017ef82217ee0329664a5a0865",
+      "correlated.json": "6020d70934be716edce648968940412c8c8b845a33884c3d41b5dff20ca7bc79",
+      "attribution.json": "3adf0e07d59af47c30763853b89436959df186ddc37a664ffabbc2f913d856c3",
+      "attempt.json": "3628cbdbaae921ebeca8377a885912c055c68050a48510f41974ba2aa180489a",
+      "preflight.json": "9137fbd63f90b70d616d880615de637e367ecdc5f320be13a6d954288447b24d",
+      "postflight.json": "22f4c89406e09529dbcbe95a63f112a83e23d5264ae113378834427544998253",
+      "reconciliation.json": "dd479c6fee6a4d8bed3f29d942d5d7d16bc93d36c9eb70e3eb0e58cef495b09e",
+      "trace-analysis.json": "ed1bc91543dde4b6936ac0b1aca18a1a6f2eefd840fac7d9d1bc3faf3f60ac99"
+    },
+    "02-enabled": {
+      "report.json": "24bd45a2245680f196459d2049cca40e04c3fc059bbad404ed93844b46de8a1b",
+      "run.log": "ae23d5bc4b8197cae7e713da1aa57af86840dd48f9c9e075c2948a4f0a51c48a",
+      "raw/raw-request-tail.json": "16a143fd224379612737d3e9842fdd32d1c1952351fc24b51572c043794cec39",
+      "joined-requests.json": "b6a25579f13ebd64173faedf4447b8a3e14e38ec006ee1dc05233ecf5a6e614a",
+      "correlated.json": "b66127237fda971613a024efb7967e619d18e5fbcd274ecf7741e2af65e43e2f",
+      "attribution.json": "e3fbcaf1d317f411337682dc65663303ef505511d4e4dc1cafd8e5f59c02d5a8",
+      "attempt.json": "312bf43daf26c60081d047034fa694f886cec1b5691fbcb6b65c18fa184e7c98",
+      "preflight.json": "b2a82ab5b0edd3ed7dce1a3ead664811f0cfed00bf84bc9af8aff3820e154a38",
+      "postflight.json": "c7aab1112ec06092bd649d33c3ebe9d7887b388e6d24b8bbab04aa201aac2f00",
+      "reconciliation.json": "5e0dd4f8b5d90d2ad15045a2d03b1b940370ef483a1b9dd36a946775e525c802",
+      "trace-analysis.json": "e520a445b7e90ec4eb66fc1061278d0aae61c76411f80f684db258de6aa9357a"
+    }
+  },
+  "request_counts": [
+    263888,
+    240636
+  ],
+  "percentile_method": "Empirical nearest rank ceil(99*N/100); weighted CDF uses exact integer masses.",
+  "exposure_standardization": {
+    "prevalence": [
+      {
+        "drain_requests": 176726,
+        "requests": 263888
+      },
+      {
+        "drain_requests": 164134,
+        "requests": 240636
+      }
+    ],
+    "matrix_p99_ns": [
+      [
+        88347260,
+        92230820
+      ],
+      [
+        112236720,
+        114930020
+      ]
+    ],
+    "matrix_rows": "conditional request latency distributions: disabled, enabled",
+    "matrix_columns": "own-group drain prevalence: disabled, enabled",
+    "raw_difference_ns": 26582760,
+    "exposure_change_by_order_ns": [
+      3883560,
+      2693300
+    ],
+    "within_state_change_by_order_ns": [
+      23889460,
+      22699200
+    ],
+    "exposure_average_ns": 3288430.0,
+    "within_state_average_ns": 23294330.0,
+    "average_rule": "Equal average of the two possible factor-change orders; both exact paths retained.",
+    "causal_archive_specific_residual_ns": null,
+    "interpretation": "Observed own-group drain composition versus conditional latency distribution change. Within-state change includes changed checkpoint/journal severity, queueing and any archive effects; it is not an identified archive-specific cost."
+  },
+  "request_subtraction_sensitivity": {
+    "own_checkpoint_pre_sync_wait": {
+      "disabled_p99_ns": 88226500,
+      "enabled_p99_ns": 99913330,
+      "difference_ns": 11686830
+    },
+    "own_checkpoint_sync_overlap": {
+      "disabled_p99_ns": 35977270,
+      "enabled_p99_ns": 72737010,
+      "difference_ns": 36759740
+    },
+    "own_checkpoint_first_wait": {
+      "disabled_p99_ns": 35971280,
+      "enabled_p99_ns": 67481340,
+      "difference_ns": 31510060
+    },
+    "own_group_submission_through_publication": {
+      "disabled_p99_ns": 29093750,
+      "enabled_p99_ns": 67242970,
+      "difference_ns": 38149220
+    }
+  },
+  "pre_sync_subtraction_change_in_contrast_ns": 14895930,
+  "sensitivity_interaction_warning": "Do not add exposure standardization and interval subtraction effects: they are different interventions on the same observed distributions, not disjoint time components.",
+  "subtraction_limits": "Descriptive sensitivity only: subtract the actual contained interval from each request, then re-sort. Keep all other durations and observed dependencies fixed. This is neither a replay nor the request latency after removing the mechanism; predecessor-induced queueing is not removed.",
+  "raw_p99_rank_samples": [
+    {
+      "commit_sequence": 134738,
+      "group_id": 7266,
+      "elapsed_ns": 88347260,
+      "first_wait_ns": 870540,
+      "before_sync_in_first_wait_ns": 120760,
+      "sync_wait_overlap_ns": 733940,
+      "submit_to_publication_ns": 1069470,
+      "checkpoint_id": 36,
+      "drain_required": true
+    },
+    {
+      "commit_sequence": 244501,
+      "group_id": 14244,
+      "elapsed_ns": 114930020,
+      "first_wait_ns": 46398220,
+      "before_sync_in_first_wait_ns": 45913170,
+      "sync_wait_overlap_ns": 465880,
+      "submit_to_publication_ns": 46494860,
+      "checkpoint_id": 71,
+      "drain_required": true
+    }
+  ],
+  "enabled_write_observation": {
+    "group_id": 12256,
+    "first_sequence": 212986,
+    "last_sequence": 213004,
+    "checkpoint_id": 61,
+    "drain_required": true,
+    "max_positional_write_us": 141387,
+    "first_wait_ns": 142264869,
+    "sync_ns": 798860,
+    "submit_to_sync_ns": 141466969
+  },
+  "identification_limit": "The traces contain client elapsed duration and commit-sequence joins, not aligned request admission/queue intervals or counterfactual checkpoint schedules. A shared mechanism can change severity in either arm. The within-state residual cannot be divided causally into shared versus archive-specific time from these observations.",
+  "gate_disposition": "No small, named archive-specific residual established; the existing unchanged-acknowledgement-latency gate remains unmet. This analysis does not authorize another measurement or an amendment."
+}

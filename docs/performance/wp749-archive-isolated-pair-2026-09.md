@@ -11,6 +11,11 @@ The shared finding is now independently registered as
 [WP-806: checkpoint-coupled journal tail latency](wp-806-checkpoint-journal-tail.md).
 Its scope and resolution are separate from WP-749's archive gate.
 
+The subsequent [P99 decomposition](wp749-archive-p99-decomposition-2026-09.md)
+uses only these retained requests. It records the pre-sync subtraction and
+drain-exposure standardization, and why neither identifies a small causal
+archive-specific residual.
+
 The single authorized replacement pair passed all host and correctness checks.
 It also reproduced substantially longer positional journal writes with archive
 enabled. This distinguishes a shared blocking path from an additional observed
