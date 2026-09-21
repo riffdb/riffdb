@@ -45,9 +45,8 @@ Generated client changes propagate through application locks, adapter and
 portability fixtures, and driver manifests. Their regeneration is a fixture
 refresh, not a new external-consumer or performance qualification result.
 
-Restricted pre-cutover startup is now implemented and exercised below. Remaining
-work: complete whole-operation failure/cancellation qualification; under-load
-zero/nonzero-RPO drills; final CI and fixture review. The
+Restricted pre-cutover startup and the under-load zero/nonzero-RPO drills are
+implemented and exercised below. Final CI and fixture review remain. The
 passing lifecycle path is preserved rather than consolidated. Follower-derived
 projection generation and lifecycle belong to the follower under ADR-0248.
 
@@ -67,8 +66,8 @@ projection generation and lifecycle belong to the follower under ADR-0248.
   merge.
 - **Updated handbook:** follower administration, configuration, compatibility,
   backup/restore, remote ingress, errors and known limitations.
-- **Hazards and follow-ups:** complete operation custody/failure qualification,
-  under-load zero/nonzero-RPO drills and final CI/fixture review remain.
+- **Hazards and follow-ups:** final CI/fixture review remain; the process
+  recovery and under-load evidence below does not substitute for either.
 
 ### Restricted pre-cutover recovery
 
@@ -101,7 +100,8 @@ authorized retry; one new incarnation/epoch; unchanged frozen selection; a new
 idempotent command; and restart without the old source. Ten crash cells cover
 Draining, Offline, Selected, CutoverPending and committed cutover in both profiles.
 Each recovers through the same selection and retains one committed cutover.
-Two signal-driven shutdown cells additionally prove clean custody release and
+Four signal-driven shutdown cells additionally prove clean custody release at
+Offline and after committed cutover, and
 fresh retry, with an explicit entity read before and after source restart.
 An authorized retry while source credentials are unavailable records
 FenceUnavailable, reopens restricted admission and preserves the selection;
@@ -112,6 +112,54 @@ fixture daemon's observation/crash hooks are unavailable in normal builds.
 Changed handbook pages are follower administration, configuration, backup/restore
 and known limitations. These correctness results do not qualify a performance
 gate or close either package.
+
+### Promotion under concurrent commands
+
+`promotion_mints_incarnation_and_refuses_old_lineage_tokens` runs eight bounded
+command clients while the primary is fenced, in Standard and Hardened profiles.
+Each profile has a caught-up follower and a follower held at application
+sequence one by an explicit delivery barrier. Successful command sequences
+are unique and exactly account for the primary's frozen application frontier.
+The promoted receipt reports the observed applied frontier and its exact delta
+from that fence: zero for the caught-up cells and positive for the held cells.
+A new command and idempotent replay succeed, followed by an entity read with the
+expected value, with the former source stopped.
+
+During fencing, the process-local admission pause returns `StorageUnavailable`;
+after its durable receipt it returns `PrimaryFenced`. A paused worker waits on
+that receipt and retries its exact input, which must be refused rather than
+committed or replayed. No sleep controls command or follower progress. The test
+does not equate source and follower projection generations or lifecycle.
+
+The initial process test exposed a missed source-side token check: after
+promotion, a causal projected read could report `Building` for an old token.
+The shared service now checks history incarnation before either lifecycle or
+wait handling on sources as well as followers. The existing service regression
+had expected `Lagging` for this detectable mismatch; it now requires the
+accepted `RDB-HISTORY-0101` refusal. This preserves the same token and error
+identities and follows the accepted WP-747 classification. All 18 projected-read
+acceptance tests pass. The under-load process proof also retains an actual
+source-issued token, follower discovery continuation and discovery history fence
+across promotion, and attempts an old-lineage replication stream. All four cells
+pass in 36.0 seconds with the unchanged 120-second watchdog. The old cursor uses
+the existing kernel discovery validation refusal; the history fence is a typed
+history mismatch and the stream returns ForeignLineage then closes without a
+frame. None releases stale rows or starts an implicit fresh page.
+
+### Failure and cancellation coverage
+
+| Boundary | Proof |
+| --- | --- |
+| Admission, current authorization and durable denial | `promotion_admission_tests`: unavailable policy, revoked authority, foreign target/generation, conflicting selection, corrupt audit storage and bounded handoff |
+| Handoff owner is lost | `promotion_handoff_is_bounded_and_receiver_loss_preserves_uncertainty`; bounded admission and a dropped owner report uncertainty |
+| Caller drops its response | `dropping_promotion_response_preserves_accepted_audit_custody`; the accepted trigger still persists its original audited terminal outcome |
+| Interrupted selected operation | `selected_promotion_restarts_restricted_then_exact_retry_serves_one_new_lineage`, both profiles, no peer or credential at restricted startup |
+| Fresh source proof unavailable | The same TLS proof requires a durable FenceUnavailable result and a later exact retry with unchanged selection |
+| Signal shutdown | `restricted_promotion_shutdown_releases_custody_before_a_fresh_exact_retry`, both profiles, at Offline and committed cutover; clean join/custody release and subsequent exact retry |
+| Durable cutover and reconciliation | Ten restricted process crash cells plus the existing storage cutover/reconciliation crash campaigns; one committed lineage and no restamping |
+| Cancelled validation and contradictory retained claims | `committed_promotion_reconciliation_refuses_cancelled_missing_and_terminal_claims` and the exact-success/contradictory-cutover storage matrix |
+
+These are correctness proofs, not latency or availability measurements.
 
 ## Implemented behavior
 

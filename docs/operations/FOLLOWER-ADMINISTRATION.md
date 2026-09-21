@@ -88,15 +88,14 @@ current facts before the coordinator commits.
 
 Old audit generations retain their bytes. Use matching updated clients for the
 new RPCs; see [compatibility](../compatibility.md). Automatic registry migration
-is not provided. The experimental fencing and promotion path below still needs
-recovery and under-load qualification before WP-748 can close.
+is not provided. The experimental fencing and promotion path below has local
+recovery and under-load proofs; final CI and review remain before WP-748 closes.
 
 ## Experimental fencing and promotion
 
 WP-748 exposes `riffdb follower fence-primary` and `riffdb follower promote`
-through the same checked Rust client, gRPC service and policy owner. Recovery
-and under-load qualification remain incomplete; this is an experimental POC
-path, not a qualified failover deployment.
+through the same checked Rust client, gRPC service and policy owner. Final
+qualification remains incomplete; this is an experimental POC path.
 
 Fencing requires the distinct global, all-partition
 `fence_replication_primary` permission and a currently attached registration.
@@ -128,6 +127,10 @@ riffdb --config ./follower-operator.toml follower promote \
 
 Success reports the exact applied application sequence, new incarnation and
 leadership epoch, administration sequence and application-sequence RPO.
+Scoped causal tokens from the former incarnation return `RDB-HISTORY-0101`
+on the promoted source, including while its local projection is unavailable.
+Opaque continuations from the former service generation are invalid; restart a
+query from fresh observations.
 JSON integers are decimal strings; BeforeFirst is `null`. Keep both operation
 IDs and the complete selection unchanged after an uncertain response. An exact
 retry on a successfully promoted source checks fresh authority, returns the

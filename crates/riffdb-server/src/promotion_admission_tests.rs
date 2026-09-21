@@ -399,6 +399,45 @@ async fn promotion_handoff_is_bounded_and_receiver_loss_preserves_uncertainty() 
 }
 
 #[tokio::test]
+async fn dropping_promotion_response_preserves_accepted_audit_custody() {
+    let root = tempfile::tempdir().unwrap();
+    let path = root.path().join("follower.redb");
+    let backups = root.path().join("backups");
+    let mut storage = RedbMaintenanceStorage::open_for_promotion_recovery(&path, &backups).unwrap();
+    let (controller, mut receiver) = PromotionController::channel();
+    let policy = policy();
+    let service =
+        FollowerPromotionService::new(database(), environment(), policy.clone(), controller);
+    let response = service.promote_follower(context(&policy, 33), request(1));
+    drop(response);
+    let mut admitted = receiver
+        .try_recv()
+        .unwrap()
+        .audit(&mut storage, request(1).target(), &environment())
+        .unwrap()
+        .unwrap();
+    assert_eq!(admitted.authorization.request(), request(1));
+    admitted
+        .attempt
+        .advance(Step::FailedClosed(Failure::FenceUnavailable))
+        .unwrap();
+    storage
+        .persist_promotion_receipt(&admitted.attempt)
+        .unwrap();
+    let retained = admitted.attempt.clone();
+    admitted
+        .completion
+        .complete(Err(FollowerPromotionPortError::Unavailable));
+    drop(storage);
+    let reopened = RedbMaintenanceStorage::open_for_promotion_recovery(&path, &backups).unwrap();
+    assert_eq!(
+        reopened.promotion_receipts().unwrap().receipts(),
+        &[retained]
+    );
+    assert!(!path.exists(), "external audit grants no database writer");
+}
+
+#[tokio::test]
 async fn promotion_policy_unavailability_is_audited_without_retargeting_an_operation() {
     let root = tempfile::tempdir().unwrap();
     let mut storage = RedbMaintenanceStorage::open_for_promotion_recovery(

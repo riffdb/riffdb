@@ -22850,7 +22850,23 @@ work_packages:
       fences ordinary startup. Only exact successful reconciliation under the
       current exclusive owner may cover prior terminal attempts with the same
       request and selection; decoded success alone never grants this proof.
-      Restricted pre-cutover retry hosting and final qualification remain open.
+      Restricted pre-cutover retry hosting is implemented with a private
+      authenticated route, fresh source proof and complete local validation;
+      no peer or derived workers start at restricted boot. Retain completion
+      until the source graph is ready. Final qualification remains open.
+    - Exercise promotion under eight bounded command clients in both durability
+      profiles, with zero and nonzero application-sequence RPO. Synchronize
+      temporary Draining refusals on the durable primary fence receipt before
+      retrying the exact command; require PrimaryFenced then and reconcile
+      all acknowledged sequences to the fence. Keep the required named process
+      proof in the existing TLS replication_follower test binary; the retention
+      proof remains in tests/replication_promotion.rs under the storage owner.
+    - Apply the existing detectable history-mismatch refusal to source projected
+      reads as well as follower reads. A promoted source must reject an old
+      causal token before projection lifecycle or wait handling. The process
+      regression returned Building before this repair; the service regression
+      had retained the obsolete Lagging expectation. No token bytes, error
+      identity, authorization or freshness guarantee change.
     - Preserve every pre-existing durable registry identity and bound while
       regenerating the approved fencing/promotion records. Correct the V1 catalog
       generator index after excluding the abandoned compact-prefix experiment.

@@ -24,6 +24,7 @@ async fn selected_promotion_restarts_restricted_then_exact_retry_serves_one_new_
 async fn restricted_promotion_shutdown_releases_custody_before_a_fresh_exact_retry() {
     for profile in ["standard", "hardened"] {
         scenario(profile, Some("signal-offline")).await;
+        scenario(profile, Some("signal-cutover-committed")).await;
     }
 }
 
@@ -248,7 +249,10 @@ async fn scenario(profile: &str, abort: Option<&str>) {
     )
     .unwrap();
     let submission = client.promote_follower(invocation(210), &admin).await;
-    let committed_before_crash = abort == Some("cutover-committed");
+    let committed_before_crash = matches!(
+        abort,
+        Some("cutover-committed" | "signal-cutover-committed")
+    );
     let result = if abort.is_some() {
         use std::os::unix::process::ExitStatusExt;
         assert!(
@@ -256,7 +260,7 @@ async fn scenario(profile: &str, abort: Option<&str>) {
             "an interrupted cutover cannot claim a completed handoff"
         );
         let exit = follower.wait_for_exit(Duration::from_secs(30)).unwrap();
-        if abort == Some("signal-offline") {
+        if abort.is_some_and(|point| point.starts_with("signal-")) {
             assert!(
                 exit.status.success(),
                 "signal shutdown must release the old engine cleanly"
@@ -411,8 +415,8 @@ fn restricted(fixture: &Fixture, abort: Option<&str>) -> ChildProcessController 
         .arg("follower")
         .unwrap();
     if let Some(point) = abort {
-        spec = if point == "signal-offline" {
-            spec.env("RIFFDB_PROMOTION_STOP", "offline").unwrap()
+        spec = if let Some(point) = point.strip_prefix("signal-") {
+            spec.env("RIFFDB_PROMOTION_STOP", point).unwrap()
         } else {
             spec.env("RIFFDB_PROMOTION_ABORT", point).unwrap()
         };

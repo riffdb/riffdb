@@ -738,9 +738,8 @@ async fn serve_causal(
     if token
         .database_id()
         .is_some_and(|database| database != database_id)
-        || (service.executors.is_follower()
-            && (token.database_id().is_none()
-                || token.history_incarnation() != service.identity.history_incarnation()))
+        || token.history_incarnation() != service.identity.history_incarnation()
+        || (service.executors.is_follower() && token.database_id().is_none())
     {
         return Err(PublicError::history_incarnation_mismatch().into());
     }

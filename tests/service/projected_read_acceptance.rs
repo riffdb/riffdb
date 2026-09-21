@@ -749,8 +749,9 @@ fn available_always_serves_and_reports_the_stale_frontier() {
 }
 
 /// B9 — a token from another history incarnation (a restore fence) is never
-/// served: the read returns typed Lagging carrying the foreign incarnation in
-/// its required fence even though the projection is fully caught up.
+/// served: the detectable mismatch is RDB-HISTORY-0101 even on a source and
+/// even though the projection is fully caught up (ADR-0072 / WP-747).
+// req: REP-005
 #[test]
 fn stale_incarnation_token_is_never_served() {
     run_async_threads(4, async move {
@@ -778,7 +779,7 @@ fn stale_incarnation_token_is_never_served() {
             sequence,
         );
         let (context, _cancellation) = harness.context(0x72);
-        let result = harness
+        let failure = harness
             .service
             .execute_projected_query(
                 context,
@@ -790,22 +791,10 @@ fn stale_incarnation_token_is_never_served() {
                 ),
             )
             .await
-            .expect("stale-incarnation read returns a typed outcome");
-        let ExecuteProjectedQueryResult::Lagging {
-            required, current, ..
-        } = &result
-        else {
-            panic!("stale-incarnation token must never serve, got {result:?}");
-        };
+            .expect_err("stale-incarnation read returns a typed history refusal");
         assert_eq!(
-            required.history_incarnation(),
-            BOARD_HISTORY_INCARNATION + 1,
-            "the required fence carries the foreign incarnation"
-        );
-        assert_eq!(
-            current.history_incarnation(),
-            BOARD_HISTORY_INCARNATION,
-            "the current frontier stays incarnation-bound"
+            failure.public_error().map(|error| error.kind()),
+            Some(PublicErrorKind::HistoryIncarnationMismatch),
         );
         harness.stop_coordinator();
     });

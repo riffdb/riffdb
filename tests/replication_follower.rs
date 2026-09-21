@@ -23,6 +23,8 @@ mod oracle;
 mod primary_fence;
 #[path = "replication_follower/promoted_restart.rs"]
 mod promoted_restart;
+#[path = "replication_follower/promotion_load.rs"]
+mod promotion_load;
 #[cfg(feature = "test-fixtures")]
 #[path = "replication_follower/promotion_retry.rs"]
 mod promotion_retry;
