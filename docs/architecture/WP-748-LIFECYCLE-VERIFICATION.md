@@ -5,6 +5,36 @@ correctness verified through the complete CI battery; human implementation and
 fixture review pending. WP-748 remains open. Promotion resumed independently of the closed
 WP-749 tail investigation. This report makes no performance-qualification claim.
 
+## Final combined integration verification
+
+On 2026-09-21, local integration candidate `e9faa42c` combined the reviewed
+WP-748 branch `db871a51` and WP-749 readiness branch `5c77333e` over main
+`05501ec07`. The merge required no manual runtime changes. Its full acceptance
+command, `./scripts/acceptance --range 05501ec07..HEAD --full`, passed all
+17 steps in one uninterrupted invocation. The included `ci-all` took 3,868.6
+seconds; that duration is correctness-check evidence, not a benchmark.
+
+The run used a fresh, dedicated build directory, Rust 1.98.1, the pinned
+Maturin 1.14.1 and locked Node dependencies. It passed workspace formatting,
+all-target/all-feature Clippy, tests and doctests, both real archive CLI cases,
+operator conformance, generated artifacts, dependency checks, Helm checks and
+source-install smoke tests. All 25 follower/promotion process tests passed,
+including under-load RPO, stale-lineage refusal, restricted retry crash edges
+and signal/custody release. Existing opt-in diagnostic and separately invoked
+tests retain their documented exclusions; the two archive CLI tests were
+explicitly executed and passed by their dedicated CI runner.
+
+This closes the integration-verification task. It does not mark either package
+complete or land the candidate. The original
+[implementation and fixture review](WP-748-PROMOTION-IMPLEMENTATION-REVIEW.md)
+remains unchanged and pending. WP-749's archive-presence measurement remains
+separate; it does not block WP-748's correctness closure after human review.
+
+PR note for this documentation increment: Package WP-748; Tier internal.
+Record the combined verification without changing runtime behavior, fixtures,
+compatibility or guarantees. No public interface or operational behavior changed.
+Remaining work is human review, the closure record and landing.
+
 ## Promotion integration and recovery guard
 
 The saved approved promotion implementation was initially integrated onto main
