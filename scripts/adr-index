@@ -16,6 +16,7 @@
 # Without them this script refuses to act rather than guess where the index
 # belongs; it will not rewrite prose it did not generate.
 
+require "yaml"
 require_relative "lib/riffdb_adr"
 
 ROOT = RiffdbAdr.root
@@ -77,6 +78,51 @@ def render(root)
   ["| ADR | Title | Status | Tier |", "|---|---|---|---|", *rows].join("\n")
 end
 
+# A missing number is not visible in a generated index: the table simply skips
+# it, and a reader cannot tell whether the decision exists somewhere else or was
+# never written. ADR-0224 and ADR-0225 were accepted on a branch and never
+# merged, and nothing on main said so.
+#
+# adr-new allocates max+1, so a gap is never reused; the cost is legibility, not
+# collision. A gap must therefore be declared in adr/RESERVED.yaml, which names
+# where the record is and why it is not here.
+RESERVED_PATH = File.join(ROOT, "adr", "RESERVED.yaml")
+
+def reserved_numbers
+  return {} unless File.file?(RESERVED_PATH)
+
+  document = YAML.safe_load(File.read(RESERVED_PATH, encoding: "UTF-8")) || {}
+  Array(document["reserved"]).each_with_object({}) do |entry, reserved|
+    number = entry.is_a?(Hash) ? entry["adr"].to_s : nil
+    reserved[number] = entry if number && !number.empty?
+  end
+end
+
+def guard_numbering(root)
+  numbers = RiffdbAdr.records(root).reject(&:template?).map { |record| record.number.to_i }
+  return if numbers.empty?
+
+  reserved = reserved_numbers
+  gaps = ((numbers.min..numbers.max).to_a - numbers).map { |number| format("%04d", number) }
+  undeclared = gaps.reject { |number| reserved.key?(number) }
+  stale = reserved.keys.select { |number| numbers.include?(number.to_i) }
+
+  findings = []
+  undeclared.each do |number|
+    findings << "ADR-#{number} has no record and no adr/RESERVED.yaml entry. " \
+                "If the record exists elsewhere, declare where; if the number was " \
+                "abandoned, say so."
+  end
+  stale.each do |number|
+    findings << "ADR-#{number} is reserved in adr/RESERVED.yaml but its record is " \
+                "present. Remove the reservation."
+  end
+  return if findings.empty?
+
+  findings.each { |finding| warn finding }
+  exit 1
+end
+
 def slice(text)
   start = text.index(START_MARKER)
   finish = text.index(END_MARKER)
@@ -104,6 +150,8 @@ unless File.file?(README_PATH)
   warn "#{README_PATH} does not exist"
   exit 1
 end
+
+guard_malformed_records { guard_numbering(ROOT) }
 
 readme = File.read(README_PATH, encoding: "UTF-8")
 range = slice(readme)

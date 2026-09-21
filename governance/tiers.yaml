@@ -46,6 +46,15 @@ rules:            # first match wins per file; a change's tier is the maximum ov
       - crates/riffdb-storage-api/src/sequence.rs
       - crates/riffdb-api-mcp/src/handler.rs
       - crates/riffdb-api-mcp/src/observer.rs
+      # What a command enforces is decided here, not only evaluated in
+      # riffdb-invariant: lowering decides whether a commit check exists at all,
+      # and the plan carries the coverage proof over them (ADR-0253).
+      - crates/riffdb-contract-compiler/src/command_lowering.rs
+      - crates/riffdb-contract-ir/src/plan.rs
+      - crates/riffdb-contract-ir/src/plan/**
+      # The table that assigns ceremony may not be weakened by a change that
+      # requires none.
+      - governance/tiers.yaml
       - AGENTS.md
   - tier: surface
     paths:

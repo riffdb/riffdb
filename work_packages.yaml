@@ -26927,3 +26927,127 @@ work_packages:
     scale: The characterisation holds for the 188 declared obligations, not only the three
       that produced it.
   human_review_triggers: *id001
+- id: WP-805
+  name: A conflict key protects its aggregate's invariants
+  tier: surface
+  depends_on: []
+  objective: SPEC §8.3 printed ADB-C042, a diagnostic for an invariant the declared conflict
+    key does not protect, and no compiler pass emits it. Establish whether the condition is
+    reachable, then either implement the pass or record why the grammar makes it
+    unreachable and prove that by enumeration.
+  requirements: [CMP-014]
+  required_adrs: [ADR-0254]
+  allowed_paths: [work_packages.yaml, SPEC.md, adr/**, docs/**, crates/riffdb-contract-compiler/tests/**]
+  deliverables:
+  - A determination of whether a conflict key can fail to serialize two commands that
+    could jointly violate an aggregate invariant
+  - SPEC no longer prints a diagnostic code no pass emits
+  - Tests that enumerate the categories of name a conflict-key component may hold, so a
+    grammar change admitting a wider component fails rather than silently reopening R-03
+  acceptance_commands:
+  - ./scripts/acceptance --wp WP-805
+  exit_gate: An invariant's protection by the declared conflict key rests on a proof in
+    code rather than on a diagnostic code in the specification, and a grammar change that
+    would break it fails a test naming the reason.
+  standing_design_tests:
+    interface_safety: An aggregate whose conflict key fails to serialize its invariants is
+      not declarable, so there is no unsafe shape to opt out of.
+    scale: The property is structural; it costs no compile-time work and does not grow with
+      the number of invariants or aggregates.
+  human_review_triggers: *id001
+  closure:
+    status: complete
+    completed_at: '2026-09-21'
+    evidence: crates/riffdb-contract-compiler/tests/conflict_key_protects_invariants.rs
+    decision: The condition ADB-C042 describes is unreachable. A conflict-key component may
+      name only a field of the aggregate root's primary key -- a child key field and another
+      aggregate's field are out of scope, and a stored root field is refused by RDB-C016 as
+      not input-computable -- so every conflict key is a function of the root key and two
+      writes to one root always derive one conflict value. SPEC now shows a real RDB-C016
+      example and states the construction as CMP-014. Four tests enumerate the categories of
+      name a component could hold, so a grammar change admitting a wider component fails and
+      names the pass it would then owe.
+- id: WP-806
+  name: Close the semantic write-path gap against the comparison baseline
+  tier: guarantee
+  depends_on: [WP-790]
+  objective: The project's own comparison harness measures RiffDB at 0.17-0.22x Postgres on
+    an application workload, with create_comment 7.6x slower at p50 and the aggregate set by
+    writes. SPEC section 262 makes that a go/no-go input to the POC-exit decision, and the
+    evidence is published but unworked. Attribute the write-path cost to its components and
+    close what can be closed without weakening a guarantee.
+  requirements: []
+  required_adrs: [ADR-0239, ADR-0238]
+  allowed_paths: [work_packages.yaml, docs/performance/**, benchmarks/**,
+    scripts/check-performance-freeze]
+  deliverables:
+  - A per-component attribution of one write, measured rather than reasoned, covering at
+    least provenance record construction, audit, journal append and fsync, canonical
+    encoding, and allocator traffic. The existing profile already names libc malloc/free
+    plus drop glue for CanonicalValue, CommandDerivedIndexes and StoredProvenanceRecordV1,
+    and the E2/N1 pair already separates fsync cost from hashing; start there rather than
+    re-deriving it
+  - For each component, whether its cost is inherent to a stated guarantee, inherent to the
+    current representation, or incidental, with the evidence for the classification
+  - The incidental cost removed, or a recorded finding that none is, measured on the banked
+    baseline under ADR-0239's discipline
+  - A statement of what ratio is achievable without weakening provenance, audit,
+    durability of acknowledged writes, or canonical ordering, so the POC-exit review has a
+    number rather than an intention
+  acceptance_commands:
+  - ./scripts/acceptance --wp WP-806
+  exit_gate: The write-path cost is attributed to components with measurements rather than
+    reasoning, each component is classified as guarantee-inherent, representation-inherent
+    or incidental with evidence, and the POC-exit review can read what ratio is reachable
+    without weakening a guarantee.
+  standing_design_tests:
+    interface_safety: No optimization may make a guarantee optional, add a fast path that
+      skips provenance, audit or durability, or expose a tuning knob that lets an
+      application trade one away. A cost found to be guarantee-inherent is reported as
+      such, not removed.
+    scale: Attribution holds at the banked load and client count, and any change is measured
+      at the same concurrency rather than only unary.
+  human_review_triggers: *id001
+- id: WP-807
+  name: An unguarded overwrite is spelled overwrite
+  tier: guarantee
+  depends_on: []
+  objective: A command may today overwrite a field without declaring anything about its
+    prior value, and the guarded and unguarded forms are indistinguishable in source, in
+    commit checks, in conflict ownership and in the plan. Make the two forms distinct at
+    the point of use, prove the spelling against the command, and carry the classification
+    in the plan, per ADR-0256.
+  requirements: []
+  required_adrs: [ADR-0256, ADR-0252, ADR-0002]
+  allowed_paths: [SPEC.md, work_packages.yaml, adr/0256-an-unguarded-overwrite-must-be-declared.md,
+    crates/riffdb-contract-syntax/**, crates/riffdb-contract-compiler/**,
+    crates/riffdb-contract-ir/**, crates/riffdb-cli/src/output.rs, fixtures/**, docs/**,
+    templates/**, clients/**, examples/**]
+  deliverables:
+  - A per-write guarded/unguarded classification derived from the command's requires and
+    the aggregate's invariants over the binding's pre-image, with the analysis stated
+    precisely enough that a reader can predict it
+  - The `overwrite` keyword, and a diagnostic pair with source-span snapshots and semantic
+    assertions - a `set` with no precondition naming the field and what would satisfy it,
+    and an `overwrite` that is in fact guarded telling the author to use `set`
+  - A regression proving that deleting a `require` from a guarded command fails to compile
+    rather than changing concurrency semantics silently
+  - The classification carried in the executable plan and folded into the plan hash, with
+    the least-sufficient grammar, IR and bundle version selected for a contract that uses
+    the new spelling, and compatibility fixtures for the version boundary
+  - "`riffdb contract explain` reporting each write's classification"
+  - Every first-party contract, template, example, and generated-client fixture migrated,
+    and every unguarded write classified by a human rather than mechanically respelled
+  acceptance_commands:
+  - ./scripts/acceptance --wp WP-807
+  - ./scripts/downstream-adapter-check
+  exit_gate: A silent lost update is not expressible. A deliberate overwrite still is, but
+    only where a reviewer reads it, and `an_unguarded_overwrite_is_accepted_and_unmarked`
+    has been replaced by its inverse.
+  standing_design_tests:
+    interface_safety: An application cannot express a write whose concurrency semantics are
+      last-writer-wins without saying so at the point of use. No flag, binding mode, or
+      option restores the silent form.
+    scale: Classification is a local analysis over a command's already-bounded bindings and
+      requires. It adds no runtime work and no unbounded compile-time work.
+  human_review_triggers: *id001

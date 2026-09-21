@@ -2562,7 +2562,7 @@ Joins, distinct count, windows, arbitrary user functions, and approximation are 
 | `DSL-011` | Compiler and runtime MUST reject undeclared field access, mutation, event type, or outcome. |
 | `DSL-012` | POC cross-partition mutation MUST fail compilation. |
 
-Section 7.2 is the canonical v0.1 surface grammar. The POC grammar has one top-level `contract <Name> version <Integer> { ... }` declaration. It does not include modules, user-defined scalar aliases, or a separate `outcomes` block. Rejection variants are declared by binding or `require ... else ...` clauses, and the terminal success variant is declared by `return ...`. A future syntax extension requires an accepted language/IR ADR and compatibility fixtures; implementations MUST NOT accept alternate spellings merely because they appear in an old example.
+Section 7.2 is the canonical v0.1 surface grammar, and it remains the base surface rather than the whole of it: later accepted language records add constructs, each selecting the least sufficient grammar, executable IR, and bundle version that admits it, up to V23 as of this revision. A contract using only the constructs below keeps its V1 identity byte for byte. The revision changelog above records what each later version added. The POC grammar has one top-level `contract <Name> version <Integer> { ... }` declaration. It does not include modules, user-defined scalar aliases, or a separate `outcomes` block. Rejection variants are declared by binding or `require ... else ...` clauses, and the terminal success variant is declared by `return ...`. A future syntax extension requires an accepted language/IR ADR and compatibility fixtures; implementations MUST NOT accept alternate spellings merely because they appear in an old example.
 
 ## 7.5 Illustrative grammar excerpt
 
@@ -2741,14 +2741,25 @@ source files
 Example:
 
 ```text
-error[ADB-C042]: annual budget invariant is not protected by the declared conflict key
-  --> legal_spend.adb:27:5
+error[RDB-C016]: partition and conflict keys must be computable from validated inputs
+  --> legal_spend.riff:27:18
    |
-27 |     conflict_key matter_id
-   |     ^^^^^^^^^^^^^^^^^^^^^^ commands for different matters may update the same annual budget
+27 |     conflict_key (organization_id, balance)
+   |                  ^^^^^^^^^^^^^^^^^^^^^^^^^
    |
-help: use conflict_key (organization_id, fiscal_year)
+help: derive aggregate keys only from root-key inputs and constants
 ```
+
+`CMP-014` A declared conflict key MUST protect the invariants the aggregate
+declares. This holds by construction rather than by a dedicated pass: a
+conflict-key component may name only a field of the aggregate root's primary
+key, so every conflict key is a function of the root key, and two commands that
+write one aggregate root always derive one conflict key value and serialize
+against each other. A component naming a child key field or another aggregate's
+field is not in scope, and a stored root field is refused by `RDB-C016` above.
+Admitting a component outside the root key would make this property fail, and
+would require a pass relating each invariant's dependencies to the declared
+conflict components before that grammar change could be accepted.
 
 ## 8.4 Executable command plan
 
@@ -7119,9 +7130,25 @@ row, redb key, or backup artifact.
 Restore preserves `DatabaseId` and rewinds both authoritative sequence spaces
 to the backup. Every observation/locator/idempotency/audit assumption from the
 destroyed suffix is invalid, and a destroyed application or administration
-sequence may later be reused for a different record. The POC has no
-incarnation/history-epoch fence; documentation and destructive confirmation
-must state that limitation.
+sequence may later be reused for a different record.
+
+The `history_incarnation/v1` fence (ADR-0072, section 10.2) distinguishes that
+history from the one before it. Destructive restore is the only operation that
+changes it: the offline phase computes `max(target incarnation, staged
+incarnation) + 1` and records it in the maintenance receipt, and the published
+phase stamps it idempotently before post-publication validation, so a
+crash-resume re-applies it exactly once in effect. Ordinary startup,
+non-destructive maintenance, and an already-stamped resume never change it. A
+backup manifest without the field is treated as incarnation 0 for that
+computation, so the fence still advances from a pre-fence backup.
+
+The residual limitation is narrower than the absence of a fence, and
+documentation and destructive confirmation must still state it: the fence
+makes a stale assumption *detectable*, it does not preserve one. A sequence
+from the destroyed suffix is still reused for an unrelated record, and a
+holder of a locator, cursor, subscription position, read-after-sequence
+expectation, or idempotency key from that suffix must obtain new ones rather
+than reconcile the old.
 
 Encrypted backup and wall-clock point-in-time recovery remain MVP work. ADR-0178
 (`REP-007`, section 4.10) moves changelog-derived incremental backup and the
