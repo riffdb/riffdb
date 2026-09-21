@@ -128,12 +128,17 @@ The named children account for about 95 percent of the stage above them.
 `stage_checked_candidate`, including the once-per-group first-on-empty path
 that `append_build_stage` does not cover.
 
-**Building the record set is not the cost.** `stage_build_records` is where
-the atomic command record set is built -- where a vector's bytes are
-encoded -- and it adds 442 ns against attach's 8,710. Reading the affected
-epoch adds 47. Whatever declaring a vector field costs the writer, it is
-not encoding the vector, which is what the width-independence already
-implied and this measures directly.
+**Building the record set is not the cost.** `stage_build_records` adds
+442 ns against attach's 8,710, and reading the affected epoch adds 47.
+
+An earlier draft of this page went further and said the cost is therefore
+not encoding the vector. That was wrong, and the correction matters:
+canonical encoding does not happen in `build_atomic_command_record_set`. It
+happens in `encode_capsule_command_record_set_v1`, **inside** the storage
+stage, which is the region this instrument cannot see into. Building the
+record set was measured and ruled out; encoding it was not measured at all.
+Width-independence still argues against a byte-proportional encoding cost,
+but that is an inference, not the measurement the page claimed.
 
 The cost is in two places:
 
@@ -262,17 +267,29 @@ the stable named children sum to about +17.6, leaving roughly 3 us in
 residuals that flip sign. That remainder is honest noise at this sample
 size, not a hidden stage, but it is not nothing either.
 
-**What the storage stage does differently is still unidentified.** The
-split has ruled out encoding, the reserved-candidate check, and payload
-size, and localised the cost to handing records to the storage batch and to
-reserving capacity. Going further means instrumenting inside
-`riffdb-storage-redb`, which is a bigger surface than this package has
-touched so far.
+**The attribution stops at a crate boundary, and not for want of effort.**
+The writer census lives in `riffdb-commit`, which depends on
+`riffdb-storage-redb`; the dependency does not run the other way. The
+storage stage cannot charge a counter that lives above it without either
+moving the census to a crate both can see or building a second instrument.
+That is a layering decision rather than a measurement, and it is where this
+attribution ends.
 
-The surviving hypothesis is that a vector field makes a command carry more
-records rather than bigger ones, and that both remaining costs follow
-record count. It has not been tested. Every hypothesis in this
-investigation that was not tested turned out to be wrong.
+What is inside that region, read from the source and therefore a list of
+candidates rather than findings:
+
+- a second `matches_reserved_candidate` check, repeating the one the commit
+  layer already performed and measured at about 23 ns;
+- `encode_capsule_command_record_set_v1`, the canonical encoding;
+- `apply_record_set`, applying the set to the batch core;
+- metrics and the pushes onto the batch.
+
+Two hypotheses survive and neither is tested: that encoding costs by
+structure rather than by bytes, which would fit width-independence, and
+that a vector field makes a command carry more records rather than bigger
+ones. Every untested hypothesis in this investigation has been wrong, and
+this page has already had to withdraw one claim for being an inference
+dressed as a measurement.
 
 **The widths were measured on one host and one rep count.** Three
 repetitions resolve a 16% step against a 14% spread only just. The
