@@ -1,5 +1,9 @@
 # WP-749: bounded archive acknowledgement attribution
 
+An explicitly authorized [isolated replacement pair](wp749-archive-isolated-pair-2026-09.md)
+subsequently passed both host checks and confirmed checkpoint-coupled waits with
+archive disabled. This earlier attempt and its validity verdict remain unchanged.
+
 **The two-cell run stopped at enabled-cell host postflight. It is not a
 qualified comparison and does not close WP-749.** Both workloads completed and
 their complete traces reconcile. No retry or additional hypothesis run occurred.

@@ -133,6 +133,15 @@ writes before sync on the checkpoint-conditioned drain path; the host-invalid
 pair does not settle the archive-specific cause. There was no retry, amendment
 or completion claim.
 
+The later [isolated replacement pair](wp749-archive-isolated-pair-2026-09.md)
+passed all host checks. It confirms that checkpoint-coupled journal waiting
+already exists with archive disabled and reproduces an additional long pre-sync
+journal write in the enabled arm. The baseline checkpoint mechanism belongs to
+storage/journal; its presence in both arms does not establish archive latency
+parity or settle the resource-level cause of the incremental blocking. The
+authorized bounded measurement is finished, with no further run or completion
+claim. The twenty-cell results above remain the qualification evidence.
+
 ## Local integration checks
 
 On 2026-09-21, revision `65101f19` completed all 14 non-test package acceptance
