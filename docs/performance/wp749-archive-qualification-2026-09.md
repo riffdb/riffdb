@@ -10,7 +10,8 @@ hashing and allocation experiments remain closed.
 Freeze current public main plus the receipt-wait/checkpoint-counter repairs and
 the standard benchmark runner's Rust 1.98.1 selector correction. Record the
 source/tree, both Cargo locks, compiler, build flags and executed daemon/runner
-digests. The archive arms use the **same binaries**; only the existing
+digests. Build the daemon and runner in newly created, separate output directories
+and bind those directories to the build receipt. The archive arms use the **same binaries**; only the existing
 `RIFFDB_APP_BASELINE_ARCHIVE_COLLECTION=disabled|enabled` setting differs. Both
 prepare the same stopped full backup outside the timed interval. The runner's
 nested lock already resolves against current main; no new dependency is needed.
@@ -53,6 +54,25 @@ durability/publication drain and the limits of that attribution. There is no
 new numeric P99 threshold, no claim that every tail movement has that cause, and
 no new tail hypothesis or representation work follows from this comparison.
 Unresolved evidence remains unresolved; this protocol does not pre-award a pass.
+
+## Local integration checks
+
+On 2026-09-21, revision `65101f19` completed all 14 non-test package acceptance
+checks, including all-target/all-feature Clippy, generated artifacts, handbook
+and governance, in an isolated build directory. Its selected test run passed
+1,543 tests and failed one nested release-manifest check; nine existing opt-in
+tests were skipped. The failed test then passed in the isolated directory.
+All 1,544 selected tests therefore have passing results across the retained
+attempts; the initial invocation remains recorded as failed.
+
+The initial Clippy, generator, handbook and nested manifest builds had reused
+artifacts containing WP-748-only enum variants absent from this source checkout.
+Fresh build isolation removed those errors without a source change. The Python
+environment also needed its existing PyYAML dependency alongside the pinned
+Maturin builder. These environment repairs are local verification findings.
+The planned measurement builds now require fresh output directories as described
+above. This is package readiness evidence; archive qualification and final
+integration checks remain required before closure.
 
 ## Readiness repair and PR note
 
