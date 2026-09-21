@@ -10,7 +10,7 @@ use riffdb_contract_ir::{
     FieldSchema, Instruction, IrValidationError, KeySchema, LocalityPlan, OutcomeConstruction,
     OutcomeSchema, RecordSchema, RecordTypeRef, RootValidationReadId, RootValidationReadPlan,
     SchemaIr, SecretRevealDestinationV1, SecretRevealSpecV1, ServiceValueKind, ServiceValueSchema,
-    WorkflowLeaseFields, WorkflowLeaseOperation,
+    WorkflowLeaseFields, WorkflowLeaseOperation, WriteGuard,
 };
 use riffdb_contract_syntax::Span;
 use riffdb_types::{CanonicalValue, ContractLineage, EntityTypeId, FieldId, InvariantId};
@@ -34,6 +34,7 @@ enum RawInstruction {
         binding: BindingId,
         field: FieldId,
         value: ExprId,
+        guard: WriteGuard,
     },
     SetEmbedding {
         binding: BindingId,
@@ -492,10 +493,12 @@ fn lower_command(
                 binding,
                 field,
                 value,
+                guard,
             } => Instruction::SetField {
                 binding,
                 field,
                 value,
+                guard,
             },
             RawInstruction::SetEmbedding {
                 binding,
@@ -960,11 +963,13 @@ fn lower_decision_effect(
             binding,
             field,
             value,
+            spelling,
             ..
         } => Instruction::SetField {
             binding: *binding,
             field: *field,
             value: value.id,
+            guard: write_guard(*spelling),
         },
         HirEffect::Embed {
             binding,
@@ -1398,6 +1403,17 @@ fn normalize_outcomes<'a>(
         });
     }
     (schemas, normalized)
+}
+
+/// The plan's classification for an author's spelling.
+///
+/// Command analysis refuses a contract whose spelling disagrees with what the
+/// command proves, so by the time a plan is built the two are the same fact.
+const fn write_guard(spelling: riffdb_contract_syntax::ast::WriteSpelling) -> WriteGuard {
+    match spelling {
+        riffdb_contract_syntax::ast::WriteSpelling::Set => WriteGuard::Guarded,
+        riffdb_contract_syntax::ast::WriteSpelling::Overwrite => WriteGuard::Unguarded,
+    }
 }
 
 fn lower_locality(
@@ -1945,11 +1961,13 @@ fn command_instructions(
                 binding,
                 field,
                 value,
+                spelling,
                 ..
             } => effects.push(RawInstruction::SetField {
                 binding: *binding,
                 field: *field,
                 value: value.id,
+                guard: write_guard(*spelling),
             }),
             HirEffect::Embed {
                 binding,

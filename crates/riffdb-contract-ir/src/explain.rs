@@ -126,6 +126,7 @@ pub struct CommandExplain {
     bindings: Vec<BindingId>,
     read_fields: Vec<(BindingId, FieldId)>,
     write_fields: Vec<(BindingId, FieldId)>,
+    unguarded_writes: std::collections::BTreeSet<(BindingId, FieldId)>,
     workflow_transitions: Vec<WorkflowTransitionExplain>,
     workflow_leases: Vec<WorkflowLeaseExplain>,
     invariants: Vec<InvariantId>,
@@ -174,6 +175,18 @@ impl CommandExplain {
             })
             .collect::<Vec<_>>();
         read_fields.sort_unstable();
+        let unguarded_writes = all_instructions
+            .iter()
+            .filter_map(|instruction| match *instruction {
+                crate::Instruction::SetField {
+                    binding,
+                    field,
+                    guard: crate::WriteGuard::Unguarded,
+                    ..
+                } => Some((*binding, *field)),
+                _ => None,
+            })
+            .collect::<std::collections::BTreeSet<_>>();
         let mut write_fields = all_instructions
             .iter()
             .filter_map(|instruction| match *instruction {
@@ -374,6 +387,7 @@ impl CommandExplain {
             bindings,
             read_fields,
             write_fields,
+            unguarded_writes,
             workflow_transitions,
             workflow_leases,
             invariants,
@@ -434,6 +448,11 @@ impl CommandExplain {
     #[must_use]
     pub fn write_fields(&self) -> &[(BindingId, FieldId)] {
         &self.write_fields
+    }
+    /// Written fields whose command constrains no prior value (ADR-0256).
+    #[must_use]
+    pub const fn unguarded_writes(&self) -> &std::collections::BTreeSet<(BindingId, FieldId)> {
+        &self.unguarded_writes
     }
     /// Exact revision/state transition checks in instruction order.
     #[must_use]
@@ -743,7 +762,19 @@ impl CommandExplain {
             );
         }
         for (binding, field) in &self.write_fields {
-            let _ = writeln!(output, "write:{}:{}", binding.get(), field.get());
+            // A reader of `explain` should be able to see which writes are
+            // last-writer-wins without reading the contract (ADR-0256).
+            let guard = if self.unguarded_writes.contains(&(*binding, *field)) {
+                "overwrite"
+            } else {
+                "set"
+            };
+            let _ = writeln!(
+                output,
+                "write:{}:{} guard={guard}",
+                binding.get(),
+                field.get()
+            );
         }
         for transition in &self.workflow_transitions {
             let sources = transition

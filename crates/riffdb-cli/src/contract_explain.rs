@@ -180,6 +180,7 @@ fn unguarded_subtractions(bundle: &ContractBundle) -> String {
                 binding,
                 field,
                 value,
+                ..
             } = instruction
             else {
                 continue;

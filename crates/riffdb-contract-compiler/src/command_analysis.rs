@@ -1738,17 +1738,37 @@ contract Invalid version 1 {{
 /// an update, so neither spelling is a claim about it and only `overwrite` is
 /// refused, because there is nothing to overwrite.
 fn validate_write_spellings(command: &HirCommand, diagnostics: &mut Vec<CompilerDiagnostic>) {
+    // Every write the command can perform, including those a compiler-sealed
+    // decision arm performs conditionally.
+    let mut writes = command.effects.iter().collect::<Vec<_>>();
+    let mut predicates = command
+        .requirements
+        .iter()
+        .map(|requirement| &requirement.condition)
+        .collect::<Vec<_>>();
+    for decision in &command.decisions {
+        for arm in &decision.when_arms {
+            predicates.push(&arm.predicate);
+            if let HirDecisionAction::Apply { effects, .. } = &arm.action {
+                writes.extend(effects.iter());
+            }
+        }
+        if let HirDecisionAction::Apply { effects, .. } = &decision.else_action {
+            writes.extend(effects.iter());
+        }
+    }
+
     let mut guarded_bindings = BTreeSet::new();
-    for requirement in &command.requirements {
+    for predicate in predicates {
         collect_read_bindings(
             &command.expressions,
-            requirement.condition.id,
-            requirement.condition.span,
+            predicate.id,
+            predicate.span,
             &mut guarded_bindings,
             diagnostics,
         );
     }
-    for effect in &command.effects {
+    for effect in &writes {
         if let HirEffect::Set { value, .. } = effect {
             collect_read_bindings(
                 &command.expressions,
@@ -1760,7 +1780,7 @@ fn validate_write_spellings(command: &HirCommand, diagnostics: &mut Vec<Compiler
         }
     }
 
-    for effect in &command.effects {
+    for effect in writes {
         let HirEffect::Set {
             target_span,
             spelling,
