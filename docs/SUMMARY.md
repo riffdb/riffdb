@@ -148,6 +148,7 @@
 - [Open Writer-evidence Defects](performance/wp749-writer-census-defects.md)
 - [WP-749 Receipt-wait Repair and Checkpoint Investigation](performance/wp749-receipt-wait-repair-2026-09.md)
 - [WP-749 Correlated Tail Result](performance/wp749-correlated-tail-2026-09.md)
+- [WP-749 Archive-presence Qualification](performance/wp749-archive-qualification-2026-09.md)
 - [WP-749 Capture Investigation Closure](performance/wp749-capture-attribution-2026-09.md)
 - [WP-451 Commutative Child Appends](performance/wp-451-commutative-child-appends.md)
 - [WP-452 Write Amplification](performance/wp-452-write-amplification.md)
