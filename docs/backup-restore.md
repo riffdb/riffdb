@@ -449,23 +449,27 @@ compatible marker-only format upgrade preserves an otherwise unchanged
 lifecycle unit. An offline integrity scrub deliberately preserves the bytes but
 does not consume, refresh, or replace them.
 
-A destructive restore removes every observation created after the backup's
-included frontier. The removed application and administration sequence suffixes
-may later be reused for different records. An idempotency key that existed only
-in the removed suffix may be accepted again.
+A destructive restore removes every observation created after the restored
+frontier: the full backup's included frontier for ordinary restore, or the
+verified selected frontier for archive-suffix restore. The removed application
+and administration sequence suffixes may later be reused for different records.
+An idempotency key that existed only in the removed suffix may be accepted again.
 
 After restore, discard all pre-restore:
 
 - outcome, commit, provenance, event, outbox, projection, and audit locators
-  beyond the backup frontier;
+  beyond the restored frontier;
 - idempotency assumptions about the removed suffix;
 - pagination cursors, subscriptions, sessions, and process generations;
-- read-after-sequence expectations beyond the backup frontier; and
+- read-after-sequence expectations beyond the restored frontier; and
 - capability and authorization facts learned from the removed suffix.
 
-Preserving `DatabaseId` does not make those observations valid. Globally stable
-pre-restore locators, point-in-time recovery, online backup, incremental backup,
-encrypted backup, and remote object storage are outside the POC.
+Preserving `DatabaseId` does not make those observations valid. Archive-suffix
+restore supports recovery at an exact commit sequence within its verified
+coverage. It makes no wall-clock point-in-time recovery promise. Globally stable
+pre-restore locators, online backup, built-in backup encryption, and a built-in
+remote object-store sink remain outside the POC. The archive collector currently
+uses an operator-configured filesystem directory.
 
 ### Promotion recovery evidence
 

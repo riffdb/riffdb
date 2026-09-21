@@ -7,7 +7,8 @@ hashing and allocation experiments remain closed.
 
 ## Bounded comparison
 
-Freeze current public main plus the receipt-wait/checkpoint-counter repairs and
+Freeze the qualified integration candidate based on current public main,
+including WP-748 promotion, the receipt-wait/checkpoint-counter repairs and
 the standard benchmark runner's Rust 1.98.1 selector correction. Record the
 source/tree, both Cargo locks, compiler, build flags and executed daemon/runner
 digests. Build the daemon and runner in newly created, separate output directories
@@ -74,6 +75,19 @@ The planned measurement builds now require fresh output directories as described
 above. This is package readiness evidence; archive qualification and final
 integration checks remain required before closure.
 
+The subsequent combined candidate `e9faa42c` joins WP-748 `db871a51` and
+WP-749 `5c77333e` over main `05501ec07`. On 2026-09-21 it passed all 17 steps
+of `./scripts/acceptance --range 05501ec07..HEAD --full` in one uninterrupted
+invocation, including the complete `ci-all` battery. That run used another
+fresh, dedicated build directory and the pinned language tooling. Both real
+CLI archive cases passed, as did the source/sink crash, exact-stop, corruption,
+compatibility and promotion proofs. See the
+[combined verification record](../architecture/WP-748-LIFECYCLE-VERIFICATION.md#final-combined-integration-verification).
+This settles final integration verification at that source identity; the
+candidate remains unmerged. No remote measurement has started and no
+archive-latency result is inferred from correctness tests. The remaining
+measurement requires a fresh explicit exclusive host interval.
+
 ## Readiness repair and PR note
 
 Package WP-749; tier internal for this runner/documentation increment. Six
@@ -83,5 +97,9 @@ previously checked 1.98.1 correction so the standard wrapper and its receipt
 agree with the actual build. Shell syntax, all six selectors against both
 workspace minimums, and offline locked runner metadata resolution pass.
 Public runtime behavior, formats and acknowledgement ordering are unchanged.
-This linked handbook page records the protocol; measurement and final merge
-checks remain required before qualification or completion.
+This linked handbook page records the protocol and integration result.
+[Backup and restore](../backup-restore.md#restore-rewinds-history) now states
+that archive restore rewinds to its selected restored frontier and supports
+exact sequence recovery; it removes the stale blanket exclusion of incremental
+backup while preserving the absence of a wall-clock recovery promise.
+Measurement, review and landing remain required before completion.
