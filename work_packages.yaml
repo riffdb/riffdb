@@ -26927,3 +26927,43 @@ work_packages:
     scale: The characterisation holds for the 188 declared obligations, not only the three
       that produced it.
   human_review_triggers: *id001
+- id: WP-805
+  name: A conflict key protects its aggregate's invariants
+  tier: surface
+  depends_on: []
+  objective: SPEC §8.3 printed ADB-C042, a diagnostic for an invariant the declared conflict
+    key does not protect, and no compiler pass emits it. Establish whether the condition is
+    reachable, then either implement the pass or record why the grammar makes it
+    unreachable and prove that by enumeration.
+  requirements: [CMP-014]
+  required_adrs: [ADR-0254]
+  allowed_paths: [work_packages.yaml, SPEC.md, adr/**, docs/**, crates/riffdb-contract-compiler/tests/**]
+  deliverables:
+  - A determination of whether a conflict key can fail to serialize two commands that
+    could jointly violate an aggregate invariant
+  - SPEC no longer prints a diagnostic code no pass emits
+  - Tests that enumerate the categories of name a conflict-key component may hold, so a
+    grammar change admitting a wider component fails rather than silently reopening R-03
+  acceptance_commands:
+  - ./scripts/acceptance --wp WP-805
+  exit_gate: An invariant's protection by the declared conflict key rests on a proof in
+    code rather than on a diagnostic code in the specification, and a grammar change that
+    would break it fails a test naming the reason.
+  standing_design_tests:
+    interface_safety: An aggregate whose conflict key fails to serialize its invariants is
+      not declarable, so there is no unsafe shape to opt out of.
+    scale: The property is structural; it costs no compile-time work and does not grow with
+      the number of invariants or aggregates.
+  human_review_triggers: *id001
+  closure:
+    status: complete
+    completed_at: '2026-09-21'
+    evidence: crates/riffdb-contract-compiler/tests/conflict_key_protects_invariants.rs
+    decision: The condition ADB-C042 describes is unreachable. A conflict-key component may
+      name only a field of the aggregate root's primary key -- a child key field and another
+      aggregate's field are out of scope, and a stored root field is refused by RDB-C016 as
+      not input-computable -- so every conflict key is a function of the root key and two
+      writes to one root always derive one conflict value. SPEC now shows a real RDB-C016
+      example and states the construction as CMP-014. Four tests enumerate the categories of
+      name a component could hold, so a grammar change admitting a wider component fails and
+      names the pass it would then owe.

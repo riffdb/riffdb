@@ -286,6 +286,7 @@ record with no front matter.
 | [0251](0251-a-declared-columnar-source-is-admitted-without-a-restart.md) | A Declared Columnar Source Is Admitted Without A Restart | Accepted | guarantee |
 | [0252](0252-invariants-are-owed-to-every-aggregate-a-command-writes.md) | Invariants Are Owed To Every Aggregate A Command Writes | Accepted | guarantee |
 | [0253](0253-enforcement-decisions-and-the-tier-table-are-guarantee-tier.md) | Enforcement Decisions And The Tier Table Are Guarantee Tier | Accepted | guarantee |
+| [0254](0254-conflict-keys-protect-invariants-by-construction.md) | Conflict Keys Protect Invariants By Construction | Accepted | surface |
 <!-- adr-index:end -->
 
 The human architecture review on 2026-07-12 approved the direction represented

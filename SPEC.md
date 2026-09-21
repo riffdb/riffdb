@@ -2741,14 +2741,25 @@ source files
 Example:
 
 ```text
-error[ADB-C042]: annual budget invariant is not protected by the declared conflict key
-  --> legal_spend.adb:27:5
+error[RDB-C016]: partition and conflict keys must be computable from validated inputs
+  --> legal_spend.riff:27:18
    |
-27 |     conflict_key matter_id
-   |     ^^^^^^^^^^^^^^^^^^^^^^ commands for different matters may update the same annual budget
+27 |     conflict_key (organization_id, balance)
+   |                  ^^^^^^^^^^^^^^^^^^^^^^^^^
    |
-help: use conflict_key (organization_id, fiscal_year)
+help: derive aggregate keys only from root-key inputs and constants
 ```
+
+`CMP-014` A declared conflict key MUST protect the invariants the aggregate
+declares. This holds by construction rather than by a dedicated pass: a
+conflict-key component may name only a field of the aggregate root's primary
+key, so every conflict key is a function of the root key, and two commands that
+write one aggregate root always derive one conflict key value and serialize
+against each other. A component naming a child key field or another aggregate's
+field is not in scope, and a stored root field is refused by `RDB-C016` above.
+Admitting a component outside the root key would make this property fail, and
+would require a pass relating each invariant's dependencies to the declared
+conflict components before that grammar change could be accepted.
 
 ## 8.4 Executable command plan
 
