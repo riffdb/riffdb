@@ -22824,9 +22824,10 @@ work_packages:
   - Additive `FollowerLowWater` fencing input to the ADR-0085 retention collector with a
     per-registration hold budget in sequences, health degradation on exhaustion, and release only
     by audited retire or configured expiry
-  - Tests `promotion_mints_incarnation_and_refuses_old_lineage_tokens` and
-    `retention_prune_refuses_to_pass_registered_follower_frontier` under
-    `tests/replication_promotion.rs`
+  - Test `promotion_mints_incarnation_and_refuses_old_lineage_tokens` under
+    `tests/replication_follower/promotion_load.rs` in the existing production TLS
+    test binary, and `retention_prune_refuses_to_pass_registered_follower_frontier`
+    under `tests/replication_promotion.rs`
   acceptance_commands:
   - ./scripts/acceptance --wp WP-748
   - ./scripts/ci-all
@@ -22841,8 +22842,30 @@ work_packages:
     scale: The fence is one sequence number per registration and the hold budget bounds how long a
       dead follower pins history; no node-local memory of another node is assumed.
   closure:
-    status: open
+    status: complete
+    completed_at: '2026-09-21'
+    requirements_satisfied: [REP-005, REP-006]
+    evidence: docs/architecture/WP-748-LIFECYCLE-VERIFICATION.md
+    decision: Audited registration, retirement and configured expiry preserve the
+      follower retention fence and degrade health before release. Explicit durable
+      primary fencing and authenticated promotion drain the received prefix, mint
+      one checked incarnation and epoch, report exact measured application-sequence
+      RPO, refuse old-lineage observations and serve new commits. Both durability
+      profiles, under-load zero/nonzero RPO, pre-cutover retry, post-cutover recovery,
+      corruption and process-crash evidence pass. The combined candidate e9faa42c
+      passed all 17 full acceptance steps, including uninterrupted scripts/ci-all.
+      The maintainer accepted implementation and fixtures at db871a51 and authorized
+      landing and completion in session on 2026-09-21. WP-749 archive qualification
+      and WP-750 release qualification remain independent and open.
     decisions_taken:
+    - 'Maintainer, in session, 2026-09-21: "Approve implementation and fixtures"
+      and "Approve WP-748 landing and completion", referring to branch
+      fix/wp748-promotion-recovery at db871a51 and
+      docs/architecture/WP-748-PROMOTION-IMPLEMENTATION-REVIEW.md. Record final
+      human review and package closure without changing the accepted guarantees.'
+    - Record the named promotion proof at its actual production TLS test location
+      and the retention proof under its existing storage test owner. This is a
+      test-packaging clarification; neither proof name nor assertion changes.
     - Resume promotion correctness independently of the closed WP-749 tail
       investigation. Integrate approved source and tests onto current main,
       excluding compact-prefix experiments and private benchmark evidence.

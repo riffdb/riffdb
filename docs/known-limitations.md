@@ -58,18 +58,19 @@ These limits are part of the POC release posture, not hidden roadmap promises.
   encoded-key byte order, which is not collation order; sort client-side for
   presentation.
 - There is no general SQL surface, arbitrary transaction callback, analytical
-  join engine, distributed transaction, failover, or consensus. WP-746 implements
+  join engine, distributed transaction, automatic failover, or consensus. WP-746 implements
   the administrative V3 stream, staged bootstrap, follower daemon and repeated
   crash proofs, verified through full CI. WP-747 adds verified follower reads,
   freshness and sequence-lag reporting. WP-748 implements audited operator
   registration/retirement, health degradation and scheduled configured expiry;
-  [verification and remaining work](architecture/WP-748-LIFECYCLE-VERIFICATION.md)
+  [verification and closure](architecture/WP-748-LIFECYCLE-VERIFICATION.md)
   are recorded separately. [Registration and retirement](operations/FOLLOWER-ADMINISTRATION.md)
-  are available through gRPC, the Rust client and CLI. Fencing and promotion are
-  experimental: restricted pre-cutover retry and crash recovery are implemented;
-  failure/cancellation and under-load proofs and the complete CI battery pass;
-  [human implementation review](architecture/WP-748-PROMOTION-IMPLEMENTATION-REVIEW.md)
-  remains open.
+  are available through gRPC, the Rust client and CLI. Fencing and promotion
+  include restricted pre-cutover retry and crash recovery; failure/cancellation,
+  under-load proofs and the complete CI battery pass. The
+  [implementation and fixtures](architecture/WP-748-PROMOTION-IMPLEMENTATION-REVIEW.md)
+  are accepted and WP-748 is complete. These remain POC capabilities pending
+  WP-750's release qualification.
   WP-749 remains open for qualification.
   The accepted registration-audit and promotion-fencing amendments are recorded
   in SPEC §13.5.

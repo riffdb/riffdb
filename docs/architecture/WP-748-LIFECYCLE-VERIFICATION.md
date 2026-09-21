@@ -1,9 +1,40 @@
 # WP-748 lifecycle, health and expiry verification
 
-Package: WP-748. Tier: guarantee. Status: registration/retirement and promotion
-correctness verified through the complete CI battery; human implementation and
-fixture review pending. WP-748 remains open. Promotion resumed independently of the closed
-WP-749 tail investigation. This report makes no performance-qualification claim.
+Package: WP-748. Tier: guarantee. Completed: 2026-09-21. Registration/retirement
+and promotion correctness are verified through the complete CI battery. The
+maintainer accepted the implementation and fixtures and authorized landing and
+completion on that date. WP-748 closes independently of WP-749's archive
+qualification. This report makes no performance-qualification claim.
+
+## Final combined integration verification
+
+On 2026-09-21, local integration candidate `e9faa42c` combined the reviewed
+WP-748 branch `db871a51` and WP-749 readiness branch `5c77333e` over main
+`05501ec07`. The merge required no manual runtime changes. Its full acceptance
+command, `./scripts/acceptance --range 05501ec07..HEAD --full`, passed all
+17 steps in one uninterrupted invocation. The included `ci-all` took 3,868.6
+seconds; that duration is correctness-check evidence, not a benchmark.
+
+The run used a fresh, dedicated build directory, Rust 1.98.1, the pinned
+Maturin 1.14.1 and locked Node dependencies. It passed workspace formatting,
+all-target/all-feature Clippy, tests and doctests, both real archive CLI cases,
+operator conformance, generated artifacts, dependency checks, Helm checks and
+source-install smoke tests. All 25 follower/promotion process tests passed,
+including under-load RPO, stale-lineage refusal, restricted retry crash edges
+and signal/custody release. Existing opt-in diagnostic and separately invoked
+tests retain their documented exclusions; the two archive CLI tests were
+explicitly executed and passed by their dedicated CI runner.
+
+This closes the integration-verification task. The maintainer subsequently
+accepted the [implementation and fixture review](WP-748-PROMOTION-IMPLEMENTATION-REVIEW.md)
+and authorized WP-748 landing and completion. WP-749's archive-presence
+measurement remains separate and does not block WP-748's correctness closure.
+
+PR note for this documentation increment: Package WP-748; Tier internal.
+Record the combined verification without changing runtime behavior, fixtures,
+compatibility or guarantees. No public interface or operational behavior changed.
+The closure follow-up records the maintainer's approval and completion date;
+no implementation or fixture changed after the reviewed and qualified result.
 
 ## Promotion integration and recovery guard
 
@@ -40,14 +71,15 @@ Nextest now reserves the runner for follower lifecycle and promotion crash
 campaigns; no readiness deadline, crash schedule or assertion was relaxed.
 The earlier 19 non-test acceptance steps passed, including scoped all-feature
 Clippy and all 30 generators, handbook, dependencies and governance. The final
-complete battery is recorded below. Human review still precedes merge and closure.
+complete battery is recorded below. The final human review was accepted on
+2026-09-21 before landing and closure.
 
 Generated client changes propagate through application locks, adapter and
 portability fixtures, and driver manifests. Their regeneration is a fixture
 refresh, not a new external-consumer or performance qualification result.
 
 Restricted pre-cutover startup and the under-load zero/nonzero-RPO drills are
-implemented and exercised below. Final fixture review remains. The
+implemented and exercised below. Final fixture review is accepted. The
 passing lifecycle path is preserved rather than consolidated. Follower-derived
 projection generation and lifecycle belong to the follower under ADR-0248.
 
@@ -63,11 +95,12 @@ projection generation and lifecycle belong to the follower under ADR-0248.
   conformance, generators and installation; 17 non-CI acceptance checks passed.
   Initial failed attempts and environment repairs are disclosed below.
 - **Compatibility:** no pre-existing durable identity or V1 bound changed; no
-  compact-prefix format is activated. Public fixture review precedes merge.
+  compact-prefix format is activated. Public fixtures were reviewed before merge.
 - **Updated handbook:** follower administration, configuration, compatibility,
   backup/restore, remote ingress, errors and known limitations.
-- **Hazards and follow-ups:** human implementation/fixture review remains;
-  fencing may leave both nodes unavailable until exact recovery succeeds.
+- **Hazards and follow-ups:** fencing may leave both nodes unavailable until
+  exact recovery succeeds. WP-749 qualification and WP-750's release campaign
+  remain separate work.
 
 ### Final promotion validation
 
@@ -309,6 +342,6 @@ policy, audit-link, wire and CLI checks. The maintainer accepted the exact publi
 that revision; this report is a documentation follow-up.
 
 Primary fencing, authenticated fence proof, promotion, incarnation/epoch
-advancement and exact RPO are implemented and verified above. Human review and
-the resulting closure record remain for WP-748. WP-749 still requires archive
-qualification; WP-750 depends on both open packages.
+advancement and exact RPO are implemented and verified above. Human review is
+accepted and WP-748 is complete. WP-749 still requires archive qualification;
+WP-750's remaining package dependency is WP-749.

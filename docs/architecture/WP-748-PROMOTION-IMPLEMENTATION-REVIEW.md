@@ -2,9 +2,20 @@
 
 Package: WP-748. Tier: guarantee. Implementation range:
 `05501ec07705576321e4ad8350dbeda38a266a2a..6cba6e8cfb2c1c9fe8c4866d07bf795020a338c6`.
-Status: implementation and the complete CI battery verified; human review pending.
+Status: implementation and fixtures accepted; completion and landing authorized.
 The fencing, V2 startup and revised stream-audit amendments are already accepted.
 This review covers their implementation and generated compatibility fixtures.
+
+## Human acceptance
+
+The maintainer accepted this exact implementation and fixture review in session
+on 2026-09-21: "Approve implementation and fixtures" and
+"Approve WP-748 landing and completion", referring to
+`fix/wp748-promotion-recovery` at `db871a51`. The approved implementation remains
+`6cba6e8c`; the subsequent combined candidate `e9faa42c` passed all 17 full
+acceptance steps in one uninterrupted run. No guarantee or fixture changed as
+part of recording this acceptance. WP-748 closes independently of WP-749's
+archive-presence qualification and WP-750's release campaign.
 
 ## Result to review
 
@@ -104,6 +115,6 @@ that the original uninterrupted invocation passed.
   exact recovery succeeds; preserve maintenance receipts. WP-749 performance
   qualification and WP-750's release campaign remain separate work.
 
-Human review is required by AGENTS.md's guarantee-tier change protocol and
+The acceptance above satisfies AGENTS.md's guarantee-tier human review and
 fixture-review rule. Acceptance of this implementation does not amend the
 already approved guarantees.
