@@ -26729,6 +26729,28 @@ work_packages:
   exit_gate: A repeatable defect one client can reach does not stop the runtime however
     often it is repeated, a burst of process-scoped defects still stops it, and a budget
     driven to empty recovers with time rather than staying spent for the process's life.
+  closure:
+    status: complete
+    completed_at: '2026-09-21'
+    evidence: adr/0250-a-defect-breaker-trips-on-rate-not-on-lifetime-count.md
+    decision: ADR-0250 is implemented on the sink production wires. InternalError carries a
+      DefectScope set at every construction site with no default. Observability's registry
+      rings rather than refusing, only process-scoped defects draw on a burst of sixteen
+      that refills one a minute, and readiness fails only when that budget is spent. The
+      three obligation proofs exercise Observability::record_internal, which every running
+      server installs through ProductionObservabilityDiagnostics.
+    decisions_taken:
+    - ProductionServiceDiagnostics is removed. It was constructed only inside a test module
+      and nothing in the graph, the follower service or the restore host ever built one,
+      so the retention ring, budget and clock that served it went with it.
+    - The budget constants live in riffdb-observability rather than riffdb-server, so the
+      record's numbers have one home and the lower crate can charge them.
+    outstanding:
+    - The first implementation of this record went into the unwired type and its three
+      proofs passed against a path no request can reach, which check-adr-obligations could
+      not detect because it verifies a test of the proof's name exists rather than what
+      the test exercises. ADR-0240's Amendment 1 records the same weakness in a different
+      place on the same morning. Nothing yet checks that a named proof touches production.
   standing_design_tests:
     interface_safety: A defect's scope is a decision made where it is raised, and no
       construction site can omit it.
