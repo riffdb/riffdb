@@ -21,11 +21,35 @@ that is what refuses most attempts.
 | adds a vector field | does not compile, by deploy or by migration | -- |
 
 The first row is the headline and it took three attempts to find. An
-optional field needs no initialisation, so it needs no command change, so
-nothing touches the frozen command surface: the field itself is
-`Compatible`, and the only friction is that the outcome shape changed,
-which asks for an explicit successor version. That is the mildest class
-above `Compatible` and entirely routine.
+optional field needs no initialisation, so it needs no command change:
+the field itself is `Compatible`, and the only friction is that the outcome
+shape changed, which asks for an explicit successor version. That is the
+mildest class above `Compatible` and entirely routine.
+
+## The working idiom
+
+A field you can add but never populate would not be much use, so the route
+has to include something that writes it. It does:
+
+> **Add the field as optional, leave every existing command alone, and add
+> a new command that mutates it.**
+
+Measured, that successor reports `RDB-K010` `Compatible` for the new
+command, `RDB-K013` `Compatible` for the field, and `RDB-K021`
+`RequiresExplicitVersion` for the existing command's outcome shape, which
+changed because the entity it returns gained a field. Overall
+`RequiresExplicitVersion`: deploy it against an explicit successor version
+and it goes.
+
+Nothing in that successor touches an existing command, which is why none of
+the three refusal codes can fire. The writer must bind with `mutate` rather
+than `read` -- a `read` binding is unwritable, and assigning through one
+fails as `AssignmentThroughUnwritableBinding` before compatibility is
+reached.
+
+This does not extend to a vector field. A vector field cannot be optional,
+so the create binding on every existing command still breaks, and no new
+command changes that.
 
 The second row is the important one. Two findings, and the overall class is
 the more restrictive: the field is migratable and the **command surface
