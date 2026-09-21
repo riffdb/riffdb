@@ -20,6 +20,20 @@ require "date"
 require "yaml"
 
 module RiffdbAdr
+  # A record that opens a front-matter block whose YAML does not parse.
+  #
+  # This used to be swallowed. `split_front_matter` rescued the parse error and
+  # returned "no front matter", so the record fell through to the legacy path
+  # and read as an untitled legacy one with no obligations. One mistyped colon
+  # in ADR-0251 therefore made `check-adr-obligations` report three fewer
+  # declared obligations and pass, and `adr-index` render an accepted guarantee
+  # record as `(untitled) | (unknown) | legacy`. Both stayed green.
+  #
+  # A file with no `---` block is still a legacy record, which is legitimate.
+  # A file that opens one and then fails to parse is corrupt, and saying so is
+  # the whole point.
+  class MalformedFrontMatter < StandardError; end
+
   FRONT_MATTER = /\A---\r?\n(.*?)\r?\n---[ \t]*\r?\n/m
   TITLE_LINE = /\A\#[ \t]*ADR-(?:\d{4}|NNNN):[ \t]*(.*)$/
   LEGACY_STATUS = /^-[ \t]+(?:\*\*)?Status:(?:\*\*)?[ \t]*(.+)$/
@@ -92,7 +106,7 @@ module RiffdbAdr
   def parse(path)
     text = File.read(path, encoding: "UTF-8")
     basename = File.basename(path)
-    front, body = split_front_matter(text)
+    front, body = split_front_matter(text, path)
     return legacy_record(path, basename, text) unless front
 
     Record.new(
@@ -109,14 +123,18 @@ module RiffdbAdr
     )
   end
 
-  def split_front_matter(text)
+  def split_front_matter(text, path = nil)
     match = FRONT_MATTER.match(text)
     return [nil, text] unless match
 
     begin
       parsed = YAML.safe_load(match[1], permitted_classes: [Date, Time], aliases: true)
-    rescue Psych::Exception
-      return [nil, text]
+    rescue Psych::Exception => error
+      raise MalformedFrontMatter,
+            "#{path || '<record>'}: front matter opens with --- but does not parse " \
+            "as YAML (#{error.message.lines.first.to_s.strip}). A record that cannot " \
+            "be read declares no obligations and renders as legacy, so this fails " \
+            "rather than degrading."
     end
     return [nil, text] unless parsed.is_a?(Hash) && parsed.key?("adr")
 
