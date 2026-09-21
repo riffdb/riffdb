@@ -3469,7 +3469,13 @@ fn vector_projection_failure(
         VectorProjectionPortError::Degraded => Some(ApplicationErrorCode::QueryUnavailable),
         VectorProjectionPortError::Building
         | VectorProjectionPortError::Rebuilding
-        | VectorProjectionPortError::Unavailable => Some(ApplicationErrorCode::QueryUnavailable),
+        | VectorProjectionPortError::Unavailable
+        // A checked query that cannot currently be executed, which is exactly
+        // what an unadmitted source is. It shares the code with Building rather
+        // than the incident path it used to take (ADR-0251 decision 4).
+        | VectorProjectionPortError::NotRegistered => {
+            Some(ApplicationErrorCode::QueryUnavailable)
+        }
         VectorProjectionPortError::Integrity => None,
     };
     code.map_or_else(

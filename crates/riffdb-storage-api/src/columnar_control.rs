@@ -1584,4 +1584,13 @@ pub trait ColumnarProjectionRetentionRepository {
     fn columnar_projection_retention_frontiers(
         &self,
     ) -> Result<Vec<(ColumnarProjectionSourceV1, Option<FrontierPosition>)>, StorageError>;
+
+    /// Reads the live retention watermark sequence; zero when nothing is pruned.
+    ///
+    /// A derived source that must replay from the beginning is admissible only
+    /// against an unpruned log, and this is the only signal that says so. The
+    /// commit log cannot answer it: an unbounded initial scan is defined to
+    /// begin at sequence one, so a pruned store fails that read rather than
+    /// returning a page that starts higher.
+    fn retention_watermark_sequence(&self) -> Result<u64, StorageError>;
 }

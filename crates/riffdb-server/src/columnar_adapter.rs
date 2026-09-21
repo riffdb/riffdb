@@ -44,10 +44,11 @@ use riffdb_service::{
 use riffdb_storage_api::{
     AuthoritativeIndexScanPage, AuthoritativeIndexScanRequest, AuthoritativePointReader,
     AuthoritativeScanReader, ColumnarProjectionControlRepository, ColumnarProjectionLayoutV1,
-    CommitScanPageV1, CommitScanRequest, EntityTarget, FreshColumnarProjectionControlV1,
-    IdempotencyIdentity, StorageError, StorageErrorKind, StorageScanLimit,
-    StoredColumnarProjectionControlV1, StoredColumnarProjectionGenerationV1, StoredCommitRecordV1,
-    StoredDurableEventV1, StoredEntityRecordV1, StoredOutcomeV1, StoredProvenanceRecordV1,
+    ColumnarProjectionRetentionRepository, CommitScanPageV1, CommitScanRequest, EntityTarget,
+    FreshColumnarProjectionControlV1, IdempotencyIdentity, StorageError, StorageErrorKind,
+    StorageScanLimit, StoredColumnarProjectionControlV1, StoredColumnarProjectionGenerationV1,
+    StoredCommitRecordV1, StoredDurableEventV1, StoredEntityRecordV1, StoredOutcomeV1,
+    StoredProvenanceRecordV1,
 };
 use riffdb_types::{
     CommitSequence, EntityKey, EventId, FieldId, FrontierPosition, ProjectionFrontier,
@@ -689,7 +690,7 @@ pub(crate) struct ColumnarRuntime {
     engines: RwLock<BTreeMap<String, Arc<ColumnarEngineSlot>>>,
     notifier: ColumnarNotifier,
     names: RwLock<Vec<String>>,
-    control_bindings: BTreeMap<String, ColumnarControlBinding>,
+    control_bindings: RwLock<BTreeMap<String, ColumnarControlBinding>>,
     projections_root: PathBuf,
     history_incarnation: u64,
     process_generation: [u8; 16],
@@ -745,7 +746,7 @@ impl ColumnarRuntime {
             engines: RwLock::new(BTreeMap::new()),
             notifier: ColumnarNotifier::from_names(Vec::new()),
             names: RwLock::new(Vec::new()),
-            control_bindings: BTreeMap::new(),
+            control_bindings: RwLock::new(BTreeMap::new()),
             projections_root,
             history_incarnation,
             process_generation,
@@ -902,7 +903,7 @@ impl ColumnarRuntime {
             engines: RwLock::new(engines),
             notifier,
             names: RwLock::new(names),
-            control_bindings,
+            control_bindings: RwLock::new(control_bindings),
             projections_root: projections_root.to_path_buf(),
             history_incarnation,
             process_generation,
@@ -1090,12 +1091,137 @@ impl ColumnarRuntime {
             .map_err(|_| ColumnarPortError::Unavailable)
     }
 
-    fn control_binding(&self, name: &str) -> Option<&ColumnarControlBinding> {
-        self.control_bindings.get(name)
+    fn control_binding(&self, name: &str) -> Option<ColumnarControlBinding> {
+        self.control_bindings
+            .read()
+            .ok()
+            .and_then(|bindings| bindings.get(name).cloned())
     }
 
     pub(crate) fn control_bindings(&self) -> Vec<ColumnarControlBinding> {
-        self.control_bindings.values().cloned().collect()
+        self.control_bindings
+            .read()
+            .map(|bindings| bindings.values().cloned().collect())
+            .unwrap_or_default()
+    }
+
+    /// Admits one contract-derived source into a running process (ADR-0251).
+    ///
+    /// Startup admission runs before the writer exists, so its all-or-nothing
+    /// batch installs every retention fence before anything can advance or
+    /// prune the log. This path has no such quiet point, so it does the two
+    /// things that make a fence meaningful without one: it installs the fence
+    /// first, and only then asks whether the history the source needs is still
+    /// there. Checking first would prove nothing, because the fence is what
+    /// stops the next pruning pass.
+    ///
+    /// Nothing here touches an existing control. A fresh source reconciles to a
+    /// no-op, so the reconciliation that startup performs over the whole set --
+    /// the part that would be unsafe against a live writer -- is not reached.
+    pub(crate) fn admit_source(
+        &self,
+        binding: ColumnarControlBinding,
+    ) -> Result<SourceAdmission, ColumnarRegistrationError> {
+        let name = binding.name.clone();
+        if self.control_binding(&name).is_some() {
+            return Ok(SourceAdmission::AlreadyAdmitted);
+        }
+
+        // Install the fence.
+        let fresh = FreshColumnarProjectionControlV1::new(
+            binding.spec.source().clone(),
+            binding.spec.definition_fingerprint(),
+            binding.spec.hash(),
+            binding.spec.replay_limits(),
+            self.history_incarnation,
+        )
+        .map_err(|_| ColumnarRegistrationError::definition(&name))?;
+        let _ = self
+            .storage()
+            .initialize_fresh_v1(std::slice::from_ref(&fresh))
+            .map_err(|error| ColumnarRegistrationError::control_storage(error, &name))?;
+        let control = self
+            .storage()
+            .recover_expected_control(binding.spec.source())
+            .map_err(|error| ColumnarRegistrationError::control_storage(error, &name))?
+            .ok_or_else(ColumnarRegistrationError::synchronization)?;
+        if !common_control_matches(&control, &binding.spec)
+            || !common_control_history_incarnation_matches(&control, self.history_incarnation)
+        {
+            return Err(ColumnarRegistrationError::synchronization());
+        }
+
+        // Only now is the question worth asking.
+        if !self.history_is_replayable_from_the_beginning()? {
+            return Ok(SourceAdmission::HistoryPruned);
+        }
+
+        let allocation = control
+            .servable_generation()
+            .or_else(|| control.candidate())
+            .ok_or_else(ColumnarRegistrationError::synchronization)?;
+        let slot = Arc::new(ColumnarEngineSlot::cold_controlled(
+            binding.definition.clone(),
+            controlled_generation_directory(
+                &self.projections_root,
+                binding.spec.hash(),
+                allocation.generation(),
+            ),
+            allocation.generation(),
+            FrontierPosition::BeforeFirst,
+            None,
+        ));
+
+        // The notifier learns the name before the slot is published, so a
+        // register-before-read wait cannot miss the source it is waiting for.
+        let mut names = self
+            .names
+            .write()
+            .map_err(|_| ColumnarRegistrationError::synchronization())?;
+        let mut engines = self
+            .engines
+            .write()
+            .map_err(|_| ColumnarRegistrationError::synchronization())?;
+        let mut bindings = self
+            .control_bindings
+            .write()
+            .map_err(|_| ColumnarRegistrationError::synchronization())?;
+        if bindings.contains_key(&name) {
+            return Ok(SourceAdmission::AlreadyAdmitted);
+        }
+        names.push(name.clone());
+        names.sort();
+        self.notifier
+            .synchronize_names(names.iter().cloned())
+            .map_err(|_| ColumnarRegistrationError::synchronization())?;
+        engines.insert(name.clone(), slot);
+        bindings.insert(name, binding);
+        self.admitted_cold_sources
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        Ok(SourceAdmission::Admitted)
+    }
+
+    /// Whether history still reaches back to where a fresh source must start.
+    ///
+    /// A fresh source replays from `BeforeFirst`, so a vector index over
+    /// documents that already exist is wrong if the commits that created them
+    /// were pruned. The retention watermark is the signal: zero means nothing
+    /// has been pruned, and an unpruned log is replayable whether it is empty
+    /// or not.
+    ///
+    /// The commit log cannot answer this. An unbounded initial scan is defined
+    /// to begin at sequence one, so a pruned store fails that read with
+    /// `CorruptData` rather than returning a page that starts higher, and a
+    /// predicate built on it can return true or error but never false.
+    pub(crate) fn history_is_replayable_from_the_beginning(
+        &self,
+    ) -> Result<bool, ColumnarRegistrationError> {
+        let watermark =
+            ColumnarProjectionRetentionRepository::retention_watermark_sequence(self.storage())
+                .map_err(|error| {
+                    ColumnarRegistrationError::control_storage(error, "columnar-control")
+                })?;
+        Ok(watermark == 0)
     }
 
     pub(crate) fn open_controlled_generation(
@@ -1883,6 +2009,47 @@ impl ColumnarProjectionPort for ServerColumnarProjectionPort {
     }
 }
 
+impl riffdb_service::ColumnarAdmissionPort for ServerColumnarProjectionPort {
+    fn fresh_source_is_replayable(&self) -> Result<bool, ColumnarPortError> {
+        self.runtime
+            .history_is_replayable_from_the_beginning()
+            .map_err(|_| ColumnarPortError::Integrity)
+    }
+
+    fn admit_active_catalog_sources(
+        &self,
+    ) -> Result<riffdb_service::ColumnarAdmissionOutcome, ColumnarPortError> {
+        // Resolved from the active catalog, exactly as startup resolves it, so
+        // the two paths cannot disagree about what a source is.
+        let active = ActiveCatalogSnapshot::read(self.runtime.storage())
+            .map_err(|_| ColumnarPortError::Integrity)?;
+        let Some(active) = active else {
+            return Ok(riffdb_service::ColumnarAdmissionOutcome::Admitted);
+        };
+        let bindings = admission::resolve_columnar_bindings(&[], Some(active.bundle().bundle()))
+            .map_err(|_| ColumnarPortError::Integrity)?;
+        for binding in bindings {
+            // Configured scalar projections are not contract-derived and cannot
+            // appear from a deploy; admitting only what the catalog declares
+            // keeps this path to the sources a contract can introduce.
+            if !binding.is_vector {
+                continue;
+            }
+            match self
+                .runtime
+                .admit_source(binding)
+                .map_err(|_| ColumnarPortError::Integrity)?
+            {
+                SourceAdmission::Admitted | SourceAdmission::AlreadyAdmitted => {}
+                SourceAdmission::HistoryPruned => {
+                    return Ok(riffdb_service::ColumnarAdmissionOutcome::HistoryPruned);
+                }
+            }
+        }
+        Ok(riffdb_service::ColumnarAdmissionOutcome::Admitted)
+    }
+}
+
 impl VectorProjectionPort for ServerColumnarProjectionPort {
     fn execute(
         &self,
@@ -1892,7 +2059,7 @@ impl VectorProjectionPort for ServerColumnarProjectionPort {
             .runtime
             .engine(request.source_name())
             .map_err(map_vector_port_error)?
-            .ok_or(VectorProjectionPortError::Integrity)?;
+            .ok_or(VectorProjectionPortError::NotRegistered)?;
         let must_return_building = self
             .runtime
             .request_activation(&slot)
@@ -1903,7 +2070,7 @@ impl VectorProjectionPort for ServerColumnarProjectionPort {
         let binding = self
             .runtime
             .control_binding(request.source_name())
-            .ok_or(VectorProjectionPortError::Integrity)?;
+            .ok_or(VectorProjectionPortError::NotRegistered)?;
         if !binding.is_vector {
             return Err(VectorProjectionPortError::Integrity);
         }
@@ -2005,6 +2172,18 @@ impl fmt::Debug for ServerColumnarProjectionPort {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         formatter.write_str("ServerColumnarProjectionPort([PUBLISHED_SNAPSHOT])")
     }
+}
+
+/// What admitting one source into a running process did (ADR-0251).
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum SourceAdmission {
+    /// The source is now registered and cold, awaiting its first demand.
+    Admitted,
+    /// A source of that name was already registered; nothing changed.
+    AlreadyAdmitted,
+    /// History the source must replay was pruned before its fence landed, so it
+    /// cannot be built here and the deploy that declared it is refused.
+    HistoryPruned,
 }
 
 /// Closed startup failure while resolving or opening one columnar projection.
@@ -2302,8 +2481,9 @@ pub(crate) mod tests {
         ActorId, ActorKind, AdmittedActorContext, AggregateTypeId, CanonicalInputHash,
         CanonicalRecord, CanonicalValue, CanonicalVector, CapabilityId, CommitSequence,
         ContractLineage, DatabaseId, DigestKeyId, DistanceMetric, EmbeddingMetadata,
-        EntityKeyBuilder, EntityVersion, Environment, LogicalTime, OutcomeId, PartitionKeyBuilder,
-        PartitionKeyHash, ProvenanceId, RequestId, TenantScope, Timestamp, hash_partition_key,
+        EntityKeyBuilder, EntityTypeId, EntityVersion, Environment, FieldId, LogicalTime,
+        OutcomeId, PartitionKeyBuilder, PartitionKeyHash, ProvenanceId, RequestId, TenantScope,
+        Timestamp, hash_partition_key,
     };
 
     use super::*;
@@ -4236,7 +4416,7 @@ contract VectorBoard version 1 {
             ));
             crate::columnar_worker::advance_one_published_v1_for_test(
                 &runtime,
-                runtime.control_binding("ticket_board").expect("binding"),
+                &runtime.control_binding("ticket_board").expect("binding"),
             );
             panic!("child did not abort at the requested V1 publication boundary");
         }
@@ -5657,7 +5837,7 @@ contract VectorBoard version 1 {
             .expect("durable selection");
         let selected = durable.servable_generation().expect("selected generation");
         let successor = runtime
-            .open_controlled_generation(binding, selected)
+            .open_controlled_generation(&binding, selected)
             .expect("open exact successor");
         let slot = runtime
             .engine("ticket_board")
@@ -6786,6 +6966,129 @@ contract VectorBoard version 1 {
             crate::storage::columnar_control_recovery_reads(),
             0,
             "the real vector port must use the gate-installed generation authority"
+        );
+    }
+
+    /// OBL-0251-1, at the layer that owns it. A source the process did not know
+    /// about at startup is admitted into the running runtime and becomes a
+    /// registered cold source, which is what the first demand then activates.
+    ///
+    /// The end-to-end sequence -- deploy into a live daemon, write, query --
+    /// is driven by `benchmarks/perf-surface`; this pins the mechanism that
+    /// makes it possible, on a runtime that opened with no source at all.
+    #[test]
+    fn a_source_is_admitted_into_a_running_runtime() {
+        let (runtime, _scope) = empty_columnar_runtime("runtime-admission");
+        assert!(
+            runtime.names().expect("names").is_empty(),
+            "the runtime opens holding no source"
+        );
+
+        let checked = ValidatedContractBundle::from_compiler_bundle(
+            riffdb_contract_compiler::compile_contract_source(PRODUCTION_VECTOR_CONTRACT)
+                .expect("compile production vector contract"),
+        )
+        .expect("validate production vector contract");
+        let binding = super::admission::resolve_columnar_bindings(&[], Some(checked.bundle()))
+            .expect("resolve the contract's columnar bindings")
+            .into_iter()
+            .next()
+            .expect("the vector contract declares one source");
+        let name = binding.name.clone();
+
+        assert_eq!(
+            runtime.admit_source(binding.clone()).expect("admit"),
+            SourceAdmission::Admitted
+        );
+        assert_eq!(
+            runtime.names().expect("names"),
+            vec![name.clone()],
+            "the admitted source is registered under its contract-derived name"
+        );
+        assert!(
+            runtime.engine(&name).expect("engine read").is_some(),
+            "admission publishes a cold engine slot"
+        );
+        assert!(
+            runtime.control_binding(&name).is_some(),
+            "admission publishes the binding the worker walks"
+        );
+
+        // Admission is idempotent: a redeploy of the same contract must not
+        // install a second control or a second slot.
+        assert_eq!(
+            runtime.admit_source(binding).expect("re-admit"),
+            SourceAdmission::AlreadyAdmitted
+        );
+        assert_eq!(runtime.names().expect("names").len(), 1);
+    }
+
+    /// The replayability probe admission refuses on, on the one state a unit
+    /// test can build honestly.
+    ///
+    /// A fresh source replays from `BeforeFirst`, so it is admissible exactly
+    /// when the commit log still begins at sequence one, and an empty log is
+    /// admissible because there is nothing to miss. The refusal itself is
+    /// proven end to end against a genuinely pruned database in
+    /// `benchmarks/perf-surface`, because the commit fixture here enforces
+    /// contiguity from the sequence allocator and so cannot manufacture a log
+    /// that starts above one.
+    #[test]
+    fn an_empty_log_is_replayable_by_a_fresh_source() {
+        let (runtime, _scope) = empty_columnar_runtime("replayable-empty-log");
+        assert!(
+            runtime
+                .history_is_replayable_from_the_beginning()
+                .expect("probe an empty log"),
+            "an empty log is replayable: there is nothing for a fresh source to miss"
+        );
+    }
+
+    /// OBL-0251-3. A projected query against a source this node does not hold
+    /// answers with a typed refusal, not an opaque internal defect.
+    ///
+    /// Before ADR-0251 this path returned `Integrity`, which the service maps to
+    /// an internal defect with an opaque incident: the caller learned nothing,
+    /// and repeating it drew on the runtime's defect budget. A source can be
+    /// absent for an ordinary reason -- it has not been admitted on this node --
+    /// so the condition is reported rather than treated as a fault.
+    #[test]
+    fn an_unregistered_source_answers_with_a_typed_refusal() {
+        let (runtime, _scope) = empty_columnar_runtime("unregistered-source");
+        assert!(
+            runtime.names().expect("names").is_empty(),
+            "the runtime under test holds no source"
+        );
+
+        let organization = uuid_bytes(0x41);
+        let mut partition = PartitionKeyBuilder::new(AggregateTypeId::first());
+        partition
+            .push_uuid(&organization)
+            .expect("partition organization");
+        let request = VectorProjectionRequest::new(
+            "Document.embedding".to_owned(),
+            ContractLineage::new("VectorBoard").expect("lineage"),
+            partition.finish().expect("partition"),
+            CanonicalValue::Uuid(organization),
+            EntityTypeId::first(),
+            FieldId::new(1).expect("field"),
+            EmbeddingMetadata::new("embed-v1", "2026-08-21").expect("model"),
+            0,
+            CanonicalVector::new(vec![1.0, 0.0, 0.0, 0.0]).expect("query vector"),
+            1,
+            DistanceMetric::Cosine,
+            Vec::new(),
+            None,
+            None,
+            None,
+        );
+
+        assert!(
+            matches!(
+                VectorProjectionPort::execute(&ServerColumnarProjectionPort::new(runtime), request),
+                Err(VectorProjectionPortError::NotRegistered)
+            ),
+            "an absent source is reported, never returned as an integrity failure"
         );
     }
 

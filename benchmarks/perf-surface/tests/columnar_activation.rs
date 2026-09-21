@@ -2,12 +2,10 @@
 //! Drives one projected vector query all the way to the columnar engine, which
 //! is the step this repository had never taken from a benchmark.
 //!
-//! The route has one non-obvious constraint. `ColumnarRuntime` resolves its
-//! source set once, at startup, from the active catalog
-//! (`prepare_columnar_control_foundation`), so a vector contract deployed into
-//! a running daemon registers no source at all: the projected query reaches a
-//! port that knows no such name and fails as an internal defect with an opaque
-//! incident. The restart below is therefore load-bearing, not hygiene.
+//! This is also OBL-0251-1: the daemon is never restarted. Until ADR-0251 the
+//! source set was resolved once at startup, so a vector contract deployed into
+//! a running daemon registered no source at all and this query failed as an
+//! internal defect with an opaque incident.
 use std::collections::BTreeMap;
 use std::time::{Duration, Instant};
 
@@ -42,8 +40,8 @@ struct Demanded {
 }
 
 #[test]
-#[ignore = "needs a built riffdbd; drives a projected vector query to the engine"]
-fn a_projected_vector_query_activates_a_cold_columnar_source() {
+#[ignore = "needs a built riffdbd; OBL-0251-1, end to end with no restart"]
+fn a_vector_field_deployed_into_a_running_daemon_becomes_queryable() {
     let binary = riffdbd_binary().expect("riffdbd");
     let dir = std::env::temp_dir().join(format!("ps-activation-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);
@@ -135,14 +133,9 @@ fn a_projected_vector_query_activates_a_cold_columnar_source() {
         panic!("the vector writes must be accepted: {error}");
     }
 
-    // The columnar runtime resolves its source set once, at startup, from the
-    // active catalog (`prepare_columnar_control_foundation`). A vector contract
-    // deployed into a live daemon therefore registers no source until the
-    // process restarts, so the restart is part of reaching the engine, not an
-    // incidental step.
-    let _ = daemon.shutdown();
-    let daemon = Daemon::start(&binary, &dir).expect("restart");
-    let endpoint = daemon.endpoint();
+    // No restart. ADR-0251 admits a contract-derived source when its contract
+    // is deployed, so the source this query demands was registered by the
+    // deploy above, in this same process.
 
     // Demand the source. WP-777 keeps an admitted source cold until a
     // projected query asks for it: the first demand is refused while the

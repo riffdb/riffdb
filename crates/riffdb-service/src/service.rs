@@ -211,6 +211,7 @@ pub struct ServiceProviders {
     pub(crate) event_lease_tokens: Option<Arc<dyn EventLeaseTokenSource>>,
     pub(crate) contextual_causation: Option<ContextualCausationTokenCodec>,
     pub(crate) columnar: Option<Arc<dyn ColumnarProjectionPort>>,
+    pub(crate) columnar_admission: Option<Arc<dyn crate::ColumnarAdmissionPort>>,
     pub(crate) exact_text: Option<Arc<dyn crate::ExactTextProjectionPort>>,
     pub(crate) long_pattern: Option<Arc<dyn crate::LongPatternProjectionPort>>,
     pub(crate) tokenized_text: Option<Arc<dyn crate::TokenizedTextProjectionPort>>,
@@ -269,6 +270,7 @@ impl ServiceProviders {
             event_lease_tokens: None,
             contextual_causation: None,
             columnar: None,
+            columnar_admission: None,
             exact_text: None,
             long_pattern: None,
             tokenized_text: None,
@@ -341,6 +343,15 @@ impl ServiceProviders {
 
     /// Installs published columnar projection observation for projected queries.
     #[must_use]
+    /// Supplies the deploy-time columnar admission capability (ADR-0251).
+    pub fn with_columnar_admission(
+        mut self,
+        admission: Arc<dyn crate::ColumnarAdmissionPort>,
+    ) -> Self {
+        self.columnar_admission = Some(admission);
+        self
+    }
+
     pub fn with_columnar(mut self, columnar: Arc<dyn ColumnarProjectionPort>) -> Self {
         self.columnar = Some(columnar);
         self

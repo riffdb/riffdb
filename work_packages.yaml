@@ -19737,7 +19737,11 @@ work_packages:
   requirements: [PERF-007, PERF-008, PERF-018, REC-001, STO-001, STO-002]
   required_adrs: [ADR-0019, ADR-0085, ADR-0100, ADR-0104, ADR-0123]
   allowed_paths: [work_packages.yaml, crates/riffdb-storage-redb/**,
-    crates/riffdb-server/src/process_graph.rs, crates/riffdb-server/src/daemon.rs,
+    crates/riffdb-server/src/process_graph.rs,
+    crates/riffdb-server/src/storage.rs,
+    crates/riffdb-storage-api/src/columnar_control.rs,
+    crates/riffdb-storage-redb/src/columnar_projection_control.rs,
+    crates/riffdb-storage-redb/src/shared_ports.rs, crates/riffdb-server/src/daemon.rs,
     examples/app-baseline/**, tests/**, docs/performance/**]
   deliverables:
   - A closed checkpoint ledger separating journal-suffix barrier, retained-state read, checkpoint
@@ -26639,4 +26643,50 @@ work_packages:
       construction site can omit it.
     scale: The breaker's cost is constant per defect and holds no per-caller state, so it
       cannot itself become a resource a caller can exhaust.
+  human_review_triggers: *id001
+- id: WP-802
+  name: Columnar source admitted without a restart
+  tier: guarantee
+  depends_on: []
+  objective: Admit a contract-derived columnar source when its contract is deployed, refuse
+    a deploy the running process cannot serve, and answer a query against an unregistered
+    source with a typed refusal, per ADR-0251 decisions 1 through 5.
+  requirements: []
+  required_adrs: [ADR-0251, ADR-0250]
+  # Widened 2026-09-20. Admitting a source at runtime has to reach two places the
+  # package first named around. ColumnarNotifier's name set is built once from
+  # startup registration, so a source admitted later would have no name to wait
+  # on; its state is already behind a mutex, so this adds a registration entry
+  # rather than changing the shape. columnar_worker walks control_bindings, which
+  # moves behind the lock engines already uses.
+  allowed_paths: [work_packages.yaml,
+    adr/0251-a-declared-columnar-source-is-admitted-without-a-restart.md,
+    crates/riffdb-service/src/columnar_notification.rs,
+    crates/riffdb-server/src/columnar_worker.rs,
+    crates/riffdb-server/src/columnar_adapter.rs,
+    crates/riffdb-server/src/columnar_admission.rs,
+    crates/riffdb-service/src/ports.rs,
+    crates/riffdb-service/src/service.rs,
+    crates/riffdb-service/src/symbolic_query.rs,
+    crates/riffdb-service/src/contract_operations.rs,
+    crates/riffdb-server/src/process_graph.rs,
+    benchmarks/perf-surface/**,
+    docs/performance/**]
+  deliverables:
+  - A typed refusal for a projected query against a source the engine does not hold,
+    replacing the internal defect that path returns today
+  - Runtime admission of a contract-derived source at deploy, installing the control,
+    verifying the history it needs is retained, and registering a cold slot
+  - A deploy refused with a typed reason when its declared source cannot be admitted
+  - The three named proofs
+  acceptance_commands:
+  - ./scripts/acceptance --wp WP-802
+  - ./scripts/ci-all
+  exit_gate: A vector field deployed into a running daemon becomes queryable without a
+    restart, a source whose history was pruned is refused at the deploy rather than after
+    it, and no projected query against an unregistered source returns an opaque incident.
+  standing_design_tests:
+    interface_safety: A source the engine does not hold is a condition the caller is told
+      about, never one it has to infer from an opaque incident.
+    scale: Admission is per declared source and runs at deploy, not per query.
   human_review_triggers: *id001

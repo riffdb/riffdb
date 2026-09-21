@@ -15,7 +15,8 @@ use riffdb_contract_compiler::{
 };
 use riffdb_contract_ir::{CommandExplain, ContractBundle, SchemaArtifactKey, StableIdNamespaceTag};
 use riffdb_errors::{
-    PublicError, ValidationCode, ValidationIssue, ValidationIssues, ValidationPath,
+    ApplicationErrorCode, PublicError, ValidationCode, ValidationIssue, ValidationIssues,
+    ValidationPath,
 };
 use riffdb_policy::OperationRequest;
 use riffdb_types::{
@@ -619,6 +620,42 @@ async fn deploy_contract(
             .await;
         }
     };
+    // ADR-0251 decision 3. A contract declaring a columnar source the running
+    // process could never build is refused here, at the point the operator
+    // acted, rather than accepted and left to fail at whoever queries first.
+    // The check is read-only and precedes the commit, so a refusal leaves no
+    // control behind; pruning is an offline operation and this process holds
+    // the store's exclusive lock, so the answer cannot go stale before the
+    // deploy completes.
+    if !candidate.schema().vector_production_specs().is_empty()
+        && let Some(admission) = service.providers.columnar_admission.as_ref()
+    {
+        match admission.fresh_source_is_replayable() {
+            Ok(true) => {}
+            Ok(false) => {
+                let failure = deploy_application_failure(ApplicationErrorCode::HistoryPruned);
+                return Err(finish_deploy_prestart_failure(
+                    service,
+                    &context,
+                    provisional_targets,
+                    ServiceAuditPhaseV1::Failed,
+                    failure,
+                )
+                .await);
+            }
+            Err(_) => {
+                let failure = service.internal_failure(OPERATION, InternalDefect::ProofMismatch);
+                return Err(finish_deploy_prestart_failure(
+                    service,
+                    &context,
+                    provisional_targets,
+                    ServiceAuditPhaseV1::Failed,
+                    failure,
+                )
+                .await);
+            }
+        }
+    }
     let descriptor = contract_descriptor(&candidate);
     let targets = match ServiceAuditTargetMap::deploy_contract(
         descriptor.lineage().clone(),
@@ -869,6 +906,25 @@ async fn deploy_contract(
             );
         }
     };
+    // ADR-0251 decision 1. The active catalog is now the contract just
+    // deployed, so its declared sources are admitted from it, by the same
+    // resolution startup uses. A source registered here is cold: the first
+    // projected query demands it and WP-777's activation does the rest.
+    //
+    // The replayability refusal happened before the commit, so this cannot
+    // report HistoryPruned for a deploy that got this far unless the store was
+    // pruned underneath a running process, which an offline-only prune cannot
+    // do. It is still handled rather than assumed away.
+    if matches!(shaped, DeployContractResult::Activated(_))
+        && let Some(admission) = service.providers.columnar_admission.as_ref()
+        && !matches!(
+            admission.admit_active_catalog_sources(),
+            Ok(crate::ColumnarAdmissionOutcome::Admitted)
+        )
+    {
+        let failure = service.internal_failure(OPERATION, InternalDefect::ProofMismatch);
+        return Err(finish_terminal_failure(service, &context, &begun, OPERATION, failure).await);
+    }
     let pending = PendingTerminalResponse::new(shaped, terminal, ensure_response_budget);
     finish_control_plane_terminal(service, &context, &begun, pending.terminal()).await?;
     pending.into_response()
@@ -1299,6 +1355,24 @@ fn require_activated_candidate(
     } else {
         Err(())
     }
+}
+
+/// A typed refusal carrying the application code that names the condition.
+fn deploy_application_failure(application_code: ApplicationErrorCode) -> ServiceFailure {
+    let error = PublicError::validation(ValidationIssues::one(ValidationIssue::new(
+        ValidationCode::InvalidValue,
+        ValidationPath::root(),
+    )));
+    error
+        .with_application_code_hint(application_code)
+        .map_or_else(
+            |_| {
+                ServiceFailure::from(PublicError::validation(ValidationIssues::one(
+                    ValidationIssue::new(ValidationCode::InvalidValue, ValidationPath::root()),
+                )))
+            },
+            ServiceFailure::from,
+        )
 }
 
 async fn finish_deploy_prestart_failure(

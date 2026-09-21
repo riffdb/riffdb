@@ -283,6 +283,7 @@ record with no front matter.
 | [0248](0248-followers-rebuild-derived-state.md) | Follower Projection Control Without A Replicated Frontier | Accepted | guarantee |
 | [0249](0249-tail-latency-is-disclosure-with-a-named-mechanism.md) | Tail Latency Is Disclosure With A Named Mechanism | Accepted | guarantee |
 | [0250](0250-a-defect-breaker-trips-on-rate-not-on-lifetime-count.md) | A Defect Breaker Trips On Rate, Not On Lifetime Count | Accepted | guarantee |
+| [0251](0251-a-declared-columnar-source-is-admitted-without-a-restart.md) | A Declared Columnar Source Is Admitted Without A Restart | Accepted | guarantee |
 <!-- adr-index:end -->
 
 The human architecture review on 2026-07-12 approved the direction represented

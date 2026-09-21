@@ -457,6 +457,10 @@ impl PreparedColumnarGenerationRepository for RedbSharedPorts {
 }
 
 impl ColumnarProjectionRetentionRepository for RedbSharedPorts {
+    fn retention_watermark_sequence(&self) -> Result<u64, StorageError> {
+        ColumnarProjectionRetentionRepository::retention_watermark_sequence(&self.operational())
+    }
+
     fn columnar_projection_retention_frontiers(
         &self,
     ) -> Result<Vec<(ColumnarProjectionSourceV1, Option<FrontierPosition>)>, StorageError> {
