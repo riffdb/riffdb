@@ -26690,3 +26690,35 @@ work_packages:
       about, never one it has to infer from an opaque incident.
     scale: Admission is per declared source and runs at deploy, not per query.
   human_review_triggers: *id001
+- id: WP-803
+  name: Adding a field to a live application
+  tier: guarantee
+  depends_on: []
+  objective: Establish what the supported path is for adding a field, and specifically a
+    vector field, to an application that already holds data, and whether that path admits a
+    columnar source. ADR-0066's additive set covers new enums, entities, aggregates and
+    relationships confined to new entities; it does not admit adding a field to an existing
+    entity, so the most ordinary schema change in any database is currently a migration.
+  requirements: []
+  required_adrs: [ADR-0066, ADR-0076, ADR-0077, ADR-0078, ADR-0251]
+  allowed_paths: [work_packages.yaml, docs/**]
+  deliverables:
+  - A recorded answer to what a deployment that adds a field to an existing entity does
+    today, established by driving it rather than by reading the policy
+  - The same for a vector field, whose create binding must initialise the new field and so
+    fails before the compatibility policy is consulted
+  - Whether the offline migration path admits a columnar source, and if so at what point it
+    is registered, since ADR-0251 admits one only at deploy
+  - A decision record proposing whatever change the answer warrants, or a recorded finding
+    that migration is the intended and sufficient path
+  acceptance_commands:
+  - ./scripts/acceptance --wp WP-803
+  exit_gate: The supported path for adding a field to an application holding data is
+    recorded, driven rather than inferred, and a reader can tell whether adopting vector
+    search on a live application requires downtime.
+  standing_design_tests:
+    interface_safety: A deployment that cannot be served is refused where the operator
+      acted, never accepted and left to fail later.
+    scale: The answer holds for an application whose data is too large to rewrite in a
+      maintenance window, or the record says plainly that it does not.
+  human_review_triggers: *id001
