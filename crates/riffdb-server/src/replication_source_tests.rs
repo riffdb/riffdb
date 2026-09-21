@@ -5,8 +5,8 @@ use crate::replication_bootstrap::BootstrapSourceJobs;
 use crate::replication_publication::ReplicationPublication;
 use riffdb_service::{ReplicationItem, ReplicationPhase};
 use riffdb_storage_api::{
-    AuthoritativeStateCatalogV1, ChangelogFrameV3, ChangelogPublicationPort,
-    ReadableCapabilityDigestInventory, ReadableDigestKey, ReadableIdempotencyDigestInventory,
+    ChangelogFrameV3, ChangelogPublicationPort, ReadableCapabilityDigestInventory,
+    ReadableDigestKey, ReadableIdempotencyDigestInventory,
     ReplicationBootstrapManifestV1 as Manifest, ReplicationBootstrapPageV3 as Page,
     ReplicationBootstrapTranscriptV3, StartupValidationInputs,
 };
@@ -48,16 +48,17 @@ async fn production_source_bootstrap_resumes_exact_pages_and_attaches_to_retaine
         after_hash: [0; 32],
         after_frontier: DualFrontier::INITIAL,
         readable_format: ChangelogFrameV3::IDENTITY.to_owned(),
-        catalog_digest: AuthoritativeStateCatalogV1.digest(),
+        catalog_digest: history.lineage().catalog_digest(),
         maximum_frame_bytes: riffdb_storage_api::MAX_CHANGELOG_FRAME_BYTES as u64,
         maximum_transitions: riffdb_storage_api::MAX_STAGED_COMMANDS as u64,
     };
-    for changed in 0..3 {
+    for changed in 0..4 {
         let mut wrong = request.clone();
         match changed {
             0 => wrong.catalog_digest = [0; 32],
             1 => wrong.history_incarnation += 1,
-            _ => wrong.leadership_epoch += 1,
+            2 => wrong.leadership_epoch += 1,
+            _ => wrong.catalog_digest = riffdb_storage_api::AuthoritativeStateCatalogV1.digest(),
         }
         assert!(source.open(wrong).await.is_err());
         assert_eq!(std::fs::read_dir(&root).unwrap().count(), 1);
@@ -250,4 +251,83 @@ async fn production_source_bootstrap_resumes_exact_pages_and_attaches_to_retaine
         ))
     );
     assert_eq!(current_history(), advanced);
+}
+
+#[tokio::test]
+// req: REP-005
+async fn production_source_fence_evidence_refuses_active_missing_and_capacity_exhausted_sources() {
+    use riffdb_storage_api::PrimaryFenceRequestV1;
+    use riffdb_types::{
+        ReplicationFenceOperationId, ReplicationFollowerAuditTargetV1, ReplicationSourceHoldIdV1,
+        RequestId,
+    };
+    let (_scope, path) = crate::real_storage_support::temporary_database_scope("fence-source");
+    let key = ReadableDigestKey::v1(DigestKeyId::new(1).unwrap());
+    let startup = crate::startup::open_redb_startup(
+        &path,
+        StartupValidationInputs::new(
+            Timestamp::new(1000, 0).unwrap(),
+            ReadableCapabilityDigestInventory::new(vec![key]).unwrap(),
+            ReadableIdempotencyDigestInventory::new(vec![key]).unwrap(),
+        ),
+        &crate::identifiers::ProductionIdentifierSources::new().database_ids(),
+    )
+    .unwrap();
+    let (_, _, _, _, _, ports) = startup.into_parts();
+    let jobs = BootstrapSourceJobs::from_repository(
+        ports
+            .bootstrap_repository(&path.parent().unwrap().join("artifacts"))
+            .unwrap(),
+    );
+    let (publisher, publications) = ReplicationPublication::channel();
+    let pin = ports.published_changelog_snapshot_v3().unwrap();
+    let history = pin.authoritative_state_v3().unwrap().history();
+    let lineage = history.lineage();
+    let request = PrimaryFenceRequestV1::new(
+        RequestId::from_unix_milliseconds_and_random(1, [1; 10]).unwrap(),
+        ReplicationFenceOperationId::from_unix_milliseconds_and_random(1, [1; 10]).unwrap(),
+        ReplicationFollowerAuditTargetV1::new(
+            lineage.database_id(),
+            lineage.history_incarnation(),
+            lineage.leadership_epoch(),
+            ReplicationSourceHoldIdV1::new([1; 16]).unwrap(),
+        )
+        .unwrap(),
+        history.tail().sequence(),
+    );
+    let source = PublishedReplicationSource::new(publications, jobs);
+    assert_eq!(
+        source
+            .primary_fence_source_evidence(request, history.tail())
+            .await,
+        Err(ReplicationFailure::Unavailable)
+    );
+    publisher.observe_published_snapshot_v3(pin);
+    assert_eq!(
+        source
+            .primary_fence_source_evidence(request, history.tail())
+            .await,
+        Err(ReplicationFailure::Source(
+            riffdb_errors::ReplicationStreamErrorV3::InvalidPosition
+        ))
+    );
+    let permit = Arc::clone(&source.capacity)
+        .try_acquire_many_owned(MAX_STREAMS as u32)
+        .unwrap();
+    assert_eq!(
+        source
+            .primary_fence_source_evidence(request, history.tail())
+            .await,
+        Err(ReplicationFailure::Unavailable)
+    );
+    drop(permit);
+    publisher.observe_source_unavailable_v3();
+    assert_eq!(
+        source
+            .primary_fence_source_evidence(request, history.tail())
+            .await,
+        Err(ReplicationFailure::Source(
+            riffdb_errors::ReplicationStreamErrorV3::Unavailable
+        ))
+    );
 }

@@ -110,6 +110,7 @@ pub(crate) fn require_direct_attribution(
             | A::DirtyActivation
             | A::HistoryReclamation
             | A::ReplicationSourceHold
+            | A::PrimaryFence
     ) {
         return Err(storage_error(StorageErrorKind::InvariantViolation));
     }
@@ -233,8 +234,13 @@ impl CapturedImmediateWrite {
                 covered_frontier: frontier,
                 prior_history_hash: history.tail().history_hash(),
             };
-            let receipt = AuthoritativeTransactionV3::new(binding, self.source, mutations)
-                .map_err(value_error)?;
+            let receipt = AuthoritativeTransactionV3::new_for_catalog(
+                binding,
+                self.source,
+                mutations,
+                history.lineage().catalog_digest(),
+            )
+            .map_err(value_error)?;
             #[cfg(test)]
             crash_edge("mutations");
             PreparedHistoryAdvance::from_captured_predecessor(
@@ -342,6 +348,7 @@ impl PreparedHistoryAdvance {
     ) -> Result<Self, StorageError> {
         {
             let meta = transaction.open_table(META).map_err(table_error)?;
+            crate::primary_admission_roots::validate_write_receipt(&meta, history, receipt)?;
             for (namespace, expected) in [
                 (
                     N::ChangelogHistoryState,

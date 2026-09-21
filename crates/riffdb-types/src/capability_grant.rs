@@ -122,6 +122,8 @@ pub enum CapabilityPermissionKindV1 {
     InspectVectorState,
     /// Replicate complete authoritative changelog bytes; administrative only.
     ReplicateChangelog,
+    /// Durably fence a primary for one registered follower; administrative only.
+    FenceReplicationPrimary,
 }
 
 impl CapabilityPermissionKindV1 {
@@ -162,6 +164,7 @@ impl CapabilityPermissionKindV1 {
             Self::InstallApplication => 0x1f,
             Self::InspectVectorState => 0x20,
             Self::ReplicateChangelog => 0x21,
+            Self::FenceReplicationPrimary => 0x22,
         }
     }
 
@@ -202,6 +205,7 @@ impl CapabilityPermissionKindV1 {
             0x1f => Some(Self::InstallApplication),
             0x20 => Some(Self::InspectVectorState),
             0x21 => Some(Self::ReplicateChangelog),
+            0x22 => Some(Self::FenceReplicationPrimary),
             _ => None,
         }
     }
@@ -1263,9 +1267,10 @@ impl CapabilityGrantV1 {
         {
             return Err(CapabilityGrantError::LimitExceeded);
         }
-        // Replication contains the complete unredacted database. A scoped or
-        // role-derived capability cannot carry this administrative authority.
-        if permissions.contains_kind(CapabilityPermissionKindV1::ReplicateChangelog)
+        // Replication and source fencing are database-wide administrative
+        // authority. Neither may be scoped or derived from an application role.
+        if (permissions.contains_kind(CapabilityPermissionKindV1::ReplicateChangelog)
+            || permissions.contains_kind(CapabilityPermissionKindV1::FenceReplicationPrimary))
             && (tenant_scope != TenantScope::Global
                 || partition_scope != PartitionScopeV1::All
                 || permissions.contains_kind(CapabilityPermissionKindV1::ApplicationRoleIdentity))
@@ -1802,12 +1807,12 @@ mod tests {
 
     #[test]
     fn permission_tags_are_closed_and_stable() {
-        for tag in 1..=33 {
+        for tag in 1..=34 {
             let kind = CapabilityPermissionKindV1::from_tag(tag).expect("known tag");
             assert_eq!(kind.tag(), tag);
         }
         assert_eq!(CapabilityPermissionKindV1::from_tag(0), None);
-        assert_eq!(CapabilityPermissionKindV1::from_tag(34), None);
+        assert_eq!(CapabilityPermissionKindV1::from_tag(35), None);
     }
 
     #[test]

@@ -1186,6 +1186,10 @@ impl CapabilityBootstrapIntentV1 {
                 .grant
                 .permissions()
                 .contains_kind(CapabilityPermissionKindV1::ReplicateChangelog)
+            || requested
+                .grant
+                .permissions()
+                .contains_kind(CapabilityPermissionKindV1::FenceReplicationPrimary)
             || !requested
                 .grant
                 .permissions()

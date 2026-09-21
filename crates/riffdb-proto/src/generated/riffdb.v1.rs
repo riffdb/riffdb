@@ -150,7 +150,7 @@ pub struct ReactiveOperationPermission {
 pub struct CapabilityPermission {
     #[prost(
         oneof = "capability_permission::Permission",
-        tags = "1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33"
+        tags = "1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34"
     )]
     pub permission: ::core::option::Option<capability_permission::Permission>,
 }
@@ -224,6 +224,8 @@ pub mod capability_permission {
         InspectVectorState(super::Unit),
         #[prost(message, tag = "33")]
         ReplicateChangelog(super::Unit),
+        #[prost(message, tag = "34")]
+        FenceReplicationPrimary(super::Unit),
     }
 }
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
@@ -1360,6 +1362,7 @@ pub enum CapabilityPermissionKind {
     InstallApplication = 31,
     InspectVectorState = 32,
     ReplicateChangelog = 33,
+    FenceReplicationPrimary = 34,
 }
 impl CapabilityPermissionKind {
     /// String value of the enum field names used in the ProtoBuf definition.
@@ -1412,6 +1415,9 @@ impl CapabilityPermissionKind {
             Self::InstallApplication => "CAPABILITY_PERMISSION_KIND_INSTALL_APPLICATION",
             Self::InspectVectorState => "CAPABILITY_PERMISSION_KIND_INSPECT_VECTOR_STATE",
             Self::ReplicateChangelog => "CAPABILITY_PERMISSION_KIND_REPLICATE_CHANGELOG",
+            Self::FenceReplicationPrimary => {
+                "CAPABILITY_PERMISSION_KIND_FENCE_REPLICATION_PRIMARY"
+            }
         }
     }
     /// Creates an enum from field names used in the ProtoBuf definition.
@@ -1486,6 +1492,9 @@ impl CapabilityPermissionKind {
             }
             "CAPABILITY_PERMISSION_KIND_REPLICATE_CHANGELOG" => {
                 Some(Self::ReplicateChangelog)
+            }
+            "CAPABILITY_PERMISSION_KIND_FENCE_REPLICATION_PRIMARY" => {
+                Some(Self::FenceReplicationPrimary)
             }
             _ => None,
         }
@@ -4392,6 +4401,7 @@ pub enum PublicErrorKind {
     HistoryPruned = 12,
     Overloaded = 11,
     FollowerMode = 13,
+    PrimaryFenced = 14,
 }
 impl PublicErrorKind {
     /// String value of the enum field names used in the ProtoBuf definition.
@@ -4418,6 +4428,7 @@ impl PublicErrorKind {
             Self::HistoryPruned => "PUBLIC_ERROR_KIND_HISTORY_PRUNED",
             Self::Overloaded => "PUBLIC_ERROR_KIND_OVERLOADED",
             Self::FollowerMode => "PUBLIC_ERROR_KIND_FOLLOWER_MODE",
+            Self::PrimaryFenced => "PUBLIC_ERROR_KIND_PRIMARY_FENCED",
         }
     }
     /// Creates an enum from field names used in the ProtoBuf definition.
@@ -4443,6 +4454,7 @@ impl PublicErrorKind {
             "PUBLIC_ERROR_KIND_HISTORY_PRUNED" => Some(Self::HistoryPruned),
             "PUBLIC_ERROR_KIND_OVERLOADED" => Some(Self::Overloaded),
             "PUBLIC_ERROR_KIND_FOLLOWER_MODE" => Some(Self::FollowerMode),
+            "PUBLIC_ERROR_KIND_PRIMARY_FENCED" => Some(Self::PrimaryFenced),
             _ => None,
         }
     }
@@ -5875,6 +5887,30 @@ pub struct ReplicationBootstrapAttachment {
     pub acknowledged: ::core::option::Option<ReplicationPosition>,
 }
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct ReplicationFenceEvidenceRequest {
+    #[prost(bytes = "vec", tag = "1")]
+    pub operation_id: ::prost::alloc::vec::Vec<u8>,
+    #[prost(bytes = "vec", tag = "2")]
+    pub hold_id: ::prost::alloc::vec::Vec<u8>,
+    #[prost(uint64, tag = "3")]
+    pub registration_generation: u64,
+    #[prost(message, optional, tag = "4")]
+    pub applied: ::core::option::Option<ReplicationPosition>,
+}
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct ReplicationFenceEvidence {
+    #[prost(bytes = "vec", tag = "1")]
+    pub fence_record: ::prost::alloc::vec::Vec<u8>,
+    #[prost(message, optional, tag = "2")]
+    pub applied: ::core::option::Option<ReplicationPosition>,
+    #[prost(message, optional, tag = "3")]
+    pub anchor: ::core::option::Option<ReplicationPosition>,
+    #[prost(message, optional, tag = "4")]
+    pub tail: ::core::option::Option<ReplicationPosition>,
+    #[prost(message, optional, tag = "5")]
+    pub minimum_resume: ::core::option::Option<ReplicationPosition>,
+}
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct StreamChangelogRequest {
     #[prost(bytes = "vec", tag = "1")]
     pub request_id: ::prost::alloc::vec::Vec<u8>,
@@ -5900,6 +5936,8 @@ pub struct StreamChangelogRequest {
     pub attachment: ::core::option::Option<ReplicationBootstrapAttachment>,
     #[prost(bytes = "vec", tag = "12")]
     pub follower_hold_id: ::prost::alloc::vec::Vec<u8>,
+    #[prost(message, optional, tag = "13")]
+    pub fence_evidence: ::core::option::Option<ReplicationFenceEvidenceRequest>,
 }
 #[derive(Clone, Copy, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct ReplicationSourceHead {
@@ -5914,7 +5952,7 @@ pub struct ReplicationSourceHead {
 pub struct StreamChangelogResponse {
     #[prost(message, optional, tag = "5")]
     pub source_head: ::core::option::Option<ReplicationSourceHead>,
-    #[prost(oneof = "stream_changelog_response::Item", tags = "1, 2, 3, 4")]
+    #[prost(oneof = "stream_changelog_response::Item", tags = "1, 2, 3, 4, 6")]
     pub item: ::core::option::Option<stream_changelog_response::Item>,
 }
 /// Nested message and enum types in `StreamChangelogResponse`.
@@ -5929,6 +5967,8 @@ pub mod stream_changelog_response {
         BootstrapManifest(::prost::alloc::vec::Vec<u8>),
         #[prost(bytes, tag = "4")]
         BootstrapPage(::prost::alloc::vec::Vec<u8>),
+        #[prost(message, tag = "6")]
+        FenceEvidence(super::ReplicationFenceEvidence),
     }
 }
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
@@ -6000,6 +6040,86 @@ pub mod retire_follower_response {
         #[prost(enumeration = "super::FollowerAdministrationRefusal", tag = "2")]
         Refusal(i32),
     }
+}
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct FenceReplicationPrimaryRequest {
+    #[prost(bytes = "vec", tag = "1")]
+    pub request_id: ::prost::alloc::vec::Vec<u8>,
+    #[prost(bytes = "vec", tag = "2")]
+    pub operation_id: ::prost::alloc::vec::Vec<u8>,
+    #[prost(message, optional, tag = "3")]
+    pub target: ::core::option::Option<ReplicationFollowerTarget>,
+    #[prost(uint64, tag = "4")]
+    pub registration_generation: u64,
+}
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct PrimaryFenceReceipt {
+    #[prost(bytes = "vec", tag = "1")]
+    pub operation_id: ::prost::alloc::vec::Vec<u8>,
+    #[prost(message, optional, tag = "2")]
+    pub target: ::core::option::Option<ReplicationFollowerTarget>,
+    #[prost(uint64, tag = "3")]
+    pub registration_generation: u64,
+    #[prost(uint64, tag = "4")]
+    pub administration_sequence: u64,
+    #[prost(message, optional, tag = "5")]
+    pub final_application_frontier: ::core::option::Option<FrontierPosition>,
+    #[prost(bool, tag = "6")]
+    pub replayed: bool,
+}
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct FenceReplicationPrimaryResponse {
+    #[prost(oneof = "fence_replication_primary_response::Result", tags = "1, 2")]
+    pub result: ::core::option::Option<fence_replication_primary_response::Result>,
+}
+/// Nested message and enum types in `FenceReplicationPrimaryResponse`.
+pub mod fence_replication_primary_response {
+    #[derive(Clone, PartialEq, Eq, Hash, ::prost::Oneof)]
+    pub enum Result {
+        #[prost(message, tag = "1")]
+        Receipt(super::PrimaryFenceReceipt),
+        #[prost(enumeration = "super::PrimaryFenceRefusal", tag = "2")]
+        Refusal(i32),
+    }
+}
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct PromoteFollowerRequest {
+    #[prost(bytes = "vec", tag = "1")]
+    pub request_id: ::prost::alloc::vec::Vec<u8>,
+    #[prost(bytes = "vec", tag = "2")]
+    pub operation_id: ::prost::alloc::vec::Vec<u8>,
+    #[prost(bytes = "vec", tag = "3")]
+    pub fence_operation_id: ::prost::alloc::vec::Vec<u8>,
+    #[prost(message, optional, tag = "4")]
+    pub target: ::core::option::Option<ReplicationFollowerTarget>,
+    #[prost(uint64, tag = "5")]
+    pub registration_generation: u64,
+}
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct FollowerPromotionReceipt {
+    #[prost(bytes = "vec", tag = "1")]
+    pub operation_id: ::prost::alloc::vec::Vec<u8>,
+    #[prost(message, optional, tag = "2")]
+    pub target: ::core::option::Option<ReplicationFollowerTarget>,
+    #[prost(uint64, tag = "3")]
+    pub registration_generation: u64,
+    #[prost(uint64, tag = "4")]
+    pub administration_sequence: u64,
+    #[prost(message, optional, tag = "5")]
+    pub applied_application_frontier: ::core::option::Option<FrontierPosition>,
+    #[prost(uint64, tag = "6")]
+    pub history_incarnation: u64,
+    #[prost(uint64, tag = "7")]
+    pub leadership_epoch: u64,
+    #[prost(uint64, tag = "8")]
+    pub application_rpo: u64,
+    #[prost(bool, tag = "9")]
+    pub replayed: bool,
+}
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct PromoteFollowerResponse {
+    #[prost(message, optional, tag = "1")]
+    pub receipt: ::core::option::Option<FollowerPromotionReceipt>,
 }
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, ::prost::Enumeration)]
 #[repr(i32)]
@@ -6102,6 +6222,42 @@ impl FollowerAdministrationRefusal {
             "FOLLOWER_ADMINISTRATION_REFUSAL_CAPACITY_EXHAUSTED" => {
                 Some(Self::CapacityExhausted)
             }
+            _ => None,
+        }
+    }
+}
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, ::prost::Enumeration)]
+#[repr(i32)]
+pub enum PrimaryFenceRefusal {
+    Unspecified = 0,
+    LineageMismatch = 1,
+    RegistrationMissingOrStale = 2,
+    FenceConflict = 3,
+}
+impl PrimaryFenceRefusal {
+    /// String value of the enum field names used in the ProtoBuf definition.
+    ///
+    /// The values are not transformed in any way and thus are considered stable
+    /// (if the ProtoBuf definition does not change) and safe for programmatic use.
+    pub fn as_str_name(&self) -> &'static str {
+        match self {
+            Self::Unspecified => "PRIMARY_FENCE_REFUSAL_UNSPECIFIED",
+            Self::LineageMismatch => "PRIMARY_FENCE_REFUSAL_LINEAGE_MISMATCH",
+            Self::RegistrationMissingOrStale => {
+                "PRIMARY_FENCE_REFUSAL_REGISTRATION_MISSING_OR_STALE"
+            }
+            Self::FenceConflict => "PRIMARY_FENCE_REFUSAL_FENCE_CONFLICT",
+        }
+    }
+    /// Creates an enum from field names used in the ProtoBuf definition.
+    pub fn from_str_name(value: &str) -> ::core::option::Option<Self> {
+        match value {
+            "PRIMARY_FENCE_REFUSAL_UNSPECIFIED" => Some(Self::Unspecified),
+            "PRIMARY_FENCE_REFUSAL_LINEAGE_MISMATCH" => Some(Self::LineageMismatch),
+            "PRIMARY_FENCE_REFUSAL_REGISTRATION_MISSING_OR_STALE" => {
+                Some(Self::RegistrationMissingOrStale)
+            }
+            "PRIMARY_FENCE_REFUSAL_FENCE_CONFLICT" => Some(Self::FenceConflict),
             _ => None,
         }
     }

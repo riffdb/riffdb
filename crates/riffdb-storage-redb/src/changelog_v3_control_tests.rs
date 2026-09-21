@@ -4,9 +4,9 @@
 
 use redb::{ReadableDatabase, ReadableTable};
 use riffdb_storage_api::{
-    ChangelogAttributionV3, ChangelogHistoryStateV3, ChangelogLineageV3,
-    DatabaseInitializationPort, LeadershipEpochV1, ReplicationSourceHoldIdV1,
-    ReplicationSourceHoldKindV1 as Kind, ReplicationSourceHoldV1 as Hold,
+    ChangelogAttributionV3, ChangelogHistoryStateV3, ChangelogLineageV3, LeadershipEpochV1,
+    ReplicationSourceHoldIdV1, ReplicationSourceHoldKindV1 as Kind,
+    ReplicationSourceHoldV1 as Hold,
 };
 use riffdb_types::{DatabaseId, DualFrontier};
 
@@ -55,7 +55,7 @@ fn initialize(path: &std::path::Path) -> (RedbOperationalPorts, Vec<ChangelogHis
     let mut store = RedbStore::open(path).unwrap();
     let database =
         DatabaseId::from_unix_milliseconds_and_random(1_700_000_000_000, [0x73; 10]).unwrap();
-    store.initialize_database(database).unwrap();
+    store.initialize_legacy_fixture(database).unwrap();
     let mut transaction = store.shared.database.begin_write().unwrap();
     let anchor = crate::changelog_v3_activation::stage_validated(
         &mut transaction,

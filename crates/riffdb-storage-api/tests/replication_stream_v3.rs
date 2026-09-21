@@ -132,6 +132,58 @@ fn handshake(after: ChangelogHistoryPointV3) -> ReplicationHandshakeV3 {
 }
 
 #[test]
+fn stream_refuses_catalog_substitution_at_open_and_on_later_pins() {
+    let v1 = snapshot(3);
+    let mut v2 = snapshot(3);
+    let lineage = ChangelogLineageV3::new_with_catalog(
+        lineage().database_id(),
+        1,
+        LeadershipEpochV1::initial(),
+        AuthoritativeStateCatalogV2.digest(),
+    )
+    .unwrap();
+    v2.history = ChangelogHistoryStateV3::new(
+        lineage,
+        v2.history.anchor(),
+        v2.history.tail(),
+        v2.history.minimum_resume(),
+    )
+    .unwrap();
+    let handshake = ReplicationHandshakeV3::new(
+        lineage,
+        anchor(),
+        ChangelogFrameV3::IDENTITY,
+        lineage.catalog_digest(),
+        MAX_CHANGELOG_FRAME_BYTES as u64,
+        MAX_STAGED_COMMANDS as u64,
+    )
+    .unwrap();
+    assert!(matches!(
+        ChangelogFrameCursorV3::open(&v1, handshake),
+        Err(ReplicationStreamErrorV3::UnsupportedCatalog)
+    ));
+    let mut stream = ChangelogFrameCursorV3::open(&v2, handshake).unwrap();
+    let emitted = stream.next_frame().unwrap().unwrap();
+    assert_eq!(
+        ChangelogFrameV3::decode(emitted.as_bytes())
+            .unwrap()
+            .binding()
+            .catalog_digest(),
+        lineage.catalog_digest()
+    );
+    let before = stream.position();
+    assert_eq!(
+        stream.advance_snapshot(&v1),
+        Err(ReplicationStreamErrorV3::UnsupportedCatalog)
+    );
+    assert_eq!(stream.position(), before);
+    assert!(matches!(
+        stream.next_frame(),
+        Err(ReplicationStreamErrorV3::UnsupportedCatalog)
+    ));
+}
+
+#[test]
 // req: REP-004
 fn published_head_is_independent_of_emission_and_unavailable_after_stream_failure() {
     let first = snapshot(3);

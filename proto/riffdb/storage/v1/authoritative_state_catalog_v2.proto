@@ -1,0 +1,9 @@
+syntax = "proto3";
+
+package riffdb.storage.v1;
+
+// WP-748's closed fencing catalog. The V1 record retains its original binding.
+// This record alone cannot activate a source or infer missing admission state.
+message StoredAuthoritativeStateCatalogV2 {
+  bytes catalog_digest = 1;
+}

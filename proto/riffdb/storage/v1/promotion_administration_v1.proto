@@ -1,0 +1,30 @@
+syntax = "proto3";
+package riffdb.storage.v1;
+import "riffdb/storage/v1/common.proto";
+import "riffdb/storage/v1/audit.proto";
+import "riffdb/storage/v1/primary_fence_v1.proto";
+import "riffdb/storage/v1/changelog_history_state_v3.proto";
+
+// SPEC 13.5: complete cutover administration, tag 78/revision 1, at most 8192
+// payload bytes. The embedded attempt ends at CutoverPending. Actual source
+// validation and terminal external publication require exact reconciliation.
+message StoredPromotionAdministrationV1 {
+  uint64 administration_sequence = 1;
+  TimestampV1 timestamp = 2;
+  bytes promotion_operation_id = 3;
+  bytes request_id = 4;
+  AuditPrincipalV1 principal = 5;
+  optional string approval_id = 6;
+  TimestampV1 attempted_at = 7;
+  StoredPrimaryFenceAdministrationV1 fence = 8;
+  StoredChangelogHistoryStateV3.Position applied = 9;
+  StoredChangelogHistoryStateV3 source_history = 10;
+  uint64 published_incarnation = 11;
+  uint64 published_epoch = 12;
+  uint64 application_rpo = 13;
+  // At most 16 bytes. Closed tags: Attempted=1, Draining=2, Offline=3,
+  // Selected=4, CutoverPending=5, uncertain storage=129, uncertain validation=130.
+  // These are this record's encoding, not an external receipt envelope.
+  bytes attempt_steps = 14;
+  ServiceIngressKindV1 ingress = 15;
+}

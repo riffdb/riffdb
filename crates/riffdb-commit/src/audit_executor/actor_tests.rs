@@ -1245,7 +1245,7 @@ impl riffdb_storage_api::DeferredServiceAuditFence for ControlledAuditFence {
 fn completion_test_lifecycle() -> ActorLifecyclePublisher {
     ActorLifecyclePublisher {
         lifecycle: Arc::new(AtomicU8::new(LIFECYCLE_ACCEPTING)),
-        submission_gate: Arc::new(SubmissionGate::new()),
+        submission_gate: Arc::new(SubmissionGate::new(PrimaryAdmissionGate::new())),
     }
 }
 
@@ -1883,3 +1883,9 @@ fn parked_reserve_capacity_waiter_wins_a_released_permit_over_try_reserve() {
     waiter.join().expect("waiter");
     running.shutdown().expect("shutdown");
 }
+
+#[path = "../primary_admission_actor_tests.rs"]
+mod primary_admission;
+
+#[path = "../primary_fence_actor_tests.rs"]
+mod primary_fence_queue;

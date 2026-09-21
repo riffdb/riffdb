@@ -28,6 +28,25 @@ message ReplicationBootstrapAttachment {
   ReplicationPosition acknowledged = 2;
 }
 
+// Exact source-fence observation; it does not acknowledge or change retention.
+message ReplicationFenceEvidenceRequest {
+  bytes operation_id = 1;
+  bytes hold_id = 2;
+  uint64 registration_generation = 3;
+  ReplicationPosition applied = 4;
+}
+
+// Existing canonical fence record plus exact positions from one source snapshot.
+// Encoded evidence, including unknown fields, is bounded to 2048 bytes. Decoding
+// these bytes does not authenticate their origin or authorize promotion.
+message ReplicationFenceEvidence {
+  bytes fence_record = 1;
+  ReplicationPosition applied = 2;
+  ReplicationPosition anchor = 3;
+  ReplicationPosition tail = 4;
+  ReplicationPosition minimum_resume = 5;
+}
+
 // Administrative-only negotiation. No application role or bootstrap credential
 // authorizes this RPC. Source bytes require a confidential transport connection.
 message StreamChangelogRequest {
@@ -40,7 +59,7 @@ message StreamChangelogRequest {
   ReplicationPosition after = 7;
   uint64 maximum_frame_bytes = 8;
   uint64 maximum_transitions = 9;
-  // Exactly one of after, bootstrap, and attachment is required.
+  // Exactly one of after, bootstrap, attachment, and fence_evidence is required.
   ReplicationBootstrapRequest bootstrap = 10;
   ReplicationBootstrapAttachment attachment = 11;
   // Optional only with after: that position is an already-durable local
@@ -48,6 +67,7 @@ message StreamChangelogRequest {
   // tail resume. A nonempty value is exactly 16 bytes, not all zero and cannot
   // register an absent hold, rewind it, or cross a lineage fence.
   bytes follower_hold_id = 12;
+  ReplicationFenceEvidenceRequest fence_evidence = 13;
 }
 
 enum ReplicationRefusal {
@@ -85,6 +105,8 @@ message StreamChangelogResponse {
     // One complete bootstrap page, at most 32 MiB + 512 bytes. After the
     // manifest's final page the stream ends; attachment needs a new request.
     bytes bootstrap_page = 4;
+    // Exactly one evidence item then EOF; no frames or pages on this phase.
+    ReplicationFenceEvidence fence_evidence = 6;
   }
   // Optional only on a frame. Durable V3 frame bytes are unchanged.
   ReplicationSourceHead source_head = 5;
@@ -139,4 +161,65 @@ message RetireFollowerResponse {
     FollowerAdministrationReceipt receipt = 1;
     FollowerAdministrationRefusal refusal = 2;
   }
+}
+
+// Explicit operator request. No caller-selected final sequence or proof is accepted.
+message FenceReplicationPrimaryRequest {
+  bytes request_id = 1;
+  bytes operation_id = 2;
+  ReplicationFollowerTarget target = 3;
+  uint64 registration_generation = 4;
+}
+
+// Summary of a durable fence; serialized bytes are not authenticated promotion proof.
+message PrimaryFenceReceipt {
+  bytes operation_id = 1;
+  ReplicationFollowerTarget target = 2;
+  uint64 registration_generation = 3;
+  uint64 administration_sequence = 4;
+  FrontierPosition final_application_frontier = 5;
+  bool replayed = 6;
+}
+
+enum PrimaryFenceRefusal {
+  PRIMARY_FENCE_REFUSAL_UNSPECIFIED = 0;
+  PRIMARY_FENCE_REFUSAL_LINEAGE_MISMATCH = 1;
+  PRIMARY_FENCE_REFUSAL_REGISTRATION_MISSING_OR_STALE = 2;
+  PRIMARY_FENCE_REFUSAL_FENCE_CONFLICT = 3;
+}
+
+message FenceReplicationPrimaryResponse {
+  oneof result {
+    PrimaryFenceReceipt receipt = 1;
+    PrimaryFenceRefusal refusal = 2;
+  }
+}
+
+// Operator selection only. The configured peer supplies authenticated fencing;
+// the drained follower determines both successor counters and the applied prefix.
+// Schema registration does not enable an RPC until the lifecycle owner is joined.
+message PromoteFollowerRequest {
+  bytes request_id = 1;
+  bytes operation_id = 2;
+  bytes fence_operation_id = 3;
+  ReplicationFollowerTarget target = 4;
+  uint64 registration_generation = 5;
+}
+
+// Bounded summary, released only after ordinary source validation and exact
+// external receipt reconciliation. It is never fencing or readiness authority.
+message FollowerPromotionReceipt {
+  bytes operation_id = 1;
+  ReplicationFollowerTarget target = 2;
+  uint64 registration_generation = 3;
+  uint64 administration_sequence = 4;
+  FrontierPosition applied_application_frontier = 5;
+  uint64 history_incarnation = 6;
+  uint64 leadership_epoch = 7;
+  uint64 application_rpo = 8;
+  bool replayed = 9;
+}
+
+message PromoteFollowerResponse {
+  FollowerPromotionReceipt receipt = 1;
 }

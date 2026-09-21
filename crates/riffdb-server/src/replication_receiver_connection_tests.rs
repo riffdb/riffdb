@@ -53,7 +53,7 @@ async fn receiver_connection_recovers_exact_durable_pages_and_requires_source_eo
         after_hash: [0; 32],
         after_frontier: DualFrontier::INITIAL,
         readable_format: ChangelogFrameV3::IDENTITY.to_owned(),
-        catalog_digest: AuthoritativeStateCatalogV1.digest(),
+        catalog_digest: history.lineage().catalog_digest(),
         maximum_frame_bytes: riffdb_storage_api::MAX_CHANGELOG_FRAME_BYTES as u64,
         maximum_transitions: riffdb_storage_api::MAX_STAGED_COMMANDS as u64,
     };
@@ -201,6 +201,19 @@ fn wire_fixture() -> (Manifest, Vec<u8>, ReplicationRequest) {
         maximum_transitions: riffdb_storage_api::MAX_STAGED_COMMANDS as u64,
     };
     (manifest, page, request)
+}
+
+#[test]
+fn receiver_manifest_refuses_another_supported_catalog_with_matching_source_coordinates() {
+    let (manifest, _, mut request) = wire_fixture();
+    super::connection::validate_manifest(&request, manifest).unwrap();
+    request.catalog_digest = riffdb_storage_api::AuthoritativeStateCatalogV2.digest();
+    assert_eq!(
+        super::connection::validate_manifest(&request, manifest),
+        Err(Failure::Source(
+            riffdb_errors::ReplicationStreamErrorV3::UnsupportedCatalog
+        ))
+    );
 }
 
 #[tokio::test]

@@ -310,6 +310,7 @@ const fn code_for_application(code: ApplicationErrorCode) -> Code {
         | ApplicationErrorCode::CommandExecutionFailed
         | ApplicationErrorCode::HistoryIncarnationMismatch
         | ApplicationErrorCode::FollowerMode
+        | ApplicationErrorCode::PrimaryFenced
         | ApplicationErrorCode::HistoryPruned
         | ApplicationErrorCode::ProjectionDiverged
         | ApplicationErrorCode::SnapshotRetired

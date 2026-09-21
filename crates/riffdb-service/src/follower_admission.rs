@@ -74,7 +74,10 @@ fn requires_primary(operation: ServiceOperationV1) -> bool {
         | GetApplicationReimport
         | CancelApplicationReimport
         | RegisterFollower
-        | RetireFollower => true,
+        | RetireFollower
+        | FenceReplicationPrimary
+        | StreamChangelog
+        | PromoteFollower => true,
     }
 }
 
@@ -124,6 +127,11 @@ mod tests {
             ApplyApplicationReimportPage,
             GetApplicationReimport,
             CancelApplicationReimport,
+            RegisterFollower,
+            RetireFollower,
+            FenceReplicationPrimary,
+            StreamChangelog,
+            PromoteFollower,
         ] {
             assert_eq!(
                 follower

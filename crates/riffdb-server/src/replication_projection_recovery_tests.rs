@@ -377,7 +377,7 @@ fn exercise_recovery(crash: Option<&str>, mode: ReplayMode) {
             history.lineage(),
             manifest.fence().history().tail(),
             ChangelogFrameV3::IDENTITY,
-            AuthoritativeStateCatalogV1.digest(),
+            history.lineage().catalog_digest(),
             MAX_CHANGELOG_FRAME_BYTES as u64,
             MAX_STAGED_COMMANDS as u64,
         )
@@ -546,10 +546,11 @@ impl riffdb_service::ReplicationSourcePort for SnapshotPeer {
         request: riffdb_service::ReplicationRequest,
     ) -> riffdb_service::ReplicationFuture<'_, Box<dyn riffdb_service::ReplicationItemSource>> {
         Box::pin(async move {
-            let lineage = ChangelogLineageV3::new(
+            let lineage = ChangelogLineageV3::new_with_catalog(
                 request.database_id,
                 request.history_incarnation,
                 LeadershipEpochV1::new(request.leadership_epoch).unwrap(),
+                request.catalog_digest,
             )
             .unwrap();
             let after = ChangelogHistoryPointV3::new(

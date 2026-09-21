@@ -33,6 +33,7 @@ mod initialization;
 mod migration;
 mod notification;
 mod outcome;
+mod primary_admission_gate;
 mod provenance;
 mod read_only_execution;
 mod read_only_preparation;
@@ -52,9 +53,9 @@ pub use audit_executor::{
     CommandIdempotencyInspector, ControlPlaneExecutionAdmissionError,
     ControlPlaneExecutionCapacityPermit, ControlPlaneExecutor, CoordinatorLifecycleState,
     CoordinatorShutdownError, CoordinatorStartError, CoordinatorWorkloadCapacity,
-    QueryModuleDeploymentReceipt, ReactiveModulePublicationReceipt, ReadOnlyExecutionReceipt,
-    ReplicationAdministrationReceipt, ReplicationRegistrationMaintenanceReceipt,
-    RunningCommandCoordinator,
+    PrimaryFenceReceipt, QueryModuleDeploymentReceipt, ReactiveModulePublicationReceipt,
+    ReadOnlyExecutionReceipt, ReplicationAdministrationReceipt,
+    ReplicationRegistrationMaintenanceReceipt, RunningCommandCoordinator,
 };
 pub use clock::{
     AdministrationClock, AdministrationClockError, AdmissionClock, AdmissionClockError,
@@ -67,6 +68,10 @@ pub use command_preparation::{
     CommandCancellationHandle, CommandExecutionPreparation, CommandExecutionPreparationError,
     CommandRequestControl, PostEvaluationAuthorizationError, PostEvaluationCommandAuthorizer,
     queued_preparation_units,
+};
+pub use control_plane::primary_fence::{
+    PrimaryFenceExecutionResult, PrimaryFenceOutcome, PrimaryFenceRefusal,
+    PrimaryFenceResultReceipt,
 };
 pub use control_plane::{
     ActivatedCatalog, ActivatedQueryModule, CapabilityBootstrapCompletion,

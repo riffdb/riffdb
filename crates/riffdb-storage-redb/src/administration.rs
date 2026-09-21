@@ -2265,6 +2265,16 @@ fn service_link_is_valid(
                 (operation, StoredAdministrationAuditRecordV1::Replication(record)) => {
                     record.matches_service_result(operation, intent.targets())
                 }
+                (operation, StoredAdministrationAuditRecordV1::Promotion(record)) => {
+                    record.matches_service_result(operation, intent.targets())
+                }
+                (operation, StoredAdministrationAuditRecordV1::PrimaryFence(record)) => record
+                    .matches_service_result(
+                        operation,
+                        intent.targets(),
+                        intent.principal(),
+                        intent.approval_id(),
+                    ),
                 (
                     ServiceOperationV1::DeployContract,
                     StoredAdministrationAuditRecordV1::Catalog(_),
@@ -2388,6 +2398,16 @@ fn service_link_is_valid_access(
                 (operation, StoredAdministrationAuditRecordV1::Replication(record)) => {
                     record.matches_service_result(operation, intent.targets())
                 }
+                (operation, StoredAdministrationAuditRecordV1::Promotion(record)) => {
+                    record.matches_service_result(operation, intent.targets())
+                }
+                (operation, StoredAdministrationAuditRecordV1::PrimaryFence(record)) => record
+                    .matches_service_result(
+                        operation,
+                        intent.targets(),
+                        intent.principal(),
+                        intent.approval_id(),
+                    ),
                 (
                     ServiceOperationV1::DeployContract,
                     StoredAdministrationAuditRecordV1::Catalog(_),
@@ -3902,6 +3922,9 @@ fn bootstrap_replay(
 
 #[cfg(test)]
 mod tests {
+    mod fenced_runtime {
+        include!("primary_fenced_runtime_tests.rs");
+    }
     mod audit_generations {
         include!("service_audit_generation_tests.rs");
     }
@@ -4011,12 +4034,22 @@ mod tests {
     }
 
     fn initialized_ports(label: &str) -> (TestPath, RedbOperationalPorts) {
+        initialized_ports_for_fixture(label, false)
+    }
+
+    fn initialized_ports_for_fixture(
+        label: &str,
+        legacy: bool,
+    ) -> (TestPath, RedbOperationalPorts) {
         let path = TestPath::new(label);
         let mut store = RedbStore::open(&path.0).expect("open test database");
         assert_eq!(
-            store
-                .initialize_database(database_id())
-                .expect("initialize test database"),
+            if legacy {
+                store.initialize_legacy_fixture(database_id())
+            } else {
+                store.initialize_database(database_id())
+            }
+            .expect("initialize test database"),
             DatabaseInitializationResult::Installed(database_id())
         );
         let dormant = crate::store::RedbDormantPorts {
@@ -4219,7 +4252,7 @@ mod tests {
         let mut store =
             RedbStore::open_with_commit_profile(&path.0, crate::store::RedbCommitProfile::Hardened)
                 .unwrap();
-        store.initialize_database(database_id()).unwrap();
+        store.initialize_legacy_fixture(database_id()).unwrap();
         let anchor = crate::changelog_v3_activation::activate_validated(
             store.shared.database.begin_write().unwrap(),
             riffdb_storage_api::ChangelogLineageV3::new(
@@ -4329,7 +4362,7 @@ mod tests {
     fn direct_capture_abort_restores_drained_journal_source_before_exact_retry() {
         let path = TestPath::new("v3-direct-abort-drained-source");
         let mut store = RedbStore::open(&path.0).unwrap();
-        store.initialize_database(database_id()).unwrap();
+        store.initialize_legacy_fixture(database_id()).unwrap();
         let anchor = crate::changelog_v3_activation::activate_validated(
             store.shared.database.begin_write().unwrap(),
             riffdb_storage_api::ChangelogLineageV3::new(
@@ -4469,7 +4502,7 @@ mod tests {
         let mut store =
             RedbStore::open_with_commit_profile(path, crate::store::RedbCommitProfile::Hardened)
                 .unwrap();
-        store.initialize_database(database_id()).unwrap();
+        store.initialize_legacy_fixture(database_id()).unwrap();
         crate::changelog_v3_activation::activate_validated(
             store.shared.database.begin_write().unwrap(),
             riffdb_storage_api::ChangelogLineageV3::new(
@@ -4561,7 +4594,7 @@ mod tests {
     fn submitted_service_audit_allocates_one_v3_source_before_publication() {
         let path = TestPath::new("v3-real-service-audit-source");
         let mut store = RedbStore::open(&path.0).unwrap();
-        store.initialize_database(database_id()).unwrap();
+        store.initialize_legacy_fixture(database_id()).unwrap();
         let history = crate::changelog_v3_activation::activate_validated(
             store.shared.database.begin_write().unwrap(),
             riffdb_storage_api::ChangelogLineageV3::new(
@@ -4691,7 +4724,7 @@ mod tests {
         for fault in 0..3 {
             let path = TestPath::new("v3-service-audit-metadata-refusal");
             let mut store = RedbStore::open(&path.0).unwrap();
-            store.initialize_database(database_id()).unwrap();
+            store.initialize_legacy_fixture(database_id()).unwrap();
             crate::changelog_v3_activation::activate_validated(
                 store.shared.database.begin_write().unwrap(),
                 riffdb_storage_api::ChangelogLineageV3::new(
@@ -4703,7 +4736,14 @@ mod tests {
                 riffdb_types::DualFrontier::INITIAL,
             )
             .unwrap();
-            let transaction = store.shared.database.begin_write().unwrap();
+            let mut ports = crate::store::RedbDormantPorts {
+                pending_v3_activation: None,
+                shared: store.shared,
+            }
+            .into_operational_after_catalog_validation()
+            .unwrap();
+            // Corruption after a valid handoff must still refuse audit admission.
+            let transaction = ports.shared.database.begin_write().unwrap();
             {
                 let mut meta = transaction.open_table(crate::layout::META).unwrap();
                 match fault {
@@ -4724,13 +4764,7 @@ mod tests {
                     }
                 }
             }
-            transaction.commit().unwrap();
-            let mut ports = crate::store::RedbDormantPorts {
-                pending_v3_activation: None,
-                shared: store.shared,
-            }
-            .into_operational_after_catalog_validation()
-            .unwrap();
+            ports.shared.commit_durable(transaction).unwrap();
             assert!(
                 ports
                     .submit_service_audit_group(&[denied_audit(30)])
@@ -4787,7 +4821,7 @@ mod tests {
             std::sync::Arc::new(Observer(sender)),
         )
         .unwrap();
-        store.initialize_database(database_id()).unwrap();
+        store.initialize_legacy_fixture(database_id()).unwrap();
         let lineage = riffdb_storage_api::ChangelogLineageV3::new(
             database_id(),
             1,

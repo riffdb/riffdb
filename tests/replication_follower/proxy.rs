@@ -33,6 +33,7 @@ struct Trap {
 struct Control {
     trap: Option<Trap>,
     resume: Option<ResumeCheck>,
+    attached_frame: Option<oneshot::Sender<()>>,
 }
 #[derive(Clone)]
 struct Relay {
@@ -48,6 +49,7 @@ impl ReplicationService for Relay {
         &self,
         request: Request<v1::StreamChangelogRequest>,
     ) -> Result<Response<Self::StreamChangelogStream>, Status> {
+        let attachment = request.get_ref().attachment.is_some();
         if let Some((expected, require_attachment, observed)) =
             self.control.lock().unwrap().resume.take()
         {
@@ -123,6 +125,15 @@ impl ReplicationService for Relay {
                         break;
                     }
                 };
+                if attachment
+                    && matches!(
+                        &item.item,
+                        Some(v1::stream_changelog_response::Item::Frame(_))
+                    )
+                    && let Some(observed) = control.lock().unwrap().attached_frame.take()
+                {
+                    let _ = observed.send(());
+                }
                 let trap = {
                     let mut state = control.lock().unwrap();
                     let matches = match (&state.trap, &item.item) {
@@ -221,6 +232,15 @@ impl Proxy {
     }
     pub(super) fn hold_attachment(&self) -> (oneshot::Receiver<()>, oneshot::Sender<()>) {
         self.hold(Target::Attachment)
+    }
+    /// A frame on the attachment response proves the real source accepted the
+    /// handoff. Process readiness alone does not establish that source action.
+    pub(super) fn observe_attached_frame(&self) -> oneshot::Receiver<()> {
+        let (send, receive) = oneshot::channel();
+        let mut control = self.control.lock().unwrap();
+        assert!(control.attached_frame.is_none());
+        control.attached_frame = Some(send);
+        receive
     }
     fn hold(&self, target: Target) -> (oneshot::Receiver<()>, oneshot::Sender<()>) {
         let (entered, observed) = oneshot::channel();

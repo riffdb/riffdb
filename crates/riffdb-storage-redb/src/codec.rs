@@ -670,6 +670,12 @@ pub(crate) fn encode_administration_audit_record_v1(
         storage::StoredAdministrationAuditRecordV1::Replication(value) => {
             storage::encode_replication_administration_v1(value).map_err(codec_error)
         }
+        storage::StoredAdministrationAuditRecordV1::PrimaryFence(value) => {
+            storage::encode_primary_fence_administration_v1(value).map_err(codec_error)
+        }
+        storage::StoredAdministrationAuditRecordV1::Promotion(value) => {
+            storage::encode_promotion_administration_v1(value).map_err(codec_error)
+        }
     }
 }
 
@@ -728,6 +734,26 @@ pub(crate) fn decode_administration_audit_record_v1(
         Ok(item) => {
             return Ok(map_item(item, |record| {
                 storage::StoredAdministrationAuditRecordV1::Replication(Box::new(record))
+            }));
+        }
+        Err(error) if error.kind() == storage::DurableCodecErrorKind::UnexpectedRecordType => {}
+        Err(error) => return Err(codec_error(error)),
+    }
+
+    match storage::decode_primary_fence_administration_v1(encoded) {
+        Ok(item) => {
+            return Ok(map_item(item, |record| {
+                storage::StoredAdministrationAuditRecordV1::PrimaryFence(Box::new(record))
+            }));
+        }
+        Err(error) if error.kind() == storage::DurableCodecErrorKind::UnexpectedRecordType => {}
+        Err(error) => return Err(codec_error(error)),
+    }
+
+    match storage::decode_promotion_administration_v1(encoded) {
+        Ok(item) => {
+            return Ok(map_item(item, |record| {
+                storage::StoredAdministrationAuditRecordV1::Promotion(Box::new(record))
             }));
         }
         Err(error) if error.kind() == storage::DurableCodecErrorKind::UnexpectedRecordType => {}

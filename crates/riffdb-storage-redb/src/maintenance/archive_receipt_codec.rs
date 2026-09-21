@@ -210,10 +210,14 @@ fn decode_selection(input: &mut Decoder<'_>) -> Result<ArchiveRestoreSelectionV3
     };
     let incarnation = input.u64()?;
     let epoch = LeadershipEpochV1::new(input.u64()?).ok_or_else(corrupt)?;
-    let lineage = ChangelogLineageV3::new(db, incarnation, epoch).map_err(|_| corrupt())?;
-    if input.array::<32>()? != AuthoritativeStateCatalogV1.digest() {
+    let catalog = input.array::<32>()?;
+    if catalog != AuthoritativeStateCatalogV1.digest()
+        && catalog != riffdb_storage_api::AuthoritativeStateCatalogV2.digest()
+    {
         return Err(incompatible());
     }
+    let lineage = ChangelogLineageV3::new_with_catalog(db, incarnation, epoch, catalog)
+        .map_err(|_| corrupt())?;
     let sequence = ChangelogTransactionSequence::new(input.u64()?).ok_or_else(corrupt)?;
     let hash = input.array()?;
     let frontier = DualFrontier::from_canonical_bytes(input.array()?).map_err(|_| corrupt())?;
@@ -233,4 +237,50 @@ fn decode_selection(input: &mut Decoder<'_>) -> Result<ArchiveRestoreSelectionV3
         suffix,
     )
     .map_err(value_error)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    // req: REP-005, REC-001, STO-012
+    fn archive_selection_round_trip_preserves_each_exact_catalog_and_refuses_unknown() {
+        for catalog in [
+            AuthoritativeStateCatalogV1.digest(),
+            riffdb_storage_api::AuthoritativeStateCatalogV2.digest(),
+        ] {
+            let id = DatabaseId::from_unix_milliseconds_and_random(1_700_000_000_000, [0x78; 10])
+                .unwrap();
+            let lineage =
+                ChangelogLineageV3::new_with_catalog(id, 2, LeadershipEpochV1::initial(), catalog)
+                    .unwrap();
+            let selection = ArchiveRestoreSelectionV3::new(
+                OfflineBackupManifestIdentityV1::new(
+                    BackupIntegrityChecksumV1::new(vec![0x19; 32]).unwrap(),
+                    id,
+                    None,
+                ),
+                lineage,
+                ChangelogHistoryPointV3::new(
+                    ChangelogTransactionSequence::new(1).unwrap(),
+                    [0x22; 32],
+                    DualFrontier::INITIAL,
+                ),
+                ArchiveRestoreSuffixV3::Empty,
+            )
+            .unwrap();
+            let mut encoder = Encoder::new();
+            encode_selection(&mut encoder, &selection).unwrap();
+            let bytes = encoder.finish();
+            let mut decoder = Decoder::new(&bytes);
+            assert_eq!(decode_selection(&mut decoder).unwrap(), selection);
+            decoder.finish().unwrap();
+            let mut unknown = bytes;
+            // The selection's fixed prefix: checksum, database ID, absent
+            // application frontier, incarnation and epoch; then catalog.
+            unknown[32 + 16 + 1 + 8 + 8..32 + 16 + 1 + 8 + 8 + 32].fill(0xa5);
+            assert!(decode_selection(&mut Decoder::new(&unknown)).is_err());
+        }
+    }
 }

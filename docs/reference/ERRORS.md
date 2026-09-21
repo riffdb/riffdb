@@ -24,6 +24,12 @@ legacy envelope), with `FAILED_PRECONDITION` transport status and
 `correct_request` recovery. Follower commands and operations requiring local
 authority return this outcome; policy-required durable read audit also refuses.
 See the [follower verification](../architecture/WP-747-VERIFICATION.md).
+`RDB-REP-0102` (`primary_fenced` in the legacy envelope) refuses commands
+after a durable primary fence, including after restart. It uses
+`FAILED_PRECONDITION` and `contact_operator` recovery. It carries no receipt,
+registration, sequence or credential. Fencing cannot be undone; retrying a
+command does not reopen admission. See [follower administration](../operations/FOLLOWER-ADMINISTRATION.md).
+
 Detectable scoped-token or discovery-fence history mismatches return
 `RDB-HISTORY-0101`. Unresolved opaque process-local continuations, including
 foreign or obsolete handles, return `RDB-CURSOR-0101` without releasing a page.

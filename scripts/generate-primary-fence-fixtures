@@ -1,0 +1,51 @@
+#!/usr/bin/env bash
+set -euo pipefail
+cd "$(git rev-parse --show-toplevel)"
+case "${1:-}" in
+    ""|--check) ;;
+    *) printf 'usage: %s [--check]\n' "$0" >&2; exit 2 ;;
+esac
+if [[ "$#" -gt 1 ]]; then
+    printf 'usage: %s [--check]\n' "$0" >&2; exit 2
+fi
+fixture=fixtures/replication/primary-fence-v1.hex
+output="$(mktemp)"
+trap 'rm -f "$output"' EXIT
+RIFFDB_PRIMARY_FENCE_VECTOR_OUTPUT="$output" cargo test --quiet --locked \
+    -p riffdb-storage-api --test primary_admission \
+    codec::primary_fence_canonical_vectors_preserve_roles_and_refuse_old_readers -- --exact
+if [[ "${1:-}" == --check ]]; then
+    diff -u "$fixture" "$output"
+else
+    cp "$output" "$fixture"
+fi
+
+fixture=fixtures/replication/changelog-frame-v3-primary-fence.hex
+RIFFDB_PRIMARY_FENCE_FRAME_VECTOR_OUTPUT="$output" cargo test --quiet --locked \
+    -p riffdb-storage-api --test changelog_fencing \
+    successor_frame_carries_fence_attribution_and_refuses_catalog_relabeling -- --exact
+if [[ "${1:-}" == --check ]]; then
+    diff -u "$fixture" "$output"
+else
+    cp "$output" "$fixture"
+fi
+
+fixture=fixtures/replication/catalog-lineage-v3.hex
+RIFFDB_CATALOG_LINEAGE_VECTOR_OUTPUT="$output" cargo test --quiet --locked \
+    -p riffdb-storage-api --test changelog_catalog_binding \
+    catalog_bound_roots_and_archive_have_canonical_vectors -- --exact
+if [[ "${1:-}" == --check ]]; then
+    diff -u "$fixture" "$output"
+else
+    cp "$output" "$fixture"
+fi
+
+fixture=fixtures/replication/primary-fence-capability-v1.hex
+RIFFDB_PRIMARY_FENCE_CAPABILITY_VECTOR_OUTPUT="$output" cargo test --quiet --locked \
+    -p riffdb-storage-api --lib \
+    proto_codec::tests::fence_permission::primary_fence_permission_durable_vector_preserves_distinct_authority -- --exact
+if [[ "${1:-}" == --check ]]; then
+    diff -u "$fixture" "$output"
+else
+    cp "$output" "$fixture"
+fi

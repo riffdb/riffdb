@@ -78,10 +78,11 @@ impl FollowerSourceDocument {
         let compact: String = self.database_id.chars().filter(|c| *c != '-').collect();
         let database_id = DatabaseId::from_bytes(parse_hex16(&compact).map_err(|_| invalid())?)
             .map_err(|_| invalid())?;
-        let lineage = ChangelogLineageV3::new(
+        let lineage = ChangelogLineageV3::new_with_catalog(
             database_id,
             self.history_incarnation,
             LeadershipEpochV1::new(self.leadership_epoch).ok_or_else(invalid)?,
+            riffdb_storage_api::AuthoritativeStateCatalogV2.digest(),
         )
         .map_err(|_| invalid())?;
         let hold =
@@ -123,6 +124,10 @@ hold_id = "71717171717171717171717171717171"
         let document: FollowerSourceDocument = toml::from_str(SOURCE).unwrap();
         let config = document.resolve().unwrap();
         assert_eq!(config.lineage.history_incarnation(), 1);
+        assert_eq!(
+            config.lineage.catalog_digest(),
+            riffdb_storage_api::AuthoritativeStateCatalogV2.digest()
+        );
         assert_eq!(config.hold.as_bytes(), &[0x71; 16]);
         assert!(!format!("{config:?}").contains("primary.example"));
         for (from, to) in [

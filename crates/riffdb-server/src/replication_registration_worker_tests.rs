@@ -101,3 +101,33 @@ async fn policy_worker_retries_proven_unavailable_work_after_a_bounded_backoff()
     stop.stop();
     run.await.unwrap();
 }
+
+#[tokio::test(start_paused = true)]
+// req: REP-005, REP-006
+async fn policy_worker_primary_fence_stops_only_its_own_maintenance_loop() {
+    use riffdb_commit::ControlPlaneExecutionAdmissionError as Error;
+    assert!(matches!(
+        maintenance_admission(Error::Draining),
+        Ok(Step::RetryLater)
+    ));
+    assert!(matches!(
+        maintenance_admission(Error::PrimaryFenced),
+        Ok(Step::PrimaryFenced)
+    ));
+    assert!(maintenance_admission(Error::Fenced).is_err());
+    assert!(maintenance_admission(Error::Stopped).is_err());
+    let stop = Cancellation::new();
+    let submissions = Cell::new(0);
+    pump(
+        || Ok(true),
+        || async {
+            submissions.set(submissions.get() + 1);
+            Ok(Step::PrimaryFenced)
+        },
+        &stop,
+    )
+    .await
+    .unwrap();
+    assert_eq!(submissions.get(), 1);
+    assert!(!stop.is_stopped());
+}

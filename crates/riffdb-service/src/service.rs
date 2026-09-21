@@ -829,7 +829,9 @@ const fn service_terminal_class<T>(result: &ServiceResult<T>) -> crate::ServiceT
             PublicErrorKind::Overloaded => crate::ServiceTerminalClass::Overloaded,
             // A follower has no authoritative writer; retain the existing coarse
             // dependency-unavailable telemetry class without changing the public refusal.
-            PublicErrorKind::FollowerMode => crate::ServiceTerminalClass::StorageUnavailable,
+            PublicErrorKind::FollowerMode | PublicErrorKind::PrimaryFenced => {
+                crate::ServiceTerminalClass::StorageUnavailable
+            }
         },
         Err(ServiceFailure::Cancelled) => crate::ServiceTerminalClass::Cancelled,
         Err(ServiceFailure::DeadlineExceeded) => crate::ServiceTerminalClass::DeadlineExceeded,

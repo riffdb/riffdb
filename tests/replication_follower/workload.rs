@@ -28,6 +28,14 @@ pub(super) async fn deploy(client: &mut RiffDbClient, metadata: &CallMetadata) {
 }
 
 async fn authority(client: &mut RiffDbClient, metadata: &CallMetadata) -> CallMetadata {
+    authority_with_seed(client, metadata, 3).await
+}
+
+pub(super) async fn authority_with_seed(
+    client: &mut RiffDbClient,
+    metadata: &CallMetadata,
+    seed: u8,
+) -> CallMetadata {
     let bundle = riffdb_contract_compiler::compile_contract_source(CONTRACT).unwrap();
     let grant = v1::CapabilityGrant {
         tenant_scope: Some(v1::TenantScope {
@@ -70,9 +78,9 @@ async fn authority(client: &mut RiffDbClient, metadata: &CallMetadata) -> CallMe
     let response = client
         .create_capability(
             v1::CreateCapabilityRequest {
-                request_id: request_id(3),
+                request_id: request_id(seed),
                 mode: v1::CapabilityCreateMode::Normal as i32,
-                capability_id: capability_id(3).as_bytes().to_vec(),
+                capability_id: capability_id(seed).as_bytes().to_vec(),
                 principal_id: "replication-ticketdesk".into(),
                 actor_kind: v1::ActorKind::Service as i32,
                 requested_lifetime_seconds: 3600,

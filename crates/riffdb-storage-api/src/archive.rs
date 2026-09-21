@@ -18,7 +18,7 @@ pub enum ArchiveConsumerErrorV1 {
     InvalidManifest,
     /// The frame is malformed, corrupt, noncanonical or over its hard bound.
     InvalidFrame,
-    /// Database, incarnation or leadership differs from the archive binding.
+    /// Database, incarnation, leadership or catalog differs from the archive binding.
     ForeignLineage,
     /// Frame/receipt predecessor or exact frontier does not match confirmed progress.
     InvalidPosition,
@@ -203,6 +203,7 @@ impl<S: ArchiveFrameSinkV1> ArchiveConsumerV1<S> {
         if binding.database_id() != self.lineage.database_id()
             || binding.history_incarnation() != self.lineage.history_incarnation()
             || binding.leadership_epoch() != self.lineage.leadership_epoch().get()
+            || binding.catalog_digest() != self.lineage.catalog_digest()
         {
             return Err(ArchiveConsumerErrorV1::ForeignLineage);
         }

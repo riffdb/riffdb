@@ -1101,7 +1101,20 @@ shape!(REPLICATION_ADMINISTRATION_V1 [
     message(10, &REPLICATION_SOURCE_HOLD_V2), message(11, &REPLICATION_ADMINISTRATION_EXPLICIT),
     message(12, &REPLICATION_ADMINISTRATION_EXPIRY),
 ]);
-const ROOTS: [&Shape; 106] = [
+shape!(PRIMARY_FENCE_ADMINISTRATION_V1 [
+    message(2, &TIMESTAMP), fixed_bytes(3, 16), fixed_bytes(4, 16),
+    message(5, &AUDIT_PRINCIPAL), string(6, MAX_TEXT_ID_BYTES),
+    message(7, &REPLICATION_FOLLOWER_AUDIT_TARGET), message(9, &CHANGELOG_POSITION_V3),
+]);
+shape!(PRIMARY_ADMISSION_ACTIVE_V1[fixed_bytes(1, 16)]);
+shape!(REPLICATION_PRIMARY_ADMISSION_V1 [message(1, &PRIMARY_ADMISSION_ACTIVE_V1), message(2, &PRIMARY_FENCE_ADMINISTRATION_V1)]);
+shape!(PROMOTION_ADMINISTRATION_V1 [
+    message(2, &TIMESTAMP), fixed_bytes(3, 16), fixed_bytes(4, 16),
+    message(5, &AUDIT_PRINCIPAL), string(6, MAX_TEXT_ID_BYTES), message(7, &TIMESTAMP),
+    message(8, &PRIMARY_FENCE_ADMINISTRATION_V1), message(9, &CHANGELOG_POSITION_V3),
+    message(10, &CHANGELOG_HISTORY_STATE_V3), nonempty_bytes(14, 16),
+]);
+const ROOTS: [&Shape; 110] = [
     &ROOT_EMPTY,
     &ROOT_DATABASE_ID,
     &ROOT_OPTIONAL_UNIT_FIELD_TWO,
@@ -1219,6 +1232,10 @@ const ROOTS: [&Shape; 106] = [
     &ROOT_APPLICATION_EXPORT_PAGE_COMMITMENT,
     &SERVICE_AUDIT_V3,
     &REPLICATION_ADMINISTRATION_V1,
+    &RECORD_REGISTRY_V2, // V2 catalog: same bounded digest shape, distinct durable role.
+    &REPLICATION_PRIMARY_ADMISSION_V1,
+    &PRIMARY_FENCE_ADMINISTRATION_V1,
+    &PROMOTION_ADMINISTRATION_V1,
 ];
 
 pub(crate) fn payload(record_index: usize, input: &[u8]) -> Result<(), DurablePreflightError> {

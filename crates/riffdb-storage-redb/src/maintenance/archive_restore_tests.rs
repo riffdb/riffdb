@@ -135,6 +135,34 @@ fn archive(
 }
 
 #[test]
+fn archive_restore_replays_current_v2_source_without_transferring_primary_admission() {
+    let scope = crate::test_path::ScopedDirectory::new("archive-replay-v2");
+    let (backup, original) =
+        crate::maintenance::archive_backup_tests::backup_current_source(&scope);
+    let (repository, last) = archive(&scope, &backup);
+    let stage = materialize(&scope, &backup, "stage");
+    let path = stage.staged_database_file().to_path_buf();
+    let before = authority(&path, false);
+    let stage = stage
+        .begin_archive_replay(repository, &AtomicBool::new(false))
+        .unwrap();
+    assert_eq!(authority(&path, true), before);
+    assert!(crate::RedbStore::open(&path).is_err());
+    let applier = validated_applier(&path);
+    assert_eq!(applier.durable_history().unwrap(), original);
+    let replayed = stage.replay(applier, &AtomicBool::new(false)).unwrap();
+    assert_eq!(replayed.history().tail(), last);
+    assert_eq!(
+        replayed.history().lineage().catalog_digest(),
+        AuthoritativeStateCatalogV2.digest()
+    );
+    crate::startup::RedbOfflineIntegrityScrub::from_inputs(&path, inputs())
+        .run_follower()
+        .unwrap();
+    replayed.discard().unwrap();
+}
+
+#[test]
 fn archive_restore_replays_verified_full_backup_through_the_real_follower_applier() {
     let scope = crate::test_path::ScopedDirectory::new("archive-replay");
     let (backup, original) = crate::maintenance::archive_backup_tests::backup(&scope);

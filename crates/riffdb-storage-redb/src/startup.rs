@@ -2,7 +2,9 @@
 
 mod archive_private;
 mod archive_private_graph;
+mod promotion;
 pub(crate) use archive_private::validate_private_archive;
+pub(crate) use promotion::{validate_committed_promotion, validate_reconciled_promotion};
 
 mod archive_follower;
 pub(crate) use archive_follower::open_validated_archive_follower;
@@ -1227,7 +1229,7 @@ impl StructuralEvidenceSession for RedbStructuralEvidenceSession {
         structural_end: Self::StructuralEnd,
         historical_end: Self::HistoricalEnd,
     ) -> Result<StructuralOpenOutcome<Self::DormantPorts, Self::MigrationPort>, StorageError> {
-        if self.shared.private_restore_binding().is_some() {
+        if self.shared.is_private_validation() {
             return Err(invariant()); // Private validation cannot release any operational port.
         }
         self.check_cancellation()?;
@@ -3056,7 +3058,9 @@ fn build_publication_audit_cache(
             riffdb_storage_api::StoredAdministrationAuditRecordV1::Capability(_)
             | riffdb_storage_api::StoredAdministrationAuditRecordV1::Service(_)
             | riffdb_storage_api::StoredAdministrationAuditRecordV1::Retention(_)
-            | riffdb_storage_api::StoredAdministrationAuditRecordV1::Replication(_) => {}
+            | riffdb_storage_api::StoredAdministrationAuditRecordV1::Replication(_)
+            | riffdb_storage_api::StoredAdministrationAuditRecordV1::PrimaryFence(_)
+            | riffdb_storage_api::StoredAdministrationAuditRecordV1::Promotion(_) => {}
         }
         if retained_bytes > MAX_STARTUP_EVIDENCE_INDEX_BYTES {
             return Err(limit_exceeded());
@@ -4583,6 +4587,23 @@ fn inspect_audit_row(
         // against ALL replication receipts, including erased holds and releases.
         // Attached followers replicate audit authority but carry no source holds.
         riffdb_storage_api::StoredAdministrationAuditRecordV1::Replication(_) => None,
+        // The same-pin V3 validation checks the immutable fence, admission and
+        // original complete physical receipt. Followers retain only audit authority.
+        riffdb_storage_api::StoredAdministrationAuditRecordV1::PrimaryFence(_) => None,
+        riffdb_storage_api::StoredAdministrationAuditRecordV1::Promotion(record) => {
+            let history = crate::changelog_v3_roots::read_checkpoint_roots(transaction)?
+                .ok_or_else(corrupt)?;
+            let audit = transaction.open_table(AUDIT).map_err(table_error)?;
+            let indexes = transaction
+                .open_table(AUDIT_BY_REQUEST)
+                .map_err(table_error)?;
+            let receipts = transaction
+                .open_table(crate::changelog_v3_activation::HISTORY)
+                .map_err(table_error)?;
+            crate::promotion_cutover::validate_record(record, history, &audit, &indexes, &receipts)
+                .err()
+                .map(|_| authoritative(StructuralFindingCode::CrossLinkMismatch))
+        }
     };
     Ok(finding)
 }
@@ -7741,9 +7762,22 @@ fn service_link_is_valid(
             };
             let operation_matches = match (&target, record.operation()) {
                 (
+                    riffdb_storage_api::StoredAdministrationAuditRecordV1::Promotion(target),
+                    riffdb_types::ServiceOperationV1::PromoteFollower,
+                ) => target.matches_service_result(record.operation(), record.targets()),
+                (
                     riffdb_storage_api::StoredAdministrationAuditRecordV1::Replication(target),
                     operation,
                 ) => target.matches_service_result(operation, record.targets()),
+                (
+                    riffdb_storage_api::StoredAdministrationAuditRecordV1::PrimaryFence(target),
+                    operation,
+                ) => target.matches_service_result(
+                    operation,
+                    record.targets(),
+                    record.principal(),
+                    record.approval_id(),
+                ),
                 (
                     riffdb_storage_api::StoredAdministrationAuditRecordV1::Catalog(_),
                     riffdb_types::ServiceOperationV1::DeployContract,
@@ -8118,3 +8152,5 @@ fn value_error_as_storage(error: StorageValueError) -> StorageError {
 mod tests;
 #[cfg(test)]
 pub(crate) use tests::open_validated_follower_fixture;
+#[cfg(test)]
+pub(crate) use tests::{open_validated_source_fixture, validate_source_store_fixture};

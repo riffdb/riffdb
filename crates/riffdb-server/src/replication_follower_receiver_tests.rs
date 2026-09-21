@@ -439,7 +439,7 @@ async fn continuous_receiver_cancelled_blocking_apply_retains_the_sole_writer_un
             after_hash: position.history_hash(),
             after_frontier: position.frontier(),
             readable_format: ChangelogFrameV3::IDENTITY.to_owned(),
-            catalog_digest: AuthoritativeStateCatalogV1.digest(),
+            catalog_digest: lineage.catalog_digest(),
             maximum_frame_bytes: MAX_CHANGELOG_FRAME_BYTES as u64,
             maximum_transitions: MAX_STAGED_COMMANDS as u64,
         })
@@ -655,3 +655,6 @@ async fn dropping_follower_worker_requests_stop_and_preserves_drain_custody() {
     );
     drop(drained);
 }
+
+#[path = "replication_follower_drain_tests.rs"]
+mod drain;

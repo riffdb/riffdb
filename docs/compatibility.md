@@ -408,3 +408,27 @@ from the destroyed suffix. It is therefore not a mechanism for maintaining
 globally stable post-backup locators. ADR-0072's durable `history_incarnation`
 makes restore rewinds detectable for clients that send optional
 `observed_history_incarnation`; non-participating clients remain unvalidated.
+
+### Primary fencing and promotion (WP-748)
+
+Fresh sources use `AuthoritativeStateCatalogV2` (catalog tag 69/revision 2)
+with explicit Active primary admission. V1 catalog bytes retain their meaning;
+there is no inferred admission state or automatic upgrade. Primary admission,
+immutable fence administration and promotion administration use accepted tags
+76/1, 77/1 and 78/1. Older registry markers require their matching binary.
+Existing changelog V3, backup manifest and command-prefix formats are unchanged.
+
+V2 sources perform complete ordinary startup validation even after CLEAN.
+The V1 certificate does not bind primary admission and cannot skip that work.
+V1 bytes and bounded startup behavior remain unchanged. See the
+[accepted startup amendment](architecture/WP-748-CLEAN-START-REVIEW.md).
+
+The existing administrative replication stream uses audit operation `0x3d`:
+durable establishment/initial denial audit, followed by redacted telemetry on
+later denial. Exact fence evidence is a bounded terminal stream item. Promotion
+uses accepted operation `0x3e` and external attempt receipts while attached or
+offline; successful cutover joins normal service audit atomically. No MCP
+fencing or promotion tool is exposed. The primary-fenced error is
+`RDB-REP-0102` with `contact_operator` recovery; older clients refuse unknown
+variants. See [follower administration](operations/FOLLOWER-ADMINISTRATION.md)
+for the experimental path and remaining recovery limits.

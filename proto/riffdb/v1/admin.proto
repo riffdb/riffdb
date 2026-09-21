@@ -170,6 +170,7 @@ enum CapabilityPermissionKind {
   CAPABILITY_PERMISSION_KIND_INSPECT_VECTOR_STATE = 32;
   // Administrative only; excluded from application roles and bootstrap grants.
   CAPABILITY_PERMISSION_KIND_REPLICATE_CHANGELOG = 33;
+  CAPABILITY_PERMISSION_KIND_FENCE_REPLICATION_PRIMARY = 34;
 }
 
 message LineageScopedStableId {
@@ -224,6 +225,7 @@ message CapabilityPermission {
     string install_application = 31;
     Unit inspect_vector_state = 32;
     Unit replicate_changelog = 33;
+    Unit fence_replication_primary = 34;
   }
 }
 

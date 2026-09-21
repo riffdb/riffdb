@@ -797,6 +797,7 @@ fn manifest_has_only_the_reviewed_dependencies_needed_by_commit_orchestration() 
     assert_eq!(
         riffdb_dependencies(manifest_section("[dev-dependencies]\n")),
         vec![
+            "riffdb-auth",
             "riffdb-contract-compiler",
             "riffdb-storage-redb",
             "riffdb-testkit",

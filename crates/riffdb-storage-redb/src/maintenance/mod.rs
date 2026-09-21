@@ -23,6 +23,8 @@ mod bootstrap_materialize_tests;
 mod bootstrap_stage;
 pub use bootstrap_source::{RedbBootstrapSourceBuild, RedbHeldBootstrapSource};
 mod codec;
+#[cfg(test)]
+mod promotion_receipt_tests;
 pub use bootstrap_stage::{
     RedbBootstrapMaterializationInput, RedbBootstrapStage, RedbBootstrapVerification,
     RedbVerifiedBootstrapTransfer,
@@ -50,6 +52,7 @@ pub use staged::{
     RedbPrivateArchiveRestoreCandidate, RedbReplayedArchiveRestore, RedbSealedArchiveRestore,
     RedbSealedStagedRestore, RedbStagedRestore, RedbValidatedPrivateArchiveRestore,
 };
+pub(crate) use store::PromotionValidationBinding;
 pub use store::{
     RedbMaintenanceOperationEvidence, RedbMaintenanceReconciliation, RedbMaintenanceStorage,
     RedbMigrationDiskReservation,

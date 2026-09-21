@@ -522,11 +522,10 @@ mod tests {
 
     use riffdb_catalog::{CatalogHistoryOutcome, validate_catalog_history};
     use riffdb_storage_api::{
-        BackupBuildMetadataV1, DatabaseIdentityProbePort, DatabaseInitializationPort,
-        EvidencePageLimit, ReadableCapabilityDigestInventory, ReadableDigestKey,
-        ReadableIdempotencyDigestInventory, StartupValidationInputs, StructuralEvidenceCursor,
-        StructuralEvidenceOpen, StructuralEvidencePage, StructuralEvidenceSession,
-        StructuralOpenOutcome,
+        BackupBuildMetadataV1, DatabaseIdentityProbePort, EvidencePageLimit,
+        ReadableCapabilityDigestInventory, ReadableDigestKey, ReadableIdempotencyDigestInventory,
+        StartupValidationInputs, StructuralEvidenceCursor, StructuralEvidenceOpen,
+        StructuralEvidencePage, StructuralEvidenceSession, StructuralOpenOutcome,
     };
     use riffdb_types::{DigestKeyId, Timestamp};
 
@@ -622,7 +621,7 @@ mod tests {
         let backup = root.join("verified-backup");
         let mut store = RedbStore::open(&database).expect("create current database");
         store
-            .initialize_database(database_id(seed))
+            .initialize_legacy_fixture(database_id(seed))
             .expect("initialize database");
         assert_eq!(
             store.probe_database_identity().expect("probe identity"),

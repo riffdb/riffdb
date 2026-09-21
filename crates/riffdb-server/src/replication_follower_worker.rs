@@ -22,9 +22,30 @@ impl RunningFollowerReceiver {
         receiver: FollowerReceiver,
         peer: Arc<dyn ReplicationSourcePort>,
     ) -> Result<Self, Failure> {
+        Self::start_inner(receiver, peer, None)
+    }
+
+    /// Joins receiver completion to the daemon's existing per-generation fence.
+    pub(crate) fn start_with_routing(
+        receiver: FollowerReceiver,
+        peer: Arc<dyn ReplicationSourcePort>,
+        routing: crate::runtime_support::RuntimeRoutingState,
+    ) -> Result<Self, Failure> {
+        Self::start_inner(receiver, peer, Some(routing))
+    }
+
+    fn start_inner(
+        receiver: FollowerReceiver,
+        peer: Arc<dyn ReplicationSourcePort>,
+        routing: Option<crate::runtime_support::RuntimeRoutingState>,
+    ) -> Result<Self, Failure> {
         let capacity = Arc::clone(receiver.owner.as_ref().ok_or_else(busy)?.permit.semaphore());
         let (stop, stopped) = oneshot::channel();
-        let task = tokio::spawn(run(receiver, peer, stopped, capacity));
+        let guard = ReceiverRoutingGuard(routing);
+        let task = tokio::spawn(async move {
+            let _guard = guard;
+            run(receiver, peer, stopped, capacity).await
+        });
         Ok(Self {
             stop: Some(stop),
             task: Some(task),
@@ -47,7 +68,8 @@ impl RunningFollowerReceiver {
         result
     }
 
-    /// Interrupts network receive/backoff, then waits for actual engine release.
+    /// Interrupts network receive/backoff, drains any complete received frame,
+    /// then waits for actual engine release.
     /// The normal follower close never writes a source CLEAN lifecycle record.
     pub async fn shutdown(mut self) -> Result<(), Failure> {
         self.request_stop();
@@ -57,6 +79,17 @@ impl RunningFollowerReceiver {
     fn request_stop(&mut self) {
         if let Some(stop) = self.stop.take() {
             let _ = stop.send(());
+        }
+    }
+}
+
+/// Captured before spawning so even an unpolled or panicked task fences routing.
+struct ReceiverRoutingGuard(Option<crate::runtime_support::RuntimeRoutingState>);
+impl Drop for ReceiverRoutingGuard {
+    fn drop(&mut self) {
+        use riffdb_service::{AuthoritativeReadinessFailure, ServiceHealthHooks};
+        if let Some(routing) = &self.0 {
+            routing.fail_authoritative_readiness(AuthoritativeReadinessFailure::CoordinatorFenced);
         }
     }
 }
@@ -74,16 +107,20 @@ impl std::fmt::Debug for RunningFollowerReceiver {
 async fn run(
     mut receiver: FollowerReceiver,
     peer: Arc<dyn ReplicationSourcePort>,
-    mut stopped: oneshot::Receiver<()>,
+    stopped: oneshot::Receiver<()>,
     capacity: Arc<Semaphore>,
 ) -> Result<(), Failure> {
+    let mut stopped = StopSignal::observed(stopped);
     let mut retry = INITIAL_RETRY;
     let outcome = loop {
-        let result = tokio::select! {
-            biased;
-            _ = &mut stopped => break Ok(()),
-            result = receiver.advance(peer.as_ref()) => result,
-        };
+        if stopped.requested() {
+            break Ok(());
+        }
+        // Stop is observed only at network waits. Once receive returns a complete
+        // frame, keep the same owner through apply and local acknowledgement.
+        let result = receiver
+            .advance_until_stopped(peer.as_ref(), &mut stopped)
+            .await;
         match result {
             Ok(Some(_)) => {
                 retry = INITIAL_RETRY;
@@ -101,7 +138,7 @@ async fn run(
         // a reconnect spin or unbounded acknowledgement/attachment churn.
         tokio::select! {
             biased;
-            _ = &mut stopped => break Ok(()),
+            _ = stopped.wait() => break Ok(()),
             () = tokio::time::sleep(retry) => {},
         }
         if result.is_err() {
@@ -121,4 +158,59 @@ async fn run(
     let drained = capacity.acquire_owned().await.map_err(|_| busy())?;
     drop(drained);
     outcome.and(close)
+}
+
+/// A sticky supervisor stop. An unobserved signal preserves direct callers'
+/// existing cancellation behavior; only the owning worker drives graceful drain.
+pub(super) struct StopSignal {
+    receiver: Option<oneshot::Receiver<()>>,
+    requested: bool,
+}
+impl StopSignal {
+    pub(super) fn unobserved() -> Self {
+        Self {
+            receiver: None,
+            requested: false,
+        }
+    }
+    fn observed(receiver: oneshot::Receiver<()>) -> Self {
+        Self {
+            receiver: Some(receiver),
+            requested: false,
+        }
+    }
+    fn requested(&mut self) -> bool {
+        if self.requested {
+            return true;
+        }
+        self.requested = self.receiver.as_mut().is_some_and(|receiver| {
+            !matches!(
+                receiver.try_recv(),
+                Err(oneshot::error::TryRecvError::Empty)
+            )
+        });
+        self.requested
+    }
+    async fn wait(&mut self) {
+        if self.requested() {
+            return;
+        }
+        match self.receiver.as_mut() {
+            Some(receiver) => {
+                let _ = receiver.await;
+            }
+            None => std::future::pending().await,
+        }
+        self.requested = true;
+    }
+    pub(super) async fn network<T>(
+        &mut self,
+        operation: impl std::future::Future<Output = T>,
+    ) -> Option<T> {
+        tokio::select! {
+            biased;
+            () = self.wait() => None,
+            result = operation => Some(result),
+        }
+    }
 }

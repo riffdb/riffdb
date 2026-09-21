@@ -1,4 +1,4 @@
-//! Follower process startup and supervision, isolated from primary maintenance.
+//! One follower generation under the shared per-database daemon supervisor.
 use super::*;
 use crate::config::FollowerSourceConfig;
 use crate::replication_bootstrap::{
@@ -7,284 +7,157 @@ use crate::replication_bootstrap::{
 use riffdb_service::{
     ReplicationFailure, ReplicationPhase, ReplicationRequest, ReplicationSourcePort,
 };
-use riffdb_storage_api::{
-    AuthoritativeStateCatalogV1, ChangelogFrameV3, MAX_CHANGELOG_FRAME_BYTES, MAX_STAGED_COMMANDS,
-};
+use riffdb_storage_api::{ChangelogFrameV3, MAX_CHANGELOG_FRAME_BYTES, MAX_STAGED_COMMANDS};
 use riffdb_storage_redb::RedbBootstrapReceiverRepository;
 use riffdb_types::DualFrontier;
 
-pub(super) async fn run(
-    config: ServerConfig,
-    signal: &mut ProductionShutdownSignal,
-) -> Result<(), DaemonError> {
-    let clocks = ProductionWallClocks::new();
-    let keys = load_production_digest_keys(&config)?;
-    let inputs = startup_validation_inputs(
-        &keys,
-        clocks
-            .authorization()
-            .now()
-            .map_err(DaemonError::StartupClock)?,
-    )?;
-    let mut lifecycles = Vec::with_capacity(config.databases().len());
-    let mut activators = Vec::with_capacity(config.databases().len());
-    let mut routes = Vec::with_capacity(config.databases().len());
-    for database in config.databases() {
-        let (initializing, activator, issuer) = RiffDbService::begin_initialization();
-        let lifecycle = Arc::new(ProductionLifecycleRoute::new(
-            initializing,
-            issuer,
-            RuntimeRoutingState::new(),
-        ));
-        let route: Arc<dyn GrpcLifecycleRoute> = lifecycle.clone();
-        routes.push((database.alias().clone(), route));
-        lifecycles.push(lifecycle);
-        activators.push(activator);
+/// A follower generation belongs to the same per-database daemon owner as a source.
+/// Transport admission closes before this value drains the applier and readers.
+pub(super) struct RunningFollowerGeneration {
+    worker: RunningFollowerReceiver,
+    service: crate::process_graph::RunningFollowerService,
+}
+impl RunningFollowerGeneration {
+    pub(super) fn is_available(&self) -> bool {
+        self.service.is_available()
     }
-    let routes =
-        Arc::new(GrpcDatabaseRoutes::new(routes).map_err(|_| DaemonError::GrpcConfiguration)?);
-    let application = GrpcApplication::with_database_routes_and_audience(
-        routes,
-        GrpcRequestLimits::new(REQUEST_DURATION_LIMIT)
-            .map_err(|_| DaemonError::GrpcConfiguration)?,
-        config.audience().clone(),
-    );
-    let mut transport = HostedGrpc::bind(config.application_listener().clone(), &application)?;
-    drop(application);
-    let mut workers = Vec::with_capacity(config.databases().len());
-    let mut services = Vec::with_capacity(config.databases().len());
-    let mut hosted_mcp = None;
-    let result = start_and_supervise(
-        &config,
-        inputs,
-        keys,
-        clocks,
-        activators,
-        &lifecycles,
-        signal,
-        &mut transport,
-        &mut workers,
-        &mut services,
-        &mut hosted_mcp,
-    )
-    .await;
-    for lifecycle in lifecycles {
-        lifecycle.stop();
+    pub(super) fn hosted_mcp_dependencies(
+        &self,
+    ) -> Option<crate::process_graph::HostedMcpDependencies> {
+        self.service.hosted_mcp_dependencies()
     }
-    let transport_result = if matches!(result, Err(DaemonError::TransportEnded)) {
-        Ok(())
-    } else {
-        transport.drain_after_signal().await
-    };
-    let mcp_result = if matches!(
-        result,
-        Err(DaemonError::McpTransportEnded | DaemonError::McpStop(_))
-    ) {
-        Ok(())
-    } else {
-        match &mut hosted_mcp {
-            Some(hosted) => hosted
-                .drain_after_signal()
-                .await
-                .map_err(DaemonError::McpStop),
-            None => Ok(()),
-        }
-    };
-    let mut drained = Ok(());
-    for worker in workers {
-        if let Err(error) = worker.shutdown().await {
-            drained = Err(DaemonError::Replication(error));
-        }
+    pub(super) async fn shutdown(self) -> Result<(), DaemonError> {
+        let worker = self
+            .worker
+            .shutdown()
+            .await
+            .map_err(DaemonError::Replication);
+        let service = self
+            .service
+            .shutdown()
+            .await
+            .map_err(|error| DaemonError::Replication(storage(error)));
+        worker.and(service)
     }
-    for service in services {
-        if let Err(error) = service.shutdown().await {
-            drained = Err(DaemonError::Replication(storage(error)));
-        }
-    }
-    result.and(transport_result).and(mcp_result).and(drained)
 }
 
+/// Called only after local promotion and maintenance evidence has been checked.
+/// None means a process shutdown signal was received before activation.
 #[allow(clippy::too_many_arguments)]
-async fn start_and_supervise(
+pub(super) async fn start(
     config: &ServerConfig,
+    database: &DatabaseConfig,
     inputs: StartupValidationInputs,
     keys: ProductionDigestKeys,
-    clocks: ProductionWallClocks,
-    activators: Vec<riffdb_service::RiffDbServiceActivator>,
-    lifecycles: &[Arc<ProductionLifecycleRoute>],
+    clocks: &ProductionWallClocks,
+    activator: riffdb_service::RiffDbServiceActivator,
+    lifecycle: Arc<ProductionLifecycleRoute>,
     signal: &mut ProductionShutdownSignal,
-    transport: &mut HostedGrpc,
-    workers: &mut Vec<RunningFollowerReceiver>,
-    services: &mut Vec<crate::process_graph::RunningFollowerService>,
-    hosted_mcp: &mut Option<HostedMcp>,
-) -> Result<(), DaemonError> {
-    // Every peer binding and credential is checked before any local construction.
-    let mut peers = Vec::with_capacity(config.databases().len());
-    for database in config.databases() {
-        let source = database
-            .follower()
-            .ok_or(DaemonError::Config(
-                ServerConfigError::InvalidFollowerConfiguration,
-            ))?
-            .clone();
-        let connecting = connect(source);
-        let peer = tokio::select! {
-            biased;
-            result = signal.received() => { result.map_err(DaemonError::ShutdownSignal)?; return Ok(()); },
-            result = connecting => result.map_err(DaemonError::Replication)?,
-        };
-        peers.push(peer);
-    }
-    for (((database, peer), activator), lifecycle) in config
-        .databases()
-        .iter()
-        .zip(peers)
-        .zip(activators)
-        .zip(lifecycles)
-    {
-        let root = database.replication_receiver_root();
-        let repository =
-            tokio::task::spawn_blocking(move || RedbBootstrapReceiverRepository::open(&root))
-                .await
-                .map_err(|_| DaemonError::Replication(ReplicationFailure::Unavailable))?
-                .map_err(|error| DaemonError::Replication(storage(error)))?;
-        let jobs = BootstrapReceiverJobs::from_repository(repository.clone());
-        let source = database.follower().ok_or(DaemonError::Config(
-            ServerConfigError::InvalidFollowerConfiguration,
-        ))?;
-        let opening = open_managed(
-            &jobs,
-            repository,
-            peer.as_ref(),
-            database.database_path().to_path_buf(),
-            inputs.clone(),
-            source,
-        );
-        let opened = tokio::select! {
-            biased;
-            result = signal.received() => { result.map_err(DaemonError::ShutdownSignal)?; None },
-            result = opening => Some(result),
-        };
-        let Some(opened) = opened else {
+    promotion: Arc<crate::promotion_admission::PromotionController>,
+) -> Result<Option<RunningFollowerGeneration>, DaemonError> {
+    let source = database.follower().ok_or(DaemonError::Config(
+        ServerConfigError::InvalidFollowerConfiguration,
+    ))?;
+    let peer = tokio::select! {
+        biased;
+        result = signal.received() => {
+            result.map_err(DaemonError::ShutdownSignal)?;
+            return Ok(None);
+        },
+        result = connect(source.clone()) => result.map_err(DaemonError::Replication)?,
+    };
+    let root = database.replication_receiver_root();
+    let repository =
+        tokio::task::spawn_blocking(move || RedbBootstrapReceiverRepository::open(&root))
+            .await
+            .map_err(|_| DaemonError::Replication(ReplicationFailure::Unavailable))?
+            .map_err(|error| DaemonError::Replication(storage(error)))?;
+    let jobs = BootstrapReceiverJobs::from_repository(repository.clone());
+    let opening = open_managed(
+        &jobs,
+        repository,
+        peer.as_ref(),
+        database.database_path().to_path_buf(),
+        inputs,
+        source,
+    );
+    let opened = tokio::select! {
+        biased;
+        result = signal.received() => result.map(|()| None).map_err(DaemonError::ShutdownSignal),
+        result = opening => result.map(Some).map_err(DaemonError::Replication),
+    };
+    let mut receiver = match opened {
+        Ok(Some(receiver)) => receiver,
+        Ok(None) => {
             jobs.drain()
                 .await
                 .map_err(|error| DaemonError::Replication(storage(error)))?;
-            return Ok(());
-        };
-        match opened {
-            Ok(mut receiver) => {
-                let (evidence, reads, notifier) = receiver
-                    .prepare_service()
-                    .await
-                    .map_err(|error| DaemonError::Replication(storage(error)))?;
-                let build = build_info_for_format(
-                    evidence.retained_metadata.storage_format_version().get(),
-                )?;
-                let process = riffdb_service::ServiceProcessMetadata::new(
-                    clocks.process_time().map_err(DaemonError::ProcessClock)?,
-                    build,
-                );
-                let service = crate::process_graph::RunningFollowerService::start(
-                    evidence,
-                    reads,
-                    notifier,
-                    database.projections_root(),
-                    database.projections(),
-                    activator,
-                    keys.clone(),
-                    config.audience().clone(),
-                    config.mcp_audience().cloned(),
-                    database.environment().clone(),
-                    process,
-                    &clocks,
-                    lifecycle.clone(),
-                );
-                match service {
-                    Ok(service) => services.push(service),
-                    Err(error) => {
-                        receiver
-                            .close()
-                            .await
-                            .map_err(|error| DaemonError::Replication(storage(error)))?;
-                        return Err(DaemonError::GraphBuild(error));
-                    }
-                }
-                workers.push(
-                    RunningFollowerReceiver::start(receiver, peer)
-                        .map_err(DaemonError::Replication)?,
-                );
-            }
-            Err(error) => {
-                jobs.drain()
-                    .await
-                    .map_err(|error| DaemonError::Replication(storage(error)))?;
-                return Err(DaemonError::Replication(error));
-            }
+            return Ok(None);
         }
-    }
-    if let Some(address) = config.mcp_listen_address() {
-        let routes = config
-            .databases()
-            .iter()
-            .zip(services.iter())
-            .map(|(database, service)| {
-                service
-                    .hosted_mcp_dependencies()
-                    .map(|dependencies| (database.alias().clone(), dependencies))
-                    .ok_or(DaemonError::McpDependencies)
-            })
-            .collect::<Result<Vec<_>, _>>()?;
-        *hosted_mcp = Some(
-            HostedMcp::bind_routes(address, config.mcp_origins(), routes)
+        Err(error) => {
+            jobs.drain()
                 .await
-                .map_err(DaemonError::McpStart)?,
-        );
-    }
-    if transport.is_finished() {
-        let _ = transport.completed().await;
-        return Err(DaemonError::TransportEnded);
-    }
-    if hosted_mcp.as_ref().is_some_and(HostedMcp::is_finished) {
-        if let Some(hosted) = hosted_mcp {
-            hosted.completed().await.map_err(DaemonError::McpStop)?;
+                .map_err(|error| DaemonError::Replication(storage(error)))?;
+            return Err(error);
         }
-        return Err(DaemonError::McpTransportEnded);
-    }
-    if services.iter().any(|service| !service.is_available()) {
-        return Err(DaemonError::Replication(ReplicationFailure::Unavailable));
-    }
-    let (shutdown, stdin_thread) = spawn_shutdown_reader()?;
-    let mut shutdown = Some(shutdown);
-    publish_readiness(&transport.endpoint)?;
-    let mut endings: FuturesUnordered<_> = workers
-        .iter_mut()
-        .map(|worker| Box::pin(worker.finished()))
-        .collect();
-    let mut runtime_endings: FuturesUnordered<_> = lifecycles
-        .iter()
-        .map(|lifecycle| {
-            let runtime = lifecycle.runtime_routing();
-            Box::pin(async move { runtime.stopped().await })
-        })
-        .collect();
-    loop {
-        tokio::select! {
-            result = signal.received() => return result.map_err(DaemonError::ShutdownSignal),
-            _ = &mut transport.task => return Err(DaemonError::TransportEnded),
-            result = wait_for_hosted_mcp(hosted_mcp) => return result.map_or_else(|error| Err(DaemonError::McpStop(error)), |()| Err(DaemonError::McpTransportEnded)),
-            _ = futures_util::StreamExt::next(&mut runtime_endings) => return Err(DaemonError::RuntimeStopped),
-            result = futures_util::StreamExt::next(&mut endings) => return Err(DaemonError::Replication(result.and_then(Result::err).unwrap_or(ReplicationFailure::Unavailable))),
-            input = wait_for_shutdown_input(&mut shutdown) => match input {
-                Some(ReadyProcessTrigger::Command) => return stdin_thread.join().map_err(|_| DaemonError::ShutdownReaderPanicked),
-                Some(_) => { let _ = stdin_thread.join(); return Err(DaemonError::ShutdownInput); },
-                None => {},
-            },
+    };
+    let prepared = receiver.prepare_service().await;
+    let (evidence, reads, notifier) = match prepared {
+        Ok(value) => value,
+        Err(error) => {
+            receiver
+                .close()
+                .await
+                .map_err(|error| DaemonError::Replication(storage(error)))?;
+            return Err(DaemonError::Replication(storage(error)));
+        }
+    };
+    let build = build_info_for_format(evidence.retained_metadata.storage_format_version().get())?;
+    let process = riffdb_service::ServiceProcessMetadata::new(
+        clocks.process_time().map_err(DaemonError::ProcessClock)?,
+        build,
+    );
+    let routing = lifecycle.runtime_routing();
+    let service = crate::process_graph::RunningFollowerService::start(
+        evidence,
+        reads,
+        notifier,
+        database.projections_root(),
+        database.projections(),
+        activator,
+        keys,
+        config.audience().clone(),
+        config.mcp_audience().cloned(),
+        database.environment().clone(),
+        process,
+        clocks,
+        lifecycle,
+        Some(promotion),
+    );
+    let service = match service {
+        Ok(service) => service,
+        Err(error) => {
+            receiver
+                .close()
+                .await
+                .map_err(|error| DaemonError::Replication(storage(error)))?;
+            return Err(DaemonError::GraphBuild(error));
+        }
+    };
+    match RunningFollowerReceiver::start_with_routing(receiver, peer, routing) {
+        Ok(worker) => Ok(Some(RunningFollowerGeneration { worker, service })),
+        Err(error) => {
+            service
+                .shutdown()
+                .await
+                .map_err(|error| DaemonError::Replication(storage(error)))?;
+            Err(DaemonError::Replication(error))
         }
     }
 }
-async fn connect(
+pub(super) async fn connect(
     source: FollowerSourceConfig,
-) -> Result<Arc<dyn ReplicationSourcePort>, ReplicationFailure> {
+) -> Result<Arc<replication_peer::VerifiedReplicationPeer>, ReplicationFailure> {
     let credential = tokio::task::spawn_blocking(move || {
         riffdb_auth::load_capability_token_file(source.credential.as_path())
     })
@@ -363,7 +236,7 @@ pub(super) async fn open_managed(
         after_hash: [0; 32],
         after_frontier: DualFrontier::INITIAL,
         readable_format: ChangelogFrameV3::IDENTITY.to_owned(),
-        catalog_digest: AuthoritativeStateCatalogV1.digest(),
+        catalog_digest: source.lineage.catalog_digest(),
         maximum_frame_bytes: MAX_CHANGELOG_FRAME_BYTES as u64,
         maximum_transitions: MAX_STAGED_COMMANDS as u64,
     };

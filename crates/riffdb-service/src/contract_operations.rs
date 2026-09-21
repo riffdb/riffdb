@@ -1609,6 +1609,12 @@ async fn finish_control_plane_admission_failure(
     begun: &BegunInvocation,
     error: ControlPlaneExecutionAdmissionError,
 ) -> ServiceFailure {
+    if error == ControlPlaneExecutionAdmissionError::PrimaryFenced {
+        return match begun.finish_primary_fence_denial(service, context).await {
+            Ok(()) => PublicError::primary_fenced().into(),
+            Err(_) => PublicError::storage_unavailable().into(),
+        };
+    }
     if matches!(error, ControlPlaneExecutionAdmissionError::Fenced) {
         service
             .providers
@@ -1986,3 +1992,7 @@ mod tests {
         ));
     }
 }
+
+#[cfg(test)]
+#[path = "primary_fenced_contract_tests.rs"]
+mod primary_fenced_contract_tests;

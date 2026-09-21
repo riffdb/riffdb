@@ -5,6 +5,8 @@ use super::*;
 use riffdb_storage_api::*;
 use riffdb_types::{DatabaseId, DigestKeyId, DualFrontier, Timestamp};
 
+#[path = "promotion_cutover_tests.rs"]
+mod promotion_cutover;
 #[path = "bootstrap_publication_tests.rs"]
 mod publication;
 #[path = "bootstrap_receiver_retirement_tests.rs"]
@@ -21,7 +23,7 @@ fn inputs() -> StartupValidationInputs {
 fn source(path: &std::path::Path) -> crate::RedbOperationalPorts {
     let mut store = crate::RedbStore::open(path).unwrap();
     let id = DatabaseId::from_unix_milliseconds_and_random(1_700_000_000_000, [0x71; 10]).unwrap();
-    store.initialize_database(id).unwrap();
+    store.initialize_legacy_fixture(id).unwrap();
     crate::changelog_v3_activation::activate_validated(
         store.shared.database.begin_write().unwrap(),
         ChangelogLineageV3::new(id, 1, LeadershipEpochV1::initial()).unwrap(),
@@ -72,6 +74,48 @@ fn bootstrap_constructs_a_new_exact_follower_and_passes_complete_startup_scrub()
     let validated = candidate.validate(inputs()).unwrap();
     assert_eq!(validated.manifest(), manifest);
     drop(validated);
+    assert!(crate::RedbFollowerStore::open(path.join("follower.redb")).is_ok());
+}
+
+#[test]
+fn fresh_v2_source_bootstrap_preserves_catalog_without_transferring_primary_admission() {
+    use redb::ReadableDatabase;
+    let scope = crate::test_path::ScopedDirectory::new("bootstrap-v2-source");
+    let mut store = crate::RedbStore::open(scope.join("source.redb")).unwrap();
+    let id = DatabaseId::from_unix_milliseconds_and_random(1_700_000_000_000, [0x78; 10]).unwrap();
+    store.initialize_database(id).unwrap();
+    let transfer = transfer_from_ports(
+        &scope,
+        crate::RedbOperationalPorts {
+            shared: store.shared,
+        },
+    );
+    let manifest = transfer.manifest();
+    assert_eq!(
+        manifest.fence().history().lineage().catalog_digest(),
+        AuthoritativeStateCatalogV2.digest()
+    );
+    let path = scope.join("candidate");
+    let mut materializer = RedbBootstrapMaterializer::create(&path, transfer).unwrap();
+    while materializer.copy_next_page().unwrap().is_some() {}
+    let validated = materializer.finish().unwrap().validate(inputs()).unwrap();
+    assert_eq!(validated.manifest(), manifest);
+    drop(validated);
+    let raw = redb::Database::open(path.join("follower.redb")).unwrap();
+    let read = raw.begin_read().unwrap();
+    let meta = read.open_table(crate::layout::META).unwrap();
+    assert!(
+        meta.get(crate::primary_admission_roots::key().unwrap())
+            .unwrap()
+            .is_none()
+    );
+    assert_eq!(
+        crate::changelog_v3_roots::validate_retained_history(&read).unwrap(),
+        Some(manifest.fence().history())
+    );
+    drop(meta);
+    drop(read);
+    drop(raw);
     assert!(crate::RedbFollowerStore::open(path.join("follower.redb")).is_ok());
 }
 

@@ -93,4 +93,6 @@ service AdminService {
   rpc CancelApplicationReimport(CancelApplicationReimportRequest) returns (CancelApplicationReimportResponse);
   rpc RegisterFollower(RegisterFollowerRequest) returns (RegisterFollowerResponse);
   rpc RetireFollower(RetireFollowerRequest) returns (RetireFollowerResponse);
+  rpc FenceReplicationPrimary(FenceReplicationPrimaryRequest) returns (FenceReplicationPrimaryResponse);
+  rpc PromoteFollower(PromoteFollowerRequest) returns (PromoteFollowerResponse);
 }

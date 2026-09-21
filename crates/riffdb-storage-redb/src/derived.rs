@@ -1943,11 +1943,18 @@ mod tests {
     }
 
     fn operational(label: &str) -> (TestDatabasePath, RedbOperationalPorts) {
+        operational_fixture(label, false)
+    }
+
+    fn operational_fixture(label: &str, legacy: bool) -> (TestDatabasePath, RedbOperationalPorts) {
         let path = TestDatabasePath::new(label);
         let mut store = RedbStore::open(&path.0).expect("open store");
-        store
-            .initialize_database(database_id())
-            .expect("initialize store");
+        if legacy {
+            store.initialize_legacy_fixture(database_id())
+        } else {
+            store.initialize_database(database_id())
+        }
+        .expect("initialize store");
         let dormant = crate::store::RedbDormantPorts {
             pending_v3_activation: None,
             shared: store.shared,

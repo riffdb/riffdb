@@ -74,11 +74,13 @@ pub enum ChangelogAttributionV3 {
     CommandAdmission = 32,
     /// Terminal execution failure, optionally accompanied by service audit.
     CommandExecutionFailure = 33,
+    /// One irreversible primary-admission fence and exact administration receipt.
+    PrimaryFence = 34,
 }
 
 impl ChangelogAttributionV3 {
     /// All source tags in canonical tag order.
-    pub const ALL: [Self; 33] = [
+    pub const ALL: [Self; 34] = [
         Self::JournaledApplicationGroup,
         Self::JournaledServiceAudit,
         Self::DirectApplicationOrServiceAuditGroup,
@@ -112,6 +114,7 @@ impl ChangelogAttributionV3 {
         Self::ProjectionControl,
         Self::CommandAdmission,
         Self::CommandExecutionFailure,
+        Self::PrimaryFence,
     ];
 
     /// Decodes only the closed source catalog.
@@ -145,6 +148,13 @@ impl ChangelogAttributionV3 {
             Self::CommandAdmission => app == 0 && admin == 0 && !empty,
             Self::CommandExecutionFailure => {
                 app == 0 && admin <= MAX_STAGED_COMMANDS as u64 && !empty
+            }
+            Self::PrimaryFence => {
+                app == 0
+                    && admin == 1
+                    && !empty
+                    && previous.administration().is_some()
+                    && binding.predecessor.is_some()
             }
             Self::CleanClose
             | Self::DirtyActivation
@@ -197,8 +207,23 @@ pub struct AuthoritativeTransactionV3 {
 }
 
 impl AuthoritativeTransactionV3 {
-    /// Seals a checked transaction receipt. The storage owner additionally proves
-    /// that attribution/frontiers agree with the actual durable command/audit rows.
+    /// Checks the selected closed catalog's complete, unsplit frame budget before
+    /// mutation. Production writers must select their validated retained catalog;
+    /// generic receipt reconstruction alone does not certify this admission.
+    pub fn new_for_catalog(
+        binding: AuthoritativeTransactionBindingV3,
+        attribution: ChangelogAttributionV3,
+        mutations: Vec<AuthoritativeMutationV3>,
+        catalog_digest: [u8; 32],
+    ) -> Result<Self, ChangelogV3Error> {
+        let receipt = Self::new(binding, attribution, mutations)?;
+        super::frame::validate_receipt_catalog(&receipt, catalog_digest)?;
+        Ok(receipt)
+    }
+
+    /// Reconstructs a checked receipt within the original compatibility ceiling.
+    /// Admission additionally checks the retained catalog with `new_for_catalog`;
+    /// storage proves attribution/frontiers against actual durable command/audit rows.
     pub fn new(
         binding: AuthoritativeTransactionBindingV3,
         attribution: ChangelogAttributionV3,

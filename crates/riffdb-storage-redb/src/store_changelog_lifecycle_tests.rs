@@ -16,7 +16,7 @@ fn follower_restart_lifecycle_must_preserve_the_exact_upstream_successor() {
     let mut store = RedbStore::open(scope.join("db.redb")).unwrap();
     let database_id =
         DatabaseId::from_unix_milliseconds_and_random(1_700_000_000_000, [0x74; 10]).unwrap();
-    store.initialize_database(database_id).unwrap();
+    store.initialize_legacy_fixture(database_id).unwrap();
     let lineage = ChangelogLineageV3::new(database_id, 1, LeadershipEpochV1::initial()).unwrap();
     let original = crate::changelog_v3_activation::activate_validated(
         store.shared.database.begin_write().unwrap(),
@@ -127,7 +127,7 @@ fn dirty_clean_and_consumption_each_commit_one_non_recursive_v3_receipt() {
     let mut store = RedbStore::open(scope.join("db.redb")).unwrap();
     let database_id =
         DatabaseId::from_unix_milliseconds_and_random(1_700_000_000_000, [0x72; 10]).unwrap();
-    store.initialize_database(database_id).unwrap();
+    store.initialize_legacy_fixture(database_id).unwrap();
     crate::changelog_v3_activation::activate_validated(
         store.shared.database.begin_write().unwrap(),
         ChangelogLineageV3::new(database_id, 1, LeadershipEpochV1::initial()).unwrap(),
@@ -209,7 +209,7 @@ fn lifecycle_receipt_process_child() {
     let mut store = RedbStore::open(path).unwrap();
     let database_id =
         DatabaseId::from_unix_milliseconds_and_random(1_700_000_000_000, [0x72; 10]).unwrap();
-    store.initialize_database(database_id).unwrap();
+    store.initialize_legacy_fixture(database_id).unwrap();
     crate::changelog_v3_activation::activate_validated(
         store.shared.database.begin_write().unwrap(),
         ChangelogLineageV3::new(database_id, 1, LeadershipEpochV1::initial()).unwrap(),
@@ -308,7 +308,7 @@ fn malformed_lifecycle_history_declines_clean_roots_and_refuses_dirty_before_mut
     let mut store = RedbStore::open(scope.join("db.redb")).unwrap();
     let database_id =
         DatabaseId::from_unix_milliseconds_and_random(1_700_000_000_000, [0x72; 10]).unwrap();
-    store.initialize_database(database_id).unwrap();
+    store.initialize_legacy_fixture(database_id).unwrap();
     crate::changelog_v3_activation::activate_validated(
         store.shared.database.begin_write().unwrap(),
         ChangelogLineageV3::new(database_id, 1, LeadershipEpochV1::initial()).unwrap(),

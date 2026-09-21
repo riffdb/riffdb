@@ -43,18 +43,22 @@ impl ReplicationService for GrpcApplication {
             .admit_replication()
             .ok_or_else(service_not_ready)?;
         let security = lifecycle.security_context().ok_or_else(service_not_ready)?;
-        let principal = authenticate_normal_request(
-            &metadata,
-            security.authenticator.as_ref(),
-            &security.authentication,
-        )?;
-        let deadline = tokio::time::Instant::from_std(self.limits.deadline(&metadata)?);
+        let request_id = riffdb_types::RequestId::from_bytes(
+            message
+                .request_id
+                .as_slice()
+                .try_into()
+                .map_err(|_| Status::invalid_argument("invalid replication request"))?,
+        )
+        .map_err(|_| Status::invalid_argument("invalid replication request"))?;
+        let (context, cancellation) = self.normal_context(&metadata, request_id, &security)?;
+        let deadline = tokio::time::Instant::from_std(context.control().deadline());
         let handshake = match handshake(message) {
             Ok(handshake) => handshake,
             Err(error) => return Ok(Response::new(terminal(error))),
         };
         let subscription =
-            match tokio::time::timeout_at(deadline, service.stream_changelog(principal, handshake))
+            match tokio::time::timeout_at(deadline, service.stream_changelog(context, handshake))
                 .await
             {
                 Ok(Ok(subscription)) => subscription,
@@ -62,9 +66,9 @@ impl ReplicationService for GrpcApplication {
                 Err(_) => return Ok(Response::new(terminal(ReplicationFailure::Unavailable))),
             };
         let stream = futures_util::stream::unfold(
-            Some((subscription, lifecycle, service)),
+            Some((subscription, lifecycle, service, cancellation)),
             move |state| async move {
-                let (mut subscription, lifecycle, service) = state?;
+                let (mut subscription, lifecycle, service, cancellation) = state?;
                 let admitted = || {
                     lifecycle
                         .admit_replication()
@@ -78,10 +82,13 @@ impl ReplicationService for GrpcApplication {
                     return Some((Ok(refusal(ReplicationFailure::Unavailable)), None));
                 }
                 match next {
-                    Ok(Ok(Some(frame))) => Some((
-                        Ok(encode_item(frame)),
-                        Some((subscription, lifecycle, service)),
-                    )),
+                    Ok(Ok(Some(frame))) => match encode_item(frame) {
+                        Ok(item) => Some((
+                            Ok(item),
+                            Some((subscription, lifecycle, service, cancellation)),
+                        )),
+                        Err(error) => Some((Ok(refusal(error)), None)),
+                    },
                     Ok(Ok(None)) => None,
                     Ok(Err(error)) => Some((Ok(refusal(error)), None)),
                     Err(_) => Some((Ok(refusal(ReplicationFailure::Unavailable)), None)),
@@ -104,8 +111,13 @@ fn handshake(
             .map_err(|_| invalid())?,
     )
     .map_err(|_| invalid())?;
-    let (phase, position) = match (message.after, message.bootstrap, message.attachment) {
-        (Some(position), None, None) => {
+    let (phase, position) = match (
+        message.after,
+        message.bootstrap,
+        message.attachment,
+        message.fence_evidence,
+    ) {
+        (Some(position), None, None, None) => {
             let phase = if message.follower_hold_id.is_empty() {
                 ReplicationPhase::Tail
             } else {
@@ -119,7 +131,7 @@ fn handshake(
             };
             (phase, Some(position))
         }
-        (None, Some(bootstrap), None) => (
+        (None, Some(bootstrap), None, None) => (
             ReplicationPhase::Bootstrap {
                 hold_id: bootstrap
                     .hold_id
@@ -131,12 +143,25 @@ fn handshake(
             },
             None,
         ),
-        (None, None, Some(attachment)) => (
+        (None, None, Some(attachment), None) => (
             ReplicationPhase::Attach {
                 manifest: attachment.manifest,
             },
             Some(attachment.acknowledged.ok_or_else(invalid)?),
         ),
+        (None, None, None, Some(fence)) => {
+            let selected = crate::replication_fence::selection(
+                &message.request_id,
+                database_id,
+                message.history_incarnation,
+                message.leadership_epoch,
+                &fence,
+            )?;
+            (
+                ReplicationPhase::FenceEvidence { request: selected },
+                Some(fence.applied.ok_or_else(invalid)?),
+            )
+        }
         _ => return Err(invalid()),
     };
     let (after_sequence, after_hash, after_frontier) = position
@@ -202,9 +227,13 @@ fn terminal(error: ReplicationFailure) -> ReplicationResponseStream {
     ))
 }
 
-fn encode_item(item: ReplicationItem) -> v1::StreamChangelogResponse {
+fn encode_item(item: ReplicationItem) -> Result<v1::StreamChangelogResponse, ReplicationFailure> {
     use v1::stream_changelog_response::Item;
     let (item, source_head) = match item {
+        ReplicationItem::FenceEvidence(evidence) => (
+            Item::FenceEvidence(crate::replication_fence::encode(&evidence)?),
+            None,
+        ),
         ReplicationItem::Frame(frame) => {
             let (bytes, head) = frame.into_parts();
             (
@@ -215,10 +244,10 @@ fn encode_item(item: ReplicationItem) -> v1::StreamChangelogResponse {
         ReplicationItem::BootstrapManifest(bytes) => (Item::BootstrapManifest(bytes), None),
         ReplicationItem::BootstrapPage(bytes) => (Item::BootstrapPage(bytes), None),
     };
-    v1::StreamChangelogResponse {
+    Ok(v1::StreamChangelogResponse {
         item: Some(item),
         source_head,
-    }
+    })
 }
 
 fn refusal(error: ReplicationFailure) -> v1::StreamChangelogResponse {

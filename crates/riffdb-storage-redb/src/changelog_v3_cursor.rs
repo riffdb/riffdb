@@ -286,10 +286,11 @@ impl ReceiptCursor {
             .binary_search_by_key(&sequence, |source| source.binding.sequence)
         {
             let source = &self.sources[index];
-            let receipt = crate::changelog_v3::receipt_from_validated_mutations(
+            let receipt = crate::changelog_v3::receipt_from_validated_mutations_for_catalog(
                 source.binding,
                 source.attribution,
                 &source.mutations,
+                source.history.lineage().catalog_digest(),
             )
             .map_err(value_error)?;
             source

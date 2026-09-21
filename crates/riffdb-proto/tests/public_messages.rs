@@ -199,6 +199,7 @@ fn replication_wire_binds_the_complete_position_and_refuses_malformed_or_oversiz
         bootstrap: None,
         attachment: None,
         follower_hold_id: vec![],
+        ..Default::default()
     };
     assert_eq!(
         decode_public_message::<v1::StreamChangelogRequest>(&request.encode_to_vec()).unwrap(),
@@ -249,7 +250,7 @@ fn replication_wire_binds_the_complete_position_and_refuses_malformed_or_oversiz
         Err(PublicWireError::MalformedEncoding)
     );
     let mut unknown = follower.encode_to_vec();
-    unknown.extend_from_slice(&[0x6a, 1, 1]); // field 13, bytes
+    unknown.extend_from_slice(&[0x72, 1, 1]); // field 14 remains unknown; 13 is fence evidence
     assert_eq!(
         decode_public_message::<v1::StreamChangelogRequest>(&unknown).unwrap(),
         follower
@@ -495,6 +496,51 @@ fn replication_grant_refuses_bootstrap_roles_and_partial_database_scope() {
             permission: Some(Permission::ReplicateChangelog(v1::Unit {})),
         },
     ];
+    let encoded = request.encode_to_vec();
+    assert_eq!(
+        decode_public_message::<v1::CreateCapabilityRequest>(&encoded),
+        Ok(request.clone())
+    );
+    let mut bootstrap = request.clone();
+    bootstrap.mode = v1::CapabilityCreateMode::Bootstrap as i32;
+    assert_eq!(
+        validate_public_message(&bootstrap),
+        Err(PublicWireError::InconsistentFields)
+    );
+    let mut role = request.clone();
+    role.grant.as_mut().expect("grant").permissions.insert(
+        1,
+        v1::CapabilityPermission {
+            permission: Some(Permission::ApplicationRoleIdentity(vec![0x42; 32])),
+        },
+    );
+    assert_eq!(
+        validate_public_message(&role),
+        Err(PublicWireError::InconsistentFields)
+    );
+    request.grant.as_mut().expect("grant").tenant_scope = Some(v1::TenantScope {
+        scope: Some(v1::tenant_scope::Scope::TenantId("one-org".to_owned())),
+    });
+    assert_eq!(
+        validate_public_message(&request),
+        Err(PublicWireError::InconsistentFields)
+    );
+}
+
+#[test]
+// req: REP-005
+fn primary_fence_grant_refuses_bootstrap_roles_and_partial_database_scope() {
+    use v1::capability_permission::Permission;
+    let mut request = create_request(v1::CapabilityCreateMode::Normal);
+    request.grant.as_mut().expect("grant").permissions = vec![
+        v1::CapabilityPermission {
+            permission: Some(Permission::AdministerCapabilities(v1::Unit {})),
+        },
+        v1::CapabilityPermission {
+            permission: Some(Permission::FenceReplicationPrimary(v1::Unit {})),
+        },
+    ];
+    request.grant.as_mut().unwrap().approval_required = vec![34];
     let encoded = request.encode_to_vec();
     assert_eq!(
         decode_public_message::<v1::CreateCapabilityRequest>(&encoded),
@@ -2509,6 +2555,7 @@ fn bootstrap_replication_uses_the_same_rpc_with_bounded_manifest_page_and_attach
         }),
         attachment: None,
         follower_hold_id: vec![],
+        ..Default::default()
     };
     assert_eq!(
         decode_public_message::<v1::StreamChangelogRequest>(&request.encode_to_vec()).unwrap(),
@@ -2621,4 +2668,125 @@ fn bootstrap_replication_uses_the_same_rpc_with_bounded_manifest_page_and_attach
             .is_err()
         );
     }
+}
+
+// req: REP-003, REP-005
+#[test]
+fn fence_evidence_phase_checks_selection_and_complete_wire_bounds() {
+    let point = v1::ReplicationPosition {
+        transaction_sequence: 1,
+        history_hash: vec![3; 32],
+        application_frontier: Some(v1::FrontierPosition {
+            position: Some(v1::frontier_position::Position::BeforeFirst(v1::Unit {})),
+        }),
+        administration_frontier: Some(v1::FrontierPosition {
+            position: Some(v1::frontier_position::Position::BeforeFirst(v1::Unit {})),
+        }),
+    };
+    let request = v1::StreamChangelogRequest {
+        request_id: uuid_v7(),
+        database_id: uuid_v7(),
+        history_incarnation: 1,
+        leadership_epoch: 1,
+        readable_format: "riffdb.changelog-frame/v3".into(),
+        catalog_digest: vec![4; 32],
+        maximum_frame_bytes: 32 * 1024 * 1024,
+        maximum_transitions: 256,
+        fence_evidence: Some(v1::ReplicationFenceEvidenceRequest {
+            operation_id: uuid_v7(),
+            hold_id: vec![1; 16],
+            registration_generation: 1,
+            applied: Some(point.clone()),
+        }),
+        ..Default::default()
+    };
+    assert_eq!(
+        decode_public_message::<v1::StreamChangelogRequest>(&request.encode_to_vec()).unwrap(),
+        request
+    );
+    for change in 0..8 {
+        let mut invalid = request.clone();
+        let fence = invalid.fence_evidence.as_mut().unwrap();
+        match change {
+            0 => fence.operation_id = vec![0; 16],
+            1 => fence.hold_id = vec![0; 16],
+            2 => fence.registration_generation = 0,
+            3 => fence.applied = None,
+            4 => fence
+                .applied
+                .as_mut()
+                .unwrap()
+                .history_hash
+                .pop()
+                .map(|_| ())
+                .unwrap(),
+            5 => invalid.after = Some(point.clone()),
+            6 => invalid.follower_hold_id = vec![1; 16],
+            _ => invalid.bootstrap = Some(Default::default()),
+        }
+        assert!(
+            decode_public_message::<v1::StreamChangelogRequest>(&invalid.encode_to_vec()).is_err(),
+            "selection change {change}"
+        );
+    }
+    // The public codec checks structure, not durable-record semantics or trust.
+    let evidence = v1::ReplicationFenceEvidence {
+        fence_record: vec![5; 1000],
+        applied: Some(point.clone()),
+        anchor: Some(point.clone()),
+        tail: Some(point.clone()),
+        minimum_resume: Some(point),
+    };
+    let response = v1::StreamChangelogResponse {
+        item: Some(v1::stream_changelog_response::Item::FenceEvidence(
+            evidence.clone(),
+        )),
+        source_head: None,
+    };
+    assert_eq!(
+        decode_public_message::<v1::StreamChangelogResponse>(&response.encode_to_vec()).unwrap(),
+        response
+    );
+    // Charge nested and outer unknown fields to the complete item ceiling.
+    let nested = evidence.encode_to_vec();
+    let wrap = |bytes: &[u8]| {
+        let mut wire = vec![0x32];
+        prost::encoding::encode_varint(bytes.len() as u64, &mut wire);
+        wire.extend_from_slice(bytes);
+        wire
+    };
+    let unknown = |length: usize| {
+        let mut bytes = nested.clone();
+        bytes.extend_from_slice(&[0xa2, 0x06]); // unknown length-delimited field 100
+        let padding = length - bytes.len() - 2;
+        prost::encoding::encode_varint(padding as u64, &mut bytes);
+        bytes.resize(length, 0);
+        bytes
+    };
+    assert!(decode_public_message::<v1::StreamChangelogResponse>(&wrap(&unknown(2045))).is_ok());
+    assert!(decode_public_message::<v1::StreamChangelogResponse>(&wrap(&unknown(2046))).is_err());
+    let mut duplicate = nested;
+    duplicate.extend_from_slice(&[0x0a, 1, 5]);
+    assert!(decode_public_message::<v1::StreamChangelogResponse>(&wrap(&duplicate)).is_err());
+    // The whole terminal item is bounded: outer unknown fields cannot borrow
+    // the ordinary 32-MiB frame allowance for a fence observation.
+    let outer = |length: usize| {
+        let mut bytes = response.encode_to_vec();
+        bytes.extend_from_slice(&[0xa2, 0x06]);
+        let padding = length - bytes.len() - 2;
+        prost::encoding::encode_varint(padding as u64, &mut bytes);
+        bytes.resize(length, 0);
+        bytes
+    };
+    assert_eq!(
+        decode_public_message::<v1::StreamChangelogResponse>(&outer(2048)).unwrap(),
+        response
+    );
+    assert!(matches!(
+        decode_public_message::<v1::StreamChangelogResponse>(&outer(2049)),
+        Err(PublicWireError::MessageTooLarge)
+    ));
+    let mut mixed = response.encode_to_vec();
+    mixed.extend_from_slice(&[0x0a, 1, 5]); // another oneof item
+    assert!(decode_public_message::<v1::StreamChangelogResponse>(&mixed).is_err());
 }

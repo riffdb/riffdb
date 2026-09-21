@@ -283,6 +283,7 @@ pub(crate) struct ProductionGraphBuilder {
     projections_root: std::path::PathBuf,
     replication_root: std::path::PathBuf,
     archives: Vec<crate::config::ConfiguredArchive>,
+    coordinator_durability: CoordinatorDurability,
     backup_root: std::path::PathBuf,
 }
 
@@ -324,6 +325,12 @@ impl ProductionGraphBuilder {
             projections_root: database.projections_root().to_path_buf(),
             replication_root: database.replication_root(),
             archives: database.archives().to_vec(),
+            // ADR-0098 keeps hardened groups on their independently Immediate
+            // two-phase path. Only standard storage admits journal epochs.
+            coordinator_durability: match config.redb_commit_profile() {
+                riffdb_storage_redb::RedbCommitProfile::Standard => CoordinatorDurability::Group,
+                riffdb_storage_redb::RedbCommitProfile::Hardened => CoordinatorDurability::Sync,
+            },
             backup_root: database.backup_root().to_path_buf(),
         }
     }
@@ -357,6 +364,7 @@ impl ProductionGraphBuilder {
             projections_root,
             replication_root,
             archives,
+            coordinator_durability,
             backup_root,
         } = self;
 
@@ -365,6 +373,7 @@ impl ProductionGraphBuilder {
             .map_err(ProductionGraphBuildError::ServerGeneration)?;
 
         let replication_publications = startup.take_replication_publications();
+        let promotion_record = startup.take_promotion();
         let (
             database_id,
             retained_metadata,
@@ -576,12 +585,6 @@ impl ProductionGraphBuilder {
         let token_issuer: Arc<dyn CapabilityTokenIssuer> = Arc::new(
             ServerCapabilityTokenIssuer::new(Arc::clone(&capability_keys)),
         );
-        let replication_service = replication_source.map(|source| {
-            Arc::new(riffdb_service::ReplicationService::new(
-                Arc::clone(&policy),
-                Arc::new(source),
-            )) as Arc<dyn riffdb_service::ReplicationApplication>
-        });
         let catalog_adapter = Arc::new(ServerCatalogReadPort::new(storage.clone(), &blocking));
         let catalog: Arc<dyn CatalogReadPort> = catalog_adapter.clone();
         let query_modules: Arc<dyn QueryModuleReadPort> = catalog_adapter.clone();
@@ -620,7 +623,7 @@ impl ProductionGraphBuilder {
                 .expect("the fixed P1 coordinator workload capacity is nonzero");
         let coordinator = match RunningCommandCoordinator::start_with_telemetry(
             coordinator_capacity,
-            CoordinatorDurability::Group,
+            coordinator_durability,
             storage.clone(),
             conflicts,
             Arc::new(admission_clock),
@@ -847,6 +850,18 @@ impl ProductionGraphBuilder {
             retained_metadata.history_incarnation(),
         );
         let service = Arc::new(activator.activate(identity, process, executors, providers));
+        let replication_service = replication_source.map(|source| {
+            Arc::new(riffdb_service::ReplicationService::new(
+                service.as_ref().clone(),
+                Arc::new(source),
+            )) as Arc<dyn riffdb_service::ReplicationApplication>
+        });
+        let promotion_retry = promotion_record.map(|record| {
+            Arc::new(riffdb_service::SourcePromotionRetryService::new(
+                service.as_ref().clone(),
+                record,
+            )) as Arc<dyn riffdb_service::FollowerPromotionApplication>
+        });
         let application_service: Arc<dyn ApplicationService> = service.clone();
         let migration_service: Arc<dyn ContractMigrationApplication> = service.clone();
         let export_service: Arc<dyn ApplicationExportApplication> = service.clone();
@@ -910,6 +925,20 @@ impl ProductionGraphBuilder {
         }
         if let Some(replication_service) = replication_service
             && let Err(source) = lifecycle.install_replication(replication_service)
+        {
+            lifecycle.stop();
+            let cleanup = cleanup_unpublished_graph(
+                exact_worker,
+                columnar_worker,
+                projection_worker,
+                coordinator,
+                blocking,
+                &notifications,
+            );
+            return Err(ProductionGraphBuildError::Activation { source, cleanup });
+        }
+        if let Some(promotion_retry) = promotion_retry
+            && let Err(source) = lifecycle.install_promotion(promotion_retry)
         {
             lifecycle.stop();
             let cleanup = cleanup_unpublished_graph(
@@ -1871,10 +1900,8 @@ mod tests {
     }
 
     #[test]
-    fn production_coordinator_selects_only_group_explicitly() {
+    fn production_coordinator_never_selects_memory_durability() {
         let source = production_source();
-        assert!(source.contains("CoordinatorDurability::Group"));
-        assert!(!source.contains("CoordinatorDurability::Sync"));
         assert!(!source.contains("DurabilityMode::Memory"));
     }
 

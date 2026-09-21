@@ -164,6 +164,16 @@ const APPLICATION_BUNDLE_EXCHANGE_BOUNDS: &[BoundDeclaration] = &[
         maximum: 4_194_304,
     },
 ];
+const REPLICATION_EXCHANGE_BOUNDS: &[BoundDeclaration] = &[
+    BoundDeclaration {
+        target: BoundTarget::EncodedRequestBytes,
+        maximum: 1024,
+    },
+    BoundDeclaration {
+        target: BoundTarget::EncodedResponseBytes,
+        maximum: 32 * 1024 * 1024 + 1024,
+    },
+];
 const ROOT_FIELD_MAP: &[FieldMapping] = &[
     FieldMapping {
         proto_path: "$request",
@@ -237,7 +247,7 @@ macro_rules! declaration {
 }
 
 /// Exactly one declaration per [`ServiceOperationV1`], in stable tag order.
-pub const OPERATIONS: [OperationDeclaration; 59] = [
+pub const OPERATIONS: [OperationDeclaration; 62] = [
     declaration_with_types!(
         ValidateContract,
         "riffdb.v1",
@@ -909,6 +919,57 @@ pub const OPERATIONS: [OperationDeclaration; 59] = [
             OPERATOR_AUDIENCE
         )
     },
+    OperationDeclaration {
+        ingress: &[
+            ServiceIngressKindV1::Grpc,
+            ServiceIngressKindV1::InProcessTestComparison,
+        ],
+        ..declaration!(
+            FenceReplicationPrimary,
+            "riffdb.v1",
+            "FenceReplicationPrimaryRequest",
+            "FenceReplicationPrimaryResponse",
+            FenceReplicationPrimary,
+            IdempotentMutation,
+            OperatorProtected,
+            OPERATOR_AUDIENCE
+        )
+    },
+    OperationDeclaration {
+        ingress: &[
+            ServiceIngressKindV1::Grpc,
+            ServiceIngressKindV1::InProcessTestComparison,
+        ],
+        ..declaration_with_types_and_bounds!(
+            StreamChangelog,
+            "riffdb.v1",
+            "StreamChangelogRequest",
+            "StreamChangelogResponse",
+            "riffdb_service::ReplicationRequest",
+            "riffdb_service::ReplicationSubscription",
+            REPLICATION_EXCHANGE_BOUNDS,
+            ReplicateChangelog,
+            StreamingRead,
+            OperatorProtected,
+            OPERATOR_AUDIENCE
+        )
+    },
+    OperationDeclaration {
+        ingress: &[
+            ServiceIngressKindV1::Grpc,
+            ServiceIngressKindV1::InProcessTestComparison,
+        ],
+        ..declaration!(
+            PromoteFollower,
+            "riffdb.v1",
+            "PromoteFollowerRequest",
+            "PromoteFollowerResponse",
+            AdministerCapabilities,
+            IdempotentMutation,
+            OperatorProtected,
+            OPERATOR_AUDIENCE
+        )
+    },
 ];
 
 /// Looks up one declaration by its stable semantic operation.
@@ -922,6 +983,57 @@ mod tests {
     use std::collections::BTreeSet;
 
     use super::*;
+
+    // req: REP-005
+    #[test]
+    fn promotion_is_operator_only_and_reuses_administration_authority() {
+        let entry = declaration(ServiceOperationV1::PromoteFollower);
+        assert_eq!(entry.operation.tag(), 0x3e);
+        assert_eq!(
+            entry.permission,
+            CapabilityPermissionKindV1::AdministerCapabilities
+        );
+        assert_eq!(entry.idempotency, IdempotencyClass::IdempotentMutation);
+        assert_eq!(entry.audiences, OPERATOR_AUDIENCE);
+        assert_eq!(
+            entry.output_redaction,
+            OutputRedactionClass::OperatorProtected
+        );
+        assert_eq!(
+            entry.ingress,
+            &[
+                ServiceIngressKindV1::Grpc,
+                ServiceIngressKindV1::InProcessTestComparison
+            ]
+        );
+        assert_eq!(entry.proto_request, "riffdb.v1.PromoteFollowerRequest");
+        assert_eq!(entry.proto_response, "riffdb.v1.PromoteFollowerResponse");
+    }
+
+    // req: REP-003, REP-005
+    #[test]
+    fn replication_stream_has_its_own_auditable_service_operation() {
+        let entry = OPERATIONS
+            .iter()
+            .find(|entry| entry.proto_request == "riffdb.v1.StreamChangelogRequest")
+            .expect(
+                "authenticated administrative replication needs its own service-audit identity",
+            );
+        assert_eq!(entry.proto_response, "riffdb.v1.StreamChangelogResponse");
+        assert_eq!(
+            entry.permission,
+            CapabilityPermissionKindV1::ReplicateChangelog
+        );
+        assert_eq!(entry.idempotency, IdempotencyClass::StreamingRead);
+        assert_eq!(entry.operation.tag(), 0x3d);
+        assert_eq!(entry.bounds, REPLICATION_EXCHANGE_BOUNDS);
+        assert!(!entry.ingress.contains(&ServiceIngressKindV1::McpHttp));
+        assert_eq!(entry.audiences, OPERATOR_AUDIENCE);
+        assert_eq!(
+            entry.output_redaction,
+            OutputRedactionClass::OperatorProtected
+        );
+    }
 
     #[test]
     fn registry_inventory_is_exact_complete_and_bounded() {
@@ -958,7 +1070,11 @@ mod tests {
         for entry in OPERATIONS {
             let lifecycle = matches!(
                 entry.operation,
-                ServiceOperationV1::RegisterFollower | ServiceOperationV1::RetireFollower
+                ServiceOperationV1::RegisterFollower
+                    | ServiceOperationV1::RetireFollower
+                    | ServiceOperationV1::FenceReplicationPrimary
+                    | ServiceOperationV1::StreamChangelog
+                    | ServiceOperationV1::PromoteFollower
             );
             assert_eq!(
                 entry.ingress,

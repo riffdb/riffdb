@@ -510,6 +510,21 @@ mod tests {
     }
 
     fn ports(label: &str, controller: RedbTestController) -> (TestPath, RedbOperationalPorts) {
+        ports_fixture(label, controller, false)
+    }
+
+    fn legacy_ports(
+        label: &str,
+        controller: RedbTestController,
+    ) -> (TestPath, RedbOperationalPorts) {
+        ports_fixture(label, controller, true)
+    }
+
+    fn ports_fixture(
+        label: &str,
+        controller: RedbTestController,
+        legacy: bool,
+    ) -> (TestPath, RedbOperationalPorts) {
         let scope = crate::test_path::ScopedDirectory::new(label);
         let path = TestPath(scope.join("db.redb"), scope);
         let mut store = RedbStore::open_with_test_controller(&path.0, controller).expect("open");
@@ -518,7 +533,12 @@ mod tests {
         database[8] = 0x84;
         let database = DatabaseId::from_bytes(database).expect("database");
         assert!(matches!(
-            store.initialize_database(database).expect("initialize"),
+            if legacy {
+                store.initialize_legacy_fixture(database)
+            } else {
+                store.initialize_database(database)
+            }
+            .expect("initialize"),
             DatabaseInitializationResult::Installed(_)
         ));
         let ports = RedbDormantPorts {
@@ -534,7 +554,7 @@ mod tests {
     #[test]
     fn follower_columnar_controls_are_complete_and_pinned_without_writer_admission() {
         use riffdb_storage_api::OwnedSnapshotReader;
-        let (_path, ports) = ports(
+        let (_path, ports) = legacy_ports(
             "columnar-read-pin",
             RedbTestController::observe_index_migration(),
         );
@@ -706,7 +726,7 @@ mod tests {
     // req: REC-001, PRJ-004, PRJ-006, PRJ-008, PRJ-009, PRJ-010
     #[test]
     fn columnar_history_reset_uses_transaction_current_incarnation() {
-        let (_path, ports) = ports(
+        let (_path, ports) = legacy_ports(
             "columnar-history-reset-current",
             RedbTestController::observe_index_migration(),
         );
@@ -760,7 +780,7 @@ mod tests {
         let controller = RedbTestController::return_unknown_after_commit(
             RedbTestOperation::ColumnarProjectionControl,
         );
-        let (path, ports) = ports("columnar-history-reset-unknown", controller);
+        let (path, ports) = legacy_ports("columnar-history-reset-unknown", controller);
         let (source, definition) = source();
         let stale = StoredColumnarProjectionControlV1::initialize_fresh_v1(
             source.clone(),

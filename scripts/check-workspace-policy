@@ -114,6 +114,10 @@ EXPECTED_FIXTURE_BINS = {
   "riffdbd-causal-wait-fixture" => {
     "package" => "riffdb-server",
     "required_features" => ["test-fixtures"]
+  },
+  "riffdbd-maintenance-fixture" => {
+    "package" => "riffdb-server",
+    "required_features" => ["test-fixtures"]
   }
 }.freeze
 

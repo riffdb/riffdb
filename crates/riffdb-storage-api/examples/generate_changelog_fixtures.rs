@@ -5,17 +5,18 @@ use std::{env, fs, path::Path};
 
 use riffdb_storage_api::{
     AuthoritativeMutationV3, AuthoritativeNamespaceV1, AuthoritativeStateCatalogV1,
-    AuthoritativeTransactionBindingV3, AuthoritativeTransactionV3, ChangelogAttributionV3,
-    ChangelogEntryClassV1, ChangelogEntryClassV2, ChangelogEntryV1, ChangelogEntryV2,
-    ChangelogFrameBindingV1, ChangelogFrameBindingV2, ChangelogFrameBindingV3, ChangelogFrameV1,
-    ChangelogFrameV2, ChangelogFrameV3, ChangelogHistoryPointV3, ChangelogHistoryStateV3,
-    ChangelogLineageV3, ChangelogTransactionAllocator, ChangelogTransactionSequence,
-    LeadershipEpochV1, ReplicationFollowerStateV3, ReplicationSourceHoldIdV1,
-    ReplicationSourceHoldKindV1 as HoldKind, ReplicationSourceHoldV1,
+    AuthoritativeStateCatalogV2, AuthoritativeTransactionBindingV3, AuthoritativeTransactionV3,
+    ChangelogAttributionV3, ChangelogEntryClassV1, ChangelogEntryClassV2, ChangelogEntryV1,
+    ChangelogEntryV2, ChangelogFrameBindingV1, ChangelogFrameBindingV2, ChangelogFrameBindingV3,
+    ChangelogFrameV1, ChangelogFrameV2, ChangelogFrameV3, ChangelogHistoryPointV3,
+    ChangelogHistoryStateV3, ChangelogLineageV3, ChangelogTransactionAllocator,
+    ChangelogTransactionSequence, LeadershipEpochV1, ReplicationFollowerStateV3,
+    ReplicationSourceHoldIdV1, ReplicationSourceHoldKindV1 as HoldKind, ReplicationSourceHoldV1,
     proto_codec::{
-        encode_authoritative_state_catalog_v1, encode_changelog_history_state_v3,
-        encode_changelog_transaction_allocator_v3, encode_leadership_epoch_v1,
-        encode_replication_follower_state_v3, encode_replication_source_hold_v1,
+        encode_authoritative_state_catalog_v1, encode_authoritative_state_catalog_v2,
+        encode_changelog_history_state_v3, encode_changelog_transaction_allocator_v3,
+        encode_leadership_epoch_v1, encode_replication_follower_state_v3,
+        encode_replication_source_hold_v1,
     },
 };
 use riffdb_types::{AdministrationSequence, CommitSequence, DatabaseId, DualFrontier};
@@ -175,6 +176,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let failure = failure.encode()?;
     let audited_failure = audited_failure.encode()?;
     let catalog = encode_authoritative_state_catalog_v1(AuthoritativeStateCatalogV1)?;
+    let catalog_v2 = encode_authoritative_state_catalog_v2(AuthoritativeStateCatalogV2)?;
     let epoch_first = encode_leadership_epoch_v1(LeadershipEpochV1::initial())?;
     let epoch_last =
         encode_leadership_epoch_v1(LeadershipEpochV1::new(u64::MAX).ok_or("invalid epoch")?)?;
@@ -286,6 +288,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             lifecycle_frame.as_slice(),
         ),
         ("authoritative-state-catalog-v1.hex", catalog.as_bytes()),
+        ("authoritative-state-catalog-v2.hex", catalog_v2.as_bytes()),
         ("leadership-epoch-v1-first.hex", epoch_first.as_bytes()),
         ("leadership-epoch-v1-last.hex", epoch_last.as_bytes()),
         ("changelog-history-state-v3.hex", history.as_bytes()),

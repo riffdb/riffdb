@@ -12,6 +12,19 @@ pub use replication_administration::{
     ReplicationAdministrationDecision,
 };
 
+#[path = "authorizer_replication_promotion.rs"]
+mod replication_promotion;
+pub use replication_promotion::{
+    AuthorizedReplicationPromotion, AuthorizedReplicationPromotionPreparation,
+    ReplicationPromotionDecision,
+};
+
+#[path = "authorizer_primary_fence.rs"]
+mod primary_fence;
+pub use primary_fence::{
+    AuthorizedPrimaryFence, AuthorizedPrimaryFencePreparation, PrimaryFenceDecision,
+};
+
 use riffdb_auth::{
     AuthenticatedPrincipal, CurrentCapability, CurrentCapabilityActivity, CurrentCapabilityResolver,
 };
@@ -1074,6 +1087,12 @@ fn authorize_tenant(
 
 #[cfg(test)]
 mod tests {
+    mod replication_promotion {
+        include!("replication_promotion_tests.rs");
+    }
+    mod primary_fence {
+        include!("primary_fence_tests.rs");
+    }
     mod replication_administration {
         include!("replication_administration_tests.rs");
     }

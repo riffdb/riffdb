@@ -7,6 +7,11 @@
 
 #[path = "daemon_follower.rs"]
 mod follower;
+#[path = "daemon_promotion.rs"]
+mod promotion;
+
+#[path = "daemon_replication_roles.rs"]
+pub(crate) mod replication_roles;
 
 #[path = "replication_peer.rs"]
 pub(crate) mod replication_peer;
@@ -597,10 +602,7 @@ async fn run_server(
     // Internal benchmark synchronization only: the runtime and signal owner
     // now exist, while no database or application population has been opened.
     eprintln!("riffdb-process-memory-baseline-v1");
-    if config.mode() == crate::config::ServerMode::Follower {
-        return follower::run(config, &mut process_signal).await;
-    }
-    if config.databases().len() > 1 {
+    if config.mode() == crate::config::ServerMode::Follower || config.databases().len() > 1 {
         return run_multi_database_server(config, &mut process_signal, &recovery).await;
     }
     let clocks = ProductionWallClocks::new();
@@ -630,12 +632,21 @@ async fn run_server(
         GrpcApplication::new_with_audience(lifecycle_for_grpc, limits, config.audience().clone());
     let mut transport = HostedGrpc::bind(config.application_listener().clone(), &application)?;
     drop(application);
-    let (mut maintenance_storage, reconciliation) =
-        RedbMaintenanceStorage::open(config.database_path(), config.backup_root())
-            .map_err(DaemonError::MaintenanceStorage)?;
+    let replication_roles::PreparedMaintenanceStartup {
+        owner: mut maintenance_storage,
+        reconciliation,
+        promoted: mut promoted_startup,
+    } = replication_roles::prepare(
+        config.database_path(),
+        config.backup_root(),
+        None,
+        startup_inputs.clone(),
+        config.redb_commit_profile(),
+    )?;
     let migration_startup = match incomplete_contract_migration(&reconciliation)? {
         None => None,
         Some(receipt) => {
+            drop(promoted_startup.take());
             let build = contract_migration_backup_build_metadata()
                 .map_err(|_| DaemonError::MaintenanceDriver)?;
             let inputs = MigrationDriverInputs {
@@ -649,7 +660,7 @@ async fn run_server(
             Some(startup)
         }
     };
-    let target_requires_recovery = if migration_startup.is_some() {
+    let target_requires_recovery = if migration_startup.is_some() || promoted_startup.is_some() {
         false
     } else {
         maintenance_storage
@@ -674,40 +685,56 @@ async fn run_server(
     let startup = if let Some(startup) = migration_startup {
         startup
     } else {
+        if !matches!(
+            initial_action,
+            InitialDatabaseAction::OpenCurrent
+                | InitialDatabaseAction::ResumeCurrent {
+                    validate_current_source: true,
+                    ..
+                }
+                | InitialDatabaseAction::AwaitRestoreCredential(_)
+        ) {
+            drop(promoted_startup.take());
+        }
         match initial_action {
-            InitialDatabaseAction::OpenCurrent => match open_redb_startup_with_commit_profile(
-                config.database_path(),
-                startup_inputs.clone(),
-                &database_ids,
-                config.redb_commit_profile(),
-            ) {
-                Ok(startup) => startup,
-                Err(source)
-                    if recovery_backup_available && startup_failure_allows_recovery(&source) =>
-                {
-                    maintenance_lifecycle
-                        .enter_recovery_mode()
-                        .map_err(|_| DaemonError::MaintenanceDriver)?;
-                    return run_recovery_until_ready(
-                        &config,
-                        started_at,
-                        transport,
-                        lifecycle,
-                        Arc::clone(&maintenance_lifecycle),
-                        maintenance,
-                        &mut maintenance_receiver,
-                        &mut process_signal,
-                        &identifiers,
-                        &recovery,
+            InitialDatabaseAction::OpenCurrent => {
+                match promoted_startup.take().map(Ok).unwrap_or_else(|| {
+                    open_redb_startup_with_commit_profile(
+                        config.database_path(),
+                        startup_inputs.clone(),
+                        &database_ids,
+                        config.redb_commit_profile(),
                     )
-                    .await;
+                }) {
+                    Ok(startup) => startup,
+                    Err(source)
+                        if recovery_backup_available
+                            && startup_failure_allows_recovery(&source) =>
+                    {
+                        maintenance_lifecycle
+                            .enter_recovery_mode()
+                            .map_err(|_| DaemonError::MaintenanceDriver)?;
+                        return run_recovery_until_ready(
+                            &config,
+                            started_at,
+                            transport,
+                            lifecycle,
+                            Arc::clone(&maintenance_lifecycle),
+                            maintenance,
+                            &mut maintenance_receiver,
+                            &mut process_signal,
+                            &identifiers,
+                            &recovery,
+                        )
+                        .await;
+                    }
+                    Err(source) => {
+                        lifecycle.stop();
+                        transport.drain_after_signal().await?;
+                        return Err(DaemonError::Startup(source));
+                    }
                 }
-                Err(source) => {
-                    lifecycle.stop();
-                    transport.drain_after_signal().await?;
-                    return Err(DaemonError::Startup(source));
-                }
-            },
+            }
             InitialDatabaseAction::ResumeCurrent {
                 receipt,
                 request,
@@ -716,13 +743,18 @@ async fn run_server(
                 let operation_id = request.operation_id();
                 let mut retained_target_history_incarnation = None;
                 if validate_current_source {
-                    let current = open_redb_startup_with_commit_profile(
-                        config.database_path(),
-                        startup_inputs.clone(),
-                        &database_ids,
-                        config.redb_commit_profile(),
-                    )
-                    .map_err(DaemonError::Startup)?;
+                    let current = promoted_startup
+                        .take()
+                        .map(Ok)
+                        .unwrap_or_else(|| {
+                            open_redb_startup_with_commit_profile(
+                                config.database_path(),
+                                startup_inputs.clone(),
+                                &database_ids,
+                                config.redb_commit_profile(),
+                            )
+                        })
+                        .map_err(DaemonError::Startup)?;
                     if receipt.source_database_id() != Some(current.database_id()) {
                         drop(current);
                         lifecycle.stop();
@@ -790,13 +822,18 @@ async fn run_server(
                 success.into_parts().1
             }
             InitialDatabaseAction::AwaitRestoreCredential(receipt) => {
-                let startup = open_redb_startup_with_commit_profile(
-                    config.database_path(),
-                    startup_inputs.clone(),
-                    &database_ids,
-                    config.redb_commit_profile(),
-                )
-                .map_err(DaemonError::Startup)?;
+                let startup = promoted_startup
+                    .take()
+                    .map(Ok)
+                    .unwrap_or_else(|| {
+                        open_redb_startup_with_commit_profile(
+                            config.database_path(),
+                            startup_inputs.clone(),
+                            &database_ids,
+                            config.redb_commit_profile(),
+                        )
+                    })
+                    .map_err(DaemonError::Startup)?;
                 if receipt.source_database_id() != Some(startup.database_id()) {
                     lifecycle.stop();
                     transport.drain_after_signal().await?;
@@ -983,12 +1020,41 @@ async fn run_server(
 struct MultiDatabaseGraph {
     alias: DatabaseAlias,
     graph: Option<RunningProductionGraph>,
+    follower: Option<follower::RunningFollowerGeneration>,
     lifecycle: Arc<ProductionLifecycleRoute>,
     routing: RuntimeRoutingState,
     maintenance_lifecycle: Arc<MaintenanceLifecycle>,
     maintenance: MaintenanceController,
     maintenance_receiver: Option<tokio::sync::mpsc::Receiver<MaintenanceTrigger>>,
     generation: u64,
+    _promotion: Option<Arc<crate::promotion_admission::PromotionController>>,
+    promotion_receiver:
+        Option<tokio::sync::mpsc::Receiver<crate::promotion_admission::PromotionTrigger>>,
+}
+
+impl MultiDatabaseGraph {
+    fn hosted_mcp_dependencies(&self) -> Option<crate::process_graph::HostedMcpDependencies> {
+        self.graph
+            .as_ref()
+            .and_then(RunningProductionGraph::hosted_mcp_dependencies)
+            .or_else(|| {
+                self.follower
+                    .as_ref()
+                    .and_then(follower::RunningFollowerGeneration::hosted_mcp_dependencies)
+            })
+    }
+
+    async fn shutdown(self) -> Result<(), DaemonError> {
+        let source = match self.graph {
+            Some(graph) => graph.shutdown().await.map_err(DaemonError::GraphShutdown),
+            None => Ok(()),
+        };
+        let follower = match self.follower {
+            Some(follower) => follower.shutdown().await,
+            None => Ok(()),
+        };
+        source.and(follower)
+    }
 }
 
 struct MultiInitialRecovery {
@@ -997,6 +1063,10 @@ struct MultiInitialRecovery {
 }
 
 enum MultiDatabaseEvent {
+    Promotion {
+        database_index: usize,
+        trigger: crate::promotion_admission::PromotionTrigger,
+    },
     Maintenance {
         database_index: usize,
         trigger: MaintenanceTrigger,
@@ -1088,17 +1158,86 @@ async fn run_multi_database_server(
 
     let mut graphs = Vec::with_capacity(pending.len());
     for (database, mut pending) in config.databases().iter().zip(pending) {
-        let (mut maintenance_storage, reconciliation) =
-            match RedbMaintenanceStorage::open(database.database_path(), database.backup_root()) {
-                Ok(value) => value,
-                Err(source) => {
+        let replication_roles::PreparedMaintenanceStartup {
+            owner: mut maintenance_storage,
+            reconciliation,
+            promoted: mut promoted_startup,
+        } = match replication_roles::prepare(
+            database.database_path(),
+            database.backup_root(),
+            database.follower(),
+            startup_inputs.clone(),
+            config.redb_commit_profile(),
+        ) {
+            Ok(value) => value,
+            Err(source) => {
+                shutdown_multi_before_ready(&mut transport, graphs).await?;
+                return Err(source);
+            }
+        };
+        if database.follower().is_some() && promoted_startup.is_none() {
+            // A follower never resumes source-only maintenance or starts a writer.
+            // An unresolved promotion was already refused by local role recovery.
+            let ordinary = incomplete_contract_migration(&reconciliation)?.is_none()
+                && matches!(
+                    initial_database_action(&mut maintenance_storage, &reconciliation, false)?,
+                    InitialDatabaseAction::OpenCurrent
+                );
+            if !ordinary {
+                shutdown_multi_before_ready(&mut transport, graphs).await?;
+                return Err(DaemonError::MaintenanceDriver);
+            }
+            let (maintenance_triggers, maintenance_receiver) = maintenance_trigger_channel();
+            let maintenance = MaintenanceController::new_with_migration_exclusion(
+                shared_maintenance_storage(maintenance_storage),
+                Arc::clone(&pending.maintenance_lifecycle),
+                maintenance_triggers,
+                Arc::clone(&migration_exclusion),
+            );
+            let (promotion, promotion_receiver) =
+                crate::promotion_admission::PromotionController::channel();
+            let follower = match follower::start(
+                &config,
+                database,
+                startup_inputs.clone(),
+                digest_keys.clone(),
+                &process_clocks,
+                pending.activator,
+                pending.lifecycle.clone(),
+                process_signal,
+                promotion.clone(),
+            )
+            .await
+            {
+                Ok(Some(follower)) => follower,
+                Ok(None) => {
                     shutdown_multi_before_ready(&mut transport, graphs).await?;
-                    return Err(DaemonError::MaintenanceStorage(source));
+                    return Ok(());
+                }
+                Err(error) => {
+                    shutdown_multi_before_ready(&mut transport, graphs).await?;
+                    return Err(error);
                 }
             };
+            graphs.push(MultiDatabaseGraph {
+                alias: pending.alias,
+                graph: None,
+                follower: Some(follower),
+                _promotion: Some(promotion),
+                promotion_receiver: Some(promotion_receiver),
+                lifecycle: pending.lifecycle,
+                routing: pending.routing,
+                maintenance_lifecycle: pending.maintenance_lifecycle,
+                maintenance,
+                maintenance_receiver: Some(maintenance_receiver),
+                generation: 0,
+            });
+            continue;
+        }
         let migration_startup = match incomplete_contract_migration(&reconciliation)? {
             None => None,
             Some(receipt) => {
+                drop(promoted_startup.take());
                 let build = contract_migration_backup_build_metadata()
                     .map_err(|_| DaemonError::MaintenanceDriver)?;
                 let database_ids = pending.identifiers.database_ids();
@@ -1117,7 +1256,8 @@ async fn run_multi_database_server(
                 }
             }
         };
-        let target_requires_recovery = if migration_startup.is_some() {
+        let target_requires_recovery = if migration_startup.is_some() || promoted_startup.is_some()
+        {
             false
         } else {
             maintenance_storage
@@ -1140,14 +1280,27 @@ async fn run_multi_database_server(
         let startup = if let Some(startup) = migration_startup {
             startup
         } else {
+            if !matches!(
+                initial_action,
+                InitialDatabaseAction::OpenCurrent
+                    | InitialDatabaseAction::ResumeCurrent {
+                        validate_current_source: true,
+                        ..
+                    }
+                    | InitialDatabaseAction::AwaitRestoreCredential(_)
+            ) {
+                drop(promoted_startup.take());
+            }
             match initial_action {
                 InitialDatabaseAction::OpenCurrent => {
-                    match open_redb_startup_with_commit_profile(
-                        database.database_path(),
-                        startup_inputs.clone(),
-                        &pending.identifiers.database_ids(),
-                        config.redb_commit_profile(),
-                    ) {
+                    match promoted_startup.take().map(Ok).unwrap_or_else(|| {
+                        open_redb_startup_with_commit_profile(
+                            database.database_path(),
+                            startup_inputs.clone(),
+                            &pending.identifiers.database_ids(),
+                            config.redb_commit_profile(),
+                        )
+                    }) {
                         Ok(startup) => startup,
                         Err(source) => {
                             shutdown_multi_before_ready(&mut transport, graphs).await?;
@@ -1163,13 +1316,18 @@ async fn run_multi_database_server(
                     let operation_id = request.operation_id();
                     let mut retained_target_history_incarnation = None;
                     if validate_current_source {
-                        let current = open_redb_startup_with_commit_profile(
-                            database.database_path(),
-                            startup_inputs.clone(),
-                            &pending.identifiers.database_ids(),
-                            config.redb_commit_profile(),
-                        )
-                        .map_err(DaemonError::Startup)?;
+                        let current = promoted_startup
+                            .take()
+                            .map(Ok)
+                            .unwrap_or_else(|| {
+                                open_redb_startup_with_commit_profile(
+                                    database.database_path(),
+                                    startup_inputs.clone(),
+                                    &pending.identifiers.database_ids(),
+                                    config.redb_commit_profile(),
+                                )
+                            })
+                            .map_err(DaemonError::Startup)?;
                         if receipt.source_database_id() != Some(current.database_id()) {
                             shutdown_multi_before_ready(&mut transport, graphs).await?;
                             return Err(DaemonError::MaintenanceDriver);
@@ -1240,13 +1398,18 @@ async fn run_multi_database_server(
                     success.into_parts().1
                 }
                 InitialDatabaseAction::AwaitRestoreCredential(receipt) => {
-                    let current = open_redb_startup_with_commit_profile(
-                        database.database_path(),
-                        startup_inputs.clone(),
-                        &pending.identifiers.database_ids(),
-                        config.redb_commit_profile(),
-                    )
-                    .map_err(DaemonError::Startup)?;
+                    let current = promoted_startup
+                        .take()
+                        .map(Ok)
+                        .unwrap_or_else(|| {
+                            open_redb_startup_with_commit_profile(
+                                database.database_path(),
+                                startup_inputs.clone(),
+                                &pending.identifiers.database_ids(),
+                                config.redb_commit_profile(),
+                            )
+                        })
+                        .map_err(DaemonError::Startup)?;
                     if receipt.source_database_id() != Some(current.database_id()) {
                         drop(current);
                         shutdown_multi_before_ready(&mut transport, graphs).await?;
@@ -1452,6 +1615,9 @@ async fn run_multi_database_server(
         graphs.push(MultiDatabaseGraph {
             alias: pending.alias,
             graph: Some(graph),
+            follower: None,
+            _promotion: None,
+            promotion_receiver: None,
             lifecycle: pending.lifecycle,
             routing: pending.routing,
             maintenance_lifecycle: pending.maintenance_lifecycle,
@@ -1461,6 +1627,16 @@ async fn run_multi_database_server(
         });
     }
 
+    if graphs.iter().any(|graph| {
+        !graph.routing.is_routing_allowed()
+            || graph
+                .follower
+                .as_ref()
+                .is_some_and(|follower| !follower.is_available())
+    }) {
+        shutdown_multi_before_ready(&mut transport, graphs).await?;
+        return Err(DaemonError::RuntimeStopped);
+    }
     for graph in &graphs {
         let route: Arc<dyn GrpcLifecycleRoute> = graph.lifecycle.clone();
         routes
@@ -1472,11 +1648,7 @@ async fn run_multi_database_server(
         Some(address) => {
             let mut dependencies = Vec::with_capacity(graphs.len());
             for (database, graph) in config.databases().iter().zip(&graphs) {
-                let Some(hosted) = graph
-                    .graph
-                    .as_ref()
-                    .and_then(RunningProductionGraph::hosted_mcp_dependencies)
-                else {
+                let Some(hosted) = graph.hosted_mcp_dependencies() else {
                     shutdown_multi_before_ready(&mut transport, graphs).await?;
                     return Err(DaemonError::McpDependencies);
                 };
@@ -1500,6 +1672,23 @@ async fn run_multi_database_server(
         tokio::sync::mpsc::channel(config.databases().len().saturating_mul(2));
     let mut monitors = Vec::with_capacity(graphs.len().saturating_mul(2));
     for (database_index, graph) in graphs.iter_mut().enumerate() {
+        if let Some(mut receiver) = graph.promotion_receiver.take() {
+            let sender = event_sender.clone();
+            monitors.push(tokio::spawn(async move {
+                while let Some(trigger) = receiver.recv().await {
+                    if sender
+                        .send(MultiDatabaseEvent::Promotion {
+                            database_index,
+                            trigger,
+                        })
+                        .await
+                        .is_err()
+                    {
+                        return;
+                    }
+                }
+            }));
+        }
         let mut receiver = graph
             .maintenance_receiver
             .take()
@@ -1587,6 +1776,19 @@ async fn run_multi_database_server(
                         .await?;
                         continue;
                     }
+                    MultiDatabaseEvent::Promotion { database_index, trigger } => {
+                        let replacement = promotion::run(&config, started_at, database_index, trigger,
+                            &routes, &hosted_mcp, &mut graphs).await;
+                        match replacement {
+                            Ok(true) => monitors.push(spawn_multi_runtime_monitor(
+                                database_index, graphs[database_index].generation,
+                                graphs[database_index].routing.clone(), event_sender.clone(),
+                            )),
+                            Ok(false) => {},
+                            Err(_) => quarantine_multi_database_generation(database_index, &routes, &hosted_mcp, &mut graphs).await?,
+                        }
+                        continue;
+                    }
                     MultiDatabaseEvent::Maintenance {
                         database_index,
                         trigger,
@@ -1659,11 +1861,12 @@ async fn run_multi_database_server(
             .await
             .map_err(DaemonError::McpStop)?;
     }
+    let mut graph_shutdown = Ok(());
     for graph in graphs {
-        if let Some(graph) = graph.graph {
-            graph.shutdown().await.map_err(DaemonError::GraphShutdown)?;
-        }
+        let result = graph.shutdown().await;
+        graph_shutdown = graph_shutdown.and(result);
     }
+    graph_shutdown?;
     if matches!(stop, MultiDatabaseStop::Clean) {
         let stdout = io::stdout();
         let mut stdout = stdout.lock();
@@ -1736,6 +1939,9 @@ async fn quarantine_multi_database_generation(
     if let Some(graph) = generation.graph.take() {
         let _ = graph.begin_transport_shutdown();
         let _ = graph.shutdown().await;
+    }
+    if let Some(follower) = generation.follower.take() {
+        let _ = follower.shutdown().await;
     }
     generation.lifecycle = offline_lifecycle;
     generation.routing = routing;
@@ -2239,11 +2445,12 @@ async fn shutdown_multi_before_ready(
         }
     }
     transport.drain_after_signal().await?;
+    let mut graph_shutdown = Ok(());
     for graph in graphs {
-        if let Some(graph) = graph.graph {
-            graph.shutdown().await.map_err(DaemonError::GraphShutdown)?;
-        }
+        let result = graph.shutdown().await;
+        graph_shutdown = graph_shutdown.and(result);
     }
+    graph_shutdown?;
     Ok(())
 }
 
@@ -5081,8 +5288,8 @@ mod tests {
             supervisor
                 .matches("quarantine_multi_database_generation(")
                 .count(),
-            3,
-            "runtime, maintenance-channel, and replacement failures remain database-local"
+            4,
+            "runtime, maintenance-channel, promotion, and replacement failures remain database-local"
         );
         assert!(
             supervisor.contains("let replacement = replace_multi_database_generation("),

@@ -369,3 +369,27 @@ fn captured_immediate_process_crashes_leave_old_or_complete_receipted_state() {
         }
     }
 }
+
+#[test]
+// req: REP-005
+fn primary_fencing_cannot_enter_generic_direct_mutation_owners() {
+    use crate::changelog_v3_write::{CapturedImmediateWrite, require_direct_attribution};
+    use riffdb_storage_api::ChangelogAttributionV3;
+    assert_eq!(
+        require_direct_attribution(ChangelogAttributionV3::PrimaryFence)
+            .unwrap_err()
+            .kind(),
+        StorageErrorKind::InvariantViolation,
+    );
+    let scope = crate::test_path::ScopedDirectory::new("primary-fence-direct-refusal");
+    let database = fixture(&scope.join("db.redb"), PRE_V3_REGISTRY);
+    let before = metadata(&database);
+    for profile in [RedbCommitProfile::Standard, RedbCommitProfile::Hardened] {
+        let result =
+            CapturedImmediateWrite::begin(&database, profile, ChangelogAttributionV3::PrimaryFence);
+        assert!(
+            matches!(result, Err(error) if error.kind() == StorageErrorKind::InvariantViolation)
+        );
+        assert_eq!(metadata(&database), before);
+    }
+}

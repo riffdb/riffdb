@@ -13,9 +13,9 @@ use crate::envelope::{PayloadValidationError, RecordRegistry, RecordSchema};
 use crate::storage::v1;
 
 /// Number of durable semantic payload tuples accepted while opening or migrating storage.
-pub const READABLE_RECORD_SCHEMA_COUNT: usize = 111;
+pub const READABLE_RECORD_SCHEMA_COUNT: usize = 115;
 /// Number of durable semantic roles accepted for current writes.
-pub const WRITABLE_RECORD_SCHEMA_COUNT: usize = 88;
+pub const WRITABLE_RECORD_SCHEMA_COUNT: usize = 92;
 /// Number of durable semantic roles accepted for current writes.
 pub const CURRENT_RECORD_SCHEMA_COUNT: usize = WRITABLE_RECORD_SCHEMA_COUNT;
 
@@ -1835,6 +1835,24 @@ const AUTHORITATIVE_STATE_CATALOG_V1_RECORD_SCHEMA: RecordSchema<'static> =
     )
     .with_compact_identity(69, 1);
 
+const AUTHORITATIVE_STATE_CATALOG_V2_RECORD_SCHEMA: RecordSchema<'static> =
+    RecordSchema::new_current(
+        "riffdb.storage.v1.StoredAuthoritativeStateCatalogV2",
+        SchemaHash::from_bytes(*include_bytes!(
+            "../fixtures/durable-authoritative-state-catalog-v2-schema-hash.bin"
+        )),
+        34,
+        u32::from_be_bytes({
+            let bounds = *include_bytes!(
+                "../fixtures/durable-authoritative-state-catalog-v2-record-bound.bin"
+            );
+            [bounds[4], bounds[5], bounds[6], bounds[7]]
+        }) as usize,
+        preflight_payload::<106>,
+        validate_payload::<106, v1::StoredAuthoritativeStateCatalogV2>,
+    )
+    .with_compact_identity(69, 2);
+
 const LEADERSHIP_EPOCH_V1_RECORD_SCHEMA: RecordSchema<'static> = RecordSchema::new_current(
     "riffdb.storage.v1.StoredLeadershipEpochV1",
     SchemaHash::from_bytes(*include_bytes!(
@@ -2167,6 +2185,10 @@ readable_message!(
     AUTHORITATIVE_STATE_CATALOG_V1_RECORD_SCHEMA
 );
 readable_message!(
+    v1::StoredAuthoritativeStateCatalogV2,
+    AUTHORITATIVE_STATE_CATALOG_V2_RECORD_SCHEMA
+);
+readable_message!(
     v1::StoredLeadershipEpochV1,
     LEADERSHIP_EPOCH_V1_RECORD_SCHEMA
 );
@@ -2349,6 +2371,7 @@ writable_message!(v1::StoredCleanCloseLifecycleV1);
 writable_message!(v1::StoredColumnarProjectionControlV1);
 writable_message!(v1::StoredChangelogTransactionAllocatorV3);
 writable_message!(v1::StoredAuthoritativeStateCatalogV1);
+writable_message!(v1::StoredAuthoritativeStateCatalogV2);
 writable_message!(v1::StoredLeadershipEpochV1);
 writable_message!(v1::StoredChangelogHistoryStateV3);
 writable_message!(v1::StoredReplicationFollowerStateV3);
@@ -2453,6 +2476,73 @@ const PRE_WP416_CAPABILITY_ADMINISTRATION_RECORD_SCHEMA: RecordSchema<'static> =
     v1::CapabilityAdministrationAuditV1,
     21
 );
+
+const REPLICATION_PRIMARY_ADMISSION_V1_RECORD_SCHEMA: RecordSchema<'static> =
+    RecordSchema::new_current(
+        "riffdb.storage.v1.ReplicationPrimaryAdmissionV1",
+        SchemaHash::from_bytes(*include_bytes!(
+            "../fixtures/durable-replication-primary-admission-v1-schema-hash.bin"
+        )),
+        1024,
+        u32::from_be_bytes({
+            let bounds = *include_bytes!(
+                "../fixtures/durable-replication-primary-admission-v1-record-bound.bin"
+            );
+            [bounds[4], bounds[5], bounds[6], bounds[7]]
+        }) as usize,
+        preflight_payload::<107>,
+        validate_payload::<107, v1::ReplicationPrimaryAdmissionV1>,
+    )
+    .with_compact_identity(76, 1);
+readable_message!(
+    v1::ReplicationPrimaryAdmissionV1,
+    REPLICATION_PRIMARY_ADMISSION_V1_RECORD_SCHEMA
+);
+writable_message!(v1::ReplicationPrimaryAdmissionV1);
+
+const PRIMARY_FENCE_ADMINISTRATION_V1_RECORD_SCHEMA: RecordSchema<'static> =
+    RecordSchema::new_current(
+        "riffdb.storage.v1.StoredPrimaryFenceAdministrationV1",
+        SchemaHash::from_bytes(*include_bytes!(
+            "../fixtures/durable-primary-fence-administration-v1-schema-hash.bin"
+        )),
+        1000,
+        u32::from_be_bytes({
+            let bounds = *include_bytes!(
+                "../fixtures/durable-primary-fence-administration-v1-record-bound.bin"
+            );
+            [bounds[4], bounds[5], bounds[6], bounds[7]]
+        }) as usize,
+        preflight_payload::<108>,
+        validate_payload::<108, v1::StoredPrimaryFenceAdministrationV1>,
+    )
+    .with_compact_identity(77, 1);
+readable_message!(
+    v1::StoredPrimaryFenceAdministrationV1,
+    PRIMARY_FENCE_ADMINISTRATION_V1_RECORD_SCHEMA
+);
+writable_message!(v1::StoredPrimaryFenceAdministrationV1);
+
+const PROMOTION_ADMINISTRATION_V1_RECORD_SCHEMA: RecordSchema<'static> = RecordSchema::new_current(
+    "riffdb.storage.v1.StoredPromotionAdministrationV1",
+    SchemaHash::from_bytes(*include_bytes!(
+        "../fixtures/durable-promotion-administration-v1-schema-hash.bin"
+    )),
+    8192,
+    u32::from_be_bytes({
+        let bounds =
+            *include_bytes!("../fixtures/durable-promotion-administration-v1-record-bound.bin");
+        [bounds[4], bounds[5], bounds[6], bounds[7]]
+    }) as usize,
+    preflight_payload::<109>,
+    validate_payload::<109, v1::StoredPromotionAdministrationV1>,
+)
+.with_compact_identity(78, 1);
+readable_message!(
+    v1::StoredPromotionAdministrationV1,
+    PROMOTION_ADMINISTRATION_V1_RECORD_SCHEMA
+);
+writable_message!(v1::StoredPromotionAdministrationV1);
 
 /// Readable durable schemas in immutable compatibility order.
 pub static READABLE_RECORD_SCHEMAS: [RecordSchema<'static>; READABLE_RECORD_SCHEMA_COUNT] = [
@@ -2562,6 +2652,10 @@ pub static READABLE_RECORD_SCHEMAS: [RecordSchema<'static>; READABLE_RECORD_SCHE
     APPLICATION_EXPORT_PAGE_COMMITMENT_V1_RECORD_SCHEMA,
     SERVICE_AUDIT_V3_RECORD_SCHEMA,
     REPLICATION_ADMINISTRATION_V1_RECORD_SCHEMA,
+    AUTHORITATIVE_STATE_CATALOG_V2_RECORD_SCHEMA,
+    REPLICATION_PRIMARY_ADMISSION_V1_RECORD_SCHEMA,
+    PRIMARY_FENCE_ADMINISTRATION_V1_RECORD_SCHEMA,
+    PROMOTION_ADMINISTRATION_V1_RECORD_SCHEMA,
     PRE_WP280_CAPABILITY_RECORD_SCHEMA,
     PRE_WP416_CAPABILITY_RECORD_SCHEMA,
     PRE_WP416_CAPABILITY_TOKEN_LOOKUP_RECORD_SCHEMA,
@@ -2659,6 +2753,10 @@ pub static WRITABLE_RECORD_SCHEMAS: [RecordSchema<'static>; WRITABLE_RECORD_SCHE
     APPLICATION_EXPORT_PAGE_COMMITMENT_V1_RECORD_SCHEMA,
     SERVICE_AUDIT_V3_RECORD_SCHEMA,
     REPLICATION_ADMINISTRATION_V1_RECORD_SCHEMA,
+    AUTHORITATIVE_STATE_CATALOG_V2_RECORD_SCHEMA,
+    REPLICATION_PRIMARY_ADMISSION_V1_RECORD_SCHEMA,
+    PRIMARY_FENCE_ADMINISTRATION_V1_RECORD_SCHEMA,
+    PROMOTION_ADMINISTRATION_V1_RECORD_SCHEMA,
 ];
 
 /// Current durable schemas. `current` is exactly synonymous with writable roles.

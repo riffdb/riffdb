@@ -183,6 +183,15 @@ pub trait EventServiceApplication: Send + Sync {
 
 /// Health, statistics, capabilities, and outbox administration.
 pub trait AdministrationApplication: Send + Sync {
+    /// Durably fences the primary under distinct current administrative authority.
+    fn fence_replication_primary(
+        &self,
+        _context: RequestContext,
+        _request: crate::FenceReplicationPrimaryRequest,
+    ) -> ServiceFuture<'_, crate::FenceReplicationPrimaryResult> {
+        Box::pin(async { Err(riffdb_errors::PublicError::storage_unavailable().into()) })
+    }
+
     /// Registers an immutable follower policy through current administrative authority.
     fn register_follower(
         &self,

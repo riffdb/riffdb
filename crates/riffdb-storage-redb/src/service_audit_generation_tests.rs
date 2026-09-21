@@ -184,7 +184,7 @@ fn follower_audit_generation_crash_child() {
     let mut store =
         RedbStore::open_with_commit_profile(path, crate::store::RedbCommitProfile::Hardened)
             .unwrap();
-    store.initialize_database(database_id()).unwrap();
+    store.initialize_legacy_fixture(database_id()).unwrap();
     crate::changelog_v3_activation::activate_validated(
         store.shared.database.begin_write().unwrap(),
         riffdb_storage_api::ChangelogLineageV3::new(database_id(), 1, LeadershipEpochV1::initial())

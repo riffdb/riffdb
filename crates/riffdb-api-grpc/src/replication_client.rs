@@ -46,9 +46,9 @@ impl ReplicationWireClient {
         };
         let position =
             || wire_position(input.after_sequence, input.after_hash, input.after_frontier);
-        let (after, bootstrap, attachment) = match input.phase {
+        let (after, bootstrap, attachment, fence_evidence) = match input.phase {
             ReplicationPhase::Tail | ReplicationPhase::Follower { .. } => {
-                (Some(position()), None, None)
+                (Some(position()), None, None, None)
             }
             ReplicationPhase::Bootstrap {
                 hold_id,
@@ -71,6 +71,7 @@ impl ReplicationWireClient {
                         after_page,
                     }),
                     None,
+                    None,
                 )
             }
             ReplicationPhase::Attach { manifest } => (
@@ -80,7 +81,30 @@ impl ReplicationWireClient {
                     manifest,
                     acknowledged: Some(position()),
                 }),
+                None,
             ),
+            ReplicationPhase::FenceEvidence { request } => {
+                let target = request.target();
+                if target.database_id() != input.database_id
+                    || target.history_incarnation() != input.history_incarnation
+                    || target.leadership_epoch().get() != input.leadership_epoch
+                {
+                    return Err(Failure::Source(
+                        riffdb_errors::ReplicationStreamErrorV3::InvalidPosition,
+                    ));
+                }
+                (
+                    None,
+                    None,
+                    None,
+                    Some(v1::ReplicationFenceEvidenceRequest {
+                        operation_id: request.operation_id().as_bytes().to_vec(),
+                        hold_id: target.hold_id().as_bytes().to_vec(),
+                        registration_generation: request.generation().get(),
+                        applied: Some(position()),
+                    }),
+                )
+            }
         };
         let mut request = tonic::Request::new(v1::StreamChangelogRequest {
             request_id: request_id.into_bytes().to_vec(),
@@ -95,6 +119,7 @@ impl ReplicationWireClient {
             bootstrap,
             attachment,
             follower_hold_id,
+            fence_evidence,
         });
 
         authorization.set_sensitive(true);
@@ -140,6 +165,9 @@ impl ReplicationItemSource for WireItems {
             let Some(message) = message else {
                 return Ok(None);
             };
+            riffdb_proto::validate_public_message(&message).map_err(|_| {
+                Failure::Source(riffdb_errors::ReplicationStreamErrorV3::CorruptHistory)
+            })?;
             use v1::stream_changelog_response::Item as Wire;
             if message.source_head.is_some() && !matches!(message.item, Some(Wire::Frame(_))) {
                 return Err(Failure::Source(
@@ -151,6 +179,9 @@ impl ReplicationItemSource for WireItems {
                 .map(crate::replication_progress::decode)
                 .transpose()?;
             let item = match message.item {
+                Some(Wire::FenceEvidence(value)) => {
+                    Item::FenceEvidence(Box::new(crate::replication_fence::decode(value)?))
+                }
                 Some(Wire::Frame(bytes)) => {
                     Item::Frame(riffdb_service::ReplicationFrame::new(bytes, head))
                 }

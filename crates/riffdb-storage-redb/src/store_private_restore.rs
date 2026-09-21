@@ -6,7 +6,10 @@ impl SharedRedb {
     pub(crate) fn private_restore_binding(&self) -> Option<PrivateArchiveValidationBinding> {
         match &self.open_mode {
             OpenMode::PrivateRestore(binding) => Some(**binding),
-            OpenMode::Source | OpenMode::Follower => None,
+            OpenMode::Source
+            | OpenMode::Follower
+            | OpenMode::PrivatePromotion(_)
+            | OpenMode::ReconciledPromotion(_) => None,
         }
     }
 }

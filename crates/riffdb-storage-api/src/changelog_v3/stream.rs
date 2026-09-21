@@ -6,8 +6,7 @@ use super::{
     ChangelogHistoryPointV3, ChangelogLineageV3, ChangelogReceiptCursorV3, ChangelogV3Error,
 };
 use crate::{
-    AuthoritativeStateCatalogV1, MAX_CHANGELOG_FRAME_BYTES, MAX_STAGED_COMMANDS,
-    PublishedDurableSnapshot, StorageErrorKind,
+    MAX_CHANGELOG_FRAME_BYTES, MAX_STAGED_COMMANDS, PublishedDurableSnapshot, StorageErrorKind,
 };
 
 pub use riffdb_errors::ReplicationStreamErrorV3;
@@ -61,7 +60,7 @@ impl ReplicationHandshakeV3 {
         if readable_format != ChangelogFrameV3::IDENTITY {
             return Err(ReplicationStreamErrorV3::UnsupportedFormat);
         }
-        if catalog_digest != AuthoritativeStateCatalogV1.digest() {
+        if catalog_digest != lineage.catalog_digest() {
             return Err(ReplicationStreamErrorV3::UnsupportedCatalog);
         }
         if maximum_frame_bytes != MAX_CHANGELOG_FRAME_BYTES as u64
@@ -231,7 +230,14 @@ impl ChangelogFrameCursorV3 {
         let mut covered = self.position;
         let mut receipts = Vec::new();
         let mut transitions = 0_u64;
-        let mut bytes = super::frame::FIXED_FRAME_BYTES;
+        let frame_binding = ChangelogFrameBindingV3::new(
+            self.lineage.database_id(),
+            self.lineage.history_incarnation(),
+            self.lineage.leadership_epoch().get(),
+            self.lineage.catalog_digest(),
+            self.prior_frame_hash,
+        )?;
+        let mut bytes = frame_binding.fixed_frame_bytes();
         while receipts.len() < maximum_receipts && transitions < MAX_STAGED_COMMANDS as u64 {
             let next = match self.lookahead.take() {
                 Some(receipt) => Some(receipt),
@@ -282,16 +288,7 @@ impl ChangelogFrameCursorV3 {
         if receipts.is_empty() {
             return Ok(None);
         }
-        let frame = ChangelogFrameV3::new(
-            ChangelogFrameBindingV3::new(
-                self.lineage.database_id(),
-                self.lineage.history_incarnation(),
-                self.lineage.leadership_epoch().get(),
-                self.lineage.catalog_digest(),
-                self.prior_frame_hash,
-            )?,
-            receipts,
-        )?;
+        let frame = ChangelogFrameV3::new(frame_binding, receipts)?;
         let bytes = frame.encode()?;
         let checksum = bytes
             .last_chunk::<32>()
@@ -315,6 +312,9 @@ fn validate_pin(
     }
     if history.lineage().leadership_epoch() != lineage.leadership_epoch() {
         return Err(ReplicationStreamErrorV3::StaleEpoch);
+    }
+    if history.lineage().catalog_digest() != lineage.catalog_digest() {
+        return Err(ReplicationStreamErrorV3::UnsupportedCatalog);
     }
     if after.sequence() < history.minimum_resume().sequence() {
         return Err(ReplicationStreamErrorV3::HistoryPruned);

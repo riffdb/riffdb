@@ -2,6 +2,7 @@
 // req: STO-023, REC-001, REC-002, REC-004, PERF-019
 fn crash_before_graceful_clean_commit_preserves_checkpoint_and_dirty_fallback() {
     let path = TestDatabasePath::new("before-graceful-clean-commit");
+    prepare_legacy_clean_start_fixture(&path.0);
     let _ = prepare_committed_command_database(&path.0);
     let ports = open_operational(RedbStore::open(&path.0).expect("open to seed CLEAN"));
     assert_eq!(
@@ -38,6 +39,7 @@ fn crash_before_graceful_clean_commit_preserves_checkpoint_and_dirty_fallback() 
 // req: STO-023, REC-001, REC-002, REC-004, PERF-019
 fn crash_after_graceful_clean_commit_preserves_checkpoint_and_atomic_clean() {
     let path = TestDatabasePath::new("after-graceful-clean-commit");
+    prepare_legacy_clean_start_fixture(&path.0);
     let _ = prepare_committed_command_database(&path.0);
     let ports = open_operational(RedbStore::open(&path.0).expect("open to seed CLEAN"));
     assert_eq!(
@@ -77,6 +79,7 @@ fn segmented_command_checkpoint_is_exact_current_without_decoding_audit_populati
     };
 
     let path = TestDatabasePath::new("graceful-segmented-command-exact-current");
+    prepare_legacy_clean_start_fixture(&path.0);
     let _ = prepare_committed_command_database(&path.0);
     let ports = open_operational(RedbStore::open(&path.0).expect("checkpoint command history"));
     drop(ports);
@@ -133,6 +136,7 @@ fn process_graceful_checkpoint_close_crash_matrix_reaches_exact_dirty_ends() {
     .enumerate()
     {
         let path = TestDatabasePath::new(&format!("graceful-stage-crash-{ordinal}"));
+        prepare_legacy_clean_start_fixture(&path.0);
         let _ = prepare_committed_command_database(&path.0);
         let ports = open_operational(RedbStore::open(&path.0).expect("open to seed CLEAN"));
         assert_eq!(

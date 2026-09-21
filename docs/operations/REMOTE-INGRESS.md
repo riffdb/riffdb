@@ -134,6 +134,9 @@ stream. A clean stream close reconnects after a fixed 250 ms pause and resets
 failure backoff. Transient source failures back off from 250 ms to at most
 30 seconds; a successfully applied frame also resets that backoff. Shutdown
 interrupts either wait and drains storage work before releasing custody.
+A complete frame already received is validated and durably applied before
+shutdown releases the applier. Corrupt received input fails the drain; no new
+stream is opened after shutdown is requested.
 
 | Counter | Primary | Follower |
 | --- | --- | --- |

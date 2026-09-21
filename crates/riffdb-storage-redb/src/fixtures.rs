@@ -252,24 +252,8 @@ pub(crate) fn contract_migration_stage_ports_fixture(
     }
     drop(entities);
     store.shared.commit_durable(transaction)?;
-    // Isolated migration fixtures exercise the current receipt substrate, not
-    // a pre-activation path that can conceal allocator/tail integration bugs.
-    let mut activation = store
-        .shared
-        .database
-        .begin_write()
-        .map_err(transaction_error)?;
-    crate::changelog_v3_activation::stage_validated(
-        &mut activation,
-        riffdb_storage_api::ChangelogLineageV3::new(
-            database_id,
-            1,
-            riffdb_storage_api::LeadershipEpochV1::initial(),
-        )
-        .map_err(crate::changelog_v3_write::value_error)?,
-        riffdb_types::DualFrontier::INITIAL,
-    )?;
-    store.shared.commit_durable(activation)?;
+    // Fresh production initialization already installed the current V2 receipt
+    // substrate. Seeding fixture rows must not re-activate or relabel it as V1.
     Ok(crate::store::RedbOperationalPorts {
         shared: store.shared,
     })
@@ -368,4 +352,14 @@ pub fn read_validated_prefix_checkpoint_bytes_fixture(
         .get(META_VALIDATED_PREFIX_CHECKPOINT)
         .map_err(precommit_storage_error)?
         .map(|encoded| encoded.value().to_vec()))
+}
+
+/// Constructs a frozen predecessor for V1 compatibility tests only. The normal
+/// initialization port always creates current V2 source state.
+#[doc(hidden)]
+pub fn initialize_legacy_database_fixture(
+    store: &mut crate::RedbStore,
+    candidate: riffdb_types::DatabaseId,
+) -> Result<riffdb_storage_api::DatabaseInitializationResult, StorageError> {
+    store.initialize_legacy_fixture(candidate)
 }

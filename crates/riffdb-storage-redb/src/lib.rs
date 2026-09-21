@@ -63,7 +63,10 @@ mod layout;
 mod maintenance;
 mod media;
 mod migration_stage;
+mod primary_admission_roots;
+mod primary_fence_write;
 mod projection_replay;
+mod promotion_cutover;
 mod replication_registration_links;
 #[cfg(feature = "test-fixtures")]
 #[doc(hidden)]
@@ -237,7 +240,8 @@ pub use durable_fixtures::{MigrationDurableFixture, migration_durable_fixture_se
 #[doc(hidden)]
 pub use fixtures::{
     append_columnar_worker_commit_fixture, append_columnar_worker_commit_with_crosslinks_fixture,
-    downgrade_all_index_rows_to_v1_fixture, read_validated_prefix_checkpoint_bytes_fixture,
+    downgrade_all_index_rows_to_v1_fixture, initialize_legacy_database_fixture,
+    read_validated_prefix_checkpoint_bytes_fixture,
     read_validated_prefix_checkpoint_commit_sequence_fixture,
 };
 pub use format_preflight::{

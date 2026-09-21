@@ -26,9 +26,10 @@ fn binding() -> Binding {
 fn command_admission_and_execution_failure_have_closed_frontier_checked_sources() {
     assert_eq!(Source::from_tag(32), Some(Source::CommandAdmission));
     assert_eq!(Source::from_tag(33), Some(Source::CommandExecutionFailure));
-    assert_eq!(Source::from_tag(34), None);
+    assert_eq!(Source::from_tag(34), Some(Source::PrimaryFence));
+    assert_eq!(Source::from_tag(35), None);
     assert_eq!(Source::from_tag(0), None);
-    assert_eq!(Source::ALL.len(), 33);
+    assert_eq!(Source::ALL.len(), 34);
     for (index, source) in Source::ALL.into_iter().enumerate() {
         assert_eq!(source as usize, index + 1);
     }

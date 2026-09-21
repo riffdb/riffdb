@@ -249,7 +249,7 @@ pub(super) fn commit_transition(
         .map_err(value_error)?,
     ];
     mutations.sort_by(|a, b| (a.namespace(), a.key()).cmp(&(b.namespace(), b.key())));
-    let receipt = AuthoritativeTransactionV3::new(
+    let receipt = AuthoritativeTransactionV3::new_for_catalog(
         AuthoritativeTransactionBindingV3 {
             database_id: lineage.database_id(),
             history_incarnation: lineage.history_incarnation(),
@@ -268,6 +268,7 @@ pub(super) fn commit_transition(
         },
         Source::RetentionHold,
         mutations,
+        lineage.catalog_digest(),
     )
     .map_err(value_error)?;
     let advance = PreparedHistoryAdvance::prepare(transaction, &receipt)?;

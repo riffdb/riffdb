@@ -1918,7 +1918,9 @@ fn serialize_record(
                 }
                 riffdb_storage_api::StoredAdministrationAuditRecordV1::Service(_) => "service",
                 riffdb_storage_api::StoredAdministrationAuditRecordV1::Retention(_) => "retention",
-                riffdb_storage_api::StoredAdministrationAuditRecordV1::Replication(_) => {
+                riffdb_storage_api::StoredAdministrationAuditRecordV1::Replication(_)
+                | riffdb_storage_api::StoredAdministrationAuditRecordV1::PrimaryFence(_)
+                | riffdb_storage_api::StoredAdministrationAuditRecordV1::Promotion(_) => {
                     "replication"
                 }
             };

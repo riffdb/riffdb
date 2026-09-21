@@ -78,7 +78,17 @@ fn registered_bootstrap_preserves_policy_and_attaches_only_its_exact_fence() {
         let bootstrap = bootstrap(original, cut);
         let mut control = ports.replication_source_control();
         assert!(ports.bootstrap_id_is_held(bootstrap.id()).unwrap());
+        assert!(
+            !ports
+                .bootstrap_id_blocks_new_artifact(bootstrap.id())
+                .unwrap()
+        );
         assert!(control.register(bootstrap).unwrap());
+        assert!(
+            ports
+                .bootstrap_id_blocks_new_artifact(bootstrap.id())
+                .unwrap()
+        );
         assert_eq!(current(&ports, original.hold()), original);
         let held = history(&ports);
         assert!(!control.register(bootstrap).unwrap());
@@ -86,6 +96,11 @@ fn registered_bootstrap_preserves_policy_and_attaches_only_its_exact_fence() {
         assert!(control.attach_bootstrap(bootstrap).unwrap());
         let attached = current(&ports, original.hold());
         assert_eq!(attached.phase(), Phase::Attached);
+        assert!(
+            ports
+                .bootstrap_id_blocks_new_artifact(bootstrap.id())
+                .unwrap()
+        );
         assert_eq!(attached.hold().fence(), bootstrap.fence());
         assert_eq!(attached.registered_at(), original.registered_at());
         assert_eq!(attached.generation(), original.generation());

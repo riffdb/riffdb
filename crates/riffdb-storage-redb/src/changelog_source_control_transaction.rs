@@ -1,4 +1,4 @@
-//! Transaction/lease owner for the two closed crate-private control lanes.
+//! Transaction/lease owner for the closed crate-private source-control lanes.
 //! Drop aborts and releases non-durable capabilities; nothing is exported.
 
 use super::*;
@@ -85,14 +85,14 @@ impl Barrier {
     }
 }
 
-pub(super) struct ControlWrite {
+pub(crate) struct ControlWrite {
     barrier: Barrier,
     raw: Option<WriteTransaction>,
 }
 
 impl ControlWrite {
     // Visible only to this closed owner, never a public or arbitrary callback.
-    pub(super) fn transaction(&self) -> Result<&WriteTransaction, StorageError> {
+    pub(crate) fn transaction(&self) -> Result<&WriteTransaction, StorageError> {
         self.raw
             .as_ref()
             .ok_or_else(|| storage_error(StorageErrorKind::InvariantViolation))
@@ -100,7 +100,7 @@ impl ControlWrite {
     pub(super) fn history(&self) -> History {
         self.barrier.observation.history
     }
-    pub(super) fn validate(&self) -> Result<(), StorageError> {
+    pub(crate) fn validate(&self) -> Result<(), StorageError> {
         crate::changelog_v3_roots::validate_retained_history_for_write(self.transaction()?)?
             .ok_or_else(|| storage_error(StorageErrorKind::CorruptData))?;
         Ok(())
@@ -110,6 +110,10 @@ impl ControlWrite {
     }
     pub(super) fn commit_retention(self) -> Result<Observation, StorageError> {
         self.commit_with_test_operation(Some(RedbTestOperation::RetentionHold))
+    }
+    pub(crate) fn commit_primary_fence(self) -> Result<(), StorageError> {
+        self.commit_with_test_operation(Some(RedbTestOperation::PrimaryFence))?;
+        Ok(())
     }
     fn commit_with_test_operation(
         mut self,

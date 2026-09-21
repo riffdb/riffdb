@@ -30,6 +30,12 @@ use crate::error::storage_error;
 mod archive_receipt;
 pub(super) use archive_receipt::{decode_archive_receipt, encode_archive_receipt};
 
+#[path = "promotion_receipt_codec.rs"]
+mod promotion_receipt;
+pub(super) use promotion_receipt::{
+    MAX_PROMOTION_RECEIPT_BYTES, decode_promotion_receipt, encode_promotion_receipt,
+};
+
 pub(super) const RECEIPT_FILE_SUFFIX: &str = ".receipt-v1";
 pub(super) const RECEIPT_TEMP_SUFFIX: &str = ".receipt-v1.tmp";
 pub(super) const RETIRE_RECEIPT_FILE_SUFFIX: &str = ".receipt-v2";

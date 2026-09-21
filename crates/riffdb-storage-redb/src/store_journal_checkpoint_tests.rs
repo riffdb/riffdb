@@ -5,7 +5,6 @@ use super::*;
 use crate::journal::{JournalFrame, JournalMutation, JournalTable};
 use crate::store::{RedbStore, ValidatedCheckpointFrame};
 use redb::ReadableDatabase;
-use riffdb_storage_api::DatabaseInitializationPort;
 use riffdb_storage_api::{
     AdministrationSequenceAllocator, AuthoritativeNamespaceV1 as N, ChangelogLineageV3,
     LeadershipEpochV1, proto_codec::*,
@@ -22,7 +21,7 @@ fn live_checkpoint_materializes_the_original_v3_receipt_with_one_existing_commit
     let mut store = RedbStore::open(&path).unwrap();
     let database_id =
         DatabaseId::from_unix_milliseconds_and_random(1_700_000_000_000, [0x71; 10]).unwrap();
-    store.initialize_database(database_id).unwrap();
+    store.initialize_legacy_fixture(database_id).unwrap();
     let lineage = ChangelogLineageV3::new(database_id, 1, LeadershipEpochV1::initial()).unwrap();
     let history = crate::changelog_v3_activation::activate_validated(
         store.shared.database.begin_write().unwrap(),

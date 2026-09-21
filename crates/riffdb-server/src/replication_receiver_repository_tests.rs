@@ -9,8 +9,8 @@ use riffdb_service::{
     ReplicationPhase, ReplicationRequest, ReplicationSourcePort,
 };
 use riffdb_storage_api::{
-    AuthoritativeStateCatalogV1, ChangelogFrameV3, ReadableCapabilityDigestInventory,
-    ReadableDigestKey, ReadableIdempotencyDigestInventory,
+    ChangelogFrameV3, ReadableCapabilityDigestInventory, ReadableDigestKey,
+    ReadableIdempotencyDigestInventory,
 };
 use riffdb_storage_redb::RedbBootstrapReceiverRepository as Repository;
 use riffdb_types::{DigestKeyId, DualFrontier, Timestamp};
@@ -100,7 +100,7 @@ async fn managed_receiver(eof: bool) {
         after_hash: [0; 32],
         after_frontier: DualFrontier::INITIAL,
         readable_format: ChangelogFrameV3::IDENTITY.to_owned(),
-        catalog_digest: AuthoritativeStateCatalogV1.digest(),
+        catalog_digest: history.lineage().catalog_digest(),
         maximum_frame_bytes: riffdb_storage_api::MAX_CHANGELOG_FRAME_BYTES as u64,
         maximum_transitions: riffdb_storage_api::MAX_STAGED_COMMANDS as u64,
     };

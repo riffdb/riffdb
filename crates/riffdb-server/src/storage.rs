@@ -1531,6 +1531,29 @@ impl riffdb_storage_api::ReplicationRegistrationMaintenancePort for SharedRedbOp
     }
 }
 
+impl riffdb_storage_api::PrimaryFenceTransactionPort for SharedRedbOperationalPorts {
+    type Candidate = <riffdb_storage_redb::RedbSharedPorts as riffdb_storage_api::PrimaryFenceTransactionPort>::Candidate;
+    fn begin_primary_fence_transaction(
+        &self,
+        candidate: riffdb_storage_api::PrimaryFenceCandidateV1,
+    ) -> Result<Self::Candidate, StorageError> {
+        riffdb_storage_api::PrimaryFenceTransactionPort::begin_primary_fence_transaction(
+            &self.shared,
+            candidate,
+        )
+    }
+}
+
+impl riffdb_storage_api::ReplicationPrimaryAdmissionReadPort for SharedRedbOperationalPorts {
+    fn read_replication_primary_admission(
+        &self,
+    ) -> Result<riffdb_storage_api::ReplicationPrimaryAdmissionV1, StorageError> {
+        riffdb_storage_api::ReplicationPrimaryAdmissionReadPort::read_replication_primary_admission(
+            &self.shared,
+        )
+    }
+}
+
 impl CapabilityCreateCandidateTransaction for SharedCapabilityCreateCandidate {
     type AwaitingDecision = SharedCapabilityCreateAwaiting;
 

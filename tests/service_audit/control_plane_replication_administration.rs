@@ -272,3 +272,6 @@ fn registration_maintenance_uses_fresh_administration_time_and_refuses_clock_out
         assert!(records(&database.open()).is_empty());
     }
 }
+
+#[path = "control_plane_primary_fence.rs"]
+mod primary_fence;

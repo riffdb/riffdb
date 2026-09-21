@@ -233,7 +233,7 @@ hold_id = "01010101010101010101010101010101"
             .unwrap()
     }
 
-    fn tls_config(&self, name: &str) -> TlsClientConfig {
+    pub(super) fn tls_config(&self, name: &str) -> TlsClientConfig {
         TlsClientConfig::new(
             CanonicalHttpsEndpoint::parse(&self.endpoint(name)).unwrap(),
             ProtectedFilePath::new(self.root.path().join("ca.crt")).unwrap(),
@@ -318,17 +318,21 @@ pub(super) fn now() -> Timestamp {
     .unwrap()
 }
 
-pub(super) fn open_primary(path: &Path) -> RedbOperationalPorts {
+pub(super) fn startup_inputs() -> StartupValidationInputs {
     let key = DigestKeyId::new(1).unwrap();
-    let inputs = StartupValidationInputs::new(
+    StartupValidationInputs::new(
         now(),
         ReadableCapabilityDigestInventory::new(vec![ReadableDigestKey::v1(key)]).unwrap(),
         ReadableIdempotencyDigestInventory::new(vec![ReadableDigestKey::v1(key)]).unwrap(),
-    );
-    let mut session = RedbStore::open(path)
-        .unwrap()
-        .begin_structural_evidence(inputs)
-        .unwrap();
+    )
+}
+
+pub(super) fn open_primary(path: &Path) -> RedbOperationalPorts {
+    validate_primary_store(RedbStore::open(path).unwrap())
+}
+
+pub(super) fn validate_primary_store(store: RedbStore) -> RedbOperationalPorts {
+    let mut session = store.begin_structural_evidence(startup_inputs()).unwrap();
     let mut cursor =
         StructuralEvidenceCursor::start(session.database_id(), session.open_session_id());
     let end = loop {

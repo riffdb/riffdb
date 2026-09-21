@@ -34,6 +34,7 @@ impl RunningFollowerService {
         process: ServiceProcessMetadata,
         clocks: &ProductionWallClocks,
         lifecycle: Arc<ProductionLifecycleRoute>,
+        promotion: Option<Arc<crate::promotion_admission::PromotionController>>,
     ) -> Result<Self, ProductionGraphBuildError> {
         let initial = reads
             .latest()
@@ -110,6 +111,19 @@ impl RunningFollowerService {
                 .map_err(ProductionGraphBuildError::TrustedAudience)?,
             observability.clone(),
         ));
+        if let Some(controller) = promotion {
+            lifecycle
+                .install_promotion(Arc::new(riffdb_service::FollowerPromotionService::new(
+                    database_id,
+                    environment.clone(),
+                    policy.clone(),
+                    controller,
+                )))
+                .map_err(|source| ProductionGraphBuildError::Activation {
+                    source,
+                    cleanup: None,
+                })?;
+        }
         let authenticator = Arc::new(ServerCredentialAuthenticator::new(
             reads.clone(),
             capability_keys.clone(),

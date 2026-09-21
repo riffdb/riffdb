@@ -11,6 +11,12 @@
 
 //! API-neutral application-service contracts and orchestration.
 
+#[cfg(test)]
+extern crate self as riffdb_service;
+#[cfg(test)]
+#[path = "../../../tests/service/support/mod.rs"]
+mod primary_admission_test_support;
+
 mod administration_operations;
 mod application;
 mod application_error;
@@ -37,7 +43,12 @@ mod maintenance_operations;
 mod migration_operations;
 mod orchestration;
 mod ports;
+mod primary_fence;
+mod primary_fence_operations;
 mod projected_query;
+mod promotion;
+mod promotion_operations;
+mod promotion_retry;
 mod query_discovery_operations;
 mod read_retry;
 mod reimport;
@@ -68,7 +79,11 @@ pub use maintenance_operations::{
     RecoveryOfflineMaintenanceService, RestoreRetryOfflineMaintenanceService,
 };
 pub use ports::*;
+pub use primary_fence::*;
 pub use projected_query::*;
+pub use promotion::*;
+pub use promotion_operations::*;
+pub use promotion_retry::SourcePromotionRetryService;
 pub use reimport::*;
 pub use replication_administration::*;
 pub use response::*;

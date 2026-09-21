@@ -12,9 +12,8 @@ use riffdb_service::{
     ReplicationRequest, ReplicationSourcePort,
 };
 use riffdb_storage_api::{
-    AuthoritativeStateCatalogV1, ChangelogAttributionV3, ChangelogFrameV3,
-    ChangelogHistoryPointV3 as Point, ChangelogLineageV3, MAX_CHANGELOG_FRAME_BYTES,
-    MAX_STAGED_COMMANDS, ReplicationSourceHoldIdV1 as HoldId,
+    ChangelogAttributionV3, ChangelogFrameV3, ChangelogHistoryPointV3 as Point, ChangelogLineageV3,
+    MAX_CHANGELOG_FRAME_BYTES, MAX_STAGED_COMMANDS, ReplicationSourceHoldIdV1 as HoldId,
 };
 pub use worker::RunningFollowerReceiver;
 
@@ -128,6 +127,11 @@ pub struct FollowerReceiver {
     reads: reads::Publication,
     startup: Option<crate::startup::FollowerStartupEvidence>,
     source_head: Option<riffdb_service::ReplicationSourceHead>,
+    #[cfg(test)]
+    received_barrier: Option<(
+        tokio::sync::oneshot::Sender<Vec<u8>>,
+        tokio::sync::oneshot::Receiver<()>,
+    )>,
 }
 struct TailStream {
     source: Box<dyn ReplicationItemSource>,
@@ -161,6 +165,8 @@ impl FollowerReceiver {
             owner: Some(owner),
             startup: Some(startup),
             source_head: None,
+            #[cfg(test)]
+            received_barrier: None,
             stream: None,
             lineage,
             hold_id,
@@ -218,6 +224,15 @@ impl FollowerReceiver {
         &mut self,
         peer: &dyn ReplicationSourcePort,
     ) -> Result<Option<Point>, Failure> {
+        self.advance_until_stopped(peer, &mut worker::StopSignal::unobserved())
+            .await
+    }
+
+    async fn advance_until_stopped(
+        &mut self,
+        peer: &dyn ReplicationSourcePort,
+        stop: &mut worker::StopSignal,
+    ) -> Result<Option<Point>, Failure> {
         let mut publication_attempt = self.reads.attempt();
         // Ownership leaves self before every possible wait. A cancelled caller
         // cannot regain an applier whose blocking operation may still be running.
@@ -268,21 +283,24 @@ impl FollowerReceiver {
                     after_hash: position.history_hash(),
                     after_frontier: position.frontier(),
                     readable_format: ChangelogFrameV3::IDENTITY.to_owned(),
-                    catalog_digest: AuthoritativeStateCatalogV1.digest(),
+                    catalog_digest: lineage.catalog_digest(),
                     maximum_frame_bytes: MAX_CHANGELOG_FRAME_BYTES as u64,
                     maximum_transitions: MAX_STAGED_COMMANDS as u64,
                 };
                 let deadline = owner.deadline;
-                let source = match tokio::time::timeout_at(deadline, peer.open(request)).await {
-                    Ok(Ok(source)) => source,
-                    Ok(Err(error)) => {
+                let source = match stop
+                    .network(async { tokio::time::timeout_at(deadline, peer.open(request)).await })
+                    .await
+                {
+                    Some(Ok(Ok(source))) => source,
+                    Some(Ok(Err(error))) => {
                         if transient(error) {
                             self.owner = Some(owner);
                             publication_attempt.complete();
                         }
                         return Err(error);
                     }
-                    Err(_) => {
+                    None | Some(Err(_)) => {
                         self.owner = Some(owner);
                         publication_attempt.complete();
                         return Ok(None);
@@ -299,9 +317,11 @@ impl FollowerReceiver {
         let result = if Instant::now() >= stream.deadline {
             None
         } else {
-            tokio::time::timeout_at(stream.deadline, stream.source.next_item())
-                .await
-                .ok()
+            stop.network(async {
+                tokio::time::timeout_at(stream.deadline, stream.source.next_item()).await
+            })
+            .await
+            .and_then(Result::ok)
         };
         let Some(result) = result else {
             // No storage work has started for this receive. Expiry closes only
@@ -337,6 +357,11 @@ impl FollowerReceiver {
         };
         if bytes.is_empty() || bytes.len() > MAX_CHANGELOG_FRAME_BYTES {
             return Err(storage(corrupt()));
+        }
+        #[cfg(test)]
+        if let Some((received, release)) = self.received_barrier.take() {
+            let _ = received.send(bytes.to_vec());
+            release.await.map_err(|_| busy())?;
         }
         // A frame received at the connection boundary gets its own bounded
         // storage step, without extending that connection's network lifetime.

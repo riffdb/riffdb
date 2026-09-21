@@ -3,7 +3,7 @@
 use super::*;
 use riffdb_storage_api::{
     AuthoritativeNamespaceV1 as N, AuthoritativeTransactionV3, ChangelogAttributionV3 as A,
-    ChangelogLineageV3, DatabaseInitializationPort, LeadershipEpochV1,
+    ChangelogLineageV3, LeadershipEpochV1,
 };
 use riffdb_types::{DatabaseId, DualFrontier};
 
@@ -108,7 +108,7 @@ fn prune_retained_plans_and_tombstone_length_refuse_bounds_before_buffer_growth(
 fn initialized(path: &Path) {
     let mut store = RedbStore::open(path).unwrap();
     let id = DatabaseId::from_unix_milliseconds_and_random(1_700_000_000_000, [0xd4; 10]).unwrap();
-    store.initialize_database(id).unwrap();
+    store.initialize_legacy_fixture(id).unwrap();
     crate::changelog_v3_activation::activate_validated(
         store.shared.database.begin_write().unwrap(),
         ChangelogLineageV3::new(id, 1, LeadershipEpochV1::initial()).unwrap(),

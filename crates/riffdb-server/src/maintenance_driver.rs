@@ -694,13 +694,7 @@ fn run_retirement(
                 OfflineMaintenanceReceiptFailureV1::InternalFailure,
             )
         })?;
-        let startup = open_redb_startup_with_commit_profile(
-            storage.configured_database_file(),
-            dependencies.startup_inputs.clone(),
-            &dependencies.database_ids,
-            dependencies.application_commit_profile,
-        )
-        .map_err(|_| {
+        let startup = reopen_current_source(storage, dependencies).map_err(|_| {
             MaintenanceDriverFailure::without_receipt(
                 operation_id,
                 OfflineMaintenanceReceiptFailureV1::ValidationFailed,
@@ -1238,6 +1232,32 @@ fn run_restore(
     complete_post_publication_validation(storage, lifecycle, dependencies, receipt)
 }
 
+/// Maintenance retains exclusive custody while readers and the writer are
+/// closed. A current promotion still requires the exact external receipt and
+/// complete source validation on reopen; the ordinary source open cannot grant
+/// that authority merely because maintenance previously ran on this database.
+fn reopen_current_source(
+    storage: &mut RedbMaintenanceStorage,
+    dependencies: &MaintenanceDriverDependencies<'_>,
+) -> Result<CheckedRedbStartup, crate::startup::RedbStartupError> {
+    if let Some(record) = storage.discover_committed_promotion()? {
+        crate::startup::promotion::reconcile_promoted_redb_startup(
+            storage,
+            &record,
+            dependencies.startup_inputs.clone(),
+            Arc::new(std::sync::atomic::AtomicBool::new(false)),
+            dependencies.application_commit_profile,
+        )
+    } else {
+        open_redb_startup_with_commit_profile(
+            storage.configured_database_file(),
+            dependencies.startup_inputs.clone(),
+            &dependencies.database_ids,
+            dependencies.application_commit_profile,
+        )
+    }
+}
+
 fn complete_post_publication_validation(
     storage: &mut RedbMaintenanceStorage,
     lifecycle: &MaintenanceLifecycle,
@@ -1274,13 +1294,8 @@ fn complete_post_publication_validation(
     }
     mark_lifecycle_validating(lifecycle, receipt.operation_id())?;
 
-    let startup = open_redb_startup_with_commit_profile(
-        storage.configured_database_file(),
-        dependencies.startup_inputs.clone(),
-        &dependencies.database_ids,
-        dependencies.application_commit_profile,
-    )
-    .map_err(|_| DriverFault::Validation)?;
+    let startup =
+        reopen_current_source(storage, dependencies).map_err(|_| DriverFault::Validation)?;
     if receipt.operation_kind() == OfflineMaintenanceOperationKind::RestoreBackup {
         let expected = receipt
             .published_history_incarnation()
@@ -1328,6 +1343,28 @@ fn validate_and_authorize_stage(
     input_hash: riffdb_types::OfflineMaintenanceInputHash,
     dependencies: &MaintenanceDriverDependencies<'_>,
 ) -> Result<PreparedStagedRestore, DriverFault> {
+    if let Some(snapshot) = stage
+        .promoted_authorization_snapshot()
+        .map_err(DriverFault::ArtifactStorage)?
+    {
+        let staged_database_id = stage.manifest_identity().database_id();
+        let admission = authorize_staged_restore(
+            snapshot,
+            staged_database_id,
+            credential,
+            operation_id,
+            input_hash,
+            dependencies,
+        )
+        .map_err(|_| DriverFault::StagedAuthorization)?;
+        dependencies
+            .recovery
+            .reached(MaintenanceRecoveryBoundary::StagedAuthorizationComplete);
+        let sealed = stage
+            .seal_after_validation(staged_database_id)
+            .map_err(DriverFault::ArtifactStorage)?;
+        return Ok(PreparedStagedRestore { sealed, admission });
+    }
     // `stage_restore` and its recovery counterpart return only after the
     // storage-owned complete exact-end scrub, so no copied CLEAN certificate
     // can stand in for ADR-0050's pre-authorization validation.

@@ -114,7 +114,7 @@ fn fixture() -> (
     RedbOperationalPorts,
     ReplicationFollowerAuditTargetV1,
 ) {
-    let (path, mut ports) = initialized_ports("follower-lifecycle-writes");
+    let (path, mut ports) = initialized_ports_for_fixture("follower-lifecycle-writes", true);
     ports
         .bootstrap_capability(&bootstrap_intent(20, capability_id(3), digest(1), 10))
         .unwrap();

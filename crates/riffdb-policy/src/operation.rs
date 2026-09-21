@@ -2923,6 +2923,9 @@ mod tests {
                         | ServiceOperationV1::CancelApplicationReimport
                         | ServiceOperationV1::RegisterFollower
                         | ServiceOperationV1::RetireFollower
+                        | ServiceOperationV1::FenceReplicationPrimary
+                        | ServiceOperationV1::PromoteFollower
+                        | ServiceOperationV1::StreamChangelog
                 )
             })
             .collect::<BTreeSet<_>>();

@@ -25,3 +25,4 @@ RDB-PROJECTION-0102	query	correct_request	restart_from_first_page	the requested 
 RDB-PROJECTION-0103	query	retry	retry_later	no query snapshot satisfies the requested freshness
 RDB-PROJECTION-0104	query	refresh_contract	pin_active_module	nearest query requires a compiler-owned projected source
 RDB-REP-0101	control	correct_request		operation is unavailable in follower mode
+RDB-REP-0102	control	contact_operator		primary is durably fenced

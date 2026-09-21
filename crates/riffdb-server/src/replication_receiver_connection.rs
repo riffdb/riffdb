@@ -4,9 +4,7 @@ use riffdb_service::{
     ReplicationFailure as Failure, ReplicationItem as Item, ReplicationItemSource,
     ReplicationPhase, ReplicationRequest, ReplicationSourcePort,
 };
-use riffdb_storage_api::{
-    ChangelogCursorErrorV3, ChangelogLineageV3, LeadershipEpochV1, ReplicationHandshakeV3,
-};
+use riffdb_storage_api::{ChangelogCursorErrorV3, ReplicationHandshakeV3};
 use riffdb_types::DualFrontier;
 
 impl BootstrapReceiverJobs {
@@ -200,15 +198,13 @@ impl BootstrapReceiverConnection {
         self.transfer.take().ok_or_else(busy)
     }
 }
-fn validate_manifest(request: &ReplicationRequest, manifest: Manifest) -> Result<(), Failure> {
+pub(super) fn validate_manifest(
+    request: &ReplicationRequest,
+    manifest: Manifest,
+) -> Result<(), Failure> {
     use riffdb_errors::ReplicationStreamErrorV3 as R;
     let history = manifest.fence().history();
-    let lineage = ChangelogLineageV3::new(
-        request.database_id,
-        request.history_incarnation,
-        LeadershipEpochV1::new(request.leadership_epoch).ok_or_else(invalid)?,
-    )
-    .map_err(|_| invalid())?;
+    let lineage = crate::replication_source::request_lineage(request)?;
     ReplicationHandshakeV3::new(
         lineage,
         history.tail(),
@@ -225,6 +221,9 @@ fn validate_manifest(request: &ReplicationRequest, manifest: Manifest) -> Result
     }
     if history.lineage().leadership_epoch() != lineage.leadership_epoch() {
         return Err(Failure::Source(R::StaleEpoch));
+    }
+    if history.lineage().catalog_digest() != lineage.catalog_digest() {
+        return Err(Failure::Source(R::UnsupportedCatalog));
     }
     if !matches!(request.phase, ReplicationPhase::Bootstrap { hold_id, .. }
         if &hold_id == manifest.fence().hold_id().as_bytes())

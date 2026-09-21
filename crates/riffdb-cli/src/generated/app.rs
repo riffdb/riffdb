@@ -9537,6 +9537,9 @@ fn application_role_permission_to_proto(
         CapabilityPermissionV1::Unparameterized(CapabilityPermissionKindV1::ReplicateChangelog) => {
             Permission::ReplicateChangelog(v1::Unit {})
         }
+        CapabilityPermissionV1::Unparameterized(CapabilityPermissionKindV1::FenceReplicationPrimary) => {
+            Permission::FenceReplicationPrimary(v1::Unit {})
+        }
         CapabilityPermissionV1::Unparameterized(_) => {
             unreachable!("application roles infer only contract-description access")
         }
@@ -9864,6 +9867,7 @@ enum CapabilityPermissionInput {
     },
     InspectVectorState {},
     ReplicateChangelog {},
+    FenceReplicationPrimary {},
     InvokeCommand {
         contract_lineage: String,
         stable_id: u32,
@@ -9963,6 +9967,7 @@ enum CapabilityPermissionKindInput {
     InstallApplication,
     InspectVectorState,
     ReplicateChangelog,
+    FenceReplicationPrimary,
     ConsumeEventStream,
     SeekEventStreamConsumer,
     WatchNamedQuery,
@@ -10423,6 +10428,9 @@ fn capability_permission(input: CapabilityPermissionInput) -> Result<v1::Capabil
         CapabilityPermissionInput::ReplicateChangelog {} => {
             Permission::ReplicateChangelog(v1::Unit {})
         }
+        CapabilityPermissionInput::FenceReplicationPrimary {} => {
+            Permission::FenceReplicationPrimary(v1::Unit {})
+        }
         CapabilityPermissionInput::InvokeCommand {
             contract_lineage,
             stable_id,
@@ -10610,6 +10618,9 @@ const fn permission_kind(input: CapabilityPermissionKindInput) -> i32 {
         }
         CapabilityPermissionKindInput::ReplicateChangelog => {
             v1::CapabilityPermissionKind::ReplicateChangelog as i32
+        }
+        CapabilityPermissionKindInput::FenceReplicationPrimary => {
+            v1::CapabilityPermissionKind::FenceReplicationPrimary as i32
         }
         CapabilityPermissionKindInput::ConsumeEventStream => {
             v1::CapabilityPermissionKind::ConsumeEventStream as i32
@@ -11849,6 +11860,8 @@ const fn command_identity(command: &TopLevel) -> CommandIdentity {
         } => CommandIdentity::CapabilityRevoke,
         TopLevel::Follower { command: FollowerCommand::Register { .. } } => CommandIdentity::FollowerRegister,
         TopLevel::Follower { command: FollowerCommand::Retire { .. } } => CommandIdentity::FollowerRetire,
+        TopLevel::Follower { command: FollowerCommand::FencePrimary { .. } } => CommandIdentity::FollowerFencePrimary,
+        TopLevel::Follower { command: FollowerCommand::Promote { .. } } => CommandIdentity::FollowerPromote,
         TopLevel::Server { .. } => CommandIdentity::ServerHealth,
         TopLevel::Backup {
             command: BackupCommand::Create { .. },
@@ -12472,11 +12485,31 @@ fn follower_selection(target: FollowerSelectionArgs) -> Result<v1::ReplicationFo
 }
 
 async fn follower_command(command: FollowerCommand, config: &EffectiveConfig, environment: &dyn Environment) -> Terminal {
-    let identity = match &command { FollowerCommand::Register { .. } => CommandIdentity::FollowerRegister, FollowerCommand::Retire { .. } => CommandIdentity::FollowerRetire };
+    let identity = match &command { FollowerCommand::Register { .. } => CommandIdentity::FollowerRegister, FollowerCommand::Retire { .. } => CommandIdentity::FollowerRetire, FollowerCommand::FencePrimary { .. } => CommandIdentity::FollowerFencePrimary, FollowerCommand::Promote { .. } => CommandIdentity::FollowerPromote };
     let metadata = match required_metadata(identity, config, environment) { Ok(metadata) => metadata, Err(terminal) => return terminal };
     let request_id = match request_id() { Ok(id) => id, Err(error) => return client_error(identity, &error) };
     // Validate the entire selection before opening a transport connection.
     let (register, retire) = match command {
+        FollowerCommand::Promote { target, registration_generation, operation_id, fence_operation_id } => {
+            let target = match follower_selection(target) { Ok(target) => target, Err(()) => return invalid_input(identity) };
+            let (Some(operation_id), Some(fence_operation_id)) = (parse_uuid_v7(&operation_id), parse_uuid_v7(&fence_operation_id)) else { return invalid_input(identity); };
+            let request = v1::PromoteFollowerRequest { request_id, operation_id: operation_id.to_vec(), fence_operation_id: fence_operation_id.to_vec(), target: Some(target), registration_generation: registration_generation.get() };
+            let mut client = match connect(config).await { Ok(client) => client, Err(error) => return client_error(identity, &error) };
+            return match client.promote_follower(request, &metadata).await {
+                Ok(response) => render_follower_promotion(identity, response),
+                Err(error) => client_error(identity, &error),
+            };
+        }
+        FollowerCommand::FencePrimary { target, registration_generation, operation_id } => {
+            let target = match follower_selection(target) { Ok(target) => target, Err(()) => return invalid_input(identity) };
+            let Some(operation_id) = parse_uuid_v7(&operation_id) else { return invalid_input(identity); };
+            let request = v1::FenceReplicationPrimaryRequest { request_id, operation_id: operation_id.to_vec(), target: Some(target), registration_generation: registration_generation.get() };
+            let mut client = match connect(config).await { Ok(client) => client, Err(error) => return client_error(identity, &error) };
+            return match client.fence_replication_primary(request, &metadata).await {
+                Ok(response) => render_primary_fence(identity, response),
+                Err(error) => client_error(identity, &error),
+            };
+        }
         FollowerCommand::Register { target, hold_budget_sequences, expires_at_sequence } => {
             let target = match follower_selection(target) { Ok(target) => target, Err(()) => return invalid_input(identity) };
             (Some(v1::RegisterFollowerRequest { request_id, target: Some(target), hold_budget_sequences: hold_budget_sequences.get(), expires_at_application_sequence: expires_at_sequence.map(std::num::NonZeroU64::get) }), None)
@@ -12526,6 +12559,59 @@ fn render_follower_refusal(command: CommandIdentity, refusal: i32) -> Terminal {
     local_error(command, code, message)
 }
 
+
+// The typed client validates and correlates every receipt before this renderer.
+fn render_follower_promotion(identity: CommandIdentity, response: v1::PromoteFollowerResponse) -> Terminal {
+    let Some(receipt) = response.receipt else { return local_error(identity, "output_render_failed", "output rendering failed"); };
+    let applied_application_sequence = match receipt.applied_application_frontier.and_then(|f| f.position) {
+        Some(v1::frontier_position::Position::BeforeFirst(_)) => None,
+        Some(v1::frontier_position::Position::AppliedThrough(sequence)) if sequence != 0 => Some(sequence.to_string()),
+        _ => return local_error(identity, "output_render_failed", "output rendering failed"),
+    };
+    #[derive(Serialize)]
+    struct Summary {
+        status: &'static str, administration_sequence: String, registration_generation: String,
+        applied_application_sequence: Option<String>, history_incarnation: String,
+        leadership_epoch: String, application_rpo: String,
+    }
+    let status = if receipt.replayed { "replayed" } else { "applied" };
+    success(identity, status, &Summary {
+        status, administration_sequence: receipt.administration_sequence.to_string(),
+        registration_generation: receipt.registration_generation.to_string(), applied_application_sequence,
+        history_incarnation: receipt.history_incarnation.to_string(), leadership_epoch: receipt.leadership_epoch.to_string(),
+        application_rpo: receipt.application_rpo.to_string(),
+    })
+}
+
+fn render_primary_fence(identity: CommandIdentity, response: v1::FenceReplicationPrimaryResponse) -> Terminal {
+    use v1::fence_replication_primary_response::Result;
+    match response.result {
+        Some(Result::Receipt(receipt)) => {
+            #[derive(Serialize)]
+            struct Summary { status: &'static str, administration_sequence: String,
+                registration_generation: String, final_application_sequence: Option<String> }
+            let final_application_sequence = match receipt.final_application_frontier.and_then(|f| f.position) {
+                Some(v1::frontier_position::Position::BeforeFirst(_)) => None,
+                Some(v1::frontier_position::Position::AppliedThrough(sequence)) if sequence != 0 => Some(sequence.to_string()),
+                _ => return local_error(identity, "output_render_failed", "output rendering failed"),
+            };
+            let status = if receipt.replayed { "replayed" } else { "applied" };
+            success(identity, status, &Summary { status, administration_sequence: receipt.administration_sequence.to_string(),
+                registration_generation: receipt.registration_generation.to_string(), final_application_sequence })
+        }
+        Some(Result::Refusal(refusal)) => {
+            let (code, message) = match v1::PrimaryFenceRefusal::try_from(refusal) {
+                Ok(v1::PrimaryFenceRefusal::LineageMismatch) => ("lineage_mismatch", "selected source lineage is no longer current"),
+                Ok(v1::PrimaryFenceRefusal::RegistrationMissingOrStale) => ("registration_missing_or_stale", "the exact registration generation is unavailable"),
+                Ok(v1::PrimaryFenceRefusal::FenceConflict) => ("fence_conflict", "the primary already retains another exact fence"),
+                _ => ("output_render_failed", "output rendering failed"),
+            };
+            local_error(identity, code, message)
+        }
+        None => local_error(identity, "output_render_failed", "output rendering failed"),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use std::collections::BTreeMap;
@@ -12535,6 +12621,91 @@ mod tests {
     use std::path::PathBuf;
 
     use super::*;
+
+    #[test]
+    // req: REP-005
+    fn promotion_cli_preserves_full_width_frontiers_and_replay_status() {
+        for replayed in [false, true] {
+            for sequence in [None, Some(u64::MAX)] {
+                let receipt = v1::FollowerPromotionReceipt {
+                    administration_sequence: u64::MAX,
+                    registration_generation: u64::MAX - 1,
+                    history_incarnation: u64::MAX,
+                    leadership_epoch: u64::MAX,
+                    application_rpo: if sequence.is_none() { u64::MAX } else { 0 },
+                    replayed,
+                    applied_application_frontier: Some(v1::FrontierPosition { position: Some(sequence.map_or(v1::frontier_position::Position::BeforeFirst(v1::Unit {}), v1::frontier_position::Position::AppliedThrough)) }),
+                    ..Default::default()
+                };
+                let expected_rpo = receipt.application_rpo.to_string();
+                let mut stdout = Vec::new(); let mut stderr = Vec::new();
+                assert_eq!(render_follower_promotion(CommandIdentity::FollowerPromote, v1::PromoteFollowerResponse { receipt: Some(receipt) }).emit(OutputMode::Json, &mut stdout, &mut stderr), ExitCode::SUCCESS);
+                let output: serde_json::Value = serde_json::from_slice(&stdout).unwrap();
+                assert_eq!(output["command"], "follower.promote");
+                assert_eq!(output["result"]["administration_sequence"], u64::MAX.to_string());
+                assert_eq!(output["result"]["registration_generation"], (u64::MAX - 1).to_string());
+                assert_eq!(output["result"]["history_incarnation"], u64::MAX.to_string());
+                assert_eq!(output["result"]["leadership_epoch"], u64::MAX.to_string());
+                assert_eq!(output["result"]["applied_application_sequence"], sequence.map_or(serde_json::Value::Null, |v| serde_json::Value::String(v.to_string())));
+                assert_eq!(output["result"]["application_rpo"], expected_rpo);
+                assert_eq!(output["result"]["status"], if replayed { "replayed" } else { "applied" });
+                assert!(stderr.is_empty());
+            }
+        }
+        for receipt in [None, Some(v1::FollowerPromotionReceipt::default()), Some(v1::FollowerPromotionReceipt {
+            applied_application_frontier: Some(v1::FrontierPosition { position: Some(v1::frontier_position::Position::AppliedThrough(0)) }), ..Default::default()
+        })] {
+            assert_local_code(render_follower_promotion(CommandIdentity::FollowerPromote, v1::PromoteFollowerResponse { receipt }), "output_render_failed");
+        }
+    }
+
+    #[tokio::test]
+    // req: REP-005
+    async fn promotion_cli_rejects_malformed_operations_before_transport() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let mut config = test_config();
+        config.endpoint = format!("http://{}", listener.local_addr().unwrap());
+        let mut environment = TestEnvironment::default();
+        environment.0.insert("RIFFDB_CAPABILITY_TOKEN".into(), "A".repeat(43).into());
+        let valid = "018f22a1-7b3c-7def-8123-456789abcdef";
+        for (operation, fence, hold) in [("invalid-operation", valid, "71".repeat(16)), (valid, "invalid-fence", "71".repeat(16)), (valid, valid, "00".repeat(16))] {
+            let command = FollowerCommand::Promote {
+                target: FollowerSelectionArgs { database_id: valid.into(), history_incarnation: std::num::NonZeroU64::MIN, leadership_epoch: std::num::NonZeroU64::MIN, hold_id: hold },
+                registration_generation: std::num::NonZeroU64::MIN,
+                operation_id: operation.into(), fence_operation_id: fence.into(),
+            };
+            assert_local_code(follower_command(command, &config, &environment).await, "input_invalid");
+            assert_listener_unused(&listener);
+        }
+    }
+
+    #[test]
+    // req: REP-005
+    fn primary_fence_cli_preserves_full_width_frontier_and_closed_refusals() {
+        for replayed in [false, true] {
+            for sequence in [None, Some(u64::MAX)] {
+                let position = sequence.map_or(v1::frontier_position::Position::BeforeFirst(v1::Unit {}), v1::frontier_position::Position::AppliedThrough);
+                let receipt = v1::PrimaryFenceReceipt { administration_sequence: u64::MAX, registration_generation: u64::MAX - 1,
+                    replayed, final_application_frontier: Some(v1::FrontierPosition { position: Some(position) }), ..Default::default() };
+                let response = v1::FenceReplicationPrimaryResponse { result: Some(v1::fence_replication_primary_response::Result::Receipt(receipt)) };
+                let mut stdout = Vec::new(); let mut stderr = Vec::new();
+                assert_eq!(render_primary_fence(CommandIdentity::FollowerFencePrimary, response).emit(OutputMode::Json, &mut stdout, &mut stderr), ExitCode::SUCCESS);
+                let output: serde_json::Value = serde_json::from_slice(&stdout).unwrap();
+                assert_eq!(output["result"]["administration_sequence"], u64::MAX.to_string());
+                assert_eq!(output["result"]["registration_generation"], (u64::MAX - 1).to_string());
+                assert_eq!(output["result"]["final_application_sequence"], sequence.map_or(serde_json::Value::Null, |v| serde_json::Value::String(v.to_string())));
+                assert_eq!(output["result"]["status"], if replayed { "replayed" } else { "applied" });
+                assert!(stderr.is_empty());
+            }
+        }
+        for (refusal, code) in [(1, "lineage_mismatch"), (2, "registration_missing_or_stale"), (3, "fence_conflict"), (99, "output_render_failed")] {
+            let response = v1::FenceReplicationPrimaryResponse { result: Some(v1::fence_replication_primary_response::Result::Refusal(refusal)) };
+            let mut stdout = Vec::new(); let mut stderr = Vec::new();
+            assert_ne!(render_primary_fence(CommandIdentity::FollowerFencePrimary, response).emit(OutputMode::Json, &mut stdout, &mut stderr), ExitCode::SUCCESS);
+            let output: serde_json::Value = serde_json::from_slice(&stdout).unwrap();
+            assert_eq!(output["error"]["code"], code);
+        }
+    }
 
     #[test]
     // req: REP-006
@@ -14677,6 +14848,29 @@ query GetDocument(
             .expect("profile request");
             NormalCapabilityCreateTemplate::new(request).expect("canonical profile");
         }
+    }
+
+    #[test]
+    // req: REP-005
+    fn capability_json_preserves_primary_fencing_and_its_approval_requirement() {
+        let input: CapabilityCreateInput = serde_json::from_str(r#"{
+            "principal_id":"fence-operator", "actor_kind":"human",
+            "requested_lifetime_seconds":600, "audiences":["riffdb-cli"],
+            "grant": {
+                "tenant_scope":{"type":"global"}, "partition_scope":{"type":"all"},
+                "permissions":[{"type":"fence_replication_primary"}],
+                "field_visibility":[], "max_scan_rows":1,
+                "approval_required":["fence_replication_primary"]
+            }
+        }"#).unwrap();
+        let request = capability_request(input,
+            parse_uuid_v7("01900000-0000-7000-8000-000000000042").unwrap().to_vec(),
+            v1::CapabilityCreateMode::Normal).unwrap();
+        let grant = request.grant.as_ref().unwrap();
+        assert!(matches!(grant.permissions[0].permission,
+            Some(v1::capability_permission::Permission::FenceReplicationPrimary(_))));
+        assert_eq!(grant.approval_required, vec![34]);
+        NormalCapabilityCreateTemplate::new(request).unwrap();
     }
 
     #[test]

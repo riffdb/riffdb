@@ -11,9 +11,9 @@ use riffdb_types::{DatabaseId, DualFrontier};
 use sha2::{Digest, Sha256};
 
 use crate::{
-    ArchiveConsumerErrorV1 as Error, ArchiveFrameV1, AuthoritativeStateCatalogV1, ChangelogFrameV3,
-    ChangelogHistoryPointV3, ChangelogLineageV3, ChangelogTransactionSequence, LeadershipEpochV1,
-    MAX_CHANGELOG_FRAME_BYTES, MAX_STAGED_COMMANDS,
+    ArchiveConsumerErrorV1 as Error, ArchiveFrameV1, ChangelogFrameV3, ChangelogHistoryPointV3,
+    ChangelogLineageV3, ChangelogTransactionSequence, LeadershipEpochV1, MAX_CHANGELOG_FRAME_BYTES,
+    MAX_STAGED_COMMANDS,
 };
 
 const MAGIC: &[u8; 8] = b"RDBARM01";
@@ -121,6 +121,7 @@ impl ArchiveManifestV1 {
         if binding.database_id() != self.lineage.database_id()
             || binding.history_incarnation() != self.lineage.history_incarnation()
             || binding.leadership_epoch() != self.lineage.leadership_epoch().get()
+            || binding.catalog_digest() != self.lineage.catalog_digest()
         {
             return Err(Error::ForeignLineage);
         }
@@ -187,11 +188,9 @@ impl ArchiveManifestV1 {
         let database = DatabaseId::from_bytes(read.array()?).map_err(|_| Error::InvalidManifest)?;
         let incarnation = read.u64()?;
         let epoch = LeadershipEpochV1::new(read.u64()?).ok_or(Error::InvalidManifest)?;
-        let lineage = ChangelogLineageV3::new(database, incarnation, epoch)
-            .map_err(|_| Error::InvalidManifest)?;
-        if read.array::<32>()? != AuthoritativeStateCatalogV1.digest() {
-            return Err(Error::InvalidManifest);
-        }
+        let lineage =
+            ChangelogLineageV3::new_with_catalog(database, incarnation, epoch, read.array()?)
+                .map_err(|_| Error::InvalidManifest)?;
         let full_backup_manifest_digest = read.array()?;
         let encryption_posture = match read.array::<1>()? {
             [0] => ArchiveEncryptionPostureV1::Unencrypted,

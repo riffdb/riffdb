@@ -144,3 +144,8 @@ required-features = ["test-fixtures"]
 name = "replication_archive_restore"
 path = "../../tests/replication_archive_restore.rs"
 required-features = ["test-fixtures"]
+
+[[bin]]
+name = "riffdbd-maintenance-fixture"
+path = "tests/fixtures/maintenance_abort_daemon.rs"
+required-features = ["test-fixtures"]

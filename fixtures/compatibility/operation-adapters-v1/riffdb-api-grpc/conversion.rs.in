@@ -6202,6 +6202,9 @@ fn capability_permission_from_proto(
         Permission::ReplicateChangelog(_) => {
             unparameterized(CapabilityPermissionKindV1::ReplicateChangelog)
         }
+        Permission::FenceReplicationPrimary(_) => {
+            unparameterized(CapabilityPermissionKindV1::FenceReplicationPrimary)
+        }
         Permission::InvokeCommand(value) => {
             let (lineage, id) = lineage_scoped_id(value)?;
             Ok(CapabilityPermissionV1::InvokeCommand(
@@ -6435,6 +6438,9 @@ fn capability_permission_kind_from_proto(value: i32) -> Result<CapabilityPermiss
         v1::CapabilityPermissionKind::ReplicateChangelog => {
             Ok(CapabilityPermissionKindV1::ReplicateChangelog)
         }
+        v1::CapabilityPermissionKind::FenceReplicationPrimary => {
+            Ok(CapabilityPermissionKindV1::FenceReplicationPrimary)
+        }
         v1::CapabilityPermissionKind::Unspecified => Err(invalid_request()),
     }
 }
@@ -6541,6 +6547,25 @@ mod tests {
     use std::collections::BTreeMap;
 
     use super::*;
+
+    #[test]
+    // req: REP-005
+    fn primary_fence_grant_preserves_permission_and_required_approval() {
+        let mut request = v1::CapabilityGrant {
+            tenant_scope: Some(v1::TenantScope { scope: Some(v1::tenant_scope::Scope::Global(v1::Unit {})) }),
+            partition_scope: Some(v1::PartitionScope { scope: Some(v1::partition_scope::Scope::All(v1::Unit {})) }),
+            permissions: vec![v1::CapabilityPermission { permission: Some(v1::capability_permission::Permission::FenceReplicationPrimary(v1::Unit {})) }],
+            max_scan_rows: 1,
+            approval_required: vec![v1::CapabilityPermissionKind::FenceReplicationPrimary as i32],
+            ..Default::default()
+        };
+        let grant = capability_grant_from_proto(request.clone()).unwrap();
+        assert!(grant.permissions().contains_kind(CapabilityPermissionKindV1::FenceReplicationPrimary));
+        assert!(!grant.permissions().contains_kind(CapabilityPermissionKindV1::ReplicateChangelog));
+        assert_eq!(grant.approval_required(), &[CapabilityPermissionKindV1::FenceReplicationPrimary]);
+        request.tenant_scope = Some(v1::TenantScope { scope: Some(v1::tenant_scope::Scope::TenantId("tenant-a".into())) });
+        assert!(capability_grant_from_proto(request).is_err());
+    }
 
     #[test]
     fn row_policy_capability_crosses_public_transport_only_when_role_bound() {
@@ -8290,4 +8315,70 @@ mod vector_wire_tests {
         assert_eq!(report.stale_count, 3);
         assert!(report.slo_breached);
     }
+}
+
+/// Converts only bounded caller selection; authority and the final head are internal.
+pub fn fence_replication_primary_request_from_proto(request: v1::FenceReplicationPrimaryRequest)
+    -> Result<(RequestId, riffdb_service::FenceReplicationPrimaryRequest), Status> {
+    riffdb_proto::validate_public_message(&request).map_err(|_| invalid_request())?;
+    Ok((request_id_from_bytes(&request.request_id)?, riffdb_service::FenceReplicationPrimaryRequest::new(
+        riffdb_types::ReplicationFenceOperationId::from_bytes(request.operation_id.try_into().map_err(|_| invalid_request())?).map_err(|_| invalid_request())?,
+        follower_target_from_proto(request.target)?,
+        riffdb_auth::ChangelogTransactionSequence::new(request.registration_generation).ok_or_else(invalid_request)?,
+    )))
+}
+fn primary_fence_receipt_to_proto(receipt: riffdb_service::PrimaryFenceResultReceipt, replayed: bool) -> v1::PrimaryFenceReceipt {
+    let target = receipt.target();
+    v1::PrimaryFenceReceipt {
+        operation_id: receipt.operation_id().as_bytes().to_vec(),
+        target: Some(v1::ReplicationFollowerTarget { database_id: target.database_id().as_bytes().to_vec(),
+            history_incarnation: target.history_incarnation(), leadership_epoch: target.leadership_epoch().get(), hold_id: target.hold_id().as_bytes().to_vec() }),
+        registration_generation: receipt.generation().get(),
+        administration_sequence: receipt.administration_sequence().get(),
+        final_application_frontier: Some(frontier_to_proto(receipt.final_application_sequence().map_or(
+            FrontierPosition::BeforeFirst, FrontierPosition::AppliedThrough))),
+        replayed,
+    }
+}
+/// Emits only a checked operator summary; it cannot act as authenticated proof.
+#[must_use]
+pub fn fence_replication_primary_result_to_proto(result: riffdb_service::FenceReplicationPrimaryResult) -> v1::FenceReplicationPrimaryResponse {
+    use riffdb_service::{FenceReplicationPrimaryResult as Result, PrimaryFenceRefusal as Refusal};
+    use v1::fence_replication_primary_response::Result as Wire;
+    v1::FenceReplicationPrimaryResponse { result: Some(match result {
+        Result::Applied(receipt) => Wire::Receipt(primary_fence_receipt_to_proto(receipt, false)),
+        Result::Replayed(receipt) => Wire::Receipt(primary_fence_receipt_to_proto(receipt, true)),
+        Result::Refused(refusal) => Wire::Refusal(match refusal {
+            Refusal::LineageMismatch => v1::PrimaryFenceRefusal::LineageMismatch,
+            Refusal::RegistrationMissingOrStale => v1::PrimaryFenceRefusal::RegistrationMissingOrStale,
+            Refusal::FenceConflict => v1::PrimaryFenceRefusal::FenceConflict,
+        } as i32),
+    }) }
+}
+
+/// Validates the complete promotion selection without accepting any proof or frontier.
+pub fn promote_follower_request_from_proto(request: v1::PromoteFollowerRequest)
+    -> Result<(RequestId, riffdb_service::PromoteFollowerRequest), Status> {
+    riffdb_proto::validate_public_message(&request).map_err(|_| invalid_request())?;
+    Ok((request_id_from_bytes(&request.request_id)?, riffdb_service::PromoteFollowerRequest::new(
+        riffdb_types::ReplicationPromotionOperationId::from_bytes(request.operation_id.try_into().map_err(|_| invalid_request())?).map_err(|_| invalid_request())?,
+        riffdb_types::ReplicationFenceOperationId::from_bytes(request.fence_operation_id.try_into().map_err(|_| invalid_request())?).map_err(|_| invalid_request())?,
+        follower_target_from_proto(request.target)?,
+        riffdb_auth::ChangelogTransactionSequence::new(request.registration_generation).ok_or_else(invalid_request)?,
+    )))
+}
+/// Emits the reconciled result after the lifecycle owner has installed the source graph.
+#[must_use]
+pub fn promote_follower_result_to_proto(result: riffdb_service::PromoteFollowerResult) -> v1::PromoteFollowerResponse {
+    let target = result.target();
+    v1::PromoteFollowerResponse { receipt: Some(v1::FollowerPromotionReceipt {
+        operation_id: result.operation_id().as_bytes().to_vec(),
+        target: Some(v1::ReplicationFollowerTarget { database_id: target.database_id().as_bytes().to_vec(),
+            history_incarnation: target.history_incarnation(), leadership_epoch: target.leadership_epoch().get(), hold_id: target.hold_id().as_bytes().to_vec() }),
+        registration_generation: result.generation().get(),
+        administration_sequence: result.administration_sequence().get(),
+        applied_application_frontier: Some(frontier_to_proto(result.applied_application().map_or(FrontierPosition::BeforeFirst, FrontierPosition::AppliedThrough))),
+        history_incarnation: result.history_incarnation(), leadership_epoch: result.leadership_epoch().get(),
+        application_rpo: result.application_rpo(), replayed: result.replayed(),
+    }) }
 }

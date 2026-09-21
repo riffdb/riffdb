@@ -9,6 +9,7 @@ files
   riffdb/storage/v1/audit.proto
     import riffdb/storage/v1/common.proto
   riffdb/storage/v1/authoritative_state_catalog_v1.proto
+  riffdb/storage/v1/authoritative_state_catalog_v2.proto
   riffdb/storage/v1/capability.proto
     import riffdb/storage/v1/common.proto
   riffdb/storage/v1/capability_export.proto
@@ -122,8 +123,17 @@ files
   riffdb/storage/v1/outbox.proto
     import riffdb/storage/v1/application.proto
     import riffdb/storage/v1/common.proto
+  riffdb/storage/v1/primary_fence_v1.proto
+    import riffdb/storage/v1/common.proto
+    import riffdb/storage/v1/changelog_history_state_v3.proto
+    import riffdb/storage/v1/service_audit_v3.proto
   riffdb/storage/v1/projection.proto
     import riffdb/storage/v1/common.proto
+  riffdb/storage/v1/promotion_administration_v1.proto
+    import riffdb/storage/v1/common.proto
+    import riffdb/storage/v1/audit.proto
+    import riffdb/storage/v1/primary_fence_v1.proto
+    import riffdb/storage/v1/changelog_history_state_v3.proto
   riffdb/storage/v1/reactive_module_v1.proto
     import riffdb/storage/v1/common.proto
   riffdb/storage/v1/registry_v2.proto
@@ -861,6 +871,13 @@ messages
     2 history_incarnation optional uint64
     3 leadership_epoch optional uint64
     4 hold_id optional bytes
+  riffdb.storage.v1.ReplicationPrimaryAdmissionV1 fields=2
+    1 active optional .riffdb.storage.v1.ReplicationPrimaryAdmissionV1.Active oneof=state
+    2 fenced optional .riffdb.storage.v1.StoredPrimaryFenceAdministrationV1 oneof=state
+  riffdb.storage.v1.ReplicationPrimaryAdmissionV1.Active fields=3
+    1 database_id optional bytes
+    2 history_incarnation optional uint64
+    3 leadership_epoch optional uint64
   riffdb.storage.v1.RetentionHoldV1 fields=4
     1 hold_id optional string
     2 sequence optional uint64
@@ -978,6 +995,8 @@ messages
     1 next_commit_sequence optional uint64 oneof=state
     2 exhausted optional .riffdb.storage.v1.UnitV1 oneof=state
   riffdb.storage.v1.StoredAuthoritativeStateCatalogV1 fields=1
+    1 catalog_digest optional bytes
+  riffdb.storage.v1.StoredAuthoritativeStateCatalogV2 fields=1
     1 catalog_digest optional bytes
   riffdb.storage.v1.StoredCatalogAdministrationV1 fields=7
     1 administration_sequence optional uint64
@@ -1467,6 +1486,16 @@ messages
   riffdb.storage.v1.StoredPendingAdmissionV3 fields=2
     1 base optional .riffdb.storage.v1.StoredPendingAdmissionV2
     2 canonical_service_values optional bytes
+  riffdb.storage.v1.StoredPrimaryFenceAdministrationV1 fields=9
+    1 administration_sequence optional uint64
+    2 timestamp optional .riffdb.storage.v1.TimestampV1
+    3 operation_id optional bytes
+    4 request_id optional bytes
+    5 principal optional .riffdb.storage.v1.AuditPrincipalV1
+    6 approval_id optional string proto3-optional oneof=_approval_id
+    7 target optional .riffdb.storage.v1.ReplicationFollowerAuditTargetV3
+    8 registration_generation optional uint64
+    9 observed optional .riffdb.storage.v1.StoredChangelogHistoryStateV3.Position
   riffdb.storage.v1.StoredProjectionApplyV1 fields=4
     1 identity optional .riffdb.storage.v1.ProjectionIdentityV1
     2 generation optional uint64
@@ -1486,6 +1515,22 @@ messages
     3 canonical_group_values repeated bytes
     4 canonical_measures optional bytes
     5 last_changed_sequence optional uint64
+  riffdb.storage.v1.StoredPromotionAdministrationV1 fields=15
+    1 administration_sequence optional uint64
+    2 timestamp optional .riffdb.storage.v1.TimestampV1
+    3 promotion_operation_id optional bytes
+    4 request_id optional bytes
+    5 principal optional .riffdb.storage.v1.AuditPrincipalV1
+    6 approval_id optional string proto3-optional oneof=_approval_id
+    7 attempted_at optional .riffdb.storage.v1.TimestampV1
+    8 fence optional .riffdb.storage.v1.StoredPrimaryFenceAdministrationV1
+    9 applied optional .riffdb.storage.v1.StoredChangelogHistoryStateV3.Position
+    10 source_history optional .riffdb.storage.v1.StoredChangelogHistoryStateV3
+    11 published_incarnation optional uint64
+    12 published_epoch optional uint64
+    13 application_rpo optional uint64
+    14 attempt_steps optional bytes
+    15 ingress optional .riffdb.storage.v1.ServiceIngressKindV1
   riffdb.storage.v1.StoredProvenanceRecordV1 fields=14
     1 provenance_id optional bytes
     2 commit_sequence optional uint64
@@ -1944,7 +1989,7 @@ messages
   riffdb.v1.CapabilityIdentity fields=2
     1 capability_id optional bytes
     2 revision optional uint64
-  riffdb.v1.CapabilityPermission fields=33
+  riffdb.v1.CapabilityPermission fields=34
     1 validate_contract optional .riffdb.v1.Unit oneof=permission
     2 read_contract optional .riffdb.v1.Unit oneof=permission
     3 explain_command optional .riffdb.v1.LineageScopedStableId oneof=permission
@@ -1978,6 +2023,7 @@ messages
     31 install_application optional string oneof=permission
     32 inspect_vector_state optional .riffdb.v1.Unit oneof=permission
     33 replicate_changelog optional .riffdb.v1.Unit oneof=permission
+    34 fence_replication_primary optional .riffdb.v1.Unit oneof=permission
   riffdb.v1.CapabilityPrincipalFact fields=2
     1 name optional string
     2 value optional .riffdb.v1.Value
@@ -2416,12 +2462,30 @@ messages
     7 tool_name optional string
   riffdb.v1.ExplicitPartitionScope fields=1
     1 partitions repeated .riffdb.v1.ScopedPartition
+  riffdb.v1.FenceReplicationPrimaryRequest fields=4
+    1 request_id optional bytes
+    2 operation_id optional bytes
+    3 target optional .riffdb.v1.ReplicationFollowerTarget
+    4 registration_generation optional uint64
+  riffdb.v1.FenceReplicationPrimaryResponse fields=2
+    1 receipt optional .riffdb.v1.PrimaryFenceReceipt oneof=result
+    2 refusal optional .riffdb.v1.PrimaryFenceRefusal oneof=result
   riffdb.v1.FieldSelection fields=1
     1 field_ids repeated uint32
   riffdb.v1.FollowerAdministrationReceipt fields=3
     1 administration_sequence optional uint64
     2 registration_generation optional uint64
     3 replayed optional bool
+  riffdb.v1.FollowerPromotionReceipt fields=9
+    1 operation_id optional bytes
+    2 target optional .riffdb.v1.ReplicationFollowerTarget
+    3 registration_generation optional uint64
+    4 administration_sequence optional uint64
+    5 applied_application_frontier optional .riffdb.v1.FrontierPosition
+    6 history_incarnation optional uint64
+    7 leadership_epoch optional uint64
+    8 application_rpo optional uint64
+    9 replayed optional bool
   riffdb.v1.FrontierPosition fields=2
     1 before_first optional .riffdb.v1.Unit oneof=position
     2 applied_through optional uint64 oneof=position
@@ -2708,6 +2772,13 @@ messages
     1 lifecycle optional .riffdb.v1.PreBootstrapLifecycle
     2 liveness optional bool
     3 readiness optional bool
+  riffdb.v1.PrimaryFenceReceipt fields=6
+    1 operation_id optional bytes
+    2 target optional .riffdb.v1.ReplicationFollowerTarget
+    3 registration_generation optional uint64
+    4 administration_sequence optional uint64
+    5 final_application_frontier optional .riffdb.v1.FrontierPosition
+    6 replayed optional bool
   riffdb.v1.ProjectionFailure fields=3
     1 generation optional uint64
     2 code optional .riffdb.v1.ProjectionFailureCode
@@ -2745,6 +2816,14 @@ messages
     1 building optional .riffdb.v1.Unit oneof=reason
     2 rebuilding optional .riffdb.v1.Unit oneof=reason
     3 failure optional .riffdb.v1.ProjectionFailureCode oneof=reason
+  riffdb.v1.PromoteFollowerRequest fields=5
+    1 request_id optional bytes
+    2 operation_id optional bytes
+    3 fence_operation_id optional bytes
+    4 target optional .riffdb.v1.ReplicationFollowerTarget
+    5 registration_generation optional uint64
+  riffdb.v1.PromoteFollowerResponse fields=1
+    1 receipt optional .riffdb.v1.FollowerPromotionReceipt
   riffdb.v1.ProtectedEventConsumerStatus fields=2
     1 history_incarnation optional uint64
     2 progress_cursor optional bytes
@@ -2833,6 +2912,17 @@ messages
     1 hold_id optional bytes
     2 resume_manifest optional bytes
     3 after_page optional uint32
+  riffdb.v1.ReplicationFenceEvidence fields=5
+    1 fence_record optional bytes
+    2 applied optional .riffdb.v1.ReplicationPosition
+    3 anchor optional .riffdb.v1.ReplicationPosition
+    4 tail optional .riffdb.v1.ReplicationPosition
+    5 minimum_resume optional .riffdb.v1.ReplicationPosition
+  riffdb.v1.ReplicationFenceEvidenceRequest fields=4
+    1 operation_id optional bytes
+    2 hold_id optional bytes
+    3 registration_generation optional uint64
+    4 applied optional .riffdb.v1.ReplicationPosition
   riffdb.v1.ReplicationFollowerTarget fields=4
     1 database_id optional bytes
     2 history_incarnation optional uint64
@@ -2995,7 +3085,7 @@ messages
     5 known_projections optional uint32 proto3-optional oneof=_known_projections
     6 history_incarnation optional uint64
     7 replication optional .riffdb.v1.ReplicationStatistics
-  riffdb.v1.StreamChangelogRequest fields=12
+  riffdb.v1.StreamChangelogRequest fields=13
     1 request_id optional bytes
     2 database_id optional bytes
     3 history_incarnation optional uint64
@@ -3008,11 +3098,13 @@ messages
     10 bootstrap optional .riffdb.v1.ReplicationBootstrapRequest
     11 attachment optional .riffdb.v1.ReplicationBootstrapAttachment
     12 follower_hold_id optional bytes
-  riffdb.v1.StreamChangelogResponse fields=5
+    13 fence_evidence optional .riffdb.v1.ReplicationFenceEvidenceRequest
+  riffdb.v1.StreamChangelogResponse fields=6
     1 frame optional bytes oneof=item
     2 refusal optional .riffdb.v1.ReplicationRefusal oneof=item
     3 bootstrap_manifest optional bytes oneof=item
     4 bootstrap_page optional bytes oneof=item
+    6 fence_evidence optional .riffdb.v1.ReplicationFenceEvidence oneof=item
     5 source_head optional .riffdb.v1.ReplicationSourceHead
   riffdb.v1.SubscribeCommitsRequest fields=4
     1 request_id optional bytes
@@ -3161,7 +3253,7 @@ enums
     13 APPLICATION_ERROR_CATEGORY_CONTROL
     14 APPLICATION_ERROR_CATEGORY_HISTORY
     15 APPLICATION_ERROR_CATEGORY_CAPACITY
-  riffdb.app.v1.ApplicationErrorCode values=27
+  riffdb.app.v1.ApplicationErrorCode values=28
     0 APPLICATION_ERROR_CODE_UNSPECIFIED
     1 APPLICATION_ERROR_CODE_INVALID_REQUEST
     2 APPLICATION_ERROR_CODE_INPUT_INVALID
@@ -3189,6 +3281,7 @@ enums
     24 APPLICATION_ERROR_CODE_FRESHNESS_UNSATISFIED
     25 APPLICATION_ERROR_CODE_PROJECTED_SOURCE_REQUIRED
     26 APPLICATION_ERROR_CODE_FOLLOWER_MODE
+    27 APPLICATION_ERROR_CODE_PRIMARY_FENCED
   riffdb.app.v1.ApplicationFixCode values=11
     0 APPLICATION_FIX_CODE_UNSPECIFIED
     1 APPLICATION_FIX_CODE_CORRECT_INPUT
@@ -3629,7 +3722,7 @@ enums
     0 CAPABILITY_CREATE_MODE_UNSPECIFIED
     1 CAPABILITY_CREATE_MODE_NORMAL
     2 CAPABILITY_CREATE_MODE_BOOTSTRAP
-  riffdb.v1.CapabilityPermissionKind values=34
+  riffdb.v1.CapabilityPermissionKind values=35
     0 CAPABILITY_PERMISSION_KIND_UNSPECIFIED
     1 CAPABILITY_PERMISSION_KIND_VALIDATE_CONTRACT
     2 CAPABILITY_PERMISSION_KIND_READ_CONTRACT
@@ -3664,6 +3757,7 @@ enums
     31 CAPABILITY_PERMISSION_KIND_INSTALL_APPLICATION
     32 CAPABILITY_PERMISSION_KIND_INSPECT_VECTOR_STATE
     33 CAPABILITY_PERMISSION_KIND_REPLICATE_CHANGELOG
+    34 CAPABILITY_PERMISSION_KIND_FENCE_REPLICATION_PRIMARY
   riffdb.v1.CapabilityRowPolicyOperation values=5
     0 CAPABILITY_ROW_POLICY_OPERATION_UNSPECIFIED
     1 CAPABILITY_ROW_POLICY_OPERATION_READ
@@ -3893,6 +3987,11 @@ enums
     0 PRE_BOOTSTRAP_LIFECYCLE_UNSPECIFIED
     1 PRE_BOOTSTRAP_LIFECYCLE_INITIALIZING_VALIDATION
     2 PRE_BOOTSTRAP_LIFECYCLE_INITIALIZING_BOOTSTRAP
+  riffdb.v1.PrimaryFenceRefusal values=4
+    0 PRIMARY_FENCE_REFUSAL_UNSPECIFIED
+    1 PRIMARY_FENCE_REFUSAL_LINEAGE_MISMATCH
+    2 PRIMARY_FENCE_REFUSAL_REGISTRATION_MISSING_OR_STALE
+    3 PRIMARY_FENCE_REFUSAL_FENCE_CONFLICT
   riffdb.v1.ProjectionFailureCode values=7
     0 PROJECTION_FAILURE_CODE_UNSPECIFIED
     1 PROJECTION_FAILURE_CODE_ARITHMETIC_OVERFLOW
@@ -3909,7 +4008,7 @@ enums
     4 PROJECTION_LIFECYCLE_DEGRADED
     5 PROJECTION_LIFECYCLE_REBUILDING
     6 PROJECTION_LIFECYCLE_INVALID
-  riffdb.v1.PublicErrorKind values=14
+  riffdb.v1.PublicErrorKind values=15
     0 PUBLIC_ERROR_KIND_UNSPECIFIED
     1 PUBLIC_ERROR_KIND_VALIDATION
     2 PUBLIC_ERROR_KIND_IDEMPOTENCY_KEY_REUSE
@@ -3924,6 +4023,7 @@ enums
     12 PUBLIC_ERROR_KIND_HISTORY_PRUNED
     11 PUBLIC_ERROR_KIND_OVERLOADED
     13 PUBLIC_ERROR_KIND_FOLLOWER_MODE
+    14 PUBLIC_ERROR_KIND_PRIMARY_FENCED
   riffdb.v1.PublishedApplyMode values=3
     0 PUBLISHED_APPLY_MODE_UNSPECIFIED
     1 PUBLISHED_APPLY_MODE_ENABLED
@@ -4012,6 +4112,8 @@ services
     CancelApplicationReimport .riffdb.v1.CancelApplicationReimportRequest -> .riffdb.v1.CancelApplicationReimportResponse (unary)
     RegisterFollower .riffdb.v1.RegisterFollowerRequest -> .riffdb.v1.RegisterFollowerResponse (unary)
     RetireFollower .riffdb.v1.RetireFollowerRequest -> .riffdb.v1.RetireFollowerResponse (unary)
+    FenceReplicationPrimary .riffdb.v1.FenceReplicationPrimaryRequest -> .riffdb.v1.FenceReplicationPrimaryResponse (unary)
+    PromoteFollower .riffdb.v1.PromoteFollowerRequest -> .riffdb.v1.PromoteFollowerResponse (unary)
   riffdb.v1.ApplicationSessionService
     Open .riffdb.v1.ApplicationSessionRequest -> .riffdb.v1.ApplicationSessionResponse (bidirectional-streaming)
   riffdb.v1.CommandService

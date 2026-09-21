@@ -4,6 +4,7 @@ use super::*;
 use crate::port_driver::{BlockingPortDriver, BlockingPortExecutor};
 use crate::replication_publication::ReplicationPublishedSnapshots;
 use riffdb_service::ReplicationStatistics;
+use riffdb_storage_api::ReplicationPrimaryAdmissionReadPort;
 
 pub(crate) struct ReplicationOperationalStatus {
     health: BlockingPortExecutor<(), OperationalHealthSnapshot, OperationalStatusError>,
@@ -30,6 +31,24 @@ impl ProductionOperationalStatusPort {
                 ),
             )?;
             let mut components = snapshot.into_components();
+            // Read checked source admission on this bounded blocking worker.
+            // Durable fencing closes command readiness without stopping the
+            // independent audit lane or treating a receipt as remote proof.
+            if base.vector_storage.as_ref().is_some_and(|storage| {
+                !storage
+                    .read_replication_primary_admission()
+                    .is_ok_and(|admission| admission.fence().is_none())
+            }) {
+                for component in &mut components {
+                    if component.component() == HealthComponentKind::CommitCoordinator {
+                        *component = ComponentHealth::new(
+                            HealthComponentKind::CommitCoordinator,
+                            HealthComponentStatus::Unavailable,
+                        );
+                    }
+                }
+            }
+
             let replication = if base.runtime.stop_reason().is_some() {
                 Err(OperationalStatusError::Unavailable)
             } else {

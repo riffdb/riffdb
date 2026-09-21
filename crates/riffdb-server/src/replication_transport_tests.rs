@@ -52,6 +52,12 @@ use tonic::{
     transport::{Certificate, Channel, ClientTlsConfig, Endpoint},
 };
 
+#[path = "../../../tests/service/support/mod.rs"]
+mod audit_support;
+
+#[path = "replication_transport_manifest.rs"]
+mod checked_manifest;
+
 const TOKEN: &str = "AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8";
 const KEYS: &[u8] = b"riffdb-capability-digest-keys-v1\n1:000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f\n";
 
@@ -59,7 +65,11 @@ fn database_id() -> DatabaseId {
     DatabaseId::from_unix_milliseconds_and_random(1_700_000_000_000, [1; 10]).unwrap()
 }
 fn request_id() -> RequestId {
-    RequestId::from_unix_milliseconds_and_random(1_700_000_000_000, [2; 10]).unwrap()
+    // Retries are distinct service-audit invocations, not replayed request IDs.
+    static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+    let mut random = [2; 10];
+    random[2..].copy_from_slice(&NEXT.fetch_add(1, Ordering::Relaxed).to_be_bytes());
+    RequestId::from_unix_milliseconds_and_random(1_700_000_000_000, random).unwrap()
 }
 fn environment() -> Environment {
     Environment::new("replication-transport").unwrap()
@@ -305,6 +315,7 @@ impl GrpcLifecycleRoute for Route {
 }
 
 struct Harness {
+    _audit: audit_support::ServiceHarness,
     authority: Arc<Authority>,
     source: Arc<Source>,
     route: Arc<Route>,
@@ -328,8 +339,13 @@ impl Harness {
             requests: Mutex::new(vec![]),
             refusal: Mutex::new(None),
         });
+        let audit = audit_support::ServiceHarness::new(
+            audit_support::ReadCommitMode::ImmediateNotFound,
+            false,
+        );
+        let owner = audit.replication_owner(database_id(), environment(), authority.clone());
         let route = Arc::new(Route {
-            service: Arc::new(ReplicationService::new(authority.clone(), source.clone())),
+            service: Arc::new(ReplicationService::new(owner, source.clone())),
             security: CheckedGrpcSecurityContext::new(
                 authority.clone(),
                 AuthenticationContext::new(
@@ -346,6 +362,7 @@ impl Harness {
             GrpcRequestLimits::new(Duration::from_secs(10)).unwrap(),
         );
         Self {
+            _audit: audit,
             authority,
             source,
             route,
@@ -381,6 +398,7 @@ fn request() -> Request<v1::StreamChangelogRequest> {
         bootstrap: None,
         attachment: None,
         follower_hold_id: vec![],
+        ..Default::default()
     });
     request
         .metadata_mut()
@@ -764,9 +782,16 @@ fn bootstrap_wire_request(resume: bool) -> Request<v1::StreamChangelogRequest> {
     let mut request = request();
     let message = request.get_mut();
     message.after = None;
+    message.catalog_digest = riffdb_storage_api::AuthoritativeStateCatalogV1
+        .digest()
+        .to_vec();
     message.bootstrap = Some(v1::ReplicationBootstrapRequest {
         hold_id: vec![0x18; 16],
-        resume_manifest: if resume { vec![1, 2, 3] } else { vec![] },
+        resume_manifest: if resume {
+            checked_manifest::bytes()
+        } else {
+            vec![]
+        },
         after_page: if resume { 3 } else { 0 },
     });
     request
@@ -789,7 +814,7 @@ async fn replication_tls_bootstrap_maps_resume_and_withholds_manifest_or_page_af
         assert_eq!(observed.after_frontier, riffdb_types::DualFrontier::INITIAL);
         assert!(
             matches!(observed.phase, ReplicationPhase::Bootstrap { hold_id, after_page, resume_manifest }
-            if hold_id == [0x18; 16] && after_page == if withhold_page {3} else {0} && resume_manifest == if withhold_page {vec![1,2,3]} else {vec![]})
+            if hold_id == [0x18; 16] && after_page == if withhold_page {3} else {0} && resume_manifest == if withhold_page {checked_manifest::bytes()} else {vec![]})
         );
         if withhold_page {
             harness
@@ -872,8 +897,11 @@ async fn replication_tls_attachment_keeps_exact_acknowledgement_and_manifest_in_
     let mut client = ReplicationServiceClient::new(channel);
     let mut request = request();
     let message = request.get_mut();
+    message.catalog_digest = riffdb_storage_api::AuthoritativeStateCatalogV1
+        .digest()
+        .to_vec();
     message.attachment = Some(v1::ReplicationBootstrapAttachment {
-        manifest: vec![0x71; 512],
+        manifest: checked_manifest::bytes(),
         acknowledged: message.after.take(),
     });
     let mut stream = bounded(client.stream_changelog(request))
@@ -883,7 +911,7 @@ async fn replication_tls_attachment_keeps_exact_acknowledgement_and_manifest_in_
     bounded(harness.entered.recv()).await.unwrap();
     let observed = harness.source.requests.lock().unwrap()[0].clone();
     assert!(
-        matches!(observed.phase, ReplicationPhase::Attach { manifest } if manifest == vec![0x71; 512])
+        matches!(observed.phase, ReplicationPhase::Attach { manifest } if manifest == checked_manifest::bytes())
     );
     assert_eq!(observed.after_sequence, 19);
     assert_eq!(observed.after_hash, [0x52; 32]);
@@ -913,3 +941,6 @@ async fn replication_tls_attachment_keeps_exact_acknowledgement_and_manifest_in_
 
 #[path = "replication_transport_source_tests.rs"]
 mod real_source;
+
+#[path = "replication_transport_fence_tests.rs"]
+mod fence_tests;

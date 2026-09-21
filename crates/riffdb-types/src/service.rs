@@ -131,11 +131,17 @@ pub enum ServiceOperationV1 {
     RegisterFollower,
     /// Retire one exact follower registration generation.
     RetireFollower,
+    /// Durably fence one primary for an exact registered follower generation.
+    FenceReplicationPrimary,
+    /// Establish an audited administrative changelog replication stream.
+    StreamChangelog,
+    /// Promote one drained follower under authenticated source fencing.
+    PromoteFollower,
 }
 
 impl ServiceOperationV1 {
     /// Every accepted v1 service operation, in tag order.
-    pub const ALL: [Self; 59] = [
+    pub const ALL: [Self; 62] = [
         Self::ValidateContract,
         Self::ExplainCommand,
         Self::DeployContract,
@@ -195,6 +201,9 @@ impl ServiceOperationV1 {
         Self::InspectVectorState,
         Self::RegisterFollower,
         Self::RetireFollower,
+        Self::FenceReplicationPrimary,
+        Self::StreamChangelog,
+        Self::PromoteFollower,
     ];
 
     /// Returns the stable v1 semantic tag.
@@ -260,6 +269,9 @@ impl ServiceOperationV1 {
             Self::InspectVectorState => 0x39,
             Self::RegisterFollower => 0x3a,
             Self::RetireFollower => 0x3b,
+            Self::FenceReplicationPrimary => 0x3c,
+            Self::StreamChangelog => 0x3d,
+            Self::PromoteFollower => 0x3e,
         }
     }
 
@@ -326,6 +338,9 @@ impl ServiceOperationV1 {
             0x39 => Some(Self::InspectVectorState),
             0x3a => Some(Self::RegisterFollower),
             0x3b => Some(Self::RetireFollower),
+            0x3c => Some(Self::FenceReplicationPrimary),
+            0x3d => Some(Self::StreamChangelog),
+            0x3e => Some(Self::PromoteFollower),
             _ => None,
         }
     }
@@ -647,12 +662,19 @@ impl ServiceAuditTargetsV1 {
     #[must_use]
     pub fn is_valid_for_operation(&self, operation: ServiceOperationV1) -> bool {
         match operation {
-            ServiceOperationV1::RegisterFollower | ServiceOperationV1::RetireFollower => {
+            ServiceOperationV1::RegisterFollower
+            | ServiceOperationV1::RetireFollower
+            | ServiceOperationV1::FenceReplicationPrimary
+            | ServiceOperationV1::PromoteFollower => {
                 matches!(
                     self.as_slice(),
                     [ServiceAuditTargetV1::ReplicationFollower(_)]
                 )
             }
+            ServiceOperationV1::StreamChangelog => matches!(
+                self.as_slice(),
+                [] | [ServiceAuditTargetV1::ReplicationFollower(_)]
+            ),
             _ => true,
         }
     }
@@ -783,9 +805,46 @@ mod tests {
         CapabilityId::from_bytes(uuid_bytes(seed)).expect("valid test UUIDv7")
     }
 
+    // req: REP-003, REP-005
+    #[test]
+    fn replication_stream_audit_targets_are_empty_or_one_selected_follower() {
+        let follower = |seed| {
+            ServiceAuditTargetV1::ReplicationFollower(
+                ReplicationFollowerAuditTargetV1::new(
+                    crate::DatabaseId::from_bytes(uuid_bytes(1)).unwrap(),
+                    1,
+                    crate::LeadershipEpochV1::initial(),
+                    crate::ReplicationSourceHoldIdV1::new([seed; 16]).unwrap(),
+                )
+                .unwrap(),
+            )
+        };
+        for targets in [vec![], vec![follower(1)]] {
+            assert!(
+                ServiceAuditTargetsV1::new(targets)
+                    .unwrap()
+                    .is_valid_for_operation(ServiceOperationV1::StreamChangelog)
+            );
+        }
+        for targets in [
+            vec![ServiceAuditTargetV1::Capability(capability_id(1))],
+            vec![follower(1), follower(2)],
+            vec![
+                follower(1),
+                ServiceAuditTargetV1::Commit(commit_sequence(1)),
+            ],
+        ] {
+            assert!(
+                !ServiceAuditTargetsV1::new(targets)
+                    .unwrap()
+                    .is_valid_for_operation(ServiceOperationV1::StreamChangelog)
+            );
+        }
+    }
+
     #[test]
     fn service_operation_registry_is_exact_and_closed() {
-        let expected: Vec<u8> = (0x01..=0x3b).collect();
+        let expected: Vec<u8> = (0x01..=0x3e).collect();
         assert_eq!(
             ServiceOperationV1::ALL
                 .into_iter()
@@ -824,7 +883,19 @@ mod tests {
             ServiceOperationV1::from_tag(0x39),
             Some(ServiceOperationV1::InspectVectorState)
         );
-        assert_eq!(ServiceOperationV1::from_tag(0x3c), None);
+        assert_eq!(
+            ServiceOperationV1::from_tag(0x3c),
+            Some(ServiceOperationV1::FenceReplicationPrimary)
+        );
+        assert_eq!(
+            ServiceOperationV1::from_tag(0x3d),
+            Some(ServiceOperationV1::StreamChangelog)
+        );
+        assert_eq!(
+            ServiceOperationV1::from_tag(0x3e),
+            Some(ServiceOperationV1::PromoteFollower)
+        );
+        assert_eq!(ServiceOperationV1::from_tag(0x3f), None);
         assert_eq!(ServiceOperationV1::from_tag(u8::MAX), None);
     }
 

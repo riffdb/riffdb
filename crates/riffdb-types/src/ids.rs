@@ -697,6 +697,14 @@ uuid_v7_id!(
     OfflineMaintenanceOperationId
 );
 uuid_v7_id!(
+    /// The caller-stable identifier of one irreversible primary fence.
+    ReplicationFenceOperationId
+);
+uuid_v7_id!(
+    /// The caller-stable identifier of one explicit follower promotion.
+    ReplicationPromotionOperationId
+);
+uuid_v7_id!(
     /// The caller-stable identifier of one contract migration operation.
     ContractMigrationOperationId
 );

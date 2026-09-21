@@ -116,6 +116,22 @@ async fn admission_failure(
     begun: &BegunInvocationCompletion,
     error: ControlPlaneExecutionAdmissionError,
 ) -> ServiceFailure {
+    if error == ControlPlaneExecutionAdmissionError::PrimaryFenced {
+        if begun
+            .finish(
+                service,
+                context,
+                ServiceAuditPhaseV1::Denied,
+                ServiceAuditLinkV1::None,
+            )
+            .await
+            .is_err()
+        {
+            service.note_audit_failure(begun.operation());
+            return PublicError::storage_unavailable().into();
+        }
+        return PublicError::primary_fenced().into();
+    }
     if error == ControlPlaneExecutionAdmissionError::Fenced {
         service
             .providers
@@ -155,3 +171,7 @@ async fn finish_failure(
     }
     failure
 }
+
+#[cfg(test)]
+#[path = "primary_fenced_replication_tests.rs"]
+mod primary_fenced_replication_tests;

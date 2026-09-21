@@ -67,6 +67,23 @@ threads-required = "num-test-threads"
 priority = 100
 slow-timeout = { period = "30s", terminate-after = 8, grace-period = "10s" }
 
+[[profile.ci.overrides]]
+# The remaining follower campaigns also restart durable daemons and temporarily
+# release their TCP ports. Concurrent storage campaigns exhausted their existing
+# readiness/120s limits; isolated reruns preserve those limits and every assertion.
+# The specific longer campaigns above retain their original bounded watchdogs.
+filter = 'binary_id(=riffdb-server::replication_follower)'
+threads-required = "num-test-threads"
+priority = 90
+
+[[profile.ci.overrides]]
+# These two promotion campaigns repeatedly kill processes at durable cutover and
+# reconciliation edges. Reserve I/O while retaining the default 120s watchdog
+# and every crash schedule; both complete within that bound in isolation.
+filter = 'package(=riffdb-storage-redb) & (test(=maintenance::bootstrap_materialize_tests::promotion_cutover::crashes::promotion_cutover_process_crashes_keep_one_complete_lineage_and_pending_receipt) | test(=maintenance::bootstrap_materialize_tests::promotion_cutover::reconciliation::committed_promotion_reconciliation_process_crashes_resume_without_restamping))'
+threads-required = "num-test-threads"
+priority = 90
+
 [[profile.ci.scripts]]
 filter = 'binary_id(=riffdb-testkit-server::full_recovery_matrix) | binary_id(=riffdb-testkit-server::offline_maintenance_matrix) | binary_id(=riffdb-testkit-server::contract_migration_gate_a) | binary_id(=riffdb-testkit-server::remote_ingress) | binary_id(=riffdb-testkit-server::remote_deployment_rotation)'
 list-wrapper = "harnessless"

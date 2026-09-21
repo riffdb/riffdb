@@ -3,7 +3,7 @@
 use super::*;
 use riffdb_storage_api::{
     AuthoritativeNamespaceV1 as N, AuthoritativeTransactionV3, ChangelogAttributionV3,
-    ChangelogLineageV3, DatabaseInitializationPort, LeadershipEpochV1,
+    ChangelogLineageV3, LeadershipEpochV1,
 };
 
 fn initialized(path: &std::path::Path) -> crate::store::RedbStore {
@@ -22,7 +22,7 @@ fn initialized_with_controller(
     let id =
         riffdb_types::DatabaseId::from_unix_milliseconds_and_random(1_700_000_000_000, [0x73; 10])
             .unwrap();
-    store.initialize_database(id).unwrap();
+    store.initialize_legacy_fixture(id).unwrap();
     crate::changelog_v3_activation::activate_validated(
         store.shared.database.begin_write().unwrap(),
         ChangelogLineageV3::new(id, 1, LeadershipEpochV1::initial()).unwrap(),

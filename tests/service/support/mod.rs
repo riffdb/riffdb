@@ -181,9 +181,44 @@ impl ServiceHarness {
     /// The real source coordinator remains a canary, but this service receives
     /// none of its writer capabilities.
     pub(crate) fn follower_service(&self) -> RiffDbService {
+        self.service_with_policy(
+            database_id(),
+            environment(),
+            self.policy.clone(),
+            ServiceExecutors::follower(),
+        )
+    }
+
+    pub(crate) fn replication_owner(
+        &self,
+        database: DatabaseId,
+        environment: Environment,
+        policy: Arc<dyn riffdb_service::CurrentPolicyPort>,
+    ) -> RiffDbService {
+        let coordinator = self.coordinator.as_ref().expect("running coordinator");
+        self.service_with_policy(
+            database,
+            environment,
+            policy,
+            ServiceExecutors::new(
+                coordinator.administration_audit_executor(),
+                coordinator.control_plane_executor(),
+                coordinator.command_executor(),
+                coordinator.command_idempotency_inspector(Arc::new(FixedDigestProvider)),
+            ),
+        )
+    }
+
+    fn service_with_policy(
+        &self,
+        database: DatabaseId,
+        environment: Environment,
+        policy: Arc<dyn riffdb_service::CurrentPolicyPort>,
+        executors: ServiceExecutors,
+    ) -> RiffDbService {
         let providers = ServiceProviders::new(
             Arc::clone(&self.ports) as Arc<dyn CatalogReadPort>,
-            Arc::clone(&self.policy) as Arc<dyn riffdb_service::CurrentPolicyPort>,
+            policy,
             Arc::clone(&self.ports) as Arc<dyn AuthoritativeReadPort>,
             Arc::clone(&self.ports) as Arc<dyn ProjectionQueryPort>,
             Some(Arc::clone(&self.ports) as Arc<dyn OutboxStatusPort>),
@@ -200,8 +235,8 @@ impl ServiceHarness {
         );
         RiffDbService::new(
             ServiceIdentity::new(
-                database_id(),
-                environment(),
+                database,
+                environment,
                 AgentSessionAdmissionPolicy::Discard,
                 1,
             ),
@@ -218,7 +253,7 @@ impl ServiceHarness {
                 )
                 .unwrap(),
             ),
-            ServiceExecutors::follower(),
+            executors,
             providers,
         )
     }
@@ -2175,7 +2210,9 @@ fn scan_service_audits(
             | StoredAdministrationAuditRecordV1::QueryModule(_)
             | StoredAdministrationAuditRecordV1::ReactiveModule(_)
             | StoredAdministrationAuditRecordV1::Retention(_)
-            | StoredAdministrationAuditRecordV1::Replication(_) => None,
+            | StoredAdministrationAuditRecordV1::Replication(_)
+            | StoredAdministrationAuditRecordV1::PrimaryFence(_)
+            | StoredAdministrationAuditRecordV1::Promotion(_) => None,
         })
         .collect()
 }
@@ -2679,6 +2716,36 @@ impl HarnessPolicy {
 }
 
 impl riffdb_service::CurrentPolicyPort for HarnessPolicy {
+    fn authorize_replication_promotion(
+        &self,
+        principal: &AuthenticatedPrincipal,
+        request: riffdb_auth::ReplicationPromotionRequestV1,
+    ) -> Result<riffdb_policy::ReplicationPromotionDecision, AuthorizationError> {
+        self.calls.fetch_add(1, Ordering::AcqRel);
+        let decision = CurrentAuthorizer::new(
+            &self.fixture.current_capability_resolver(),
+            &HarnessAuthorizationClock(self.now()),
+            &NoopAuthorizationTelemetry,
+            database_id(),
+            environment(),
+        )
+        .authorize_replication_promotion(principal, request)?;
+        if matches!(
+            decision,
+            riffdb_policy::ReplicationPromotionDecision::Allow(_)
+        ) {
+            let call = self.allowed_calls.fetch_add(1, Ordering::AcqRel) + 1;
+            if self
+                .revoke_after_allowed_call
+                .compare_exchange(call, 0, Ordering::AcqRel, Ordering::Acquire)
+                .is_ok()
+            {
+                self.revoke();
+            }
+        }
+        Ok(decision)
+    }
+
     fn authorize_replication_administration(
         &self,
         principal: &AuthenticatedPrincipal,
@@ -5227,7 +5294,7 @@ pub(super) fn database_id() -> DatabaseId {
     DatabaseId::from_bytes(uuid_bytes(0x11)).expect("database UUIDv7")
 }
 
-fn environment() -> Environment {
+pub(crate) fn environment() -> Environment {
     Environment::new("test").expect("bounded environment")
 }
 

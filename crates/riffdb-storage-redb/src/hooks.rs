@@ -62,6 +62,8 @@ pub enum RedbTestOperation {
     GracefulCheckpointClassification,
     /// Retention hold add/remove and registered follower policy (ADR-0085 A2, ADR-0178).
     RetentionHold,
+    /// Atomic primary admission fence and its original administration receipt.
+    PrimaryFence,
     /// Offline retention prune: first transaction deletes the validated-prefix checkpoint.
     RetentionPruneCheckpointDelete,
     /// Offline retention prune: one sub-range delete+tombstone+watermark transaction.

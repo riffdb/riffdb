@@ -252,6 +252,25 @@ pub type BoxPortCapacityPermit<Request, Response, Failure> =
 
 /// The one non-caching current-policy entry point consumed by service code.
 pub trait CurrentPolicyPort: Send + Sync {
+    /// Reloads distinct fence authority; the coordinator repeats this under its writer.
+    fn authorize_primary_fence(
+        &self,
+        _principal: &AuthenticatedPrincipal,
+        _request: riffdb_auth::PrimaryFenceRequestV1,
+    ) -> Result<riffdb_policy::PrimaryFenceDecision, AuthorizationError> {
+        Err(AuthorizationError::CurrentCapabilityUnavailable)
+    }
+
+    /// Reloads current authority for the exact promotion request. The exclusive
+    /// owner must independently reauthorize after draining the follower.
+    fn authorize_replication_promotion(
+        &self,
+        _principal: &AuthenticatedPrincipal,
+        _request: riffdb_auth::ReplicationPromotionRequestV1,
+    ) -> Result<riffdb_policy::ReplicationPromotionDecision, AuthorizationError> {
+        Err(AuthorizationError::CurrentCapabilityUnavailable)
+    }
+
     /// Reloads administrative authority for the exact follower lifecycle request.
     /// The coordinator still reauthorizes inside its drained transaction.
     fn authorize_replication_administration(
@@ -340,6 +359,14 @@ where
     C: AuthorizationClock + Send + Sync + ?Sized,
     T: AuthorizationTelemetry + Send + Sync + ?Sized,
 {
+    fn authorize_primary_fence(
+        &self,
+        principal: &AuthenticatedPrincipal,
+        request: riffdb_auth::PrimaryFenceRequestV1,
+    ) -> Result<riffdb_policy::PrimaryFenceDecision, AuthorizationError> {
+        CurrentAuthorizer::authorize_primary_fence(self, principal, request)
+    }
+
     fn authorize_replication_administration(
         &self,
         principal: &AuthenticatedPrincipal,

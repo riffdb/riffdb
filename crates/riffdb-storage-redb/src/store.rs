@@ -26,21 +26,36 @@ pub use follower::{
 #[derive(Clone, Eq, PartialEq)]
 enum OpenMode {
     Source,
+    ReconciledPromotion(Arc<crate::maintenance::PromotionValidationBinding>),
     Follower,
     PrivateRestore(Arc<crate::maintenance::PrivateArchiveValidationBinding>),
+    PrivatePromotion(Arc<crate::maintenance::PromotionValidationBinding>),
+}
+
+impl OpenMode {
+    fn is_source(&self) -> bool {
+        matches!(self, Self::Source | Self::ReconciledPromotion(_))
+    }
+
+    fn is_private_validation(&self) -> bool {
+        matches!(self, Self::PrivateRestore(_) | Self::PrivatePromotion(_))
+    }
 }
 
 #[path = "store_private_restore.rs"]
 mod private_restore;
+#[path = "store_promotion.rs"]
+mod promotion;
 
 #[path = "store_graceful_close.rs"]
 mod graceful_close;
 
 #[path = "store_changelog_lifecycle.rs"]
-mod changelog_lifecycle;
+pub(crate) mod changelog_lifecycle;
 
 #[path = "store_changelog_source_control.rs"]
 mod changelog_source_control;
+pub(crate) use changelog_source_control::ControlWrite;
 
 #[path = "store_v3_layout.rs"]
 pub(crate) mod v3_layout;
@@ -752,11 +767,10 @@ impl SharedRedb {
     /// Verifies the ADR-0157 clean-close certificate, naming the precondition
     /// that declined bounded startup.
     ///
-    /// Fail-closed is unchanged: every path that used to return `None` still
-    /// returns `Declined`, in the same order, on exactly the same conditions.
-    /// The only new behaviour is that the reason is now a closed discriminant,
-    /// counted on the store and readable from the startup session, instead of
-    /// being erased into an anonymous `None`.
+    /// Every decline selects complete validation. V2 source roots always
+    /// decline under ADR-0156 Amendment 6 because the V1 binding excludes
+    /// primary admission. The closed reason is counted on the store and
+    /// readable from the startup session without exposing stored identities.
     pub(crate) fn verified_clean_close_lifecycle(
         &self,
         transaction: &ReadTransaction,
@@ -2313,11 +2327,21 @@ impl RedbStore {
         if let OpenMode::PrivateRestore(binding) = &open_mode {
             binding.validate(&database.begin_read().map_err(transaction_error)?)?;
         }
+        if let OpenMode::PrivatePromotion(binding) | OpenMode::ReconciledPromotion(binding) =
+            &open_mode
+        {
+            binding.validate(&database.begin_read().map_err(transaction_error)?)?;
+        }
         let attached = crate::follower_lifecycle::is_attached(
             &database.begin_read().map_err(transaction_error)?,
         )?;
         if attached != (open_mode == OpenMode::Follower) {
             return Err(storage_error(StorageErrorKind::InvariantViolation));
+        }
+        if open_mode == OpenMode::Source {
+            crate::promotion_cutover::require_reconciled_source_open(
+                &database.begin_read().map_err(transaction_error)?,
+            )?;
         }
         if open_mode == OpenMode::Follower {
             follower::validate_open(&database, path, journal_media.as_ref())?;
@@ -2340,7 +2364,7 @@ impl RedbStore {
                 journal_media,
                 application_commit_profile,
                 mutation_gate: ExclusiveGate::default(),
-                write_fenced: AtomicBool::new(matches!(open_mode, OpenMode::PrivateRestore(_))),
+                write_fenced: AtomicBool::new(open_mode.is_private_validation()),
                 engine_repaired_at_open: repair_observed.load(Ordering::Acquire),
                 engine_initialized_at_open: initialize_marker_witness.is_some(),
                 bounded_clean_startup: AtomicBool::new(false),
@@ -2377,7 +2401,7 @@ impl RedbStore {
                 changelog_port,
             }),
         };
-        if open_mode == OpenMode::Source {
+        if open_mode.is_source() {
             store.ensure_current_storage_format()?;
             store.install_command_locator_tables()?;
             store.recover_durability_journal()?;
@@ -3108,7 +3132,7 @@ impl RedbStore {
     }
 
     pub(crate) fn ensure_writable(&self) -> Result<(), StorageError> {
-        if self.shared.open_mode != OpenMode::Source {
+        if !self.shared.open_mode.is_source() {
             return Err(storage_error(StorageErrorKind::InvariantViolation));
         }
         if self.shared.write_fenced.load(Ordering::Acquire) {
@@ -4941,7 +4965,7 @@ impl RedbDormantPorts {
     pub fn into_operational_after_catalog_validation(
         self,
     ) -> Result<RedbOperationalPorts, StorageError> {
-        if self.shared.open_mode != OpenMode::Source {
+        if !self.shared.open_mode.is_source() {
             return Err(storage_error(StorageErrorKind::InvariantViolation));
         }
         let _lease = self
@@ -4998,8 +5022,21 @@ impl RedbStore {
 fn activate_operational_ports(
     shared: Arc<SharedRedb>,
 ) -> Result<RedbOperationalPorts, StorageError> {
-    if shared.open_mode != OpenMode::Source {
+    if !shared.open_mode.is_source() {
         return Err(storage_error(StorageErrorKind::InvariantViolation));
+    }
+    {
+        let read = shared.database.begin_read().map_err(transaction_error)?;
+        // Operational reads, required audit and existing replication drain also
+        // serve a fenced source. Consult its checked admission before handoff;
+        // the coordinator independently seeds command/control refusal from it,
+        // and physical receipt admission prevents authoritative write bypasses.
+        if let Some(history) = crate::changelog_v3_roots::read_checkpoint_roots(&read)?
+            && history.lineage().catalog_digest()
+                == riffdb_storage_api::AuthoritativeStateCatalogV2.digest()
+        {
+            crate::primary_admission_roots::read_source_admission(&read)?;
+        }
     }
     if shared.bounded_clean_startup.load(Ordering::Acquire) {
         let state = shared
@@ -8408,6 +8445,33 @@ impl DatabaseInitializationPort for RedbStore {
         &mut self,
         candidate: DatabaseId,
     ) -> Result<DatabaseInitializationResult, StorageError> {
+        self.initialize_source(candidate, SourceCreation::Current)
+    }
+}
+
+#[derive(Clone, Copy)]
+enum SourceCreation {
+    Current,
+    #[cfg(any(test, feature = "test-fixtures"))]
+    LegacyFixture,
+}
+
+impl RedbStore {
+    /// Explicit frozen pre-V3 fixture construction. Production initialization
+    /// has no catalog selector and always creates complete V2 source state.
+    #[cfg(any(test, feature = "test-fixtures"))]
+    pub(crate) fn initialize_legacy_fixture(
+        &mut self,
+        candidate: DatabaseId,
+    ) -> Result<DatabaseInitializationResult, StorageError> {
+        self.initialize_source(candidate, SourceCreation::LegacyFixture)
+    }
+
+    fn initialize_source(
+        &mut self,
+        candidate: DatabaseId,
+        creation: SourceCreation,
+    ) -> Result<DatabaseInitializationResult, StorageError> {
         let _lease = self.acquire_mutation_lease()?;
         self.ensure_writable()?;
 
@@ -8431,10 +8495,23 @@ impl DatabaseInitializationPort for RedbStore {
             LayoutState::Empty => {
                 create_all_tables(&transaction).map_err(table_error)?;
                 write_initial_metadata(&transaction, candidate)?;
+                match creation {
+                    SourceCreation::Current => {
+                        crate::changelog_v3_activation::stage_new_source(
+                            &mut transaction,
+                            candidate,
+                        )?;
+                    }
+                    #[cfg(any(test, feature = "test-fixtures"))]
+                    SourceCreation::LegacyFixture => {}
+                }
                 if let Some(controller) = &self.shared.test_controller {
                     controller.before_commit(RedbTestOperation::Initialization)?;
                 }
                 self.shared.commit_durable(transaction)?;
+                if matches!(creation, SourceCreation::Current) {
+                    crate::changelog_v3_activation::activation_edge("committed");
+                }
                 if let Some(controller) = &self.shared.test_controller
                     && let Err(error) = controller.after_commit(RedbTestOperation::Initialization)
                 {
@@ -8605,8 +8682,9 @@ fn write_initial_metadata(
 ) -> Result<(), StorageError> {
     let format = encode_storage_format_version_v1(StorageFormatVersion::V2)
         .map_err(crate::error::codec_error)?;
-    // Fresh layout is inactive until complete structural AND catalog validation.
-    // Only the atomic V3 activation transaction may publish the current digest.
+    // This predecessor exists only inside the initial transaction. The Empty
+    // owner installs explicit V2 source admission and the current registry before
+    // committing; reopening never infers admission from this predecessor.
     let registry = encode_record_registry_v2(crate::changelog_v3_activation::PRE_V3_REGISTRY)
         .map_err(crate::error::codec_error)?;
     let identity = encode_database_identity_v1(database_id).map_err(crate::error::codec_error)?;

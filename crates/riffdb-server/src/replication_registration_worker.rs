@@ -1,6 +1,8 @@
 //! Bounded continuation of stored policy; never a second authoritative writer.
 use crate::replication_publication::ReplicationPublishedSnapshots;
-use riffdb_commit::{ControlPlaneExecutionErrorKind, ControlPlaneExecutor};
+use riffdb_commit::{
+    ControlPlaneExecutionAdmissionError, ControlPlaneExecutionErrorKind, ControlPlaneExecutor,
+};
 use std::{
     future::Future,
     sync::{
@@ -19,6 +21,16 @@ const RETRY_DELAY: Duration = Duration::from_secs(1);
 enum Step {
     Complete,
     RetryLater,
+    PrimaryFenced,
+}
+
+fn maintenance_admission(error: ControlPlaneExecutionAdmissionError) -> Result<Step, ()> {
+    match error {
+        ControlPlaneExecutionAdmissionError::Draining => Ok(Step::RetryLater),
+        ControlPlaneExecutionAdmissionError::PrimaryFenced => Ok(Step::PrimaryFenced),
+        ControlPlaneExecutionAdmissionError::Fenced
+        | ControlPlaneExecutionAdmissionError::Stopped => Err(()),
+    }
 }
 
 struct Cancellation {
@@ -68,10 +80,11 @@ impl RunningRegistrationMaintenance {
                             else {
                                 return Ok(Step::Complete);
                             };
-                            let receipt = capacity
-                                .map_err(|_| ())?
-                                .submit_replication_maintenance()
-                                .map_err(|_| ())?;
+                            let receipt =
+                                match capacity.map_err(|_| ())?.submit_replication_maintenance() {
+                                    Ok(receipt) => receipt,
+                                    Err(error) => return maintenance_admission(error),
+                                };
                             // Accepted work drains even during shutdown. This observer
                             // cannot select a registration, policy, time or sequence.
                             match receipt.completion().await {
@@ -155,8 +168,10 @@ async fn pump<F: Future<Output = Result<Step, ()>>>(
             if !observe()? {
                 break;
             }
-            if submit().await? == Step::RetryLater {
-                break;
+            match submit().await? {
+                Step::Complete => {}
+                Step::RetryLater => break,
+                Step::PrimaryFenced => return Ok(()),
             }
         }
         if unless_cancelled(tokio::time::sleep(RETRY_DELAY), stop)

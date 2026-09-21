@@ -4,10 +4,10 @@ use riffdb_proto::storage::v1 as wire;
 use riffdb_types::{AdministrationSequence, CommitSequence, DatabaseId, DualFrontier};
 
 use crate::{
-    AuthoritativeStateCatalogV1, ChangelogHistoryPointV3, ChangelogHistoryStateV3,
-    ChangelogLineageV3, ChangelogTransactionSequence, EncodedPageItem, LeadershipEpochV1,
-    ReplicationFollowerStateV3, ReplicationSourceHoldIdV1, ReplicationSourceHoldKindV1,
-    ReplicationSourceHoldV1,
+    AuthoritativeStateCatalogV1, AuthoritativeStateCatalogV2, ChangelogHistoryPointV3,
+    ChangelogHistoryStateV3, ChangelogLineageV3, ChangelogTransactionSequence, EncodedPageItem,
+    LeadershipEpochV1, ReplicationFollowerStateV3, ReplicationSourceHoldIdV1,
+    ReplicationSourceHoldKindV1, ReplicationSourceHoldV1,
 };
 
 use super::{
@@ -16,6 +16,7 @@ use super::{
 };
 
 const CATALOG: &str = "riffdb.storage.v1.StoredAuthoritativeStateCatalogV1";
+const CATALOG_V2: &str = "riffdb.storage.v1.StoredAuthoritativeStateCatalogV2";
 const LEADERSHIP: &str = "riffdb.storage.v1.StoredLeadershipEpochV1";
 const HISTORY: &str = "riffdb.storage.v1.StoredChangelogHistoryStateV3";
 const FOLLOWER: &str = "riffdb.storage.v1.StoredReplicationFollowerStateV3";
@@ -75,6 +76,11 @@ fn source_hold_from_wire(
     ))
 }
 
+mod primary_admission;
+pub use primary_admission::*;
+mod promotion;
+pub use promotion::*;
+
 mod administration;
 pub use administration::*;
 mod source_hold_v2;
@@ -104,6 +110,33 @@ pub fn decode_authoritative_state_catalog_v1(
             ));
         }
         Ok(AuthoritativeStateCatalogV1)
+    })
+}
+
+/// Encodes the distinct fencing inventory; this cannot activate a source or infer admission state.
+pub fn encode_authoritative_state_catalog_v2(
+    catalog: AuthoritativeStateCatalogV2,
+) -> Result<CanonicalStoredEnvelopeV1, DurableCodecError> {
+    encode_message(
+        CATALOG_V2,
+        &wire::StoredAuthoritativeStateCatalogV2 {
+            catalog_digest: catalog.digest().to_vec(),
+        },
+    )
+}
+
+/// Refuses foreign catalogs without exposing their digest or accepting partial authority.
+pub fn decode_authoritative_state_catalog_v2(
+    encoded: &[u8],
+) -> Result<EncodedPageItem<AuthoritativeStateCatalogV2>, DurableCodecError> {
+    decode_message::<wire::StoredAuthoritativeStateCatalogV2, _, _>(CATALOG_V2, encoded, |value| {
+        let digest: [u8; 32] = fixed(value.catalog_digest)?;
+        if digest != AuthoritativeStateCatalogV2.digest() {
+            return Err(DurableCodecError::new(
+                DurableCodecErrorKind::IncompatibleFormat,
+            ));
+        }
+        Ok(AuthoritativeStateCatalogV2)
     })
 }
 
@@ -158,15 +191,18 @@ fn decode_lineage(
     catalog: Vec<u8>,
 ) -> Result<ChangelogLineageV3, DurableCodecError> {
     let digest: [u8; 32] = fixed(catalog)?;
-    if digest != AuthoritativeStateCatalogV1.digest() {
+    if digest != AuthoritativeStateCatalogV1.digest()
+        && digest != AuthoritativeStateCatalogV2.digest()
+    {
         return Err(DurableCodecError::new(
             DurableCodecErrorKind::IncompatibleFormat,
         ));
     }
-    ChangelogLineageV3::new(
+    ChangelogLineageV3::new_with_catalog(
         DatabaseId::from_bytes(fixed(database)?).map_err(|_| DurableCodecError::corrupt())?,
         incarnation,
         LeadershipEpochV1::new(epoch).ok_or_else(DurableCodecError::corrupt)?,
+        digest,
     )
     .map_err(|_| DurableCodecError::corrupt())
 }
@@ -175,19 +211,20 @@ fn decode_lineage(
 pub fn encode_changelog_history_state_v3(
     history: ChangelogHistoryStateV3,
 ) -> Result<CanonicalStoredEnvelopeV1, DurableCodecError> {
+    encode_message(HISTORY, &history_to_wire(history))
+}
+
+fn history_to_wire(history: ChangelogHistoryStateV3) -> wire::StoredChangelogHistoryStateV3 {
     let lineage = history.lineage();
-    encode_message(
-        HISTORY,
-        &wire::StoredChangelogHistoryStateV3 {
-            database_id: lineage.database_id().as_bytes().to_vec(),
-            history_incarnation: lineage.history_incarnation(),
-            leadership_epoch: lineage.leadership_epoch().get(),
-            catalog_digest: lineage.catalog_digest().to_vec(),
-            anchor: Some(encode_position(history.anchor())),
-            tail: Some(encode_position(history.tail())),
-            minimum_resume: Some(encode_position(history.minimum_resume())),
-        },
-    )
+    wire::StoredChangelogHistoryStateV3 {
+        database_id: lineage.database_id().as_bytes().to_vec(),
+        history_incarnation: lineage.history_incarnation(),
+        leadership_epoch: lineage.leadership_epoch().get(),
+        catalog_digest: lineage.catalog_digest().to_vec(),
+        anchor: Some(encode_position(history.anchor())),
+        tail: Some(encode_position(history.tail())),
+        minimum_resume: Some(encode_position(history.minimum_resume())),
+    }
 }
 
 /// Refuses missing roots, foreign catalogs, regressing or substituted positions.
@@ -195,20 +232,24 @@ pub fn encode_changelog_history_state_v3(
 pub fn decode_changelog_history_state_v3(
     encoded: &[u8],
 ) -> Result<EncodedPageItem<ChangelogHistoryStateV3>, DurableCodecError> {
-    decode_message::<wire::StoredChangelogHistoryStateV3, _, _>(HISTORY, encoded, |v| {
-        ChangelogHistoryStateV3::new(
-            decode_lineage(
-                v.database_id,
-                v.history_incarnation,
-                v.leadership_epoch,
-                v.catalog_digest,
-            )?,
-            decode_position(require(v.anchor)?)?,
-            decode_position(require(v.tail)?)?,
-            decode_position(require(v.minimum_resume)?)?,
-        )
-        .map_err(|_| DurableCodecError::corrupt())
-    })
+    decode_message::<wire::StoredChangelogHistoryStateV3, _, _>(HISTORY, encoded, history_from_wire)
+}
+
+fn history_from_wire(
+    v: wire::StoredChangelogHistoryStateV3,
+) -> Result<ChangelogHistoryStateV3, DurableCodecError> {
+    ChangelogHistoryStateV3::new(
+        decode_lineage(
+            v.database_id,
+            v.history_incarnation,
+            v.leadership_epoch,
+            v.catalog_digest,
+        )?,
+        decode_position(require(v.anchor)?)?,
+        decode_position(require(v.tail)?)?,
+        decode_position(require(v.minimum_resume)?)?,
+    )
+    .map_err(|_| DurableCodecError::corrupt())
 }
 
 /// Encodes explicit detached state or exact locally durable follower progress.

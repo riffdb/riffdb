@@ -2,10 +2,9 @@
 //! No coordinator, mutation gate, source acknowledgement or application port.
 use crate::{config::ConfiguredArchive, replication_publication::ReplicationPublishedSnapshots};
 use riffdb_storage_api::{
-    ArchiveConsumerErrorV1 as Error, ArchiveConsumerV1, ArchiveFrameSinkV1,
-    AuthoritativeStateCatalogV1, ChangelogFrameCursorV3, ChangelogFrameV3, ChangelogHistoryPointV3,
-    ChangelogLineageV3, MAX_CHANGELOG_FRAME_BYTES, MAX_STAGED_COMMANDS, PublishedDurableSnapshot,
-    ReplicationHandshakeV3,
+    ArchiveConsumerErrorV1 as Error, ArchiveConsumerV1, ArchiveFrameSinkV1, ChangelogFrameCursorV3,
+    ChangelogFrameV3, ChangelogHistoryPointV3, ChangelogLineageV3, MAX_CHANGELOG_FRAME_BYTES,
+    MAX_STAGED_COMMANDS, PublishedDurableSnapshot, ReplicationHandshakeV3,
 };
 use riffdb_storage_redb::{RedbArchiveRepository, RedbVerifiedArchiveBackup};
 use std::{
@@ -44,7 +43,7 @@ impl<S: ArchiveFrameSinkV1> Pump<S> {
             lineage,
             position,
             ChangelogFrameV3::IDENTITY,
-            AuthoritativeStateCatalogV1.digest(),
+            lineage.catalog_digest(),
             MAX_CHANGELOG_FRAME_BYTES as u64,
             MAX_STAGED_COMMANDS as u64,
         )

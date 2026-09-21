@@ -26,6 +26,10 @@ use crate::{
 /// Closed V3 metadata shape validation for shared identity probes. This neither
 /// grants activation nor replaces the complete, cross-bound root check below.
 pub(crate) fn validate_metadata_entry(key: &str, value: &[u8]) -> Result<bool, StorageError> {
+    if key == crate::primary_admission_roots::key()? {
+        decode_replication_primary_admission_v1(value).map_err(codec_error)?;
+        return Ok(true);
+    }
     let Some(namespace) = N::ALL.into_iter().find(|namespace| {
         namespace.requires_v3_activation() && namespace.metadata_key() == Some(key)
     }) else {
@@ -36,7 +40,7 @@ pub(crate) fn validate_metadata_entry(key: &str, value: &[u8]) -> Result<bool, S
     }
     match namespace {
         N::AuthoritativeStateCatalog => {
-            decode_authoritative_state_catalog_v1(value).map_err(codec_error)?;
+            crate::primary_admission_roots::catalog_digest(value)?;
         }
         N::LeadershipEpoch => {
             decode_leadership_epoch_v1(value).map_err(codec_error)?;
@@ -73,7 +77,17 @@ pub(crate) fn read_checkpoint_roots(
         Err(TableError::TableDoesNotExist(_)) => None,
         Err(error) => return Err(table_error(error)),
     };
-    validate_roots(&meta, history.as_ref(), source_holds.as_ref())
+    let audit = match transaction.open_table(crate::layout::AUDIT) {
+        Ok(table) => Some(table),
+        Err(TableError::TableDoesNotExist(_)) => None,
+        Err(error) => return Err(table_error(error)),
+    };
+    validate_roots(
+        &meta,
+        history.as_ref(),
+        source_holds.as_ref(),
+        audit.as_ref(),
+    )
 }
 
 /// Complete retained receipt-chain validation for the full startup path. This
@@ -98,6 +112,12 @@ pub(crate) fn validate_retained_history(
             .open_table(crate::layout::AUDIT)
             .map_err(table_error)?;
         crate::replication_registration_links::validate(&holds, &audit, history, &table)?;
+        let meta = transaction.open_table(META).map_err(table_error)?;
+        crate::primary_admission_roots::validate_retained(&meta, history, &audit, &table)?;
+        let indexes = transaction
+            .open_table(crate::layout::AUDIT_BY_REQUEST)
+            .map_err(table_error)?;
+        crate::promotion_cutover::validate_retained(history, &audit, &indexes, &table)?;
     }
     Ok(Some(history))
 }
@@ -121,11 +141,18 @@ pub(crate) fn validate_retained_history_for_write(
             .open_table(crate::layout::AUDIT)
             .map_err(table_error)?;
         crate::replication_registration_links::validate(&holds, &audit, history, &table)?;
+        let meta = transaction.open_table(META).map_err(table_error)?;
+        crate::primary_admission_roots::validate_retained(&meta, history, &audit, &table)?;
+        let indexes = transaction
+            .open_table(crate::layout::AUDIT_BY_REQUEST)
+            .map_err(table_error)?;
+        crate::promotion_cutover::validate_retained(history, &audit, &indexes, &table)?;
     }
     Ok(Some(history))
 }
 
-fn validate_retained_rows(
+// Shared chain check; does not grant a V1 or V2 writer permit.
+pub(crate) fn validate_retained_rows(
     history: ChangelogHistoryStateV3,
     table: &impl ReadableTable<&'static [u8], &'static [u8]>,
     holds: &impl ReadableTable<&'static [u8], &'static [u8]>,
@@ -264,13 +291,23 @@ pub(crate) fn read_checkpoint_roots_for_write(
         .then(|| transaction.open_table(SOURCE_HOLDS))
         .transpose()
         .map_err(table_error)?;
-    validate_roots(&meta, history.as_ref(), source_holds.as_ref())
+    let audit = audit_present
+        .then(|| transaction.open_table(crate::layout::AUDIT))
+        .transpose()
+        .map_err(table_error)?;
+    validate_roots(
+        &meta,
+        history.as_ref(),
+        source_holds.as_ref(),
+        audit.as_ref(),
+    )
 }
 
 fn validate_roots(
     meta: &impl ReadableTable<&'static str, &'static [u8]>,
     history_table: Option<&impl ReadableTable<&'static [u8], &'static [u8]>>,
     source_holds: Option<&impl ReadableTable<&'static [u8], &'static [u8]>>,
+    audit: Option<&impl ReadableTable<&'static [u8], &'static [u8]>>,
 ) -> Result<Option<ChangelogHistoryStateV3>, StorageError> {
     let read = |key: &str| -> Result<Vec<u8>, StorageError> {
         let value = meta
@@ -310,6 +347,13 @@ fn validate_roots(
         && history_table.is_none()
         && source_holds.is_none()
     {
+        if meta
+            .get(crate::primary_admission_roots::key()?)
+            .map_err(precommit_storage_error)?
+            .is_some()
+        {
+            return Err(storage_error(StorageErrorKind::CorruptData));
+        }
         return Ok(None);
     }
     if registry != current_record_registry_digest() || present != required || source_holds.is_none()
@@ -318,8 +362,9 @@ fn validate_roots(
     }
     let history_table =
         history_table.ok_or_else(|| storage_error(StorageErrorKind::CorruptData))?;
-    decode_authoritative_state_catalog_v1(&read_namespace(N::AuthoritativeStateCatalog)?)
-        .map_err(codec_error)?;
+    let catalog = crate::primary_admission_roots::catalog_digest(&read_namespace(
+        N::AuthoritativeStateCatalog,
+    )?)?;
     let epoch = *decode_leadership_epoch_v1(&read_namespace(N::LeadershipEpoch)?)
         .map_err(codec_error)?
         .value();
@@ -348,6 +393,7 @@ fn validate_roots(
     if lineage.database_id() != database
         || lineage.history_incarnation() != incarnation
         || lineage.leadership_epoch() != epoch
+        || lineage.catalog_digest() != catalog
         || history.tail().frontier() != frontier
         || follower
             .attached_state()
@@ -358,15 +404,24 @@ fn validate_roots(
     history
         .validate_allocator(allocator)
         .map_err(|_| storage_error(StorageErrorKind::CorruptData))?;
+    crate::primary_admission_roots::validate(
+        meta,
+        history,
+        follower.attached_state().is_some(),
+        audit,
+        history_table,
+    )?;
     // SourceOnly tables exist in the shared engine layout, but follower
     // bootstrap transfers no rows into them. Its existing durable applied
     // receipt hash binds the exact prefix; source receipt ancestry validation
     // remains mandatory for every source and physical source-history image.
-    if history_table.is_empty().map_err(precommit_storage_error)?
-        && let Some((attached, applied, _)) = follower.attached_state()
+    if let Some((attached, applied, _)) = follower.attached_state()
+        && (history_table.is_empty().map_err(precommit_storage_error)?
+            || catalog == riffdb_storage_api::AuthoritativeStateCatalogV2.digest())
     {
         if attached != lineage
             || applied != history.tail()
+            || !history_table.is_empty().map_err(precommit_storage_error)?
             || !source_holds
                 .ok_or_else(|| storage_error(StorageErrorKind::CorruptData))?
                 .is_empty()

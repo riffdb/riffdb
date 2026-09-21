@@ -767,6 +767,11 @@ pub struct StoredAuthoritativeStateCatalogV1 {
     pub catalog_digest: ::prost::alloc::vec::Vec<u8>,
 }
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct StoredAuthoritativeStateCatalogV2 {
+    #[prost(bytes = "vec", tag = "1")]
+    pub catalog_digest: ::prost::alloc::vec::Vec<u8>,
+}
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct CapabilityTokenDigestV1 {
     #[prost(uint32, tag = "1")]
     pub digest_scheme: u32,
@@ -3464,6 +3469,51 @@ pub mod stored_outbox_status_v1 {
     }
 }
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct StoredPrimaryFenceAdministrationV1 {
+    #[prost(uint64, tag = "1")]
+    pub administration_sequence: u64,
+    #[prost(message, optional, tag = "2")]
+    pub timestamp: ::core::option::Option<TimestampV1>,
+    #[prost(bytes = "vec", tag = "3")]
+    pub operation_id: ::prost::alloc::vec::Vec<u8>,
+    #[prost(bytes = "vec", tag = "4")]
+    pub request_id: ::prost::alloc::vec::Vec<u8>,
+    #[prost(message, optional, tag = "5")]
+    pub principal: ::core::option::Option<AuditPrincipalV1>,
+    #[prost(string, optional, tag = "6")]
+    pub approval_id: ::core::option::Option<::prost::alloc::string::String>,
+    #[prost(message, optional, tag = "7")]
+    pub target: ::core::option::Option<ReplicationFollowerAuditTargetV3>,
+    #[prost(uint64, tag = "8")]
+    pub registration_generation: u64,
+    #[prost(message, optional, tag = "9")]
+    pub observed: ::core::option::Option<stored_changelog_history_state_v3::Position>,
+}
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct ReplicationPrimaryAdmissionV1 {
+    #[prost(oneof = "replication_primary_admission_v1::State", tags = "1, 2")]
+    pub state: ::core::option::Option<replication_primary_admission_v1::State>,
+}
+/// Nested message and enum types in `ReplicationPrimaryAdmissionV1`.
+pub mod replication_primary_admission_v1 {
+    #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+    pub struct Active {
+        #[prost(bytes = "vec", tag = "1")]
+        pub database_id: ::prost::alloc::vec::Vec<u8>,
+        #[prost(uint64, tag = "2")]
+        pub history_incarnation: u64,
+        #[prost(uint64, tag = "3")]
+        pub leadership_epoch: u64,
+    }
+    #[derive(Clone, PartialEq, Eq, Hash, ::prost::Oneof)]
+    pub enum State {
+        #[prost(message, tag = "1")]
+        Active(Active),
+        #[prost(message, tag = "2")]
+        Fenced(::prost::alloc::boxed::Box<super::StoredPrimaryFenceAdministrationV1>),
+    }
+}
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct ProjectionIdentityV1 {
     #[prost(string, tag = "1")]
     pub contract_lineage: ::prost::alloc::string::String,
@@ -3690,6 +3740,39 @@ impl ProjectionFailureCodeV1 {
             _ => None,
         }
     }
+}
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct StoredPromotionAdministrationV1 {
+    #[prost(uint64, tag = "1")]
+    pub administration_sequence: u64,
+    #[prost(message, optional, tag = "2")]
+    pub timestamp: ::core::option::Option<TimestampV1>,
+    #[prost(bytes = "vec", tag = "3")]
+    pub promotion_operation_id: ::prost::alloc::vec::Vec<u8>,
+    #[prost(bytes = "vec", tag = "4")]
+    pub request_id: ::prost::alloc::vec::Vec<u8>,
+    #[prost(message, optional, tag = "5")]
+    pub principal: ::core::option::Option<AuditPrincipalV1>,
+    #[prost(string, optional, tag = "6")]
+    pub approval_id: ::core::option::Option<::prost::alloc::string::String>,
+    #[prost(message, optional, tag = "7")]
+    pub attempted_at: ::core::option::Option<TimestampV1>,
+    #[prost(message, optional, tag = "8")]
+    pub fence: ::core::option::Option<StoredPrimaryFenceAdministrationV1>,
+    #[prost(message, optional, tag = "9")]
+    pub applied: ::core::option::Option<stored_changelog_history_state_v3::Position>,
+    #[prost(message, optional, tag = "10")]
+    pub source_history: ::core::option::Option<StoredChangelogHistoryStateV3>,
+    #[prost(uint64, tag = "11")]
+    pub published_incarnation: u64,
+    #[prost(uint64, tag = "12")]
+    pub published_epoch: u64,
+    #[prost(uint64, tag = "13")]
+    pub application_rpo: u64,
+    #[prost(bytes = "vec", tag = "14")]
+    pub attempt_steps: ::prost::alloc::vec::Vec<u8>,
+    #[prost(enumeration = "ServiceIngressKindV1", tag = "15")]
+    pub ingress: i32,
 }
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct StoredReactiveModuleV1 {

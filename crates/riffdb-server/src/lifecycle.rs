@@ -33,6 +33,7 @@ pub(crate) struct ProductionLifecycleRoute {
     follower: OnceLock<crate::replication_bootstrap::FollowerReadSnapshots>,
     activated: OnceLock<Arc<dyn ApplicationService>>,
     replication: OnceLock<Arc<dyn riffdb_service::ReplicationApplication>>,
+    promotion: OnceLock<Arc<dyn riffdb_service::FollowerPromotionApplication>>,
     migration: OnceLock<Arc<dyn ContractMigrationApplication>>,
     application_export: OnceLock<Arc<dyn ApplicationExportApplication>>,
     application_reimport: OnceLock<Arc<dyn ApplicationReimportApplication>>,
@@ -75,6 +76,7 @@ impl ProductionLifecycleRoute {
             follower: OnceLock::new(),
             activated: OnceLock::new(),
             replication: OnceLock::new(),
+            promotion: OnceLock::new(),
             migration: OnceLock::new(),
             application_export: OnceLock::new(),
             application_reimport: OnceLock::new(),
@@ -135,6 +137,20 @@ impl ProductionLifecycleRoute {
             );
         }
         model.allows_offline_maintenance(runtime_ready)
+    }
+
+    pub(crate) fn install_promotion(
+        &self,
+        service: Arc<dyn riffdb_service::FollowerPromotionApplication>,
+    ) -> Result<(), LifecycleInstallError> {
+        self.promotion
+            .set(service)
+            .map_err(|_| LifecycleInstallError::AlreadyInstalled)
+    }
+
+    /// Copies the current completed position without retaining an engine pin.
+    pub(crate) fn follower_position(&self) -> Option<riffdb_storage_api::ChangelogHistoryPointV3> {
+        Some(self.follower.get()?.latest().ok()?.history().tail())
     }
 
     /// Installs administrative replication over the activated published source.
@@ -333,6 +349,20 @@ impl ProductionLifecycleRoute {
 }
 
 impl GrpcLifecycleRoute for ProductionLifecycleRoute {
+    fn admit_follower_promotion(
+        &self,
+    ) -> Option<Arc<dyn riffdb_service::FollowerPromotionApplication>> {
+        let state = self.lock_state();
+        (self.maintenance.ordinary_admission_available()
+            && self.allows_operation(
+                state.model,
+                ServiceOperationV1::PromoteFollower,
+                self.runtime.is_routing_allowed(),
+            ))
+        .then(|| self.promotion.get().cloned())
+        .flatten()
+    }
+
     fn admit_replication(&self) -> Option<Arc<dyn riffdb_service::ReplicationApplication>> {
         if !self.maintenance.ordinary_admission_available() {
             return None;
@@ -684,6 +714,7 @@ impl LifecycleModel {
                     | ServiceOperationV1::RevokeCapability
                     | ServiceOperationV1::RegisterFollower
                     | ServiceOperationV1::RetireFollower
+                    | ServiceOperationV1::FenceReplicationPrimary
                     | ServiceOperationV1::DiscoverCommandTools
                     | ServiceOperationV1::DiscoverResources
             ),
@@ -1373,6 +1404,7 @@ mod tests {
                         | ServiceOperationV1::RevokeCapability
                         | ServiceOperationV1::RegisterFollower
                         | ServiceOperationV1::RetireFollower
+                        | ServiceOperationV1::FenceReplicationPrimary
                         | ServiceOperationV1::DiscoverCommandTools
                         | ServiceOperationV1::DiscoverResources
                 )
@@ -1933,6 +1965,7 @@ mod tests {
                     | ServiceOperationV1::RevokeCapability
                     | ServiceOperationV1::RegisterFollower
                     | ServiceOperationV1::RetireFollower
+                    | ServiceOperationV1::FenceReplicationPrimary
                     | ServiceOperationV1::DiscoverCommandTools
                     | ServiceOperationV1::DiscoverResources
             );

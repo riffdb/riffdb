@@ -85,8 +85,38 @@ fn generated_adapters_reproduce_frozen_public_fixtures_byte_for_byte() {
 #[test]
 fn generated_inventory_covers_every_registry_operation_in_tag_order() {
     assert_eq!(riffdb_proto::GENERATED_OPERATION_REGISTRY_VERSION, 1);
-    assert_eq!(riffdb_proto::GENERATED_PUBLIC_OPERATION_COUNT, 59);
-    assert_eq!(riffdb_proto::GENERATED_PUBLIC_VALIDATION_MESSAGES.len(), 59);
+    assert_eq!(riffdb_proto::GENERATED_PUBLIC_OPERATION_COUNT, 62);
+    assert_eq!(riffdb_proto::GENERATED_PUBLIC_VALIDATION_MESSAGES.len(), 62);
+    let stream = &riffdb_proto::GENERATED_PUBLIC_VALIDATION_MESSAGES[60];
+    assert_eq!((stream.tag, stream.operation), (0x3d, "StreamChangelog"));
+    assert_eq!(
+        (stream.request, stream.response),
+        (
+            "riffdb.v1.StreamChangelogRequest",
+            "riffdb.v1.StreamChangelogResponse"
+        )
+    );
+    assert_eq!((stream.request_fields, stream.response_fields), (13, 6));
+    assert_eq!(
+        (stream.request_bytes, stream.response_bytes),
+        (1024, 32 * 1024 * 1024 + 1024)
+    );
+    let promotion = &riffdb_proto::GENERATED_PUBLIC_VALIDATION_MESSAGES[61];
+    assert_eq!(
+        (promotion.tag, promotion.operation),
+        (0x3e, "PromoteFollower")
+    );
+    assert_eq!(
+        (promotion.request, promotion.response),
+        (
+            "riffdb.v1.PromoteFollowerRequest",
+            "riffdb.v1.PromoteFollowerResponse"
+        )
+    );
+    assert_eq!(
+        (promotion.request_fields, promotion.response_fields),
+        (5, 1)
+    );
     for (index, entry) in riffdb_proto::GENERATED_PUBLIC_VALIDATION_MESSAGES
         .iter()
         .enumerate()

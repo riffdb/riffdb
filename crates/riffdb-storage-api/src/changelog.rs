@@ -840,6 +840,19 @@ impl std::error::Error for ChangelogFrameError {}
 /// later publication, which is what lets an emitter derive asynchronously
 /// without ever reading state past its covered frontier.
 pub trait PublishedDurableSnapshot: Send + Sync {
+    /// Validates one candidate against this immutable source's exact fence,
+    /// registration and retained history. None means explicitly Active; absent
+    /// or contradictory required metadata is an error. The invocation ID is
+    /// not required to equal the original fence invocation. This source evidence
+    /// is not authenticated remote proof and never grants promotion authority.
+    fn primary_fence_source_evidence_v1(
+        &self,
+        _request: crate::PrimaryFenceRequestV1,
+        _applied: crate::ChangelogHistoryPointV3,
+    ) -> Result<Option<crate::PrimaryFenceSourceEvidenceV1>, crate::ChangelogCursorErrorV3> {
+        Err(crate::StorageError::new(crate::StorageErrorKind::IncompatibleFormat, None).into())
+    }
+
     /// Observes bounded source-only follower acknowledgements and the published
     /// head from this pin. No application rows or receipt population are scanned.
     /// Legacy backends refuse rather than inventing an empty follower inventory.

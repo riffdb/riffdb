@@ -87,7 +87,64 @@ checked before admission, after capacity admission, and against transaction-
 current facts before the coordinator commits.
 
 Old audit generations retain their bytes. Use matching updated clients for the
-new RPCs; see [compatibility](../compatibility.md). Primary fencing, authenticated
-fence proof and promotion remain WP-748 work. Automatic registry migration is
-not provided. Benchmark qualification remains paused; these operations do not
-claim failover or performance qualification.
+new RPCs; see [compatibility](../compatibility.md). Automatic registry migration
+is not provided. The experimental fencing and promotion path below still needs
+recovery and under-load qualification before WP-748 can close.
+
+## Experimental fencing and promotion
+
+WP-748 exposes `riffdb follower fence-primary` and `riffdb follower promote`
+through the same checked Rust client, gRPC service and policy owner. Recovery
+and under-load qualification remain incomplete; this is an experimental POC
+path, not a qualified failover deployment.
+
+Fencing requires the distinct global, all-partition
+`fence_replication_primary` permission and a currently attached registration.
+It drains admitted commands, permanently refuses subsequent authoritative
+writes as `RDB-REP-0102`, and survives restart. There is no unfence command.
+Required audit and replication evidence remain available. A lost response
+requires an exact retry with the same operation ID, follower and generation.
+
+Promotion requires current global `AdministerCapabilities` authority. Point
+operator configuration at the follower; retain the source fence operation and
+registration selection. The daemon obtains proof through its configured
+CA/name-verified TLS source connection. The caller cannot supply a new
+incarnation, epoch, RPO or unauthenticated proof.
+
+```text
+riffdb --config ./source-operator.toml follower fence-primary \
+  --database-id <SOURCE_DATABASE_UUIDV7> \
+  --history-incarnation <INCARNATION> --leadership-epoch <EPOCH> \
+  --hold-id <32_LOWERCASE_HEX_DIGITS> \
+  --registration-generation <GENERATION> --operation-id <FENCE_UUIDV7>
+
+riffdb --config ./follower-operator.toml follower promote \
+  --database-id <SOURCE_DATABASE_UUIDV7> \
+  --history-incarnation <INCARNATION> --leadership-epoch <EPOCH> \
+  --hold-id <32_LOWERCASE_HEX_DIGITS> \
+  --registration-generation <GENERATION> --operation-id <PROMOTION_UUIDV7> \
+  --fence-operation-id <FENCE_UUIDV7>
+```
+
+Success reports the exact applied application sequence, new incarnation and
+leadership epoch, administration sequence and application-sequence RPO.
+JSON integers are decimal strings; BeforeFirst is `null`. Keep both operation
+IDs and the complete selection unchanged after an uncertain response. An exact
+retry on a successfully promoted source checks fresh authority, returns the
+original result and audits the invocation without contacting the former source.
+
+Keep `<backup-root>/.maintenance/replication_promotion` with the database and
+maintenance receipts. Missing or contradictory evidence fences readiness.
+A failed or denied attempt that already froze a selection continues to fence
+ordinary startup; terminal failure does not release its selected frontier.
+Only complete reconciliation of an exact successful retry under the current
+exclusive owner can discharge that selection. Denial before selection does
+not leave this fence. Never delete receipts to bypass recovery.
+
+After committed cutover, restart validates the exact local control, audit and
+external receipt before starting as a source, without loading the former
+source's credentials. Pre-cutover restart still refuses ordinary startup:
+a restricted, freshly authorized retry route remains to be implemented.
+Follower projection generation and lifecycle remain locally owned derived
+state under ADR-0248; authoritative commit/entity zero-RPO claims do not extend
+to derived state.

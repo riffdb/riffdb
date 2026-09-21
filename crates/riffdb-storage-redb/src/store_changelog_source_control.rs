@@ -26,10 +26,13 @@ use riffdb_storage_api::{
 #[path = "changelog_source_control_transaction.rs"]
 mod transaction;
 use transaction::Barrier;
+pub(crate) use transaction::ControlWrite;
 #[path = "replication_administration_write.rs"]
 mod administration;
 #[path = "changelog_bootstrap_attachment.rs"]
 mod bootstrap_attachment;
+#[path = "primary_fence_control.rs"]
+mod primary_fence;
 #[path = "changelog_registered_ack.rs"]
 mod registered_ack;
 #[path = "replication_registration_maintenance.rs"]
@@ -96,6 +99,23 @@ impl RedbOperationalPorts {
         &self,
         id: riffdb_storage_api::ReplicationSourceHoldIdV1,
     ) -> Result<bool, StorageError> {
+        self.bootstrap_id_has_custody(id, true)
+    }
+
+    /// A pending registration permits its first artifact, but cannot authorize
+    /// replacement of any existing bootstrap, attached follower or archive hold.
+    pub(crate) fn bootstrap_id_blocks_new_artifact(
+        &self,
+        id: riffdb_storage_api::ReplicationSourceHoldIdV1,
+    ) -> Result<bool, StorageError> {
+        self.bootstrap_id_has_custody(id, false)
+    }
+
+    fn bootstrap_id_has_custody(
+        &self,
+        id: riffdb_storage_api::ReplicationSourceHoldIdV1,
+        include_pending_registration: bool,
+    ) -> Result<bool, StorageError> {
         if self.shared.write_fenced.load(Ordering::Acquire) || self.shared.is_follower_mode() {
             return Err(storage_error(StorageErrorKind::Unavailable));
         }
@@ -122,7 +142,10 @@ impl RedbOperationalPorts {
                 if hold.id() != id || hold.kind() != kind {
                     return Err(storage_error(StorageErrorKind::CorruptData));
                 }
-                if retired {
+                if retired
+                    || (!include_pending_registration
+                        && matches!(state, State::Registered(policy) if policy.phase() == Phase::AwaitingBootstrap))
+                {
                     continue;
                 }
                 return Ok(true);
@@ -326,7 +349,7 @@ fn prepare_control_receipt(
         .expected_allocator()
         .allocate_one()
         .map_err(value_error)?;
-    let receipt = AuthoritativeTransactionV3::new(
+    let receipt = AuthoritativeTransactionV3::new_for_catalog(
         AuthoritativeTransactionBindingV3 {
             database_id: history.lineage().database_id(),
             history_incarnation: history.lineage().history_incarnation(),
@@ -338,6 +361,7 @@ fn prepare_control_receipt(
         },
         source,
         Vec::new(),
+        history.lineage().catalog_digest(),
     )
     .map_err(value_error)?;
     Ok((

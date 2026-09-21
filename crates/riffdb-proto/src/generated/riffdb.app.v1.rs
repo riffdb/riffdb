@@ -876,6 +876,7 @@ pub enum ApplicationErrorCode {
     FreshnessUnsatisfied = 24,
     ProjectedSourceRequired = 25,
     FollowerMode = 26,
+    PrimaryFenced = 27,
 }
 impl ApplicationErrorCode {
     /// String value of the enum field names used in the ProtoBuf definition.
@@ -917,6 +918,7 @@ impl ApplicationErrorCode {
                 "APPLICATION_ERROR_CODE_PROJECTED_SOURCE_REQUIRED"
             }
             Self::FollowerMode => "APPLICATION_ERROR_CODE_FOLLOWER_MODE",
+            Self::PrimaryFenced => "APPLICATION_ERROR_CODE_PRIMARY_FENCED",
         }
     }
     /// Creates an enum from field names used in the ProtoBuf definition.
@@ -967,6 +969,7 @@ impl ApplicationErrorCode {
                 Some(Self::ProjectedSourceRequired)
             }
             "APPLICATION_ERROR_CODE_FOLLOWER_MODE" => Some(Self::FollowerMode),
+            "APPLICATION_ERROR_CODE_PRIMARY_FENCED" => Some(Self::PrimaryFenced),
             _ => None,
         }
     }

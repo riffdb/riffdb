@@ -1,5 +1,13 @@
 //! Shared authorization and durable service-audit orchestration.
 
+#[path = "orchestration_replication_stream.rs"]
+mod replication_stream;
+
+#[path = "orchestration_promotion_retry.rs"]
+mod promotion_retry;
+
+#[path = "orchestration_primary_fence.rs"]
+mod primary_fence;
 #[path = "orchestration_replication_administration.rs"]
 mod replication_administration;
 
@@ -936,6 +944,17 @@ impl BegunInvocation {
                 Err(PublicError::storage_unavailable().into())
             }
         }
+    }
+
+    /// Records a primary-fence refusal even when successful reads need no audit.
+    /// Unlike a policy denial, this cannot hide a required audit append failure.
+    pub(crate) async fn finish_primary_fence_denial(
+        &self,
+        service: &RiffDbServiceInner,
+        context: &RequestContext,
+    ) -> Result<(), AuditAppendFailure> {
+        self.finish_reauthorization_phase(service, context, ServiceAuditPhaseV1::Denied)
+            .await
     }
 
     /// Records a denial derived while monotonically intersecting current policy.

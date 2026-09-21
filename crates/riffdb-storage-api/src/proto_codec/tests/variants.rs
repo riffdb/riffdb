@@ -705,7 +705,10 @@ fn service_audit_with(
         ingress,
         if matches!(
             operation,
-            ServiceOperationV1::RegisterFollower | ServiceOperationV1::RetireFollower
+            ServiceOperationV1::RegisterFollower
+                | ServiceOperationV1::RetireFollower
+                | ServiceOperationV1::FenceReplicationPrimary
+                | ServiceOperationV1::PromoteFollower
         ) {
             ServiceAuditTargetsV1::new([riffdb_types::ServiceAuditTargetV1::ReplicationFollower(
                 riffdb_types::ReplicationFollowerAuditTargetV1::new(
@@ -732,7 +735,10 @@ fn every_service_operation_round_trips() {
     for operation in ServiceOperationV1::ALL {
         let (encode, decode) = if matches!(
             operation,
-            ServiceOperationV1::RegisterFollower | ServiceOperationV1::RetireFollower
+            ServiceOperationV1::RegisterFollower
+                | ServiceOperationV1::RetireFollower
+                | ServiceOperationV1::FenceReplicationPrimary
+                | ServiceOperationV1::PromoteFollower
         ) {
             (
                 encode_service_audit_record_v3 as fn(&StoredServiceAuditRecordV1) -> _,

@@ -98,6 +98,9 @@ impl RedbStagedRestore {
         {
             return Err(corrupt());
         }
+        crate::primary_admission_roots::require_unfenced(
+            &read.open_table(crate::layout::META).map_err(unavailable)?,
+        )?;
         let selection = match selection {
             Some(selection) => selection,
             None => ArchiveRestoreSelectionV3::new(
@@ -162,6 +165,9 @@ impl RedbStagedRestore {
         {
             return Err(corrupt());
         }
+        crate::primary_admission_roots::require_unfenced(
+            &write.open_table(crate::layout::META).map_err(unavailable)?,
+        )?;
         for table in [
             crate::changelog_v3_activation::HISTORY,
             crate::changelog_v3_activation::SOURCE_HOLDS,
@@ -183,6 +189,10 @@ impl RedbStagedRestore {
                     meta.remove(key).map_err(unavailable)?;
                 }
             }
+            // This validated, unfenced source becomes a private attached
+            // candidate. V2 admission is SourceOnly and cannot follow it.
+            meta.remove(crate::primary_admission_roots::key()?)
+                .map_err(unavailable)?;
             let state =
                 ReplicationFollowerStateV3::attached(history.lineage(), history.tail(), None)
                     .map_err(|_| corrupt())?;

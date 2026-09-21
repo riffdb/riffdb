@@ -242,6 +242,7 @@ fn exact_closed_enum_registries_are_frozen() {
             ("PUBLIC_ERROR_KIND_HISTORY_PRUNED", 12),
             ("PUBLIC_ERROR_KIND_OVERLOADED", 11),
             ("PUBLIC_ERROR_KIND_FOLLOWER_MODE", 13),
+            ("PUBLIC_ERROR_KIND_PRIMARY_FENCED", 14),
         ]
     );
     assert_eq!(
@@ -496,7 +497,7 @@ fn service_inventory_and_completed_phase_zero_messages_are_exact() {
         }
     }
     methods.sort();
-    assert_eq!(methods.len(), 72);
+    assert_eq!(methods.len(), 74);
     let descriptor_order = descriptors
         .file
         .iter()
@@ -612,6 +613,8 @@ fn service_inventory_and_completed_phase_zero_messages_are_exact() {
             "CancelApplicationReimport",
             "RegisterFollower",
             "RetireFollower",
+            "FenceReplicationPrimary",
+            "PromoteFollower",
         ]
     );
     assert_eq!(
@@ -662,6 +665,8 @@ fn service_inventory_and_completed_phase_zero_messages_are_exact() {
         "ReplicationStatistics",
         "ReplicationBootstrapRequest",
         "ReplicationBootstrapAttachment",
+        "ReplicationFenceEvidenceRequest",
+        "ReplicationFenceEvidence",
         "StreamChangelogRequest",
         "StreamChangelogResponse",
         "CommitNotification",
@@ -722,6 +727,9 @@ fn service_inventory_and_completed_phase_zero_messages_are_exact() {
         "RegisterFollowerResponse",
         "RetireFollowerRequest",
         "RetireFollowerResponse",
+        "FenceReplicationPrimaryRequest",
+        "FenceReplicationPrimaryResponse",
+        "PrimaryFenceReceipt",
         "FollowerAdministrationReceipt",
         "GetOfflineMaintenanceOperationRequest",
         "GetOfflineMaintenanceOperationResponse",
@@ -808,7 +816,7 @@ fn service_inventory_and_completed_phase_zero_messages_are_exact() {
             .keys()
             .filter(|name| name.starts_with("riffdb.v1."))
             .count(),
-        301
+        309
     );
     assert_eq!(
         messages
@@ -1011,4 +1019,39 @@ fn every_public_descriptor_element_has_an_exact_schema_hash() {
         assert!(actual_names.insert(key));
     }
     assert_eq!(actual_names, expected.keys().cloned().collect());
+}
+
+// req: REP-003, REP-005
+#[test]
+fn fence_evidence_is_a_bounded_phase_on_the_existing_replication_rpc() {
+    let descriptors = descriptors();
+    let messages = message_map(&descriptors);
+    let request = messages["riffdb.v1.StreamChangelogRequest"];
+    assert!(
+        request
+            .field
+            .iter()
+            .any(|field| field.name() == "fence_evidence" && field.number() == 13),
+        "accepted source proof needs an explicit phase on the existing stream"
+    );
+    let response = messages["riffdb.v1.StreamChangelogResponse"];
+    assert!(
+        response
+            .field
+            .iter()
+            .any(|field| field.name() == "fence_evidence"
+                && field.number() == 6
+                && field.oneof_index == Some(0))
+    );
+    let replication = descriptors
+        .file
+        .iter()
+        .flat_map(|file| &file.service)
+        .find(|service| service.name() == "ReplicationService")
+        .unwrap();
+    assert_eq!(replication.method.len(), 1);
+    assert_eq!(replication.method[0].name(), "StreamChangelog");
+    assert!(replication.method[0].server_streaming());
+    assert_eq!(<riffdb_proto::v1::StreamChangelogRequest as riffdb_proto::PublicMessage>::MAX_ENCODED_BYTES, 1024);
+    assert_eq!(<riffdb_proto::v1::StreamChangelogResponse as riffdb_proto::PublicMessage>::MAX_ENCODED_BYTES, 32 * 1024 * 1024 + 1024);
 }

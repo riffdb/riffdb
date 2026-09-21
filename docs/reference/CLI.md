@@ -34,7 +34,7 @@ Commands:
   query
   role         Checks, describes, binds, or revokes an exact symbolic application role
   capability
-  follower     Registers or retires one audited follower retention policy
+  follower     Manages audited follower retention policy and permanent primary fencing
   server
   backup
   export       Exports one authorized symbolic application snapshot as canonical JSONL pages
@@ -561,13 +561,15 @@ Options:
 ### `riffdb follower`
 
 ```text
-Registers or retires one audited follower retention policy
+Manages audited follower retention policy and permanent primary fencing
 
 Usage: riffdb follower [OPTIONS] <COMMAND>
 
 Commands:
-  register  Registers or exactly replays the selected immutable policy
-  retire    Retires only the original generation reported by registration
+  promote        Promotes a follower using the configured source's authenticated fence proof
+  fence-primary  Permanently fences this primary; it may remain unavailable if promotion fails
+  register       Registers or exactly replays the selected immutable policy
+  retire         Retires only the original generation reported by registration
 
 Options:
       --config <PATH>
@@ -2208,6 +2210,53 @@ Options:
 
   -h, --help
           Print help
+```
+
+#### `riffdb follower promote`
+
+```text
+Promotes a follower using the configured source's authenticated fence proof
+
+Usage: riffdb follower promote [OPTIONS] --database-id <SOURCE_DATABASE_UUIDV7> --history-incarnation <NONZERO_U64> --leadership-epoch <NONZERO_U64> --hold-id <32_LOWERCASE_HEX_DIGITS> --registration-generation <REGISTRATION_GENERATION> --operation-id <PROMOTION_OPERATION_UUIDV7> --fence-operation-id <FENCE_OPERATION_UUIDV7>
+
+Options:
+      --config <PATH>
+      --database-id <SOURCE_DATABASE_UUIDV7>
+      --endpoint <HTTP_OR_HTTPS_ENDPOINT>
+      --history-incarnation <NONZERO_U64>
+      --database <DATABASE>
+      --leadership-epoch <NONZERO_U64>
+      --hold-id <32_LOWERCASE_HEX_DIGITS>
+      --output <human|json>                                [possible values: human, json]
+      --max-attempts <1..10>
+      --registration-generation <REGISTRATION_GENERATION>
+      --credential-file <PATH>
+      --operation-id <PROMOTION_OPERATION_UUIDV7>
+      --fence-operation-id <FENCE_OPERATION_UUIDV7>
+  -h, --help                                               Print help
+```
+
+#### `riffdb follower fence-primary`
+
+```text
+Permanently fences this primary; it may remain unavailable if promotion fails
+
+Usage: riffdb follower fence-primary [OPTIONS] --database-id <SOURCE_DATABASE_UUIDV7> --history-incarnation <NONZERO_U64> --leadership-epoch <NONZERO_U64> --hold-id <32_LOWERCASE_HEX_DIGITS> --registration-generation <REGISTRATION_GENERATION> --operation-id <OPERATION_ID>
+
+Options:
+      --config <PATH>
+      --database-id <SOURCE_DATABASE_UUIDV7>
+      --endpoint <HTTP_OR_HTTPS_ENDPOINT>
+      --history-incarnation <NONZERO_U64>
+      --database <DATABASE>
+      --leadership-epoch <NONZERO_U64>
+      --hold-id <32_LOWERCASE_HEX_DIGITS>
+      --output <human|json>                                [possible values: human, json]
+      --max-attempts <1..10>
+      --registration-generation <REGISTRATION_GENERATION>
+      --credential-file <PATH>
+      --operation-id <OPERATION_ID>
+  -h, --help                                               Print help
 ```
 
 #### `riffdb follower register`

@@ -29,6 +29,8 @@ end
 
 def validate_exchange_bounds!(operation, bounds)
   expected_request = case operation
+                     when "StreamChangelog"
+                       1_024
                      when "ExecuteCommand", "ExecuteContextualReaction"
                        8_388_608
                      when "ApplyContractMigration"
@@ -40,7 +42,7 @@ def validate_exchange_bounds!(operation, bounds)
                      end
   expected = {
     "EncodedRequestBytes" => expected_request,
-    "EncodedResponseBytes" => 4_194_304
+    "EncodedResponseBytes" => (operation == "StreamChangelog" ? 33_555_456 : 4_194_304)
   }
   parsed = {}
   bounds.each do |bound|
@@ -101,6 +103,17 @@ rescue ArgumentError => error
   abort "bound self-test produced wrong refusal: #{error.message}" unless error.message.include?("must remain")
 end
 
+[1_024, 1_048_576].product([4_194_304, 33_555_456]).each do |request, response|
+  next if request == 1_024 && response == 33_555_456
+
+  begin
+    validate_exchange_bounds!("StreamChangelog", ["EncodedRequestBytes=#{request}", "EncodedResponseBytes=#{response}"])
+    abort "replication bound self-test accepted an incompatible exchange ceiling"
+  rescue ArgumentError => error
+    abort "replication bound self-test produced wrong refusal: #{error.message}" unless error.message.include?("must remain")
+  end
+end
+
 root = Pathname.new(File.expand_path("..", __dir__))
 check = ARGV == ["--check"]
 abort "usage: scripts/generate-operation-adapters [--check]" unless ARGV.empty? || check
@@ -115,10 +128,10 @@ lines = registry.lines(chomp: true)
 version = lines.shift&.split("\t", 2)
 abort "operation registry has no version" unless version == ["version", "1"]
 operations = lines.map { |line| line.split("\t", -1) }
-abort "operation registry must contain exactly 59 declarations" unless operations.length == 59
+abort "operation registry must contain exactly 62 declarations" unless operations.length == 62
 tags = operations.map { |fields| Integer(fields.fetch(1), 10) }
-abort "operation registry tags are not exact and ordered" unless tags == (1..59).to_a
-abort "operation registry contains a duplicate semantic operation" unless operations.map { |fields| fields.fetch(2) }.uniq.length == 59
+abort "operation registry tags are not exact and ordered" unless tags == (1..62).to_a
+abort "operation registry contains a duplicate semantic operation" unless operations.map { |fields| fields.fetch(2) }.uniq.length == 62
 
 descriptor_path = root.join("fixtures/proto/descriptors/riffdb-v1-descriptor-set.bin")
 descriptor_text, descriptor_error, descriptor_status = Open3.capture3(

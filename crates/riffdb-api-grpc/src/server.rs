@@ -84,6 +84,13 @@ const MAX_APPLICATION_SESSION_ERROR_DETAILS_BYTES: usize = 64 * 1024;
 
 /// Server-owned atomic route across initializing and activated service stages.
 pub trait GrpcLifecycleRoute: Send + Sync {
+    /// Admits only the dedicated, externally audited promotion service.
+    fn admit_follower_promotion(
+        &self,
+    ) -> Option<Arc<dyn riffdb_service::FollowerPromotionApplication>> {
+        None
+    }
+
     /// Admits the administrative replication service only in the ready stage.
     fn admit_replication(&self) -> Option<Arc<dyn riffdb_service::ReplicationApplication>> {
         None
@@ -3012,6 +3019,44 @@ impl AdminService for GrpcApplication {
             self.normal_invocation(ServiceOperationV1::RetireFollower, &metadata, request_id)?;
         let result = map_service(service.retire_follower(context, request).await)?;
         Ok(Response::new(retire_follower_result_to_proto(result)))
+    }
+
+    async fn promote_follower(
+        &self,
+        request: Request<v1::PromoteFollowerRequest>,
+    ) -> Result<Response<v1::PromoteFollowerResponse>, Status> {
+        let (metadata, _peer, message) = split_request(request);
+        let (request_id, request) = promote_follower_request_from_proto(message)?;
+        // Scope these references before awaiting. The owner must close the old
+        // graph, including its authentication reader, to perform the cutover.
+        let (completion, _cancellation) = {
+            let lifecycle = self.select_lifecycle(&metadata)?;
+            let service = lifecycle
+                .admit_follower_promotion()
+                .ok_or_else(service_not_ready)?;
+            let security = lifecycle.security_context().ok_or_else(service_not_ready)?;
+            let (context, cancellation) = self.normal_context(&metadata, request_id, &security)?;
+            (service.promote_follower(context, request), cancellation)
+        };
+        let result = map_service(completion.await)?;
+        Ok(Response::new(promote_follower_result_to_proto(result)))
+    }
+
+    async fn fence_replication_primary(
+        &self,
+        request: Request<v1::FenceReplicationPrimaryRequest>,
+    ) -> Result<Response<v1::FenceReplicationPrimaryResponse>, Status> {
+        let (metadata, _peer, message) = split_request(request);
+        let (request_id, request) = fence_replication_primary_request_from_proto(message)?;
+        let (service, context, _cancellation) = self.normal_invocation(
+            ServiceOperationV1::FenceReplicationPrimary,
+            &metadata,
+            request_id,
+        )?;
+        let result = map_service(service.fence_replication_primary(context, request).await)?;
+        Ok(Response::new(fence_replication_primary_result_to_proto(
+            result,
+        )))
     }
 
     async fn revoke_capability(

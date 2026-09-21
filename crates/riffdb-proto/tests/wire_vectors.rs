@@ -44,6 +44,7 @@ fn every_checked_in_wire_vector_decodes_through_its_strict_boundary() {
         "error.idempotency",
         "error.internal",
         "error.outcome-unknown",
+        "error.primary-fenced",
         "error.storage",
         "error.validation",
         "execute.request-active",

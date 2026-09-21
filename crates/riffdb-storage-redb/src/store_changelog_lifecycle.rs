@@ -42,7 +42,7 @@ pub(super) fn prepare(
         .allocate_one()
         .map_err(value_error)?
         .0;
-    let receipt = AuthoritativeTransactionV3::new(
+    let receipt = AuthoritativeTransactionV3::new_for_catalog(
         AuthoritativeTransactionBindingV3 {
             database_id,
             history_incarnation,
@@ -57,28 +57,31 @@ pub(super) fn prepare(
             LifecycleSource::Dirty => ChangelogAttributionV3::DirtyActivation,
         },
         Vec::new(),
+        history.lineage().catalog_digest(),
     )
     .map_err(value_error)?;
     PreparedHistoryAdvance::prepare(transaction, &receipt).map(Some)
 }
 
-/// This is an additional bounded clean-root check, never full validation or an
-/// activation permit. No history scan or V1 lifecycle binding byte is changed.
-pub(super) fn clean_roots_available(transaction: &ReadTransaction) -> Result<bool, StorageError> {
+/// Checks bounded-start eligibility without granting authority. ADR-0156
+/// Amendment 6 requires complete validation for V2: the frozen V1 binding does
+/// not cover source admission. No history scan or lifecycle byte changes here.
+pub(crate) fn clean_roots_available(transaction: &ReadTransaction) -> Result<bool, StorageError> {
     if !crate::changelog_v3_journal::has_recovery_roots(transaction)? {
         return Ok(true); // Transitional legacy lane; final activation closes it.
     }
-    let validate = || -> Result<(), StorageError> {
+    let validate = || -> Result<bool, StorageError> {
         let history = crate::changelog_v3_roots::read_checkpoint_roots(transaction)?
             .ok_or_else(|| storage_error(StorageErrorKind::CorruptData))?;
         history
             .expected_allocator()
             .allocate_one()
             .map_err(value_error)?;
-        Ok(())
+        Ok(history.lineage().catalog_digest()
+            == riffdb_storage_api::AuthoritativeStateCatalogV1.digest())
     };
     match validate() {
-        Ok(()) => Ok(true),
+        Ok(eligible) => Ok(eligible),
         Err(error)
             if matches!(
                 error.kind(),

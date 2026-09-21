@@ -141,6 +141,22 @@ fn stamp_incarnation(
         return transaction.abort().map_err(precommit_storage_error);
     }
     v3_restore::edge("preflight");
+    stamp_incarnation_metadata(&transaction, incarnation)?;
+    v3_restore::edge("incarnation");
+    if let Some(anchor) = anchor {
+        anchor.stage(&transaction)?;
+    }
+    transaction.commit().map_err(commit_error)?;
+    v3_restore::edge("committed");
+    Ok(())
+}
+
+/// Shared private metadata portion of the ADR-0072 offline stamp. Callers own
+/// full preflight and the single transaction containing the new lineage anchor.
+pub(crate) fn stamp_incarnation_metadata(
+    transaction: &redb::WriteTransaction,
+    incarnation: u64,
+) -> Result<(), StorageError> {
     {
         let mut meta = transaction.open_table(META).map_err(table_error)?;
         let encoded = codec::encode_history_incarnation_v1(incarnation)?;
@@ -185,12 +201,6 @@ fn stamp_incarnation(
                 .map_err(precommit_storage_error)?;
         }
     }
-    v3_restore::edge("incarnation");
-    if let Some(anchor) = anchor {
-        anchor.stage(&transaction)?;
-    }
-    transaction.commit().map_err(commit_error)?;
-    v3_restore::edge("committed");
     Ok(())
 }
 

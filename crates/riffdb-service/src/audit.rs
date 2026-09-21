@@ -77,7 +77,10 @@ fn validate_phase_link(
             !(phase == ServiceAuditPhaseV1::Succeeded
                 && matches!(
                     operation,
-                    ServiceOperationV1::RegisterFollower | ServiceOperationV1::RetireFollower
+                    ServiceOperationV1::RegisterFollower
+                        | ServiceOperationV1::RetireFollower
+                        | ServiceOperationV1::FenceReplicationPrimary
+                        | ServiceOperationV1::PromoteFollower
                 ))
         }
         ServiceAuditLinkV1::Command { .. } => matches!(
@@ -93,6 +96,8 @@ fn validate_phase_link(
                 | ServiceOperationV1::RevokeCapability
                 | ServiceOperationV1::RegisterFollower
                 | ServiceOperationV1::RetireFollower
+                | ServiceOperationV1::FenceReplicationPrimary
+                | ServiceOperationV1::PromoteFollower
         ),
     };
     if !operation_accepts_link {
@@ -895,6 +900,15 @@ mod tests {
             ),
             (ServiceOperationV1::RegisterFollower, follower_targets()),
             (ServiceOperationV1::RetireFollower, follower_targets()),
+            (
+                ServiceOperationV1::FenceReplicationPrimary,
+                follower_targets(),
+            ),
+            (
+                ServiceOperationV1::StreamChangelog,
+                ServiceAuditTargetsV1::empty(),
+            ),
+            (ServiceOperationV1::PromoteFollower, follower_targets()),
         ];
 
         let public_operations = ServiceOperationV1::ALL
@@ -913,6 +927,7 @@ mod tests {
         let expected_nonempty_lengths = [
             0, 2, 1, 0, 1, 2, 1, 2, 2, 2, 2, 1, 0, 0, 1, 0, 0, 1, 1, 0, 0, 0, 1, 1, 1, 1, 1, 1, 1,
             1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 0, 1, 0, 1, 1, 0, 0, 1, 1, 0, 0, 1, 1, 1,
+            1, 0, 1,
         ];
         assert_eq!(
             mapped.each_ref().map(|(_, targets)| targets.len()),
@@ -988,7 +1003,10 @@ mod tests {
             ServiceIngressKindV1::Grpc,
             if matches!(
                 operation,
-                ServiceOperationV1::RegisterFollower | ServiceOperationV1::RetireFollower
+                ServiceOperationV1::RegisterFollower
+                    | ServiceOperationV1::RetireFollower
+                    | ServiceOperationV1::FenceReplicationPrimary
+                    | ServiceOperationV1::PromoteFollower
             ) {
                 follower_targets()
             } else {
@@ -1067,7 +1085,10 @@ mod tests {
                 .is_ok(),
                 !matches!(
                     operation,
-                    ServiceOperationV1::RegisterFollower | ServiceOperationV1::RetireFollower
+                    ServiceOperationV1::RegisterFollower
+                        | ServiceOperationV1::RetireFollower
+                        | ServiceOperationV1::FenceReplicationPrimary
+                        | ServiceOperationV1::PromoteFollower
                 ),
                 "lifecycle requires a link; preserve legacy service pre-checks"
             );

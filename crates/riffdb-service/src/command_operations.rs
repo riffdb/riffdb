@@ -2599,6 +2599,15 @@ async fn finish_failure_with_link(
     terminal: TerminalKind,
     link: ServiceAuditLinkV1,
 ) -> ServiceFailure {
+    if failure
+        .public_error()
+        .is_some_and(|error| error.kind() == PublicErrorKind::PrimaryFenced)
+    {
+        return match begun.finish_primary_fence_denial(service, context).await {
+            Ok(()) => failure,
+            Err(_) => PublicError::storage_unavailable().into(),
+        };
+    }
     if begun
         .finish(service, context, terminal.phase(&failure), link)
         .await
@@ -2971,6 +2980,7 @@ fn map_command_admission(
         | CommandExecutionAdmissionError::RetainedByteCapacityExceeded => {
             PublicError::overloaded().into()
         }
+        CommandExecutionAdmissionError::PrimaryFenced => PublicError::primary_fenced().into(),
         CommandExecutionAdmissionError::PermitUnitMismatch => service.internal_failure(
             ServiceOperationV1::ExecuteCommand,
             InternalDefect::ProofMismatch,
@@ -4475,3 +4485,7 @@ contract EmbeddingInput version 1 {
         }
     }
 }
+
+#[cfg(test)]
+#[path = "primary_admission_service_tests.rs"]
+mod primary_admission_tests;

@@ -403,6 +403,11 @@ Startup bootstraps an absent follower or fully validates and reopens an existing
 one. A retained complete transfer permits the existing candidate-publication
 recovery path to check its exact fence and destination before replacement.
 Tail reception uses the supervised worker's bounded retry and shutdown rules.
+A committed promotion is reconciled from local authoritative control and external
+audit before loading former-source credentials. Once completely validated, it
+starts as a source even with its existing follower configuration. Failed selected
+attempts continue to refuse ordinary startup; pre-cutover retry hosting remains
+in progress. See [follower administration](operations/FOLLOWER-ADMINISTRATION.md).
 
 After validation, the daemon activates a writer-free application service for each
 configured alias, binds configured hosted MCP routes, and emits the ordinary
@@ -414,7 +419,8 @@ Authentication and current policy observe the latest completed follower prefix.
 A capability or contract installed later on the source becomes visible through
 replication; followers expose no local capability-bootstrap convenience path.
 Commands, administration, migration, maintenance and export return the typed
-follower-mode refusal. Policy-required durable read audit also refuses. See
+follower-mode refusal. The experimental promotion operation has its own external
+audit owner. Policy-required durable read audit still refuses. See
 [the follower audit boundary](architecture/CHANGELOG-V3.md) for Health, Statistics
 and denied-read telemetry.
 

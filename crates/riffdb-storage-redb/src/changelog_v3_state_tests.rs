@@ -8,8 +8,8 @@ use std::sync::Arc;
 use redb::{ReadableDatabase, ReadableTable, TableDefinition, TableHandle};
 use riffdb_storage_api::{
     AuthoritativeNamespaceV1 as N, AuthoritativeStateCatalogV1, AuthoritativeStateStepV3,
-    ChangelogHistoryStateV3, ChangelogLineageV3, DatabaseInitializationPort, LeadershipEpochV1,
-    PublishedDurableSnapshot, ReplicationAuthorityClassV1 as Class,
+    ChangelogHistoryStateV3, ChangelogLineageV3, LeadershipEpochV1, PublishedDurableSnapshot,
+    ReplicationAuthorityClassV1 as Class,
 };
 use riffdb_types::{DatabaseId, DualFrontier};
 
@@ -28,7 +28,7 @@ fn inventory_fixture() -> (
     let mut store = crate::RedbStore::open(scope.join("db.redb")).unwrap();
     let database =
         DatabaseId::from_unix_milliseconds_and_random(1_700_000_000_000, [0x75; 10]).unwrap();
-    store.initialize_database(database).unwrap();
+    store.initialize_legacy_fixture(database).unwrap();
     // Populate every pre-activation domain before the isolated fixture anchor.
     // Retain actual core metadata; arbitrary payloads prove transport custody,
     // not catalog semantics or a serving database's readiness.
@@ -247,7 +247,7 @@ fn authoritative_inventory_never_falls_back_to_an_inactive_partial_catalog() {
     let mut store = crate::RedbStore::open(scope.join("db.redb")).unwrap();
     let database =
         DatabaseId::from_unix_milliseconds_and_random(1_700_000_000_000, [0x76; 10]).unwrap();
-    store.initialize_database(database).unwrap();
+    store.initialize_legacy_fixture(database).unwrap();
     for _ in 0..2 {
         assert!(matches!(published(&store).authoritative_state_v3(),
             Err(riffdb_storage_api::ChangelogCursorErrorV3::Storage(error))

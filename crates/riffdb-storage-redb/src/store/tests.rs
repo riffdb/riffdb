@@ -164,7 +164,9 @@ fn pre_export_registry_installs_operation_table_before_publication() {
         bytes
     })
     .expect("database");
-    store.initialize_database(database_id).expect("initialize");
+    store
+        .initialize_legacy_fixture(database_id)
+        .expect("initialize");
     {
         let mut transaction = store
             .shared
@@ -237,7 +239,9 @@ fn pre_vector_registry_installs_evidence_table_before_publication() {
         bytes
     })
     .expect("database");
-    store.initialize_database(database_id).expect("initialize");
+    store
+        .initialize_legacy_fixture(database_id)
+        .expect("initialize");
     {
         let mut transaction = store
             .shared
@@ -306,7 +310,9 @@ fn pre_vector_observation_registry_installs_table_before_publication() {
         bytes
     })
     .expect("database");
-    store.initialize_database(database_id).expect("initialize");
+    store
+        .initialize_legacy_fixture(database_id)
+        .expect("initialize");
     {
         let mut transaction = store
             .shared
@@ -380,7 +386,9 @@ fn pre_vector_health_registry_publishes_only_after_health_backfill() {
         bytes
     })
     .expect("database");
-    store.initialize_database(database_id).expect("initialize");
+    store
+        .initialize_legacy_fixture(database_id)
+        .expect("initialize");
     {
         let mut transaction = store
             .shared
@@ -441,7 +449,9 @@ fn pre_vector_projection_control_registry_installs_table_before_publication() {
         bytes
     })
     .expect("database");
-    store.initialize_database(database_id).expect("initialize");
+    store
+        .initialize_legacy_fixture(database_id)
+        .expect("initialize");
     {
         let mut transaction = store
             .shared
@@ -506,7 +516,9 @@ fn pre_columnar_control_registry_installs_table_before_publication() {
         bytes
     })
     .expect("database");
-    store.initialize_database(database_id).expect("initialize");
+    store
+        .initialize_legacy_fixture(database_id)
+        .expect("initialize");
     {
         let mut transaction = store
             .shared
@@ -795,7 +807,7 @@ fn legacy_v1_fixture_envelope(record_type: &str) -> Vec<u8> {
 fn install_pre_generation_fixture(path: &Path) {
     let mut store = RedbStore::open(path).expect("open generation fixture");
     store
-        .initialize_database(database_id(0x1d))
+        .initialize_legacy_fixture(database_id(0x1d))
         .expect("initialize generation fixture");
     let index_id = IndexId::new(7).expect("index ID");
     let mut entity = EntityKeyBuilder::new(EntityTypeId::first());
@@ -954,7 +966,7 @@ fn mixed_v1_v2_framing_resumes_and_publishes_registry_last() {
     let expected = database_id(0x19);
     let mut store = RedbStore::open(&path.0).expect("open empty store");
     store
-        .initialize_database(expected)
+        .initialize_legacy_fixture(expected)
         .expect("initialize current database");
 
     let mut transaction = store
@@ -1062,7 +1074,7 @@ fn wp373_event_copies_migrate_to_exact_references_before_registry_publication() 
     let path = TestDatabasePath::new("event-reference-migration");
     let mut store = RedbStore::open(&path.0).expect("open empty store");
     store
-        .initialize_database(database_id(0x1b))
+        .initialize_legacy_fixture(database_id(0x1b))
         .expect("initialize current database");
 
     let transaction = store
@@ -1175,7 +1187,7 @@ fn entity_reference_migration_transcodes_v2_commits_and_is_idempotent() {
     let path = TestDatabasePath::new("entity-reference-migration");
     let mut store = RedbStore::open(&path.0).expect("open empty store");
     store
-        .initialize_database(database_id(0x2e))
+        .initialize_legacy_fixture(database_id(0x2e))
         .expect("initialize current database");
 
     let (v2, event, event_id, sequence) = v2_commit_fixture_from_legacy_v1();
@@ -1276,7 +1288,7 @@ fn entity_reference_migration_from_pre_audit_request_index_converges() {
     let path = TestDatabasePath::new("entity-reference-from-audit");
     let mut store = RedbStore::open(&path.0).expect("open empty store");
     store
-        .initialize_database(database_id(0x30))
+        .initialize_legacy_fixture(database_id(0x30))
         .expect("initialize");
     let (v2, event, event_id, sequence) = v2_commit_fixture_from_legacy_v1();
     let commit_key = encode_application_sequence_key(sequence);
@@ -1329,7 +1341,7 @@ fn entity_reference_migration_survives_damaged_events_row() {
     let path = TestDatabasePath::new("entity-reference-damaged-event");
     let mut store = RedbStore::open(&path.0).expect("open empty store");
     store
-        .initialize_database(database_id(0x31))
+        .initialize_legacy_fixture(database_id(0x31))
         .expect("initialize");
     let (v2, _event, _event_id, sequence) = v2_commit_fixture_from_legacy_v1();
     let commit_key = encode_application_sequence_key(sequence);
@@ -1378,7 +1390,7 @@ fn entity_reference_migration_splits_501_rows_and_crash_restarts() {
     let path = TestDatabasePath::new("entity-reference-501");
     let mut store = RedbStore::open(&path.0).expect("open empty store");
     store
-        .initialize_database(database_id(0x32))
+        .initialize_legacy_fixture(database_id(0x32))
         .expect("initialize");
     let (v2_template, event, event_id, _) = v2_commit_fixture_from_legacy_v1();
     let event_key = encode_event_key(event_id);
@@ -1451,7 +1463,7 @@ fn entity_reference_migration_empty_database_path_converges() {
     let path = TestDatabasePath::new("entity-reference-empty");
     let mut store = RedbStore::open(&path.0).expect("open empty store");
     store
-        .initialize_database(database_id(0x2f))
+        .initialize_legacy_fixture(database_id(0x2f))
         .expect("initialize");
     let predecessor =
         encode_record_registry_v2(SchemaHash::from_bytes(PRE_ENTITY_REFERENCE_REGISTRY_DIGEST))
@@ -1484,7 +1496,7 @@ fn event_routes_rebuild_idempotently_before_registry_publication() {
     let path = TestDatabasePath::new("event-route-migration");
     let mut store = RedbStore::open(&path.0).expect("open empty store");
     store
-        .initialize_database(database_id(0x1c))
+        .initialize_legacy_fixture(database_id(0x1c))
         .expect("initialize current database");
 
     let event_id = EventId::new(CommitSequence::first(), 0);
@@ -1735,7 +1747,7 @@ fn history_incarnation_migration_inserts_initial_and_is_idempotent() {
     let path = TestDatabasePath::new("history-incarnation-migrate");
     let mut store = RedbStore::open(&path.0).expect("open");
     store
-        .initialize_database(database_id(0x71))
+        .initialize_legacy_fixture(database_id(0x71))
         .expect("initialize");
 
     // Simulate a pre-fence database: drop the key and roll the registry
@@ -1811,7 +1823,7 @@ fn current_digest_still_runs_index_generation_row_repair() {
     let path = TestDatabasePath::new("current-digest-epoch-repair");
     let mut store = RedbStore::open(&path.0).expect("open");
     store
-        .initialize_database(database_id(0x72))
+        .initialize_legacy_fixture(database_id(0x72))
         .expect("initialize");
 
     // Simulate a pre-marker database that published the current digest while

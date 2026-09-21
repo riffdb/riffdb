@@ -4520,6 +4520,7 @@ fn emit_typescript_application_errors(output: &mut String) {
   "RDB-PROJECTION-0103": ["no query snapshot satisfies the requested freshness", "query", "retry", ["retry_later"]],
   "RDB-PROJECTION-0104": ["nearest query requires a compiler-owned projected source", "query", "refresh_contract", ["pin_active_module"]],
   "RDB-REP-0101": ["operation is unavailable in follower mode", "control", "correct_request", []],
+  "RDB-REP-0102": ["primary is durably fenced", "control", "contact_operator", []],
 } as const;
 
 export type ApplicationErrorCode = keyof typeof APPLICATION_ERROR_REGISTRY;

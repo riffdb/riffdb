@@ -22843,6 +22843,20 @@ work_packages:
   closure:
     status: open
     decisions_taken:
+    - Resume promotion correctness independently of the closed WP-749 tail
+      investigation. Integrate approved source and tests onto current main,
+      excluding compact-prefix experiments and private benchmark evidence.
+    - A terminal failed or denied promotion retains its immutable selection and
+      fences ordinary startup. Only exact successful reconciliation under the
+      current exclusive owner may cover prior terminal attempts with the same
+      request and selection; decoded success alone never grants this proof.
+      Restricted pre-cutover retry hosting and final qualification remain open.
+    - Preserve every pre-existing durable registry identity and bound while
+      regenerating the approved fencing/promotion records. Correct the V1 catalog
+      generator index after excluding the abandoned compact-prefix experiment.
+      Reserve follower lifecycle and promotion crash tests in nextest after
+      isolated reruns pass with unchanged readiness and watchdog limits; retain
+      every crash schedule and assertion.
     - Re-establish the separately reviewed scope for riffdb-errors,
       riffdb-query-module and riffdb-api-mcp before integrating the accepted
       primary_fenced refusal. This changes no MCP visibility or authority.

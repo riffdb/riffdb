@@ -49,6 +49,7 @@ mod process_graph;
 mod projection_adapter;
 mod projection_read_source;
 mod projection_worker;
+mod promotion_admission;
 mod read_adapters;
 #[cfg(test)]
 mod real_storage_support;

@@ -247,7 +247,9 @@ fn pre_retention_registry_migrates_on_open() {
     // migrate and install current registry (history_tombstones already present
     // is fine — install is idempotent).
     let root = TestRoot::new("pre-retention-migrate");
-    initialize(&root.db());
+    let mut store = RedbStore::open(root.db()).unwrap();
+    riffdb_storage_redb::initialize_legacy_database_fixture(&mut store, database_id()).unwrap();
+    drop(store);
     {
         let database = Database::open(root.db()).expect("open redb");
         let write = database.begin_write().expect("write");
@@ -281,7 +283,9 @@ fn pre_retention_registry_migrates_on_open() {
 #[test]
 fn pre_wp417_registry_installs_reactive_consumer_tables_on_open() {
     let root = TestRoot::new("pre-wp417-reactive-consumer-migrate");
-    initialize(&root.db());
+    let mut store = RedbStore::open(root.db()).unwrap();
+    riffdb_storage_redb::initialize_legacy_database_fixture(&mut store, database_id()).unwrap();
+    drop(store);
     let inactive_registry;
     {
         let database = Database::open(root.db()).expect("open redb");

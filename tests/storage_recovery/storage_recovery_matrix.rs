@@ -368,7 +368,7 @@ fn run_crashing_child(mode: &str, path: &Path) {
     run_crashing_child_with_profile(mode, path, RedbCommitProfile::Standard);
 }
 
-#[cfg(feature = "test-fixtures")]
+#[cfg(all(feature = "test-fixtures", feature = "benchmark-support"))]
 fn run_externally_killed_command_child(path: &Path) {
     let marker = path.with_extension("external-kill.ready");
     let mut child = Command::new(std::env::current_exe().expect("current test executable"))
@@ -1099,6 +1099,13 @@ fn catalog_principal() -> AuditPrincipalV1 {
         CapabilityId::from_bytes(uuid_bytes(0x61)).expect("catalog capability"),
         NonZeroU64::MIN,
     )
+}
+
+/// Selects predecessor bytes only for tests of V1 bounded-start compatibility.
+fn prepare_legacy_clean_start_fixture(path: &Path) {
+    let mut store = RedbStore::open(path).expect("open V1 compatibility fixture");
+    riffdb_storage_redb::initialize_legacy_database_fixture(&mut store, database_id())
+        .expect("initialize V1 compatibility fixture");
 }
 
 fn prepare_command_database(path: &Path) {
@@ -2480,6 +2487,7 @@ fn cold_fresh_database_publications_complete_without_history_scans() {
     const PUBLICATIONS: u64 = 288;
 
     let path = TestDatabasePath::new("fresh-locator-no-history-scans");
+    prepare_legacy_clean_start_fixture(&path.0);
     prepare_command_database(&path.0);
     let prepared = open_operational(RedbStore::open(&path.0).expect("validate fresh database"));
     let _clean = prepared.complete_graceful_close();
@@ -4709,8 +4717,7 @@ fn validated_prefix_checkpoint_incarnation_mismatch_falls_back() {
 fn pre_validated_prefix_registry_digest_migrates_on_open() {
     let path = TestDatabasePath::new("pre-validated-prefix-migrate");
     let mut store = RedbStore::open(&path.0).expect("open");
-    store
-        .initialize_database(database_id())
+    riffdb_storage_redb::initialize_legacy_database_fixture(&mut store, database_id())
         .expect("initialize");
     drop(store);
 
@@ -4970,6 +4977,7 @@ fn durable_locators_are_written_without_populating_the_counted_tables() {
 // req: REC-004
 fn a_committed_command_is_still_recognised_with_the_population_index_dormant() {
     let path = TestDatabasePath::new("locator-admission-dormant");
+    prepare_legacy_clean_start_fixture(&path.0);
     let (fixture, _) = prepare_committed_command_database(&path.0);
 
     // Certify a clean close so the next open takes the bounded path.
@@ -5022,6 +5030,7 @@ fn a_committed_command_is_still_recognised_with_the_population_index_dormant() {
 #[test]
 fn a_write_after_a_bounded_start_validates_the_command_owned_audit_tail() {
     let path = TestDatabasePath::new("locator-audit-tail-bounded");
+    prepare_legacy_clean_start_fixture(&path.0);
     let _ = prepare_committed_command_database(&path.0);
 
     let ports = open_operational(RedbStore::open(&path.0).expect("reopen to certify"));
@@ -5049,6 +5058,7 @@ fn a_write_after_a_bounded_start_validates_the_command_owned_audit_tail() {
 #[test]
 fn an_undecodable_idempotency_locator_fails_closed() {
     let path = TestDatabasePath::new("locator-undecodable");
+    prepare_legacy_clean_start_fixture(&path.0);
     let (fixture, _) = prepare_committed_command_database(&path.0);
     overwrite_first_row(&path.0, "idempotency_locators", &[0xFF, 0xFF, 0xFF, 0xFF]);
     assert!(
@@ -5061,6 +5071,7 @@ fn an_undecodable_idempotency_locator_fails_closed() {
 #[test]
 fn an_idempotency_locator_naming_the_wrong_segment_fails_closed() {
     let path = TestDatabasePath::new("locator-wrong-segment");
+    prepare_legacy_clean_start_fixture(&path.0);
     let (fixture, _) = prepare_committed_command_database(&path.0);
     // Sequence 9_999 has no segment at all, so nothing owns the key.
     let encoded = riffdb_storage_api::encode_command_locator_v1(
@@ -5080,6 +5091,7 @@ fn an_idempotency_locator_naming_the_wrong_segment_fails_closed() {
 #[test]
 fn fresh_locator_miss_preserves_prior_identity_and_rejects_malformed_locators() {
     let prior_path = TestDatabasePath::new("fresh-locator-prior-identity");
+    prepare_legacy_clean_start_fixture(&prior_path.0);
     let (first, second) = prepare_two_command_database(&prior_path.0);
     let ports = open_operational(RedbStore::open(&prior_path.0).expect("reopen two-command store"));
     ports
@@ -5103,6 +5115,7 @@ fn fresh_locator_miss_preserves_prior_identity_and_rejects_malformed_locators() 
     }
 
     let malformed_path = TestDatabasePath::new("fresh-locator-malformed-row");
+    prepare_legacy_clean_start_fixture(&malformed_path.0);
     let (malformed, _) = prepare_committed_command_database(&malformed_path.0);
     overwrite_first_row(
         &malformed_path.0,
@@ -5112,6 +5125,7 @@ fn fresh_locator_miss_preserves_prior_identity_and_rejects_malformed_locators() 
     assert!(readmission_is_corrupt(&malformed_path.0, &malformed));
 
     let wrong_capsule_path = TestDatabasePath::new("fresh-locator-wrong-capsule-identity");
+    prepare_legacy_clean_start_fixture(&wrong_capsule_path.0);
     let (expected, _) = prepare_two_command_database(&wrong_capsule_path.0);
     let wrong_locator = riffdb_storage_api::encode_command_locator_v1(
         riffdb_storage_api::StoredCommandLocatorV1::new(
@@ -7728,6 +7742,7 @@ fn two_phase_admitted_command_reopens_clean() {
 #[test]
 fn clean_close_fast_startup_resolves_command_owned_audit_members() {
     let path = TestDatabasePath::new("clean-close-command-audit");
+    prepare_legacy_clean_start_fixture(&path.0);
     prepare_command_database(&path.0);
     let fixture = command_fixture();
     let ports = open_operational(RedbStore::open(&path.0).expect("open command database"));
@@ -7775,6 +7790,7 @@ fn clean_close_fast_startup_resolves_command_owned_audit_members() {
 #[test]
 fn clean_close_fast_startup_warms_under_a_live_catalog_read() {
     let path = TestDatabasePath::new("clean-close-catalog-warm");
+    prepare_legacy_clean_start_fixture(&path.0);
     prepare_command_database(&path.0);
     let fixture = command_fixture();
     let ports = open_operational(RedbStore::open(&path.0).expect("open command database"));

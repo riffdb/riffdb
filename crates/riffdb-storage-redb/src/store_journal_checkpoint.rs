@@ -79,11 +79,12 @@ impl SharedRedb {
                 } else {
                     ChangelogAttributionV3::JournaledApplicationGroup
                 };
-                let receipt = crate::changelog_v3::receipt_from_validated_mutations(
+                let receipt = crate::changelog_v3::receipt_from_validated_mutations_for_catalog(
                     // The same binding was proven before admission to the lane.
                     binding,
                     source,
                     &frame.mutations,
+                    history.lineage().catalog_digest(),
                 )
                 .map_err(value_error)?;
                 if frame.changelog_binding != Some(binding) {

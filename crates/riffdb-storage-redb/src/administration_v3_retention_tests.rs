@@ -7,8 +7,8 @@ use crate::store::{RedbCommitProfile, RedbDormantPorts, RedbOperationalPorts, Re
 use redb::ReadableDatabase;
 use riffdb_storage_api::{
     AuthoritativeStateStepV3, ChangelogAttributionV3 as Source, ChangelogHistoryStateV3,
-    ChangelogLineageV3, DatabaseInitializationPort, LeadershipEpochV1, PublishedDurableSnapshot,
-    PublishedFrontierAdvancement, ReplicationSourceHoldIdV1, ReplicationSourceHoldKindV1 as Kind,
+    ChangelogLineageV3, LeadershipEpochV1, PublishedDurableSnapshot, PublishedFrontierAdvancement,
+    ReplicationSourceHoldIdV1, ReplicationSourceHoldKindV1 as Kind,
     ReplicationSourceHoldV1 as Hold,
 };
 use std::sync::{Arc, mpsc};
@@ -42,7 +42,7 @@ fn control_only_publication_pins_exact_history_without_advancing_application_fro
     )
     .unwrap();
     store
-        .initialize_database(super::tests::database_id())
+        .initialize_legacy_fixture(super::tests::database_id())
         .unwrap();
     let lineage =
         ChangelogLineageV3::new(super::tests::database_id(), 1, LeadershipEpochV1::initial())
@@ -156,7 +156,7 @@ fn changelog_history_reclamation_respects_checkpoint_and_fences() {
     )
     .unwrap();
     store
-        .initialize_database(super::tests::database_id())
+        .initialize_legacy_fixture(super::tests::database_id())
         .unwrap();
     let lineage =
         ChangelogLineageV3::new(super::tests::database_id(), 1, LeadershipEpochV1::initial())

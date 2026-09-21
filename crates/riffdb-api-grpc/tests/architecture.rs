@@ -308,12 +308,14 @@ fn operator_campaigns_maintenance_and_migration_are_additive_and_never_an_mcp_su
             .lines()
             .filter(|line| line.trim_start().starts_with("rpc "))
             .count(),
-        61
+        63
     );
     assert_eq!(services.matches("rpc ExecuteBatch(").count(), 1);
     for rpc in [
         "rpc RegisterFollower(",
         "rpc RetireFollower(",
+        "rpc FenceReplicationPrimary(",
+        "rpc PromoteFollower(",
         "rpc CreateOfflineBackup(",
         "rpc RestoreOfflineBackup(",
         "rpc RestoreArchivedBackup(",
@@ -340,6 +342,9 @@ fn operator_campaigns_maintenance_and_migration_are_additive_and_never_an_mcp_su
     let normalized = mcp_registry.to_ascii_lowercase();
     assert!(!normalized.contains("registerfollower"));
     assert!(!normalized.contains("retirefollower"));
+    assert!(!normalized.contains("fencereplicationprimary"));
+    assert!(!normalized.contains("promotefollower"));
+    assert!(!normalized.contains("promote_follower"));
     assert!(!normalized.contains("backup"));
     assert!(!normalized.contains("maintenance"));
     assert!(!normalized.contains("migration"));
@@ -380,6 +385,8 @@ fn operator_campaigns_maintenance_and_migration_are_additive_and_never_an_mcp_su
             "register_follower",
             "retirefollower",
             "retire_follower",
+            "promotefollower",
+            "promote_follower",
         ] {
             assert!(!normalized.contains(operation), "{surface}: {operation}");
         }

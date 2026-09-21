@@ -5,8 +5,8 @@ use crate::replication_bootstrap::BootstrapSourceJobs;
 
 use crate::replication_publication::ReplicationPublishedSnapshots;
 use riffdb_service::{
-    ReplicationFailure, ReplicationFuture, ReplicationItemSource, ReplicationRequest,
-    ReplicationSourcePort,
+    PrimaryFenceRequestV1, PrimaryFenceSourceEvidenceV1, ReplicationFailure, ReplicationFuture,
+    ReplicationItemSource, ReplicationRequest, ReplicationSourcePort,
 };
 use riffdb_storage_api::{
     ChangelogFrameCursorV3, ChangelogHistoryPointV3, ChangelogLineageV3,
@@ -87,7 +87,70 @@ impl PublishedReplicationSource {
     }
 }
 
+/// Checks the source coordinates and exact supported catalog named by the peer.
+/// This is request validation; only the published pin can prove that lineage.
+pub(crate) fn request_lineage(
+    request: &ReplicationRequest,
+) -> Result<ChangelogLineageV3, ReplicationFailure> {
+    let invalid =
+        || ReplicationFailure::Source(riffdb_errors::ReplicationStreamErrorV3::InvalidPosition);
+    let coordinates = ChangelogLineageV3::new(
+        request.database_id,
+        request.history_incarnation,
+        LeadershipEpochV1::new(request.leadership_epoch).ok_or_else(invalid)?,
+    )
+    .map_err(|_| invalid())?;
+    ChangelogLineageV3::new_with_catalog(
+        coordinates.database_id(),
+        coordinates.history_incarnation(),
+        coordinates.leadership_epoch(),
+        request.catalog_digest,
+    )
+    .map_err(|_| {
+        ReplicationFailure::Source(riffdb_errors::ReplicationStreamErrorV3::UnsupportedCatalog)
+    })
+}
+
 impl ReplicationSourcePort for PublishedReplicationSource {
+    fn primary_fence_source_evidence(
+        &self,
+        request: PrimaryFenceRequestV1,
+        applied: ChangelogHistoryPointV3,
+    ) -> ReplicationFuture<'_, PrimaryFenceSourceEvidenceV1> {
+        Box::pin(async move {
+            let permit = Arc::new(
+                Arc::clone(&self.capacity)
+                    .try_acquire_owned()
+                    .map_err(|_| ReplicationFailure::Unavailable)?,
+            );
+            let mut publications = self.publications.clone();
+            let pin = publications
+                .latest()
+                .map_err(ReplicationFailure::Source)?
+                .ok_or(ReplicationFailure::Unavailable)?;
+            let evidence = tokio::time::timeout(
+                IDLE_LIMIT,
+                bounded_read(permit, move || {
+                    pin.primary_fence_source_evidence_v1(request, applied)
+                }),
+            )
+            .await
+            .map_err(|_| ReplicationFailure::Unavailable)?
+            .map_err(|_| ReplicationFailure::Unavailable)?
+            .map_err(bootstrap::storage_failure)?
+            .ok_or(ReplicationFailure::Source(
+                riffdb_errors::ReplicationStreamErrorV3::InvalidPosition,
+            ))?;
+            // An uncertainty notification while reading must still refuse the
+            // release. Later audit-only publications cannot undo this fence.
+            publications
+                .latest()
+                .map_err(ReplicationFailure::Source)?
+                .ok_or(ReplicationFailure::Unavailable)?;
+            Ok(evidence)
+        })
+    }
+
     fn open(
         &self,
         request: ReplicationRequest,
@@ -96,12 +159,7 @@ impl ReplicationSourcePort for PublishedReplicationSource {
             let invalid = || {
                 ReplicationFailure::Source(riffdb_errors::ReplicationStreamErrorV3::InvalidPosition)
             };
-            let lineage = ChangelogLineageV3::new(
-                request.database_id,
-                request.history_incarnation,
-                LeadershipEpochV1::new(request.leadership_epoch).ok_or_else(invalid)?,
-            )
-            .map_err(|_| invalid())?;
+            let lineage = request_lineage(&request)?;
             let permit = Arc::new(
                 Arc::clone(&self.capacity)
                     .try_acquire_owned()
@@ -125,6 +183,25 @@ impl ReplicationSourcePort for PublishedReplicationSource {
                 .latest()
                 .map_err(ReplicationFailure::Source)?
                 .ok_or(ReplicationFailure::Unavailable)?;
+            if let riffdb_service::ReplicationPhase::FenceEvidence { request: selected } =
+                request.phase
+            {
+                let evidence = bounded_read(Arc::clone(&permit), move || {
+                    ChangelogFrameCursorV3::open(pin.as_ref(), handshake)?;
+                    pin.primary_fence_source_evidence_v1(selected, after)
+                        .map_err(riffdb_errors::ReplicationStreamErrorV3::from)?
+                        .ok_or(riffdb_errors::ReplicationStreamErrorV3::InvalidPosition)
+                })
+                .await
+                .map_err(|_| ReplicationFailure::Unavailable)?
+                .map_err(ReplicationFailure::Source)?;
+                return Ok(Box::new(FenceItems {
+                    evidence: Some(evidence),
+                    publications,
+                    expires,
+                    _permit: permit,
+                }) as Box<dyn ReplicationItemSource>);
+            }
             let cursor = bounded_read(Arc::clone(&permit), move || {
                 ChangelogFrameCursorV3::open(pin.as_ref(), handshake)
             })
@@ -159,6 +236,32 @@ impl ReplicationSourcePort for PublishedReplicationSource {
                 expires,
                 permit,
             }) as Box<dyn ReplicationItemSource>)
+        })
+    }
+}
+
+struct FenceItems {
+    evidence: Option<PrimaryFenceSourceEvidenceV1>,
+    publications: ReplicationPublishedSnapshots,
+    expires: tokio::time::Instant,
+    _permit: Arc<OwnedSemaphorePermit>,
+}
+impl ReplicationItemSource for FenceItems {
+    fn next_item(&mut self) -> ReplicationFuture<'_, Option<riffdb_service::ReplicationItem>> {
+        Box::pin(async move {
+            let Some(evidence) = self.evidence.take() else {
+                return Ok(None);
+            };
+            if tokio::time::Instant::now() >= self.expires {
+                return Err(ReplicationFailure::Unavailable);
+            }
+            self.publications
+                .latest()
+                .map_err(ReplicationFailure::Source)?
+                .ok_or(ReplicationFailure::Unavailable)?;
+            Ok(Some(riffdb_service::ReplicationItem::FenceEvidence(
+                Box::new(evidence),
+            )))
         })
     }
 }

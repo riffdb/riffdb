@@ -1691,6 +1691,9 @@ const fn operation_name(operation: ServiceOperationV1) -> &'static str {
         ServiceOperationV1::InspectVectorState => "inspect_vector_state",
         ServiceOperationV1::RegisterFollower => "register_follower",
         ServiceOperationV1::RetireFollower => "retire_follower",
+        ServiceOperationV1::FenceReplicationPrimary => "fence_replication_primary",
+        ServiceOperationV1::StreamChangelog => "stream_changelog",
+        ServiceOperationV1::PromoteFollower => "promote_follower",
     }
 }
 

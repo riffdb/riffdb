@@ -7,14 +7,15 @@ use super::{
     AuthoritativeTransactionV3, ChangelogTransactionAllocator, ChangelogTransactionSequence,
     ChangelogV3Error, LeadershipEpochV1,
 };
-use crate::AuthoritativeStateCatalogV1;
+use crate::{AuthoritativeStateCatalogV1, AuthoritativeStateCatalogV2};
 
-/// Exact lineage fence; the catalog is always the one closed storage inventory.
+/// Exact lineage fence and checked catalog binding; neither grants source authority.
 #[derive(Clone, Copy, Eq, PartialEq)]
 pub struct ChangelogLineageV3 {
     database_id: DatabaseId,
     history_incarnation: u64,
     leadership_epoch: LeadershipEpochV1,
+    catalog_digest: [u8; 32],
 }
 
 impl ChangelogLineageV3 {
@@ -24,13 +25,33 @@ impl ChangelogLineageV3 {
         history_incarnation: u64,
         leadership_epoch: LeadershipEpochV1,
     ) -> Result<Self, ChangelogV3Error> {
-        if history_incarnation == 0 {
+        Self::new_with_catalog(
+            database_id,
+            history_incarnation,
+            leadership_epoch,
+            AuthoritativeStateCatalogV1.digest(),
+        )
+    }
+    /// Reconstructs one explicitly selected, supported catalog. Callers must
+    /// obtain this identity from validated durable or authenticated peer evidence;
+    /// selecting V2 never upgrades V1 authority or implies Active admission.
+    pub fn new_with_catalog(
+        database_id: DatabaseId,
+        history_incarnation: u64,
+        leadership_epoch: LeadershipEpochV1,
+        catalog_digest: [u8; 32],
+    ) -> Result<Self, ChangelogV3Error> {
+        if history_incarnation == 0
+            || (catalog_digest != AuthoritativeStateCatalogV1.digest()
+                && catalog_digest != AuthoritativeStateCatalogV2.digest())
+        {
             return Err(ChangelogV3Error::InvalidEncoding);
         }
         Ok(Self {
             database_id,
             history_incarnation,
             leadership_epoch,
+            catalog_digest,
         })
     }
     /// Permanent database identity.
@@ -48,10 +69,10 @@ impl ChangelogLineageV3 {
     pub const fn leadership_epoch(self) -> LeadershipEpochV1 {
         self.leadership_epoch
     }
-    /// The sole catalog identity, never an operator-selected digest.
+    /// Exact validated catalog identity; never silently replaced by the current one.
     #[must_use]
-    pub fn catalog_digest(self) -> [u8; 32] {
-        AuthoritativeStateCatalogV1.digest()
+    pub const fn catalog_digest(self) -> [u8; 32] {
+        self.catalog_digest
     }
 }
 
@@ -187,6 +208,7 @@ impl ChangelogHistoryStateV3 {
         self,
         receipt: &AuthoritativeTransactionV3,
     ) -> Result<(), ChangelogV3Error> {
+        super::frame::validate_receipt_catalog(receipt, self.lineage.catalog_digest())?;
         if receipt.binding().database_id != self.lineage.database_id
             || receipt.binding().history_incarnation != self.lineage.history_incarnation
             || ChangelogHistoryPointV3::from_receipt(receipt)? != self.tail
@@ -198,6 +220,7 @@ impl ChangelogHistoryStateV3 {
     /// Derives an unchanged-or-successful successor value from the original receipt.
     /// The caller persists it only with that receipt in the same engine transaction.
     pub fn advance(self, receipt: &AuthoritativeTransactionV3) -> Result<Self, ChangelogV3Error> {
+        super::frame::validate_receipt_catalog(receipt, self.lineage.catalog_digest())?;
         let row = receipt.binding();
         if row.database_id != self.lineage.database_id
             || row.history_incarnation != self.lineage.history_incarnation

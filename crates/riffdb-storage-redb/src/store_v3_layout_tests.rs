@@ -6,7 +6,7 @@ use riffdb_storage_api::{ChangelogLineageV3, LeadershipEpochV1};
 fn initialized(path: &Path) -> (RedbStore, DatabaseId) {
     let mut store = RedbStore::open(path).unwrap();
     let id = DatabaseId::from_unix_milliseconds_and_random(1_700_000_000_000, [0x74; 10]).unwrap();
-    store.initialize_database(id).unwrap();
+    store.initialize_legacy_fixture(id).unwrap();
     crate::changelog_v3_activation::activate_validated(
         store.shared.database.begin_write().unwrap(),
         ChangelogLineageV3::new(id, 1, LeadershipEpochV1::initial()).unwrap(),

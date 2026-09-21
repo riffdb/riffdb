@@ -5,6 +5,9 @@
 
 //! Typed control-plane preparations and sole-writer execution.
 
+#[path = "primary_fence_driver.rs"]
+pub(crate) mod primary_fence;
+
 #[path = "replication_administration.rs"]
 mod replication_administration;
 pub(crate) use replication_administration::drive_replication_administration;

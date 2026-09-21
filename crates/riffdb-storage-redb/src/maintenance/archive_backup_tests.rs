@@ -2,6 +2,7 @@
 // req: REP-007, AFC-007
 use super::*;
 use crate::backup::{DATABASE_ARTIFACT_FILE_NAME, MANIFEST_FILE_NAME};
+use redb::ReadableDatabase;
 use riffdb_storage_api::*;
 use riffdb_types::{DatabaseId, DualFrontier};
 use std::{fs, path::Path};
@@ -12,6 +13,28 @@ pub(super) fn backup(
     backup_with_pruned_head(scope, false)
 }
 
+pub(super) fn backup_current_source(
+    scope: &crate::test_path::ScopedDirectory,
+) -> (std::path::PathBuf, ChangelogHistoryStateV3) {
+    let source = scope.join("source.redb");
+    let mut store = crate::RedbStore::open(&source).unwrap();
+    let id = DatabaseId::from_unix_milliseconds_and_random(1_700_000_000_000, [0x78; 10]).unwrap();
+    store.initialize_database(id).unwrap();
+    let history = crate::changelog_v3_roots::validate_retained_history(
+        &store.shared.database.begin_read().unwrap(),
+    )
+    .unwrap()
+    .unwrap();
+    drop(store);
+    let path = scope.join("backup");
+    crate::RedbOfflineBackup::bind(&source, &path)
+        .create_offline_backup(
+            &BackupBuildMetadataV1::new("0.1.0", "abc", "rustc", 1, vec![]).unwrap(),
+        )
+        .unwrap();
+    (path, history)
+}
+
 fn backup_with_pruned_head(
     scope: &crate::test_path::ScopedDirectory,
     pruned: bool,
@@ -19,7 +42,7 @@ fn backup_with_pruned_head(
     let source = scope.join("source.redb");
     let mut store = crate::RedbStore::open(&source).unwrap();
     let id = DatabaseId::from_unix_milliseconds_and_random(1_700_000_000_000, [0x74; 10]).unwrap();
-    store.initialize_database(id).unwrap();
+    store.initialize_legacy_fixture(id).unwrap();
     let frontier = if pruned {
         use riffdb_storage_api::proto_codec::*;
         let first = riffdb_types::CommitSequence::first();

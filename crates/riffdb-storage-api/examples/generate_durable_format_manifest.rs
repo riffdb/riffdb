@@ -228,6 +228,13 @@ fn render_fixture_inventory(
         "fixtures/replication/export-page-commitment-key-v1.hex",
         "fixtures/replication/authoritative-state-catalog-v1.hex",
         "fixtures/replication/authoritative-state-catalog-v1.txt",
+        "fixtures/replication/authoritative-state-catalog-v2.hex",
+        "fixtures/replication/authoritative-state-catalog-v2.txt",
+        "fixtures/replication/primary-fence-v1.hex",
+        "fixtures/replication/promotion-administration-v1.hex",
+        "fixtures/replication/primary-fence-capability-v1.hex",
+        "fixtures/replication/changelog-frame-v3-primary-fence.hex",
+        "fixtures/replication/catalog-lineage-v3.hex",
         "fixtures/compatibility/offline-maintenance-archive-accepted-receipt-v3.hex",
         "fixtures/compatibility/offline-maintenance-archive-selected-receipt-v3.hex",
     ] {

@@ -147,7 +147,7 @@ pub(crate) enum TopLevel {
         #[command(subcommand)]
         command: CapabilityCommand,
     },
-    /// Registers or retires one audited follower retention policy.
+    /// Manages audited follower retention policy and permanent primary fencing.
     Follower {
         #[command(subcommand)]
         command: FollowerCommand,
@@ -1192,6 +1192,26 @@ pub(crate) struct FollowerSelectionArgs {
 
 #[derive(Debug, Subcommand)]
 pub(crate) enum FollowerCommand {
+    /// Promotes a follower using the configured source's authenticated fence proof.
+    Promote {
+        #[command(flatten)]
+        target: FollowerSelectionArgs,
+        #[arg(long)]
+        registration_generation: std::num::NonZeroU64,
+        #[arg(long, value_name = "PROMOTION_OPERATION_UUIDV7")]
+        operation_id: String,
+        #[arg(long, value_name = "FENCE_OPERATION_UUIDV7")]
+        fence_operation_id: String,
+    },
+    /// Permanently fences this primary; it may remain unavailable if promotion fails.
+    FencePrimary {
+        #[command(flatten)]
+        target: FollowerSelectionArgs,
+        #[arg(long)]
+        registration_generation: std::num::NonZeroU64,
+        #[arg(long)]
+        operation_id: String,
+    },
     /// Registers or exactly replays the selected immutable policy.
     Register {
         #[command(flatten)]
@@ -1402,6 +1422,77 @@ mod tests {
             TopLevel::Follower { command: FollowerCommand::Retire { registration_generation, .. } } if registration_generation.get() == 9));
         args[12] = "0";
         assert!(Cli::try_parse_from(&args).is_err());
+    }
+
+    #[test]
+    // req: REP-005
+    fn primary_fence_requires_explicit_stable_operation_and_generation() {
+        let base = [
+            "riffdb",
+            "follower",
+            "fence-primary",
+            "--database-id",
+            "018f22a1-7b3c-7def-8123-456789abcdef",
+            "--history-incarnation",
+            "1",
+            "--leadership-epoch",
+            "1",
+            "--hold-id",
+            "71717171717171717171717171717171",
+        ];
+        assert!(Cli::try_parse_from(base).is_err());
+        let mut args = base.to_vec();
+        args.extend(["--registration-generation", "18446744073709551615"]);
+        assert!(Cli::try_parse_from(&args).is_err());
+        args.extend(["--operation-id", "018f22a1-7b3c-7def-8123-456789abcdef"]);
+        assert!(matches!(Cli::try_parse_from(&args).unwrap().command,
+            TopLevel::Follower { command: FollowerCommand::FencePrimary { registration_generation, .. } } if registration_generation.get() == u64::MAX));
+        args[12] = "0";
+        assert!(Cli::try_parse_from(&args).is_err());
+    }
+
+    #[test]
+    // req: REP-005
+    fn promotion_requires_both_stable_operations_and_exact_registration() {
+        let args = [
+            "riffdb",
+            "follower",
+            "promote",
+            "--database-id",
+            "018f22a1-7b3c-7def-8123-456789abcdef",
+            "--history-incarnation",
+            "1",
+            "--leadership-epoch",
+            "1",
+            "--hold-id",
+            "71717171717171717171717171717171",
+            "--registration-generation",
+            "18446744073709551615",
+            "--operation-id",
+            "018f22a1-7b3c-7def-8123-456789abcdef",
+            "--fence-operation-id",
+            "018f22a1-7b3c-7def-8123-456789abcdee",
+        ];
+        assert!(Cli::try_parse_from(args).is_ok());
+        for index in [3, 5, 7, 9, 11, 13, 15] {
+            let mut missing = args.to_vec();
+            missing.drain(index..index + 2);
+            assert!(Cli::try_parse_from(missing).is_err());
+        }
+        for index in [6, 8, 12] {
+            let mut zero = args;
+            zero[index] = "0";
+            assert!(Cli::try_parse_from(zero).is_err());
+        }
+        for option in [
+            "--new-history-incarnation",
+            "--new-leadership-epoch",
+            "--force",
+        ] {
+            let mut unsafe_selection = args.to_vec();
+            unsafe_selection.push(option);
+            assert!(Cli::try_parse_from(unsafe_selection).is_err());
+        }
     }
 
     #[test]

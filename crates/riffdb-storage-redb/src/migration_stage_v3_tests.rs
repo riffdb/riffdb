@@ -3,9 +3,7 @@
 
 use super::*;
 use redb::ReadableDatabase;
-use riffdb_storage_api::{
-    ChangelogAttributionV3, ChangelogLineageV3, DatabaseInitializationPort, LeadershipEpochV1,
-};
+use riffdb_storage_api::{ChangelogAttributionV3, ChangelogLineageV3, LeadershipEpochV1};
 use riffdb_types::{DatabaseId, DualFrontier};
 
 #[test]
@@ -14,7 +12,7 @@ fn migration_immutable_witness_accepts_receipted_progress_but_not_authority_chan
     let mut store = RedbStore::open(scope.join("db.redb")).unwrap();
     let database =
         DatabaseId::from_unix_milliseconds_and_random(1_700_000_000_000, [0x77; 10]).unwrap();
-    store.initialize_database(database).unwrap();
+    store.initialize_legacy_fixture(database).unwrap();
     crate::changelog_v3_activation::activate_validated(
         store.shared.database.begin_write().unwrap(),
         ChangelogLineageV3::new(database, 1, LeadershipEpochV1::initial()).unwrap(),

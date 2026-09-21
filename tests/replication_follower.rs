@@ -4,6 +4,9 @@
 //! the receiver; this harness checks the independently launched service graphs.
 // req: REP-002, REP-003, REC-001
 
+#[path = "replication_follower/stream_audit.rs"]
+mod stream_audit;
+
 #[path = "replication_follower/administration.rs"]
 mod administration;
 #[path = "replication_follower/columnar_reads.rs"]
@@ -12,8 +15,14 @@ mod columnar_reads;
 mod exact_reads;
 #[path = "replication_follower/export.rs"]
 mod export;
+#[path = "replication_follower/live_promotion.rs"]
+mod live_promotion;
 #[path = "replication_follower/oracle.rs"]
 mod oracle;
+#[path = "replication_follower/primary_fence.rs"]
+mod primary_fence;
+#[path = "replication_follower/promoted_restart.rs"]
+mod promoted_restart;
 #[path = "replication_follower/proxy.rs"]
 mod proxy;
 #[path = "replication_follower/support.rs"]

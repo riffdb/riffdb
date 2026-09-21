@@ -7,8 +7,7 @@ use crate::journal::{JournalFrame, JournalMutation, JournalTable};
 use crate::store::RedbStore;
 use redb::ReadableDatabase;
 use riffdb_storage_api::{
-    ApplicationSequenceAllocator, AuthoritativeNamespaceV1 as N, DatabaseInitializationPort,
-    LeadershipEpochV1, proto_codec::*,
+    ApplicationSequenceAllocator, AuthoritativeNamespaceV1 as N, LeadershipEpochV1, proto_codec::*,
 };
 use riffdb_types::{CommitSequence, DatabaseId, DualFrontier};
 
@@ -21,7 +20,7 @@ fn fixture() -> (
     let mut store = RedbStore::open(scope.join("db.redb")).unwrap();
     let database =
         DatabaseId::from_unix_milliseconds_and_random(1_700_000_000_000, [0x73; 10]).unwrap();
-    store.initialize_database(database).unwrap();
+    store.initialize_legacy_fixture(database).unwrap();
     let history = crate::changelog_v3_activation::activate_validated(
         store.shared.database.begin_write().unwrap(),
         ChangelogLineageV3::new(database, 1, LeadershipEpochV1::initial()).unwrap(),

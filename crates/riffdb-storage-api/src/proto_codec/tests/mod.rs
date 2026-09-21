@@ -4,6 +4,7 @@ mod audit_v3;
 mod bounds;
 mod command_prefix;
 mod entity_references;
+mod fence_permission;
 mod malformed_semantic;
 mod migration;
 mod relationships;

@@ -78,12 +78,81 @@ impl VerifiedReplicationPeer {
         })
     }
 }
+/// Move-only evidence obtained from this configured source's exact TLS path.
+/// Kept inside the server: promotion must use its own configured peer, never a
+/// caller-supplied channel, receipt or proof value.
+pub(crate) struct AuthenticatedPrimaryFenceProof(riffdb_service::PrimaryFenceSourceEvidenceV1);
+impl AuthenticatedPrimaryFenceProof {
+    pub(crate) fn into_evidence(self) -> riffdb_service::PrimaryFenceSourceEvidenceV1 {
+        self.0
+    }
+}
+impl std::fmt::Debug for AuthenticatedPrimaryFenceProof {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("AuthenticatedPrimaryFenceProof([redacted])")
+    }
+}
+impl VerifiedReplicationPeer {
+    pub(crate) async fn authenticated_primary_fence(
+        &self,
+        request: riffdb_service::PrimaryFenceRequestV1,
+        applied: riffdb_service::ChangelogHistoryPointV3,
+    ) -> Result<AuthenticatedPrimaryFenceProof, Failure> {
+        let target = request.target();
+        let catalog = riffdb_storage_api::AuthoritativeStateCatalogV2.digest();
+        let input = ReplicationRequest {
+            database_id: target.database_id(),
+            history_incarnation: target.history_incarnation(),
+            leadership_epoch: target.leadership_epoch().get(),
+            phase: riffdb_service::ReplicationPhase::FenceEvidence { request },
+            after_sequence: applied.sequence().get(),
+            after_hash: applied.history_hash(),
+            after_frontier: applied.frontier(),
+            readable_format: riffdb_storage_api::ChangelogFrameV3::IDENTITY.into(),
+            catalog_digest: catalog,
+            maximum_frame_bytes: riffdb_storage_api::MAX_CHANGELOG_FRAME_BYTES as u64,
+            maximum_transitions: riffdb_storage_api::MAX_STAGED_COMMANDS as u64,
+        };
+        let corrupt = || Failure::Source(riffdb_errors::ReplicationStreamErrorV3::CorruptHistory);
+        let mut stream = self.open(input).await?;
+        let Some(Item::FenceEvidence(evidence)) = stream.next_item().await? else {
+            return Err(corrupt());
+        };
+        let fence = evidence.fence();
+        if fence.target() != target
+            || fence.operation_id() != request.operation_id()
+            || fence.generation() != request.generation()
+            || evidence.applied() != applied
+            || evidence.source_history().lineage().catalog_digest() != catalog
+        {
+            return Err(corrupt());
+        }
+        // Authentication alone cannot excuse a missing/extra item or a late
+        // denial. Consume the terminal boundary before creating private proof.
+        if stream.next_item().await?.is_some() {
+            return Err(corrupt());
+        }
+        Ok(AuthenticatedPrimaryFenceProof(*evidence))
+    }
+}
 impl std::fmt::Debug for VerifiedReplicationPeer {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.write_str("VerifiedReplicationPeer([redacted])")
     }
 }
 impl ReplicationSourcePort for VerifiedReplicationPeer {
+    fn primary_fence_source_evidence(
+        &self,
+        request: riffdb_service::PrimaryFenceRequestV1,
+        applied: riffdb_service::ChangelogHistoryPointV3,
+    ) -> ReplicationFuture<'_, riffdb_service::PrimaryFenceSourceEvidenceV1> {
+        Box::pin(async move {
+            self.authenticated_primary_fence(request, applied)
+                .await
+                .map(AuthenticatedPrimaryFenceProof::into_evidence)
+        })
+    }
+
     fn open(
         &self,
         input: ReplicationRequest,

@@ -25,6 +25,17 @@ impl RedbPublishedSnapshot {
 }
 
 impl PublishedDurableSnapshot for RedbPublishedSnapshot {
+    fn primary_fence_source_evidence_v1(
+        &self,
+        request: riffdb_storage_api::PrimaryFenceRequestV1,
+        applied: riffdb_storage_api::ChangelogHistoryPointV3,
+    ) -> Result<
+        Option<riffdb_storage_api::PrimaryFenceSourceEvidenceV1>,
+        riffdb_storage_api::ChangelogCursorErrorV3,
+    > {
+        crate::primary_fence_write::proof::observe(&self.access, request, applied)
+    }
+
     fn replication_source_progress_v3(
         &self,
     ) -> Result<

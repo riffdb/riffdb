@@ -419,11 +419,16 @@ impl RedbValidatedBootstrapCandidate {
 
 fn install_roots(write: &redb::WriteTransaction, manifest: Manifest) -> Result<(), StorageError> {
     let history = manifest.fence().history();
+    let catalog = history.lineage().catalog_digest();
+    let encoded_catalog = if catalog == AuthoritativeStateCatalogV1.digest() {
+        encode_authoritative_state_catalog_v1(AuthoritativeStateCatalogV1)
+    } else if catalog == riffdb_storage_api::AuthoritativeStateCatalogV2.digest() {
+        encode_authoritative_state_catalog_v2(riffdb_storage_api::AuthoritativeStateCatalogV2)
+    } else {
+        return Err(corrupt());
+    };
     let roots = [
-        (
-            N::AuthoritativeStateCatalog,
-            encode_authoritative_state_catalog_v1(AuthoritativeStateCatalogV1),
-        ),
+        (N::AuthoritativeStateCatalog, encoded_catalog),
         (
             N::LeadershipEpoch,
             encode_leadership_epoch_v1(history.lineage().leadership_epoch()),

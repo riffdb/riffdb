@@ -29,15 +29,26 @@ use riffdb_storage_api::{
 use tokio::runtime;
 use tokio::sync::{OwnedSemaphorePermit, Semaphore, mpsc, oneshot};
 
+use crate::primary_admission_gate::{
+    DrainedPrimaryPause, PrimaryAdmissionGate, PrimaryAdmissionRefusal, PrimarySubmission,
+};
+
+use crate::control_plane::primary_fence::{PrimaryFenceExecutionResult, drive_primary_fence};
 use crate::control_plane::{
     ReplicationAdministrationExecutionResult, drive_replication_administration,
     drive_replication_maintenance,
 };
 use riffdb_conflict::ConflictManager;
 use riffdb_idempotency::IdempotencyDigestProvider;
-use riffdb_policy::{AuthorizationClock, AuthorizedReplicationAdministrationPreparation};
+use riffdb_policy::{
+    AuthorizationClock, AuthorizedPrimaryFencePreparation,
+    AuthorizedReplicationAdministrationPreparation,
+};
+#[path = "primary_fence_actor.rs"]
+mod primary_fence;
 use riffdb_storage_api::{
-    ReplicationAdministrationTransactionPort, ReplicationRegistrationMaintenancePort,
+    PrimaryFenceResultV1, PrimaryFenceTransactionPort, ReplicationAdministrationTransactionPort,
+    ReplicationPrimaryAdmissionReadPort, ReplicationRegistrationMaintenancePort,
     ReplicationRegistrationMaintenanceResultV1,
 };
 
@@ -513,6 +524,8 @@ impl CoordinatorWorkloadCapacity {
 /// Safe failure to start the dedicated coordinator actor.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum CoordinatorStartError {
+    /// Required durable primary admission could not be checked.
+    PrimaryAdmissionUnavailable,
     /// Tokio could not construct the current-thread scheduler.
     RuntimeUnavailable,
     /// The dedicated operating-system thread could not be created.
@@ -526,6 +539,7 @@ pub enum CoordinatorStartError {
 impl fmt::Display for CoordinatorStartError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         formatter.write_str(match self {
+            Self::PrimaryAdmissionUnavailable => "coordinator primary admission is unavailable",
             Self::RuntimeUnavailable => "coordinator runtime is unavailable",
             Self::ThreadUnavailable => "coordinator thread is unavailable",
             Self::PreparationWorkerUnavailable => "command preparation worker is unavailable",
@@ -782,10 +796,12 @@ impl fmt::Debug for AdministrationAuditReceipt {
 /// Safe rejection before a control-plane preparation enters the sole-writer queue.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum ControlPlaneExecutionAdmissionError {
-    /// Shutdown has begun and new work is no longer accepted.
+    /// Authoritative admission is closed for shutdown or primary-fence draining.
     Draining,
     /// An unknown authoritative write fenced all later work.
     Fenced,
+    /// The source is durably fenced; required service-audit writes remain available.
+    PrimaryFenced,
     /// The coordinator actor has stopped.
     Stopped,
 }
@@ -795,6 +811,7 @@ impl fmt::Display for ControlPlaneExecutionAdmissionError {
         formatter.write_str(match self {
             Self::Draining => "command coordinator is draining",
             Self::Fenced => "command coordinator fenced authoritative writes",
+            Self::PrimaryFenced => "primary is durably fenced",
             Self::Stopped => "command coordinator has stopped",
         })
     }
@@ -847,7 +864,8 @@ impl fmt::Debug for ControlPlaneExecutor {
     }
 }
 
-/// Move-only authority to synchronously submit one typed control-plane operation.
+/// Move-only authority to submit one typed control-plane operation.
+/// Primary fencing first awaits the drain of previously admitted senders.
 #[must_use = "dropping the permit releases its reserved workload capacity"]
 pub struct ControlPlaneExecutionCapacityPermit {
     permit: Option<mpsc::OwnedPermit<CoordinatorMessage>>,
@@ -978,7 +996,7 @@ impl ControlPlaneExecutionCapacityPermit {
         self,
         preparation: CapabilityBootstrapTerminalPreparation,
     ) -> Result<CapabilityBootstrapTerminalReceipt, ControlPlaneExecutionAdmissionError> {
-        let (permit, submission) = self.into_submission()?;
+        let (permit, submission) = self.into_audit_submission()?;
         let (completion, receiver) = oneshot::channel();
         let _sender = permit.send(CoordinatorMessage::CapabilityBootstrapTerminal {
             preparation: Box::new(preparation),
@@ -989,6 +1007,24 @@ impl ControlPlaneExecutionCapacityPermit {
     }
 
     fn into_submission(
+        self,
+    ) -> Result<
+        (mpsc::OwnedPermit<CoordinatorMessage>, ActiveSubmission),
+        ControlPlaneExecutionAdmissionError,
+    > {
+        let (permit, mut submission) = self.into_audit_submission()?;
+        submission._primary = Some(submission.gate.primary.begin().map_err(
+            |refusal| match refusal {
+                PrimaryAdmissionRefusal::Draining => ControlPlaneExecutionAdmissionError::Draining,
+                PrimaryAdmissionRefusal::Fenced => {
+                    ControlPlaneExecutionAdmissionError::PrimaryFenced
+                }
+            },
+        )?);
+        Ok((permit, submission))
+    }
+
+    fn into_audit_submission(
         mut self,
     ) -> Result<
         (mpsc::OwnedPermit<CoordinatorMessage>, ActiveSubmission),
@@ -1038,6 +1074,7 @@ macro_rules! control_plane_receipt {
     };
 }
 
+control_plane_receipt!(PrimaryFenceReceipt, PrimaryFenceExecutionResult);
 control_plane_receipt!(CatalogDeploymentReceipt, CatalogDeploymentResult);
 control_plane_receipt!(QueryModuleDeploymentReceipt, QueryModuleDeploymentResult);
 control_plane_receipt!(
@@ -1078,10 +1115,12 @@ pub enum CommandExecutionAdmissionError {
     /// This is an internal defect (units derivation mismatch), never a silent
     /// accept and never a capacity rejection after accept.
     PermitUnitMismatch,
-    /// Shutdown has begun and new work is no longer accepted.
+    /// Authoritative admission is closed for shutdown or primary-fence draining.
     Draining,
     /// An unknown authoritative write fenced all later work.
     Fenced,
+    /// The source is durably fenced; required service-audit writes remain available.
+    PrimaryFenced,
     /// The coordinator actor has stopped.
     Stopped,
 }
@@ -1096,6 +1135,7 @@ impl fmt::Display for CommandExecutionAdmissionError {
             }
             Self::Draining => "command coordinator is draining",
             Self::Fenced => "command coordinator fenced authoritative writes",
+            Self::PrimaryFenced => "primary is durably fenced",
             Self::Stopped => "command coordinator has stopped",
         })
     }
@@ -1267,6 +1307,29 @@ pub struct CommandExecutionCapacityPermit {
 }
 
 impl CommandExecutionCapacityPermit {
+    fn begin_submission(&self) -> Result<ActiveSubmission, CommandExecutionAdmissionError> {
+        let mut submission = self
+            .submission_gate
+            .begin()
+            .ok_or_else(|| command_lifecycle_error(&self.lifecycle))?;
+        ensure_command_accepting(&self.lifecycle)?;
+        submission._primary =
+            Some(
+                self.submission_gate
+                    .primary
+                    .begin()
+                    .map_err(|refusal| match refusal {
+                        PrimaryAdmissionRefusal::Draining => {
+                            CommandExecutionAdmissionError::Draining
+                        }
+                        PrimaryAdmissionRefusal::Fenced => {
+                            CommandExecutionAdmissionError::PrimaryFenced
+                        }
+                    })?,
+            );
+        Ok(submission)
+    }
+
     /// Attaches a pre-admitted retained-byte permit acquired for `units`.
     ///
     /// Service admission acquires retained bytes before authorization; submit
@@ -1285,11 +1348,7 @@ impl CommandExecutionCapacityPermit {
         mut self,
         preparation: CommandExecutionPreparation,
     ) -> Result<CommandExecutionReceipt, CommandExecutionAdmissionError> {
-        let submission = self
-            .submission_gate
-            .begin()
-            .ok_or_else(|| command_lifecycle_error(&self.lifecycle))?;
-        ensure_command_accepting(&self.lifecycle)?;
+        let submission = self.begin_submission()?;
         let retained_byte_permit =
             self.take_retained_byte_permit(preparation.queued_byte_units())?;
         let (completion, receiver) = oneshot::channel();
@@ -1319,11 +1378,7 @@ impl CommandExecutionCapacityPermit {
         mut self,
         preparation: ReadOnlyExecutionPreparation,
     ) -> Result<ReadOnlyExecutionReceipt, CommandExecutionAdmissionError> {
-        let submission = self
-            .submission_gate
-            .begin()
-            .ok_or_else(|| command_lifecycle_error(&self.lifecycle))?;
-        ensure_command_accepting(&self.lifecycle)?;
+        let submission = self.begin_submission()?;
         let retained_byte_permit =
             self.take_retained_byte_permit(preparation.queued_byte_units())?;
         let (completion, receiver) = oneshot::channel();
@@ -1616,7 +1671,9 @@ impl RunningCommandCoordinator {
             + ReactiveModuleAdministrationRepository
             + CapabilityAdministrationTransactionPort
             + ReplicationAdministrationTransactionPort
+            + PrimaryFenceTransactionPort
             + ReplicationRegistrationMaintenancePort
+            + ReplicationPrimaryAdmissionReadPort
             + CapabilityBootstrapAdministrationRepository
             + Send
             + 'static,
@@ -1670,7 +1727,9 @@ impl RunningCommandCoordinator {
             + ReactiveModuleAdministrationRepository
             + CapabilityAdministrationTransactionPort
             + ReplicationAdministrationTransactionPort
+            + PrimaryFenceTransactionPort
             + ReplicationRegistrationMaintenancePort
+            + ReplicationPrimaryAdmissionReadPort
             + CapabilityBootstrapAdministrationRepository
             + Clone
             + Send
@@ -1731,7 +1790,9 @@ impl RunningCommandCoordinator {
             + ReactiveModuleAdministrationRepository
             + CapabilityAdministrationTransactionPort
             + ReplicationAdministrationTransactionPort
+            + PrimaryFenceTransactionPort
             + ReplicationRegistrationMaintenancePort
+            + ReplicationPrimaryAdmissionReadPort
             + CapabilityBootstrapAdministrationRepository
             + Send
             + 'static,
@@ -1780,15 +1841,20 @@ impl RunningCommandCoordinator {
             + ReactiveModuleAdministrationRepository
             + CapabilityAdministrationTransactionPort
             + ReplicationAdministrationTransactionPort
+            + PrimaryFenceTransactionPort
             + ReplicationRegistrationMaintenancePort
+            + ReplicationPrimaryAdmissionReadPort
             + CapabilityBootstrapAdministrationRepository
             + Send
             + 'static,
     {
+        let primary = PrimaryAdmissionGate::from_repository(&repository)
+            .map_err(|_| CoordinatorStartError::PrimaryAdmissionUnavailable)?;
         let operations_telemetry = Arc::clone(&telemetry);
         Self::spawn_with_operations(
             workload_capacity,
             completion_edge_coalescing_enabled(durability),
+            primary,
             notifications,
             telemetry,
             move |lifecycle| {
@@ -1812,6 +1878,7 @@ impl RunningCommandCoordinator {
     fn spawn_with_operations(
         workload_capacity: CoordinatorWorkloadCapacity,
         completion_edge_coalescing_enabled: bool,
+        primary: PrimaryAdmissionGate,
         notifications: Arc<dyn ApplicationCommitNotificationSink>,
         telemetry: Arc<dyn CommitTelemetry>,
         operations: impl FnOnce(ActorLifecyclePublisher) -> Box<dyn CoordinatorActorOperations>,
@@ -1819,6 +1886,7 @@ impl RunningCommandCoordinator {
         Self::spawn_with_operations_and_clock(
             workload_capacity,
             completion_edge_coalescing_enabled,
+            primary,
             notifications,
             telemetry,
             Arc::new(WallCoordinatorMonotonicClock),
@@ -1829,6 +1897,7 @@ impl RunningCommandCoordinator {
     fn spawn_with_operations_and_clock(
         workload_capacity: CoordinatorWorkloadCapacity,
         completion_edge_coalescing_enabled: bool,
+        primary: PrimaryAdmissionGate,
         notifications: Arc<dyn ApplicationCommitNotificationSink>,
         telemetry: Arc<dyn CommitTelemetry>,
         monotonic_clock: Arc<dyn CoordinatorMonotonicClock>,
@@ -1845,7 +1914,7 @@ impl RunningCommandCoordinator {
             .build()
             .map_err(|_| CoordinatorStartError::RuntimeUnavailable)?;
         let lifecycle = Arc::new(AtomicU8::new(LIFECYCLE_ACCEPTING));
-        let submission_gate = Arc::new(SubmissionGate::new());
+        let submission_gate = Arc::new(SubmissionGate::new(primary));
         let retained_byte_capacity = Arc::new(Semaphore::new(
             MAX_QUEUED_COMMAND_BYTES / QUEUED_COMMAND_BYTE_UNIT,
         ));
@@ -1979,6 +2048,7 @@ impl RunningCommandCoordinator {
         Self::spawn_with_operations(
             workload_capacity,
             false,
+            PrimaryAdmissionGate::new(),
             Arc::new(DiscardApplicationCommitNotifications),
             Arc::new(NoopCommitTelemetry),
             move |_| Box::new(AuditOnlyCoordinatorOperations { repository, clock }),
@@ -2005,6 +2075,7 @@ impl RunningCommandCoordinator {
         Self::spawn_with_operations_and_clock(
             workload_capacity,
             false,
+            PrimaryAdmissionGate::new(),
             Arc::new(DiscardApplicationCommitNotifications),
             Arc::new(NoopCommitTelemetry),
             monotonic_clock,
@@ -2026,6 +2097,7 @@ impl RunningCommandCoordinator {
         Self::spawn_with_operations(
             workload_capacity,
             false,
+            PrimaryAdmissionGate::new(),
             Arc::new(DiscardApplicationCommitNotifications),
             telemetry,
             move |_| Box::new(AuditOnlyCoordinatorOperations { repository, clock }),
@@ -2188,6 +2260,12 @@ enum CoordinatorMessage {
         completion:
             oneshot::Sender<Result<CapabilityCreateExecutionResult, ControlPlaneExecutionError>>,
     },
+    PrimaryFence {
+        preparation: Box<AuthorizedPrimaryFencePreparation>,
+        pause: DrainedPrimaryPause,
+        completion:
+            oneshot::Sender<Result<PrimaryFenceExecutionResult, ControlPlaneExecutionError>>,
+    },
     ReplicationAdministration {
         preparation: Box<AuthorizedReplicationAdministrationPreparation>,
         completion: oneshot::Sender<
@@ -2257,6 +2335,11 @@ enum PendingCommandPublication {
 }
 
 trait CoordinatorActorOperations: Send {
+    fn fence_primary(
+        &mut self,
+        preparation: AuthorizedPrimaryFencePreparation,
+    ) -> Result<PrimaryFenceExecutionResult, ControlPlaneExecutionError>;
+
     fn maintain_replication(
         &mut self,
     ) -> Result<ReplicationRegistrationMaintenanceResultV1, ControlPlaneExecutionError>;
@@ -2388,6 +2471,7 @@ where
         + ReactiveModuleAdministrationRepository
         + CapabilityAdministrationTransactionPort
         + ReplicationAdministrationTransactionPort
+        + PrimaryFenceTransactionPort
         + ReplicationRegistrationMaintenancePort
         + CapabilityBootstrapAdministrationRepository
         + Send,
@@ -2549,6 +2633,18 @@ where
         )
     }
 
+    fn fence_primary(
+        &mut self,
+        preparation: AuthorizedPrimaryFencePreparation,
+    ) -> Result<PrimaryFenceExecutionResult, ControlPlaneExecutionError> {
+        drive_primary_fence(
+            &self.repository,
+            self.authorization_clock.as_ref(),
+            &self.lifecycle,
+            preparation,
+        )
+    }
+
     fn administer_replication(
         &mut self,
         preparation: AuthorizedReplicationAdministrationPreparation,
@@ -2677,6 +2773,13 @@ where
         &mut self,
         _: CapabilityCreatePreparation,
     ) -> Result<CapabilityCreateExecutionResult, ControlPlaneExecutionError> {
+        Err(ControlPlaneExecutionError::coordinator_stopped())
+    }
+
+    fn fence_primary(
+        &mut self,
+        _: AuthorizedPrimaryFencePreparation,
+    ) -> Result<PrimaryFenceExecutionResult, ControlPlaneExecutionError> {
         Err(ControlPlaneExecutionError::coordinator_stopped())
     }
 
@@ -3753,6 +3856,13 @@ impl CommandWriter {
             } => {
                 self.execute_capability_create(*preparation, completion);
             }
+            CoordinatorMessage::PrimaryFence {
+                preparation,
+                pause,
+                completion,
+            } => {
+                self.execute_primary_fence(*preparation, pause, completion);
+            }
             CoordinatorMessage::ReplicationAdministration {
                 preparation,
                 completion,
@@ -4446,6 +4556,9 @@ fn reject_message_fenced(message: CoordinatorMessage) {
         CoordinatorMessage::CapabilityCreate { completion, .. } => {
             let _ = completion.send(Err(ControlPlaneExecutionError::coordinator_fenced()));
         }
+        CoordinatorMessage::PrimaryFence { completion, .. } => {
+            let _ = completion.send(Err(ControlPlaneExecutionError::coordinator_fenced()));
+        }
         CoordinatorMessage::ReplicationAdministration { completion, .. } => {
             let _ = completion.send(Err(ControlPlaneExecutionError::coordinator_fenced()));
         }
@@ -4491,6 +4604,9 @@ fn reject_message_stopped(message: CoordinatorMessage) {
         CoordinatorMessage::CapabilityCreate { completion, .. } => {
             let _ = completion.send(Err(ControlPlaneExecutionError::coordinator_stopped()));
         }
+        CoordinatorMessage::PrimaryFence { completion, .. } => {
+            let _ = completion.send(Err(ControlPlaneExecutionError::coordinator_stopped()));
+        }
         CoordinatorMessage::ReplicationAdministration { completion, .. } => {
             let _ = completion.send(Err(ControlPlaneExecutionError::coordinator_stopped()));
         }
@@ -4529,6 +4645,7 @@ fn command_grouping_class(message: &CoordinatorMessage) -> CommandGroupingClass 
         | CoordinatorMessage::QueryModuleDeployment { .. }
         | CoordinatorMessage::ReactiveModulePublication { .. }
         | CoordinatorMessage::CapabilityCreate { .. }
+        | CoordinatorMessage::PrimaryFence { .. }
         | CoordinatorMessage::ReplicationAdministration { .. }
         | CoordinatorMessage::ReplicationMaintenance { .. }
         | CoordinatorMessage::CapabilityRevoke { .. }
@@ -4603,46 +4720,61 @@ impl Drop for ActorMessagePanicGuard {
     }
 }
 
-struct SubmissionGate(AtomicUsize);
+struct SubmissionGate {
+    state: AtomicUsize,
+    primary: Arc<PrimaryAdmissionGate>,
+}
 
 impl SubmissionGate {
-    const fn new() -> Self {
-        Self(AtomicUsize::new(0))
+    fn new(primary: PrimaryAdmissionGate) -> Self {
+        Self {
+            state: AtomicUsize::new(0),
+            primary: Arc::new(primary),
+        }
     }
 
     fn begin(self: &Arc<Self>) -> Option<ActiveSubmission> {
-        let mut observed = self.0.load(Ordering::Acquire);
+        let mut observed = self.state.load(Ordering::Acquire);
         loop {
             if observed & SUBMISSION_GATE_CLOSED != 0 {
                 return None;
             }
             debug_assert!((observed & SUBMISSION_COUNT_MASK) < u16::MAX.into());
-            match self.0.compare_exchange_weak(
+            match self.state.compare_exchange_weak(
                 observed,
                 observed + 1,
                 Ordering::AcqRel,
                 Ordering::Acquire,
             ) {
-                Ok(_) => return Some(ActiveSubmission(Arc::clone(self))),
+                Ok(_) => {
+                    return Some(ActiveSubmission {
+                        gate: Arc::clone(self),
+                        _primary: None,
+                    });
+                }
                 Err(current) => observed = current,
             }
         }
     }
 
     fn close(&self) {
-        self.0.fetch_or(SUBMISSION_GATE_CLOSED, Ordering::AcqRel);
+        self.state
+            .fetch_or(SUBMISSION_GATE_CLOSED, Ordering::AcqRel);
     }
 
     fn is_closed(&self) -> bool {
-        self.0.load(Ordering::Acquire) & SUBMISSION_GATE_CLOSED != 0
+        self.state.load(Ordering::Acquire) & SUBMISSION_GATE_CLOSED != 0
     }
 }
 
-struct ActiveSubmission(Arc<SubmissionGate>);
+struct ActiveSubmission {
+    gate: Arc<SubmissionGate>,
+    _primary: Option<PrimarySubmission>,
+}
 
 impl Drop for ActiveSubmission {
     fn drop(&mut self) {
-        let prior = self.0.0.fetch_sub(1, Ordering::AcqRel);
+        let prior = self.gate.state.fetch_sub(1, Ordering::AcqRel);
         debug_assert_ne!(prior & SUBMISSION_COUNT_MASK, 0);
     }
 }

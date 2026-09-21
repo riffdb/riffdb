@@ -1,0 +1,34 @@
+syntax = "proto3";
+package riffdb.storage.v1;
+import "riffdb/storage/v1/common.proto";
+import "riffdb/storage/v1/changelog_history_state_v3.proto";
+import "riffdb/storage/v1/service_audit_v3.proto";
+
+// SPEC 13.5: exact primary fence administration evidence, tag 77/revision 1.
+// Storage verifies current authority, registration and ancestry under the barrier.
+message StoredPrimaryFenceAdministrationV1 {
+  uint64 administration_sequence = 1;
+  TimestampV1 timestamp = 2;
+  bytes operation_id = 3;
+  bytes request_id = 4;
+  AuditPrincipalV1 principal = 5;
+  optional string approval_id = 6;
+  ReplicationFollowerAuditTargetV3 target = 7;
+  uint64 registration_generation = 8;
+  StoredChangelogHistoryStateV3.Position observed = 9;
+}
+
+// Required SourceOnly metadata in catalog V2, tag 76/revision 1. Absence or
+// an unset state is corruption, never implicit Active. Fenced embeds its exact
+// administration value; the owner cross-checks its separately retained receipt.
+message ReplicationPrimaryAdmissionV1 {
+  message Active {
+    bytes database_id = 1;
+    uint64 history_incarnation = 2;
+    uint64 leadership_epoch = 3;
+  }
+  oneof state {
+    Active active = 1;
+    StoredPrimaryFenceAdministrationV1 fenced = 2;
+  }
+}

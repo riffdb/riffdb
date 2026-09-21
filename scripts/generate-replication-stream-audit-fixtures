@@ -1,0 +1,21 @@
+#!/usr/bin/env bash
+set -euo pipefail
+cd "$(git rev-parse --show-toplevel)"
+case "${1:-}" in
+    ""|--check) ;;
+    *) printf 'usage: %s [--check]\n' "$0" >&2; exit 2 ;;
+esac
+if [[ "$#" -gt 1 ]]; then
+    printf 'usage: %s [--check]\n' "$0" >&2; exit 2
+fi
+fixture=fixtures/replication/stream-audit-v1.hex
+output="$(mktemp)"
+trap 'rm -f "$output"' EXIT
+RIFFDB_REPLICATION_STREAM_AUDIT_VECTOR_OUTPUT="$output" cargo test --quiet --locked \
+    -p riffdb-storage-api --test replication_stream_audit \
+    stream_audit_vectors_keep_existing_target_generation_selection -- --exact
+if [[ "${1:-}" == --check ]]; then
+    diff -u "$fixture" "$output"
+else
+    cp "$output" "$fixture"
+fi

@@ -29,7 +29,7 @@ mod tests {
         use riffdb_storage_api::{
             ChangelogLineageV3, LeadershipEpochV1, ReplicationSourceHoldIdV1,
         };
-        let (path, mut ports) = operational("bootstrap-projection-rebuild");
+        let (path, mut ports) = operational_fixture("bootstrap-projection-rebuild", true);
         for n in 1..=2 {
             seed_command(&ports, CommitSequence::new(n).unwrap(), 0);
         }
@@ -455,7 +455,7 @@ contract ProjectionEvaluation version 1 {
             ChangelogLineageV3, LeadershipEpochV1, ReplicationSourceHoldIdV1,
         };
         let fixture = evaluator_fixture();
-        let (path, mut ports) = operational("bootstrap-projection-events");
+        let (path, mut ports) = operational_fixture("bootstrap-projection-events", true);
         let generation = ProjectionGeneration::first();
         let initial = StoredProjectionControlV1::new(
             fixture.schema.identity().clone(),

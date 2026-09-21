@@ -1,9 +1,72 @@
 # WP-748 lifecycle, health and expiry verification
 
-Package: WP-748. Tier: guarantee. Status: lifecycle full validation passed;
-public operator increment full validation passed; fixture review accepted;
-WP-748 remains open. Benchmark qualification remains paused at the maintainer's
-request; this report makes no performance-qualification claim.
+Package: WP-748. Tier: guarantee. Status: earlier registration/retirement
+increments qualified; promotion integration checkpoint verified locally;
+WP-748 remains open. Promotion correctness resumed independently of the closed
+WP-749 tail investigation. This report makes no performance-qualification claim.
+
+## Promotion integration and recovery guard
+
+The saved approved promotion implementation is integrated onto main revision
+`395e2b693` without its private benchmark evidence or compact-prefix experiments.
+The already accepted V2 complete-startup and revised establishment-only stream
+amendments are restored in an authority-only commit. Main's Rust 1.98.1 and
+process/request defect scoping remain in force.
+
+A regression test reproduced an ordinary-startup hole: a terminal failed attempt
+retained its immutable selection but passed maintenance reconciliation. The
+repair keeps every selected attempt fenced until this exclusive owner has
+completely reconciled an exact successful retry. That proof covers only terminal
+attempts with the same request and selection. A fresh owner must validate again;
+removing the successful receipt or adding another operation's failed selection
+refuses. Denial before selection retains ordinary-open behavior.
+
+The 40 storage promotion tests pass, including both process-crash campaigns.
+The integrated workspace builds with all targets and features. The first scoped
+suite ran 4,263 tests: 4,253 passed, six failed and four timed out. Five failures
+exposed integration-generated fixture errors: a wrongly shifted V1 catalog
+generator index and a missing primary-fenced error-registry row. Regeneration
+restores the frozen V1 bytes; all 111 prior readable registry entries retain
+their exact identities and bounds. Only the four approved fencing/promotion
+records are added. Stale compact-prefix generator entries were removed.
+
+The remaining failure was a follower readiness timeout. All ten unsuccessful
+tests passed in a focused, serial rerun of 765 tests. The two daemon crash
+campaigns finished in 38.1 and 34.2 seconds against unchanged 120-second limits.
+Nextest now reserves the runner for follower lifecycle and promotion crash
+campaigns; no readiness deadline, crash schedule or assertion was relaxed.
+All 19 non-test acceptance steps pass, including scoped all-feature Clippy and
+all 30 generators, handbook, dependencies and governance. A fresh full CI run remains required
+before merge. The checkpoint makes no package completion or merge claim.
+
+Generated client changes propagate through application locks, adapter and
+portability fixtures, and driver manifests. Their regeneration is a fixture
+refresh, not a new external-consumer or performance qualification result.
+
+Remaining work: restricted pre-cutover startup that exposes only a freshly
+authorized exact-operation retry; whole-operation custody and failure/cancellation
+proofs; under-load zero/nonzero-RPO drills; final CI and fixture review. The
+passing lifecycle path is preserved rather than consolidated. Follower-derived
+projection generation and lifecycle belong to the follower under ADR-0248.
+
+### Integration PR note
+
+- **Package / Tier:** WP-748 / guarantee; accepted fencing, complete V2 startup
+  and revised establishment-only stream-audit amendments.
+- **Behavior:** recover the approved live TLS promotion and committed restart
+  path; keep failed or denied selected attempts fenced until exact successful
+  reconciliation under the current owner.
+- **Checks:** workspace all-target/all-feature build, scoped all-feature Clippy,
+  40 focused storage promotion tests, 765 repair/recovery tests and all 19
+  non-test acceptance steps; the initial scoped run and its failures are
+  disclosed above.
+- **Compatibility:** no pre-existing durable identity or V1 bound changed; no
+  compact-prefix format is activated. Public fixture review and full CI precede
+  merge.
+- **Updated handbook:** follower administration, configuration, compatibility,
+  backup/restore, remote ingress, errors and known limitations.
+- **Hazards and follow-ups:** restricted pre-cutover retry hosting, operation
+  custody/failure proofs and under-load zero/nonzero-RPO qualification remain.
 
 ## Implemented behavior
 

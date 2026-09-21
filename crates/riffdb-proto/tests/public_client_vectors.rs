@@ -69,6 +69,12 @@ fn every_client_vector_passes_its_strict_public_boundary() {
             "riffdb.v1.RegisterFollowerResponse" => decode::<v1::RegisterFollowerResponse>(&bytes),
             "riffdb.v1.RetireFollowerRequest" => decode::<v1::RetireFollowerRequest>(&bytes),
             "riffdb.v1.RetireFollowerResponse" => decode::<v1::RetireFollowerResponse>(&bytes),
+            "riffdb.v1.FenceReplicationPrimaryRequest" => {
+                decode::<v1::FenceReplicationPrimaryRequest>(&bytes)
+            }
+            "riffdb.v1.FenceReplicationPrimaryResponse" => {
+                decode::<v1::FenceReplicationPrimaryResponse>(&bytes)
+            }
             "riffdb.v1.ValidateContractRequest" => decode::<v1::ValidateContractRequest>(&bytes),
             "riffdb.v1.ValidateContractResponse" => decode::<v1::ValidateContractResponse>(&bytes),
             "riffdb.v1.ExplainCommandRequest" => decode::<v1::ExplainCommandRequest>(&bytes),
@@ -163,8 +169,8 @@ fn every_client_vector_passes_its_strict_public_boundary() {
         }
         count += 1;
     }
-    assert_eq!(count, 166);
-    assert_eq!(rpcs.len(), 29);
+    assert_eq!(count, 174);
+    assert_eq!(rpcs.len(), 30);
     assert_eq!(request_rpcs, rpcs);
     assert_eq!(visible_rpcs, rpcs);
 }
@@ -429,6 +435,26 @@ fn descriptor_delta() -> (BTreeSet<String>, BTreeSet<String>) {
 
 fn expected_enum_values() -> BTreeSet<String> {
     let mut values = [
+        (
+            "riffdb.v1.PrimaryFenceRefusal",
+            0,
+            "PRIMARY_FENCE_REFUSAL_UNSPECIFIED",
+        ),
+        (
+            "riffdb.v1.PrimaryFenceRefusal",
+            1,
+            "PRIMARY_FENCE_REFUSAL_LINEAGE_MISMATCH",
+        ),
+        (
+            "riffdb.v1.PrimaryFenceRefusal",
+            2,
+            "PRIMARY_FENCE_REFUSAL_REGISTRATION_MISSING_OR_STALE",
+        ),
+        (
+            "riffdb.v1.PrimaryFenceRefusal",
+            3,
+            "PRIMARY_FENCE_REFUSAL_FENCE_CONFLICT",
+        ),
         (
             "riffdb.v1.FollowerAdministrationRefusal",
             0,
@@ -823,6 +849,11 @@ fn expected_enum_values() -> BTreeSet<String> {
             "riffdb.v1.CapabilityPermissionKind",
             33,
             "CAPABILITY_PERMISSION_KIND_REPLICATE_CHANGELOG",
+        ),
+        (
+            "riffdb.v1.CapabilityPermissionKind",
+            34,
+            "CAPABILITY_PERMISSION_KIND_FENCE_REPLICATION_PRIMARY",
         ),
         // Inherited-base completeness repair, not a WP-596 enum addition:
         // bac8c0db added this enum and its generated fixture rows before the
@@ -1558,6 +1589,11 @@ fn expected_enum_values() -> BTreeSet<String> {
             "PUBLIC_ERROR_KIND_FOLLOWER_MODE",
         ),
         (
+            "riffdb.v1.PublicErrorKind",
+            14,
+            "PUBLIC_ERROR_KIND_PRIMARY_FENCED",
+        ),
+        (
             "riffdb.v1.ResourceDiscoveryKind",
             0,
             "RESOURCE_DISCOVERY_KIND_UNSPECIFIED",
@@ -2205,7 +2241,7 @@ fn assert_unspecified_enum_rejected(enumeration: &str, message_type: &str, bytes
 #[test]
 fn wp137_enum_optional_and_page_registry_is_complete() {
     let (vectors, registry) = fixture_sections();
-    assert_eq!(vectors.len(), 166);
+    assert_eq!(vectors.len(), 174);
 
     let expected_enums = expected_enum_values();
     let expected_optionals = expected_optional_registry();

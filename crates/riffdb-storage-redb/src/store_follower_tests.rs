@@ -17,7 +17,7 @@ fn fixture(path: &Path) -> ChangelogHistoryStateV3 {
     let mut store = RedbStore::open(path).unwrap();
     let database_id =
         DatabaseId::from_unix_milliseconds_and_random(1_700_000_000_000, [0x76; 10]).unwrap();
-    store.initialize_database(database_id).unwrap();
+    store.initialize_legacy_fixture(database_id).unwrap();
     let history = crate::changelog_v3_activation::activate_validated(
         store.shared.database.begin_write().unwrap(),
         ChangelogLineageV3::new(database_id, 1, LeadershipEpochV1::initial()).unwrap(),

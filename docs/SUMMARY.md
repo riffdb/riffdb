@@ -110,6 +110,8 @@
   - [WP-746 Verification Report](architecture/WP-746-VERIFICATION.md)
   - [WP-747 Verification Report](architecture/WP-747-VERIFICATION.md)
   - [WP-748 Lifecycle Verification](architecture/WP-748-LIFECYCLE-VERIFICATION.md)
+    - [V2 complete startup amendment](architecture/WP-748-CLEAN-START-REVIEW.md)
+    - [Replication stream audit amendment](architecture/WP-748-REPLICATION-STREAM-AUDIT-REVIEW.md)
   - [WP-748 Public Lifecycle Fixture Review](architecture/WP-748-PUBLIC-LIFECYCLE-REVIEW.md)
   - [WP-746 Scope Review](architecture/WP-746-SCOPE-REVIEW.md)
   - [WP-746 Follower Lifecycle Review](architecture/WP-746-FOLLOWER-LIFECYCLE-REVIEW.md)

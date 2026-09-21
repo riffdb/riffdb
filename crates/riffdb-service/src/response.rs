@@ -695,6 +695,25 @@ impl ServiceResponseCharge for crate::FollowerAdministrationResult {
         fixed_charge(4)
     }
 }
+impl sealed::Sealed for crate::FenceReplicationPrimaryResult {}
+impl ServiceResponseCharge for crate::FenceReplicationPrimaryResult {
+    fn service_response_charge_v1(
+        &self,
+    ) -> Result<ServiceResponseChargeV1, ServiceResponseChargeOverflow> {
+        // Conservatively cover all nested target, identity and frontier fields.
+        fixed_charge(16)
+    }
+}
+
+impl sealed::Sealed for crate::PromoteFollowerResult {}
+impl ServiceResponseCharge for crate::PromoteFollowerResult {
+    fn service_response_charge_v1(
+        &self,
+    ) -> Result<ServiceResponseChargeV1, ServiceResponseChargeOverflow> {
+        // Covers all fixed-width nested target, operation and frontier fields.
+        fixed_charge(20)
+    }
+}
 
 fn apply_type_local_charge_limit(
     charge: ServiceResponseChargeV1,

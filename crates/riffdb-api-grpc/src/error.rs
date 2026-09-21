@@ -110,6 +110,7 @@ pub const fn application_grpc_code(code: ApplicationErrorCode) -> Code {
         | ApplicationErrorCode::CommandExecutionFailed
         | ApplicationErrorCode::HistoryIncarnationMismatch
         | ApplicationErrorCode::FollowerMode
+        | ApplicationErrorCode::PrimaryFenced
         | ApplicationErrorCode::HistoryPruned
         | ApplicationErrorCode::ProjectionDiverged
         | ApplicationErrorCode::SnapshotRetired
@@ -301,6 +302,7 @@ mod tests {
             PublicErrorKind::HistoryPruned,
             PublicErrorKind::Overloaded,
             PublicErrorKind::FollowerMode,
+            PublicErrorKind::PrimaryFenced,
         ];
         for kind in kinds {
             let error = match kind {
@@ -333,6 +335,7 @@ mod tests {
                 PublicErrorKind::HistoryPruned => PublicError::history_pruned(),
                 PublicErrorKind::Overloaded => PublicError::overloaded(),
                 PublicErrorKind::FollowerMode => PublicError::follower_mode(),
+                PublicErrorKind::PrimaryFenced => PublicError::primary_fenced(),
             };
             assert_eq!(error.kind(), kind);
             let status = status_from_public_error(&error);

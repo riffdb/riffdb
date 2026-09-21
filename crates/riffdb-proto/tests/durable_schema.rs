@@ -232,6 +232,15 @@ fn storage_source_import_and_type_inventory_is_exact() {
         imports,
         BTreeMap::from([
             (
+                "riffdb/storage/v1/promotion_administration_v1.proto".to_owned(),
+                vec![
+                    "riffdb/storage/v1/common.proto",
+                    "riffdb/storage/v1/audit.proto",
+                    "riffdb/storage/v1/primary_fence_v1.proto",
+                    "riffdb/storage/v1/changelog_history_state_v3.proto",
+                ],
+            ),
+            (
                 "riffdb/storage/v1/replication_source_hold_v2.proto".to_owned(),
                 vec![
                     "riffdb/storage/v1/replication_source_hold_v1.proto",
@@ -326,6 +335,18 @@ fn storage_source_import_and_type_inventory_is_exact() {
             (
                 "riffdb/storage/v1/authoritative_state_catalog_v1.proto".to_owned(),
                 vec![]
+            ),
+            (
+                "riffdb/storage/v1/authoritative_state_catalog_v2.proto".to_owned(),
+                vec![]
+            ),
+            (
+                "riffdb/storage/v1/primary_fence_v1.proto".to_owned(),
+                vec![
+                    "riffdb/storage/v1/common.proto",
+                    "riffdb/storage/v1/changelog_history_state_v3.proto",
+                    "riffdb/storage/v1/service_audit_v3.proto"
+                ]
             ),
             (
                 "riffdb/storage/v1/leadership_epoch_v1.proto".to_owned(),
@@ -569,7 +590,7 @@ fn storage_source_import_and_type_inventory_is_exact() {
             .iter()
             .map(|file| file.message_type.len())
             .sum::<usize>(),
-        205,
+        209,
         "exact top-level semantic messages, StoredEnvelope and registry support"
     );
     assert_eq!(
@@ -598,9 +619,9 @@ fn storage_source_import_and_type_inventory_is_exact() {
 
 #[test]
 fn closed_registry_order_and_schema_hashes_are_exactly_derived() {
-    assert_eq!(CURRENT_RECORD_SCHEMA_COUNT, 88);
-    assert_eq!(READABLE_RECORD_SCHEMA_COUNT, 111);
-    assert_eq!(WRITABLE_RECORD_SCHEMA_COUNT, 88);
+    assert_eq!(CURRENT_RECORD_SCHEMA_COUNT, 92);
+    assert_eq!(READABLE_RECORD_SCHEMA_COUNT, 115);
+    assert_eq!(WRITABLE_RECORD_SCHEMA_COUNT, 92);
     assert_eq!(
         CURRENT_RECORD_SCHEMAS
             .iter()
@@ -700,6 +721,10 @@ fn closed_registry_order_and_schema_hashes_are_exactly_derived() {
     readable_names.push("riffdb.storage.v1.StoredApplicationExportPageCommitmentV1".to_owned());
     readable_names.push("riffdb.storage.v1.ServiceAuditRecordV3".to_owned());
     readable_names.push("riffdb.storage.v1.StoredReplicationAdministrationV1".to_owned());
+    readable_names.push("riffdb.storage.v1.StoredAuthoritativeStateCatalogV2".to_owned());
+    readable_names.push("riffdb.storage.v1.ReplicationPrimaryAdmissionV1".to_owned());
+    readable_names.push("riffdb.storage.v1.StoredPrimaryFenceAdministrationV1".to_owned());
+    readable_names.push("riffdb.storage.v1.StoredPromotionAdministrationV1".to_owned());
     readable_names.push("riffdb.storage.v1.CapabilityRecordV1".to_owned());
     readable_names.push("riffdb.storage.v1.CapabilityRecordV1".to_owned());
     readable_names.push("riffdb.storage.v1.CapabilityTokenLookupV1".to_owned());
@@ -780,6 +805,10 @@ fn closed_registry_order_and_schema_hashes_are_exactly_derived() {
     writable_names.push("riffdb.storage.v1.StoredApplicationExportPageCommitmentV1".to_owned());
     writable_names.push("riffdb.storage.v1.ServiceAuditRecordV3".to_owned());
     writable_names.push("riffdb.storage.v1.StoredReplicationAdministrationV1".to_owned());
+    writable_names.push("riffdb.storage.v1.StoredAuthoritativeStateCatalogV2".to_owned());
+    writable_names.push("riffdb.storage.v1.ReplicationPrimaryAdmissionV1".to_owned());
+    writable_names.push("riffdb.storage.v1.StoredPrimaryFenceAdministrationV1".to_owned());
+    writable_names.push("riffdb.storage.v1.StoredPromotionAdministrationV1".to_owned());
     assert_eq!(
         READABLE_RECORD_SCHEMAS
             .iter()
@@ -862,8 +891,8 @@ fn closed_registry_order_and_schema_hashes_are_exactly_derived() {
             .map(|schema| schema.max_payload_bytes())
             .collect::<BTreeSet<_>>()
             .len(),
-        21,
-        "five semantic classes plus sixteen FQN-specific absolute maxima"
+        23,
+        "five semantic classes plus eighteen FQN-specific absolute maxima"
     );
 
     let v1 = "riffdb.storage.v1.StoredIndexEntryV1";
@@ -1143,8 +1172,8 @@ fn columnar_control_v1_freezes_numeric_registry_and_bounds() {
 #[test]
 fn generated_registry_fixtures_freeze_exact_membership_and_hashes() {
     let legacy = registry_fixture_entries(LEGACY_REGISTRY_FIXTURE, 26);
-    let readable = registry_fixture_entries(READABLE_REGISTRY_FIXTURE, 111);
-    let writable = registry_fixture_entries(WRITABLE_REGISTRY_FIXTURE, 88);
+    let readable = registry_fixture_entries(READABLE_REGISTRY_FIXTURE, 115);
+    let writable = registry_fixture_entries(WRITABLE_REGISTRY_FIXTURE, 92);
 
     assert_eq!(legacy, readable[..legacy.len()]);
     assert_eq!(
@@ -1523,6 +1552,8 @@ fn semantic_optional_wire_presence_is_exact() {
         "StoredIndexGenerationTransitionV1.prior_generation",
         "StoredProjectionControlV1.published_apply_mode",
         "StoredQueryModuleAdministrationV1.approval_id",
+        "StoredPrimaryFenceAdministrationV1.approval_id",
+        "StoredPromotionAdministrationV1.approval_id",
         "StoredEventConsumerV1.checkpoint",
         "StoredEntityChainStateV1.entity_version",
         "StoredReactiveModuleAdministrationV1.approval_id",
@@ -1591,6 +1622,10 @@ fn closed_oneof_and_enum_registries_are_exact() {
             (
                 "riffdb.storage.v1.StoredReplicationFollowerStateV3.state".to_owned(),
                 vec![("detached", 1), ("attached", 2)],
+            ),
+            (
+                "riffdb.storage.v1.ReplicationPrimaryAdmissionV1.state".to_owned(),
+                vec![("active", 1), ("fenced", 2)],
             ),
             (
                 "riffdb.storage.v1.CapabilityLifecycleV1.state".to_owned(),

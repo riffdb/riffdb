@@ -43,12 +43,21 @@ mod archive_reconciliation;
 mod archive_receipts;
 use archive_receipts::{archive_receipt_file_name, read_archive_receipt_file};
 
+#[path = "promotion_cutover_store.rs"]
+mod promotion_cutover;
+#[path = "promotion_reconciliation.rs"]
+mod promotion_reconciliation;
+pub(crate) use promotion_reconciliation::PromotionValidationBinding;
+#[path = "promotion_receipt_store.rs"]
+mod promotion_receipts;
+
 const MAINTENANCE_DIRECTORY_NAME: &str = ".maintenance";
 const OWNERSHIP_LOCK_FILE_NAME: &str = "owner.lock";
 const RECEIPTS_DIRECTORY_NAME: &str = "receipts";
 const STAGED_DIRECTORY_NAME: &str = "staged";
 const RETIRED_DIRECTORY_NAME: &str = "retired";
 const MIGRATIONS_DIRECTORY_NAME: &str = "migrations";
+const PROMOTIONS_DIRECTORY_NAME: &str = "replication_promotion";
 const MIGRATION_CANDIDATE_FILE_NAME: &str = "candidate.bundle";
 const MIGRATION_BUNDLE_FILE_NAME: &str = "migration.bundle";
 const MIGRATION_RECEIPT_FILE_NAME: &str = "receipt-v1";
@@ -263,6 +272,8 @@ pub struct RedbMaintenanceStorage {
     staged_directory_guard: PinnedDirectory,
     retired_directory_guard: PinnedDirectory,
     migrations_directory_guard: PinnedDirectory,
+    promotion_directory_guard: Option<PinnedDirectory>,
+    reconciled_promotion: Option<promotion_reconciliation::ReconciledPromotionReceipt>,
     ownership_lock_path: PathBuf,
     ownership_lock: File,
     test_controller: Option<RedbMaintenanceTestController>,
@@ -338,6 +349,26 @@ impl RedbMaintenanceStorage {
         backup_root: &Path,
         test_controller: Option<RedbMaintenanceTestController>,
     ) -> Result<(Self, RedbMaintenanceReconciliation), StorageError> {
+        let mut storage = Self::acquire_owner(database_file, backup_root, test_controller)?;
+        let reconciliation = storage.reconcile_for_startup()?;
+        Ok((storage, reconciliation))
+    }
+
+    /// Completes the same whole-owner reconciliation as ordinary open without
+    /// releasing its lock. Promotion recovery must first establish its exact
+    /// successful join; this method cannot waive unresolved promotion evidence.
+    pub fn reconcile_for_startup(&mut self) -> Result<RedbMaintenanceReconciliation, StorageError> {
+        self.verify_path_ownership()?;
+        let migration_receipts = self.validate_migration_inventory()?;
+        self.reconcile()?
+            .with_migration_receipts(migration_receipts)
+    }
+
+    fn acquire_owner(
+        database_file: &Path,
+        backup_root: &Path,
+        test_controller: Option<RedbMaintenanceTestController>,
+    ) -> Result<Self, StorageError> {
         let database_file = resolve_database_file(database_file)?;
         validate_configured_paths(&database_file, backup_root)?;
         create_checked_directory(backup_root)?;
@@ -367,9 +398,11 @@ impl RedbMaintenanceStorage {
         let staged_directory_guard = PinnedDirectory::open(&staged_directory)?;
         let retired_directory_guard = PinnedDirectory::open(&retired_directory)?;
         let migrations_directory_guard = PinnedDirectory::open(&migrations_directory)?;
+        let promotion_directory_guard =
+            maintenance_directory_guard.child_directory(OsStr::new(PROMOTIONS_DIRECTORY_NAME))?;
         validate_reserved_inventory(&maintenance_directory)?;
 
-        let mut storage = Self {
+        let storage = Self {
             database_file,
             backup_root: backup_root.to_path_buf(),
             receipts_directory,
@@ -383,18 +416,22 @@ impl RedbMaintenanceStorage {
             staged_directory_guard,
             retired_directory_guard,
             migrations_directory_guard,
+            promotion_directory_guard,
+            reconciled_promotion: None,
             ownership_lock_path,
             ownership_lock,
             test_controller,
         };
-        storage.verify_path_ownership()?;
-        let migration_receipts = storage.validate_migration_inventory()?;
-        let reconciliation = storage.reconcile()?;
-        let reconciliation = reconciliation.with_migration_receipts(migration_receipts)?;
-        Ok((storage, reconciliation))
+        storage.verify_path_custody()?;
+        Ok(storage)
     }
 
     fn verify_path_ownership(&self) -> Result<(), StorageError> {
+        self.verify_path_custody()?;
+        self.require_no_unreconciled_promotion()
+    }
+
+    fn verify_path_custody(&self) -> Result<(), StorageError> {
         self.database_parent_guard.verify()?;
         self.backup_root_guard.verify()?;
         self.maintenance_directory_guard.verify()?;
@@ -402,6 +439,17 @@ impl RedbMaintenanceStorage {
         self.staged_directory_guard.verify()?;
         self.retired_directory_guard.verify()?;
         self.migrations_directory_guard.verify()?;
+        match &self.promotion_directory_guard {
+            Some(directory) => directory.verify_private()?,
+            None if self
+                .maintenance_directory_guard
+                .child_directory(OsStr::new(PROMOTIONS_DIRECTORY_NAME))?
+                .is_some() =>
+            {
+                return Err(corrupt());
+            }
+            None => {}
+        }
         verify_regular_file_path(&self.ownership_lock, &self.ownership_lock_path)
     }
 
@@ -2191,6 +2239,7 @@ fn validate_reserved_inventory(maintenance_directory: &Path) -> Result<(), Stora
                     | STAGED_DIRECTORY_NAME
                     | RETIRED_DIRECTORY_NAME
                     | MIGRATIONS_DIRECTORY_NAME
+                    | PROMOTIONS_DIRECTORY_NAME
             )
         ) {
             file_type.is_dir()
@@ -2209,6 +2258,9 @@ fn validate_reserved_inventory(maintenance_directory: &Path) -> Result<(), Stora
         OsStr::new(RETIRED_DIRECTORY_NAME).to_os_string(),
         OsStr::new(MIGRATIONS_DIRECTORY_NAME).to_os_string(),
     ]);
+    // Older stores have no promotion ledger. Create it only when the explicit
+    // promotion owner first persists an attempt; ordinary opens stay unchanged.
+    names.remove(OsStr::new(PROMOTIONS_DIRECTORY_NAME));
     if names != expected {
         return Err(corrupt());
     }
@@ -2630,6 +2682,11 @@ fn retire_receipt_file_name(operation_id: OfflineMaintenanceOperationId) -> Stri
 }
 
 fn parse_operation_id(value: &str) -> Option<OfflineMaintenanceOperationId> {
+    let operation_id = OfflineMaintenanceOperationId::from_bytes(parse_uuid_bytes(value)?).ok()?;
+    (operation_id.to_string() == value).then_some(operation_id)
+}
+
+fn parse_uuid_bytes(value: &str) -> Option<[u8; 16]> {
     if value.len() != 36 {
         return None;
     }
@@ -2655,8 +2712,7 @@ fn parse_operation_id(value: &str) -> Option<OfflineMaintenanceOperationId> {
         output += 1;
         index += 2;
     }
-    let operation_id = OfflineMaintenanceOperationId::from_bytes(decoded).ok()?;
-    (operation_id.to_string() == value).then_some(operation_id)
+    Some(decoded)
 }
 
 fn parse_contract_migration_operation_id(value: &str) -> Option<ContractMigrationOperationId> {

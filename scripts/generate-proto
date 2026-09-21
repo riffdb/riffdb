@@ -55,6 +55,14 @@ generate_command_prefix_vectors() {
             proto_codec::tests::command_prefix::command_prefix_successor_wire_vectors_are_exact -- --exact
 }
 
+generate_promotion_administration_vectors() {
+    mkdir -p "$output_root/fixtures/replication"
+    LC_ALL=C TZ=UTC \
+        RIFFDB_PROMOTION_ADMINISTRATION_VECTOR_OUTPUT="$output_root/fixtures/replication/promotion-administration-v1.hex" \
+        cargo test --quiet --locked -p riffdb-storage-api --test replication_promotion_selection \
+            cutover::codec::promotion_administration_vectors_preserve_exact_attempts_and_refuse_old_readers -- --exact
+}
+
 generate
 if [[ "$mode" == "" ]]; then
     # The checked-in Prost types are inputs to public wire-vector generation.
@@ -65,8 +73,22 @@ generate_durable_vectors
 generate_durable_relationship_vectors
 generate_command_prefix_vectors
 generate_replication_administration_vectors
+generate_promotion_administration_vectors
 
 artifacts=(
+    fixtures/replication/promotion-administration-v1.hex
+    fixtures/proto/durable-promotion-administration-v1-schema-hash.bin
+    fixtures/proto/durable-promotion-administration-v1-record-bound.bin
+    crates/riffdb-proto/fixtures/durable-promotion-administration-v1-schema-hash.bin
+    crates/riffdb-proto/fixtures/durable-promotion-administration-v1-record-bound.bin
+    fixtures/proto/durable-replication-primary-admission-v1-schema-hash.bin
+    fixtures/proto/durable-replication-primary-admission-v1-record-bound.bin
+    fixtures/proto/durable-primary-fence-administration-v1-schema-hash.bin
+    fixtures/proto/durable-primary-fence-administration-v1-record-bound.bin
+    crates/riffdb-proto/fixtures/durable-replication-primary-admission-v1-schema-hash.bin
+    crates/riffdb-proto/fixtures/durable-replication-primary-admission-v1-record-bound.bin
+    crates/riffdb-proto/fixtures/durable-primary-fence-administration-v1-schema-hash.bin
+    crates/riffdb-proto/fixtures/durable-primary-fence-administration-v1-record-bound.bin
     fixtures/proto/durable-replication-administration-v1.hex
     fixtures/proto/durable-replication-administration-v1-schema-hash.bin
     fixtures/proto/durable-replication-administration-v1-record-bound.bin
@@ -157,6 +179,10 @@ artifacts=(
     fixtures/proto/durable-changelog-allocator-v3-schema-hash.bin
     crates/riffdb-proto/fixtures/durable-changelog-allocator-v3-record-bound.bin
     crates/riffdb-proto/fixtures/durable-changelog-allocator-v3-schema-hash.bin
+    fixtures/proto/durable-authoritative-state-catalog-v2-record-bound.bin
+    fixtures/proto/durable-authoritative-state-catalog-v2-schema-hash.bin
+    crates/riffdb-proto/fixtures/durable-authoritative-state-catalog-v2-record-bound.bin
+    crates/riffdb-proto/fixtures/durable-authoritative-state-catalog-v2-schema-hash.bin
     fixtures/proto/durable-authoritative-state-catalog-v1-record-bound.bin
     fixtures/proto/durable-authoritative-state-catalog-v1-schema-hash.bin
     crates/riffdb-proto/fixtures/durable-authoritative-state-catalog-v1-record-bound.bin

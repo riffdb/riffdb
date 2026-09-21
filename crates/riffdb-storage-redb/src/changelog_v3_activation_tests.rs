@@ -8,6 +8,9 @@ use riffdb_storage_api::LeadershipEpochV1;
 use riffdb_types::DatabaseId;
 use std::{collections::BTreeMap, path::Path};
 
+#[path = "changelog_v3_catalog_binding_tests.rs"]
+mod catalog_binding;
+
 #[path = "changelog_v3_journal_tests.rs"]
 mod journal_materialization;
 

@@ -113,6 +113,38 @@ impl<S> ServerCurrentPolicyPort<S> {
 }
 
 impl<S: CapabilityReader + Send + Sync> CurrentPolicyPort for ServerCurrentPolicyPort<S> {
+    fn authorize_replication_promotion(
+        &self,
+        principal: &AuthenticatedPrincipal,
+        request: riffdb_auth::ReplicationPromotionRequestV1,
+    ) -> Result<riffdb_policy::ReplicationPromotionDecision, AuthorizationError> {
+        let resolver = CapabilityReaderCurrentResolver::new(&self.storage);
+        CurrentAuthorizer::new(
+            &resolver,
+            &self.clock,
+            self.telemetry.as_ref(),
+            self.database_id,
+            self.environment.clone(),
+        )
+        .authorize_replication_promotion(principal, request)
+    }
+
+    fn authorize_primary_fence(
+        &self,
+        principal: &AuthenticatedPrincipal,
+        request: riffdb_auth::PrimaryFenceRequestV1,
+    ) -> Result<riffdb_policy::PrimaryFenceDecision, AuthorizationError> {
+        let resolver = CapabilityReaderCurrentResolver::new(&self.storage);
+        CurrentAuthorizer::new(
+            &resolver,
+            &self.clock,
+            self.telemetry.as_ref(),
+            self.database_id,
+            self.environment.clone(),
+        )
+        .authorize_primary_fence(principal, request)
+    }
+
     fn authorize_replication_administration(
         &self,
         principal: &AuthenticatedPrincipal,
@@ -435,7 +467,7 @@ mod tests {
     /// the capability's expiry invalidates the retained validity window even
     /// though nothing was published.
     #[test]
-    // req: REP-006
+    // req: REP-005, REP-006
     fn production_capability_view_chain_refuses_reissue_after_revoke_and_after_expiry() {
         use std::num::{NonZeroU16, NonZeroU32, NonZeroU64};
         use std::sync::Arc;
@@ -601,6 +633,30 @@ mod tests {
             Timestamp::new(ISSUED_SECONDS + 10, 0).unwrap()
         );
 
+        let promotion_request = riffdb_auth::ReplicationPromotionRequestV1::new(
+            riffdb_types::ReplicationPromotionOperationId::from_unix_milliseconds_and_random(
+                9, [0x9e; 10],
+            )
+            .unwrap(),
+            riffdb_types::ReplicationFenceOperationId::from_unix_milliseconds_and_random(
+                9, [0x9f; 10],
+            )
+            .unwrap(),
+            lifecycle_request.target(),
+            riffdb_storage_api::ChangelogTransactionSequence::new(1).unwrap(),
+        );
+        let Ok(riffdb_policy::ReplicationPromotionDecision::Allow(preparation)) =
+            port.authorize_replication_promotion(&principal, promotion_request)
+        else {
+            panic!("current global administrator must prepare the exact promotion request");
+        };
+        assert_eq!(preparation.request(), promotion_request);
+        assert_eq!(preparation.principal(), &principal);
+        assert_eq!(
+            preparation.authorized_at(),
+            Timestamp::new(ISSUED_SECONDS + 10, 0).unwrap()
+        );
+
         // Baseline: capture the generation before evaluating, exactly as
         // `begin_invocation` does, then take the full evaluation.
         let baseline = port
@@ -631,6 +687,10 @@ mod tests {
         assert!(matches!(
             port.authorize_replication_administration(&principal, lifecycle_request),
             Ok(riffdb_policy::ReplicationAdministrationDecision::Deny(_))
+        ));
+        assert!(matches!(
+            port.authorize_replication_promotion(&principal, promotion_request),
+            Ok(riffdb_policy::ReplicationPromotionDecision::Deny(_))
         ));
         assert_eq!(
             expired.generation(),
@@ -696,6 +756,10 @@ mod tests {
         assert!(matches!(
             port.authorize_replication_administration(&principal, lifecycle_request),
             Ok(riffdb_policy::ReplicationAdministrationDecision::Deny(_))
+        ));
+        assert!(matches!(
+            port.authorize_replication_promotion(&principal, promotion_request),
+            Ok(riffdb_policy::ReplicationPromotionDecision::Deny(_))
         ));
         assert_ne!(
             after_revoke.generation(),

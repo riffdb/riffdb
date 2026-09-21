@@ -10,7 +10,9 @@ use riffdb_storage_api::{
 use riffdb_types::DualFrontier;
 
 use crate::{
-    changelog_v3::{journal_allocator_assignment, receipt_from_journal},
+    changelog_v3::{
+        journal_allocator_assignment, receipt_from_journal_for_catalog as receipt_from_journal,
+    },
     changelog_v3_activation::HISTORY,
     changelog_v3_roots::{
         read_checkpoint_roots, read_checkpoint_roots_for_write, validate_retained_history,
@@ -67,6 +69,13 @@ pub(crate) fn has_write_recovery_roots(
 fn has_metadata_roots(
     meta: &impl ReadableTable<&'static str, &'static [u8]>,
 ) -> Result<bool, StorageError> {
+    if meta
+        .get(crate::primary_admission_roots::key()?)
+        .map_err(precommit_storage_error)?
+        .is_some()
+    {
+        return Ok(true);
+    }
     if let Some(registry) = meta
         .get(crate::layout::META_RECORD_REGISTRY)
         .map_err(precommit_storage_error)?
@@ -166,8 +175,16 @@ pub(crate) fn plan_recovery(
                     ),
                     prior_history_hash: history.tail().history_hash(),
                 },
+                history.lineage().catalog_digest(),
             )
             .map_err(value_error)?;
+            crate::primary_admission_roots::validate_write_receipt(
+                &transaction
+                    .open_table(crate::layout::META)
+                    .map_err(table_error)?,
+                history,
+                &receipt,
+            )?;
             history = history.advance(&receipt).map_err(value_error)?;
         }
     }
@@ -202,7 +219,8 @@ pub(crate) fn materialize_recovered_frame(
         ),
         prior_history_hash: history.tail().history_hash(),
     };
-    let receipt = receipt_from_journal(frame, binding).map_err(value_error)?;
+    let receipt = receipt_from_journal(frame, binding, history.lineage().catalog_digest())
+        .map_err(value_error)?;
     let advance = PreparedHistoryAdvance::prepare(transaction, &receipt)?;
     let tables = table_inventory(transaction)?;
     // Refuse missing target tables before any write; redb's open_table would
@@ -290,7 +308,8 @@ pub(crate) fn verify_materialized_frame(
             return Err(storage_error(StorageErrorKind::CorruptData));
         }
     }
-    let recovered = receipt_from_journal(frame, binding).map_err(value_error)?;
+    let recovered = receipt_from_journal(frame, binding, history.lineage().catalog_digest())
+        .map_err(value_error)?;
     let original = table
         .get(sequence.get().to_be_bytes().as_slice())
         .map_err(precommit_storage_error)?

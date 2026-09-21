@@ -941,7 +941,7 @@ pub(crate) fn plan_checkpoint_receipt(
         .expected_allocator()
         .allocate_one()
         .map_err(invalid)?;
-    let receipt = AuthoritativeTransactionV3::new(
+    let receipt = AuthoritativeTransactionV3::new_for_catalog(
         AuthoritativeTransactionBindingV3 {
             database_id: history.lineage().database_id(),
             history_incarnation: history.lineage().history_incarnation(),
@@ -953,6 +953,7 @@ pub(crate) fn plan_checkpoint_receipt(
         },
         ChangelogAttributionV3::ValidatedPrefixCheckpoint,
         changes,
+        history.lineage().catalog_digest(),
     )
     .map_err(invalid)?;
     Ok(Some(receipt))

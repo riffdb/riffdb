@@ -42,6 +42,28 @@ use crate::{
 const MAX_CAPABILITY_REVOKE_PREPARATION_ATTEMPTS: usize = 3;
 
 impl AdministrationApplication for RiffDbService {
+    fn fence_replication_primary(
+        &self,
+        context: RequestContext,
+        request: crate::FenceReplicationPrimaryRequest,
+    ) -> ServiceFuture<'_, crate::FenceReplicationPrimaryResult> {
+        let service = Arc::clone(&self.inner);
+        let ingress = context.ingress();
+        self.spawn_operation(
+            ServiceOperationV1::FenceReplicationPrimary,
+            ingress,
+            async move {
+                let request = riffdb_auth::PrimaryFenceRequestV1::new(
+                    context.request_id(),
+                    request.operation_id(),
+                    request.target(),
+                    request.generation(),
+                );
+                crate::primary_fence_operations::execute(service, context, request).await
+            },
+        )
+    }
+
     fn register_follower(
         &self,
         context: RequestContext,
@@ -644,6 +666,11 @@ async fn create_capability_bootstrap(
             .grant()
             .permissions()
             .contains_kind(riffdb_types::CapabilityPermissionKindV1::ReplicateChangelog)
+        || request
+            .requested()
+            .grant()
+            .permissions()
+            .contains_kind(riffdb_types::CapabilityPermissionKindV1::FenceReplicationPrimary)
         || request.requested().environment() != service.identity.environment()
         || matches!(
             request.requested().grant().partition_scope(),
@@ -1384,6 +1411,9 @@ fn bootstrap_admission_failure(
     service: &RiffDbServiceInner,
     error: ControlPlaneExecutionAdmissionError,
 ) -> ServiceFailure {
+    if error == ControlPlaneExecutionAdmissionError::PrimaryFenced {
+        return PublicError::primary_fenced().into();
+    }
     if error == ControlPlaneExecutionAdmissionError::Fenced {
         service
             .providers
@@ -1524,6 +1554,16 @@ async fn finish_control_plane_admission(
     begun: &BegunCapabilityMutation,
     error: ControlPlaneExecutionAdmissionError,
 ) -> ServiceFailure {
+    if error == ControlPlaneExecutionAdmissionError::PrimaryFenced {
+        return finish_mutation_failure(
+            service,
+            context,
+            begun,
+            ServiceAuditPhaseV1::Denied,
+            PublicError::primary_fenced().into(),
+        )
+        .await;
+    }
     if error == ControlPlaneExecutionAdmissionError::Fenced {
         service
             .providers
@@ -1972,3 +2012,7 @@ contract CapabilityKeys version 1 {
         assert!(validate_capability_partition_scope(&successor, &scope).is_ok());
     }
 }
+
+#[cfg(test)]
+#[path = "primary_fenced_capability_tests.rs"]
+mod primary_fenced_capability_tests;

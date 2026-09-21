@@ -11,7 +11,7 @@ use riffdb_storage_api::{
 fn setup(path: &std::path::Path) -> (ChangelogHistoryStateV3, StoredProjectionControlV1) {
     let mut store =
         RedbStore::open_with_commit_profile(path, crate::RedbCommitProfile::Hardened).unwrap();
-    store.initialize_database(database_id()).unwrap();
+    store.initialize_legacy_fixture(database_id()).unwrap();
     let ports = crate::store::RedbDormantPorts {
         pending_v3_activation: None,
         shared: store.shared,

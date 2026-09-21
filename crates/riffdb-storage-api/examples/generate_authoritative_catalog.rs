@@ -3,21 +3,32 @@
 
 use std::{env, fs, path::Path};
 
-use riffdb_storage_api::AuthoritativeStateCatalogV1;
+use riffdb_storage_api::{AuthoritativeStateCatalogV1, AuthoritativeStateCatalogV2};
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let arguments = env::args().skip(1).collect::<Vec<_>>();
     if arguments != ["--check"] && arguments != ["--write"] {
         return Err("usage: generate_authoritative_catalog --check|--write".into());
     }
-    let path = Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("../../fixtures/replication/authoritative-state-catalog-v1.txt");
-    let expected = AuthoritativeStateCatalogV1.canonical_fixture();
-    if arguments == ["--write"] {
-        fs::create_dir_all(path.parent().ok_or("fixture parent missing")?)?;
-        fs::write(path, expected)?;
-    } else if fs::read_to_string(path)? != expected {
-        return Err("authoritative state catalog fixture differs from its owner".into());
+    for (name, expected) in [
+        (
+            "authoritative-state-catalog-v1.txt",
+            AuthoritativeStateCatalogV1.canonical_fixture(),
+        ),
+        (
+            "authoritative-state-catalog-v2.txt",
+            AuthoritativeStateCatalogV2.canonical_fixture(),
+        ),
+    ] {
+        let path = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../fixtures/replication")
+            .join(name);
+        if arguments == ["--write"] {
+            fs::create_dir_all(path.parent().ok_or("fixture parent missing")?)?;
+            fs::write(path, expected)?;
+        } else if fs::read_to_string(path)? != expected {
+            return Err("authoritative state catalog fixture differs from its owner".into());
+        }
     }
     Ok(())
 }

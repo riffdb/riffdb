@@ -46,7 +46,7 @@ pub(crate) fn open(
         return Err(super::corrupt().into());
     }
     drop(verified);
-    validate_inventory(&root)?;
+    validate_inventory(&root, history.lineage().catalog_digest())?;
     Ok(Box::new(StateCursor {
         root,
         view,
@@ -57,7 +57,11 @@ pub(crate) fn open(
     }))
 }
 
-fn validate_inventory(root: &CheckpointRoot) -> Result<(), StorageError> {
+fn validate_inventory(root: &CheckpointRoot, catalog: [u8; 32]) -> Result<(), StorageError> {
+    let v2 = catalog == riffdb_storage_api::AuthoritativeStateCatalogV2.digest();
+    if !v2 && catalog != AuthoritativeStateCatalogV1.digest() {
+        return Err(super::corrupt());
+    }
     let expected: BTreeSet<_> = N::ALL.into_iter().map(N::table).collect();
     let mut observed = BTreeSet::new();
     for table in root.list_tables().map_err(precommit_storage_error)? {
@@ -72,10 +76,16 @@ fn validate_inventory(root: &CheckpointRoot) -> Result<(), StorageError> {
     let meta = root.open_table(META).map_err(table_error)?;
     for row in meta.iter().map_err(precommit_storage_error)? {
         let (key, _) = row.map_err(precommit_storage_error)?;
-        if AuthoritativeStateCatalogV1
-            .lookup("meta", key.value().as_bytes())
-            .is_none()
-        {
+        let known = if v2 {
+            riffdb_storage_api::AuthoritativeStateCatalogV2
+                .lookup("meta", key.value().as_bytes())
+                .is_some()
+        } else {
+            AuthoritativeStateCatalogV1
+                .lookup("meta", key.value().as_bytes())
+                .is_some()
+        };
+        if !known {
             return Err(super::corrupt());
         }
     }
@@ -104,7 +114,7 @@ pub(crate) fn open_attached(
     {
         return Err(super::corrupt().into());
     }
-    validate_inventory(&root)?;
+    validate_inventory(&root, expected.lineage().catalog_digest())?;
     Ok(Box::new(StateCursor {
         root,
         view: None,

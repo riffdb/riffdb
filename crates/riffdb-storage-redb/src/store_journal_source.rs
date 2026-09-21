@@ -95,9 +95,13 @@ impl JournalRuntime {
             covered_frontier: covered,
             prior_history_hash: history.tail().history_hash(),
         };
-        let receipt =
-            crate::changelog_v3::receipt_from_validated_mutations(binding, source, mutations)
-                .map_err(value_error)?;
+        let receipt = crate::changelog_v3::receipt_from_validated_mutations_for_catalog(
+            binding,
+            source,
+            mutations,
+            history.lineage().catalog_digest(),
+        )
+        .map_err(value_error)?;
         // Complete canonical coalescing, bounds and attribution are proven BEFORE
         // lane.submit. Retain only constant-size binding/history; original values
         // remain in the existing bounded retained mutation source, not a copy.

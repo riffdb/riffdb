@@ -1,16 +1,20 @@
 //! Atomic installation primitive for ADR-0186. Production startup must supply
-//! complete structural/catalog validation under its exclusive session before
-//! staging this transition in the live store's hardened commit owner.
+//! complete structural/catalog validation before upgrading an existing inactive
+//! store. Fresh V2 creation belongs only to the transaction that proved Empty;
+//! ordinary startup still validates every root before granting operational ports.
 
 use redb::{Durability, ReadableTable, TableDefinition, TableHandle, WriteTransaction};
 use riffdb_storage_api::{
     AdministrationSequenceAllocator, ApplicationSequenceAllocator, AuthoritativeMutationV3,
-    AuthoritativeNamespaceV1 as N, AuthoritativeStateCatalogV1, AuthoritativeTransactionBindingV3,
-    AuthoritativeTransactionV3, ChangelogAttributionV3, ChangelogHistoryPointV3,
-    ChangelogHistoryStateV3, ChangelogLineageV3, ChangelogTransactionAllocator,
-    ReplicationFollowerStateV3, StorageError, StorageErrorKind, proto_codec::*,
+    AuthoritativeNamespaceV1 as N, AuthoritativeStateCatalogV1, AuthoritativeStateCatalogV2,
+    AuthoritativeTransactionBindingV3, AuthoritativeTransactionV3, ChangelogAttributionV3,
+    ChangelogHistoryPointV3, ChangelogHistoryStateV3, ChangelogLineageV3,
+    ChangelogTransactionAllocator, ReplicationFollowerStateV3, ReplicationPrimaryAdmissionV1,
+    StorageError, StorageErrorKind, proto_codec::*,
 };
-use riffdb_types::{AdministrationSequence, CommitSequence, DualFrontier, SchemaHash};
+use riffdb_types::{
+    AdministrationSequence, CommitSequence, DatabaseId, DualFrontier, LeadershipEpochV1, SchemaHash,
+};
 
 use crate::{
     error::{codec_error, precommit_storage_error, storage_error, table_error},
@@ -43,6 +47,44 @@ pub(crate) fn stage_validated(
     lineage: ChangelogLineageV3,
     frontier: DualFrontier,
 ) -> Result<ChangelogHistoryStateV3, StorageError> {
+    // This existing activation installs only V1 roots. A supported codec does
+    // not authorize upgrading their catalog or omitting required V2 admission.
+    if lineage.catalog_digest() != AuthoritativeStateCatalogV1.digest() {
+        return Err(storage_error(StorageErrorKind::IncompatibleFormat));
+    }
+    stage(transaction, lineage, frontier)
+}
+
+/// Called exclusively by the Empty arm of database initialization, in the SAME
+/// transaction as empty-layout classification and initial metadata creation.
+/// No existing database, missing admission row, or startup failure selects this.
+pub(crate) fn stage_new_source(
+    transaction: &mut WriteTransaction,
+    database_id: DatabaseId,
+) -> Result<ChangelogHistoryStateV3, StorageError> {
+    let lineage = ChangelogLineageV3::new_with_catalog(
+        database_id,
+        1,
+        LeadershipEpochV1::initial(),
+        AuthoritativeStateCatalogV2.digest(),
+    )
+    .map_err(|_| storage_error(StorageErrorKind::InvariantViolation))?;
+    stage(transaction, lineage, DualFrontier::INITIAL)
+}
+
+fn stage(
+    transaction: &mut WriteTransaction,
+    lineage: ChangelogLineageV3,
+    frontier: DualFrontier,
+) -> Result<ChangelogHistoryStateV3, StorageError> {
+    let catalog = if lineage.catalog_digest() == AuthoritativeStateCatalogV1.digest() {
+        encode_authoritative_state_catalog_v1(AuthoritativeStateCatalogV1)
+    } else if lineage.catalog_digest() == AuthoritativeStateCatalogV2.digest() {
+        encode_authoritative_state_catalog_v2(AuthoritativeStateCatalogV2)
+    } else {
+        return Err(storage_error(StorageErrorKind::IncompatibleFormat));
+    }
+    .map_err(codec_error)?;
     transaction.set_two_phase_commit(true);
     transaction
         .set_durability(Durability::Immediate)
@@ -62,6 +104,18 @@ pub(crate) fn stage_validated(
         }
     }
     let mut meta = transaction.open_table(META).map_err(table_error)?;
+    // V1 cannot interpret successor admission state. Even a malformed or
+    // foreign row must refuse; ignoring it could discard durable fence evidence.
+    let admission_key = riffdb_storage_api::AuthoritativeNamespaceV2::ReplicationPrimaryAdmission
+        .metadata_key()
+        .ok_or_else(|| storage_error(StorageErrorKind::InvariantViolation))?;
+    if meta
+        .get(admission_key)
+        .map_err(precommit_storage_error)?
+        .is_some()
+    {
+        return Err(storage_error(StorageErrorKind::CorruptData));
+    }
     for namespace in N::ALL
         .into_iter()
         .filter(|n| n.requires_v3_activation() && n.metadata_key().is_some())
@@ -139,7 +193,7 @@ pub(crate) fn stage_validated(
     let (sequence, allocator) = ChangelogTransactionAllocator::initial()
         .allocate_one()
         .map_err(|_| storage_error(StorageErrorKind::SequenceExhausted))?;
-    let receipt = AuthoritativeTransactionV3::new(
+    let receipt = AuthoritativeTransactionV3::new_for_catalog(
         AuthoritativeTransactionBindingV3 {
             database_id: lineage.database_id(),
             history_incarnation: lineage.history_incarnation(),
@@ -151,6 +205,7 @@ pub(crate) fn stage_validated(
         },
         ChangelogAttributionV3::V3Activation,
         mutations,
+        lineage.catalog_digest(),
     )
     .map_err(|_| storage_error(StorageErrorKind::CorruptData))?;
     let point = ChangelogHistoryPointV3::from_receipt(&receipt)
@@ -158,10 +213,7 @@ pub(crate) fn stage_validated(
     let history = ChangelogHistoryStateV3::new(lineage, point, point, point)
         .map_err(|_| storage_error(StorageErrorKind::CorruptData))?;
     let roots = [
-        (
-            N::AuthoritativeStateCatalog,
-            encode_authoritative_state_catalog_v1(AuthoritativeStateCatalogV1),
-        ),
+        (N::AuthoritativeStateCatalog, Ok(catalog)),
         (
             N::LeadershipEpoch,
             encode_leadership_epoch_v1(lineage.leadership_epoch()),
@@ -188,6 +240,13 @@ pub(crate) fn stage_validated(
     activation_edge("preflight");
     for (namespace, value) in roots {
         meta.insert(key(namespace)?, value.as_bytes())
+            .map_err(precommit_storage_error)?;
+    }
+    if lineage.catalog_digest() == AuthoritativeStateCatalogV2.digest() {
+        let admission = ReplicationPrimaryAdmissionV1::active(lineage)
+            .map_err(|_| storage_error(StorageErrorKind::InvariantViolation))?;
+        let encoded = encode_replication_primary_admission_v1(&admission).map_err(codec_error)?;
+        meta.insert(admission_key, encoded.as_bytes())
             .map_err(precommit_storage_error)?;
     }
     meta.insert(META_RECORD_REGISTRY, registry.as_bytes())

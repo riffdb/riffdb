@@ -790,8 +790,8 @@ fn maintenance_and_copy_transitions_have_exact_clean_certificate_behavior() {
         "normal restore staging preserves the immutable artifact's certificate bytes"
     );
     assert!(
-        clean_mode_selected(staged.staged_database_file()),
-        "the complete immutable backup selected through normal restore staging preserves matching clean eligibility"
+        !clean_mode_selected(staged.staged_database_file()),
+        "V2 backup preserves certificate bytes but still requires complete source validation"
     );
     let staged_database_id = complete_structural_validation(staged.staged_database_file());
     let mut sealed = staged

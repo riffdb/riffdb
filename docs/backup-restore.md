@@ -466,3 +466,14 @@ After restore, discard all pre-restore:
 Preserving `DatabaseId` does not make those observations valid. Globally stable
 pre-restore locators, point-in-time recovery, online backup, incremental backup,
 encrypted backup, and remote object storage are outside the POC.
+
+### Promotion recovery evidence
+
+Keep the private `<backup-root>/.maintenance/replication_promotion` ledger with
+maintenance receipts and the configured database. Terminal failure retains any
+frozen selection and refuses ordinary startup until an exact successful retry
+has been completely reconciled under the current owner. Deleting this evidence
+is not a recovery procedure. A V2 source always receives complete validation,
+even after CLEAN; V1 clean-start behavior is unchanged. The experimental
+[follower administration path](operations/FOLLOWER-ADMINISTRATION.md) lists
+remaining pre-cutover recovery limitations.

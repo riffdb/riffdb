@@ -19,6 +19,8 @@ pub use digest_keys::*;
 pub use entropy::*;
 pub use principal_facts::*;
 pub use riffdb_storage_api::{
-    ChangelogTransactionSequence, FollowerHoldBudget, ReplicationAdministrationRequestV1,
+    ChangelogHistoryPointV3, ChangelogTransactionSequence, FollowerHoldBudget,
+    PrimaryFenceRequestV1, PrimaryFenceSourceEvidenceV1, ReplicationAdministrationRequestV1,
+    ReplicationBootstrapManifestV1, ReplicationPromotionRequestV1, StoredPromotionAdministrationV1,
 };
 pub use token::*;

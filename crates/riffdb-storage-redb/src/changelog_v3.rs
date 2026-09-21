@@ -74,9 +74,10 @@ fn allocator_assignment(
 /// binds its predecessor to the known-durable activation/checkpoint or prior
 /// validated suffix receipt, and owns the durable-record semantic validation.
 /// No source may be synthesized for a pre-activation frame without its allocator.
-pub(crate) fn receipt_from_journal(
+pub(crate) fn receipt_from_journal_for_catalog(
     frame: &JournalFrame,
     binding: AuthoritativeTransactionBindingV3,
+    catalog: [u8; 32],
 ) -> Result<AuthoritativeTransactionV3, ChangelogV3Error> {
     if binding.predecessor.is_none()
         || binding.database_id != frame.database_id()
@@ -100,6 +101,7 @@ pub(crate) fn receipt_from_journal(
     receipt_from_sources(
         binding,
         source,
+        catalog,
         frame.mutations().iter().map(|mutation| {
             Ok((
                 mutation.table(),
@@ -114,14 +116,16 @@ pub(crate) fn receipt_from_journal(
 /// Same receipt fold for the live checkpoint's retained validated mutations.
 /// It borrows the original source, not latest overlay rows, and does not decode
 /// a journal frame or duplicate its mutation payloads before coalescing.
-pub(crate) fn receipt_from_validated_mutations(
+pub(crate) fn receipt_from_validated_mutations_for_catalog(
     binding: AuthoritativeTransactionBindingV3,
     source: ChangelogAttributionV3,
     mutations: &[CompositeMutationV1],
+    catalog: [u8; 32],
 ) -> Result<AuthoritativeTransactionV3, ChangelogV3Error> {
     receipt_from_sources(
         binding,
         source,
+        catalog,
         mutations.iter().map(|mutation| {
             // Invert the existing exhaustive journal-to-composite mapping instead
             // of maintaining a second physical table inventory.
@@ -144,6 +148,7 @@ type MutationSource<'a> = (JournalTable, &'a [u8], Option<[u8; 32]>, Option<&'a 
 fn receipt_from_sources<'a>(
     binding: AuthoritativeTransactionBindingV3,
     source: ChangelogAttributionV3,
+    catalog: [u8; 32],
     mutations: impl IntoIterator<Item = Result<MutationSource<'a>, ChangelogV3Error>>,
 ) -> Result<AuthoritativeTransactionV3, ChangelogV3Error> {
     if binding.predecessor.is_none()
@@ -189,7 +194,30 @@ fn receipt_from_sources<'a>(
     if !allocator_seen {
         return Err(ChangelogV3Error::InvalidEncoding);
     }
-    AuthoritativeTransactionV3::new(binding, source, changes.finish()?)
+    AuthoritativeTransactionV3::new_for_catalog(binding, source, changes.finish()?, catalog)
+}
+
+// Frozen V1 fixture entry points; production always passes its checked lineage.
+#[cfg(test)]
+pub(crate) fn receipt_from_journal(
+    frame: &JournalFrame,
+    binding: AuthoritativeTransactionBindingV3,
+) -> Result<AuthoritativeTransactionV3, ChangelogV3Error> {
+    receipt_from_journal_for_catalog(frame, binding, AuthoritativeStateCatalogV1.digest())
+}
+
+#[cfg(test)]
+pub(crate) fn receipt_from_validated_mutations(
+    binding: AuthoritativeTransactionBindingV3,
+    source: ChangelogAttributionV3,
+    mutations: &[CompositeMutationV1],
+) -> Result<AuthoritativeTransactionV3, ChangelogV3Error> {
+    receipt_from_validated_mutations_for_catalog(
+        binding,
+        source,
+        mutations,
+        AuthoritativeStateCatalogV1.digest(),
+    )
 }
 
 #[cfg(test)]

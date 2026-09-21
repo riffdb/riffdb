@@ -43,7 +43,7 @@ impl ReplicationSourcePort for ReceiptPeer {
                             self.lineage.database_id(),
                             self.lineage.history_incarnation(),
                             self.lineage.leadership_epoch().get(),
-                            AuthoritativeStateCatalogV1.digest(),
+                            self.lineage.catalog_digest(),
                             frame_hash,
                         )
                         .unwrap(),
@@ -173,7 +173,7 @@ async fn source_head_mismatch_or_regression_refuses_before_apply_and_withdraws_r
                     peer.lineage.database_id(),
                     peer.lineage.history_incarnation(),
                     peer.lineage.leadership_epoch().get(),
-                    AuthoritativeStateCatalogV1.digest(),
+                    peer.lineage.catalog_digest(),
                     receipt.binding().prior_history_hash,
                 )
                 .unwrap(),

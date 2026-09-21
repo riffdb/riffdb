@@ -58,7 +58,7 @@
     {
       "kind": "typescript",
       "path": "fixtures/driver/conformance-app/generated/typescript/client.ts",
-      "sha256": "11cac253ff0176e327ea13c11171e7b61d5cae0e6837162f1d6acff891e78618"
+      "sha256": "a6200aa8154b93258b48dda538bb7d3eecdf8637a05d59d9164623ad44e87515"
     }
   ],
   "observation": {
@@ -81,7 +81,7 @@
   "schema": "riffdb.unary-delete-preimage-external-acceptance/v1",
   "source_lock": {
     "path": "fixtures/driver/conformance-app/riffdb.application.lock.json",
-    "sha256": "66747e7300648ba9ecbdeb26d147979f1ec99076d4063118af893e59a2587c1b"
+    "sha256": "9e183a73870971ef0393256c5ac7fb12cdd2a40bbd7f5334716e6c3e9916f802"
   },
   "status": "passed",
   "verified_semantics": {

@@ -121,6 +121,7 @@ async fn follower_authentication_rechecks_published_capabilities_and_withdraws_o
         riffdb_service::ServiceProcessMetadata::new(Timestamp::new(1001, 0).unwrap(), build),
         &clocks,
         lifecycle.clone(),
+        None,
     )
     .unwrap();
     assert!(!lifecycle.bootstrap_available());

@@ -570,6 +570,10 @@ pub enum StoredAdministrationAuditRecordV1 {
     Retention(crate::StoredRetentionAdministrationV1),
     /// Audited follower registration, retirement, or configured expiry.
     Replication(Box<crate::StoredReplicationAdministrationV1>),
+    /// Durable old-primary admission fence, using its existing versioned record.
+    PrimaryFence(Box<crate::StoredPrimaryFenceAdministrationV1>),
+    /// Atomic new-lineage promotion with its complete external attempt.
+    Promotion(Box<crate::StoredPromotionAdministrationV1>),
 }
 
 impl StoredAdministrationAuditRecordV1 {
@@ -584,6 +588,8 @@ impl StoredAdministrationAuditRecordV1 {
             Self::Service(record) => record.administration_sequence(),
             Self::Retention(record) => record.administration_sequence(),
             Self::Replication(record) => record.administration_sequence(),
+            Self::PrimaryFence(record) => record.administration_sequence(),
+            Self::Promotion(record) => record.administration_sequence(),
         }
     }
 }
@@ -836,6 +842,8 @@ fn validate_service_audit_phase_link(
                         | ServiceOperationV1::RevokeCapability
                         | ServiceOperationV1::RegisterFollower
                         | ServiceOperationV1::RetireFollower
+                        | ServiceOperationV1::FenceReplicationPrimary
+                        | ServiceOperationV1::PromoteFollower
                 ) =>
             {
                 false
@@ -862,6 +870,8 @@ fn validate_service_audit_phase_link(
                     | ServiceOperationV1::RevokeCapability
                     | ServiceOperationV1::RegisterFollower
                     | ServiceOperationV1::RetireFollower
+                    | ServiceOperationV1::FenceReplicationPrimary
+                    | ServiceOperationV1::PromoteFollower
             ),
         },
     };
@@ -1426,6 +1436,8 @@ mod tests {
         ServiceOperationV1::RevokeCapability,
         ServiceOperationV1::RegisterFollower,
         ServiceOperationV1::RetireFollower,
+        ServiceOperationV1::FenceReplicationPrimary,
+        ServiceOperationV1::PromoteFollower,
     ];
 
     /// Operations that may never APPEND a success without an authoritative link.
@@ -1447,6 +1459,8 @@ mod tests {
         ServiceOperationV1::RevokeCapability,
         ServiceOperationV1::RegisterFollower,
         ServiceOperationV1::RetireFollower,
+        ServiceOperationV1::FenceReplicationPrimary,
+        ServiceOperationV1::PromoteFollower,
     ];
 
     /// Operations whose linkless success may not even RECONSTRUCT from durable
@@ -1469,6 +1483,8 @@ mod tests {
         ServiceOperationV1::RevokeCapability,
         ServiceOperationV1::RegisterFollower,
         ServiceOperationV1::RetireFollower,
+        ServiceOperationV1::FenceReplicationPrimary,
+        ServiceOperationV1::PromoteFollower,
     ];
 
     fn command_link() -> ServiceAuditLinkV1 {

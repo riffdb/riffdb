@@ -36,8 +36,11 @@ async fn replication_tls_real_source_transfers_complete_bootstrap_and_attaches_e
     let history = pin.authoritative_state_v3().unwrap().history();
     publisher.observe_published_snapshot_v3(pin);
     let source = Arc::new(PublishedReplicationSource::new(publications, jobs));
+    let audit =
+        audit_support::ServiceHarness::new(audit_support::ReadCommitMode::ImmediateNotFound, false);
+    let owner = audit.replication_owner(database_id, environment(), authority.clone());
     let route = Arc::new(Route {
-        service: Arc::new(ReplicationService::new(authority.clone(), source)),
+        service: Arc::new(ReplicationService::new(owner, source)),
         security: CheckedGrpcSecurityContext::new(
             authority.clone(),
             AuthenticationContext::new(database_id, environment(), Audience::new("grpc").unwrap()),
@@ -59,7 +62,7 @@ async fn replication_tls_real_source_transfers_complete_bootstrap_and_attaches_e
         message.history_incarnation = history.lineage().history_incarnation();
         message.leadership_epoch = history.lineage().leadership_epoch().get();
         message.readable_format = ChangelogFrameV3::IDENTITY.to_owned();
-        message.catalog_digest = AuthoritativeStateCatalogV1.digest().to_vec();
+        message.catalog_digest = history.lineage().catalog_digest().to_vec();
         request
     };
     let mut stream = bounded(client.stream_changelog(make_request()))
@@ -143,7 +146,7 @@ async fn replication_tls_real_source_transfers_complete_bootstrap_and_attaches_e
         after_hash: [0; 32],
         after_frontier: riffdb_types::DualFrontier::INITIAL,
         readable_format: ChangelogFrameV3::IDENTITY.to_owned(),
-        catalog_digest: AuthoritativeStateCatalogV1.digest(),
+        catalog_digest: history.lineage().catalog_digest(),
         maximum_frame_bytes: riffdb_storage_api::MAX_CHANGELOG_FRAME_BYTES as u64,
         maximum_transitions: riffdb_storage_api::MAX_STAGED_COMMANDS as u64,
     };

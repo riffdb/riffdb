@@ -4,6 +4,10 @@ use redb::{ReadTransaction, ReadableTableMetadata, WriteTransaction};
 use riffdb_storage_api::{StorageFormatVersion, proto_codec::*};
 use std::sync::Arc;
 
+#[cfg(test)]
+#[path = "archive_prefix_validation_tests.rs"]
+mod tests;
+
 /// Only the reconstruction owner can create this binding. Ordinary startup has
 /// no optional root relaxation: the private mode checks this exact predecessor
 /// plus the independently reconstructed logical frontier instead.
@@ -98,8 +102,15 @@ impl PrivateArchiveValidationBinding {
             Ok(value.value().to_vec())
         };
         let lineage = self.predecessor.lineage();
-        decode_authoritative_state_catalog_v1(&read(N::AuthoritativeStateCatalog)?)
-            .map_err(|_| corrupt())?;
+        if crate::primary_admission_roots::catalog_digest(&read(N::AuthoritativeStateCatalog)?)?
+            != lineage.catalog_digest()
+            || meta
+                .get(crate::primary_admission_roots::key()?)
+                .map_err(unavailable)?
+                .is_some()
+        {
+            return Err(corrupt());
+        }
         if *decode_storage_format_version_v1(&read(N::FormatVersion)?)
             .map_err(|_| corrupt())?
             .value()

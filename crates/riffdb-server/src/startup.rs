@@ -3,6 +3,9 @@
 // The complete component graph consumes these private values during WP-130 composition.
 #![allow(dead_code)]
 
+#[path = "startup_promotion.rs"]
+pub(crate) mod promotion;
+
 use std::error::Error;
 use std::fmt;
 use std::path::Path;
@@ -72,6 +75,7 @@ pub(crate) struct CheckedRedbStartup {
     allocator_capacity: ValidatedAllocatorCapacity,
     operational_ports: RedbOperationalPorts,
     replication_publications: Option<crate::replication_publication::ReplicationPublishedSnapshots>,
+    promotion: Option<riffdb_storage_api::StoredPromotionAdministrationV1>,
 }
 
 impl CheckedRedbStartup {
@@ -139,6 +143,14 @@ impl CheckedRedbStartup {
                 return Ok(true);
             }
         }
+    }
+
+    /// Immutable original control, retained only after complete source validation
+    /// and exact external receipt reconciliation for this runtime generation.
+    pub(crate) fn take_promotion(
+        &mut self,
+    ) -> Option<riffdb_storage_api::StoredPromotionAdministrationV1> {
+        self.promotion.take()
     }
 
     pub(crate) fn take_replication_publications(
@@ -445,6 +457,13 @@ where
             permit.initialize(candidate()?)?.into_initialized_database()
         }
     };
+    complete_initialized_redb_startup(initialized, inputs)
+}
+
+fn complete_initialized_redb_startup(
+    initialized: InitializedDatabase<RedbStore>,
+    inputs: StartupValidationInputs,
+) -> Result<CheckedRedbStartup, RedbStartupError> {
     match run_redb_startup_pass(initialized, inputs.clone())? {
         RedbStartupPass::Ready {
             catalog_history,
@@ -619,6 +638,7 @@ fn complete_ready_redb_startup(
         allocator_capacity,
         operational_ports,
         replication_publications: None,
+        promotion: None,
     })
 }
 

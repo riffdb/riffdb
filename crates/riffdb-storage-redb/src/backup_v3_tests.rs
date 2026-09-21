@@ -5,8 +5,8 @@ use crate::changelog_v3_activation::{HISTORY, SOURCE_HOLDS};
 use redb::ReadableTableMetadata;
 use riffdb_storage_api::{
     AuthoritativeNamespaceV1 as N, AuthoritativeTransactionV3, ChangelogAttributionV3,
-    ChangelogHistoryStateV3, ChangelogLineageV3, DatabaseInitializationPort, LeadershipEpochV1,
-    ReplicationFollowerStateV3, proto_codec::*,
+    ChangelogHistoryStateV3, ChangelogLineageV3, LeadershipEpochV1, ReplicationFollowerStateV3,
+    proto_codec::*,
 };
 use riffdb_types::DualFrontier;
 use std::collections::BTreeMap;
@@ -14,7 +14,7 @@ use std::collections::BTreeMap;
 fn fixture(path: &Path) {
     let mut store = crate::RedbStore::open(path).unwrap();
     let id = DatabaseId::from_unix_milliseconds_and_random(1_700_000_000_000, [0xd9; 10]).unwrap();
-    store.initialize_database(id).unwrap();
+    store.initialize_legacy_fixture(id).unwrap();
     crate::changelog_v3_activation::activate_validated(
         store.shared.database.begin_write().unwrap(),
         ChangelogLineageV3::new(id, 1, LeadershipEpochV1::initial()).unwrap(),

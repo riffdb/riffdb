@@ -20,6 +20,7 @@ pub(super) struct PreparedRestoreAnchor {
     history: CanonicalStoredEnvelopeV1,
     allocator: CanonicalStoredEnvelopeV1,
     follower: CanonicalStoredEnvelopeV1,
+    admission: Option<CanonicalStoredEnvelopeV1>,
     receipt: Vec<u8>,
 }
 
@@ -39,6 +40,7 @@ impl PreparedRestoreAnchor {
         let predecessor = validate_retained_history_for_write(transaction)?.ok_or_else(corrupt)?;
         {
             let meta = transaction.open_table(META).map_err(table_error)?;
+            crate::primary_admission_roots::require_unfenced(&meta)?;
             if let Some(encoded) = meta
                 .get(key(N::CleanCloseLifecycle)?)
                 .map_err(precommit_storage_error)?
@@ -68,6 +70,9 @@ impl PreparedRestoreAnchor {
         incarnation: u64,
     ) -> Result<Self, StorageError> {
         binding.validate_for_write(transaction)?;
+        crate::primary_admission_roots::require_unfenced(
+            &transaction.open_table(META).map_err(table_error)?,
+        )?;
         if incarnation <= binding.predecessor().lineage().history_incarnation() {
             return Err(storage_error(StorageErrorKind::InvariantViolation));
         }
@@ -80,16 +85,17 @@ impl PreparedRestoreAnchor {
         incarnation: u64,
     ) -> Result<Self, StorageError> {
         let corrupt = || storage_error(StorageErrorKind::CorruptData);
-        let lineage = ChangelogLineageV3::new(
+        let lineage = ChangelogLineageV3::new_with_catalog(
             predecessor.lineage().database_id(),
             incarnation,
             predecessor.lineage().leadership_epoch(),
+            predecessor.lineage().catalog_digest(),
         )
         .map_err(|_| corrupt())?;
         let (sequence, allocator) = ChangelogTransactionAllocator::initial()
             .allocate_one()
             .map_err(|_| storage_error(StorageErrorKind::SequenceExhausted))?;
-        let receipt = AuthoritativeTransactionV3::new(
+        let receipt = AuthoritativeTransactionV3::new_for_catalog(
             AuthoritativeTransactionBindingV3 {
                 database_id: lineage.database_id(),
                 history_incarnation: incarnation,
@@ -101,6 +107,7 @@ impl PreparedRestoreAnchor {
             },
             ChangelogAttributionV3::RestoreAnchor,
             vec![],
+            lineage.catalog_digest(),
         )
         .map_err(|_| corrupt())?;
         let point = ChangelogHistoryPointV3::from_receipt(&receipt).map_err(|_| corrupt())?;
@@ -113,6 +120,19 @@ impl PreparedRestoreAnchor {
             allocator: encode_changelog_transaction_allocator_v3(allocator).map_err(codec_error)?,
             follower: encode_replication_follower_state_v3(ReplicationFollowerStateV3::detached())
                 .map_err(codec_error)?,
+            admission: if lineage.catalog_digest()
+                == riffdb_storage_api::AuthoritativeStateCatalogV2.digest()
+            {
+                Some(
+                    encode_replication_primary_admission_v1(
+                        &riffdb_storage_api::ReplicationPrimaryAdmissionV1::active(lineage)
+                            .map_err(|_| corrupt())?,
+                    )
+                    .map_err(codec_error)?,
+                )
+            } else {
+                None
+            },
             receipt: receipt.encode().map_err(|_| corrupt())?,
         })
     }
@@ -165,6 +185,10 @@ impl PreparedRestoreAnchor {
             }
             meta.insert(key(N::ReplicationFollowerState)?, self.follower.as_bytes())
                 .map_err(precommit_storage_error)?;
+            if let Some(admission) = &self.admission {
+                meta.insert(crate::primary_admission_roots::key()?, admission.as_bytes())
+                    .map_err(precommit_storage_error)?;
+            }
         }
         edge("local-reset");
         {
@@ -248,7 +272,7 @@ pub(super) fn prepare_watermark_receipt(
         }
         .map_err(value_error)?
     };
-    let receipt = AuthoritativeTransactionV3::new(
+    let receipt = AuthoritativeTransactionV3::new_for_catalog(
         AuthoritativeTransactionBindingV3 {
             database_id: history.lineage().database_id(),
             history_incarnation: history.lineage().history_incarnation(),
@@ -264,6 +288,7 @@ pub(super) fn prepare_watermark_receipt(
         },
         ChangelogAttributionV3::RetentionPrune,
         vec![mutation],
+        history.lineage().catalog_digest(),
     )
     .map_err(value_error)?;
     PreparedHistoryAdvance::prepare(transaction, &receipt).map(Some)

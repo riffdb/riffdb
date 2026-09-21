@@ -1,22 +1,58 @@
 use riffdb_types::{DatabaseId, DualFrontier};
 use sha2::{Digest, Sha256};
 
-use crate::{AuthoritativeStateCatalogV1, MAX_CHANGELOG_FRAME_BYTES, MAX_STAGED_COMMANDS};
+use crate::{
+    AuthoritativeStateCatalogV1, AuthoritativeStateCatalogV2, MAX_CHANGELOG_FRAME_BYTES,
+    MAX_STAGED_COMMANDS,
+};
 
 use super::receipt_codec::ReceiptReader;
-use super::{
-    AuthoritativeTransactionV3, ChangelogAttributionV3, ChangelogV3Error, LeadershipEpochV1,
-};
+use super::{AuthoritativeTransactionV3, ChangelogV3Error, LeadershipEpochV1};
 
 const MAGIC: &[u8; 8] = b"RDBCLF03";
 const FOOTER_MAGIC: &[u8; 8] = b"RDBCLE03";
-const SOURCE_COUNT: usize = ChangelogAttributionV3::ALL.len();
-const HEADER_BYTES: usize = 166 + 4 * SOURCE_COUNT;
+// The catalog digest discriminates the counter table. Never grow the original
+// header when the accepted attribution set gains a successor member.
+const ORIGINAL_SOURCE_COUNT: usize = 33;
+const SOURCE_COUNT: usize = 34;
+const HEADER_BYTES: usize = 166 + 4 * ORIGINAL_SOURCE_COUNT;
 const FOOTER_BYTES: usize = 48;
 pub(super) const FIXED_FRAME_BYTES: usize = HEADER_BYTES + FOOTER_BYTES;
 
-// Admission must leave space for a complete frame containing this unsplit row.
+// Preserve the original receipt ceiling for compatibility. Catalog-specific
+// admission additionally charges the selected frame header before mutation.
 pub(super) const MAX_RECEIPT_BYTES: usize = MAX_CHANGELOG_FRAME_BYTES - FIXED_FRAME_BYTES - 4;
+
+fn catalog_source_count(catalog: [u8; 32]) -> Result<usize, ChangelogV3Error> {
+    if catalog == AuthoritativeStateCatalogV1.digest() {
+        Ok(ORIGINAL_SOURCE_COUNT)
+    } else if catalog == AuthoritativeStateCatalogV2.digest() {
+        Ok(SOURCE_COUNT)
+    } else {
+        Err(ChangelogV3Error::InvalidEncoding)
+    }
+}
+
+pub(super) fn validate_receipt_catalog(
+    receipt: &AuthoritativeTransactionV3,
+    catalog: [u8; 32],
+) -> Result<(), ChangelogV3Error> {
+    validate_receipt_count(receipt, catalog_source_count(catalog)?)
+}
+
+fn validate_receipt_count(
+    receipt: &AuthoritativeTransactionV3,
+    count: usize,
+) -> Result<(), ChangelogV3Error> {
+    if receipt.attribution() as usize > count {
+        return Err(ChangelogV3Error::InvalidEncoding);
+    }
+    let maximum = MAX_CHANGELOG_FRAME_BYTES - (166 + 4 * count + FOOTER_BYTES) - 4;
+    if receipt.encoded_len()? > maximum {
+        return Err(ChangelogV3Error::LimitExceeded);
+    }
+    Ok(())
+}
 
 /// Exact checked lineage, leadership, catalog, and prior-frame binding.
 #[derive(Clone, Copy, Eq, PartialEq)]
@@ -25,11 +61,12 @@ pub struct ChangelogFrameBindingV3 {
     history_incarnation: u64,
     leadership_epoch: LeadershipEpochV1,
     catalog_digest: [u8; 32],
+    source_count: usize,
     prior_frame_hash: [u8; 32],
 }
 
 impl ChangelogFrameBindingV3 {
-    /// Refuses zero fences and any catalog other than the exact V3 declaration.
+    /// Refuses zero fences and catalogs outside the two accepted V3 bindings.
     pub fn new(
         database_id: DatabaseId,
         history_incarnation: u64,
@@ -39,7 +76,8 @@ impl ChangelogFrameBindingV3 {
     ) -> Result<Self, ChangelogV3Error> {
         let leadership_epoch =
             LeadershipEpochV1::new(leadership_epoch).ok_or(ChangelogV3Error::InvalidEncoding)?;
-        if history_incarnation == 0 || catalog_digest != AuthoritativeStateCatalogV1.digest() {
+        let source_count = catalog_source_count(catalog_digest)?;
+        if history_incarnation == 0 {
             return Err(ChangelogV3Error::InvalidEncoding);
         }
         Ok(Self {
@@ -47,8 +85,16 @@ impl ChangelogFrameBindingV3 {
             history_incarnation,
             leadership_epoch,
             catalog_digest,
+            source_count,
             prior_frame_hash,
         })
+    }
+
+    pub(super) const fn header_bytes(self) -> usize {
+        166 + 4 * self.source_count
+    }
+    pub(super) const fn fixed_frame_bytes(self) -> usize {
+        self.header_bytes() + FOOTER_BYTES
     }
 
     /// Exact database identity.
@@ -109,6 +155,7 @@ impl ChangelogFrameV3 {
         }
         let mut transitions = 0_u64;
         for (index, receipt) in receipts.iter().enumerate() {
+            validate_receipt_count(receipt, binding.source_count)?;
             let row = receipt.binding();
             if row.database_id != binding.database_id
                 || row.history_incarnation != binding.history_incarnation
@@ -154,7 +201,7 @@ impl ChangelogFrameV3 {
     pub fn encoded_len(&self) -> Result<usize, ChangelogV3Error> {
         self.receipts
             .iter()
-            .try_fold(FIXED_FRAME_BYTES, |bytes, row| {
+            .try_fold(self.binding.fixed_frame_bytes(), |bytes, row| {
                 bytes
                     .checked_add(4)
                     .and_then(|n| n.checked_add(row.encoded_len().ok()?))
@@ -162,12 +209,15 @@ impl ChangelogFrameV3 {
             })
     }
 
-    fn source_counts(&self) -> [u32; SOURCE_COUNT] {
+    fn source_counts(&self) -> Result<[u32; SOURCE_COUNT], ChangelogV3Error> {
         let mut counts = [0; SOURCE_COUNT];
         for receipt in &self.receipts {
-            counts[receipt.attribution() as usize - 1] += 1;
+            let slot = counts
+                .get_mut(receipt.attribution() as usize - 1)
+                .ok_or(ChangelogV3Error::InvalidEncoding)?;
+            *slot += 1;
         }
-        counts
+        Ok(counts)
     }
 
     /// Canonical V3 only; no V1/V2 fallback or journal-format translation.
@@ -201,11 +251,15 @@ impl ChangelogFrameV3 {
                 .to_be_bytes(),
         );
         bytes.extend_from_slice(
-            &u32::try_from(total - HEADER_BYTES - FOOTER_BYTES)
+            &u32::try_from(total - self.binding.fixed_frame_bytes())
                 .map_err(|_| ChangelogV3Error::LimitExceeded)?
                 .to_be_bytes(),
         );
-        for count in self.source_counts() {
+        for count in self
+            .source_counts()?
+            .into_iter()
+            .take(self.binding.source_count)
+        {
             bytes.extend_from_slice(&count.to_be_bytes());
         }
         for receipt in &self.receipts {
@@ -279,7 +333,7 @@ impl ChangelogFrameV3 {
             return Err(ChangelogV3Error::LimitExceeded);
         }
         let mut source_counts = [0; SOURCE_COUNT];
-        for slot in &mut source_counts {
+        for slot in source_counts.iter_mut().take(binding.source_count) {
             *slot = reader.u32()?;
         }
         if count == 0 || payload_len != reader.remaining.len() || count > payload_len / 164 {
@@ -309,7 +363,7 @@ impl ChangelogFrameV3 {
             || covered != last.sequence.get()
             || predecessor_frontier != first.predecessor_frontier
             || covered_frontier != last.covered_frontier
-            || source_counts != frame.source_counts()
+            || source_counts != frame.source_counts()?
         {
             return Err(ChangelogV3Error::InvalidEncoding);
         }

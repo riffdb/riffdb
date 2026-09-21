@@ -132,10 +132,12 @@ pub enum ApplicationErrorCode {
     ProjectedSourceRequired,
     /// This node is a follower and cannot execute a write operation.
     FollowerMode,
+    /// Durable source fencing permanently refuses new command admission.
+    PrimaryFenced,
 }
 
 /// Complete v1 application error code registry in stable wire order.
-pub const APPLICATION_ERROR_CODES: [ApplicationErrorCode; 26] = [
+pub const APPLICATION_ERROR_CODES: [ApplicationErrorCode; 27] = [
     ApplicationErrorCode::InvalidRequest,
     ApplicationErrorCode::InputInvalid,
     ApplicationErrorCode::AuthorizationDenied,
@@ -162,6 +164,7 @@ pub const APPLICATION_ERROR_CODES: [ApplicationErrorCode; 26] = [
     ApplicationErrorCode::FreshnessUnsatisfied,
     ApplicationErrorCode::ProjectedSourceRequired,
     ApplicationErrorCode::FollowerMode,
+    ApplicationErrorCode::PrimaryFenced,
 ];
 
 impl ApplicationErrorCode {
@@ -182,6 +185,7 @@ impl ApplicationErrorCode {
             PublicErrorKind::HistoryPruned => Self::HistoryPruned,
             PublicErrorKind::Overloaded => Self::Overloaded,
             PublicErrorKind::FollowerMode => Self::FollowerMode,
+            PublicErrorKind::PrimaryFenced => Self::PrimaryFenced,
         }
     }
 
@@ -215,6 +219,7 @@ impl ApplicationErrorCode {
             Self::FreshnessUnsatisfied => "RDB-PROJECTION-0103",
             Self::ProjectedSourceRequired => "RDB-PROJECTION-0104",
             Self::FollowerMode => "RDB-REP-0101",
+            Self::PrimaryFenced => "RDB-REP-0102",
         }
     }
 
@@ -246,6 +251,7 @@ impl ApplicationErrorCode {
             Self::HistoryPruned => "requested history has been pruned",
             Self::Overloaded => "service is over capacity",
             Self::FollowerMode => "operation is unavailable in follower mode",
+            Self::PrimaryFenced => "primary is durably fenced",
             Self::ProjectionDiverged => "query projections cannot prove one common snapshot",
             Self::SnapshotRetired => "the requested query snapshot has been retired",
             Self::FreshnessUnsatisfied => "no query snapshot satisfies the requested freshness",
@@ -275,9 +281,10 @@ impl ApplicationErrorCode {
             Self::ResponseTooLarge => ApplicationErrorCategory::Resource,
             Self::StorageUnavailable => ApplicationErrorCategory::Storage,
             Self::OutcomeUnknown => ApplicationErrorCategory::Uncertainty,
-            Self::OperationCancelled | Self::DeadlineExceeded | Self::FollowerMode => {
-                ApplicationErrorCategory::Control
-            }
+            Self::OperationCancelled
+            | Self::DeadlineExceeded
+            | Self::FollowerMode
+            | Self::PrimaryFenced => ApplicationErrorCategory::Control,
             Self::InternalDefect => ApplicationErrorCategory::Internal,
             Self::IdempotencyKeyReuse | Self::CommandExecutionFailed => {
                 ApplicationErrorCategory::Command
@@ -318,9 +325,10 @@ impl ApplicationErrorCode {
             | Self::FreshnessUnsatisfied => ApplicationRecoveryAction::Retry,
             Self::OutcomeUnknown => ApplicationRecoveryAction::ResolveWithSameIdempotencyKey,
             Self::OperationCancelled => ApplicationRecoveryAction::None,
-            Self::InternalDefect | Self::CommandExecutionFailed | Self::ProtocolInvalid => {
-                ApplicationRecoveryAction::ContactOperator
-            }
+            Self::InternalDefect
+            | Self::CommandExecutionFailed
+            | Self::ProtocolInvalid
+            | Self::PrimaryFenced => ApplicationRecoveryAction::ContactOperator,
         }
     }
 
@@ -356,7 +364,8 @@ impl ApplicationErrorCode {
             Self::OperationCancelled
             | Self::CommandExecutionFailed
             | Self::ProtocolInvalid
-            | Self::FollowerMode => &[],
+            | Self::FollowerMode
+            | Self::PrimaryFenced => &[],
         }
     }
 }
@@ -922,6 +931,8 @@ pub enum PublicErrorKind {
     Overloaded,
     /// This node is a follower and cannot execute a write operation.
     FollowerMode,
+    /// Durable source fencing permanently refuses new command admission.
+    PrimaryFenced,
 }
 
 impl PublicErrorKind {
@@ -942,6 +953,7 @@ impl PublicErrorKind {
             Self::HistoryPruned => "history_pruned",
             Self::Overloaded => "overloaded",
             Self::FollowerMode => "follower_mode",
+            Self::PrimaryFenced => "primary_fenced",
         }
     }
 
@@ -962,6 +974,7 @@ impl PublicErrorKind {
             Self::HistoryPruned => "requested history has been pruned",
             Self::Overloaded => "service is over capacity",
             Self::FollowerMode => "operation is unavailable in follower mode",
+            Self::PrimaryFenced => "primary is durably fenced",
         }
     }
 
@@ -976,7 +989,8 @@ impl PublicErrorKind {
             Self::ContractMismatch
             | Self::HistoryIncarnationMismatch
             | Self::HistoryPruned
-            | Self::FollowerMode => ErrorClass::FailedPrecondition,
+            | Self::FollowerMode
+            | Self::PrimaryFenced => ErrorClass::FailedPrecondition,
             Self::StorageUnavailable | Self::Overloaded => ErrorClass::Unavailable,
             Self::OutcomeUnknown => ErrorClass::Uncertain,
             Self::InternalDefect => ErrorClass::Internal,
@@ -1004,7 +1018,8 @@ impl PublicErrorKind {
             | Self::CommandExecutionFailed
             | Self::HistoryIncarnationMismatch
             | Self::HistoryPruned
-            | Self::FollowerMode => PublicErrorStatusCode::FailedPrecondition,
+            | Self::FollowerMode
+            | Self::PrimaryFenced => PublicErrorStatusCode::FailedPrecondition,
             Self::StorageUnavailable => PublicErrorStatusCode::Unavailable,
             Self::Overloaded => PublicErrorStatusCode::ResourceExhausted,
             Self::OutcomeUnknown => PublicErrorStatusCode::Unknown,
@@ -1027,7 +1042,9 @@ impl PublicErrorKind {
             }
             Self::ContractMismatch => RecoveryAction::RefreshContract,
             Self::OutcomeUnknown => RecoveryAction::ResolveWithSameIdempotencyKey,
-            Self::InternalDefect | Self::CommandExecutionFailed => RecoveryAction::ContactOperator,
+            Self::InternalDefect | Self::CommandExecutionFailed | Self::PrimaryFenced => {
+                RecoveryAction::ContactOperator
+            }
         }
     }
 }
@@ -1385,6 +1402,13 @@ impl PublicError {
         Self::contextless(PublicErrorKind::FollowerMode)
     }
 
+    /// Creates the durable primary-fence refusal before command admission.
+    /// This outcome never recommends retrying or clearing the fence.
+    #[must_use]
+    pub const fn primary_fenced() -> Self {
+        Self::contextless(PublicErrorKind::PrimaryFenced)
+    }
+
     /// Creates an overload / capacity rejection failure.
     #[must_use]
     pub const fn overloaded() -> Self {
@@ -1442,6 +1466,7 @@ impl PublicError {
             PublicErrorKind::HistoryPruned => code == ApplicationErrorCode::HistoryPruned,
             PublicErrorKind::Overloaded => code == ApplicationErrorCode::Overloaded,
             PublicErrorKind::FollowerMode => code == ApplicationErrorCode::FollowerMode,
+            PublicErrorKind::PrimaryFenced => code == ApplicationErrorCode::PrimaryFenced,
         };
         if !compatible {
             return Err(ApplicationErrorHintError);
@@ -1629,7 +1654,7 @@ mod tests {
 
     use super::*;
 
-    const KINDS: [PublicErrorKind; 13] = [
+    const KINDS: [PublicErrorKind; 14] = [
         PublicErrorKind::Validation,
         PublicErrorKind::IdempotencyKeyReuse,
         PublicErrorKind::AuthorizationDenied,
@@ -1643,6 +1668,7 @@ mod tests {
         PublicErrorKind::HistoryPruned,
         PublicErrorKind::Overloaded,
         PublicErrorKind::FollowerMode,
+        PublicErrorKind::PrimaryFenced,
     ];
 
     const VALIDATION_CODES: [ValidationCode; 8] = [
@@ -1818,13 +1844,19 @@ mod tests {
                 ErrorClass::FailedPrecondition,
                 RecoveryAction::CorrectRequest,
             ),
+            (
+                "primary_fenced",
+                "primary is durably fenced",
+                ErrorClass::FailedPrecondition,
+                RecoveryAction::ContactOperator,
+            ),
         ];
 
-        assert_eq!(KINDS.len(), 13);
+        assert_eq!(KINDS.len(), 14);
         assert_eq!(KINDS[9], PublicErrorKind::HistoryIncarnationMismatch);
         assert_eq!(KINDS[10], PublicErrorKind::HistoryPruned);
         assert_eq!(KINDS[11], PublicErrorKind::Overloaded);
-        assert_eq!(APPLICATION_ERROR_CODES.len(), 26);
+        assert_eq!(APPLICATION_ERROR_CODES.len(), 27);
         assert_eq!(
             APPLICATION_ERROR_CODES[18],
             ApplicationErrorCode::HistoryIncarnationMismatch

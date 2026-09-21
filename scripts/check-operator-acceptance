@@ -39,6 +39,7 @@ done < <(jq -r '.shapes[].query' "$corpus")
 jq -e '
   . as $catalog
   | .schema == "riffdb-generated-application-operations/v6"
+  and .predecessor_schema == "riffdb-generated-application-operations/v5"
   and all(
     "TicketPageWithComments", "MlflowRunsWithTags", "FgaObjectsWithRelations";
     . as $operation

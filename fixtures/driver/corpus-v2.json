@@ -2019,6 +2019,108 @@
           ]
         }
       ]
+    },
+    {
+      "tag": 60,
+      "operation": "FenceReplicationPrimary",
+      "bounds": [
+        {
+          "target": "encoded_request_bytes",
+          "maximum": 1048576,
+          "cases": [
+            {
+              "encoded_bytes": 1048576,
+              "expected_error_class": "none"
+            },
+            {
+              "encoded_bytes": 1048577,
+              "expected_error_class": "request_too_large"
+            }
+          ]
+        },
+        {
+          "target": "encoded_response_bytes",
+          "maximum": 4194304,
+          "cases": [
+            {
+              "encoded_bytes": 4194304,
+              "expected_error_class": "none"
+            },
+            {
+              "encoded_bytes": 4194305,
+              "expected_error_class": "response_too_large"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "tag": 61,
+      "operation": "StreamChangelog",
+      "bounds": [
+        {
+          "target": "encoded_request_bytes",
+          "maximum": 1024,
+          "cases": [
+            {
+              "encoded_bytes": 1024,
+              "expected_error_class": "none"
+            },
+            {
+              "encoded_bytes": 1025,
+              "expected_error_class": "request_too_large"
+            }
+          ]
+        },
+        {
+          "target": "encoded_response_bytes",
+          "maximum": 33555456,
+          "cases": [
+            {
+              "encoded_bytes": 33555456,
+              "expected_error_class": "none"
+            },
+            {
+              "encoded_bytes": 33555457,
+              "expected_error_class": "response_too_large"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "tag": 62,
+      "operation": "PromoteFollower",
+      "bounds": [
+        {
+          "target": "encoded_request_bytes",
+          "maximum": 1048576,
+          "cases": [
+            {
+              "encoded_bytes": 1048576,
+              "expected_error_class": "none"
+            },
+            {
+              "encoded_bytes": 1048577,
+              "expected_error_class": "request_too_large"
+            }
+          ]
+        },
+        {
+          "target": "encoded_response_bytes",
+          "maximum": 4194304,
+          "cases": [
+            {
+              "encoded_bytes": 4194304,
+              "expected_error_class": "none"
+            },
+            {
+              "encoded_bytes": 4194305,
+              "expected_error_class": "response_too_large"
+            }
+          ]
+        }
+      ]
     }
   ]
 }

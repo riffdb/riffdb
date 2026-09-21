@@ -173,7 +173,7 @@ impl RedbBootstrapRepository {
             }
             ids.retain(|existing| *existing != id);
         }
-        if self.inner.ports.bootstrap_id_is_held(id)? {
+        if self.inner.ports.bootstrap_id_blocks_new_artifact(id)? {
             return Err(Refusal::InvalidPosition);
         }
         if ids.len() == MAX_ARTIFACTS {

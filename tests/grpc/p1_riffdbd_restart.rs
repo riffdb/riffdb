@@ -297,10 +297,9 @@ async fn real_riffdbd_restart_preserves_budget_and_bootstrap_replay() -> TestRes
     drop(first_client);
     first_process.shutdown_cleanly()?;
 
-    // ADR-0188: graceful shutdown earns CLEAN but never refreshes the optional
-    // validated-prefix proof. The exact pre-close bytes must survive, even
-    // though two commands made that startup proof stale.
-    assert_graceful_shutdown_retains_checkpoint(
+    // Complete V2 startup may replace the checkpoint before these commands.
+    // ADR-0188 still forbids refreshing it at shutdown to cover the commands.
+    assert_graceful_shutdown_preserves_pre_command_checkpoint(
         &database_path,
         checkpoint_before_commands.as_deref(),
     )?;
@@ -311,29 +310,9 @@ async fn real_riffdbd_restart_preserves_budget_and_bootstrap_replay() -> TestRes
         &idempotency_keys_path,
     )?;
     let second_address = second_process.wait_for_ready_address()?;
-    // Tripwire on the readiness path's transient population-index rebuilds.
-    //
-    // ADR-0156 says a bounded start leaves the population caches cold. The
-    // rebuild it means -- a walk of every command segment, decoding each one and
-    // re-deriving every manifest key -- was 96% of a bounded start's wall clock
-    // at 115,690 retained commands.
-    //
-    // This was pinned at ONE for as long as the rebuild was load-bearing for
-    // read correctness: with the index dormant and no durable locator,
-    // `read_stored_outcome` answered `Ok(None)` for a durably committed outcome,
-    // and removing the incidental rebuild made this very test fail with
-    // "durable command outcome was not found".
-    //
-    // ADR-0165's durable locator tables removed that dependency, so the target
-    // number becomes ZERO once the readiness-path outbox skip is enabled. That
-    // switch is held off pending an undiagnosed bootstrap-replay failure, so
-    // this stays at ONE and must be flipped in the same change that enables it.
-    //
-    // Still pinned exactly rather than as an upper bound, so it keeps failing in
-    // both directions: any future readiness-path caller that reaches
-    // `ensure_transient_indexes_ready` before the ready line trips it, whichever
-    // call it is.
-    assert_readiness_path_rebuild_census(&second_process, 0)?;
+    // Accepted WP-748 qualification: a V2 source takes complete validation
+    // after CLEAN. Pin its census rather than claiming V1 bounded startup.
+    assert_readiness_path_rebuild_census(&second_process, 1)?;
     let mut second_client = connect(second_address).await?;
 
     assert_principal_less_liveness(&mut second_client).await?;
@@ -1562,9 +1541,9 @@ fn assert_readiness_path_rebuild_census(process: &ServerProcess, expected: u64) 
         .split('\t')
         .find_map(|field| field.strip_prefix("mode="))
         .ok_or_else(|| test_failure("startup census omitted mode"))?;
-    if mode != "clean_certificate" {
+    if mode != "complete_validation" {
         return Err(test_failure(format!(
-            "graceful real-daemon restart selected mode={mode}, expected clean_certificate"
+            "graceful V2 daemon restart selected mode={mode}, expected complete_validation"
         )));
     }
     let rebuilds = census
@@ -1582,7 +1561,7 @@ fn assert_readiness_path_rebuild_census(process: &ServerProcess, expected: u64) 
         .split('\t')
         .find_map(|field| field.strip_prefix("population_table_walk="))
         .ok_or_else(|| test_failure("startup census omitted population_table_walk"))?;
-    let expected_walk = if expected == 0 { "none" } else { "observed" };
+    let expected_walk = "observed";
     if population_walk != expected_walk {
         return Err(test_failure(format!(
             "readiness path reported population_table_walk={population_walk}, expected {expected_walk}"
@@ -1596,42 +1575,58 @@ fn assert_readiness_path_rebuild_census(process: &ServerProcess, expected: u64) 
     Ok(())
 }
 
-fn assert_graceful_shutdown_retains_checkpoint(
+fn assert_graceful_shutdown_preserves_pre_command_checkpoint(
     database_path: &Path,
-    expected_bytes: Option<&[u8]>,
+    seed_bytes: Option<&[u8]>,
 ) -> TestResult<()> {
+    use riffdb_storage_api::decode_validated_prefix_checkpoint_v2;
     let observed = read_validated_prefix_checkpoint_bytes_fixture(database_path)
-        .map_err(|error| test_failure(format!("checkpoint probe failed: {error:?}")))?;
-    if observed.as_deref() != expected_bytes {
-        return Err(test_failure(
-            "graceful shutdown changed retained validated-prefix checkpoint bytes".to_owned(),
-        ));
-    }
-    // CLEAN, not the stale optional prefix, authorizes bounded startup.
+        .map_err(|error| test_failure(format!("checkpoint probe failed: {error:?}")))?
+        .ok_or_else(|| test_failure("complete startup omitted its checkpoint"))?;
+    let seed = decode_validated_prefix_checkpoint_v2(
+        seed_bytes.ok_or_else(|| test_failure("seed startup omitted its checkpoint"))?,
+    )?;
+    let checkpoint = decode_validated_prefix_checkpoint_v2(&observed)?;
+    let before = seed.value().base();
+    let after = checkpoint.value().base();
+    assert_eq!(after.database_id(), before.database_id());
+    assert_eq!(after.history_incarnation(), before.history_incarnation());
+    assert_eq!(
+        after.previous_checkpoint_hash(),
+        Some(before.checkpoint_hash()),
+        "exactly one complete startup replaced the seed; shutdown must not add a checkpoint"
+    );
+    assert_eq!(
+        after.checkpoint_commit_sequence(),
+        before.checkpoint_commit_sequence()
+    );
+    assert_eq!(after.audit_sequence_bound(), before.audit_sequence_bound());
+    assert_eq!(after.counts(), before.counts());
+    assert_eq!(
+        after.entity_chain_fingerprint(),
+        before.entity_chain_fingerprint()
+    );
+    assert_eq!(
+        checkpoint.value().entity_counts(),
+        seed.value().entity_counts()
+    );
+    assert_eq!(
+        checkpoint.value().entity_transition_fingerprint(),
+        seed.value().entity_transition_fingerprint()
+    );
     let store = RedbStore::open(database_path)
         .map_err(|error| test_failure(format!("checkpoint reopen failed: {error:?}")))?;
     let session = store
         .begin_structural_evidence(daemon_startup_inputs())
         .map_err(|error| test_failure(format!("evidence session failed: {error:?}")))?;
-    // The ADR-0157 clean-close certificate specifically, not merely "one of the
-    // two fast paths". This assertion used to accept either proof, so a
-    // graceful shutdown that stopped certifying its clean close would still
-    // pass here on the retained validated-prefix checkpoint alone — and the
-    // only symptom would be that every future open of a large database took the
-    // complete validation pass. Name the declined precondition when it fails so
-    // the next reader does not have to instrument the engine to find out which
-    // of the nine closed the gate.
-    if !session.clean_close_fast_path() {
-        return Err(test_failure(format!(
-            "a real graceful daemon shutdown must leave a verifiable clean-close \
-             certificate; the next open declined bounded startup with decline={:?} \
-             (checkpoint_verified={} checkpoint_ignored={:?})",
-            session.clean_close_declined_reason(),
-            session.checkpoint_verified(),
-            session.checkpoint_ignored_reason(),
-        )));
-    }
-    drop(session);
+    assert!(
+        !session.clean_close_fast_path(),
+        "V2 cannot reuse a V1 CLEAN certificate"
+    );
+    assert_eq!(
+        session.clean_close_declined_reason(),
+        Some("bounded_roots_unavailable")
+    );
     Ok(())
 }
 

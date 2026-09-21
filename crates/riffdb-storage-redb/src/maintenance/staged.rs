@@ -20,6 +20,9 @@ use crate::error::storage_error;
 
 const COPY_BUFFER_BYTES: usize = 64 * 1024;
 
+#[path = "staged_promotion.rs"]
+mod promotion;
+
 #[path = "archive_restore.rs"]
 mod archive;
 pub(crate) use archive::PrivateArchiveValidationBinding;
@@ -44,6 +47,7 @@ pub struct RedbStagedRestore {
     configured_database_file: PathBuf,
     manifest: OfflineBackupManifestV1,
     manifest_identity: OfflineBackupManifestIdentityV1,
+    promoted_authorization_checksum: Option<BackupIntegrityChecksumV1>,
     backup_directory_guard: PinnedDirectory,
     configured_parent_guard: PinnedDirectory,
     stage_cleanup: StagedDirectoryCleanup,
@@ -109,12 +113,7 @@ impl RedbStagedRestore {
                 let staged_journal_file = crate::journal::journal_path(&staged_database_file);
                 let staged_format_marker_file =
                     crate::durable_format_marker_path(&staged_database_file);
-                crate::startup::RedbOfflineIntegrityScrub::from_inputs(
-                    &staged_database_file,
-                    validation_inputs,
-                )
-                .run()?;
-                Ok(Self {
+                let mut stage = Self {
                     operation_id,
                     backup_name,
                     backup_directory,
@@ -124,11 +123,14 @@ impl RedbStagedRestore {
                     configured_database_file,
                     manifest,
                     manifest_identity,
+                    promoted_authorization_checksum: None,
                     backup_directory_guard,
                     configured_parent_guard,
                     stage_cleanup,
                     test_controller,
-                })
+                };
+                stage.validate_materialized(validation_inputs)?;
+                Ok(stage)
             }
             Err(error) => {
                 stage_cleanup.remove_now()?;
@@ -172,6 +174,7 @@ impl RedbStagedRestore {
         validated_database_id: DatabaseId,
     ) -> Result<RedbSealedStagedRestore, StorageError> {
         self.verify_paths()?;
+        self.verify_promoted_authorization_seal()?;
         if validated_database_id != self.manifest.database_id() {
             return Err(corrupt());
         }

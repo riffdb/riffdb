@@ -95,6 +95,9 @@ include!("../startup_graceful_close_tests.rs");
 #[path = "../startup_v3_tests.rs"]
 mod v3;
 
+#[path = "../startup_v2_primary_tests.rs"]
+mod v2_primary;
+
 #[path = "../startup_v3_retention_tests.rs"]
 mod v3_retention;
 
@@ -145,7 +148,11 @@ fn inputs_at(seconds: i64) -> StartupValidationInputs {
 
 fn initialized_store(path: &TestDatabasePath, id: DatabaseId) -> RedbStore {
     let mut store = RedbStore::open(&path.0).expect("open store");
-    store.initialize_database(id).expect("initialize store");
+    // These structural corruption/migration fixtures predate V3 activation.
+    // Current source initialization is exercised separately by v2_primary.
+    store
+        .initialize_legacy_fixture(id)
+        .expect("initialize legacy fixture");
     store
 }
 
@@ -387,6 +394,40 @@ fn finish_structural(session: &mut RedbStructuralEvidenceSession) -> RedbStructu
     let (end, findings) = collect_structural(session);
     assert!(findings.is_empty());
     end
+}
+
+/// Complete source proof join; no dormant-port shortcut in runtime reopen tests.
+pub(crate) fn open_validated_source_fixture(
+    path: &std::path::Path,
+    profile: crate::RedbCommitProfile,
+    inputs: StartupValidationInputs,
+) -> crate::RedbOperationalPorts {
+    let store = RedbStore::open_with_commit_profile(path, profile).unwrap();
+    validate_source_store_fixture(store, inputs)
+}
+
+/// Same complete proof join, permitting closed storage failpoint controllers.
+pub(crate) fn validate_source_store_fixture(
+    store: RedbStore,
+    inputs: StartupValidationInputs,
+) -> crate::RedbOperationalPorts {
+    let mut session = store.begin_structural_evidence(inputs).unwrap();
+    let (structural_end, findings) = collect_structural(&mut session);
+    assert!(findings.is_empty(), "source findings: {findings:?}");
+    let (catalog, historical_end) = validate_catalog_history(&mut session).unwrap().into_parts();
+    let CatalogHistoryOutcome::Ready(catalog) = catalog else {
+        panic!("invalid source catalog");
+    };
+    let StructuralOpenOutcome::Clean(opened) =
+        session.finish(structural_end, historical_end).unwrap()
+    else {
+        panic!("invalid source structure");
+    };
+    let (database, session_id, _, dormant) = opened.into_parts();
+    assert!(catalog.matches(database, session_id));
+    dormant
+        .into_operational_after_catalog_validation()
+        .expect("fenced source audit/drain handoff")
 }
 
 /// Complete startup proof join for physical follower maintenance fixtures.

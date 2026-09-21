@@ -40,6 +40,7 @@ const STORAGE_SOURCES: &[&str] = &[
     "riffdb/storage/v1/replication_source_hold_v1.proto",
     "riffdb/storage/v1/replication_source_hold_v2.proto",
     "riffdb/storage/v1/authoritative_state_catalog_v1.proto",
+    "riffdb/storage/v1/authoritative_state_catalog_v2.proto",
     "riffdb/storage/v1/leadership_epoch_v1.proto",
     "riffdb/storage/v1/changelog_history_state_v3.proto",
     "riffdb/storage/v1/replication_follower_state_v3.proto",
@@ -81,6 +82,8 @@ const STORAGE_SOURCES: &[&str] = &[
     "riffdb/storage/v1/service_audit_v2.proto",
     "riffdb/storage/v1/service_audit_v3.proto",
     "riffdb/storage/v1/replication_administration_v1.proto",
+    "riffdb/storage/v1/primary_fence_v1.proto",
+    "riffdb/storage/v1/promotion_administration_v1.proto",
     "riffdb/storage/v1/validated_prefix_checkpoint_v1.proto",
     "riffdb/storage/v1/retention_watermark_v1.proto",
     "riffdb/storage/v1/vector_evidence_v1.proto",
@@ -100,6 +103,7 @@ const PRODUCTION_SOURCES: &[&str] = &[
     "riffdb/storage/v1/replication_source_hold_v1.proto",
     "riffdb/storage/v1/replication_source_hold_v2.proto",
     "riffdb/storage/v1/authoritative_state_catalog_v1.proto",
+    "riffdb/storage/v1/authoritative_state_catalog_v2.proto",
     "riffdb/storage/v1/leadership_epoch_v1.proto",
     "riffdb/storage/v1/changelog_history_state_v3.proto",
     "riffdb/storage/v1/replication_follower_state_v3.proto",
@@ -142,7 +146,9 @@ const PRODUCTION_SOURCES: &[&str] = &[
     "riffdb/storage/v1/service_audit_v2.proto",
     "riffdb/storage/v1/service_audit_v3.proto",
     "riffdb/storage/v1/replication_administration_v1.proto",
+    "riffdb/storage/v1/primary_fence_v1.proto",
     "riffdb/storage/v1/validated_prefix_checkpoint_v1.proto",
+    "riffdb/storage/v1/promotion_administration_v1.proto",
     "riffdb/storage/v1/retention_watermark_v1.proto",
     "riffdb/storage/v1/vector_evidence_v1.proto",
     "riffdb/storage/v1/vector_evidence_index_v1.proto",
@@ -755,6 +761,26 @@ const DURABLE_RECORDS: &[DurableRecord] = &[
         "StoredReplicationAdministrationV1",
         PayloadBound::Exact(2048),
     ),
+    durable(
+        "authoritative_state_catalog_v2.proto",
+        "StoredAuthoritativeStateCatalogV2",
+        PayloadBound::Exact(34),
+    ),
+    durable(
+        "primary_fence_v1.proto",
+        "ReplicationPrimaryAdmissionV1",
+        PayloadBound::Exact(1024),
+    ),
+    durable(
+        "primary_fence_v1.proto",
+        "StoredPrimaryFenceAdministrationV1",
+        PayloadBound::Exact(1000),
+    ),
+    durable(
+        "promotion_administration_v1.proto",
+        "StoredPromotionAdministrationV1",
+        PayloadBound::Exact(8192),
+    ),
 ];
 
 const LEGACY_DURABLE_RECORD_COUNT: usize = 26;
@@ -811,6 +837,8 @@ const EXPECTED_METHODS: &[(&str, &str, bool)] = &[
     ("AdminService", "RevokeCapability", false),
     ("AdminService", "RegisterFollower", false),
     ("AdminService", "RetireFollower", false),
+    ("AdminService", "FenceReplicationPrimary", false),
+    ("AdminService", "PromoteFollower", false),
     ("AdminService", "Stats", false),
     ("AdminService", "StartApplicationInstallation", false),
     ("CommandService", "Execute", false),
@@ -1307,6 +1335,18 @@ fn main() -> Result<(), Box<dyn Error>> {
     let source_hold_record = durable_registry
         .get(current_v1_record_count + 69)
         .ok_or_else(|| io::Error::other("durable source hold registry is incomplete"))?;
+    let primary_admission_record = durable_registry
+        .get(current_v1_record_count + 78)
+        .ok_or_else(|| io::Error::other("durable primary admission registry is incomplete"))?;
+    let primary_fence_record = durable_registry
+        .get(current_v1_record_count + 79)
+        .ok_or_else(|| io::Error::other("durable primary fence registry is incomplete"))?;
+    let promotion_record = durable_registry
+        .get(current_v1_record_count + 80)
+        .ok_or_else(|| io::Error::other("durable promotion registry is incomplete"))?;
+    let catalog_v2_record = durable_registry
+        .get(current_v1_record_count + 77)
+        .ok_or_else(|| io::Error::other("durable fencing catalog registry is incomplete"))?;
     let replication_administration_record = durable_registry
         .get(current_v1_record_count + 76)
         .ok_or_else(|| {
@@ -1785,6 +1825,10 @@ fn main() -> Result<(), Box<dyn Error>> {
     for (stem, record) in [
         ("changelog-allocator-v3", changelog_allocator_record),
         ("authoritative-state-catalog-v1", catalog_record),
+        ("authoritative-state-catalog-v2", catalog_v2_record),
+        ("replication-primary-admission-v1", primary_admission_record),
+        ("primary-fence-administration-v1", primary_fence_record),
+        ("promotion-administration-v1", promotion_record),
         ("leadership-epoch-v1", leadership_record),
         ("changelog-history-state-v3", history_record),
         ("replication-follower-state-v3", follower_record),
@@ -2099,9 +2143,9 @@ struct BuiltDurableRecord {
 fn build_durable_registry(
     storage: &FileDescriptorSet,
 ) -> Result<Vec<BuiltDurableRecord>, Box<dyn Error>> {
-    if DURABLE_RECORDS.len() != 106 {
+    if DURABLE_RECORDS.len() != 110 {
         return Err(
-            io::Error::other("readable durable registry must contain exactly 105 records").into(),
+            io::Error::other("readable durable registry must contain exactly 110 records").into(),
         );
     }
     if storage.file.len() != STORAGE_SOURCES.len()
@@ -2125,9 +2169,9 @@ fn build_durable_registry(
         .iter()
         .map(|file| file.enum_type.len())
         .sum::<usize>();
-    if message_count != 205 || enum_count != 30 {
+    if message_count != 209 || enum_count != 30 {
         return Err(io::Error::other(format!(
-            "storage schema must contain exactly 205 messages and 30 enums; found {message_count} messages and {enum_count} enums"
+            "storage schema must contain exactly 209 messages and 30 enums; found {message_count} messages and {enum_count} enums"
         ))
         .into());
     }
@@ -2481,6 +2525,18 @@ fn durable_writable_registry_fixture(
     let command_prefix = records
         .get(current_v1_record_count + 70..current_v1_record_count + 72)
         .ok_or_else(|| io::Error::other("durable registry is missing command-prefix authority"))?;
+    let primary_admission = records
+        .get(current_v1_record_count + 78)
+        .ok_or_else(|| io::Error::other("durable registry is missing primary admission"))?;
+    let primary_fence = records
+        .get(current_v1_record_count + 79)
+        .ok_or_else(|| io::Error::other("durable registry is missing primary fence"))?;
+    let promotion = records
+        .get(current_v1_record_count + 80)
+        .ok_or_else(|| io::Error::other("durable registry is missing promotion"))?;
+    let catalog_v2 = records
+        .get(current_v1_record_count + 77)
+        .ok_or_else(|| io::Error::other("durable registry is missing fencing catalog"))?;
     let replication_administration =
         records.get(current_v1_record_count + 76).ok_or_else(|| {
             io::Error::other("durable registry is missing replication administration")
@@ -2549,10 +2605,14 @@ fn durable_writable_registry_fixture(
         .chain(std::iter::once(source_hold_v2))
         .chain(export_ledger.iter())
         .chain(std::iter::once(service_audit_v3))
-        .chain(std::iter::once(replication_administration));
+        .chain(std::iter::once(replication_administration))
+        .chain(std::iter::once(catalog_v2))
+        .chain(std::iter::once(primary_admission))
+        .chain(std::iter::once(primary_fence))
+        .chain(std::iter::once(promotion));
 
     let mut output = String::from("riffdb-durable-writable-registry-v1\n");
-    let _ = writeln!(output, "records {}", current_v1_record_count + 59);
+    let _ = writeln!(output, "records {}", current_v1_record_count + 63);
     for record in writable {
         let _ = write!(output, "{} schema-hash=", record.record_type);
         for byte in record.schema_hash {
@@ -2891,6 +2951,7 @@ fn generate_rust(
     let generated = output_root.join("crates/riffdb-proto/src/generated");
     fs::create_dir_all(&generated)?;
     prost_build::Config::new()
+        .boxed(".riffdb.storage.v1.ReplicationPrimaryAdmissionV1.state.fenced")
         .out_dir(generated)
         .format(true)
         .compile_fds(descriptor_set)?;
@@ -3383,6 +3444,7 @@ fn wire_vectors() -> Result<String, Box<dyn Error>> {
         ),
         ("error.storage", PublicError::storage_unavailable()),
         ("error.outcome-unknown", PublicError::outcome_unknown()),
+        ("error.primary-fenced", PublicError::primary_fenced()),
         ("error.internal", PublicError::internal_defect(incident_id)),
     ];
     for (name, error) in errors {
@@ -3401,6 +3463,7 @@ fn public_client_vectors(descriptors: &FileDescriptorSet) -> Result<String, Box<
     };
 
     append_follower_lifecycle_vectors(&mut output);
+    append_primary_fence_vectors(&mut output);
 
     append_client_vector(
         &mut output,
@@ -8130,6 +8193,90 @@ fn append_follower_lifecycle_vectors(output: &mut String) {
             "riffdb.v1.RetireFollowerResponse",
             &v1::RetireFollowerResponse {
                 result: Some(v1::retire_follower_response::Result::Refusal(refusal)),
+            },
+        );
+    }
+}
+
+fn append_primary_fence_vectors(output: &mut String) {
+    let target = v1::ReplicationFollowerTarget {
+        database_id: public_request_id(),
+        history_incarnation: 1,
+        leadership_epoch: 1,
+        hold_id: vec![0x71; 16],
+    };
+    append_client_vector(
+        output,
+        "AdminService.FenceReplicationPrimary",
+        "request",
+        "exact-generation",
+        "riffdb.v1.FenceReplicationPrimaryRequest",
+        &v1::FenceReplicationPrimaryRequest {
+            request_id: public_request_id(),
+            operation_id: public_request_id(),
+            target: Some(target.clone()),
+            registration_generation: 3,
+        },
+    );
+    for (branch, replayed, position) in [
+        (
+            "applied-before-first",
+            false,
+            v1::frontier_position::Position::BeforeFirst(v1::Unit {}),
+        ),
+        (
+            "replayed-before-first",
+            true,
+            v1::frontier_position::Position::BeforeFirst(v1::Unit {}),
+        ),
+        (
+            "applied-positive",
+            false,
+            v1::frontier_position::Position::AppliedThrough(u64::MAX),
+        ),
+        (
+            "replayed-positive",
+            true,
+            v1::frontier_position::Position::AppliedThrough(u64::MAX),
+        ),
+    ] {
+        append_client_vector(
+            output,
+            "AdminService.FenceReplicationPrimary",
+            "response",
+            branch,
+            "riffdb.v1.FenceReplicationPrimaryResponse",
+            &v1::FenceReplicationPrimaryResponse {
+                result: Some(v1::fence_replication_primary_response::Result::Receipt(
+                    v1::PrimaryFenceReceipt {
+                        operation_id: public_request_id(),
+                        target: Some(target.clone()),
+                        registration_generation: 3,
+                        administration_sequence: 5,
+                        final_application_frontier: Some(v1::FrontierPosition {
+                            position: Some(position),
+                        }),
+                        replayed,
+                    },
+                )),
+            },
+        );
+    }
+    for (branch, refusal) in [
+        ("lineage-mismatch", 1),
+        ("registration-missing-or-stale", 2),
+        ("fence-conflict", 3),
+    ] {
+        append_client_vector(
+            output,
+            "AdminService.FenceReplicationPrimary",
+            "response",
+            branch,
+            "riffdb.v1.FenceReplicationPrimaryResponse",
+            &v1::FenceReplicationPrimaryResponse {
+                result: Some(v1::fence_replication_primary_response::Result::Refusal(
+                    refusal,
+                )),
             },
         );
     }

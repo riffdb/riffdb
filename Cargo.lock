@@ -1861,6 +1861,7 @@ dependencies = [
 name = "riffdb-commit"
 version = "0.1.0"
 dependencies = [
+ "riffdb-auth",
  "riffdb-catalog",
  "riffdb-conflict",
  "riffdb-contract-compiler",
@@ -2283,6 +2284,7 @@ dependencies = [
  "riffdb-query-ir",
  "riffdb-riffql-syntax",
  "riffdb-storage-api",
+ "riffdb-storage-redb",
  "riffdb-types",
  "sha2",
  "tempfile",
