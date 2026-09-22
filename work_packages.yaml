@@ -27107,3 +27107,40 @@ work_packages:
     scale: Classification is a local analysis over a command's already-bounded bindings and
       requires. It adds no runtime work and no unbounded compile-time work.
   human_review_triggers: *id001
+- id: WP-808
+  name: Governance verifies its own claims
+  tier: internal
+  depends_on: []
+  objective: Four governance defects found in one session share one shape - a named thing that
+    does not exist. ADB-C042 was a diagnostic SPEC printed that no pass emits. AGENTS.md names
+    ./scripts/downstream-adapter-check among the checks acceptance runs, and it is absent.
+    ADR-0181 decided scripts/check-adr-form and adr/GLOSSARY.md and neither was written. The
+    process that makes the compiler prove a contract's claims does not check its own, so it
+    describes itself inaccurately and nothing notices. Make it check itself.
+  requirements: []
+  required_adrs: [ADR-0181]
+  allowed_paths: [AGENTS.md, SPEC.md, work_packages.yaml, adr/**, scripts/**, docs/**,
+    crates/riffdb-contract-compiler/examples/**]
+  deliverables:
+  - A check that every scripts/<name> and repository path named in AGENTS.md, in SPEC.md, and in
+    an accepted record's Decision section resolves to a file that exists, with a self-test that
+    proves it catches an absent one
+  - The check wired into the path-triggered plan so a change that names a new artifact cannot
+    merge before the artifact does
+  - Every instance the check finds at introduction, fixed or struck - beginning with
+    ./scripts/downstream-adapter-check, which AGENTS.md names and docs/CONTRIBUTING.md does not
+    explain, and which WP-807 declared as an acceptance command and could not run
+  - A recorded finding on whether check-allowed-paths reading allowed_paths at the merge base is
+    correct, since a package that widens its own scope cannot pass its own check until it merges,
+    which cost this session a cherry-pick and a back-merge for no safety
+  acceptance_commands:
+  - ./scripts/acceptance --wp WP-808
+  exit_gate: A named script, path, or artifact that does not exist fails a check rather than
+    waiting to be noticed by a reader, and the instances present when this package opened are
+    gone.
+  standing_design_tests:
+    interface_safety: Not applicable; the package adds no application surface. It adds a check
+      over the repository's own prose.
+    scale: The check is a scan over a fixed set of governing documents and accepted records, and
+      it reports every instance rather than the first.
+  human_review_triggers: *id001
