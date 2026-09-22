@@ -27030,6 +27030,34 @@ work_packages:
     reasoning, each component is classified as guarantee-inherent, representation-inherent
     or incidental with evidence, and the POC-exit review can read what ratio is reachable
     without weakening a guarantee.
+  closure:
+    status: complete
+    completed_at: '2026-09-22'
+    evidence: docs/performance/wp-806-write-path-c3d-2026-09.md
+    decision: Retain ADR-0257's two fixed catalog digest caches after the frozen C3D comparison.
+      Fresh write throughput improves 4.5 percent at c1 and 8.7 percent at c32 versus control;
+      every measured load remains within the bank's four-percent noise band. Full-scale
+      candidate write throughput reaches 0.659 times safe-app PostgreSQL and mixed throughput
+      reaches 1.020 times, with mixed p95 at 1.032 times. Attribution and an achievable ratio
+      are supplied without weakening any guarantee; PostgreSQL write parity is not achieved.
+    decisions_taken:
+    - Accept ADR-0257 under the maintainer's explicit delegation and extend scope in a separate
+      prerequisite commit only for closed declaration digests and their competing-first-call proof.
+    - Synchronize the stale nested benchmark CRC lock with the already accepted workspace graph
+      after the initial locked build refused it, before any workload measurements began.
+    - Retain all 76 reports from both campaigns; qualify the cache against a fresh rotating
+      bank-control-candidate comparison rather than the older slower control campaign.
+    - Publish numeric reductions and source hashes without private machine identifiers or raw logs.
+    - Classify required provenance, audit, canonical ordering and durability separately from
+      representation costs and the removed incidental declaration recomputation; never add
+      overlapping stage timers or equate intrusive allocator counts with committed writes.
+    hazards:
+    - Candidate write p99 is 104.858 ms versus PostgreSQL's 14.680 ms and exceeds the earlier
+      control campaign's median; sequential campaigns do not isolate a causal tail regression.
+    - N1/E2 release qualification, production payloads, projections, text and row policies remain
+      unqualified. C3D mixed parity is not release-gate clearance.
+    - Named CPU symbols and record-assembly timers do not isolate all inclusive provenance cost;
+      unresolved CPU samples and thread-open warnings remain explicit in the evidence.
   standing_design_tests:
     interface_safety: No optimization may make a guarantee optional, add a fast path that
       skips provenance, audit or durability, or expose a tuning knob that lets an
