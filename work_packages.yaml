@@ -27062,6 +27062,44 @@ work_packages:
   exit_gate: A silent lost update is not expressible. A deliberate overwrite still is, but
     only where a reviewer reads it, and `an_unguarded_overwrite_is_accepted_and_unmarked`
     has been replaced by its inverse.
+  closure:
+    status: complete
+    completed_at: '2026-09-21'
+    evidence: crates/riffdb-contract-compiler/tests/unguarded_overwrite.rs
+    decision: A silent lost update is no longer expressible. `overwrite` is a keyword beside
+      `set`, the compiler proves the spelling against what the command constrains and refuses
+      both mismatches, and the classification is carried in the plan and its hash, selecting
+      V24 only for a contract that declares one.
+    decisions_taken:
+    - Guardedness is a property of the binding, not of the field written, because commit-time
+      revalidation is per record. If anything in the command reads a stored field of a
+      binding, a concurrent change invalidates the whole command and every write to it is
+      protected.
+    - An invariant does not guard, so ADR-0256's "or the aggregate an invariant" clause is
+      vacuous rather than wrong. Invariants constrain post-commit state, and a lost update
+      produces a state satisfying every invariant. Recorded for a clarifying amendment rather
+      than reinterpreted silently.
+    - A distinct instruction tag over a widened SET_FIELD payload, so a guarded write encodes
+      exactly the bytes it did and no existing plan hash moves for a property most contracts
+      do not use.
+    - The analysis covers decision arms, whose predicates guard and whose conditional effects
+      are classified like any other write.
+    - "`explain` annotates only field assignments. An embedding carries its own model
+      evidence and a workflow transition states its expected revision; neither is a spelling
+      an author chooses."
+    - The app-baseline ticketdesk contract declares its unguarded writes rather than tightening
+      them. It is the banked comparison workload under ADR-0239, and adding a predicate and an
+      outcome would change the work per command and the comparison with it.
+    - Four era fixtures pinning V12, V15, V20 and V21 were guarded with real preconditions
+      instead of respelled, because declaring an unguarded write would lift them to V24 and
+      destroy what they test.
+    hazards:
+    - ADR-0256's Decision 1 names an invariant that reads a binding's pre-image as a guard. No
+      invariant does. The clause is inert, not harmful, but it should be amended to say so.
+    - Every existing first-party contract was classified in this package. An application
+      outside this repository with an unguarded write will not compile until it is respelled;
+      that is the intended migration and it has no automated path.
+
   standing_design_tests:
     interface_safety: An application cannot express a write whose concurrency semantics are
       last-writer-wins without saying so at the point of use. No flag, binding mode, or
