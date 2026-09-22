@@ -26998,10 +26998,16 @@ work_packages:
     writes. SPEC section 262 makes that a go/no-go input to the POC-exit decision, and the
     evidence is published but unworked. Attribute the write-path cost to its components and
     close what can be closed without weakening a guarantee.
-  requirements: []
-  required_adrs: [ADR-0239, ADR-0238]
+  requirements: [REP-003, REP-005, STO-012]
+  required_adrs: [ADR-0239, ADR-0238, ADR-0257]
   allowed_paths: [work_packages.yaml, docs/performance/**, benchmarks/**,
-    scripts/check-performance-freeze]
+    scripts/check-performance-freeze,
+    crates/riffdb-storage-api/src/authoritative_catalog.rs,
+    crates/riffdb-storage-api/src/authoritative_catalog_v2.rs,
+    crates/riffdb-storage-api/src/authoritative_catalog/digest_tests.rs,
+    adr/0257-cache-only-closed-authoritative-catalog-digests.md, adr/README.md]
+  # ADR-0257's delegated exact-text scope review permits only the immutable
+  # declaration-digest candidate and its deterministic initialization proof.
   deliverables:
   - A per-component attribution of one write, measured rather than reasoned, covering at
     least provenance record construction, audit, journal append and fsync, canonical
@@ -27016,6 +27022,8 @@ work_packages:
   - A statement of what ratio is achievable without weakening provenance, audit,
     durability of acknowledged writes, or canonical ordering, so the POC-exit review has a
     number rather than an intention
+  - ADR-0257's competing-first-call test proves independent frozen fixture hashes and
+    exactly one digest computation per version, without changing a stored-data check
   acceptance_commands:
   - ./scripts/acceptance --wp WP-806
   exit_gate: The write-path cost is attributed to components with measurements rather than

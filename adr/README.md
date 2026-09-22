@@ -291,6 +291,7 @@ record with no front matter.
 | [0254](0254-conflict-keys-protect-invariants-by-construction.md) | Conflict Keys Protect Invariants By Construction | Accepted | surface |
 | [0255](0255-a-declared-approximate-vector-tier-must-be-reachable.md) | A Declared Approximate Vector Tier Must Be Reachable | Accepted | surface |
 | [0256](0256-an-unguarded-overwrite-must-be-declared.md) | An Unguarded Overwrite Must Be Declared | Accepted | guarantee |
+| [0257](0257-cache-only-closed-authoritative-catalog-digests.md) | Cache Only Closed Authoritative Catalog Digests | Accepted | surface |
 <!-- adr-index:end -->
 
 The human architecture review on 2026-07-12 approved the direction represented
