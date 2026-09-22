@@ -27109,7 +27109,7 @@ work_packages:
   human_review_triggers: *id001
 - id: WP-808
   name: Governance verifies its own claims
-  tier: internal
+  tier: guarantee
   depends_on: []
   objective: Four governance defects found in one session share one shape - a named thing that
     does not exist. ADB-C042 was a diagnostic SPEC printed that no pass emits. AGENTS.md names

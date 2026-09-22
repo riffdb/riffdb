@@ -59,19 +59,42 @@ contracts_filter = ->(paths) { paths.reject { |path| path.include?("/templates/"
 in_repository = contracts_filter.call(in_repository)
 siblings = contracts_filter.call(siblings)
 
-contracts = in_repository + siblings
-if contracts.empty?
+def compile(contracts)
+  return [true, ""] if contracts.empty?
+
+  command = [
+    "cargo", "run", "--quiet", "--package", "riffdb-contract-compiler",
+    "--example", "check_contracts", "--"
+  ] + contracts
+  output, status = Open3.capture2e(*command, chdir: ROOT)
+  [status.success?, output]
+end
+
+if in_repository.empty? && siblings.empty?
   puts "No adapter contracts found."
   exit 0
 end
 
-puts "Checking #{in_repository.length} in-repository and #{siblings.length} sibling contract(s)."
+puts "Checking #{in_repository.length} in-repository contract(s)."
+repository_ok, repository_output = compile(in_repository)
+puts repository_output
 
-command = [
-  "cargo", "run", "--quiet", "--package", "riffdb-contract-compiler",
-  "--example", "check_contracts", "--"
-] + contracts
-output, status = Open3.capture2e(*command, chdir: ROOT)
-puts output
+# A sibling checkout is whatever this developer happens to have, at whatever
+# revision. It is the most valuable signal here and the least reproducible one,
+# so it reports and never fails: a check that blocks this repository on another
+# repository's state is a check that gets switched off.
+unless siblings.empty?
+  puts "Checking #{siblings.length} sibling adapter contract(s) (advisory)."
+  _, sibling_output = compile(siblings)
+  puts sibling_output
+  refused = sibling_output.lines.grep(/^refused /).map { |line| line.split(":").first }.uniq
+  unless refused.empty?
+    warn ""
+    warn "A sibling adapter no longer compiles against this checkout:"
+    refused.each { |line| warn "  #{line.sub(/\Arefused /, '')}" }
+    warn "This does not fail the check, because the sibling's revision is not this"
+    warn "repository's to control. It is reported because nothing else reports it."
+  end
+end
 
-exit(status.success? ? 0 : 1)
+exit(repository_ok ? 0 : 1)
