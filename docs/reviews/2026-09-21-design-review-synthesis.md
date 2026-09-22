@@ -123,6 +123,10 @@ protection currently rests on nothing the compiler proves.
   no evidence from real models, and the "learnable from error messages at
   runtime" claim is aspiration — the runtime diagnostic surface is thin
   compared with the deploy-time surface.
+  Follow-up: the [RDB-C048 natural authoring case](https://github.com/riffdb/riffdb/blob/main/evaluations/agent-authoring/README.md)
+  now records one observed adapter migration and controlled compiler replays.
+  It separates four false positives from 13 structurally unguarded writes;
+  it supplies no MCP catalog-selection measurement and leaves R-06 open.
 - **S-12.** Vision contradictions: "one process, one backup unit"
   (VISION.md:29-31) is broken by the replication tier and follower columnar
   views; VISION.md never mentions followers, partitions, or replication.
