@@ -105,7 +105,10 @@ pub(super) fn execute(
         metric: request.metric(),
         predicates: request.predicates().to_vec(),
         budget: QueryBudget {
-            max_scanned_rows: 500,
+            max_scanned_rows: production_vector_candidate_ceiling(
+                observation.definition(),
+                request.field(),
+            ),
             max_group_cardinality: 1,
         },
     };
@@ -126,6 +129,33 @@ pub(super) fn execute(
         observation.published_frontier().clone(),
         observation.head().clone(),
     ))
+}
+
+/// Rows one organization may merge before a production vector query refuses,
+/// for a field that declares no approximate tier.
+///
+/// A field with no ANN declaration has asked for exact search and nothing else,
+/// so this bound is the server's own and is deliberately small.
+const UNDECLARED_VECTOR_CANDIDATE_CEILING: usize = 500;
+
+/// Rows one organization may merge before a production vector query refuses.
+///
+/// A declared ANN tier engages only *above* the contract's `row_threshold`, and
+/// the merge happens before that test, so a ceiling below the declared
+/// threshold would refuse the query first and the declared tier could never run
+/// (ADR-0255). A field that declares one is therefore served up to
+/// `MAX_VECTOR_ANN_THRESHOLD_ROWS_PER_ORG`, which is the per-organization row
+/// count the declaration's own bound is expressed in: the contract author chose
+/// to be measured against it.
+fn production_vector_candidate_ceiling(
+    definition: &riffdb_columnar::RegisteredDefinition,
+    field: FieldId,
+) -> usize {
+    if definition.vector_ann_config(field).is_some() {
+        riffdb_contract_ir::MAX_VECTOR_ANN_THRESHOLD_ROWS_PER_ORG as usize
+    } else {
+        UNDECLARED_VECTOR_CANDIDATE_CEILING
+    }
 }
 
 fn trusted_commit_lag_ms(
@@ -195,4 +225,103 @@ fn graph_context(
         append(&[])?;
     }
     Some(bytes)
+}
+
+#[cfg(test)]
+mod ceiling_tests {
+    use super::*;
+    use riffdb_columnar::ColumnarProjectionDefinition;
+    use riffdb_contract_compiler::compile_contract_source;
+
+    const DECLARED: &str = r#"
+contract AnnDocs version 1 {
+  entity Document {
+    key (org_id: uuid, doc_id: uuid)
+    field title: string<64>
+    vector_field embedding(12, cosine, (title), staleness_slo 60, ann_threshold 4096, recall_target_bps 9500)
+  }
+  aggregate Documents {
+    root Document
+    partition_by org_id
+    conflict_key (org_id, doc_id)
+  }
+}
+"#;
+
+    const UNDECLARED: &str = r#"
+contract AnnDocs version 1 {
+  entity Document {
+    key (org_id: uuid, doc_id: uuid)
+    field title: string<64>
+    vector_field embedding(12, cosine, (title), staleness_slo 60)
+  }
+  aggregate Documents {
+    root Document
+    partition_by org_id
+    conflict_key (org_id, doc_id)
+  }
+}
+"#;
+
+    fn definition(source: &str) -> (riffdb_columnar::RegisteredDefinition, FieldId) {
+        let bundle = compile_contract_source(source).expect("contract compiles");
+        let field = |name: &str| {
+            bundle.schema().entities()[0]
+                .record()
+                .fields()
+                .iter()
+                .find(|candidate| candidate.name() == name)
+                .expect("field")
+                .id()
+        };
+        let embedding = field("embedding");
+        let registered = riffdb_columnar::RegisteredDefinition::register(
+            ColumnarProjectionDefinition {
+                name: "document_vectors".into(),
+                entity_name: "Document".into(),
+                projected_fields: vec![field("title"), embedding],
+                org_scope_field: field("org_id"),
+            },
+            &bundle,
+        )
+        .expect("register");
+        (registered, embedding)
+    }
+
+    /// A declared approximate tier engages only *above* the contract's
+    /// `ann_threshold`, and the merge that feeds it happens first. A ceiling
+    /// below the declared threshold refuses the query before the tier can run,
+    /// which is what made a declaration of 500 or more inert (ADR-0255).
+    // req: VEC-010
+    #[test]
+    fn a_declared_approximate_tier_is_served_up_to_its_declarable_bound() {
+        let (registered, field) = definition(DECLARED);
+        let ceiling = production_vector_candidate_ceiling(&registered, field);
+        let declared = registered
+            .vector_ann_config(field)
+            .expect("the contract declares an approximate tier")
+            .row_threshold() as usize;
+        assert!(
+            ceiling > declared,
+            "a declared threshold of {declared} must be reachable, not refused first"
+        );
+        assert_eq!(
+            ceiling,
+            riffdb_contract_ir::MAX_VECTOR_ANN_THRESHOLD_ROWS_PER_ORG as usize,
+            "the bound is the per-organization row count the declaration is expressed in"
+        );
+    }
+
+    /// A field that declares no approximate tier asked for exact search and
+    /// nothing else, so the server keeps its own smaller bound.
+    // req: VEC-010
+    #[test]
+    fn an_undeclared_field_keeps_the_servers_own_ceiling() {
+        let (registered, field) = definition(UNDECLARED);
+        assert!(registered.vector_ann_config(field).is_none());
+        assert_eq!(
+            production_vector_candidate_ceiling(&registered, field),
+            UNDECLARED_VECTOR_CANDIDATE_CEILING
+        );
+    }
 }

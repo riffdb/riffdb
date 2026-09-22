@@ -1250,7 +1250,7 @@ contract ServiceValues version 1 {
     service execution_id: uuid_v7
     idempotency_key request_key
     mutate Item(tenant, item_id) as item else Missing {}
-    set item.touched_at = observed_at
+    overwrite item.touched_at = observed_at
     return Touched { execution_id: execution_id }
   }
 }

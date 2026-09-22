@@ -67,7 +67,7 @@ has expression drift. The complete target read must appear before the relevant
 `create` or `mutate`, must declare what happens when the target is absent, and
 must use the same key input expressions as the stored relationship fields. For
 example, after `read Author(site_id, author_id) as author`, store
-`post.author_id = author_id`. In grammar v1, storing
+`post.author_id = author_id`. In the contract grammar, storing
 `post.author_id = author.author_id` is value-equivalent after the read but is
 not the same structural expression and therefore does not satisfy the proof.
 The database does not infer that equivalence or weaken the declared

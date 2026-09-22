@@ -10,7 +10,7 @@ use riffdb_contract_ir::{
     FieldSchema, Instruction, IrValidationError, KeySchema, LocalityPlan, OutcomeConstruction,
     OutcomeSchema, RecordSchema, RecordTypeRef, RootValidationReadId, RootValidationReadPlan,
     SchemaIr, SecretRevealDestinationV1, SecretRevealSpecV1, ServiceValueKind, ServiceValueSchema,
-    WorkflowLeaseFields, WorkflowLeaseOperation,
+    WorkflowLeaseFields, WorkflowLeaseOperation, WriteGuard,
 };
 use riffdb_contract_syntax::Span;
 use riffdb_types::{CanonicalValue, ContractLineage, EntityTypeId, FieldId, InvariantId};
@@ -34,6 +34,7 @@ enum RawInstruction {
         binding: BindingId,
         field: FieldId,
         value: ExprId,
+        guard: WriteGuard,
     },
     SetEmbedding {
         binding: BindingId,
@@ -271,16 +272,10 @@ fn lower_command(
         &mut diagnostics,
     );
 
-    let (locality, aggregate_id) =
+    let (locality, _anchor_aggregate_id) =
         lower_locality(hir, schema, command, &mut hir_expressions, &mut diagnostics);
-    let (raw_checks, raw_root_validation_reads) = lower_commit_checks(
-        hir,
-        schema,
-        command,
-        aggregate_id,
-        &mut hir_expressions,
-        &mut diagnostics,
-    );
+    let (raw_checks, raw_root_validation_reads) =
+        lower_commit_checks(hir, schema, command, &mut hir_expressions, &mut diagnostics);
     let (raw_instructions, repeated_instruction_range) =
         command_instructions(command, &mut diagnostics);
     validate_event_partition_proofs(
@@ -498,10 +493,12 @@ fn lower_command(
                 binding,
                 field,
                 value,
+                guard,
             } => Instruction::SetField {
                 binding,
                 field,
                 value,
+                guard,
             },
             RawInstruction::SetEmbedding {
                 binding,
@@ -966,11 +963,13 @@ fn lower_decision_effect(
             binding,
             field,
             value,
+            spelling,
             ..
         } => Instruction::SetField {
             binding: *binding,
             field: *field,
             value: value.id,
+            guard: write_guard(*spelling),
         },
         HirEffect::Embed {
             binding,
@@ -1406,6 +1405,17 @@ fn normalize_outcomes<'a>(
     (schemas, normalized)
 }
 
+/// The plan's classification for an author's spelling.
+///
+/// Command analysis refuses a contract whose spelling disagrees with what the
+/// command proves, so by the time a plan is built the two are the same fact.
+const fn write_guard(spelling: riffdb_contract_syntax::ast::WriteSpelling) -> WriteGuard {
+    match spelling {
+        riffdb_contract_syntax::ast::WriteSpelling::Set => WriteGuard::Guarded,
+        riffdb_contract_syntax::ast::WriteSpelling::Overwrite => WriteGuard::Unguarded,
+    }
+}
+
 fn lower_locality(
     hir: &TypedContractHir,
     schema: &SchemaIr,
@@ -1532,11 +1542,38 @@ fn lower_locality(
     }
 }
 
+/// Every aggregate a command writes, in canonical identifier order.
+///
+/// An aggregate invariant is owed to every aggregate the command mutates, not
+/// to whichever one the first declared binding happens to belong to. Ordering
+/// the set by identifier keeps the lowered plan a property of the schema rather
+/// than of the order the source text declares its bindings in.
+fn written_aggregates(
+    hir: &TypedContractHir,
+    command: &HirCommand,
+) -> BTreeSet<riffdb_types::AggregateTypeId> {
+    command
+        .bindings
+        .iter()
+        .filter(|binding| {
+            matches!(
+                binding.mode,
+                BindingMode::Mutate
+                    | BindingMode::Create
+                    | BindingMode::InitOrMutate
+                    | BindingMode::ObserveOrInitialize
+                    | BindingMode::Delete
+            )
+        })
+        .filter_map(|binding| hir.aggregate_for_entity(binding.entity_id))
+        .map(|aggregate| aggregate.id)
+        .collect()
+}
+
 fn lower_commit_checks(
     hir: &TypedContractHir,
     schema: &SchemaIr,
     command: &HirCommand,
-    aggregate_id: Option<riffdb_types::AggregateTypeId>,
     expressions: &mut HirExpressionArena,
     diagnostics: &mut Vec<CompilerDiagnostic>,
 ) -> (Vec<RawCommitCheck>, Vec<RawRootValidationRead>) {
@@ -1573,23 +1610,59 @@ fn lower_commit_checks(
             }
         }
     }
-    let Some(aggregate_id) = aggregate_id else {
-        return (checks, Vec::new());
-    };
+    let mut root_validation_reads = Vec::new();
+    for aggregate_id in written_aggregates(hir, command) {
+        lower_aggregate_invariants(
+            hir,
+            schema,
+            command,
+            aggregate_id,
+            expressions,
+            diagnostics,
+            &mut checks,
+            &mut root_validation_reads,
+        );
+    }
+    // The IR coverage proof compares the lowered checks against the applicable
+    // invariants in this order. Sorting here is what makes the two agree for
+    // any declaration order; a plan that compiles today is already in it, so
+    // no existing plan hash moves.
+    checks.sort_by(|left, right| {
+        left.invariant_id
+            .cmp(&right.invariant_id)
+            .then_with(|| left.source_bindings.cmp(&right.source_bindings))
+            .then_with(|| left.root_validation_reads.cmp(&right.root_validation_reads))
+    });
+    (checks, root_validation_reads)
+}
+
+/// Lowers one aggregate's invariants into commit checks over the root records
+/// the command's writes reach.
+#[allow(clippy::too_many_arguments)]
+fn lower_aggregate_invariants(
+    hir: &TypedContractHir,
+    schema: &SchemaIr,
+    command: &HirCommand,
+    aggregate_id: riffdb_types::AggregateTypeId,
+    expressions: &mut HirExpressionArena,
+    diagnostics: &mut Vec<CompilerDiagnostic>,
+    checks: &mut Vec<RawCommitCheck>,
+    root_validation_reads: &mut Vec<RawRootValidationRead>,
+) {
     let Some(aggregate) = hir.aggregate(aggregate_id) else {
         diagnostics.push(ir_diagnostic(command.span));
-        return (checks, Vec::new());
+        return;
     };
     if aggregate.invariants.is_empty() {
-        return (checks, Vec::new());
+        return;
     }
     let Some(root) = hir.entity(aggregate.root) else {
         diagnostics.push(ir_diagnostic(aggregate.root_span));
-        return (checks, Vec::new());
+        return;
     };
     let Some(root_schema) = schema.entity(root.id) else {
         diagnostics.push(ir_diagnostic(root.span));
-        return (checks, Vec::new());
+        return;
     };
 
     let mut accessed_fields = BTreeSet::new();
@@ -1622,6 +1695,14 @@ fn lower_commit_checks(
                 | BindingMode::Delete
         )
     }) {
+        // A write to another aggregate does not reach this aggregate's root,
+        // and its key arguments do not derive this root's key.
+        if hir
+            .aggregate_for_entity(binding.entity_id)
+            .is_none_or(|owner| owner.id != aggregate_id)
+        {
+            continue;
+        }
         if binding.mode == BindingMode::Delete && binding.entity_id == aggregate.root {
             continue;
         }
@@ -1648,7 +1729,6 @@ fn lower_commit_checks(
         });
     }
 
-    let mut root_validation_reads = Vec::new();
     for target in targets {
         let source_root = command.bindings.iter().find(|binding| {
             binding.entity_id == root.id
@@ -1703,7 +1783,6 @@ fn lower_commit_checks(
             }
         }
     }
-    (checks, root_validation_reads)
 }
 
 fn root_key_derivation(
@@ -1882,11 +1961,13 @@ fn command_instructions(
                 binding,
                 field,
                 value,
+                spelling,
                 ..
             } => effects.push(RawInstruction::SetField {
                 binding: *binding,
                 field: *field,
                 value: value.id,
+                guard: write_guard(*spelling),
             }),
             HirEffect::Embed {
                 binding,
@@ -2268,8 +2349,8 @@ contract Example version 1 {
     idempotency_key request_key
     mutate Child(tenant, root_id, first_child) as first else MissingFirst {}
     mutate Child(tenant, root_id, second_child) as second else MissingSecond {}
-    set first.amount = amount
-    set second.amount = amount
+    overwrite first.amount = amount
+    overwrite second.amount = amount
     return Changed { first: first, second: second }
   }
 }
@@ -2368,7 +2449,7 @@ contract Example version 1 {
     idempotency_key request_key
     read Root(tenant, root_id) as root_row else MissingRoot {}
     mutate Child(tenant, root_id, child_id) as child_row else MissingChild {}
-    set child_row.amount = amount
+    overwrite child_row.amount = amount
     return Changed { root_row: root_row, child_row: child_row }
   }
 }
@@ -2432,8 +2513,8 @@ contract Example version 1 {
     idempotency_key request_key
     mutate Child(tenant, first_root, first_child) as first else MissingFirst {}
     mutate Child(tenant, second_root, second_child) as second else MissingSecond {}
-    set first.amount = amount
-    set second.amount = amount
+    overwrite first.amount = amount
+    overwrite second.amount = amount
     return Changed { first: first, second: second }
   }
 }
@@ -2485,7 +2566,7 @@ contract Example version 1 {
     input amount: i64
     idempotency_key request_key
     mutate Child(tenant, root_id, child_id) as child_row else MissingChild {}
-    set child_row.amount = amount
+    overwrite child_row.amount = amount
     return Changed { child_row: child_row }
   }
 }

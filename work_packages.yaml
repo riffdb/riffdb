@@ -23069,7 +23069,7 @@ work_packages:
 - id: WP-749
   name: Changelog-derived incremental and remote backup
   tier: guarantee
-  depends_on: [WP-746, WP-808]
+  depends_on: [WP-746, WP-809]
   objective: Implement ADR-0178 section 7. Persist validated changelog frames to a configured
     archive sink beside periodic offline full backups, publish an additive archive manifest, and
     restore from a verified full backup plus the archived suffix through the follower applier
@@ -23127,15 +23127,15 @@ work_packages:
   closure:
     status: blocked
     blocked_at: '2026-09-21'
-    blocked_by: [WP-808]
+    blocked_by: [WP-809]
     evidence: docs/performance/wp749-archive-qualification-2026-09.md
     reason: The acknowledgement-latency gate is unmet. The isolated archive comparison
       moves P99 from 88.35 to 114.93 ms. Its dominant named mechanism is checkpoint-coupled
-      journal durability, present without archive and owned by WP-808. The roughly
+      journal durability, present without archive and owned by WP-809. The roughly
       11.7 ms fixed-trace residual remains unattributed; existing subtraction analyses
       do not identify a causal archive cost. Stop WP-749 investigation until the shared
       term is reduced, then measure archive acknowledgement cost directly.
-    resume_when: WP-808 lands a guarantee-preserving reduction of the shared checkpoint
+    resume_when: WP-809 lands a guarantee-preserving reduction of the shared checkpoint
       term with its own correctness and performance evidence. Closing or renaming that
       package without reducing the term does not clear this dependency.
     remeasurement: After the prerequisite, freeze refreshed source and toolchain and use
@@ -23148,8 +23148,9 @@ work_packages:
     decisions_taken:
     - 'Maintainer direction, in session, 2026-09-21: block WP-749 on the checkpoint/journal
       package, publish the named dominant mechanism and explicitly unattributed remainder,
-      and stop. That package was locally numbered WP-806; renumber it WP-808 because main
-      independently assigned WP-806 to the semantic write-path comparison task. The
+      and stop. That package was locally numbered WP-806, then WP-808; renumber it WP-809
+      because main independently assigned WP-806 to the semantic write-path comparison
+      task and WP-808 to governance verification. The
       dependency follows the same checkpoint work. WP-748 is already complete on main
       and has no dependency on this block. No additional subtraction or measurement.'
     - Full workspace CI exposed simulation fixtures whose entity images omitted
@@ -24068,7 +24069,13 @@ work_packages:
 - id: WP-758
   name: Obligations ledger closure and ADR form governance
   tier: internal
-  depends_on: [WP-757]
+  # Unblocked 2026-09-21. This depended on WP-757 because ADR-0181 bundled a
+  # format-epoch reset with the governance-load remedies, not because closing
+  # the ledger needs epoch 2. No ledger entry references WP-757, and none of
+  # this package's deliverables touch a durable format. The remedies for
+  # governance load had been waiting on the largest package in the repository
+  # for twenty days, during which 76 records were added.
+  depends_on: []
   objective: Discharge or strike all 144 entries in adr/obligations-outstanding.yaml, remove the
     ledger, make scripts/check-adr-obligations reject any ledger, and add scripts/check-adr-form with
     the repository glossary so ADR length, sections, and SPEC document-control rows are bounded.
@@ -26766,6 +26773,28 @@ work_packages:
   exit_gate: A repeatable defect one client can reach does not stop the runtime however
     often it is repeated, a burst of process-scoped defects still stops it, and a budget
     driven to empty recovers with time rather than staying spent for the process's life.
+  closure:
+    status: complete
+    completed_at: '2026-09-21'
+    evidence: adr/0250-a-defect-breaker-trips-on-rate-not-on-lifetime-count.md
+    decision: ADR-0250 is implemented on the sink production wires. InternalError carries a
+      DefectScope set at every construction site with no default. Observability's registry
+      rings rather than refusing, only process-scoped defects draw on a burst of sixteen
+      that refills one a minute, and readiness fails only when that budget is spent. The
+      three obligation proofs exercise Observability::record_internal, which every running
+      server installs through ProductionObservabilityDiagnostics.
+    decisions_taken:
+    - ProductionServiceDiagnostics is removed. It was constructed only inside a test module
+      and nothing in the graph, the follower service or the restore host ever built one,
+      so the retention ring, budget and clock that served it went with it.
+    - The budget constants live in riffdb-observability rather than riffdb-server, so the
+      record's numbers have one home and the lower crate can charge them.
+    outstanding:
+    - The first implementation of this record went into the unwired type and its three
+      proofs passed against a path no request can reach, which check-adr-obligations could
+      not detect because it verifies a test of the proof's name exists rather than what
+      the test exercises. ADR-0240's Amendment 1 records the same weakness in a different
+      place on the same morning. Nothing yet checks that a named proof touches production.
   standing_design_tests:
     interface_safety: A defect's scope is a decision made where it is raised, and no
       construction site can omit it.
@@ -26813,6 +26842,31 @@ work_packages:
   exit_gate: A vector field deployed into a running daemon becomes queryable without a
     restart, a source whose history was pruned is refused at the deploy rather than after
     it, and no projected query against an unregistered source returns an opaque incident.
+  closure:
+    status: complete
+    completed_at: '2026-09-21'
+    evidence: benchmarks/perf-surface/tests/columnar_activation.rs
+    decision: ADR-0251 is implemented. A vector field deployed into a running daemon is
+      queryable in that same process, proven end to end with the restart deleted from the
+      activation diagnostic; with the admission call disabled the same test times out after
+      thirty seconds, so it is the deploy that makes the query servable. A projected query
+      against a source the engine does not hold answers with a typed refusal rather than an
+      opaque incident. OBL-0251-2 is discharged as unreachable by Amendment 1, since no
+      deploy that adds a columnar source to a database holding history can compile.
+    decisions_taken:
+    - The unregistered-source refusal maps to QueryUnavailable, whose registry meaning is a
+      checked query that cannot currently be executed, rather than adding a twenty-seventh
+      member to the public application error registry. That shares a wire code with the
+      building state and the page says so.
+    - Runtime admission installs the control first and verifies replayability after,
+      because the fence is what stops the next pruning pass. Pruning is offline only and a
+      running process holds the store's exclusive lock, so the window is empty in practice.
+    outstanding:
+    - The replayability probe first read the commit log, which cannot answer the question.
+      An unbounded initial scan is defined to begin at sequence one, so a pruned store fails
+      that read rather than returning a page that starts higher. It reads the retention
+      watermark now. The false branch is still not driven by a test, and after Amendment 1
+      it cannot be reached from a deploy.
   standing_design_tests:
     interface_safety: A source the engine does not hold is a condition the caller is told
       about, never one it has to infer from an opaque incident.
@@ -26882,7 +26936,261 @@ work_packages:
     scale: The answer holds for an application whose data is too large to rewrite in a
       maintenance window, or the record says plainly that it does not.
   human_review_triggers: *id001
+- id: WP-804
+  name: A named proof must exercise what it claims
+  tier: guarantee
+  depends_on: []
+  objective: Close the gap between an obligation naming a proof and that proof testing the
+    thing the record says. Three instances were found in two days, each by accident rather
+    than by a check, and one of them left a reproduced denial of service live behind three
+    green tests.
+  requirements: []
+  required_adrs: [ADR-0156]
+  # Widened 2026-09-21. Both silent failures come from one rescue in the shared
+  # record parser, not from either tool, so the fix belongs there.
+  allowed_paths: [work_packages.yaml, scripts/check-adr-obligations, scripts/adr-index,
+    scripts/lib/riffdb_adr.rb, docs/**, adr/**]
+  deliverables:
+  - A recorded characterisation of what check-adr-obligations can and cannot establish
+    today, driven by reproducing each of the three instances against it
+  - A malformed record must fail its tools rather than degrade quietly. Two were observed
+    from one mistyped colon. check-adr-obligations reported three fewer obligations and
+    passed, and adr-index rendered the record as untitled, unknown status and legacy tier
+    without complaint. Both are correctness bugs rather than limits of what a check can
+    establish.
+  - Whatever strengthening the characterisation warrants for the other two, or a recorded
+    finding that naming the production symbol a proof must reach is the wrong shape
+  acceptance_commands:
+  - ./scripts/acceptance --wp WP-804
+  exit_gate: A malformed record fails every tool that reads it rather than degrading
+    quietly in any of them, and a reader can tell from a check's own output which failure
+    shapes it detects and which it cannot.
+  standing_design_tests:
+    interface_safety: A check that cannot detect a class of failure says so, rather than
+      passing and leaving the reader to infer coverage it does not have.
+    scale: The characterisation holds for the 188 declared obligations, not only the three
+      that produced it.
+  human_review_triggers: *id001
+- id: WP-805
+  name: A conflict key protects its aggregate's invariants
+  tier: surface
+  depends_on: []
+  objective: SPEC §8.3 printed ADB-C042, a diagnostic for an invariant the declared conflict
+    key does not protect, and no compiler pass emits it. Establish whether the condition is
+    reachable, then either implement the pass or record why the grammar makes it
+    unreachable and prove that by enumeration.
+  requirements: [CMP-014]
+  required_adrs: [ADR-0254]
+  allowed_paths: [work_packages.yaml, SPEC.md, adr/**, docs/**, crates/riffdb-contract-compiler/tests/**]
+  deliverables:
+  - A determination of whether a conflict key can fail to serialize two commands that
+    could jointly violate an aggregate invariant
+  - SPEC no longer prints a diagnostic code no pass emits
+  - Tests that enumerate the categories of name a conflict-key component may hold, so a
+    grammar change admitting a wider component fails rather than silently reopening R-03
+  acceptance_commands:
+  - ./scripts/acceptance --wp WP-805
+  exit_gate: An invariant's protection by the declared conflict key rests on a proof in
+    code rather than on a diagnostic code in the specification, and a grammar change that
+    would break it fails a test naming the reason.
+  standing_design_tests:
+    interface_safety: An aggregate whose conflict key fails to serialize its invariants is
+      not declarable, so there is no unsafe shape to opt out of.
+    scale: The property is structural; it costs no compile-time work and does not grow with
+      the number of invariants or aggregates.
+  human_review_triggers: *id001
+  closure:
+    status: complete
+    completed_at: '2026-09-21'
+    evidence: crates/riffdb-contract-compiler/tests/conflict_key_protects_invariants.rs
+    decision: The condition ADB-C042 describes is unreachable. A conflict-key component may
+      name only a field of the aggregate root's primary key -- a child key field and another
+      aggregate's field are out of scope, and a stored root field is refused by RDB-C016 as
+      not input-computable -- so every conflict key is a function of the root key and two
+      writes to one root always derive one conflict value. SPEC now shows a real RDB-C016
+      example and states the construction as CMP-014. Four tests enumerate the categories of
+      name a component could hold, so a grammar change admitting a wider component fails and
+      names the pass it would then owe.
+- id: WP-806
+  name: Close the semantic write-path gap against the comparison baseline
+  tier: guarantee
+  depends_on: [WP-790]
+  objective: The project's own comparison harness measures RiffDB at 0.17-0.22x Postgres on
+    an application workload, with create_comment 7.6x slower at p50 and the aggregate set by
+    writes. SPEC section 262 makes that a go/no-go input to the POC-exit decision, and the
+    evidence is published but unworked. Attribute the write-path cost to its components and
+    close what can be closed without weakening a guarantee.
+  requirements: []
+  required_adrs: [ADR-0239, ADR-0238]
+  allowed_paths: [work_packages.yaml, docs/performance/**, benchmarks/**,
+    scripts/check-performance-freeze]
+  deliverables:
+  - A per-component attribution of one write, measured rather than reasoned, covering at
+    least provenance record construction, audit, journal append and fsync, canonical
+    encoding, and allocator traffic. The existing profile already names libc malloc/free
+    plus drop glue for CanonicalValue, CommandDerivedIndexes and StoredProvenanceRecordV1,
+    and the E2/N1 pair already separates fsync cost from hashing; start there rather than
+    re-deriving it
+  - For each component, whether its cost is inherent to a stated guarantee, inherent to the
+    current representation, or incidental, with the evidence for the classification
+  - The incidental cost removed, or a recorded finding that none is, measured on the banked
+    baseline under ADR-0239's discipline
+  - A statement of what ratio is achievable without weakening provenance, audit,
+    durability of acknowledged writes, or canonical ordering, so the POC-exit review has a
+    number rather than an intention
+  acceptance_commands:
+  - ./scripts/acceptance --wp WP-806
+  exit_gate: The write-path cost is attributed to components with measurements rather than
+    reasoning, each component is classified as guarantee-inherent, representation-inherent
+    or incidental with evidence, and the POC-exit review can read what ratio is reachable
+    without weakening a guarantee.
+  standing_design_tests:
+    interface_safety: No optimization may make a guarantee optional, add a fast path that
+      skips provenance, audit or durability, or expose a tuning knob that lets an
+      application trade one away. A cost found to be guarantee-inherent is reported as
+      such, not removed.
+    scale: Attribution holds at the banked load and client count, and any change is measured
+      at the same concurrency rather than only unary.
+  human_review_triggers: *id001
+- id: WP-807
+  name: An unguarded overwrite is spelled overwrite
+  tier: guarantee
+  depends_on: []
+  objective: A command may today overwrite a field without declaring anything about its
+    prior value, and the guarded and unguarded forms are indistinguishable in source, in
+    commit checks, in conflict ownership and in the plan. Make the two forms distinct at
+    the point of use, prove the spelling against the command, and carry the classification
+    in the plan, per ADR-0256.
+  requirements: [CMP-015]
+  required_adrs: [ADR-0256, ADR-0252, ADR-0002]
+  # Widened 2026-09-21, twice. Adding the classification to
+  # Instruction::SetField makes every exhaustive match on that variant a compile
+  # error, which reaches the runtime and the explain renderer; those changes are
+  # the mechanical `guard: _`, since execution applies the assignment either way.
+  #
+  # The second widening is the migration itself. A breaking grammar change
+  # reaches every crate that embeds a contract in a test, and V24 must be
+  # admitted by the catalog's supported-version tuple and the commit
+  # coordinator's grammar/IR pair or no V24 contract can be deployed or
+  # executed. Those two are the only non-test changes outside the compiler.
+  allowed_paths: [SPEC.md, work_packages.yaml, adr/0256-an-unguarded-overwrite-must-be-declared.md,
+    crates/riffdb-contract-syntax/**, crates/riffdb-contract-compiler/**,
+    crates/riffdb-contract-ir/**, crates/riffdb-runtime/**,
+    crates/riffdb-catalog/**, crates/riffdb-commit/**, crates/riffdb-service/**,
+    crates/riffdb-query-module/**, crates/riffdb-query-compiler/**,
+    crates/riffdb-query-executor/**, crates/riffdb-query-ir/**,
+    crates/riffdb-api-grpc/**, crates/riffdb-proto/fixtures/**,
+    crates/riffdb-server/**, crates/riffdb-storage-redb/**,
+    crates/riffdb-testkit-server/**, crates/riffdb-diagnostics/**,
+    crates/riffdb-cli/src/output.rs, crates/riffdb-cli/src/contract_explain.rs,
+    crates/riffdb-cli/src/generated/**,
+    tests/**, fixtures/**, docs/**, templates/**, clients/**, examples/**]
+  deliverables:
+  - A per-write guarded/unguarded classification derived from the command's requires and
+    the aggregate's invariants over the binding's pre-image, with the analysis stated
+    precisely enough that a reader can predict it
+  - The `overwrite` keyword, and a diagnostic pair with source-span snapshots and semantic
+    assertions - a `set` with no precondition naming the field and what would satisfy it,
+    and an `overwrite` that is in fact guarded telling the author to use `set`
+  - A regression proving that deleting a `require` from a guarded command fails to compile
+    rather than changing concurrency semantics silently
+  - The classification carried in the executable plan and folded into the plan hash, with
+    the least-sufficient grammar, IR and bundle version selected for a contract that uses
+    the new spelling, and compatibility fixtures for the version boundary
+  - "`riffdb contract explain` reporting each write's classification"
+  - Every first-party contract, template, example, and generated-client fixture migrated,
+    and every unguarded write classified by a human rather than mechanically respelled
+  acceptance_commands:
+  - ./scripts/acceptance --wp WP-807
+  - ./scripts/downstream-adapter-check
+  exit_gate: A silent lost update is not expressible. A deliberate overwrite still is, but
+    only where a reviewer reads it, and `an_unguarded_overwrite_is_accepted_and_unmarked`
+    has been replaced by its inverse.
+  closure:
+    status: complete
+    completed_at: '2026-09-21'
+    evidence: crates/riffdb-contract-compiler/tests/unguarded_overwrite.rs
+    decision: A silent lost update is no longer expressible. `overwrite` is a keyword beside
+      `set`, the compiler proves the spelling against what the command constrains and refuses
+      both mismatches, and the classification is carried in the plan and its hash, selecting
+      V24 only for a contract that declares one.
+    decisions_taken:
+    - Guardedness is a property of the binding, not of the field written, because commit-time
+      revalidation is per record. If anything in the command reads a stored field of a
+      binding, a concurrent change invalidates the whole command and every write to it is
+      protected.
+    - An invariant does not guard, so ADR-0256's "or the aggregate an invariant" clause is
+      vacuous rather than wrong. Invariants constrain post-commit state, and a lost update
+      produces a state satisfying every invariant. Recorded for a clarifying amendment rather
+      than reinterpreted silently.
+    - A distinct instruction tag over a widened SET_FIELD payload, so a guarded write encodes
+      exactly the bytes it did and no existing plan hash moves for a property most contracts
+      do not use.
+    - The analysis covers decision arms, whose predicates guard and whose conditional effects
+      are classified like any other write.
+    - "`explain` annotates only field assignments. An embedding carries its own model
+      evidence and a workflow transition states its expected revision; neither is a spelling
+      an author chooses."
+    - The app-baseline ticketdesk contract declares its unguarded writes rather than tightening
+      them. It is the banked comparison workload under ADR-0239, and adding a predicate and an
+      outcome would change the work per command and the comparison with it.
+    - Four era fixtures pinning V12, V15, V20 and V21 were guarded with real preconditions
+      instead of respelled, because declaring an unguarded write would lift them to V24 and
+      destroy what they test.
+    hazards:
+    - ADR-0256's Decision 1 names an invariant that reads a binding's pre-image as a guard. No
+      invariant does. The clause is inert, not harmful, but it should be amended to say so.
+    - Every existing first-party contract was classified in this package. An application
+      outside this repository with an unguarded write will not compile until it is respelled;
+      that is the intended migration and it has no automated path.
+
+  standing_design_tests:
+    interface_safety: An application cannot express a write whose concurrency semantics are
+      last-writer-wins without saying so at the point of use. No flag, binding mode, or
+      option restores the silent form.
+    scale: Classification is a local analysis over a command's already-bounded bindings and
+      requires. It adds no runtime work and no unbounded compile-time work.
+  human_review_triggers: *id001
 - id: WP-808
+  name: Governance verifies its own claims
+  tier: guarantee
+  depends_on: []
+  objective: Four governance defects found in one session share one shape - a named thing that
+    does not exist. ADB-C042 was a diagnostic SPEC printed that no pass emits. AGENTS.md names
+    ./scripts/downstream-adapter-check among the checks acceptance runs, and it is absent.
+    ADR-0181 decided scripts/check-adr-form and adr/GLOSSARY.md and neither was written. The
+    process that makes the compiler prove a contract's claims does not check its own, so it
+    describes itself inaccurately and nothing notices. Make it check itself.
+  requirements: []
+  required_adrs: [ADR-0181]
+  # governance/tiers.yaml carries the path-triggered checks, and a check that is
+  # not wired into the plan is a check nobody runs.
+  allowed_paths: [AGENTS.md, SPEC.md, work_packages.yaml, adr/**, scripts/**, docs/**,
+    governance/tiers.yaml, crates/riffdb-contract-compiler/examples/**]
+  deliverables:
+  - A check that every scripts/<name> and repository path named in AGENTS.md, in SPEC.md, and in
+    an accepted record's Decision section resolves to a file that exists, with a self-test that
+    proves it catches an absent one
+  - The check wired into the path-triggered plan so a change that names a new artifact cannot
+    merge before the artifact does
+  - Every instance the check finds at introduction, fixed or struck - beginning with
+    ./scripts/downstream-adapter-check, which AGENTS.md names and docs/CONTRIBUTING.md does not
+    explain, and which WP-807 declared as an acceptance command and could not run
+  - A recorded finding on whether check-allowed-paths reading allowed_paths at the merge base is
+    correct, since a package that widens its own scope cannot pass its own check until it merges,
+    which cost this session a cherry-pick and a back-merge for no safety
+  acceptance_commands:
+  - ./scripts/acceptance --wp WP-808
+  exit_gate: A named script, path, or artifact that does not exist fails a check rather than
+    waiting to be noticed by a reader, and the instances present when this package opened are
+    gone.
+  standing_design_tests:
+    interface_safety: Not applicable; the package adds no application surface. It adds a check
+      over the repository's own prose.
+    scale: The check is a scan over a fixed set of governing documents and accepted records, and
+      it reports every instance rather than the first.
+  human_review_triggers: *id001
+- id: WP-809
   name: Checkpoint-coupled journal tail latency
   tier: guarantee
   depends_on: []
@@ -26898,7 +27206,7 @@ work_packages:
     crates/riffdb-commit/**, docs/**, scripts/**, tests/**, release/evidence/**,
     benchmarks/**, examples/app-baseline/**]
   deliverables:
-  - Standalone storage/journal finding at docs/performance/wp-808-checkpoint-journal-tail.md,
+  - Standalone storage/journal finding at docs/performance/wp-809-checkpoint-journal-tail.md,
     retaining the valid archive-disabled trace, source/binary identities, checkpoint
     counts, first-wait and sync evidence, and explicit timing limitations
   - A deterministic production-path reproduction controlling checkpoint materialization,
@@ -26916,7 +27224,7 @@ work_packages:
     p50/p95/p99, throughput, corrected wait counters, checkpoint counts and explicit wall
     reconciliation retained; no new measurements are part of this registration
   acceptance_commands:
-  - ./scripts/acceptance --wp WP-808
+  - ./scripts/acceptance --wp WP-809
   - ./scripts/ci-all
   exit_gate: The shared checkpoint/journal delay has a maintainer-reviewed resolution
     supported by a production-path schedule proof and recovery evidence. Any mitigation
@@ -26926,7 +27234,7 @@ work_packages:
     is assessed separately.
   closure:
     status: open
-    evidence: docs/performance/wp-808-checkpoint-journal-tail.md
+    evidence: docs/performance/wp-809-checkpoint-journal-tail.md
   standing_design_tests:
     interface_safety: No application or operator can bypass a journal fence, publish a
       hole, acknowledge before publication, or opt out of checkpoint-installation safety.

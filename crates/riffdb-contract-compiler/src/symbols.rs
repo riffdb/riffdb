@@ -1189,7 +1189,7 @@ contract Example version 1 {
   command Change {
     input id: uuid
     mutate Row(id) as row else Missing { id: id }
-    set row.value = 1
+    overwrite row.value = 1
     return Changed { row: row }
   }
 }

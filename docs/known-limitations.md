@@ -147,9 +147,14 @@ These limits are part of the POC release posture, not hidden roadmap promises.
   Cold or unavailable graphs fall back to exact execution; callers cannot choose
   a tier or weaken the declared recall target. Primary providers use bounded
   background builds and memory-only reuse; followers currently stay exact.
-  This POC does not claim persistent-graph latency for large partitions. The
-  current production candidate ceiling is 500 rows, which also means a declared
-  threshold of 500 or more remains exact under the POC ceiling. The native and typed Protobuf value branches, gRPC and
+  This POC does not claim persistent-graph latency for large partitions. A
+  field that declares an approximate tier is served up to 65,536 rows per
+  organization, the unit its own `ann_threshold` is expressed in (ADR-0255); a
+  field that declares none keeps the server's smaller 500-row ceiling. Above
+  the applicable ceiling an organization receives a typed `ScanBudgetExceeded`
+  refusal rather than an exact answer: the ceiling bounds what is answerable
+  and is not a fallback to exact search.
+  The native and typed Protobuf value branches, gRPC and
   hosted MCP conversions, and CLI numeric component arrays now preserve finite
   binary32 vectors without bytes punning. Contract IR V15 now seals one exact
   model identity/current version and bounded replay ceilings per production
@@ -285,3 +290,57 @@ These limits are part of the POC release posture, not hidden roadmap promises.
   output are published.
 - A POC-exit decision still requires all POC-001 through POC-010 evidence plus
   a human architecture review: proceed to alpha, revise and repeat, or stop.
+
+## Storage reclamation
+
+Retention pruning deletes rows; it does not shrink the database file. redb 4.2
+exposes `Database::compact`, and nothing in RiffDB calls it, so freed pages are
+reused inside the file and the file's high-water mark is permanent for the life
+of the database. Capacity planning must size for the historical peak, not for
+the retained working set, and an operator who prunes aggressively to recover
+disk will not recover any.
+
+
+## What a command cannot express
+
+The safety claim is that an application's writes are proven before they run. It
+holds for what a command can express, and that boundary is narrower than the
+patterns an ordinary multi-tenant application reaches for. Three limits set it,
+and they compose:
+
+- A command reads by complete key. A write-influencing indexed range read is
+  rejected, and no future one is admitted without accepted static target
+  derivation and explicit up-front exclusion.
+- An invariant may span entities inside one aggregate, never across aggregates.
+  A command may *write* two aggregates that share a partition route, and since
+  ADR-0252 it carries each one's own invariants, but no invariant relates them.
+- A command cannot read a projection. Projections are derived state, and
+  admitting them into a write decision would make a write depend on a
+  watermark.
+
+Less follows from this than it appears, and the part that does follow is worth
+stating exactly.
+
+A limit over rows a command does not name *is* expressible: maintain the total
+on the aggregate root in the same command and put the invariant on the root.
+The conflict key covers the root, so concurrent writers serialize and the
+invariant is checked at commit against the value the command wrote. A rollup
+maintained this way is a first-class pattern, not a workaround.
+
+Choosing a target -- a free slot, the next item -- happens in the application:
+read a bounded page, choose, then invoke a command naming that target by
+complete key. That is the intended idiom and it is safe *when the command
+re-checks the condition the choice depended on*, because a losing choice then
+becomes a declared outcome rather than a lost update. Write the `require`. The
+compiler does not yet oblige you to: a command that overwrites a field without
+declaring anything about its prior value compiles, and is indistinguishable
+from a guarded one in its plan. ADR-0256 proposes closing that, and until it
+lands the discipline is yours to keep.
+
+What remains genuinely unavailable is allocating an unspecified free row in one
+round trip. That is a contention and round-trip cost, not a safety gap.
+
+The specification's risk register names durable workflows outside commands as
+the answer for logic a command cannot hold (`R-01`). No such facility exists in
+this POC: no requirement, record, or work package defines one, and sagas are
+listed as deferred. Treat the sentence as a direction, not an available feature.

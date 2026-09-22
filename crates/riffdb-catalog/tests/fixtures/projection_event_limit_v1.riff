@@ -22,7 +22,7 @@ contract ProjectionEventLimit version 1 {
     input data: bytes<1048546>
     idempotency_key idempotency_key
     mutate Row(id) as changed_row else Missing { id: id }
-    set changed_row.value = 1
+    overwrite changed_row.value = 1
     emit Huge { bucket: bucket, data: data }
     return Recorded { row: changed_row }
   }

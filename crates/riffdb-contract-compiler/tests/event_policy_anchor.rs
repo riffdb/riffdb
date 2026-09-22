@@ -73,7 +73,7 @@ fn complete_current_row_anchor_is_retained_in_checked_ir() {
     input ticket_id: uuid
     idempotency_key request_id
     mutate Ticket(organization_id, ticket_id) as ticket else Missing {}
-    set ticket.owner_id = organization_id
+    overwrite ticket.owner_id = organization_id
     emit TicketCreated {
       organization_id: organization_id,
       ticket_id: ticket_id,

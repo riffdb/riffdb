@@ -32,7 +32,7 @@ fn source(event_partition: &str, emitted_partition: &str) -> String {
     input row_id: uuid
     idempotency_key request_id
     mutate Row(organization_id, row_id) as row else Missing {{ row_id: row_id }}
-    set row.value = 1
+    overwrite row.value = 1
     emit RowChanged {{ organization_id: {emitted_partition}, row_id: row_id }}
     return Changed {{ row: row }}
   }}

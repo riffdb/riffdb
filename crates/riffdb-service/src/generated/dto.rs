@@ -10231,7 +10231,7 @@ contract OutcomeShapes version 1 {
     input id: uuid
     idempotency_key idempotency_key
     mutate Row(id) as row else ChangeMissing { id: id }
-    set row.status = State.Closed
+    overwrite row.status = State.Closed
     return Changed { row: row }
   }
 }

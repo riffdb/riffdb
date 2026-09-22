@@ -189,7 +189,7 @@ contract CoupledPlans version 1 {
     input id: uuid
     idempotency_key idempotency_key
     mutate Unchanged(id) as row else Missing { id: id }
-    set row.value = 1
+    overwrite row.value = 1
     return Changed { row: row }
   }
 }
@@ -202,7 +202,7 @@ contract CoupledPlans version 1 {
             "partition_by scope conflict_key (scope, id) }",
             1,
         )
-        .replace("set row.value = 1", "set row.value = 2");
+        .replace("overwrite row.value = 1", "overwrite row.value = 2");
     let parent = compile_contract_source(parent_source).expect("parent");
     let candidate =
         compile_contract_successor(&candidate_source, &parent).expect("candidate successor");
@@ -235,7 +235,7 @@ contract CoupledCommand version 1 {
     input scope: string<16>
     idempotency_key idempotency_key
     mutate Row(id) as row else Missing { id: id }
-    set row.value = 1
+    overwrite row.value = 1
     return Changed { row: row }
   }
 }

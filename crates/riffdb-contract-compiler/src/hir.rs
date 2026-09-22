@@ -535,6 +535,9 @@ pub(crate) enum HirDecisionAction {
 pub(crate) enum HirEffect {
     Set {
         target_span: Span,
+        /// Which spelling the author used, checked against the classification
+        /// this command actually proves (ADR-0256).
+        spelling: riffdb_contract_syntax::ast::WriteSpelling,
         binding: BindingId,
         field: FieldId,
         value: HirExpressionRoot,
@@ -3246,6 +3249,7 @@ fn lower_commands(
                     let reveals = lower_secret_reveals(&set.reveals, &reveal_scope, diagnostics);
                     effects.push(HirEffect::Set {
                         target_span: set.target.span,
+                        spelling: set.spelling,
                         binding: binding.id,
                         field: field.id,
                         value,
@@ -3737,6 +3741,9 @@ fn lower_commands(
             };
             let initializer = HirEffect::Set {
                 target_span: binding.span,
+                // Compiler-owned initialization of a freshly bound workflow
+                // state. There is no prior value for an author to constrain.
+                spelling: riffdb_contract_syntax::ast::WriteSpelling::Set,
                 binding: binding.id,
                 field: workflow.state_field,
                 value: HirExpressionRoot {
@@ -4115,6 +4122,9 @@ fn normalize_reimport_command(
             let target_span = binding_span.cover(field.name_span);
             Spanned::new(
                 Effect::Set(SetEffect {
+                    // A create has no pre-image, so this write cannot be a
+                    // lost update and the classification does not apply.
+                    spelling: riffdb_contract_syntax::ast::WriteSpelling::Set,
                     target: Spanned::new(target, target_span),
                     value: path_expression(&record_name, record_span, field),
                     reveals: Vec::new(),

@@ -901,6 +901,20 @@ pub enum Effect {
     WorkflowLease(Box<WorkflowLeaseEffect>),
 }
 
+/// How an author spelled a field write.
+///
+/// `set` claims the command constrains the field's prior value; `overwrite`
+/// declares that it does not, making last-writer-wins visible at the point of
+/// use instead of silent (ADR-0256). The compiler proves the claim.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum WriteSpelling {
+    /// Written `set`: the author claims the command constrains the record's
+    /// prior state, or derives the new value from it.
+    Set,
+    /// Written `overwrite`: the author declares that it does not.
+    Overwrite,
+}
+
 /// A compiler-sealed production embedding assignment.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct EmbeddingEffect {
@@ -1021,6 +1035,9 @@ pub enum WorkflowLeaseOperation {
 /// A source-level field assignment effect.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct SetEffect {
+    /// Which spelling the author used, which is a claim about the write's
+    /// concurrency semantics rather than a stylistic choice (ADR-0256).
+    pub spelling: WriteSpelling,
     /// The assignment target path.
     pub target: Spanned<Path>,
     /// The assigned value expression.

@@ -28,10 +28,45 @@ things to secure and monitor, and no coherent backup of the whole.
 
 RiffDB's answer is that the seams do not exist. Committed means indexed means
 deliverable, inside one total order, behind one typed freshness vocabulary,
-in one process with one backup unit. That is a lot of architecture for most
+in one system with one backup unit. That is a lot of architecture for most
 projects to buy any other way — and most projects are exactly who this is
 for. In a world of capable agents, the stacks they wire together
 mass-produce the pathology this design removes by construction.
+
+## Scale is a placement change, not a semantics change
+
+One process is how RiffDB runs today and is what the proof of concept proves.
+It is not the ceiling the design is drawn to.
+
+The unit of ownership is already the partition route. A command declares the
+route it writes, every binding must derive the same route, and a write that
+crosses routes is refused at compile time rather than quietly becoming a
+distributed transaction. Conflict keys are functions of the aggregate root key
+inside that route, so two writers to one aggregate always serialize against
+each other and never against the rest of the database. That is the same shape
+a shard-per-core, elastically scheduled engine uses to place data — with the
+difference that here the boundary is declared in the contract and proven by
+the compiler rather than discovered under load.
+
+So scaling out is meant to be a change in where a route lives, not a change in
+what a transaction means. A route keeps one owner. The total order that
+matters is the one inside it. Cross-route work stays exactly what it is
+today, which is not a transaction, and no amount of distribution turns it into
+one.
+
+What RiffDB will not buy scale with is the usual currency. Tunable quorums,
+last-writer-wins conflict resolution, and read repair make a database elastic
+by making its guarantees probabilistic, and everything above this section
+depends on those guarantees being absolute. If a distributed mode cannot keep
+one owner per route and proven invariants inside it, the answer is a smaller
+distributed mode, not a weaker promise.
+
+None of it is built. Replication is deliberately outside the proof of concept
+(`REP-001`), the risk that adding it later forces a semantic redesign is
+registered and not yet discharged (`R-13`), and the standing design test on
+every decision record — does this assume co-located storage or single-node
+memory — is what keeps the option open in the meantime. This section is the
+direction the boundaries are drawn for, not a feature you can deploy.
 
 ## Two boundaries that keep it honest
 

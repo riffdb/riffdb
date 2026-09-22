@@ -90,9 +90,13 @@ fn expansion_plan_is_least_sufficient_and_legacy_bytes_are_unchanged() {
     );
     assert_eq!(
         legacy.identity().hash().into_bytes(),
+        // Moved 2026-09-21 by ADR-0256: the operational-conformance contract's
+        // writes were reclassified, and the classification is part of the plan
+        // hash, so the cursor-bound identity this pins moved with it. The
+        // freeze is doing its job -- this is the review it exists to force.
         [
-            183, 148, 22, 237, 225, 232, 37, 108, 178, 210, 172, 202, 189, 174, 220, 90, 253, 26,
-            135, 22, 31, 191, 7, 63, 146, 69, 134, 122, 255, 152, 59, 30,
+            7, 252, 58, 184, 46, 147, 155, 125, 228, 167, 186, 13, 224, 142, 133, 3, 117, 237, 67,
+            114, 114, 177, 1, 83, 113, 65, 8, 152, 82, 54, 235, 240,
         ],
         "the predecessor program bytes and cursor-bound plan identity are frozen",
     );

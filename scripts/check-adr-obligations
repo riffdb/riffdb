@@ -80,6 +80,16 @@ require "yaml"
 require_relative "lib/riffdb_adr"
 
 ROOT = RiffdbAdr.root
+
+# A record whose front matter does not parse is corrupt, not legacy. Report it
+# the way a check reports a finding rather than as an interpreter backtrace.
+def guard_malformed_records
+  yield
+rescue RiffdbAdr::MalformedFrontMatter => error
+  warn error.message
+  exit 1
+end
+
 ADR_DIR = File.join(ROOT, "adr")
 LEDGER_PATH = File.join(ADR_DIR, "obligations-outstanding.yaml")
 
@@ -613,9 +623,41 @@ def full_battery_root_proof_preserves_script_wiring(failures)
   end
 end
 
+# A record that opens a front-matter block whose YAML does not parse must fail
+# the check, not quietly declare fewer obligations.
+#
+# Before this, one mistyped colon in an accepted record dropped three
+# obligations from the count and the check passed. The fixture below reproduces
+# exactly that shape.
+def malformed_front_matter_fails_rather_than_dropping_obligations(script, failures)
+  Dir.mktmpdir("riffdb-adr-malformed-") do |directory|
+    build_self_test_tree(directory)
+    healthy = self_test_json(self_test_run(script, directory, "--json").first)
+    declared = healthy["declared_v2"]
+
+    path = File.join(directory, "adr", "0901-v2-fixture.md")
+    broken = File.read(path).sub("says: ", "says: a colon: inside a plain scalar ")
+    File.write(path, broken)
+    stdout, stderr, status = self_test_run(script, directory, "--json")
+
+    if status.success?
+      failures << "a record whose front matter does not parse must fail the check"
+    end
+    unless "#{stdout}#{stderr}".include?("does not parse as YAML")
+      failures << "the failure must name the cause, got:\n#{stdout}\n#{stderr}"
+    end
+    after = self_test_json(stdout)["declared_v2"]
+    if after && declared && after < declared
+      failures << "a malformed record must not silently reduce the declared count " \
+                  "from #{declared} to #{after}"
+    end
+  end
+end
+
 def self_test(script)
   failures = []
   full_battery_root_proof_preserves_script_wiring(failures)
+  malformed_front_matter_fails_rather_than_dropping_obligations(script, failures)
   Dir.mktmpdir("riffdb-adr-obligations-") do |directory|
     build_self_test_tree(directory)
 
@@ -698,7 +740,7 @@ ARGV.each do |argument|
   end
 end
 
-result = check(ROOT)
+result = guard_malformed_records { check(ROOT) }
 
 if prune
   begin

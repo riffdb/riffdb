@@ -1,13 +1,27 @@
-# The columnar leg is unmeasured, and why
+# The columnar leg was unmeasured — closed 2026-09-21
+
+> **This gap is closed.** A benchmark now activates the columnar engine and
+> serves a projected vector query end to end:
+> `benchmarks/perf-surface/tests/columnar_activation.rs` reports
+> `columnar_activations=1` and returns the nearest 8 of 16 written rows, with no
+> restart. It is OBL-0251-1's proof.
+>
+> The page is kept because how it was closed is worth more than the fact that it
+> was. Everything below is the record of getting there, including several
+> readings that were confidently wrong. Where a section has been overtaken it
+> says so rather than being deleted — a withdrawn claim that quietly disappears
+> is worse than one that says why it went.
+>
+> For what declaring a vector field costs, see
+> [the C3D measurement](wp-791-derived-sinks-c3d-2026-09.md) and
+> [the attribution](wp-800-vector-write-attribution.md). Those supersede every
+> throughput figure on this page.
 
 RiffDB's stated product thesis is that one database serves the transactional and
 the analytical shape of an application — the role PostgreSQL and ClickHouse play
-together. Every performance figure this project has banked covers the
-transactional half. **No benchmark has ever activated the columnar engine.**
-`columnar_activations` is zero in every run recorded here.
-
-This note records why, and what closing it needs, so the gap is a known quantity
-rather than an absence nobody has looked at.
+together. When this note was written, every performance figure the project had
+banked covered the transactional half, and no benchmark had ever activated the
+columnar engine.
 
 ## Why it is zero
 
@@ -126,7 +140,9 @@ percent rather than 11. It is recorded here rather than deleted because the
 first reading was quoted once already, and a withdrawn number that quietly
 disappears is worse than one that says why it went.
 
-## What still blocks execution
+## Resolved: the `AuthorizationDenied` on execution
+
+*Answered 2026-09-20. The problem is stated as it stood; the answer follows.*
 
 Executing the deployed query is refused with `AuthorizationDenied`, and the
 obvious cause has been ruled out. The runner capability now carries an
@@ -146,7 +162,30 @@ This is a narrow, well-defined question rather than an open design problem: the
 deployment works, the permission shape is right, and what remains is finding
 which additional grant a projected source requires.
 
-## What still blocks the analytical half
+**The answer was three things, and the guess above named none of them.**
+Neither `query_projection` nor `inspect_vector_state` was required, and
+`max_scan_rows` was the red herring it was suspected of being.
+
+1. **`ReadEntity` and `ScanIndex` per entity and index.** A projected query
+   still reads rows, and the capability granted only the named query.
+2. **`field_visibility` for the non-key fields the query returns.** The query
+   returns `title`, and a capability whose `field_visibility` is empty cannot
+   see it. The refusal is the same `AuthorizationDenied` as a missing grant.
+3. **Canonical ascending permission order.** Out of order the request is refused
+   as `InvalidOutboundMessage` before validation — a different error that reads
+   as a malformed request rather than a missing grant.
+
+The trap worth keeping is that one refusal code covered three unrelated causes,
+so each fix looked like it had failed until all three were in place.
+
+## Resolved: the analytical half
+
+*All four items below were closed between 2026-09-20 and 2026-09-21. Query
+module deployment went through raw tonic, as route one suggested; the query
+compiled and bound as written; the activation wait polls the typed result; and
+the restart the harness needed is gone, because ADR-0251 admits a
+contract-derived source when its contract deploys. The original statement of
+what blocked follows.*
 
 Activation needs a projected query, and the harness cannot issue one yet. It
 deploys a contract through `deploy_contract` only; a `nearest` binding lives in
@@ -191,7 +230,12 @@ a RiffQL **query module**, which is a separate deployment path
 4. **Query latency measured after activation**, alongside the write figure
    above. The thesis needs both shapes, not either alone.
 
-## What it must not claim until then
+## What it must not claim
+
+*Still true, and the reason has narrowed rather than gone. The write path with a
+columnar source admitted is now measured on two hosts; analytical query latency
+against an activated source is not. The thesis needs both shapes and only one
+has numbers.*
 
 No public performance claim about analytical or mixed workloads is supported by
 anything banked here. ADR-0239 decision 4 already binds this: the baseline

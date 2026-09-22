@@ -46,6 +46,15 @@ rules:            # first match wins per file; a change's tier is the maximum ov
       - crates/riffdb-storage-api/src/sequence.rs
       - crates/riffdb-api-mcp/src/handler.rs
       - crates/riffdb-api-mcp/src/observer.rs
+      # What a command enforces is decided here, not only evaluated in
+      # riffdb-invariant: lowering decides whether a commit check exists at all,
+      # and the plan carries the coverage proof over them (ADR-0253).
+      - crates/riffdb-contract-compiler/src/command_lowering.rs
+      - crates/riffdb-contract-ir/src/plan.rs
+      - crates/riffdb-contract-ir/src/plan/**
+      # The table that assigns ceremony may not be weakened by a change that
+      # requires none.
+      - governance/tiers.yaml
       - AGENTS.md
   - tier: surface
     paths:
@@ -98,6 +107,15 @@ checks:           # path-triggered checks; `run` entries are executed in order; 
     run: [./scripts/check-requirement-coverage, ./scripts/check-adr-obligations,
       ./scripts/adr-new --self-test, ./scripts/adr-index --check,
       ./scripts/check-acceptance-commits, ./scripts/check-performance-freeze]
+  # A governing document or accepted record that names a script or path this
+  # repository does not contain describes a repository that does not exist.
+  - when: [AGENTS.md, SPEC.md, adr/**, scripts/**]
+    run: [./scripts/check-named-artifacts, ./scripts/check-named-artifacts --self-test]
+  # A language change lands on a downstream adapter before it lands anywhere
+  # else, and said nothing about it until now.
+  - when: [crates/riffdb-contract-syntax/**, crates/riffdb-contract-compiler/**,
+      crates/riffdb-contract-ir/**]
+    run: [./scripts/downstream-adapter-check]
   - when: [crates/**]
     run: [./scripts/check-file-size-guard, ./scripts/check-panic-allowances]
   - when: [release/container/**, release/kubernetes/**, release/helm/**]

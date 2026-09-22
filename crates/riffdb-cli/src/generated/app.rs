@@ -14714,7 +14714,7 @@ query GetDocument(
             .rsplit_once("}\n")
             .expect("contract closing delimiter");
         let successor_source = format!(
-            "{body}\n\n  command RenameItem {{\n    input idempotency_key: string<128>\n    input item_id: uuid\n    input title: string<128>\n    idempotency_key idempotency_key\n    mutate Item(item_id) as item\n      else ItemMissing {{ item_id: item_id }}\n    set item.title = title\n    return Renamed {{ item: item }}\n  }}\n}}\n"
+            "{body}\n\n  command RenameItem {{\n    input idempotency_key: string<128>\n    input item_id: uuid\n    input title: string<128>\n    idempotency_key idempotency_key\n    mutate Item(item_id) as item\n      else ItemMissing {{ item_id: item_id }}\n    overwrite item.title = title\n    return Renamed {{ item: item }}\n  }}\n}}\n"
         );
         let successor =
             riffdb_contract_compiler::compile_contract_successor(&successor_source, &genesis)

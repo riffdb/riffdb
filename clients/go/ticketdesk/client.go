@@ -8,10 +8,10 @@ import (
 	riffdb "riffdb.dev/application"
 )
 
-const QueryModuleHash = "07e927f735f4b4501c8c6d06458716ebca1ffbd451ec72a517c2b968e71612b4"
+const QueryModuleHash = "f4bebec973f66fd7da2f2209e2cbeb5dcf23798b883c5eba3754d89ab80746b4"
 const ContractLineage = "TicketDesk"
 const ContractVersion uint64 = 1
-const ContractBundleHash = "7cae1122f8daad0469b74e1e40473f7cfcd9ea8474c39e1ddc510218b2ac0999"
+const ContractBundleHash = "32df6e2a70abfb420945291da188928dac100fcbfe66560ac3d0f1e438b8b11c"
 
 type QueryOptions = riffdb.Options
 type QueryIdentity struct {
@@ -1375,7 +1375,7 @@ func decodeProjectMember(value riffdb.Value) (ProjectMember, error) {
 	return result, nil
 }
 
-const BoardPage200QueryPlanHash = "cb06f3300791614daa6bb72e5a8d850527bde79c63a08c2d03aaccb6e73bfc47"
+const BoardPage200QueryPlanHash = "72169665c1b33ab5e1cfafa48def34d2a43231f66d8cc7d86d52f7aa0361cdcf"
 
 var BoardPage200Operation = riffdb.Operation{Name: "ticketdesk_board_page200", InputSchemaHash: "09bcdc1788d66641ac2def372383c69f620a3006fa4cd7763832752bf75b2c30"}
 
@@ -1565,7 +1565,7 @@ func (client *Client) BoardPage200(ctx context.Context, parameters BoardPage200P
 	return QueryResult[BoardPage200Result]{Value: value, Identity: identity, ApplicationHead: *response.ApplicationHead, NextCursor: response.Cursor}, nil
 }
 
-const BoardPage450QueryPlanHash = "22f105b94037c2a8b46878139028e3ee495b2ac4e94495d28ba202c2386e8c84"
+const BoardPage450QueryPlanHash = "a1cadce00f19ea49ffb7e2e8b94f53ddf316d7925054d61a79b19d12b9f18a6c"
 
 var BoardPage450Operation = riffdb.Operation{Name: "ticketdesk_board_page450", InputSchemaHash: "09bcdc1788d66641ac2def372383c69f620a3006fa4cd7763832752bf75b2c30"}
 
@@ -1755,7 +1755,7 @@ func (client *Client) BoardPage450(ctx context.Context, parameters BoardPage450P
 	return QueryResult[BoardPage450Result]{Value: value, Identity: identity, ApplicationHead: *response.ApplicationHead, NextCursor: response.Cursor}, nil
 }
 
-const BoardPage50QueryPlanHash = "1fe070429b28a2870a0ffde2e089ff0e79fdf740c602528ff3562bb4123d11f7"
+const BoardPage50QueryPlanHash = "5ee7572cc924b6f9553e7ce5661660728deb245424418f516bb47155230dcbf7"
 
 var BoardPage50Operation = riffdb.Operation{Name: "ticketdesk_board_page50", InputSchemaHash: "09bcdc1788d66641ac2def372383c69f620a3006fa4cd7763832752bf75b2c30"}
 
@@ -1945,7 +1945,7 @@ func (client *Client) BoardPage50(ctx context.Context, parameters BoardPage50Par
 	return QueryResult[BoardPage50Result]{Value: value, Identity: identity, ApplicationHead: *response.ApplicationHead, NextCursor: response.Cursor}, nil
 }
 
-const GetTicketQueryPlanHash = "14cf6045df12cea4c1680074ba99090d8dfbe8da8e02ff778e82c8e8dcdf1dd7"
+const GetTicketQueryPlanHash = "a199bdf92f3daa73103241772f878015cfe51a852340e8fc193d31697ddd5961"
 
 var GetTicketOperation = riffdb.Operation{Name: "ticketdesk_get_ticket", InputSchemaHash: "cd3d7f77ee75dee8d99ace0a2fc341057aeb943342378d0d22cd1fce32b9010b"}
 
@@ -2048,7 +2048,7 @@ func (client *Client) GetTicket(ctx context.Context, parameters GetTicketParams,
 	return QueryResult[GetTicketResult]{Value: value, Identity: identity, ApplicationHead: *response.ApplicationHead, NextCursor: response.Cursor}, nil
 }
 
-const GetUserQueryPlanHash = "1623690c03865daba8c6a42aed6ac276e96595541a2d5cd1c3540e1d71466284"
+const GetUserQueryPlanHash = "e4b26a0538fa019b85f62440c642404474f1757aca13f6c0e7c05bec4cd3329b"
 
 var GetUserOperation = riffdb.Operation{Name: "ticketdesk_get_user", InputSchemaHash: "55fc1b8b0854edb2d5cffb1ed6f3ac0f4b562e81f48c8dac7cd955339ebb0a60"}
 
@@ -2130,7 +2130,7 @@ func (client *Client) GetUser(ctx context.Context, parameters GetUserParams, opt
 	return QueryResult[GetUserResult]{Value: value, Identity: identity, ApplicationHead: *response.ApplicationHead, NextCursor: response.Cursor}, nil
 }
 
-const ListCommentsQueryPlanHash = "64559d88efd2d574700ed2fcf00f88402c45c4cbbe5ce1aafd9ee7367bbb444a"
+const ListCommentsQueryPlanHash = "d457f9cd5bfc72339c105c8891efb71d1d5fbc08aa65d2513d61649677960fd0"
 
 var ListCommentsOperation = riffdb.Operation{Name: "ticketdesk_list_comments", InputSchemaHash: "20d05fad284c4121a3b1622a326bfb35aed8821aaad545d0c5add8c5a4ae21bc"}
 
@@ -2233,7 +2233,7 @@ func (client *Client) ListComments(ctx context.Context, parameters ListCommentsP
 	return QueryResult[ListCommentsResult]{Value: value, Identity: identity, ApplicationHead: *response.ApplicationHead, NextCursor: response.Cursor}, nil
 }
 
-const ListTicketsQueryPlanHash = "7383edd6564a4e5062615af9c6edf278fea89b7a7fb45e24df6468b326128455"
+const ListTicketsQueryPlanHash = "17c77464ce252eea382371e0644fa52d86ed97fedf7541aaa54803ca5eac4088"
 
 var ListTicketsOperation = riffdb.Operation{Name: "ticketdesk_list_tickets", InputSchemaHash: "2e773748669493c1c19390469c5c3866a2d7a534e7c11b9531af6b8934035b2f"}
 
@@ -2361,7 +2361,7 @@ func (client *Client) ListTickets(ctx context.Context, parameters ListTicketsPar
 	return QueryResult[ListTicketsResult]{Value: value, Identity: identity, ApplicationHead: *response.ApplicationHead, NextCursor: response.Cursor}, nil
 }
 
-const ListTicketsByAssigneeQueryPlanHash = "35c620250590740f440efe6281bd5de78bbd2a07b7386fd1021a64ff6510268a"
+const ListTicketsByAssigneeQueryPlanHash = "29bba6b3d17e22bf56b6c22b9cc44654e7354fdd33d62c62d5e7aa4c114da457"
 
 var ListTicketsByAssigneeOperation = riffdb.Operation{Name: "ticketdesk_list_tickets_by_assignee", InputSchemaHash: "a9f85816c8b408b769438a894cc30c08db18a1abf62ce326bd1a6b824a249063"}
 
@@ -2489,7 +2489,7 @@ func (client *Client) ListTicketsByAssignee(ctx context.Context, parameters List
 	return QueryResult[ListTicketsByAssigneeResult]{Value: value, Identity: identity, ApplicationHead: *response.ApplicationHead, NextCursor: response.Cursor}, nil
 }
 
-const ProjectMembersQueryPlanHash = "6327a0d15a757c3f265b595bccf697019650f5f21e7e30f8366fb181a4352669"
+const ProjectMembersQueryPlanHash = "4e920ac6204991954c92874f293a3a2a38cc796540c1af51020f7bbb6453153c"
 
 var ProjectMembersOperation = riffdb.Operation{Name: "ticketdesk_project_members", InputSchemaHash: "140d0b389b383b0f8616b4b12003f9fcc6233ddb5240913fc25d78a15c9b374e"}
 
@@ -2570,7 +2570,7 @@ func (client *Client) ProjectMembers(ctx context.Context, parameters ProjectMemb
 	return QueryResult[ProjectMembersResult]{Value: value, Identity: identity, ApplicationHead: *response.ApplicationHead, NextCursor: response.Cursor}, nil
 }
 
-const ProjectSummaryQueryPlanHash = "f58b2f9edf69a8f0edd43a9363ce5bff3cd908c3bb7b37a3cdfdcf48719510e3"
+const ProjectSummaryQueryPlanHash = "b73445d19af4c24387b0795dcc89b93237bcdfe7fdbe7b3a0599f277a33dba47"
 
 var ProjectSummaryOperation = riffdb.Operation{Name: "ticketdesk_project_summary", InputSchemaHash: "09bcdc1788d66641ac2def372383c69f620a3006fa4cd7763832752bf75b2c30"}
 
@@ -2692,7 +2692,7 @@ func (client *Client) ProjectSummary(ctx context.Context, parameters ProjectSumm
 	return QueryResult[ProjectSummaryResult]{Value: value, Identity: identity, ApplicationHead: *response.ApplicationHead, NextCursor: response.Cursor}, nil
 }
 
-const TicketPageQueryPlanHash = "abbf375e3d2920ad04991308eaa6ffe4f8d2ce3e3fb57805978e5e64de7903f0"
+const TicketPageQueryPlanHash = "6f275c1b67379cda1457f636126a4578a7732074605f7123f1f869285ccb5d60"
 
 var TicketPageOperation = riffdb.Operation{Name: "ticketdesk_ticket_page", InputSchemaHash: "cd3d7f77ee75dee8d99ace0a2fc341057aeb943342378d0d22cd1fce32b9010b"}
 
@@ -2985,7 +2985,7 @@ func (client *Client) TicketPage(ctx context.Context, parameters TicketPageParam
 	return QueryResult[TicketPageResult]{Value: value, Identity: identity, ApplicationHead: *response.ApplicationHead, NextCursor: response.Cursor}, nil
 }
 
-const TicketPagePagedQueryPlanHash = "105db755be54dc657ca72c51f6f3f29df8e543bc3b4ffa6e04db7a3329ca7aaf"
+const TicketPagePagedQueryPlanHash = "092f337102e7624e0e1274f5dbf3b7d7e9fcfff2cf91192305a1625349ad8710"
 
 var TicketPagePagedOperation = riffdb.Operation{Name: "ticketdesk_ticket_page_paged", InputSchemaHash: "24e73f5e8fe92707c91f1fea4f5d0b60d49f141e22494ebe7a0f4f8d1eab7166"}
 
@@ -3284,7 +3284,7 @@ func (client *Client) TicketPagePaged(ctx context.Context, parameters TicketPage
 	return QueryResult[TicketPagePagedResult]{Value: value, Identity: identity, ApplicationHead: *response.ApplicationHead, NextCursor: response.Cursor}, nil
 }
 
-const TicketQueueQueryPlanHash = "ecdcd9ea75fc9a1d762b94dbf91a5d05cbcec126d4dbd2ae315674ad79a9e1ae"
+const TicketQueueQueryPlanHash = "f822640a8039a2eee218695aa79303b3722ff572b04dc8a4fb5afc715ba6a6f5"
 
 var TicketQueueOperation = riffdb.Operation{Name: "ticketdesk_ticket_queue", InputSchemaHash: "8bd9c7956b74fb8ae16b2e958f77daf2eae2c899b53171f3063d88a065440b68"}
 
@@ -3648,7 +3648,7 @@ func (client *Client) AttachLabelBatch(ctx context.Context, inputs []AttachLabel
 	return result, nil
 }
 
-const CloseTicketWithCommentPlanHash = "43be33bba05e123f6497b432174d8c275e5cc32b6cb604849c407f4b9cb744b8"
+const CloseTicketWithCommentPlanHash = "4ed95ada2b3333727f7ae2188dd291685938389a126cad253d8406d88f6b73fd"
 
 var CloseTicketWithCommentOperation = riffdb.Operation{Name: "ticketdesk_close_ticket_with_comment", InputSchemaHash: "93880522ce9a9d60d309d706ffda136a83bb9328e8ba1f3dc13f747a2ad4f4c3"}
 
@@ -4589,7 +4589,7 @@ func (client *Client) OpenTicketWithLabelsBatch(ctx context.Context, inputs []Op
 	return result, nil
 }
 
-const SwapMemberRolesPlanHash = "9be1787da3660f0c4d9ab97509979bc9466b49f38762ee747c3c1ee21c252695"
+const SwapMemberRolesPlanHash = "cf211b13f7ab6c296a2298510567f58c5c2a5595fff5be58c32c53a43bcf40a9"
 
 var SwapMemberRolesOperation = riffdb.Operation{Name: "ticketdesk_swap_member_roles", InputSchemaHash: "3a0f1689dcfe88e123654aff052f598439fc272e0c3ceab2dd728e67dc8bd445"}
 

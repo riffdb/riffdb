@@ -765,6 +765,7 @@ impl DeclarationKind {
                     | Token::Create
                     | Token::Require
                     | Token::Set
+                    | Token::Overwrite
                     | Token::Emit
                     | Token::Return
             ),
@@ -1010,6 +1011,7 @@ const EXPECTED_TOKEN_NAMES: &[&str] = &[
     "else",
     "require",
     "set",
+    "overwrite",
     "embed",
     "emit",
     "return",

@@ -101,7 +101,7 @@ contract UniqueUsers version 1 {
     idempotency_key idempotency_key
     mutate User(organization_id, user_id) as user
       else UserMissing { user_id: user_id }
-    set user.email = email
+    overwrite user.email = email
     return Changed { user: user }
   }
   bulk command DeleteUsers {
@@ -176,7 +176,7 @@ contract BulkRowsRecovery version 1 {
       }
       init_or_mutate Child(row.tenant_id, row.row_id, row.row_id)
         as stored_child initialize {}
-      set stored.value = row.value
+      overwrite stored.value = row.value
       emit RowWritten { row_id: row.row_id, value: stored.value }
     }
     return Written {}

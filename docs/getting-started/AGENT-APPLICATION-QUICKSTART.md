@@ -199,8 +199,8 @@ merely because the ready marker appeared. Stopping it shuts down the scoped
 driver and development daemon. Application stdout is caller-owned output and
 is streamed directly, not copied into RiffDB diagnostics or logs.
 
-Current application command and RiffQL plans retain the accepted grammar-v1
-global tenant requirement. Consequently, `riffdb dev` requires the selected
+Current application command and RiffQL plans retain the accepted global
+tenant requirement. Consequently, `riffdb dev` requires the selected
 local role to declare `"tenant_scope": "global"`. A tenant-scoped role is
 rejected before the disposable server starts with a diagnostic naming the
 missing reviewed tenant mapping; the workflow never widens it implicitly.

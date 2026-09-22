@@ -9,6 +9,7 @@
 use riffdb_contract_compiler::{CompilerDiagnosticCode, compile_contract_source};
 use riffdb_contract_ir::{
     BUNDLE_FORMAT_VERSION_V19, EXECUTABLE_IR_VERSION_V19, GRAMMAR_VERSION_V19, KeyPurpose,
+    RootValidationReadPlan,
 };
 
 /// One tenant route, two aggregates, one atomic checkout.
@@ -181,4 +182,154 @@ fn a_cross_aggregate_bundle_round_trips_through_its_canonical_encoding() {
         .expect("Checkout survives the round trip");
     assert!(command.locality().spans_aggregates());
     assert_eq!(command.locality().conflict_keys().len(), 2);
+}
+
+// A command's invariant enforcement is a property of the aggregates it writes,
+// never of the order its bindings are declared in. Before ADR-0252 the commit
+// checks and their root-validation reads were both derived from the *first*
+// mutating binding's aggregate, so a second aggregate's invariants were lowered
+// only when its binding happened to come first, and the IR coverage proof
+// validated against the same anchor and could not see the omission.
+// req: POC-003
+const TWO_AGGREGATE_INVARIANT: &str = r"
+contract Ledger version 1 {
+  entity Account {
+    key (tenant: uuid, account_id: uuid)
+    field open: bool
+  }
+  entity Entry {
+    key (tenant: uuid, account_id: uuid, entry_id: uuid)
+    field amount: i64
+  }
+  entity Note {
+    key (tenant: uuid, note_id: uuid)
+    field body: i64
+  }
+  aggregate Accounts {
+    root Account
+    child Entry
+    partition_by tenant
+    conflict_key (tenant, account_id)
+    invariant account_open: open
+  }
+  aggregate Notes {
+    root Note
+    partition_by tenant
+    conflict_key (tenant, note_id)
+  }
+  command Post {
+    input request_key: string<128>
+    input tenant: uuid
+    input account_id: uuid
+    input entry_id: uuid
+    input note_id: uuid
+    input amount: i64
+    idempotency_key request_key
+BINDINGS    overwrite note.body = amount
+    overwrite entry.amount = amount
+    return Posted { entry: entry }
+  }
+}
+";
+
+const NOTE_BINDING: &str = "    mutate Note(tenant, note_id) as note else NoteMissing {}\n";
+const ENTRY_BINDING: &str =
+    "    mutate Entry(tenant, account_id, entry_id) as entry else EntryMissing {}\n";
+
+fn two_aggregate_invariant(note_first: bool) -> String {
+    let bindings = if note_first {
+        format!("{NOTE_BINDING}{ENTRY_BINDING}")
+    } else {
+        format!("{ENTRY_BINDING}{NOTE_BINDING}")
+    };
+    TWO_AGGREGATE_INVARIANT.replace("BINDINGS", &bindings)
+}
+
+/// The property: permuting the mutating bindings must not change what the
+/// command enforces.
+///
+/// The plan itself is not identical under permutation -- binding identifiers and
+/// the instruction stream follow the source order, and that is intended. What
+/// must not move is the enforced content: which invariants are checked, and
+/// which aggregate roots are read to check them.
+// req: POC-003
+#[test]
+fn declaration_order_of_mutating_bindings_does_not_change_what_is_enforced() {
+    let enforced = |note_first: bool| {
+        let bundle = compile_contract_source(&two_aggregate_invariant(note_first))
+            .expect("a partition-local cross-aggregate write compiles");
+        let command = bundle
+            .commands()
+            .iter()
+            .find(|command| command.name() == "Post")
+            .expect("Post");
+        let mut invariants = command
+            .commit_checks()
+            .iter()
+            .map(|check| check.invariant_id())
+            .collect::<Vec<_>>();
+        invariants.sort_unstable();
+        let mut validated_roots = command
+            .root_validation_reads()
+            .iter()
+            .map(RootValidationReadPlan::entity_type)
+            .collect::<Vec<_>>();
+        validated_roots.sort_unstable();
+        (invariants, validated_roots)
+    };
+    assert_eq!(
+        enforced(true),
+        enforced(false),
+        "the same writes under a different binding order must enforce the same invariants \
+         over the same aggregate roots"
+    );
+}
+
+/// The soundness claim the property protects: the invariant is enforced even
+/// when its aggregate is not the one the first mutating binding belongs to.
+// req: POC-003
+#[test]
+fn an_invariant_is_enforced_for_every_aggregate_the_command_writes() {
+    for note_first in [true, false] {
+        let bundle = compile_contract_source(&two_aggregate_invariant(note_first))
+            .expect("a partition-local cross-aggregate write compiles");
+        let command = bundle
+            .commands()
+            .iter()
+            .find(|command| command.name() == "Post")
+            .expect("Post");
+        let accounts = bundle
+            .schema()
+            .aggregates()
+            .iter()
+            .find(|aggregate| aggregate.name() == "Accounts")
+            .expect("Accounts");
+        let invariant = accounts
+            .invariants()
+            .first()
+            .expect("Accounts declares account_open");
+
+        assert_eq!(
+            command
+                .commit_checks()
+                .iter()
+                .filter(|check| check.invariant_id() == invariant.id())
+                .count(),
+            1,
+            "note_first={note_first}: account_open must be checked exactly once"
+        );
+        assert!(
+            command
+                .root_validation_reads()
+                .iter()
+                .all(|read| read.entity_type() == accounts.root()),
+            "note_first={note_first}: a root-validation read must read the invariant's own \
+             aggregate root, never a key fabricated from another aggregate's binding"
+        );
+        assert_eq!(
+            command.root_validation_reads().len(),
+            1,
+            "note_first={note_first}: one entry write reaches one account root"
+        );
+    }
 }

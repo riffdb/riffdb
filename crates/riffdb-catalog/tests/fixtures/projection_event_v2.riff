@@ -21,7 +21,7 @@ contract ProjectionEventEvolution version 2 {
     input id: uuid
     idempotency_key idempotency_key
     mutate Row(id) as changed_row else Missing { id: id }
-    set changed_row.value = 1
+    overwrite changed_row.value = 1
     emit Changed { id: id }
     return ChangedOutcome { row: changed_row }
   }

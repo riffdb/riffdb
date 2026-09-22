@@ -382,7 +382,7 @@ The later combined implementation also passed full integration CI. The
 [same-binary archive comparison](performance/wp749-archive-qualification-2026-09.md#result-recorded-on-2026-09-21)
 completed twenty valid cells and found measurable archive overhead: write-only
 median throughput fell 8.49% and request P95 rose 4.35%. **WP-749 is blocked on
-WP-808**, which owns the shared checkpoint/journal delay. The isolated diagnostic
+WP-809**, which owns the shared checkpoint/journal delay. The isolated diagnostic
 measured acknowledgement P99 at 88.35 ms off and 114.93 ms on. Checkpoint-coupled
 journal durability is the named dominant mechanism, present without archive;
 roughly 11.7 ms remains unattributed. After that shared term is reduced, the

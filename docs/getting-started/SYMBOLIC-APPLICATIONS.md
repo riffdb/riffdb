@@ -55,8 +55,8 @@ the option is omitted, the CLI forwards no Go-only configuration: the runner
 detects `package.json` applications and executes `npm run build` followed by
 `npm run start` as usual.
 
-Current application command and RiffQL plans retain the accepted grammar-v1
-global tenant requirement. `riffdb dev` therefore accepts only an explicitly
+Current application command and RiffQL plans retain the accepted global
+tenant requirement. `riffdb dev` therefore accepts only an explicitly
 global development role. A tenant-scoped role is rejected before the
 disposable server starts because no reviewed contract-field-to-tenant mapping
 exists; development never invents that mapping or widens the role. Tenant

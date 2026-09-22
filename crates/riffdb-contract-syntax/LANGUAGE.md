@@ -704,6 +704,14 @@ Requirement: Spanned<Requirement> = {
 Effect: Spanned<Effect> = {
     <lo:@L> "set" <target:Path> "=" <value:Expression> <reveals:RevealAnnotation*> <hi:@R>
         => parser::spanned(Effect::Set(SetEffect {
+            spelling: WriteSpelling::Set,
+            target,
+            value: value.into_syntax(),
+            reveals,
+        }), lo, hi),
+    <lo:@L> "overwrite" <target:Path> "=" <value:Expression> <reveals:RevealAnnotation*> <hi:@R>
+        => parser::spanned(Effect::Set(SetEffect {
+            spelling: WriteSpelling::Overwrite,
             target,
             value: value.into_syntax(),
             reveals,
@@ -1170,6 +1178,7 @@ extern {
         "else" => Token::Else,
         "require" => Token::Require,
         "set" => Token::Set,
+        "overwrite" => Token::Overwrite,
         "embed" => Token::Embed,
         "emit" => Token::Emit,
         "return" => Token::Return,

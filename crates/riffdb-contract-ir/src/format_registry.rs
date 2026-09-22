@@ -151,6 +151,7 @@ tag_registry!(instruction, "Instruction", {
     WORKFLOW_TRANSITION = 0x05 => "workflow transition",
     WORKFLOW_LEASE = 0x06 => "workflow lease",
     SET_EMBEDDING = 0x07 => "set production embedding",
+    OVERWRITE_FIELD = 0x08 => "overwrite field",
 });
 tag_registry!(workflow_lease_operation, "Workflow lease operation", {
     CLAIM = 0x01 => "claim",
@@ -524,6 +525,13 @@ pub(crate) const INSTRUCTION_VARIANTS: &[TaggedVariantLayout] = &[
         "value" => "ExprId as u32",
         "model_identity" => "ExprId as u32",
         "model_version" => "ExprId as u32",
+    }),
+    // Same payload, distinct tag: the classification is the tag, which is what
+    // keeps a guarded write's bytes exactly what they were (ADR-0256).
+    tagged_variant!(instruction::OVERWRITE_FIELD, "overwrite field", {
+        "binding" => "BindingId as u32",
+        "field" => "FieldId as u32",
+        "value" => "ExprId as u32",
     }),
 ];
 

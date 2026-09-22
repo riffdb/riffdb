@@ -1,7 +1,7 @@
 format=riffdb-compiler-diagnostic-fixture-v1
 
 [semantic-code-registry]
-count=49
+count=51
 code.0.id=RDB-C001
 code.0.message=contract version must be a supported nonzero integer
 code.0.help=use a base-10 application version in 1..=u64::MAX
@@ -140,15 +140,21 @@ code.44.help=add `reveals binding.secret_field` at the exact non-secret flow sit
 code.45.id=RDB-C047
 code.45.message=the tokenized text-index declaration is invalid
 code.45.help=use distinct bounded string sources, keyword_v1 or standard_v1, boolean_v1, positive weights and ceilings, and max_results no greater than max_candidates
-code.46.id=RDB-C201
-code.46.message=an identifier cannot form a valid MCP command tool-name segment
-code.46.help=start contract and command identifiers with an ASCII letter
-code.47.id=RDB-C202
-code.47.message=the complete MCP command tool name exceeds 128 bytes
-code.47.help=shorten the source contract or command identifier
-code.48.id=RDB-C203
-code.48.message=two commands normalize to the same MCP command tool name
-code.48.help=rename one command so lowercase identifiers remain distinct
+code.46.id=RDB-C048
+code.46.message=this write does not constrain the field's prior value, so concurrent commands overwrite each other
+code.46.help=add a `require` reading a field of this binding, or derive the new value from the old one; write `overwrite` instead if last-writer-wins is what you mean
+code.47.id=RDB-C049
+code.47.message=this write does constrain the record's prior value, so it is not an unconditional overwrite
+code.47.help=write `set`
+code.48.id=RDB-C201
+code.48.message=an identifier cannot form a valid MCP command tool-name segment
+code.48.help=start contract and command identifiers with an ASCII letter
+code.49.id=RDB-C202
+code.49.message=the complete MCP command tool name exceeds 128 bytes
+code.49.help=shorten the source contract or command identifier
+code.50.id=RDB-C203
+code.50.message=two commands normalize to the same MCP command tool name
+code.50.help=rename one command so lowercase identifiers remain distinct
 
 [RDB-C001-invalid-contract-version]
 expected=RDB-C001
@@ -256,7 +262,7 @@ kind=semantic
 count=1
 diagnostic.0.code=RDB-C011
 diagnostic.0.message=the idempotency expression is invalid or used outside its clause
-diagnostic.0.primary=365..380
+diagnostic.0.primary=371..386
 diagnostic.0.related=none
 diagnostic.0.help=use one required UUID or string<1..=128> input only in the idempotency clause
 
@@ -281,7 +287,7 @@ kind=semantic
 count=1
 diagnostic.0.code=RDB-C013
 diagnostic.0.message=the command mutation target is invalid
-diagnostic.0.primary=258..264
+diagnostic.0.primary=264..270
 diagnostic.0.related=none
 diagnostic.0.help=write one declared non-key field through a mutable binding
 
@@ -654,6 +660,26 @@ diagnostic.0.message=the tokenized text-index declaration is invalid
 diagnostic.0.primary=167..176
 diagnostic.0.related=none
 diagnostic.0.help=use distinct bounded string sources, keyword_v1 or standard_v1, boolean_v1, positive weights and ceilings, and max_results no greater than max_candidates
+
+[RDB-C048-unguarded-set]
+expected=RDB-C048
+kind=semantic
+count=1
+diagnostic.0.code=RDB-C048
+diagnostic.0.message=this write does not constrain the field's prior value, so concurrent commands overwrite each other
+diagnostic.0.primary=402..414
+diagnostic.0.related=none
+diagnostic.0.help=add a `require` reading a field of this binding, or derive the new value from the old one; write `overwrite` instead if last-writer-wins is what you mean
+
+[RDB-C049-guarded-overwrite]
+expected=RDB-C049
+kind=semantic
+count=1
+diagnostic.0.code=RDB-C049
+diagnostic.0.message=this write does constrain the record's prior value, so it is not an unconditional overwrite
+diagnostic.0.primary=431..440
+diagnostic.0.related=none
+diagnostic.0.help=write `set`
 
 [RDB-C201-invalid-command-tool-name]
 expected=RDB-C201

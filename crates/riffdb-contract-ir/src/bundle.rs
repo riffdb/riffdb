@@ -44,7 +44,7 @@ use crate::{
     RowPolicyCatalogV1, RowPolicyOperationV1, SchemaIr, SecretRevealDestinationV1,
     SecretRevealSpecV1, TextKeyProfileV1, UnaryOperator, ValueType, ValueTypeTag, WorkflowCatalog,
     WorkflowLeaseFields, WorkflowLeaseOperation, WorkflowLeaseSchema, WorkflowSchema,
-    WorkflowTransitionSchema, checked_len, validate_source_name,
+    WorkflowTransitionSchema, WriteGuard, checked_len, validate_source_name,
 };
 
 /// Canonical bundle format version emitted and executed by the POC.
@@ -93,6 +93,8 @@ pub const BUNDLE_FORMAT_VERSION_V21: u32 = 21;
 pub const BUNDLE_FORMAT_VERSION_V22: u32 = 22;
 /// Bundle framing containing compiler-bounded high-cardinality collections.
 pub const BUNDLE_FORMAT_VERSION_V23: u32 = 23;
+/// Bundle framing whose commands may declare an unguarded write (ADR-0256).
+pub const BUNDLE_FORMAT_VERSION_V24: u32 = 24;
 /// Canonical grammar version represented by a bundle.
 pub const GRAMMAR_VERSION_V1: u32 = 1;
 /// Contract grammar containing compiled workflows and service-owned values.
@@ -139,6 +141,8 @@ pub const GRAMMAR_VERSION_V21: u32 = 21;
 pub const GRAMMAR_VERSION_V22: u32 = 22;
 /// Contract grammar whose compiler may select high-cardinality collection semantics.
 pub const GRAMMAR_VERSION_V23: u32 = 23;
+/// Contract grammar admitting the `overwrite` spelling (ADR-0256).
+pub const GRAMMAR_VERSION_V24: u32 = 24;
 /// Executable IR version represented by a bundle.
 pub const EXECUTABLE_IR_VERSION_V1: u32 = 1;
 /// Executable IR containing compiled workflow transitions and service values.
@@ -192,6 +196,8 @@ pub const EXECUTABLE_IR_VERSION_V21: u32 = 21;
 pub const EXECUTABLE_IR_VERSION_V22: u32 = 22;
 /// Executable IR admitting compiler-proved high-cardinality collections.
 pub const EXECUTABLE_IR_VERSION_V23: u32 = 23;
+/// Executable IR carrying a write's guard classification (ADR-0256).
+pub const EXECUTABLE_IR_VERSION_V24: u32 = 24;
 
 const RELATIONSHIP_SCHEMA_EXTENSION: u32 = 0xffff_fffe;
 const UNIQUE_KEY_SCHEMA_EXTENSION: u32 = 0xffff_fffd;
@@ -1121,7 +1127,9 @@ impl ContractBundle {
         mcp_command_names: McpCommandNameRegistryV2,
         compatibility: CompatibilityReport,
     ) -> Result<Self, IrValidationError> {
-        let version = if commands.iter().any(CommandPlan::requires_ir_v23) {
+        let version = if commands.iter().any(CommandPlan::requires_ir_v24) {
+            BUNDLE_FORMAT_VERSION_V24
+        } else if commands.iter().any(CommandPlan::requires_ir_v23) {
             BUNDLE_FORMAT_VERSION_V23
         } else if commands.iter().any(CommandPlan::requires_ir_v22) {
             BUNDLE_FORMAT_VERSION_V22
@@ -1303,6 +1311,10 @@ impl ContractBundle {
                 BUNDLE_FORMAT_VERSION_V23,
                 GRAMMAR_VERSION_V23,
                 EXECUTABLE_IR_VERSION_V23
+            ) | (
+                BUNDLE_FORMAT_VERSION_V24,
+                GRAMMAR_VERSION_V24,
+                EXECUTABLE_IR_VERSION_V24
             )
         ) || (ir_version < EXECUTABLE_IR_VERSION_V2
             && (!workflows.is_empty() || commands.iter().any(CommandPlan::requires_ir_v2)))
@@ -1340,6 +1352,8 @@ impl ContractBundle {
                 && commands.iter().any(CommandPlan::requires_ir_v22))
             || (ir_version < EXECUTABLE_IR_VERSION_V23
                 && commands.iter().any(CommandPlan::requires_ir_v23))
+            || (ir_version < EXECUTABLE_IR_VERSION_V24
+                && commands.iter().any(CommandPlan::requires_ir_v24))
             || (ir_version >= EXECUTABLE_IR_VERSION_V6
                 && commands
                     .iter()
@@ -2061,7 +2075,9 @@ pub(crate) fn compute_command_plan_hash(
 ) -> Result<PlanHash, IrValidationError> {
     let mut writer = Writer::new(MAX_BUNDLE_BYTES);
     writer.raw(COMMAND_PLAN_MAGIC)?;
-    let ir_version = if plan.requires_ir_v23() {
+    let ir_version = if plan.requires_ir_v24() {
+        EXECUTABLE_IR_VERSION_V24
+    } else if plan.requires_ir_v23() {
         EXECUTABLE_IR_VERSION_V23
     } else if plan.requires_ir_v22() {
         EXECUTABLE_IR_VERSION_V22
@@ -3762,6 +3778,7 @@ fn encode_instruction(
             binding,
             field,
             value,
+            guard: _,
         } => {
             writer.u32(binding.get())?;
             writer.u32(field.get())?;
@@ -4138,6 +4155,10 @@ fn decode_bundle(bytes: &[u8]) -> Result<ContractBundle, IrValidationError> {
             BUNDLE_FORMAT_VERSION_V23,
             GRAMMAR_VERSION_V23,
             EXECUTABLE_IR_VERSION_V23
+        ) | (
+            BUNDLE_FORMAT_VERSION_V24,
+            GRAMMAR_VERSION_V24,
+            EXECUTABLE_IR_VERSION_V24
         )
     ) {
         return Err(IrValidationError::UnsupportedVersion {
@@ -6498,7 +6519,16 @@ fn decode_instruction_versioned(
             binding: BindingId::new(reader.u32()?),
             field: decode_field_id(reader)?,
             value: ExprId::new(reader.u32()?),
+            guard: WriteGuard::Guarded,
         }),
+        instruction_tag::OVERWRITE_FIELD if ir_version >= EXECUTABLE_IR_VERSION_V24 => {
+            Ok(Instruction::SetField {
+                binding: BindingId::new(reader.u32()?),
+                field: decode_field_id(reader)?,
+                value: ExprId::new(reader.u32()?),
+                guard: WriteGuard::Unguarded,
+            })
+        }
         instruction_tag::SET_EMBEDDING if ir_version >= EXECUTABLE_IR_VERSION_V15 => {
             Ok(Instruction::SetEmbedding {
                 binding: BindingId::new(reader.u32()?),

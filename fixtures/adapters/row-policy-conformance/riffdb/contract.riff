@@ -146,8 +146,8 @@ contract AdapterRowPolicyConformance version 1 {
     input visibility: Visibility
     idempotency_key request_id
     mutate Document(organization_id, document_id) as document else DocumentMissing {}
-    set document.group_id = group_id
-    set document.visibility = visibility
+    overwrite document.group_id = group_id
+    overwrite document.visibility = visibility
     return DocumentAccessChanged { document: document }
   }
 
@@ -158,7 +158,7 @@ contract AdapterRowPolicyConformance version 1 {
     input new_owner_id: uuid
     idempotency_key request_id
     mutate Document(organization_id, document_id) as document else DocumentMissing {}
-    set document.owner_id = new_owner_id
+    overwrite document.owner_id = new_owner_id
     return DocumentTransferred { document: document }
   }
 

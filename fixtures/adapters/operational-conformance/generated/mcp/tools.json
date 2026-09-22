@@ -1,5 +1,5 @@
 {
-  "application_manifest_hash": "6d4ac1432244d0d1fa84b2c868dac5fe7a174e2b271c35dd09e0cdab7d24bada",
+  "application_manifest_hash": "a76fb9d35a032db72a1819ce31e34db8d11117d144bb9efc42da14e242a322d4",
   "commands": [
     {
       "annotations": {
@@ -8,7 +8,7 @@
         "openWorldHint": false,
         "readOnlyHint": false
       },
-      "contract_bundle_hash": "c2e7e4c1bbf2df2b983565888f633aa63b4575e68423a0cd2d1cd57be64c3adf",
+      "contract_bundle_hash": "16cd380e6d1753cd069f6cacb1553b24cc1040d7d62724fd29e4c95aa7cac158",
       "description": "Execute the exact ChangeInventoryRecordState compiled command from contract AdapterOperationalConformance.",
       "input_schema": {
         "$schema": "https://json-schema.org/draft/2020-12/schema",
@@ -416,7 +416,7 @@
       },
       "name": "adapter_operational_conformance_change_inventory_record_state",
       "operation_name": "ChangeInventoryRecordState",
-      "plan_hash": "0f7a6a862f120299eb6713f6d2b3e9e96d662315799e70c7b6b2f8bedec85b6c",
+      "plan_hash": "2265073278bcf664047f6ccb9876105332d30dc81fc934a9ddca2678580d48e5",
       "result_schema": {
         "$schema": "https://json-schema.org/draft/2020-12/schema",
         "oneOf": [
@@ -500,7 +500,7 @@
         "openWorldHint": false,
         "readOnlyHint": false
       },
-      "contract_bundle_hash": "c2e7e4c1bbf2df2b983565888f633aa63b4575e68423a0cd2d1cd57be64c3adf",
+      "contract_bundle_hash": "16cd380e6d1753cd069f6cacb1553b24cc1040d7d62724fd29e4c95aa7cac158",
       "description": "Execute the exact CreateAuthSessions compiled command from contract AdapterOperationalConformance.",
       "input_schema": {
         "$schema": "https://json-schema.org/draft/2020-12/schema",
@@ -916,7 +916,7 @@
         "openWorldHint": false,
         "readOnlyHint": false
       },
-      "contract_bundle_hash": "c2e7e4c1bbf2df2b983565888f633aa63b4575e68423a0cd2d1cd57be64c3adf",
+      "contract_bundle_hash": "16cd380e6d1753cd069f6cacb1553b24cc1040d7d62724fd29e4c95aa7cac158",
       "description": "Execute the exact CreateDirectoryUsers compiled command from contract AdapterOperationalConformance.",
       "input_schema": {
         "$schema": "https://json-schema.org/draft/2020-12/schema",
@@ -1322,7 +1322,7 @@
         "openWorldHint": false,
         "readOnlyHint": false
       },
-      "contract_bundle_hash": "c2e7e4c1bbf2df2b983565888f633aa63b4575e68423a0cd2d1cd57be64c3adf",
+      "contract_bundle_hash": "16cd380e6d1753cd069f6cacb1553b24cc1040d7d62724fd29e4c95aa7cac158",
       "description": "Execute the exact CreateDocuments compiled command from contract AdapterOperationalConformance.",
       "input_schema": {
         "$schema": "https://json-schema.org/draft/2020-12/schema",
@@ -1709,7 +1709,7 @@
         "openWorldHint": false,
         "readOnlyHint": false
       },
-      "contract_bundle_hash": "c2e7e4c1bbf2df2b983565888f633aa63b4575e68423a0cd2d1cd57be64c3adf",
+      "contract_bundle_hash": "16cd380e6d1753cd069f6cacb1553b24cc1040d7d62724fd29e4c95aa7cac158",
       "description": "Execute the exact CreateInventoryRecordMissing compiled command from contract AdapterOperationalConformance.",
       "input_schema": {
         "$schema": "https://json-schema.org/draft/2020-12/schema",
@@ -2031,7 +2031,7 @@
         "openWorldHint": false,
         "readOnlyHint": false
       },
-      "contract_bundle_hash": "c2e7e4c1bbf2df2b983565888f633aa63b4575e68423a0cd2d1cd57be64c3adf",
+      "contract_bundle_hash": "16cd380e6d1753cd069f6cacb1553b24cc1040d7d62724fd29e4c95aa7cac158",
       "description": "Execute the exact CreateInventoryRecords compiled command from contract AdapterOperationalConformance.",
       "input_schema": {
         "$schema": "https://json-schema.org/draft/2020-12/schema",
@@ -2442,7 +2442,7 @@
         "openWorldHint": false,
         "readOnlyHint": false
       },
-      "contract_bundle_hash": "c2e7e4c1bbf2df2b983565888f633aa63b4575e68423a0cd2d1cd57be64c3adf",
+      "contract_bundle_hash": "16cd380e6d1753cd069f6cacb1553b24cc1040d7d62724fd29e4c95aa7cac158",
       "description": "Execute the exact CreatePipelines compiled command from contract AdapterOperationalConformance.",
       "input_schema": {
         "$schema": "https://json-schema.org/draft/2020-12/schema",
@@ -2799,7 +2799,7 @@
         "openWorldHint": false,
         "readOnlyHint": false
       },
-      "contract_bundle_hash": "c2e7e4c1bbf2df2b983565888f633aa63b4575e68423a0cd2d1cd57be64c3adf",
+      "contract_bundle_hash": "16cd380e6d1753cd069f6cacb1553b24cc1040d7d62724fd29e4c95aa7cac158",
       "description": "Execute the exact LogMetrics compiled command from contract AdapterOperationalConformance.",
       "input_schema": {
         "$schema": "https://json-schema.org/draft/2020-12/schema",
@@ -3167,7 +3167,7 @@
         "openWorldHint": false,
         "readOnlyHint": false
       },
-      "contract_bundle_hash": "c2e7e4c1bbf2df2b983565888f633aa63b4575e68423a0cd2d1cd57be64c3adf",
+      "contract_bundle_hash": "16cd380e6d1753cd069f6cacb1553b24cc1040d7d62724fd29e4c95aa7cac158",
       "description": "Execute the exact SeedObjectRelations compiled command from contract AdapterOperationalConformance.",
       "input_schema": {
         "$schema": "https://json-schema.org/draft/2020-12/schema",
@@ -3558,7 +3558,7 @@
         "openWorldHint": false,
         "readOnlyHint": false
       },
-      "contract_bundle_hash": "c2e7e4c1bbf2df2b983565888f633aa63b4575e68423a0cd2d1cd57be64c3adf",
+      "contract_bundle_hash": "16cd380e6d1753cd069f6cacb1553b24cc1040d7d62724fd29e4c95aa7cac158",
       "description": "Execute the exact SeedObjects compiled command from contract AdapterOperationalConformance.",
       "input_schema": {
         "$schema": "https://json-schema.org/draft/2020-12/schema",
@@ -3906,7 +3906,7 @@
         "openWorldHint": false,
         "readOnlyHint": false
       },
-      "contract_bundle_hash": "c2e7e4c1bbf2df2b983565888f633aa63b4575e68423a0cd2d1cd57be64c3adf",
+      "contract_bundle_hash": "16cd380e6d1753cd069f6cacb1553b24cc1040d7d62724fd29e4c95aa7cac158",
       "description": "Execute the exact SeedRunTags compiled command from contract AdapterOperationalConformance.",
       "input_schema": {
         "$schema": "https://json-schema.org/draft/2020-12/schema",
@@ -4297,7 +4297,7 @@
         "openWorldHint": false,
         "readOnlyHint": false
       },
-      "contract_bundle_hash": "c2e7e4c1bbf2df2b983565888f633aa63b4575e68423a0cd2d1cd57be64c3adf",
+      "contract_bundle_hash": "16cd380e6d1753cd069f6cacb1553b24cc1040d7d62724fd29e4c95aa7cac158",
       "description": "Execute the exact SeedRuns compiled command from contract AdapterOperationalConformance.",
       "input_schema": {
         "$schema": "https://json-schema.org/draft/2020-12/schema",
@@ -4645,7 +4645,7 @@
         "openWorldHint": false,
         "readOnlyHint": false
       },
-      "contract_bundle_hash": "c2e7e4c1bbf2df2b983565888f633aa63b4575e68423a0cd2d1cd57be64c3adf",
+      "contract_bundle_hash": "16cd380e6d1753cd069f6cacb1553b24cc1040d7d62724fd29e4c95aa7cac158",
       "description": "Execute the exact SeedTicketComments compiled command from contract AdapterOperationalConformance.",
       "input_schema": {
         "$schema": "https://json-schema.org/draft/2020-12/schema",
@@ -5037,7 +5037,7 @@
         "openWorldHint": false,
         "readOnlyHint": false
       },
-      "contract_bundle_hash": "c2e7e4c1bbf2df2b983565888f633aa63b4575e68423a0cd2d1cd57be64c3adf",
+      "contract_bundle_hash": "16cd380e6d1753cd069f6cacb1553b24cc1040d7d62724fd29e4c95aa7cac158",
       "description": "Execute the exact SeedTickets compiled command from contract AdapterOperationalConformance.",
       "input_schema": {
         "$schema": "https://json-schema.org/draft/2020-12/schema",
@@ -5394,7 +5394,7 @@
         "openWorldHint": false,
         "readOnlyHint": false
       },
-      "contract_bundle_hash": "c2e7e4c1bbf2df2b983565888f633aa63b4575e68423a0cd2d1cd57be64c3adf",
+      "contract_bundle_hash": "16cd380e6d1753cd069f6cacb1553b24cc1040d7d62724fd29e4c95aa7cac158",
       "description": "Execute the exact WriteTuples compiled command from contract AdapterOperationalConformance.",
       "input_schema": {
         "$schema": "https://json-schema.org/draft/2020-12/schema",
@@ -5901,7 +5901,7 @@
           ]
         }
       },
-      "module_hash": "b461ee2f384a4caf685c9f5ca2bd8df3873f9b44d853c4208797608bca190c90",
+      "module_hash": "23964d621c0d490d9c9ae4c1663b1f209e5fcfa1b1e1300efbf1a2778292343e",
       "name": "adapter_operational_conformance_exact_documents_contains_asc",
       "operation_name": "ExactDocumentsContainsAsc",
       "result_schema": {
@@ -6105,7 +6105,7 @@
           ]
         }
       },
-      "module_hash": "b461ee2f384a4caf685c9f5ca2bd8df3873f9b44d853c4208797608bca190c90",
+      "module_hash": "23964d621c0d490d9c9ae4c1663b1f209e5fcfa1b1e1300efbf1a2778292343e",
       "name": "adapter_operational_conformance_exact_documents_ends_with_desc",
       "operation_name": "ExactDocumentsEndsWithDesc",
       "result_schema": {
@@ -6309,7 +6309,7 @@
           ]
         }
       },
-      "module_hash": "b461ee2f384a4caf685c9f5ca2bd8df3873f9b44d853c4208797608bca190c90",
+      "module_hash": "23964d621c0d490d9c9ae4c1663b1f209e5fcfa1b1e1300efbf1a2778292343e",
       "name": "adapter_operational_conformance_exact_documents_starts_with_asc",
       "operation_name": "ExactDocumentsStartsWithAsc",
       "result_schema": {
@@ -6481,7 +6481,7 @@
           ]
         }
       },
-      "module_hash": "b461ee2f384a4caf685c9f5ca2bd8df3873f9b44d853c4208797608bca190c90",
+      "module_hash": "23964d621c0d490d9c9ae4c1663b1f209e5fcfa1b1e1300efbf1a2778292343e",
       "name": "adapter_operational_conformance_fga_objects_with_relations",
       "operation_name": "FgaObjectsWithRelations",
       "result_schema": {
@@ -6665,7 +6665,7 @@
           ]
         }
       },
-      "module_hash": "b461ee2f384a4caf685c9f5ca2bd8df3873f9b44d853c4208797608bca190c90",
+      "module_hash": "23964d621c0d490d9c9ae4c1663b1f209e5fcfa1b1e1300efbf1a2778292343e",
       "name": "adapter_operational_conformance_get_auth_session",
       "operation_name": "GetAuthSession",
       "result_schema": {
@@ -6867,7 +6867,7 @@
           ]
         }
       },
-      "module_hash": "b461ee2f384a4caf685c9f5ca2bd8df3873f9b44d853c4208797608bca190c90",
+      "module_hash": "23964d621c0d490d9c9ae4c1663b1f209e5fcfa1b1e1300efbf1a2778292343e",
       "name": "adapter_operational_conformance_inventory_by_observed_asc_nulls_last",
       "operation_name": "InventoryByObservedAscNullsLast",
       "result_schema": {
@@ -7087,7 +7087,7 @@
           ]
         }
       },
-      "module_hash": "b461ee2f384a4caf685c9f5ca2bd8df3873f9b44d853c4208797608bca190c90",
+      "module_hash": "23964d621c0d490d9c9ae4c1663b1f209e5fcfa1b1e1300efbf1a2778292343e",
       "name": "adapter_operational_conformance_inventory_by_observed_desc_nulls_first",
       "operation_name": "InventoryByObservedDescNullsFirst",
       "result_schema": {
@@ -7307,7 +7307,7 @@
           ]
         }
       },
-      "module_hash": "b461ee2f384a4caf685c9f5ca2bd8df3873f9b44d853c4208797608bca190c90",
+      "module_hash": "23964d621c0d490d9c9ae4c1663b1f209e5fcfa1b1e1300efbf1a2778292343e",
       "name": "adapter_operational_conformance_inventory_by_subtitle_asc_nulls_first",
       "operation_name": "InventoryBySubtitleAscNullsFirst",
       "result_schema": {
@@ -7527,7 +7527,7 @@
           ]
         }
       },
-      "module_hash": "b461ee2f384a4caf685c9f5ca2bd8df3873f9b44d853c4208797608bca190c90",
+      "module_hash": "23964d621c0d490d9c9ae4c1663b1f209e5fcfa1b1e1300efbf1a2778292343e",
       "name": "adapter_operational_conformance_inventory_by_subtitle_desc_nulls_last",
       "operation_name": "InventoryBySubtitleDescNullsLast",
       "result_schema": {
@@ -7703,7 +7703,7 @@
           ]
         }
       },
-      "module_hash": "b461ee2f384a4caf685c9f5ca2bd8df3873f9b44d853c4208797608bca190c90",
+      "module_hash": "23964d621c0d490d9c9ae4c1663b1f209e5fcfa1b1e1300efbf1a2778292343e",
       "name": "adapter_operational_conformance_list_draft_documents",
       "operation_name": "ListDraftDocuments",
       "result_schema": {
@@ -7929,7 +7929,7 @@
           "x-riffdb-resultProfile": "paginated-envelope-v1"
         }
       },
-      "module_hash": "b461ee2f384a4caf685c9f5ca2bd8df3873f9b44d853c4208797608bca190c90",
+      "module_hash": "23964d621c0d490d9c9ae4c1663b1f209e5fcfa1b1e1300efbf1a2778292343e",
       "name": "adapter_operational_conformance_list_fga_tuples",
       "operation_name": "ListFgaTuples",
       "result_schema": {
@@ -8181,7 +8181,7 @@
           "x-riffdb-resultProfile": "paginated-envelope-v1"
         }
       },
-      "module_hash": "b461ee2f384a4caf685c9f5ca2bd8df3873f9b44d853c4208797608bca190c90",
+      "module_hash": "23964d621c0d490d9c9ae4c1663b1f209e5fcfa1b1e1300efbf1a2778292343e",
       "name": "adapter_operational_conformance_list_pipelines",
       "operation_name": "ListPipelines",
       "result_schema": {
@@ -8370,7 +8370,7 @@
           ]
         }
       },
-      "module_hash": "b461ee2f384a4caf685c9f5ca2bd8df3873f9b44d853c4208797608bca190c90",
+      "module_hash": "23964d621c0d490d9c9ae4c1663b1f209e5fcfa1b1e1300efbf1a2778292343e",
       "name": "adapter_operational_conformance_metric_dashboard",
       "operation_name": "MetricDashboard",
       "result_schema": {
@@ -8551,7 +8551,7 @@
           ]
         }
       },
-      "module_hash": "b461ee2f384a4caf685c9f5ca2bd8df3873f9b44d853c4208797608bca190c90",
+      "module_hash": "23964d621c0d490d9c9ae4c1663b1f209e5fcfa1b1e1300efbf1a2778292343e",
       "name": "adapter_operational_conformance_mlflow_runs_with_tags",
       "operation_name": "MlflowRunsWithTags",
       "result_schema": {
@@ -8776,7 +8776,7 @@
           ]
         }
       },
-      "module_hash": "b461ee2f384a4caf685c9f5ca2bd8df3873f9b44d853c4208797608bca190c90",
+      "module_hash": "23964d621c0d490d9c9ae4c1663b1f209e5fcfa1b1e1300efbf1a2778292343e",
       "name": "adapter_operational_conformance_reviewed_directory_users",
       "operation_name": "ReviewedDirectoryUsers",
       "result_schema": {
@@ -9036,7 +9036,7 @@
           ]
         }
       },
-      "module_hash": "b461ee2f384a4caf685c9f5ca2bd8df3873f9b44d853c4208797608bca190c90",
+      "module_hash": "23964d621c0d490d9c9ae4c1663b1f209e5fcfa1b1e1300efbf1a2778292343e",
       "name": "adapter_operational_conformance_search_directory_users",
       "operation_name": "SearchDirectoryUsers",
       "result_schema": {
@@ -9278,7 +9278,7 @@
           "x-riffdb-resultProfile": "paginated-envelope-v1"
         }
       },
-      "module_hash": "b461ee2f384a4caf685c9f5ca2bd8df3873f9b44d853c4208797608bca190c90",
+      "module_hash": "23964d621c0d490d9c9ae4c1663b1f209e5fcfa1b1e1300efbf1a2778292343e",
       "name": "adapter_operational_conformance_search_documents",
       "operation_name": "SearchDocuments",
       "result_schema": {
@@ -9481,7 +9481,7 @@
           ]
         }
       },
-      "module_hash": "b461ee2f384a4caf685c9f5ca2bd8df3873f9b44d853c4208797608bca190c90",
+      "module_hash": "23964d621c0d490d9c9ae4c1663b1f209e5fcfa1b1e1300efbf1a2778292343e",
       "name": "adapter_operational_conformance_ticket_page_with_comments",
       "operation_name": "TicketPageWithComments",
       "result_schema": {
