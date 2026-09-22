@@ -42,7 +42,7 @@ The read-only sibling MLflow contract snapshot has SHA-256
 `54873de3b57a5ad3a263e07eef5814ca7a3288ef686ff7409baead93c65d92ee`.
 It reproduces four RDB-C049 diagnostics: the `tag.value` and
 `tag.value_digest` writes in `SetExperimentTag`, and the
-`run_name_tag.text_value` and `run_name_tag.value_digest` writes in `UpdateRun`.
+`run_name_tag.text_value` and `run_name_tag.value_digest` writes in `UpdateRunInfo`.
 Each uses an unconditional unsigned parent revision fence.
 
 A temporary copy changing only those four `overwrite` tokens to `set` compiles

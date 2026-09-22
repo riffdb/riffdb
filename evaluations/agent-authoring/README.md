@@ -1,5 +1,12 @@
 # RDB-C048 authoring case
 
+The [fresh-context follow-up](fresh-context-2026-09-22/README.md) now adds two
+independent repair participants and eight MCP catalog-selection participants.
+Both repairs compile after one edit cycle; all 48 catalog responses match the
+frozen rubric under explicit-refresh, file-assisted conditions. That bounded
+pilot supplies R-06 evidence while leaving native-client and broader model
+qualification open. The retrospective case below remains a separate observation.
+
 The [bounded evidence record](rdb-c048-mlflow-2026-09-21.json) preserves one
 retrospective application-authoring case and four evaluator compiler replays.
 It supplies evidence about a real repair burden. It does not close SPEC R-06,
@@ -43,7 +50,7 @@ and committed source with `git show`. In a temporary copy of the committed
 source, change only `tag.value`, `tag.value_digest`, `run_name_tag.text_value`
 and `run_name_tag.value_digest` from `overwrite` to `set`. For the negative
 control, remove the `current_revision` requirements in `SetExperimentTag` and
-`UpdateRun`. Match the resulting hashes before running:
+`UpdateRunInfo`. Match the resulting hashes before running:
 
 ```sh
 cargo run --locked --quiet --package riffdb-contract-compiler \

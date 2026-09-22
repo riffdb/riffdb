@@ -127,6 +127,14 @@ protection currently rests on nothing the compiler proves.
   now records one observed adapter migration and controlled compiler replays.
   It separates four false positives from 13 structurally unguarded writes;
   it supplies no MCP catalog-selection measurement and leaves R-06 open.
+  A subsequent [fresh-context pilot](https://github.com/riffdb/riffdb/blob/main/evaluations/agent-authoring/fresh-context-2026-09-22/README.md)
+  adds two successful compiler-repair participants and eight catalog-selection
+  participants, with 48/48 correct first responses at 10/66 visible tools.
+  Catalogs came from real capability-filtered discovery. The model tasks used
+  file-assisted inspection and explicit simulated refresh, so native-client
+  behavior, autonomous notification handling and broader R-06 closure remain
+  unqualified. This replaces the absence-of-real-model-evidence finding only
+  within those recorded conditions.
 - **S-12.** Vision contradictions: "one process, one backup unit"
   (VISION.md:29-31) is broken by the replication tier and follower columnar
   views; VISION.md never mentions followers, partitions, or replication.

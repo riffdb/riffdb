@@ -1,0 +1,262 @@
+{
+  "schema": "riffdb.fresh-context-authoring-pilot/v1",
+  "date": "2026-09-22",
+  "protocol_sha256": "5a5b1a2a15161e6070c383261288c524142e266785b35f095accd3945778a43b",
+  "repository_revision": "ea7ffe17dafcad55cd2f007f57ec3565e31448cb",
+  "compiler_sha256": "aab01a0e65fba2acb2feebec63bc56c283d7b4b3f953d778755bfaf11a3a0d6e",
+  "cookbook_sha256": "0e657daa896aeab2c188cae41bb9f421ecffadc2d42fe12a2148be6e478d73d2",
+  "model_configuration": "parent session model/settings inherited without override; no independently attested model version",
+  "fresh_context": true,
+  "history_fork": "none",
+  "isolation": "instruction-scoped separate packet directories, not OS sealed",
+  "runs": [
+    {
+      "run": "author-a",
+      "source_condition": "before_adapter_migration",
+      "initial_source_sha256": "6d368aea0a77c9e8544a51e79a2613899277151f64e49ca20618ace9bb9da14b",
+      "final_source_sha256": "831dee757824e98656d05920a826be240b761a8d51861df882295ba51a90f672",
+      "attempts": [
+        {
+          "attempt": 1,
+          "source_sha256": "6d368aea0a77c9e8544a51e79a2613899277151f64e49ca20618ace9bb9da14b",
+          "exit_status": 1,
+          "compiler_elapsed_seconds": 0.011151,
+          "diagnostics": [
+            {
+              "line": 560,
+              "code": "RDB-C048"
+            },
+            {
+              "line": 561,
+              "code": "RDB-C048"
+            },
+            {
+              "line": 562,
+              "code": "RDB-C048"
+            },
+            {
+              "line": 563,
+              "code": "RDB-C048"
+            },
+            {
+              "line": 564,
+              "code": "RDB-C048"
+            },
+            {
+              "line": 565,
+              "code": "RDB-C048"
+            },
+            {
+              "line": 566,
+              "code": "RDB-C048"
+            },
+            {
+              "line": 567,
+              "code": "RDB-C048"
+            },
+            {
+              "line": 568,
+              "code": "RDB-C048"
+            },
+            {
+              "line": 569,
+              "code": "RDB-C048"
+            },
+            {
+              "line": 570,
+              "code": "RDB-C048"
+            },
+            {
+              "line": 571,
+              "code": "RDB-C048"
+            },
+            {
+              "line": 572,
+              "code": "RDB-C048"
+            }
+          ]
+        },
+        {
+          "attempt": 2,
+          "source_sha256": "831dee757824e98656d05920a826be240b761a8d51861df882295ba51a90f672",
+          "exit_status": 0,
+          "compiler_elapsed_seconds": 0.03687,
+          "diagnostics": []
+        }
+      ],
+      "changes": [
+        {
+          "line": 560,
+          "before": "set",
+          "after": "overwrite",
+          "target": "latest.text_value"
+        },
+        {
+          "line": 561,
+          "before": "set",
+          "after": "overwrite",
+          "target": "latest.logical_key"
+        },
+        {
+          "line": 562,
+          "before": "set",
+          "after": "overwrite",
+          "target": "latest.latest_item_key"
+        },
+        {
+          "line": 563,
+          "before": "set",
+          "after": "overwrite",
+          "target": "latest.sort_key"
+        },
+        {
+          "line": 564,
+          "before": "set",
+          "after": "overwrite",
+          "target": "latest.latest_sort_key"
+        },
+        {
+          "line": 565,
+          "before": "set",
+          "after": "overwrite",
+          "target": "latest.value_digest"
+        },
+        {
+          "line": 566,
+          "before": "set",
+          "after": "overwrite",
+          "target": "latest.value_bits"
+        },
+        {
+          "line": 567,
+          "before": "set",
+          "after": "overwrite",
+          "target": "latest.value_identity"
+        },
+        {
+          "line": 568,
+          "before": "set",
+          "after": "overwrite",
+          "target": "latest.value_order"
+        },
+        {
+          "line": 569,
+          "before": "set",
+          "after": "overwrite",
+          "target": "latest.metric_timestamp"
+        },
+        {
+          "line": 570,
+          "before": "set",
+          "after": "overwrite",
+          "target": "latest.metric_step"
+        },
+        {
+          "line": 571,
+          "before": "set",
+          "after": "overwrite",
+          "target": "latest.is_nan"
+        },
+        {
+          "line": 572,
+          "before": "set",
+          "after": "overwrite",
+          "target": "latest.promote_latest"
+        }
+      ],
+      "scores": {
+        "compile_success": true,
+        "only_mutation_spelling_changed": true,
+        "all_other_source_bytes_preserved": true,
+        "matches_independent_preexisting_gold_hash": true,
+        "expected_command_count": 14,
+        "outside_access_disclosed": false
+      },
+      "participant_wall_seconds": null,
+      "timing_limitation": "Exact participant wall duration was not instrumented; compiler durations are measured. No completion-time comparison is claimed.",
+      "runtime_execution": false,
+      "evaluator_summary": "Only thirteen latest-binding mutation keywords changed; existing guards and all other source bytes retained."
+    },
+    {
+      "run": "author-b",
+      "source_condition": "retained_adapter_migration",
+      "initial_source_sha256": "54873de3b57a5ad3a263e07eef5814ca7a3288ef686ff7409baead93c65d92ee",
+      "final_source_sha256": "831dee757824e98656d05920a826be240b761a8d51861df882295ba51a90f672",
+      "attempts": [
+        {
+          "attempt": 1,
+          "source_sha256": "54873de3b57a5ad3a263e07eef5814ca7a3288ef686ff7409baead93c65d92ee",
+          "exit_status": 1,
+          "compiler_elapsed_seconds": 0.011514,
+          "diagnostics": [
+            {
+              "line": 310,
+              "code": "RDB-C049"
+            },
+            {
+              "line": 311,
+              "code": "RDB-C049"
+            },
+            {
+              "line": 451,
+              "code": "RDB-C049"
+            },
+            {
+              "line": 452,
+              "code": "RDB-C049"
+            }
+          ]
+        },
+        {
+          "attempt": 2,
+          "source_sha256": "831dee757824e98656d05920a826be240b761a8d51861df882295ba51a90f672",
+          "exit_status": 0,
+          "compiler_elapsed_seconds": 0.036854,
+          "diagnostics": []
+        }
+      ],
+      "changes": [
+        {
+          "line": 310,
+          "before": "overwrite",
+          "after": "set",
+          "target": "tag.value"
+        },
+        {
+          "line": 311,
+          "before": "overwrite",
+          "after": "set",
+          "target": "tag.value_digest"
+        },
+        {
+          "line": 451,
+          "before": "overwrite",
+          "after": "set",
+          "target": "run_name_tag.text_value"
+        },
+        {
+          "line": 452,
+          "before": "overwrite",
+          "after": "set",
+          "target": "run_name_tag.value_digest"
+        }
+      ],
+      "scores": {
+        "compile_success": true,
+        "only_mutation_spelling_changed": true,
+        "all_other_source_bytes_preserved": true,
+        "matches_independent_preexisting_gold_hash": true,
+        "expected_command_count": 14,
+        "outside_access_disclosed": false
+      },
+      "participant_wall_seconds": null,
+      "timing_limitation": "Exact participant wall duration was not instrumented; compiler durations are measured. No completion-time comparison is claimed.",
+      "runtime_execution": false,
+      "evaluator_summary": "Only four child-binding mutation keywords changed; same-root revision checks and increments retained."
+    }
+  ],
+  "all_launched_runs_retained": true,
+  "independent_subjects": 2,
+  "sealed_alpha_qualification": false,
+  "mcp_catalog_risk_evidence": false
+}
