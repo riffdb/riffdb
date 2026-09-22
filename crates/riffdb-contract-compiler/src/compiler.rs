@@ -1258,7 +1258,7 @@ contract ReadServiceValue version 1 {
             .map(|index| format!("    index by_value_{index:04} (value)\n"))
             .collect::<String>();
         format!(
-            "contract IndexedMutation version 1 {{\n  entity Row {{\n    key (id: uuid)\n    field value: i64\n{indexes}  }}\n  aggregate Rows {{ root Row partition_by id conflict_key (id) }}\n  command Change {{\n    input idempotency_key: string<128>\n    input id: uuid\n    idempotency_key idempotency_key\n    mutate Row(id) as row else Missing {{ id: id }}\n    set row.value = 1\n    return Changed {{ row: row }}\n  }}\n}}\n"
+            "contract IndexedMutation version 1 {{\n  entity Row {{\n    key (id: uuid)\n    field value: i64\n{indexes}  }}\n  aggregate Rows {{ root Row partition_by id conflict_key (id) }}\n  command Change {{\n    input idempotency_key: string<128>\n    input id: uuid\n    idempotency_key idempotency_key\n    mutate Row(id) as row else Missing {{ id: id }}\n    overwrite row.value = 1\n    return Changed {{ row: row }}\n  }}\n}}\n"
         )
     }
 
@@ -1658,7 +1658,7 @@ contract KeyMutation version 1 {
     input id: uuid
     idempotency_key idempotency_key
     mutate Row(id) as row else Missing { id: id }
-    set row.id = id
+    overwrite row.id = id
     return Changed { id: id }
   }
 }
@@ -2207,9 +2207,9 @@ contract OptionalNumerics version 1 {
     input id: uuid
     idempotency_key idempotency_key
     mutate Row(id) as row else Missing { id: id }
-    set row.minimum = -9223372036854775808
-    set row.decimal_value = -1.25
-    set row.money_value = -2.50
+    overwrite row.minimum = -9223372036854775808
+    overwrite row.decimal_value = -1.25
+    overwrite row.money_value = -2.50
     emit Changed {
       minimum: -9223372036854775808,
       decimal_value: -1.25,
@@ -2268,7 +2268,7 @@ contract OptionalArithmetic version 1 {
     input amount: i64
     idempotency_key idempotency_key
     mutate Row(id) as row else Missing { id: id }
-    set row.calculated = amount + 1
+    overwrite row.calculated = amount + 1
     return Updated { row: row }
   }
 }
@@ -2340,8 +2340,10 @@ contract OptionalArithmetic version 1 {
     #[test]
     fn optional_event_addition_does_not_hide_an_unrelated_plan_change() {
         let genesis = compile_contract_source(&event_evolution_source(1, false)).expect("genesis");
-        let successor_source = event_evolution_source(2, true)
-            .replace("set changed_row.value = 1", "set changed_row.value = 2");
+        let successor_source = event_evolution_source(2, true).replace(
+            "overwrite changed_row.value = 1",
+            "overwrite changed_row.value = 2",
+        );
         let successor = compile_contract_successor(&successor_source, &genesis).expect("successor");
         let codes = successor
             .compatibility()
@@ -2365,7 +2367,10 @@ contract OptionalArithmetic version 1 {
                 "field value: i64",
                 "field value: i64 field note: optional<string<8>>",
             )
-            .replace("set changed_row.value = 1", "set changed_row.value = 2");
+            .replace(
+                "overwrite changed_row.value = 1",
+                "overwrite changed_row.value = 2",
+            );
         let successor = compile_contract_successor(&successor_source, &genesis).expect("successor");
         let codes = successor
             .compatibility()
@@ -2711,7 +2716,7 @@ contract RelationshipMutation version 1 {{
     idempotency_key idempotency_key
     {parent_read}mutate Child(tenant_id, child_id) as row
       else ChildMissing {{ child_id: child_id }}
-    set row.parent_id = parent_id
+    overwrite row.parent_id = parent_id
     return Changed {{ record: row }}
   }}
 }}
@@ -2722,7 +2727,7 @@ contract RelationshipMutation version 1 {{
     // req: SAFE-005
     #[test]
     fn declared_unique_key_adds_input_computable_conflict_to_create_and_change() {
-        let source = unique_source("set user.email = email");
+        let source = unique_source("overwrite user.email = email");
         let bundle = compile_contract_source(&source).expect("unique commands compile");
         assert_eq!(bundle.schema().unique_keys().len(), 1);
         let create = bundle
@@ -2848,7 +2853,7 @@ contract EventEvolution version {version} {{
     input id: uuid
     idempotency_key idempotency_key
     mutate Row(id) as changed_row else Missing {{ id: id }}
-    set changed_row.value = 1
+    overwrite changed_row.value = 1
     emit Changed {{ id: id }}
     return ChangedOutcome {{ row: changed_row }}
   }}

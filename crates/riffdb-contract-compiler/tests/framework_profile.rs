@@ -80,6 +80,7 @@ fn workflow_initialization_and_self_transition_survive_v11_reveal_ir() {
                 binding,
                 field,
                 value,
+                ..
             } if *field == state_field
                 && create.bindings()[binding.get() as usize].entity_type() == workflow.entity() =>
             {

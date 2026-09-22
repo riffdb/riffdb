@@ -1,5 +1,5 @@
 {
-  "application_manifest_hash": "c605cd5c4166786541b50a4ae53b6a2545e9e717f8ca7640f6f7dfcd4eb5d490",
+  "application_manifest_hash": "b8c65aac677078e6670097dacf1841807b41bbe9e66b27b6666203730e710a2d",
   "commands": [
     {
       "annotations": {
@@ -8,7 +8,7 @@
         "openWorldHint": false,
         "readOnlyHint": false
       },
-      "contract_bundle_hash": "7cae1122f8daad0469b74e1e40473f7cfcd9ea8474c39e1ddc510218b2ac0999",
+      "contract_bundle_hash": "32df6e2a70abfb420945291da188928dac100fcbfe66560ac3d0f1e438b8b11c",
       "description": "Execute the exact AddProjectMember compiled command from contract TicketDesk.",
       "input_schema": {
         "$schema": "https://json-schema.org/draft/2020-12/schema",
@@ -153,7 +153,7 @@
         "openWorldHint": false,
         "readOnlyHint": false
       },
-      "contract_bundle_hash": "7cae1122f8daad0469b74e1e40473f7cfcd9ea8474c39e1ddc510218b2ac0999",
+      "contract_bundle_hash": "32df6e2a70abfb420945291da188928dac100fcbfe66560ac3d0f1e438b8b11c",
       "description": "Execute the exact AttachLabel compiled command from contract TicketDesk.",
       "input_schema": {
         "$schema": "https://json-schema.org/draft/2020-12/schema",
@@ -290,7 +290,7 @@
         "openWorldHint": false,
         "readOnlyHint": false
       },
-      "contract_bundle_hash": "7cae1122f8daad0469b74e1e40473f7cfcd9ea8474c39e1ddc510218b2ac0999",
+      "contract_bundle_hash": "32df6e2a70abfb420945291da188928dac100fcbfe66560ac3d0f1e438b8b11c",
       "description": "Execute the exact CloseTicketWithComment compiled command from contract TicketDesk.",
       "input_schema": {
         "$schema": "https://json-schema.org/draft/2020-12/schema",
@@ -327,7 +327,7 @@
       },
       "name": "ticketdesk_close_ticket_with_comment",
       "operation_name": "CloseTicketWithComment",
-      "plan_hash": "43be33bba05e123f6497b432174d8c275e5cc32b6cb604849c407f4b9cb744b8",
+      "plan_hash": "4ed95ada2b3333727f7ae2188dd291685938389a126cad253d8406d88f6b73fd",
       "result_schema": {
         "$schema": "https://json-schema.org/draft/2020-12/schema",
         "oneOf": [
@@ -501,7 +501,7 @@
         "openWorldHint": false,
         "readOnlyHint": false
       },
-      "contract_bundle_hash": "7cae1122f8daad0469b74e1e40473f7cfcd9ea8474c39e1ddc510218b2ac0999",
+      "contract_bundle_hash": "32df6e2a70abfb420945291da188928dac100fcbfe66560ac3d0f1e438b8b11c",
       "description": "Execute the exact CreateComment compiled command from contract TicketDesk.",
       "input_schema": {
         "$schema": "https://json-schema.org/draft/2020-12/schema",
@@ -650,7 +650,7 @@
         "openWorldHint": false,
         "readOnlyHint": false
       },
-      "contract_bundle_hash": "7cae1122f8daad0469b74e1e40473f7cfcd9ea8474c39e1ddc510218b2ac0999",
+      "contract_bundle_hash": "32df6e2a70abfb420945291da188928dac100fcbfe66560ac3d0f1e438b8b11c",
       "description": "Execute the exact CreateLabel compiled command from contract TicketDesk.",
       "input_schema": {
         "$schema": "https://json-schema.org/draft/2020-12/schema",
@@ -766,7 +766,7 @@
         "openWorldHint": false,
         "readOnlyHint": false
       },
-      "contract_bundle_hash": "7cae1122f8daad0469b74e1e40473f7cfcd9ea8474c39e1ddc510218b2ac0999",
+      "contract_bundle_hash": "32df6e2a70abfb420945291da188928dac100fcbfe66560ac3d0f1e438b8b11c",
       "description": "Execute the exact CreateOrganization compiled command from contract TicketDesk.",
       "input_schema": {
         "$schema": "https://json-schema.org/draft/2020-12/schema",
@@ -857,7 +857,7 @@
         "openWorldHint": false,
         "readOnlyHint": false
       },
-      "contract_bundle_hash": "7cae1122f8daad0469b74e1e40473f7cfcd9ea8474c39e1ddc510218b2ac0999",
+      "contract_bundle_hash": "32df6e2a70abfb420945291da188928dac100fcbfe66560ac3d0f1e438b8b11c",
       "description": "Execute the exact CreateProject compiled command from contract TicketDesk.",
       "input_schema": {
         "$schema": "https://json-schema.org/draft/2020-12/schema",
@@ -973,7 +973,7 @@
         "openWorldHint": false,
         "readOnlyHint": false
       },
-      "contract_bundle_hash": "7cae1122f8daad0469b74e1e40473f7cfcd9ea8474c39e1ddc510218b2ac0999",
+      "contract_bundle_hash": "32df6e2a70abfb420945291da188928dac100fcbfe66560ac3d0f1e438b8b11c",
       "description": "Execute the exact CreateTicket compiled command from contract TicketDesk.",
       "input_schema": {
         "$schema": "https://json-schema.org/draft/2020-12/schema",
@@ -1159,7 +1159,7 @@
         "openWorldHint": false,
         "readOnlyHint": false
       },
-      "contract_bundle_hash": "7cae1122f8daad0469b74e1e40473f7cfcd9ea8474c39e1ddc510218b2ac0999",
+      "contract_bundle_hash": "32df6e2a70abfb420945291da188928dac100fcbfe66560ac3d0f1e438b8b11c",
       "description": "Execute the exact CreateUser compiled command from contract TicketDesk.",
       "input_schema": {
         "$schema": "https://json-schema.org/draft/2020-12/schema",
@@ -1283,7 +1283,7 @@
         "openWorldHint": false,
         "readOnlyHint": false
       },
-      "contract_bundle_hash": "7cae1122f8daad0469b74e1e40473f7cfcd9ea8474c39e1ddc510218b2ac0999",
+      "contract_bundle_hash": "32df6e2a70abfb420945291da188928dac100fcbfe66560ac3d0f1e438b8b11c",
       "description": "Execute the exact OpenTicketWithLabels compiled command from contract TicketDesk.",
       "input_schema": {
         "$schema": "https://json-schema.org/draft/2020-12/schema",
@@ -1561,7 +1561,7 @@
         "openWorldHint": false,
         "readOnlyHint": false
       },
-      "contract_bundle_hash": "7cae1122f8daad0469b74e1e40473f7cfcd9ea8474c39e1ddc510218b2ac0999",
+      "contract_bundle_hash": "32df6e2a70abfb420945291da188928dac100fcbfe66560ac3d0f1e438b8b11c",
       "description": "Execute the exact SwapMemberRoles compiled command from contract TicketDesk.",
       "input_schema": {
         "$schema": "https://json-schema.org/draft/2020-12/schema",
@@ -1602,7 +1602,7 @@
       },
       "name": "ticketdesk_swap_member_roles",
       "operation_name": "SwapMemberRoles",
-      "plan_hash": "9be1787da3660f0c4d9ab97509979bc9466b49f38762ee747c3c1ee21c252695",
+      "plan_hash": "cf211b13f7ab6c296a2298510567f58c5c2a5595fff5be58c32c53a43bcf40a9",
       "result_schema": {
         "$schema": "https://json-schema.org/draft/2020-12/schema",
         "oneOf": [
@@ -1747,7 +1747,7 @@
         ],
         "type": "object"
       },
-      "module_hash": "07e927f735f4b4501c8c6d06458716ebca1ffbd451ec72a517c2b968e71612b4",
+      "module_hash": "f4bebec973f66fd7da2f2209e2cbeb5dcf23798b883c5eba3754d89ab80746b4",
       "name": "ticketdesk_board_page200",
       "operation_name": "BoardPage200",
       "result_schema": {
@@ -1836,7 +1836,7 @@
         ],
         "type": "object"
       },
-      "module_hash": "07e927f735f4b4501c8c6d06458716ebca1ffbd451ec72a517c2b968e71612b4",
+      "module_hash": "f4bebec973f66fd7da2f2209e2cbeb5dcf23798b883c5eba3754d89ab80746b4",
       "name": "ticketdesk_board_page450",
       "operation_name": "BoardPage450",
       "result_schema": {
@@ -1925,7 +1925,7 @@
         ],
         "type": "object"
       },
-      "module_hash": "07e927f735f4b4501c8c6d06458716ebca1ffbd451ec72a517c2b968e71612b4",
+      "module_hash": "f4bebec973f66fd7da2f2209e2cbeb5dcf23798b883c5eba3754d89ab80746b4",
       "name": "ticketdesk_board_page50",
       "operation_name": "BoardPage50",
       "result_schema": {
@@ -2010,7 +2010,7 @@
         ],
         "type": "object"
       },
-      "module_hash": "07e927f735f4b4501c8c6d06458716ebca1ffbd451ec72a517c2b968e71612b4",
+      "module_hash": "f4bebec973f66fd7da2f2209e2cbeb5dcf23798b883c5eba3754d89ab80746b4",
       "name": "ticketdesk_get_ticket",
       "operation_name": "GetTicket",
       "result_schema": {
@@ -2104,7 +2104,7 @@
         ],
         "type": "object"
       },
-      "module_hash": "07e927f735f4b4501c8c6d06458716ebca1ffbd451ec72a517c2b968e71612b4",
+      "module_hash": "f4bebec973f66fd7da2f2209e2cbeb5dcf23798b883c5eba3754d89ab80746b4",
       "name": "ticketdesk_get_user",
       "operation_name": "GetUser",
       "result_schema": {
@@ -2205,7 +2205,7 @@
         "type": "object",
         "x-riffdb-continuationParameter": "after"
       },
-      "module_hash": "07e927f735f4b4501c8c6d06458716ebca1ffbd451ec72a517c2b968e71612b4",
+      "module_hash": "f4bebec973f66fd7da2f2209e2cbeb5dcf23798b883c5eba3754d89ab80746b4",
       "name": "ticketdesk_list_comments",
       "operation_name": "ListComments",
       "result_schema": {
@@ -2343,7 +2343,7 @@
         "type": "object",
         "x-riffdb-continuationParameter": "after"
       },
-      "module_hash": "07e927f735f4b4501c8c6d06458716ebca1ffbd451ec72a517c2b968e71612b4",
+      "module_hash": "f4bebec973f66fd7da2f2209e2cbeb5dcf23798b883c5eba3754d89ab80746b4",
       "name": "ticketdesk_list_tickets",
       "operation_name": "ListTickets",
       "result_schema": {
@@ -2493,7 +2493,7 @@
         "type": "object",
         "x-riffdb-continuationParameter": "after"
       },
-      "module_hash": "07e927f735f4b4501c8c6d06458716ebca1ffbd451ec72a517c2b968e71612b4",
+      "module_hash": "f4bebec973f66fd7da2f2209e2cbeb5dcf23798b883c5eba3754d89ab80746b4",
       "name": "ticketdesk_list_tickets_by_assignee",
       "operation_name": "ListTicketsByAssignee",
       "result_schema": {
@@ -2629,7 +2629,7 @@
         "type": "object",
         "x-riffdb-continuationParameter": "after"
       },
-      "module_hash": "07e927f735f4b4501c8c6d06458716ebca1ffbd451ec72a517c2b968e71612b4",
+      "module_hash": "f4bebec973f66fd7da2f2209e2cbeb5dcf23798b883c5eba3754d89ab80746b4",
       "name": "ticketdesk_project_members",
       "operation_name": "ProjectMembers",
       "result_schema": {
@@ -2735,7 +2735,7 @@
         ],
         "type": "object"
       },
-      "module_hash": "07e927f735f4b4501c8c6d06458716ebca1ffbd451ec72a517c2b968e71612b4",
+      "module_hash": "f4bebec973f66fd7da2f2209e2cbeb5dcf23798b883c5eba3754d89ab80746b4",
       "name": "ticketdesk_project_summary",
       "operation_name": "ProjectSummary",
       "result_schema": {
@@ -2842,7 +2842,7 @@
         ],
         "type": "object"
       },
-      "module_hash": "07e927f735f4b4501c8c6d06458716ebca1ffbd451ec72a517c2b968e71612b4",
+      "module_hash": "f4bebec973f66fd7da2f2209e2cbeb5dcf23798b883c5eba3754d89ab80746b4",
       "name": "ticketdesk_ticket_page",
       "operation_name": "TicketPage",
       "result_schema": {
@@ -3088,7 +3088,7 @@
         "type": "object",
         "x-riffdb-continuationParameter": "comments_after"
       },
-      "module_hash": "07e927f735f4b4501c8c6d06458716ebca1ffbd451ec72a517c2b968e71612b4",
+      "module_hash": "f4bebec973f66fd7da2f2209e2cbeb5dcf23798b883c5eba3754d89ab80746b4",
       "name": "ticketdesk_ticket_page_paged",
       "operation_name": "TicketPagePaged",
       "result_schema": {
@@ -3353,7 +3353,7 @@
         ],
         "type": "object"
       },
-      "module_hash": "07e927f735f4b4501c8c6d06458716ebca1ffbd451ec72a517c2b968e71612b4",
+      "module_hash": "f4bebec973f66fd7da2f2209e2cbeb5dcf23798b883c5eba3754d89ab80746b4",
       "name": "ticketdesk_ticket_queue",
       "operation_name": "TicketQueue",
       "result_schema": {

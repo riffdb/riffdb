@@ -1304,14 +1304,19 @@ fn existing_instruction_compatible(
                 binding: left_binding,
                 field: left_field,
                 value: left_value,
+                guard: left_guard,
             },
             Instruction::SetField {
                 binding: right_binding,
                 field: right_field,
                 value: right_value,
+                guard: right_guard,
             },
+            // A write that changes guard is not the same instruction: the same
+            // assignment now admits or refuses a concurrent writer.
         ) => Ok(left_binding == right_binding
             && left_field == right_field
+            && left_guard == right_guard
             && expression_trees_equal(
                 old_plan.expressions(),
                 *left_value,

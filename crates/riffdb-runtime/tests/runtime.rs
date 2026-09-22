@@ -2013,8 +2013,8 @@ contract RootValidation version 1 {
     idempotency_key request_key
     mutate Child(tenant, root_id, first_child) as first else MissingFirst {}
     mutate Child(tenant, root_id, second_child) as second else MissingSecond {}
-    set first.amount = amount
-    set second.amount = amount
+    overwrite first.amount = amount
+    overwrite second.amount = amount
     return Changed { first: first, second: second }
   }
 }
@@ -2200,8 +2200,8 @@ contract ServiceTransactionTime version 1 {
     service execution_id: uuid_v7
     idempotency_key request_key
     mutate WorkItem(organization_id, work_id) as work else Missing {}
-    set work.updated_at = observed_at
-    set work.execution_id = execution_id
+    overwrite work.updated_at = observed_at
+    overwrite work.execution_id = execution_id
     return Touched { observed_at: observed_at, execution_id: execution_id }
   }
 }

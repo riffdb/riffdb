@@ -1072,6 +1072,21 @@ impl RootValidationReadPlan {
     }
 }
 
+/// Whether a command constrains the prior value of a record it writes.
+///
+/// A write is guarded when a `require`, or the value of any write to the same
+/// binding, reads one of that binding's stored fields: commit-time revalidation
+/// then refuses the command if the record changed under it. A write that
+/// constrains nothing is last-writer-wins, which is legitimate but must be
+/// declared rather than inferred (ADR-0256).
+#[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
+pub enum WriteGuard {
+    /// Spelled `set`: the command constrains this record's prior value.
+    Guarded,
+    /// Spelled `overwrite`: it does not, and says so.
+    Unguarded,
+}
+
 /// One instantiated entity/aggregate commit validation predicate.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct CommitCheckPlan {
@@ -1354,6 +1369,11 @@ pub enum Instruction {
         field: FieldId,
         /// Typed right-hand expression.
         value: ExprId,
+        /// Whether the command constrains this record's prior value.
+        ///
+        /// Part of the plan, and so of its hash: moving a write between the two
+        /// changes what concurrent callers observe (ADR-0256).
+        guard: WriteGuard,
     },
     /// Set one production vector with explicit caller-submitted model evidence.
     SetEmbedding {
@@ -1404,7 +1424,14 @@ impl Instruction {
     pub(crate) fn tag(&self) -> u8 {
         match self {
             Self::Require { .. } => crate::format_registry::instruction::REQUIRE,
-            Self::SetField { .. } => crate::format_registry::instruction::SET_FIELD,
+            Self::SetField {
+                guard: WriteGuard::Guarded,
+                ..
+            } => crate::format_registry::instruction::SET_FIELD,
+            Self::SetField {
+                guard: WriteGuard::Unguarded,
+                ..
+            } => crate::format_registry::instruction::OVERWRITE_FIELD,
             Self::SetEmbedding { .. } => crate::format_registry::instruction::SET_EMBEDDING,
             Self::WorkflowTransition { .. } => {
                 crate::format_registry::instruction::WORKFLOW_TRANSITION
@@ -2714,6 +2741,23 @@ impl CommandPlan {
     pub fn requires_ir_v19(&self) -> bool {
         self.locality.spans_aggregates()
     }
+    /// Whether this command declares an unguarded write (ADR-0256).
+    ///
+    /// A command whose every write is guarded answers `false` and keeps its
+    /// existing least-sufficient identity, so no contract that compiles today
+    /// moves its plan hash.
+    #[must_use]
+    pub fn requires_ir_v24(&self) -> bool {
+        self.instructions.iter().any(|instruction| {
+            matches!(
+                instruction,
+                Instruction::SetField {
+                    guard: WriteGuard::Unguarded,
+                    ..
+                }
+            )
+        })
+    }
     /// Whether this command requires the additive large atomic-input envelope.
     #[must_use]
     pub const fn requires_ir_v22(&self) -> bool {
@@ -3364,6 +3408,7 @@ fn validate_secret_reveals(
                 binding,
                 field,
                 value,
+                ..
             } => {
                 let destination_binding = bindings
                     .iter()
@@ -4351,6 +4396,7 @@ fn aggregate_binding_graph_charge(
                 binding: target,
                 field,
                 value,
+                ..
             }
             | Instruction::SetEmbedding {
                 binding: target,
@@ -4601,6 +4647,7 @@ fn validate_aggregate_collection_graph_bytes(
                     binding: target,
                     field,
                     value,
+                    ..
                 }
                 | Instruction::SetEmbedding {
                     binding: target,
@@ -4900,6 +4947,7 @@ fn derive_relationship_checks(
                 binding,
                 field,
                 value,
+                ..
             } => Some(((*binding, *field), *value)),
             Instruction::SetEmbedding {
                 binding,
@@ -5069,6 +5117,7 @@ fn derive_unique_conflicts(
                 binding,
                 field,
                 value,
+                ..
             } => Some(((*binding, *field), *value)),
             Instruction::SetEmbedding {
                 binding,
@@ -5622,6 +5671,7 @@ fn worst_case_index_derivation(
                     binding: target,
                     field,
                     value,
+                    ..
                 }
                 | Instruction::SetEmbedding {
                     binding: target,
@@ -7051,6 +7101,7 @@ fn validate_instruction_stream(
                 binding,
                 field,
                 value,
+                ..
             } => {
                 effect_seen = true;
                 ensure_initialized_reads(arena, *value, bindings, schema, &initialized)?;
@@ -8308,6 +8359,7 @@ pub(crate) mod tests {
                         } else {
                             ExprId::new(0)
                         },
+                        guard: WriteGuard::Guarded,
                     })
             })
             .collect::<Vec<_>>();
@@ -9489,6 +9541,7 @@ pub(crate) mod tests {
                 binding: BindingId::new(0),
                 field: FieldId::new(2).expect("flag"),
                 value: ExprId::new(2),
+                guard: WriteGuard::Guarded,
             });
         }
         instructions.push(Instruction::Return(success));

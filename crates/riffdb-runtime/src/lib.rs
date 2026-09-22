@@ -360,6 +360,7 @@ pub fn execute_command(
                 binding,
                 field,
                 value,
+                guard: _,
             } => {
                 let value = {
                     let values = RuntimeValues {
@@ -1302,6 +1303,7 @@ fn execute_ordinary_decision_effects(
                 binding,
                 field,
                 value,
+                guard: _,
             } => {
                 let value = {
                     let values = RuntimeValues {
@@ -2135,6 +2137,7 @@ fn execute_collection_decision_effects(
                 binding,
                 field,
                 value,
+                guard: _,
             } => {
                 let value = match element {
                     Some((_, element)) => {
@@ -2738,6 +2741,7 @@ fn execute_collection_command(
                     binding,
                     field,
                     value,
+                    guard: _,
                 } => {
                     let value = {
                         let values = CollectionRuntimeValues::new(
@@ -2934,6 +2938,7 @@ fn execute_collection_command(
                 binding,
                 field,
                 value,
+                guard: _,
             } => {
                 if binding.get() as usize >= first_binding {
                     return Err(ExecutionFault::Integrity);

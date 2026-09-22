@@ -14,7 +14,7 @@ partition:expr=0 purpose=Partition(AggregateTypeId(1)) components=1
 conflict:0 purpose=Conflict(AggregateTypeId(1)) expressions=[0,1]
 binding:0 mode=InitOrMutate entity=1 complete=false reads=[3]
 initialize:0 fields=[1:2,3:3] state-independent:true
-write:0:1
-write:0:2
-write:0:3
+write:0:1 guard=set
+write:0:2 guard=set
+write:0:3 guard=set
 outcome:1 fields=[1:ValueType(U64)]

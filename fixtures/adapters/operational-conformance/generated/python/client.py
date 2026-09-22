@@ -22,8 +22,8 @@ def _compact_tag(value: object, tag: str, keys: frozenset[str]) -> dict[str, obj
 
 CONTRACT_LINEAGE: Final[str] = "AdapterOperationalConformance"
 CONTRACT_VERSION: Final[int] = 1
-CONTRACT_BUNDLE_HASH: Final[str] = "c2e7e4c1bbf2df2b983565888f633aa63b4575e68423a0cd2d1cd57be64c3adf"
-QUERY_MODULE_HASH: Final[str] = "b461ee2f384a4caf685c9f5ca2bd8df3873f9b44d853c4208797608bca190c90"
+CONTRACT_BUNDLE_HASH: Final[str] = "16cd380e6d1753cd069f6cacb1553b24cc1040d7d62724fd29e4c95aa7cac158"
+QUERY_MODULE_HASH: Final[str] = "23964d621c0d490d9c9ae4c1663b1f209e5fcfa1b1e1300efbf1a2778292343e"
 
 class AuthSessionState(StrEnum):
     AUTH_ACTIVE = "AuthActive"
@@ -143,7 +143,7 @@ class InventoryRecord:
     observed_at: Timestamp | None
     organization_id: UUID
 
-EXACT_DOCUMENTS_CONTAINS_ASC_QUERY_PLAN_HASH: Final[str] = "e9ab2700a467a65d0119b2b9348d62bde0fefc771b25b0b90a1805711a8a9683"
+EXACT_DOCUMENTS_CONTAINS_ASC_QUERY_PLAN_HASH: Final[str] = "ad14fcb228a91596d98caed21168fb96ac5c44ff52602a653c0969d4196a8aa3"
 
 @dataclass(frozen=True, slots=True, kw_only=True)
 class ExactDocumentsContainsAscParams:
@@ -171,7 +171,7 @@ class ExactDocumentsContainsAscFound:
 
 ExactDocumentsContainsAscResult: TypeAlias = ExactDocumentsContainsAscFound
 
-EXACT_DOCUMENTS_ENDS_WITH_DESC_QUERY_PLAN_HASH: Final[str] = "3051491f4d5b44e9a1bec0813c45f572ddc6f8439d066b952f5893db48a23ce9"
+EXACT_DOCUMENTS_ENDS_WITH_DESC_QUERY_PLAN_HASH: Final[str] = "bd61840093e2d0223a7474f485b6c67e5601b88e766c70ae48cf0ce6473edd9c"
 
 @dataclass(frozen=True, slots=True, kw_only=True)
 class ExactDocumentsEndsWithDescParams:
@@ -199,7 +199,7 @@ class ExactDocumentsEndsWithDescFound:
 
 ExactDocumentsEndsWithDescResult: TypeAlias = ExactDocumentsEndsWithDescFound
 
-EXACT_DOCUMENTS_STARTS_WITH_ASC_QUERY_PLAN_HASH: Final[str] = "4257ede9a6913aa3bde6876a558c2c97dc9767f57aa687082d7dd17f468b204a"
+EXACT_DOCUMENTS_STARTS_WITH_ASC_QUERY_PLAN_HASH: Final[str] = "a63fc0cccb99f5002382503f96c95ecf287c6d1a09c91fd04879c9aab3f9aa5c"
 
 @dataclass(frozen=True, slots=True, kw_only=True)
 class ExactDocumentsStartsWithAscParams:
@@ -227,7 +227,7 @@ class ExactDocumentsStartsWithAscFound:
 
 ExactDocumentsStartsWithAscResult: TypeAlias = ExactDocumentsStartsWithAscFound
 
-FGA_OBJECTS_WITH_RELATIONS_QUERY_PLAN_HASH: Final[str] = "cdac987404c335d2790395df670b48af14264bfa02c2f76d726e7a0c0df14261"
+FGA_OBJECTS_WITH_RELATIONS_QUERY_PLAN_HASH: Final[str] = "53b5e50a56c9463abcee353b0ae2badcc106b74da7401b8060f2bc58e04583f6"
 
 @dataclass(frozen=True, slots=True, kw_only=True)
 class FgaObjectsWithRelationsParams:
@@ -252,7 +252,7 @@ class FgaObjectsWithRelationsFound:
 
 FgaObjectsWithRelationsResult: TypeAlias = FgaObjectsWithRelationsFound
 
-GET_AUTH_SESSION_QUERY_PLAN_HASH: Final[str] = "621d2d349b24d4a2113dda5bc685306dd997ad38d859c78dedcb5cccd9aefb0f"
+GET_AUTH_SESSION_QUERY_PLAN_HASH: Final[str] = "7ed4b2e225e92d302bd1f183eed0b2f61b91de063374b32d8f160f7a0766e297"
 
 @dataclass(frozen=True, slots=True, kw_only=True)
 class GetAuthSessionParams:
@@ -279,7 +279,7 @@ class GetAuthSessionMissing:
 
 GetAuthSessionResult: TypeAlias = GetAuthSessionFound | GetAuthSessionMissing
 
-INVENTORY_BY_OBSERVED_ASC_NULLS_LAST_QUERY_PLAN_HASH: Final[str] = "34a72055b43ff5bad1ad7032f4917344e5989576c7837625b675a927b4348ab7"
+INVENTORY_BY_OBSERVED_ASC_NULLS_LAST_QUERY_PLAN_HASH: Final[str] = "ccb353b4dbeb9de37eb410f13ec351d957a702890547f3097e8f188d0e1dcc45"
 
 @dataclass(frozen=True, slots=True, kw_only=True)
 class InventoryByObservedAscNullsLastParams:
@@ -307,7 +307,7 @@ class InventoryByObservedAscNullsLastFound:
 
 InventoryByObservedAscNullsLastResult: TypeAlias = InventoryByObservedAscNullsLastFound
 
-INVENTORY_BY_OBSERVED_DESC_NULLS_FIRST_QUERY_PLAN_HASH: Final[str] = "64b44fa0682ec77c49c1f8698a06833215853db02c83a81f4884f36def78405a"
+INVENTORY_BY_OBSERVED_DESC_NULLS_FIRST_QUERY_PLAN_HASH: Final[str] = "7a989129285359f8bdf3ba28b2f35d82b654f3373d31154d4472dd1e8a5ca413"
 
 @dataclass(frozen=True, slots=True, kw_only=True)
 class InventoryByObservedDescNullsFirstParams:
@@ -335,7 +335,7 @@ class InventoryByObservedDescNullsFirstFound:
 
 InventoryByObservedDescNullsFirstResult: TypeAlias = InventoryByObservedDescNullsFirstFound
 
-INVENTORY_BY_SUBTITLE_ASC_NULLS_FIRST_QUERY_PLAN_HASH: Final[str] = "ee536c1ee8d3db3b6b4f844b56c52e3cfc1cdfd542dbb518fab7ea05580b52da"
+INVENTORY_BY_SUBTITLE_ASC_NULLS_FIRST_QUERY_PLAN_HASH: Final[str] = "595605fc820f0f25eda62b286bb74ff6190969bee1b78a4f9758ea6bc22b598d"
 
 @dataclass(frozen=True, slots=True, kw_only=True)
 class InventoryBySubtitleAscNullsFirstParams:
@@ -363,7 +363,7 @@ class InventoryBySubtitleAscNullsFirstFound:
 
 InventoryBySubtitleAscNullsFirstResult: TypeAlias = InventoryBySubtitleAscNullsFirstFound
 
-INVENTORY_BY_SUBTITLE_DESC_NULLS_LAST_QUERY_PLAN_HASH: Final[str] = "874dfed993df3356130f46e3857fbfb8274e8eb50fb2a28e8af343538a1dc492"
+INVENTORY_BY_SUBTITLE_DESC_NULLS_LAST_QUERY_PLAN_HASH: Final[str] = "1d8f5c1f6151e162f8586c3a8789c01d6a46082a92c370154b2331e3d680f088"
 
 @dataclass(frozen=True, slots=True, kw_only=True)
 class InventoryBySubtitleDescNullsLastParams:
@@ -391,7 +391,7 @@ class InventoryBySubtitleDescNullsLastFound:
 
 InventoryBySubtitleDescNullsLastResult: TypeAlias = InventoryBySubtitleDescNullsLastFound
 
-LIST_DRAFT_DOCUMENTS_QUERY_PLAN_HASH: Final[str] = "dd27a6c08ab392d81aca5acef234aec6aa2c2d255e29ab8c0ef5e497196fb232"
+LIST_DRAFT_DOCUMENTS_QUERY_PLAN_HASH: Final[str] = "ecfc1f20115612c2555ffb1c25eeff7b96cb10927017e813f2d372a5b8a22f68"
 
 @dataclass(frozen=True, slots=True, kw_only=True)
 class ListDraftDocumentsParams:
@@ -410,7 +410,7 @@ class ListDraftDocumentsFound:
 
 ListDraftDocumentsResult: TypeAlias = ListDraftDocumentsFound
 
-LIST_FGA_TUPLES_QUERY_PLAN_HASH: Final[str] = "5b1048274757b76a6f4bd08cc9fb75c0fd921df7a49e2010361aff6391a6b70a"
+LIST_FGA_TUPLES_QUERY_PLAN_HASH: Final[str] = "e24a32778c1e34470ec26a95681817d722b83dd0f54f3fdd2cc991646ee64a35"
 
 @dataclass(frozen=True, slots=True, kw_only=True)
 class ListFgaTuplesParams:
@@ -432,7 +432,7 @@ class ListFgaTuplesFound:
 
 ListFgaTuplesResult: TypeAlias = ListFgaTuplesFound
 
-LIST_PIPELINES_QUERY_PLAN_HASH: Final[str] = "eb10d13aef51782bc9d9c3c3a7ffbfd413df17a89fa8eb700ffffdb37f4f535b"
+LIST_PIPELINES_QUERY_PLAN_HASH: Final[str] = "cd577b8a0a68ccb1ee1a5533afde5fbc5c7510ef83aa8b98e4a9f38bdb3e15a7"
 
 @dataclass(frozen=True, slots=True, kw_only=True)
 class ListPipelinesParams:
@@ -453,7 +453,7 @@ class ListPipelinesFound:
 
 ListPipelinesResult: TypeAlias = ListPipelinesFound
 
-METRIC_DASHBOARD_QUERY_PLAN_HASH: Final[str] = "a653795586cae65231f0e827ba11c768fed5f73114a5815e5e3072faaf9e8e30"
+METRIC_DASHBOARD_QUERY_PLAN_HASH: Final[str] = "a5fc67f289346cf2eb2408a5962aebf2656c1f7b344e086ff3ed0c39e07a2c34"
 
 @dataclass(frozen=True, slots=True, kw_only=True)
 class MetricDashboardParams:
@@ -474,7 +474,7 @@ class MetricDashboardFound:
 
 MetricDashboardResult: TypeAlias = MetricDashboardFound
 
-MLFLOW_RUNS_WITH_TAGS_QUERY_PLAN_HASH: Final[str] = "917068f618a0a25146f6b70695c823acd60c4c89fd57385d7f88b31ad324684d"
+MLFLOW_RUNS_WITH_TAGS_QUERY_PLAN_HASH: Final[str] = "62e28da78cd594d3e7a736afa0ab8ca33d5c5a7ca556679349493ad665f095b7"
 
 @dataclass(frozen=True, slots=True, kw_only=True)
 class MlflowRunsWithTagsParams:
@@ -499,7 +499,7 @@ class MlflowRunsWithTagsFound:
 
 MlflowRunsWithTagsResult: TypeAlias = MlflowRunsWithTagsFound
 
-REVIEWED_DIRECTORY_USERS_QUERY_PLAN_HASH: Final[str] = "548187b593dfa8cadd276d769f652821b350ed76d1ee3b9262185944b58cf78e"
+REVIEWED_DIRECTORY_USERS_QUERY_PLAN_HASH: Final[str] = "edbf8d47fe98e086c2c618327dc8ffa592622f07f1079006d9142f6e0c4edaff"
 
 @dataclass(frozen=True, slots=True, kw_only=True)
 class ReviewedDirectoryUsersParams:
@@ -530,7 +530,7 @@ class ReviewedDirectoryUsersFound:
 
 ReviewedDirectoryUsersResult: TypeAlias = ReviewedDirectoryUsersFound
 
-SEARCH_DIRECTORY_USERS_QUERY_PLAN_HASH: Final[str] = "2653ca7b6cb55ef3149f7d4ce76a8225184f452b96e758d3513227f083e2fdb9"
+SEARCH_DIRECTORY_USERS_QUERY_PLAN_HASH: Final[str] = "830924f2a49fce31c002242198057119bff2259ff5af9797676b2575ae77f20b"
 
 @dataclass(frozen=True, slots=True, kw_only=True)
 class SearchDirectoryUsersParams:
@@ -562,7 +562,7 @@ class SearchDirectoryUsersFound:
 
 SearchDirectoryUsersResult: TypeAlias = SearchDirectoryUsersFound
 
-SEARCH_DOCUMENTS_QUERY_PLAN_HASH: Final[str] = "ea284602476e8a871f7bab0745b4e5839479bb0a4a7ca4b023cb801c5fcf79ad"
+SEARCH_DOCUMENTS_QUERY_PLAN_HASH: Final[str] = "f19627b592a472427e9c16641e42e93ed77bff61aab1f4b88d032bb81d3c3033"
 
 @dataclass(frozen=True, slots=True, kw_only=True)
 class SearchDocumentsParams:
@@ -583,7 +583,7 @@ class SearchDocumentsFound:
 
 SearchDocumentsResult: TypeAlias = SearchDocumentsFound
 
-TICKET_PAGE_WITH_COMMENTS_QUERY_PLAN_HASH: Final[str] = "34d57d95f12d47a44141170adb75086fa2daf2dd9844b650f01314f7e653d4c9"
+TICKET_PAGE_WITH_COMMENTS_QUERY_PLAN_HASH: Final[str] = "85b1ea6d87fdd87bae2ef0d46cd7c6ca1752e53d4bb1cc1828c9d3eac7f55171"
 
 @dataclass(frozen=True, slots=True, kw_only=True)
 class TicketPageWithCommentsParams:
@@ -618,7 +618,7 @@ class ChangeInventoryRecordStateInput:
     observed_at: Timestamp | None
     organization_id: UUID
 
-CHANGE_INVENTORY_RECORD_STATE_PLAN_HASH: Final[str] = "0f7a6a862f120299eb6713f6d2b3e9e96d662315799e70c7b6b2f8bedec85b6c"
+CHANGE_INVENTORY_RECORD_STATE_PLAN_HASH: Final[str] = "2265073278bcf664047f6ccb9876105332d30dc81fc934a9ddca2678580d48e5"
 @dataclass(frozen=True, slots=True, kw_only=True)
 class ChangeInventoryRecordStateInventoryRecordMissing:
     outcome: Literal["InventoryRecordMissing"] = field(default="InventoryRecordMissing", init=False)

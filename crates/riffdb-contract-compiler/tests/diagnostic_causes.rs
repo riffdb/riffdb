@@ -75,7 +75,7 @@ contract Registry version 1 {
     input other_id: u64
     idempotency_key request_id
     mutate Item(tenant_id, item_id) as item else Missing {}
-    set item.item_id = other_id
+    overwrite item.item_id = other_id
     return Done { item: item }
   }
 }
@@ -96,8 +96,8 @@ contract Registry version 1 {
     input other: string<100>
     idempotency_key request_id
     mutate Item(tenant_id, item_id) as item else Missing {}
-    set item.name = name
-    set item.name = other
+    overwrite item.name = name
+    overwrite item.name = other
     return Done { item: item }
   }
 }

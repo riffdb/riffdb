@@ -55,7 +55,7 @@ contract Ledger version 1 {{
     input amount: i64
     idempotency_key request_key
     mutate Entry(tenant, account_id, entry_id) as entry else EntryMissing {{}}
-    set entry.amount = amount
+    overwrite entry.amount = amount
     return Added {{ entry: entry }}
   }}
 }}

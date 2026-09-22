@@ -211,6 +211,8 @@ pub(crate) enum Token {
     Require,
     #[token("set")]
     Set,
+    #[token("overwrite")]
+    Overwrite,
     #[token("embed")]
     Embed,
     #[token("emit")]

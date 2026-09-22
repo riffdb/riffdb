@@ -7709,7 +7709,7 @@ contract EventCatalog version 1 {
     input id: uuid
     idempotency_key idempotency_key
     mutate Row(id) as row else Missing { id: id }
-    set row.value = 1
+    overwrite row.value = 1
     emit Routed { id: id }
     return Changed { row: row }
   }

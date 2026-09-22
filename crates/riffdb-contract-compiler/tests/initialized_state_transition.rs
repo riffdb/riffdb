@@ -195,7 +195,13 @@ fn empty_initializer_is_valid_when_common_effects_complete_the_absent_postimage(
         .replace(
             "require current_revision: state.revision == 0 else Changed {}\n",
             "",
-        );
+        )
+        // Stripping both the revision guard and the read-modify-write leaves
+        // nothing constraining `state`, so every write to it is unguarded and
+        // must say so (ADR-0256). That is the property, not an inconvenience:
+        // this variant really does admit a concurrent writer the original did
+        // not.
+        .replace("set state.", "overwrite state.");
     let bundle = compile_contract_source(&source).expect("common effects complete the record");
     assert!(
         bundle

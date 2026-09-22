@@ -354,6 +354,12 @@ pub enum CompilerDiagnosticCode {
     InvalidSecretReveal,
     /// `RDB-C047`: a tokenized text-index declaration is invalid.
     InvalidTextIndex,
+    /// `RDB-C048`: a `set` writes a field whose prior value the command does
+    /// not constrain, so the write is last-writer-wins without saying so.
+    UnguardedSet,
+    /// `RDB-C049`: an `overwrite` writes a field the command does constrain,
+    /// or one with no prior value at all.
+    GuardedOverwrite,
     /// `RDB-C201`: an identifier cannot form an ADR-0064 command tool-name segment.
     InvalidCommandToolName,
     /// `RDB-C202`: a complete ADR-0064 command tool name exceeds 128 bytes.
@@ -364,7 +370,7 @@ pub enum CompilerDiagnosticCode {
 
 impl CompilerDiagnosticCode {
     /// Complete pre-freeze public semantic diagnostic registry in code order.
-    pub const ALL: [Self; 49] = [
+    pub const ALL: [Self; 51] = [
         Self::InvalidContractVersion,
         Self::DuplicateName,
         Self::MissingDeclaration,
@@ -411,6 +417,8 @@ impl CompilerDiagnosticCode {
         Self::InvalidDeletePolicy,
         Self::InvalidSecretReveal,
         Self::InvalidTextIndex,
+        Self::UnguardedSet,
+        Self::GuardedOverwrite,
         Self::InvalidCommandToolName,
         Self::CommandToolNameTooLong,
         Self::CommandToolNameCollision,
@@ -466,6 +474,8 @@ impl CompilerDiagnosticCode {
             Self::InvalidDeletePolicy => "RDB-C045",
             Self::InvalidSecretReveal => "RDB-C046",
             Self::InvalidTextIndex => "RDB-C047",
+            Self::UnguardedSet => "RDB-C048",
+            Self::GuardedOverwrite => "RDB-C049",
             Self::InvalidCommandToolName => "RDB-C201",
             Self::CommandToolNameTooLong => "RDB-C202",
             Self::CommandToolNameCollision => "RDB-C203",
@@ -568,6 +578,12 @@ impl CompilerDiagnosticCode {
                 "a secret value crosses a non-secret destination without an exact reveals annotation"
             }
             Self::InvalidTextIndex => "the tokenized text-index declaration is invalid",
+            Self::UnguardedSet => {
+                "this write does not constrain the field's prior value, so concurrent commands overwrite each other"
+            }
+            Self::GuardedOverwrite => {
+                "this write does constrain the record's prior value, so it is not an unconditional overwrite"
+            }
             Self::InvalidCommandToolName => {
                 "an identifier cannot form a valid MCP command tool-name segment"
             }
@@ -710,6 +726,10 @@ impl CompilerDiagnosticCode {
             Self::InvalidTextIndex => Some(
                 "use distinct bounded string sources, keyword_v1 or standard_v1, boolean_v1, positive weights and ceilings, and max_results no greater than max_candidates",
             ),
+            Self::UnguardedSet => Some(
+                "add a `require` reading a field of this binding, or derive the new value from the old one; write `overwrite` instead if last-writer-wins is what you mean",
+            ),
+            Self::GuardedOverwrite => Some("write `set`"),
             Self::InvalidCommandToolName => {
                 Some("start contract and command identifiers with an ASCII letter")
             }
@@ -1075,7 +1095,7 @@ mod tests {
 
     #[test]
     fn public_diagnostic_registry_is_complete_unique_and_code_ordered() {
-        assert_eq!(CompilerDiagnosticCode::ALL.len(), 49);
+        assert_eq!(CompilerDiagnosticCode::ALL.len(), 51);
         let codes = CompilerDiagnosticCode::ALL.map(CompilerDiagnosticCode::as_str);
         assert!(codes.windows(2).all(|pair| pair[0] < pair[1]));
         assert!(CompilerDiagnosticCode::ALL.iter().all(|code| {

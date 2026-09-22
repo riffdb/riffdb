@@ -2738,6 +2738,33 @@ source files
 - `CMP-012` Internal panics on user input are defects; compiler entry points MUST return structured diagnostics.
 - `CMP-013` `riffdb contract explain` MUST show derived partition key, conflict keys, reads, writes, invariants, events, outcomes, and estimated execution class.
 
+`CMP-015` A field write MUST declare whether the command constrains the
+record's prior value, and the compiler MUST prove the declaration (ADR-0256).
+
+A write on a binding with a pre-image -- `mutate`, `init_or_mutate`,
+`observe_or_initialize` -- is **guarded** when something in the command reads a
+stored field of that same binding: a `require`, a decision arm's predicate, or
+the value expression of any write to it. Otherwise it is **unguarded**.
+
+The property is per binding rather than per field, because commit-time
+revalidation is per record: if the command observed the record at all, a
+concurrent change to it invalidates the whole command and every write to it is
+protected. A command that writes `state.revision = state.revision + 1`
+therefore guards its other writes to `state`.
+
+An invariant does not guard. Invariants constrain the state after the commit,
+and a lost update produces a state that satisfies every invariant, so an
+invariant cannot distinguish one writer from two. A binding with no pre-image
+-- a `create`, or a delete -- cannot lose an update at all.
+
+A guarded write is spelled `set` and an unguarded one `overwrite`. A `set` the
+compiler finds unguarded raises `RDB-C048`; an `overwrite` it finds guarded, or
+one on a binding with no prior value, raises `RDB-C049`. The classification is
+carried in the executable plan and is part of the plan hash, so moving a write
+between the two moves the contract's identity. A contract that declares no
+unguarded write keeps the identity it had; one that does selects grammar,
+executable IR, and bundle V24.
+
 Example:
 
 ```text

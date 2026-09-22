@@ -900,6 +900,7 @@ fn tagged_union_registry_is_closed_in_tag_order() {
                             "model_version",
                         ],
                     ),
+                    (0x08, "overwrite field", vec!["binding", "field", "value"]),
                 ],
             ),
             (

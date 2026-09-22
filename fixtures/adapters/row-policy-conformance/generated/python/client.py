@@ -22,8 +22,8 @@ def _compact_tag(value: object, tag: str, keys: frozenset[str]) -> dict[str, obj
 
 CONTRACT_LINEAGE: Final[str] = "AdapterRowPolicyConformance"
 CONTRACT_VERSION: Final[int] = 1
-CONTRACT_BUNDLE_HASH: Final[str] = "72bb73113b25e9ad21b0c7634965f69d7f301a728c19de01fc962438d731b40b"
-QUERY_MODULE_HASH: Final[str] = "b19f62e03160616ec25b55dfb9ce59dfc538f02644c43cd2e5f69db246710462"
+CONTRACT_BUNDLE_HASH: Final[str] = "ea27ffbbb2b2924efc28c867c7f8b29ab0485b36c1164d8612f417cc3aa506f5"
+QUERY_MODULE_HASH: Final[str] = "2405f81c6fa1c04bc2cb81e72981e03fe9fe0ec5813e70a79d6fcd4817efff4a"
 
 class RunState(StrEnum):
     RUNNING = "Running"
@@ -92,7 +92,7 @@ class Experiment:
     experiment_id: UUID
     organization_id: UUID
 
-DOCUMENT_SUMMARY_QUERY_PLAN_HASH: Final[str] = "6fd53256d7eb4b75496f2bf21d16a0209a6e1002bc0c4d602e4c49aa989f45d9"
+DOCUMENT_SUMMARY_QUERY_PLAN_HASH: Final[str] = "2ac8139b703319c2af5e1c96a1618427844df3777a5c2d6a0293f7812018e17b"
 
 @dataclass(frozen=True, slots=True, kw_only=True)
 class DocumentSummaryParams:
@@ -110,7 +110,7 @@ class DocumentSummaryFound:
 
 DocumentSummaryResult: TypeAlias = DocumentSummaryFound
 
-GET_DOCUMENT_QUERY_PLAN_HASH: Final[str] = "2c788d196763b286e364ab6b5f29beb6fd2819e3e3a749843837e31a5110dc4c"
+GET_DOCUMENT_QUERY_PLAN_HASH: Final[str] = "7a1f8dc90c7decb9df64282a9b02a6c786ae9bdb5ae9701b020b60985f7a6d78"
 
 @dataclass(frozen=True, slots=True, kw_only=True)
 class GetDocumentParams:
@@ -138,7 +138,7 @@ class GetDocumentNotFound:
 
 GetDocumentResult: TypeAlias = GetDocumentFound | GetDocumentNotFound
 
-LIST_DOCUMENTS_QUERY_PLAN_HASH: Final[str] = "d4c15fe73c58868ce61b51d984eb5e74947c56662327ef375ca042bc1e2f65fa"
+LIST_DOCUMENTS_QUERY_PLAN_HASH: Final[str] = "62fbb1f8178ee63b984157e8adc21a2e02a24b4b9ae6a83665e5df744d3aa06b"
 
 @dataclass(frozen=True, slots=True, kw_only=True)
 class ListDocumentsParams:
@@ -161,7 +161,7 @@ class ListDocumentsFound:
 
 ListDocumentsResult: TypeAlias = ListDocumentsFound
 
-LIST_DRAFT_DOCUMENTS_QUERY_PLAN_HASH: Final[str] = "75db9dcfffe557bf5be980b2f204b1e070211d2d0b846f7b04b27858176bc41e"
+LIST_DRAFT_DOCUMENTS_QUERY_PLAN_HASH: Final[str] = "8dfece306e8a13dc004809116b103d1b771a95c8a1c893a18aba73a1485561d9"
 
 @dataclass(frozen=True, slots=True, kw_only=True)
 class ListDraftDocumentsParams:
@@ -181,7 +181,7 @@ class ListDraftDocumentsFound:
 
 ListDraftDocumentsResult: TypeAlias = ListDraftDocumentsFound
 
-LIST_EXPERIMENTS_QUERY_PLAN_HASH: Final[str] = "4d26e855ea409bbe0969924fd112766032c6068eab22d470b7aedc326562352d"
+LIST_EXPERIMENTS_QUERY_PLAN_HASH: Final[str] = "0b8b64b9c83a667b14d8152b4a29384d1102def8536f02925caf088623cc11be"
 
 @dataclass(frozen=True, slots=True, kw_only=True)
 class ListExperimentsParams:
@@ -202,7 +202,7 @@ class ListExperimentsFound:
 
 ListExperimentsResult: TypeAlias = ListExperimentsFound
 
-METRIC_DASHBOARD_QUERY_PLAN_HASH: Final[str] = "de93edf32e9c8492c80b8afe21576d62ceb9b0262975ac3f4cafb8fc7d37d6e4"
+METRIC_DASHBOARD_QUERY_PLAN_HASH: Final[str] = "e228f9af015642b204ad519a590b248d42564b3fb5d77952bd24cc6e158e040f"
 
 @dataclass(frozen=True, slots=True, kw_only=True)
 class MetricDashboardParams:
@@ -223,7 +223,7 @@ class MetricDashboardFound:
 
 MetricDashboardResult: TypeAlias = MetricDashboardFound
 
-RUN_PAGE_QUERY_PLAN_HASH: Final[str] = "e102ea39653b43aba2565605efbab38c54fd4c6ab1345a1e895449a902911a62"
+RUN_PAGE_QUERY_PLAN_HASH: Final[str] = "da6218b0ce6a5b0e65079f0030fdf28c8ee94520f596a65dfba61626189a483a"
 
 @dataclass(frozen=True, slots=True, kw_only=True)
 class RunPageParams:
@@ -263,7 +263,7 @@ class RunPageNotFound:
 
 RunPageResult: TypeAlias = RunPageFound | RunPageNotFound
 
-SEARCH_DOCUMENTS_QUERY_PLAN_HASH: Final[str] = "793d12e5fc2b00c09e786a1c54ad1f66354145809e3604d2611ffefc1a7d7045"
+SEARCH_DOCUMENTS_QUERY_PLAN_HASH: Final[str] = "9b9f3c33e1d587820bce1a7164a45225303728e0ad81b5c5c8c06b6dea6dd3cb"
 
 @dataclass(frozen=True, slots=True, kw_only=True)
 class SearchDocumentsParams:
@@ -291,7 +291,7 @@ class AttemptDocumentTransferInput:
     new_owner_id: UUID
     organization_id: UUID
 
-ATTEMPT_DOCUMENT_TRANSFER_PLAN_HASH: Final[str] = "5628368a203e7893833379fee69cc84b3b68770a0cf5bd03d016d2eadadaf2cb"
+ATTEMPT_DOCUMENT_TRANSFER_PLAN_HASH: Final[str] = "236687054091ed1d74bac2ed6babc7b8d10195997e134b4cb89135b1fa7cbcb1"
 @dataclass(frozen=True, slots=True, kw_only=True)
 class AttemptDocumentTransferDocumentMissing:
     outcome: Literal["DocumentMissing"] = field(default="DocumentMissing", init=False)
@@ -311,7 +311,7 @@ class ChangeDocumentAccessInput:
     document_id: UUID
     organization_id: UUID
 
-CHANGE_DOCUMENT_ACCESS_PLAN_HASH: Final[str] = "44d76955f1da9a19af449bd5effa06a148b9dd3476553ef9ba5105efd0d6f849"
+CHANGE_DOCUMENT_ACCESS_PLAN_HASH: Final[str] = "e91d9bbdf5bcbc525134681c7ae65a2cde35df8395afbb6b7baf37d4f9178c18"
 @dataclass(frozen=True, slots=True, kw_only=True)
 class ChangeDocumentAccessDocumentMissing:
     outcome: Literal["DocumentMissing"] = field(default="DocumentMissing", init=False)
@@ -972,7 +972,7 @@ from collections.abc import AsyncIterator
 from typing import Any, cast
 from riffdb_application._binding import decode_record, encode_reactive_record
 
-DOCUMENT_ACTIVITY_REACTIVE_MODULE_HASH: Final[str] = "3964e3ed87e46dd7a53f1108d5df7d4c76b8f025d639dcffca8e5180ef7f6b09"
+DOCUMENT_ACTIVITY_REACTIVE_MODULE_HASH: Final[str] = "87e3c42b490d5bf549051e83e661097fb318ed0de1e91d40cb906f0bdbd8c7f3"
 
 @dataclass(frozen=True, slots=True, kw_only=True)
 class DocumentListWatchParams:
