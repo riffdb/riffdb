@@ -2,9 +2,8 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use riffdb_contract_ir::{BindingId, BindingMode, ExprId, ExpressionKind, ValueTypeTag};
+use riffdb_contract_ir::{BindingId, BindingMode, ExpressionKind, ValueTypeTag};
 use riffdb_contract_syntax::Span;
-use riffdb_contract_syntax::ast::WriteSpelling;
 use riffdb_types::FieldId;
 
 use crate::diagnostic::{
@@ -12,8 +11,8 @@ use crate::diagnostic::{
     CompilerDiagnostics,
 };
 use crate::hir::{
-    HirBinding, HirCommand, HirDecisionAction, HirEffect, HirExpressionArena, HirExpressionRoot,
-    HirObjectField, HirOutcome, HirWorkflowLeaseOperation, TypedContractHir,
+    HirBinding, HirCommand, HirDecisionAction, HirEffect, HirExpressionRoot, HirObjectField,
+    HirOutcome, HirWorkflowLeaseOperation, TypedContractHir,
 };
 use crate::locality::command_expression_fingerprint;
 
@@ -199,7 +198,7 @@ fn validate_command(
     validate_binding_ownership(command, diagnostics);
     validate_relationship_reads(hir, command, diagnostics);
     validate_unique_conflicts(hir, command, diagnostics);
-    validate_write_spellings(command, diagnostics);
+    crate::write_guard::validate_write_spellings(hir, command, diagnostics);
     let secret_input = validate_idempotency(command, diagnostics);
     let mut states = command
         .bindings
@@ -1581,145 +1580,6 @@ fn validate_secret_taint(
                 root.span,
             ));
         }
-    }
-}
-
-/// Proves each field write's spelling against what the command actually
-/// constrains (ADR-0256).
-///
-/// A write can be lost when two commands write the same field concurrently and
-/// neither outcome depends on the value the other wrote. What prevents that is
-/// a *revalidated read of the written record's prior state*: the plan records
-/// the read, the conflict key serializes the writers, and commit-time
-/// revalidation refuses a command whose observation no longer holds.
-///
-/// Revalidation is per record, not per field. If anything in the command reads
-/// a stored field of a binding, a concurrent change to that record invalidates
-/// the whole command, and every write to it is protected. So guardedness is a
-/// property of the binding: it is guarded when a `require`, or the value of any
-/// write to it, reads one of its stored fields. A command that bumps
-/// `state.revision = state.revision + 1` therefore guards its other writes to
-/// `state` too, which is the ordinary optimistic-concurrency idiom.
-///
-/// An invariant does not qualify, and this is the subtle part. Invariants
-/// constrain the state after the commit, and a lost update produces a state
-/// that satisfies every invariant -- a slot held by B instead of A violates
-/// nothing. ADR-0256's decision names an invariant that "reads that binding's
-/// pre-image"; no invariant does, because entity invariants are instantiated
-/// over the post-image and aggregate invariants over the root, so that clause
-/// is vacuous rather than wrong.
-///
-/// A binding with no pre-image at all -- a `create`, or a delete -- cannot lose
-/// an update, so neither spelling is a claim about it and only `overwrite` is
-/// refused, because there is nothing to overwrite.
-fn validate_write_spellings(command: &HirCommand, diagnostics: &mut Vec<CompilerDiagnostic>) {
-    // Every write the command can perform, including those a compiler-sealed
-    // decision arm performs conditionally.
-    let mut writes = command.effects.iter().collect::<Vec<_>>();
-    let mut predicates = command
-        .requirements
-        .iter()
-        .map(|requirement| &requirement.condition)
-        .collect::<Vec<_>>();
-    for decision in &command.decisions {
-        for arm in &decision.when_arms {
-            predicates.push(&arm.predicate);
-            if let HirDecisionAction::Apply { effects, .. } = &arm.action {
-                writes.extend(effects.iter());
-            }
-        }
-        if let HirDecisionAction::Apply { effects, .. } = &decision.else_action {
-            writes.extend(effects.iter());
-        }
-    }
-
-    let mut guarded_bindings = BTreeSet::new();
-    for predicate in predicates {
-        collect_read_bindings(
-            &command.expressions,
-            predicate.id,
-            predicate.span,
-            &mut guarded_bindings,
-            diagnostics,
-        );
-    }
-    for effect in &writes {
-        if let HirEffect::Set { value, .. } = effect {
-            collect_read_bindings(
-                &command.expressions,
-                value.id,
-                value.span,
-                &mut guarded_bindings,
-                diagnostics,
-            );
-        }
-    }
-
-    for effect in writes {
-        let HirEffect::Set {
-            target_span,
-            spelling,
-            binding,
-            ..
-        } = effect
-        else {
-            continue;
-        };
-        let Some(bound) = command
-            .bindings
-            .iter()
-            .find(|candidate| candidate.id == *binding)
-        else {
-            continue;
-        };
-
-        let has_preimage = matches!(
-            bound.mode,
-            BindingMode::Mutate | BindingMode::InitOrMutate | BindingMode::ObserveOrInitialize
-        );
-        if !has_preimage {
-            if *spelling == WriteSpelling::Overwrite {
-                diagnostics.push(CompilerDiagnostic::new(
-                    CompilerDiagnosticCode::GuardedOverwrite,
-                    *target_span,
-                ));
-            }
-            continue;
-        }
-
-        match (spelling, guarded_bindings.contains(binding)) {
-            (WriteSpelling::Set, false) => diagnostics.push(CompilerDiagnostic::new(
-                CompilerDiagnosticCode::UnguardedSet,
-                *target_span,
-            )),
-            (WriteSpelling::Overwrite, true) => diagnostics.push(CompilerDiagnostic::new(
-                CompilerDiagnosticCode::GuardedOverwrite,
-                *target_span,
-            )),
-            _ => {}
-        }
-    }
-}
-
-/// Bindings whose stored fields an expression reads.
-///
-/// Reading a binding's *key* is not reading its state: a command that names a
-/// record by key has observed nothing about what the record holds.
-fn collect_read_bindings(
-    expressions: &HirExpressionArena,
-    root: ExprId,
-    span: Span,
-    into: &mut BTreeSet<BindingId>,
-    diagnostics: &mut Vec<CompilerDiagnostic>,
-) {
-    match expressions.dependencies(root, span) {
-        Ok(dependencies) => into.extend(
-            dependencies
-                .bound_fields()
-                .iter()
-                .map(|(binding, _)| *binding),
-        ),
-        Err(diagnostic) => diagnostics.push(diagnostic),
     }
 }
 

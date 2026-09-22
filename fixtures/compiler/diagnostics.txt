@@ -141,10 +141,10 @@ code.45.id=RDB-C047
 code.45.message=the tokenized text-index declaration is invalid
 code.45.help=use distinct bounded string sources, keyword_v1 or standard_v1, boolean_v1, positive weights and ceilings, and max_results no greater than max_candidates
 code.46.id=RDB-C048
-code.46.message=this write does not constrain the field's prior value, so concurrent commands overwrite each other
-code.46.help=add a `require` reading a field of this binding, or derive the new value from the old one; write `overwrite` instead if last-writer-wins is what you mean
+code.46.message=this write has no local pre-image dependency or proven root revision fence
+code.46.help=add a `require` reading this binding, derive a write from its prior value, or compare and increment its aggregate root revision; use `overwrite` only for intended last-writer-wins
 code.47.id=RDB-C049
-code.47.message=this write does constrain the record's prior value, so it is not an unconditional overwrite
+code.47.message=this write has a local pre-image dependency or proven root revision fence
 code.47.help=write `set`
 code.48.id=RDB-C201
 code.48.message=an identifier cannot form a valid MCP command tool-name segment
@@ -666,17 +666,17 @@ expected=RDB-C048
 kind=semantic
 count=1
 diagnostic.0.code=RDB-C048
-diagnostic.0.message=this write does not constrain the field's prior value, so concurrent commands overwrite each other
+diagnostic.0.message=this write has no local pre-image dependency or proven root revision fence
 diagnostic.0.primary=402..414
 diagnostic.0.related=none
-diagnostic.0.help=add a `require` reading a field of this binding, or derive the new value from the old one; write `overwrite` instead if last-writer-wins is what you mean
+diagnostic.0.help=add a `require` reading this binding, derive a write from its prior value, or compare and increment its aggregate root revision; use `overwrite` only for intended last-writer-wins
 
 [RDB-C049-guarded-overwrite]
 expected=RDB-C049
 kind=semantic
 count=1
 diagnostic.0.code=RDB-C049
-diagnostic.0.message=this write does constrain the record's prior value, so it is not an unconditional overwrite
+diagnostic.0.message=this write has a local pre-image dependency or proven root revision fence
 diagnostic.0.primary=431..440
 diagnostic.0.related=none
 diagnostic.0.help=write `set`
@@ -710,6 +710,24 @@ diagnostic.0.message=two commands normalize to the same MCP command tool name
 diagnostic.0.primary=135..143
 diagnostic.0.related=245..253
 diagnostic.0.help=rename one command so lowercase identifiers remain distinct
+
+[cross-binding-fence-removed]
+kind=semantic
+count=1
+diagnostic.0.code=RDB-C048
+diagnostic.0.message=this write has no local pre-image dependency or proven root revision fence
+diagnostic.0.primary=834..844
+diagnostic.0.related=none
+diagnostic.0.help=add a `require` reading this binding, derive a write from its prior value, or compare and increment its aggregate root revision; use `overwrite` only for intended last-writer-wins
+
+[cross-binding-fenced-overwrite]
+kind=semantic
+count=1
+diagnostic.0.code=RDB-C049
+diagnostic.0.message=this write has a local pre-image dependency or proven root revision fence
+diagnostic.0.primary=907..917
+diagnostic.0.related=none
+diagnostic.0.help=write `set`
 
 [syntax]
 kind=syntax

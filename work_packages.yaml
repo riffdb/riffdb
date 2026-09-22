@@ -27180,6 +27180,21 @@ work_packages:
   - ./scripts/acceptance --wp WP-809
   exit_gate: A same-root fence protects child writes, removing either half rejects their set
     spelling, false fences do not qualify, and stale execution cannot overwrite a child.
+  closure:
+    status: complete
+    completed_at: '2026-09-21'
+    evidence: docs/architecture/WP-809-VERIFICATION.md
+    decision: Same-root compare-and-increment fences protect child writes. Removing either
+      half refuses child set writes without independent protection; invariants never guard.
+    decisions_taken:
+    - Match exact root-key expression fingerprints rather than infer protection from any
+      read or any fence elsewhere in an atomic command.
+    - Preserve existing guarded and unguarded plan tags and deployed artifact interpretation.
+    - Exercise both signed and unsigned revision fences, including exact arithmetic refusal.
+    hazards:
+    - The sibling MLflow contract needs four overwrite-to-set changes and normal lock renewal;
+      temporary-copy compilation verifies this migration without editing that checkout.
+    - Conditional fences and arbitrary revision expressions are not inferred.
   standing_design_tests:
     interface_safety: Neither a local guard nor a root fence can be removed silently from
       a set that depends on it; overwrite remains explicit and checked in both directions.

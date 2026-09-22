@@ -120,6 +120,30 @@ Write `overwrite` and it compiles; a reviewer then sees the choice instead of
 having to reconstruct it. An `overwrite` is refused on a `create`, which has no
 prior value to overwrite.
 
+A root revision fence also protects children of that exact root:
+
+```riff
+mutate Parent(tenant_id, parent_id) as parent else ParentMissing {}
+mutate Item(tenant_id, parent_id, item_id) as item else ItemMissing {}
+require current: parent.revision == expected_revision else Stale {}
+set parent.revision = parent.revision + 1
+set item.value = value
+```
+
+The root revision and input must both be `i64` or both `u64`. The comparison
+and increment must be unconditional; either operand order works. The compiler
+matches the aggregate and every root-key argument. Removing either the
+comparison or increment makes the child `set` fail compilation. A fence on a
+different root does not protect this child. Arithmetic overflow refuses the
+command rather than wrapping the revision. Invariants constrain final state;
+they do not guard a write against a stale caller.
+
+This POC recognizes this exact fence shape, not arbitrary equivalent
+predicates, conditional fences, or arbitrary revision arithmetic. Existing
+contracts that spelled a now-proven fenced child write `overwrite` must use
+`set` when recompiled, changing the plan hash and requiring the normal lock
+update. Already deployed plans retain their behavior.
+
 ## Unique values
 
 Declare uniqueness on the entity:

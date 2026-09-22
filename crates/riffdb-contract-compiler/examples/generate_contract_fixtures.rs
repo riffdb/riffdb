@@ -3333,6 +3333,28 @@ fn diagnostic_snapshots() -> Result<String, Box<dyn Error>> {
         render_compilation_error(&mut output, &error)?;
     }
 
+    let fenced = include_str!("../../../fixtures/contracts/cross-binding-fence.riff");
+    for (name, code, source) in [
+        (
+            "cross-binding-fence-removed",
+            CompilerDiagnosticCode::UnguardedSet,
+            fenced.replace(
+                "require current: parent.revision == expected_revision else Stale {}",
+                "",
+            ),
+        ),
+        (
+            "cross-binding-fenced-overwrite",
+            CompilerDiagnosticCode::GuardedOverwrite,
+            fenced.replace("set item.value", "overwrite item.value"),
+        ),
+    ] {
+        let error = validate_contract_source(&source).expect_err("cross-binding spelling refuses");
+        require_semantic_code(name, code, &error)?;
+        writeln!(output, "\n[{name}]")?;
+        render_compilation_error(&mut output, &error)?;
+    }
+
     let syntax = validate_contract_source("not a contract").expect_err("syntax fixture rejects");
     writeln!(output, "\n[syntax]")?;
     render_compilation_error(&mut output, &syntax)?;
