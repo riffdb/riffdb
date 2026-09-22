@@ -24031,7 +24031,13 @@ work_packages:
 - id: WP-758
   name: Obligations ledger closure and ADR form governance
   tier: internal
-  depends_on: [WP-757]
+  # Unblocked 2026-09-21. This depended on WP-757 because ADR-0181 bundled a
+  # format-epoch reset with the governance-load remedies, not because closing
+  # the ledger needs epoch 2. No ledger entry references WP-757, and none of
+  # this package's deliverables touch a durable format. The remedies for
+  # governance load had been waiting on the largest package in the repository
+  # for twenty days, during which 76 records were added.
+  depends_on: []
   objective: Discharge or strike all 144 entries in adr/obligations-outstanding.yaml, remove the
     ledger, make scripts/check-adr-obligations reject any ledger, and add scripts/check-adr-form with
     the repository glossary so ADR length, sections, and SPEC document-control rows are bounded.
