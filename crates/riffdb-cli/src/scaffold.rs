@@ -3927,7 +3927,7 @@ mod tests {
                 "ticketdesk",
                 riffdb_query_module::APPLICATION_LOCK_SCHEMA_V6,
                 GENERATED_OPERATIONS_V5,
-                "d74a3de8c3d10ca503803578a24dbc636a3c1d2fe663259443938b939407d70b",
+                "761a8ed9ae6a02a44e0386b87c4a8774f1bb2912f2d0b7dd3aa0b4bb632513c1",
             ),
         ] {
             let root = repository.join("examples").join(application);

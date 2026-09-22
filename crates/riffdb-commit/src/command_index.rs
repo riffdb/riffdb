@@ -2029,10 +2029,10 @@ mod tests {
     // gate.
     #[test]
     fn index_derivation_admits_exactly_the_audited_identity_pairs() {
-        for grammar in 0..=GRAMMAR_VERSION_V23 + 1 {
+        for grammar in 0..=GRAMMAR_VERSION_V24 + 1 {
             for ir in 0..=EXECUTABLE_IR_VERSION_V24 + 1 {
                 let audited_identity_pair =
-                    grammar == ir && (GRAMMAR_VERSION_V1..=GRAMMAR_VERSION_V23).contains(&grammar);
+                    grammar == ir && (GRAMMAR_VERSION_V1..=GRAMMAR_VERSION_V24).contains(&grammar);
                 assert_eq!(
                     index_derivation_version_supported(grammar, ir),
                     audited_identity_pair,
@@ -2075,9 +2075,10 @@ contract IndexedRows version 1 {
     input score: i64
     idempotency_key request_key
     mutate Row(id) as row else Missing {}
-    overwrite row.tenant = tenant
-    overwrite row.category = category
-    overwrite row.score = score
+    require nonnegative: row.score >= 0 else NegativeScore {}
+    set row.tenant = tenant
+    set row.category = category
+    set row.score = score
     return Changed { row: row }
   }
 }
@@ -2115,9 +2116,10 @@ contract IndexedRows version 1 {
     input score: i64
     idempotency_key request_key
     mutate Row(id) as row else Missing {}
-    overwrite row.tenant = tenant
-    overwrite row.category = category
-    overwrite row.score = score
+    require nonnegative: row.score >= 0 else NegativeScore {}
+    set row.tenant = tenant
+    set row.category = category
+    set row.score = score
     return Changed { row: row }
   }
 }
@@ -3063,7 +3065,8 @@ contract ProductionEmbeddingIndexedRows version 1 {
     input submitted_version: string<256>
     idempotency_key request_key
     mutate Document(org_id, doc_id) as doc else Missing {}
-    overwrite doc.category = category
+    require recategorized: doc.category != category else Unchanged {}
+    set doc.category = category
     embed doc.embedding = embedding from (submitted_model, submitted_version)
     return Updated { document: doc }
   }
@@ -3503,9 +3506,10 @@ contract VectorAnnIndexedRows version 1 {
     input score: i64
     idempotency_key request_key
     mutate Row(id) as row else Missing {}
-    overwrite row.tenant = tenant
-    overwrite row.category = category
-    overwrite row.score = score
+    require nonnegative: row.score >= 0 else NegativeScore {}
+    set row.tenant = tenant
+    set row.category = category
+    set row.score = score
     return Updated { row: row }
   }
 }

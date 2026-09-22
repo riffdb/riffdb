@@ -84,12 +84,41 @@ read Shelf(collection_id, new_shelf_id) as shelf
   else ShelfMissing { shelf_id: new_shelf_id }
 mutate Artifact(collection_id, artifact_id) as artifact
   else ArtifactMissing { artifact_id: artifact_id }
-set artifact.shelf_id = new_shelf_id
+overwrite artifact.shelf_id = new_shelf_id
 ```
 
 The compiler rejects a relationship-changing command without the dominating
 target read. Required references use required fields; optional relationships
 must use a contract-supported optional shape.
+
+## Say which writes are last-writer-wins
+
+A write is spelled `set` when the command constrains the record's prior value,
+and `overwrite` when it does not. The compiler proves which one is true and
+refuses the other spelling, so the two cannot be confused and a write's
+concurrency semantics are legible where the write is.
+
+A binding is constrained when a `require`, a decision arm's predicate, or the
+value of any write to it reads one of its stored fields. That makes it per
+record, not per field: a command that bumps `state.revision = state.revision +
+1` constrains `state`, so its other writes to `state` are `set` too.
+
+```riff
+mutate Slot(tenant_id, slot_id) as slot else SlotMissing {}
+require is_free: slot.free else SlotTaken {}
+set slot.free = false
+set slot.held_by = holder
+```
+
+Delete the `require` and the command stops compiling rather than quietly
+becoming last-writer-wins. That is the point: two callers would both succeed
+and the second would silently replace the first holder.
+
+Not every unconditional write is a mistake. Replacing a display name, or a
+relationship the caller names outright as above, is last-writer-wins by intent.
+Write `overwrite` and it compiles; a reviewer then sees the choice instead of
+having to reconstruct it. An `overwrite` is refused on a `create`, which has no
+prior value to overwrite.
 
 ## Unique values
 

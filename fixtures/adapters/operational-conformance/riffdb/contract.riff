@@ -277,9 +277,9 @@ contract AdapterOperationalConformance version 1 {
     input tie_rank: u64
     idempotency_key request_id
     mutate InventoryRecord(organization_id, record_id) as record else InventoryRecordMissing {}
-    set record.subtitle = subtitle
-    set record.observed_at = observed_at
-    set record.tie_rank = tie_rank
+    overwrite record.subtitle = subtitle
+    overwrite record.observed_at = observed_at
+    overwrite record.tie_rank = tie_rank
     return InventoryRecordStateChanged { record: record }
   }
 

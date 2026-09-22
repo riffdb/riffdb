@@ -3,7 +3,7 @@ format=riffdb-command-plan-fixture-v1
 [command 1]
 name=ChangeChild
 contract_version=1
-plan_hash=f0c9b4f8ba7b32cf4887592cb8380158911e26b21299f94e50bf1b3b305c081e
+plan_hash=1d5fcee89ead98515301a3b9333adcd3e4a205b099f9ca27d3c27d79ab12df5d
 execution=idempotent-mutation
 retry=bounded-full-reevaluation
 capability=invoke-command:RootValidationFieldFixture:1
@@ -51,5 +51,5 @@ locality.conflict.key.component.1=type:uuid variants: maximum_payload_bytes:16
 commit_check_count=1
 commit_check invariant=1 predicate=5 bindings= root_reads=0
 instruction_count=2
-instruction.0=set binding:0 field:1 value:3
+instruction.0=overwrite binding:0 field:1 value:3
 instruction.1=return outcome:1 payload:owner:command-outcome:1:1 fields:[1:4]

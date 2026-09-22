@@ -27017,7 +27017,7 @@ work_packages:
     commit checks, in conflict ownership and in the plan. Make the two forms distinct at
     the point of use, prove the spelling against the command, and carry the classification
     in the plan, per ADR-0256.
-  requirements: []
+  requirements: [CMP-015]
   required_adrs: [ADR-0256, ADR-0252, ADR-0002]
   # Widened 2026-09-21, twice. Adding the classification to
   # Instruction::SetField makes every exhaustive match on that variant a compile

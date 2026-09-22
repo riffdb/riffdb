@@ -9,7 +9,7 @@
 //! Two of those patterns are expressible. What is not proven is narrower and
 //! sharper: a command may overwrite a field without declaring anything about its
 //! prior value, and nothing marks that as last-writer-wins.
-// req: POC-003
+// req: POC-003, CMP-015
 
 use riffdb_contract_compiler::{CompilerDiagnosticCode, compile_contract_source};
 
@@ -92,7 +92,7 @@ fn declared_overwrite() -> String {
 /// A limit over rows the command does not name is expressible: maintain the
 /// rollup on the aggregate root in the same command and put the invariant on the
 /// root. The conflict key covers the root, so concurrent orders serialize.
-// req: POC-003
+// req: POC-003, CMP-015
 #[test]
 fn a_limit_over_unnamed_rows_is_expressible_as_a_root_rollup() {
     let bundle = compile_contract_source(CREDIT_LIMIT).expect("a maintained rollup compiles");
@@ -110,7 +110,7 @@ fn a_limit_over_unnamed_rows_is_expressible_as_a_root_rollup() {
 
 /// Choosing a target in the application is safe when the command re-checks the
 /// condition the choice depended on: the loser gets a declared outcome.
-// req: POC-003
+// req: POC-003, CMP-015
 #[test]
 fn a_claim_that_rechecks_its_precondition_compiles() {
     compile_contract_source(&slot_claim(GUARDED)).expect("a compare-and-set claim compiles");
@@ -123,7 +123,7 @@ fn a_claim_that_rechecks_its_precondition_compiles() {
 /// conflict ownership and in the plan. A blind overwrite is not always wrong --
 /// overwriting a display name is last-writer-wins by intent -- so it is still
 /// expressible. What is no longer possible is expressing it silently.
-// req: POC-003
+// req: POC-003, CMP-015
 #[test]
 fn an_unguarded_overwrite_must_be_declared_and_is_then_distinguishable() {
     let silent = compile_contract_source(&slot_claim(""));
@@ -165,7 +165,7 @@ fn an_unguarded_overwrite_must_be_declared_and_is_then_distinguishable() {
 /// It is also least-sufficient. A contract with no `overwrite` keeps the
 /// version identity it had, which is what lets the migration be per contract
 /// rather than all at once.
-// req: POC-003
+// req: POC-003, CMP-015
 #[test]
 fn the_classification_selects_its_own_version_and_moves_the_plan_hash() {
     use riffdb_contract_ir::{
@@ -202,7 +202,7 @@ fn the_classification_selects_its_own_version_and_moves_the_plan_hash() {
 
 /// The property the record exists for: deleting a `require` does not quietly
 /// change what concurrent callers observe, it stops compiling.
-// req: POC-003
+// req: POC-003, CMP-015
 #[test]
 fn deleting_a_require_fails_to_compile_rather_than_changing_semantics() {
     let deployed = slot_claim(GUARDED);
@@ -225,7 +225,7 @@ fn deleting_a_require_fails_to_compile_rather_than_changing_semantics() {
 
 /// And the inverse, so the pair cannot drift into a one-way rule that trains
 /// authors to write `overwrite` everywhere.
-// req: POC-003
+// req: POC-003, CMP-015
 #[test]
 fn an_overwrite_that_is_guarded_is_refused() {
     let guarded_but_declared_otherwise =
