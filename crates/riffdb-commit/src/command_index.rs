@@ -15,13 +15,13 @@ use riffdb_contract_ir::{
     EXECUTABLE_IR_VERSION_V14, EXECUTABLE_IR_VERSION_V15, EXECUTABLE_IR_VERSION_V16,
     EXECUTABLE_IR_VERSION_V17, EXECUTABLE_IR_VERSION_V18, EXECUTABLE_IR_VERSION_V19,
     EXECUTABLE_IR_VERSION_V20, EXECUTABLE_IR_VERSION_V21, EXECUTABLE_IR_VERSION_V22,
-    EXECUTABLE_IR_VERSION_V23, ExecutionClass, GRAMMAR_VERSION_V1, GRAMMAR_VERSION_V2,
-    GRAMMAR_VERSION_V3, GRAMMAR_VERSION_V4, GRAMMAR_VERSION_V5, GRAMMAR_VERSION_V6,
-    GRAMMAR_VERSION_V7, GRAMMAR_VERSION_V8, GRAMMAR_VERSION_V9, GRAMMAR_VERSION_V10,
-    GRAMMAR_VERSION_V11, GRAMMAR_VERSION_V12, GRAMMAR_VERSION_V13, GRAMMAR_VERSION_V14,
-    GRAMMAR_VERSION_V15, GRAMMAR_VERSION_V16, GRAMMAR_VERSION_V17, GRAMMAR_VERSION_V18,
-    GRAMMAR_VERSION_V19, GRAMMAR_VERSION_V20, GRAMMAR_VERSION_V21, GRAMMAR_VERSION_V22,
-    GRAMMAR_VERSION_V23, IndexSchema, SchemaIr,
+    EXECUTABLE_IR_VERSION_V23, EXECUTABLE_IR_VERSION_V24, ExecutionClass, GRAMMAR_VERSION_V1,
+    GRAMMAR_VERSION_V2, GRAMMAR_VERSION_V3, GRAMMAR_VERSION_V4, GRAMMAR_VERSION_V5,
+    GRAMMAR_VERSION_V6, GRAMMAR_VERSION_V7, GRAMMAR_VERSION_V8, GRAMMAR_VERSION_V9,
+    GRAMMAR_VERSION_V10, GRAMMAR_VERSION_V11, GRAMMAR_VERSION_V12, GRAMMAR_VERSION_V13,
+    GRAMMAR_VERSION_V14, GRAMMAR_VERSION_V15, GRAMMAR_VERSION_V16, GRAMMAR_VERSION_V17,
+    GRAMMAR_VERSION_V18, GRAMMAR_VERSION_V19, GRAMMAR_VERSION_V20, GRAMMAR_VERSION_V21,
+    GRAMMAR_VERSION_V22, GRAMMAR_VERSION_V23, GRAMMAR_VERSION_V24, IndexSchema, SchemaIr,
 };
 use riffdb_invariant::InputDerivedCommandFacts;
 #[cfg(test)]
@@ -1618,6 +1618,7 @@ const fn index_derivation_version_supported(grammar: u32, ir: u32) -> bool {
             | (GRAMMAR_VERSION_V21, EXECUTABLE_IR_VERSION_V21)
             | (GRAMMAR_VERSION_V22, EXECUTABLE_IR_VERSION_V22)
             | (GRAMMAR_VERSION_V23, EXECUTABLE_IR_VERSION_V23)
+            | (GRAMMAR_VERSION_V24, EXECUTABLE_IR_VERSION_V24)
     )
 }
 
@@ -2029,7 +2030,7 @@ mod tests {
     #[test]
     fn index_derivation_admits_exactly_the_audited_identity_pairs() {
         for grammar in 0..=GRAMMAR_VERSION_V23 + 1 {
-            for ir in 0..=EXECUTABLE_IR_VERSION_V23 + 1 {
+            for ir in 0..=EXECUTABLE_IR_VERSION_V24 + 1 {
                 let audited_identity_pair =
                     grammar == ir && (GRAMMAR_VERSION_V1..=GRAMMAR_VERSION_V23).contains(&grammar);
                 assert_eq!(
@@ -2074,9 +2075,9 @@ contract IndexedRows version 1 {
     input score: i64
     idempotency_key request_key
     mutate Row(id) as row else Missing {}
-    set row.tenant = tenant
-    set row.category = category
-    set row.score = score
+    overwrite row.tenant = tenant
+    overwrite row.category = category
+    overwrite row.score = score
     return Changed { row: row }
   }
 }
@@ -2114,9 +2115,9 @@ contract IndexedRows version 1 {
     input score: i64
     idempotency_key request_key
     mutate Row(id) as row else Missing {}
-    set row.tenant = tenant
-    set row.category = category
-    set row.score = score
+    overwrite row.tenant = tenant
+    overwrite row.category = category
+    overwrite row.score = score
     return Changed { row: row }
   }
 }
@@ -3062,7 +3063,7 @@ contract ProductionEmbeddingIndexedRows version 1 {
     input submitted_version: string<256>
     idempotency_key request_key
     mutate Document(org_id, doc_id) as doc else Missing {}
-    set doc.category = category
+    overwrite doc.category = category
     embed doc.embedding = embedding from (submitted_model, submitted_version)
     return Updated { document: doc }
   }
@@ -3502,9 +3503,9 @@ contract VectorAnnIndexedRows version 1 {
     input score: i64
     idempotency_key request_key
     mutate Row(id) as row else Missing {}
-    set row.tenant = tenant
-    set row.category = category
-    set row.score = score
+    overwrite row.tenant = tenant
+    overwrite row.category = category
+    overwrite row.score = score
     return Updated { row: row }
   }
 }

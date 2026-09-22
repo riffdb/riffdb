@@ -127,6 +127,7 @@ pub struct CommandExplain {
     read_fields: Vec<(BindingId, FieldId)>,
     write_fields: Vec<(BindingId, FieldId)>,
     unguarded_writes: std::collections::BTreeSet<(BindingId, FieldId)>,
+    classified_writes: std::collections::BTreeSet<(BindingId, FieldId)>,
     workflow_transitions: Vec<WorkflowTransitionExplain>,
     workflow_leases: Vec<WorkflowLeaseExplain>,
     invariants: Vec<InvariantId>,
@@ -184,6 +185,17 @@ impl CommandExplain {
                     guard: crate::WriteGuard::Unguarded,
                     ..
                 } => Some((*binding, *field)),
+                _ => None,
+            })
+            .collect::<std::collections::BTreeSet<_>>();
+        // Only a field assignment carries the classification. An embedding
+        // write is compiler-sealed with its own model evidence, and a workflow
+        // transition states its expected revision; neither is a spelling an
+        // author chooses, so neither is annotated.
+        let classified_writes = all_instructions
+            .iter()
+            .filter_map(|instruction| match *instruction {
+                crate::Instruction::SetField { binding, field, .. } => Some((*binding, *field)),
                 _ => None,
             })
             .collect::<std::collections::BTreeSet<_>>();
@@ -388,6 +400,7 @@ impl CommandExplain {
             read_fields,
             write_fields,
             unguarded_writes,
+            classified_writes,
             workflow_transitions,
             workflow_leases,
             invariants,
@@ -764,17 +777,21 @@ impl CommandExplain {
         for (binding, field) in &self.write_fields {
             // A reader of `explain` should be able to see which writes are
             // last-writer-wins without reading the contract (ADR-0256).
-            let guard = if self.unguarded_writes.contains(&(*binding, *field)) {
-                "overwrite"
+            if self.classified_writes.contains(&(*binding, *field)) {
+                let guard = if self.unguarded_writes.contains(&(*binding, *field)) {
+                    "overwrite"
+                } else {
+                    "set"
+                };
+                let _ = writeln!(
+                    output,
+                    "write:{}:{} guard={guard}",
+                    binding.get(),
+                    field.get()
+                );
             } else {
-                "set"
-            };
-            let _ = writeln!(
-                output,
-                "write:{}:{} guard={guard}",
-                binding.get(),
-                field.get()
-            );
+                let _ = writeln!(output, "write:{}:{}", binding.get(), field.get());
+            }
         }
         for transition in &self.workflow_transitions {
             let sources = transition

@@ -2321,7 +2321,7 @@ contract RootMaterialization version {version} {{
     input amount: i64
     idempotency_key request_key
     mutate Child(tenant, root_id, child_id) as child_row else Missing {{}}
-    set child_row.amount = amount
+    overwrite child_row.amount = amount
     return Changed {{ amount: child_row.amount }}
   }}
 }}

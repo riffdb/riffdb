@@ -2349,8 +2349,8 @@ contract Example version 1 {
     idempotency_key request_key
     mutate Child(tenant, root_id, first_child) as first else MissingFirst {}
     mutate Child(tenant, root_id, second_child) as second else MissingSecond {}
-    set first.amount = amount
-    set second.amount = amount
+    overwrite first.amount = amount
+    overwrite second.amount = amount
     return Changed { first: first, second: second }
   }
 }
@@ -2449,7 +2449,7 @@ contract Example version 1 {
     idempotency_key request_key
     read Root(tenant, root_id) as root_row else MissingRoot {}
     mutate Child(tenant, root_id, child_id) as child_row else MissingChild {}
-    set child_row.amount = amount
+    overwrite child_row.amount = amount
     return Changed { root_row: root_row, child_row: child_row }
   }
 }
@@ -2513,8 +2513,8 @@ contract Example version 1 {
     idempotency_key request_key
     mutate Child(tenant, first_root, first_child) as first else MissingFirst {}
     mutate Child(tenant, second_root, second_child) as second else MissingSecond {}
-    set first.amount = amount
-    set second.amount = amount
+    overwrite first.amount = amount
+    overwrite second.amount = amount
     return Changed { first: first, second: second }
   }
 }
@@ -2566,7 +2566,7 @@ contract Example version 1 {
     input amount: i64
     idempotency_key request_key
     mutate Child(tenant, root_id, child_id) as child_row else MissingChild {}
-    set child_row.amount = amount
+    overwrite child_row.amount = amount
     return Changed { child_row: child_row }
   }
 }

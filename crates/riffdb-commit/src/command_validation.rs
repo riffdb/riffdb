@@ -3023,7 +3023,7 @@ contract ZeroReject version 1 {
     input next: i64
     idempotency_key request_key
     mutate Row(id) as row else Missing {}
-    set row.value = next
+    overwrite row.value = next
     return Changed { row: row }
   }
 }
@@ -3061,7 +3061,7 @@ contract MixedValidation version 1 {
     read Root(tenant, observed_root) as observed else MissingRoot {}
     mutate Child(tenant, observed_root, changed_child) as changed else MissingChanged {}
     create Child(tenant, created_root, new_child) as created else AlreadyCreated {}
-    set changed.amount = amount
+    overwrite changed.amount = amount
     set created.amount = amount
     return Changed { observed: observed, changed: changed, created: created }
   }
@@ -3082,7 +3082,7 @@ contract FalseCheck version 1 {
     input next: i64
     idempotency_key request_key
     mutate Row(id) as row else Missing {}
-    set row.value = next
+    overwrite row.value = next
     return Changed { row: row }
   }
 }
@@ -3104,8 +3104,8 @@ contract ArithmeticCheck version 1 {
     input divisor: i64
     idempotency_key request_key
     mutate Row(id) as row else Missing {}
-    set row.numerator = numerator
-    set row.divisor = divisor
+    overwrite row.numerator = numerator
+    overwrite row.divisor = divisor
     return Changed { row: row }
   }
 }
@@ -3127,7 +3127,7 @@ contract EventValidation version 1 {
     input next: i64
     idempotency_key request_key
     mutate Row(id) as row else Missing {}
-    set row.value = next
+    overwrite row.value = next
     emit First { value: row.value }
     emit Second { value: row.value }
     return Changed { value: row.value }

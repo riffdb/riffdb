@@ -361,8 +361,8 @@ contract InitializedPolicySurface version 1 {{
       owner_id: owner_id,
       value: 0,
     }}
-    set document.owner_id = owner_id
-    set document.value = value
+    overwrite document.owner_id = owner_id
+    overwrite document.value = value
     return Written {{}}
   }}
 }}

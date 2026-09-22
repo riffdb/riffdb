@@ -242,7 +242,7 @@ const ADDS_AN_OPTIONAL_FIELD_AND_A_WRITER: &str = r#"contract Live version 2 {
     idempotency_key idempotency_key
     mutate Document(org_id, document_id) as document
       else DocumentMissing { document_id: document_id }
-    set document.note = note
+    overwrite document.note = note
     return Annotated { document: document }
   }
 }"#;

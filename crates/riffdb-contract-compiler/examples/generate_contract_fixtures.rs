@@ -2113,8 +2113,13 @@ fn render_instruction(instruction: &Instruction) -> String {
             binding,
             field,
             value,
+            guard,
         } => format!(
-            "set binding:{} field:{} value:{}",
+            "{} binding:{} field:{} value:{}",
+            match guard {
+                riffdb_contract_ir::WriteGuard::Guarded => "set",
+                riffdb_contract_ir::WriteGuard::Unguarded => "overwrite",
+            },
             binding.get(),
             field.get(),
             value.get()

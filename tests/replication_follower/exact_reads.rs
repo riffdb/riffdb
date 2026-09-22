@@ -59,8 +59,8 @@ contract FollowerDocuments version 1 {
     input state: string<32>
     idempotency_key request_key
     mutate Document(org_id, doc_id) as stored else Missing {}
-    set stored.title = title
-    set stored.state = state
+    overwrite stored.title = title
+    overwrite stored.state = state
     return Updated {}
   }
   command SetRank {
@@ -70,7 +70,7 @@ contract FollowerDocuments version 1 {
     input rank: optional<u64>
     idempotency_key request_key
     mutate Document(org_id, doc_id) as stored else Missing {}
-    set stored.rank = rank
+    overwrite stored.rank = rank
     return Ranked {}
   }
   command DeleteDocument {

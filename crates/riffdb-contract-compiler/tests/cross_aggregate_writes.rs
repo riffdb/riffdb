@@ -225,8 +225,8 @@ contract Ledger version 1 {
     input note_id: uuid
     input amount: i64
     idempotency_key request_key
-BINDINGS    set note.body = amount
-    set entry.amount = amount
+BINDINGS    overwrite note.body = amount
+    overwrite entry.amount = amount
     return Posted { entry: entry }
   }
 }

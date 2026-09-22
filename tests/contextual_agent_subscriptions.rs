@@ -111,7 +111,7 @@ fn reaction_binder_replaces_caller_identity_for_string_and_uuid_commands() {
         ("uuid", SubmittedValue::Uuid([0x99; 16])),
     ] {
         let source = format!(
-            "contract Reaction version 1 {{\n  entity Row {{\n    key (id: uuid)\n    field value: i64\n  }}\n  aggregate Rows {{ root Row partition_by id conflict_key (id) }}\n  command Change {{\n    input request_key: {type_name}\n    input id: uuid\n    idempotency_key request_key\n    mutate Row(id) as row else Missing {{}}\n    set row.value = 1\n    return Changed {{ row: row }}\n  }}\n}}\n"
+            "contract Reaction version 1 {{\n  entity Row {{\n    key (id: uuid)\n    field value: i64\n  }}\n  aggregate Rows {{ root Row partition_by id conflict_key (id) }}\n  command Change {{\n    input request_key: {type_name}\n    input id: uuid\n    idempotency_key request_key\n    mutate Row(id) as row else Missing {{}}\n    overwrite row.value = 1\n    return Changed {{ row: row }}\n  }}\n}}\n"
         );
         let bundle = riffdb_contract_compiler::compile_contract_source(&source)
             .expect("reaction contract compiles");

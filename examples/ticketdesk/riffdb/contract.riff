@@ -292,8 +292,8 @@ contract TicketDesk version 1 {
       else AuthorMissing { user_id: author_id }
     create Comment(organization_id, ticket_id, comment_id) as comment
       else CommentExists { comment_id: comment_id }
-    set ticket.status = TicketStatus.Closed
-    set ticket.updated_at = tx.time
+    overwrite ticket.status = TicketStatus.Closed
+    overwrite ticket.updated_at = tx.time
     set comment.author_id = author_id
     set comment.body = body
     set comment.created_at = tx.time
@@ -314,8 +314,8 @@ contract TicketDesk version 1 {
       else MemberAMissing { user_id: user_a }
     mutate ProjectMember(organization_id, project_id, user_b) as member_b
       else MemberBMissing { user_id: user_b }
-    set member_a.role = role_a
-    set member_b.role = role_b
+    overwrite member_a.role = role_a
+    overwrite member_b.role = role_b
     return Swapped { member_a: member_a, member_b: member_b }
   }
 

@@ -32,7 +32,7 @@ contract ReactiveRows version 1 {
     input row_id: uuid
     idempotency_key idempotency_key
     mutate Row(organization_id, row_id) as row else Missing {}
-    set row.value = 1
+    overwrite row.value = 1
     emit RowChanged { organization_id: organization_id, row_id: row_id, value: 1 }
     return Changed {}
   }
