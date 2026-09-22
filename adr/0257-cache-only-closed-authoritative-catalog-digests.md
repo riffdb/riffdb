@@ -25,6 +25,10 @@ obligations:
     package: WP-806
     proof: primary_admission_is_exact_source_only_domain_and_never_a_v1_mutation
     says: The V2 inventory remains distinct from V1 and does not reinterpret its domains.
+  - id: OBL-0257-3
+    package: WP-806
+    proof: competing_first_catalog_digests_preserve_fixture_hashes_and_compute_once
+    says: Competing cold callers receive the independent frozen fixture hashes with one computation per version.
 review_triggers:
   - The cached value depends on a request, principal, database, stored bytes, or active runtime state.
   - An existing verification, authority comparison, audit transition, or durable byte changes.
