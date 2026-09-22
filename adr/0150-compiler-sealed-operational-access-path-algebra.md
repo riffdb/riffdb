@@ -1,6 +1,13 @@
 # ADR-0150: Compiler-Sealed Operational Access-Path Algebra and Bounded Relationship Composition
 
 - **Status:** Accepted
+- **Obligations (WP-758):**
+  - `OBL-0150-1` Source: `bd865b94ba4b8b79cafe1ef976e3622bbc11542b8b740a6bbe44ac25dfe79834`. Proof: `closed_registry_freezes_every_executable_component_role`, `one_generic_application_proves_the_complete_operational_access_matrix`, `one_compiler_registry_and_one_executor_lowering_own_component_semantics`.
+
+- **Struck obligations (WP-758):**
+  - Source: `fba34527d39a4a118caeed5497917c0f181e79841fa351901c527c584d70288f`. Reason: The one-time repository and external-rebuild inventory belonged to completed WP-687 (0547d368); current admitted cells remain checked by the compiler registry and generic operational-access corpus, without claiming a new external rebuild.
+  - Source: `6892b6f112d452d22898c14b1c6ff6bc9631b27c14904c8af9716e9766bf9965`. Reason: The one-time repository and external-rebuild inventory belonged to completed WP-687 (0547d368); current admitted cells remain checked by the compiler registry and generic operational-access corpus, without claiming a new external rebuild.
+
 - **Direction approved:** Yes
 - **Exact text accepted:** Yes, 2026-08-25
 - **Accepted:** 2026-08-25

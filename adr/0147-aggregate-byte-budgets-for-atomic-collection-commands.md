@@ -1,6 +1,9 @@
 # ADR-0147: Aggregate Byte Budgets for Atomic Collection Commands
 
 - **Status:** Accepted
+- **Struck obligations (WP-758):**
+  - Source: `66487516fb05c26dd3cb807cdc574159db0acedda7eafeb1476e8cc7ae9c1e64`. Reason: Historical prerequisite or allocation checkpoint for an already implemented package; the original ordering instruction remains in the decision history and is not unfinished implementation work. Current identity and scope rules remain mandatory.
+
 - **Direction approved:** 2026-08-24 (maintainer, in session)
 - **Exact text accepted:** Yes, 2026-08-24 (maintainer, in session)
 - **Formatter-scope amendment accepted:** 2026-09-03 (maintainer, in session)

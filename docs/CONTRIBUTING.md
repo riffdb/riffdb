@@ -186,14 +186,31 @@ that alters a public or durable behavior still stops under AGENTS.md.
 
 ## Obligations and requirement tags
 
-An obligation is a promise a record makes that its own change does not yet
-keep. It names the owning package and a `proof`: a test function name, or a
-`scripts/<name>` script. The proof must exist in code, not in prose.
-`./scripts/check-adr-obligations` requires a match for `fn <proof>` in Rust,
-`def <proof>` or `test_<proof>` in Python, or the script path, found outside
-`adr/`, `docs/`, `work_packages.yaml`, `SPEC.md`, and `governance/`. A missing
-proof is reported while the owning package is open and fails once that package
-closes.
+A new deferred obligation has exactly one form: an `OBL-NNNN-n` declaration
+in the ADR header naming its package, a test function or `scripts/<name>`
+proof, and the behavior it proves. The proof exists in code at acceptance,
+not in prose. If it cannot exist yet, register the package first and accept
+the record when the proof lands, or register the obligation as a requirement
+ID owned by that package. Declarations accepted before the 2026-09-21 cutover remain visible
+in the report while their packages are open and fail at package closure.
+Records accepted from that date fail immediately if their proof is missing.
+
+`./scripts/check-adr-obligations` searches for code definitions outside
+`adr/`, `docs/`, `work_packages.yaml`, `SPEC.md`, and `governance/`; script
+proofs must also be wired into CI. A prose imperative naming a package is
+bound to its declaration using the SHA-256 of its whitespace-normalized
+sentence in `obligations[].sources` or `obligation_sources`. Adding another
+imperative beside an existing declaration does not discharge it. A reviewed
+strike records the exact source fingerprint and a one-line reason in
+`struck_obligations`. Historical records retain equivalent header entries.
+The outstanding ledger is removed; recreating it, even empty, fails.
+
+`./scripts/check-adr-form` checks the template's required and optional
+sections, warns above 260 lines, and rejects document-control table rows
+containing multiple paragraphs. Historical section inventories are frozen
+in `adr/form-sections-v1.yaml` to preserve existing records; this permits no
+new or deleted headings. Use the [shared glossary](../adr/GLOSSARY.md)
+instead of redefining its sealed vocabulary.
 
 A requirement is proven by a tag on the test that establishes it: a comment
 line `// req: REP-002, REP-003` in Rust, Go, and TypeScript, or
@@ -216,7 +233,8 @@ unproven.
 | `./scripts/adr-new --title "..." --tier surface\|guarantee [--requires ADR-..] [--requirements ID..] [--packages WP-..]` | Allocate the next number and write the v2 skeleton |
 | `./scripts/wp-new ADR-NNNN` | Print the package skeletons the record's front matter implies |
 | `./scripts/adr-index --write` / `--check` | Regenerate or verify the index in `adr/README.md` |
-| `./scripts/check-adr-obligations [--report] [--json] [--prune-ledger]` | Check obligation proofs; prune superseded ledger entries |
+| `./scripts/check-adr-obligations [--report] [--json] [--self-test]` | Check source-bound obligation proofs and reject any ledger |
+| `./scripts/check-adr-form [--json] [--self-test]` | Check record sections and document-control rows; warn on length |
 | `./scripts/check-requirement-coverage [--report] [--json]` | Check that every requirement is claimed by a package or proven by a tag |
 | `./scripts/governance-cost [--since <date>] [--range a..b] [--json]` | Measure governance lines against all other changed lines |
 | `./scripts/ci-all` | The full battery, required at merge |
@@ -271,10 +289,8 @@ jobs run. `./scripts/ci-all` deliberately retains the unpartitioned
 - ADR-0001 through ADR-0177 keep the legacy header, a `# ADR-NNNN: Title` line
   followed by a `- **Status:**` list. They are not rewritten, they are read
   exactly as they were accepted, and the index renders their tier as `legacy`.
-- `adr/obligations-outstanding.yaml` is closed to new entries. It is read and
-  pruned, never appended; an entry whose record now has front matter is
-  superseded and removed by `./scripts/check-adr-obligations --prune-ledger`.
-  A new obligation belongs in the record's front matter.
+- Legacy obligation dispositions remain beside their source records; there is
+  no outstanding ledger or ledger-pruning command.
 - Packages whose `closure.completed_at` is earlier than 2026-09-02 are exempt
   from the requirement-tag rule. Their requirements stay claimed rather than
   proven, and nothing reopens them.

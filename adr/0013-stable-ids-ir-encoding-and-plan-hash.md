@@ -1,6 +1,19 @@
 # ADR-0013: Stable IDs, IR Encoding, and Plan-Hash Framing
 
 - **Status:** Accepted
+- **Obligations (WP-758):**
+  - `OBL-0013-1` Source: `db7559fbd48221cf3dc6e6e5fe76dac27dc3465034299ca84ddefa4dea8c9859`. Proof: `genesis_allocation_is_independent_of_input_order`, `canonical_budget_source_matches_the_accepted_parser_fixture`.
+  - `OBL-0013-2` Source: `652eaa3a621717f783b39008e673ea721b90b1786034bb194739824b03842312`. Proof: `exact_fifteen_mibibyte_bundle_content_fits_the_structural_ceiling`, `every_semantic_fixture_reports_its_exact_complete_envelope_charge`.
+  - `OBL-0013-3` Source: `6929e8bd1ff0565b7c69396d20567cda1759d32ed9239c15c578e24de88e2cbd`. Proof: `exact_fifteen_mibibyte_bundle_content_fits_the_structural_ceiling`, `every_semantic_fixture_reports_its_exact_complete_envelope_charge`.
+
+- **Struck obligations (WP-758):**
+  - Source: `1ead73f3c2fcefb5e853f808b7aaa2da90f5c89a0d12f28e0a39f742fc7713ff`. Reason: Historical prerequisite or allocation checkpoint for an already implemented package; the original ordering instruction remains in the decision history and is not unfinished implementation work. Current identity and scope rules remain mandatory.
+  - Source: `e6f9b348b9b60bc20e78a6acc786a74226c12e55b6c2701f43ffe9855b08ef0a`. Reason: This is rationale for rejecting Protobuf as executable IR, not a deferred package action; the compiler and IR dependency boundaries remain in force.
+  - Source: `d5ab5d6dd70fbb1c8ea46d5d96e25b75f50910e3f29800bf505ec55958068706`. Reason: Historical prerequisite or allocation checkpoint for an already implemented package; the original ordering instruction remains in the decision history and is not unfinished implementation work. Current identity and scope rules remain mandatory.
+  - Source: `23a2e34cbb706e766cb810d09688b13818b215ab584d56ec82ec1fe611238648`. Reason: Historical prerequisite or allocation checkpoint for an already implemented package; the original ordering instruction remains in the decision history and is not unfinished implementation work. Current identity and scope rules remain mandatory.
+  - Source: `2f6bda96deaaffcb7faf789478d776cc346d6898d5c05c12becfbfd3396c3b45`. Reason: Historical prerequisite or allocation checkpoint for an already implemented package; the original ordering instruction remains in the decision history and is not unfinished implementation work. Current identity and scope rules remain mandatory.
+  - Source: `f3668dc8b2d4bb89402e1c8d0c07e113b2245b071c8971d12711567a11a16df9`. Reason: The extractor joined package cross-references to a decision-deadline or adjacent section; this is record-navigation or acceptance-order text, not an unimplemented obligation.
+
 - **Direction approved:** 2026-07-13
 - **Exact text accepted:** 2026-07-13, clarified 2026-07-13, 2026-07-20, and 2026-07-21
 - **Clarified by:** ADR-0004 (complete executable plan reference), ADR-0007

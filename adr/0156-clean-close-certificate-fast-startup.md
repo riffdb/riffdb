@@ -1,6 +1,13 @@
 # ADR-0156: Clean-Close Certificate Fast Startup
 
 - **Status:** Accepted
+- **Obligations (WP-758):**
+  - `OBL-0156-2` Source: `aff77ed7eec579ef38f59ca25c15a9cc7ff3a66327d6a87aa9f6708ccb33c6fb`. Proof: `assert_readiness_path_rebuild_census`.
+
+- **Struck obligations (WP-758):**
+  - Source: `f731099266374d6e8914b247aa0abffb33b58a2208f5624da919ac956f155cd8`. Reason: The lifecycle crash-evidence campaign is explicitly registered by OBL-0195-6 and open WP-705; this duplicate ledger candidate does not claim that campaign has passed.
+  - Source: `95d7d436f1243971aa29cf6b3631544e080f7514fd53c1efdb6a43c87d45e0a0`. Reason: The dirty-start scale campaign is explicitly registered by OBL-0182-1 and OBL-0182-6 in open WP-760; this duplicate statement creates no separate ledger debt or passing-evidence claim.
+
 - **Obligations:**
   - `OBL-0156-1` WP-704 moves every population fact skipped by bounded clean
     startup onto the fail-closed operational path that first uses it, while

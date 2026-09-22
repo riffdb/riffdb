@@ -1,6 +1,9 @@
 # ADR-0143: Fixed-Generation Unary Stability Without Performance-Selected Retries
 
 - **Status:** Accepted
+- **Struck obligations (WP-758):**
+  - Source: `b26ce287d1982a0843ef371be9feb53bcd90e34e850c1ebef061c42589e2c036`. Reason: Qualification remains explicitly owned by open WP-674 under PERF-008/PERF-018 and the successor ADR-0171 method; this ledger strike does not claim a completed or passing bank.
+
 - **Direction approved:** 2026-08-23 (maintainer)
 - **Exact text accepted:** Yes, 2026-08-24 (maintainer)
 - **Evidence ownership split accepted:** 2026-09-03 (maintainer, in session)

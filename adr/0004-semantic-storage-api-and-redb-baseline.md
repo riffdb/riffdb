@@ -1,6 +1,19 @@
 # ADR-0004: Semantic Storage API and Redb Baseline
 
 - **Status:** Accepted
+- **Obligations (WP-758):**
+  - `OBL-0004-1` Source: `7942c05e4ed4f126d852ac9f1189e5e7611183d0f3d8cf536bff7723760119ff`. Proof: `equal_key_commands_commit_once_and_replay_exactly`, `real_riffdbd_restart_preserves_budget_and_bootstrap_replay`.
+  - `OBL-0004-2` Source: `74e93d2809b11a371738d84fb9b8e99397eb015012737f2c52196c905d916d64`. Proof: `assigned_and_compiler_ids_are_one_based_and_exhaustion_is_checked`.
+  - `OBL-0004-3` Source: `72657d6ad5d6cbf7e97fc99487269c1dad64461561804bd777e4a419725c9b20`. Proof: `health_availability_is_independent_of_authoritative_runtime_readiness`, `marker_absent_exhaustion_is_rejected_for_every_exhausted_capacity`, `known_bootstrap_success_enters_authenticated_deployment_routing`.
+  - `OBL-0004-4` Source: `b95533300ceb296b6836e71d2230f20b84e3d94056202f8871e2bac0fb290b2c`. Proof: `semantic_api_excludes_engines_transports_sources_and_generic_transactions`, `completed_startup_handoff_owns_the_same_session_retained_metadata`.
+  - `OBL-0004-5` Source: `d947452c8ec164b15db6af29f1dc39eb5cdceea3f0961c682177929dcfcfd4c2`. Proof: `one_maximum_valid_row_and_replacement_fit_the_migration_page_bound`.
+
+- **Struck obligations (WP-758):**
+  - Source: `16751632ae43bc23e0a5054e9bcfc1e0efa2a51527106342900496756901dd37`. Reason: Historical dependency-admission review for the initial package, not a pending dependency addition; current pins and dependency reviews remain governed by their accepted successor records and cargo-deny policy.
+  - Source: `aea8aa613c3579e8773a42c029f51d20481a6e5893e842a38284887fc440b08d`. Reason: The original exact 26-record inventory is superseded by accepted schema additions; current inventory and envelopes are checked by the durable-schema suite, not the obsolete count.
+  - Source: `8124d748191928ea3d12d91277dead94bd00cae914a4c3d60eb46a350c06a3f4`. Reason: Historical dependency-admission review for the initial package, not a pending dependency addition; current pins and dependency reviews remain governed by their accepted successor records and cargo-deny policy.
+  - Source: `ade4b373afc1e01ace43af05ec83ba9e863dfbadf5a54582a76dfe1d0eb39513`. Reason: Historical prerequisite or allocation checkpoint for an already implemented package; the original ordering instruction remains in the decision history and is not unfinished implementation work. Current identity and scope rules remain mandatory.
+
 - **Direction approved:** 2026-07-12
 - **Exact text accepted:** Yes; amended 2026-07-14, 2026-07-20, 2026-07-21,
   2026-07-22, and 2026-08-18 (Amendment 5: redb baseline 4.2.0)

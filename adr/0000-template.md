@@ -32,8 +32,12 @@ obligations:
 
 The proof must exist in code, not in prose: `./scripts/check-adr-obligations`
 searches outside `adr/`, `docs/`, `work_packages.yaml`, `SPEC.md`, and
-`governance/`, and fails once the owning package closes without it.
+`governance/`. For records accepted from 2026-09-21 the proof must already
+exist; register a package-owned requirement instead until its proof lands.
+Historical open-package declarations remain visible and fail at closure.
 -->
+
+Use the [decision vocabulary](GLOSSARY.md); do not redefine its sealed terms.
 
 ## Context
 

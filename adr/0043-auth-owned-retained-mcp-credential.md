@@ -1,6 +1,12 @@
 # ADR-0043: Auth-Owned Retained MCP Credential
 
 - **Status:** Accepted
+- **Obligations (WP-758):**
+  - `OBL-0043-1` Source: `d099e1e6eba54cc5682e80e9dc13b866461efe0aeba907ff3a69480c2351de0a`. Proof: `retained_credential_bounds_and_copies_without_validating_syntax`.
+
+- **Struck obligations (WP-758):**
+  - Source: `2ce93e49b73c8404d66bf1b4f0000d10d7cbd2e3989cbbf49abb2708531dd058`. Reason: The extractor joined package cross-references to a decision-deadline or adjacent section; this is record-navigation or acceptance-order text, not an unimplemented obligation.
+
 - **Direction approved:** 2026-07-23
 - **Exact text accepted:** 2026-07-23
 - **Accepted:** 2026-07-23

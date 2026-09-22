@@ -1,6 +1,9 @@
 # ADR-0016: Canonical Key Components and Partition Identity
 
 - **Status:** Accepted
+- **Struck obligations (WP-758):**
+  - Source: `73cc9d43781653cf795c0aa23e3f1c75dea8c9ce69de1aaed22397470f8d35ca`. Reason: The extractor joined package cross-references to a decision-deadline or adjacent section; this is record-navigation or acceptance-order text, not an unimplemented obligation.
+
 - **Direction approved:** 2026-07-13
 - **Exact text accepted:** 2026-07-13, clarified 2026-07-13
 - **Amends:** ADR-0011 typed-key envelope and hash-domain registries

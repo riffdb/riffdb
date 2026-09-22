@@ -1,6 +1,11 @@
 # ADR-0027: Service Response Budget and Oversize Disposition
 
 - **Status:** Accepted
+- **Obligations (WP-758):**
+  - `OBL-0027-1` Source: `ce134b80943e4fdaccae8d5a2f4425d272faa99d1f3209a5e7d0f132f4132ad6`. Proof: `every_service_charge_case_covers_its_public_encoding`, `exact_ceiling_fits_and_one_byte_over_is_withheld`.
+  - `OBL-0027-2` Source: `c68050b0aeee06108b7dfbfc70ca2ebfc4c89e2bf07f8b8f656e4b24e18af3d6`. Proof: `every_service_charge_case_covers_its_public_encoding`, `exact_ceiling_fits_and_one_byte_over_is_withheld`.
+  - `OBL-0027-3` Source: `e678551cc97b33cbb61903c93a2fedf66edbc355264b2908a54ceec44dd8efa4`. Proof: `tools_list_component_ledgers_cover_maximum_fixed_dynamic_and_mixed_pages`, `full_discovery_ceiling_is_inclusive_and_whole_item_fitting_stops_before_overflow`.
+
 - **Direction approved:** 2026-07-21
 - **Exact text accepted:** 2026-07-21, amended 2026-07-22
 - **Accepted:** 2026-07-21

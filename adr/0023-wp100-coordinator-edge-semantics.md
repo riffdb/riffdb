@@ -1,6 +1,10 @@
 # ADR-0023: WP-100 Coordinator Edge Semantics
 
 - **Status:** Accepted
+- **Obligations (WP-758):**
+  - `OBL-0023-1` Source: `77d37008b4367fc77204d5ead4fdd1ed91c85d8ec0592069a262b947b9394df1`. Proof: `equal_key_commands_commit_once_and_replay_exactly`, `audited_standard_singleton_uses_one_unpublished_root_and_one_journal_tail`.
+  - `OBL-0023-2` Source: `768b424d4d46006e305c8f1eb74dff18f1601e035cd5775c630b88570edc4e34`. Proof: `equal_key_commands_commit_once_and_replay_exactly`, `audited_standard_singleton_uses_one_unpublished_root_and_one_journal_tail`.
+
 - **Direction approved:** 2026-07-20
 - **Exact text accepted:** 2026-07-20, amended 2026-07-20, 2026-07-21, and
   2026-07-22

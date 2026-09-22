@@ -1,6 +1,9 @@
 # ADR-0033: First-Commit Notification Publication
 
 - **Status:** Accepted
+- **Obligations (WP-758):**
+  - `OBL-0033-1` Source: `25a18c61574bfbfeb0c8d32f5d48db8483dbc60e31e5eb748e25863c59eb40a2`. Proof: `no_terminal_completion_resurrects_stopped_routing`, `uncertain_bootstrap_completion_irreversibly_stops_production_routing`.
+
 - **Direction approved:** 2026-07-21
 - **Exact text accepted:** 2026-07-21
 - **Accepted:** 2026-07-21

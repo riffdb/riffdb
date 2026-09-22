@@ -1,6 +1,11 @@
 # ADR-0018: UUIDv7 Generation, Ownership, and Replay Boundaries
 
 - **Status:** Accepted
+- **Struck obligations (WP-758):**
+  - Source: `872bd29d5f5139d50df49456c425e19aee58e0b8b39e42b93d40c185cd073b9a`. Reason: Historical prerequisite or allocation checkpoint for an already implemented package; the original ordering instruction remains in the decision history and is not unfinished implementation work. Current identity and scope rules remain mandatory.
+  - Source: `31d87aaf321341cd370add87fc69b23a130cdbd850fb8f8034815af08987bd00`. Reason: Historical prerequisite or allocation checkpoint for an already implemented package; the original ordering instruction remains in the decision history and is not unfinished implementation work. Current identity and scope rules remain mandatory.
+  - Source: `bc33f90bc3736c3c99496ac5763635cc1c5a485637e16051c5431dcb635594e8`. Reason: Historical prerequisite or allocation checkpoint for an already implemented package; the original ordering instruction remains in the decision history and is not unfinished implementation work. Current identity and scope rules remain mandatory.
+
 - **Direction approved:** 2026-07-13
 - **Exact text accepted:** 2026-07-13, amended 2026-07-22
 - **Accepted:** 2026-07-13

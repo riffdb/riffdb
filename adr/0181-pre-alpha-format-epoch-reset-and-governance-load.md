@@ -87,7 +87,7 @@ ceremony turns every additive identity into carrying cost with no consumer.
 The process ledger has grown alongside. The repository holds 174 ADRs, with
 ADR-0150 at 529 lines and ADR-0174 at 497; `SPEC.md` is 9,456 lines with
 document-control rows that run to a page; `work_packages.yaml` is 21,529
-lines; and `adr/obligations-outstanding.yaml` acknowledges 144 obligations that
+lines; and `adr/obligations-outstanding.yaml` (since removed by WP-758) acknowledged 143 obligations that
 predate `scripts/check-adr-obligations`. That checker exists because prose
 obligations shipped undischarged (ADR-0156 section 5). A ledger that only
 grows names the gap rather than closing it.

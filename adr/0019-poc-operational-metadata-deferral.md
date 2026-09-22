@@ -1,6 +1,12 @@
 # ADR-0019: POC Operational Metadata Deferral
 
 - **Status:** Accepted
+- **Obligations (WP-758):**
+  - `OBL-0019-1` Source: `e938be215f47761458e81187d1dda38cb26ebcae00f37dd09e9a698b2ebfce28`. Proof: `semantic_authorities_have_one_construction_site`.
+
+- **Struck obligations (WP-758):**
+  - Source: `6c94c0f9b544bf90fdf93474ea8b67265e88878f30eda60548fb9be7efcf3b0d`. Reason: The no-clean-marker restriction was explicitly amended by ADR-0156/ADR-0157; current readiness follows that accepted clean-close certificate protocol.
+
 - **Direction approved:** 2026-07-13
 - **Exact text accepted:** 2026-07-13
 - **Accepted:** 2026-07-13

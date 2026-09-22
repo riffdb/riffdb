@@ -1,6 +1,9 @@
 # ADR-0055: Safe Application Surface and Declared Integrity
 
 - **Status:** Accepted
+- **Struck obligations (WP-758):**
+  - Source: `23dece3d26b6f9ec99e4fc4635de63514445d4c73ab7d56c62b79756804ed668`. Reason: Historical prerequisite or allocation checkpoint for an already implemented package; the original ordering instruction remains in the decision history and is not unfinished implementation work. Current identity and scope rules remain mandatory.
+
 - **Direction approved:** 2026-07-29
 - **Exact text accepted:** 2026-07-29
 - **Acceptance reference:** Maintainer agreement in the current Codex session

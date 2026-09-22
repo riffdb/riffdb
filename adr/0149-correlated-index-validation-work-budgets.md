@@ -1,6 +1,10 @@
 # ADR-0149: Correlated Index-Validation Work Budgets for Atomic Commands
 
 - **Status:** Accepted
+- **Struck obligations (WP-758):**
+  - Source: `7f9ca7be71264d96bf0cac255a84bf3991f66d1f8c770c0cf949bce48c7c9e7a`. Reason: Historical prerequisite or allocation checkpoint for an already implemented package; the original ordering instruction remains in the decision history and is not unfinished implementation work. Current identity and scope rules remain mandatory.
+  - Source: `f8bd90dc6c46ecda4763ffab29138b563be1ce89e15c57e3bea3c91a4e2e050f`. Reason: Conditional identity-allocation rule for a completed budget change; it does not itself require a new plan identity and current topology rules continue to apply.
+
 - **Direction approved:** 2026-08-25 (maintainer, in session)
 - **Exact text accepted:** Yes, 2026-08-25 (maintainer, in session)
 - **Decision deadline:** Before changing the accepted 4,096 affected-prefix or

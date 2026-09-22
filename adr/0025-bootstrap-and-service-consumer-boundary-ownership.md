@@ -1,6 +1,11 @@
 # ADR-0025: Bootstrap and Service Consumer Boundary Ownership
 
 - **Status:** Accepted
+- **Obligations (WP-758):**
+  - `OBL-0025-1` Source: `886aac3b67b66982767c08db31fafa39c8f93791f11f4a726595e8c3382901ba`. Proof: `client_and_public_message_helpers_remain_test_only`, `semantic_authorities_have_one_construction_site`, `production_coordinator_never_selects_memory_durability`.
+  - `OBL-0025-2` Source: `391a624bcdd22d8bc3db1989eb87f31afeb2ccf6256541e1855b36f4f0eaa993`. Proof: `client_and_public_message_helpers_remain_test_only`, `semantic_authorities_have_one_construction_site`, `production_coordinator_never_selects_memory_durability`.
+  - `OBL-0025-3` Source: `dab597993b4e49dd1750440ea45f66eac83c5be9fc2333127a88a7b30166bfa7`. Proof: `client_and_public_message_helpers_remain_test_only`, `semantic_authorities_have_one_construction_site`, `production_coordinator_never_selects_memory_durability`.
+
 - **Direction approved:** 2026-07-21
 - **Exact text accepted:** 2026-07-21
 - **Accepted:** 2026-07-21

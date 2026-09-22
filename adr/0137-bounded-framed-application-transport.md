@@ -1,6 +1,11 @@
 # ADR-0137: Bounded Framed Application Transport
 
 - **Status:** Accepted
+- **Struck obligations (WP-758):**
+  - Source: `d7c1eba2bec013a96b924d27973ace7d08c8ff0c768bd3cb4db6022713e27ffb`. Reason: WP-662 closed without production activation and removed the framed candidate; there is no retained production framing adapter to retrofit, and unary transport remains governed by its own records.
+  - Source: `0635f46a7e288358ccc18963748b2bafae1a9614891c035052da5c5b3c740fb4`. Reason: WP-662 closed without production activation and removed the framed candidate; there is no retained production framing adapter to retrofit, and unary transport remains governed by its own records.
+  - Source: `4185988fe87d9dbd0e517474c02d1a5d09ea4bacbc2b494547c12eb677e9e918`. Reason: WP-662 closed without production activation and removed the framed candidate; there is no retained production framing adapter to retrofit, and unary transport remains governed by its own records.
+
 - **Direction approved:** Yes
 - **Exact text accepted:** Yes, 2026-08-21
 - **Accepted:** 2026-08-21

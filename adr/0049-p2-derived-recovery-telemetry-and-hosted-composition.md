@@ -1,6 +1,12 @@
 # ADR-0049: P2 Derived Recovery, Telemetry, and Hosted Composition
 
 - **Status:** Accepted
+- **Obligations (WP-758):**
+  - `OBL-0049-1` Source: `d35ea026c84eb5414416916f1291702cc8872908431dc914493396ab34d89813`. Proof: `semantic_authorities_have_one_construction_site`.
+
+- **Struck obligations (WP-758):**
+  - Source: `e1abe618092fa84451787016a5fc53326657e47a429ba6c5982312f5c3b8ae17`. Reason: The extractor joined package cross-references to a decision-deadline or adjacent section; this is record-navigation or acceptance-order text, not an unimplemented obligation.
+
 - **Direction approved:** 2026-07-24
 - **Exact text accepted:** 2026-07-24
 - **Accepted:** 2026-07-24

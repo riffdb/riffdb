@@ -1,6 +1,9 @@
 # ADR-0107: Compiler-Bounded Collection Mutations
 
 - **Status:** Accepted
+- **Struck obligations (WP-758):**
+  - Source: `d33dd6792ad244e7cf3f798b6d2be3082cb07b2d88e9ac4b44522113244fd816`. Reason: Historical prerequisite or allocation checkpoint for an already implemented package; the original ordering instruction remains in the decision history and is not unfinished implementation work. Current identity and scope rules remain mandatory.
+
 - **Direction approved:** 2026-08-09
 - **Exact text accepted:** Yes, 2026-08-09
 - **Decision deadline:** Before WP-560 changes contract grammar or command IR

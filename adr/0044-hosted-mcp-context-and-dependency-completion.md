@@ -1,6 +1,13 @@
 # ADR-0044: Hosted MCP Context and Dependency Completion
 
 - **Status:** Accepted
+- **Obligations (WP-758):**
+  - `OBL-0044-1` Source: `8ad328197cddfe6e8e213e9b571b191985f1f4db2288c236d679631808977e91`. Proof: `hosted_authentication_has_one_owner_and_credential_never_enters_session_state`, `hosted_request_id_authority_is_retained_without_premature_consumption`.
+  - `OBL-0044-2` Source: `0e368b149716531295e68cdbd42a217fd5b900f85a4051370ba0b3861c533269`. Proof: `hosted_authentication_has_one_owner_and_credential_never_enters_session_state`, `hosted_request_id_authority_is_retained_without_premature_consumption`.
+
+- **Struck obligations (WP-758):**
+  - Source: `d72013d65b54d6dce024877922a388e04bced4dc15e5c2ba948cc1cd5bcba568`. Reason: The all-features acceptance instruction is executed by the repository full battery; it is an ongoing check selection rule, not deferred MCP functionality.
+
 - **Direction approved:** 2026-07-23
 - **Exact text accepted:** 2026-07-23
 - **Accepted:** 2026-07-23

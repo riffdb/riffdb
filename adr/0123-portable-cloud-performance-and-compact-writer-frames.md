@@ -1,6 +1,9 @@
 # ADR-0123: Portable Cloud Performance and Compact Command Segments
 
 - **Status:** Accepted
+- **Struck obligations (WP-758):**
+  - Source: `40fc053b4fddf481a0a8c9f3301add584af2baae028f269aa115ddd3eb7b30fa`. Reason: Historical prerequisite or allocation checkpoint for an already implemented package; the original ordering instruction remains in the decision history and is not unfinished implementation work. Current identity and scope rules remain mandatory.
+
 - **Direction approved:** 2026-08-15 (maintainer, optimize before the 72-hour soak)
 - **Exact text accepted:** Yes, 2026-08-15 (maintainer)
 - **Decision deadline:** Before WP-621 writes writer-frame format V2 or the final

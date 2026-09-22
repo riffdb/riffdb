@@ -1,6 +1,9 @@
 # ADR-0060: Bounded Scheduler Windows, Activated Storage Lanes, and Parallel Preparation
 
 - **Status:** Accepted
+- **Struck obligations (WP-758):**
+  - Source: `24a7d974138eed881bbd65442a4b977b098674c459cfa3bc191dd20ad716ed64`. Reason: This is a continuing prohibition on weakening guarantees, not a deferred implementation task; striking the ledger match does not retire the restriction.
+
 - **Date:** 2026-07-30
 - **Decision owners:** RiffDB maintainers
 - **Related requirements:** `PERF-004`, `PERF-005`, `PERF-006`, `PERF-007`,

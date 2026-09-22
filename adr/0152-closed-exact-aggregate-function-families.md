@@ -1,6 +1,9 @@
 # ADR-0152: Closed Exact Aggregate Function Families Across Query Providers
 
 - **Status:** Accepted
+- **Obligations (WP-758):**
+  - `OBL-0152-1` Source: `42fd4efbadaa56055a20b5a930149e4e3ca0373c87941a6db4cff192057b07af`. Proof: `scripts/check-version-topology`.
+
 - **Direction approved:** Yes
 - **Exact text accepted:** Yes, 2026-08-25
 - **Accepted:** 2026-08-25

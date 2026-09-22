@@ -1,6 +1,10 @@
 # ADR-0134: Compiler-Declared Exact Predicate and Independent Order Families
 
 - **Status:** Accepted
+- **Struck obligations (WP-758):**
+  - Source: `32ccd462be819d1d4a28a852c7ce6c99466b3ebf98204987e54a5e0c3ef86892`. Reason: The named successor identities have been allocated and registered; current compatibility and topology checks govern them, while the original pre-merge allocation instruction is historical.
+  - Source: `e2ae1497251981ed70e4a9eb85a9cf9285f46e55cff4ebbe100d45efcfe35952`. Reason: ADR-0179 and WP-655 corrected ownership: real framework schema and route evidence belongs to external adapter repositories; the database retains framework-neutral conformance only.
+
 - **Direction approved:** 20 August 2026 (maintainer, in session)
 - **Exact text accepted:** Yes — 2026-08-21 (maintainer, as written)
 - **Decision deadline:** Before WP-656 changes RiffQL predicate syntax, exact-

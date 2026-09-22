@@ -1,6 +1,9 @@
 # ADR-0015: Explicit Binding Outcomes and Budget Bootstrap
 
 - **Status:** Accepted
+- **Struck obligations (WP-758):**
+  - Source: `adf3e496ccbb8add68a3516b8f4342eeefb50d3dcf3a01e4ee8fb93066d651ae`. Reason: The extractor joined package cross-references to a decision-deadline or adjacent section; this is record-navigation or acceptance-order text, not an unimplemented obligation.
+
 - **Direction approved:** 2026-07-13
 - **Exact text accepted:** 2026-07-13
 - **Amends:** ADR-0002 grammar-v1 binding productions and corpus

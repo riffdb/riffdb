@@ -1,0 +1,148 @@
+#!/usr/bin/env ruby
+# frozen_string_literal: true
+
+# req: GOV-005
+# ADR-0181 preserves existing records. Their exact pre-check section inventories
+# are frozen separately; new records use the current template, without exemptions.
+require "json"
+require "tmpdir"
+require "fileutils"
+require_relative "lib/riffdb_adr"
+
+REQUIRED = ["context", "decision", "standing design tests", "checks"].freeze
+OPTIONAL = ["options considered", "consequences"].freeze
+BASELINE = "adr/form-sections-v1.yaml"
+
+# Ignore headings embedded in examples and template comments.
+def headings(text)
+  text = text.gsub(/<!--.*?-->/m, "")
+  fence = nil
+  text.lines.filter_map do |line|
+    if (marker = line[/\A\s*(`{3,}|~{3,})/, 1])
+      if fence
+        fence = nil if marker[0] == fence[0] && marker.length >= fence.length && line.strip == marker
+      else
+        fence = marker
+      end
+      next
+    end
+    next if fence
+
+    line[/\A##\s+(.+?)\s*#*\s*$/, 1]&.downcase
+  end
+end
+
+def check_form(root)
+  errors = []
+  warnings = []
+  path = File.join(root, BASELINE)
+  baseline = File.file?(path) ? YAML.safe_load_file(path) : {}
+  unless baseline.is_a?(Hash) && baseline.fetch("records", {}).is_a?(Hash)
+    return {"errors" => ["#{BASELINE}: expected a record mapping"], "warnings" => [], "records" => 0}
+  end
+  legacy = baseline.fetch("records", {})
+  records = RiffdbAdr.records(root)
+  names = records.map(&:basename)
+  (legacy.keys - names).each { |name| errors << "#{BASELINE}: stale record #{name}" }
+  legacy.each do |name, entry|
+    unless name.is_a?(String) && name.match?(/\A\d{4}-.*\.md\z/) && name.to_i.between?(1, 256) &&
+           entry.is_a?(Hash) && !entry["reason"].to_s.strip.empty? &&
+           entry["sections"].is_a?(Array) && entry["sections"].all? { |s| s.is_a?(String) && !s.empty? }
+      errors << "#{BASELINE}: invalid historical form declaration for #{name}"
+    end
+  end
+  return {"errors" => errors, "warnings" => [], "records" => records.length} unless errors.empty?
+  records.each do |record|
+    actual = headings(record.body)
+    expected = legacy.dig(record.basename, "sections")
+    required = expected || REQUIRED
+    allowed = expected || (REQUIRED + OPTIONAL)
+    (required - actual).each { |section| errors << "#{record.basename}: missing section #{section.inspect}" }
+    (actual - allowed).each { |section| errors << "#{record.basename}: unknown section #{section.inspect}" }
+    actual.tally.select { |_section, count| count > 1 }.each_key do |section|
+      # Some accepted legacy records repeated an amendment heading. Their exact
+      # multiplicity is frozen, not a blanket duplicate-heading exception.
+      next if expected && actual.count(section) == expected.count(section)
+
+      errors << "#{record.basename}: duplicate section #{section.inspect}"
+    end
+    if expected && expected.tally != actual.tally && (required - actual).empty? && (actual - allowed).empty?
+      errors << "#{record.basename}: historical section multiplicity changed"
+    end
+    count = record.text.lines.length
+    warnings << "#{record.basename}: #{count} lines exceeds the 260-line warning threshold" if count > 260
+  end
+  spec = File.join(root, "SPEC.md")
+  if File.file?(spec)
+    section = RiffdbAdr.section(File.read(spec), ["Document control"])
+    section.to_s.lines.each_with_index do |line, index|
+      next unless line.lstrip.start_with?("|")
+
+      # Markdown table cells cannot contain block paragraphs. Also refuse HTML
+      # and escaped paragraph breaks rather than let them bypass the line form.
+      if line.match?(/<\/?p(?:\s[^>]*)?>|<br\s*\/?>(?:\s|&nbsp;)*<br\s*\/?>|\\n\s*\\n/i)
+        errors << "SPEC.md document-control row #{index + 1}: more than one paragraph"
+      end
+    end
+  end
+  { "errors" => errors, "warnings" => warnings, "records" => records.length }
+rescue RiffdbAdr::MalformedFrontMatter, Psych::Exception => error
+  { "errors" => [error.message], "warnings" => [], "records" => 0 }
+end
+
+# req: GOV-005
+def self_test
+  Dir.mktmpdir("riffdb-adr-form-") do |root|
+    FileUtils.mkdir_p(File.join(root, "adr"))
+    path = File.join(root, "adr/0900-fixture.md")
+    good = "# ADR-0900: Fixture\n\n- **Status:** Accepted\n\n" +
+           REQUIRED.map { |heading| "## #{heading}\n\nText.\n\n" }.join
+    File.write(path, good)
+    File.write(File.join(root, "SPEC.md"), "## Document control\n\n| Revision | One paragraph. |\n\n## Next\n")
+    raise "canonical record refused" unless check_form(root)["errors"].empty?
+    File.write(path, good.sub("## checks", "## typo"))
+    result = check_form(root)
+    raise "missing/unknown section accepted" unless result["errors"].any? { |e| e.include?("missing section") } && result["errors"].any? { |e| e.include?("unknown section") }
+    File.write(path, good + "\n" * (260 - good.lines.length))
+    raise "260-line record warned" unless check_form(root)["warnings"].empty?
+    File.write(path, good + "\n" * (261 - good.lines.length))
+    result = check_form(root)
+    raise "length must warn only" unless result["errors"].empty? && result["warnings"].length == 1
+    File.write(path, good + "```markdown\n## unknown in an example\n```\n")
+    raise "example heading treated as a section" unless check_form(root)["errors"].empty?
+    File.write(File.join(root, "SPEC.md"), "## Document control\n| Revision | First.<br><br>Second. |\n\n## Next\n")
+    raise "multi-paragraph row accepted" unless check_form(root)["errors"].any? { |e| e.include?("more than one paragraph") }
+    File.write(File.join(root, "SPEC.md"), "## Document control\n| Revision | One. |\n")
+    File.rename(path, File.join(root, "adr/0001-fixture.md"))
+    path = File.join(root, "adr/0001-fixture.md")
+    legacy = "# ADR-0001: Fixture\n- **Status:** Accepted\n## Context\n## Proposed Decision\n## Testing\n"
+    File.write(path, legacy)
+    File.write(File.join(root, BASELINE), {"records" => {"0001-fixture.md" => {"reason" => "Preserve accepted historical form.", "sections" => headings(legacy)}}}.to_yaml)
+    raise "frozen historical form refused" unless check_form(root)["errors"].empty?
+    File.write(path, legacy + "## Surprise\n")
+    raise "historical form permits new unknown section" if check_form(root)["errors"].empty?
+    File.write(path, legacy.sub("## Testing\n", ""))
+    raise "historical form permits section deletion" if check_form(root)["errors"].empty?
+    File.write(File.join(root, BASELINE), "records: []\n")
+    raise "malformed baseline accepted" if check_form(root)["errors"].empty?
+  end
+  puts "ADR form self-test passed."
+end
+
+if ARGV == ["--self-test"]
+  self_test
+elsif ARGV == ["--help"]
+  puts "usage: check-adr-form [--self-test | --json]"
+elsif ARGV.empty? || ARGV == ["--json"]
+  result = check_form(RiffdbAdr.root)
+  if ARGV == ["--json"]
+    puts JSON.pretty_generate(result)
+  else
+    result["warnings"].each { |message| warn "warning: #{message}" }
+    result["errors"].each { |message| warn message }
+    puts "ADR form: #{result['records']} records, #{result['errors'].length} errors, #{result['warnings'].length} length warnings."
+  end
+  exit(result["errors"].empty? ? 0 : 1)
+else
+  abort "usage: check-adr-form [--self-test | --json]"
+end

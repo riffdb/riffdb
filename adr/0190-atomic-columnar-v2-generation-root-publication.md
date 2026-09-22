@@ -47,6 +47,8 @@ acceptance: >-
   Original exact text accepted by the maintainer on the accepted date above;
   canonical-vector amendment accepted by the maintainer in session 2026-09-15,
   "Approve exact text", referring to docs/architecture/WP-747-V2-VECTOR-REVIEW.md.
+obligation_sources:
+  121ddd3aed818a6ad95fe167d16d015e0f2bb25ccb4fc0f74f4f595716d53d9d: ["OBL-0181-1", "OBL-0181-2", "OBL-0181-3"]
 ---
 # ADR-0190: Atomic Columnar V2 Generation-Root Publication
 

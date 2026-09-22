@@ -25,6 +25,8 @@ review_triggers:
   - ADR-0216 or OBL-0185-1 retirement would not precede the query identity and fixture rotation required here.
   - An application, agent, transport, storage, migration, cursor, provider-selection, or compatibility surface would change.
   - WP-757 would edit the amended ADRs before a separate path-authority commit or combine path authority with reconciliation or implementation.
+obligation_sources:
+  f318f7d591ffa0c180787c9f5f82e86563461fe137d7ad847e261e5ed2dd8888: ["OBL-0219-1"]
 ---
 # ADR-0219: Epoch-Two Sole-Current Exact-Provider State
 

@@ -1,6 +1,9 @@
 # ADR-0165: Durable Command-Derived Locator Tables
 
 - **Status:** Accepted
+- **Obligations (WP-758):**
+  - `OBL-0165-2` Source: `701e34503f1a2adadebe1a2f9fb9d09cb7de80c8b382060a722814a00233685d`. Proof: `assert_readiness_path_rebuild_census`.
+
 - **Obligations:**
   - `OBL-0165-1` ADR-0156 section 5's deferred fail-closed local check is
     discharged for the command-derived locator kinds: a bounded clean start
