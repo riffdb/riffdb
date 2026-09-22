@@ -24076,6 +24076,17 @@ work_packages:
       governance scripts and records only and adds no application, operator, or agent surface.
     scale: Not applicable; the package touches no storage, memory, or execution path.
   human_review_triggers: *id0181
+  closure:
+    status: complete
+    completed_at: '2026-09-22'
+    evidence: adr/WP-758-VERIFICATION.md
+    decision: All 143 ledger entries and 18 previously untracked source obligations have
+      proof-backed declarations or explicit strike reasons, and the ledger is removed.
+      Obligation and ADR form self-tests pass, both checks are wired into CI, the glossary
+      is referenced by the template, scoped acceptance passes, and the full ci-all run
+      passes. The report retains 69 older open-package v2 proofs as outstanding and 84
+      nonblocking ADR length warnings; neither is represented as discharged. Historical
+      noncanonical section inventories preserve ADR-0181's no-rewrite decision.
 
 - id: WP-759
   name: Agent-audience handbook rewrite measured by campaign 04
