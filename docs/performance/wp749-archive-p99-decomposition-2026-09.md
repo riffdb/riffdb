@@ -1,5 +1,13 @@
 # WP-749: P99 decomposition from retained requests
 
+**Current disposition: blocked on [WP-808](wp-808-checkpoint-journal-tail.md).**
+The maintainer ended subtraction-based investigation on 2026-09-21 and accepted
+the [named-mechanism disclosure and blocked handoff](wp749-archive-qualification-2026-09.md#blocked-handoff-and-disclosure-2026-09-21).
+The arithmetic below is retained evidence of the instrument's identification
+limit. It is not a request for further analysis. After the shared term is
+reduced, the defined isolated pair measures archive acknowledgement cost
+directly.
+
 **The data do not establish a small, named archive-specific residual. The
 unchanged-acknowledgement-latency gate remains unmet.** The observed P99 movement
 is **26.582760 ms**. Request-by-request subtraction of the measured pre-sync
@@ -8,7 +16,7 @@ These are exact arithmetic results on the retained traces, not an identified
 causal split into shared and archive-specific time.
 
 The shared checkpoint/journal finding now has its own open package,
-[WP-806](wp-806-checkpoint-journal-tail.md). This analysis used the existing
+[WP-808](wp-808-checkpoint-journal-tail.md). This analysis used the existing
 [host-valid isolated pair](wp749-archive-isolated-pair-2026-09.md); no new run,
 host reservation, runtime change or gate amendment was made.
 
@@ -104,7 +112,7 @@ It cannot prove that all of the remainder belongs to archive either.
 
 ## Closure disposition and checks
 
-WP-806 owns resolution of the shared checkpoint/journal mechanism independently.
+WP-808 owns resolution of the shared checkpoint/journal mechanism independently.
 WP-749's incremental acknowledgement movement is not fully attributed, so this
 analysis does not justify amending its gate around a small named residual.
 ADR-0249 supplies no numeric P99 rejection threshold; the unresolved mechanism

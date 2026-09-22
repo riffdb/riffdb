@@ -1,10 +1,62 @@
 # WP-749: remaining archive-presence qualification
 
-Status: the fixed archive comparison is complete; **WP-749 remains open on
-measured acknowledgement overhead**. The
+Status: **WP-749 is blocked on [WP-808](wp-808-checkpoint-journal-tail.md)**,
+the shared checkpoint/journal package. The acknowledgement-latency gate is
+unmet; the archive investigation is stopped. The fixed archive comparison is
+complete, and the
 [correlated tail investigation](wp749-correlated-tail-2026-09.md) is closed.
-WP-748 promotion is complete independently. Capture representation,
+WP-748 promotion is already complete on main, dated 2026-09-21, and has no
+dependency on this block. Capture representation,
 hashing and allocation experiments remain closed.
+
+## Blocked handoff and disclosure, 2026-09-21
+
+**Acknowledgement P99 moves from 88.35 ms to 114.93 ms with archive enabled.**
+The dominant observed mechanism is **checkpoint-coupled journal durability**,
+present without archive and now owned by WP-808. A residual of roughly
+**11.7 ms remains unattributed**. That value comes from the retained fixed-trace
+sensitivity; it is not an independently measured archive-specific cost.
+Attributing the remainder requires reducing the dominant shared term first.
+Further subtraction of the existing samples cannot settle the closure decision.
+
+The enabled **141.387 ms journal write inside a 142.265 ms receipt wait**
+remains the concrete blocking observation; its sync takes only 0.799 ms.
+All raw evidence and the limits of the earlier analyses remain retained in the
+[isolated-pair report](wp749-archive-isolated-pair-2026-09.md) and
+[decomposition record](wp749-archive-p99-decomposition-2026-09.md).
+
+The maintainer directed this disposition in session on 2026-09-21: record the
+named dominant mechanism and explicitly unattributed remainder as the
+ADR-0249 disclosure, block WP-749 on its owner, and stop. Disclosure is not a
+latency-gate pass. The accepted exit gate and REP-007 remain unchanged; no
+numeric P99 gate or latency allowance is introduced.
+
+The checkpoint package was initially numbered WP-806 on this review branch.
+Main independently assigned that number to the semantic write-path comparison
+task, so the checkpoint package is renamed **WP-808**. The dependency follows
+the same checkpoint/journal work, not main's different WP-806.
+
+### Remeasurement that clears the block
+
+1. WP-808 must land a guarantee-preserving reduction of the shared checkpoint
+   term, supported by its own correctness and performance evidence. Closing the
+   package without reducing that term is insufficient.
+2. Then freeze refreshed source and the current pinned toolchain, record build
+   and executable digests, and use identical binaries in one isolated archive
+   disabled/enabled pair. Keep the full dataset, c32 write-only, Standard
+   durability, 15-second warmup and 90-second measurement per cell. Coordinate
+   fresh exclusive host use and apply the established reversible isolation.
+3. Retain direct command-acknowledgement P50/P95/P99, host and correctness
+   checks, repaired wait counters, checkpoint counts and archive progress.
+   Disclose throughput separately. Compare the direct off/on measurements;
+   do not subtract a modeled shared component. Preserve both cells and any
+   failed attempt, with no automatic retry.
+4. Assess the unchanged latency/write-gate clause from that evidence. If it is
+   still unmet, an exact, separately accepted amendment would be required;
+   this blocked state supplies no waiver or automatic completion.
+
+No measurement is scheduled by this handoff. WP-749 remains blocked until the
+prerequisite is met; its investigation does not continue in parallel with it.
 
 ## Bounded comparison
 
@@ -148,7 +200,7 @@ run. Subtracting each request's own checkpoint pre-sync wait reduces that
 contrast by 14.895930 ms and leaves 11.686830 ms. This is a fixed-trace
 sensitivity, not a causal archive residual; drain-exposure standardization also
 leaves a substantial within-state movement. The shared mechanism is now owned
-by [WP-806](wp-806-checkpoint-journal-tail.md). A small named archive cost is
+by [WP-808](wp-808-checkpoint-journal-tail.md). A small named archive cost is
 not established, so the unchanged-latency gate remains unmet and no amendment
 or completion is justified by this arithmetic.
 

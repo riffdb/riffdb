@@ -1,10 +1,16 @@
-# WP-806: checkpoint-coupled journal tail latency
+# WP-808: checkpoint-coupled journal tail latency
+
+Identifier correction: this package was first registered locally as WP-806.
+Main independently assigned WP-806 to the semantic write-path comparison task;
+WP-808 preserves this package's original checkpoint scope and evidence.
 
 **Open storage/journal package.** A registered asynchronous checkpoint makes
 the Standard-profile writer drain journal durability and ordered publication
 before continuing. This shared writer path can stall command acknowledgement
-without any archive consumer. It is independent of WP-749's archive-presence
-gate and is not an archive feature to repair or close there.
+without any archive consumer. **WP-749 is now blocked on reduction of this shared
+term**, per maintainer direction on 2026-09-21. WP-808 owns its repair;
+WP-749 subsequently assesses its separate archive-presence gate by the defined
+direct off/on measurement. WP-808 does not depend on WP-749.
 
 ## Established finding
 
@@ -81,14 +87,15 @@ public surface is authorized by registration. A required decision change must
 first receive exact-text review under AGENTS.md and D-003.
 
 Registration needs **no further measurement** from the WP-749 investigation.
-It does not start a new campaign, reserve a host, or make WP-749 depend on
-WP-806. A future implementation must re-baseline its actual source/toolchain
+The later maintainer disposition makes this work WP-749's prerequisite and stops
+that investigation; it does not start a campaign or reserve a host. A future
+implementation must re-baseline its actual source/toolchain
 under ADR-0239 and preserve ADR-0249's named-mechanism disclosure discipline.
 No P99 threshold is invented here.
 
 ## Registration PR note
 
-Package WP-806; registration change tier internal, planned implementation tier
+Package WP-808; registration change tier internal, planned implementation tier
 guarantee. Behavior: no runtime change; give the shared finding independent
 scope and an open exit gate. Updated handbook: this page and the linked archive
 report. Checks: manifest brief, governance and documentation acceptance.
