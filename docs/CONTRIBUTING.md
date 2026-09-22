@@ -230,7 +230,12 @@ unproven.
 `./scripts/handbook check` verifies generated references, links, snippets,
 and the published Rust API surface. `./scripts/check-container-startup`
 starts the release container, because rendering checks alone cannot detect
-startup failures.
+startup failures. `./scripts/downstream-adapter-check` compiles this
+repository's adapter contracts and those of any sibling adapter checkout, since
+a language change reaches a downstream adapter before it reaches anything else.
+`./scripts/check-named-artifacts` verifies that a script or path named in
+`AGENTS.md`, in `SPEC.md`, or in an accepted record's decision actually exists,
+or is still owed by an open package.
 
 ### External adapter compatibility
 

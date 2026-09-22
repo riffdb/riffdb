@@ -1,0 +1,100 @@
+#!/usr/bin/env ruby
+# frozen_string_literal: true
+
+# Compiles the adapter contracts this repository's language changes can break.
+#
+# Why this exists. `AGENTS.md` has named this script among the checks
+# `./scripts/acceptance` runs, and until now it did not exist. WP-807 declared
+# it as an acceptance command and it silently did nothing, while WP-807's
+# breaking grammar change left a downstream adapter unable to compile. A named
+# check that is absent is worse than no check, because a reader believes it ran.
+#
+# Two populations are checked. The adapter conformance contracts inside this
+# repository are always present, so this is meaningful in any checkout. Sibling
+# adapter repositories are checked when a developer has them beside this one;
+# they are where a language change actually lands first, and they are silent
+# about it otherwise.
+
+require "open3"
+
+ROOT = File.expand_path("..", __dir__)
+
+USAGE = <<~TEXT
+  usage: downstream-adapter-check [--help]
+
+  Compiles every adapter contract in this repository, and every contract in a
+  sibling riffdb-* adapter checkout when one is present.
+TEXT
+
+if ARGV.include?("--help") || ARGV.include?("-h")
+  puts USAGE
+  exit 0
+end
+unless ARGV.empty?
+  warn "unknown option #{ARGV.first.inspect}"
+  warn USAGE
+  exit 2
+end
+
+in_repository = Dir.glob(File.join(ROOT, "fixtures", "adapters", "*", "riffdb", "*.riff")).sort
+
+# A sibling checkout is a peer directory named riffdb-something that carries
+# contracts and is not this repository. The parent directory is not scanned
+# recursively: a developer's home is not this repository's business.
+#
+# A worktree or stale clone of RiffDB itself is excluded by the presence of
+# SPEC.md. Without that test this check reports another checkout's older
+# revision as a downstream break, which is noise that would get it switched off.
+siblings = Dir.glob(File.join(ROOT, "..", "riffdb*"))
+              .select { |path| File.directory?(path) }
+              .reject { |path| File.expand_path(path) == ROOT }
+              .reject { |path| File.file?(File.join(path, "SPEC.md")) }
+              .flat_map { |path| Dir.glob(File.join(path, "**", "*.riff")) }
+              .reject { |path| path.include?("/target/") }
+              .sort
+
+# A scaffolding template carries substitution markers and is not a contract
+# until it is rendered, so it is not evidence about the language.
+contracts_filter = ->(paths) { paths.reject { |path| path.include?("/templates/") } }
+in_repository = contracts_filter.call(in_repository)
+siblings = contracts_filter.call(siblings)
+
+def compile(contracts)
+  return [true, ""] if contracts.empty?
+
+  command = [
+    "cargo", "run", "--quiet", "--package", "riffdb-contract-compiler",
+    "--example", "check_contracts", "--"
+  ] + contracts
+  output, status = Open3.capture2e(*command, chdir: ROOT)
+  [status.success?, output]
+end
+
+if in_repository.empty? && siblings.empty?
+  puts "No adapter contracts found."
+  exit 0
+end
+
+puts "Checking #{in_repository.length} in-repository contract(s)."
+repository_ok, repository_output = compile(in_repository)
+puts repository_output
+
+# A sibling checkout is whatever this developer happens to have, at whatever
+# revision. It is the most valuable signal here and the least reproducible one,
+# so it reports and never fails: a check that blocks this repository on another
+# repository's state is a check that gets switched off.
+unless siblings.empty?
+  puts "Checking #{siblings.length} sibling adapter contract(s) (advisory)."
+  _, sibling_output = compile(siblings)
+  puts sibling_output
+  refused = sibling_output.lines.grep(/^refused /).map { |line| line.split(":").first }.uniq
+  unless refused.empty?
+    warn ""
+    warn "A sibling adapter no longer compiles against this checkout:"
+    refused.each { |line| warn "  #{line.sub(/\Arefused /, '')}" }
+    warn "This does not fail the check, because the sibling's revision is not this"
+    warn "repository's to control. It is reported because nothing else reports it."
+  end
+end
+
+exit(repository_ok ? 0 : 1)

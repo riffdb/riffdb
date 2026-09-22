@@ -1,0 +1,237 @@
+#!/usr/bin/env ruby
+# frozen_string_literal: true
+
+# Verifies that a script or repository path this project NAMES actually exists.
+#
+# Why this exists. Four defects found in one session share one shape, and it is
+# not a shape any existing check looks for:
+#
+#   - `SPEC.md` illustrated its diagnostic requirements with `ADB-C042`, an
+#     error code no compiler pass emits. It read as a mitigation for R-03 for
+#     as long as anyone cared to read it.
+#   - `AGENTS.md` names `./scripts/downstream-adapter-check` among the checks
+#     `./scripts/acceptance` runs. There is no such script. WP-807 copied the
+#     name into its acceptance commands, and the command silently did nothing.
+#   - ADR-0181 decided `scripts/check-adr-form` and `adr/GLOSSARY.md`. Neither
+#     was written, and the record has read as accepted since 2026-09-01.
+#
+# This repository's whole argument is that a claim should be proven by something
+# a machine checks rather than by prose a reader believes. It applies that to
+# contracts with a compiler and to obligations with `check-adr-obligations`. It
+# did not apply it to its own governing documents, so those documents drifted
+# into describing a repository that does not exist.
+#
+# What this checks is deliberately narrow: a named path either resolves or it
+# does not. It says nothing about whether the named thing does what the prose
+# says -- `check-adr-obligations` owns that question for obligations, and no
+# check owns it in general.
+
+require "set"
+
+ROOT = File.expand_path("..", __dir__)
+
+USAGE = <<~TEXT
+  usage: check-named-artifacts [--json] [--self-test] [--help]
+
+    (default)       report every named artifact that does not exist, exit 1 if any
+    --json          emit {missing: [{source, line, name}], scanned: n}
+    --self-test     check this script against a fabricated tree
+TEXT
+
+# Documents whose prose governs the repository. A name that appears here is a
+# claim about what the repository contains.
+def governing_documents(root)
+  documents = ["AGENTS.md", "SPEC.md"].select { |path| File.file?(File.join(root, path)) }
+  documents + Dir.glob(File.join(root, "adr", "*.md"))
+                 .sort
+                 .map { |path| path.delete_prefix("#{root}/") }
+end
+
+# A record governs only once accepted; a proposed one is allowed to name what it
+# would create. The legacy header spelling is still in the tree.
+def accepted?(root, relative)
+  return true unless relative.start_with?("adr/")
+
+  text = File.read(File.join(root, relative), encoding: "UTF-8")
+  front = text[/\A---\n(.*?)\n---\n/m, 1]
+  return text.include?("- **Status:** Accepted") if front.nil?
+
+  front.match?(/^status:\s*["']?accepted["']?\s*$/)
+end
+
+# `scripts/<name>` and `./scripts/<name>`, with or without backticks, and any
+# backticked path that looks like a repository file rather than prose.
+SCRIPT_REFERENCE = %r{(?<!\w)\.?/?(scripts/[a-z0-9][a-z0-9._-]*)}
+BACKTICKED_PATH = %r{`(adr/[A-Za-z0-9._/-]+\.(?:md|yaml)|docs/[A-Za-z0-9._/-]+\.md|governance/[A-Za-z0-9._-]+\.yaml)`}
+
+# A name inside a fenced block is an example, not a claim, and a line that says
+# a thing is absent is not naming it as present.
+#
+# The absence test runs over the prose with the names removed. Testing the whole
+# line matched `scripts/absent` on its own name, which is how a heuristic that
+# reads paths as prose gets it backwards.
+ABSENCE = /\b(?:does not exist|no such|absent|removed|deleted|never written|is removed)\b/i
+
+def prose_only(line)
+  line.gsub(SCRIPT_REFERENCE, " ").gsub(BACKTICKED_PATH, " ")
+end
+
+def named_artifacts(root, relative)
+  text = File.read(File.join(root, relative), encoding: "UTF-8")
+  fenced = false
+  found = []
+  text.each_line.with_index(1) do |line, number|
+    fenced = !fenced if line.start_with?("```")
+    next if fenced
+    next if ABSENCE.match?(prose_only(line))
+
+    line.scan(SCRIPT_REFERENCE) { |(name)| found << [number, name] }
+    line.scan(BACKTICKED_PATH) { |(name)| found << [number, name] }
+  end
+  found
+end
+
+# A record whose packages are still open is allowed to name what those packages
+# will create; that is the ordinary shape of deciding before building. It stops
+# being allowed when the last owning package closes, which is exactly the rule
+# `check-adr-obligations` applies to a deferred obligation.
+#
+# `AGENTS.md` and `SPEC.md` have no owning package, so a name in them is a claim
+# about the repository as it stands.
+def pending?(root, relative, packages)
+  return false unless relative.start_with?("adr/")
+
+  text = File.read(File.join(root, relative), encoding: "UTF-8")
+  owned = text[/^packages:\s*\[(.*?)\]/m, 1].to_s.scan(/WP-\d+/)
+  return false if owned.empty?
+
+  owned.any? { |package| packages.fetch(package, :absent) == :open }
+end
+
+# Package state, read without a YAML parser so this check has no dependency on
+# the 27,000-line work-package file staying parseable.
+def package_states(root)
+  path = File.join(root, "work_packages.yaml")
+  return {} unless File.file?(path)
+
+  states = {}
+  current = nil
+  File.foreach(path, encoding: "UTF-8") do |line|
+    if (match = line.match(/^- id: (WP-\d+)\s*$/))
+      current = match[1]
+      states[current] = :open
+    elsif current && line.match?(/^  closure:\s*$/)
+      states[current] = :closed
+    end
+  end
+  states
+end
+
+def missing_artifacts(root)
+  missing = []
+  pending = []
+  scanned = 0
+  packages = package_states(root)
+  governing_documents(root).each do |relative|
+    next unless accepted?(root, relative)
+
+    waiting = pending?(root, relative, packages)
+    named_artifacts(root, relative).each do |number, name|
+      scanned += 1
+      next if File.exist?(File.join(root, name))
+
+      entry = { source: relative, line: number, name: name }
+      (waiting ? pending : missing) << entry
+    end
+  end
+  [
+    missing.uniq { |entry| [entry[:source], entry[:name]] },
+    scanned,
+    pending.uniq { |entry| [entry[:source], entry[:name]] }
+  ]
+end
+
+def self_test
+  require "tmpdir"
+  require "json"
+  failures = []
+  Dir.mktmpdir do |directory|
+    Dir.mkdir(File.join(directory, "scripts"))
+    File.write(File.join(directory, "scripts", "present"), "#!/bin/sh\n")
+    File.write(
+      File.join(directory, "AGENTS.md"),
+      "Run `./scripts/present` and `./scripts/missing-one`.\n" \
+      "```\n./scripts/fenced-is-an-example\n```\n" \
+      "`./scripts/struck` does not exist.\n"
+    )
+    missing, = missing_artifacts(directory)
+    names = missing.map { |entry| entry[:name] }.sort
+    if names != ["scripts/missing-one"]
+      failures << "expected exactly scripts/missing-one, got #{names.inspect}"
+    end
+
+    # A proposed record may name what it would create.
+    Dir.mkdir(File.join(directory, "adr"))
+    File.write(
+      File.join(directory, "adr", "0001-proposed.md"),
+      "---\nstatus: proposed\n---\nAdds `./scripts/future`.\n"
+    )
+    missing, = missing_artifacts(directory)
+    if missing.any? { |entry| entry[:name] == "scripts/future" }
+      failures << "a proposed record must be allowed to name what it would create"
+    end
+
+    # Accepting it makes the same name a claim.
+    File.write(
+      File.join(directory, "adr", "0001-proposed.md"),
+      "---\nstatus: accepted\n---\nAdds `./scripts/future`.\n"
+    )
+    missing, = missing_artifacts(directory)
+    unless missing.any? { |entry| entry[:name] == "scripts/future" }
+      failures << "an accepted record naming an absent script must fail"
+    end
+  end
+  failures.each { |failure| warn failure }
+  exit(failures.empty? ? 0 : 1)
+end
+
+mode = "report"
+ARGV.each do |argument|
+  case argument
+  when "--help", "-h" then (puts USAGE; exit 0)
+  when "--json" then mode = "json"
+  when "--self-test" then mode = "self-test"
+  else
+    warn "unknown option #{argument.inspect}"
+    warn USAGE
+    exit 2
+  end
+end
+
+self_test if mode == "self-test"
+
+missing, scanned, pending = missing_artifacts(ROOT)
+
+if mode == "json"
+  require "json"
+  puts JSON.pretty_generate(missing: missing, pending: pending, scanned: scanned)
+  exit(missing.empty? ? 0 : 1)
+end
+
+pending.each do |entry|
+  puts "#{entry[:source]}:#{entry[:line]}: names #{entry[:name]}, owed by an open package"
+end
+
+if missing.empty?
+  puts "Every named script and repository path exists or is owed by an open package " \
+       "(#{scanned} reference(s) checked, #{pending.length} pending)."
+  exit 0
+end
+
+missing.each do |entry|
+  warn "#{entry[:source]}:#{entry[:line]}: names #{entry[:name]}, which does not exist"
+end
+warn ""
+warn "A governing document or accepted record names something this repository does not"
+warn "contain. Create it, or strike the name in the same change."
+exit 1
