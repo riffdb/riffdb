@@ -1584,131 +1584,6 @@ fn validate_secret_taint(
     }
 }
 
-#[cfg(test)]
-mod tests {
-    use riffdb_contract_syntax::parse_contract;
-
-    use super::*;
-    use crate::hir::lower_contract_hir;
-    use crate::symbols::allocate_genesis_symbols;
-    use crate::typecheck::resolve_declared_types;
-
-    fn validate(source: &str) -> Result<(), CompilerDiagnostics> {
-        let document = parse_contract(source).expect("valid syntax");
-        let symbols = allocate_genesis_symbols(&document)?;
-        let types = resolve_declared_types(&document, &symbols)?;
-        let hir = lower_contract_hir(&document, &symbols, &types)?;
-        validate_commands(&hir)
-    }
-
-    #[test]
-    fn canonical_budget_commands_validate() {
-        validate(include_str!("../../../contracts/examples/budget.riff")).expect("budget commands");
-    }
-
-    #[test]
-    fn direct_uuid_idempotency_input_is_valid() {
-        validate(
-            r#"
-contract UuidIdempotency version 1 {
-  entity Row { key (id: uuid) field value: i64 }
-  aggregate Rows { root Row partition_by id conflict_key (id) }
-  command Change {
-    input request_key: uuid
-    input id: uuid
-    idempotency_key request_key
-    mutate Row(id) as row else Missing { id: id }
-    overwrite row.value = 1
-    return Changed { row: row }
-  }
-}
-"#,
-        )
-        .expect("UUID idempotency command");
-    }
-
-    #[test]
-    fn idempotency_secret_cannot_influence_event_or_outcome() {
-        let source = r#"
-contract Invalid version 1 {
-  entity Row { key (id: uuid) field value: i64 }
-  event Changed { leaked: string<128> }
-  aggregate Rows { root Row partition_by id conflict_key (id) }
-  command Change {
-    input idempotency_key: string<128>
-    input id: uuid
-    idempotency_key idempotency_key
-    mutate Row(id) as row else Missing { id: id }
-    overwrite row.value = 1
-    emit Changed { leaked: idempotency_key }
-    return ChangedOutcome { row: row }
-  }
-}
-"#;
-        let diagnostics = validate(source).expect_err("secret leak rejects");
-        assert!(
-            diagnostics.as_slice().iter().any(|diagnostic| {
-                diagnostic.code() == CompilerDiagnosticCode::InvalidIdempotency
-            })
-        );
-    }
-
-    #[test]
-    fn create_requires_every_nonoptional_nonkey_field_once() {
-        let source = r#"
-contract Invalid version 1 {
-  entity Row { key (id: uuid) field first: i64 field second: i64 }
-  aggregate Rows { root Row partition_by id conflict_key (id) }
-  command Create {
-    input idempotency_key: string<128>
-    input id: uuid
-    idempotency_key idempotency_key
-    create Row(id) as row else Exists { id: id }
-    set row.first = 1
-    return Created { row: row }
-  }
-}
-"#;
-        let diagnostics = validate(source).expect_err("incomplete create rejects");
-        assert!(
-            diagnostics
-                .as_slice()
-                .iter()
-                .any(|diagnostic| { diagnostic.code() == CompilerDiagnosticCode::InvalidCreation })
-        );
-    }
-
-    #[test]
-    fn binding_failure_payloads_reject_binding_and_transaction_dependencies() {
-        for forbidden in ["first_row", "second_row", "tx.time"] {
-            let source = format!(
-                r#"
-contract Invalid version 1 {{
-  entity Row {{ key (id: uuid) field value: i64 }}
-  aggregate Rows {{ root Row partition_by id conflict_key (id) }}
-  command ReadTwo {{
-    input first_id: uuid
-    input second_id: uuid
-    read Row(first_id) as first_row else MissingFirst {{ leaked: {forbidden} }}
-    read Row(second_id) as second_row else MissingSecond {{ id: second_id }}
-    return Found {{}}
-  }}
-}}
-"#
-            );
-            let diagnostics = validate(&source).expect_err("failure dependency rejects");
-            let forbidden_start = source
-                .find(&format!("leaked: {forbidden}"))
-                .expect("payload marker")
-                + "leaked: ".len();
-            assert!(diagnostics.as_slice().iter().any(|diagnostic| {
-                diagnostic.code() == CompilerDiagnosticCode::UnknownName
-                    && diagnostic.primary_span().start() as usize == forbidden_start
-            }));
-        }
-    }
-}
-
 /// Proves each field write's spelling against what the command actually
 /// constrains (ADR-0256).
 ///
@@ -1845,5 +1720,130 @@ fn collect_read_bindings(
                 .map(|(binding, _)| *binding),
         ),
         Err(diagnostic) => diagnostics.push(diagnostic),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use riffdb_contract_syntax::parse_contract;
+
+    use super::*;
+    use crate::hir::lower_contract_hir;
+    use crate::symbols::allocate_genesis_symbols;
+    use crate::typecheck::resolve_declared_types;
+
+    fn validate(source: &str) -> Result<(), CompilerDiagnostics> {
+        let document = parse_contract(source).expect("valid syntax");
+        let symbols = allocate_genesis_symbols(&document)?;
+        let types = resolve_declared_types(&document, &symbols)?;
+        let hir = lower_contract_hir(&document, &symbols, &types)?;
+        validate_commands(&hir)
+    }
+
+    #[test]
+    fn canonical_budget_commands_validate() {
+        validate(include_str!("../../../contracts/examples/budget.riff")).expect("budget commands");
+    }
+
+    #[test]
+    fn direct_uuid_idempotency_input_is_valid() {
+        validate(
+            r#"
+contract UuidIdempotency version 1 {
+  entity Row { key (id: uuid) field value: i64 }
+  aggregate Rows { root Row partition_by id conflict_key (id) }
+  command Change {
+    input request_key: uuid
+    input id: uuid
+    idempotency_key request_key
+    mutate Row(id) as row else Missing { id: id }
+    overwrite row.value = 1
+    return Changed { row: row }
+  }
+}
+"#,
+        )
+        .expect("UUID idempotency command");
+    }
+
+    #[test]
+    fn idempotency_secret_cannot_influence_event_or_outcome() {
+        let source = r#"
+contract Invalid version 1 {
+  entity Row { key (id: uuid) field value: i64 }
+  event Changed { leaked: string<128> }
+  aggregate Rows { root Row partition_by id conflict_key (id) }
+  command Change {
+    input idempotency_key: string<128>
+    input id: uuid
+    idempotency_key idempotency_key
+    mutate Row(id) as row else Missing { id: id }
+    overwrite row.value = 1
+    emit Changed { leaked: idempotency_key }
+    return ChangedOutcome { row: row }
+  }
+}
+"#;
+        let diagnostics = validate(source).expect_err("secret leak rejects");
+        assert!(
+            diagnostics.as_slice().iter().any(|diagnostic| {
+                diagnostic.code() == CompilerDiagnosticCode::InvalidIdempotency
+            })
+        );
+    }
+
+    #[test]
+    fn create_requires_every_nonoptional_nonkey_field_once() {
+        let source = r#"
+contract Invalid version 1 {
+  entity Row { key (id: uuid) field first: i64 field second: i64 }
+  aggregate Rows { root Row partition_by id conflict_key (id) }
+  command Create {
+    input idempotency_key: string<128>
+    input id: uuid
+    idempotency_key idempotency_key
+    create Row(id) as row else Exists { id: id }
+    set row.first = 1
+    return Created { row: row }
+  }
+}
+"#;
+        let diagnostics = validate(source).expect_err("incomplete create rejects");
+        assert!(
+            diagnostics
+                .as_slice()
+                .iter()
+                .any(|diagnostic| { diagnostic.code() == CompilerDiagnosticCode::InvalidCreation })
+        );
+    }
+
+    #[test]
+    fn binding_failure_payloads_reject_binding_and_transaction_dependencies() {
+        for forbidden in ["first_row", "second_row", "tx.time"] {
+            let source = format!(
+                r#"
+contract Invalid version 1 {{
+  entity Row {{ key (id: uuid) field value: i64 }}
+  aggregate Rows {{ root Row partition_by id conflict_key (id) }}
+  command ReadTwo {{
+    input first_id: uuid
+    input second_id: uuid
+    read Row(first_id) as first_row else MissingFirst {{ leaked: {forbidden} }}
+    read Row(second_id) as second_row else MissingSecond {{ id: second_id }}
+    return Found {{}}
+  }}
+}}
+"#
+            );
+            let diagnostics = validate(&source).expect_err("failure dependency rejects");
+            let forbidden_start = source
+                .find(&format!("leaked: {forbidden}"))
+                .expect("payload marker")
+                + "leaked: ".len();
+            assert!(diagnostics.as_slice().iter().any(|diagnostic| {
+                diagnostic.code() == CompilerDiagnosticCode::UnknownName
+                    && diagnostic.primary_span().start() as usize == forbidden_start
+            }));
+        }
     }
 }
