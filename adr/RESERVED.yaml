@@ -22,15 +22,3 @@ reserved:
     status: abandoned
     note: >-
       As ADR-0067.
-  - adr: "0225"
-    title: Directory-Anchored Bounded Columnar Candidate Cleanup
-    status: accepted elsewhere
-    where: branch codex/wp757-integration-safe
-    note: >-
-      Accepted 2026-09-12, also owned by WP-757. ADR-0224 was brought to main on
-      2026-09-21; this one could not follow it. Its acceptance date falls on
-      governance/tiers.yaml's reference_required_since and its front matter
-      carries no `acceptance:` reference, so ./scripts/check-acceptance-commits
-      refuses it as written. It lands once someone who was there records who
-      accepted it and how; that reference is not reconstructable from the
-      repository.
