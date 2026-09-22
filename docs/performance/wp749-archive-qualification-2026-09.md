@@ -1,6 +1,6 @@
 # WP-749: remaining archive-presence qualification
 
-Status: **WP-749 is blocked on [WP-809](wp-809-checkpoint-journal-tail.md)**,
+Status: **WP-749 is blocked on [WP-810](wp-810-checkpoint-journal-tail.md)**,
 the shared checkpoint/journal package. The acknowledgement-latency gate is
 unmet; the archive investigation is stopped. The fixed archive comparison is
 complete, and the
@@ -13,7 +13,7 @@ hashing and allocation experiments remain closed.
 
 **Acknowledgement P99 moves from 88.35 ms to 114.93 ms with archive enabled.**
 The dominant observed mechanism is **checkpoint-coupled journal durability**,
-present without archive and now owned by WP-809. A residual of roughly
+present without archive and now owned by WP-810. A residual of roughly
 **11.7 ms remains unattributed**. That value comes from the retained fixed-trace
 sensitivity; it is not an independently measured archive-specific cost.
 Attributing the remainder requires reducing the dominant shared term first.
@@ -31,15 +31,15 @@ ADR-0249 disclosure, block WP-749 on its owner, and stop. Disclosure is not a
 latency-gate pass. The accepted exit gate and REP-007 remain unchanged; no
 numeric P99 gate or latency allowance is introduced.
 
-The checkpoint package was initially numbered WP-806, then WP-808, on this
-review branch. Main independently assigned WP-806 to the semantic write-path
-comparison task and WP-808 to governance verification, so the checkpoint
-package is renamed **WP-809**. The dependency follows the same checkpoint/journal
-work.
+The checkpoint package was initially numbered WP-806, then WP-808 and WP-809,
+on this review branch. Main independently assigned those numbers to the semantic
+write-path comparison, governance verification, and same-root revision fence
+tasks, so the checkpoint package is renamed **WP-810**. The dependency follows
+the same checkpoint/journal work.
 
 ### Main integration check, 2026-09-22
 
-The merge of main at `e248681e924ad2bf7d8c5ce64498fcfdef909ef0`
+The merge of main at `57167a230ad7e46009f88965a7c2eafa44fc9dd6`
 leaves this prerequisite unresolved. Since the branches' common ancestor,
 main has changed no storage-redb implementation files; its commit-crate changes
 admit the accepted V24 command plans and do not change checkpoint drains.
@@ -49,7 +49,7 @@ arrived with this merge. WP-749 remains blocked, and no measurement was run.
 
 ### Remeasurement that clears the block
 
-1. WP-809 must land a guarantee-preserving reduction of the shared checkpoint
+1. WP-810 must land a guarantee-preserving reduction of the shared checkpoint
    term, supported by its own correctness and performance evidence. Closing the
    package without reducing that term is insufficient.
 2. Then freeze refreshed source and the current pinned toolchain, record build
@@ -211,7 +211,7 @@ run. Subtracting each request's own checkpoint pre-sync wait reduces that
 contrast by 14.895930 ms and leaves 11.686830 ms. This is a fixed-trace
 sensitivity, not a causal archive residual; drain-exposure standardization also
 leaves a substantial within-state movement. The shared mechanism is now owned
-by [WP-809](wp-809-checkpoint-journal-tail.md). A small named archive cost is
+by [WP-810](wp-810-checkpoint-journal-tail.md). A small named archive cost is
 not established, so the unchanged-latency gate remains unmet and no amendment
 or completion is justified by this arithmetic.
 

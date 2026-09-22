@@ -1,6 +1,6 @@
 # WP-749: P99 decomposition from retained requests
 
-**Current disposition: blocked on [WP-809](wp-809-checkpoint-journal-tail.md).**
+**Current disposition: blocked on [WP-810](wp-810-checkpoint-journal-tail.md).**
 The maintainer ended subtraction-based investigation on 2026-09-21 and accepted
 the [named-mechanism disclosure and blocked handoff](wp749-archive-qualification-2026-09.md#blocked-handoff-and-disclosure-2026-09-21).
 The arithmetic below is retained evidence of the instrument's identification
@@ -16,7 +16,7 @@ These are exact arithmetic results on the retained traces, not an identified
 causal split into shared and archive-specific time.
 
 The shared checkpoint/journal finding now has its own open package,
-[WP-809](wp-809-checkpoint-journal-tail.md). This analysis used the existing
+[WP-810](wp-810-checkpoint-journal-tail.md). This analysis used the existing
 [host-valid isolated pair](wp749-archive-isolated-pair-2026-09.md); no new run,
 host reservation, runtime change or gate amendment was made.
 
@@ -112,7 +112,7 @@ It cannot prove that all of the remainder belongs to archive either.
 
 ## Closure disposition and checks
 
-WP-809 owns resolution of the shared checkpoint/journal mechanism independently.
+WP-810 owns resolution of the shared checkpoint/journal mechanism independently.
 WP-749's incremental acknowledgement movement is not fully attributed, so this
 analysis does not justify amending its gate around a small named residual.
 ADR-0249 supplies no numeric P99 rejection threshold; the unresolved mechanism

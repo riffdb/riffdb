@@ -259,6 +259,7 @@ record with no front matter.
 | [0222](0222-exact-provider-v2-lowering-path-authority.md) | Exact Provider V2 Lowering Path Authority | Accepted | guarantee |
 | [0223](0223-epoch-two-application-source-and-lock-retirement.md) | Epoch-Two Application Source and Lock Retirement | Accepted | guarantee |
 | [0224](0224-compiler-sealed-folded-inputs-for-exact-provider-v5.md) | Compiler-Sealed Folded Inputs For Exact Provider V5 | Accepted | guarantee |
+| [0225](0225-directory-anchored-bounded-columnar-candidate-cleanup.md) | Directory-Anchored Bounded Columnar Candidate Cleanup | Accepted | guarantee |
 | [0226](0226-rustls-security-patch-within-the-reviewed-tls-boundary.md) | Rustls Security Patch Within The Reviewed TLS Boundary | Accepted | guarantee |
 | [0227](0227-columnar-candidate-publication-at-a-validated-frontier.md) | Columnar Candidate Publication At A Validated Frontier | Accepted | guarantee |
 | [0228](0228-bounded-successor-unique-index-validation.md) | Bounded Successor Unique Index Validation | Accepted | guarantee |

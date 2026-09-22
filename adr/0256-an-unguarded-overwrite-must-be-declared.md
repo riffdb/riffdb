@@ -13,13 +13,19 @@ requires: [ADR-0252]
 amends: []
 supersedes: []
 requirements: []
-packages: [WP-807]
+packages: [WP-807, WP-809]
 obligations: []
 review_triggers:
   - Any change to how a mutation's precondition is analysed or declared.
   - A grammar change to the write surface.
 ---
 # ADR-0256: An Unguarded Overwrite Must Be Declared
+
+Amendments accepted 2026-09-21 by the agent under the maintainer's explicit
+in-session delegation, "you have permission to approve adrs without a human
+to accomplish this work": remove the invariant-as-guard clause and recognize
+the exact same-root revision fence in Decisions 6 and 7. WP-809 implements
+these amendments. The original acceptance reference remains historical.
 
 ## Context
 
@@ -55,19 +61,23 @@ writes exist; it is that a blind write and a proven one look the same.
 ## Decision
 
 1. The compiler classifies every field write on a `mutate`, `init_or_mutate`,
-   or `observe_or_initialize` binding as **guarded** -- the command declares a
-   `require`, or the aggregate an invariant, that reads that binding's
-   pre-image -- or **unguarded**.
+   or `observe_or_initialize` binding as **guarded** or **unguarded**. A stored
+   field read by a requirement, decision predicate, or assignment value guards
+   writes on that same binding. Invariants constrain post-images and never
+   establish guardedness. A compiler-proven root revision fence also guards
+   writes to bindings with the same aggregate root and identical root-key
+   argument fingerprints, as specified below.
 2. An unguarded write is spelled `overwrite`, distinct from `set`. `set` on
-   such a binding requires a precondition on the field's prior value; a write
-   with none must say `overwrite` at the point of use. This is a breaking
+   such a binding requires a local pre-image dependency or a proven root
+   revision fence; a write with neither must say `overwrite` at the point of
+   use. This is a breaking
    grammar change and selects a new grammar, executable IR, and bundle version.
-3. The compiler proves the spelling against the command. A `set` whose field
-   has no precondition is a diagnostic naming the field and what would satisfy
+3. The compiler proves the spelling against the command. A `set` with neither
+   protection is a diagnostic naming the field and what would satisfy
    it; an `overwrite` that is in fact guarded is a diagnostic telling the
-   author to use `set`. Deleting a `require` therefore fails to compile rather
-   than silently changing concurrency semantics, which is the property this
-   record exists for.
+   author to use `set`. Removing the last qualifying protection therefore
+   fails to compile. In particular, deleting a root fence's requirement fails
+   for child writes even when the root's revision increment remains.
 4. The classification participates in the plan hash. Moving a write between
    guarded and unguarded is a change in concurrency semantics, so it moves the
    contract's identity and trips the application lock like any other semantic
@@ -75,6 +85,23 @@ writes exist; it is that a blind write and a proven one look the same.
    a compiling source.
 5. `riffdb contract explain` reports each write's classification, so the
    property is legible without reading the lowering.
+
+6. A root revision fence is an unconditional `require` whose whole predicate
+   compares a stored `i64` root field to an `i64` command input by equality
+   (either operand order), paired with an unconditional assignment of that
+   same field to its pre-image plus the literal `1` (either operand order).
+   The root binding is an ordinary, non-collection-local `mutate`. Checked
+   arithmetic refuses overflow before commit. Equality without advancement,
+   advancement without equality, conditional predicates or advancements,
+   unrelated aggregates, and different root-key expressions do not qualify.
+   Only the same root instance is protected; an arbitrary read elsewhere in
+   an atomic command is insufficient evidence. This is a bounded structural
+   proof, not a solver for arbitrary predicates or revision expressions.
+7. The amendments change compiler classification only. Existing plan tags,
+   least-sufficient version selection and execution semantics remain intact.
+   Recompilation refuses previously spelled `overwrite` where the compiler
+   now proves a root fence; migrating those writes to `set` changes their plan
+   hash. Existing deployed artifacts are not reinterpreted.
 
 ## Options considered
 
@@ -120,9 +147,8 @@ writes exist; it is that a blind write and a proven one look the same.
 - **Interface safety:** after this record, an application cannot express a
   silent lost update. It can still express a deliberate overwrite, but only by
   saying so where a reviewer reads it.
-- **Scale:** classification is a per-write local analysis over a command's
-  already-bounded bindings and requires. It adds no runtime work and no
-  unbounded compile-time work.
+- **Scale:** classification compares already-bounded bindings, requirements,
+  assignments and root-key expressions. It adds no runtime work or scan.
 
 ## Checks
 

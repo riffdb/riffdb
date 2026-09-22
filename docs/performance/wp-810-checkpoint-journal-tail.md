@@ -1,17 +1,17 @@
-# WP-809: checkpoint-coupled journal tail latency
+# WP-810: checkpoint-coupled journal tail latency
 
 Identifier correction: this package was first registered locally as WP-806,
-then WP-808. Main independently assigned WP-806 to the semantic write-path
-comparison task and WP-808 to governance verification. WP-809 preserves this
-package's original checkpoint scope and evidence.
+then WP-808 and WP-809. Main independently assigned those numbers to the
+semantic write-path comparison, governance verification, and same-root revision
+fence tasks. WP-810 preserves this package's original checkpoint scope and evidence.
 
 **Open storage/journal package.** A registered asynchronous checkpoint makes
 the Standard-profile writer drain journal durability and ordered publication
 before continuing. This shared writer path can stall command acknowledgement
 without any archive consumer. **WP-749 is now blocked on reduction of this shared
-term**, per maintainer direction on 2026-09-21. WP-809 owns its repair;
+term**, per maintainer direction on 2026-09-21. WP-810 owns its repair;
 WP-749 subsequently assesses its separate archive-presence gate by the defined
-direct off/on measurement. WP-809 does not depend on WP-749.
+direct off/on measurement. WP-810 does not depend on WP-749.
 
 ## Established finding
 
@@ -96,7 +96,7 @@ No P99 threshold is invented here.
 
 ## Registration PR note
 
-Package WP-809; registration change tier internal, planned implementation tier
+Package WP-810; registration change tier internal, planned implementation tier
 guarantee. Behavior: no runtime change; give the shared finding independent
 scope and an open exit gate. Updated handbook: this page and the linked archive
 report. Checks: manifest brief, governance and documentation acceptance.

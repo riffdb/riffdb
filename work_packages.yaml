@@ -23069,7 +23069,7 @@ work_packages:
 - id: WP-749
   name: Changelog-derived incremental and remote backup
   tier: guarantee
-  depends_on: [WP-746, WP-809]
+  depends_on: [WP-746, WP-810]
   objective: Implement ADR-0178 section 7. Persist validated changelog frames to a configured
     archive sink beside periodic offline full backups, publish an additive archive manifest, and
     restore from a verified full backup plus the archived suffix through the follower applier
@@ -23127,15 +23127,15 @@ work_packages:
   closure:
     status: blocked
     blocked_at: '2026-09-21'
-    blocked_by: [WP-809]
+    blocked_by: [WP-810]
     evidence: docs/performance/wp749-archive-qualification-2026-09.md
     reason: The acknowledgement-latency gate is unmet. The isolated archive comparison
       moves P99 from 88.35 to 114.93 ms. Its dominant named mechanism is checkpoint-coupled
-      journal durability, present without archive and owned by WP-809. The roughly
+      journal durability, present without archive and owned by WP-810. The roughly
       11.7 ms fixed-trace residual remains unattributed; existing subtraction analyses
       do not identify a causal archive cost. Stop WP-749 investigation until the shared
       term is reduced, then measure archive acknowledgement cost directly.
-    resume_when: WP-809 lands a guarantee-preserving reduction of the shared checkpoint
+    resume_when: WP-810 lands a guarantee-preserving reduction of the shared checkpoint
       term with its own correctness and performance evidence. Closing or renaming that
       package without reducing the term does not clear this dependency.
     remeasurement: After the prerequisite, freeze refreshed source and toolchain and use
@@ -23148,9 +23148,9 @@ work_packages:
     decisions_taken:
     - 'Maintainer direction, in session, 2026-09-21: block WP-749 on the checkpoint/journal
       package, publish the named dominant mechanism and explicitly unattributed remainder,
-      and stop. That package was locally numbered WP-806, then WP-808; renumber it WP-809
-      because main independently assigned WP-806 to the semantic write-path comparison
-      task and WP-808 to governance verification. The
+      and stop. That package was locally numbered WP-806, then WP-808 and WP-809; renumber
+      it WP-810 because main independently assigned those numbers to the semantic
+      write-path comparison, governance verification, and same-root revision fence tasks. The
       dependency follows the same checkpoint work. WP-748 is already complete on main
       and has no dependency on this block. No additional subtraction or measurement.'
     - Full workspace CI exposed simulation fixtures whose entity images omitted
@@ -23927,7 +23927,7 @@ work_packages:
     DX-044, DX-047, DX-049, VER-001, VER-002, VER-003, VER-004, VER-005, VER-008]
   required_adrs: [ADR-0006, ADR-0112, ADR-0124, ADR-0181, ADR-0190, ADR-0192, ADR-0204,
     ADR-0207, ADR-0215, ADR-0216, ADR-0217, ADR-0218, ADR-0219, ADR-0221, ADR-0222,
-    ADR-0223]
+    ADR-0223, ADR-0225]
   allowed_paths: [SPEC.md, work_packages.yaml,
     Cargo.lock,
     adr/0074-python-application-driver.md,
@@ -23960,6 +23960,9 @@ work_packages:
     no-replace candidate retirement, with no transitive graph rotation or fallback; ADR-0222
     adds only the exact compiler exact_predicate.rs and module exact_predicate_result_set.rs
     owners for genuine V2 lowering and sealed carriage, retaining all existing proof obligations
+  - ADR-0225 directory-anchored bounded candidate cleanup using only its exact safe rustix
+    operations, with retained directory identities, aggregate ceilings, exact reference fences,
+    substitution tests, and every removal/rename/sync crash edge in OBL-0209-4's existing proof
   - Removal of every non-current reader, fixture, generated artifact, and topology identity across
     durable, executable-IR, wire, protocol, application-artifact, generated-surface, and evidence
     domains except ADR-0207's exact read-only ChangelogFrameV1/V2 decoders and compatibility
@@ -24063,6 +24066,8 @@ work_packages:
     pair without explanation, causality would be assigned to that existing difference, or a final
     combined plan, module, lock, cursor, fixture, or hash rotation would be accepted without
     independent derivation and review after ADR-0216 reconciliation.
+  - ADR-0225 cleanup would follow a symlink, use ambient descendant paths, enumerate the
+    source parent, exceed its bounds, omit a reference or identity check, or broaden rustix use.
   - A ledger entry, ADR section, or public handbook page would be exempted from the new checks
     without a recorded reason.
 
@@ -27190,7 +27195,37 @@ work_packages:
     scale: The check is a scan over a fixed set of governing documents and accepted records, and
       it reports every instance rather than the first.
   human_review_triggers: *id001
+
 - id: WP-809
+  name: Same-root revision fences protect cross-binding writes
+  tier: guarantee
+  depends_on: [WP-807]
+  objective: Implement both ADR-0256 amendments, recognizing a proven same-root revision
+    fence so deleting its require cannot silently remove protection from child writes.
+  requirements: [CMP-015]
+  required_adrs: [ADR-0256]
+  allowed_paths: [SPEC.md, work_packages.yaml, adr/0256-an-unguarded-overwrite-must-be-declared.md,
+    crates/riffdb-contract-compiler/**, crates/riffdb-contract-ir/**,
+    crates/riffdb-runtime/**, crates/riffdb-diagnostics/**,
+    tests/**, fixtures/**, docs/**]
+  deliverables:
+  - Bounded structural root revision fence analysis with exact root-instance matching
+  - Regression proofs for deletion of either fence half, unrelated roots, conditional
+    effects, invariants, and the guarded/overwrite mismatch with source-span snapshots
+  - Plan hash and explain assertions and execution evidence that the stale child update refuses
+  - Updated handbook describing both forms of protection and the supported fence shape
+  acceptance_commands:
+  - ./scripts/acceptance --wp WP-809
+  exit_gate: A same-root fence protects child writes, removing either half rejects their set
+    spelling, false fences do not qualify, and stale execution cannot overwrite a child.
+  standing_design_tests:
+    interface_safety: Neither a local guard nor a root fence can be removed silently from
+      a set that depends on it; overwrite remains explicit and checked in both directions.
+    scale: Only existing bounded command metadata is analyzed, with no runtime work added.
+  human_review_triggers:
+  - A fence outside the exact ADR-0256 structural rule would be admitted.
+  - Runtime revalidation, atomicity, or durable encoding would change.
+- id: WP-810
   name: Checkpoint-coupled journal tail latency
   tier: guarantee
   depends_on: []
@@ -27206,7 +27241,7 @@ work_packages:
     crates/riffdb-commit/**, docs/**, scripts/**, tests/**, release/evidence/**,
     benchmarks/**, examples/app-baseline/**]
   deliverables:
-  - Standalone storage/journal finding at docs/performance/wp-809-checkpoint-journal-tail.md,
+  - Standalone storage/journal finding at docs/performance/wp-810-checkpoint-journal-tail.md,
     retaining the valid archive-disabled trace, source/binary identities, checkpoint
     counts, first-wait and sync evidence, and explicit timing limitations
   - A deterministic production-path reproduction controlling checkpoint materialization,
@@ -27224,7 +27259,7 @@ work_packages:
     p50/p95/p99, throughput, corrected wait counters, checkpoint counts and explicit wall
     reconciliation retained; no new measurements are part of this registration
   acceptance_commands:
-  - ./scripts/acceptance --wp WP-809
+  - ./scripts/acceptance --wp WP-810
   - ./scripts/ci-all
   exit_gate: The shared checkpoint/journal delay has a maintainer-reviewed resolution
     supported by a production-path schedule proof and recovery evidence. Any mitigation
@@ -27234,7 +27269,7 @@ work_packages:
     is assessed separately.
   closure:
     status: open
-    evidence: docs/performance/wp-809-checkpoint-journal-tail.md
+    evidence: docs/performance/wp-810-checkpoint-journal-tail.md
   standing_design_tests:
     interface_safety: No application or operator can bypass a journal fence, publish a
       hole, acknowledge before publication, or opt out of checkpoint-installation safety.

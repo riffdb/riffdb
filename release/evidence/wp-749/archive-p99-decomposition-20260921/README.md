@@ -2,7 +2,7 @@
 
 **Review evidence; no causal archive residual identified and no closure.**
 See `docs/performance/wp749-archive-p99-decomposition-2026-09.md` for the
-interpretation and `docs/performance/wp-809-checkpoint-journal-tail.md` for
+interpretation and `docs/performance/wp-810-checkpoint-journal-tail.md` for
 independent ownership of the shared checkpoint mechanism.
 
 `decomposition.json` binds the original summary and raw inputs by SHA-256. The

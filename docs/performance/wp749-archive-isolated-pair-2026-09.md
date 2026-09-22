@@ -1,6 +1,6 @@
 # WP-749: isolated checkpoint-wait comparison
 
-**Current disposition: WP-749 is blocked on WP-809; investigation is stopped.**
+**Current disposition: WP-749 is blocked on WP-810; investigation is stopped.**
 The [disclosure and resumption condition](wp749-archive-qualification-2026-09.md#blocked-handoff-and-disclosure-2026-09-21)
 record the named shared mechanism, the unattributed remainder and the direct
 remeasurement required after the shared term is reduced.
@@ -13,7 +13,7 @@ checkpoint/journal path owns it, including the checkpoint-installation guarantee
 that the drain preserves.
 
 The shared finding is now independently registered as
-[WP-809: checkpoint-coupled journal tail latency](wp-809-checkpoint-journal-tail.md).
+[WP-810: checkpoint-coupled journal tail latency](wp-810-checkpoint-journal-tail.md).
 Its scope and resolution are separate from WP-749's archive gate.
 
 The subsequent [P99 decomposition](wp749-archive-p99-decomposition-2026-09.md)

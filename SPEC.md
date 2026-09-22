@@ -2744,13 +2744,27 @@ record's prior value, and the compiler MUST prove the declaration (ADR-0256).
 A write on a binding with a pre-image -- `mutate`, `init_or_mutate`,
 `observe_or_initialize` -- is **guarded** when something in the command reads a
 stored field of that same binding: a `require`, a decision arm's predicate, or
-the value expression of any write to it. Otherwise it is **unguarded**.
+the value expression of any write to it. It is also guarded by a proven
+revision fence on the same aggregate root instance. Otherwise it is
+**unguarded**.
 
 The property is per binding rather than per field, because commit-time
 revalidation is per record: if the command observed the record at all, a
 concurrent change to it invalidates the whole command and every write to it is
 protected. A command that writes `state.revision = state.revision + 1`
 therefore guards its other writes to `state`.
+
+A root revision fence requires an unconditional equality between a stored
+`i64` root field and an `i64` command input, plus an unconditional assignment
+of that field to its pre-image plus literal `1` (either operand order for each).
+The root binding MUST be a non-collection-local `mutate`, and the protected
+binding MUST belong to the same aggregate with identical root-key argument
+fingerprints. Overflow refuses through checked arithmetic. A predicate or
+assignment inside a decision arm, a read without advancement, an increment
+without equality, or an unrelated root does not confer this protection.
+Removing either half of the fence MUST reject child `set` writes lacking
+independent local protection. This is a structural rule, not general theorem
+proving; deployed artifacts retain their existing semantics.
 
 An invariant does not guard. Invariants constrain the state after the commit,
 and a lost update produces a state that satisfies every invariant, so an
