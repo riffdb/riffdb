@@ -27119,8 +27119,10 @@ work_packages:
     describes itself inaccurately and nothing notices. Make it check itself.
   requirements: []
   required_adrs: [ADR-0181]
+  # governance/tiers.yaml carries the path-triggered checks, and a check that is
+  # not wired into the plan is a check nobody runs.
   allowed_paths: [AGENTS.md, SPEC.md, work_packages.yaml, adr/**, scripts/**, docs/**,
-    crates/riffdb-contract-compiler/examples/**]
+    governance/tiers.yaml, crates/riffdb-contract-compiler/examples/**]
   deliverables:
   - A check that every scripts/<name> and repository path named in AGENTS.md, in SPEC.md, and in
     an accepted record's Decision section resolves to a file that exists, with a self-test that
