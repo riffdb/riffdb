@@ -2755,7 +2755,7 @@ protected. A command that writes `state.revision = state.revision + 1`
 therefore guards its other writes to `state`.
 
 A root revision fence requires an unconditional equality between a stored
-`i64` root field and an `i64` command input, plus an unconditional assignment
+`i64` or `u64` root field and a same-typed command input, plus an unconditional assignment
 of that field to its pre-image plus literal `1` (either operand order for each).
 The root binding MUST be a non-collection-local `mutate`, and the protected
 binding MUST belong to the same aggregate with identical root-key argument

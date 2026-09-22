@@ -87,7 +87,7 @@ writes exist; it is that a blind write and a proven one look the same.
    property is legible without reading the lowering.
 
 6. A root revision fence is an unconditional `require` whose whole predicate
-   compares a stored `i64` root field to an `i64` command input by equality
+   compares a stored `i64` or `u64` root field to a same-typed command input by equality
    (either operand order), paired with an unconditional assignment of that
    same field to its pre-image plus the literal `1` (either operand order).
    The root binding is an ordinary, non-collection-local `mutate`. Checked
