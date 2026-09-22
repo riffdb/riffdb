@@ -27019,16 +27019,27 @@ work_packages:
     in the plan, per ADR-0256.
   requirements: []
   required_adrs: [ADR-0256, ADR-0252, ADR-0002]
-  # Widened 2026-09-21. Adding the classification to Instruction::SetField makes
-  # every exhaustive match on that variant a compile error, and the runtime and
-  # the explain renderer both match it. The runtime change is the mechanical
-  # `guard: _`: execution applies the assignment either way, because the
-  # classification is a compile-time property.
+  # Widened 2026-09-21, twice. Adding the classification to
+  # Instruction::SetField makes every exhaustive match on that variant a compile
+  # error, which reaches the runtime and the explain renderer; those changes are
+  # the mechanical `guard: _`, since execution applies the assignment either way.
+  #
+  # The second widening is the migration itself. A breaking grammar change
+  # reaches every crate that embeds a contract in a test, and V24 must be
+  # admitted by the catalog's supported-version tuple and the commit
+  # coordinator's grammar/IR pair or no V24 contract can be deployed or
+  # executed. Those two are the only non-test changes outside the compiler.
   allowed_paths: [SPEC.md, work_packages.yaml, adr/0256-an-unguarded-overwrite-must-be-declared.md,
     crates/riffdb-contract-syntax/**, crates/riffdb-contract-compiler/**,
-    crates/riffdb-contract-ir/**, crates/riffdb-runtime/src/**,
+    crates/riffdb-contract-ir/**, crates/riffdb-runtime/**,
+    crates/riffdb-catalog/**, crates/riffdb-commit/**, crates/riffdb-service/**,
+    crates/riffdb-query-module/**, crates/riffdb-query-compiler/**,
+    crates/riffdb-query-executor/**, crates/riffdb-query-ir/**,
+    crates/riffdb-api-grpc/**, crates/riffdb-server/**, crates/riffdb-storage-redb/**,
+    crates/riffdb-testkit-server/**, crates/riffdb-diagnostics/**,
     crates/riffdb-cli/src/output.rs, crates/riffdb-cli/src/contract_explain.rs,
-    fixtures/**, docs/**, templates/**, clients/**, examples/**]
+    crates/riffdb-cli/src/generated/**,
+    tests/**, fixtures/**, docs/**, templates/**, clients/**, examples/**]
   deliverables:
   - A per-write guarded/unguarded classification derived from the command's requires and
     the aggregate's invariants over the binding's pre-image, with the analysis stated
