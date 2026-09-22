@@ -39,7 +39,7 @@ the same checkpoint/journal work.
 
 ### Main integration check, 2026-09-22
 
-The merge of main at `57167a230ad7e46009f88965a7c2eafa44fc9dd6`
+The merge of main at `215286abed9e98b77811b33be991ee1bca6b0077`
 leaves this prerequisite unresolved. Since the branches' common ancestor,
 main has changed no storage-redb implementation files; its commit-crate changes
 admit the accepted V24 command plans and do not change checkpoint drains.
