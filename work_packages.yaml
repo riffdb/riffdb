@@ -26543,6 +26543,22 @@ work_packages:
     interface_safety: No interface changes. Ignoring whitespace and trailing commas the
       files are byte-identical to their committed versions.
     scale: Not applicable; the change adds no runtime behaviour.
+  closure:
+    status: complete
+    completed_at: '2026-09-22'
+    evidence: crates/riffdb-commit/src/command_validation.rs
+    decision: The four drifted files were reformatted on main in db399aca6 and merged
+      through 5a2bf5845, with ADR-0242 accepted in 0066382cd. cargo fmt --all -- --check
+      passes on main at 1402347c9; ignoring whitespace and trailing commas the four files
+      are byte-identical to their pre-repair versions, so no token or semantic change
+      rode along. Scoped acceptance passes for fmt, Clippy, the riffdb-api-mcp and
+      riffdb-server suites, and allowed paths; the handbook check step was repaired to
+      read pages as UTF-8 so it no longer depends on the invoking locale.
+    decisions_taken:
+    - Repair scripts/check-handbook-source to set Encoding.default_external to UTF-8 and
+      read each page with an explicit UTF-8 encoding, because the acceptance run failed
+      on a US-ASCII locale rather than on any handbook content. This is an internal-tier
+      tooling repair outside the package's scope files, committed separately.
 - id: WP-792
   name: Rust 1.98.1 toolchain upgrade
   tier: surface
