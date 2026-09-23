@@ -26574,7 +26574,7 @@ work_packages:
     examples/**, scripts/**, tests/**, .github/workflows/**, fixtures/**,
     docs/installation.md, docs/CONTRIBUTING.md, docs/python-driver.md,
     docs/performance/rust-1-98-1-toolchain-ab-2026-09.md,
-    release/python/platform-matrix-v1.json,
+    release/python/platform-matrix-v1.json, release/python/Cargo.sdist.toml,
     release/agent-application-alpha/riffdb-api-grpc-client.Cargo.toml,
     release/agent-application-alpha/sdk-Cargo.toml]
   deliverables:
