@@ -78,6 +78,9 @@ jobs:
           ./scripts/build-python-sdist dist
       - name: Validate exact platform claims
         run: ./scripts/test-python-platform-matrix
+      - name: Check reproducible package and receipt toolchain
+        if: matrix.arch == 'x86_64'
+        run: ./scripts/check-python-package
       - name: Write artifact receipt
         run: ./scripts/write-python-artifact-receipt dist
       - name: Upload checked artifacts
