@@ -61,7 +61,9 @@ module RiffdbGovernance
     out, err, status = Open3.capture3("git", *args, chdir: root)
     raise Error, "git #{args.join(' ')} failed: #{err.strip}" unless status.success?
 
-    out
+    # Commit messages and paths are UTF-8; the invoking locale may not be, and
+    # callers scan the returned text with regexes that raise on other encodings.
+    out.force_encoding(Encoding::UTF_8)
   end
 
   def git_ok(*args)
