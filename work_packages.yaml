@@ -27036,6 +27036,39 @@ work_packages:
     scale: The characterisation holds for the 188 declared obligations, not only the three
       that produced it.
   human_review_triggers: *id001
+  closure:
+    status: complete
+    completed_at: '2026-09-23'
+    evidence: docs/reviews/2026-09-23-named-proof-characterisation.md
+    decision: The characterisation is recorded and the malformed-record repair is verified
+      against every tool that reads records. The three instances were reproduced against the
+      check in a fabricated tree rather than argued from its source. Instance 1 (ADR-0240, a
+      proof that exists but asserts something narrower than its record says) and instance 2
+      (ADR-0250, a proof that exercises a type only tests construct) both still pass the
+      check today, which is the recorded limit, not an open defect; the check matches names,
+      not semantics, and no name-based check can close either gap. Instance 3 (ADR-0251, a
+      mistyped colon silently dropping obligations) is closed by the 2026-09-21 shared-parser
+      repair in 1b28ea431 and pinned by the check's self-test; the characterisation re-ran
+      that shape against every record-reading tool (check-adr-obligations, adr-index,
+      check-adr-form, brief, wp-new) and each fails with the record named. Tools that do not
+      parse records (check-requirement-coverage, adr-new) are unaffected by design, and
+      check-named-artifacts deliberately regexes status lines without a YAML parser; one
+      adjacent valid-YAML spelling (a space before the status colon) escapes that one check
+      and is recorded as its known limit. The finding the third deliverable asked for is
+      recorded; naming the production symbol a proof must reach is the wrong shape, because
+      the check could still only verify the symbol appears, not that the proof means what
+      the record means, which would add a second synchronized name one layer down. The
+      control for instances 1 and 2 is review of the proof against the says text the check
+      prints at package closure, which is where both real instances were caught. The
+      characterisation is linked from CONTRIBUTING and the handbook reference list.
+    decisions_taken:
+    - Record the finding that naming the production symbol a proof must reach is the wrong
+      shape, rather than strengthening the check for instances 1 and 2; the characterisation
+      shows a symbol-presence check would reproduce instance 1's defect one layer down.
+    - Record check-named-artifacts' unquoted-status-regex escape (a valid-YAML space before
+      the colon reads an accepted record as not accepted) as that check's known limit rather
+      than fixing it in this package; the spelling fails five other record-reading tools
+      first, no accepted record carries it, and the regex is deliberately parser-independent.
 - id: WP-805
   name: A conflict key protects its aggregate's invariants
   tier: surface

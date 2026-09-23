@@ -205,6 +205,14 @@ strike records the exact source fingerprint and a one-line reason in
 `struck_obligations`. Historical records retain equivalent header entries.
 The outstanding ledger is removed; recreating it, even empty, fails.
 
+The check proves that a definition of the named proof exists; it cannot
+prove that the proof exercises what its record says or that it reaches
+production wires. Those two gaps are characterised with reproduced instances
+in [What check-adr-obligations establishes](reviews/2026-09-23-named-proof-characterisation.md);
+the control for both is review of the proof against the `says` text the
+check prints at package closure. A record whose front matter opens with
+`---` but does not parse fails every tool that reads records.
+
 `./scripts/check-adr-form` checks the template's required and optional
 sections, warns above 260 lines, and rejects document-control table rows
 containing multiple paragraphs. Historical section inventories are frozen
