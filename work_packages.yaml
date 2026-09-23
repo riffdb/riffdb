@@ -26596,6 +26596,39 @@ work_packages:
     scale: Not applicable to storage. The measurement is one bench host with two
       repetitions per cell; it resolves effects of roughly 2 percent and larger and does
       not establish that the ratio ports to another host.
+  closure:
+    status: complete
+    completed_at: '2026-09-23'
+    evidence: docs/performance/rust-1-98-1-toolchain-ab-2026-09.md
+    decision: The pin moved to 1.98.1 in bc6c2d0a4 with ADR-0241 accepted in c4eaba08e,
+      and the counterbalanced C3D A/B with differing binary digests is banked at the
+      evidence path — geometric mean ratio 1.98.1/1.97.0 of 1.0036 write-only, 1.0005
+      read-only, 1.0027 interactive, every cell within 0.989-1.017 against a worst
+      repetition spread of 1.023, so no regression is distinguishable from noise at this
+      resolution. The closure audit found and repaired what the original bump missed —
+      eleven benchmark harnesses and three documents still selecting or naming 1.97.0,
+      the Python sdist workspace manifest still declaring rust-version 1.97.0 in the
+      published artifact, developer-tools install hints and readiness banner naming
+      1.97.0 while verifying the 1.98.1 selector, and a missing
+      riffdb-policy/test-fixtures dev-dependency edge that broke the riffdb-server lib
+      test target under --all-features. No live path names the superseded toolchain
+      after 8b5fe6960; release/evidence, the WP-711 receipt validator, banked reports,
+      ADR text, and synthetic fixture BuildInfo strings deliberately retain 1.97.0 per
+      ADR-0241 decision 5. The workspace is clean under 1.98.1 fmt, clippy with warnings
+      denied, and the full suite (5616 passed; the ten WP-674 profile-runner tests fail
+      only in this sandbox, which denies bounded_evidence_io's O_RDONLY open of the
+      mount root, reproduced directly outside the tests).
+    decisions_taken:
+    - Widen allowed_paths to release/python/Cargo.sdist.toml in a separate commit
+      (9020077a6) before carrying the pin into it; the sdist manifest is a shipped
+      artifact ADR-0241 decision 1 names, but the original scope entry missed it.
+    - Repair scripts/developer-tools, scripts/check-handbook-source,
+      scripts/lib/riffdb_governance.rb, and scripts/check-file-size-guard for
+      non-UTF-8 locales in separate internal-tier commits; the sandbox's US-ASCII
+      default made Ruby raise on valid UTF-8 content in four governance tools.
+    - Add the riffdb-policy test-fixtures feature to the riffdb-server
+      dev-dependency edge, matching the existing riffdb-commit and riffdb-storage-redb
+      edges, so the lib test target compiles under --all-features.
 - id: WP-791
   name: Derived-state sinks off the primary writer's gate
   tier: guarantee
