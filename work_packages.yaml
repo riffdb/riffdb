@@ -26520,6 +26520,44 @@ work_packages:
       export page may claim and cannot let a consumer express an unsafe read.
     scale: Append-only commitments are bounded per page and add no unbounded state.
   human_review_triggers: *id001
+  closure:
+    status: complete
+    completed_at: '2026-09-23'
+    evidence: crates/riffdb-storage-redb/src/application_export_ledger.rs
+    decision: ADR-0232 is implemented and now owned. The implementation landed in b76fca09b
+      with no package registered, which left the accepted record without an owner; this
+      package registers itself as that owner, audits the landed work against every decision
+      in the record, and validates the proofs. New export operations carry a compact
+      StoredApplicationExportOperationV2 head (namespace 33, compact identity 60/2) whose
+      fixed-size ApplicationExportLedgerPrefixV1 replaces the growing page-hash vector with
+      a page count and domain-separated prefix commitment bound to an immutable
+      operation/snapshot genesis; each released page installs one
+      ApplicationExportPageCommitmentV1 (namespace 43, compact identity 74/1) in the same
+      atomic attributed transaction as the head replacement, with the exact expected head
+      compared, the next ordinal verified, and terminal-document headroom charged to the
+      unchanged 256 KiB durable-state budget before release. Entries are append-only; an
+      equal retry reconciles to Unchanged, an unequal duplicate or a head-only or orphan
+      mutation fails closed at write, startup, follower replay, and offline
+      backup/restore. Terminalization verifies the complete contiguous prefix once and
+      reconstructs the identical public manifest and receipt bytes; the cursor carries a
+      new explicit version binding the compact state and its prefix commitment. Existing
+      operations retain their legacy encoding and cursor meaning; the new formats pass the
+      normal compatibility gate, and the permanent fixtures were approved by the maintainer
+      in session on 2026-09-16. Every requirement the record binds (EXP-002, EXP-006,
+      EXP-007, EXP-008, EXP-009, EXP-010) is covered by tagged code-derived proofs, and
+      check-requirement-coverage reports none unproven for this package.
+    decisions_taken:
+    - Register WP-795 as the owning package of the already-accepted and already-implemented
+      ADR-0232 rather than re-implementing; the record's acceptance (maintainer, in session,
+      2026-09-16) and the permanent fixture approval in b76fca09b already cover the
+      guarantee, so the closure records ownership and validated evidence.
+    - Record the landed implementation's byte-equality and cost evidence as the package
+      proof; compact_terminal_documents_preserve_legacy_bytes_for_every_class_and_failure
+      proves manifest/receipt byte equality across every class, scope, empty class and
+      terminal failure; compact_export_storage_append_bytes_are_linear_through_1024_pages
+      proves per-page durable work is independent of prior page count at 16, 128 and 1,024
+      pages; compact_export_crash_and_unknown_outcome_keep_complete_head_page_pairs proves
+      crash before/after commit and unknown-outcome reconciliation.
 - id: WP-793
   name: Formatting drift repair
   tier: guarantee
