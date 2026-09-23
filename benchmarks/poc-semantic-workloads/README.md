@@ -97,11 +97,11 @@ history need not cross a physical allocation boundary in every sample.
 
 ```bash
 ./benchmarks/poc-semantic-workloads/test-contract
-cargo +1.97.0 test \
+cargo +1.98.1 test \
   --manifest-path examples/budget-comparison/Cargo.toml \
   -p riffdb-budget-comparison --test service_comparison \
   performance_support::tests
-cargo +1.97.0 test \
+cargo +1.98.1 test \
   --manifest-path examples/budget-comparison/Cargo.toml \
   -p riffdb-budget-comparison --test service_comparison --no-run --release
 ```

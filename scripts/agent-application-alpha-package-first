@@ -226,7 +226,7 @@ cp "$repo_root/evaluations/agent-application-alpha/report-schema-v2.json" \
     --identity "$identity" \
     --receipt "$legacy/evaluation/package-conformance-receipt.json" >/dev/null
 
-# Cargo 1.97 updates these process-local cache markers while resolving the
+# Cargo 1.98 updates these process-local cache markers while resolving the
 # package smoke, even though all sources come from the sealed vendor tree.
 # They are neither runtime inputs nor stable bundle content: retaining them
 # makes byte-identical package-first builds hash differently. Remove them only

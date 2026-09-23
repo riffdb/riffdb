@@ -37,7 +37,7 @@ mkdir -p "$task_tmp_root"
 export TMPDIR="$task_tmp_root"
 
 cargo_target_directory() {
-    cargo +1.97.0 metadata --format-version 1 --no-deps "$@" \
+    cargo +1.98.1 metadata --format-version 1 --no-deps "$@" \
         | jq -er '.target_directory | select(type == "string" and length > 0)'
 }
 
@@ -134,7 +134,7 @@ if [[ "${1:-}" == "--self-test" ]]; then
     rm -f "$receipt_fixture"
     rmdir "$receipt_fixture_root"
     rm -f "$host_fixture"
-    cargo +1.97.0 build --locked --release -p riffdb-server --bin riffdbd --features test-fixtures
+    cargo +1.98.1 build --locked --release -p riffdb-server --bin riffdbd --features test-fixtures
     riffdbd_bin="$(cargo_target_directory)/release/riffdbd"
     [[ -x "$riffdbd_bin" ]] || {
         printf 'self-test: riffdbd missing after build: %s\n' "$riffdbd_bin" >&2
@@ -143,7 +143,7 @@ if [[ "${1:-}" == "--self-test" ]]; then
     printf 'self-test: cargo test --workspace (dead-peer e2e enforced)\n'
     export RIFFDB_APP_BASELINE_RIFFDBD_BIN="$riffdbd_bin"
     export RUN_RIFFDB_DEAD_PEER=1
-    cargo +1.97.0 test --locked --manifest-path examples/app-baseline/Cargo.toml --workspace
+    cargo +1.98.1 test --locked --manifest-path examples/app-baseline/Cargo.toml --workspace
     printf 'self-test: ok\n'
     exit 0
 fi
@@ -1002,7 +1002,7 @@ if ((skip_riffdb == 0)); then
                 riffdbd_feature_identity=test-fixtures
             fi
         fi
-        cargo +1.97.0 build --locked --release -p riffdb-server --bin riffdbd "${riffdbd_feature_args[@]}"
+        cargo +1.98.1 build --locked --release -p riffdb-server --bin riffdbd "${riffdbd_feature_args[@]}"
         export RIFFDB_APP_BASELINE_RIFFDBD_BIN="$(cargo_target_directory)/release/riffdbd"
     fi
 fi
@@ -1012,7 +1012,7 @@ if [[ -n "$runner" && -x "$runner" ]]; then
     printf 'using exact supplied app-baseline runner: %s\n' "$runner"
 else
     printf 'building app-baseline runner\n'
-    cargo +1.97.0 build --locked --release --manifest-path examples/app-baseline/Cargo.toml -p riffdb-app-baseline
+    cargo +1.98.1 build --locked --release --manifest-path examples/app-baseline/Cargo.toml -p riffdb-app-baseline
     runner="$(cargo_target_directory --manifest-path examples/app-baseline/Cargo.toml)/release/riffdb-app-baseline"
 fi
 
@@ -1643,7 +1643,7 @@ report["qualification_candidate"] = {
     "referee_sha256": referee_sha256,
     "method": {"stability_rule_binds": "gated_backend"},
     "build": {
-        "cargo": "cargo +1.97.0 build --locked --release",
+        "cargo": "cargo +1.98.1 build --locked --release",
         "package": "riffdb-server",
         "binary": "riffdbd",
         "feature_set": riffdbd_feature_identity,

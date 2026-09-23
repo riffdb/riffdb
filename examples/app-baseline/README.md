@@ -430,8 +430,8 @@ measurement; postflight interference marks the completed report ineligible.
 Or directly after provisioning:
 
 ```bash
-cargo +1.97.0 build --locked --release -p riffdb-server --bin riffdbd
-cargo +1.97.0 build --release --manifest-path examples/app-baseline/Cargo.toml
+cargo +1.98.1 build --locked --release -p riffdb-server --bin riffdbd
+cargo +1.98.1 build --release --manifest-path examples/app-baseline/Cargo.toml
 
 export RIFFDB_APP_BASELINE_POSTGRES_URL=postgres://riffdb:riffdb@127.0.0.1:55432/riffdb_app_baseline
 export RIFFDB_APP_BASELINE_RIFFDBD_BIN=$PWD/target/release/riffdbd

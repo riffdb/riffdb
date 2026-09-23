@@ -164,13 +164,13 @@ fi
 if ((want_riffdb)); then
     if [[ -z "${RIFFDB_APP_BASELINE_RIFFDBD_BIN:-}" ]]; then
         printf 'building riffdbd, riffdb, riffdb-driverd (release)\n'
-        cargo +1.97.0 build --locked --release \
+        cargo +1.98.1 build --locked --release \
             -p riffdb-server --bin riffdbd \
             -p riffdb-cli --bin riffdb \
             -p riffdb-driver-host --bin riffdb-driverd
         export RIFFDB_APP_BASELINE_RIFFDBD_BIN="$repo_root/target/release/riffdbd"
     else
-        cargo +1.97.0 build --locked --release -p riffdb-cli --bin riffdb -p riffdb-driver-host --bin riffdb-driverd
+        cargo +1.98.1 build --locked --release -p riffdb-cli --bin riffdb -p riffdb-driver-host --bin riffdb-driverd
     fi
     riffdbd="${RIFFDB_APP_BASELINE_RIFFDBD_BIN}"
     riffdb="$repo_root/target/release/riffdb"
