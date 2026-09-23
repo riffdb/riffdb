@@ -2558,12 +2558,13 @@ async fn finish_success(
     link: ServiceAuditLinkV1,
     known_durable: bool,
 ) -> ServiceResult<()> {
-    if begun
+    if let Err(audit_failure) = begun
         .finish(service, context, ServiceAuditPhaseV1::Succeeded, link)
         .await
-        .is_err()
     {
-        service.note_audit_failure(begun.operation());
+        // ADR-0205 Decision 7: preserve the terminal-audit append's exact cause
+        // instead of replacing it with an unconditional subsystem cause.
+        service.note_audit_failure_with_cause(begun.operation(), audit_failure.cause());
         return Err(if known_durable {
             PublicError::outcome_unknown().into()
         } else {
@@ -2608,12 +2609,13 @@ async fn finish_failure_with_link(
             Err(_) => PublicError::storage_unavailable().into(),
         };
     }
-    if begun
+    if let Err(audit_failure) = begun
         .finish(service, context, terminal.phase(&failure), link)
         .await
-        .is_err()
     {
-        service.note_audit_failure(begun.operation());
+        // ADR-0205 Decision 7: preserve the terminal-audit append's exact cause
+        // instead of replacing it with an unconditional subsystem cause.
+        service.note_audit_failure_with_cause(begun.operation(), audit_failure.cause());
         // Never rewrite a typed capacity rejection into storage_unavailable:
         // the audit append failed because the same saturated channel is full.
         if is_capacity_overload(&failure) {
