@@ -27324,7 +27324,36 @@ work_packages:
     scale: The check is a scan over a fixed set of governing documents and accepted records, and
       it reports every instance rather than the first.
   human_review_triggers: *id001
-
+  closure:
+    status: complete
+    completed_at: '2026-09-23'
+    evidence: scripts/check-named-artifacts
+    decision: All four defects are gone and the last deliverable is recorded. The implementation
+      landed across 797b88aeb through d2eae1336, merged as e248681e9; check-named-artifacts scans
+      AGENTS.md, SPEC.md and every accepted record's Decision section for named scripts and
+      repository paths, is package-aware the way check-adr-obligations is (an accepted record
+      whose packages are open may name what they will build), is wired into the path-triggered
+      plan in governance/tiers.yaml with a self-test, and found ten instances at introduction
+      (nine pending against open packages, one real). The real one, downstream-adapter-check,
+      now exists with in-repository adapter contracts fatal and sibling checkouts advisory, and
+      is wired to run on contract-language changes. ADB-C042 is gone from SPEC, which prints the
+      real RDB-C016 diagnostic; scripts/check-adr-form and adr/GLOSSARY.md exist and run in the
+      plan. The fourth deliverable, the recorded finding on check-allowed-paths reading
+      allowed_paths at the merge base, is docs/reviews/2026-09-23-allowed-paths-merge-base.md.
+      The failure was reproduced on a scratch branch (a widening-only commit fails the check
+      with self_edit regardless of touched files), the WP-807 cost was traced to byte-identical
+      cherry-picks of widening commits onto main (87ec80ed6 of 2ad7a089f, confirmed by
+      range-diff) followed by back-merges, and the finding is that the merge base is the wrong
+      base; the safety property is that a package's change is not judged by scope the same
+      change invented, which a widening commit that touches only work_packages.yaml already
+      satisfies. The proposed repair, recorded not implemented, is to read allowed_paths from
+      the last widening-only commit in the range while keeping narrowing as a self_edit failure.
+    decisions_taken:
+    - Record the merge-base finding rather than implement the repair; the change would alter
+      what a governance check accepts on every open package's branch, belongs to the check's
+      maintainers, and removes an annoying-but-safe cost only.
+    - Record the finding's proposed rule as widening-only (narrowing and mixed edits keep
+      failing as self_edit), so the property worth catching is preserved.
 - id: WP-809
   name: Same-root revision fences protect cross-binding writes
   tier: guarantee

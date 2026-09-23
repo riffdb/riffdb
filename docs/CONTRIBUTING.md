@@ -133,7 +133,12 @@ records, so none of those need listing. A touched file outside scope fails the
 check only when it sits on a surface- or guarantee-tier path; an internal-tier
 file outside scope is reported as a warning. Paths are read at the base commit,
 so entering another crate is a separate widening commit that precedes the
-package change; it needs no approval, only that commit. `./scripts/wp-new ADR-NNNN` prints one skeleton per
+package change; it needs no approval, only that commit. On an unmerged branch
+that rule has a known cost — the widening cannot serve as the branch's own
+merge base, so sessions cherry-pick widenings to main and back-merge; the
+recorded finding and the repair it proposes are in
+[check-allowed-paths and the merge base](reviews/2026-09-23-allowed-paths-merge-base.md).
+`./scripts/wp-new ADR-NNNN` prints one skeleton per
 entry in the record's `packages:` list, with the tier taken from the record.
 
 ### Decision authority

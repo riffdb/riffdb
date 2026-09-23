@@ -212,6 +212,7 @@
 - [September 21 Design Review Disposition](reviews/2026-09-21-design-review-disposition.md)
 - [September 21 Design Review Synthesis](reviews/2026-09-21-design-review-synthesis.md)
 - [What check-adr-obligations establishes](reviews/2026-09-23-named-proof-characterisation.md)
+- [check-allowed-paths and the merge base](reviews/2026-09-23-allowed-paths-merge-base.md)
 - [Transactions, Concurrency and Idempotency Critique](reviews/2026-09-transaction-concurrency-idempotency-critique.md)
 - [Contract DSL, Compiler and RiffQL Critique](reviews/2026-09-contract-dsl-compiler-riffql-critique.md)
 - [Storage, Projection and Durability Critique](reviews/storage-projection-durability-critique.md)
