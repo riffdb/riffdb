@@ -2014,8 +2014,14 @@ work_packages:
   - Redaction-safe closed startup/shutdown mode and stage observations that expose no database path,
     identifier, frontier, table count, hash, key, application value, or unbounded label and cannot be
     supplied back as control input
-  - A production-scale cleanly seeded and cleanly shut down database proving clean reopen and final
-    close retain bounded heap and perform zero population-table evidence walks
+  - A production-scale cleanly seeded and cleanly shut down V2-catalog database whose
+    reopen and final close are evidenced as complete ordinary validation with its cost
+    stated (startup stages, wall time, and heap envelope) and no population-independent
+    or bounded-clean claim, per ADR-0156 Amendment 6 and PERF-019's V2 qualification; the
+    bounded clean-certificate lifecycle evidence and its 64 MiB envelope that this
+    deliverable originally named are moved to the successor lifecycle record Amendment 6
+    requires, and scripts/wp705-lifecycle-referee remains in the tree serving that
+    successor's evidence (maintainer, in session, 2026-09-23, approving the restatement)
   - Genuine writer-process kill and reopen evidence at exactly the 65,536-row checkpoint proving
     the unchanged complete-validation path reaches exact end, recovery and idempotency remain exact,
     and the in-flight probe resolves atomically as either wholly absent or wholly committed; a
@@ -2053,8 +2059,10 @@ work_packages:
   - cargo +1.97.0 fmt --all -- --check
   - cargo +1.97.0 clippy --workspace --all-targets --all-features -- -D warnings
   - cargo +1.97.0 doc --workspace --no-deps
-  exit_gate: Clean production-scale reopen and shutdown are bounded independently of live and
-    retained populations; a genuine 65,536-row dirty kill/reopen completes exact validation,
+  exit_gate: A production-scale V2-catalog reopen and shutdown are evidenced as complete
+    ordinary validation with their cost stated and no bounded-clean or
+    population-independent claim, per ADR-0156 Amendment 6; a genuine 65,536-row dirty
+    kill/reopen completes exact validation,
     resolves the in-flight probe atomically as either wholly absent or wholly committed, matches the
     corresponding predeclared clean twin, reports whether engine repair actually occurred, and
     proves a second recovery makes no further authoritative or allocator advance; a separate

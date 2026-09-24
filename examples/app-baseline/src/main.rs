@@ -1145,15 +1145,18 @@ fn production_dirty_lifecycle_evidence(
         "process_start_to_ready",
         clean_initial_memory,
         clean_resources,
-        true,
+        false,
     )?;
-    if clean_startup.mode != "clean_certificate"
-        || clean_startup.transient_index_rebuilds != 0
-        || clean_startup.population_table_walk != "none"
+    // ADR-0156 Amendment 6: a V2-catalog source must decline the clean
+    // certificate and perform complete ordinary validation, and the evidence
+    // must state that cost without claiming population-independent clean
+    // startup. The bounded clean-certificate assertions this arm originally
+    // made are the successor lifecycle record's evidence, not this run's.
+    if clean_startup.mode != "complete_validation"
         || clean_startup.columnar_activations != 0
         || clean_startup.columnar_population_passes != 0
     {
-        return Err("production clean restart was not bounded".to_owned());
+        return Err("production V2 restart was not complete ordinary validation".to_owned());
     }
     let (dirty_restarted, dirty) = runtime
         .block_on(clean_restarted.force_kill_and_restart_for_evidence(crash_probe))
@@ -1187,9 +1190,9 @@ fn production_dirty_lifecycle_evidence(
         ));
     }
     if !after.same_authority_after_clean_generations(&repeated_snapshot, 2)
-        || repeated_startup.mode != "clean_certificate"
+        || repeated_startup.mode != "complete_validation"
     {
-        return Err("second recovery restart added authority or missed clean mode".to_owned());
+        return Err("second recovery restart added authority or missed complete validation".to_owned());
     }
     let clean_process_to_ready_us = if committed {
         dirty.committed_twin_process_to_ready_us
@@ -1210,6 +1213,8 @@ fn production_dirty_lifecycle_evidence(
         json!({
             "schema": "riffdb.wp-705-production-lifecycle/v1",
             "scale_checkpoint": scale_checkpoint,
+            "v2_complete_validation": true,
+            "bounded_clean_claim": false,
             "clean_restart": {
                 "startup": startup_evidence_json(&clean_startup),
                 "rss_bytes_at_ready": clean_resources.rss_bytes,
@@ -1255,13 +1260,11 @@ fn production_clean_lifecycle_evidence(
     let startup = clean_restarted
         .startup_evidence()
         .map_err(|error| error.to_string())?;
-    if startup.mode != "clean_certificate"
-        || startup.transient_index_rebuilds != 0
-        || startup.population_table_walk != "none"
+    if startup.mode != "complete_validation"
         || startup.columnar_activations != 0
         || startup.columnar_population_passes != 0
     {
-        return Err("production clean restart was not bounded".to_owned());
+        return Err("production V2 restart was not complete ordinary validation".to_owned());
     }
     let initial_memory = clean_restarted.initial_process_memory();
     let resources = process_resource_snapshot(
@@ -1269,7 +1272,7 @@ fn production_clean_lifecycle_evidence(
         clean_restarted.session_directory(),
     )?;
     let memory =
-        lifecycle_memory_window_json("process_start_to_ready", initial_memory, resources, true)?;
+        lifecycle_memory_window_json("process_start_to_ready", initial_memory, resources, false)?;
     let final_close = clean_restarted
         .shutdown_with_evidence()
         .map_err(|error| error.to_string())?;
@@ -1280,6 +1283,8 @@ fn production_clean_lifecycle_evidence(
     let lifecycle = json!({
         "schema": "riffdb.wp-705-production-clean-lifecycle/v1",
         "scale_checkpoint": "production",
+        "v2_complete_validation": true,
+        "bounded_clean_claim": false,
         "clean_restart": {
             "startup": startup_evidence_json(&startup),
             "rss_bytes_at_ready": resources.rss_bytes,
