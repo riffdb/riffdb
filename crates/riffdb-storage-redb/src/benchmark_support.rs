@@ -337,10 +337,13 @@ pub fn recovery_authority_snapshot_v1(
             continue;
         }
         if std::env::var_os("RIFFDB_DBG_AUTHORITY_KEYS").is_some() {
+            let mut value_hasher = Sha256::new();
+            value_hasher.update(value.value());
             eprintln!(
-                "DBG-AUTH-KEY {:?} value_len={}",
+                "DBG-AUTH-KEY {:?} value_len={} value_sha={}",
                 key.value(),
-                value.value().len()
+                value.value().len(),
+                value_hasher.finalize()[..8].iter().map(|b| format!("{b:02x}")).collect::<String>()
             );
         }
         hash_component(&mut hasher, key.value().as_bytes());
@@ -354,6 +357,9 @@ pub fn recovery_authority_snapshot_v1(
         AUDIT_BY_REQUEST_LOCATORS,
     ]) {
         let name = definition.name();
+        if std::env::var_os("RIFFDB_DBG_AUTHORITY_KEYS").is_some() {
+            eprintln!("DBG-AUTH-TABLE {name}");
+        }
         hash_component(&mut hasher, name.as_bytes());
         let table =
             transaction
