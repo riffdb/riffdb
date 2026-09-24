@@ -1,11 +1,11 @@
 ---
 adr: "0258"
 title: Retire Stranded Fresh-Locator Obligations
-status: proposed
+status: accepted
 tier: guarantee
 date: 2026-09-23
-accepted: null
-acceptance: null
+accepted: '2026-09-23'
+acceptance: 'maintainer, in session, 2026-09-23: "i accept them" (ADR-0258 and ADR-0259)'
 requires: [ADR-0205, ADR-0206, ADR-0208, ADR-0210, ADR-0213, ADR-0214, ADR-0236]
 amends: [ADR-0205, ADR-0206, ADR-0208, ADR-0210, ADR-0213, ADR-0214]
 supersedes: []

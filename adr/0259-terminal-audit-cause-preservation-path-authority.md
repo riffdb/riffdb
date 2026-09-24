@@ -1,11 +1,11 @@
 ---
 adr: "0259"
 title: Terminal-Audit Cause Preservation Path Authority
-status: proposed
+status: accepted
 tier: guarantee
 date: 2026-09-23
-accepted: null
-acceptance: null
+accepted: '2026-09-23'
+acceptance: 'maintainer, in session, 2026-09-23: "i accept them" (ADR-0258 and ADR-0259)'
 requires: [ADR-0205]
 amends: [ADR-0205]
 supersedes: []
