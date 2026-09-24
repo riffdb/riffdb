@@ -1477,14 +1477,15 @@ async fn finish_mutation_terminal(
             PublicError::storage_unavailable(),
         ),
     };
-    if begun.finish(service, context, phase, link).await.is_err() {
-        service.note_audit_failure(
+    if let Err(audit_failure) = begun.finish(service, context, phase, link).await {
+        service.note_audit_failure_with_cause(
             begun
                 .initial_authorization()
                 .create_target()
                 .map_or(ServiceOperationV1::RevokeCapability, |_| {
                     ServiceOperationV1::CreateCapability
                 }),
+            audit_failure.cause(),
         );
         Err(failure.into())
     } else {
@@ -1533,12 +1534,11 @@ async fn finish_control_plane_execution(
             .health
             .fail_authoritative_readiness(AuthoritativeReadinessFailure::CoordinatorFenced);
     }
-    if begun
+    if let Err(audit_failure) = begun
         .finish(service, context, phase, ServiceAuditLinkV1::None)
         .await
-        .is_err()
     {
-        service.note_audit_failure(operation);
+        service.note_audit_failure_with_cause(operation, audit_failure.cause());
         return match error.kind() {
             ControlPlaneExecutionErrorKind::AuthorizationDenied => failure,
             ControlPlaneExecutionErrorKind::OutcomeUnknown => PublicError::outcome_unknown().into(),
@@ -1603,17 +1603,17 @@ async fn finish_mutation_failure(
     phase: ServiceAuditPhaseV1,
     failure: ServiceFailure,
 ) -> ServiceFailure {
-    if begun
+    if let Err(audit_failure) = begun
         .finish(service, context, phase, ServiceAuditLinkV1::None)
         .await
-        .is_err()
     {
         let operation = if begun.initial_authorization().create_target().is_some() {
             ServiceOperationV1::CreateCapability
         } else {
             ServiceOperationV1::RevokeCapability
         };
-        service.note_audit_failure(operation);
+        // ADR-0205 Decision 7: preserve the terminal-audit append's exact cause.
+        service.note_audit_failure_with_cause(operation, audit_failure.cause());
         PublicError::storage_unavailable().into()
     } else {
         failure
@@ -1625,7 +1625,7 @@ async fn finish_read_success(
     context: &RequestContext,
     begun: &BegunInvocation,
 ) -> ServiceResult<()> {
-    if begun
+    if let Err(audit_failure) = begun
         .finish(
             service,
             context,
@@ -1633,9 +1633,8 @@ async fn finish_read_success(
             ServiceAuditLinkV1::None,
         )
         .await
-        .is_err()
     {
-        service.note_audit_failure(begun.operation());
+        service.note_audit_failure_with_cause(begun.operation(), audit_failure.cause());
         Err(PublicError::storage_unavailable().into())
     } else {
         Ok(())
@@ -1648,7 +1647,7 @@ async fn finish_read_failure(
     begun: &BegunInvocation,
     failure: ServiceFailure,
 ) -> ServiceFailure {
-    if begun
+    if let Err(audit_failure) = begun
         .finish(
             service,
             context,
@@ -1656,9 +1655,8 @@ async fn finish_read_failure(
             ServiceAuditLinkV1::None,
         )
         .await
-        .is_err()
     {
-        service.note_audit_failure(begun.operation());
+        service.note_audit_failure_with_cause(begun.operation(), audit_failure.cause());
         PublicError::storage_unavailable().into()
     } else {
         failure
@@ -1672,7 +1670,7 @@ async fn finish_read_wait(
     error: ControlledWaitError,
 ) -> ServiceFailure {
     let failure = controlled_wait_failure(error);
-    if begun
+    if let Err(audit_failure) = begun
         .finish(
             service,
             context,
@@ -1680,9 +1678,8 @@ async fn finish_read_wait(
             ServiceAuditLinkV1::None,
         )
         .await
-        .is_err()
     {
-        service.note_audit_failure(begun.operation());
+        service.note_audit_failure_with_cause(begun.operation(), audit_failure.cause());
         PublicError::storage_unavailable().into()
     } else {
         failure

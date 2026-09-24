@@ -103,8 +103,8 @@ pub(crate) async fn execute(
             PublicError::storage_unavailable(),
         ),
     };
-    if begun.finish(&service, &context, phase, link).await.is_err() {
-        service.note_audit_failure(begun.operation());
+    if let Err(audit_failure) = begun.finish(&service, &context, phase, link).await {
+        service.note_audit_failure_with_cause(begun.operation(), audit_failure.cause());
         return Err(failure.into());
     }
     pending.into_response()
@@ -117,7 +117,7 @@ async fn admission_failure(
     error: ControlPlaneExecutionAdmissionError,
 ) -> ServiceFailure {
     if error == ControlPlaneExecutionAdmissionError::PrimaryFenced {
-        if begun
+        if let Err(audit_failure) = begun
             .finish(
                 service,
                 context,
@@ -125,9 +125,8 @@ async fn admission_failure(
                 ServiceAuditLinkV1::None,
             )
             .await
-            .is_err()
         {
-            service.note_audit_failure(begun.operation());
+            service.note_audit_failure_with_cause(begun.operation(), audit_failure.cause());
             return PublicError::storage_unavailable().into();
         }
         return PublicError::primary_fenced().into();
@@ -155,12 +154,11 @@ async fn finish_failure(
     phase: ServiceAuditPhaseV1,
     failure: ServiceFailure,
 ) -> ServiceFailure {
-    if begun
+    if let Err(audit_failure) = begun
         .finish(service, context, phase, ServiceAuditLinkV1::None)
         .await
-        .is_err()
     {
-        service.note_audit_failure(begun.operation());
+        service.note_audit_failure_with_cause(begun.operation(), audit_failure.cause());
         if matches!(
             phase,
             ServiceAuditPhaseV1::Denied | ServiceAuditPhaseV1::OutcomeUncertain

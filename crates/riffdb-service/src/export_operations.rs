@@ -458,10 +458,14 @@ async fn finish<T>(
         }
         Err(_) => ServiceAuditPhaseV1::Failed,
     };
-    begun.finish(service, context, phase).await.map_err(|_| {
-        service.note_audit_failure(begun.operation());
-        PublicError::storage_unavailable().into()
-    })
+    begun
+        .finish(service, context, phase)
+        .await
+        .map_err(|audit_failure| {
+            // ADR-0205 Decision 7: preserve the terminal-audit append's exact cause.
+            service.note_audit_failure_with_cause(begun.operation(), audit_failure.cause());
+            PublicError::storage_unavailable().into()
+        })
 }
 
 fn exact_request_id(
