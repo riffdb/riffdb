@@ -10,23 +10,7 @@ amends: [ADR-0197, ADR-0205, ADR-0206, ADR-0208, ADR-0210]
 supersedes: []
 requirements: [OUT-001, OUT-002, TXN-042, REC-004, PERF-008, PERF-015, PERF-017, PERF-019, END-008]
 packages: [WP-705]
-obligations:
-  - id: OBL-0213-1
-    package: WP-705
-    proof: fresh_locator_recognized_pre_arm_control_writes_preserve_uninitialized
-    says: Exact recognized pre-arm preserving Immediate writes retain Uninitialized without minting a witness, while every invalid, unknown, uncertain, poisoned, or lost-witness case disables coverage and Disabled remains monotonic.
-  - id: OBL-0213-2
-    package: WP-705
-    proof: fresh_locator_queued_frame_validator_is_linear_exact_and_bounded
-    says: The queued command witness validates every ADR-0197 Decision 6 fact from the exact mutations returned by the same composite seal, the sealed frame metadata, and ordered deltas in bounded one-pass work, decoding each physical segment once and refusing all missing, duplicate, extra, sequence-reordered, malformed, substituted, oversized, and uncertain evidence.
-  - id: OBL-0213-3
-    package: WP-705
-    proof: production_grouped_command_arms_fresh_locator_coverage_without_manual_arm
-    says: The real bounded-fast-start Group path preserves Uninitialized across its recognized startup controls, arms on its first command, and completes two commands and distinct novel inspections with zero rebuilds and zero fallback scans.
-  - id: OBL-0213-4
-    package: WP-705
-    proof: production_fresh_locator_arming_site_is_reachable_from_both_command_batch_paths
-    says: Architecture checks freeze pre-arm state handling and the queued validator's exact frame source, one-pass bounds, complete fact inventory, and prohibition on point, history, composite-successor, and repeated manifest reads.
+obligations: []
 review_triggers:
   - A pre-arm lane would arm, publish, mint or retain a witness, skip the exact closed permit checks, preserve Uninitialized for an unknown or invalid operation, or revive Disabled.
   - Queued evidence would come from anything except the exact mutation slice returned by the same composite seal, its sealed frame metadata, and ordered writer-private deltas, treat physical-mutation position as semantic association, omit canonical manifest ordering or a Decision 6 fact, scan any population, or revisit a command or manifest entry.

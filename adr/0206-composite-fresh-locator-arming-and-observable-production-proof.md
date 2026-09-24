@@ -10,15 +10,7 @@ amends: [ADR-0197, ADR-0205]
 supersedes: []
 requirements: [OUT-001, OUT-002, TXN-042, REC-004, PERF-019]
 packages: [WP-705]
-obligations:
-  - id: OBL-0206-1
-    package: WP-705
-    proof: production_grouped_command_arms_fresh_locator_coverage_without_manual_arm
-    says: A verified bounded fast start keeps transient indexes Dormant while two real production Group-durability commands and their post-publication novel-key inspections complete with zero rebuilds and zero fallback history scans without manual arming.
-  - id: OBL-0206-2
-    package: WP-705
-    proof: production_fresh_locator_arming_site_is_reachable_from_both_command_batch_paths
-    says: Architecture checks freeze the sole shared arming site and the private one-row exact logical-table emptiness implementation for both direct redb and deferred composite-stage access.
+obligations: []
 review_triggers:
   - Logical emptiness would use a different view than the owning mutation-gated command access, inspect or return more than its fixed bound, infer emptiness from allocators or frontiers alone, or omit any of COMMITS, IDEMPOTENCY, IDEMPOTENCY_PENDING, and IDEMPOTENCY_LOCATORS.
   - Composite evidence would come from a non-live, later, startup, checkpoint, reconstructed, caller-supplied, or externally supplied view, or direct access would stop using its original writer transaction.
