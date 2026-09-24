@@ -252,6 +252,13 @@ impl RecoveryAuthoritySnapshotV1 {
     /// advance; authority is compared independently against the two clean twins.
     #[must_use]
     pub fn clean_generation_advance_matches(&self, after: &Self, generations: u64) -> bool {
+        eprintln!(
+            "DBG-GEN: before state={:?} gen={:?} after state={:?} gen={:?} expect={generations}",
+            self.lifecycle.state(),
+            self.lifecycle.lifecycle_generation(),
+            after.lifecycle.state(),
+            after.lifecycle.lifecycle_generation()
+        );
         self.lifecycle.database_id() == after.lifecycle.database_id()
             && self.lifecycle.history_incarnation() == after.lifecycle.history_incarnation()
             && matches!(
