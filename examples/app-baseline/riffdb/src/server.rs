@@ -820,9 +820,12 @@ impl RiffDbServerSession {
                     .map_err(|error| RiffDbError::Server {
                         detail: error.to_string(),
                     })?;
-            if absent_startup.mode != "clean_certificate" {
+            // ADR-0156 Amendment 6: a V2-catalog twin complete-validates on
+            // reopen; the twin is an authority and timing oracle, not a
+            // clean-startup proof.
+            if absent_startup.mode != "complete_validation" {
                 return Err(RiffDbError::Server {
-                    detail: "absent twin did not select clean startup".to_owned(),
+                    detail: "absent twin did not select complete validation".to_owned(),
                 });
             }
             absent_process
@@ -885,9 +888,9 @@ impl RiffDbServerSession {
                 .map_err(|error| RiffDbError::Server {
                     detail: error.to_string(),
                 })?;
-        if twin_startup.mode != "clean_certificate" {
+        if twin_startup.mode != "complete_validation" {
             return Err(RiffDbError::Server {
-                detail: "committed twin did not select clean startup".to_owned(),
+                detail: "committed twin did not select complete validation".to_owned(),
             });
         }
         let mut twin_backend = self
@@ -929,9 +932,9 @@ impl RiffDbServerSession {
                 .map_err(|error| RiffDbError::Server {
                     detail: error.to_string(),
                 })?;
-        if twin_matching_startup.mode != "clean_certificate" {
+        if twin_matching_startup.mode != "complete_validation" {
             return Err(RiffDbError::Server {
-                detail: "committed twin second open did not select clean startup".to_owned(),
+                detail: "committed twin second open did not select complete validation".to_owned(),
             });
         }
         twin_process
