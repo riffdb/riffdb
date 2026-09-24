@@ -726,10 +726,35 @@ impl RiffDbServerSession {
         .map_err(|error| RiffDbError::Server {
             detail: error.to_string(),
         })?;
-        let address = process.wait_for_ready_address().map_err(|error| {
-            let detail = process.diagnostic_detail(&error.to_string());
-            RiffDbError::Server { detail }
-        })?;
+        let address = match process.wait_for_ready_address() {
+            Ok(address) => address,
+            Err(error) => {
+                let detail = process.diagnostic_detail(&error.to_string());
+                // WP-705's known-ceiling receipt: the production-scale
+                // complete-validation startup refuses the database with the
+                // typed LimitExceeded historical-evidence ceiling. Capture the
+                // refusal with before/after authority snapshots proving the
+                // attempt mutated nothing, instead of discarding the session.
+                if detail.contains("class=LimitExceeded")
+                    && detail.contains("startup validation refused")
+                {
+                    let after =
+                        riffdb_storage_redb::benchmark_support::recovery_authority_snapshot_v1(
+                            &database_path,
+                        )
+                        .map_err(|error| RiffDbError::Server {
+                            detail: format!("read post-refusal authority snapshot: {error}"),
+                        })?;
+                    return Err(RiffDbError::StartupCeilingRefusal {
+                        detail,
+                        setup_evidence: Box::new(setup_evidence),
+                        before: recovery_authority_before_process,
+                        after,
+                    });
+                }
+                return Err(RiffDbError::Server { detail });
+            }
+        };
         let endpoint = format!("http://{address}");
         let backend = self.backend.reconnect_endpoint(&endpoint).await?;
         self.process = process;

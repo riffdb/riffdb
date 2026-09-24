@@ -1192,7 +1192,9 @@ fn production_dirty_lifecycle_evidence(
     if !after.same_authority_after_clean_generations(&repeated_snapshot, 2)
         || repeated_startup.mode != "complete_validation"
     {
-        return Err("second recovery restart added authority or missed complete validation".to_owned());
+        return Err(
+            "second recovery restart added authority or missed complete validation".to_owned(),
+        );
     }
     let clean_process_to_ready_us = if committed {
         dirty.committed_twin_process_to_ready_us
@@ -1251,9 +1253,44 @@ fn production_clean_lifecycle_evidence(
     runtime: &tokio::runtime::Runtime,
     session: RiffDbServerSession,
 ) -> Result<(RiffDbShutdownEvidence, serde_json::Value), String> {
-    let (clean_restarted, seeded_close) = runtime
-        .block_on(session.restart_for_measurement())
-        .map_err(|error| error.to_string())?;
+    let (clean_restarted, seeded_close) = match runtime.block_on(session.restart_for_measurement())
+    {
+        Ok(restarted) => restarted,
+        // WP-705's known-ceiling receipt: at the production population the
+        // V2 complete-validation reopen refuses the database with the typed
+        // LimitExceeded historical-evidence ceiling. The attempt is the
+        // evidence — no retry, no raised ceiling, no partial readiness — and
+        // the before/after authority snapshots prove it mutated nothing. The
+        // receipt is handed to WP-760 and does not satisfy production-scale
+        // dirty readiness.
+        Err(riffdb_app_baseline_riffdb::RiffDbError::StartupCeilingRefusal {
+            detail,
+            setup_evidence,
+            before,
+            after,
+        }) => {
+            if !before.same_authority(&after) {
+                return Err(format!("refused startup mutated authority: {detail}"));
+            }
+            return Ok((
+                *setup_evidence,
+                json!({
+                    "schema": "riffdb.wp-705-complete-path-ceiling/v1",
+                    "scale_checkpoint": "production",
+                    "v2_complete_validation": true,
+                    "bounded_clean_claim": false,
+                    "typed_refusal": "LimitExceeded",
+                    "refusal_detail": detail,
+                    "attempt_mutated_authority": false,
+                    "allocator_advance": 0,
+                    "readiness_published": false,
+                    "partial_success": false,
+                    "handed_to": "WP-760",
+                }),
+            ));
+        }
+        Err(error) => return Err(error.to_string()),
+    };
     if clean_restarted.retained_entity_rows_before_measurement()
         != Some(Scale::production().approximate_row_count())
     {
