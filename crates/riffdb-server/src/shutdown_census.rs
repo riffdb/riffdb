@@ -96,7 +96,29 @@ pub(crate) fn format_v1_line() -> String {
     line.push_str(&crate::startup_census::columnar_activations().to_string());
     line.push_str("\tcolumnar_population_passes=");
     line.push_str(&crate::startup_census::columnar_population_passes().to_string());
+    line.push_str("\tbackground_scrub=");
+    line.push_str(scrub_terminal_state());
     line
+}
+
+/// The background scrub's closed terminal state at shutdown, or `absent` when
+/// no scrub observation was recorded (a start that never became ready).
+fn scrub_terminal_state() -> &'static str {
+    SCRUB_STATE.with(|state| match state.get() {
+        Some(state) => state.as_str(),
+        None => "absent",
+    })
+}
+
+thread_local! {
+    static SCRUB_STATE: std::cell::Cell<Option<crate::scrub_worker::BackgroundScrubState>> =
+        const { std::cell::Cell::new(None) };
+}
+
+/// Records the background scrub's closed terminal state for the shutdown
+/// census line. Redaction-safe: a closed discriminant only.
+pub(crate) fn record_background_scrub_state(state: crate::scrub_worker::BackgroundScrubState) {
+    SCRUB_STATE.set(Some(state));
 }
 
 #[cfg(test)]

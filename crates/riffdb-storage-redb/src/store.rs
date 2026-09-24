@@ -492,6 +492,10 @@ impl SharedRedb {
         self.open_mode == OpenMode::Follower
     }
 
+    pub(crate) fn is_source_mode(&self) -> bool {
+        self.open_mode == OpenMode::Source
+    }
+
     pub(crate) fn cannot_serve_command_commit(&self) -> bool {
         self.open_mode != OpenMode::Source
     }

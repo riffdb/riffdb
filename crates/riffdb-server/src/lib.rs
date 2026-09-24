@@ -60,6 +60,7 @@ mod replication_registration_worker;
 mod replication_source;
 mod restore_retry_host;
 mod runtime_support;
+mod scrub_worker;
 mod server_generation;
 mod shutdown_census;
 mod startup;

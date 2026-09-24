@@ -95,6 +95,13 @@ pub(crate) const MAX_RECOVERY_OWNED_STATE_BYTES: usize = 64 * 1024 * 1024;
 enum EvidenceOpenPurpose {
     Startup,
     OfflineIntegrityScrub,
+    /// ADR-0182 background scrub: the complete exact-end walk over a
+    /// least-authority MVCC snapshot while the writer stays live. No mutation
+    /// lease is held, no durable state is consumed or created, and a
+    /// concurrent write advancing the commit epoch does not fail the scrub —
+    /// the scrub validates its pinned snapshot, and progress restarts on the
+    /// next process generation exactly as the record requires.
+    BackgroundScrub,
 }
 
 /// One fixed-cardinality successful offline integrity-scrub receipt.
@@ -256,6 +263,112 @@ pub(crate) fn begin_follower_bootstrap_scrub(
         return Err(invariant());
     }
     store.begin_structural_evidence_for(inputs, EvidenceOpenPurpose::OfflineIntegrityScrub)
+}
+
+/// Opens the ADR-0182 background scrub session over the live writer's shared
+/// handle: the complete exact-end walk on a pinned MVCC snapshot, holding no
+/// mutation lease, consuming and creating no durable state. The caller drives
+/// it page by page (the rows-per-step rate bound) and may cancel at any page
+/// boundary.
+pub(crate) fn begin_background_scrub_on_shared(
+    shared: &Arc<SharedRedb>,
+    inputs: StartupValidationInputs,
+) -> Result<RedbBackgroundScrubSession, StorageError> {
+    if !shared.is_source_mode() {
+        return Err(invariant());
+    }
+    let store = RedbStore {
+        shared: Arc::clone(shared),
+    };
+    let session =
+        store.begin_structural_evidence_for(inputs, EvidenceOpenPurpose::BackgroundScrub)?;
+    Ok(RedbBackgroundScrubSession { session })
+}
+
+/// One page-driven background scrub over a pinned MVCC snapshot.
+pub struct RedbBackgroundScrubSession {
+    session: RedbStructuralEvidenceSession,
+}
+
+impl RedbBackgroundScrubSession {
+    /// Cancels the scrub at the next page boundary.
+    pub fn set_cancellation(&mut self, cancellation: Arc<AtomicBool>) {
+        self.session.cancellation = Some(cancellation);
+    }
+
+    /// Reads the next bounded structural page. Empty findings advance the
+    /// walk; any finding is returned to the caller (the scrub degrades health
+    /// rather than repairing).
+    pub fn read_structural_page(
+        &mut self,
+        limit: EvidencePageLimit,
+    ) -> Result<BackgroundScrubPage, StorageError> {
+        let cursor = self.session.next_structural;
+        match self.session.read_structural_evidence(cursor, limit)? {
+            StructuralEvidencePage::Page { findings, next, .. } => {
+                Ok(BackgroundScrubPage::Page { findings, next })
+            }
+            StructuralEvidencePage::ExactEnd(end) => Ok(BackgroundScrubPage::ExactEnd(end)),
+        }
+    }
+
+    /// Reads the next bounded historical page after the structural exact end.
+    /// The page yields the historical semantic evidence for the caller's
+    /// catalog validation; the scrub does not interpret it.
+    pub fn read_historical_page(
+        &mut self,
+        limit: EvidencePageLimit,
+    ) -> Result<BackgroundScrubHistoricalPage, StorageError> {
+        let cursor = self.session.next_historical;
+        match self.session.read_historical_evidence(cursor, limit)? {
+            HistoricalEvidencePage::Page { evidence, next, .. } => {
+                Ok(BackgroundScrubHistoricalPage::Page { evidence, next })
+            }
+            HistoricalEvidencePage::ExactEnd(end) => {
+                Ok(BackgroundScrubHistoricalPage::ExactEnd(end))
+            }
+        }
+    }
+
+    /// Completes the scrub after both exact ends, proving the walk finished
+    /// with zero findings and touching no durable state.
+    pub fn finish(
+        self,
+        structural_end: RedbStructuralEvidenceEnd,
+        historical_end: RedbHistoricalEvidenceEnd,
+    ) -> Result<(), StorageError> {
+        self.session
+            .finish_background_scrub(structural_end, historical_end)
+    }
+}
+
+/// One bounded structural scrub page: findings plus the advancing cursor, or
+/// the exact end.
+pub enum BackgroundScrubPage {
+    /// A page with its findings (empty on a healthy walk) and the next cursor.
+    Page {
+        /// Findings from this page; empty on a healthy walk.
+        findings: Vec<StructuralFinding>,
+        /// The advancing structural continuation.
+        next: StructuralEvidenceCursor,
+    },
+    /// The structural stream reached its exact end.
+    ExactEnd(RedbStructuralEvidenceEnd),
+}
+
+/// One bounded historical scrub page: semantic evidence plus the advancing
+/// cursor, or the exact end.
+pub enum BackgroundScrubHistoricalPage {
+    /// A page of historical semantic evidence and the next cursor.
+    Page {
+        /// The page's historical semantic evidence, handed to the catalog
+        /// validator by the scrub driver.
+        evidence: Vec<HistoricalSemanticEvidence>,
+        /// The advancing historical continuation.
+        next: HistoricalEvidenceCursor,
+    },
+    /// The historical stream reached its exact end.
+    ExactEnd(RedbHistoricalEvidenceEnd),
 }
 // The V1 validated-prefix checkpoint permanently covers the original table set.
 // Additive tables are validated separately and never inferred from that proof.
@@ -540,6 +653,9 @@ pub struct RedbStructuralEvidenceSession {
     /// True only for an ADR-0182 bounded dirty startup: journal-suffix
     /// recovery plus bounded-root validation with no population walk.
     bounded_dirty_startup: bool,
+    /// Why this session opened; the background scrub is lease-free and its
+    /// continuity checks tolerate a live writer.
+    purpose: EvidenceOpenPurpose,
     /// Exact clean lifecycle consumed to DIRTY immediately before activation.
     verified_clean_lifecycle: Option<crate::clean_close::CleanCloseLifecycle>,
     /// Which precondition declined the ADR-0157 bounded path, if it declined.
@@ -696,7 +812,13 @@ impl RedbStore {
         if private.is_some() && purpose != EvidenceOpenPurpose::OfflineIntegrityScrub {
             return Err(invariant());
         }
-        let lease = self.acquire_mutation_lease()?;
+        // The background scrub holds no mutation lease: it validates its
+        // pinned MVCC snapshot while the writer stays live, and a concurrent
+        // write advancing the commit epoch does not fail it.
+        let lease = match purpose {
+            EvidenceOpenPurpose::BackgroundScrub => None,
+            _ => Some(self.acquire_mutation_lease()?),
+        };
         let durable_commit_epoch = self.shared.durable_commit_epoch();
         let transaction = self
             .shared
@@ -744,7 +866,8 @@ impl RedbStore {
             let binding_bundles = collect_bundle_bindings(&transaction)?;
             return Ok(RedbStructuralEvidenceSession {
                 shared: Arc::clone(&self.shared),
-                lease: Some(lease),
+                lease,
+                purpose: EvidenceOpenPurpose::Startup,
                 durable_commit_epoch,
                 database_id,
                 open_session_id,
@@ -847,7 +970,8 @@ impl RedbStore {
             let binding_bundles = collect_bundle_bindings(&transaction)?;
             return Ok(RedbStructuralEvidenceSession {
                 shared: Arc::clone(&self.shared),
-                lease: Some(lease),
+                lease,
+                purpose: EvidenceOpenPurpose::Startup,
                 durable_commit_epoch,
                 database_id,
                 open_session_id,
@@ -1013,7 +1137,8 @@ impl RedbStore {
         Ok(RedbStructuralEvidenceSession {
             cancellation: None,
             shared: Arc::clone(&self.shared),
-            lease: Some(lease),
+            lease,
+            purpose,
             durable_commit_epoch,
             database_id,
             open_session_id,
@@ -1533,6 +1658,37 @@ impl RedbStructuralEvidenceSession {
         Ok(())
     }
 
+    /// ADR-0182 background scrub completion: both streams reached their exact
+    /// ends on the pinned MVCC snapshot with zero findings, no durable state
+    /// was consumed or created, and no lease was ever held. The scrub's
+    /// findings — if any — were already returned by the page reads; a clean
+    /// finish only proves the walk completed.
+    fn finish_background_scrub(
+        mut self,
+        structural_end: RedbStructuralEvidenceEnd,
+        historical_end: RedbHistoricalEvidenceEnd,
+    ) -> Result<(), StorageError> {
+        self.check_cancellation()?;
+        if self.purpose != EvidenceOpenPurpose::BackgroundScrub
+            || self.lease.is_some()
+            || self.clean_close_fast
+            || self.bounded_dirty_startup
+            || self.checkpoint_verified
+            || !self.structural_finished
+            || !self.historical_finished
+            || structural_end.cursor != self.next_structural
+            || historical_end.cursor != self.next_historical
+            || self.authoritative_finding_seen
+            || self.any_finding_seen
+            || self.saw_v1_index
+        {
+            return Err(storage_error(StorageErrorKind::CorruptData));
+        }
+        self.historical_tables = None;
+        self.validation_read = None;
+        Ok(())
+    }
+
     fn ensure_historical_read(&mut self) -> Result<(), StorageError> {
         self.check_cancellation()?;
         if self.validation_read.is_none() {
@@ -1549,7 +1705,9 @@ impl RedbStructuralEvidenceSession {
     }
 
     fn open_snapshot_read(&self) -> Result<ReadTransaction, StorageError> {
-        if self.shared.durable_commit_epoch() != self.durable_commit_epoch {
+        if self.purpose != EvidenceOpenPurpose::BackgroundScrub
+            && self.shared.durable_commit_epoch() != self.durable_commit_epoch
+        {
             return Err(corrupt());
         }
         let transaction = self
@@ -1558,14 +1716,18 @@ impl RedbStructuralEvidenceSession {
             .begin_read()
             .map_err(transaction_error)?;
         self.verify_structural_continuity(&transaction)?;
-        if self.shared.durable_commit_epoch() != self.durable_commit_epoch {
+        if self.purpose != EvidenceOpenPurpose::BackgroundScrub
+            && self.shared.durable_commit_epoch() != self.durable_commit_epoch
+        {
             return Err(corrupt());
         }
         Ok(transaction)
     }
 
     fn ensure_structural_continuity(&self) -> Result<(), StorageError> {
-        if self.shared.durable_commit_epoch() != self.durable_commit_epoch {
+        if self.purpose != EvidenceOpenPurpose::BackgroundScrub
+            && self.shared.durable_commit_epoch() != self.durable_commit_epoch
+        {
             return Err(corrupt());
         }
         let Some(transaction) = self.validation_read.as_ref() else {

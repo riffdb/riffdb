@@ -290,6 +290,7 @@ pub use migration_stage::{
 pub use retention::{RedbOfflineRetention, RetentionStatusV1};
 pub use shared_ports::RedbSharedPorts;
 pub use startup::{
+    BackgroundScrubHistoricalPage, BackgroundScrubPage, RedbBackgroundScrubSession,
     RedbCompletionAuthority, RedbHistoricalEvidenceEnd, RedbStartupIndexMigrationPort,
     RedbStructuralEvidenceEnd, RedbStructuralEvidenceSession,
 };

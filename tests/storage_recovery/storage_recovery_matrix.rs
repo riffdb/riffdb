@@ -9691,7 +9691,7 @@ fn dirty_startup_reaches_readiness_without_a_population_walk() {
         riffdb_storage_redb::benchmark_support::RecoveryAuthoritySnapshotV1,
     ) {
         let store = RedbStore::open(path).expect("dirty reopen");
-        let mut session = store
+        let session = store
             .begin_structural_evidence(startup_inputs())
             .expect("begin bounded dirty evidence");
         assert!(
@@ -9734,7 +9734,7 @@ fn dirty_startup_reaches_readiness_without_a_population_walk() {
         // Reopen once more purely to return live ports for follow-up probes;
         // the assertions above already proved the bounded shape.
         let store = RedbStore::open(path).expect("reopen for probes");
-        let mut session = store
+        let session = store
             .begin_structural_evidence(startup_inputs())
             .expect("begin evidence for probes");
         let opened = complete_structural_open_from(session);

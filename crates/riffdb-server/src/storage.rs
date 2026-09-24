@@ -174,6 +174,12 @@ impl SharedRedbOperationalPorts {
     }
 
     /// Assembles the sole executor implementation over this cloneable lower reader.
+    /// The cloneable pure-read shared handle (the ADR-0182 background scrub's
+    /// least-authority reader).
+    pub(crate) fn shared_read_ports(&self) -> RedbSharedPorts {
+        self.shared.clone()
+    }
+
     pub(crate) fn query_executor(&self) -> StorageQueryExecutor<RedbSharedPorts> {
         StorageQueryExecutor::new(self.shared.clone())
     }
