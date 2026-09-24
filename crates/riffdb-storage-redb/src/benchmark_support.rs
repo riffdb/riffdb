@@ -341,15 +341,17 @@ pub fn recovery_authority_snapshot_v1(
         // history to its exact end, which is a stronger check than a digest
         // comparison, and the application and administration allocators
         // remain in the digest.
-        if key.value()
-            == riffdb_storage_api::AuthoritativeNamespaceV1::ChangelogHistoryState
+        let excluded = [
+            riffdb_storage_api::AuthoritativeNamespaceV1::ChangelogHistoryState,
+            riffdb_storage_api::AuthoritativeNamespaceV1::NextChangelogTransaction,
+        ]
+        .iter()
+        .any(|namespace| {
+            namespace
                 .metadata_key()
-                .expect("changelog history state metadata key")
-            || key.value()
-                == riffdb_storage_api::AuthoritativeNamespaceV1::NextChangelogTransaction
-                    .metadata_key()
-                    .expect("changelog allocator metadata key")
-        {
+                .is_some_and(|metadata_key| key.value() == metadata_key)
+        });
+        if excluded {
             continue;
         }
         hash_component(&mut hasher, key.value().as_bytes());
