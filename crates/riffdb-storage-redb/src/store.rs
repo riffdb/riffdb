@@ -785,6 +785,28 @@ impl SharedRedb {
         Ok(verdict)
     }
 
+    /// ADR-0182 bounded dirty startup: re-validate the same bounded roots the
+    /// clean path's binding verifier checks — the fixed meta roots, the
+    /// singleton active catalog, and every active query-module pointer and
+    /// body — without comparing the binding against any certificate and
+    /// without the clean-close journal boundary, which a dirty journal never
+    /// has (its suffix was already recovered at engine open). Population rows
+    /// are validated locally on first access; the background scrub owns the
+    /// complete exact-end walk.
+    pub(crate) fn validate_bounded_dirty_roots(
+        &self,
+        transaction: &ReadTransaction,
+        _database_id: DatabaseId,
+    ) -> Result<(), StorageError> {
+        // The journal digest component of the clean binding is irrelevant
+        // here: no certificate comparison follows. A fixed domain-separated
+        // label keeps the bounded-root preimage distinct from every clean
+        // binding ever written.
+        const DIRTY_BOUNDED_ROOT_LABEL: [u8; 32] = [0xdd; 32];
+        crate::clean_close::bounded_state_binding_hash(transaction, DIRTY_BOUNDED_ROOT_LABEL)?;
+        Ok(())
+    }
+
     fn verify_clean_close_lifecycle_inner(
         &self,
         transaction: &ReadTransaction,
