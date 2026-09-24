@@ -336,6 +336,13 @@ pub fn recovery_authority_snapshot_v1(
         if key.value() == META_VALIDATED_PREFIX_CHECKPOINT {
             continue;
         }
+        if std::env::var_os("RIFFDB_DBG_AUTHORITY_KEYS").is_some() {
+            eprintln!(
+                "DBG-AUTH-KEY {:?} value_len={}",
+                key.value(),
+                value.value().len()
+            );
+        }
         hash_component(&mut hasher, key.value().as_bytes());
         hash_component(&mut hasher, value.value());
     }
