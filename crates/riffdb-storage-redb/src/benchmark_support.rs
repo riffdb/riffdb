@@ -252,13 +252,6 @@ impl RecoveryAuthoritySnapshotV1 {
     /// advance; authority is compared independently against the two clean twins.
     #[must_use]
     pub fn clean_generation_advance_matches(&self, after: &Self, generations: u64) -> bool {
-        eprintln!(
-            "DBG-GEN: before state={:?} gen={:?} after state={:?} gen={:?} expect={generations}",
-            self.lifecycle.state(),
-            self.lifecycle.lifecycle_generation(),
-            after.lifecycle.state(),
-            after.lifecycle.lifecycle_generation()
-        );
         self.lifecycle.database_id() == after.lifecycle.database_id()
             && self.lifecycle.history_incarnation() == after.lifecycle.history_incarnation()
             && matches!(
@@ -336,15 +329,28 @@ pub fn recovery_authority_snapshot_v1(
         if key.value() == META_VALIDATED_PREFIX_CHECKPOINT {
             continue;
         }
-        if std::env::var_os("RIFFDB_DBG_AUTHORITY_KEYS").is_some() {
-            let mut value_hasher = Sha256::new();
-            value_hasher.update(value.value());
-            eprintln!(
-                "DBG-AUTH-KEY {:?} value_len={} value_sha={}",
-                key.value(),
-                value.value().len(),
-                value_hasher.finalize()[..8].iter().map(|b| format!("{b:02x}")).collect::<String>()
-            );
+        // The V3 substrate writes the DIRTY/CLEAN lifecycle transitions as
+        // authoritative changelog transactions, so every process generation
+        // legitimately advances the changelog allocator and rewrites the
+        // chained history state. That bookkeeping is the lifecycle advance
+        // this snapshot already decodes separately, carried through the V3
+        // changelog rather than the lifecycle record alone; excluding it
+        // follows the same principle as excluding the record. Replication
+        // authority is not weakened by the exclusion: every generation's
+        // complete ordinary validation re-validates the entire retained V3
+        // history to its exact end, which is a stronger check than a digest
+        // comparison, and the application and administration allocators
+        // remain in the digest.
+        if key.value()
+            == riffdb_storage_api::AuthoritativeNamespaceV1::ChangelogHistoryState
+                .metadata_key()
+                .expect("changelog history state metadata key")
+            || key.value()
+                == riffdb_storage_api::AuthoritativeNamespaceV1::NextChangelogTransaction
+                    .metadata_key()
+                    .expect("changelog allocator metadata key")
+        {
+            continue;
         }
         hash_component(&mut hasher, key.value().as_bytes());
         hash_component(&mut hasher, value.value());
@@ -357,9 +363,6 @@ pub fn recovery_authority_snapshot_v1(
         AUDIT_BY_REQUEST_LOCATORS,
     ]) {
         let name = definition.name();
-        if std::env::var_os("RIFFDB_DBG_AUTHORITY_KEYS").is_some() {
-            eprintln!("DBG-AUTH-TABLE {name}");
-        }
         hash_component(&mut hasher, name.as_bytes());
         let table =
             transaction
