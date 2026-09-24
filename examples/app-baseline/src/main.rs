@@ -1206,6 +1206,7 @@ fn production_dirty_lifecycle_evidence(
         .checked_mul(1_000)
         .and_then(|value| value.checked_div(clean_process_to_ready_us))
         .ok_or_else(|| "startup ratio could not be represented".to_owned())?;
+    let background_scrub = dirty_shutdown.background_scrub;
     let measured_clean_close = &dirty.clean_comparison_close;
     require_no_columnar_demand(measured_clean_close, "measured clean close")?;
     // The close window spans process spawn to shutdown admission, so under
@@ -1245,8 +1246,25 @@ fn production_dirty_lifecycle_evidence(
             "measured_clean_close_memory": measured_close_memory,
             "dirty_recovery_final_close": clean_close_evidence_json(&dirty_shutdown),
             "dirty_recovery_final_close_memory": dirty_final_close_memory,
+            "background_scrub": background_scrub_json(background_scrub),
         }),
     ))
+}
+
+/// The ADR-0182 background scrub's closed observation, or an explicit absent
+/// marker when the daemon emitted no scrub line.
+fn background_scrub_json(
+    observation: Option<riffdb_app_baseline_riffdb::BackgroundScrubObservation>,
+) -> serde_json::Value {
+    match observation {
+        Some(observation) => json!({
+            "state": observation.state,
+            "rows_walked": observation.rows_walked,
+            "total_us": observation.total_us,
+            "rows_per_second": observation.rows_per_second,
+        }),
+        None => json!({"state": "absent"}),
+    }
 }
 
 fn production_clean_lifecycle_evidence(

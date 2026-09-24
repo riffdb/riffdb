@@ -15,7 +15,7 @@
 //! restart restarts the scrub.
 
 use std::fmt;
-use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU8, AtomicU64, Ordering};
 use std::sync::{Arc, Condvar, Mutex};
 use std::thread::{self, JoinHandle};
 
@@ -60,16 +60,31 @@ impl fmt::Display for BackgroundScrubState {
     }
 }
 
+/// The scrub's bounded work observation for the ADR-0182 evidence: closed
+/// state, rows walked, total time, and rows per second when complete.
+/// Redaction-safe: counters only, no hash, frontier, key, path, or value.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) struct ScrubObservation {
+    pub(crate) state: BackgroundScrubState,
+    pub(crate) rows_walked: u64,
+    pub(crate) total_us: Option<u64>,
+    pub(crate) rows_per_second: Option<u64>,
+}
+
 /// Rows per scheduling step: one page of at most this many rows, then the
 /// worker yields. The bound is expressed in rows, never wall-clock terms,
 /// exactly as ADR-0182 Decision 3 requires.
 pub(crate) const BACKGROUND_SCRUB_ROWS_PER_STEP: u32 = 64;
 
 /// Redaction-safe, process-local scrub status. Carries no hash, frontier,
-/// count, path, or key.
+/// key, path, or application value; the row counters are the scrub's own
+/// bounded work observations for the ADR-0182 evidence.
 #[derive(Clone)]
 pub(crate) struct BackgroundScrubStatus {
     state: Arc<AtomicU8>,
+    rows_walked: Arc<AtomicU64>,
+    started_at: Arc<Mutex<Option<std::time::Instant>>>,
+    finished_at: Arc<Mutex<Option<std::time::Instant>>>,
 }
 
 const STATE_PENDING: u8 = 0;
@@ -82,11 +97,32 @@ impl BackgroundScrubStatus {
     fn new() -> Self {
         Self {
             state: Arc::new(AtomicU8::new(STATE_PENDING)),
+            rows_walked: Arc::new(AtomicU64::new(0)),
+            started_at: Arc::new(Mutex::new(None)),
+            finished_at: Arc::new(Mutex::new(None)),
         }
     }
 
     fn store(&self, state: u8) {
         self.state.store(state, Ordering::Release);
+    }
+
+    fn note_running(&self) {
+        *self
+            .started_at
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(std::time::Instant::now());
+    }
+
+    fn note_finished(&self) {
+        *self
+            .finished_at
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(std::time::Instant::now());
+    }
+
+    fn note_rows(&self, rows: u64) {
+        let _ = self.rows_walked.fetch_add(rows, Ordering::AcqRel);
     }
 
     /// The closed scrub state.
@@ -99,6 +135,40 @@ impl BackgroundScrubStatus {
             STATE_CANCELLED => BackgroundScrubState::Cancelled,
             _ => BackgroundScrubState::Failed,
         }
+    }
+
+    /// Rows the scrub walked (bounded work observation for evidence).
+    pub(crate) fn rows_walked(&self) -> u64 {
+        self.rows_walked.load(Ordering::Acquire)
+    }
+
+    /// Total scrub time in microseconds, or `None` before a terminal state.
+    pub(crate) fn total_us(&self) -> Option<u64> {
+        let started = {
+            let guard = self
+                .started_at
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            (*guard)?
+        };
+        let finished = {
+            let guard = self
+                .finished_at
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            (*guard)?
+        };
+        Some(u64::try_from(finished.duration_since(started).as_micros()).unwrap_or(u64::MAX))
+    }
+
+    /// Rows per second over the completed walk, or `None` before completion.
+    pub(crate) fn rows_per_second(&self) -> Option<u64> {
+        let rows = self.rows_walked();
+        let total_us = self.total_us()?;
+        if total_us == 0 {
+            return None;
+        }
+        Some(rows.saturating_mul(1_000_000) / total_us)
     }
 }
 
@@ -186,6 +256,17 @@ impl RunningScrubWorker {
         self.status.clone()
     }
 
+    /// The bounded, redaction-safe scrub work observation.
+    pub(crate) fn observation(&self) -> ScrubObservation {
+        let status = self.status();
+        ScrubObservation {
+            state: status.state(),
+            rows_walked: status.rows_walked(),
+            total_us: status.total_us(),
+            rows_per_second: status.rows_per_second(),
+        }
+    }
+
     /// Requests cancellation and joins the worker. The observation names how
     /// the scrub ended; it carries no diagnostic detail.
     pub(crate) fn shutdown(&mut self) -> ScrubStopObservation {
@@ -240,6 +321,7 @@ fn run_scrub(
         }
     };
     session.set_cancellation(cancellation);
+    status.note_running();
     status.store(STATE_RUNNING);
     let limit = EvidencePageLimit::new(BACKGROUND_SCRUB_ROWS_PER_STEP)
         .unwrap_or(EvidencePageLimit::new(1).expect("bounded page limit"));
@@ -258,6 +340,7 @@ fn run_scrub(
                     );
                     return;
                 }
+                status.note_rows(session.rows_walked());
                 // One bounded page per scheduling step: yield the thread so
                 // the writer and workers keep their share of the core.
                 thread::yield_now();
@@ -299,8 +382,12 @@ fn run_scrub(
         return;
     };
     match session.finish(structural_end, historical_end) {
-        Ok(()) => status.store(STATE_COMPLETE),
+        Ok(()) => {
+            status.note_finished();
+            status.store(STATE_COMPLETE);
+        }
         Err(_) => {
+            status.note_finished();
             status.store(STATE_FAILED);
             health.fail_authoritative_readiness(
                 riffdb_observability::AuthoritativeReadinessFailure::Integrity,

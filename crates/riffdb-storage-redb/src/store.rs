@@ -352,6 +352,10 @@ pub(crate) struct SharedRedb {
     /// Set only by the verified ADR-0157 startup handoff. Operational
     /// composition uses it to keep rebuildable population accelerators cold.
     pub(crate) bounded_clean_startup: AtomicBool,
+    /// True only for the ADR-0157 verified clean-certificate startup (the
+    /// closed health mode `clean_certificate`); false on the ADR-0182 bounded
+    /// dirty path, which reports `complete_validation`.
+    pub(crate) clean_certificate_startup: AtomicBool,
     durable_commit_epoch: AtomicU64,
     /// Even values name stable redb roots; odd values mean an engine commit is
     /// in flight or visible but has not yet published its exact root identity.
@@ -2394,6 +2398,7 @@ impl RedbStore {
                 engine_repaired_at_open: repair_observed.load(Ordering::Acquire),
                 engine_initialized_at_open: initialize_marker_witness.is_some(),
                 bounded_clean_startup: AtomicBool::new(false),
+                clean_certificate_startup: AtomicBool::new(false),
                 durable_commit_epoch: AtomicU64::new(0),
                 durable_root_publication: AtomicU64::new(0),
                 durable_root_publication_wait: Mutex::new(()),
@@ -5121,6 +5126,16 @@ impl RedbOperationalPorts {
     #[doc(hidden)]
     pub fn clean_close_fast_startup(&self) -> bool {
         self.shared.bounded_clean_startup.load(Ordering::Acquire)
+    }
+
+    /// True only when readiness came from a verified clean-close certificate
+    /// (the closed health mode `clean_certificate`); the ADR-0182 bounded
+    /// dirty path reports `complete_validation` instead.
+    #[doc(hidden)]
+    pub fn clean_certificate_startup(&self) -> bool {
+        self.shared
+            .clean_certificate_startup
+            .load(Ordering::Acquire)
     }
 
     pub(crate) fn standard_writer_journal_enabled(&self) -> bool {

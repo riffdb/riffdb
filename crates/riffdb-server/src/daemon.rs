@@ -3442,7 +3442,15 @@ async fn supervise_ready_process(
     let write_completion_groups = graph.write_completion_group_snapshot();
     let dispatch_reasons = graph.command_group_dispatch_snapshot();
     // ADR-0182: the background scrub's closed terminal state at shutdown.
-    crate::shutdown_census::record_background_scrub_state(graph.scrub_state());
+    let scrub_observation = graph.scrub_observation();
+    crate::shutdown_census::record_background_scrub_state(scrub_observation.state);
+    eprintln!(
+        "riffdb-background-scrub-v1	state={}	rows_walked={}	total_us={}	rows_per_second={}",
+        scrub_observation.state,
+        scrub_observation.rows_walked,
+        scrub_observation.total_us.unwrap_or(0),
+        scrub_observation.rows_per_second.unwrap_or(0),
+    );
     let read_stages = graph.read_stage_snapshot();
     let write_service_stages = graph.write_service_stage_snapshot();
     let command_stages = graph.command_stage_snapshot();

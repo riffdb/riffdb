@@ -284,6 +284,9 @@ pub struct RiffDbShutdownEvidence {
     pub shutdown_stages_us: Option<[u64; 8]>,
     /// Complete harness-observed clean-shutdown wall time.
     pub harness_shutdown_elapsed_us: u64,
+    /// The ADR-0182 background scrub's closed terminal observation from this
+    /// process generation's shutdown census line.
+    pub background_scrub: Option<BackgroundScrubObservation>,
     /// First-demand columnar activations observed across the process generation.
     pub columnar_activations: Option<u64>,
     /// Columnar population passes observed across the process generation.
@@ -1096,6 +1099,13 @@ impl RiffDbServerSession {
             .map_err(|error| RiffDbError::Server {
                 detail: error.to_string(),
             })
+    }
+
+    /// The ADR-0182 background scrub's closed terminal observation from the
+    /// daemon's shutdown census line, or `None` when the daemon emitted none.
+    #[must_use]
+    pub fn background_scrub_observation(&self) -> Option<BackgroundScrubObservation> {
+        parse_background_scrub_observation(&self.process.stderr_tail())
     }
 
     /// Stops the server cleanly.
@@ -2271,6 +2281,7 @@ impl ServerProcess {
                 parse_shutdown_release_evidence(&stderr)?;
             evidence.columnar_activations = Some(columnar_activations);
             evidence.columnar_population_passes = Some(columnar_population_passes);
+            evidence.background_scrub = parse_background_scrub_observation(&stderr);
             evidence.process_memory_at_spawn = Some(self.initial_process_memory);
             evidence.process_memory_before_shutdown = Some(process_memory_before_shutdown);
             evidence.harness_shutdown_elapsed_us =
@@ -2510,6 +2521,7 @@ fn read_server_stdout(
                                                 graph_shutdown_elapsed_us,
                                                 shutdown_stages_us,
                                                 harness_shutdown_elapsed_us: 0,
+                                                background_scrub: None,
                                                 columnar_activations: None,
                                                 columnar_population_passes: None,
                                                 write_completion_groups,
@@ -2943,6 +2955,38 @@ fn parse_key_values(line: &str, prefix: &str) -> io::Result<BTreeMap<String, Str
         }
     }
     Ok(fields)
+}
+
+/// The background scrub's closed terminal work observation (ADR-0182
+/// evidence): state, rows walked, total microseconds, rows per second.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct BackgroundScrubObservation {
+    pub state: &'static str,
+    pub rows_walked: u64,
+    pub total_us: u64,
+    pub rows_per_second: u64,
+}
+
+fn parse_background_scrub_observation(stderr: &str) -> Option<BackgroundScrubObservation> {
+    let line = stderr
+        .lines()
+        .rev()
+        .find(|line| line.starts_with("riffdb-background-scrub-v1\t"))?;
+    let fields = parse_key_values(line, "riffdb-background-scrub-v1").ok()?;
+    let state = match fields.get("state").map(String::as_str) {
+        Some("pending") => "pending",
+        Some("running") => "running",
+        Some("complete") => "complete",
+        Some("failed") => "failed",
+        Some("cancelled") => "cancelled",
+        _ => return None,
+    };
+    Some(BackgroundScrubObservation {
+        state,
+        rows_walked: fields.get("rows_walked")?.parse().ok()?,
+        total_us: fields.get("total_us")?.parse().ok()?,
+        rows_per_second: fields.get("rows_per_second")?.parse().ok()?,
+    })
 }
 
 fn parse_startup_evidence(stderr: &str) -> io::Result<RiffDbStartupEvidence> {

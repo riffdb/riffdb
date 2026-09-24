@@ -282,18 +282,28 @@ pub(crate) fn begin_background_scrub_on_shared(
     };
     let session =
         store.begin_structural_evidence_for(inputs, EvidenceOpenPurpose::BackgroundScrub)?;
-    Ok(RedbBackgroundScrubSession { session })
+    Ok(RedbBackgroundScrubSession {
+        session,
+        rows_walked: 0,
+    })
 }
 
 /// One page-driven background scrub over a pinned MVCC snapshot.
 pub struct RedbBackgroundScrubSession {
     session: RedbStructuralEvidenceSession,
+    rows_walked: u64,
 }
 
 impl RedbBackgroundScrubSession {
     /// Cancels the scrub at the next page boundary.
     pub fn set_cancellation(&mut self, cancellation: Arc<AtomicBool>) {
         self.session.cancellation = Some(cancellation);
+    }
+
+    /// Rows the scrub has walked (bounded work observation for evidence).
+    #[must_use]
+    pub const fn rows_walked(&self) -> u64 {
+        self.rows_walked
     }
 
     /// Reads the next bounded structural page. Empty findings advance the
@@ -306,6 +316,9 @@ impl RedbBackgroundScrubSession {
         let cursor = self.session.next_structural;
         match self.session.read_structural_evidence(cursor, limit)? {
             StructuralEvidencePage::Page { findings, next, .. } => {
+                self.rows_walked = self
+                    .rows_walked
+                    .saturating_add(next.position().saturating_sub(cursor.position()));
                 Ok(BackgroundScrubPage::Page { findings, next })
             }
             StructuralEvidencePage::ExactEnd(end) => Ok(BackgroundScrubPage::ExactEnd(end)),
@@ -925,7 +938,11 @@ impl RedbStore {
         // active catalog, and every active query-module pointer and body —
         // through the same bounded binding computation the clean path's
         // verifier used, without comparing it against any certificate.
-        if purpose == EvidenceOpenPurpose::Startup && v3_active {
+        // A follower open never takes this branch: ADR-0093/ADR-0182 require a
+        // bootstrapped follower to pass primary startup validation (the
+        // complete walk) at its applied head, and the follower applier handoff
+        // rebuilds its transient indexes from that complete proof.
+        if purpose == EvidenceOpenPurpose::Startup && v3_active && !self.shared.is_follower_mode() {
             self.shared
                 .validate_bounded_dirty_roots(&transaction, database_id)?;
             // Re-validate the bounded retention watermark bindings (never
@@ -1579,6 +1596,9 @@ impl StructuralEvidenceSession for RedbStructuralEvidenceSession {
                 self.clean_close_fast || self.bounded_dirty_startup,
                 Ordering::Release,
             );
+            self.shared
+                .clean_certificate_startup
+                .store(self.clean_close_fast, Ordering::Release);
             drop(lease);
             Ok(StructuralOpenOutcome::Clean(
                 StructurallyOpened::from_finished_session(

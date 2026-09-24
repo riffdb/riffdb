@@ -1106,9 +1106,11 @@ impl RunningProductionGraph {
         self.observability.write_completion_group_snapshot()
     }
 
-    /// The background scrub's closed health state (ADR-0182 Decision 3).
-    pub(crate) fn scrub_state(&self) -> crate::scrub_worker::BackgroundScrubState {
-        self.scrub_worker.status().state()
+    /// The background scrub's bounded work observation for the ADR-0182
+    /// evidence: closed state, rows walked, total microseconds, and rows per
+    /// second when complete. Redaction-safe: counters only.
+    pub(crate) fn scrub_observation(&self) -> crate::scrub_worker::ScrubObservation {
+        self.scrub_worker.observation()
     }
 
     /// Dispatch-reason counts plus selected/deferred totals for shutdown evidence.
