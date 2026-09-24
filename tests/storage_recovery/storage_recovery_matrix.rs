@@ -9827,3 +9827,146 @@ fn startup_inputs() -> StartupValidationInputs {
             .expect("idempotency digest inventory"),
     )
 }
+
+// req: REC-001, REC-002, REC-004, REC-006
+/// OBL-0182-2 proof (ADR-0182 Decision 2). A corrupt population row outside
+/// the bounded readiness roots does not stop the bounded dirty startup from
+/// reaching readiness; it fails closed with the existing typed corruption
+/// outcome on first access, and is never reported as absence, a business
+/// outcome, partial output, or repaired state. Repeated access keeps
+/// refusing, and the refusal creates no authoritative advance.
+#[test]
+fn planted_row_corruption_fails_closed_on_first_access_after_dirty_startup() {
+    let path = TestDatabasePath::new("dirty-planted-corruption");
+    prepare_command_database(&path.0);
+    {
+        let ports = open_operational(RedbStore::open(&path.0).expect("open populated source"));
+        for ordinal in 1..=4 {
+            commit_command_fixture(&ports, &command_fixture_at(ordinal));
+        }
+        drop(ports);
+    }
+
+    // Plant corruption in one entity row's stored bytes: a byte flip inside
+    // the canonical envelope breaks its checksum, so any decode of the row
+    // fails. The bounded dirty startup never reads entity rows — the open-time
+    // compact-encoding migration is guarded to pre-current registries and the
+    // readiness path walks only the bounded roots — so the corruption is
+    // invisible to readiness and must surface on first access.
+    let (target, _, _) = target_and_index_at(1, 1);
+    {
+        let raw = redb::Database::open(&path.0).expect("open raw for planting");
+        let write = raw.begin_write().expect("begin planting");
+        {
+            let mut entities = write
+                .open_table(ENTITIES_RAW)
+                .expect("open entities for planting");
+            let corrupted = {
+                let original = entities
+                    .first()
+                    .expect("entity iter")
+                    .expect("populated fixture has an entity row");
+                let key = original.0.value().to_vec();
+                let mut corrupted = original.1.value().to_vec();
+                let last = corrupted.len().saturating_sub(1);
+                corrupted[last] = corrupted[last].wrapping_add(1);
+                (key, corrupted)
+            };
+            entities
+                .insert(corrupted.0.as_slice(), corrupted.1.as_slice())
+                .expect("plant corrupted entity bytes");
+        }
+        write.commit().expect("publish planted corruption");
+        drop(raw);
+    }
+
+    let authority_before =
+        riffdb_storage_redb::benchmark_support::recovery_authority_snapshot_v1(&path.0)
+            .expect("authority before the dirty open");
+
+    // The bounded dirty startup reaches readiness despite the planted row.
+    let store = RedbStore::open(&path.0).expect("dirty reopen with planted corruption");
+    let session = store
+        .begin_structural_evidence(startup_inputs())
+        .expect("bounded dirty evidence with planted corruption");
+    assert!(
+        session.bounded_dirty_startup_path(),
+        "the planted population row must not affect the bounded dirty path selection"
+    );
+    let opened = complete_structural_open_from(session);
+    let (_, _, _, dormant) = opened.into_parts();
+    let ports = dormant
+        .into_operational_after_catalog_validation()
+        .expect("readiness despite the planted row");
+
+    // First access through the operational read path fails closed with the
+    // typed corruption outcome — never absence, never a business outcome.
+    use riffdb_storage_api::AuthoritativePointReader;
+    let failure = ports
+        .read_entity(&target)
+        .expect_err("corrupt entity row must not produce an outcome or absence");
+    assert_eq!(
+        failure.kind(),
+        riffdb_storage_api::StorageErrorKind::CorruptData,
+        "first access of a corrupt row fails closed with the typed corruption outcome"
+    );
+    // Repeated access keeps refusing; the refusal repairs nothing and hides
+    // nothing: the stored bytes are unchanged and the authority is unchanged.
+    let failure_again = ports
+        .read_entity(&target)
+        .expect_err("repeat access must keep refusing");
+    assert_eq!(
+        failure_again.kind(),
+        riffdb_storage_api::StorageErrorKind::CorruptData
+    );
+    drop(ports);
+    let authority_after =
+        riffdb_storage_redb::benchmark_support::recovery_authority_snapshot_v1(&path.0)
+            .expect("authority after first access");
+    assert!(
+        authority_before.same_authority(&authority_after),
+        "the corruption refusal must create no authoritative advance"
+    );
+}
+
+#[test]
+fn probe_raw_entity_flip_open() {
+    let path = TestDatabasePath::new("probe-raw-flip");
+    prepare_command_database(&path.0);
+    {
+        let ports = open_operational(RedbStore::open(&path.0).expect("open"));
+        commit_command_fixture(&ports, &command_fixture_at(1));
+        drop(ports);
+    }
+    let raw = redb::Database::open(&path.0).expect("raw open");
+    let write = raw.begin_write().expect("raw write");
+    {
+        let mut entities = write.open_table(ENTITIES_RAW).expect("entities");
+        let key = entities
+            .first()
+            .expect("iter")
+            .expect("row")
+            .0
+            .value()
+            .to_vec();
+        let mut corrupted = entities
+            .get(key.as_slice())
+            .expect("get")
+            .expect("row")
+            .value()
+            .to_vec();
+        let last = corrupted.len().saturating_sub(1);
+        corrupted[last] = corrupted[last].wrapping_add(1);
+        entities
+            .insert(key.as_slice(), corrupted.as_slice())
+            .expect("flip");
+    }
+    write.commit().expect("commit flip");
+    drop(raw);
+    let result = RedbStore::open(&path.0);
+    eprintln!(
+        "DBG-FLIP-OPEN: {:?}",
+        result.as_ref().map(|_| ()).map_err(|e| e.kind())
+    );
+    drop(result);
+}
