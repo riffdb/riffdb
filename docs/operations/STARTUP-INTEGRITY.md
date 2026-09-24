@@ -42,6 +42,19 @@ relationship checks before they can affect authorization, execution, output,
 delivery, projection, or mutation. Latent corruption unrelated to the bounded
 roots can therefore be reported when the affected row is first accessed.
 
+Databases created by current binaries carry the V2 authoritative state
+catalog. For those databases every restart — including one after a graceful
+close — performs complete ordinary validation and pays its full cost; the
+clean-close certificate does not select a bounded fast path for a V2 source.
+At the 65,536-row benchmark checkpoint that validation measured about 24
+seconds to readiness and roughly one gigabyte of private memory; at the
+production benchmark population (about 1.1 million rows) the complete path
+currently fails closed with the typed `LimitExceeded` historical-evidence
+ceiling and does not publish readiness. A bounded clean-start path for V2
+catalogs requires a separately accepted successor lifecycle design and is
+not available in this release. V1-catalog databases retain the bounded
+clean-certificate path exactly as documented above.
+
 Dirty startup retains the complete exact-end structural and historical
 validation path. RiffDB also retains a sealed internal primitive for that
 complete-integrity work. It is not a public operation, storage handle,

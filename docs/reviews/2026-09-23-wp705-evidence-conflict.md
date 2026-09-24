@@ -116,3 +116,28 @@ clean; scoped acceptance 6/6.
 
 END-006 remains unproven for this package (its restart/cycle evidence is
 part of the blocked lifecycle runs).
+
+## Resolution (2026-09-23, same session)
+
+The maintainer approved the recommended route for each blocker:
+
+1. **Restated (decision 1c).** The clean-lifecycle deliverable is now V2
+   complete-validation cost disclosure; the bounded clean-certificate evidence
+   and its 64 MiB envelope move to the successor lifecycle record, and the
+   referee remains in the tree serving that successor. Both checkpoints'
+   evidence is produced and retained at `release/evidence/wp-705/`
+   (785ec038): the 65,536-row lifecycle (24.3 s complete validation, 1.04x
+   twin ratio, atomic absent outcome, second restart advancing nothing) and
+   the production-scale typed `LimitExceeded` ceiling receipt with the
+   no-mutation proof and the WP-760 handoff.
+2. **Retired (decision 2a).** ADR-0258, accepted in session, retires the
+   thirteen stranded obligations whole on the ADR-0216 pattern; the retirement
+   governance commit removed them from the six records' live arrays
+   (4f7b5cda). OBL-0205-3 survives, proven.
+3. **Amended and repaired (decision 3a).** ADR-0259, accepted in session,
+   added the thirteen sibling operation files to WP-705's authority solely for
+   the cause-preservation repair; all thirty-one sites are repaired and
+   validated (728520dd), with the proof passing unchanged.
+
+END-006 was removed from WP-705's requirement list with the recorded reason
+(endurance-campaign evidence; listed pre-cutover).
