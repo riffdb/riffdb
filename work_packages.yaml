@@ -2092,6 +2092,56 @@ work_packages:
       state under 64 MiB at production scale. Evidence uses fixed checkpoints, stages, labels,
       durations, artifacts, and diagnostic ceilings.
   human_review_triggers: *id001
+  closure:
+    status: complete
+    completed_at: '2026-09-23'
+    evidence: release/evidence/wp-705/rows-65536-lifecycle-v2.json
+    decision: ADR-0156 closes for WP-705's scope under the maintainer's approved V2 restatement.
+      The sealed internal offline integrity-scrub primitive and its fixed bounded receipt exist
+      on main (startup.rs, sealed until the authorized WP-760 maintenance owner calls it); the
+      backup/restore/migration/retention/copy compatibility conformance proves which operations
+      preserve a matching clean certificate and which invalidate it (startup/tests.rs, 122 tests
+      including complete-copy-preserves/registry-migration-invalidates and
+      retention-hold-makes-prior-certificate-ineligible); the redaction-safe closed startup and
+      shutdown observations are the startup/shutdown census lines; and the lifecycle evidence is
+      retained at release/evidence/wp-705/ under the restated contract. The 65,536-row report
+      shows both the clean restart and the genuine SIGKILL dirty recovery complete-validating
+      (24.3 s to ready, 1.04x the matching predeclared twin), the in-flight crash probe
+      resolving atomically absent, the second restart advancing no authority, and both final
+      certificates committing. The production-scale report is the typed LimitExceeded
+      complete-path ceiling receipt, with before/after authority snapshots proving the attempt
+      mutated nothing, no published readiness, and the WP-760 handoff. The dirty-recovery
+      memory bound and the public scrub remain WP-760's, and the uninterrupted endurance run
+      remains WP-578's. The three governance blockers recorded in
+      docs/reviews/2026-09-23-wp705-evidence-conflict.md were resolved by the maintainer's
+      approved decisions; the ADR-0205 Decision 7 cause-preservation violation found during the
+      campaign is repaired at all thirty-three sites (two authorized under the original record,
+      thirty-one under accepted ADR-0259) and proven by
+      request_scoped_command_terminal_audit_failure_preserves_threshold; the thirteen stranded
+      fresh-locator obligations are retired whole by accepted ADR-0258 with their exact tuples
+      preserved in that record.
+    decisions_taken:
+    - Restate the production-scale lifecycle deliverable as V2 complete-validation cost
+      disclosure per ADR-0156 Amendment 6 (maintainer, in session, 2026-09-23); the bounded
+      clean-certificate evidence and its 64 MiB envelope move to the successor lifecycle record,
+      and scripts/wp705-lifecycle-referee remains in the tree serving that successor.
+    - Exclude changelog_history_state/v3 and next_changelog_transaction/v3 from the recovery
+      authority snapshot's digest; the V3 substrate writes the DIRTY/CLEAN lifecycle transitions
+      as authoritative changelog transactions, so every process generation legitimately advances
+      them; replication authority remains covered by every generation's complete validation to
+      exact end, and the application and administration allocators stay in the digest.
+    - Report the close-path memory windows without envelope enforcement under V2; the window
+      spans process spawn to shutdown admission and carries the startup's legitimate
+      complete-validation memory, and the bounded close-path envelope is the successor record's
+      claim.
+    - Drop END-006 from the requirement list with the recorded reason; it was listed pre-cutover
+      when tags were not enforced at closure and its sustained-growth, retention,
+      backup-rotation, and deploy-under-load cycles are the endurance campaign's evidence.
+    - Prove the audit-counter reset on a fresh harness because ServiceHealthHooks is fail-only;
+      the eighth stop is permanent for the process lifecycle.
+    - Assert the parked replay's durable phases never contain Succeeded rather than exactly
+      [Started]; which safe point observes the elapsed deadline first varies and both map to
+      the same request-scoped cause.
 - id: WP-706
   name: Compiler-declared bounded runtime page limits
   depends_on: [WP-690, WP-696, WP-701, WP-703]
