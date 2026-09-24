@@ -942,7 +942,44 @@ impl RedbStore {
         // bootstrapped follower to pass primary startup validation (the
         // complete walk) at its applied head, and the follower applier handoff
         // rebuilds its transient indexes from that complete proof.
-        if purpose == EvidenceOpenPurpose::Startup && v3_active && !self.shared.is_follower_mode() {
+        // A pre-current record registry needs the complete path: its historical
+        // plan performs the V1-index migration drive and the bounded plan
+        // carries no index locators, so the bounded branch must not engage.
+        // A current registry alone is not sufficient either: a pending
+        // catalog index migration (V1 rows under a current registry, e.g. a
+        // crash between migration batches) is detected only by the complete
+        // walk. The bounded dirty branch therefore additionally requires a
+        // validated-prefix checkpoint covering the current state — the
+        // durable record that one complete walk already validated (and
+        // thereby migrated) everything at this head. A database that has
+        // never completed a full walk under the current registry takes the
+        // complete path once and gains the checkpoint; every later dirty
+        // open is bounded.
+        let registry_is_current = {
+            let meta = transaction.open_table(META).map_err(table_error)?;
+            meta.get(META_RECORD_REGISTRY)
+                .map_err(precommit_storage_error)?
+                .is_some_and(|encoded| {
+                    riffdb_storage_api::decode_record_registry_v2(encoded.value())
+                        .is_ok_and(|registry| {
+                            *registry.value()
+                                == riffdb_storage_api::proto_codec::current_record_registry_digest()
+                        })
+                })
+        };
+        let checkpoint_admits_bounded = registry_is_current
+            && crate::validated_prefix::load_active_checkpoint(
+                &transaction,
+                database_id,
+                snapshot.retained_metadata.history_incarnation(),
+                &full_structural_counts,
+            )
+            .is_ok();
+        if purpose == EvidenceOpenPurpose::Startup
+            && v3_active
+            && checkpoint_admits_bounded
+            && !self.shared.is_follower_mode()
+        {
             self.shared
                 .validate_bounded_dirty_roots(&transaction, database_id)?;
             // Re-validate the bounded retention watermark bindings (never
