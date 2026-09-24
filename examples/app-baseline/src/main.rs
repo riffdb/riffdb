@@ -1206,7 +1206,11 @@ fn production_dirty_lifecycle_evidence(
         .ok_or_else(|| "startup ratio could not be represented".to_owned())?;
     let measured_clean_close = &dirty.clean_comparison_close;
     require_no_columnar_demand(measured_clean_close, "measured clean close")?;
-    let measured_close_memory = shutdown_memory_window_json(&dirty.clean_comparison_close, true)?;
+    // The close window spans process spawn to shutdown admission, so under
+    // V2 it carries the startup's legitimate complete-validation memory;
+    // report-only, like the startup window (the bounded close-path envelope
+    // is the successor lifecycle record's claim).
+    let measured_close_memory = shutdown_memory_window_json(&dirty.clean_comparison_close, false)?;
     let dirty_final_close_memory = shutdown_memory_window_json(&dirty_shutdown, false)?;
     Ok((
         measured_close,
@@ -1278,8 +1282,8 @@ fn production_clean_lifecycle_evidence(
         .map_err(|error| error.to_string())?;
     require_no_columnar_demand(&seeded_close, "seeded clean close")?;
     require_no_columnar_demand(&final_close, "final clean close")?;
-    let seeded_close_memory = shutdown_memory_window_json(&seeded_close, true)?;
-    let final_close_memory = shutdown_memory_window_json(&final_close, true)?;
+    let seeded_close_memory = shutdown_memory_window_json(&seeded_close, false)?;
+    let final_close_memory = shutdown_memory_window_json(&final_close, false)?;
     let lifecycle = json!({
         "schema": "riffdb.wp-705-production-clean-lifecycle/v1",
         "scale_checkpoint": "production",
@@ -4596,7 +4600,7 @@ mod tests {
             .0;
         assert!(
             dirty_lifecycle
-                .contains("shutdown_memory_window_json(&dirty.clean_comparison_close, true)")
+                .contains("shutdown_memory_window_json(&dirty.clean_comparison_close, false)")
         );
         assert!(!dirty_lifecycle.contains("shutdown_memory_window_json(&measured_close, true)"));
         assert!(!wp705_lifecycle_selector(None, false, Scale::production()).expect("off"));
