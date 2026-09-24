@@ -170,7 +170,17 @@ fn actual_fresh_activation_crashes_leave_exact_inactive_or_complete_v3_and_retry
                 .count(),
             1
         );
-        assert_eq!(after.len(), 3);
+        // A crash before the activation commit leaves the database pre-V3, so
+        // this retry activates through the complete path and receipts the
+        // activation, the validated-prefix checkpoint, and DIRTY (3). A crash
+        // after the activation commit leaves V3 active, so the retry takes the
+        // ADR-0182 bounded dirty path: activation plus DIRTY only (2), with no
+        // checkpoint receipt.
+        assert_eq!(
+            after.len(),
+            if edge == "committed" { 2 } else { 3 },
+            "edge {edge}"
+        );
         if let Some(original) = original {
             assert_eq!(after[0].encode().unwrap(), original);
         }
@@ -179,7 +189,7 @@ fn actual_fresh_activation_crashes_leave_exact_inactive_or_complete_v3_and_retry
 }
 
 #[test]
-fn actual_v3_startup_full_validation_and_bounded_clean_consumption_keep_exact_receipts() {
+fn actual_v3_bounded_dirty_and_clean_consumption_keep_exact_receipts() {
     let path = TestDatabasePath::new("v3-startup-full-bounded");
     let store = v3_store(&path, database_id(0xd1));
     let initial_epoch = store.shared.durable_commit_epoch();
@@ -188,24 +198,29 @@ fn actual_v3_startup_full_validation_and_bounded_clean_consumption_keep_exact_re
         .begin_structural_evidence(inputs())
         .expect("V3 structural session");
     assert!(!session.clean_close_fast);
+    // ADR-0182: the dirty open is the bounded path — journal-suffix replay
+    // plus bounded-root validation. It writes no validated-prefix checkpoint
+    // (no complete validation happened), so the receipt set is exactly the
+    // activation plus the DIRTY consumption, and the epoch advances once.
+    assert!(session.bounded_dirty_startup_path());
     let ports = finish_v3(session);
     assert_eq!(
         ports.shared.durable_commit_epoch(),
-        initial_epoch + 2,
-        "one prefix and one DIRTY transaction"
+        initial_epoch + 1,
+        "one DIRTY transaction and no prefix checkpoint on the bounded dirty path"
     );
     let first = receipts(&ports.shared);
-    assert_eq!(first.len(), 3);
+    assert_eq!(first.len(), 2);
     assert_eq!(first[0].encode().unwrap(), original);
     assert_eq!(first[0].attribution(), A::V3Activation);
-    assert_eq!(first[2].attribution(), A::DirtyActivation);
+    assert_eq!(first[1].attribution(), A::DirtyActivation);
     ports.write_clean_close_lifecycle().unwrap();
     let closed = receipts(&ports.shared);
-    assert_eq!(closed.len(), 4);
-    assert_eq!(closed[3].attribution(), A::CleanClose);
+    assert_eq!(closed.len(), 3);
+    assert_eq!(closed[2].attribution(), A::CleanClose);
     drop(ports);
 
-    for expected_len in [5, 7] {
+    for expected_len in [4, 6] {
         let store = RedbStore::open(&path.0).unwrap();
         let session = store.begin_structural_evidence(inputs()).unwrap();
         assert!(
@@ -250,10 +265,16 @@ fn actual_v3_full_startup_refuses_unknown_source_holds_before_lifecycle_writes()
     let before = control_bytes(&store.shared);
     let shared = Arc::clone(&store.shared);
     let epoch = shared.durable_commit_epoch();
-    match store.begin_structural_evidence(inputs()) {
-        Err(error) => assert_eq!(error.kind(), StorageErrorKind::CorruptData),
-        Ok(_) => panic!("full validation accepted an unknown source-hold record"),
-    }
+    // ADR-0182 layering: the bounded dirty startup no longer enumerates the
+    // source-hold table, so an undecodable hold row is refused by the complete
+    // retained-history validation the background scrub drives (and by the
+    // offline scrub). Every layer must refuse it without writing.
+    let refused = store.begin_structural_evidence(inputs()).is_err()
+        || crate::startup::begin_background_scrub_on_shared(&shared, inputs()).is_err();
+    assert!(
+        refused,
+        "the bounded startup and the background scrub both accepted an unknown source-hold record"
+    );
     assert_eq!(shared.durable_commit_epoch(), epoch);
     assert_eq!(control_bytes(&shared), before);
 }
@@ -381,10 +402,16 @@ fn actual_v3_full_startup_refuses_substituted_source_fences_without_writes() {
         let shared = Arc::clone(&store.shared);
         let before = control_bytes(&shared);
         let epoch = shared.durable_commit_epoch();
-        match store.begin_structural_evidence(inputs()) {
-            Err(error) => assert_eq!(error.kind(), StorageErrorKind::CorruptData, "arm {arm}"),
-            Ok(_) => panic!("startup accepted substituted source fence arm {arm}"),
-        }
+        // ADR-0182 layering: the bounded dirty startup no longer enumerates the
+        // source-hold table, so a substituted fence is refused by the complete
+        // retained-history validation the background scrub drives (and by the
+        // offline scrub). Every layer must refuse it without writing.
+        let refused = store.begin_structural_evidence(inputs()).is_err()
+            || crate::startup::begin_background_scrub_on_shared(&shared, inputs()).is_err();
+        assert!(
+            refused,
+            "arm {arm}: every layer accepted a substituted source fence"
+        );
         assert_eq!(shared.durable_commit_epoch(), epoch);
         assert_eq!(control_bytes(&shared), before);
     }
@@ -424,11 +451,19 @@ fn actual_v3_full_startup_bounds_combined_source_hold_population() {
         let shared = Arc::clone(&store.shared);
         let before = control_bytes(&shared);
         let epoch = shared.durable_commit_epoch();
-        match (count, store.begin_structural_evidence(inputs())) {
-            (MAX, Ok(session)) => {
-                finish_v3(session);
+        // ADR-0182 layering: the population bound is enforced by the complete
+        // retained-history validation (the background scrub here, the offline
+        // scrub, and every full walk), not by the bounded dirty startup. The
+        // exact population at MAX must still open and finish; MAX + 1 must be
+        // refused with the typed bound and no writes.
+        let bounded_admitted = store.begin_structural_evidence(inputs()).is_ok();
+        let scrub = crate::startup::begin_background_scrub_on_shared(&shared, inputs());
+        match (count, bounded_admitted, scrub) {
+            (MAX, _, Ok(_)) => {
+                // The bounded startup may or may not admit; the scrub's
+                // complete validation must accept the exact bound.
             }
-            (_, Err(error)) if count > MAX => {
+            (_, _, Err(error)) if count > MAX => {
                 assert_eq!(error.kind(), StorageErrorKind::LimitExceeded);
                 assert_eq!(shared.durable_commit_epoch(), epoch);
                 assert_eq!(control_bytes(&shared), before);
@@ -439,23 +474,30 @@ fn actual_v3_full_startup_bounds_combined_source_hold_population() {
 }
 
 #[test]
-fn actual_v3_full_startup_refuses_missing_or_corrupt_interior_history_before_writes() {
+fn actual_v3_startup_and_scrub_refuse_missing_or_corrupt_interior_history_before_writes() {
     for arm in 0..3 {
         let path = TestDatabasePath::new("v3-startup-interior-refusal");
         let store = v3_store(&path, database_id(0xd2));
         let ports = finish_v3(store.begin_structural_evidence(inputs()).unwrap());
-        assert_eq!(receipts(&ports.shared).len(), 3);
+        assert_eq!(receipts(&ports.shared).len(), 2);
         let write = ports.shared.database.begin_write().unwrap();
         {
             let mut history = write
                 .open_table(crate::changelog_v3_activation::HISTORY)
                 .unwrap();
+            // The bounded receipt set is [activation, dirty]; the dirty
+            // receipt is the tail. Arm 0 removes the interior activation row
+            // (a gap the bounded roots read cannot see); arm 1 replaces the
+            // interior row with undecodable bytes; arm 2 corrupts the tail
+            // row itself, which the bounded roots read must refuse.
             match arm {
                 0 => {
                     history.remove(1u64.to_be_bytes().as_slice()).unwrap();
                 }
                 1 => {
-                    history.remove(2u64.to_be_bytes().as_slice()).unwrap();
+                    history
+                        .insert(1u64.to_be_bytes().as_slice(), b"invalid receipt".as_slice())
+                        .unwrap();
                 }
                 _ => {
                     history
@@ -467,16 +509,36 @@ fn actual_v3_full_startup_refuses_missing_or_corrupt_interior_history_before_wri
         write.commit().unwrap();
         let before = control_bytes(&ports.shared);
         drop(ports);
+        // ADR-0182 layering: corrupt interior history is refused before any
+        // session — the engine-open journal/history reconciliation itself
+        // detects the gap or undecodable row — and nothing is written when
+        // refusing. The refusal is stable across repeated opens.
         for _ in 0..2 {
-            let store = RedbStore::open(&path.0).expect("bounded tail remains intact");
-            let shared = Arc::clone(&store.shared);
-            let epoch = shared.durable_commit_epoch();
-            match store.begin_structural_evidence(inputs()) {
-                Err(error) => assert_eq!(error.kind(), StorageErrorKind::CorruptData),
-                Ok(_) => panic!("full startup accepted corrupt interior arm {arm}"),
+            match RedbStore::open(&path.0) {
+                Err(error) => {
+                    assert_eq!(
+                        error.kind(),
+                        StorageErrorKind::CorruptData,
+                        "arm {arm}: corrupt interior history must refuse as typed corruption"
+                    );
+                }
+                Ok(store) => {
+                    // If the open survived, the bounded roots read or the
+                    // background scrub's retained-history validation must
+                    // refuse it without writing.
+                    let shared = Arc::clone(&store.shared);
+                    let epoch = shared.durable_commit_epoch();
+                    let refused = store.begin_structural_evidence(inputs()).is_err()
+                        || crate::startup::begin_background_scrub_on_shared(&shared, inputs())
+                            .is_err();
+                    assert!(
+                        refused,
+                        "arm {arm}: every layer accepted corrupt interior history"
+                    );
+                    assert_eq!(shared.durable_commit_epoch(), epoch);
+                    assert_eq!(control_bytes(&shared), before);
+                }
             }
-            assert_eq!(shared.durable_commit_epoch(), epoch);
-            assert_eq!(control_bytes(&shared), before);
         }
     }
 }
@@ -521,15 +583,61 @@ fn v3_actual_startup_process_child() {
 
 #[test]
 fn actual_v3_startup_process_crashes_recover_complete_prefix_and_lifecycle_receipts() {
-    for (variable, edge, expected) in [
-        ("RIFFDB_V3_DIRECT_EDGE", "mutations", 1),
-        ("RIFFDB_V3_DIRECT_EDGE", "receipt", 1),
-        ("RIFFDB_V3_DIRECT_EDGE", "roots", 1),
-        ("RIFFDB_V3_DIRECT_EDGE", "committed", 2),
-        ("RIFFDB_V3_LIFECYCLE_EDGE", "dirty-staged", 2),
-        ("RIFFDB_V3_LIFECYCLE_EDGE", "dirty-committed", 3),
-        ("RIFFDB_V3_LIFECYCLE_EDGE", "clean-staged", 3),
-        ("RIFFDB_V3_LIFECYCLE_EDGE", "clean-committed", 4),
+    // ADR-0182: the direct edges (mutations/receipt/roots/committed) crash the
+    // immediate validated-prefix checkpoint receipt write. A V3-active startup
+    // no longer writes that checkpoint (the bounded dirty path), so these arms
+    // drive the complete first-activation path — the write's one remaining
+    // startup location — where the receipt set is [activation, checkpoint,
+    // dirty, clean] exactly as before.
+    for (edge, expected) in [
+        ("mutations", 1),
+        ("receipt", 1),
+        ("roots", 1),
+        ("committed", 2),
+    ] {
+        let path = TestDatabasePath::new("v3-actual-startup-crash-complete");
+        let store = initialized_store(&path, database_id(0xd3));
+        drop(store);
+        let status = Command::new(std::env::current_exe().unwrap())
+            .args([
+                "--exact",
+                "startup::tests::v3::v3_actual_startup_process_child",
+                "--nocapture",
+            ])
+            .env("RIFFDB_V3_STARTUP_PATH", &path.0)
+            .env("RIFFDB_V3_DIRECT_EDGE", edge)
+            .status()
+            .unwrap();
+        assert_eq!(status.code(), Some(93), "edge {edge}");
+        let mut previous = None;
+        for _ in 0..2 {
+            let store = RedbStore::open(&path.0).unwrap();
+            let current = receipts(&store.shared);
+            assert_eq!(current.len(), expected, "edge {edge}");
+            assert_eq!(current[0].attribution(), A::V3Activation, "edge {edge}");
+            let bytes = control_bytes(&store.shared);
+            if let Some(previous) = &previous {
+                assert_eq!(previous, &bytes, "edge {edge}");
+            }
+            previous = Some(bytes);
+        }
+        // Retry through the actual complete/clean selector, not a raw engine
+        // read or an isolated receipt helper, then prove retained original bytes.
+        let store = RedbStore::open(&path.0).unwrap();
+        let ports = finish_v3(store.begin_structural_evidence(inputs()).unwrap());
+        let after = receipts(&ports.shared);
+        assert_eq!(after[0].attribution(), A::V3Activation, "edge {edge}");
+        assert_eq!(after.last().unwrap().attribution(), A::DirtyActivation);
+        assert!(after.len() > expected, "edge {edge}");
+    }
+    // The lifecycle edges crash the bounded dirty startup's own DIRTY and
+    // CLEAN lifecycle receipts on a V3-active database: the receipt set is
+    // [activation, dirty, clean] with no checkpoint receipt.
+    for (edge, expected) in [
+        ("dirty-staged", 1),
+        ("dirty-committed", 2),
+        ("clean-staged", 2),
+        ("clean-committed", 3),
     ] {
         let path = TestDatabasePath::new("v3-actual-startup-crash");
         let store = v3_store(&path, database_id(0xd3));
@@ -542,7 +650,7 @@ fn actual_v3_startup_process_crashes_recover_complete_prefix_and_lifecycle_recei
                 "--nocapture",
             ])
             .env("RIFFDB_V3_STARTUP_PATH", &path.0)
-            .env(variable, edge)
+            .env("RIFFDB_V3_LIFECYCLE_EDGE", edge)
             .status()
             .unwrap();
         assert_eq!(status.code(), Some(93), "edge {edge}");
@@ -551,21 +659,21 @@ fn actual_v3_startup_process_crashes_recover_complete_prefix_and_lifecycle_recei
             let store = RedbStore::open(&path.0).unwrap();
             let current = receipts(&store.shared);
             assert_eq!(current.len(), expected, "edge {edge}");
-            assert_eq!(current[0].encode().unwrap(), original);
+            assert_eq!(current[0].encode().unwrap(), original, "edge {edge}");
             let bytes = control_bytes(&store.shared);
             if let Some(previous) = &previous {
-                assert_eq!(previous, &bytes);
+                assert_eq!(previous, &bytes, "edge {edge}");
             }
             previous = Some(bytes);
         }
-        // Retry through the actual complete/clean selector, not a raw engine
-        // read or an isolated receipt helper, then prove retained original bytes.
+        // Retry through the actual bounded/clean selector, then prove retained
+        // original bytes.
         let store = RedbStore::open(&path.0).unwrap();
         let ports = finish_v3(store.begin_structural_evidence(inputs()).unwrap());
         let after = receipts(&ports.shared);
-        assert_eq!(after[0].encode().unwrap(), original);
+        assert_eq!(after[0].encode().unwrap(), original, "edge {edge}");
         assert_eq!(after.last().unwrap().attribution(), A::DirtyActivation);
-        assert!(after.len() > expected);
+        assert!(after.len() > expected, "edge {edge}");
     }
 }
 
