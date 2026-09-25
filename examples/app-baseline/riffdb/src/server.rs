@@ -1101,13 +1101,6 @@ impl RiffDbServerSession {
             })
     }
 
-    /// The ADR-0182 background scrub's closed terminal observation from the
-    /// daemon's shutdown census line, or `None` when the daemon emitted none.
-    #[must_use]
-    pub fn background_scrub_observation(&self) -> Option<BackgroundScrubObservation> {
-        parse_background_scrub_observation(&self.process.stderr_tail())
-    }
-
     /// Stops the server cleanly.
     pub fn shutdown(mut self) -> Result<[u64; WRITE_GROUP_BUCKETS], RiffDbError> {
         self.process
@@ -2277,11 +2270,11 @@ impl ServerProcess {
             let stderr = self.stderr_tail();
             evidence.startup = Some(parse_startup_evidence(&stderr)?);
             evidence.clean_close = Some(parse_clean_close_evidence(&stderr)?);
-            let (columnar_activations, columnar_population_passes) =
+            let (columnar_activations, columnar_population_passes, background_scrub) =
                 parse_shutdown_release_evidence(&stderr)?;
             evidence.columnar_activations = Some(columnar_activations);
             evidence.columnar_population_passes = Some(columnar_population_passes);
-            evidence.background_scrub = parse_background_scrub_observation(&stderr);
+            evidence.background_scrub = Some(background_scrub);
             evidence.process_memory_at_spawn = Some(self.initial_process_memory);
             evidence.process_memory_before_shutdown = Some(process_memory_before_shutdown);
             evidence.harness_shutdown_elapsed_us =
@@ -2967,28 +2960,6 @@ pub struct BackgroundScrubObservation {
     pub rows_per_second: u64,
 }
 
-fn parse_background_scrub_observation(stderr: &str) -> Option<BackgroundScrubObservation> {
-    let line = stderr
-        .lines()
-        .rev()
-        .find(|line| line.starts_with("riffdb-background-scrub-v1\t"))?;
-    let fields = parse_key_values(line, "riffdb-background-scrub-v1").ok()?;
-    let state = match fields.get("state").map(String::as_str) {
-        Some("pending") => "pending",
-        Some("running") => "running",
-        Some("complete") => "complete",
-        Some("failed") => "failed",
-        Some("cancelled") => "cancelled",
-        _ => return None,
-    };
-    Some(BackgroundScrubObservation {
-        state,
-        rows_walked: fields.get("rows_walked")?.parse().ok()?,
-        total_us: fields.get("total_us")?.parse().ok()?,
-        rows_per_second: fields.get("rows_per_second")?.parse().ok()?,
-    })
-}
-
 fn parse_startup_evidence(stderr: &str) -> io::Result<RiffDbStartupEvidence> {
     let lines = stderr
         .lines()
@@ -3042,7 +3013,9 @@ fn parse_startup_evidence(stderr: &str) -> io::Result<RiffDbStartupEvidence> {
     })
 }
 
-fn parse_shutdown_release_evidence(stderr: &str) -> io::Result<(u64, u64)> {
+fn parse_shutdown_release_evidence(
+    stderr: &str,
+) -> io::Result<(u64, u64, BackgroundScrubObservation)> {
     let lines = stderr
         .lines()
         .filter(|line| line.starts_with(SHUTDOWN_RELEASE_PREFIX))
@@ -3052,13 +3025,16 @@ fn parse_shutdown_release_evidence(stderr: &str) -> io::Result<(u64, u64)> {
     }
     let parse_line = |line: &str| {
         let fields = parse_key_values(line, SHUTDOWN_RELEASE_PREFIX)?;
-        const EXPECTED_FIELDS: [&str; 5] = [
+        const EXPECTED_FIELDS: [&str; 8] = [
             "graph_storage_release",
             "post_graph_release",
             "columnar_activations",
             "columnar_population_passes",
-            // ADR-0182: the background scrub's closed terminal state.
+            // ADR-0182: the background scrub's closed terminal observation.
             "background_scrub",
+            "background_scrub_rows",
+            "background_scrub_total_us",
+            "background_scrub_rows_per_second",
         ];
         if fields.len() != EXPECTED_FIELDS.len()
             || EXPECTED_FIELDS
@@ -3074,9 +3050,27 @@ fn parse_shutdown_release_evidence(stderr: &str) -> io::Result<(u64, u64)> {
                 .parse::<u64>()
                 .map_err(|_| io::Error::other(format!("shutdown release {name} invalid")))
         };
+        let scrub_state = match fields.get("background_scrub").map(String::as_str) {
+            Some("pending") => "pending",
+            Some("running") => "running",
+            Some("complete") => "complete",
+            Some("failed") => "failed",
+            Some("cancelled") => "cancelled",
+            _ => {
+                return Err(io::Error::other(
+                    "shutdown release background_scrub state invalid",
+                ));
+            }
+        };
         Ok::<_, io::Error>((
             parse_count("columnar_activations")?,
             parse_count("columnar_population_passes")?,
+            BackgroundScrubObservation {
+                state: scrub_state,
+                rows_walked: parse_count("background_scrub_rows")?,
+                total_us: parse_count("background_scrub_total_us")?,
+                rows_per_second: parse_count("background_scrub_rows_per_second")?,
+            },
         ))
     };
     let graph_release = parse_line(lines[0])?;
@@ -3426,11 +3420,20 @@ mod tests {
         );
         assert_eq!(
             parse_shutdown_release_evidence(
-                "riffdb-shutdown-release-v1\tgraph_storage_release=1\tpost_graph_release=0\tcolumnar_activations=0\tcolumnar_population_passes=0\n\
-                 riffdb-shutdown-release-v1\tgraph_storage_release=1\tpost_graph_release=2\tcolumnar_activations=0\tcolumnar_population_passes=0\n"
+                "riffdb-shutdown-release-v1\tgraph_storage_release=1\tpost_graph_release=0\tcolumnar_activations=0\tcolumnar_population_passes=0\tbackground_scrub=complete\tbackground_scrub_rows=7\tbackground_scrub_total_us=9\tbackground_scrub_rows_per_second=11\n\
+                 riffdb-shutdown-release-v1\tgraph_storage_release=1\tpost_graph_release=2\tcolumnar_activations=0\tcolumnar_population_passes=0\tbackground_scrub=complete\tbackground_scrub_rows=7\tbackground_scrub_total_us=9\tbackground_scrub_rows_per_second=11\n"
             )
             .expect("columnar shutdown evidence"),
-            (0, 0)
+            (
+                0,
+                0,
+                BackgroundScrubObservation {
+                    state: "complete",
+                    rows_walked: 7,
+                    total_us: 9,
+                    rows_per_second: 11,
+                }
+            )
         );
         assert!(parse_shutdown_release_evidence(
             "riffdb-shutdown-release-v1\tgraph_storage_release=1\tpost_graph_release=2\tcolumnar_activations=0\n"

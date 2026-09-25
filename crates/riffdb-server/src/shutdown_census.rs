@@ -98,27 +98,64 @@ pub(crate) fn format_v1_line() -> String {
     line.push_str(&crate::startup_census::columnar_population_passes().to_string());
     line.push_str("\tbackground_scrub=");
     line.push_str(scrub_terminal_state());
+    line.push_str("\tbackground_scrub_rows=");
+    line.push_str(&scrub_rows().to_string());
+    line.push_str("\tbackground_scrub_total_us=");
+    line.push_str(&scrub_total_us().to_string());
+    line.push_str("\tbackground_scrub_rows_per_second=");
+    line.push_str(&scrub_rows_per_second().to_string());
     line
 }
 
-/// The background scrub's closed terminal state at shutdown, or `absent` when
-/// no scrub observation was recorded (a start that never became ready).
+/// The background scrub's closed terminal observation at shutdown, or the
+/// absent zero shape when no scrub was recorded (a start that never became
+/// ready). Redaction-safe: closed discriminants and bounded counters only.
 fn scrub_terminal_state() -> &'static str {
-    SCRUB_STATE.with(|state| match state.get() {
-        Some(state) => state.as_str(),
-        None => "absent",
+    SCRUB_OBSERVATION.with(|state| {
+        let (state, _, _, _) = state.get();
+        state.as_str()
+    })
+}
+
+fn scrub_rows() -> u64 {
+    SCRUB_OBSERVATION.with(|state| {
+        let (_, rows, _, _) = state.get();
+        rows
+    })
+}
+
+fn scrub_total_us() -> u64 {
+    SCRUB_OBSERVATION.with(|state| {
+        let (_, _, total_us, _) = state.get();
+        total_us
+    })
+}
+
+fn scrub_rows_per_second() -> u64 {
+    SCRUB_OBSERVATION.with(|state| {
+        let (_, _, _, rows_per_second) = state.get();
+        rows_per_second
     })
 }
 
 thread_local! {
-    static SCRUB_STATE: std::cell::Cell<Option<crate::scrub_worker::BackgroundScrubState>> =
-        const { std::cell::Cell::new(None) };
+    static SCRUB_OBSERVATION: std::cell::Cell<(
+        crate::scrub_worker::BackgroundScrubState,
+        u64,
+        u64,
+        u64,
+    )> = const { std::cell::Cell::new((crate::scrub_worker::BackgroundScrubState::Pending, 0, 0, 0)) };
 }
 
-/// Records the background scrub's closed terminal state for the shutdown
-/// census line. Redaction-safe: a closed discriminant only.
-pub(crate) fn record_background_scrub_state(state: crate::scrub_worker::BackgroundScrubState) {
-    SCRUB_STATE.set(Some(state));
+/// Records the background scrub's closed terminal observation for the shutdown
+/// census line. Redaction-safe: a closed discriminant and bounded counters.
+pub(crate) fn record_background_scrub(
+    state: crate::scrub_worker::BackgroundScrubState,
+    rows_walked: u64,
+    total_us: u64,
+    rows_per_second: u64,
+) {
+    SCRUB_OBSERVATION.set((state, rows_walked, total_us, rows_per_second));
 }
 
 #[cfg(test)]

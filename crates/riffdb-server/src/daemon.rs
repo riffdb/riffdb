@@ -3441,11 +3441,12 @@ async fn supervise_ready_process(
     }
     let write_completion_groups = graph.write_completion_group_snapshot();
     let dispatch_reasons = graph.command_group_dispatch_snapshot();
-    // ADR-0182: the background scrub's closed terminal state at shutdown.
+    // ADR-0182: the background scrub's closed terminal observation at
+    // shutdown, recorded into the release census line (which the evidence
+    // harness already captures and parses) so a bounded stderr ring cannot
+    // evict it.
     let scrub_observation = graph.scrub_observation();
-    crate::shutdown_census::record_background_scrub_state(scrub_observation.state);
-    eprintln!(
-        "riffdb-background-scrub-v1	state={}	rows_walked={}	total_us={}	rows_per_second={}",
+    crate::shutdown_census::record_background_scrub(
         scrub_observation.state,
         scrub_observation.rows_walked,
         scrub_observation.total_us.unwrap_or(0),
