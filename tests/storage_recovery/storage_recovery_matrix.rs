@@ -1627,6 +1627,12 @@ fn legacy_index_entry(current: &StoredIndexEntryV2) -> StoredIndexEntryV1 {
     .expect("legacy migration row")
 }
 
+/// Writes index rows out-of-band and removes the validated-prefix checkpoint in
+/// the same transaction. Rows no receipt wrote cannot sit under a checkpoint in
+/// a real database: a checkpoint is written only by a complete walk that found
+/// nothing to migrate, and the current writer emits only V2 rows. Keeping the
+/// checkpoint would admit the ADR-0182 bounded dirty path over state it never
+/// covered, so the next open takes the complete path as a real one would.
 fn write_raw_index_entries(
     path: &Path,
     entries: &[(IndexEntryKey, Vec<u8>)],
@@ -1634,6 +1640,11 @@ fn write_raw_index_entries(
     let database = Database::create(path).expect("open raw migration fixture");
     let transaction = database.begin_write().expect("begin raw migration write");
     let mut previous = Vec::with_capacity(entries.len());
+    transaction
+        .open_table(META)
+        .expect("open raw metadata table")
+        .remove(CHECKPOINT_META_KEY)
+        .expect("remove the validated-prefix checkpoint");
     {
         let mut table = transaction
             .open_table(SECONDARY_INDEXES)
@@ -2398,6 +2409,10 @@ fn deferred_command_root_is_invisible_until_the_tail_fence_publishes_it() {
     let path = TestDatabasePath::new("deferred-frontier");
     prepare_command_database(&path.0);
     let ports = open_operational(RedbStore::open(&path.0).expect("reopen command database"));
+    // A bounded startup leaves the transient indexes cold, and their lazy
+    // rebuild takes the mutation gate that an open deferred epoch holds. Warm
+    // them before the epoch so the precommit audit read cannot wait on it.
+    assert!(command_audit_phases(&ports).is_empty());
     let fixture = command_fixture();
 
     let epoch = ports
@@ -2822,6 +2837,11 @@ fn multiple_sealed_epochs_publish_in_fifo_order_after_one_journal_flush() {
     let path = TestDatabasePath::new("deferred-multiple-epochs");
     prepare_command_database(&path.0);
     let ports = open_operational(RedbStore::open(&path.0).expect("reopen command database"));
+    // A bounded startup leaves the transient indexes cold. Warm them before any
+    // epoch is sealed: the lazy rebuild checkpoints the published journal
+    // suffix and answers Unavailable (transient backpressure) while a sealed
+    // epoch awaits publication, which is not what this test is about.
+    assert!(command_audit_phases(&ports).is_empty());
     let first = command_fixture_at(1);
     let second = command_fixture_at(2);
 
@@ -4411,17 +4431,21 @@ fn crash_before_validated_prefix_checkpoint_commit_leaves_no_meta() {
 fn crash_after_validated_prefix_checkpoint_commit_reopens_fast_path() {
     let path = TestDatabasePath::new("after-validated-prefix-checkpoint");
     let _ = prepare_committed_command_database(&path.0);
+    // The child reaches the checkpoint-commit failpoint only on a complete
+    // walk; with no covering checkpoint its open validates completely.
+    strip_checkpoint_meta(&path.0);
     run_crashing_child("after-validated-prefix-checkpoint-commit", &path.0);
 
+    let (_, bounded_dirty) = startup_path_observation(&path.0);
+    assert!(
+        bounded_dirty,
+        "the checkpoint committed before the crash must admit the bounded dirty path"
+    );
     let store = RedbStore::open(&path.0).expect("reopen after after-checkpoint crash");
-    let (_, _, outcome, verified, _) = complete_startup_observing_checkpoint(store);
+    let (_, _, outcome, _, _) = complete_startup_observing_checkpoint(store);
     assert!(
         matches!(outcome, StructuralOpenOutcome::Clean(_)),
         "recovery after post-checkpoint crash must open clean"
-    );
-    assert!(
-        verified,
-        "checkpoint committed before crash must be verified on reopen"
     );
 }
 
@@ -4576,6 +4600,9 @@ fn delete_aware_checkpoint_rejects_each_substituted_head_summary() {
     ] {
         let path = TestDatabasePath::new(&format!("v2-checkpoint-{name}"));
         let _ = prepare_committed_command_database(&path.0);
+        // Only a complete walk writes a checkpoint; with none covering the
+        // committed command this open validates completely and writes S=head.
+        strip_checkpoint_meta(&path.0);
         let _ = complete_startup_pass(RedbStore::open(&path.0).expect("write V2 checkpoint"));
         {
             let database = Database::create(&path.0).expect("open checkpoint fixture");
@@ -4633,6 +4660,14 @@ fn delete_aware_checkpoint_rejects_each_substituted_head_summary() {
             txn.commit().expect("commit checkpoint mutation");
         }
 
+        // A state-inexact checkpoint is not a record that a complete walk
+        // validated this state, so it must not admit the ADR-0182 bounded
+        // dirty path either.
+        let (_, bounded_dirty) = startup_path_observation(&path.0);
+        assert!(
+            !bounded_dirty,
+            "{name} substitution must not admit the bounded dirty path"
+        );
         let (_, _, outcome, verified, _) = complete_startup_observing_checkpoint(
             RedbStore::open(&path.0).expect("open substituted checkpoint"),
         );
@@ -4813,6 +4848,7 @@ fn checkpoint_meta_present(path: &Path) -> bool {
     meta.get(CHECKPOINT_META_KEY).expect("get").is_some()
 }
 
+/// Returns (clean-certificate path, bounded dirty path) for one startup open.
 fn startup_path_observation(path: &Path) -> (bool, bool) {
     let store = RedbStore::open(path).expect("open for startup path observation");
     let inputs = StartupValidationInputs::new(
@@ -4829,9 +4865,11 @@ fn startup_path_observation(path: &Path) -> (bool, bool) {
     let session = store
         .begin_structural_evidence(inputs)
         .expect("begin startup observation");
+    // The second flag is the ADR-0182 bounded dirty path, whose admission
+    // loads and verifies the retained validated-prefix checkpoint.
     (
         session.clean_close_fast_path(),
-        session.checkpoint_verified(),
+        session.bounded_dirty_startup_path(),
     )
 }
 
@@ -5369,6 +5407,9 @@ fn public_checkpoint_write_is_gated_on_clean_validation() {
     // Allowed case: a clean validation session permits the public write.
     let clean_path = TestDatabasePath::new("public-write-gate-clean");
     let _ = prepare_committed_command_database(&clean_path.0);
+    // Only a complete validation grants the write; with no covering checkpoint
+    // this open validates completely rather than taking the bounded dirty path.
+    strip_checkpoint_meta(&clean_path.0);
     let report = drain_tolerating_findings(RedbStore::open(&clean_path.0).expect("clean open"));
     assert!(report.findings.is_empty(), "clean fixture has no findings");
     let StructuralOpenOutcome::Clean(opened) = report.outcome.expect("clean open completes") else {
@@ -5551,27 +5592,23 @@ fn checkpoint_sequence_beyond_head_falls_back_to_full_validation() {
 
 #[test]
 fn doctored_entities_row_falls_back_and_full_pass_reports_the_finding() {
-    // Doctor an ENTITIES row away: reconstruction at S disagrees with the
-    // fingerprint → checkpoint ignored (counted) → the full pass reports the
-    // real authoritative finding and the open refuses.
+    // Doctor an ENTITIES row away. ADR-0182 Decisions 1 and 3: a vanished
+    // population row is not enumerated before dirty readiness, so startup or
+    // the background scrub's complete walk must report it as authoritative
+    // corruption.
     let path = TestDatabasePath::new("doctored-entities-row");
     prepare_checkpointed_command_database(&path.0);
     delete_first_raw_row(&path.0, ENTITIES_RAW);
 
-    let report = drain_tolerating_findings(RedbStore::open(&path.0).expect("doctored open"));
+    let refusal = bounded_dirty_startup::corruption_refusal(&path.0)
+        .expect("no layer refused the vanished ENTITIES row");
     assert!(
-        !report.verified,
-        "entity-chain fingerprint mismatch must ignore the checkpoint"
-    );
-    assert!(
-        report.authoritative_finding(),
-        "the post-fallback full pass must report the real authoritative \
-         finding for the vanished ENTITIES row: {:?}",
-        report.findings,
-    );
-    assert!(
-        report.refused(),
-        "authoritative corruption must refuse the open"
+        refusal.authoritative()
+            || matches!(
+                refusal,
+                bounded_dirty_startup::CorruptionRefusal::BeforeReadiness
+            ),
+        "the vanished ENTITIES row must be refused as authoritative corruption: {refusal:?}"
     );
 }
 
@@ -5929,6 +5966,9 @@ fn retention_prune_refuses_on_empty_history() {
 fn retention_prune_deletes_live_checkpoint_first() {
     let path = TestDatabasePath::new("retention-checkpoint-delete");
     prepare_command_database(&path.0);
+    // The explicit write below needs a process whose startup validated
+    // completely; with no covering checkpoint this open is not bounded.
+    strip_checkpoint_meta(&path.0);
     let ports = open_operational(RedbStore::open(&path.0).expect("open journal fixture"));
     fence_deferred_epoch(&ports, &[command_fixture()]);
     assert!(
@@ -6560,7 +6600,18 @@ fn retention_tombstone_byte_corruption_refuses_open() {
         }
         write.commit().expect("commit corruption");
     }
-    let err = RedbStore::open(&path.0).expect_err("byte-corrupt tombstone must refuse open");
+    // The engine open no longer re-encodes retained rows for a current
+    // registry (the open-time compact-encoding migration is guarded to
+    // pre-current registries), so the tombstone chain's canonical decode is
+    // what refuses: it runs in the startup evidence session, before readiness,
+    // on whichever path the open takes (the prune deleted the checkpoint).
+    let err = match RedbStore::open(&path.0) {
+        Err(error) => error,
+        Ok(store) => store
+            .begin_structural_evidence(startup_inputs())
+            .map(|_| ())
+            .expect_err("byte-corrupt tombstone must refuse startup before readiness"),
+    };
     assert_eq!(
         err.kind(),
         riffdb_storage_api::StorageErrorKind::CorruptData

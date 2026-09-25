@@ -20,11 +20,11 @@ fn crash_before_graceful_clean_commit_preserves_checkpoint_and_dirty_fallback() 
         "pre-CLEAN crash must not create, refresh, or delete checkpoint bytes"
     );
     assert_eq!(allocator_metadata_bytes(&path.0), allocators);
-    let (clean_fast, checkpoint_verified) = startup_path_observation(&path.0);
+    let (clean_fast, bounded_dirty) = startup_path_observation(&path.0);
     assert!(!clean_fast, "pre-CLEAN crash must leave lifecycle DIRTY");
     assert!(
-        checkpoint_verified,
-        "dirty recovery may verify the unchanged prefix"
+        bounded_dirty,
+        "dirty recovery takes the bounded path the unchanged checkpoint admits"
     );
     let store = RedbStore::open(&path.0).expect("reopen for complete dirty drain");
     let (_, catalog, structural, _, _) = complete_startup_observing_checkpoint(store);
@@ -115,6 +115,11 @@ fn segmented_command_checkpoint_is_exact_current_without_decoding_audit_populati
     drop(read);
     drop(database);
 
+    // The close retains a checkpoint as exact-current only for a process whose
+    // startup validated completely; the ADR-0182 bounded dirty path does not.
+    // Strip the checkpoint so this reopen validates completely and republishes
+    // it over the same segmented history.
+    strip_checkpoint_meta(&path.0);
     let ports = open_operational(RedbStore::open(&path.0).expect("reopen segmented history"));
     assert_eq!(
         ports.complete_graceful_close().disposition(),
@@ -166,14 +171,14 @@ fn process_graceful_checkpoint_close_crash_matrix_reaches_exact_dirty_ends() {
                 "the deliberately acknowledged deferred command must advance authority"
             );
         }
-        let (clean_fast, checkpoint_verified) = startup_path_observation(&path.0);
+        let (clean_fast, bounded_dirty) = startup_path_observation(&path.0);
         assert!(
             !clean_fast,
             "every pre-CLEAN crash must leave lifecycle DIRTY"
         );
         assert!(
-            checkpoint_verified,
-            "dirty recovery may verify the retained exact prefix"
+            bounded_dirty,
+            "dirty recovery takes the bounded path the retained exact prefix admits"
         );
         let store = RedbStore::open(&path.0).expect("reopen for complete dirty drain");
         let (_, catalog, structural, _, _) = complete_startup_observing_checkpoint(store);

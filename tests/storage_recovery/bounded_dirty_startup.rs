@@ -160,3 +160,109 @@ fn bounded_dirty_startup_claims_a_command_owned_outbox_event() {
         "the fresh claim must apply: {result:?}"
     );
 }
+
+/// Where an out-of-band corruption was refused under the ADR-0182 layering.
+#[derive(Debug)]
+pub(crate) enum CorruptionRefusal {
+    /// The engine open or the startup evidence session refused it.
+    BeforeReadiness,
+    /// Startup reported these structural findings before readiness.
+    StartupFindings(Vec<StructuralFinding>),
+    /// Readiness was reached and the background scrub reported these findings.
+    ScrubFindings(Vec<StructuralFinding>),
+    /// Readiness was reached and the background scrub refused to continue.
+    ScrubRefused,
+}
+
+impl CorruptionRefusal {
+    /// Whether the refusal carries an authoritative structural finding.
+    pub(crate) fn authoritative(&self) -> bool {
+        match self {
+            Self::StartupFindings(findings) | Self::ScrubFindings(findings) => findings
+                .iter()
+                .any(|finding| finding.scope() == StructuralFindingScope::Authoritative),
+            Self::BeforeReadiness | Self::ScrubRefused => false,
+        }
+    }
+}
+
+/// Opens `path` for startup and, when startup reaches readiness cleanly, runs
+/// the background scrub's complete walk. Returns the first layer that refused
+/// the database, or `None` when no layer did, which a corruption test must
+/// treat as the failure it exists to catch.
+pub(crate) fn corruption_refusal(path: &Path) -> Option<CorruptionRefusal> {
+    let Ok(store) = RedbStore::open(path) else {
+        return Some(CorruptionRefusal::BeforeReadiness);
+    };
+    let Ok(mut session) = store.begin_structural_evidence(startup_inputs()) else {
+        return Some(CorruptionRefusal::BeforeReadiness);
+    };
+    let limit = EvidencePageLimit::new(64).expect("page limit");
+    let mut cursor =
+        StructuralEvidenceCursor::start(session.database_id(), session.open_session_id());
+    let mut findings = Vec::new();
+    let structural_end = loop {
+        match session.read_structural_evidence(cursor, limit) {
+            Ok(StructuralEvidencePage::Page {
+                findings: page,
+                next,
+                ..
+            }) => {
+                findings.extend(page);
+                cursor = next;
+            }
+            Ok(StructuralEvidencePage::ExactEnd(end)) => break end,
+            Err(_) => return Some(CorruptionRefusal::BeforeReadiness),
+        }
+    };
+    if !findings.is_empty() {
+        return Some(CorruptionRefusal::StartupFindings(findings));
+    }
+    let Ok(validation) = validate_catalog_history(&mut session) else {
+        return Some(CorruptionRefusal::BeforeReadiness);
+    };
+    let (catalog, historical_end) = validation.into_parts();
+    if !matches!(catalog, CatalogHistoryOutcome::Ready(_)) {
+        return Some(CorruptionRefusal::BeforeReadiness);
+    }
+    let Ok(StructuralOpenOutcome::Clean(opened)) = session.finish(structural_end, historical_end)
+    else {
+        return Some(CorruptionRefusal::BeforeReadiness);
+    };
+    let Ok(ports) = opened
+        .into_parts()
+        .3
+        .into_operational_after_catalog_validation()
+    else {
+        return Some(CorruptionRefusal::BeforeReadiness);
+    };
+    let Ok(mut scrub) = ports
+        .shared_ports()
+        .begin_background_scrub(startup_inputs())
+    else {
+        return Some(CorruptionRefusal::ScrubRefused);
+    };
+    let structural_end = loop {
+        match scrub.read_structural_page(limit) {
+            Ok(riffdb_storage_redb::BackgroundScrubPage::Page { findings: page, .. }) => {
+                findings.extend(page);
+            }
+            Ok(riffdb_storage_redb::BackgroundScrubPage::ExactEnd(end)) => break end,
+            Err(_) => return Some(CorruptionRefusal::ScrubRefused),
+        }
+    };
+    if !findings.is_empty() {
+        return Some(CorruptionRefusal::ScrubFindings(findings));
+    }
+    let historical_end = loop {
+        match scrub.read_historical_page(limit) {
+            Ok(riffdb_storage_redb::BackgroundScrubHistoricalPage::Page { .. }) => {}
+            Ok(riffdb_storage_redb::BackgroundScrubHistoricalPage::ExactEnd(end)) => break end,
+            Err(_) => return Some(CorruptionRefusal::ScrubRefused),
+        }
+    };
+    scrub
+        .finish(structural_end, historical_end)
+        .err()
+        .map(|_| CorruptionRefusal::ScrubRefused)
+}

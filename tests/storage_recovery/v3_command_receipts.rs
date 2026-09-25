@@ -207,6 +207,10 @@ fn assert_command_graph(ports: &RedbOperationalPorts, fixture: &CommandFixture) 
 fn successor_changelog_receipts_survive_checkpoint_and_recovery() {
     let path = TestDatabasePath::new("v3-real-command-receipts");
     let anchor = install_fixture(&path.0);
+    // The checkpoint write below is permitted only in a process whose startup
+    // completed the full validation; with no covering checkpoint this open
+    // takes the complete path instead of the ADR-0182 bounded dirty path.
+    super::strip_checkpoint_meta(&path.0);
     let (mut ports, receiver) = observed_ports(&path.0, RedbCommitProfile::Standard);
     let first = command_fixture_at(1);
     let second = command_fixture_at(2);
@@ -409,6 +413,10 @@ fn successor_changelog_receipts_survive_checkpoint_and_recovery() {
 fn real_v3_journal_subgroups_share_one_physical_receipt_without_losing_command_identity() {
     let path = TestDatabasePath::new("v3-journal-physical-group");
     let anchor = install_fixture(&path.0);
+    // The checkpoint write below is permitted only in a process whose startup
+    // completed the full validation; with no covering checkpoint this open
+    // takes the complete path instead of the ADR-0182 bounded dirty path.
+    super::strip_checkpoint_meta(&path.0);
     let (ports, receiver) = observed_ports(&path.0, RedbCommitProfile::Standard);
     let first = command_fixture_at(1);
     let second = superseding_command_fixture_at(2, 1, &first);
