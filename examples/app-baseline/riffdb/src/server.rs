@@ -3052,11 +3052,13 @@ fn parse_shutdown_release_evidence(stderr: &str) -> io::Result<(u64, u64)> {
     }
     let parse_line = |line: &str| {
         let fields = parse_key_values(line, SHUTDOWN_RELEASE_PREFIX)?;
-        const EXPECTED_FIELDS: [&str; 4] = [
+        const EXPECTED_FIELDS: [&str; 5] = [
             "graph_storage_release",
             "post_graph_release",
             "columnar_activations",
             "columnar_population_passes",
+            // ADR-0182: the background scrub's closed terminal state.
+            "background_scrub",
         ];
         if fields.len() != EXPECTED_FIELDS.len()
             || EXPECTED_FIELDS
