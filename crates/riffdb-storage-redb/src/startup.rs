@@ -975,14 +975,33 @@ impl RedbStore {
                 snapshot.retained_metadata.history_incarnation(),
                 &full_structural_counts,
             )
+            .map(|checkpoint| {
+                eprintln!(
+                    "DBG-BOUNDED-PRECHECK: registry_current={registry_is_current} checkpoint_seq={}",
+                    checkpoint.checkpoint_commit_sequence
+                );
+                true
+            })
+            .map_err(|reason| {
+                eprintln!(
+                    "DBG-BOUNDED-PRECHECK: registry_current={registry_is_current} checkpoint_refused={reason:?}"
+                );
+                reason
+            })
             .is_ok();
+        eprintln!(
+            "DBG-BOUNDED-CONDS: purpose_startup={} v3_active={v3_active} follower={}",
+            purpose == EvidenceOpenPurpose::Startup,
+            self.shared.is_follower_mode()
+        );
         if purpose == EvidenceOpenPurpose::Startup
             && v3_active
             && checkpoint_admits_bounded
             && !self.shared.is_follower_mode()
         {
             self.shared
-                .validate_bounded_dirty_roots(&transaction, database_id)?;
+                .validate_bounded_dirty_roots(&transaction, database_id)
+                .inspect_err(|error| eprintln!("DBG-BOUNDED-ROOTS-FAIL: {error:?}"))?;
             // Re-validate the bounded retention watermark bindings (never
             // advance) exactly as the full session does; the tombstone chain
             // verification is bounded by the watermark sequence's own chain

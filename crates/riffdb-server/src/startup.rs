@@ -516,10 +516,12 @@ fn run_redb_evidence_session(
 
     let structural_end = timed(StartupStage::StructuralDrain, || {
         drive_structural_evidence(&mut session)
-    })?;
+    })
+    .inspect_err(|error| eprintln!("DBG-STAGE-FAIL structural: {error:?}"))?;
     let validation = timed(StartupStage::CatalogHistory, || {
         validate_catalog_history(&mut session)
-    })?;
+    })
+    .inspect_err(|error| eprintln!("DBG-STAGE-FAIL catalog: {error:?}"))?;
     let (catalog_outcome, historical_end) = validation.into_parts();
     let storage_outcome = timed(StartupStage::EvidenceFinish, || {
         session.finish(structural_end, historical_end)
