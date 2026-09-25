@@ -55,6 +55,10 @@ The subsequent integration also retains main through `f2f4dcb2de6c95a5062c72394f
 including the follower checkpoint fast-path proofs. The intended landing is an
 incremental handoff: register WP-810 on main and retain WP-749 as blocked. It
 does not close either package or amend the archive-presence gate.
+The final integration also includes `1dfb78cf9e40458f540db89d1554d0a0a288879b`,
+which adds recovery-owned-state measurements and the production-scale dirty
+evidence runner. Both runner merges are conflict-free; the archive wait and
+checkpoint observations remain alongside the new startup observations.
 
 #### Integration verification and landing note
 
@@ -79,6 +83,25 @@ These failures concern current startup behavior and are separate from the
 checkpoint/journal latency prerequisite. The baseline reproduction does not
 waive the repository's merge checks. The branch carries no startup repair and
 makes no current full-CI pass claim.
+
+The expanded `cargo test --workspace --all-features --no-fail-fast` run at
+`3ee06023` completes with **13 failures across four suites**. All 13 reproduce
+on a frozen clean checkout of main `f2f4dcb2`; none is unique to the integrated
+branch:
+
+| Suite | Failures | Observed failure |
+| --- | ---: | --- |
+| `p1_riffdbd_restart` | 2 | The checkpoint and migrated-index failures above |
+| `replication_follower` | 9 | Promotion retries, subsequent writes or restart lose storage availability or readiness; the stale-token check observes storage unavailability |
+| `seeded_campaign` | 1 | `corpus::regression_corpus_replays_and_reproduces_its_territory` no longer reaches the pinned restoring territory for seed `0x51c2c067` |
+| `bulk_command_recovery` | 1 | `collection_create_and_delete_are_complete_or_absent_across_process_crash` expects a clean seed to checkpoint before its delete crash arm |
+
+All remaining `ci-all` commands, starting with the real archive CLI checks,
+pass in a separate continuation. This includes generated-client, dependency,
+operator, Helm and source-install checks. The continuation does not turn the
+failed full-CI invocation into a pass. The final main measurement-only merge
+does not supply a repair for these failures; verification source identities
+remain as stated above.
 
 Compatibility: existing durable bytes, checkpoint selection, acknowledgement
 ordering and public APIs remain unchanged by this handoff. The diagnostic

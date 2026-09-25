@@ -115,7 +115,7 @@ def check_dirty_restart(lifecycle: dict[str, Any], label: str) -> None:
     if startup.get("population_table_walk") != "none":
         refuse(f"{label} dirty restart enumerated a population table")
     # PERF-014: the genuine writer kill is evidenced by the atomic outcome and
-    # the matching predeclalled twin.
+    # the matching predeclared twin.
     if dirty.get("matching_clean_twin") is not True:
         refuse(f"{label} dirty recovery did not match its predeclared twin")
     if dirty.get("atomic_outcome") not in ("absent", "committed"):
@@ -126,9 +126,19 @@ def check_dirty_restart(lifecycle: dict[str, Any], label: str) -> None:
         dirty.get("unclean_over_clean_process_to_ready_ratio_millis"),
         f"{label} unclean/clean ratio",
     )
-    # REC-005: the peak recovery-owned heap is stated and within the compiled
-    # ceiling. The memory window reports the process envelope; the recovery-
-    # owned bound is the compiled constant the evidence must not exceed.
+    # REC-005: the peak recovery-owned state is measured by the startup
+    # evidence session itself (the historical plan's locator index plus the
+    # command cache) and must sit within the compiled 64 MiB ceiling. The
+    # process heap envelope is reported beside it; it includes engine caches
+    # and runtime state, so it is not the recovery-owned bound.
+    recovery_owned = integer(
+        startup.get("recovery_owned_bytes"), f"{label} recovery-owned bytes"
+    )
+    if recovery_owned > RECOVERY_HEAP_CEILING:
+        refuse(
+            f"{label} recovery-owned state {recovery_owned} exceeds the "
+            f"{RECOVERY_HEAP_CEILING}-byte ceiling"
+        )
     memory = object_value(dirty.get("memory"), f"{label} dirty memory window")
     integer(memory.get("heap_envelope_bytes"), f"{label} dirty heap envelope")
 

@@ -1597,13 +1597,15 @@ if [[ "$wp705_lifecycle_evidence" == 1 ]]; then
               | type == "number" and . >= 0 and floor == .)
             and $startup.columnar_activations == 0
             and $startup.columnar_population_passes == 0)
-          and (if $lifecycle.scale_checkpoint == "production" then
+          and (if $lifecycle.schema == "riffdb.wp-705-production-clean-lifecycle/v1" then
             $lifecycle.seeded_close.columnar_activations == 0
             and $lifecycle.seeded_close.columnar_population_passes == 0
             and $lifecycle.final_close.columnar_activations == 0
             and $lifecycle.final_close.columnar_population_passes == 0
-          elif $lifecycle.scale_checkpoint == "rows_65536" then
-            $lifecycle.measured_clean_close.columnar_activations == 0
+          elif $lifecycle.schema == "riffdb.wp-705-production-lifecycle/v1" then
+            ($lifecycle.scale_checkpoint == "production"
+              or $lifecycle.scale_checkpoint == "rows_65536")
+            and $lifecycle.measured_clean_close.columnar_activations == 0
             and $lifecycle.measured_clean_close.columnar_population_passes == 0
           else false end)
         end))
