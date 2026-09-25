@@ -5,6 +5,8 @@ status: accepted
 tier: guarantee
 date: 2026-09-05
 accepted: 2026-09-06
+acceptance: 'Amendment 1 accepted 2026-09-25, maintainer, in session: exact text
+  selected ("Accept exact text")'
 requires: [ADR-0050, ADR-0156, ADR-0157, ADR-0179, ADR-0182, ADR-0199]
 amends:
   - ADR-0050 for the additive selector-free storage-scrub operation
@@ -23,7 +25,7 @@ obligations:
   - id: OBL-0203-2
     package: WP-760
     proof: every_public_operation_has_exactly_one_registry_declaration
-    says: Each of the five public receipted-maintenance RPCs has exactly one generated, audit-exempt, gRPC-only registry declaration separate from durable ServiceOperationV1.
+    says: Each of the six public receipted-maintenance RPCs (Amendment 1) has exactly one generated, audit-exempt, gRPC-only registry declaration separate from durable ServiceOperationV1.
 review_triggers:
   - The scrub request, client, or CLI would gain a target, path, namespace, scope, backend, repair, force, skip, readiness, rate, checkpoint, resume, or kind selector.
   - Scrub would bypass the API-neutral service, policy authorization, quiescence, receipt, exact-end validator, or ordinary post-maintenance readiness proof.
@@ -230,3 +232,23 @@ bounded dirty recovery.
   terminalization, reopen, and readiness; compatibility fixtures prove V1/V2
   byte stability, new receipt bytes, corrupt/unknown-version refusal, and
   startup reconciliation.
+
+## Amendment 1 — receipt version and RPC inventory after the archive-restore amendment (Accepted 2026-09-25)
+
+The maintainer accepted this exact text in session on 2026-09-25.
+
+The ADR-0050/0178 archive-restore amendment accepted 2026-09-15 assigned
+offline maintenance receipt format V3 to archive restore and added the public
+receipted-maintenance RPC `RestoreArchivedBackup`. Accordingly:
+
+- Decision 9: wherever this record says scrub writes maintenance receipt V3,
+  read V4. Only scrub writes V4; create/restore remain V1, retire remains V2,
+  archive restore remains V3, and all their bytes and meanings stay frozen. V4
+  carries exactly the V3 properties Decision 9 lists for scrub.
+- Decision 2 and OBL-0203-2: the public receipted-maintenance RPCs are the six
+  `CreateOfflineBackup`, `RestoreOfflineBackup`, `RestoreArchivedBackup`,
+  `RetireOfflineBackup`, `GetOfflineMaintenanceOperation`, and
+  `StartOfflineStorageScrub`, each with exactly one declaration under the
+  unchanged Decision 2 rules.
+
+No other decision changes.
