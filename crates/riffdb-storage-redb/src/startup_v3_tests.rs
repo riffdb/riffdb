@@ -271,6 +271,72 @@ fn actual_v3_bounded_dirty_and_clean_consumption_keep_exact_receipts() {
     }
 }
 
+/// ADR-0182 Decision 1: the bounded dirty header decodes no command history,
+/// yet still proves the administration allocator against the durable tail. A
+/// physical AUDIT row at or beyond the allocator (a sequence the next
+/// administration write would reissue) is an authoritative header finding
+/// before readiness, and the session writes nothing.
+#[test]
+fn bounded_dirty_header_refuses_an_audit_tail_beyond_the_allocator() {
+    let path = TestDatabasePath::new("v3-bounded-dirty-audit-tail");
+    let store = v3_store(&path, database_id(0xd3));
+    let session = store.begin_structural_evidence(inputs()).unwrap();
+    assert!(
+        !session.bounded_dirty_startup_path(),
+        "first open is complete"
+    );
+    drop(finish_v3(session));
+
+    // The valid database takes the bounded dirty path with no header finding.
+    let store = RedbStore::open(&path.0).unwrap();
+    let mut session = store.begin_structural_evidence(inputs()).unwrap();
+    assert!(session.bounded_dirty_startup_path());
+    let (_, findings) = collect_structural(&mut session);
+    assert!(findings.is_empty(), "valid tail: {findings:?}");
+    assert_eq!(session.command_history_rows_decoded(), 0);
+    drop(session);
+
+    let store = RedbStore::open(&path.0).unwrap();
+    let write = store.shared.database.begin_write().unwrap();
+    write
+        .open_table(AUDIT)
+        .unwrap()
+        .insert(
+            keys::encode_audit_key(riffdb_types::AdministrationSequence::new(1_000).unwrap())
+                .as_slice(),
+            b"stray audit row".as_slice(),
+        )
+        .unwrap();
+    write.commit().unwrap();
+    drop(store);
+
+    let store = RedbStore::open(&path.0).unwrap();
+    let epoch = store.shared.durable_commit_epoch();
+    let before = control_bytes(&store.shared);
+    let shared = Arc::clone(&store.shared);
+    let mut session = store.begin_structural_evidence(inputs()).unwrap();
+    assert!(session.bounded_dirty_startup_path());
+    let (_, findings) = collect_structural(&mut session);
+    assert!(
+        findings.iter().any(|finding| {
+            finding.code() == StructuralFindingCode::SequenceDiscontinuity
+                && finding.scope() == StructuralFindingScope::Authoritative
+        }),
+        "the bounded header must refuse an AUDIT tail beyond the allocator: {findings:?}"
+    );
+    assert_eq!(session.command_history_rows_decoded(), 0);
+    drop(session);
+    assert_eq!(
+        shared.durable_commit_epoch(),
+        epoch,
+        "a refused header writes nothing"
+    );
+    assert!(
+        control_bytes(&shared) == before,
+        "a refused header writes nothing"
+    );
+}
+
 #[test]
 fn actual_v3_full_startup_refuses_unknown_source_holds_before_lifecycle_writes() {
     let path = TestDatabasePath::new("v3-startup-source-hold-refusal");

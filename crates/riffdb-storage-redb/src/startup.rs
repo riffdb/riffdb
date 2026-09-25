@@ -712,6 +712,8 @@ pub struct RedbStructuralEvidenceSession {
     /// segment/capsule row during the cache's exact forward `COMMITS` pass.
     embedded_command_authority: BTreeSet<CommitSequence>,
     command_cache_built: bool,
+    /// COMMITS rows decoded into the startup command cache (observation only).
+    command_history_rows_decoded: u64,
     /// Publication facts decoded once from AUDIT and shared by catalog, query
     /// module, reactive module, and suffix-audit validation.
     publication_audits: Option<PublicationAuditCache>,
@@ -912,6 +914,7 @@ impl RedbStore {
                 command_capsules: BTreeMap::new(),
                 embedded_command_authority: BTreeSet::new(),
                 command_cache_built: false,
+                command_history_rows_decoded: 0,
                 publication_audits: None,
                 binding_bundles,
                 entity_chains: None,
@@ -1058,6 +1061,7 @@ impl RedbStore {
                 command_capsules: BTreeMap::new(),
                 embedded_command_authority: BTreeSet::new(),
                 command_cache_built: false,
+                command_history_rows_decoded: 0,
                 publication_audits: None,
                 binding_bundles,
                 entity_chains: None,
@@ -1224,6 +1228,7 @@ impl RedbStore {
             command_capsules: std::collections::BTreeMap::new(),
             embedded_command_authority: BTreeSet::new(),
             command_cache_built: false,
+            command_history_rows_decoded: 0,
             publication_audits: Some(publication_audits),
             binding_bundles,
             entity_chains: None,
@@ -1970,6 +1975,15 @@ impl RedbStructuralEvidenceSession {
         self.structural_total
     }
 
+    /// Test/evidence observability: the COMMITS rows this session decoded
+    /// into its startup command cache. The bounded startup paths report zero
+    /// through the structural exact end. Observation only.
+    #[doc(hidden)]
+    #[must_use]
+    pub fn command_history_rows_decoded(&self) -> u64 {
+        self.command_history_rows_decoded
+    }
+
     /// Test/operator observability: which precondition declined the ADR-0157
     /// bounded path on this open, or `None` when the bounded path was admitted.
     ///
@@ -2226,6 +2240,15 @@ impl RedbStructuralEvidenceSession {
             if self.clean_close_fast {
                 return Ok(None);
             }
+            if self.bounded_dirty_startup {
+                // ADR-0182 Decision 1: no population-sized table is enumerated
+                // before readiness, so the dirty header proves only the bounded
+                // header facts and never builds the command or publication
+                // caches. Gap-free administration continuity and the
+                // last-activation reciprocity stay with the background scrub.
+                let transaction = self.validation_read.as_ref().ok_or_else(invariant)?;
+                return inspect_header(transaction, self.database_id, HeaderProof::BoundedDirty);
+            }
             // Allocator continuity and the later command/audit phases need the
             // same exact command graph. Build it once (suffix-only under a
             // validated checkpoint) and share it instead of decoding every
@@ -2236,9 +2259,11 @@ impl RedbStructuralEvidenceSession {
             return inspect_header(
                 transaction,
                 self.database_id,
-                self.checkpoint.as_ref(),
-                &self.command_audits,
-                self.publication_audits.as_ref().ok_or_else(invariant)?,
+                HeaderProof::Complete {
+                    checkpoint: self.checkpoint.as_ref(),
+                    command_audits: &self.command_audits,
+                    publication_audits: self.publication_audits.as_ref().ok_or_else(invariant)?,
+                },
             );
         }
         if self.structural_cursors.is_none() {
@@ -2275,10 +2300,14 @@ impl RedbStructuralEvidenceSession {
             let key = std::str::from_utf8(&key).map_err(|_| corrupt())?;
             return Ok(inspect_meta_row(key, &value, self.database_id));
         }
-        if self.clean_close_fast && phase == 1 {
+        // Both bounded startup paths inspect the catalog rows self-contained;
+        // the activation-audit reciprocity is the complete path's and the
+        // scrub's, since it reads the whole administration stream.
+        let bounded = self.clean_close_fast || self.bounded_dirty_startup;
+        if bounded && phase == 1 {
             return inspect_clean_close_bundle_row(&key, &value);
         }
-        if self.clean_close_fast && phase == 2 {
+        if bounded && phase == 2 {
             return inspect_clean_close_active_catalog_row(
                 self.validation_read.as_ref().ok_or_else(invariant)?,
                 &key,
@@ -2432,6 +2461,7 @@ impl RedbStructuralEvidenceSession {
         let mut audits = std::collections::BTreeMap::new();
         let mut embedded_authority = BTreeSet::new();
         let mut retained_bytes = 0usize;
+        let mut decoded_rows = 0_u64;
         let checkpoint_sequence = self
             .checkpoint
             .as_ref()
@@ -2449,6 +2479,7 @@ impl RedbStructuralEvidenceSession {
         };
         for entry in &mut rows {
             let (key, value) = entry.map_err(precommit_storage_error)?;
+            decoded_rows = decoded_rows.saturating_add(1);
             retained_bytes = retained_bytes
                 .checked_add(value.value().len())
                 .ok_or_else(limit_exceeded)?;
@@ -2536,6 +2567,7 @@ impl RedbStructuralEvidenceSession {
             }
         }
         self.command_audit_bytes = retained_bytes;
+        self.command_history_rows_decoded = decoded_rows;
         self.command_audits = audits;
         self.command_capsules = capsules;
         self.embedded_command_authority = embedded_authority;
@@ -3824,15 +3856,28 @@ fn table_len(
         .map_err(precommit_storage_error)
 }
 
+/// Which header proof a structural session owes before its first row.
+enum HeaderProof<'a> {
+    /// The complete path: exact gap-free administration continuity and the
+    /// last-activation reciprocity, over the session's cached evidence.
+    Complete {
+        checkpoint: Option<&'a crate::validated_prefix::ActiveCheckpoint>,
+        command_audits: &'a std::collections::BTreeMap<
+            riffdb_types::AdministrationSequence,
+            CachedCommandAudit,
+        >,
+        publication_audits: &'a PublicationAuditCache,
+    },
+    /// The ADR-0182 bounded dirty path: every check is a point lookup, a
+    /// table-length read, or the bounded META walk. The administration
+    /// allocator is proven against the durable tail only.
+    BoundedDirty,
+}
+
 fn inspect_header(
     transaction: &ReadTransaction,
     database_id: DatabaseId,
-    checkpoint: Option<&crate::validated_prefix::ActiveCheckpoint>,
-    command_audits: &std::collections::BTreeMap<
-        riffdb_types::AdministrationSequence,
-        CachedCommandAudit,
-    >,
-    publication_audits: &PublicationAuditCache,
+    proof: HeaderProof<'_>,
 ) -> Result<Option<StructuralFinding>, StorageError> {
     let meta = transaction.open_table(META).map_err(table_error)?;
     let mut seen = BTreeSet::new();
@@ -3872,14 +3917,22 @@ fn inspect_header(
         Ok(value) => value,
         Err(code) => return Ok(Some(authoritative(code))),
     };
-    if !application_allocator_matches(transaction, application)?
-        || !administration_allocator_matches(
-            transaction,
-            administration,
+    let administration_matches = match &proof {
+        HeaderProof::Complete {
             checkpoint,
             command_audits,
-        )?
-    {
+            ..
+        } => administration_allocator_matches(
+            transaction,
+            administration,
+            *checkpoint,
+            command_audits,
+        )?,
+        HeaderProof::BoundedDirty => {
+            administration_allocator_matches_tail(transaction, administration)?
+        }
+    };
+    if !application_allocator_matches(transaction, application)? || !administration_matches {
         return Ok(Some(authoritative(
             StructuralFindingCode::SequenceDiscontinuity,
         )));
@@ -3893,11 +3946,15 @@ fn inspect_header(
     {
         return Ok(Some(authoritative(StructuralFindingCode::MissingCrossLink)));
     }
-    if !active_catalog_matches_last_activation_cached(
-        transaction,
-        publication_audits,
-        active.as_ref(),
-    )? {
+    if let HeaderProof::Complete {
+        publication_audits, ..
+    } = &proof
+        && !active_catalog_matches_last_activation_cached(
+            transaction,
+            publication_audits,
+            active.as_ref(),
+        )?
+    {
         return Ok(Some(authoritative(
             StructuralFindingCode::CrossLinkMismatch,
         )));
@@ -8314,6 +8371,59 @@ fn physical_audit_row_repeats_derived(
     };
     Ok(physical.into_parts().0
         == riffdb_storage_api::StoredAdministrationAuditRecordV1::Service(derived.clone()))
+}
+
+/// The bounded dirty header's administration allocator proof: the allocator
+/// is exactly one past the highest administration sequence the durable tail
+/// holds, read from the last physical AUDIT row and the head command's
+/// started and terminal audits. The V3 roots already bind the allocator to the
+/// changelog tail frontier; this binds it to the rows. Both carriers allocate
+/// through the one ordered writer, so the tail holds the maximum. Gap-free
+/// continuity below the tail is the complete path's and the scrub's proof.
+fn administration_allocator_matches_tail(
+    transaction: &ReadTransaction,
+    allocator: riffdb_storage_api::AdministrationSequenceAllocator,
+) -> Result<bool, StorageError> {
+    let audit = transaction.open_table(AUDIT).map_err(table_error)?;
+    let mut highest = match audit.last().map_err(precommit_storage_error)? {
+        Some((key, _)) => match keys::decode_audit_key(key.value()) {
+            Ok(sequence) => Some(sequence),
+            Err(_) => return Ok(false),
+        },
+        None => None,
+    };
+    let commits = transaction.open_table(COMMITS).map_err(table_error)?;
+    let events = transaction.open_table(EVENTS).map_err(table_error)?;
+    let head = match command_authority_head(&commits, &events) {
+        Ok(head) => head,
+        Err(error) if error.kind() == StorageErrorKind::CorruptData => return Ok(false),
+        Err(error) => return Err(error),
+    };
+    // A head row that is not a command capsule carries no embedded audits:
+    // its administration records are physical AUDIT rows, already read above.
+    let member = match head.map(|head| command_member_at(&commits, &events, head)) {
+        None => None,
+        Some(Ok(member)) => member,
+        Some(Err(error)) if error.kind() == StorageErrorKind::CorruptData => return Ok(false),
+        Some(Err(error)) => return Err(error),
+    };
+    if let Some(member) = member {
+        let base = member.base();
+        for sequence in [
+            base.started_audit().administration_sequence(),
+            base.terminal_audit().administration_sequence(),
+        ] {
+            highest = highest.max(Some(sequence));
+        }
+    }
+    let exact = match highest {
+        None => riffdb_storage_api::AdministrationSequenceAllocator::initial(),
+        Some(sequence) => sequence.checked_next().map_or(
+            riffdb_storage_api::AdministrationSequenceAllocator::Exhausted,
+            riffdb_storage_api::AdministrationSequenceAllocator::next,
+        ),
+    };
+    Ok(allocator == exact)
 }
 
 fn administration_allocator_matches(

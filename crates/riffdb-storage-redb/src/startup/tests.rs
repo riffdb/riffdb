@@ -394,7 +394,7 @@ pub(crate) fn finish_structural(
     session: &mut RedbStructuralEvidenceSession,
 ) -> RedbStructuralEvidenceEnd {
     let (end, findings) = collect_structural(session);
-    assert!(findings.is_empty());
+    assert!(findings.is_empty(), "structural findings: {findings:?}");
     end
 }
 
