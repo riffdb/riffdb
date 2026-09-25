@@ -812,6 +812,19 @@ impl SharedRedb {
         // binding ever written.
         const DIRTY_BOUNDED_ROOT_LABEL: [u8; 32] = [0xdd; 32];
         crate::clean_close::bounded_state_binding_hash(transaction, DIRTY_BOUNDED_ROOT_LABEL)?;
+        // The bounded outbox-recovery skip needs the same bounded probe the
+        // clean path runs: only a proven-absent result permits the skip, and
+        // the probe is bounded and never reaches the population indexes.
+        match self.probe_outbox_delivering(transaction)? {
+            OutboxDeliveringProbe::NoneObserved => {
+                self.outbox_delivering_proven_absent
+                    .store(true, Ordering::Release);
+            }
+            _ => {
+                self.outbox_delivering_proven_absent
+                    .store(false, Ordering::Release);
+            }
+        }
         Ok(())
     }
 
