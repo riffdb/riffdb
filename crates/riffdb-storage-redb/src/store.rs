@@ -3008,18 +3008,13 @@ impl RedbStore {
 
         // ADR-0182 / REC-005: the compact-encoding migration scans every row
         // of every byte table, which is a population enumeration before
-        // readiness. Under the current registry every durable row was written
-        // compact by construction (the writer's V2 encoding), so the scan can
-        // only ever confirm what the registry already proves. Run it only for
-        // pre-current registries, where non-compact rows can actually exist.
-        // ADR-0182 / REC-005: the compact-encoding migration scans every row
-        // of every byte table, which is a population enumeration before
-        // readiness. Under the current registry every durable row was written
-        // compact by construction (the writer's V2 encoding), so the scan can
-        // only ever confirm what the registry already proves. Run it only for
-        // pre-current registries, where non-compact rows can actually exist.
+        // readiness. Skip it only when every durable row was written compact
+        // by construction — a V2 format under the current record registry.
+        // A V1 format always needs the compact migration (its rows are
+        // string-encoded), and a pre-current V2 registry can carry non-compact
+        // rows from before a rotation.
         let require_compact = format == StorageFormatVersion::V2;
-        if registry_migration != RegistryMigration::Current {
+        if !require_compact || registry_migration != RegistryMigration::Current {
             migrate_string_table(&self.shared, META, require_compact)?;
             for table in BYTE_TABLES {
                 migrate_byte_table(&self.shared, table, require_compact)?;

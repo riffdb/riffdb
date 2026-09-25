@@ -18,9 +18,10 @@ fn initialized(path: &TestDatabasePath) {
         ),
     )
     .unwrap();
-    // ADR-0182: the open below is the bounded dirty startup (V3 active, no
-    // clean certificate yet), so it receipts [activation, dirty] and leaves
-    // no validated-prefix checkpoint for the prune to invalidate.
+    // The open below is the store's FIRST open under the current record
+    // registry, so it takes the complete path and writes the validated-prefix
+    // checkpoint: receipts [activation, prefix-checkpoint, dirty]. The prune
+    // below then invalidates that checkpoint in its first transaction.
     drop(open_cleanly(store));
 }
 
@@ -43,7 +44,7 @@ fn actual_offline_prune_receipts_preserve_exact_deletions_and_watermark_atomicit
     let path = TestDatabasePath::new("v3-offline-prune");
     initialized(&path);
     let original = receipts(&path.0);
-    assert_eq!(original.len(), 2);
+    assert_eq!(original.len(), 3);
     let commands = {
         let database = redb::Database::open(&path.0).unwrap();
         let read = database.begin_read().unwrap();
@@ -63,13 +64,21 @@ fn actual_offline_prune_receipts_preserve_exact_deletions_and_watermark_atomicit
     let after = receipts(&path.0);
     assert_eq!(
         after.len(),
-        original.len() + 1,
-        "ADR-0182: the bounded dirty startup wrote no validated-prefix checkpoint, so only the prune itself needs a receipt"
+        original.len() + 2,
+        "checkpoint invalidation and prune each need a receipt"
     );
     for (before, after) in original.iter().zip(after.iter()) {
         assert_eq!(before.encode().unwrap(), after.encode().unwrap());
     }
-    let pruned = &after[2];
+    let invalidation = &after[3];
+    assert_eq!(invalidation.attribution(), A::RetentionPrune);
+    assert_eq!(invalidation.mutations().len(), 1);
+    assert_eq!(
+        invalidation.mutations()[0].namespace(),
+        N::ValidatedPrefixCheckpoint
+    );
+    assert!(invalidation.mutations()[0].value().is_none());
+    let pruned = &after[4];
     assert_eq!(pruned.attribution(), A::RetentionPrune);
     assert_eq!(pruned.mutations().len(), 4);
     for (key, value) in &commands[..2] {
@@ -125,17 +134,17 @@ fn actual_offline_prune_receipts_preserve_exact_deletions_and_watermark_atomicit
     let complete = receipts(&path.0);
     assert_eq!(
         complete.len(),
-        3,
+        6,
         "absent checkpoint is not another authoritative transition"
     );
     for (before, after) in after.iter().zip(complete.iter()) {
         assert_eq!(before.encode().unwrap(), after.encode().unwrap());
     }
-    // The post-prune open is the ADR-0182 bounded dirty startup (no clean
-    // certificate), which reports bounded startup at the ports level even
-    // though no clean-close fast path was taken.
+    // The prune deleted the validated-prefix checkpoint, so the post-prune
+    // open has no active checkpoint and takes the complete path again (no
+    // clean-certificate fast path, no bounded dirty path).
     let ports = open_cleanly(RedbStore::open(&path.0).unwrap());
-    assert!(ports.clean_close_fast_startup());
+    assert!(!ports.clean_close_fast_startup());
 }
 
 #[test]
@@ -164,18 +173,18 @@ fn actual_v3_prune_preserves_per_transaction_refusal_unknown_and_retry_semantics
                 }
             );
             let expected = match (operation, committed) {
-                (RedbTestOperation::RetentionPruneCheckpointDelete, false) => 2,
-                (RedbTestOperation::RetentionPruneSubrange, true) => 4,
-                _ => 3,
+                (RedbTestOperation::RetentionPruneCheckpointDelete, false) => 3,
+                (RedbTestOperation::RetentionPruneSubrange, true) => 5,
+                _ => 4,
             };
             assert_eq!(receipts(&path.0).len(), expected);
             let offline = RedbOfflineRetention::bind(&path.0);
             assert_eq!(
                 offline.status().unwrap().watermark_sequence,
-                if expected == 4 { 2 } else { 0 }
+                if expected == 5 { 2 } else { 0 }
             );
             offline.prune_to(2).unwrap();
-            assert_eq!(receipts(&path.0).len(), 4);
+            assert_eq!(receipts(&path.0).len(), 5);
         }
     }
 }
@@ -192,10 +201,10 @@ fn actual_v3_prune_process_child() {
 #[test]
 fn actual_v3_prune_crashes_keep_checkpoint_invalidation_and_subrange_atomic() {
     for (edge, expected) in [
-        ("checkpoint-staged", 2),
-        ("checkpoint-committed", 3),
-        ("subrange-staged", 3),
-        ("subrange-committed", 4),
+        ("checkpoint-staged", 3),
+        ("checkpoint-committed", 4),
+        ("subrange-staged", 4),
+        ("subrange-committed", 5),
     ] {
         let path = TestDatabasePath::new("v3-prune-crash");
         initialized(&path);
@@ -225,13 +234,13 @@ fn actual_v3_prune_crashes_keep_checkpoint_invalidation_and_subrange_atomic() {
             let offline = crate::RedbOfflineRetention::bind(&path.0);
             assert_eq!(
                 offline.status().unwrap().watermark_sequence,
-                if expected == 4 { 2 } else { 0 }
+                if expected == 5 { 2 } else { 0 }
             );
         }
         crate::RedbOfflineRetention::bind(&path.0)
             .prune_to(2)
             .unwrap();
-        assert_eq!(receipts(&path.0).len(), 4);
+        assert_eq!(receipts(&path.0).len(), 5);
         drop(open_cleanly(RedbStore::open(&path.0).unwrap()));
     }
 }

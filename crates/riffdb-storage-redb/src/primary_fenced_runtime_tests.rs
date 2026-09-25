@@ -354,19 +354,46 @@ fn fenced_v2_clean_reopen_validates_retained_admission_without_repair() {
             if corruption == "intact" {
                 let ports =
                     crate::startup::open_validated_source_fixture(&path.0, profile, inputs());
-                assert!(!ports.clean_close_fast_startup());
+                // ADR-0156 Amendment 6: the V2 source declines the V1 clean
+                // certificate; the reopen takes the ADR-0182 bounded dirty
+                // path instead, so no clean CERTIFICATE was trusted.
+                assert!(!ports.clean_certificate_startup());
                 assert_eq!(
                     ports.read_replication_primary_admission().unwrap().fence(),
                     Some(&fence)
                 );
                 continue;
             }
+            // ADR-0182 layering: the bounded dirty session does not decode
+            // the admission root (it is not one of the bounded binding's
+            // meta keys); the corrupt admission is refused at operational
+            // activation, where the checked source admission is read for
+            // every V2 source. Drive to activation and require the refusal.
+            // ADR-0182 layering: a semantically contradictory admission
+            // (active where the retained fence evidence says fenced, or a
+            // foreign lineage) is decodable and lineage-consistent enough for
+            // the bounded path's root checks, so the bounded dirty open
+            // ADMITS it; the background scrub's retained-history validation
+            // compares the admission against the retained fence evidence and
+            // refuses. The fenced runtime independently refuses writes. The
+            // corruption is never repaired.
             let error = match RedbStore::open_with_commit_profile(&path.0, profile) {
                 Err(error) => error,
-                Ok(store) => match store.begin_structural_evidence(inputs()) {
+                Ok(store) => {
+                    let shared = std::sync::Arc::clone(&store.shared);
+                    match store.begin_structural_evidence(inputs()) {
                     Err(error) => error,
-                    Ok(_) => panic!("{corruption} must not grant source startup"),
-                },
+                    Ok(_) => match crate::startup::begin_background_scrub_on_shared(
+                        &shared,
+                        inputs(),
+                    ) {
+                        Err(error) => error,
+                        Ok(_) => panic!(
+                            "{corruption}: the scrub must refuse the contradictory admission"
+                        ),
+                    },
+                    }
+                }
             };
             assert_eq!(error.kind(), StorageErrorKind::CorruptData, "{corruption}");
             let raw = redb::Database::open(&path.0).unwrap();

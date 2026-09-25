@@ -173,14 +173,12 @@ fn actual_fresh_activation_crashes_leave_exact_inactive_or_complete_v3_and_retry
         // A crash before the activation commit leaves the database pre-V3, so
         // this retry activates through the complete path and receipts the
         // activation, the validated-prefix checkpoint, and DIRTY (3). A crash
-        // after the activation commit leaves V3 active, so the retry takes the
-        // ADR-0182 bounded dirty path: activation plus DIRTY only (2), with no
-        // checkpoint receipt.
-        assert_eq!(
-            after.len(),
-            if edge == "committed" { 2 } else { 3 },
-            "edge {edge}"
-        );
+        // after the activation commit leaves V3 active under the current
+        // registry but with NO validated-prefix checkpoint (the crash preceded
+        // any complete walk), so the retry still takes the complete path and
+        // writes the checkpoint: activation plus prefix-checkpoint plus DIRTY
+        // (3) in every arm.
+        assert_eq!(after.len(), 3, "edge {edge}");
         if let Some(original) = original {
             assert_eq!(after[0].encode().unwrap(), original);
         }
@@ -198,29 +196,54 @@ fn actual_v3_bounded_dirty_and_clean_consumption_keep_exact_receipts() {
         .begin_structural_evidence(inputs())
         .expect("V3 structural session");
     assert!(!session.clean_close_fast);
-    // ADR-0182: the dirty open is the bounded path — journal-suffix replay
-    // plus bounded-root validation. It writes no validated-prefix checkpoint
-    // (no complete validation happened), so the receipt set is exactly the
-    // activation plus the DIRTY consumption, and the epoch advances once.
+    // This is the database's FIRST open under the current record registry, so
+    // it takes the complete path and WRITES the validated-prefix checkpoint
+    // (ADR-0182 bounded-dirty preconditions): the receipt set is exactly the
+    // activation, the prefix-checkpoint, and the DIRTY consumption, and the
+    // epoch advances twice.
+    assert!(!session.bounded_dirty_startup_path());
+    let ports = finish_v3(session);
+    assert_eq!(
+        ports.shared.durable_commit_epoch(),
+        initial_epoch + 2,
+        "one prefix-checkpoint and one DIRTY transaction on the first complete open"
+    );
+    let first = receipts(&ports.shared);
+    assert_eq!(first.len(), 3);
+    assert_eq!(first[0].encode().unwrap(), original);
+    assert_eq!(first[0].attribution(), A::V3Activation);
+    assert_eq!(first[1].attribution(), A::ValidatedPrefixCheckpoint);
+    assert_eq!(first[2].attribution(), A::DirtyActivation);
+    drop(ports);
+
+    // A LATER dirty open (checkpoint now present, no clean certificate) takes
+    // the ADR-0182 bounded dirty path: journal-suffix replay plus bounded-root
+    // validation. It writes no validated-prefix checkpoint (no complete
+    // validation happened), so it adds exactly one DIRTY receipt and advances
+    // the epoch once.
+    let store = RedbStore::open(&path.0).unwrap();
+    let session = store.begin_structural_evidence(inputs()).unwrap();
+    assert!(!session.clean_close_fast);
     assert!(session.bounded_dirty_startup_path());
     let ports = finish_v3(session);
     assert_eq!(
         ports.shared.durable_commit_epoch(),
-        initial_epoch + 1,
+        1,
         "one DIRTY transaction and no prefix checkpoint on the bounded dirty path"
     );
-    let first = receipts(&ports.shared);
-    assert_eq!(first.len(), 2);
-    assert_eq!(first[0].encode().unwrap(), original);
-    assert_eq!(first[0].attribution(), A::V3Activation);
-    assert_eq!(first[1].attribution(), A::DirtyActivation);
+    let bounded = receipts(&ports.shared);
+    assert_eq!(bounded.len(), 4);
+    for (before, after) in first.iter().zip(bounded.iter()) {
+        assert_eq!(before.encode().unwrap(), after.encode().unwrap());
+    }
+    assert_eq!(bounded.last().unwrap().attribution(), A::DirtyActivation);
     ports.write_clean_close_lifecycle().unwrap();
     let closed = receipts(&ports.shared);
-    assert_eq!(closed.len(), 3);
-    assert_eq!(closed[2].attribution(), A::CleanClose);
+    assert_eq!(closed.len(), 5);
+    assert_eq!(closed[4].attribution(), A::CleanClose);
     drop(ports);
 
-    for expected_len in [4, 6] {
+    for expected_len in [6, 8] {
         let store = RedbStore::open(&path.0).unwrap();
         let session = store.begin_structural_evidence(inputs()).unwrap();
         assert!(
@@ -479,29 +502,32 @@ fn actual_v3_startup_and_scrub_refuse_missing_or_corrupt_interior_history_before
         let path = TestDatabasePath::new("v3-startup-interior-refusal");
         let store = v3_store(&path, database_id(0xd2));
         let ports = finish_v3(store.begin_structural_evidence(inputs()).unwrap());
-        assert_eq!(receipts(&ports.shared).len(), 2);
+        // The first open under the current registry is the complete path: the
+        // receipt set is [activation, prefix-checkpoint, dirty].
+        assert_eq!(receipts(&ports.shared).len(), 3);
         let write = ports.shared.database.begin_write().unwrap();
         {
             let mut history = write
                 .open_table(crate::changelog_v3_activation::HISTORY)
                 .unwrap();
-            // The bounded receipt set is [activation, dirty]; the dirty
-            // receipt is the tail. Arm 0 removes the interior activation row
-            // (a gap the bounded roots read cannot see); arm 1 replaces the
-            // interior row with undecodable bytes; arm 2 corrupts the tail
-            // row itself, which the bounded roots read must refuse.
+            // The complete receipt set is [activation, prefix-checkpoint,
+            // dirty]; the dirty receipt is the tail. Arm 0 removes the interior
+            // activation row (a gap the bounded roots read cannot see); arm 1
+            // replaces the interior prefix-checkpoint row with undecodable
+            // bytes; arm 2 corrupts the tail row itself, which the bounded
+            // roots read must refuse.
             match arm {
                 0 => {
                     history.remove(1u64.to_be_bytes().as_slice()).unwrap();
                 }
                 1 => {
                     history
-                        .insert(1u64.to_be_bytes().as_slice(), b"invalid receipt".as_slice())
+                        .insert(2u64.to_be_bytes().as_slice(), b"invalid receipt".as_slice())
                         .unwrap();
                 }
                 _ => {
                     history
-                        .insert(2u64.to_be_bytes().as_slice(), b"invalid receipt".as_slice())
+                        .insert(3u64.to_be_bytes().as_slice(), b"invalid receipt".as_slice())
                         .unwrap();
                 }
             }
@@ -630,14 +656,17 @@ fn actual_v3_startup_process_crashes_recover_complete_prefix_and_lifecycle_recei
         assert_eq!(after.last().unwrap().attribution(), A::DirtyActivation);
         assert!(after.len() > expected, "edge {edge}");
     }
-    // The lifecycle edges crash the bounded dirty startup's own DIRTY and
-    // CLEAN lifecycle receipts on a V3-active database: the receipt set is
-    // [activation, dirty, clean] with no checkpoint receipt.
+    // The lifecycle edges crash the complete first open's own DIRTY and the
+    // CLEAN lifecycle receipts on a V3-active database: the first open under
+    // the current registry is the complete path (it writes the
+    // validated-prefix checkpoint first), so the receipt set is [activation,
+    // prefix-checkpoint, dirty, clean] and the DIRTY/CLEAN edges land after
+    // the committed checkpoint receipt.
     for (edge, expected) in [
-        ("dirty-staged", 1),
-        ("dirty-committed", 2),
-        ("clean-staged", 2),
-        ("clean-committed", 3),
+        ("dirty-staged", 2),
+        ("dirty-committed", 3),
+        ("clean-staged", 3),
+        ("clean-committed", 4),
     ] {
         let path = TestDatabasePath::new("v3-actual-startup-crash");
         let store = v3_store(&path, database_id(0xd3));

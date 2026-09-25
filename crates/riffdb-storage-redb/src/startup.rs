@@ -960,11 +960,12 @@ impl RedbStore {
             meta.get(META_RECORD_REGISTRY)
                 .map_err(precommit_storage_error)?
                 .is_some_and(|encoded| {
-                    riffdb_storage_api::decode_record_registry_v2(encoded.value())
-                        .is_ok_and(|registry| {
+                    riffdb_storage_api::decode_record_registry_v2(encoded.value()).is_ok_and(
+                        |registry| {
                             *registry.value()
                                 == riffdb_storage_api::proto_codec::current_record_registry_digest()
-                        })
+                        },
+                    )
                 })
         };
         let checkpoint_admits_bounded = registry_is_current
