@@ -1,6 +1,9 @@
 # ADR-0119: Compiler-Owned Workflow Reconstitution for Portable Reimport
 
 - **Status:** Accepted
+- **Struck obligations (WP-758):**
+  - Source: `6c2244ec2c5e40d10ee9f52ffcd6dcba668264c0419a1367666222660108bbc1`. Reason: Historical prerequisite or allocation checkpoint for an already implemented package; the original ordering instruction remains in the decision history and is not unfinished implementation work. Current identity and scope rules remain mandatory.
+
 - **Direction approved:** 2026-08-13
 - **Exact text accepted:** Yes — 2026-08-13, exact amended text in `e22cfa48`
 - **Decision deadline:** Before WP-599 changes workflow grammar/IR, capability

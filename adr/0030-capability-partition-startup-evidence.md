@@ -1,6 +1,10 @@
 # ADR-0030: Capability Partition Startup Evidence
 
 - **Status:** Accepted
+- **Struck obligations (WP-758):**
+  - Source: `e60dd36ffb54eb278a46be1350d5547cce5e06d15ebd1d62b791e4d4a55dfcec`. Reason: Historical ownership constraint on the coordinated startup/public-surface correction; the shared semantic ownership boundary remains authoritative and this clause is not separate unfinished implementation work.
+  - Source: `0e8261bb3ad515f6b1e7ebff9beb5d097220bd78c0a929a066c4c77e89da25f9`. Reason: Historical ownership constraint on the coordinated startup/public-surface correction; the shared semantic ownership boundary remains authoritative and this clause is not separate unfinished implementation work.
+
 - **Direction approved:** 2026-07-21
 - **Exact text accepted:** 2026-07-21, amended 2026-07-22
 - **Accepted:** 2026-07-21

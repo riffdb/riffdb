@@ -1076,9 +1076,9 @@ impl RootValidationReadPlan {
 ///
 /// A write is guarded when a `require`, or the value of any write to the same
 /// binding, reads one of that binding's stored fields: commit-time revalidation
-/// then refuses the command if the record changed under it. A write that
-/// constrains nothing is last-writer-wins, which is legitimate but must be
-/// declared rather than inferred (ADR-0256).
+/// then refuses the command if the record changed under it. A compiler-proven
+/// same-root compare-and-increment revision fence also guards child writes.
+/// A write with neither protection must declare last-writer-wins (ADR-0256).
 #[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
 pub enum WriteGuard {
     /// Spelled `set`: the command constrains this record's prior value.

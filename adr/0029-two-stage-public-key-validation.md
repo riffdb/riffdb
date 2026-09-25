@@ -1,6 +1,12 @@
 # ADR-0029: Two-Stage Public Key Validation
 
 - **Status:** Accepted
+- **Obligations (WP-758):**
+  - `OBL-0029-1` Source: `b8c0e899a3952294ad3c3476c518ffaee89c5c8a1eb5979f4485414bf7a66d11`. Proof: `explicit_capability_partition_validation_precedes_policy_and_token_issuance`.
+
+- **Struck obligations (WP-758):**
+  - Source: `a042f54154f20dae1577890fe16cf4a64b92edfe6706f5ef7ac06c348dbeb431`. Reason: Historical ownership constraint on the coordinated startup/public-surface correction; the shared semantic ownership boundary remains authoritative and this clause is not separate unfinished implementation work.
+
 - **Direction approved:** 2026-07-21
 - **Exact text accepted:** 2026-07-21
 - **Requires:** ADR-0007, ADR-0009, ADR-0011, ADR-0016, and ADR-0028

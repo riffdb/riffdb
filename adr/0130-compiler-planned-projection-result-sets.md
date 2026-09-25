@@ -1,6 +1,14 @@
 # ADR-0130: Compiler-Planned Projection Result Sets and Snapshot-Aligned Composition
 
 - **Status:** Accepted
+- **Obligations (WP-758):**
+  - `OBL-0130-1` Source: `e6cf817a1842ed88f1b9f4185dc55c166d3f7f1dbe16e9c02cebae6e4dd23b85`. Proof: `columnar_provider_descriptor_matches_real_reference_engine_contract`, `vector_provider_descriptor_matches_real_exact_and_ann_engine_contracts`, `another_organization_cannot_change_results_or_graph_statistics`.
+
+- **Struck obligations (WP-758):**
+  - Source: `c4186d2b0315fbefb511b6225491ebe8a06c41242c1b1102998911bb56dc41fe`. Reason: The named successor identities have been allocated and registered; current compatibility and topology checks govern them, while the original pre-merge allocation instruction is historical.
+  - Source: `b413c922d45043b7239141a8fca4d33689dbb9e52c44ebd12f1d4cc7164f23c4`. Reason: This prohibition scoped the completed descriptor-only WP-645 foundation; it remains part of that historical boundary and is not a deferred BM25 implementation promise.
+  - Source: `9660754cc5350c610a10793d902a661707271f493b1cc4889ac92d0454027ffe`. Reason: Historical prerequisite or allocation checkpoint for an already implemented package; the original ordering instruction remains in the decision history and is not unfinished implementation work. Current identity and scope rules remain mandatory.
+
 - **Direction approved:** 2026-08-16 (maintainer, in session)
 - **Exact text accepted:** 2026-08-16 (maintainer, as written)
 - **Administrative package renumbering accepted:** 2026-08-17 (maintainer),

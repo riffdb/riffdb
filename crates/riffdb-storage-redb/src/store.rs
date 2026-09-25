@@ -352,6 +352,10 @@ pub(crate) struct SharedRedb {
     /// Set only by the verified ADR-0157 startup handoff. Operational
     /// composition uses it to keep rebuildable population accelerators cold.
     pub(crate) bounded_clean_startup: AtomicBool,
+    /// True only for the ADR-0157 verified clean-certificate startup (the
+    /// closed health mode `clean_certificate`); false on the ADR-0182 bounded
+    /// dirty path, which reports `complete_validation`.
+    pub(crate) clean_certificate_startup: AtomicBool,
     durable_commit_epoch: AtomicU64,
     /// Even values name stable redb roots; odd values mean an engine commit is
     /// in flight or visible but has not yet published its exact root identity.
@@ -490,6 +494,10 @@ impl RedbCommitProfile {
 impl SharedRedb {
     pub(crate) fn is_follower_mode(&self) -> bool {
         self.open_mode == OpenMode::Follower
+    }
+
+    pub(crate) fn is_source_mode(&self) -> bool {
+        self.open_mode == OpenMode::Source
     }
 
     pub(crate) fn cannot_serve_command_commit(&self) -> bool {
@@ -783,6 +791,41 @@ impl SharedRedb {
             self.note_clean_close_declined(reason);
         }
         Ok(verdict)
+    }
+
+    /// ADR-0182 bounded dirty startup: re-validate the same bounded roots the
+    /// clean path's binding verifier checks — the fixed meta roots, the
+    /// singleton active catalog, and every active query-module pointer and
+    /// body — without comparing the binding against any certificate and
+    /// without the clean-close journal boundary, which a dirty journal never
+    /// has (its suffix was already recovered at engine open). Population rows
+    /// are validated locally on first access; the background scrub owns the
+    /// complete exact-end walk.
+    pub(crate) fn validate_bounded_dirty_roots(
+        &self,
+        transaction: &ReadTransaction,
+        _database_id: DatabaseId,
+    ) -> Result<(), StorageError> {
+        // The journal digest component of the clean binding is irrelevant
+        // here: no certificate comparison follows. A fixed domain-separated
+        // label keeps the bounded-root preimage distinct from every clean
+        // binding ever written.
+        const DIRTY_BOUNDED_ROOT_LABEL: [u8; 32] = [0xdd; 32];
+        crate::clean_close::bounded_state_binding_hash(transaction, DIRTY_BOUNDED_ROOT_LABEL)?;
+        // The bounded outbox-recovery skip needs the same bounded probe the
+        // clean path runs: only a proven-absent result permits the skip, and
+        // the probe is bounded and never reaches the population indexes.
+        match self.probe_outbox_delivering(transaction)? {
+            OutboxDeliveringProbe::NoneObserved => {
+                self.outbox_delivering_proven_absent
+                    .store(true, Ordering::Release);
+            }
+            _ => {
+                self.outbox_delivering_proven_absent
+                    .store(false, Ordering::Release);
+            }
+        }
+        Ok(())
     }
 
     fn verify_clean_close_lifecycle_inner(
@@ -2368,6 +2411,7 @@ impl RedbStore {
                 engine_repaired_at_open: repair_observed.load(Ordering::Acquire),
                 engine_initialized_at_open: initialize_marker_witness.is_some(),
                 bounded_clean_startup: AtomicBool::new(false),
+                clean_certificate_startup: AtomicBool::new(false),
                 durable_commit_epoch: AtomicU64::new(0),
                 durable_root_publication: AtomicU64::new(0),
                 durable_root_publication_wait: Mutex::new(()),
@@ -2975,10 +3019,19 @@ impl RedbStore {
             install_validated_prefix_entity_heads_table(&self.shared)?;
         }
 
+        // ADR-0182 / REC-005: the compact-encoding migration scans every row
+        // of every byte table, which is a population enumeration before
+        // readiness. Skip it only when every durable row was written compact
+        // by construction — a V2 format under the current record registry.
+        // A V1 format always needs the compact migration (its rows are
+        // string-encoded), and a pre-current V2 registry can carry non-compact
+        // rows from before a rotation.
         let require_compact = format == StorageFormatVersion::V2;
-        migrate_string_table(&self.shared, META, require_compact)?;
-        for table in BYTE_TABLES {
-            migrate_byte_table(&self.shared, table, require_compact)?;
+        if !require_compact || registry_migration != RegistryMigration::Current {
+            migrate_string_table(&self.shared, META, require_compact)?;
+            for table in BYTE_TABLES {
+                migrate_byte_table(&self.shared, table, require_compact)?;
+            }
         }
         if require_compact {
             return Ok(());
@@ -5081,6 +5134,16 @@ impl RedbOperationalPorts {
     #[doc(hidden)]
     pub fn clean_close_fast_startup(&self) -> bool {
         self.shared.bounded_clean_startup.load(Ordering::Acquire)
+    }
+
+    /// True only when readiness came from a verified clean-close certificate
+    /// (the closed health mode `clean_certificate`); the ADR-0182 bounded
+    /// dirty path reports `complete_validation` instead.
+    #[doc(hidden)]
+    pub fn clean_certificate_startup(&self) -> bool {
+        self.shared
+            .clean_certificate_startup
+            .load(Ordering::Acquire)
     }
 
     pub(crate) fn standard_writer_journal_enabled(&self) -> bool {

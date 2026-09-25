@@ -106,8 +106,11 @@ async fn execute(
         ),
         Err((phase, _)) => (*phase, ServiceAuditLinkV1::None),
     };
-    if begun.finish(&service, &context, phase, link).await.is_err() {
-        service.note_audit_failure(ServiceOperationV1::PromoteFollower);
+    if let Err(audit_failure) = begun.finish(&service, &context, phase, link).await {
+        service.note_audit_failure_with_cause(
+            ServiceOperationV1::PromoteFollower,
+            audit_failure.cause(),
+        );
         return Err(match result {
             Err((ServiceAuditPhaseV1::Denied, failure)) => failure,
             _ => PublicError::storage_unavailable().into(),

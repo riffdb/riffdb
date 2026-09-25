@@ -70,12 +70,14 @@ pub(super) async fn finish(
     begun: &BegunInvocationCompletion,
     phase: ServiceAuditPhaseV1,
 ) -> Result<(), ReplicationFailure> {
-    if begun
+    if let Err(audit_failure) = begun
         .finish(service, context, phase, ServiceAuditLinkV1::None)
         .await
-        .is_err()
     {
-        service.note_audit_failure(ServiceOperationV1::StreamChangelog);
+        service.note_audit_failure_with_cause(
+            ServiceOperationV1::StreamChangelog,
+            audit_failure.cause(),
+        );
         return Err(if phase == ServiceAuditPhaseV1::Denied {
             ReplicationFailure::AuthorizationDenied
         } else {

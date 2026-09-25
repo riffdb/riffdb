@@ -229,6 +229,14 @@ jobs:
         run: ./scripts/check-requirement-coverage
       - name: Check ADR obligations
         run: ./scripts/check-adr-obligations
+      - name: Obligation checker regression cases
+        run: ./scripts/check-adr-obligations --self-test
+      - name: Unary evidence method regression cases
+        run: ./scripts/check-wp674-unary-baseline --self-test
+      - name: Check ADR form
+        run: ./scripts/check-adr-form
+      - name: Self-test ADR form
+        run: ./scripts/check-adr-form --self-test
 
   governance:
     name: Governance
@@ -245,6 +253,14 @@ jobs:
         run: ./scripts/check-requirement-coverage
       - name: Check ADR obligations
         run: ./scripts/check-adr-obligations
+      - name: Obligation checker regression cases
+        run: ./scripts/check-adr-obligations --self-test
+      - name: Unary evidence method regression cases
+        run: ./scripts/check-wp674-unary-baseline --self-test
+      - name: Check ADR form
+        run: ./scripts/check-adr-form
+      - name: Self-test ADR form
+        run: ./scripts/check-adr-form --self-test
       - name: Self-test canonical ADR allocation
         run: ./scripts/adr-new --self-test
       - name: Check the ADR index

@@ -87,6 +87,8 @@ use riffdb_types::{
 };
 
 const CHILD_MODE: &str = "RIFFDB_STORAGE_RECOVERY_CHILD_MODE";
+#[path = "bounded_dirty_startup.rs"]
+mod bounded_dirty_startup;
 mod changelog_compatibility;
 #[path = "../replication_promotion.rs"]
 mod replication_promotion;
@@ -1625,6 +1627,12 @@ fn legacy_index_entry(current: &StoredIndexEntryV2) -> StoredIndexEntryV1 {
     .expect("legacy migration row")
 }
 
+/// Writes index rows out-of-band and removes the validated-prefix checkpoint in
+/// the same transaction. Rows no receipt wrote cannot sit under a checkpoint in
+/// a real database: a checkpoint is written only by a complete walk that found
+/// nothing to migrate, and the current writer emits only V2 rows. Keeping the
+/// checkpoint would admit the ADR-0182 bounded dirty path over state it never
+/// covered, so the next open takes the complete path as a real one would.
 fn write_raw_index_entries(
     path: &Path,
     entries: &[(IndexEntryKey, Vec<u8>)],
@@ -1632,6 +1640,11 @@ fn write_raw_index_entries(
     let database = Database::create(path).expect("open raw migration fixture");
     let transaction = database.begin_write().expect("begin raw migration write");
     let mut previous = Vec::with_capacity(entries.len());
+    transaction
+        .open_table(META)
+        .expect("open raw metadata table")
+        .remove(CHECKPOINT_META_KEY)
+        .expect("remove the validated-prefix checkpoint");
     {
         let mut table = transaction
             .open_table(SECONDARY_INDEXES)
@@ -2396,6 +2409,10 @@ fn deferred_command_root_is_invisible_until_the_tail_fence_publishes_it() {
     let path = TestDatabasePath::new("deferred-frontier");
     prepare_command_database(&path.0);
     let ports = open_operational(RedbStore::open(&path.0).expect("reopen command database"));
+    // A bounded startup leaves the transient indexes cold, and their lazy
+    // rebuild takes the mutation gate that an open deferred epoch holds. Warm
+    // them before the epoch so the precommit audit read cannot wait on it.
+    assert!(command_audit_phases(&ports).is_empty());
     let fixture = command_fixture();
 
     let epoch = ports
@@ -2820,6 +2837,11 @@ fn multiple_sealed_epochs_publish_in_fifo_order_after_one_journal_flush() {
     let path = TestDatabasePath::new("deferred-multiple-epochs");
     prepare_command_database(&path.0);
     let ports = open_operational(RedbStore::open(&path.0).expect("reopen command database"));
+    // A bounded startup leaves the transient indexes cold. Warm them before any
+    // epoch is sealed: the lazy rebuild checkpoints the published journal
+    // suffix and answers Unavailable (transient backpressure) while a sealed
+    // epoch awaits publication, which is not what this test is about.
+    assert!(command_audit_phases(&ports).is_empty());
     let first = command_fixture_at(1);
     let second = command_fixture_at(2);
 
@@ -4409,17 +4431,21 @@ fn crash_before_validated_prefix_checkpoint_commit_leaves_no_meta() {
 fn crash_after_validated_prefix_checkpoint_commit_reopens_fast_path() {
     let path = TestDatabasePath::new("after-validated-prefix-checkpoint");
     let _ = prepare_committed_command_database(&path.0);
+    // The child reaches the checkpoint-commit failpoint only on a complete
+    // walk; with no covering checkpoint its open validates completely.
+    strip_checkpoint_meta(&path.0);
     run_crashing_child("after-validated-prefix-checkpoint-commit", &path.0);
 
+    let (_, bounded_dirty) = startup_path_observation(&path.0);
+    assert!(
+        bounded_dirty,
+        "the checkpoint committed before the crash must admit the bounded dirty path"
+    );
     let store = RedbStore::open(&path.0).expect("reopen after after-checkpoint crash");
-    let (_, _, outcome, verified, _) = complete_startup_observing_checkpoint(store);
+    let (_, _, outcome, _, _) = complete_startup_observing_checkpoint(store);
     assert!(
         matches!(outcome, StructuralOpenOutcome::Clean(_)),
         "recovery after post-checkpoint crash must open clean"
-    );
-    assert!(
-        verified,
-        "checkpoint committed before crash must be verified on reopen"
     );
 }
 
@@ -4574,6 +4600,9 @@ fn delete_aware_checkpoint_rejects_each_substituted_head_summary() {
     ] {
         let path = TestDatabasePath::new(&format!("v2-checkpoint-{name}"));
         let _ = prepare_committed_command_database(&path.0);
+        // Only a complete walk writes a checkpoint; with none covering the
+        // committed command this open validates completely and writes S=head.
+        strip_checkpoint_meta(&path.0);
         let _ = complete_startup_pass(RedbStore::open(&path.0).expect("write V2 checkpoint"));
         {
             let database = Database::create(&path.0).expect("open checkpoint fixture");
@@ -4631,6 +4660,14 @@ fn delete_aware_checkpoint_rejects_each_substituted_head_summary() {
             txn.commit().expect("commit checkpoint mutation");
         }
 
+        // A state-inexact checkpoint is not a record that a complete walk
+        // validated this state, so it must not admit the ADR-0182 bounded
+        // dirty path either.
+        let (_, bounded_dirty) = startup_path_observation(&path.0);
+        assert!(
+            !bounded_dirty,
+            "{name} substitution must not admit the bounded dirty path"
+        );
         let (_, _, outcome, verified, _) = complete_startup_observing_checkpoint(
             RedbStore::open(&path.0).expect("open substituted checkpoint"),
         );
@@ -4811,6 +4848,7 @@ fn checkpoint_meta_present(path: &Path) -> bool {
     meta.get(CHECKPOINT_META_KEY).expect("get").is_some()
 }
 
+/// Returns (clean-certificate path, bounded dirty path) for one startup open.
 fn startup_path_observation(path: &Path) -> (bool, bool) {
     let store = RedbStore::open(path).expect("open for startup path observation");
     let inputs = StartupValidationInputs::new(
@@ -4827,9 +4865,11 @@ fn startup_path_observation(path: &Path) -> (bool, bool) {
     let session = store
         .begin_structural_evidence(inputs)
         .expect("begin startup observation");
+    // The second flag is the ADR-0182 bounded dirty path, whose admission
+    // loads and verifies the retained validated-prefix checkpoint.
     (
         session.clean_close_fast_path(),
-        session.checkpoint_verified(),
+        session.bounded_dirty_startup_path(),
     )
 }
 
@@ -5367,6 +5407,9 @@ fn public_checkpoint_write_is_gated_on_clean_validation() {
     // Allowed case: a clean validation session permits the public write.
     let clean_path = TestDatabasePath::new("public-write-gate-clean");
     let _ = prepare_committed_command_database(&clean_path.0);
+    // Only a complete validation grants the write; with no covering checkpoint
+    // this open validates completely rather than taking the bounded dirty path.
+    strip_checkpoint_meta(&clean_path.0);
     let report = drain_tolerating_findings(RedbStore::open(&clean_path.0).expect("clean open"));
     assert!(report.findings.is_empty(), "clean fixture has no findings");
     let StructuralOpenOutcome::Clean(opened) = report.outcome.expect("clean open completes") else {
@@ -5549,27 +5592,23 @@ fn checkpoint_sequence_beyond_head_falls_back_to_full_validation() {
 
 #[test]
 fn doctored_entities_row_falls_back_and_full_pass_reports_the_finding() {
-    // Doctor an ENTITIES row away: reconstruction at S disagrees with the
-    // fingerprint → checkpoint ignored (counted) → the full pass reports the
-    // real authoritative finding and the open refuses.
+    // Doctor an ENTITIES row away. ADR-0182 Decisions 1 and 3: a vanished
+    // population row is not enumerated before dirty readiness, so startup or
+    // the background scrub's complete walk must report it as authoritative
+    // corruption.
     let path = TestDatabasePath::new("doctored-entities-row");
     prepare_checkpointed_command_database(&path.0);
     delete_first_raw_row(&path.0, ENTITIES_RAW);
 
-    let report = drain_tolerating_findings(RedbStore::open(&path.0).expect("doctored open"));
+    let refusal = bounded_dirty_startup::corruption_refusal(&path.0)
+        .expect("no layer refused the vanished ENTITIES row");
     assert!(
-        !report.verified,
-        "entity-chain fingerprint mismatch must ignore the checkpoint"
-    );
-    assert!(
-        report.authoritative_finding(),
-        "the post-fallback full pass must report the real authoritative \
-         finding for the vanished ENTITIES row: {:?}",
-        report.findings,
-    );
-    assert!(
-        report.refused(),
-        "authoritative corruption must refuse the open"
+        refusal.authoritative()
+            || matches!(
+                refusal,
+                bounded_dirty_startup::CorruptionRefusal::BeforeReadiness
+            ),
+        "the vanished ENTITIES row must be refused as authoritative corruption: {refusal:?}"
     );
 }
 
@@ -5927,6 +5966,9 @@ fn retention_prune_refuses_on_empty_history() {
 fn retention_prune_deletes_live_checkpoint_first() {
     let path = TestDatabasePath::new("retention-checkpoint-delete");
     prepare_command_database(&path.0);
+    // The explicit write below needs a process whose startup validated
+    // completely; with no covering checkpoint this open is not bounded.
+    strip_checkpoint_meta(&path.0);
     let ports = open_operational(RedbStore::open(&path.0).expect("open journal fixture"));
     fence_deferred_epoch(&ports, &[command_fixture()]);
     assert!(
@@ -6558,7 +6600,18 @@ fn retention_tombstone_byte_corruption_refuses_open() {
         }
         write.commit().expect("commit corruption");
     }
-    let err = RedbStore::open(&path.0).expect_err("byte-corrupt tombstone must refuse open");
+    // The engine open no longer re-encodes retained rows for a current
+    // registry (the open-time compact-encoding migration is guarded to
+    // pre-current registries), so the tombstone chain's canonical decode is
+    // what refuses: it runs in the startup evidence session, before readiness,
+    // on whichever path the open takes (the prune deleted the checkpoint).
+    let err = match RedbStore::open(&path.0) {
+        Err(error) => error,
+        Ok(store) => store
+            .begin_structural_evidence(startup_inputs())
+            .map(|_| ())
+            .expect_err("byte-corrupt tombstone must refuse startup before readiness"),
+    };
     assert_eq!(
         err.kind(),
         riffdb_storage_api::StorageErrorKind::CorruptData
@@ -7855,15 +7908,51 @@ fn conflicting_physical_and_derived_audit_records_refuse_open() {
         "the fixture must actually change the physical row"
     );
 
-    let findings =
-        collect_structural_findings(RedbStore::open(&path.0).expect("reopen after the conflict"));
+    // ADR-0182 layering: telling the two carriers apart needs the complete
+    // administration walk, which is off the bounded dirty readiness path. The
+    // bounded header still proves the allocator against the durable tail, so
+    // readiness is reached; the disagreeing pair is then refused on first
+    // access and reported by the background scrub, never read as either record.
+    let store = RedbStore::open(&path.0).expect("reopen after the conflict");
+    let session = store
+        .begin_structural_evidence(startup_inputs())
+        .expect("begin bounded dirty evidence");
+    assert!(session.bounded_dirty_startup_path());
+    let ports = complete_structural_open_from(session)
+        .into_parts()
+        .3
+        .into_operational_after_catalog_validation()
+        .expect("the bounded dirty path reaches readiness");
+
+    let first_access = ports.scan_administration_audit(AdministrationAuditScanRequest::new(
+        None,
+        StorageScanLimit::new(64).expect("audit scan limit"),
+    ));
+    assert_eq!(
+        first_access.map(|_| ()).map_err(|error| error.kind()),
+        Err(riffdb_storage_api::StorageErrorKind::CorruptData),
+        "first access must refuse a physical/derived pair that disagrees at one sequence"
+    );
+
+    let mut scrub = ports
+        .shared_ports()
+        .begin_background_scrub(startup_inputs())
+        .expect("begin background scrub");
+    let limit = EvidencePageLimit::new(64).expect("scrub page limit");
+    let mut findings = Vec::new();
+    while let riffdb_storage_redb::BackgroundScrubPage::Page { findings: page, .. } = scrub
+        .read_structural_page(limit)
+        .expect("scrub structural page")
+    {
+        findings.extend(page);
+    }
     assert!(
         findings.iter().any(|finding| {
             finding.scope() == StructuralFindingScope::Authoritative
                 && finding.code() == StructuralFindingCode::SequenceDiscontinuity
         }),
-        "a physical/derived pair that disagrees at one sequence is a genuine \
-         discontinuity and must still be refused: {findings:?}"
+        "the scrub must report a physical/derived pair that disagrees at one \
+         sequence as a genuine discontinuity: {findings:?}"
     );
 }
 
@@ -9670,4 +9759,215 @@ fn bounded_history_fallback_remains_the_only_absence_backstop() {
         0,
         "the backstop carries the absence answer without rebuilding the transient index"
     );
+}
+
+/// Drives one already-opened evidence session to its structural and
+/// historical exact ends and returns the opened dormant handoff.
+fn complete_structural_open_from(
+    mut session: riffdb_storage_redb::RedbStructuralEvidenceSession,
+) -> StructurallyOpened<RedbDormantPorts> {
+    let structural_end = drive_structural_to_end(&mut session);
+    finish_structural_open_from(session, structural_end)
+}
+
+/// Drives one evidence session's structural stream to its exact end,
+/// asserting a valid fixture yields no findings.
+fn drive_structural_to_end(
+    session: &mut riffdb_storage_redb::RedbStructuralEvidenceSession,
+) -> <riffdb_storage_redb::RedbStructuralEvidenceSession as StructuralEvidenceSession>::StructuralEnd
+{
+    let database_id = session.database_id();
+    let open_session_id = session.open_session_id();
+    let limit = EvidencePageLimit::new(64).expect("page limit");
+    let mut structural_cursor = StructuralEvidenceCursor::start(database_id, open_session_id);
+    loop {
+        match session
+            .read_structural_evidence(structural_cursor, limit)
+            .expect("read structural evidence")
+        {
+            StructuralEvidencePage::Page { findings, next, .. } => {
+                assert!(
+                    findings.is_empty(),
+                    "a valid recovery fixture has no findings: {findings:?}"
+                );
+                structural_cursor = next;
+            }
+            StructuralEvidencePage::ExactEnd(end) => break end,
+        }
+    }
+}
+
+/// Validates the catalog history and finishes a session whose structural
+/// stream already reached its exact end.
+fn finish_structural_open_from(
+    mut session: riffdb_storage_redb::RedbStructuralEvidenceSession,
+    structural_end: <riffdb_storage_redb::RedbStructuralEvidenceSession as StructuralEvidenceSession>::StructuralEnd,
+) -> StructurallyOpened<RedbDormantPorts> {
+    let (catalog_outcome, historical_end) = validate_catalog_history(&mut session)
+        .expect("catalog validates the bounded historical stream")
+        .into_parts();
+    assert!(matches!(catalog_outcome, CatalogHistoryOutcome::Ready(_)));
+    let outcome = session
+        .finish(structural_end, historical_end)
+        .expect("finish bounded dirty evidence");
+    match outcome {
+        StructuralOpenOutcome::Clean(opened) => opened,
+        StructuralOpenOutcome::MigrationRequired(_) => {
+            panic!("bounded dirty recovery fixture must not require index migration")
+        }
+    }
+}
+
+fn startup_inputs() -> StartupValidationInputs {
+    let digest_key = DigestKeyId::new(1).expect("digest key ID");
+    StartupValidationInputs::new(
+        Timestamp::new(1_700_000_000, 0).expect("startup timestamp"),
+        ReadableCapabilityDigestInventory::new(vec![ReadableDigestKey::v1(digest_key)])
+            .expect("capability digest inventory"),
+        ReadableIdempotencyDigestInventory::new(vec![ReadableDigestKey::v1(digest_key)])
+            .expect("idempotency digest inventory"),
+    )
+}
+
+// req: REC-001, REC-002, REC-004, REC-006
+/// OBL-0182-2 proof (ADR-0182 Decision 2). A corrupt population row outside
+/// the bounded readiness roots does not stop the bounded dirty startup from
+/// reaching readiness; it fails closed with the existing typed corruption
+/// outcome on first access, and is never reported as absence, a business
+/// outcome, partial output, or repaired state. Repeated access keeps
+/// refusing, and the refusal creates no authoritative advance.
+#[test]
+fn planted_row_corruption_fails_closed_on_first_access_after_dirty_startup() {
+    let path = TestDatabasePath::new("dirty-planted-corruption");
+    prepare_command_database(&path.0);
+    {
+        let ports = open_operational(RedbStore::open(&path.0).expect("open populated source"));
+        for ordinal in 1..=4 {
+            commit_command_fixture(&ports, &command_fixture_at(ordinal));
+        }
+        drop(ports);
+    }
+
+    // Plant corruption in one entity row's stored bytes: a byte flip inside
+    // the canonical envelope breaks its checksum, so any decode of the row
+    // fails. The bounded dirty startup never reads entity rows — the open-time
+    // compact-encoding migration is guarded to pre-current registries and the
+    // readiness path walks only the bounded roots — so the corruption is
+    // invisible to readiness and must surface on first access.
+    let (target, _, _) = target_and_index_at(1, 1);
+    {
+        let raw = redb::Database::open(&path.0).expect("open raw for planting");
+        let write = raw.begin_write().expect("begin planting");
+        {
+            let mut entities = write
+                .open_table(ENTITIES_RAW)
+                .expect("open entities for planting");
+            let corrupted = {
+                let original = entities
+                    .first()
+                    .expect("entity iter")
+                    .expect("populated fixture has an entity row");
+                let key = original.0.value().to_vec();
+                let mut corrupted = original.1.value().to_vec();
+                let last = corrupted.len().saturating_sub(1);
+                corrupted[last] = corrupted[last].wrapping_add(1);
+                (key, corrupted)
+            };
+            entities
+                .insert(corrupted.0.as_slice(), corrupted.1.as_slice())
+                .expect("plant corrupted entity bytes");
+        }
+        write.commit().expect("publish planted corruption");
+        drop(raw);
+    }
+
+    let authority_before =
+        riffdb_storage_redb::benchmark_support::recovery_authority_snapshot_v1(&path.0)
+            .expect("authority before the dirty open");
+
+    // The bounded dirty startup reaches readiness despite the planted row.
+    let store = RedbStore::open(&path.0).expect("dirty reopen with planted corruption");
+    let session = store
+        .begin_structural_evidence(startup_inputs())
+        .expect("bounded dirty evidence with planted corruption");
+    assert!(
+        session.bounded_dirty_startup_path(),
+        "the planted population row must not affect the bounded dirty path selection"
+    );
+    let opened = complete_structural_open_from(session);
+    let (_, _, _, dormant) = opened.into_parts();
+    let ports = dormant
+        .into_operational_after_catalog_validation()
+        .expect("readiness despite the planted row");
+
+    // First access through the operational read path fails closed with the
+    // typed corruption outcome — never absence, never a business outcome.
+    use riffdb_storage_api::AuthoritativePointReader;
+    let failure = ports
+        .read_entity(&target)
+        .expect_err("corrupt entity row must not produce an outcome or absence");
+    assert_eq!(
+        failure.kind(),
+        riffdb_storage_api::StorageErrorKind::CorruptData,
+        "first access of a corrupt row fails closed with the typed corruption outcome"
+    );
+    // Repeated access keeps refusing; the refusal repairs nothing and hides
+    // nothing: the stored bytes are unchanged and the authority is unchanged.
+    let failure_again = ports
+        .read_entity(&target)
+        .expect_err("repeat access must keep refusing");
+    assert_eq!(
+        failure_again.kind(),
+        riffdb_storage_api::StorageErrorKind::CorruptData
+    );
+    drop(ports);
+    let authority_after =
+        riffdb_storage_redb::benchmark_support::recovery_authority_snapshot_v1(&path.0)
+            .expect("authority after first access");
+    assert!(
+        authority_before.same_authority(&authority_after),
+        "the corruption refusal must create no authoritative advance"
+    );
+}
+
+#[test]
+fn probe_raw_entity_flip_open() {
+    let path = TestDatabasePath::new("probe-raw-flip");
+    prepare_command_database(&path.0);
+    {
+        let ports = open_operational(RedbStore::open(&path.0).expect("open"));
+        commit_command_fixture(&ports, &command_fixture_at(1));
+        drop(ports);
+    }
+    let raw = redb::Database::open(&path.0).expect("raw open");
+    let write = raw.begin_write().expect("raw write");
+    {
+        let mut entities = write.open_table(ENTITIES_RAW).expect("entities");
+        let key = entities
+            .first()
+            .expect("iter")
+            .expect("row")
+            .0
+            .value()
+            .to_vec();
+        let mut corrupted = entities
+            .get(key.as_slice())
+            .expect("get")
+            .expect("row")
+            .value()
+            .to_vec();
+        let last = corrupted.len().saturating_sub(1);
+        corrupted[last] = corrupted[last].wrapping_add(1);
+        entities
+            .insert(key.as_slice(), corrupted.as_slice())
+            .expect("flip");
+    }
+    write.commit().expect("commit flip");
+    drop(raw);
+    let result = RedbStore::open(&path.0);
+    eprintln!(
+        "DBG-FLIP-OPEN: {:?}",
+        result.as_ref().map(|_| ()).map_err(|e| e.kind())
+    );
+    drop(result);
 }

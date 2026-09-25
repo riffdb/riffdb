@@ -38,6 +38,8 @@ review_triggers:
   - A deploy would be accepted that the running process cannot serve.
   - A projected query would fail as an internal defect for a reason the caller
     could have been told.
+struck_obligations:
+  447f6fe4857b7b869d0a72645908df62fc6d32ca6145916cbbd2bc40a91d23ca: "The extractor matched a report of an observed compiler restriction from WP-803; the sentence does not assign future work."
 ---
 # ADR-0251: A Declared Columnar Source Is Admitted Without A Restart
 

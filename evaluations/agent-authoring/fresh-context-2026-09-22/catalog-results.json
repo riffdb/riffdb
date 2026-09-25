@@ -1,0 +1,1326 @@
+{
+  "schema": "riffdb.catalog-risk-model-pilot/v1",
+  "date": "2026-09-22",
+  "repository_revision": "ea7ffe17dafcad55cd2f007f57ec3565e31448cb",
+  "generator_test": "real_catalog_risk_snapshots_are_filtered_stable_and_schema_complete",
+  "server_evidence": [
+    {
+      "condition": "small-stable",
+      "dynamic_tools": 8,
+      "fixed_tools": 2,
+      "total_tools": 10,
+      "json_bytes": 38950,
+      "pages": 1,
+      "equal_observations": 3,
+      "capability_visible_names_exact": true,
+      "real_daemon": true,
+      "changed_version_deployed_in_fresh_database": false,
+      "catalog_sha256": "ca9ffa83f42a044e54b9282e238591ad8509724bf831ca1748631992dd4e3338",
+      "stale_name_refusal": null,
+      "missing_new_input_refusal": null,
+      "hidden_name_refusal": {
+        "json_rpc_code": -32601,
+        "public_code": null,
+        "path": null
+      }
+    },
+    {
+      "condition": "small-changed",
+      "dynamic_tools": 7,
+      "fixed_tools": 2,
+      "total_tools": 9,
+      "json_bytes": 35022,
+      "pages": 1,
+      "equal_observations": 3,
+      "capability_visible_names_exact": true,
+      "real_daemon": true,
+      "changed_version_deployed_in_fresh_database": true,
+      "catalog_sha256": "3ed96a1ae5e44c1df436f9915c7de824b7aa785a34cd2707c1de79877ab99526",
+      "stale_name_refusal": {
+        "json_rpc_code": -32601,
+        "public_code": null,
+        "path": null
+      },
+      "missing_new_input_refusal": {
+        "json_rpc_code": -32602,
+        "public_code": "required_property_missing",
+        "path": "/review_reference"
+      },
+      "hidden_name_refusal": {
+        "json_rpc_code": -32601,
+        "public_code": null,
+        "path": null
+      }
+    },
+    {
+      "condition": "large-stable",
+      "dynamic_tools": 64,
+      "fixed_tools": 2,
+      "total_tools": 66,
+      "json_bytes": 263715,
+      "pages": 1,
+      "equal_observations": 3,
+      "capability_visible_names_exact": true,
+      "real_daemon": true,
+      "changed_version_deployed_in_fresh_database": false,
+      "catalog_sha256": "0cd456640fc7440ff7d175519c3fced1218fd30d5d65b7313aed2b2234c5ce6e",
+      "stale_name_refusal": null,
+      "missing_new_input_refusal": null,
+      "hidden_name_refusal": null
+    },
+    {
+      "condition": "large-changed",
+      "dynamic_tools": 63,
+      "fixed_tools": 2,
+      "total_tools": 65,
+      "json_bytes": 259787,
+      "pages": 1,
+      "equal_observations": 3,
+      "capability_visible_names_exact": true,
+      "real_daemon": true,
+      "changed_version_deployed_in_fresh_database": true,
+      "catalog_sha256": "151f3fd3f02dbb2a9e5ce1ae584107758c515fafbf9b0b80cca516866291316e",
+      "stale_name_refusal": {
+        "json_rpc_code": -32601,
+        "public_code": null,
+        "path": null
+      },
+      "missing_new_input_refusal": {
+        "json_rpc_code": -32602,
+        "public_code": "required_property_missing",
+        "path": "/review_reference"
+      },
+      "hidden_name_refusal": null
+    }
+  ],
+  "runs": [
+    {
+      "subject": "selection-01",
+      "size": "small",
+      "transition": "stable",
+      "history_fork": "none",
+      "model_configuration": "inherited parent session model/settings, without override; exact model revision not independently attested",
+      "stages": [
+        {
+          "stage": 1,
+          "catalog_sha256": "ca9ffa83f42a044e54b9282e238591ad8509724bf831ca1748631992dd4e3338",
+          "response_sha256": "890865a31302001b5caf9eb2a2031d9c5dbbed5d953e6574860103a421c04d93",
+          "outside_packet_access_reported": false,
+          "response_shape_valid": true,
+          "inspection": "file-assisted catalog inspection permitted; participant reports captured separately in private archive",
+          "tasks": [
+            {
+              "task_id": "stage1-1",
+              "answer": {
+                "task_id": "stage1-1",
+                "status": "call",
+                "name": "riffdb_cmd_workflowdesk_approveticket",
+                "arguments": {
+                  "organization_id": "11111111-1111-4111-8111-111111111111",
+                  "item_id": "22222222-2222-4222-8222-222222222222",
+                  "expected_revision": 7,
+                  "reason": "Reviewed and approved",
+                  "idempotency_key": "catalog-stage-1-task-1"
+                }
+              },
+              "score": {
+                "selection_correct": true,
+                "arguments_correct": true,
+                "schema_valid": true,
+                "correct": true
+              }
+            },
+            {
+              "task_id": "stage1-2",
+              "answer": {
+                "task_id": "stage1-2",
+                "status": "call",
+                "name": "riffdb_cmd_workflowdesk_cancelticket",
+                "arguments": {
+                  "organization_id": "11111111-1111-4111-8111-111111111111",
+                  "item_id": "33333333-3333-4333-8333-333333333333",
+                  "expected_revision": 8,
+                  "reason": "Duplicate request",
+                  "idempotency_key": "catalog-stage-1-task-2"
+                }
+              },
+              "score": {
+                "selection_correct": true,
+                "arguments_correct": true,
+                "schema_valid": true,
+                "correct": true
+              }
+            },
+            {
+              "task_id": "stage1-3",
+              "answer": {
+                "task_id": "stage1-3",
+                "status": "call",
+                "name": "riffdb_cmd_workflowdesk_submitticket",
+                "arguments": {
+                  "organization_id": "11111111-1111-4111-8111-111111111111",
+                  "item_id": "44444444-4444-4444-8444-444444444444",
+                  "expected_revision": 9,
+                  "reason": "Ready for review",
+                  "idempotency_key": "catalog-stage-1-task-3"
+                }
+              },
+              "score": {
+                "selection_correct": true,
+                "arguments_correct": true,
+                "schema_valid": true,
+                "correct": true
+              }
+            }
+          ]
+        },
+        {
+          "stage": 2,
+          "catalog_sha256": "ca9ffa83f42a044e54b9282e238591ad8509724bf831ca1748631992dd4e3338",
+          "response_sha256": "8b86898d606c21630a271be761e67020a1d1368c78c2b482102bbfbd89c9c49c",
+          "outside_packet_access_reported": false,
+          "response_shape_valid": true,
+          "inspection": "file-assisted catalog inspection permitted; participant reports captured separately in private archive",
+          "tasks": [
+            {
+              "task_id": "stage2-1",
+              "answer": {
+                "task_id": "stage2-1",
+                "status": "call",
+                "name": "riffdb_cmd_workflowdesk_approveticket",
+                "arguments": {
+                  "organization_id": "11111111-1111-4111-8111-111111111111",
+                  "item_id": "22222222-2222-4222-8222-222222222222",
+                  "expected_revision": 7,
+                  "reason": "Reviewed and approved",
+                  "idempotency_key": "catalog-stage-2-task-1"
+                }
+              },
+              "score": {
+                "selection_correct": true,
+                "arguments_correct": true,
+                "schema_valid": true,
+                "correct": true
+              }
+            },
+            {
+              "task_id": "stage2-2",
+              "answer": {
+                "task_id": "stage2-2",
+                "status": "call",
+                "name": "riffdb_cmd_workflowdesk_cancelticket",
+                "arguments": {
+                  "organization_id": "11111111-1111-4111-8111-111111111111",
+                  "item_id": "33333333-3333-4333-8333-333333333333",
+                  "expected_revision": 8,
+                  "reason": "Duplicate request",
+                  "idempotency_key": "catalog-stage-2-task-2"
+                }
+              },
+              "score": {
+                "selection_correct": true,
+                "arguments_correct": true,
+                "schema_valid": true,
+                "correct": true
+              }
+            },
+            {
+              "task_id": "stage2-3",
+              "answer": {
+                "task_id": "stage2-3",
+                "status": "call",
+                "name": "riffdb_cmd_workflowdesk_submitticket",
+                "arguments": {
+                  "organization_id": "11111111-1111-4111-8111-111111111111",
+                  "item_id": "44444444-4444-4444-8444-444444444444",
+                  "expected_revision": 9,
+                  "reason": "Ready for review",
+                  "idempotency_key": "catalog-stage-2-task-3"
+                }
+              },
+              "score": {
+                "selection_correct": true,
+                "arguments_correct": true,
+                "schema_valid": true,
+                "correct": true
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "subject": "selection-02",
+      "size": "large",
+      "transition": "changed",
+      "history_fork": "none",
+      "model_configuration": "inherited parent session model/settings, without override; exact model revision not independently attested",
+      "stages": [
+        {
+          "stage": 1,
+          "catalog_sha256": "0cd456640fc7440ff7d175519c3fced1218fd30d5d65b7313aed2b2234c5ce6e",
+          "response_sha256": "da47ce7841be49fa071626a6d03bd337e446b5d089825ee18ae3a64a685e78b3",
+          "outside_packet_access_reported": false,
+          "response_shape_valid": true,
+          "inspection": "file-assisted catalog inspection permitted; participant reports captured separately in private archive",
+          "tasks": [
+            {
+              "task_id": "stage1-1",
+              "answer": {
+                "task_id": "stage1-1",
+                "status": "call",
+                "name": "riffdb_cmd_workflowdesk_approveticket",
+                "arguments": {
+                  "item_id": "22222222-2222-4222-8222-222222222222",
+                  "organization_id": "11111111-1111-4111-8111-111111111111",
+                  "expected_revision": 7,
+                  "reason": "Reviewed and approved",
+                  "idempotency_key": "catalog-stage-1-task-1"
+                }
+              },
+              "score": {
+                "selection_correct": true,
+                "arguments_correct": true,
+                "schema_valid": true,
+                "correct": true
+              }
+            },
+            {
+              "task_id": "stage1-2",
+              "answer": {
+                "task_id": "stage1-2",
+                "status": "call",
+                "name": "riffdb_cmd_workflowdesk_cancelticket",
+                "arguments": {
+                  "item_id": "33333333-3333-4333-8333-333333333333",
+                  "organization_id": "11111111-1111-4111-8111-111111111111",
+                  "expected_revision": 8,
+                  "reason": "Duplicate request",
+                  "idempotency_key": "catalog-stage-1-task-2"
+                }
+              },
+              "score": {
+                "selection_correct": true,
+                "arguments_correct": true,
+                "schema_valid": true,
+                "correct": true
+              }
+            },
+            {
+              "task_id": "stage1-3",
+              "answer": {
+                "task_id": "stage1-3",
+                "status": "call",
+                "name": "riffdb_cmd_workflowdesk_submitticket",
+                "arguments": {
+                  "item_id": "44444444-4444-4444-8444-444444444444",
+                  "organization_id": "11111111-1111-4111-8111-111111111111",
+                  "expected_revision": 9,
+                  "reason": "Ready for review",
+                  "idempotency_key": "catalog-stage-1-task-3"
+                }
+              },
+              "score": {
+                "selection_correct": true,
+                "arguments_correct": true,
+                "schema_valid": true,
+                "correct": true
+              }
+            }
+          ]
+        },
+        {
+          "stage": 2,
+          "catalog_sha256": "151f3fd3f02dbb2a9e5ce1ae584107758c515fafbf9b0b80cca516866291316e",
+          "response_sha256": "0a1e7c4b2256b7103b0e4876c80132739e207935429520ba1d4fcee74935e40b",
+          "outside_packet_access_reported": false,
+          "response_shape_valid": true,
+          "inspection": "file-assisted catalog inspection permitted; participant reports captured separately in private archive",
+          "tasks": [
+            {
+              "task_id": "stage2-1",
+              "answer": {
+                "task_id": "stage2-1",
+                "status": "call",
+                "name": "riffdb_cmd_workflowdesk_authorizeticket",
+                "arguments": {
+                  "item_id": "22222222-2222-4222-8222-222222222222",
+                  "organization_id": "11111111-1111-4111-8111-111111111111",
+                  "expected_revision": 7,
+                  "reason": "Reviewed and approved",
+                  "idempotency_key": "catalog-stage-2-task-1"
+                }
+              },
+              "score": {
+                "selection_correct": true,
+                "arguments_correct": true,
+                "schema_valid": true,
+                "correct": true
+              }
+            },
+            {
+              "task_id": "stage2-2",
+              "answer": {
+                "task_id": "stage2-2",
+                "status": "unavailable"
+              },
+              "score": {
+                "selection_correct": true,
+                "arguments_correct": null,
+                "schema_valid": null,
+                "correct": true
+              }
+            },
+            {
+              "task_id": "stage2-3",
+              "answer": {
+                "task_id": "stage2-3",
+                "status": "call",
+                "name": "riffdb_cmd_workflowdesk_submitticket",
+                "arguments": {
+                  "item_id": "44444444-4444-4444-8444-444444444444",
+                  "organization_id": "11111111-1111-4111-8111-111111111111",
+                  "expected_revision": 9,
+                  "reason": "Ready for review",
+                  "idempotency_key": "catalog-stage-2-task-3",
+                  "review_reference": "review-2026-09-22"
+                }
+              },
+              "score": {
+                "selection_correct": true,
+                "arguments_correct": true,
+                "schema_valid": true,
+                "correct": true
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "subject": "selection-03",
+      "size": "large",
+      "transition": "stable",
+      "history_fork": "none",
+      "model_configuration": "inherited parent session model/settings, without override; exact model revision not independently attested",
+      "stages": [
+        {
+          "stage": 1,
+          "catalog_sha256": "0cd456640fc7440ff7d175519c3fced1218fd30d5d65b7313aed2b2234c5ce6e",
+          "response_sha256": "46e1b32a035c8141f2c18ca045f90aa5c45db5a5bcce6025083b96e59b6bda18",
+          "outside_packet_access_reported": false,
+          "response_shape_valid": true,
+          "inspection": "file-assisted catalog inspection permitted; participant reports captured separately in private archive",
+          "tasks": [
+            {
+              "task_id": "stage1-1",
+              "answer": {
+                "task_id": "stage1-1",
+                "status": "call",
+                "name": "riffdb_cmd_workflowdesk_approveticket",
+                "arguments": {
+                  "item_id": "22222222-2222-4222-8222-222222222222",
+                  "organization_id": "11111111-1111-4111-8111-111111111111",
+                  "expected_revision": 7,
+                  "reason": "Reviewed and approved",
+                  "idempotency_key": "catalog-stage-1-task-1"
+                }
+              },
+              "score": {
+                "selection_correct": true,
+                "arguments_correct": true,
+                "schema_valid": true,
+                "correct": true
+              }
+            },
+            {
+              "task_id": "stage1-2",
+              "answer": {
+                "task_id": "stage1-2",
+                "status": "call",
+                "name": "riffdb_cmd_workflowdesk_cancelticket",
+                "arguments": {
+                  "item_id": "33333333-3333-4333-8333-333333333333",
+                  "organization_id": "11111111-1111-4111-8111-111111111111",
+                  "expected_revision": 8,
+                  "reason": "Duplicate request",
+                  "idempotency_key": "catalog-stage-1-task-2"
+                }
+              },
+              "score": {
+                "selection_correct": true,
+                "arguments_correct": true,
+                "schema_valid": true,
+                "correct": true
+              }
+            },
+            {
+              "task_id": "stage1-3",
+              "answer": {
+                "task_id": "stage1-3",
+                "status": "call",
+                "name": "riffdb_cmd_workflowdesk_submitticket",
+                "arguments": {
+                  "item_id": "44444444-4444-4444-8444-444444444444",
+                  "organization_id": "11111111-1111-4111-8111-111111111111",
+                  "expected_revision": 9,
+                  "reason": "Ready for review",
+                  "idempotency_key": "catalog-stage-1-task-3"
+                }
+              },
+              "score": {
+                "selection_correct": true,
+                "arguments_correct": true,
+                "schema_valid": true,
+                "correct": true
+              }
+            }
+          ]
+        },
+        {
+          "stage": 2,
+          "catalog_sha256": "0cd456640fc7440ff7d175519c3fced1218fd30d5d65b7313aed2b2234c5ce6e",
+          "response_sha256": "b1da8981cc4a952611db38542b01f82df9bb77889782765ee1a14f803703fc6c",
+          "outside_packet_access_reported": false,
+          "response_shape_valid": true,
+          "inspection": "file-assisted catalog inspection permitted; participant reports captured separately in private archive",
+          "tasks": [
+            {
+              "task_id": "stage2-1",
+              "answer": {
+                "task_id": "stage2-1",
+                "status": "call",
+                "name": "riffdb_cmd_workflowdesk_approveticket",
+                "arguments": {
+                  "item_id": "22222222-2222-4222-8222-222222222222",
+                  "organization_id": "11111111-1111-4111-8111-111111111111",
+                  "expected_revision": 7,
+                  "reason": "Reviewed and approved",
+                  "idempotency_key": "catalog-stage-2-task-1"
+                }
+              },
+              "score": {
+                "selection_correct": true,
+                "arguments_correct": true,
+                "schema_valid": true,
+                "correct": true
+              }
+            },
+            {
+              "task_id": "stage2-2",
+              "answer": {
+                "task_id": "stage2-2",
+                "status": "call",
+                "name": "riffdb_cmd_workflowdesk_cancelticket",
+                "arguments": {
+                  "item_id": "33333333-3333-4333-8333-333333333333",
+                  "organization_id": "11111111-1111-4111-8111-111111111111",
+                  "expected_revision": 8,
+                  "reason": "Duplicate request",
+                  "idempotency_key": "catalog-stage-2-task-2"
+                }
+              },
+              "score": {
+                "selection_correct": true,
+                "arguments_correct": true,
+                "schema_valid": true,
+                "correct": true
+              }
+            },
+            {
+              "task_id": "stage2-3",
+              "answer": {
+                "task_id": "stage2-3",
+                "status": "call",
+                "name": "riffdb_cmd_workflowdesk_submitticket",
+                "arguments": {
+                  "item_id": "44444444-4444-4444-8444-444444444444",
+                  "organization_id": "11111111-1111-4111-8111-111111111111",
+                  "expected_revision": 9,
+                  "reason": "Ready for review",
+                  "idempotency_key": "catalog-stage-2-task-3"
+                }
+              },
+              "score": {
+                "selection_correct": true,
+                "arguments_correct": true,
+                "schema_valid": true,
+                "correct": true
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "subject": "selection-04",
+      "size": "small",
+      "transition": "changed",
+      "history_fork": "none",
+      "model_configuration": "inherited parent session model/settings, without override; exact model revision not independently attested",
+      "stages": [
+        {
+          "stage": 1,
+          "catalog_sha256": "ca9ffa83f42a044e54b9282e238591ad8509724bf831ca1748631992dd4e3338",
+          "response_sha256": "ee7845de0bc96b8183a09e7a6705085f10fb7d01c65d56bb56e846d2414f8650",
+          "outside_packet_access_reported": false,
+          "response_shape_valid": true,
+          "inspection": "file-assisted catalog inspection permitted; participant reports captured separately in private archive",
+          "tasks": [
+            {
+              "task_id": "stage1-1",
+              "answer": {
+                "task_id": "stage1-1",
+                "status": "call",
+                "name": "riffdb_cmd_workflowdesk_approveticket",
+                "arguments": {
+                  "item_id": "22222222-2222-4222-8222-222222222222",
+                  "organization_id": "11111111-1111-4111-8111-111111111111",
+                  "expected_revision": 7,
+                  "reason": "Reviewed and approved",
+                  "idempotency_key": "catalog-stage-1-task-1"
+                }
+              },
+              "score": {
+                "selection_correct": true,
+                "arguments_correct": true,
+                "schema_valid": true,
+                "correct": true
+              }
+            },
+            {
+              "task_id": "stage1-2",
+              "answer": {
+                "task_id": "stage1-2",
+                "status": "call",
+                "name": "riffdb_cmd_workflowdesk_cancelticket",
+                "arguments": {
+                  "item_id": "33333333-3333-4333-8333-333333333333",
+                  "organization_id": "11111111-1111-4111-8111-111111111111",
+                  "expected_revision": 8,
+                  "reason": "Duplicate request",
+                  "idempotency_key": "catalog-stage-1-task-2"
+                }
+              },
+              "score": {
+                "selection_correct": true,
+                "arguments_correct": true,
+                "schema_valid": true,
+                "correct": true
+              }
+            },
+            {
+              "task_id": "stage1-3",
+              "answer": {
+                "task_id": "stage1-3",
+                "status": "call",
+                "name": "riffdb_cmd_workflowdesk_submitticket",
+                "arguments": {
+                  "item_id": "44444444-4444-4444-8444-444444444444",
+                  "organization_id": "11111111-1111-4111-8111-111111111111",
+                  "expected_revision": 9,
+                  "reason": "Ready for review",
+                  "idempotency_key": "catalog-stage-1-task-3"
+                }
+              },
+              "score": {
+                "selection_correct": true,
+                "arguments_correct": true,
+                "schema_valid": true,
+                "correct": true
+              }
+            }
+          ]
+        },
+        {
+          "stage": 2,
+          "catalog_sha256": "3ed96a1ae5e44c1df436f9915c7de824b7aa785a34cd2707c1de79877ab99526",
+          "response_sha256": "f7eead6a0ec3b465dffaef22cfd56990efe5b63e5cb06e7a1a96c643360dc432",
+          "outside_packet_access_reported": false,
+          "response_shape_valid": true,
+          "inspection": "file-assisted catalog inspection permitted; participant reports captured separately in private archive",
+          "tasks": [
+            {
+              "task_id": "stage2-1",
+              "answer": {
+                "task_id": "stage2-1",
+                "status": "call",
+                "name": "riffdb_cmd_workflowdesk_authorizeticket",
+                "arguments": {
+                  "item_id": "22222222-2222-4222-8222-222222222222",
+                  "organization_id": "11111111-1111-4111-8111-111111111111",
+                  "expected_revision": 7,
+                  "reason": "Reviewed and approved",
+                  "idempotency_key": "catalog-stage-2-task-1"
+                }
+              },
+              "score": {
+                "selection_correct": true,
+                "arguments_correct": true,
+                "schema_valid": true,
+                "correct": true
+              }
+            },
+            {
+              "task_id": "stage2-2",
+              "answer": {
+                "task_id": "stage2-2",
+                "status": "unavailable"
+              },
+              "score": {
+                "selection_correct": true,
+                "arguments_correct": null,
+                "schema_valid": null,
+                "correct": true
+              }
+            },
+            {
+              "task_id": "stage2-3",
+              "answer": {
+                "task_id": "stage2-3",
+                "status": "call",
+                "name": "riffdb_cmd_workflowdesk_submitticket",
+                "arguments": {
+                  "item_id": "44444444-4444-4444-8444-444444444444",
+                  "organization_id": "11111111-1111-4111-8111-111111111111",
+                  "expected_revision": 9,
+                  "reason": "Ready for review",
+                  "idempotency_key": "catalog-stage-2-task-3",
+                  "review_reference": "review-2026-09-22"
+                }
+              },
+              "score": {
+                "selection_correct": true,
+                "arguments_correct": true,
+                "schema_valid": true,
+                "correct": true
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "subject": "selection-05",
+      "size": "small",
+      "transition": "changed",
+      "history_fork": "none",
+      "model_configuration": "inherited parent session model/settings, without override; exact model revision not independently attested",
+      "stages": [
+        {
+          "stage": 1,
+          "catalog_sha256": "ca9ffa83f42a044e54b9282e238591ad8509724bf831ca1748631992dd4e3338",
+          "response_sha256": "b8875cf66c882dcb172258cbc9e5084febd951622249fb515dc90eb197c9d910",
+          "outside_packet_access_reported": false,
+          "response_shape_valid": true,
+          "inspection": "file-assisted catalog inspection permitted; participant reports captured separately in private archive",
+          "tasks": [
+            {
+              "task_id": "stage1-1",
+              "answer": {
+                "task_id": "stage1-1",
+                "status": "call",
+                "name": "riffdb_cmd_workflowdesk_approveticket",
+                "arguments": {
+                  "item_id": "22222222-2222-4222-8222-222222222222",
+                  "organization_id": "11111111-1111-4111-8111-111111111111",
+                  "expected_revision": 7,
+                  "reason": "Reviewed and approved",
+                  "idempotency_key": "catalog-stage-1-task-1"
+                }
+              },
+              "score": {
+                "selection_correct": true,
+                "arguments_correct": true,
+                "schema_valid": true,
+                "correct": true
+              }
+            },
+            {
+              "task_id": "stage1-2",
+              "answer": {
+                "task_id": "stage1-2",
+                "status": "call",
+                "name": "riffdb_cmd_workflowdesk_cancelticket",
+                "arguments": {
+                  "item_id": "33333333-3333-4333-8333-333333333333",
+                  "organization_id": "11111111-1111-4111-8111-111111111111",
+                  "expected_revision": 8,
+                  "reason": "Duplicate request",
+                  "idempotency_key": "catalog-stage-1-task-2"
+                }
+              },
+              "score": {
+                "selection_correct": true,
+                "arguments_correct": true,
+                "schema_valid": true,
+                "correct": true
+              }
+            },
+            {
+              "task_id": "stage1-3",
+              "answer": {
+                "task_id": "stage1-3",
+                "status": "call",
+                "name": "riffdb_cmd_workflowdesk_submitticket",
+                "arguments": {
+                  "item_id": "44444444-4444-4444-8444-444444444444",
+                  "organization_id": "11111111-1111-4111-8111-111111111111",
+                  "expected_revision": 9,
+                  "reason": "Ready for review",
+                  "idempotency_key": "catalog-stage-1-task-3"
+                }
+              },
+              "score": {
+                "selection_correct": true,
+                "arguments_correct": true,
+                "schema_valid": true,
+                "correct": true
+              }
+            }
+          ]
+        },
+        {
+          "stage": 2,
+          "catalog_sha256": "3ed96a1ae5e44c1df436f9915c7de824b7aa785a34cd2707c1de79877ab99526",
+          "response_sha256": "261c6cc92e34a0d118fc36b761ddfe634c803d8c51f2bb3b858fda60ca65d60a",
+          "outside_packet_access_reported": false,
+          "response_shape_valid": true,
+          "inspection": "file-assisted catalog inspection permitted; participant reports captured separately in private archive",
+          "tasks": [
+            {
+              "task_id": "stage2-1",
+              "answer": {
+                "task_id": "stage2-1",
+                "status": "call",
+                "name": "riffdb_cmd_workflowdesk_authorizeticket",
+                "arguments": {
+                  "item_id": "22222222-2222-4222-8222-222222222222",
+                  "organization_id": "11111111-1111-4111-8111-111111111111",
+                  "expected_revision": 7,
+                  "reason": "Reviewed and approved",
+                  "idempotency_key": "catalog-stage-2-task-1"
+                }
+              },
+              "score": {
+                "selection_correct": true,
+                "arguments_correct": true,
+                "schema_valid": true,
+                "correct": true
+              }
+            },
+            {
+              "task_id": "stage2-2",
+              "answer": {
+                "task_id": "stage2-2",
+                "status": "unavailable"
+              },
+              "score": {
+                "selection_correct": true,
+                "arguments_correct": null,
+                "schema_valid": null,
+                "correct": true
+              }
+            },
+            {
+              "task_id": "stage2-3",
+              "answer": {
+                "task_id": "stage2-3",
+                "status": "call",
+                "name": "riffdb_cmd_workflowdesk_submitticket",
+                "arguments": {
+                  "item_id": "44444444-4444-4444-8444-444444444444",
+                  "organization_id": "11111111-1111-4111-8111-111111111111",
+                  "expected_revision": 9,
+                  "reason": "Ready for review",
+                  "idempotency_key": "catalog-stage-2-task-3",
+                  "review_reference": "review-2026-09-22"
+                }
+              },
+              "score": {
+                "selection_correct": true,
+                "arguments_correct": true,
+                "schema_valid": true,
+                "correct": true
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "subject": "selection-06",
+      "size": "large",
+      "transition": "stable",
+      "history_fork": "none",
+      "model_configuration": "inherited parent session model/settings, without override; exact model revision not independently attested",
+      "stages": [
+        {
+          "stage": 1,
+          "catalog_sha256": "0cd456640fc7440ff7d175519c3fced1218fd30d5d65b7313aed2b2234c5ce6e",
+          "response_sha256": "613bce235f530b3367f4363749a292db648d388caf92332ad28bc320b80bbcf7",
+          "outside_packet_access_reported": false,
+          "response_shape_valid": true,
+          "inspection": "file-assisted catalog inspection permitted; participant reports captured separately in private archive",
+          "tasks": [
+            {
+              "task_id": "stage1-1",
+              "answer": {
+                "task_id": "stage1-1",
+                "status": "call",
+                "name": "riffdb_cmd_workflowdesk_approveticket",
+                "arguments": {
+                  "item_id": "22222222-2222-4222-8222-222222222222",
+                  "organization_id": "11111111-1111-4111-8111-111111111111",
+                  "expected_revision": 7,
+                  "reason": "Reviewed and approved",
+                  "idempotency_key": "catalog-stage-1-task-1"
+                }
+              },
+              "score": {
+                "selection_correct": true,
+                "arguments_correct": true,
+                "schema_valid": true,
+                "correct": true
+              }
+            },
+            {
+              "task_id": "stage1-2",
+              "answer": {
+                "task_id": "stage1-2",
+                "status": "call",
+                "name": "riffdb_cmd_workflowdesk_cancelticket",
+                "arguments": {
+                  "item_id": "33333333-3333-4333-8333-333333333333",
+                  "organization_id": "11111111-1111-4111-8111-111111111111",
+                  "expected_revision": 8,
+                  "reason": "Duplicate request",
+                  "idempotency_key": "catalog-stage-1-task-2"
+                }
+              },
+              "score": {
+                "selection_correct": true,
+                "arguments_correct": true,
+                "schema_valid": true,
+                "correct": true
+              }
+            },
+            {
+              "task_id": "stage1-3",
+              "answer": {
+                "task_id": "stage1-3",
+                "status": "call",
+                "name": "riffdb_cmd_workflowdesk_submitticket",
+                "arguments": {
+                  "item_id": "44444444-4444-4444-8444-444444444444",
+                  "organization_id": "11111111-1111-4111-8111-111111111111",
+                  "expected_revision": 9,
+                  "reason": "Ready for review",
+                  "idempotency_key": "catalog-stage-1-task-3"
+                }
+              },
+              "score": {
+                "selection_correct": true,
+                "arguments_correct": true,
+                "schema_valid": true,
+                "correct": true
+              }
+            }
+          ]
+        },
+        {
+          "stage": 2,
+          "catalog_sha256": "0cd456640fc7440ff7d175519c3fced1218fd30d5d65b7313aed2b2234c5ce6e",
+          "response_sha256": "c208a338cafa754de3f483b94852b8b57f18690e4e44e9d7c49ff6fdf841cf8f",
+          "outside_packet_access_reported": false,
+          "response_shape_valid": true,
+          "inspection": "file-assisted catalog inspection permitted; participant reports captured separately in private archive",
+          "tasks": [
+            {
+              "task_id": "stage2-1",
+              "answer": {
+                "task_id": "stage2-1",
+                "status": "call",
+                "name": "riffdb_cmd_workflowdesk_approveticket",
+                "arguments": {
+                  "item_id": "22222222-2222-4222-8222-222222222222",
+                  "organization_id": "11111111-1111-4111-8111-111111111111",
+                  "expected_revision": 7,
+                  "reason": "Reviewed and approved",
+                  "idempotency_key": "catalog-stage-2-task-1"
+                }
+              },
+              "score": {
+                "selection_correct": true,
+                "arguments_correct": true,
+                "schema_valid": true,
+                "correct": true
+              }
+            },
+            {
+              "task_id": "stage2-2",
+              "answer": {
+                "task_id": "stage2-2",
+                "status": "call",
+                "name": "riffdb_cmd_workflowdesk_cancelticket",
+                "arguments": {
+                  "item_id": "33333333-3333-4333-8333-333333333333",
+                  "organization_id": "11111111-1111-4111-8111-111111111111",
+                  "expected_revision": 8,
+                  "reason": "Duplicate request",
+                  "idempotency_key": "catalog-stage-2-task-2"
+                }
+              },
+              "score": {
+                "selection_correct": true,
+                "arguments_correct": true,
+                "schema_valid": true,
+                "correct": true
+              }
+            },
+            {
+              "task_id": "stage2-3",
+              "answer": {
+                "task_id": "stage2-3",
+                "status": "call",
+                "name": "riffdb_cmd_workflowdesk_submitticket",
+                "arguments": {
+                  "item_id": "44444444-4444-4444-8444-444444444444",
+                  "organization_id": "11111111-1111-4111-8111-111111111111",
+                  "expected_revision": 9,
+                  "reason": "Ready for review",
+                  "idempotency_key": "catalog-stage-2-task-3"
+                }
+              },
+              "score": {
+                "selection_correct": true,
+                "arguments_correct": true,
+                "schema_valid": true,
+                "correct": true
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "subject": "selection-07",
+      "size": "large",
+      "transition": "changed",
+      "history_fork": "none",
+      "model_configuration": "inherited parent session model/settings, without override; exact model revision not independently attested",
+      "stages": [
+        {
+          "stage": 1,
+          "catalog_sha256": "0cd456640fc7440ff7d175519c3fced1218fd30d5d65b7313aed2b2234c5ce6e",
+          "response_sha256": "c46af671b7ef5a9e19ec0f6f5fff4800ca96304d6357c4e6522731c1092e5ae6",
+          "outside_packet_access_reported": false,
+          "response_shape_valid": true,
+          "inspection": "file-assisted catalog inspection permitted; participant reports captured separately in private archive",
+          "tasks": [
+            {
+              "task_id": "stage1-1",
+              "answer": {
+                "task_id": "stage1-1",
+                "status": "call",
+                "name": "riffdb_cmd_workflowdesk_approveticket",
+                "arguments": {
+                  "item_id": "22222222-2222-4222-8222-222222222222",
+                  "organization_id": "11111111-1111-4111-8111-111111111111",
+                  "expected_revision": 7,
+                  "reason": "Reviewed and approved",
+                  "idempotency_key": "catalog-stage-1-task-1"
+                }
+              },
+              "score": {
+                "selection_correct": true,
+                "arguments_correct": true,
+                "schema_valid": true,
+                "correct": true
+              }
+            },
+            {
+              "task_id": "stage1-2",
+              "answer": {
+                "task_id": "stage1-2",
+                "status": "call",
+                "name": "riffdb_cmd_workflowdesk_cancelticket",
+                "arguments": {
+                  "item_id": "33333333-3333-4333-8333-333333333333",
+                  "organization_id": "11111111-1111-4111-8111-111111111111",
+                  "expected_revision": 8,
+                  "reason": "Duplicate request",
+                  "idempotency_key": "catalog-stage-1-task-2"
+                }
+              },
+              "score": {
+                "selection_correct": true,
+                "arguments_correct": true,
+                "schema_valid": true,
+                "correct": true
+              }
+            },
+            {
+              "task_id": "stage1-3",
+              "answer": {
+                "task_id": "stage1-3",
+                "status": "call",
+                "name": "riffdb_cmd_workflowdesk_submitticket",
+                "arguments": {
+                  "item_id": "44444444-4444-4444-8444-444444444444",
+                  "organization_id": "11111111-1111-4111-8111-111111111111",
+                  "expected_revision": 9,
+                  "reason": "Ready for review",
+                  "idempotency_key": "catalog-stage-1-task-3"
+                }
+              },
+              "score": {
+                "selection_correct": true,
+                "arguments_correct": true,
+                "schema_valid": true,
+                "correct": true
+              }
+            }
+          ]
+        },
+        {
+          "stage": 2,
+          "catalog_sha256": "151f3fd3f02dbb2a9e5ce1ae584107758c515fafbf9b0b80cca516866291316e",
+          "response_sha256": "71e05c66c122cebd86bc58371416d7d38bf28523cac4b7aa5646244a6d912117",
+          "outside_packet_access_reported": false,
+          "response_shape_valid": true,
+          "inspection": "file-assisted catalog inspection permitted; participant reports captured separately in private archive",
+          "tasks": [
+            {
+              "task_id": "stage2-1",
+              "answer": {
+                "task_id": "stage2-1",
+                "status": "call",
+                "name": "riffdb_cmd_workflowdesk_authorizeticket",
+                "arguments": {
+                  "item_id": "22222222-2222-4222-8222-222222222222",
+                  "organization_id": "11111111-1111-4111-8111-111111111111",
+                  "expected_revision": 7,
+                  "reason": "Reviewed and approved",
+                  "idempotency_key": "catalog-stage-2-task-1"
+                }
+              },
+              "score": {
+                "selection_correct": true,
+                "arguments_correct": true,
+                "schema_valid": true,
+                "correct": true
+              }
+            },
+            {
+              "task_id": "stage2-2",
+              "answer": {
+                "task_id": "stage2-2",
+                "status": "unavailable"
+              },
+              "score": {
+                "selection_correct": true,
+                "arguments_correct": null,
+                "schema_valid": null,
+                "correct": true
+              }
+            },
+            {
+              "task_id": "stage2-3",
+              "answer": {
+                "task_id": "stage2-3",
+                "status": "call",
+                "name": "riffdb_cmd_workflowdesk_submitticket",
+                "arguments": {
+                  "item_id": "44444444-4444-4444-8444-444444444444",
+                  "organization_id": "11111111-1111-4111-8111-111111111111",
+                  "expected_revision": 9,
+                  "reason": "Ready for review",
+                  "idempotency_key": "catalog-stage-2-task-3",
+                  "review_reference": "review-2026-09-22"
+                }
+              },
+              "score": {
+                "selection_correct": true,
+                "arguments_correct": true,
+                "schema_valid": true,
+                "correct": true
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "subject": "selection-08",
+      "size": "small",
+      "transition": "stable",
+      "history_fork": "none",
+      "model_configuration": "inherited parent session model/settings, without override; exact model revision not independently attested",
+      "stages": [
+        {
+          "stage": 1,
+          "catalog_sha256": "ca9ffa83f42a044e54b9282e238591ad8509724bf831ca1748631992dd4e3338",
+          "response_sha256": "b6d08997825eac16176962e0a66833ff6d1f4d85d2888f06ea328992ba8fc6a7",
+          "outside_packet_access_reported": false,
+          "response_shape_valid": true,
+          "inspection": "file-assisted catalog inspection permitted; participant reports captured separately in private archive",
+          "tasks": [
+            {
+              "task_id": "stage1-1",
+              "answer": {
+                "task_id": "stage1-1",
+                "status": "call",
+                "name": "riffdb_cmd_workflowdesk_approveticket",
+                "arguments": {
+                  "expected_revision": 7,
+                  "idempotency_key": "catalog-stage-1-task-1",
+                  "item_id": "22222222-2222-4222-8222-222222222222",
+                  "organization_id": "11111111-1111-4111-8111-111111111111",
+                  "reason": "Reviewed and approved"
+                }
+              },
+              "score": {
+                "selection_correct": true,
+                "arguments_correct": true,
+                "schema_valid": true,
+                "correct": true
+              }
+            },
+            {
+              "task_id": "stage1-2",
+              "answer": {
+                "task_id": "stage1-2",
+                "status": "call",
+                "name": "riffdb_cmd_workflowdesk_cancelticket",
+                "arguments": {
+                  "expected_revision": 8,
+                  "idempotency_key": "catalog-stage-1-task-2",
+                  "item_id": "33333333-3333-4333-8333-333333333333",
+                  "organization_id": "11111111-1111-4111-8111-111111111111",
+                  "reason": "Duplicate request"
+                }
+              },
+              "score": {
+                "selection_correct": true,
+                "arguments_correct": true,
+                "schema_valid": true,
+                "correct": true
+              }
+            },
+            {
+              "task_id": "stage1-3",
+              "answer": {
+                "task_id": "stage1-3",
+                "status": "call",
+                "name": "riffdb_cmd_workflowdesk_submitticket",
+                "arguments": {
+                  "expected_revision": 9,
+                  "idempotency_key": "catalog-stage-1-task-3",
+                  "item_id": "44444444-4444-4444-8444-444444444444",
+                  "organization_id": "11111111-1111-4111-8111-111111111111",
+                  "reason": "Ready for review"
+                }
+              },
+              "score": {
+                "selection_correct": true,
+                "arguments_correct": true,
+                "schema_valid": true,
+                "correct": true
+              }
+            }
+          ]
+        },
+        {
+          "stage": 2,
+          "catalog_sha256": "ca9ffa83f42a044e54b9282e238591ad8509724bf831ca1748631992dd4e3338",
+          "response_sha256": "b89754aab4d0ba505a4694a58227a72b5c1c87b7510260c38984a920c2bb2b65",
+          "outside_packet_access_reported": false,
+          "response_shape_valid": true,
+          "inspection": "file-assisted catalog inspection permitted; participant reports captured separately in private archive",
+          "tasks": [
+            {
+              "task_id": "stage2-1",
+              "answer": {
+                "task_id": "stage2-1",
+                "status": "call",
+                "name": "riffdb_cmd_workflowdesk_approveticket",
+                "arguments": {
+                  "expected_revision": 7,
+                  "idempotency_key": "catalog-stage-2-task-1",
+                  "item_id": "22222222-2222-4222-8222-222222222222",
+                  "organization_id": "11111111-1111-4111-8111-111111111111",
+                  "reason": "Reviewed and approved"
+                }
+              },
+              "score": {
+                "selection_correct": true,
+                "arguments_correct": true,
+                "schema_valid": true,
+                "correct": true
+              }
+            },
+            {
+              "task_id": "stage2-2",
+              "answer": {
+                "task_id": "stage2-2",
+                "status": "call",
+                "name": "riffdb_cmd_workflowdesk_cancelticket",
+                "arguments": {
+                  "expected_revision": 8,
+                  "idempotency_key": "catalog-stage-2-task-2",
+                  "item_id": "33333333-3333-4333-8333-333333333333",
+                  "organization_id": "11111111-1111-4111-8111-111111111111",
+                  "reason": "Duplicate request"
+                }
+              },
+              "score": {
+                "selection_correct": true,
+                "arguments_correct": true,
+                "schema_valid": true,
+                "correct": true
+              }
+            },
+            {
+              "task_id": "stage2-3",
+              "answer": {
+                "task_id": "stage2-3",
+                "status": "call",
+                "name": "riffdb_cmd_workflowdesk_submitticket",
+                "arguments": {
+                  "expected_revision": 9,
+                  "idempotency_key": "catalog-stage-2-task-3",
+                  "item_id": "44444444-4444-4444-8444-444444444444",
+                  "organization_id": "11111111-1111-4111-8111-111111111111",
+                  "reason": "Ready for review"
+                }
+              },
+              "score": {
+                "selection_correct": true,
+                "arguments_correct": true,
+                "schema_valid": true,
+                "correct": true
+              }
+            }
+          ]
+        }
+      ]
+    }
+  ],
+  "all_eight_launched_subjects_retained": true,
+  "native_client_tool_injection": false,
+  "autonomous_notification_handling": false,
+  "business_command_execution": false,
+  "r06_closed": false,
+  "setup_failures": [
+    {
+      "phase": "harness bootstrap before snapshot generation",
+      "reason": "Adding normal invoke grants to bootstrap request was refused; retained original harness bootstrap and created normal filtered capabilities afterward. No participant had started."
+    }
+  ],
+  "generator_source_sha256": "2b9e3202f845f95ff9cd0765eeb797ac53d66d68d10ca78c79ea1eb8fdebdbed",
+  "generated_contract_sha256": {
+    "stable.riff": "f3bfecef8f108641c697ed9bfc0a6043aca8a45b5fa95552c5421d6b0d6b3da5",
+    "changed.riff": "cf3fed33dccfba5dd5c5234bc4f52ee4ffd09f1de2c316f4d8420b174ecda11d"
+  }
+}

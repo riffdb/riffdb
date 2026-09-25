@@ -29,6 +29,8 @@ review_triggers:
   - Any source-page, source-byte, physical-command-scan, segment, command-event, server-chunk, total-work, or continuation bound would change or become configurable.
   - A public protocol, CLI, SDK, authorization, policy, reimport, epoch-two identity, durable record schema, storage key, transaction, acknowledgement, recovery, or redaction behavior would change.
   - Implementation would touch a production path other than the four exact paths authorized here.
+struck_obligations:
+  13c10e48ef482b42dc8329a5e787e59e44b76c1a2c47736124f2e697f6376b73: "This is the package closure check list; its individual implementation obligations remain declared in this record and the referenced ceremony records."
 ---
 # ADR-0217: Snapshot-Bound Export of Command-Owned Evidence
 

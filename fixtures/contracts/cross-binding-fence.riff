@@ -1,0 +1,33 @@
+contract FencedChildren version 1 {
+  entity Parent {
+    key (tenant: uuid, parent_id: uuid)
+    field revision: i64
+  }
+  entity Child {
+    key (tenant: uuid, parent_id: uuid, child_id: uuid)
+    field value: i64
+  }
+  aggregate Parents {
+    root Parent
+    child Child
+    partition_by tenant
+    conflict_key (tenant, parent_id)
+    invariant nonnegative: revision >= 0
+  }
+  command UpdateChild {
+    input request_key: string<128>
+    input tenant: uuid
+    input parent_id: uuid
+    input other_parent_id: uuid
+    input child_id: uuid
+    input expected_revision: i64
+    input value: i64
+    idempotency_key request_key
+    mutate Parent(tenant, parent_id) as parent else ParentMissing {}
+    mutate Child(tenant, parent_id, child_id) as item else ChildMissing {}
+    require current: parent.revision == expected_revision else Stale {}
+    set parent.revision = parent.revision + 1
+    set item.value = value
+    return Updated { item: item }
+  }
+}

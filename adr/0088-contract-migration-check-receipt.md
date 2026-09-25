@@ -1,6 +1,9 @@
 # ADR-0088: Contract Migration Check Receipt
 
 - **Status:** Accepted
+- **Struck obligations (WP-758):**
+  - Source: `c8eec6ad1f6c6bc592f16179713a97536a686dfac0f45eceafe9de36805d4c0f`. Reason: The extractor matched a description of the already specified migration state machine; the normative Accepted/Draining/Preflight/backup ordering remains in force.
+
 - **Date:** 2026-08-01
 - **Decision owners:** RiffDB maintainers
 - **Acceptance reference:** Human maintainer approval in the WP-409 implementation session on 2026-08-01

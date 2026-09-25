@@ -84,10 +84,24 @@ use crate::store::{
 
 static NEXT_OPEN_SESSION: AtomicU64 = AtomicU64::new(1);
 
+/// ADR-0182 Decision 5: the compiled ceiling on recovery-owned state beyond
+/// engine caches. The bounded dirty readiness path may hold only the bounded
+/// historical locator index and fixed-size streaming windows; a stage that
+/// would exceed this ceiling fails closed with a typed internal defect rather
+/// than spilling or degrading.
+pub(crate) const MAX_RECOVERY_OWNED_STATE_BYTES: usize = 64 * 1024 * 1024;
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum EvidenceOpenPurpose {
     Startup,
     OfflineIntegrityScrub,
+    /// ADR-0182 background scrub: the complete exact-end walk over a
+    /// least-authority MVCC snapshot while the writer stays live. No mutation
+    /// lease is held, no durable state is consumed or created, and a
+    /// concurrent write advancing the commit epoch does not fail the scrub —
+    /// the scrub validates its pinned snapshot, and progress restarts on the
+    /// next process generation exactly as the record requires.
+    BackgroundScrub,
 }
 
 /// One fixed-cardinality successful offline integrity-scrub receipt.
@@ -249,6 +263,125 @@ pub(crate) fn begin_follower_bootstrap_scrub(
         return Err(invariant());
     }
     store.begin_structural_evidence_for(inputs, EvidenceOpenPurpose::OfflineIntegrityScrub)
+}
+
+/// Opens the ADR-0182 background scrub session over the live writer's shared
+/// handle: the complete exact-end walk on a pinned MVCC snapshot, holding no
+/// mutation lease, consuming and creating no durable state. The caller drives
+/// it page by page (the rows-per-step rate bound) and may cancel at any page
+/// boundary.
+pub(crate) fn begin_background_scrub_on_shared(
+    shared: &Arc<SharedRedb>,
+    inputs: StartupValidationInputs,
+) -> Result<RedbBackgroundScrubSession, StorageError> {
+    if !shared.is_source_mode() {
+        return Err(invariant());
+    }
+    let store = RedbStore {
+        shared: Arc::clone(shared),
+    };
+    let session =
+        store.begin_structural_evidence_for(inputs, EvidenceOpenPurpose::BackgroundScrub)?;
+    Ok(RedbBackgroundScrubSession {
+        session,
+        rows_walked: 0,
+    })
+}
+
+/// One page-driven background scrub over a pinned MVCC snapshot.
+pub struct RedbBackgroundScrubSession {
+    session: RedbStructuralEvidenceSession,
+    rows_walked: u64,
+}
+
+impl RedbBackgroundScrubSession {
+    /// Cancels the scrub at the next page boundary.
+    pub fn set_cancellation(&mut self, cancellation: Arc<AtomicBool>) {
+        self.session.cancellation = Some(cancellation);
+    }
+
+    /// Rows the scrub has walked (bounded work observation for evidence).
+    #[must_use]
+    pub const fn rows_walked(&self) -> u64 {
+        self.rows_walked
+    }
+
+    /// Reads the next bounded structural page. Empty findings advance the
+    /// walk; any finding is returned to the caller (the scrub degrades health
+    /// rather than repairing).
+    pub fn read_structural_page(
+        &mut self,
+        limit: EvidencePageLimit,
+    ) -> Result<BackgroundScrubPage, StorageError> {
+        let cursor = self.session.next_structural;
+        match self.session.read_structural_evidence(cursor, limit)? {
+            StructuralEvidencePage::Page { findings, next, .. } => {
+                self.rows_walked = self
+                    .rows_walked
+                    .saturating_add(next.position().saturating_sub(cursor.position()));
+                Ok(BackgroundScrubPage::Page { findings, next })
+            }
+            StructuralEvidencePage::ExactEnd(end) => Ok(BackgroundScrubPage::ExactEnd(end)),
+        }
+    }
+
+    /// Reads the next bounded historical page after the structural exact end.
+    /// The page yields the historical semantic evidence for the caller's
+    /// catalog validation; the scrub does not interpret it.
+    pub fn read_historical_page(
+        &mut self,
+        limit: EvidencePageLimit,
+    ) -> Result<BackgroundScrubHistoricalPage, StorageError> {
+        let cursor = self.session.next_historical;
+        match self.session.read_historical_evidence(cursor, limit)? {
+            HistoricalEvidencePage::Page { evidence, next, .. } => {
+                Ok(BackgroundScrubHistoricalPage::Page { evidence, next })
+            }
+            HistoricalEvidencePage::ExactEnd(end) => {
+                Ok(BackgroundScrubHistoricalPage::ExactEnd(end))
+            }
+        }
+    }
+
+    /// Completes the scrub after both exact ends, proving the walk finished
+    /// with zero findings and touching no durable state.
+    pub fn finish(
+        self,
+        structural_end: RedbStructuralEvidenceEnd,
+        historical_end: RedbHistoricalEvidenceEnd,
+    ) -> Result<(), StorageError> {
+        self.session
+            .finish_background_scrub(structural_end, historical_end)
+    }
+}
+
+/// One bounded structural scrub page: findings plus the advancing cursor, or
+/// the exact end.
+pub enum BackgroundScrubPage {
+    /// A page with its findings (empty on a healthy walk) and the next cursor.
+    Page {
+        /// Findings from this page; empty on a healthy walk.
+        findings: Vec<StructuralFinding>,
+        /// The advancing structural continuation.
+        next: StructuralEvidenceCursor,
+    },
+    /// The structural stream reached its exact end.
+    ExactEnd(RedbStructuralEvidenceEnd),
+}
+
+/// One bounded historical scrub page: semantic evidence plus the advancing
+/// cursor, or the exact end.
+pub enum BackgroundScrubHistoricalPage {
+    /// A page of historical semantic evidence and the next cursor.
+    Page {
+        /// The page's historical semantic evidence, handed to the catalog
+        /// validator by the scrub driver.
+        evidence: Vec<HistoricalSemanticEvidence>,
+        /// The advancing historical continuation.
+        next: HistoricalEvidenceCursor,
+    },
+    /// The historical stream reached its exact end.
+    ExactEnd(RedbHistoricalEvidenceEnd),
 }
 // The V1 validated-prefix checkpoint permanently covers the original table set.
 // Additive tables are validated separately and never inferred from that proof.
@@ -530,6 +663,12 @@ pub struct RedbStructuralEvidenceSession {
     v3_activation_required: bool,
     /// True only for an ADR-0157 verified clean-close bounded startup.
     clean_close_fast: bool,
+    /// True only for an ADR-0182 bounded dirty startup: journal-suffix
+    /// recovery plus bounded-root validation with no population walk.
+    bounded_dirty_startup: bool,
+    /// Why this session opened; the background scrub is lease-free and its
+    /// continuity checks tolerate a live writer.
+    purpose: EvidenceOpenPurpose,
     /// Exact clean lifecycle consumed to DIRTY immediately before activation.
     verified_clean_lifecycle: Option<crate::clean_close::CleanCloseLifecycle>,
     /// Which precondition declined the ADR-0157 bounded path, if it declined.
@@ -573,6 +712,8 @@ pub struct RedbStructuralEvidenceSession {
     /// segment/capsule row during the cache's exact forward `COMMITS` pass.
     embedded_command_authority: BTreeSet<CommitSequence>,
     command_cache_built: bool,
+    /// COMMITS rows decoded into the startup command cache (observation only).
+    command_history_rows_decoded: u64,
     /// Publication facts decoded once from AUDIT and shared by catalog, query
     /// module, reactive module, and suffix-audit validation.
     publication_audits: Option<PublicationAuditCache>,
@@ -686,7 +827,13 @@ impl RedbStore {
         if private.is_some() && purpose != EvidenceOpenPurpose::OfflineIntegrityScrub {
             return Err(invariant());
         }
-        let lease = self.acquire_mutation_lease()?;
+        // The background scrub holds no mutation lease: it validates its
+        // pinned MVCC snapshot while the writer stays live, and a concurrent
+        // write advancing the commit epoch does not fail it.
+        let lease = match purpose {
+            EvidenceOpenPurpose::BackgroundScrub => None,
+            _ => Some(self.acquire_mutation_lease()?),
+        };
         let durable_commit_epoch = self.shared.durable_commit_epoch();
         let transaction = self
             .shared
@@ -734,7 +881,8 @@ impl RedbStore {
             let binding_bundles = collect_bundle_bindings(&transaction)?;
             return Ok(RedbStructuralEvidenceSession {
                 shared: Arc::clone(&self.shared),
-                lease: Some(lease),
+                lease,
+                purpose: EvidenceOpenPurpose::Startup,
                 durable_commit_epoch,
                 database_id,
                 open_session_id,
@@ -742,6 +890,7 @@ impl RedbStore {
                 inputs,
                 v3_activation_required: false,
                 clean_close_fast: true,
+                bounded_dirty_startup: false,
                 verified_clean_lifecycle: Some(lifecycle),
                 clean_close_declined_reason: None,
                 structural_counts,
@@ -765,6 +914,154 @@ impl RedbStore {
                 command_capsules: BTreeMap::new(),
                 embedded_command_authority: BTreeSet::new(),
                 command_cache_built: false,
+                command_history_rows_decoded: 0,
+                publication_audits: None,
+                binding_bundles,
+                entity_chains: None,
+                reactive_publication_audit_decodes: 0,
+                pending_entity_orphan_findings: VecDeque::new(),
+                historical_plan: None,
+                checkpoint: None,
+                sampled_window_rows_inspected: 0,
+                checkpoint_verified: false,
+                checkpoint_ignored_reason: None,
+                walked_suffix_counts: [0; STRUCTURAL_TABLE_COUNT],
+                walked_prefix_counts: [0; STRUCTURAL_TABLE_COUNT],
+                terminal_execution_failure_rows: 0,
+            });
+        }
+        // ADR-0182 Decision 1: a startup without a valid clean-close
+        // certificate is journal-suffix replay (already reconciled at engine
+        // open) plus the SAME bounded-root validation the clean path performs,
+        // then dirty-generation consumption and readiness. No population-sized
+        // table is enumerated before readiness and the complete exact-end
+        // evidence stream is not constructed on this path; the background
+        // scrub and the explicit complete path own it. The bounded roots are
+        // re-validated here directly — the fixed meta roots, the singleton
+        // active catalog, and every active query-module pointer and body —
+        // through the same bounded binding computation the clean path's
+        // verifier used, without comparing it against any certificate.
+        // A follower open never takes this branch: ADR-0093/ADR-0182 require a
+        // bootstrapped follower to pass primary startup validation (the
+        // complete walk) at its applied head, and the follower applier handoff
+        // rebuilds its transient indexes from that complete proof.
+        // A pre-current record registry needs the complete path: its historical
+        // plan performs the V1-index migration drive and the bounded plan
+        // carries no index locators, so the bounded branch must not engage.
+        // A current registry alone is not sufficient either: a pending
+        // catalog index migration (V1 rows under a current registry, e.g. a
+        // crash between migration batches) is detected only by the complete
+        // walk. The bounded dirty branch therefore additionally requires a
+        // validated-prefix checkpoint covering the current state — the
+        // durable record that one complete walk already validated (and
+        // thereby migrated) everything at this head. A database that has
+        // never completed a full walk under the current registry takes the
+        // complete path once and gains the checkpoint; every later dirty
+        // open is bounded.
+        let registry_is_current = {
+            let meta = transaction.open_table(META).map_err(table_error)?;
+            meta.get(META_RECORD_REGISTRY)
+                .map_err(precommit_storage_error)?
+                .is_some_and(|encoded| {
+                    riffdb_storage_api::decode_record_registry_v2(encoded.value()).is_ok_and(
+                        |registry| {
+                            *registry.value()
+                                == riffdb_storage_api::proto_codec::current_record_registry_digest()
+                        },
+                    )
+                })
+        };
+        let checkpoint_admits_bounded = registry_is_current
+            && crate::validated_prefix::load_active_checkpoint(
+                &transaction,
+                database_id,
+                snapshot.retained_metadata.history_incarnation(),
+                &full_structural_counts,
+            )
+            .is_ok();
+        if purpose == EvidenceOpenPurpose::Startup
+            && v3_active
+            && checkpoint_admits_bounded
+            && !self.shared.is_follower_mode()
+        {
+            self.shared
+                .validate_bounded_dirty_roots(&transaction, database_id)?;
+            // Re-validate the bounded retention watermark bindings (never
+            // advance) exactly as the full session does; the tombstone chain
+            // verification is bounded by the watermark sequence's own chain
+            // root, not by population size.
+            {
+                let watermark = crate::retention::load_watermark(&transaction)?;
+                if let Some(wm) = watermark.as_ref() {
+                    if wm.history_incarnation() != snapshot.retained_metadata.history_incarnation()
+                    {
+                        return Err(corrupt());
+                    }
+                    let recomputed = wm
+                        .computed_hash()
+                        .map_err(|_| storage_error(StorageErrorKind::CorruptData))?;
+                    if recomputed != wm.watermark_hash() {
+                        return Err(corrupt());
+                    }
+                    let head = crate::retention::durable_application_head(&transaction)?;
+                    if wm.watermark_sequence() > head {
+                        return Err(corrupt());
+                    }
+                    crate::retention::verify_tombstone_chain(
+                        &transaction,
+                        wm.watermark_sequence(),
+                        wm.chain_root_registry_digest(),
+                    )?;
+                } else {
+                    crate::retention::verify_tombstone_chain(&transaction, 0, None)?;
+                }
+            }
+            self.shared.set_startup_validation_clean(false);
+            structural_counts = [0; STRUCTURAL_TABLE_COUNT];
+            structural_counts[0] = full_structural_counts[0];
+            structural_counts[1] = full_structural_counts[1];
+            structural_counts[2] = full_structural_counts[2];
+            let additive_structural_counts = [0; ADDITIVE_STRUCTURAL_TABLE_COUNT];
+            structural_total = structural_counts.iter().try_fold(1_u64, |total, count| {
+                total.checked_add(*count).ok_or_else(limit_exceeded)
+            })?;
+            let binding_bundles = collect_bundle_bindings(&transaction)?;
+            return Ok(RedbStructuralEvidenceSession {
+                shared: Arc::clone(&self.shared),
+                lease,
+                purpose: EvidenceOpenPurpose::Startup,
+                durable_commit_epoch,
+                database_id,
+                open_session_id,
+                retained_metadata: snapshot.retained_metadata,
+                inputs,
+                v3_activation_required: false,
+                clean_close_fast: false,
+                bounded_dirty_startup: true,
+                verified_clean_lifecycle: None,
+                clean_close_declined_reason,
+                structural_counts,
+                full_structural_counts,
+                additive_structural_counts,
+                structural_total,
+                next_structural: StructuralEvidenceCursor::start(database_id, open_session_id),
+                next_historical: HistoricalEvidenceCursor::start(database_id, open_session_id),
+                last_historical_key: None,
+                structural_finished: false,
+                historical_finished: false,
+                authoritative_finding_seen: false,
+                cancellation: None,
+                any_finding_seen: false,
+                saw_v1_index: false,
+                validation_read: Some(transaction),
+                historical_tables: None,
+                structural_cursors: None,
+                command_audits: BTreeMap::new(),
+                command_audit_bytes: 0,
+                command_capsules: BTreeMap::new(),
+                embedded_command_authority: BTreeSet::new(),
+                command_cache_built: false,
+                command_history_rows_decoded: 0,
                 publication_audits: None,
                 binding_bundles,
                 entity_chains: None,
@@ -899,7 +1196,8 @@ impl RedbStore {
         Ok(RedbStructuralEvidenceSession {
             cancellation: None,
             shared: Arc::clone(&self.shared),
-            lease: Some(lease),
+            lease,
+            purpose,
             durable_commit_epoch,
             database_id,
             open_session_id,
@@ -907,6 +1205,7 @@ impl RedbStore {
             inputs,
             v3_activation_required: !v3_active,
             clean_close_fast: false,
+            bounded_dirty_startup: false,
             verified_clean_lifecycle: None,
             clean_close_declined_reason,
             structural_counts,
@@ -929,6 +1228,7 @@ impl RedbStore {
             command_capsules: std::collections::BTreeMap::new(),
             embedded_command_authority: BTreeSet::new(),
             command_cache_built: false,
+            command_history_rows_decoded: 0,
             publication_audits: Some(publication_audits),
             binding_bundles,
             entity_chains: None,
@@ -1063,8 +1363,22 @@ impl StructuralEvidenceSession for RedbStructuralEvidenceSession {
         self.ensure_historical_read()?;
         if self.historical_plan.is_none() {
             let transaction = self.validation_read.as_ref().ok_or_else(invariant)?;
-            let plan = if self.clean_close_fast {
-                build_clean_close_historical_evidence_plan(transaction)?
+            let plan = if self.clean_close_fast || self.bounded_dirty_startup {
+                // Both bounded startup paths walk only the bounded historical
+                // locators (bundles, migration edges, the active catalog); the
+                // full evidence plan is the scrub's and the explicit complete
+                // path's.
+                let plan = build_clean_close_historical_evidence_plan(transaction)?;
+                // ADR-0182 Decision 5: the bounded locator index is the dirty
+                // path's one recovery-owned structure; it is bounded by the
+                // compiled 64 MiB ceiling and refuses with a typed internal
+                // defect rather than spilling.
+                if self.bounded_dirty_startup
+                    && plan.retained_bytes > MAX_RECOVERY_OWNED_STATE_BYTES
+                {
+                    return Err(storage_error(StorageErrorKind::InvariantViolation));
+                }
+                plan
             } else {
                 build_historical_evidence_plan(transaction, &self.inputs)?
             };
@@ -1288,8 +1602,11 @@ impl StructuralEvidenceSession for RedbStructuralEvidenceSession {
             // ADR-0019 A1 write gate: the checkpoint is written ONLY when this
             // validation session produced ZERO findings of ANY scope. A finding
             // of any severity (authoritative, outbox, projection, sampled)
-            // vetoes the write so the fast path can never silence it.
-            if !self.clean_close_fast && !self.any_finding_seen {
+            // vetoes the write so the fast path can never silence it. The
+            // ADR-0182 bounded dirty session writes no checkpoint either: it
+            // performed no complete validation, so there is no exact census to
+            // seed and no prefix proven safe to skip.
+            if !self.clean_close_fast && !self.bounded_dirty_startup && !self.any_finding_seen {
                 // Seed the terminal execution-failure census from THIS walk
                 // before the gate opens. The census and the write permission are
                 // established by the same statement pair, so no checkpoint can
@@ -1318,8 +1635,12 @@ impl StructuralEvidenceSession for RedbStructuralEvidenceSession {
                 self.retained_metadata.history_incarnation(),
                 self.verified_clean_lifecycle.take(),
             )?;
+            self.shared.bounded_clean_startup.store(
+                self.clean_close_fast || self.bounded_dirty_startup,
+                Ordering::Release,
+            );
             self.shared
-                .bounded_clean_startup
+                .clean_certificate_startup
                 .store(self.clean_close_fast, Ordering::Release);
             drop(lease);
             Ok(StructuralOpenOutcome::Clean(
@@ -1400,6 +1721,37 @@ impl RedbStructuralEvidenceSession {
         Ok(())
     }
 
+    /// ADR-0182 background scrub completion: both streams reached their exact
+    /// ends on the pinned MVCC snapshot with zero findings, no durable state
+    /// was consumed or created, and no lease was ever held. The scrub's
+    /// findings — if any — were already returned by the page reads; a clean
+    /// finish only proves the walk completed.
+    fn finish_background_scrub(
+        mut self,
+        structural_end: RedbStructuralEvidenceEnd,
+        historical_end: RedbHistoricalEvidenceEnd,
+    ) -> Result<(), StorageError> {
+        self.check_cancellation()?;
+        if self.purpose != EvidenceOpenPurpose::BackgroundScrub
+            || self.lease.is_some()
+            || self.clean_close_fast
+            || self.bounded_dirty_startup
+            || self.checkpoint_verified
+            || !self.structural_finished
+            || !self.historical_finished
+            || structural_end.cursor != self.next_structural
+            || historical_end.cursor != self.next_historical
+            || self.authoritative_finding_seen
+            || self.any_finding_seen
+            || self.saw_v1_index
+        {
+            return Err(storage_error(StorageErrorKind::CorruptData));
+        }
+        self.historical_tables = None;
+        self.validation_read = None;
+        Ok(())
+    }
+
     fn ensure_historical_read(&mut self) -> Result<(), StorageError> {
         self.check_cancellation()?;
         if self.validation_read.is_none() {
@@ -1416,7 +1768,9 @@ impl RedbStructuralEvidenceSession {
     }
 
     fn open_snapshot_read(&self) -> Result<ReadTransaction, StorageError> {
-        if self.shared.durable_commit_epoch() != self.durable_commit_epoch {
+        if self.purpose != EvidenceOpenPurpose::BackgroundScrub
+            && self.shared.durable_commit_epoch() != self.durable_commit_epoch
+        {
             return Err(corrupt());
         }
         let transaction = self
@@ -1425,14 +1779,18 @@ impl RedbStructuralEvidenceSession {
             .begin_read()
             .map_err(transaction_error)?;
         self.verify_structural_continuity(&transaction)?;
-        if self.shared.durable_commit_epoch() != self.durable_commit_epoch {
+        if self.purpose != EvidenceOpenPurpose::BackgroundScrub
+            && self.shared.durable_commit_epoch() != self.durable_commit_epoch
+        {
             return Err(corrupt());
         }
         Ok(transaction)
     }
 
     fn ensure_structural_continuity(&self) -> Result<(), StorageError> {
-        if self.shared.durable_commit_epoch() != self.durable_commit_epoch {
+        if self.purpose != EvidenceOpenPurpose::BackgroundScrub
+            && self.shared.durable_commit_epoch() != self.durable_commit_epoch
+        {
             return Err(corrupt());
         }
         let Some(transaction) = self.validation_read.as_ref() else {
@@ -1499,7 +1857,7 @@ impl RedbStructuralEvidenceSession {
         if counts != self.full_structural_counts {
             return Err(corrupt());
         }
-        if self.clean_close_fast {
+        if self.clean_close_fast || self.bounded_dirty_startup {
             // Redb table lengths are metadata reads. They prove the immutable
             // snapshot did not change without walking any population table.
             return Ok(());
@@ -1595,6 +1953,35 @@ impl RedbStructuralEvidenceSession {
     #[must_use]
     pub fn clean_close_fast_path(&self) -> bool {
         self.clean_close_fast
+    }
+
+    /// Test/benchmark observability: whether this open took the ADR-0182
+    /// bounded dirty path (journal-suffix replay plus bounded-root validation,
+    /// no population walk). Observation only; it cannot select startup
+    /// behavior.
+    #[doc(hidden)]
+    #[must_use]
+    pub fn bounded_dirty_startup_path(&self) -> bool {
+        self.bounded_dirty_startup
+    }
+
+    /// Test/evidence observability: the total structural rows this session
+    /// will walk before its exact end. The bounded startup paths report their
+    /// bounded catalog totals; the complete path reports the full population
+    /// total. Observation only.
+    #[doc(hidden)]
+    #[must_use]
+    pub fn structural_walk_total(&self) -> u64 {
+        self.structural_total
+    }
+
+    /// Test/evidence observability: the COMMITS rows this session decoded
+    /// into its startup command cache. The bounded startup paths report zero
+    /// through the structural exact end. Observation only.
+    #[doc(hidden)]
+    #[must_use]
+    pub fn command_history_rows_decoded(&self) -> u64 {
+        self.command_history_rows_decoded
     }
 
     /// Test/operator observability: which precondition declined the ADR-0157
@@ -1853,6 +2240,15 @@ impl RedbStructuralEvidenceSession {
             if self.clean_close_fast {
                 return Ok(None);
             }
+            if self.bounded_dirty_startup {
+                // ADR-0182 Decision 1: no population-sized table is enumerated
+                // before readiness, so the dirty header proves only the bounded
+                // header facts and never builds the command or publication
+                // caches. Gap-free administration continuity and the
+                // last-activation reciprocity stay with the background scrub.
+                let transaction = self.validation_read.as_ref().ok_or_else(invariant)?;
+                return inspect_header(transaction, self.database_id, HeaderProof::BoundedDirty);
+            }
             // Allocator continuity and the later command/audit phases need the
             // same exact command graph. Build it once (suffix-only under a
             // validated checkpoint) and share it instead of decoding every
@@ -1863,9 +2259,11 @@ impl RedbStructuralEvidenceSession {
             return inspect_header(
                 transaction,
                 self.database_id,
-                self.checkpoint.as_ref(),
-                &self.command_audits,
-                self.publication_audits.as_ref().ok_or_else(invariant)?,
+                HeaderProof::Complete {
+                    checkpoint: self.checkpoint.as_ref(),
+                    command_audits: &self.command_audits,
+                    publication_audits: self.publication_audits.as_ref().ok_or_else(invariant)?,
+                },
             );
         }
         if self.structural_cursors.is_none() {
@@ -1902,10 +2300,14 @@ impl RedbStructuralEvidenceSession {
             let key = std::str::from_utf8(&key).map_err(|_| corrupt())?;
             return Ok(inspect_meta_row(key, &value, self.database_id));
         }
-        if self.clean_close_fast && phase == 1 {
+        // Both bounded startup paths inspect the catalog rows self-contained;
+        // the activation-audit reciprocity is the complete path's and the
+        // scrub's, since it reads the whole administration stream.
+        let bounded = self.clean_close_fast || self.bounded_dirty_startup;
+        if bounded && phase == 1 {
             return inspect_clean_close_bundle_row(&key, &value);
         }
-        if self.clean_close_fast && phase == 2 {
+        if bounded && phase == 2 {
             return inspect_clean_close_active_catalog_row(
                 self.validation_read.as_ref().ok_or_else(invariant)?,
                 &key,
@@ -2059,6 +2461,7 @@ impl RedbStructuralEvidenceSession {
         let mut audits = std::collections::BTreeMap::new();
         let mut embedded_authority = BTreeSet::new();
         let mut retained_bytes = 0usize;
+        let mut decoded_rows = 0_u64;
         let checkpoint_sequence = self
             .checkpoint
             .as_ref()
@@ -2076,6 +2479,7 @@ impl RedbStructuralEvidenceSession {
         };
         for entry in &mut rows {
             let (key, value) = entry.map_err(precommit_storage_error)?;
+            decoded_rows = decoded_rows.saturating_add(1);
             retained_bytes = retained_bytes
                 .checked_add(value.value().len())
                 .ok_or_else(limit_exceeded)?;
@@ -2163,6 +2567,7 @@ impl RedbStructuralEvidenceSession {
             }
         }
         self.command_audit_bytes = retained_bytes;
+        self.command_history_rows_decoded = decoded_rows;
         self.command_audits = audits;
         self.command_capsules = capsules;
         self.embedded_command_authority = embedded_authority;
@@ -3451,15 +3856,28 @@ fn table_len(
         .map_err(precommit_storage_error)
 }
 
+/// Which header proof a structural session owes before its first row.
+enum HeaderProof<'a> {
+    /// The complete path: exact gap-free administration continuity and the
+    /// last-activation reciprocity, over the session's cached evidence.
+    Complete {
+        checkpoint: Option<&'a crate::validated_prefix::ActiveCheckpoint>,
+        command_audits: &'a std::collections::BTreeMap<
+            riffdb_types::AdministrationSequence,
+            CachedCommandAudit,
+        >,
+        publication_audits: &'a PublicationAuditCache,
+    },
+    /// The ADR-0182 bounded dirty path: every check is a point lookup, a
+    /// table-length read, or the bounded META walk. The administration
+    /// allocator is proven against the durable tail only.
+    BoundedDirty,
+}
+
 fn inspect_header(
     transaction: &ReadTransaction,
     database_id: DatabaseId,
-    checkpoint: Option<&crate::validated_prefix::ActiveCheckpoint>,
-    command_audits: &std::collections::BTreeMap<
-        riffdb_types::AdministrationSequence,
-        CachedCommandAudit,
-    >,
-    publication_audits: &PublicationAuditCache,
+    proof: HeaderProof<'_>,
 ) -> Result<Option<StructuralFinding>, StorageError> {
     let meta = transaction.open_table(META).map_err(table_error)?;
     let mut seen = BTreeSet::new();
@@ -3499,14 +3917,22 @@ fn inspect_header(
         Ok(value) => value,
         Err(code) => return Ok(Some(authoritative(code))),
     };
-    if !application_allocator_matches(transaction, application)?
-        || !administration_allocator_matches(
-            transaction,
-            administration,
+    let administration_matches = match &proof {
+        HeaderProof::Complete {
             checkpoint,
             command_audits,
-        )?
-    {
+            ..
+        } => administration_allocator_matches(
+            transaction,
+            administration,
+            *checkpoint,
+            command_audits,
+        )?,
+        HeaderProof::BoundedDirty => {
+            administration_allocator_matches_tail(transaction, administration)?
+        }
+    };
+    if !application_allocator_matches(transaction, application)? || !administration_matches {
         return Ok(Some(authoritative(
             StructuralFindingCode::SequenceDiscontinuity,
         )));
@@ -3520,11 +3946,15 @@ fn inspect_header(
     {
         return Ok(Some(authoritative(StructuralFindingCode::MissingCrossLink)));
     }
-    if !active_catalog_matches_last_activation_cached(
-        transaction,
-        publication_audits,
-        active.as_ref(),
-    )? {
+    if let HeaderProof::Complete {
+        publication_audits, ..
+    } = &proof
+        && !active_catalog_matches_last_activation_cached(
+            transaction,
+            publication_audits,
+            active.as_ref(),
+        )?
+    {
         return Ok(Some(authoritative(
             StructuralFindingCode::CrossLinkMismatch,
         )));
@@ -7941,6 +8371,59 @@ fn physical_audit_row_repeats_derived(
     };
     Ok(physical.into_parts().0
         == riffdb_storage_api::StoredAdministrationAuditRecordV1::Service(derived.clone()))
+}
+
+/// The bounded dirty header's administration allocator proof: the allocator
+/// is exactly one past the highest administration sequence the durable tail
+/// holds, read from the last physical AUDIT row and the head command's
+/// started and terminal audits. The V3 roots already bind the allocator to the
+/// changelog tail frontier; this binds it to the rows. Both carriers allocate
+/// through the one ordered writer, so the tail holds the maximum. Gap-free
+/// continuity below the tail is the complete path's and the scrub's proof.
+fn administration_allocator_matches_tail(
+    transaction: &ReadTransaction,
+    allocator: riffdb_storage_api::AdministrationSequenceAllocator,
+) -> Result<bool, StorageError> {
+    let audit = transaction.open_table(AUDIT).map_err(table_error)?;
+    let mut highest = match audit.last().map_err(precommit_storage_error)? {
+        Some((key, _)) => match keys::decode_audit_key(key.value()) {
+            Ok(sequence) => Some(sequence),
+            Err(_) => return Ok(false),
+        },
+        None => None,
+    };
+    let commits = transaction.open_table(COMMITS).map_err(table_error)?;
+    let events = transaction.open_table(EVENTS).map_err(table_error)?;
+    let head = match command_authority_head(&commits, &events) {
+        Ok(head) => head,
+        Err(error) if error.kind() == StorageErrorKind::CorruptData => return Ok(false),
+        Err(error) => return Err(error),
+    };
+    // A head row that is not a command capsule carries no embedded audits:
+    // its administration records are physical AUDIT rows, already read above.
+    let member = match head.map(|head| command_member_at(&commits, &events, head)) {
+        None => None,
+        Some(Ok(member)) => member,
+        Some(Err(error)) if error.kind() == StorageErrorKind::CorruptData => return Ok(false),
+        Some(Err(error)) => return Err(error),
+    };
+    if let Some(member) = member {
+        let base = member.base();
+        for sequence in [
+            base.started_audit().administration_sequence(),
+            base.terminal_audit().administration_sequence(),
+        ] {
+            highest = highest.max(Some(sequence));
+        }
+    }
+    let exact = match highest {
+        None => riffdb_storage_api::AdministrationSequenceAllocator::initial(),
+        Some(sequence) => sequence.checked_next().map_or(
+            riffdb_storage_api::AdministrationSequenceAllocator::Exhausted,
+            riffdb_storage_api::AdministrationSequenceAllocator::next,
+        ),
+    };
+    Ok(allocator == exact)
 }
 
 fn administration_allocator_matches(

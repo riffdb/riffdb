@@ -5,6 +5,11 @@
 //! not inherit a table-wide default. Unproven rebuildability stays authoritative.
 
 use sha2::{Digest, Sha256};
+use std::sync::OnceLock;
+
+#[cfg(test)]
+pub(super) static DIGEST_COMPUTATIONS: std::sync::atomic::AtomicUsize =
+    std::sync::atomic::AtomicUsize::new(0);
 
 /// Transfer behavior of a replication-control namespace.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -213,6 +218,16 @@ impl AuthoritativeStateCatalogV1 {
     /// SHA-256 of the canonical declaration, including its identity line.
     #[must_use]
     pub fn digest(self) -> [u8; 32] {
-        Sha256::digest(self.canonical_fixture().as_bytes()).into()
+        // This inventory is a closed compile-time declaration. Cache only its
+        // expected digest; callers still validate freshly read storage evidence.
+        static DIGEST: OnceLock<[u8; 32]> = OnceLock::new();
+        *DIGEST.get_or_init(|| {
+            #[cfg(test)]
+            DIGEST_COMPUTATIONS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            Sha256::digest(self.canonical_fixture().as_bytes()).into()
+        })
     }
 }
+
+#[cfg(test)]
+mod digest_tests;

@@ -37,6 +37,20 @@ write-path comparison, governance verification, and same-root revision fence
 tasks, so the checkpoint package is renamed **WP-810**. The dependency follows
 the same checkpoint/journal work.
 
+### Main integration check, 2026-09-25
+
+Main at `e18bc5ef4ebd1b855b9e5430b2cb2d1a0edee814` adds compiler
+revision-fence proofs, terminal audit-cause preservation, and bounded dirty
+startup with background scrubbing. The merge retains those changes alongside
+the corrected receipt-wait and checkpoint diagnostics. Rust remains 1.98.1.
+
+The checkpoint-conditioned drain still derives from
+`async_checkpoint_in_flight`, and the commit writer still waits in
+`POST_DRAIN_ALL`. Main contains no WP-810 repair or measured reduction of this
+shared term. WP-749 therefore remains blocked under the existing disposition.
+No archive comparison, capture experiment, or host reservation accompanies
+this integration; the retained measurements keep their original source identities.
+
 ### Main integration check, 2026-09-22
 
 The merge of main at `215286abed9e98b77811b33be991ee1bca6b0077`

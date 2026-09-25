@@ -670,10 +670,11 @@ fn startup_refuses_resealed_epoch_priors_and_secondary_index_images() {
         }
         write.commit().unwrap();
         drop(database);
-        match RedbStore::open(&source.0) {
-            Ok(store) => assert!(!collect_structural_findings(store).is_empty()),
-            Err(error) => assert_eq!(error.kind(), StorageErrorKind::CorruptData),
-        }
+        // ADR-0182 layering: the contradiction is between self-consistent
+        // rows and the retained receipts, which only the complete walk reads.
+        // Startup or, after bounded readiness, the background scrub refuses it.
+        let refusal = super::super::bounded_dirty_startup::corruption_refusal(&source.0);
+        assert!(refusal.is_some(), "no layer refused the resealed prior");
     }
 }
 

@@ -47,13 +47,13 @@ pub use projected::{
     execute_projected_board_packed, freshness_available, freshness_causal, request_shape,
 };
 pub use server::{
-    ArchiveCollectionEvidence, DATABASE_ROOT_ENV, DEFAULT_DATABASE_ROOT, MIN_FREE_BYTES,
-    MIN_FREE_BYTES_FULL, MIN_FREE_BYTES_SMOKE, RiffDbCleanCloseStageEvidence,
-    RiffDbCompletionLaneEvidence, RiffDbDirtyRecoveryEvidence, RiffDbProcessMemoryEvidence,
-    RiffDbQueryExecuteEvidence, RiffDbQueryExecuteWindowEvidence, RiffDbReadStageEvidence,
-    RiffDbServerSession, RiffDbShutdownEvidence, RiffDbStartupEvidence, RiffDbWriterEvidence,
-    ServerStartOptions, min_free_bytes_for_full, resolve_bench_root, resolve_database_root,
-    sweep_stale_session_dirs,
+    ArchiveCollectionEvidence, BackgroundScrubObservation, DATABASE_ROOT_ENV,
+    DEFAULT_DATABASE_ROOT, MIN_FREE_BYTES, MIN_FREE_BYTES_FULL, MIN_FREE_BYTES_SMOKE,
+    RiffDbCleanCloseStageEvidence, RiffDbCompletionLaneEvidence, RiffDbDirtyRecoveryEvidence,
+    RiffDbProcessMemoryEvidence, RiffDbQueryExecuteEvidence, RiffDbQueryExecuteWindowEvidence,
+    RiffDbReadStageEvidence, RiffDbServerSession, RiffDbShutdownEvidence, RiffDbStartupEvidence,
+    RiffDbWriterEvidence, ServerStartOptions, min_free_bytes_for_full, resolve_bench_root,
+    resolve_database_root, sweep_stale_session_dirs,
 };
 
 /// Default in-flight seed commands (bounded client concurrency, not a bulk RPC).
@@ -1637,6 +1637,18 @@ pub enum RiffDbError {
         /// Bounded diagnostic from the harness (exit status, last stderr lines).
         detail: String,
     },
+    /// The measured daemon's startup complete validation refused the database
+    /// with the typed `LimitExceeded` ceiling (WP-705's known-ceiling receipt).
+    StartupCeilingRefusal {
+        /// Bounded diagnostic carrying the typed refusal.
+        detail: String,
+        /// The seeded daemon's clean-close evidence (the last clean boundary).
+        setup_evidence: Box<RiffDbShutdownEvidence>,
+        /// Authority snapshot read before the attempted restart.
+        before: riffdb_storage_redb::benchmark_support::RecoveryAuthoritySnapshotV1,
+        /// Authority snapshot read after the refused attempt.
+        after: riffdb_storage_redb::benchmark_support::RecoveryAuthoritySnapshotV1,
+    },
     /// Filesystem error.
     Io,
     /// Application semantic error with stable `RDB-*` code.
@@ -1661,6 +1673,10 @@ impl fmt::Display for RiffDbError {
             Self::Bootstrap => formatter.write_str("riffdb bootstrap failed"),
             Self::Deploy => formatter.write_str("riffdb contract/query module deploy failed"),
             Self::Server { detail } => write!(formatter, "riffdbd process failed: {detail}"),
+            Self::StartupCeilingRefusal { detail, .. } => write!(
+                formatter,
+                "riffdbd startup complete validation refused the database: {detail}"
+            ),
             Self::Io => formatter.write_str("riffdb harness io failed"),
             Self::Application { code, detail } => {
                 write!(formatter, "riffdb application {code}: {detail}")

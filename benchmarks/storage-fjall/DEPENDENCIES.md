@@ -8,7 +8,7 @@ It does not approve Fjall, its durable format, or its unsafe dependency surface
 for production RiffDB.
 
 The selected Fjall release is licensed `MIT OR Apache-2.0`, declares Rust
-1.90.0, and is compiled here with the repository Rust 1.97.0 toolchain. Its
+1.90.0, and is compiled here with the repository Rust 1.98.1 toolchain. Its
 default `lz4` feature, optional `lz4_flex` dependency, `metrics`, `bytes_1`, and
 internal white-box feature are not enabled.
 

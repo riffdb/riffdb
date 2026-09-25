@@ -18,6 +18,10 @@ fn initialized(path: &TestDatabasePath) {
         ),
     )
     .unwrap();
+    // The open below is the store's FIRST open under the current record
+    // registry, so it takes the complete path and writes the validated-prefix
+    // checkpoint: receipts [activation, prefix-checkpoint, dirty]. The prune
+    // below then invalidates that checkpoint in its first transaction.
     drop(open_cleanly(store));
 }
 
@@ -136,6 +140,9 @@ fn actual_offline_prune_receipts_preserve_exact_deletions_and_watermark_atomicit
     for (before, after) in after.iter().zip(complete.iter()) {
         assert_eq!(before.encode().unwrap(), after.encode().unwrap());
     }
+    // The prune deleted the validated-prefix checkpoint, so the post-prune
+    // open has no active checkpoint and takes the complete path again (no
+    // clean-certificate fast path, no bounded dirty path).
     let ports = open_cleanly(RedbStore::open(&path.0).unwrap());
     assert!(!ports.clean_close_fast_startup());
 }

@@ -1,6 +1,10 @@
 # ADR-0017: Projection Group Keys, Generations, and Durable Frontiers
 
 - **Status:** Accepted
+- **Obligations (WP-758):**
+  - `OBL-0017-1` Source: `05edf0ffb198bb57e1e36949dc240624700c161dced3a5c776b437b585a7c981`. Proof: `every_generated_record_bound_accepts_equal_and_rejects_one_over`, `every_semantic_fixture_reports_its_exact_complete_envelope_charge`.
+  - `OBL-0017-2` Source: `6214a08baecff78370466b7a4130de0149138fb456b84b088ea49ca74f668775`. Proof: `every_generated_record_bound_accepts_equal_and_rejects_one_over`, `every_semantic_fixture_reports_its_exact_complete_envelope_charge`.
+
 - **Direction approved:** 2026-07-13
 - **Exact text accepted:** 2026-07-13, amended 2026-07-13
 - **Accepted:** 2026-07-13

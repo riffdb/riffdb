@@ -18,6 +18,8 @@ review_triggers:
   - An administration edit would escape the existing cfg(test) module, alter a named fixture beyond its raw corruption-publication shell, or broadly retier administration.rs.
   - The startup fixture would change production behavior, terminal bytes, census semantics, or assertions instead of registering its exact existing mutation.
   - The two ADR-0213 repair commits, transaction ordering, acknowledgement, failure, publication, fencing, restart, or evidence eligibility would change.
+struck_obligations:
+  99800d80d957444896218d2c1a2dea2390f014e13dd07889d60a2ffed66b09f5: "This is an acceptance-before-measurement sequencing instruction for WP-705, not a distinct deferred implementation obligation; the ordering remains mandatory."
 ---
 # ADR-0214: Fresh-Locator Validation Module and Fixture Authority
 

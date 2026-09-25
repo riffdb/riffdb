@@ -1,6 +1,9 @@
 # ADR-0141: Diagnostic-Gate-First Exclusive Application Lane
 
 - **Status:** Accepted
+- **Struck obligations (WP-758):**
+  - Source: `6eef21e170e47a9bb5b3a673649b38f2db586d3e08d453beb90ead7516e79595`. Reason: Historical pre-edit measurement gate for WP-670; current unary qualification is still owed by WP-674 under PERF-008/PERF-018, and this strike claims no passing measurement bank.
+
 - **Direction approved:** Yes
 - **Exact text accepted:** Yes
 - **Decision deadline:** Before WP-670 restores a direct application listener,

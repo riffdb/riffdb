@@ -83,6 +83,9 @@ mod vector_documents {
     ));
 }
 
+#[path = "../mcp/catalog_risk.rs"]
+mod catalog_risk;
+
 type TestResult<T> = Result<T, Box<dyn Error + Send + Sync>>;
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

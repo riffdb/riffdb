@@ -3,6 +3,13 @@
 The `--production` dataset tier and the offered-load rate sweep. Neither is
 release evidence, and neither replaces the frozen `PERF-018` comparator.
 
+[WP-806's measured write-path attribution](https://github.com/riffdb/riffdb/blob/main/docs/performance/wp-806-write-path-c3d-2026-09.md)
+adds current C3D evidence, an incidental-cost repair, and a full-scale safe-app
+comparison. Its host, revisions, dataset and comparator differ from the
+historical N1/E2 cells below. Those earlier 0.17–0.22 ratios remain historical
+evidence; the C3D measurements neither establish an improvement of that size
+nor requalify the N1/E2 release gates.
+
 ## Why the tier exists
 
 `full` seeds roughly 14,600 rows: 10 organizations, 500 users, 100 projects,

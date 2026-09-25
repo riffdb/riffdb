@@ -1,6 +1,9 @@
 # ADR-0053: Composite Query Snapshots and Current-View Publication
 
 - **Status:** Accepted
+- **Struck obligations (WP-758):**
+  - Source: `6664c7b3cc403c68f29a7f0dd441ef4c72c296357693ade9a69743d9aaeecda9`. Reason: Historical pre-optimization safe-point review for WP-205, not a pending authorization change; accepted current-policy safe points remain mandatory.
+
 - **Direction approved:** 2026-07-28
 - **Exact text accepted:** 2026-07-28
 - **Acceptance reference:** Maintainer authorization in the current Codex

@@ -1,6 +1,9 @@
 # ADR-0170: Partition-Local Cross-Aggregate Writes
 
 - **Status:** Accepted
+- **Obligations (WP-758):**
+  - `OBL-0170-1` Source: `592a9f423a3a1ef2e3a9987276adac0f760f86b841ff2782b893d0bccd61a7c5`. Proof: `a_command_may_write_two_aggregates_that_share_one_partition_route`, `its_conflict_ownership_is_the_union_of_the_aggregates_it_writes`, `cross_aggregate_conflict_acquisition_is_globally_ordered_and_deadlock_free`.
+
 - **Direction approved:** 2026-08-29
 - **Exact text accepted:** Yes, 2026-08-29
 - **Accepted:** 2026-08-29

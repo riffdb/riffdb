@@ -1990,12 +1990,18 @@ work_packages:
     fail-closed production-scale complete-path ceiling handoff to WP-760. ADR-0182 and WP-760 solely
     own production-scale dirty readiness without a population walk, the 64 MiB recovery-owned-state
     proof, the authorized public maintenance service, CLI command, and public scrub receipt.
+  # END-006 removed 2026-09-23: it was listed pre-cutover when requirement tags
+  # were not enforced at closure. Its sustained-growth, retention, backup-rotation,
+  # and deploy-under-load cycles are the endurance campaign's evidence (WP-577
+  # built the harness; WP-578 runs it; WP-579 gates on it). WP-705's restart
+  # cycles are its lifecycle evidence, already retained at
+  # release/evidence/wp-705/.
   requirements: [STO-012, STO-023, REC-001, REC-002, REC-004,
-    PERF-013, PERF-014, PERF-019, END-004, END-006, END-007, END-008]
+    PERF-013, PERF-014, PERF-019, END-004, END-007, END-008]
   required_adrs: [ADR-0019, ADR-0041, ADR-0050, ADR-0056, ADR-0073,
     ADR-0085, ADR-0104, ADR-0112, ADR-0123, ADR-0156, ADR-0157, ADR-0182, ADR-0187,
     ADR-0188, ADR-0197, ADR-0205, ADR-0206, ADR-0208, ADR-0210, ADR-0213, ADR-0214,
-    ADR-0220]
+    ADR-0220, ADR-0258, ADR-0259]
   allowed_paths: [SPEC.md, work_packages.yaml,
     adr/0156-clean-close-certificate-fast-startup.md,
     adr/0157-clean-close-lifecycle-durable-identity.md,
@@ -2014,8 +2020,14 @@ work_packages:
   - Redaction-safe closed startup/shutdown mode and stage observations that expose no database path,
     identifier, frontier, table count, hash, key, application value, or unbounded label and cannot be
     supplied back as control input
-  - A production-scale cleanly seeded and cleanly shut down database proving clean reopen and final
-    close retain bounded heap and perform zero population-table evidence walks
+  - A production-scale cleanly seeded and cleanly shut down V2-catalog database whose
+    reopen and final close are evidenced as complete ordinary validation with its cost
+    stated (startup stages, wall time, and heap envelope) and no population-independent
+    or bounded-clean claim, per ADR-0156 Amendment 6 and PERF-019's V2 qualification; the
+    bounded clean-certificate lifecycle evidence and its 64 MiB envelope that this
+    deliverable originally named are moved to the successor lifecycle record Amendment 6
+    requires, and scripts/wp705-lifecycle-referee remains in the tree serving that
+    successor's evidence (maintainer, in session, 2026-09-23, approving the restatement)
   - Genuine writer-process kill and reopen evidence at exactly the 65,536-row checkpoint proving
     the unchanged complete-validation path reaches exact end, recovery and idempotency remain exact,
     and the in-flight probe resolves atomically as either wholly absent or wholly committed; a
@@ -2053,8 +2065,10 @@ work_packages:
   - cargo +1.97.0 fmt --all -- --check
   - cargo +1.97.0 clippy --workspace --all-targets --all-features -- -D warnings
   - cargo +1.97.0 doc --workspace --no-deps
-  exit_gate: Clean production-scale reopen and shutdown are bounded independently of live and
-    retained populations; a genuine 65,536-row dirty kill/reopen completes exact validation,
+  exit_gate: A production-scale V2-catalog reopen and shutdown are evidenced as complete
+    ordinary validation with their cost stated and no bounded-clean or
+    population-independent claim, per ADR-0156 Amendment 6; a genuine 65,536-row dirty
+    kill/reopen completes exact validation,
     resolves the in-flight probe atomically as either wholly absent or wholly committed, matches the
     corresponding predeclared clean twin, reports whether engine repair actually occurred, and
     proves a second recovery makes no further authoritative or allocator advance; a separate
@@ -2078,6 +2092,56 @@ work_packages:
       state under 64 MiB at production scale. Evidence uses fixed checkpoints, stages, labels,
       durations, artifacts, and diagnostic ceilings.
   human_review_triggers: *id001
+  closure:
+    status: complete
+    completed_at: '2026-09-23'
+    evidence: release/evidence/wp-705/rows-65536-lifecycle-v2.json
+    decision: ADR-0156 closes for WP-705's scope under the maintainer's approved V2 restatement.
+      The sealed internal offline integrity-scrub primitive and its fixed bounded receipt exist
+      on main (startup.rs, sealed until the authorized WP-760 maintenance owner calls it); the
+      backup/restore/migration/retention/copy compatibility conformance proves which operations
+      preserve a matching clean certificate and which invalidate it (startup/tests.rs, 122 tests
+      including complete-copy-preserves/registry-migration-invalidates and
+      retention-hold-makes-prior-certificate-ineligible); the redaction-safe closed startup and
+      shutdown observations are the startup/shutdown census lines; and the lifecycle evidence is
+      retained at release/evidence/wp-705/ under the restated contract. The 65,536-row report
+      shows both the clean restart and the genuine SIGKILL dirty recovery complete-validating
+      (24.3 s to ready, 1.04x the matching predeclared twin), the in-flight crash probe
+      resolving atomically absent, the second restart advancing no authority, and both final
+      certificates committing. The production-scale report is the typed LimitExceeded
+      complete-path ceiling receipt, with before/after authority snapshots proving the attempt
+      mutated nothing, no published readiness, and the WP-760 handoff. The dirty-recovery
+      memory bound and the public scrub remain WP-760's, and the uninterrupted endurance run
+      remains WP-578's. The three governance blockers recorded in
+      docs/reviews/2026-09-23-wp705-evidence-conflict.md were resolved by the maintainer's
+      approved decisions; the ADR-0205 Decision 7 cause-preservation violation found during the
+      campaign is repaired at all thirty-three sites (two authorized under the original record,
+      thirty-one under accepted ADR-0259) and proven by
+      request_scoped_command_terminal_audit_failure_preserves_threshold; the thirteen stranded
+      fresh-locator obligations are retired whole by accepted ADR-0258 with their exact tuples
+      preserved in that record.
+    decisions_taken:
+    - Restate the production-scale lifecycle deliverable as V2 complete-validation cost
+      disclosure per ADR-0156 Amendment 6 (maintainer, in session, 2026-09-23); the bounded
+      clean-certificate evidence and its 64 MiB envelope move to the successor lifecycle record,
+      and scripts/wp705-lifecycle-referee remains in the tree serving that successor.
+    - Exclude changelog_history_state/v3 and next_changelog_transaction/v3 from the recovery
+      authority snapshot's digest; the V3 substrate writes the DIRTY/CLEAN lifecycle transitions
+      as authoritative changelog transactions, so every process generation legitimately advances
+      them; replication authority remains covered by every generation's complete validation to
+      exact end, and the application and administration allocators stay in the digest.
+    - Report the close-path memory windows without envelope enforcement under V2; the window
+      spans process spawn to shutdown admission and carries the startup's legitimate
+      complete-validation memory, and the bounded close-path envelope is the successor record's
+      claim.
+    - Drop END-006 from the requirement list with the recorded reason; it was listed pre-cutover
+      when tags were not enforced at closure and its sustained-growth, retention,
+      backup-rotation, and deploy-under-load cycles are the endurance campaign's evidence.
+    - Prove the audit-counter reset on a fresh harness because ServiceHealthHooks is fail-only;
+      the eighth stop is permanent for the process lifecycle.
+    - Assert the parked replay's durable phases never contain Succeeded rather than exactly
+      [Started]; which safe point observes the elapsed deadline first varies and both map to
+      the same request-scoped cause.
 - id: WP-706
   name: Compiler-declared bounded runtime page limits
   depends_on: [WP-690, WP-696, WP-701, WP-703]
@@ -24073,7 +24137,7 @@ work_packages:
 
 - id: WP-758
   name: Obligations ledger closure and ADR form governance
-  tier: internal
+  tier: guarantee
   # Unblocked 2026-09-21. This depended on WP-757 because ADR-0181 bundled a
   # format-epoch reset with the governance-load remedies, not because closing
   # the ledger needs epoch 2. No ledger entry references WP-757, and none of
@@ -24081,7 +24145,7 @@ work_packages:
   # governance load had been waiting on the largest package in the repository
   # for twenty days, during which 76 records were added.
   depends_on: []
-  objective: Discharge or strike all 144 entries in adr/obligations-outstanding.yaml, remove the
+  objective: Discharge or strike all 143 entries in adr/obligations-outstanding.yaml, remove the
     ledger, make scripts/check-adr-obligations reject any ledger, and add scripts/check-adr-form with
     the repository glossary so ADR length, sections, and SPEC document-control rows are bounded.
   requirements: [GOV-004, GOV-005]
@@ -24114,6 +24178,17 @@ work_packages:
       governance scripts and records only and adds no application, operator, or agent surface.
     scale: Not applicable; the package touches no storage, memory, or execution path.
   human_review_triggers: *id0181
+  closure:
+    status: complete
+    completed_at: '2026-09-22'
+    evidence: adr/WP-758-VERIFICATION.md
+    decision: All 143 ledger entries and 18 previously untracked source obligations have
+      proof-backed declarations or explicit strike reasons, and the ledger is removed.
+      Obligation and ADR form self-tests pass, both checks are wired into CI, the glossary
+      is referenced by the template, scoped acceptance passes, and the full ci-all run
+      passes. The report retains 69 older open-package v2 proofs as outstanding and 84
+      nonblocking ADR length warnings; neither is represented as discharged. Historical
+      noncanonical section inventories preserve ADR-0181's no-rewrite decision.
 
 - id: WP-759
   name: Agent-audience handbook rewrite measured by campaign 04
@@ -26547,6 +26622,44 @@ work_packages:
       export page may claim and cannot let a consumer express an unsafe read.
     scale: Append-only commitments are bounded per page and add no unbounded state.
   human_review_triggers: *id001
+  closure:
+    status: complete
+    completed_at: '2026-09-23'
+    evidence: crates/riffdb-storage-redb/src/application_export_ledger.rs
+    decision: ADR-0232 is implemented and now owned. The implementation landed in b76fca09b
+      with no package registered, which left the accepted record without an owner; this
+      package registers itself as that owner, audits the landed work against every decision
+      in the record, and validates the proofs. New export operations carry a compact
+      StoredApplicationExportOperationV2 head (namespace 33, compact identity 60/2) whose
+      fixed-size ApplicationExportLedgerPrefixV1 replaces the growing page-hash vector with
+      a page count and domain-separated prefix commitment bound to an immutable
+      operation/snapshot genesis; each released page installs one
+      ApplicationExportPageCommitmentV1 (namespace 43, compact identity 74/1) in the same
+      atomic attributed transaction as the head replacement, with the exact expected head
+      compared, the next ordinal verified, and terminal-document headroom charged to the
+      unchanged 256 KiB durable-state budget before release. Entries are append-only; an
+      equal retry reconciles to Unchanged, an unequal duplicate or a head-only or orphan
+      mutation fails closed at write, startup, follower replay, and offline
+      backup/restore. Terminalization verifies the complete contiguous prefix once and
+      reconstructs the identical public manifest and receipt bytes; the cursor carries a
+      new explicit version binding the compact state and its prefix commitment. Existing
+      operations retain their legacy encoding and cursor meaning; the new formats pass the
+      normal compatibility gate, and the permanent fixtures were approved by the maintainer
+      in session on 2026-09-16. Every requirement the record binds (EXP-002, EXP-006,
+      EXP-007, EXP-008, EXP-009, EXP-010) is covered by tagged code-derived proofs, and
+      check-requirement-coverage reports none unproven for this package.
+    decisions_taken:
+    - Register WP-795 as the owning package of the already-accepted and already-implemented
+      ADR-0232 rather than re-implementing; the record's acceptance (maintainer, in session,
+      2026-09-16) and the permanent fixture approval in b76fca09b already cover the
+      guarantee, so the closure records ownership and validated evidence.
+    - Record the landed implementation's byte-equality and cost evidence as the package
+      proof; compact_terminal_documents_preserve_legacy_bytes_for_every_class_and_failure
+      proves manifest/receipt byte equality across every class, scope, empty class and
+      terminal failure; compact_export_storage_append_bytes_are_linear_through_1024_pages
+      proves per-page durable work is independent of prior page count at 16, 128 and 1,024
+      pages; compact_export_crash_and_unknown_outcome_keep_complete_head_page_pairs proves
+      crash before/after commit and unknown-outcome reconciliation.
 - id: WP-793
   name: Formatting drift repair
   tier: guarantee
@@ -26570,6 +26683,22 @@ work_packages:
     interface_safety: No interface changes. Ignoring whitespace and trailing commas the
       files are byte-identical to their committed versions.
     scale: Not applicable; the change adds no runtime behaviour.
+  closure:
+    status: complete
+    completed_at: '2026-09-22'
+    evidence: crates/riffdb-commit/src/command_validation.rs
+    decision: The four drifted files were reformatted on main in db399aca6 and merged
+      through 5a2bf5845, with ADR-0242 accepted in 0066382cd. cargo fmt --all -- --check
+      passes on main at 1402347c9; ignoring whitespace and trailing commas the four files
+      are byte-identical to their pre-repair versions, so no token or semantic change
+      rode along. Scoped acceptance passes for fmt, Clippy, the riffdb-api-mcp and
+      riffdb-server suites, and allowed paths; the handbook check step was repaired to
+      read pages as UTF-8 so it no longer depends on the invoking locale.
+    decisions_taken:
+    - Repair scripts/check-handbook-source to set Encoding.default_external to UTF-8 and
+      read each page with an explicit UTF-8 encoding, because the acceptance run failed
+      on a US-ASCII locale rather than on any handbook content. This is an internal-tier
+      tooling repair outside the package's scope files, committed separately.
 - id: WP-792
   name: Rust 1.98.1 toolchain upgrade
   tier: surface
@@ -26585,7 +26714,7 @@ work_packages:
     examples/**, scripts/**, tests/**, .github/workflows/**, fixtures/**,
     docs/installation.md, docs/CONTRIBUTING.md, docs/python-driver.md,
     docs/performance/rust-1-98-1-toolchain-ab-2026-09.md,
-    release/python/platform-matrix-v1.json,
+    release/python/platform-matrix-v1.json, release/python/Cargo.sdist.toml,
     release/agent-application-alpha/riffdb-api-grpc-client.Cargo.toml,
     release/agent-application-alpha/sdk-Cargo.toml]
   deliverables:
@@ -26607,6 +26736,39 @@ work_packages:
     scale: Not applicable to storage. The measurement is one bench host with two
       repetitions per cell; it resolves effects of roughly 2 percent and larger and does
       not establish that the ratio ports to another host.
+  closure:
+    status: complete
+    completed_at: '2026-09-23'
+    evidence: docs/performance/rust-1-98-1-toolchain-ab-2026-09.md
+    decision: The pin moved to 1.98.1 in bc6c2d0a4 with ADR-0241 accepted in c4eaba08e,
+      and the counterbalanced C3D A/B with differing binary digests is banked at the
+      evidence path — geometric mean ratio 1.98.1/1.97.0 of 1.0036 write-only, 1.0005
+      read-only, 1.0027 interactive, every cell within 0.989-1.017 against a worst
+      repetition spread of 1.023, so no regression is distinguishable from noise at this
+      resolution. The closure audit found and repaired what the original bump missed —
+      eleven benchmark harnesses and three documents still selecting or naming 1.97.0,
+      the Python sdist workspace manifest still declaring rust-version 1.97.0 in the
+      published artifact, developer-tools install hints and readiness banner naming
+      1.97.0 while verifying the 1.98.1 selector, and a missing
+      riffdb-policy/test-fixtures dev-dependency edge that broke the riffdb-server lib
+      test target under --all-features. No live path names the superseded toolchain
+      after 8b5fe6960; release/evidence, the WP-711 receipt validator, banked reports,
+      ADR text, and synthetic fixture BuildInfo strings deliberately retain 1.97.0 per
+      ADR-0241 decision 5. The workspace is clean under 1.98.1 fmt, clippy with warnings
+      denied, and the full suite (5616 passed; the ten WP-674 profile-runner tests fail
+      only in this sandbox, which denies bounded_evidence_io's O_RDONLY open of the
+      mount root, reproduced directly outside the tests).
+    decisions_taken:
+    - Widen allowed_paths to release/python/Cargo.sdist.toml in a separate commit
+      (9020077a6) before carrying the pin into it; the sdist manifest is a shipped
+      artifact ADR-0241 decision 1 names, but the original scope entry missed it.
+    - Repair scripts/developer-tools, scripts/check-handbook-source,
+      scripts/lib/riffdb_governance.rb, and scripts/check-file-size-guard for
+      non-UTF-8 locales in separate internal-tier commits; the sandbox's US-ASCII
+      default made Ruby raise on valid UTF-8 content in four governance tools.
+    - Add the riffdb-policy test-fixtures feature to the riffdb-server
+      dev-dependency edge, matching the existing riffdb-commit and riffdb-storage-redb
+      edges, so the lib test target compiles under --all-features.
 - id: WP-791
   name: Derived-state sinks off the primary writer's gate
   tier: guarantee
@@ -26976,6 +27138,39 @@ work_packages:
     scale: The characterisation holds for the 188 declared obligations, not only the three
       that produced it.
   human_review_triggers: *id001
+  closure:
+    status: complete
+    completed_at: '2026-09-23'
+    evidence: docs/reviews/2026-09-23-named-proof-characterisation.md
+    decision: The characterisation is recorded and the malformed-record repair is verified
+      against every tool that reads records. The three instances were reproduced against the
+      check in a fabricated tree rather than argued from its source. Instance 1 (ADR-0240, a
+      proof that exists but asserts something narrower than its record says) and instance 2
+      (ADR-0250, a proof that exercises a type only tests construct) both still pass the
+      check today, which is the recorded limit, not an open defect; the check matches names,
+      not semantics, and no name-based check can close either gap. Instance 3 (ADR-0251, a
+      mistyped colon silently dropping obligations) is closed by the 2026-09-21 shared-parser
+      repair in 1b28ea431 and pinned by the check's self-test; the characterisation re-ran
+      that shape against every record-reading tool (check-adr-obligations, adr-index,
+      check-adr-form, brief, wp-new) and each fails with the record named. Tools that do not
+      parse records (check-requirement-coverage, adr-new) are unaffected by design, and
+      check-named-artifacts deliberately regexes status lines without a YAML parser; one
+      adjacent valid-YAML spelling (a space before the status colon) escapes that one check
+      and is recorded as its known limit. The finding the third deliverable asked for is
+      recorded; naming the production symbol a proof must reach is the wrong shape, because
+      the check could still only verify the symbol appears, not that the proof means what
+      the record means, which would add a second synchronized name one layer down. The
+      control for instances 1 and 2 is review of the proof against the says text the check
+      prints at package closure, which is where both real instances were caught. The
+      characterisation is linked from CONTRIBUTING and the handbook reference list.
+    decisions_taken:
+    - Record the finding that naming the production symbol a proof must reach is the wrong
+      shape, rather than strengthening the check for instances 1 and 2; the characterisation
+      shows a symbol-presence check would reproduce instance 1's defect one layer down.
+    - Record check-named-artifacts' unquoted-status-regex escape (a valid-YAML space before
+      the colon reads an accepted record as not accepted) as that check's known limit rather
+      than fixing it in this package; the spelling fails five other record-reading tools
+      first, no accepted record carries it, and the regex is deliberately parser-independent.
 - id: WP-805
   name: A conflict key protects its aggregate's invariants
   tier: surface
@@ -27025,10 +27220,16 @@ work_packages:
     writes. SPEC section 262 makes that a go/no-go input to the POC-exit decision, and the
     evidence is published but unworked. Attribute the write-path cost to its components and
     close what can be closed without weakening a guarantee.
-  requirements: []
-  required_adrs: [ADR-0239, ADR-0238]
+  requirements: [REP-003, REP-005, STO-012]
+  required_adrs: [ADR-0239, ADR-0238, ADR-0257]
   allowed_paths: [work_packages.yaml, docs/performance/**, benchmarks/**,
-    scripts/check-performance-freeze]
+    scripts/check-performance-freeze,
+    crates/riffdb-storage-api/src/authoritative_catalog.rs,
+    crates/riffdb-storage-api/src/authoritative_catalog_v2.rs,
+    crates/riffdb-storage-api/src/authoritative_catalog/digest_tests.rs,
+    adr/0257-cache-only-closed-authoritative-catalog-digests.md, adr/README.md]
+  # ADR-0257's delegated exact-text scope review permits only the immutable
+  # declaration-digest candidate and its deterministic initialization proof.
   deliverables:
   - A per-component attribution of one write, measured rather than reasoned, covering at
     least provenance record construction, audit, journal append and fsync, canonical
@@ -27043,12 +27244,42 @@ work_packages:
   - A statement of what ratio is achievable without weakening provenance, audit,
     durability of acknowledged writes, or canonical ordering, so the POC-exit review has a
     number rather than an intention
+  - ADR-0257's competing-first-call test proves independent frozen fixture hashes and
+    exactly one digest computation per version, without changing a stored-data check
   acceptance_commands:
   - ./scripts/acceptance --wp WP-806
   exit_gate: The write-path cost is attributed to components with measurements rather than
     reasoning, each component is classified as guarantee-inherent, representation-inherent
     or incidental with evidence, and the POC-exit review can read what ratio is reachable
     without weakening a guarantee.
+  closure:
+    status: complete
+    completed_at: '2026-09-22'
+    evidence: docs/performance/wp-806-write-path-c3d-2026-09.md
+    decision: Retain ADR-0257's two fixed catalog digest caches after the frozen C3D comparison.
+      Fresh write throughput improves 4.5 percent at c1 and 8.7 percent at c32 versus control;
+      every measured load remains within the bank's four-percent noise band. Full-scale
+      candidate write throughput reaches 0.659 times safe-app PostgreSQL and mixed throughput
+      reaches 1.020 times, with mixed p95 at 1.032 times. Attribution and an achievable ratio
+      are supplied without weakening any guarantee; PostgreSQL write parity is not achieved.
+    decisions_taken:
+    - Accept ADR-0257 under the maintainer's explicit delegation and extend scope in a separate
+      prerequisite commit only for closed declaration digests and their competing-first-call proof.
+    - Synchronize the stale nested benchmark CRC lock with the already accepted workspace graph
+      after the initial locked build refused it, before any workload measurements began.
+    - Retain all 76 reports from both campaigns; qualify the cache against a fresh rotating
+      bank-control-candidate comparison rather than the older slower control campaign.
+    - Publish numeric reductions and source hashes without private machine identifiers or raw logs.
+    - Classify required provenance, audit, canonical ordering and durability separately from
+      representation costs and the removed incidental declaration recomputation; never add
+      overlapping stage timers or equate intrusive allocator counts with committed writes.
+    hazards:
+    - Candidate write p99 is 104.858 ms versus PostgreSQL's 14.680 ms and exceeds the earlier
+      control campaign's median; sequential campaigns do not isolate a causal tail regression.
+    - N1/E2 release qualification, production payloads, projections, text and row policies remain
+      unqualified. C3D mixed parity is not release-gate clearance.
+    - Named CPU symbols and record-assembly timers do not isolate all inclusive provenance cost;
+      unresolved CPU samples and thread-open warnings remain explicit in the evidence.
   standing_design_tests:
     interface_safety: No optimization may make a guarantee optional, add a fast path that
       skips provenance, audit or durability, or expose a tuning knob that lets an
@@ -27195,7 +27426,36 @@ work_packages:
     scale: The check is a scan over a fixed set of governing documents and accepted records, and
       it reports every instance rather than the first.
   human_review_triggers: *id001
-
+  closure:
+    status: complete
+    completed_at: '2026-09-23'
+    evidence: scripts/check-named-artifacts
+    decision: All four defects are gone and the last deliverable is recorded. The implementation
+      landed across 797b88aeb through d2eae1336, merged as e248681e9; check-named-artifacts scans
+      AGENTS.md, SPEC.md and every accepted record's Decision section for named scripts and
+      repository paths, is package-aware the way check-adr-obligations is (an accepted record
+      whose packages are open may name what they will build), is wired into the path-triggered
+      plan in governance/tiers.yaml with a self-test, and found ten instances at introduction
+      (nine pending against open packages, one real). The real one, downstream-adapter-check,
+      now exists with in-repository adapter contracts fatal and sibling checkouts advisory, and
+      is wired to run on contract-language changes. ADB-C042 is gone from SPEC, which prints the
+      real RDB-C016 diagnostic; scripts/check-adr-form and adr/GLOSSARY.md exist and run in the
+      plan. The fourth deliverable, the recorded finding on check-allowed-paths reading
+      allowed_paths at the merge base, is docs/reviews/2026-09-23-allowed-paths-merge-base.md.
+      The failure was reproduced on a scratch branch (a widening-only commit fails the check
+      with self_edit regardless of touched files), the WP-807 cost was traced to byte-identical
+      cherry-picks of widening commits onto main (87ec80ed6 of 2ad7a089f, confirmed by
+      range-diff) followed by back-merges, and the finding is that the merge base is the wrong
+      base; the safety property is that a package's change is not judged by scope the same
+      change invented, which a widening commit that touches only work_packages.yaml already
+      satisfies. The proposed repair, recorded not implemented, is to read allowed_paths from
+      the last widening-only commit in the range while keeping narrowing as a self_edit failure.
+    decisions_taken:
+    - Record the merge-base finding rather than implement the repair; the change would alter
+      what a governance check accepts on every open package's branch, belongs to the check's
+      maintainers, and removes an annoying-but-safe cost only.
+    - Record the finding's proposed rule as widening-only (narrowing and mixed edits keep
+      failing as self_edit), so the property worth catching is preserved.
 - id: WP-809
   name: Same-root revision fences protect cross-binding writes
   tier: guarantee
@@ -27218,6 +27478,21 @@ work_packages:
   - ./scripts/acceptance --wp WP-809
   exit_gate: A same-root fence protects child writes, removing either half rejects their set
     spelling, false fences do not qualify, and stale execution cannot overwrite a child.
+  closure:
+    status: complete
+    completed_at: '2026-09-21'
+    evidence: docs/architecture/WP-809-VERIFICATION.md
+    decision: Same-root compare-and-increment fences protect child writes. Removing either
+      half refuses child set writes without independent protection; invariants never guard.
+    decisions_taken:
+    - Match exact root-key expression fingerprints rather than infer protection from any
+      read or any fence elsewhere in an atomic command.
+    - Preserve existing guarded and unguarded plan tags and deployed artifact interpretation.
+    - Exercise both signed and unsigned revision fences, including exact arithmetic refusal.
+    hazards:
+    - The sibling MLflow contract needs four overwrite-to-set changes and normal lock renewal;
+      temporary-copy compilation verifies this migration without editing that checkout.
+    - Conditional fences and arbitrary revision expressions are not inferred.
   standing_design_tests:
     interface_safety: Neither a local guard nor a root fence can be removed silently from
       a set that depends on it; overwrite remains explicit and checked in both directions.

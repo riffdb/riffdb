@@ -43,6 +43,8 @@ acceptance: >-
   Original exact text accepted by the maintainer on the accepted date above;
   canonical-vector amendment accepted by the maintainer in session 2026-09-15,
   "Approve exact text", referring to docs/architecture/WP-747-V2-VECTOR-REVIEW.md.
+obligation_sources:
+  5a129bc5f2d42f35b45454c82b5b850889fa723e656ac1a5ed5ad639b14b9600: ["OBL-0209-1", "OBL-0209-2", "OBL-0209-3", "OBL-0209-4", "OBL-0209-5"]
 ---
 # ADR-0209: Epoch-Two Direct Columnar V2 Control Activation
 

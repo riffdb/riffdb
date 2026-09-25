@@ -406,6 +406,11 @@ impl ProductionGraphBuilder {
         .map_err(ProductionGraphBuildError::ReadableIdempotencyDigests)?;
         let trusted_audiences = TrustedAudienceCatalog::new(trusted_audiences)
             .map_err(ProductionGraphBuildError::TrustedAudience)?;
+        // Captured before their moves below: the ADR-0182 background scrub's
+        // inputs reuse the readable idempotency digest inventory and the
+        // process start timestamp.
+        let scrub_idempotency_digests = readable_idempotency_digests.clone();
+        let scrub_authorization_time = process.started_at();
         let runtime = lifecycle.runtime_routing();
         let spawner = SupervisedServiceJobSpawner::from_current_runtime(runtime.clone())
             .map_err(ProductionGraphBuildError::Runtime)?;
@@ -777,6 +782,9 @@ impl ProductionGraphBuilder {
         let health: Arc<dyn ServiceHealthHooks> = Arc::new(
             ProductionObservabilityHealthHooks::new(runtime.clone(), observability.clone()),
         );
+        // The ADR-0182 background scrub degrades Storage through the same
+        // production health hooks the storage bundle uses.
+        let scrub_health: Arc<dyn ServiceHealthHooks> = Arc::clone(&health);
         let service_spawner: Arc<dyn ServiceJobSpawner> = Arc::new(spawner.clone());
         let deadline_scheduler: Arc<dyn RequestDeadlineScheduler> =
             Arc::new(TokioRequestDeadlineScheduler);
@@ -965,6 +973,30 @@ impl ProductionGraphBuilder {
                 registration_publications,
                 coordinator.control_plane_executor(),
             );
+        // ADR-0182 Decision 3: after readiness the server starts one
+        // background scrub driving the complete exact-end validation over a
+        // least-authority MVCC reader. It holds no mutation lease, advances
+        // under its rows-per-step bound, and is cancelled by shutdown.
+        let scrub_worker = {
+            let capability_inventory = riffdb_storage_api::ReadableCapabilityDigestInventory::new(
+                capability_keys
+                    .readable_key_ids()
+                    .map(ReadableDigestKey::v1)
+                    .collect(),
+            )
+            .map_err(ProductionGraphBuildError::ReadableIdempotencyDigests)?;
+            let scrub_inputs = riffdb_storage_api::StartupValidationInputs::new(
+                scrub_authorization_time,
+                capability_inventory,
+                scrub_idempotency_digests,
+            );
+            crate::scrub_worker::RunningScrubWorker::start(
+                storage.shared_read_ports(),
+                scrub_inputs,
+                scrub_health,
+            )
+            .map_err(|_| ProductionGraphBuildError::CurrentView)?
+        };
         Ok(RunningProductionGraph {
             registration_worker,
             archive_workers,
@@ -978,6 +1010,7 @@ impl ProductionGraphBuilder {
             mcp_telemetry,
             observability,
             storage: shutdown_storage,
+            scrub_worker,
             exact_worker: Some(exact_worker),
             columnar_worker: Some(columnar_worker),
             projection_worker: Some(projection_worker),
@@ -1057,6 +1090,7 @@ pub(crate) struct RunningProductionGraph {
     observability: Arc<Observability>,
     /// Activated storage retained for the bounded graceful-close ceremony.
     storage: SharedRedbOperationalPorts,
+    scrub_worker: crate::scrub_worker::RunningScrubWorker,
     exact_worker: Option<RunningExactTextWorker>,
     columnar_worker: Option<RunningColumnarWorker>,
     projection_worker: Option<RunningProjectionWorker>,
@@ -1070,6 +1104,13 @@ impl RunningProductionGraph {
         &self,
     ) -> [u64; riffdb_observability::MAX_WRITE_GROUP_SIZE] {
         self.observability.write_completion_group_snapshot()
+    }
+
+    /// The background scrub's bounded work observation for the ADR-0182
+    /// evidence: closed state, rows walked, total microseconds, and rows per
+    /// second when complete. Redaction-safe: counters only.
+    pub(crate) fn scrub_observation(&self) -> crate::scrub_worker::ScrubObservation {
+        self.scrub_worker.observation()
     }
 
     /// Dispatch-reason counts plus selected/deferred totals for shutdown evidence.
@@ -1183,6 +1224,10 @@ impl RunningProductionGraph {
         let graph_started = Instant::now();
         let mut elapsed_us = [0_u64; PRODUCTION_SHUTDOWN_STAGE_COUNT];
         self.lifecycle.stop();
+        // The background scrub is read-only and cancellable at any page
+        // boundary; it stops first so the drain below observes a settled
+        // health classification.
+        let _scrub_stop = self.scrub_worker.shutdown();
         let started = begin_shutdown_stage(0);
         self.registration_worker.shutdown();
         self.spawner.wait_for_idle().await;

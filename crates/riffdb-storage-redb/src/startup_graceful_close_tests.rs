@@ -348,7 +348,11 @@
             .begin_structural_evidence(inputs())
             .expect("dirty fallback session");
         assert!(!session.clean_close_fast_path());
-        assert!(session.checkpoint_verified());
+        // The failed graceful close left no clean certificate, so this reopen is
+        // the ADR-0182 bounded dirty path: it admits only because the active
+        // validated-prefix checkpoint verified at load, and it still reaches
+        // the exact ends below.
+        assert!(session.bounded_dirty_startup_path());
         let structural_end = finish_structural(&mut session);
         let historical_end = drain_historical(&mut session);
         assert!(matches!(

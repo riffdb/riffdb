@@ -1,6 +1,9 @@
 # ADR-0105: Authenticated Remote Application Ingress
 
 - **Status:** Accepted
+- **Struck obligations (WP-758):**
+  - Source: `9d92007a08560dcef46390234c107e33860c6a70c9629bf65d7c5c6aa41b484c`. Reason: Historical prerequisite or allocation checkpoint for an already implemented package; the original ordering instruction remains in the decision history and is not unfinished implementation work. Current identity and scope rules remain mandatory.
+
 - **Direction approved:** 2026-08-09
 - **Exact text accepted:** Yes, 2026-08-09; amended 2026-08-27
   (Amendment 1: h2 0.4.19)

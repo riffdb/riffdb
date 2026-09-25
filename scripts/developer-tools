@@ -28,8 +28,8 @@ resolve_install_cargo() {
         return
     fi
     printf '%s\n' \
-        'Rustup with the pinned 1.97.0 toolchain is required.' \
-        'Install rustup, run `rustup toolchain install 1.97.0`, and retry.' >&2
+        'Rustup with the pinned 1.98.1 toolchain is required.' \
+        'Install rustup, run `rustup toolchain install 1.98.1`, and retry.' >&2
     exit 1
 }
 
@@ -51,7 +51,7 @@ check_cargo_path() {
         else
             printf '%s\n' \
                 'install rustup and the pinned toolchain, then retry:' \
-                '  rustup toolchain install 1.97.0' >&2
+                '  rustup toolchain install 1.98.1' >&2
         fi
         return 1
     fi
@@ -126,7 +126,7 @@ check_all() {
     if [[ "$failed" == true ]]; then
         return 1
     fi
-    printf 'Developer tools are ready: Rust 1.97.0, mdbook %s, lychee %s.\n' \
+    printf 'Developer tools are ready: Rust 1.98.1, mdbook %s, lychee %s.\n' \
         "$RIFFDB_MDBOOK_VERSION" "$RIFFDB_LYCHEE_VERSION"
 }
 

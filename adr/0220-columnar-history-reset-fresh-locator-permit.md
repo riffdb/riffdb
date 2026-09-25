@@ -16,6 +16,8 @@ review_triggers:
   - Permit registration would move before the existing current-value guard or after the physical insert, or the close, actual-record, insert, drop, or commit ordering would change.
   - Durable bytes, reset semantics, history-incarnation selection, transaction ownership, acknowledgement, publication, fencing, restart, or public behavior would change.
   - The amendment would authorize a general columnar-control repair, a new class, action, helper, hook, interface, dependency, or evidence claim.
+struck_obligations:
+  90ccbc9cff9c640ea2bfc6a0bfdadce3a6c6fa804d6f1e9fa63dcbf1dc2908e4: "This is a before-commit and before-measurement acceptance ordering rule, not a separate deferred implementation; the rule remains mandatory."
 ---
 # ADR-0220: Columnar History Reset Fresh-Locator Permit
 

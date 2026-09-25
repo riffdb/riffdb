@@ -36,6 +36,8 @@ review_triggers:
     accepted guarantee ADR.
   - This proposal would change runtime code, durable bytes, fixtures, topology data, package text,
     or the external-database registry before exact acceptance and separate reviewed changes.
+obligation_sources:
+  824f3e5fdbec23729c20df98d5a6fd6ab87909ed29b6ddcf9ffc16b8b976f4e9: ["OBL-0207-1", "OBL-0207-2"]
 ---
 # ADR-0207: Frozen Changelog Compatibility Exception During the Pre-External Window
 

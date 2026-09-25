@@ -20,6 +20,8 @@ review_triggers:
   - Existing exact-predicate compiler or module logic would be copied or moved instead of changed at its current owner.
   - PresentOnlyV1 would be emitted without the complete normalized-predicate and installed-lineage proof required by ADR-0219.
   - V5 bytes, exact-provider semantics, a public surface, storage authority, or transaction behavior would change.
+struck_obligations:
+  10cf49f3bafd687488d3c783889cfe47bf612cdbdf9127c6aae323b42b96212c: "This is a standing prohibition against evading package path boundaries, not deferred functionality; the prohibition remains mandatory."
 ---
 # ADR-0222: Exact Provider V2 Lowering Path Authority
 

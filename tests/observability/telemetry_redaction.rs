@@ -743,6 +743,23 @@ impl Visit for TextVisitor<'_> {
 
 #[test]
 fn supported_api_redacts_before_both_subscriber_layers() {
+    // Other tests emit through this same process-wide tracing callsite without
+    // a subscriber. Keep its first registration and subscriber lifetime out of
+    // their concurrent schedules; both semantic capture assertions still run.
+    const CHILD: &str = "RIFFDB_REDACTION_SUBSCRIBER_CHILD";
+    if std::env::var_os(CHILD).is_none() {
+        let status = std::process::Command::new(std::env::current_exe().expect("test executable"))
+            .args([
+                "--exact",
+                "supported_api_redacts_before_both_subscriber_layers",
+                "--test-threads=1",
+            ])
+            .env(CHILD, "1")
+            .status()
+            .expect("isolated subscriber test starts");
+        assert!(status.success(), "isolated subscriber assertions failed");
+        return;
+    }
     let _subscriber_test = SUBSCRIBER_TEST_LOCK
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner);
@@ -787,10 +804,11 @@ fn supported_api_redacts_before_both_subscriber_layers() {
     });
 
     assert_eq!(safe_records.snapshot().len(), 5);
-    let sibling_text = sibling_records
+    let sibling_records = sibling_records
         .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner)
-        .join("");
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    assert_eq!(sibling_records.len(), 5, "the sibling saw every safe event");
+    let sibling_text = sibling_records.join("");
     assert!(!sibling_text.contains(SECRET_CANARY));
 }
 

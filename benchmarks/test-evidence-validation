@@ -23,7 +23,7 @@ timer="$repo_root/$fixture_root/process-timer"
 timer_root="$repo_root/$fixture_root/process-timer-root"
 timer_result="$repo_root/$fixture_root/process-timer-result.tsv"
 mkdir -p "$timer_root"
-rustc +1.97.0 \
+rustc +1.98.1 \
     --edition=2024 \
     -D warnings \
     benchmarks/process-timer.rs \

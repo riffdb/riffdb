@@ -60,6 +60,10 @@ cleanup_wp701_proof_root
 trap - EXIT INT TERM
 ./scripts/check-requirement-coverage
 ./scripts/check-adr-obligations
+./scripts/check-adr-obligations --self-test
+./scripts/check-wp674-unary-baseline --self-test
+./scripts/check-adr-form
+./scripts/check-adr-form --self-test
 ./scripts/adr-new --self-test
 ./scripts/adr-index --check
 ./scripts/check-acceptance-commits

@@ -230,6 +230,10 @@ fn v2_clean_close_requires_complete_startup_and_keeps_lifecycle_bytes() {
         session.clean_close_declined_reason(),
         Some("bounded_roots_unavailable")
     );
+    // The declined clean certificate routes this reopen to the bounded dirty
+    // path (checkpoint admitted, bounded roots re-validated directly), never
+    // to the clean-certificate fast path.
+    assert!(session.bounded_dirty_startup_path());
     let structural_end = finish_structural(&mut session);
     let (catalog, historical_end) = validate_catalog_history(&mut session).unwrap().into_parts();
     assert!(matches!(catalog, CatalogHistoryOutcome::Ready(_)));
@@ -240,7 +244,11 @@ fn v2_clean_close_requires_complete_startup_and_keeps_lifecycle_bytes() {
     };
     let (_, _, _, dormant) = opened.into_parts();
     let ports = dormant.into_operational_after_catalog_validation().unwrap();
-    assert!(!ports.clean_close_fast_startup());
+    // The ports-level `clean_close_fast_startup` flag now covers both bounded
+    // paths (clean certificate OR ADR-0182 bounded dirty); the precise claim —
+    // no clean CERTIFICATE was trusted for V2 authority — is the closed health
+    // mode flag below.
+    assert!(!ports.clean_certificate_startup());
     use riffdb_storage_api::ReplicationPrimaryAdmissionReadPort;
     assert!(
         ports

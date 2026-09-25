@@ -1,6 +1,9 @@
 # ADR-0118: Secret Field Classification and Display-Surface Redaction
 
 - **Status:** Accepted
+- **Obligations (WP-758):**
+  - `OBL-0118-1` Source: `48ca64311159c1fd0a94ba49e3c7d1cb8bf1e167360d38f84a2ea9d494bc31f9`. Proof: `secret_flow_without_reveal_fails_with_both_source_spans`, `secret_classification_is_sticky_across_entity_assignments`, `durable_event_disclosure_requires_the_same_exact_annotation`.
+
 - **Direction approved:** 2026-08-11
 - **Exact text accepted:** Yes — 2026-08-11, maintainer acceptance as written
 - **Decision deadline:** Before WP-597 changes the contract grammar or any

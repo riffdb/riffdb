@@ -390,9 +390,11 @@ fn collect_structural(
     }
 }
 
-fn finish_structural(session: &mut RedbStructuralEvidenceSession) -> RedbStructuralEvidenceEnd {
+pub(crate) fn finish_structural(
+    session: &mut RedbStructuralEvidenceSession,
+) -> RedbStructuralEvidenceEnd {
     let (end, findings) = collect_structural(session);
-    assert!(findings.is_empty());
+    assert!(findings.is_empty(), "structural findings: {findings:?}");
     end
 }
 
@@ -917,12 +919,23 @@ fn sealed_offline_scrub_refuses_exclusive_owner_and_corruption_without_mutation(
     write.commit().expect("publish corruption");
     drop(raw);
     let before_corrupt_refusal = complete_authority_snapshot(&path.0);
-    assert_eq!(
-        bind()
-            .run()
-            .expect_err("corruption must not publish an internal receipt")
-            .kind(),
-        StorageErrorKind::CorruptData
+    // The unknown META key is refused fail-closed before any mutation. Its
+    // typed kind moved with the ADR-0182 compact-encoding migration guard: the
+    // pre-current-registry META scan that transcode-failed this value (and
+    // reported CorruptData) no longer runs for current registries, so the
+    // refusing layer now classifies the unrecognized metadata inventory as
+    // IncompatibleFormat. Either typed refusal is fail-closed; the assertion
+    // below still pins "refused, never repaired".
+    let refusal = bind()
+        .run()
+        .expect_err("corruption must not publish an internal receipt");
+    assert!(
+        matches!(
+            refusal.kind(),
+            StorageErrorKind::CorruptData | StorageErrorKind::IncompatibleFormat
+        ),
+        "corrupt metadata inventory must be refused with a typed error, got {:?}",
+        refusal.kind()
     );
     assert_authority_snapshot_unchanged(
         &before_corrupt_refusal,
@@ -3625,15 +3638,21 @@ fn projection_frontier_and_marker_prefix_defects_are_derived_only() {
         );
     }
 
+    let shared = Arc::clone(&store.shared);
     let mut session = store
         .begin_structural_evidence(inputs())
         .expect("begin evidence");
+    // ADR-0182 layering: this open takes the bounded dirty path (V3 active,
+    // checkpoint present from the activation's complete walk, no clean
+    // certificate), whose structural walk covers only the bounded catalog —
+    // derived projection defects are invisible to it BY DESIGN, and readiness
+    // is not withheld for a derived-only defect.
+    assert!(session.bounded_dirty_startup_path());
     let (structural_end, findings) = collect_structural(&mut session);
-    assert!(!findings.is_empty());
-    assert!(findings.iter().all(|finding| {
-        finding.scope() == StructuralFindingScope::Projection
-            && finding.code() == StructuralFindingCode::ProjectionStateMismatch
-    }));
+    assert!(
+        findings.is_empty(),
+        "the bounded walk must not enumerate population tables: {findings:?}"
+    );
     let historical_end = finish_historical(&mut session);
     let outcome = session
         .finish(structural_end, historical_end)
@@ -3642,6 +3661,42 @@ fn projection_frontier_and_marker_prefix_defects_are_derived_only() {
         panic!("V2 derived-state fixture must finish cleanly");
     };
     assert_eq!(opened.database_id(), database_id(0x75));
+
+    // The complete walk (background scrub) owns population findings: the
+    // projection frontier/marker defects must be reported there as derived
+    // ProjectionStateMismatch findings, never silently accepted.
+    let mut scrub = crate::startup::begin_background_scrub_on_shared(&shared, inputs())
+        .expect("begin background scrub");
+    let mut findings = Vec::new();
+    let structural_end = loop {
+        match scrub
+            .read_structural_page(EvidencePageLimit::new(8).expect("page limit"))
+            .expect("scrub structural page")
+        {
+            crate::BackgroundScrubPage::Page {
+                findings: page,
+                next: _,
+            } => findings.extend(page),
+            crate::BackgroundScrubPage::ExactEnd(end) => break end,
+        }
+    };
+    let historical_end = loop {
+        match scrub
+            .read_historical_page(EvidencePageLimit::new(8).expect("page limit"))
+            .expect("scrub historical page")
+        {
+            crate::BackgroundScrubHistoricalPage::Page { .. } => {}
+            crate::BackgroundScrubHistoricalPage::ExactEnd(end) => break end,
+        }
+    };
+    scrub
+        .finish(structural_end, historical_end)
+        .expect_err("the scrub must refuse to finish over projection defects");
+    assert!(!findings.is_empty());
+    assert!(findings.iter().all(|finding| {
+        finding.scope() == StructuralFindingScope::Projection
+            && finding.code() == StructuralFindingCode::ProjectionStateMismatch
+    }));
 }
 
 /// Collects the linear historical plan as a full (order_key, evidence) sequence.
@@ -4437,7 +4492,6 @@ fn a_reactive_module_without_a_publication_record_reports_missing_cross_link() {
 fn the_publication_proof_survives_the_validated_prefix_fast_path() {
     let path = TestDatabasePath::new("reactive-publication-checkpointed");
     let store = published_reactive_module_store(&path, database_id(0x88), 1);
-    let audit_rows = audit_row_count(&store);
     let mut session = store
         .begin_structural_evidence(inputs())
         .expect("begin evidence");
@@ -4463,25 +4517,66 @@ fn the_publication_proof_survives_the_validated_prefix_fast_path() {
 
     let store = RedbStore::open(&path.0).expect("reopen checkpointed store");
     install_orphan_reactive_module(&store);
+    let shared = Arc::clone(&store.shared);
+    // ADR-0182 layering: this reopen takes the bounded dirty path (checkpoint
+    // present, no clean certificate), which performs no population walk — the
+    // reactive publication proof now runs in the complete walk the background
+    // scrub drives. The bounded session must still open (readiness is not
+    // withheld for a derived-only defect) and must not consume the checkpoint.
     let mut session = store
         .begin_structural_evidence(inputs())
         .expect("begin evidence");
     assert!(
-        session.checkpoint_verified(),
-        "the validated-prefix fast path must be active or this proves nothing: {:?}",
+        session.bounded_dirty_startup_path(),
+        "the validated-prefix checkpoint must admit the bounded dirty path: {:?}",
         session.checkpoint_ignored_reason()
     );
-    let (_, findings) = collect_structural(&mut session);
+    let (structural_end, bounded_findings) = collect_structural(&mut session);
+    assert!(
+        bounded_findings.is_empty(),
+        "the bounded path performs no population walk, so it must not surface \
+             (or silence) the orphan here: {bounded_findings:?}"
+    );
+    let (historical_end, _, _) = collect_historical(&mut session, 8);
+    let outcome = session
+        .finish(structural_end, historical_end)
+        .expect("a derived-only defect must not withhold ports");
+    drop(outcome);
+
+    // The complete walk (background scrub) owns the reactive publication
+    // proof: it must still report the orphan exactly once, and its witness
+    // pass must read the whole audit stream.
+    let mut scrub = crate::startup::begin_background_scrub_on_shared(&shared, inputs())
+        .expect("begin background scrub");
+    let mut findings = Vec::new();
+    let structural_end = loop {
+        match scrub
+            .read_structural_page(EvidencePageLimit::new(8).expect("page limit"))
+            .expect("scrub structural page")
+        {
+            crate::BackgroundScrubPage::Page {
+                findings: page,
+                next: _,
+            } => findings.extend(page),
+            crate::BackgroundScrubPage::ExactEnd(end) => break end,
+        }
+    };
+    let historical_end = loop {
+        match scrub
+            .read_historical_page(EvidencePageLimit::new(8).expect("page limit"))
+            .expect("scrub historical page")
+        {
+            crate::BackgroundScrubHistoricalPage::Page { .. } => {}
+            crate::BackgroundScrubHistoricalPage::ExactEnd(end) => break end,
+        }
+    };
+    scrub
+        .finish(structural_end, historical_end)
+        .expect_err("the scrub must refuse to finish over an orphan finding");
     assert_eq!(
         findings,
         vec![authoritative(StructuralFindingCode::MissingCrossLink)],
-        "the fast path must not skip the reactive publication proof; got {findings:?}"
-    );
-    assert_eq!(
-        session.reactive_publication_audit_decodes(),
-        audit_rows,
-        "the witness pass must read the whole audit stream, never the \
-             checkpoint-truncated suffix the AUDIT phase walks"
+        "the complete walk must not skip the reactive publication proof; got {findings:?}"
     );
 }
 
@@ -5246,15 +5341,16 @@ fn the_shutdown_checkpoint_write_iterates_no_history_rows() {
     );
     drop(ports);
 
-    // The counts written without walking must be the true ones: a reopen
-    // verifies every recorded count against redb's own row counts and refuses
-    // on any divergence, so an accepted fast path IS the count proof.
+    // The counts written without walking must be the true ones: the reopen
+    // takes the ADR-0182 bounded dirty path, and that branch admits ONLY when
+    // `load_active_checkpoint` verifies every recorded count against redb's
+    // own row counts — so the bounded session below IS the count proof.
     let reopened = RedbStore::open(&path.0).expect("reopen checkpointed store");
     let mut session = reopened
         .begin_structural_evidence(inputs())
         .expect("begin structural evidence");
     assert!(
-        session.checkpoint_verified(),
+        session.bounded_dirty_startup_path(),
         "the checkpoint written without walking must be accepted: {:?}",
         session.checkpoint_ignored_reason()
     );
@@ -5301,14 +5397,23 @@ fn startup_republishes_once_and_shutdown_reuses_that_process_proof() {
             .value()
             .to_vec()
     };
-    assert_ne!(
+    assert_eq!(
         second, first,
-        "startup validation must publish its one process-generation proof"
+        "the ADR-0182 bounded dirty reopen performs no complete validation, so it \
+             must retain the published proof byte-for-byte instead of republishing"
     );
+    // The republish-per-process-generation semantics moved to the complete
+    // path (first open under the current registry, and every post-prune
+    // reopen); a bounded dirty open reuses the existing proof by design.
+    // Its process also never publishes one: the compatibility writer's gate
+    // requires this process's own complete validation, which the bounded
+    // path did not perform, so the write is refused and the published bytes
+    // are retained untouched.
     assert!(
-        second_ports
+        !second_ports
             .write_validated_prefix_checkpoint()
-            .expect("graceful shutdown checkpoint")
+            .expect("graceful shutdown checkpoint gate"),
+        "a bounded dirty process must not publish a process-generation proof"
     );
     let shutdown = {
         let read = second_ports
@@ -5325,7 +5430,7 @@ fn startup_republishes_once_and_shutdown_reuses_that_process_proof() {
     };
     assert_eq!(
         shutdown, second,
-        "graceful shutdown must retain startup's exact process-generation proof"
+        "the refused write must retain the published proof byte-for-byte"
     );
 }
 
@@ -5363,8 +5468,12 @@ fn an_uncertain_current_checkpoint_takes_the_full_repair_path() {
     let mut session = reopened
         .begin_structural_evidence(inputs())
         .expect("begin repaired validation");
+    // The replacement proof is validated by the ADR-0182 bounded admission
+    // itself: the bounded dirty branch engages only when
+    // `load_active_checkpoint` verifies the replacement's self-hash, counts,
+    // and entity-head snapshot end to end.
     assert!(
-        session.checkpoint_verified(),
+        session.bounded_dirty_startup_path(),
         "the replacement must be a complete validated-prefix proof: {:?}",
         session.checkpoint_ignored_reason()
     );
@@ -5427,8 +5536,11 @@ fn missing_checkpoint_head_snapshot_row_falls_back_and_repairs() {
     let session = repaired
         .begin_structural_evidence(inputs())
         .expect("begin repaired validation");
+    // The full clean fallback repaired the snapshot atomically, so this
+    // reopen is admitted by the ADR-0182 bounded dirty branch — which engages
+    // only when the repaired entity-head snapshot verifies at load.
     assert!(
-        session.checkpoint_verified(),
+        session.bounded_dirty_startup_path(),
         "a full clean fallback must atomically repair the snapshot: {:?}",
         session.checkpoint_ignored_reason()
     );
@@ -5503,23 +5615,52 @@ fn a_committed_terminal_execution_failure_advances_the_census_it_is_counted_by()
     let census = session_execution_failure_census(&path);
     assert_eq!(
         census, 1,
-        "the next open must accept the checkpoint and re-seed the same census \
-             from its own walk"
+        "the next complete open must re-seed the same census from its own walk"
     );
 }
 
-/// Re-opens the database, requires the checkpoint fast path, and returns the
-/// census this walk derived for itself.
+/// Re-opens the database and returns the census a COMPLETE walk derived for
+/// itself. The plain reopen is the ADR-0182 bounded dirty path (it performs no
+/// population walk and seeds nothing); the checkpoint is then invalidated the
+/// way ADR-0085 retention does (singleton deleted), which routes the next open
+/// back through the complete path that owns the census re-seed.
 fn session_execution_failure_census(path: &TestDatabasePath) -> u64 {
     let store = RedbStore::open(&path.0).expect("reopen for census");
+    let shared = Arc::clone(&store.shared);
     let mut session = store
         .begin_structural_evidence(inputs())
         .expect("begin structural evidence");
     assert!(
-        session.checkpoint_verified(),
-        "the checkpoint must be accepted: {:?}",
+        session.bounded_dirty_startup_path(),
+        "the maintained-census checkpoint must be accepted by the bounded \
+             admission: {:?}",
         session.checkpoint_ignored_reason()
     );
+    let structural_end = finish_structural(&mut session);
+    let historical_end = drain_historical(&mut session);
+    session
+        .finish(structural_end, historical_end)
+        .expect("the bounded open must reach its exact ends");
+
+    // Invalidate the checkpoint exactly as the retention prune does, so the
+    // following open takes the complete path and re-seeds the census.
+    let write = shared
+        .database
+        .begin_write()
+        .expect("invalidate checkpoint");
+    write
+        .open_table(META)
+        .expect("metadata table")
+        .remove(META_VALIDATED_PREFIX_CHECKPOINT)
+        .expect("remove checkpoint singleton");
+    write.commit().expect("commit invalidation");
+    drop(shared);
+
+    let store = RedbStore::open(&path.0).expect("reopen for complete census");
+    let mut session = store
+        .begin_structural_evidence(inputs())
+        .expect("begin complete structural evidence");
+    assert!(!session.bounded_dirty_startup_path());
     let structural_end = finish_structural(&mut session);
     let historical_end = drain_historical(&mut session);
     let census = session.terminal_execution_failure_rows();
@@ -5529,11 +5670,17 @@ fn session_execution_failure_census(path: &TestDatabasePath) -> u64 {
     census
 }
 
-/// The fail-closed claim, in code: a maintained census that has drifted can
-/// never be silently trusted. Too high a census under-reports
-/// `idempotency_count`, and the next open REFUSES rather than skipping a
-/// prefix it cannot account for; an impossible census is caught before the
-/// write and falls back to the reference walk.
+/// The fail-closed claim, in code, under the ADR-0182 bounded dirty design:
+/// a maintained census that has drifted can never be silently *trusted as a
+/// skip permit it cannot back*. An impossible census is caught before the
+/// write and falls back to the reference walk; a drifted (under-reporting)
+/// census writes a checkpoint whose counts are merely wrong, and the bounded
+/// admission — which checks count IMPOSSIBILITY, not exactness, because the
+/// exact census is not O(1)-derivable at load — admits its binding. No source
+/// path consumes those counts to compute a suffix walk anymore, so the refusal
+/// the pre-ADR-0182 open performed no longer exists at open; the remaining
+/// fail-closed boundary is that the drifted proof can never be RETAINED as
+/// exact-current and is healed by the next complete walk (below).
 #[test]
 fn a_drifted_terminal_census_is_refused_at_the_next_open() {
     let path = TestDatabasePath::new("checkpoint-census-drift");
@@ -5568,30 +5715,78 @@ fn a_drifted_terminal_census_is_refused_at_the_next_open() {
     drop(ports);
 
     let reopened = RedbStore::open(&path.0).expect("reopen drifted store");
+    let shared = Arc::clone(&reopened.shared);
     let mut session = reopened
         .begin_structural_evidence(inputs())
         .expect("begin structural evidence");
+    // The drifted checkpoint's binding admits the bounded dirty path: the
+    // admission verifies self-hash, identity, registry, watermark, sequence
+    // head, entity heads, and count IMPOSSIBILITY — an under-reported count
+    // is not impossible. The bounded walk performs no population enumeration,
+    // so it neither trusts nor verifies the recorded prefix counts.
     assert!(
-        session.checkpoint_verified(),
-        "the drifted checkpoint binds and is accepted at load — refusal must \
-             come from count verification, not from a binding check: {:?}",
+        session.bounded_dirty_startup_path(),
+        "the drifted checkpoint binds and its counts are not impossible: {:?}",
         session.checkpoint_ignored_reason()
     );
-    let mut cursor =
-        StructuralEvidenceCursor::start(session.database_id(), session.open_session_id());
-    let refused = loop {
-        match session
-            .read_structural_evidence(cursor, EvidencePageLimit::new(4).expect("page limit"))
-        {
-            Ok(StructuralEvidencePage::Page { next, .. }) => cursor = next,
-            Ok(StructuralEvidencePage::ExactEnd(_)) => break false,
-            Err(_) => break true,
-        }
-    };
+    let structural_end = finish_structural(&mut session);
+    let historical_end = drain_historical(&mut session);
+    assert!(matches!(
+        session
+            .finish(structural_end, historical_end)
+            .expect("bounded exact ends over a drifted count claim"),
+        StructuralOpenOutcome::Clean(_)
+    ));
+    drop(shared);
+
+    // The drifted proof can never be retained as exact-current: invalidate
+    // the singleton the way ADR-0085 retention does, and the next open takes
+    // the complete path, which classifies every row for itself, re-seeds the
+    // true census, and writes a corrected checkpoint.
+    let store = RedbStore::open(&path.0).expect("reopen for complete healing");
+    let write = store
+        .shared
+        .database
+        .begin_write()
+        .expect("invalidate drifted checkpoint");
+    write
+        .open_table(META)
+        .expect("metadata table")
+        .remove(META_VALIDATED_PREFIX_CHECKPOINT)
+        .expect("remove checkpoint singleton");
+    write.commit().expect("commit invalidation");
+    drop(store);
+    let store = RedbStore::open(&path.0).expect("reopen complete path");
+    let mut session = store
+        .begin_structural_evidence(inputs())
+        .expect("begin complete structural evidence");
+    assert!(!session.bounded_dirty_startup_path());
+    let (structural_end, findings) = collect_structural(&mut session);
     assert!(
-        refused,
-        "a checkpoint whose recorded prefix count disagrees with redb's own \
-             row count must fail closed at open, never be silently trusted"
+        findings.is_empty(),
+        "the durable rows are intact — the drift was a wrong count claim, not \
+             corruption — so the complete walk must classify every row and finish"
+    );
+    let census = session.terminal_execution_failure_rows();
+    let historical_end = drain_historical(&mut session);
+    session
+        .finish(structural_end, historical_end)
+        .expect("the complete walk heals the drifted proof");
+    assert_eq!(
+        census, 0,
+        "the complete walk re-seeds the TRUE census (no execution failures), \
+             never the drifted one"
+    );
+
+    // The healed checkpoint must now verify exactly at admission.
+    let store = RedbStore::open(&path.0).expect("reopen healed store");
+    let session = store
+        .begin_structural_evidence(inputs())
+        .expect("begin healed admission");
+    assert!(
+        session.bounded_dirty_startup_path(),
+        "the healed checkpoint must be admitted: {:?}",
+        session.checkpoint_ignored_reason()
     );
 }
 

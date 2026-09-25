@@ -6,12 +6,16 @@ require "open3"
 require "pathname"
 require "tmpdir"
 
+# Sources and git output are UTF-8; the invoking locale may not be, and
+# counting or scanning non-ASCII content under a US-ASCII default raises.
+Encoding.default_external = Encoding::UTF_8
+
 REPORT_LINES = 6_000
 MAX_LINES = 10_000
 
 def capture!(*command, chdir:)
   stdout, stderr, status = Open3.capture3(*command, chdir: chdir.to_s)
-  return stdout if status.success?
+  return stdout.force_encoding(Encoding::UTF_8) if status.success?
 
   warn stderr
   exit status.exitstatus
@@ -45,7 +49,7 @@ end
 
 def baseline_count(root, revision, relative)
   stdout, = Open3.capture3("git", "show", "#{revision}:#{relative}", chdir: root.to_s)
-  line_count(stdout)
+  line_count(stdout.force_encoding(Encoding::UTF_8))
 end
 
 def run_guard(root, base)

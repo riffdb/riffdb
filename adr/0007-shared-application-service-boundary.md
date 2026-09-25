@@ -1,6 +1,17 @@
 # ADR-0007: Shared Application-Service Boundary
 
 - **Status:** Accepted
+- **Obligations (WP-758):**
+  - `OBL-0007-1` Source: `6201be8f906717752ec32f0d55b24d9e72dcc588605f4560b4c790a683e70c2b`. Proof: `authoritative_projection_and_operational_reads_use_typed_ports_and_audit_by_scope`.
+  - `OBL-0007-2` Source: `e1d73e206b1f606b5f7cd6807c04eb78b58f2ad80c031f83ab961d9131e2ba47`. Proof: `exact_closed_enum_registries_are_frozen`.
+  - `OBL-0007-3` Source: `5d8b920dac0e781995c648f8655d3494560bdd5f7db9ee35aa6eb3f45af0a919`. Proof: `semantic_authorities_have_one_construction_site`.
+  - `OBL-0007-4` Source: `3c1f6e431fb5aaefbadf00ac42fa06314863c7b2828b70f61d3a5d642c865b0f`. Proof: `real_riffdbd_restart_preserves_budget_and_bootstrap_replay`, `known_bootstrap_success_enters_authenticated_deployment_routing`.
+
+- **Struck obligations (WP-758):**
+  - Source: `7494cf12e6b6d08407abcfaf9cc16727109780ab0c4700ea282ab795274b1b73`. Reason: The temporary private-until-complete driver restriction expired when the complete coordinator and shared service shipped; it does not authorize a placeholder driver today.
+  - Source: `dfa4b1cdfda9c8fd7d5dbb79a0ce0c5d31f2261a5e1f6849d43238336ea5a874`. Reason: This is a requirement-ownership registration instruction, already represented by MCP-046 in the package manifest; it adds no separate deferred proof beyond that requirement.
+  - Source: `7b57434d708d85dcaef112c7be6aedd9f3ae3951de440497dc089db49c7f8646`. Reason: Historical prerequisite or allocation checkpoint for an already implemented package; the original ordering instruction remains in the decision history and is not unfinished implementation work. Current identity and scope rules remain mandatory.
+
 - **Amended by:** ADR-0021 for the exact service-audit target registry,
   lineage scoping, canonical order, and per-operation construction rule; and
   ADR-0006's 2026-07-20 accepted direct gRPC public-error carriage; plus the

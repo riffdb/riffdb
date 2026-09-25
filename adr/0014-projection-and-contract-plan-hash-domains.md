@@ -1,6 +1,9 @@
 # ADR-0014: Projection and Contract Plan Hash Domains
 
 - **Status:** Accepted
+- **Struck obligations (WP-758):**
+  - Source: `6abe781a318f254ffb318d38167c414667cf2e67cb2e7532b6f71b581cb38b1d`. Reason: The extractor joined package cross-references to a decision-deadline or adjacent section; this is record-navigation or acceptance-order text, not an unimplemented obligation.
+
 - **Direction approved:** 2026-07-13
 - **Exact text accepted:** 2026-07-13
 - **Decision deadline:** Before WP-040 plan interfaces or fixtures merge

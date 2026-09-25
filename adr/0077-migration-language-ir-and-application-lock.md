@@ -1,6 +1,9 @@
 # ADR-0077: Migration Language, IR, and Application Lock
 
 - **Status:** Accepted
+- **Struck obligations (WP-758):**
+  - Source: `28d0613f57ab05dd8562b527e56e949411a98aeec15279bb8e4738750d54fc5e`. Reason: The extractor joined package cross-references to a decision-deadline or adjacent section; this is record-navigation or acceptance-order text, not an unimplemented obligation.
+
 - **Direction approved:** 2026-07-31
 - **Exact text accepted:** 2026-07-31
 - **Acceptance reference:** Human maintainer exact-text acceptance in the

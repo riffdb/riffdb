@@ -1,6 +1,9 @@
 # ADR-0021: Service-Audit Target Registry and Canonical Ordering
 
 - **Status:** Accepted
+- **Obligations (WP-758):**
+  - `OBL-0021-1` Source: `a53d95822fbbf4d860ce2dd3186cf4ae924246323f1343bcf8f95891afd5acec`. Proof: `all_nine_target_tags_and_canonical_keys_are_frozen`, `critical_cross_package_field_numbers_are_frozen`.
+
 - **Direction approved:** 2026-07-13
 - **Exact text accepted:** 2026-07-13
 - **Accepted:** 2026-07-13

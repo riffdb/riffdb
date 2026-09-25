@@ -146,16 +146,27 @@ fn v3_startup_streams_retained_history_only_after_the_bounded_clean_return() {
         .split_once("impl StructuralEvidenceSession")
         .unwrap()
         .0;
-    let clean = begin
-        .find("return Ok(RedbStructuralEvidenceSession")
+    // Both bounded returns (the clean certificate and the ADR-0182 bounded
+    // dirty path) precede the complete retained-history walk, and the full
+    // session's retention validation follows it. The bounded dirty branch
+    // re-validates the retention bindings itself before its own return.
+    let bounded = begin
+        .rfind("return Ok(RedbStructuralEvidenceSession")
         .unwrap();
+    assert_eq!(
+        begin
+            .matches("return Ok(RedbStructuralEvidenceSession")
+            .count(),
+        2
+    );
     let full = begin
         .find("validate_retained_history(&transaction)")
         .unwrap();
-    let retention = begin
-        .find("crate::retention::load_watermark(&transaction)")
-        .unwrap();
-    assert!(clean < full && full < retention);
+    let retention = full
+        + begin[full..]
+            .find("crate::retention::load_watermark(&transaction)")
+            .unwrap();
+    assert!(bounded < full && full < retention);
     assert_eq!(begin.matches("validate_retained_history(").count(), 1);
     assert!(!begin.contains("begin_write("));
     assert!(!begin.contains(".commit("));

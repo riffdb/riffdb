@@ -1,6 +1,13 @@
 # ADR-0002: Bounded Typed DSL and Deterministic Compilation Boundary
 
 - **Status:** Accepted
+- **Obligations (WP-758):**
+  - `OBL-0002-1` Source: `fa836363182aa72838186eb301dd6c7a67f763f1f7af54f60efc6b23561e7899`. Proof: `dynamic_binding_key_rejects_at_non_input_expression`, `create_requires_every_nonoptional_nonkey_field_once`, `core_diagnostic_codes_retain_their_required_primary_spans`.
+
+- **Struck obligations (WP-758):**
+  - Source: `d2f8527f9fc77695a600f49a6157b46cc36d5fef1f5eaff8e65c7807acd48103`. Reason: The state-machine deferral is superseded by accepted compiled workflows (ADR-0109 and ADR-0119); an absence test would contradict the successor language.
+  - Source: `2021cf9cff16aaa060d61a44b49ab36a796acb54658700e53eeb723ccb60b827`. Reason: The state-machine deferral is superseded by accepted compiled workflows (ADR-0109 and ADR-0119); an absence test would contradict the successor language.
+
 - **Direction approved:** 2026-07-12
 - **Exact text accepted:** 2026-07-12; amended 2026-07-14
 - **Contextual-keyword clarification accepted:** 2026-07-12

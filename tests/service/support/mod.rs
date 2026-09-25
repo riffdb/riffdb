@@ -5,7 +5,7 @@ use std::future::Future;
 use std::num::{NonZeroU16, NonZeroU32, NonZeroU64};
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, AtomicI64, AtomicU8, AtomicU64, AtomicUsize, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Condvar, Mutex};
 use std::time::{Duration, Instant};
 
 use riffdb_auth::{
@@ -1357,6 +1357,92 @@ impl ServiceHarness {
         self.policy.deny_after_next_allows(allow_count);
     }
 
+    /// ADR-0205 Decision 9: arms the one-shot park of the `allow_count`-th
+    /// allowed authorize call. The runtime proof uses the post-evaluation
+    /// authorizer's call so the coordinator actor parks after command
+    /// execution and before its completion is delivered.
+    pub(crate) fn park_after_policy_allow(&self, allow_count: usize) {
+        {
+            // Re-arm the one-shot park: the previous arming's release latch
+            // must clear so the next park actually holds the caller.
+            let mut state = self
+                .policy
+                .park_state
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            state.parked = false;
+            state.released = false;
+        }
+        self.policy
+            .park_after_allowed_call
+            .store(allow_count, Ordering::Release);
+    }
+
+    /// Cumulative allowed authorize calls, for arming the park at the next
+    /// invocation's post-evaluation authorizer call.
+    pub(crate) fn allowed_policy_calls(&self) -> usize {
+        self.policy.allowed_calls.load(Ordering::Acquire)
+    }
+
+    /// Waits until the armed policy park is observed. Returns immediately if
+    /// the park already fired and was released.
+    pub(crate) fn wait_until_policy_parked(&self) {
+        let mut state = self
+            .policy
+            .park_state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        while !state.parked && !state.released {
+            state = self
+                .policy
+                .park_changed
+                .wait(state)
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+        }
+    }
+
+    /// Releases the armed policy park exactly once.
+    pub(crate) fn release_policy_park(&self) {
+        let mut state = self
+            .policy
+            .park_state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        state.released = true;
+        self.policy.park_changed.notify_all();
+        while state.parked {
+            state = self
+                .policy
+                .park_changed
+                .wait(state)
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+        }
+    }
+
+    /// ADR-0205 Decision 9 capacity-holding helper: reserves `count` audit
+    /// workload slots so a terminal-audit append parks in its capacity wait.
+    /// Dropping the returned permits releases them.
+    pub(crate) async fn hold_audit_capacity(
+        &self,
+        count: usize,
+    ) -> Vec<riffdb_commit::AdministrationAuditCapacityPermit> {
+        let executor = self
+            .coordinator
+            .as_ref()
+            .expect("coordinator is running")
+            .administration_audit_executor();
+        let mut held = Vec::with_capacity(count);
+        for _ in 0..count {
+            held.push(
+                executor
+                    .reserve_capacity()
+                    .await
+                    .expect("hold one free audit workload slot"),
+            );
+        }
+        held
+    }
+
     /// Advances the policy clock to `seconds` after the `allow_count`-th allow.
     ///
     /// Models wall time passing between one safe point and the next without
@@ -2433,6 +2519,19 @@ pub(crate) struct HarnessPolicy {
     ///
     /// Production samples one wall clock for both; the harness samples this.
     now_seconds: AtomicI64,
+    /// ADR-0205 Decision 9: one-shot deterministic park of the Nth allowed
+    /// authorize call, so a runtime proof can hold the coordinator actor at
+    /// the post-evaluation authorizer (after command execution, before its
+    /// completion is delivered) and stage audit capacity around it.
+    park_after_allowed_call: AtomicUsize,
+    park_state: Mutex<ParkState>,
+    park_changed: Condvar,
+}
+
+#[derive(Default)]
+struct ParkState {
+    parked: bool,
+    released: bool,
 }
 
 impl HarnessPolicy {
@@ -2621,6 +2720,9 @@ impl HarnessPolicy {
             capability_order,
             discovery_order,
             now_seconds: AtomicI64::new(BASE_SECONDS + 20),
+            park_after_allowed_call: AtomicUsize::new(0),
+            park_state: Mutex::new(ParkState::default()),
+            park_changed: Condvar::new(),
         }
     }
 
@@ -2867,6 +2969,30 @@ impl riffdb_service::CurrentPolicyPort for HarnessPolicy {
                 .is_ok()
             {
                 self.advance_to(self.advance_clock_to_seconds.load(Ordering::Acquire));
+            }
+            if self
+                .park_after_allowed_call
+                .compare_exchange(allowed_call, 0, Ordering::AcqRel, Ordering::Acquire)
+                .is_ok()
+            {
+                // One-shot deterministic park (ADR-0205 Decision 9). The caller
+                // is the coordinator actor thread at the post-evaluation
+                // authorizer; the proof releases it only after staging audit
+                // capacity, so the terminal append parks in its capacity wait.
+                let mut state = self
+                    .park_state
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner);
+                state.parked = true;
+                self.park_changed.notify_all();
+                while !state.released {
+                    state = self
+                        .park_changed
+                        .wait(state)
+                        .unwrap_or_else(std::sync::PoisonError::into_inner);
+                }
+                state.parked = false;
+                self.park_changed.notify_all();
             }
         }
         Ok(decision)

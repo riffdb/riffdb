@@ -29,6 +29,10 @@ review_triggers:
   - An old artifact would be read, written, migrated, reinterpreted, aliased, negotiated, or retained as a compatibility fallback after its owning transition.
   - The external-database registry would become nonempty before the reviewed V6 activation, V5 retirement, and WP-779 closure all complete; V6 would be selected conditionally on command-registry population; or an MCP descriptor, schema, visibility, authorization, pagination, cursor, SDK-only, or vector semantic would change.
   - Operator admission, plan semantics, public query behavior, protocol, durable data, runtime authority, or any compatibility boundary other than the named artifact identities would change.
+obligation_sources:
+  e7f0f2c93ca1b802096ef3086cb37918a959a1aec36a44ac38811689a4d2057e: ["OBL-0216-3"]
+struck_obligations:
+  48b8e1b22aab8296295175a4c2da645bfcb91266398adb2ec657f1686fb822e6: "Rejected-option rationale explaining why V6 follows V5, not a deferred implementation obligation."
 ---
 # ADR-0216: Epoch-Two Sole-Current Query and Generated-Operation Identities
 

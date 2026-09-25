@@ -1,6 +1,18 @@
 # ADR-0040: Public gRPC MCP Parity Bridge
 
 - **Status:** Accepted
+- **Obligations (WP-758):**
+  - `OBL-0040-1` Source: `ac2505c3d1b46d274e7a78d08406c1bab4420d8802c21e846f4a7dbe85df1053`. Proof: `pre_wp137_public_descriptor_surface_is_additively_compatible`, `conditional_command_discovery_binds_representation_and_fence`, `every_public_descriptor_element_has_an_exact_schema_hash`.
+  - `OBL-0040-2` Source: `ce401692a8b261867374c8c62851e0b1f96721a43ebcb70d52fd269a04033bbe`. Proof: `conditional_command_discovery_binds_representation_and_fence`, `exact_contract_and_outbox_exchange_relations_are_closed`.
+  - `OBL-0040-3` Source: `f9653f2235c000f3e345f05a2f8e858a18ab9d135b574ea17efd660562bb1247`. Proof: `pre_wp137_public_descriptor_surface_is_additively_compatible`, `conditional_command_discovery_binds_representation_and_fence`, `every_public_descriptor_element_has_an_exact_schema_hash`.
+
+- **Struck obligations (WP-758):**
+  - Source: `b7526c5a01eb28388d1fa4daad75fa8ed97501aeaee2ca9e0d662df849e0842d`. Reason: Historical prerequisite or allocation checkpoint for an already implemented package; the original ordering instruction remains in the decision history and is not unfinished implementation work. Current identity and scope rules remain mandatory.
+  - Source: `b9b54bf3c43521948d35cce86992ad6472b56c362f711da9c1ee2e113b0c2661`. Reason: Historical prerequisite or allocation checkpoint for an already implemented package; the original ordering instruction remains in the decision history and is not unfinished implementation work. Current identity and scope rules remain mandatory.
+  - Source: `7f4195f5fcdb616c1e07170d2dce9ffb74c5d936550ea33cac98f74a7421e6b0`. Reason: Historical prerequisite or allocation checkpoint for an already implemented package; the original ordering instruction remains in the decision history and is not unfinished implementation work. Current identity and scope rules remain mandatory.
+  - Source: `d266fead6abda95f9d59ac1e6ae5e6c8cb067d28dc4a835fc17856c281d7c6ef`. Reason: Historical prerequisite or allocation checkpoint for an already implemented package; the original ordering instruction remains in the decision history and is not unfinished implementation work. Current identity and scope rules remain mandatory.
+  - Source: `e7411348a82ec69dbb1184cf14396c0fe703261a4cc92601007fddd2a195a493`. Reason: The extractor joined package cross-references to a decision-deadline or adjacent section; this is record-navigation or acceptance-order text, not an unimplemented obligation.
+
 - **Direction approved:** 2026-07-22
 - **Exact text accepted:** 2026-07-22
 - **Accepted:** 2026-07-22

@@ -5,6 +5,11 @@
 //! validation and complete fencing transaction. V1 remains frozen and separate.
 
 use sha2::{Digest, Sha256};
+use std::sync::OnceLock;
+
+#[cfg(test)]
+pub(super) static DIGEST_COMPUTATIONS: std::sync::atomic::AtomicUsize =
+    std::sync::atomic::AtomicUsize::new(0);
 
 use crate::{
     AuthoritativeNamespaceV1, AuthoritativeStateCatalogV1, ReplicationAuthorityClassV1,
@@ -119,6 +124,13 @@ impl AuthoritativeStateCatalogV2 {
     /// SHA-256 of this distinct canonical inventory, including its identity.
     #[must_use]
     pub fn digest(self) -> [u8; 32] {
-        Sha256::digest(self.canonical_fixture().as_bytes()).into()
+        // This inventory is a closed compile-time declaration. Cache only its
+        // expected digest; callers still validate freshly read storage evidence.
+        static DIGEST: OnceLock<[u8; 32]> = OnceLock::new();
+        *DIGEST.get_or_init(|| {
+            #[cfg(test)]
+            DIGEST_COMPUTATIONS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            Sha256::digest(self.canonical_fixture().as_bytes()).into()
+        })
     }
 }

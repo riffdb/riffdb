@@ -159,10 +159,18 @@ static COLUMNAR_COLD_SOURCES: AtomicU64 = AtomicU64::new(0);
 static COLUMNAR_ACTIVATIONS: AtomicU64 = AtomicU64::new(0);
 static COLUMNAR_POPULATION_PASSES: AtomicU64 = AtomicU64::new(0);
 static CLEAN_CERTIFICATE_MODE: AtomicBool = AtomicBool::new(false);
+static BOUNDED_POPULATION_WALK: AtomicBool = AtomicBool::new(false);
 
 /// Records the closed startup mode selected by storage evidence.
 pub(crate) fn record_mode(clean_certificate: bool) {
     CLEAN_CERTIFICATE_MODE.store(clean_certificate, Ordering::Relaxed);
+}
+
+/// Records that this startup excluded the population walk by a bounded
+/// selector: the verified clean certificate OR the ADR-0182 bounded dirty
+/// path (journal-suffix replay plus bounded-root validation).
+pub(crate) fn record_bounded_population_walk(bounded: bool) {
+    BOUNDED_POPULATION_WALK.store(bounded, Ordering::Relaxed);
 }
 
 const fn startup_mode_label(clean_certificate: bool) -> &'static str {
@@ -178,9 +186,12 @@ const fn population_walk_label(
     transient_commit_rows: u64,
 ) -> &'static str {
     // `none` is a proof classification, not an inference from one zero counter:
-    // only the bounded clean selector excludes the complete evidence plan, and
+    // only a bounded startup selector (the verified clean certificate or the
+    // ADR-0182 bounded dirty path) excludes the complete evidence plan, and
     // the independent transient counter excludes a derived COMMITS rebuild.
-    // Every other state reports the conservative closed value.
+    // Every other state reports the conservative closed value. The bounded
+    // dirty path reports mode=complete_validation with walk=none: the mode
+    // names the path, the walk class names the proof.
     if clean_certificate && transient_commit_rows == 0 {
         "none"
     } else {
@@ -250,7 +261,8 @@ pub(crate) fn format_v1_line() -> String {
     line.push_str(&TRANSIENT_REBUILDS.load(Ordering::Relaxed).to_string());
     line.push_str("\tpopulation_table_walk=");
     line.push_str(population_walk_label(
-        CLEAN_CERTIFICATE_MODE.load(Ordering::Relaxed),
+        CLEAN_CERTIFICATE_MODE.load(Ordering::Relaxed)
+            || BOUNDED_POPULATION_WALK.load(Ordering::Relaxed),
         TRANSIENT_COMMIT_ROWS.load(Ordering::Relaxed),
     ));
     line.push_str("\tcolumnar_cold_sources=");

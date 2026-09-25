@@ -1,6 +1,21 @@
 # ADR-0041: CLI Public Flow and Output Contract
 
 - **Status:** Accepted
+- **Obligations (WP-758):**
+  - `OBL-0041-1` Source: `aebee48268308ee070ae42844e0907cef491a98499f07dcb204cc7bbdf49fd69`. Proof: `public_process_all_acceptance_operations`, `source_has_no_internal_database_or_unchecked_transport_path`.
+  - `OBL-0041-2` Source: `bb4541f7223d622c12cd942e9447e9f6f929716a3aa5fcbec5e03e9fd0ebe5ea`. Proof: `public_process_all_acceptance_operations`, `public_backup_restore_preserves_identity_and_rewinds_authoritative_history`, `offline_maintenance_surface_is_exact_and_additive`.
+  - `OBL-0041-3` Source: `9e282d1d53c8340d0b877d4ad7d8a39c1a3bebeb6b2d366a9972030aa238a40a`. Proof: `accepted_interface_checkpoint_still_verifies_byte_for_byte`.
+  - `OBL-0041-4` Source: `5f61561cab1bd4b8c6adb3cf1f5a229b00ee4923c1e6c7b9d9f322bec6c58162`. Proof: `exact_private_file_loads_and_compares_without_exposure`, `final_symlink_every_forbidden_mode_bit_and_trailing_byte_fail_closed`, `directory_fifo_and_device_objects_fail_before_payload_read`, `public_failures_expose_neither_path_nor_credential_content`.
+  - `OBL-0041-5` Source: `8af0512a8f5b8ee36e3ff73d798fcfd9ec8d3a9f3db9fb3d89d1bccf9ee3235a`. Proof: `production_graph_has_no_local_authority_or_server_imports`, `config_surface_names_only_the_accepted_flags_and_environment`, `credential_file_selection_uses_environment_then_config_and_loads_once`, `stdio_uses_exact_protocol_and_policy_filtered_common_handler`.
+  - `OBL-0041-6` Source: `e008f8e1d97185d3feeb1019eafe76adbbf3f03fc259a77981d29fe50c5ae295`. Proof: `production_manifest_matches_the_accepted_direct_allowlist`, `source_has_no_internal_database_or_unchecked_transport_path`, `auth_access_is_confined_to_the_isolated_bootstrap_module`, `bootstrap_durability_and_demo_process_boundaries_are_structural`.
+  - `OBL-0041-7` Source: `d262b38d515b072e9c3ee1046c33837bbe7807921e5e80786f40536bd11c438f`. Proof: `public_backup_restore_preserves_identity_and_rewinds_authoritative_history`, `staged_only_recovery_denies_bad_credentials_and_restores_empty_or_corrupt_targets`, `staged_restore_refuses_policy_required_approval_without_local_authority`, `receipt_codec_is_canonical_checksummed_and_version_closed`, `overlapping_or_symlinked_maintenance_roots_fail_closed_without_path_text`, `maintenance_detects_backup_root_and_database_parent_replacement_after_open`, `run_receipt_case`, `run_backup_case`, `run_stage_case`, `run_publication_case`.
+
+- **Struck obligations (WP-758):**
+  - Source: `586780499bb83f43dd4645cc9a717819f6ae4bebd57b342b753fed5f9c286096`. Reason: Historical prerequisite or allocation checkpoint for an already implemented package; the original ordering instruction remains in the decision history and is not unfinished implementation work. Current identity and scope rules remain mandatory.
+  - Source: `04961c8a71570261327bbb77ac1467c85c6b8edade6512d740efe900985bec1f`. Reason: Historical WP-190 exit-gate registration; the completed recovery report retains the accepted cases and the clause adds no new crash mechanism.
+  - Source: `1e3c497e02c8cba91d48f8c53290dc0a656a0001f49bcdfc77980691d3cb2f7a`. Reason: Historical prerequisite or allocation checkpoint for an already implemented package; the original ordering instruction remains in the decision history and is not unfinished implementation work. Current identity and scope rules remain mandatory.
+  - Source: `e3dc2fff75088b5f1d0d550dd3073553a12745dafe5526992e9e204390f56c39`. Reason: Historical prerequisite or allocation checkpoint for an already implemented package; the original ordering instruction remains in the decision history and is not unfinished implementation work. Current identity and scope rules remain mandatory.
+
 - **Direction approved:** 2026-07-22
 - **Exact text accepted:** 2026-07-22
 - **Accepted:** 2026-07-22

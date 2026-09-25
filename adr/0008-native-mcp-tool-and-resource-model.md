@@ -1,6 +1,16 @@
 # ADR-0008: Native MCP Tool and Resource Model
 
 - **Status:** Accepted
+- **Obligations (WP-758):**
+  - `OBL-0008-1` Source: `15ea43d29ca4d919f31e75932da646912b92a45bbe977ace5bc03e5937de9a2c`. Proof: `conditional_command_discovery_binds_representation_and_fence`, `unchanged_command_discovery_observations_repeat_the_authorized_current_catalog_safe_point`.
+  - `OBL-0008-2` Source: `24fe0cc494705065bf580ed2aa0cdba7165955e23cec07755f3858b5b3d8a715`. Proof: `locator_presence_is_status_consistent_and_legacy_compatible`.
+  - `OBL-0008-3` Source: `72c45f61fc02a78f558c9a0160ff329aae373121bc874b8defbdb8411f9734af`. Proof: `tools_list_component_ledgers_cover_maximum_fixed_dynamic_and_mixed_pages`, `full_discovery_ceiling_is_inclusive_and_whole_item_fitting_stops_before_overflow`.
+  - `OBL-0008-4` Source: `952a0e5d79bd5b2c4caaccc72674ef8317a6542504e902e1efeef5fd465fb688`. Proof: `pre_wp137_public_descriptor_surface_is_additively_compatible`, `conditional_command_discovery_binds_representation_and_fence`, `every_public_descriptor_element_has_an_exact_schema_hash`.
+
+- **Struck obligations (WP-758):**
+  - Source: `7e767ce4056f4b5a4da1a32d9c4cacc65a4d55d0844e9e5546f8fbd703d8d78a`. Reason: Historical dependency-admission review for the initial package, not a pending dependency addition; current pins and dependency reviews remain governed by their accepted successor records and cargo-deny policy.
+  - Source: `aacb7dd12e75765927ced9f5b510355213cade2d0ef4616b0b0e6eea0674c40e`. Reason: Historical prerequisite or allocation checkpoint for an already implemented package; the original ordering instruction remains in the decision history and is not unfinished implementation work. Current identity and scope rules remain mandatory.
+
 - **Direction approved:** 2026-07-12
 - **Exact text accepted:** 2026-07-22
 - **Accepted:** 2026-07-22

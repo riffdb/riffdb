@@ -1,6 +1,9 @@
 # ADR-0131: Exact Indexed Text Matching, Cardinality, and Ordinal Windowing
 
 - **Status:** Accepted
+- **Struck obligations (WP-758):**
+  - Source: `3db4fbc39b738a9fca1aa3215d58ea898dfa99d7d23755d3a7b2fb423b323006`. Reason: ADR-0179 and WP-655 corrected ownership: real framework schema and route evidence belongs to external adapter repositories; the database retains framework-neutral conformance only.
+
 - **Direction approved:** 2026-08-16 (maintainer, in session)
 - **Exact text accepted:** 2026-08-16 (maintainer, as written)
 - **Administrative package renumbering accepted:** 2026-08-17 (maintainer),

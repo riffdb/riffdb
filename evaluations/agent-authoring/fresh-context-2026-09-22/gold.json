@@ -1,0 +1,155 @@
+{
+  "schema": "riffdb.catalog-risk-gold/v1",
+  "stage1": [
+    {
+      "task_id": "stage1-1",
+      "prompt": "Approve the ticket with item ID 22222222-2222-4222-8222-222222222222 in organization 11111111-1111-4111-8111-111111111111. Its expected revision is 7. Use reason \"Reviewed and approved\" and idempotency key \"catalog-stage-1-task-1\".",
+      "gold": {
+        "status": "call",
+        "name": "riffdb_cmd_workflowdesk_approveticket",
+        "arguments": {
+          "idempotency_key": "catalog-stage-1-task-1",
+          "organization_id": "11111111-1111-4111-8111-111111111111",
+          "item_id": "22222222-2222-4222-8222-222222222222",
+          "expected_revision": 7,
+          "reason": "Reviewed and approved"
+        }
+      }
+    },
+    {
+      "task_id": "stage1-2",
+      "prompt": "Cancel the ticket with item ID 33333333-3333-4333-8333-333333333333 in organization 11111111-1111-4111-8111-111111111111. Its expected revision is 8. Use reason \"Duplicate request\" and idempotency key \"catalog-stage-1-task-2\".",
+      "gold": {
+        "status": "call",
+        "name": "riffdb_cmd_workflowdesk_cancelticket",
+        "arguments": {
+          "idempotency_key": "catalog-stage-1-task-2",
+          "organization_id": "11111111-1111-4111-8111-111111111111",
+          "item_id": "33333333-3333-4333-8333-333333333333",
+          "expected_revision": 8,
+          "reason": "Duplicate request"
+        }
+      }
+    },
+    {
+      "task_id": "stage1-3",
+      "prompt": "Submit the ticket with item ID 44444444-4444-4444-8444-444444444444 in organization 11111111-1111-4111-8111-111111111111. Its expected revision is 9. Use reason \"Ready for review\" and idempotency key \"catalog-stage-1-task-3\".",
+      "gold": {
+        "status": "call",
+        "name": "riffdb_cmd_workflowdesk_submitticket",
+        "arguments": {
+          "idempotency_key": "catalog-stage-1-task-3",
+          "organization_id": "11111111-1111-4111-8111-111111111111",
+          "item_id": "44444444-4444-4444-8444-444444444444",
+          "expected_revision": 9,
+          "reason": "Ready for review"
+        }
+      }
+    }
+  ],
+  "stage2_stable": [
+    {
+      "task_id": "stage2-1",
+      "prompt": "Approve the ticket with item ID 22222222-2222-4222-8222-222222222222 in organization 11111111-1111-4111-8111-111111111111. Its expected revision is 7. Use reason \"Reviewed and approved\" and idempotency key \"catalog-stage-2-task-1\".",
+      "gold": {
+        "status": "call",
+        "name": "riffdb_cmd_workflowdesk_approveticket",
+        "arguments": {
+          "idempotency_key": "catalog-stage-2-task-1",
+          "organization_id": "11111111-1111-4111-8111-111111111111",
+          "item_id": "22222222-2222-4222-8222-222222222222",
+          "expected_revision": 7,
+          "reason": "Reviewed and approved"
+        }
+      }
+    },
+    {
+      "task_id": "stage2-2",
+      "prompt": "Cancel the ticket with item ID 33333333-3333-4333-8333-333333333333 in organization 11111111-1111-4111-8111-111111111111. Its expected revision is 8. Use reason \"Duplicate request\" and idempotency key \"catalog-stage-2-task-2\".",
+      "gold": {
+        "status": "call",
+        "name": "riffdb_cmd_workflowdesk_cancelticket",
+        "arguments": {
+          "idempotency_key": "catalog-stage-2-task-2",
+          "organization_id": "11111111-1111-4111-8111-111111111111",
+          "item_id": "33333333-3333-4333-8333-333333333333",
+          "expected_revision": 8,
+          "reason": "Duplicate request"
+        }
+      }
+    },
+    {
+      "task_id": "stage2-3",
+      "prompt": "Submit the ticket with item ID 44444444-4444-4444-8444-444444444444 in organization 11111111-1111-4111-8111-111111111111. Its expected revision is 9. Use reason \"Ready for review\" and idempotency key \"catalog-stage-2-task-3\". A review reference is available: \"review-2026-09-22\". Include it only if the current tool schema requires it.",
+      "gold": {
+        "status": "call",
+        "name": "riffdb_cmd_workflowdesk_submitticket",
+        "arguments": {
+          "idempotency_key": "catalog-stage-2-task-3",
+          "organization_id": "11111111-1111-4111-8111-111111111111",
+          "item_id": "44444444-4444-4444-8444-444444444444",
+          "expected_revision": 9,
+          "reason": "Ready for review"
+        }
+      }
+    }
+  ],
+  "stage2_changed": [
+    {
+      "task_id": "stage2-1",
+      "prompt": "Approve the ticket with item ID 22222222-2222-4222-8222-222222222222 in organization 11111111-1111-4111-8111-111111111111. Its expected revision is 7. Use reason \"Reviewed and approved\" and idempotency key \"catalog-stage-2-task-1\".",
+      "gold": {
+        "status": "call",
+        "name": "riffdb_cmd_workflowdesk_authorizeticket",
+        "arguments": {
+          "idempotency_key": "catalog-stage-2-task-1",
+          "organization_id": "11111111-1111-4111-8111-111111111111",
+          "item_id": "22222222-2222-4222-8222-222222222222",
+          "expected_revision": 7,
+          "reason": "Reviewed and approved"
+        }
+      }
+    },
+    {
+      "task_id": "stage2-2",
+      "prompt": "Cancel the ticket with item ID 33333333-3333-4333-8333-333333333333 in organization 11111111-1111-4111-8111-111111111111. Its expected revision is 8. Use reason \"Duplicate request\" and idempotency key \"catalog-stage-2-task-2\".",
+      "gold": {
+        "status": "unavailable"
+      }
+    },
+    {
+      "task_id": "stage2-3",
+      "prompt": "Submit the ticket with item ID 44444444-4444-4444-8444-444444444444 in organization 11111111-1111-4111-8111-111111111111. Its expected revision is 9. Use reason \"Ready for review\" and idempotency key \"catalog-stage-2-task-3\". A review reference is available: \"review-2026-09-22\". Include it only if the current tool schema requires it.",
+      "gold": {
+        "status": "call",
+        "name": "riffdb_cmd_workflowdesk_submitticket",
+        "arguments": {
+          "idempotency_key": "catalog-stage-2-task-3",
+          "organization_id": "11111111-1111-4111-8111-111111111111",
+          "item_id": "44444444-4444-4444-8444-444444444444",
+          "expected_revision": 9,
+          "reason": "Ready for review",
+          "review_reference": "review-2026-09-22"
+        }
+      }
+    }
+  ],
+  "catalogs": {
+    "small-stable.json": {
+      "sha256": "ca9ffa83f42a044e54b9282e238591ad8509724bf831ca1748631992dd4e3338",
+      "bytes": 38950
+    },
+    "small-changed.json": {
+      "sha256": "3ed96a1ae5e44c1df436f9915c7de824b7aa785a34cd2707c1de79877ab99526",
+      "bytes": 35022
+    },
+    "large-stable.json": {
+      "sha256": "0cd456640fc7440ff7d175519c3fced1218fd30d5d65b7313aed2b2234c5ce6e",
+      "bytes": 263715
+    },
+    "large-changed.json": {
+      "sha256": "151f3fd3f02dbb2a9e5ce1ae584107758c515fafbf9b0b80cca516866291316e",
+      "bytes": 259787
+    }
+  }
+}

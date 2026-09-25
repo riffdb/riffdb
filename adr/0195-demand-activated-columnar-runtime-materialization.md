@@ -46,6 +46,8 @@ review_triggers:
   - Startup or no-demand graceful close could open or decode a generation artifact, apply authoritative records, publish a view, write a checkpoint, or walk projection population.
   - Shutdown could interrupt inside a commit/page, publish or checkpoint because of stop, or fail to join the activation owner before storage closes.
   - A durable control, generation-root, manifest, segment, retention fence, public protocol, lifecycle enum, freshness outcome, or canonical identity would change.
+obligation_sources:
+  31fa639ddf15e3027cfd2bacbbb43a2348aab8f7002be7c9123c0e297778e315: ["OBL-0195-1", "OBL-0195-2", "OBL-0195-3", "OBL-0195-4", "OBL-0195-5"]
 ---
 # ADR-0195: Demand-Activated Columnar Runtime Materialization
 

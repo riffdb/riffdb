@@ -19,6 +19,7 @@ mod row_policy_lowering;
 mod schema_lowering;
 mod symbols;
 mod typecheck;
+mod write_guard;
 
 pub use compiler::{
     CompilationError, compile_contract_migration_successor, compile_contract_source,

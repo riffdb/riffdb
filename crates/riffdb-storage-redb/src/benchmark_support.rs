@@ -329,6 +329,31 @@ pub fn recovery_authority_snapshot_v1(
         if key.value() == META_VALIDATED_PREFIX_CHECKPOINT {
             continue;
         }
+        // The V3 substrate writes the DIRTY/CLEAN lifecycle transitions as
+        // authoritative changelog transactions, so every process generation
+        // legitimately advances the changelog allocator and rewrites the
+        // chained history state. That bookkeeping is the lifecycle advance
+        // this snapshot already decodes separately, carried through the V3
+        // changelog rather than the lifecycle record alone; excluding it
+        // follows the same principle as excluding the record. Replication
+        // authority is not weakened by the exclusion: every generation's
+        // complete ordinary validation re-validates the entire retained V3
+        // history to its exact end, which is a stronger check than a digest
+        // comparison, and the application and administration allocators
+        // remain in the digest.
+        let excluded = [
+            riffdb_storage_api::AuthoritativeNamespaceV1::ChangelogHistoryState,
+            riffdb_storage_api::AuthoritativeNamespaceV1::NextChangelogTransaction,
+        ]
+        .iter()
+        .any(|namespace| {
+            namespace
+                .metadata_key()
+                .is_some_and(|metadata_key| key.value() == metadata_key)
+        });
+        if excluded {
+            continue;
+        }
         hash_component(&mut hasher, key.value().as_bytes());
         hash_component(&mut hasher, value.value());
     }

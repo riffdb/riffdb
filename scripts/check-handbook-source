@@ -4,6 +4,10 @@
 require "pathname"
 require "set"
 
+# Handbook pages are UTF-8; the sandbox may default to a non-UTF-8 locale,
+# which makes `match?` raise on valid content instead of scanning it.
+Encoding.default_external = Encoding::UTF_8
+
 root = Pathname(`git rev-parse --show-toplevel`.strip)
 abort "not inside a Git worktree" if root.to_s.empty?
 docs = root.join("docs")
@@ -33,7 +37,7 @@ absent = listed.reject { |path| docs.join(path).file? }
 abort "SUMMARY.md links missing pages:\n  #{absent.to_a.sort.join("\n  ")}" unless absent.empty?
 
 (public_pages + Set["README.md"]).each do |relative|
-  content = docs.join(relative).read
+  content = docs.join(relative).read(encoding: "UTF-8")
   if content.match?(/!\[\]\(/)
     abort "image without alternative text in docs/#{relative}"
   end

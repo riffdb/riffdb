@@ -1,6 +1,11 @@
 # ADR-0026: WP-120 Authorization, Recovery, and Failure Boundaries
 
 - **Status:** Accepted
+- **Obligations (WP-758):**
+  - `OBL-0026-1` Source: `26f004ce250f14470ecc9d68493834c1f96f48bd49a1b865ebdff196218b6917`. Proof: `memory_committed_outcome_is_withheld_as_an_incident_backed_internal_defect`.
+  - `OBL-0026-2` Source: `64447a9ec304bad12b131e70dadce61f33fe42702db2f60b232d1d7d4809348c`. Proof: `policy_revocation_between_outcome_checks_withholds_the_present_result`, `wrong_stored_owner_and_tenant_are_internal_integrity_failures`, `wrong_stored_partition_is_denied_by_the_full_disclosure_check`, `missing_outcome_returns_bounded_absence_after_pre_lookup_authorization`, `outcome_storage_failure_fails_closed_without_a_disclosure_check`, `incident_source_failure_withholds_a_wrong_owner_outcome_without_fabrication`, `memory_committed_outcome_is_withheld_as_an_incident_backed_internal_defect`.
+  - `OBL-0026-3` Source: `a2ea95139827778883a04a6348e9d2de04e5861325009f8f9b017474eec1d4c4`. Proof: `incident_source_is_injected_fail_closed_and_preserves_observation_order`, `authoritative_health_failure_is_monotonic_and_stops_routing`, `real_riffdbd_restart_preserves_budget_and_bootstrap_replay`.
+
 - **Direction approved:** 2026-07-21
 - **Exact text accepted:** 2026-07-21, amended 2026-07-22
 - **Accepted:** 2026-07-21

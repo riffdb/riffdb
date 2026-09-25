@@ -1,6 +1,10 @@
 # ADR-0056: Agent Application Alpha Before Operational and Distributed Alpha
 
 - **Status:** Accepted
+- **Struck obligations (WP-758):**
+  - Source: `8f5196520e478dc05142a0698fe1b498afdeb98c8fd50925b2b3a76eba89b091`. Reason: Historical prerequisite or allocation checkpoint for an already implemented package; the original ordering instruction remains in the decision history and is not unfinished implementation work. Current identity and scope rules remain mandatory.
+  - Source: `fef43a7e1a130792befc459ba9041025fd80b7ad602233a467c0a14cf9d6609c`. Reason: Conditional requirement to obtain a separate language decision before expanding expressiveness; it remains a standing review restriction, not an unimplemented language construct.
+
 - **Proposed:** 2026-07-29
 - **Direction approved:** 2026-07-29
 - **Exact text accepted:** 2026-07-29

@@ -3292,7 +3292,7 @@ async fn finish_success(
     context: &RequestContext,
     begun: &BegunInvocation,
 ) -> ServiceResult<()> {
-    if begun
+    if let Err(audit_failure) = begun
         .finish(
             service,
             context,
@@ -3300,9 +3300,11 @@ async fn finish_success(
             ServiceAuditLinkV1::None,
         )
         .await
-        .is_err()
     {
-        service.note_audit_failure(begun.initial_authorization().operation());
+        service.note_audit_failure_with_cause(
+            begun.initial_authorization().operation(),
+            audit_failure.cause(),
+        );
         return Err(PublicError::storage_unavailable().into());
     }
     Ok(())
@@ -3314,7 +3316,7 @@ async fn finish_failure(
     begun: &BegunInvocation,
     failure: ServiceFailure,
 ) -> ServiceFailure {
-    if begun
+    if let Err(audit_failure) = begun
         .finish(
             service,
             context,
@@ -3322,9 +3324,11 @@ async fn finish_failure(
             ServiceAuditLinkV1::None,
         )
         .await
-        .is_err()
     {
-        service.note_audit_failure(begun.initial_authorization().operation());
+        service.note_audit_failure_with_cause(
+            begun.initial_authorization().operation(),
+            audit_failure.cause(),
+        );
         return PublicError::storage_unavailable().into();
     }
     failure
@@ -3337,7 +3341,7 @@ async fn finish_controlled(
     error: ControlledWaitError,
 ) -> ServiceFailure {
     let failure = controlled_failure(error);
-    if begun
+    if let Err(audit_failure) = begun
         .finish(
             service,
             context,
@@ -3345,9 +3349,11 @@ async fn finish_controlled(
             ServiceAuditLinkV1::None,
         )
         .await
-        .is_err()
     {
-        service.note_audit_failure(begun.initial_authorization().operation());
+        service.note_audit_failure_with_cause(
+            begun.initial_authorization().operation(),
+            audit_failure.cause(),
+        );
         return PublicError::storage_unavailable().into();
     }
     failure

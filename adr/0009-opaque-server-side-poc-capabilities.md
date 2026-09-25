@@ -1,6 +1,13 @@
 # ADR-0009: Opaque Server-Side POC Capabilities
 
 - **Status:** Accepted
+- **Obligations (WP-758):**
+  - `OBL-0009-1` Source: `e53d2d8395581d2cd22b506b360cc2c4fa56133c3866ef9ca2f7e43da00ea1cd`. Proof: `health_availability_is_independent_of_authoritative_runtime_readiness`, `marker_absent_exhaustion_is_rejected_for_every_exhausted_capacity`, `known_bootstrap_success_enters_authenticated_deployment_routing`.
+
+- **Struck obligations (WP-758):**
+  - Source: `d472ad00d6a02fd1513086c2b1e47e656a1fe85a8613b421f69a4b2b0f07b6f4`. Reason: Historical dependency-admission review for the initial package, not a pending dependency addition; current pins and dependency reviews remain governed by their accepted successor records and cargo-deny policy.
+  - Source: `6126737503d3d7f4bfade9b9f7c65addcff69a766d7bcaffed65f04d0c90da5b`. Reason: Historical prerequisite or allocation checkpoint for an already implemented package; the original ordering instruction remains in the decision history and is not unfinished implementation work. Current identity and scope rules remain mandatory.
+
 - **Direction approved:** 2026-07-12
 - **Exact text accepted:** Yes; dependency graph amended 2026-07-20 and
   2026-07-22

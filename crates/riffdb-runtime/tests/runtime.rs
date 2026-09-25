@@ -17,6 +17,9 @@ use riffdb_types::{
     OutcomeId, RequestId, TenantScope, Timestamp,
 };
 
+#[path = "runtime/cross_binding_fence.rs"]
+mod cross_binding_fence;
+
 const BUDGET_SOURCE: &str = include_str!(concat!(
     env!("CARGO_MANIFEST_DIR"),
     "/../../contracts/examples/budget.riff"

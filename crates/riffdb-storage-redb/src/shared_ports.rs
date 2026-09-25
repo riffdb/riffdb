@@ -75,6 +75,16 @@ impl RedbSharedPorts {
         }
     }
 
+    /// Opens the ADR-0182 background scrub over this shared read handle: the
+    /// complete exact-end walk on a pinned MVCC snapshot, holding no mutation
+    /// lease while the writer stays live.
+    pub fn begin_background_scrub(
+        &self,
+        inputs: riffdb_storage_api::StartupValidationInputs,
+    ) -> Result<crate::startup::RedbBackgroundScrubSession, riffdb_storage_api::StorageError> {
+        crate::startup::begin_background_scrub_on_shared(&self.0, inputs)
+    }
+
     /// Reloads the active catalog pair from the bounded root proven during
     /// clean-close startup. It is unavailable on every other startup path.
     #[doc(hidden)]

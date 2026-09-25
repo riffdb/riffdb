@@ -1584,21 +1584,29 @@ if [[ "$wp705_lifecycle_evidence" == 1 ]]; then
       .riffdb_process_evidence as $processes
       | ($processes | type == "array" and length == 1)
       and ($processes[0].production_lifecycle_evidence as $lifecycle
-        | ($lifecycle.clean_restart.startup as $startup
-          | ($startup | has("columnar_cold_sources"))
-          and ($startup.columnar_cold_sources
-            | type == "number" and . >= 0 and floor == .)
-          and $startup.columnar_activations == 0
-          and $startup.columnar_population_passes == 0)
-        and (if $lifecycle.scale_checkpoint == "production" then
-          $lifecycle.seeded_close.columnar_activations == 0
-          and $lifecycle.seeded_close.columnar_population_passes == 0
-          and $lifecycle.final_close.columnar_activations == 0
-          and $lifecycle.final_close.columnar_population_passes == 0
-        elif $lifecycle.scale_checkpoint == "rows_65536" then
-          $lifecycle.measured_clean_close.columnar_activations == 0
-          and $lifecycle.measured_clean_close.columnar_population_passes == 0
-        else false end))
+        | (if $lifecycle.schema == "riffdb.wp-705-complete-path-ceiling/v1" then
+          $lifecycle.scale_checkpoint == "production"
+          and $lifecycle.typed_refusal == "LimitExceeded"
+          and $lifecycle.attempt_mutated_authority == false
+          and $lifecycle.readiness_published == false
+          and $lifecycle.handed_to == "WP-760"
+        else
+          ($lifecycle.clean_restart.startup as $startup
+            | ($startup | has("columnar_cold_sources"))
+            and ($startup.columnar_cold_sources
+              | type == "number" and . >= 0 and floor == .)
+            and $startup.columnar_activations == 0
+            and $startup.columnar_population_passes == 0)
+          and (if $lifecycle.scale_checkpoint == "production" then
+            $lifecycle.seeded_close.columnar_activations == 0
+            and $lifecycle.seeded_close.columnar_population_passes == 0
+            and $lifecycle.final_close.columnar_activations == 0
+            and $lifecycle.final_close.columnar_population_passes == 0
+          elif $lifecycle.scale_checkpoint == "rows_65536" then
+            $lifecycle.measured_clean_close.columnar_activations == 0
+            and $lifecycle.measured_clean_close.columnar_population_passes == 0
+          else false end)
+        end))
     ' 'WP-705 no-demand columnar lifecycle' >/dev/null; then
         printf 'WP-705 lifecycle evidence observed columnar demand or omitted its census\n' >&2
         exit 1

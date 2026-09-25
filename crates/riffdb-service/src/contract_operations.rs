@@ -1831,8 +1831,8 @@ async fn finish_phase(
     phase: ServiceAuditPhaseV1,
     link: ServiceAuditLinkV1,
 ) -> ServiceResult<()> {
-    if begun.finish(service, context, phase, link).await.is_err() {
-        service.note_audit_failure(operation);
+    if let Err(audit_failure) = begun.finish(service, context, phase, link).await {
+        service.note_audit_failure_with_cause(operation, audit_failure.cause());
         Err(PublicError::storage_unavailable().into())
     } else {
         Ok(())

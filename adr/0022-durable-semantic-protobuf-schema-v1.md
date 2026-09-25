@@ -1,6 +1,9 @@
 # ADR-0022: Durable Semantic Protobuf Schema Version 1
 
 - **Status:** Accepted
+- **Struck obligations (WP-758):**
+  - Source: `29f77ebc014c7d9b2c63ef2c9cc85ffc7fd517cb286c54cc54b40c288142648d`. Reason: The original exact 26-record inventory is superseded by accepted schema additions; current inventory and envelopes are checked by the durable-schema suite, not the obsolete count.
+
 - **Direction approved:** 2026-07-20
 - **Exact text accepted:** 2026-07-20, amended 2026-07-22
 - **Accepted:** 2026-07-20

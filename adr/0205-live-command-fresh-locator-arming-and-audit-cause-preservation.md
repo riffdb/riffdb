@@ -11,14 +11,6 @@ supersedes: []
 requirements: [OUT-001, OUT-002, TXN-042, REC-004, PERF-019]
 packages: [WP-705]
 obligations:
-  - id: OBL-0205-1
-    package: WP-705
-    proof: production_grouped_command_arms_fresh_locator_coverage_without_manual_arm
-    says: A real production grouped coordinator executes the first fresh command through the live fused transaction path and every later new-key inspection uses exact public coverage with zero fallback history scans, without a test or caller manually arming it.
-  - id: OBL-0205-2
-    package: WP-705
-    proof: production_fresh_locator_arming_site_is_reachable_from_both_command_batch_paths
-    says: Architecture checks prove the sole production arming call is in the shared fused command transaction constructor reached by both direct and deferred command batch paths before command staging.
   - id: OBL-0205-3
     package: WP-705
     proof: request_scoped_command_terminal_audit_failure_preserves_threshold

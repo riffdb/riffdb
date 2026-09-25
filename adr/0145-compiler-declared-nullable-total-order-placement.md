@@ -1,6 +1,9 @@
 # ADR-0145: Compiler-Declared Nullable Total-Order Placement
 
 - **Status:** Accepted
+- **Struck obligations (WP-758):**
+  - Source: `ceb0e3dc52ebb663bf18932ec430100fad7ae96623f99ee98b7dc1200aff8127`. Reason: Historical prerequisite or allocation checkpoint for an already implemented package; the original ordering instruction remains in the decision history and is not unfinished implementation work. Current identity and scope rules remain mandatory.
+
 - **Direction approved:** 2026-08-24 (maintainer, in session)
 - **Exact text accepted:** Yes, 2026-08-24 (maintainer, in session)
 - **Decision deadline:** Before WP-675 changes RiffQL order syntax, exact-order

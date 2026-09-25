@@ -80,6 +80,7 @@ tikv-jemallocator = "=0.7.0"
 riffdb-app-baseline-core = { version = "0.1.0", path = "../../examples/app-baseline/core", default-features = false }
 riffdb-ticketdesk = { version = "0.1.0", path = "../../examples/ticketdesk", default-features = false }
 riffdb-invariant = { version = "0.1.0", path = "../riffdb-invariant", default-features = false }
+riffdb-policy = { version = "0.1.0", path = "../riffdb-policy", default-features = false, features = ["test-fixtures"] }
 riffdb-proto = { version = "0.1.0", path = "../riffdb-proto", default-features = false }
 riffdb-client-rust = { version = "0.1.0", path = "../riffdb-client-rust", default-features = false }
 riffdb-commit = { version = "0.1.0", path = "../riffdb-commit", default-features = false, features = ["test-fixtures"] }

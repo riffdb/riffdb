@@ -324,12 +324,11 @@ async fn finish_audited_result<T>(
             | ServiceFailure::EmergencyInternal(_),
         ) => ServiceAuditPhaseV1::Failed,
     };
-    if begun
+    if let Err(audit_failure) = begun
         .finish(service, context, phase, ServiceAuditLinkV1::None)
         .await
-        .is_err()
     {
-        service.note_audit_failure(operation);
+        service.note_audit_failure_with_cause(operation, audit_failure.cause());
         Err(PublicError::storage_unavailable().into())
     } else {
         result

@@ -10,15 +10,7 @@ amends: [ADR-0156, ADR-0205, ADR-0206]
 supersedes: []
 requirements: [OUT-001, OUT-002, TXN-042, REC-004, PERF-019]
 packages: [WP-705]
-obligations:
-  - id: OBL-0208-1
-    package: WP-705
-    proof: production_grouped_command_arms_fresh_locator_coverage_without_manual_arm
-    says: An exact command-empty clean start prepares and executes two audited production Group commands through shared ports while retained operational ports prove zero transient rebuilds and both novel-key inspections prove zero fallback scans.
-  - id: OBL-0208-2
-    package: WP-705
-    proof: exact_empty_command_authority_avoids_command_audit_index_activation
-    says: Architecture checks freeze the same-read-transaction exact-empty command-tail branch, complete physical administration validation, and unchanged derived-index validation for every nonempty history.
+obligations: []
 review_triggers:
   - Physical-only administration validation would use a certificate, allocator, cached frontier, different transaction, caller claim, or anything except exact `read_commit_tail(transaction) == Ok(None)`.
   - A nonempty, retained, uncertain, malformed, or failed command-tail observation would skip `indexed_command_audit`, warm or rebuild less strictly, or stop failing closed.

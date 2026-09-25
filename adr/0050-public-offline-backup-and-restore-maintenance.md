@@ -1,6 +1,9 @@
 # ADR-0050: Public Offline Backup and Restore Maintenance
 
 - **Status:** Accepted
+- **Obligations (WP-758):**
+  - `OBL-0050-1` Source: `8f280e775964d68f18ea01fb16ddacf49fdc04e81a24afc2d3fd59adeba9cb23`. Proof: `public_backup_restore_preserves_identity_and_rewinds_authoritative_history`, `staged_only_recovery_denies_bad_credentials_and_restores_empty_or_corrupt_targets`, `staged_restore_refuses_policy_required_approval_without_local_authority`, `receipt_codec_is_canonical_checksummed_and_version_closed`, `overlapping_or_symlinked_maintenance_roots_fail_closed_without_path_text`, `maintenance_detects_backup_root_and_database_parent_replacement_after_open`, `run_receipt_case`, `run_backup_case`, `run_stage_case`, `run_publication_case`.
+
 - **Direction approved:** 2026-07-24
 - **Exact text accepted:** 2026-07-24
 - **Accepted:** 2026-07-24

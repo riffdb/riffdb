@@ -1,6 +1,9 @@
 # ADR-0144: Release-Evidence Durability-Mode Reconciliation
 
 - **Status:** Accepted
+- **Obligations (WP-758):**
+  - `OBL-0144-1` Source: `b2a49eaf03f4573b0920efff3e0e8dab7efb2c999ad859cc53daad185af0d459`. Proof: `public_command_metadata_accepts_only_closed_production_durability`, `public_commit_durability_must_match_the_response_exactly`, `public_comparison_process_runner_matches_the_shared_oracle`.
+
 - **Direction approved:** 2026-08-24 (maintainer)
 - **Exact text accepted:** Yes, 2026-08-24 (maintainer)
 - **Decision deadline:** Before WP-200 changes or republishes its public budget

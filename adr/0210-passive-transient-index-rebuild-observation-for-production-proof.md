@@ -10,19 +10,7 @@ amends: [ADR-0205, ADR-0206, ADR-0208]
 supersedes: []
 requirements: [OUT-001, OUT-002, TXN-042, REC-004, PERF-019]
 packages: [WP-705]
-obligations:
-  - id: OBL-0210-1
-    package: WP-705
-    proof: production_grouped_command_arms_fresh_locator_coverage_without_manual_arm
-    says: A cloned passive controller proves zero transient-index rebuilds while two real production Group commands, their distinct post-publication novel-key inspections, and successful coordinator shutdown complete with zero fallback scans.
-  - id: OBL-0210-2
-    package: WP-705
-    proof: passive_rebuild_observation_matches_one_real_rebuild
-    says: A calibration test causes exactly one real transient-index rebuild and proves the cloned controller reports one in parity with the operational-port counter.
-  - id: OBL-0210-3
-    package: WP-705
-    proof: production_fresh_locator_arming_site_is_reachable_from_both_command_batch_paths
-    says: Architecture checks freeze the passive controller mirror, its sole increment site, both shared-state rebuild sites, the bounded-start exclusion on the raw ephemeral rebuild, saturation, and the fresh-locator arming location and bounds.
+obligations: []
 review_triggers:
   - The controller observation would callback, block, allocate per rebuild, fail, reset, decrement, wrap, affect a branch or result, or expose state-changing authority.
   - Installation or observation would occur without explicitly selecting the pre-existing doc-hidden Rust test API, or ordinary `RedbStore::open`, production composition, a service, protocol, or configuration would select it.

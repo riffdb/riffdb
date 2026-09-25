@@ -7,7 +7,7 @@ mod follower_lifecycle;
 mod support;
 
 use std::task::{Context, Poll, Waker};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use riffdb_errors::PublicErrorKind;
 use riffdb_service::{
@@ -2436,4 +2436,167 @@ fn assert_internal_with_incident(failure: &ServiceFailure) {
         .expect("ordinary internal containment has a public error");
     assert_eq!(public.kind(), PublicErrorKind::InternalDefect);
     assert!(public.incident_id().is_some());
+}
+
+/// Drives one replay invocation whose terminal-audit append fails on an
+/// elapsed deadline: parks the coordinator actor at the post-evaluation
+/// authorizer, stages the controlled request deadline, releases the actor,
+/// then elapses the deadline so the terminal append's controlled wait returns
+/// `DeadlineExceeded` — the request-scoped append cause.
+async fn parked_replay_fails_terminal_audit(harness: &ServiceHarness, seed: u8) -> ServiceFailure {
+    let park_at = harness.allowed_policy_calls() + 2;
+    harness.park_after_policy_allow(park_at);
+    let service = harness.service.clone();
+    let request = harness.execute_command_request();
+    let (context, _cancellation) =
+        harness.context_with_deadline(seed, Instant::now() + Duration::from_millis(150));
+    let invocation = service.execute_command(context, request);
+    let mut invocation = std::pin::pin!(invocation);
+    {
+        let mut task_context = Context::from_waker(Waker::noop());
+        assert!(
+            matches!(invocation.as_mut().poll(&mut task_context), Poll::Pending),
+            "the invocation must reach the actor park"
+        );
+    }
+    harness.wait_until_policy_parked();
+    // Let the request's real wall-clock deadline elapse while the actor is
+    // parked: whichever safe point observes it first (the in-actor request
+    // recheck or the terminal append's controlled wait), the failure maps to
+    // the request-scoped terminal-audit append cause, and the terminal append
+    // itself sees the elapsed deadline.
+    tokio::time::sleep(Duration::from_millis(350)).await;
+    harness.release_policy_park();
+    match invocation.await {
+        Err(failure) => failure,
+        Ok(result) => {
+            let completion = match &result {
+                riffdb_service::ExecuteCommandResult::Journaled(journaled) => {
+                    format!("{:?}", journaled.completion())
+                }
+                _ => "non-journaled".to_owned(),
+            };
+            panic!("DBG: seed={seed} park_at={park_at} succeeded with completion {completion}");
+        }
+    }
+}
+
+// req: OUT-001, OUT-002, TXN-042, REC-004
+/// OBL-0205-3 proof (ADR-0205 Decisions 7 and 8). A request-scoped
+/// terminal-audit append failure — a deadline elapsed while the terminal
+/// append waits — must preserve its exact cause, fail only the affected
+/// invocation, and leave global readiness up until the unchanged eighth
+/// consecutive request-scoped failure. A successful audit receipt resets the
+/// consecutive counter.
+///
+/// The deterministic window is the post-evaluation authorizer inside the
+/// coordinator actor (after command work, before its completion is
+/// delivered): the one-shot policy park holds the actor there so the proof
+/// can stage the deadline before the terminal append runs. A replay's
+/// terminal audit is a separate append (finish_success) rather than the fused
+/// compound terminal of a first commit.
+#[test]
+fn request_scoped_command_terminal_audit_failure_preserves_threshold() {
+    run_async(async move {
+        const FIRST: u8 = 0xe0;
+        let harness = ServiceHarness::command_capacity_n(2);
+        // One committed command establishes the idempotency key; every later
+        // invocation with the same request replays.
+        let committed = execute_journaled(&harness, FIRST).await;
+        assert_eq!(committed.completion(), JournaledCompletion::Committed);
+        assert!(harness.health.failures().is_empty());
+
+        // One parked replay whose terminal audit fails on a deadline: the
+        // invocation fails closed with its durable knowledge (the replayed
+        // outcome is known durable, so the withheld result maps to
+        // outcome_unknown), and the request-scoped cause leaves readiness up.
+        let failure = parked_replay_fails_terminal_audit(&harness, 0xe1).await;
+        assert_eq!(
+            failure.public_error().expect("typed public error").kind(),
+            PublicErrorKind::OutcomeUnknown
+        );
+        assert!(
+            harness.health.failures().is_empty(),
+            "the first request-scoped terminal-audit failure must leave readiness up"
+        );
+
+        // Seven more consecutive request-scoped terminal-audit failures keep
+        // readiness up; the eighth stops it exactly once.
+        for invocation in 2..=8u8 {
+            let failure = parked_replay_fails_terminal_audit(&harness, 0xe0 + invocation).await;
+            assert_eq!(
+                failure.public_error().expect("typed public error").kind(),
+                PublicErrorKind::OutcomeUnknown
+            );
+            let readiness = harness.health.failures();
+            if invocation < 8 {
+                assert!(
+                    readiness.is_empty(),
+                    "request-scoped failure {invocation} of 8 must leave readiness up"
+                );
+            } else {
+                assert_eq!(
+                    readiness,
+                    vec![AuthoritativeReadinessFailure::AuditUnavailable],
+                    "the eighth consecutive request-scoped failure stops readiness exactly once"
+                );
+            }
+        }
+
+        // The eighth stop is permanent for the process lifecycle, so the reset
+        // is proven on a fresh harness: seven request-scoped failures leave
+        // the counter at seven, one successful audit receipt resets it, and
+        // seven more request-scoped failures still leave readiness up —
+        // without the reset, the next failure would be the eighth and would
+        // stop readiness.
+        drop(harness);
+        let mut harness = ServiceHarness::command_capacity_n(2);
+        let committed = execute_journaled(&harness, 0xf0).await;
+        assert_eq!(committed.completion(), JournaledCompletion::Committed);
+        for invocation in 1..=7u8 {
+            let failure = parked_replay_fails_terminal_audit(&harness, 0xf0 + invocation).await;
+            assert_eq!(
+                failure.public_error().expect("typed public error").kind(),
+                PublicErrorKind::OutcomeUnknown
+            );
+            assert!(
+                harness.health.failures().is_empty(),
+                "request-scoped failure {invocation} of the pre-reset seven must leave readiness up"
+            );
+        }
+        let recovered = execute_journaled(&harness, 0xf8).await;
+        assert_eq!(recovered.completion(), JournaledCompletion::Replayed);
+        for invocation in 1..=7u8 {
+            let failure = parked_replay_fails_terminal_audit(&harness, 0xf8 + invocation).await;
+            assert_eq!(
+                failure.public_error().expect("typed public error").kind(),
+                PublicErrorKind::OutcomeUnknown
+            );
+            assert!(
+                harness.health.failures().is_empty(),
+                "after a reset, seven request-scoped failures must leave readiness up"
+            );
+        }
+
+        harness.stop_coordinator();
+        // Durable audit phases, read after the coordinator stops: the
+        // threshold harness's first commit and parked replay, and the reset
+        // harness's commits and reset replay, close exact lifecycles; a
+        // parked replay retains its Started phase and never reaches Succeeded.
+        assert_eq!(
+            harness.audit_phases(0xf0),
+            [ServiceAuditPhaseV1::Started, ServiceAuditPhaseV1::Succeeded]
+        );
+        assert!(
+            !harness
+                .audit_phases(0xf1)
+                .contains(&ServiceAuditPhaseV1::Succeeded),
+            "the failed terminal append leaves no durable Succeeded phase"
+        );
+        assert_eq!(
+            harness.audit_phases(0xf8),
+            [ServiceAuditPhaseV1::Started, ServiceAuditPhaseV1::Succeeded],
+            "the reset replay closes an exact lifecycle"
+        );
+    });
 }

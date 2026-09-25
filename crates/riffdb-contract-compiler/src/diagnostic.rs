@@ -579,10 +579,10 @@ impl CompilerDiagnosticCode {
             }
             Self::InvalidTextIndex => "the tokenized text-index declaration is invalid",
             Self::UnguardedSet => {
-                "this write does not constrain the field's prior value, so concurrent commands overwrite each other"
+                "this write has no local pre-image dependency or proven root revision fence"
             }
             Self::GuardedOverwrite => {
-                "this write does constrain the record's prior value, so it is not an unconditional overwrite"
+                "this write has a local pre-image dependency or proven root revision fence"
             }
             Self::InvalidCommandToolName => {
                 "an identifier cannot form a valid MCP command tool-name segment"
@@ -727,7 +727,7 @@ impl CompilerDiagnosticCode {
                 "use distinct bounded string sources, keyword_v1 or standard_v1, boolean_v1, positive weights and ceilings, and max_results no greater than max_candidates",
             ),
             Self::UnguardedSet => Some(
-                "add a `require` reading a field of this binding, or derive the new value from the old one; write `overwrite` instead if last-writer-wins is what you mean",
+                "add a `require` reading this binding, derive a write from its prior value, or compare and increment its aggregate root revision; use `overwrite` only for intended last-writer-wins",
             ),
             Self::GuardedOverwrite => Some("write `set`"),
             Self::InvalidCommandToolName => {

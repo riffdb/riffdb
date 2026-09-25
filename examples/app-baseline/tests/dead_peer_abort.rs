@@ -61,7 +61,7 @@ fn kill_daemon_mid_load_aborts_within_two_seconds_for(bounded_session: bool) {
         if env::var_os("RUN_RIFFDB_DEAD_PEER").is_some() {
             panic!(
                 "RUN_RIFFDB_DEAD_PEER=1 but riffdbd not found; build with \
-                 `cargo +1.97.0 build -p riffdb-server --bin riffdbd` or set \
+                 `cargo +1.98.1 build -p riffdb-server --bin riffdbd` or set \
                  RIFFDB_APP_BASELINE_RIFFDBD_BIN"
             );
         }

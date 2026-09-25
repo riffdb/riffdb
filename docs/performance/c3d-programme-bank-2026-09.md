@@ -78,15 +78,18 @@ host.
 For reference, the smoke cells were: interactive minimal 1.91, interactive
 safe-app 2.30, write_only minimal 2.36, write_only safe-app 2.55.
 
-### Where the write-path advantage is real
+### Correction: the write advantage was an unsupported extrapolation
 
-On `write_only` the advantage is structural rather than an artifact of scale.
-The harness measures this device at about 1,030 fdatasync per second.
-PostgreSQL at `synchronous_commit=on` pays one WAL fsync per transaction, which
-puts a ceiling near that figure, and it lands at 1,394 to 1,427 ops/s. RiffDB
-group-commits roughly 16 commands per flush and is not bound by it. That is the
-durable-group mechanism ADR-0183 describes. `interactive` is read-heavy, which
-is why the two engines land level there while diverging on writes.
+The original paragraph inferred a full-scale write advantage from the smoke
+comparison and a device sync probe. It also assumed one physical PostgreSQL
+WAL sync per transaction without measuring that relationship. Neither inference
+was supported by these receipts, and both are withdrawn.
+
+[WP-806's full-scale measurement](wp-806-write-path-c3d-2026-09.md) found the
+pre-change revision at 2,919 write ops/s against 4,756 for safe-app PostgreSQL
+at 32 clients, a 0.614 throughput ratio. RiffDB did group roughly 16 commands
+per physical flush; that mechanism alone did not establish a throughput
+advantage. The historical smoke numbers above remain recorded as smoke only.
 
 ## What these numbers do and do not say
 

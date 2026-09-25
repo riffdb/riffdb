@@ -317,6 +317,9 @@ pub struct RiffDbShutdownEvidence {
     pub shutdown_stages_us: Option<[u64; 8]>,
     /// Complete harness-observed clean-shutdown wall time.
     pub harness_shutdown_elapsed_us: u64,
+    /// The ADR-0182 background scrub's closed terminal observation from this
+    /// process generation's shutdown census line.
+    pub background_scrub: Option<BackgroundScrubObservation>,
     /// First-demand columnar activations observed across the process generation.
     pub columnar_activations: Option<u64>,
     /// Columnar population passes observed across the process generation.
@@ -761,10 +764,35 @@ impl RiffDbServerSession {
         .map_err(|error| RiffDbError::Server {
             detail: error.to_string(),
         })?;
-        let address = process.wait_for_ready_address().map_err(|error| {
-            let detail = process.diagnostic_detail(&error.to_string());
-            RiffDbError::Server { detail }
-        })?;
+        let address = match process.wait_for_ready_address() {
+            Ok(address) => address,
+            Err(error) => {
+                let detail = process.diagnostic_detail(&error.to_string());
+                // WP-705's known-ceiling receipt: the production-scale
+                // complete-validation startup refuses the database with the
+                // typed LimitExceeded historical-evidence ceiling. Capture the
+                // refusal with before/after authority snapshots proving the
+                // attempt mutated nothing, instead of discarding the session.
+                if detail.contains("class=LimitExceeded")
+                    && detail.contains("startup validation refused")
+                {
+                    let after =
+                        riffdb_storage_redb::benchmark_support::recovery_authority_snapshot_v1(
+                            &database_path,
+                        )
+                        .map_err(|error| RiffDbError::Server {
+                            detail: format!("read post-refusal authority snapshot: {error}"),
+                        })?;
+                    return Err(RiffDbError::StartupCeilingRefusal {
+                        detail,
+                        setup_evidence: Box::new(setup_evidence),
+                        before: recovery_authority_before_process,
+                        after,
+                    });
+                }
+                return Err(RiffDbError::Server { detail });
+            }
+        };
         let endpoint = format!("http://{address}");
         let backend = self.backend.reconnect_endpoint(&endpoint).await?;
         self.process = process;
@@ -855,9 +883,12 @@ impl RiffDbServerSession {
                     .map_err(|error| RiffDbError::Server {
                         detail: error.to_string(),
                     })?;
-            if absent_startup.mode != "clean_certificate" {
+            // ADR-0156 Amendment 6: a V2-catalog twin complete-validates on
+            // reopen; the twin is an authority and timing oracle, not a
+            // clean-startup proof.
+            if absent_startup.mode != "complete_validation" {
                 return Err(RiffDbError::Server {
-                    detail: "absent twin did not select clean startup".to_owned(),
+                    detail: "absent twin did not select complete validation".to_owned(),
                 });
             }
             absent_process
@@ -920,9 +951,9 @@ impl RiffDbServerSession {
                 .map_err(|error| RiffDbError::Server {
                     detail: error.to_string(),
                 })?;
-        if twin_startup.mode != "clean_certificate" {
+        if twin_startup.mode != "complete_validation" {
             return Err(RiffDbError::Server {
-                detail: "committed twin did not select clean startup".to_owned(),
+                detail: "committed twin did not select complete validation".to_owned(),
             });
         }
         let mut twin_backend = self
@@ -964,9 +995,9 @@ impl RiffDbServerSession {
                 .map_err(|error| RiffDbError::Server {
                     detail: error.to_string(),
                 })?;
-        if twin_matching_startup.mode != "clean_certificate" {
+        if twin_matching_startup.mode != "complete_validation" {
             return Err(RiffDbError::Server {
-                detail: "committed twin second open did not select clean startup".to_owned(),
+                detail: "committed twin second open did not select complete validation".to_owned(),
             });
         }
         twin_process
@@ -2274,10 +2305,11 @@ impl ServerProcess {
             let stderr = self.stderr_tail();
             evidence.startup = Some(parse_startup_evidence(&stderr)?);
             evidence.clean_close = Some(parse_clean_close_evidence(&stderr)?);
-            let (columnar_activations, columnar_population_passes) =
+            let (columnar_activations, columnar_population_passes, background_scrub) =
                 parse_shutdown_release_evidence(&stderr)?;
             evidence.columnar_activations = Some(columnar_activations);
             evidence.columnar_population_passes = Some(columnar_population_passes);
+            evidence.background_scrub = Some(background_scrub);
             evidence.process_memory_at_spawn = Some(self.initial_process_memory);
             evidence.process_memory_before_shutdown = Some(process_memory_before_shutdown);
             evidence.harness_shutdown_elapsed_us =
@@ -2529,6 +2561,7 @@ fn read_server_stdout(
                                                 graph_shutdown_elapsed_us,
                                                 shutdown_stages_us,
                                                 harness_shutdown_elapsed_us: 0,
+                                                background_scrub: None,
                                                 columnar_activations: None,
                                                 columnar_population_passes: None,
                                                 write_completion_groups,
@@ -2966,6 +2999,16 @@ fn parse_key_values(line: &str, prefix: &str) -> io::Result<BTreeMap<String, Str
     Ok(fields)
 }
 
+/// The background scrub's closed terminal work observation (ADR-0182
+/// evidence): state, rows walked, total microseconds, rows per second.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct BackgroundScrubObservation {
+    pub state: &'static str,
+    pub rows_walked: u64,
+    pub total_us: u64,
+    pub rows_per_second: u64,
+}
+
 fn parse_startup_evidence(stderr: &str) -> io::Result<RiffDbStartupEvidence> {
     let lines = stderr
         .lines()
@@ -3019,7 +3062,9 @@ fn parse_startup_evidence(stderr: &str) -> io::Result<RiffDbStartupEvidence> {
     })
 }
 
-fn parse_shutdown_release_evidence(stderr: &str) -> io::Result<(u64, u64)> {
+fn parse_shutdown_release_evidence(
+    stderr: &str,
+) -> io::Result<(u64, u64, BackgroundScrubObservation)> {
     let lines = stderr
         .lines()
         .filter(|line| line.starts_with(SHUTDOWN_RELEASE_PREFIX))
@@ -3029,11 +3074,16 @@ fn parse_shutdown_release_evidence(stderr: &str) -> io::Result<(u64, u64)> {
     }
     let parse_line = |line: &str| {
         let fields = parse_key_values(line, SHUTDOWN_RELEASE_PREFIX)?;
-        const EXPECTED_FIELDS: [&str; 4] = [
+        const EXPECTED_FIELDS: [&str; 8] = [
             "graph_storage_release",
             "post_graph_release",
             "columnar_activations",
             "columnar_population_passes",
+            // ADR-0182: the background scrub's closed terminal observation.
+            "background_scrub",
+            "background_scrub_rows",
+            "background_scrub_total_us",
+            "background_scrub_rows_per_second",
         ];
         if fields.len() != EXPECTED_FIELDS.len()
             || EXPECTED_FIELDS
@@ -3049,9 +3099,27 @@ fn parse_shutdown_release_evidence(stderr: &str) -> io::Result<(u64, u64)> {
                 .parse::<u64>()
                 .map_err(|_| io::Error::other(format!("shutdown release {name} invalid")))
         };
+        let scrub_state = match fields.get("background_scrub").map(String::as_str) {
+            Some("pending") => "pending",
+            Some("running") => "running",
+            Some("complete") => "complete",
+            Some("failed") => "failed",
+            Some("cancelled") => "cancelled",
+            _ => {
+                return Err(io::Error::other(
+                    "shutdown release background_scrub state invalid",
+                ));
+            }
+        };
         Ok::<_, io::Error>((
             parse_count("columnar_activations")?,
             parse_count("columnar_population_passes")?,
+            BackgroundScrubObservation {
+                state: scrub_state,
+                rows_walked: parse_count("background_scrub_rows")?,
+                total_us: parse_count("background_scrub_total_us")?,
+                rows_per_second: parse_count("background_scrub_rows_per_second")?,
+            },
         ))
     };
     let graph_release = parse_line(lines[0])?;
@@ -3414,11 +3482,20 @@ mod tests {
         );
         assert_eq!(
             parse_shutdown_release_evidence(
-                "riffdb-shutdown-release-v1\tgraph_storage_release=1\tpost_graph_release=0\tcolumnar_activations=0\tcolumnar_population_passes=0\n\
-                 riffdb-shutdown-release-v1\tgraph_storage_release=1\tpost_graph_release=2\tcolumnar_activations=0\tcolumnar_population_passes=0\n"
+                "riffdb-shutdown-release-v1\tgraph_storage_release=1\tpost_graph_release=0\tcolumnar_activations=0\tcolumnar_population_passes=0\tbackground_scrub=complete\tbackground_scrub_rows=7\tbackground_scrub_total_us=9\tbackground_scrub_rows_per_second=11\n\
+                 riffdb-shutdown-release-v1\tgraph_storage_release=1\tpost_graph_release=2\tcolumnar_activations=0\tcolumnar_population_passes=0\tbackground_scrub=complete\tbackground_scrub_rows=7\tbackground_scrub_total_us=9\tbackground_scrub_rows_per_second=11\n"
             )
             .expect("columnar shutdown evidence"),
-            (0, 0)
+            (
+                0,
+                0,
+                BackgroundScrubObservation {
+                    state: "complete",
+                    rows_walked: 7,
+                    total_us: 9,
+                    rows_per_second: 11,
+                }
+            )
         );
         assert!(parse_shutdown_release_evidence(
             "riffdb-shutdown-release-v1\tgraph_storage_release=1\tpost_graph_release=2\tcolumnar_activations=0\n"

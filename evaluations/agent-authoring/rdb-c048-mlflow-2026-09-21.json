@@ -1,0 +1,158 @@
+{
+  "schema": "riffdb.agent-authoring-case/v1",
+  "case_id": "rdb-c048-mlflow-2026-09-21",
+  "kind": "retrospective_natural_case_with_evaluator_replays",
+  "independent_authoring_cases": 1,
+  "origin": {
+    "agent_authorship": "reported_by_requester; not independently identified by commit metadata",
+    "adapter_revision": "7617c92ac1cd383322db3cc6d9850ed2219ecf34",
+    "source_path": "riffdb/contract.riff",
+    "observed_diff": {
+      "set_to_overwrite_total": 17,
+      "same_root_revision_protected": 4,
+      "without_qualifying_local_or_root_fence": 13
+    },
+    "historical_build_and_21_tests": "reported in adapter commit; not independently rerun",
+    "historical_compiler_revision": null,
+    "model_identity": null,
+    "elapsed_seconds": null,
+    "interaction_count": null,
+    "rating": null
+  },
+  "replay": {
+    "repository_revision": "de180345888ecee0fa6a33c431c3a4cc023c1cb9",
+    "compiler_change_revision": "863708bdfabfbfacda6d88b9a87c42ad5535417b",
+    "grammar_version": 23,
+    "driver": "crates/riffdb-contract-compiler/examples/check_contracts.rs",
+    "kind": "maintainer offline compilation; not a new model authoring run",
+    "cases": [
+      {
+        "id": "before_adapter_migration",
+        "source_sha256": "6d368aea0a77c9e8544a51e79a2613899277151f64e49ca20618ace9bb9da14b",
+        "replay_exit_status": 1,
+        "diagnostics": [
+          {
+            "line": 560,
+            "code": "RDB-C048"
+          },
+          {
+            "line": 561,
+            "code": "RDB-C048"
+          },
+          {
+            "line": 562,
+            "code": "RDB-C048"
+          },
+          {
+            "line": 563,
+            "code": "RDB-C048"
+          },
+          {
+            "line": 564,
+            "code": "RDB-C048"
+          },
+          {
+            "line": 565,
+            "code": "RDB-C048"
+          },
+          {
+            "line": 566,
+            "code": "RDB-C048"
+          },
+          {
+            "line": 567,
+            "code": "RDB-C048"
+          },
+          {
+            "line": 568,
+            "code": "RDB-C048"
+          },
+          {
+            "line": 569,
+            "code": "RDB-C048"
+          },
+          {
+            "line": 570,
+            "code": "RDB-C048"
+          },
+          {
+            "line": 571,
+            "code": "RDB-C048"
+          },
+          {
+            "line": 572,
+            "code": "RDB-C048"
+          }
+        ],
+        "compiled_commands": null
+      },
+      {
+        "id": "adapter_migration",
+        "source_sha256": "54873de3b57a5ad3a263e07eef5814ca7a3288ef686ff7409baead93c65d92ee",
+        "replay_exit_status": 1,
+        "diagnostics": [
+          {
+            "line": 310,
+            "code": "RDB-C049"
+          },
+          {
+            "line": 311,
+            "code": "RDB-C049"
+          },
+          {
+            "line": 451,
+            "code": "RDB-C049"
+          },
+          {
+            "line": 452,
+            "code": "RDB-C049"
+          }
+        ],
+        "compiled_commands": null
+      },
+      {
+        "id": "four_token_repair",
+        "source_sha256": "831dee757824e98656d05920a826be240b761a8d51861df882295ba51a90f672",
+        "replay_exit_status": 0,
+        "diagnostics": [],
+        "compiled_commands": 14
+      },
+      {
+        "id": "parent_comparison_removed",
+        "source_sha256": "043f87e3d20b7e6eb273a3f864abc029b8d2f2a43e83f7928b0fa949caad6c4f",
+        "replay_exit_status": 1,
+        "diagnostics": [
+          {
+            "line": 310,
+            "code": "RDB-C048"
+          },
+          {
+            "line": 311,
+            "code": "RDB-C048"
+          },
+          {
+            "line": 451,
+            "code": "RDB-C048"
+          },
+          {
+            "line": 452,
+            "code": "RDB-C048"
+          }
+        ],
+        "compiled_commands": null
+      }
+    ]
+  },
+  "eligibility": {
+    "sealed_alpha_gate": false,
+    "mcp_catalog_selection": false,
+    "fresh_independent_repair_trial": false,
+    "production_adapter_execution": false
+  },
+  "conclusion": {
+    "compiler_false_positive_confirmed": true,
+    "four_protected_writes_need_no_new_concurrency_mechanism": true,
+    "thirteen_unguarded_writes_still_require_explicit_overwrite": true,
+    "r06_catalog_risk_closed": false
+  }
+}

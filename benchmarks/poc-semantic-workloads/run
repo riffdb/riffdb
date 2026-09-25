@@ -103,8 +103,8 @@ if [ "$PUBLISH" = true ] && [ "$GIT_DIRTY" != false ]; then
     exit 1
 fi
 
-RUST_VERSION=$(rustc +1.97.0 --version --verbose | tr '\n' ';')
-RUST_TARGET=$(rustc +1.97.0 --version --verbose | sed -n 's/^host: //p')
+RUST_VERSION=$(rustc +1.98.1 --version --verbose | tr '\n' ';')
+RUST_TARGET=$(rustc +1.98.1 --version --verbose | sed -n 's/^host: //p')
 OPERATING_SYSTEM=$(uname -srm)
 CPU_DESCRIPTION=$(sed -n 's/^model name[[:space:]]*: //p' /proc/cpuinfo | head -n 1)
 [ -n "$CPU_DESCRIPTION" ] || CPU_DESCRIPTION=$(uname -m)
@@ -149,7 +149,7 @@ RIFFDB_POC_BENCHMARK_DATABASE_ROOT="$DATABASE_ROOT" \
 RIFFDB_POC_BENCHMARK_FILESYSTEM="$FILESYSTEM" \
 RIFFDB_POC_BENCHMARK_MOUNT_OPTIONS="$MOUNT_OPTIONS" \
 TMPDIR="$DATABASE_ROOT" \
-cargo +1.97.0 test \
+cargo +1.98.1 test \
     --manifest-path "$MANIFEST" \
     --locked \
     --release \

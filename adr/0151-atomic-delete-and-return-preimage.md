@@ -1,6 +1,9 @@
 # ADR-0151: Atomic Unary Delete and Return of the Revalidated Preimage
 
 - **Status:** Accepted
+- **Obligations (WP-758):**
+  - `OBL-0151-1` Source: `8ae878347f7ec8f12ba51b7660e5519446fab78dca92695e153772cd4caf598a`. Proof: `unary_no_inbound_delete_returns_the_declared_preimage`, `unary_delete_complete_record_access_remains_explicit`, `unary_delete_race_commits_one_preimage_and_replays_after_reopen`.
+
 - **Direction approved:** Yes
 - **Exact text accepted:** Yes, 2026-08-25
 - **Accepted:** 2026-08-25

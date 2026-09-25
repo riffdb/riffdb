@@ -119,7 +119,11 @@ impl SharedRedbOperationalPorts {
         health: Option<Arc<dyn ServiceHealthHooks>>,
     ) -> Result<Self, StorageError> {
         let bounded_clean_startup = ports.clean_close_fast_startup();
-        crate::startup_census::record_mode(bounded_clean_startup);
+        // The closed health mode names the verified clean certificate only;
+        // the ADR-0182 bounded dirty path reports complete_validation.
+        crate::startup_census::record_mode(ports.clean_certificate_startup());
+        // Both bounded startup selectors exclude the population walk.
+        crate::startup_census::record_bounded_population_walk(bounded_clean_startup);
         let shared = ports.shared_ports();
         let catalog = if bounded_clean_startup {
             CurrentCatalogView::rebuild_from_clean_startup(&shared)?
@@ -174,6 +178,12 @@ impl SharedRedbOperationalPorts {
     }
 
     /// Assembles the sole executor implementation over this cloneable lower reader.
+    /// The cloneable pure-read shared handle (the ADR-0182 background scrub's
+    /// least-authority reader).
+    pub(crate) fn shared_read_ports(&self) -> RedbSharedPorts {
+        self.shared.clone()
+    }
+
     pub(crate) fn query_executor(&self) -> StorageQueryExecutor<RedbSharedPorts> {
         StorageQueryExecutor::new(self.shared.clone())
     }

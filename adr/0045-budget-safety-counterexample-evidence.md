@@ -1,6 +1,12 @@
 # ADR-0045: Budget Safety Counterexample Evidence and Claim Boundary
 
 - **Status:** Accepted
+- **Obligations (WP-758):**
+  - `OBL-0045-1` Source: `6d5163f6224119598630a99bd70b42f74cedbebbaa3329e15b0b2d77e7f8c90c`. Proof: `safety_evidence_runner_proves_all_four_live_contrasts`, `report_path_is_new_absolute_bounded_and_non_overwriting`.
+
+- **Struck obligations (WP-758):**
+  - Source: `2fdae359dd1b44395857aeec4213c8f38e5e3f4c556256c5ad6be69071e0a110`. Reason: Historical prerequisite or allocation checkpoint for an already implemented package; the original ordering instruction remains in the decision history and is not unfinished implementation work. Current identity and scope rules remain mandatory.
+
 - **Direction approved:** 2026-07-23 for adding comparison evidence; exact
   scenarios and wording were accepted on 2026-07-23
 - **Exact text accepted:** 2026-07-23

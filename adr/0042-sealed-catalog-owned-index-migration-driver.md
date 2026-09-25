@@ -1,6 +1,9 @@
 # ADR-0042: Sealed Catalog-Owned Index Migration Driver
 
 - **Status:** Accepted
+- **Struck obligations (WP-758):**
+  - Source: `4ee2f245e288201cab60b82ad1cfcbd978aa2fd82e6a6f395043e43cd2965d4a`. Reason: Consumer recompilation requirement for the old catalog-owned startup migration API; ADR-0180 subsequently moved that ownership and its current architecture checks replace the retired interface shape.
+
 - **Direction approved:** 2026-07-22
 - **Exact text accepted:** 2026-07-22
 - **Accepted:** 2026-07-22

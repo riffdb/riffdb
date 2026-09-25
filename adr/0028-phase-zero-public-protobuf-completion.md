@@ -1,6 +1,12 @@
 # ADR-0028: Phase-Zero Public Protobuf Completion
 
 - **Status:** Accepted
+- **Obligations (WP-758):**
+  - `OBL-0028-1` Source: `968ae6eb021677b0f0e8ddc5c2fa5523547144ed113ba048229262d8326b24dd`. Proof: `locator_presence_is_status_consistent_and_legacy_compatible`.
+
+- **Struck obligations (WP-758):**
+  - Source: `3bf8c8220d27936bb57dfe429ca1d3129eb1fcceded0f7f73beba08a70904891`. Reason: Historical prerequisite or allocation checkpoint for an already implemented package; the original ordering instruction remains in the decision history and is not unfinished implementation work. Current identity and scope rules remain mandatory.
+
 - **Direction approved:** 2026-07-21
 - **Exact text accepted:** 2026-07-21, amended 2026-07-22
 - **Accepted:** 2026-07-21

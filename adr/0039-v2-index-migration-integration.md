@@ -1,6 +1,20 @@
 # ADR-0039: V2 Index Migration Integration
 
 - **Status:** Accepted
+- **Obligations (WP-758):**
+  - `OBL-0039-1` Source: `83b5de716e8dda5ae79b2f854c1594c1afe6dca9262743bfbabe07d5ea4aacd5`. Proof: `one_maximum_valid_row_and_replacement_fit_the_migration_page_bound`.
+  - `OBL-0039-2` Source: `7f8639b9289fa53b0d79d83a4b237d7977a89754fd33b5bdab3709cd3462b194`. Proof: `service_comparison_matches_the_shared_semantic_oracle`, `service_comparison_preflight_proves_replay_mismatch_and_shared_authorization`.
+  - `OBL-0039-3` Source: `d8155e3692467a96eb879b069a1ce14ac67f5c54760891f112b3b5d2807faf16`. Proof: `migration_evidence_and_cursor_retain_neutral_bounds_and_identity`, `skipped_repeated_reordered_cross_session_and_truncated_streams_fail_closed`, `redb_driver_rejects_a_port_from_another_migration_session`, `crossed_catalog_and_storage_startup_outcomes_fail_closed`, `startup_migration_port_exposes_identity_but_no_catalog_authority`.
+  - `OBL-0039-4` Source: `8986cc3924eac55e745365b3c1532d38c98464a8da74093095fb3dc14c91456a`. Proof: `service_comparison_matches_the_shared_semantic_oracle`, `service_comparison_preflight_proves_replay_mismatch_and_shared_authorization`.
+
+- **Struck obligations (WP-758):**
+  - Source: `a847f8704188e3a6887eb0c046c55c7b7bf6611507f79d061a61fe12a62790fa`. Reason: The original catalog dependency exception has been superseded by ADR-0180 dependency inversion; retaining a proof of the retired edge would be misleading.
+  - Source: `fd99a19a3a06bc56199a65b74c3fbd0144cd7c0b2543e5ed190ccda91b828950`. Reason: Historical WP-075 nested benchmark consumer reconciliation, completed before current V2 startup fixtures; it is not a new storage interface or a pending backend qualification.
+  - Source: `7fa886ef56deeb83c4dbb5eaa6ec6be0856c62ef8034e3aedc924ac1a8767d2e`. Reason: Historical WP-075 nested benchmark consumer reconciliation, completed before current V2 startup fixtures; it is not a new storage interface or a pending backend qualification.
+  - Source: `1a1732528bb9f61f08ca47bd7adf2c252f95f70ef8d51de3265647e61492e27b`. Reason: The extractor joined package cross-references to a decision-deadline or adjacent section; this is record-navigation or acceptance-order text, not an unimplemented obligation.
+  - Source: `7f05cee9dee8703d2dabe4d5ef304c89b1c66278ad27f613cd4c7cae36c4602b`. Reason: Historical prerequisite or allocation checkpoint for an already implemented package; the original ordering instruction remains in the decision history and is not unfinished implementation work. Current identity and scope rules remain mandatory.
+  - Source: `d7bce30af0eba3ca916e0dfa4395093e8f52b40138f27dc0b0606ec894eb4187`. Reason: Historical prerequisite or allocation checkpoint for an already implemented package; the original ordering instruction remains in the decision history and is not unfinished implementation work. Current identity and scope rules remain mandatory.
+
 - **Direction approved:** 2026-07-22
 - **Exact text accepted:** 2026-07-22
 - **Accepted:** 2026-07-22

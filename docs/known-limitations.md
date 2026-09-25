@@ -331,11 +331,12 @@ Choosing a target -- a free slot, the next item -- happens in the application:
 read a bounded page, choose, then invoke a command naming that target by
 complete key. That is the intended idiom and it is safe *when the command
 re-checks the condition the choice depended on*, because a losing choice then
-becomes a declared outcome rather than a lost update. Write the `require`. The
-compiler does not yet oblige you to: a command that overwrites a field without
-declaring anything about its prior value compiles, and is indistinguishable
-from a guarded one in its plan. ADR-0256 proposes closing that, and until it
-lands the discipline is yours to keep.
+becomes a declared outcome rather than a lost update. The compiler requires
+`set` for writes protected by a local pre-image dependency or a proven
+same-root revision fence, and explicit `overwrite` for last-writer-wins.
+The root fence must unconditionally compare an integer revision to an input
+and increment it by one; arbitrary equivalent predicates and conditional
+fences are not inferred. Invariants alone do not establish this protection.
 
 What remains genuinely unavailable is allocating an unspecified free row in one
 round trip. That is a contention and round-trip cost, not a safety gap.
