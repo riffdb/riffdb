@@ -426,8 +426,12 @@ fn run() -> Result<(), String> {
             let (process_evidence, lifecycle_evidence) = if args.production_lifecycle_evidence {
                 let checkpoint = lifecycle_scale_checkpoint(args.scale)?;
                 let (shutdown, lifecycle) = match checkpoint {
-                    "production" => production_clean_lifecycle_evidence(&runtime, session),
-                    "rows_65536" => production_dirty_lifecycle_evidence(
+                    // WP-760 owns the production-scale dirty-readiness
+                    // evidence (ADR-0182): both checkpoints run the genuine
+                    // kill and bounded dirty restart. The WP-705 clean-only
+                    // arm and its complete-path ceiling receipt are retained
+                    // for that package's evidence.
+                    "production" | "rows_65536" => production_dirty_lifecycle_evidence(
                         &runtime,
                         session,
                         checkpoint,
@@ -1007,6 +1011,7 @@ fn startup_evidence_json(
         "stages_us": evidence.stages_us,
         "transient_index_rebuilds": evidence.transient_index_rebuilds,
         "population_table_walk": evidence.population_table_walk,
+        "recovery_owned_bytes": evidence.recovery_owned_bytes,
         "columnar_cold_sources": evidence.columnar_cold_sources,
         "columnar_activations": evidence.columnar_activations,
         "columnar_population_passes": evidence.columnar_population_passes,
@@ -1265,98 +1270,6 @@ fn background_scrub_json(
         }),
         None => json!({"state": "absent"}),
     }
-}
-
-fn production_clean_lifecycle_evidence(
-    runtime: &tokio::runtime::Runtime,
-    session: RiffDbServerSession,
-) -> Result<(RiffDbShutdownEvidence, serde_json::Value), String> {
-    let (clean_restarted, seeded_close) = match runtime.block_on(session.restart_for_measurement())
-    {
-        Ok(restarted) => restarted,
-        // WP-705's known-ceiling receipt: at the production population the
-        // V2 complete-validation reopen refuses the database with the typed
-        // LimitExceeded historical-evidence ceiling. The attempt is the
-        // evidence — no retry, no raised ceiling, no partial readiness — and
-        // the before/after authority snapshots prove it mutated nothing. The
-        // receipt is handed to WP-760 and does not satisfy production-scale
-        // dirty readiness.
-        Err(riffdb_app_baseline_riffdb::RiffDbError::StartupCeilingRefusal {
-            detail,
-            setup_evidence,
-            before,
-            after,
-        }) => {
-            if !before.same_authority(&after) {
-                return Err(format!("refused startup mutated authority: {detail}"));
-            }
-            return Ok((
-                *setup_evidence,
-                json!({
-                    "schema": "riffdb.wp-705-complete-path-ceiling/v1",
-                    "scale_checkpoint": "production",
-                    "v2_complete_validation": true,
-                    "bounded_clean_claim": false,
-                    "typed_refusal": "LimitExceeded",
-                    "refusal_detail": detail,
-                    "attempt_mutated_authority": false,
-                    "allocator_advance": 0,
-                    "readiness_published": false,
-                    "partial_success": false,
-                    "handed_to": "WP-760",
-                }),
-            ));
-        }
-        Err(error) => return Err(error.to_string()),
-    };
-    if clean_restarted.retained_entity_rows_before_measurement()
-        != Some(Scale::production().approximate_row_count())
-    {
-        return Err(
-            "production clean qualification has a noncanonical entity population".to_owned(),
-        );
-    }
-    let startup = clean_restarted
-        .startup_evidence()
-        .map_err(|error| error.to_string())?;
-    if startup.mode != "complete_validation"
-        || startup.columnar_activations != 0
-        || startup.columnar_population_passes != 0
-    {
-        return Err("production V2 restart was not complete ordinary validation".to_owned());
-    }
-    let initial_memory = clean_restarted.initial_process_memory();
-    let resources = process_resource_snapshot(
-        clean_restarted.child_pid(),
-        clean_restarted.session_directory(),
-    )?;
-    let memory =
-        lifecycle_memory_window_json("process_start_to_ready", initial_memory, resources, false)?;
-    let final_close = clean_restarted
-        .shutdown_with_evidence()
-        .map_err(|error| error.to_string())?;
-    require_no_columnar_demand(&seeded_close, "seeded clean close")?;
-    require_no_columnar_demand(&final_close, "final clean close")?;
-    let seeded_close_memory = shutdown_memory_window_json(&seeded_close, false)?;
-    let final_close_memory = shutdown_memory_window_json(&final_close, false)?;
-    let lifecycle = json!({
-        "schema": "riffdb.wp-705-production-clean-lifecycle/v1",
-        "scale_checkpoint": "production",
-        "v2_complete_validation": true,
-        "bounded_clean_claim": false,
-        "clean_restart": {
-            "startup": startup_evidence_json(&startup),
-            "rss_bytes_at_ready": resources.rss_bytes,
-            "peak_rss_bytes_at_ready": resources.peak_rss_bytes,
-            "memory": memory,
-        },
-        "seeded_close": clean_close_evidence_json(&seeded_close),
-        "seeded_close_memory": seeded_close_memory,
-        "final_close": clean_close_evidence_json(&final_close),
-        "final_close_memory": final_close_memory,
-        "shutdown_completed": true,
-    });
-    Ok((final_close, lifecycle))
 }
 
 fn lifecycle_scale_checkpoint(scale: Scale) -> Result<&'static str, String> {
@@ -4634,12 +4547,13 @@ mod tests {
             .split_once("}?;")
             .expect("bounded dispatch body")
             .0;
+        // WP-760: both scale checkpoints run the genuine kill and bounded
+        // dirty restart through the one dirty lifecycle owner.
         assert!(
             dispatch.contains(
-                "\"production\" => production_clean_lifecycle_evidence(&runtime, session)"
+                "\"production\" | \"rows_65536\" => production_dirty_lifecycle_evidence("
             )
         );
-        assert!(dispatch.contains("\"rows_65536\" => production_dirty_lifecycle_evidence("));
         assert_eq!(
             dispatch
                 .matches("production_dirty_lifecycle_evidence(")
@@ -4650,7 +4564,7 @@ mod tests {
             .split_once("fn production_dirty_lifecycle_evidence(")
             .expect("dirty lifecycle evidence owner")
             .1
-            .split_once("fn production_clean_lifecycle_evidence(")
+            .split_once("fn background_scrub_json(")
             .expect("dirty lifecycle evidence end")
             .0;
         assert!(
@@ -4733,6 +4647,7 @@ mod tests {
             stages_us: [0; 11],
             transient_index_rebuilds: 0,
             population_table_walk: "none".to_owned(),
+            recovery_owned_bytes: 0,
             columnar_cold_sources: 2,
             columnar_activations: 0,
             columnar_population_passes: 0,

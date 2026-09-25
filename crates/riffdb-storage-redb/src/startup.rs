@@ -714,6 +714,10 @@ pub struct RedbStructuralEvidenceSession {
     command_cache_built: bool,
     /// COMMITS rows decoded into the startup command cache (observation only).
     command_history_rows_decoded: u64,
+    /// Peak bytes held together by this session's recovery-owned structures:
+    /// the historical evidence plan's locator index and the startup command
+    /// cache (observation only; ADR-0182 Decision 5 bounds the dirty path).
+    recovery_owned_peak_bytes: u64,
     /// Publication facts decoded once from AUDIT and shared by catalog, query
     /// module, reactive module, and suffix-audit validation.
     publication_audits: Option<PublicationAuditCache>,
@@ -915,6 +919,7 @@ impl RedbStore {
                 embedded_command_authority: BTreeSet::new(),
                 command_cache_built: false,
                 command_history_rows_decoded: 0,
+                recovery_owned_peak_bytes: 0,
                 publication_audits: None,
                 binding_bundles,
                 entity_chains: None,
@@ -1062,6 +1067,7 @@ impl RedbStore {
                 embedded_command_authority: BTreeSet::new(),
                 command_cache_built: false,
                 command_history_rows_decoded: 0,
+                recovery_owned_peak_bytes: 0,
                 publication_audits: None,
                 binding_bundles,
                 entity_chains: None,
@@ -1229,6 +1235,7 @@ impl RedbStore {
             embedded_command_authority: BTreeSet::new(),
             command_cache_built: false,
             command_history_rows_decoded: 0,
+            recovery_owned_peak_bytes: 0,
             publication_audits: Some(publication_audits),
             binding_bundles,
             entity_chains: None,
@@ -1369,12 +1376,14 @@ impl StructuralEvidenceSession for RedbStructuralEvidenceSession {
                 // full evidence plan is the scrub's and the explicit complete
                 // path's.
                 let plan = build_clean_close_historical_evidence_plan(transaction)?;
-                // ADR-0182 Decision 5: the bounded locator index is the dirty
-                // path's one recovery-owned structure; it is bounded by the
-                // compiled 64 MiB ceiling and refuses with a typed internal
-                // defect rather than spilling.
+                // ADR-0182 Decision 5: the dirty path's recovery-owned state
+                // (the bounded locator index plus the command cache, which the
+                // bounded header never builds) is bounded by the compiled
+                // 64 MiB ceiling and refuses with a typed internal defect
+                // rather than spilling.
                 if self.bounded_dirty_startup
-                    && plan.retained_bytes > MAX_RECOVERY_OWNED_STATE_BYTES
+                    && plan.retained_bytes.saturating_add(self.command_audit_bytes)
+                        > MAX_RECOVERY_OWNED_STATE_BYTES
                 {
                     return Err(storage_error(StorageErrorKind::InvariantViolation));
                 }
@@ -1382,6 +1391,7 @@ impl StructuralEvidenceSession for RedbStructuralEvidenceSession {
             } else {
                 build_historical_evidence_plan(transaction, &self.inputs)?
             };
+            self.note_recovery_owned_bytes(plan.retained_bytes);
             self.historical_plan = Some(plan);
         }
         let requested = usize::try_from(limit.get()).map_err(|_| limit_exceeded())?;
@@ -1984,6 +1994,22 @@ impl RedbStructuralEvidenceSession {
         self.command_history_rows_decoded
     }
 
+    /// Test/evidence observability: the peak bytes this session's
+    /// recovery-owned structures held together (the historical evidence
+    /// plan's locator index and the startup command cache). The bounded dirty
+    /// path refuses above the compiled 64 MiB ceiling. Observation only.
+    #[doc(hidden)]
+    #[must_use]
+    pub fn recovery_owned_peak_bytes(&self) -> u64 {
+        self.recovery_owned_peak_bytes
+    }
+
+    fn note_recovery_owned_bytes(&mut self, plan_bytes: usize) {
+        let held =
+            u64::try_from(plan_bytes.saturating_add(self.command_audit_bytes)).unwrap_or(u64::MAX);
+        self.recovery_owned_peak_bytes = self.recovery_owned_peak_bytes.max(held);
+    }
+
     /// Test/operator observability: which precondition declined the ADR-0157
     /// bounded path on this open, or `None` when the bounded path was admitted.
     ///
@@ -2568,6 +2594,11 @@ impl RedbStructuralEvidenceSession {
         }
         self.command_audit_bytes = retained_bytes;
         self.command_history_rows_decoded = decoded_rows;
+        let plan_bytes = self
+            .historical_plan
+            .as_ref()
+            .map_or(0, |plan| plan.retained_bytes);
+        self.note_recovery_owned_bytes(plan_bytes);
         self.command_audits = audits;
         self.command_capsules = capsules;
         self.embedded_command_authority = embedded_authority;

@@ -337,6 +337,9 @@ pub struct RiffDbStartupEvidence {
     pub transient_index_rebuilds: u64,
     /// `none` or `observed`; never a population cardinality.
     pub population_table_walk: String,
+    /// Peak bytes of the startup evidence session's recovery-owned
+    /// structures (ADR-0182 Decision 5; the dirty ceiling is 64 MiB).
+    pub recovery_owned_bytes: u64,
     /// Columnar sources retained cold through readiness.
     pub columnar_cold_sources: u64,
     /// First-demand columnar activations observed before readiness.
@@ -3004,6 +3007,7 @@ fn parse_startup_evidence(stderr: &str) -> io::Result<RiffDbStartupEvidence> {
         stages_us,
         transient_index_rebuilds,
         population_table_walk,
+        recovery_owned_bytes: parse_count("recovery_owned_bytes")?,
         columnar_cold_sources: parse_count("columnar_cold_sources")?,
         columnar_activations: parse_count("columnar_activations")?,
         columnar_population_passes: parse_count("columnar_population_passes")?,
@@ -3307,7 +3311,7 @@ mod tests {
     // req: PERF-014, PERF-019
     #[test]
     fn stderr_collector_publishes_startup_after_the_complete_line() {
-        let startup_line = "riffdb-startup-stages-v1\tmode=complete_validation\tstore_open=1\tevidence_begin=2\tstructural_drain=3\tcatalog_history=4\tevidence_finish=5\tport_activation=6\tcurrent_views=7\tconsumer_recovery=8\toutbox_recovery=9\tgraph_rest=10\tprocess_to_ready=11\ttransient_index_rebuilds=1\tpopulation_table_walk=observed\tcolumnar_cold_sources=2\tcolumnar_activations=0\tcolumnar_population_passes=0\n";
+        let startup_line = "riffdb-startup-stages-v1\tmode=complete_validation\tstore_open=1\tevidence_begin=2\tstructural_drain=3\tcatalog_history=4\tevidence_finish=5\tport_activation=6\tcurrent_views=7\tconsumer_recovery=8\toutbox_recovery=9\tgraph_rest=10\tprocess_to_ready=11\ttransient_index_rebuilds=1\tpopulation_table_walk=observed\trecovery_owned_bytes=0\tcolumnar_cold_sources=2\tcolumnar_activations=0\tcolumnar_population_passes=0\n";
         let input = format!("{ENGINE_REPAIR_DIAGNOSTIC_LINE}\n{startup_line}");
         let ring = Arc::new(Mutex::new(VecDeque::new()));
         let (baseline_sender, _baseline_receiver) = mpsc::sync_channel(1);
@@ -3337,7 +3341,7 @@ mod tests {
     fn production_lifecycle_observations_are_closed_and_kill_is_owner_bound() {
         let startup = parse_startup_evidence(
             "[riffdbd-diag] trigger=startup clean_close_fast=false decline=engine_repaired_at_open (full validation pass; cost scales with retained history)\n\
-             riffdb-startup-stages-v1\tmode=complete_validation\tstore_open=1\tevidence_begin=2\tstructural_drain=3\tcatalog_history=4\tevidence_finish=5\tport_activation=6\tcurrent_views=7\tconsumer_recovery=8\toutbox_recovery=9\tgraph_rest=10\tprocess_to_ready=11\ttransient_index_rebuilds=1\tpopulation_table_walk=observed\tcolumnar_cold_sources=2\tcolumnar_activations=0\tcolumnar_population_passes=0\n",
+             riffdb-startup-stages-v1\tmode=complete_validation\tstore_open=1\tevidence_begin=2\tstructural_drain=3\tcatalog_history=4\tevidence_finish=5\tport_activation=6\tcurrent_views=7\tconsumer_recovery=8\toutbox_recovery=9\tgraph_rest=10\tprocess_to_ready=11\ttransient_index_rebuilds=1\tpopulation_table_walk=observed\trecovery_owned_bytes=0\tcolumnar_cold_sources=2\tcolumnar_activations=0\tcolumnar_population_passes=0\n",
         )
         .expect("parse dirty production observation");
         assert_eq!(startup.mode, "complete_validation");

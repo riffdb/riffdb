@@ -521,6 +521,7 @@ fn run_redb_evidence_session(
         validate_catalog_history(&mut session)
     })?;
     let (catalog_outcome, historical_end) = validation.into_parts();
+    crate::startup_census::record_recovery_owned_bytes(session.recovery_owned_peak_bytes());
     let storage_outcome = timed(StartupStage::EvidenceFinish, || {
         session.finish(structural_end, historical_end)
     })?;

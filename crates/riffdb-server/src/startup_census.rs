@@ -158,6 +158,9 @@ static TRANSIENT_COMMIT_ROWS: AtomicU64 = AtomicU64::new(0);
 static COLUMNAR_COLD_SOURCES: AtomicU64 = AtomicU64::new(0);
 static COLUMNAR_ACTIVATIONS: AtomicU64 = AtomicU64::new(0);
 static COLUMNAR_POPULATION_PASSES: AtomicU64 = AtomicU64::new(0);
+/// Peak bytes held by the startup evidence session's recovery-owned
+/// structures (ADR-0182 Decision 5; the dirty path's ceiling is 64 MiB).
+static RECOVERY_OWNED_BYTES: AtomicU64 = AtomicU64::new(0);
 static CLEAN_CERTIFICATE_MODE: AtomicBool = AtomicBool::new(false);
 static BOUNDED_POPULATION_WALK: AtomicBool = AtomicBool::new(false);
 
@@ -197,6 +200,11 @@ const fn population_walk_label(
     } else {
         "observed"
     }
+}
+
+/// Records the startup evidence session's peak recovery-owned bytes.
+pub(crate) fn record_recovery_owned_bytes(bytes: u64) {
+    RECOVERY_OWNED_BYTES.store(bytes, Ordering::Relaxed);
 }
 
 /// Records the transient-index rebuild census observed at graph build.
@@ -265,6 +273,8 @@ pub(crate) fn format_v1_line() -> String {
             || BOUNDED_POPULATION_WALK.load(Ordering::Relaxed),
         TRANSIENT_COMMIT_ROWS.load(Ordering::Relaxed),
     ));
+    line.push_str("\trecovery_owned_bytes=");
+    line.push_str(&RECOVERY_OWNED_BYTES.load(Ordering::Relaxed).to_string());
     line.push_str("\tcolumnar_cold_sources=");
     line.push_str(&COLUMNAR_COLD_SOURCES.load(Ordering::Acquire).to_string());
     line.push_str("\tcolumnar_activations=");
