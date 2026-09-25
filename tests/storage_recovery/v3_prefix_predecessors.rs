@@ -6,6 +6,9 @@ use riffdb_storage_redb::{
     RedbBootstrapMaterializer, RedbBootstrapStage, RedbFollowerApplier, RedbFollowerStore,
 };
 
+#[path = "v3_follower_checkpoint.rs"]
+mod follower_checkpoint;
+
 pub(super) fn inputs() -> StartupValidationInputs {
     let key = ReadableDigestKey::v1(DigestKeyId::new(1).unwrap());
     StartupValidationInputs::new(
