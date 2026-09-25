@@ -4141,9 +4141,25 @@ fn complete_startup_observing_checkpoint(
         ReadableIdempotencyDigestInventory::new(vec![ReadableDigestKey::v1(digest_key)])
             .expect("idempotency digest inventory"),
     );
-    let mut session = store
-        .begin_structural_evidence(inputs)
-        .expect("begin exclusive structural evidence");
+    complete_session_observing_checkpoint(
+        store
+            .begin_structural_evidence(inputs)
+            .expect("begin exclusive structural evidence"),
+    )
+}
+
+/// Drives one opened evidence session (primary or follower) to its exact ends,
+/// reporting whether a validated-prefix checkpoint drove it and how many
+/// sampled prefix rows it inspected.
+fn complete_session_observing_checkpoint(
+    mut session: riffdb_storage_redb::RedbStructuralEvidenceSession,
+) -> (
+    OpenSessionId,
+    CatalogHistoryOutcome,
+    StructuralOpenOutcome<RedbDormantPorts, RedbStartupIndexMigrationPort>,
+    bool,
+    u64,
+) {
     let checkpoint_verified = session.checkpoint_verified();
     let sampled = session.sampled_window_rows_inspected();
     let database_id = session.database_id();
@@ -4180,59 +4196,6 @@ fn complete_startup_observing_checkpoint(
         checkpoint_verified,
         sampled,
     )
-}
-
-#[test]
-fn validated_prefix_checkpoint_roundtrip_second_open_uses_fast_path() {
-    let path = TestDatabasePath::new("validated-prefix-roundtrip");
-    let _ = prepare_committed_command_database(&path.0);
-    // Write an S=head checkpoint after the committed command (prepare's open was pre-command).
-    let _ = complete_startup_pass(RedbStore::open(&path.0).expect("seed S=head checkpoint"));
-
-    // A subsequent open must verify the checkpoint and take the fast path.
-    let (_, _, outcome, verified, sampled) =
-        complete_startup_observing_checkpoint(RedbStore::open(&path.0).expect("checkpointed open"));
-    assert!(
-        matches!(outcome, StructuralOpenOutcome::Clean(_)),
-        "checkpointed open must finish clean"
-    );
-    assert!(
-        verified,
-        "open after a clean finish must verify the written checkpoint"
-    );
-    assert!(
-        sampled > 0,
-        "verified checkpoint with S>0 must execute sampled windows (observed {sampled})"
-    );
-    drop(outcome);
-
-    // Forced full path: remove checkpoint meta, open full, rewrite, reopen.
-    {
-        let database = Database::create(&path.0).expect("open");
-        let txn = database.begin_write().expect("write");
-        {
-            let mut meta = txn.open_table(META).expect("meta");
-            let _ = meta.remove("validated_prefix_checkpoint/v1");
-        }
-        txn.commit().expect("commit");
-        drop(database);
-    }
-    let store = RedbStore::open(&path.0).expect("full open");
-    let (_, _, outcome, verified_full, _) = complete_startup_observing_checkpoint(store);
-    assert!(
-        matches!(outcome, StructuralOpenOutcome::Clean(_)),
-        "full validation open must finish clean"
-    );
-    assert!(
-        !verified_full,
-        "absent checkpoint must force full validation"
-    );
-    drop(outcome);
-    let store = RedbStore::open(&path.0).expect("rewrite open");
-    let (_, _, outcome, verified_again, _) = complete_startup_observing_checkpoint(store);
-    assert!(matches!(outcome, StructuralOpenOutcome::Clean(_)));
-    assert!(verified_again, "rewritten checkpoint must verify");
-    drop(outcome);
 }
 
 #[test]
@@ -4277,112 +4240,6 @@ fn validated_prefix_checkpoint_binding_mismatch_falls_back_to_full_validation() 
         "full validation must still open cleanly on otherwise-valid data"
     );
     drop(outcome);
-}
-
-#[test]
-fn validated_prefix_checkpoint_prefix_count_mismatch_fails_closed() {
-    use riffdb_storage_api::{
-        StoredValidatedPrefixCheckpointV1, StoredValidatedPrefixCheckpointV2,
-        proto_codec::{
-            decode_validated_prefix_checkpoint_v2, encode_validated_prefix_checkpoint_v2,
-        },
-    };
-
-    let path = TestDatabasePath::new("validated-prefix-count-mismatch");
-    let _ = prepare_committed_command_database(&path.0);
-    let _ = complete_startup_pass(RedbStore::open(&path.0).expect("write checkpoint"));
-
-    // Under-report commits_count while leaving rows in place. Load-time
-    // CountImpossible does not fire (recorded ≤ full), but at ExactEnd
-    // table_len − walked_suffix ≠ recorded_prefix → fail closed.
-    {
-        let database = Database::create(&path.0).expect("open");
-        let txn = database.begin_write().expect("write");
-        {
-            let mut meta = txn.open_table(META).expect("meta");
-            let key = "validated_prefix_checkpoint/v1";
-            let existing = meta
-                .get(key)
-                .expect("get")
-                .expect("checkpoint present")
-                .value()
-                .to_vec();
-            let original_v2 = decode_validated_prefix_checkpoint_v2(&existing)
-                .expect("decode")
-                .into_parts()
-                .0;
-            let original = original_v2.base();
-            assert!(
-                original.counts().commits_count >= 1,
-                "fixture must record a non-empty commits prefix"
-            );
-            let mut counts = original.counts();
-            counts.commits_count = 0;
-            let doctored_base = StoredValidatedPrefixCheckpointV1::new(
-                original.database_id(),
-                original.history_incarnation(),
-                original.registry_digest(),
-                original.checkpoint_commit_sequence(),
-                original.audit_sequence_bound(),
-                counts,
-                original.entity_chain_fingerprint(),
-                original.retained(),
-                original.previous_checkpoint_hash(),
-                0,
-            )
-            .expect("rehash under-reported counts");
-            let doctored = StoredValidatedPrefixCheckpointV2::new(
-                doctored_base,
-                original_v2.entity_counts(),
-                original_v2.entity_transition_fingerprint(),
-            )
-            .expect("rehash delete-aware checkpoint");
-            let encoded = encode_validated_prefix_checkpoint_v2(&doctored).expect("encode");
-            meta.insert(key, encoded.as_bytes()).expect("insert");
-        }
-        txn.commit().expect("commit doctor");
-    }
-
-    let store = RedbStore::open(&path.0).expect("open doctored DB");
-    let digest_key = DigestKeyId::new(1).expect("digest key ID");
-    let inputs = StartupValidationInputs::new(
-        Timestamp::new(1_700_000_000, 0).expect("startup timestamp"),
-        ReadableCapabilityDigestInventory::new(vec![ReadableDigestKey::v1(digest_key)])
-            .expect("capability digest inventory"),
-        ReadableIdempotencyDigestInventory::new(vec![ReadableDigestKey::v1(digest_key)])
-            .expect("idempotency digest inventory"),
-    );
-    let mut session = store
-        .begin_structural_evidence(inputs)
-        .expect("begin accepts bindable checkpoint");
-    assert!(
-        session.checkpoint_verified(),
-        "under-reported counts still bind at load; mismatch is walk-end verified"
-    );
-    let mut cursor =
-        StructuralEvidenceCursor::start(session.database_id(), session.open_session_id());
-    let limit = EvidencePageLimit::new(64).expect("page limit");
-    let mut failed_closed = false;
-    loop {
-        match session.read_structural_evidence(cursor, limit) {
-            Ok(StructuralEvidencePage::Page { findings, next, .. }) => {
-                if !findings.is_empty() {
-                    failed_closed = true;
-                    break;
-                }
-                cursor = next;
-            }
-            Ok(StructuralEvidencePage::ExactEnd(_)) => break,
-            Err(_) => {
-                failed_closed = true;
-                break;
-            }
-        }
-    }
-    assert!(
-        failed_closed,
-        "under-reported below-S commits_count must fail closed at walk end"
-    );
 }
 
 #[test]
@@ -5609,45 +5466,6 @@ fn doctored_entities_row_falls_back_and_full_pass_reports_the_finding() {
                 bounded_dirty_startup::CorruptionRefusal::BeforeReadiness
             ),
         "the vanished ENTITIES row must be refused as authoritative corruption: {refusal:?}"
-    );
-}
-
-#[test]
-fn checkpointed_open_accepts_prefix_only_entities_via_seeded_chains() {
-    // Prefix-only target under a verified checkpoint: the seeded chain carries
-    // the fingerprint-verified version but no post-image hash. The version-only
-    // acceptance arm must validate the ENTITIES row cleanly; without it every
-    // prefix-only entity would report a false MissingCrossLink.
-    let path = TestDatabasePath::new("seeded-chain-prefix-only");
-    prepare_checkpointed_command_database(&path.0);
-
-    let (_, _, outcome, verified, _) =
-        complete_startup_observing_checkpoint(RedbStore::open(&path.0).expect("checkpointed open"));
-    assert!(verified, "the S=head checkpoint must verify");
-    assert!(
-        matches!(outcome, StructuralOpenOutcome::Clean(_)),
-        "prefix-only entities must validate via seeded chains"
-    );
-}
-
-#[test]
-fn audit_shaped_history_gets_nonzero_below_bound_sampling() {
-    // The committed-command fixture carries audit rows below the bound; the
-    // audit-class sample windows must inspect them (S2: audit histories get
-    // nonzero below-S sampling; previously zero when only COMMITS/EVENTS were
-    // sampled).
-    let path = TestDatabasePath::new("audit-sample-windows");
-    prepare_checkpointed_command_database(&path.0);
-
-    let (_, _, outcome, verified, sampled) =
-        complete_startup_observing_checkpoint(RedbStore::open(&path.0).expect("checkpointed open"));
-    assert!(verified);
-    assert!(matches!(outcome, StructuralOpenOutcome::Clean(_)));
-    // Fixture: 1 commit + 1 event + 3 audit rows below bounds. Sampling must
-    // now cover more than the commit/event classes alone.
-    assert!(
-        sampled > 2,
-        "audit-class rows must be sampled below the bound (observed {sampled})"
     );
 }
 

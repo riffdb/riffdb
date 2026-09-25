@@ -51,6 +51,44 @@ shared term. WP-749 therefore remains blocked under the existing disposition.
 No archive comparison, capture experiment, or host reservation accompanies
 this integration; the retained measurements keep their original source identities.
 
+The subsequent integration also retains main through `f2f4dcb2de6c95a5062c72394fd83ba57bec7a01`,
+including the follower checkpoint fast-path proofs. The intended landing is an
+incremental handoff: register WP-810 on main and retain WP-749 as blocked. It
+does not close either package or amend the archive-presence gate.
+
+#### Integration verification and landing note
+
+Package WP-749, with the independent WP-810 registration; aggregate tier
+guarantee because the receipt-wait repair touches storage. Scoped acceptance
+passes all 16 checks after restoring the pinned TypeScript checker used by CI.
+Workspace Clippy with all targets and features passes. The app-baseline
+workspace check and all 26 runner library tests pass. The initial generated
+check failed when the recreated worktree lacked its ignored Node dependencies;
+installing the unchanged lockfile dependencies resolves it without a source
+change.
+
+Full CI is **not green**. Its workspace test run stops on two daemon restart
+tests; both reproduce on clean main at `f2f4dcb2` without the WP-749 changes:
+
+- `real_riffdbd_restart_preserves_budget_and_bootstrap_replay` expects startup
+  to have replaced the seed checkpoint, but the observed predecessor is absent.
+- `real_riffdbd_migrates_v1_index_before_public_readiness` receives an internal
+  defect from its partition-filtered scan after migration.
+
+These failures concern current startup behavior and are separate from the
+checkpoint/journal latency prerequisite. The baseline reproduction does not
+waive the repository's merge checks. The branch carries no startup repair and
+makes no current full-CI pass claim.
+
+Compatibility: existing durable bytes, checkpoint selection, acknowledgement
+ordering and public APIs remain unchanged by this handoff. The diagnostic
+publication line is V2, and the runner recognizes its corrected wait coverage.
+Handbook updates are this report, the linked checkpoint package, receipt-wait
+repair, writer-census warnings, app-baseline evidence guide and backup/restore.
+Hazards: the acknowledgement gate remains unmet, the residual remains
+unattributed, and WP-810 must supply its own repair and evidence before the
+defined archive remeasurement.
+
 ### Main integration check, 2026-09-22
 
 The merge of main at `215286abed9e98b77811b33be991ee1bca6b0077`

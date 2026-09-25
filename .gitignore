@@ -81,3 +81,6 @@ service-account*.json
 .cowboy/*
 !.cowboy/agent.yaml
 !.cowboy/security.yaml
+
+# Agent working notes are never committed.
+cowboy-work/
