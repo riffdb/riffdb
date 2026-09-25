@@ -37,7 +37,9 @@ use crate::codec::{
     encode_durable_event_v1, encode_outbox_intent_v1, encode_outbox_status_v1,
     encode_projection_apply_v1, encode_projection_control_v1, encode_projection_state_v1,
 };
-use crate::command_authority::{command_member_at_access, commit_at, commit_at_access};
+use crate::command_authority::{
+    command_member_at, command_member_at_access, commit_at, commit_at_access,
+};
 use crate::error::{precommit_storage_error, storage_error, table_error};
 use crate::hooks::RedbTestOperation;
 use crate::journal::JournalTable;
@@ -474,9 +476,27 @@ where
     C: ReadableTable<&'static [u8], &'static [u8]>,
 {
     let key = encode_event_key(event_id);
-    if let Some(command) = ports.indexed_command_at(event_id.commit_sequence())? {
-        let ordinal = usize::try_from(event_id.event_ordinal()).map_err(|_| corrupt())?;
-        let event = command.events().get(ordinal).ok_or_else(corrupt)?.clone();
+    let ordinal = usize::try_from(event_id.event_ordinal()).map_err(|_| corrupt())?;
+    // A cold transient index answers `None` for every sequence, which must not
+    // read as "no command": a segment-owned event has no physical EVENTS or
+    // OUTBOX row, so falling through would misclassify it as corrupt. Resolve
+    // the command from its durable authority row instead, exactly as
+    // `reciprocal_outbox_item_access` does. This runs under the write lease, so
+    // it cannot warm the index here.
+    let command_event = match ports.indexed_command_at(event_id.commit_sequence())? {
+        Some(command) => Some(command.events().get(ordinal).ok_or_else(corrupt)?.clone()),
+        None => match command_member_at(commits, events, event_id.commit_sequence())? {
+            Some(command) => {
+                let commit = command.base().commit();
+                if commit.outbox_event_ids().get(ordinal) != Some(&event_id) {
+                    return Err(corrupt());
+                }
+                Some(commit.events().get(ordinal).ok_or_else(corrupt)?.clone())
+            }
+            None => None,
+        },
+    };
+    if let Some(event) = command_event {
         if event.event_id() != event_id {
             return Err(corrupt());
         }
@@ -542,7 +562,6 @@ where
     }
 
     let commit = read_commit(commits, events, event_id.commit_sequence())?;
-    let ordinal = usize::try_from(event_id.event_ordinal()).map_err(|_| corrupt())?;
     match (event, intent) {
         (None, None) => {
             if status.is_some()

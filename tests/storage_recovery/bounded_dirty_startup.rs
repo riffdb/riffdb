@@ -117,3 +117,46 @@ fn dirty_startup_reaches_readiness_without_a_population_walk() {
     );
     assert!(authority_before.same_authority(&authority_final));
 }
+
+// req: REC-001, REC-004
+/// ADR-0182 Decision 2: rows outside the bounded roots are validated on first
+/// access, never classified from a cold cache. After a bounded dirty startup
+/// the transient command index is cold; the first outbox claim for a
+/// command-owned event must resolve the command from its durable segment and
+/// apply, not misread the segment's events as missing physical rows.
+#[test]
+fn bounded_dirty_startup_claims_a_command_owned_outbox_event() {
+    let path = TestDatabasePath::new("bounded-dirty-outbox-claim");
+    prepare_command_database(&path.0);
+    let mut ports = {
+        let store = RedbStore::open(&path.0).expect("dirty reopen");
+        let session = store
+            .begin_structural_evidence(startup_inputs())
+            .expect("begin bounded dirty evidence");
+        assert!(session.bounded_dirty_startup_path());
+        complete_structural_open_from(session)
+            .into_parts()
+            .3
+            .into_operational_after_catalog_validation()
+            .expect("bounded dirty startup reaches readiness")
+    };
+    let fixture = command_fixture_at(1);
+    commit_command_fixture(&ports, &fixture);
+    assert_eq!(ports.transient_index_rebuilds(), 0, "the index stays cold");
+
+    let claim = OutboxClaimV1::new(
+        fixture.records.events()[0].event_id(),
+        OutboxStatusObservationV1::AbsentInitialPending,
+        OutboxDestinationIdV1::new("bounded-dirty-claim").expect("destination"),
+        Timestamp::new(1_700_000_010, 0).expect("claimed at"),
+        Timestamp::new(1_700_000_020, 0).expect("lease expiry"),
+    )
+    .expect("claim transition");
+    let result = ports
+        .claim_outbox(&claim)
+        .expect("a command-owned event is not corrupt when the index is cold");
+    assert!(
+        matches!(result, OutboxTransitionResultV1::Applied(_)),
+        "the fresh claim must apply: {result:?}"
+    );
+}
