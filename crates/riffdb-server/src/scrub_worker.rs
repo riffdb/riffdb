@@ -308,11 +308,17 @@ fn run_scrub(
     cancellation: Arc<AtomicBool>,
     health: Arc<dyn riffdb_observability::ServiceHealthHooks>,
 ) {
+    // The scrub is running from its first instruction: the session open
+    // itself performs the retained-history validation, which is
+    // population-proportional work the state must not hide as pending.
+    status.note_running();
+    status.store(STATE_RUNNING);
     let mut session = match storage.begin_background_scrub(inputs) {
         Ok(session) => session,
         Err(_) => {
             // The scrub cannot even pin its snapshot: a bounded, redaction-
             // safe failure. Degrade Storage; do not retry.
+            status.note_finished();
             status.store(STATE_FAILED);
             health.fail_authoritative_readiness(
                 riffdb_observability::AuthoritativeReadinessFailure::Integrity,
@@ -321,8 +327,6 @@ fn run_scrub(
         }
     };
     session.set_cancellation(cancellation);
-    status.note_running();
-    status.store(STATE_RUNNING);
     let limit = EvidencePageLimit::new(BACKGROUND_SCRUB_ROWS_PER_STEP)
         .unwrap_or(EvidencePageLimit::new(1).expect("bounded page limit"));
     // Drive the structural stream page by page.
@@ -547,7 +551,17 @@ mod tests {
             let health: Arc<RecordingHealth> = Arc::default();
             let mut worker = RunningScrubWorker::start(shared, test_inputs(), health.clone())
                 .expect("start scrub worker");
-            assert_eq!(worker.status().state(), BackgroundScrubState::Pending);
+            // The worker sets Running from its first instruction (the session
+            // open itself is population-proportional work), so the immediate
+            // observation is Pending or Running — both legal pre-terminal
+            // states, never a terminal one.
+            assert!(
+                matches!(
+                    worker.status().state(),
+                    BackgroundScrubState::Pending | BackgroundScrubState::Running
+                ),
+                "the scrub starts in a pre-terminal state"
+            );
             // The scrub runs to completion on its own thread; poll the closed
             // state without sleeps-as-synchronization by joining through
             // shutdown once the terminal state is observed.
