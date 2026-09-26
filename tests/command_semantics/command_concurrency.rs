@@ -760,7 +760,8 @@ fn audited_standard_group_uses_one_unpublished_root_and_one_immediate_tail() {
     let second =
         database.prepare_audited_organization_for(&ports, [0x85; 16], "audit-second", 0x85, 0x95);
     let blocker = ports.begin_empty_batch().expect("hold writer admission");
-    let admission_clock = Arc::new(FixedAdmissionClock::new(command_timestamp()));
+    let (admission_clock, first_admission) = FixedAdmissionClock::observed(command_timestamp());
+    let admission_clock = Arc::new(admission_clock);
     let provenance_source = Arc::new(IncrementingProvenanceSource::new(0xa4));
     let notifications = Arc::new(RecordingApplicationCommitNotifications::default());
     let coordinator = start_group_coordinator_with_notifications(
@@ -778,12 +779,9 @@ fn audited_standard_group_uses_one_unpublished_root_and_one_immediate_tail() {
             .expect("reserve organization")
             .submit(organization)
             .expect("submit organization");
-        for _ in 0..10_000 {
-            if admission_clock.calls() == 1 {
-                break;
-            }
-            std::thread::yield_now();
-        }
+        first_admission
+            .recv_timeout(Duration::from_secs(10))
+            .expect("organization reached the explicit admission-clock hook");
         assert_eq!(admission_clock.calls(), 1);
 
         let first = executor
@@ -886,7 +884,8 @@ fn hardened_audited_group_stays_direct_and_keeps_independent_results() {
     let second =
         database.prepare_audited_organization_for(&ports, [0x82; 16], "group-second", 0x82, 0x92);
     let blocker = ports.begin_empty_batch().expect("hold writer admission");
-    let admission_clock = Arc::new(FixedAdmissionClock::new(command_timestamp()));
+    let (admission_clock, first_admission) = FixedAdmissionClock::observed(command_timestamp());
+    let admission_clock = Arc::new(admission_clock);
     let provenance_source = Arc::new(IncrementingProvenanceSource::new(0xa1));
     let notifications = Arc::new(RecordingApplicationCommitNotifications::default());
     let coordinator = start_coordinator_with_notifications(
@@ -904,12 +903,9 @@ fn hardened_audited_group_stays_direct_and_keeps_independent_results() {
             .expect("reserve organization")
             .submit(organization)
             .expect("submit organization");
-        for _ in 0..10_000 {
-            if admission_clock.calls() == 1 {
-                break;
-            }
-            std::thread::yield_now();
-        }
+        first_admission
+            .recv_timeout(Duration::from_secs(10))
+            .expect("organization reached the explicit admission-clock hook");
         assert_eq!(
             admission_clock.calls(),
             1,
