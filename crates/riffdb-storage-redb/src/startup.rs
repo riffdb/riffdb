@@ -958,11 +958,22 @@ impl RedbStore {
             .begin_read()
             .map_err(transaction_error)?;
         let snapshot = collect_startup_snapshot(&transaction, private)?;
-        let v3_active = if private.is_some() {
-            true // The private inventory check proved the distinct reconstruction roots.
+        let v3_history = if private.is_some() {
+            None
         } else {
-            crate::changelog_v3_roots::read_checkpoint_roots(&transaction)?.is_some()
+            crate::changelog_v3_roots::read_checkpoint_roots(&transaction)?
         };
+        // The private inventory check proved the distinct reconstruction roots.
+        let v3_active = private.is_some() || v3_history.is_some();
+        // ADR-0156 Amendment 6: an AuthoritativeStateCatalogV2 source must
+        // perform complete ordinary validation, including retained fence
+        // evidence, before it is granted source authority. The ADR-0182
+        // bounded dirty path does not, so it is not selected for V2 sources
+        // until a successor design is accepted.
+        let v2_source = v3_history.is_some_and(|history| {
+            history.lineage().catalog_digest()
+                == riffdb_storage_api::AuthoritativeStateCatalogV2.digest()
+        });
         if self.shared.durable_commit_epoch() != durable_commit_epoch {
             return Err(corrupt());
         }
@@ -1099,6 +1110,7 @@ impl RedbStore {
             .is_ok();
         if purpose == EvidenceOpenPurpose::Startup
             && v3_active
+            && !v2_source
             && checkpoint_admits_bounded
             && !self.shared.is_follower_mode()
         {

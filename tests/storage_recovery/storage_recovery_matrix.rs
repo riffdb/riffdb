@@ -1115,6 +1115,21 @@ fn prepare_command_database(path: &Path) {
     store
         .initialize_database(database_id())
         .expect("initialize command recovery database");
+    activate_command_catalog(store);
+}
+
+/// The same activated command database on an AuthoritativeStateCatalogV1
+/// source. New databases are always V2, whose startup performs complete
+/// ordinary validation (ADR-0156 Amendment 6); the ADR-0182 bounded dirty path
+/// serves V1 sources, so its proofs run here.
+fn prepare_v1_command_database(path: &Path) {
+    let mut store = RedbStore::open(path).expect("open V1 command recovery database");
+    riffdb_storage_redb::initialize_legacy_database_fixture(&mut store, database_id())
+        .expect("initialize V1 command recovery database");
+    activate_command_catalog(store);
+}
+
+fn activate_command_catalog(store: RedbStore) {
     let mut ports = open_operational(store);
     let bundle = contract_bundle();
     let result = ports
@@ -4288,21 +4303,17 @@ fn crash_before_validated_prefix_checkpoint_commit_leaves_no_meta() {
 fn crash_after_validated_prefix_checkpoint_commit_reopens_fast_path() {
     let path = TestDatabasePath::new("after-validated-prefix-checkpoint");
     let _ = prepare_committed_command_database(&path.0);
-    // The child reaches the checkpoint-commit failpoint only on a complete
-    // walk; with no covering checkpoint its open validates completely.
-    strip_checkpoint_meta(&path.0);
     run_crashing_child("after-validated-prefix-checkpoint-commit", &path.0);
 
-    let (_, bounded_dirty) = startup_path_observation(&path.0);
-    assert!(
-        bounded_dirty,
-        "the checkpoint committed before the crash must admit the bounded dirty path"
-    );
     let store = RedbStore::open(&path.0).expect("reopen after after-checkpoint crash");
-    let (_, _, outcome, _, _) = complete_startup_observing_checkpoint(store);
+    let (_, _, outcome, verified, _) = complete_startup_observing_checkpoint(store);
     assert!(
         matches!(outcome, StructuralOpenOutcome::Clean(_)),
         "recovery after post-checkpoint crash must open clean"
+    );
+    assert!(
+        verified,
+        "checkpoint committed before crash must be verified on reopen"
     );
 }
 
@@ -7726,51 +7737,15 @@ fn conflicting_physical_and_derived_audit_records_refuse_open() {
         "the fixture must actually change the physical row"
     );
 
-    // ADR-0182 layering: telling the two carriers apart needs the complete
-    // administration walk, which is off the bounded dirty readiness path. The
-    // bounded header still proves the allocator against the durable tail, so
-    // readiness is reached; the disagreeing pair is then refused on first
-    // access and reported by the background scrub, never read as either record.
-    let store = RedbStore::open(&path.0).expect("reopen after the conflict");
-    let session = store
-        .begin_structural_evidence(startup_inputs())
-        .expect("begin bounded dirty evidence");
-    assert!(session.bounded_dirty_startup_path());
-    let ports = complete_structural_open_from(session)
-        .into_parts()
-        .3
-        .into_operational_after_catalog_validation()
-        .expect("the bounded dirty path reaches readiness");
-
-    let first_access = ports.scan_administration_audit(AdministrationAuditScanRequest::new(
-        None,
-        StorageScanLimit::new(64).expect("audit scan limit"),
-    ));
-    assert_eq!(
-        first_access.map(|_| ()).map_err(|error| error.kind()),
-        Err(riffdb_storage_api::StorageErrorKind::CorruptData),
-        "first access must refuse a physical/derived pair that disagrees at one sequence"
-    );
-
-    let mut scrub = ports
-        .shared_ports()
-        .begin_background_scrub(startup_inputs())
-        .expect("begin background scrub");
-    let limit = EvidencePageLimit::new(64).expect("scrub page limit");
-    let mut findings = Vec::new();
-    while let riffdb_storage_redb::BackgroundScrubPage::Page { findings: page, .. } = scrub
-        .read_structural_page(limit)
-        .expect("scrub structural page")
-    {
-        findings.extend(page);
-    }
+    let findings =
+        collect_structural_findings(RedbStore::open(&path.0).expect("reopen after the conflict"));
     assert!(
         findings.iter().any(|finding| {
             finding.scope() == StructuralFindingScope::Authoritative
                 && finding.code() == StructuralFindingCode::SequenceDiscontinuity
         }),
-        "the scrub must report a physical/derived pair that disagrees at one \
-         sequence as a genuine discontinuity: {findings:?}"
+        "a physical/derived pair that disagrees at one sequence is a genuine \
+         discontinuity and must still be refused: {findings:?}"
     );
 }
 
@@ -9657,7 +9632,9 @@ fn startup_inputs() -> StartupValidationInputs {
 #[test]
 fn planted_row_corruption_fails_closed_on_first_access_after_dirty_startup() {
     let path = TestDatabasePath::new("dirty-planted-corruption");
-    prepare_command_database(&path.0);
+    // The bounded dirty path serves V1 sources; a V2 source validates
+    // completely before readiness (ADR-0156 Amendment 6).
+    prepare_v1_command_database(&path.0);
     {
         let ports = open_operational(RedbStore::open(&path.0).expect("open populated source"));
         for ordinal in 1..=4 {
