@@ -77,6 +77,14 @@ The subsequent C3D comparison found the same defect: **8.654267947 s (20.54%)**
 missing from **42.138019947 s** of independent writer wall. The percentage is
 workload/host dependent; 15.30% is an observation, not a correction factor.
 
+The [WP-810 scheduling comparison](wp-810-checkpoint-journal-tail.md#timing-remainder-and-instrument-limits)
+shows why this warning also applies across implementation changes on one host.
+With approximately 105 seconds of independent writer span in every cell,
+busy plus idle omits **22.91–23.99%** in the control and **0.235–0.246%** in the
+candidate. The candidate moves most waiting out of `POST_DRAIN_ALL`; the small
+remaining discrepancy does not repair W1. Compare the independently measured
+span and its signed residuals, not a changing busy-plus-idle denominator.
+
 ### Required reconciliation
 
 1. Measure independently from the first writer-iteration start to the last

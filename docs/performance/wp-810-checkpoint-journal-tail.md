@@ -99,8 +99,10 @@ No P99 threshold is invented here.
 The local candidate keeps the ordered installation barrier while allowing the
 existing bounded pipeline to run during checkpoint materialization. It changes
 no checkpoint threshold, journal or capsule encoding, durability worker,
-publication order, or acknowledgement requirement. Performance benefit is
-**not yet measured**; WP-810 remains open and WP-749 remains blocked.
+publication order, or acknowledgement requirement. The bounded comparison below
+shows higher throughput and lower P50/P95, with mixed P99 movement. **WP-810
+remains open and WP-749 remains blocked**; removing the writer drain has not
+established reduction of the shared acknowledgement tail.
 
 Implementation decisions within ADR-0101/0104/0132:
 
@@ -159,11 +161,112 @@ retained iteration sum and continuous span, with signed remainders; busy plus
 idle is not wall time. A local debug smoke check verifies evidence plumbing
 only and supplies no performance conclusion.
 
-Next: finish scoped checks, run that comparison on an exclusively reserved
-admitted host, complete merge qualification and obtain implementation/fixture
-review. This candidate addresses the writer's dependency on a pending
-checkpoint; it does not claim to eliminate the underlying device write stalls
-or quantify their client-latency effect without measurement.
+### Bounded comparison result
+
+All six fixed cells completed, with zero application errors, unavailable
+outcomes, checkpoint failures or dropped raw samples. Every host interval and
+signed level-0/1 reconciliation passed. No retries or cells were discarded.
+The evidence bank at `release/evidence/wp-810/checkpoint-pipeline-20260925/`
+retains source and executable identities, exact raw percentiles, all slowest
+twenty samples, checkpoint counts, timing windows and private-input digests.
+
+The frozen control is `d9ae2633015501b0d36f2753c894b1b7a1edb905`; the frozen
+candidate is `66c394fc755e57ec774bba5c4b6de830bddacd90`. Both use Rust 1.98.1,
+thin LTO, one codegen unit, generic x86-64 and the same observation patch on
+8-vCPU AMD EPYC 9B14 hardware with the required instruction features. Server
+digests differ, the client digest is shared, and all six raw sample arrays have
+different digests. This is a bounded scheduling comparison, not a complete
+alpha sweep or an archive off/on qualification.
+
+| Cell | Arm | Commands/s | P50 ms | P95 ms | P99 ms | Checkpoints started |
+| --- | --- | ---: | ---: | ---: | ---: | ---: |
+| 1 | Control | 3,016 | 8.417 | 12.544 | 81.886 | 99 |
+| 2 | Candidate | 3,180 | 8.001 | 10.962 | 101.052 | 106 |
+| 3 | Candidate | 3,122 | 8.174 | 11.252 | 94.750 | 104 |
+| 4 | Control | 3,002 | 8.373 | 12.846 | 86.203 | 100 |
+| 5 | Control | 3,023 | 8.249 | 12.360 | 105.191 | 100 |
+| 6 | Candidate | 3,176 | 8.018 | 10.694 | 92.216 | 106 |
+
+Median paired changes are **+5.06% throughput, −2.80% P50 and −12.62% P95**.
+P99 changes are **+23.40%, +9.92% and −12.33%**, with a +9.92% median paired
+change. Do not turn that mixed tail result into a reduction claim, a numeric
+P99 gate, or a precise attribution from aggregate counters. P50/P95 improve
+in every pair; three-run `(max − min) / median` spreads are at most 5.10% for
+those two percentiles. P99 spread is 27.03% in control and 9.33% in candidate.
+
+### What changed, and what remains
+
+The production-path census confirms the scheduling change ran: total
+`POST_DRAIN_ALL` falls from **23.859–25.002 seconds** per control cell to
+**0.034–0.048 seconds** per candidate cell, over approximately 105 seconds of
+independently measured writer span. The median per-iteration value falls from
+1.218 ms to 0.002 ms. This is a reduction in that particular writer barrier,
+not elimination of journal service time.
+
+| Observation | Control range | Candidate range |
+| --- | ---: | ---: |
+| Journal queue time, mean per frame | 22.8–25.4 µs | 983.6–1,051.5 µs |
+| Journal sync time, mean per flush | 1.405–1.454 ms | 1.507–1.548 ms |
+| Maximum journal sync | 155.118–167.948 ms | 159.654–160.906 ms |
+| Writer pre-execution drain, total | 0.589–0.664 s | 1.756–2.431 s |
+| Writer work-receive stage, total | 1.558–2.407 s | 18.465–19.879 s |
+| Complete frame bytes per command | 5,515.6–5,516.1 | 5,517.3–5,517.7 |
+
+`JournalLane::submit` timestamps each frame; the journal census measures from
+that timestamp to the start of physical encoding. The sole journal worker
+finishes the current write and sync before receiving the next batch. Allowing
+foreground apply during materialization permits frames to queue behind that
+work, while acknowledgement still waits for durability and ordered publication.
+The larger queue times and persistent long syncs are evidence that the journal
+delay remains after the foreground barrier is removed. They do **not** identify
+the kernel/device cause or assign the exact P99 movement to individual requests.
+The candidate's tail variation remains unresolved at that finer granularity.
+
+All checkpoint selections are byte-triggered, at 2,992–3,328 transitions across
+the six cells. Thresholds are unchanged. Counts include warmup and precede
+graceful close, so installed counts can trail materialized counts by one at the
+snapshot. Journal/publication timers overlap the writer and each other; none
+is added to writer wall. The earlier 141.387 ms positional-write observation
+remains separate evidence: these cells instead retain long sync maxima, with
+maximum positional writes of 4.812 ms in control and 0.865 ms in candidate.
+
+### Timing remainder and instrument limits
+
+Signed level-0 and level-1 reconciliation errors are zero in every cell. The
+between-iteration remainder is 16.7–19.3 ms per cell and the within-iteration
+level-0 residual is 8.4–10.6 ms. Level-1 unnamed time remains inside
+`unit_execute`: 5.949–6.248 seconds in control and 1.255–1.561 seconds in
+candidate. Adding those three disjoint unnamed portions leaves **5.69–5.98%**
+of control writer span and **1.22–1.51%** of candidate writer span unattributed.
+The evidence retains all six signed values, including the invalid level-2
+parent mapping; level 2 is excluded from attribution.
+
+Busy plus idle undercounts continuous span by **22.91–23.99%** in control and
+**0.235–0.246%** in candidate. W1 remains an instrument defect: its smaller
+undercount after changing the schedule is not a repair or a portable correction
+factor. See the [writer-census warnings](wp749-writer-census-defects.md).
+
+### Checkpoint and next decision
+
+The fixed comparison is complete and the host is released with its original
+firewall/timer state restored. All 124 retained private evidence files were
+hash-verified locally before removing the remote task's source, build and data
+directories. The temporary observer and current-main control worktrees were
+also removed.
+
+Full CI on the frozen candidate stopped at two startup/restart failures already
+seen on its older main baseline. Newer main `408cbff3b` fixes both: its clean
+control passed all seven tests in that target. Local integration `fcc6e1183`
+includes that main and passes the six WP-810 schedule/recovery tests plus all
+seven startup/restart tests. Full CI has not yet been rerun on that integration,
+and it has no performance measurement. The timing verdict remains bound to the
+frozen candidate above.
+
+The remaining decision is a maintainer-reviewed disposition of the shared
+journal delay and this common-case improvement. **No merge or completion is
+claimed, and no extra timing run follows this comparison.** The candidate does
+not establish that WP-749's shared tail prerequisite is resolved. Archive
+presence must still be assessed separately after that prerequisite is met.
 
 ### Candidate PR note
 
@@ -171,12 +274,14 @@ Package WP-810; tier guarantee. Behavior: retain bounded pipelining during
 checkpoint materialization and the ordered drain for installation; publish
 existing predecessors under capacity pressure and fence observed checkpoint
 errors immediately. Checks: deterministic real coordinator/storage schedules,
-six process-crash edges, scoped storage/commit tests and path-triggered
-acceptance; full merge checks and performance comparison remain pending.
+six process-crash edges, scoped storage/commit tests, path-triggered acceptance,
+six valid comparison cells and focused checks after current-main integration;
+full merge qualification and human review remain pending.
 Compatibility: existing durable bytes, public interfaces, thresholds and
-authority guarantees remain unchanged. Updated handbook: this page. Hazards:
-the device's long writes remain possible; no acknowledgement improvement or
-WP-749 gate result is claimed before measurement and review.
+authority guarantees remain unchanged. Updated handbook: this page and the
+writer-census defect warning. Hazards:
+long journal service times and mixed acknowledgement P99 remain; the measured
+P50/P95 benefit does not establish WP-749's gate or close WP-810.
 
 ## Registration PR note
 
