@@ -381,3 +381,36 @@ fn concurrent_first_touch_of_the_sidecar_never_reports_unavailable() {
     );
     drop(path);
 }
+
+// req: STO-030
+/// ADR-0085 Amendment 2 fence after ADR-0240: document projection frontiers
+/// live in the derived sidecar, and retention must read them there. Before
+/// this, retention read only the primary's table, so a catching-up projection
+/// was invisible and a prune could delete the history it still needs.
+#[test]
+fn retention_fences_on_the_derived_sidecar_projection_frontier() {
+    let (path, ports) = operational("retention-derived-projection-fence");
+    let schema = recovery_projection_schema();
+    seed_command(&ports, CommitSequence::first(), 0);
+    install_control(&ports, schema.identity(), &catching_up(&schema));
+    drop(ports);
+    let retention = crate::RedbOfflineRetention::bind(&path.0);
+    let status = retention.status().expect("retention status");
+    assert_eq!(status.max_permissible_watermark, Some(0));
+    assert_eq!(
+        status.fence_binding,
+        riffdb_storage_api::RetentionFenceBinding::ProjectionDurableFrontier
+    );
+    let refused = retention
+        .prune_to(1)
+        .expect_err("a catching-up projection fences the prune");
+    assert_eq!(refused.kind(), StorageErrorKind::InvariantViolation);
+    assert_eq!(
+        retention
+            .status()
+            .expect("status after refusal")
+            .watermark_sequence,
+        0,
+        "the refused prune deleted nothing"
+    );
+}

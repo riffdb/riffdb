@@ -115,7 +115,12 @@ impl RedbOfflineRetention {
         let watermark = load_watermark(&transaction)?;
         let holds = load_holds(&transaction)?;
         let incarnation = load_history_incarnation(&transaction)?;
-        let fencing = collect_fencing_inputs(&transaction, &holds)?;
+        let derived = open_derived_sidecar(&self.database_path)?;
+        let derived_read = derived
+            .as_ref()
+            .map(|database| database.begin_read().map_err(transaction_error))
+            .transpose()?;
+        let fencing = collect_fencing_inputs(&transaction, derived_read.as_ref(), &holds)?;
         let (max_perm, binding) = compute_max_permissible_watermark(&fencing);
         let tombstones = transaction
             .open_table(HISTORY_TOMBSTONES)
@@ -358,6 +363,8 @@ impl RedbOfflineRetention {
         let store = RedbStore::open(&self.database_path)?;
         let preparation = store.prepare_offline_retention()?;
         let database = preparation.database();
+        // Document projection frontiers live in the ADR-0240 sidecar.
+        let derived = open_derived_sidecar(&self.database_path)?;
 
         // Pre-verification: refuse to extend a watermark/chain state that
         // does not verify (fail toward NOT deleting). Also fixes the chain
@@ -405,7 +412,11 @@ impl RedbOfflineRetention {
                 break;
             }
             let holds = load_holds(&transaction)?;
-            let fencing = collect_fencing_inputs(&transaction, &holds)?;
+            let derived_read = derived
+                .as_ref()
+                .map(|database| database.begin_read().map_err(transaction_error))
+                .transpose()?;
+            let fencing = collect_fencing_inputs(&transaction, derived_read.as_ref(), &holds)?;
             let (max_perm, _) = compute_max_permissible_watermark(&fencing);
             let Some(max_perm) = max_perm else {
                 return Err(storage_error(StorageErrorKind::InvariantViolation));
@@ -773,6 +784,20 @@ struct RangeCounts {
     outbox_status: u64,
 }
 
+/// Opens the stopped database's ADR-0240 derived-state sidecar when one
+/// exists. It is never created here: an absent sidecar holds no projection.
+fn open_derived_sidecar(database_path: &Path) -> Result<Option<Database>, StorageError> {
+    let sidecar = crate::store::derived_store_path(database_path);
+    match std::fs::symlink_metadata(&sidecar) {
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
+        Err(_) => Err(storage_error(StorageErrorKind::Unavailable)),
+        Ok(metadata) if !metadata.file_type().is_file() => {
+            Err(storage_error(StorageErrorKind::CorruptData))
+        }
+        Ok(_) => Database::open(&sidecar).map(Some).map_err(database_error),
+    }
+}
+
 fn begin_durable_write(database: &Database) -> Result<RawWriteTransaction, StorageError> {
     let mut write = database.begin_write().map_err(transaction_error)?;
     write.set_two_phase_commit(true);
@@ -843,12 +868,24 @@ fn load_last_tombstone_hash(
 }
 
 /// Collect fencing inputs. Any unreadable fencing source refuses (error).
+/// `derived` is the ADR-0240 derived-state sidecar's read pin, where document
+/// projection frontiers live. Omitting it when the sidecar exists would drop
+/// every live projection from the fence.
 pub(crate) fn collect_fencing_inputs(
     transaction: &redb::ReadTransaction,
+    derived: Option<&redb::ReadTransaction>,
     holds: &StoredRetentionHoldsV1,
 ) -> Result<RetentionFencingInputs, StorageError> {
     let detached = detached_projection_ids(holds);
-    let min_projection = min_projection_durable_frontier(transaction, &detached)?;
+    let primary_projection = min_projection_durable_frontier(transaction, &detached)?;
+    let derived_projection = derived
+        .map(|derived| derived_projection_durable_frontier(derived, &detached))
+        .transpose()?
+        .flatten();
+    let min_projection = match (primary_projection, derived_projection) {
+        (Some(primary), Some(derived)) => Some(primary.min(derived)),
+        (primary, derived) => primary.or(derived),
+    };
     let min_hold = holds
         .holds()
         .iter()
@@ -958,14 +995,25 @@ pub(crate) fn durable_application_head(
     })
 }
 
-pub(crate) fn min_projection_durable_frontier(
-    transaction: &redb::ReadTransaction,
+/// Minimum published frontier over the derived sidecar's document projection
+/// controls (ADR-0240), or `None` when it holds none.
+pub(crate) fn derived_projection_durable_frontier(
+    derived: &redb::ReadTransaction,
     detached: &BTreeSet<String>,
 ) -> Result<Option<u64>, StorageError> {
-    let controls = transaction
+    let controls = derived
         .open_table(PROJECTION_FRONTIER)
         .map_err(table_error)?;
     let mut min_frontier: Option<u64> = None;
+    let any = fold_projection_controls(&controls, detached, &mut min_frontier)?;
+    Ok(if any { min_frontier } else { None })
+}
+
+fn fold_projection_controls(
+    controls: &impl ReadableTable<&'static [u8], &'static [u8]>,
+    detached: &BTreeSet<String>,
+    min_frontier: &mut Option<u64>,
+) -> Result<bool, StorageError> {
     let mut any = false;
     for entry in controls.iter().map_err(precommit_storage_error)? {
         let (_, encoded) = entry.map_err(precommit_storage_error)?;
@@ -985,11 +1033,23 @@ pub(crate) fn min_projection_durable_frontier(
                 FrontierPosition::AppliedThrough(seq) => seq.get(),
             })
             .unwrap_or(0);
-        min_frontier = Some(match min_frontier {
+        *min_frontier = Some(match *min_frontier {
             None => frontier,
             Some(existing) => existing.min(frontier),
         });
     }
+    Ok(any)
+}
+
+pub(crate) fn min_projection_durable_frontier(
+    transaction: &redb::ReadTransaction,
+    detached: &BTreeSet<String>,
+) -> Result<Option<u64>, StorageError> {
+    let controls = transaction
+        .open_table(PROJECTION_FRONTIER)
+        .map_err(table_error)?;
+    let mut min_frontier: Option<u64> = None;
+    let mut any = fold_projection_controls(&controls, detached, &mut min_frontier)?;
     let columnar_controls = transaction
         .open_table(crate::layout::COLUMNAR_PROJECTION_CONTROLS)
         .map_err(table_error)?;

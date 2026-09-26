@@ -337,7 +337,9 @@ pub(crate) fn apply_restored_retention_watermark(
         .map(|w| w.watermark_sequence())
         .unwrap_or(0);
     let holds = crate::retention::load_holds(&transaction)?;
-    let fencing = crate::retention::collect_fencing_inputs(&transaction, &holds)?;
+    // Restore discards the derived sidecar (ADR-0240), so no projection
+    // frontier exists yet for the restored timeline.
+    let fencing = crate::retention::collect_fencing_inputs(&transaction, None, &holds)?;
     let (max_perm, _) = riffdb_storage_api::compute_max_permissible_watermark(&fencing);
     let tombstone_end = {
         let table = transaction
