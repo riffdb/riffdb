@@ -551,6 +551,34 @@ timer changes were restored, task processes ended, and remote source, build
 and data directories were removed before releasing the host. This attempt
 does not answer the complete materialization question or close WP-810.
 
+#### Full-workload capacity repair qualified locally
+
+The replacement diagnostic in
+`release/evidence/wp-810/materialization-capacity-20260926/` retains a fixed
+16,777,216 I/O-row limit, a 1,312 MiB record-memory ceiling and a 2 GiB log
+ceiling. The source remains `31aeab76`. Only the observer's I/O limit and
+memory-bound assertion change in Rust; the production candidate is unchanged.
+The earlier 4,194,304-row probe and all failed evidence remain retained.
+
+The full local workload now passes: full dataset, c32 write-only, 15-second
+warmup, 90-second measurement, 357,879 successful measured requests, 139
+checkpoints and 12,924,427 I/O records. No records are dropped. The final
+footer, exact request/group/flush joins, phase bounds, journal counters and
+independent writer-wall reconciliation all pass. The 998,090,680-byte log
+exceeds the old ceiling, confirming that both record and log sizing needed
+repair. This exercises 37% more I/O records than the failed remote cell and
+leaves approximately 23% of the new record capacity unused.
+
+The launch gate now requires the full-capacity proof and both exact executable
+digests. Tests show the legacy gate admitted 16 invalid cases, including a short
+or smoke qualification; the new gate refuses them. Five collector tests, two
+backend tests and 24 analyzer/gate/retention tests pass. Source, binary and
+private evidence digests are retained in the new directory's `qualification.json`.
+These are local correctness and capacity results, not qualified latency or
+evidence that the shared delay is resolved. A new exclusive interval and full
+qualification of the exact rebuilt remote binaries are still required before
+one replacement remote cell. No additional run has started.
+
 The remaining decision is a maintainer-reviewed resolution of the shared
 journal delay and disposition of this common-case improvement. **No merge or
 completion is claimed.** The earlier diagnostic failed during setup; the

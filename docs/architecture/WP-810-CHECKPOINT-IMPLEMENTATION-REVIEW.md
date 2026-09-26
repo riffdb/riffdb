@@ -107,11 +107,18 @@ long-case overflow should have blocked remote execution; the subsequent short
 functional pass did not prove full-cell capacity. Both local cases and the
 remote failure are retained in `release/evidence/wp-810/materialization-overflow-20260926.json`.
 
+The replacement probe is locally qualified for the full workload, retaining
+12,924,427 I/O records and 139 checkpoints without drops. Its larger fixed
+capacity and stricter full-workload gate are recorded in
+`release/evidence/wp-810/materialization-capacity-20260926/qualification.json`.
+This is capacity and correctness proof only; a replacement remote diagnostic
+and reviewed disposition are still outstanding.
+
 ## Remaining completion actions
 
-1. Qualify diagnostic capacity for the intended full workload before proposing
-   another remote run. The authorized cell and its failure are retained;
-   host settings are restored and the host is released.
+1. Reserve a new exclusive interval for the prepared replacement diagnostic.
+   Rebuild and fully qualify the exact remote binaries before its one measured
+   cell. The earlier failed cell remains retained, and the host is released.
 2. Record what the evidence proves about the shared delay and any remaining
    limits. Resolve the package's exit gate with the maintainer; do not substitute
    a renamed follow-up for an unmet gate.

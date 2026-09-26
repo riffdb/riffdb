@@ -1,0 +1,140 @@
+{
+  "schema": "riffdb.wp810-full-capacity-qualification/v1",
+  "date": "2026-09-26",
+  "status": "Full local capacity qualification passed; fresh remote reservation and exact remote-binary qualification remain required. No performance or completion verdict.",
+  "source_revision": "31aeab76fa7c41b5d3a05d191905fd8b53e43dd2",
+  "observer_patch_sha256": "368205b8bebf4aec1f90b9ce8d519278aa9f147d1074a6c135d618b65cb89b3e",
+  "daemon_sha256": "9fee355c6955ece6a4ed8bf016f477454d4a033f537977cbd214926af6e3bcfa",
+  "runner_sha256": "467ca697042a3e9c6f73ed38f22dcc4ec7e007ed662a3ae1c390b62496e94936",
+  "toolchain": "1.98.1",
+  "host_scope": "Unqualified local AMD Ryzen 9 7950X; functional proof only.",
+  "workload": {
+    "dataset": "full",
+    "clients": 32,
+    "load": "write_only",
+    "warmup_seconds": 15,
+    "measurement_seconds": 90
+  },
+  "report_scale": {
+    "approximate_row_count": 19220,
+    "board_dense_open": 600,
+    "comment_payload_bytes": 0,
+    "comments_per_ticket": 4,
+    "labels_per_ticket": 2,
+    "organizations": 10,
+    "payload_bytes": 0,
+    "profile": "full",
+    "projects_per_org": 10,
+    "ticket_title_payload_bytes": 0,
+    "tickets_per_project": 20
+  },
+  "whole_cell_seconds": 140.64812397910282,
+  "measured_elapsed_ns": 90002596870,
+  "outcomes": {
+    "conflict": 0,
+    "error": 0,
+    "success": 357879,
+    "unavailable": 0
+  },
+  "coverage": {
+    "final": 1,
+    "groups": 32847,
+    "checkpoints": 139,
+    "io": 12924427,
+    "reserved_groups": 32847,
+    "reserved_checkpoints": 139,
+    "reserved_io": 12924427,
+    "dropped_groups": 0,
+    "dropped_checkpoints": 0,
+    "dropped_io": 0
+  },
+  "populations": {
+    "requests": 357879,
+    "measured_groups": 27580,
+    "measured_flushes": 23859
+  },
+  "checkpoint_census": {
+    "failures": 0,
+    "installed": 139,
+    "materialized": 139,
+    "max_bytes": 18217949,
+    "max_transitions": 3316,
+    "min_bytes": 16820911,
+    "min_transitions": 3012,
+    "scope": "actual_async_checkpoint_selections_before_graceful_close",
+    "selected_bytes": 2424239420,
+    "selected_commands": 438392,
+    "selected_transitions": 438392,
+    "starts": 139,
+    "trigger_counts_nonexclusive": {
+      "bytes": 139,
+      "physical": 0,
+      "reanchor": 0,
+      "transitions": 0
+    }
+  },
+  "checkpoint_completion_coverage": {
+    "census_scope": "before graceful close; no exact snapshot timestamp",
+    "trace_scope": "complete process lifetime, including graceful close",
+    "preclose_materialized": 139,
+    "preclose_installed": 139,
+    "final_materialized": 139,
+    "final_installed": 139,
+    "additional_completion_constraint": "Each completion absent from the pre-close census must be after the last command publication."
+  },
+  "independent_writer_wall": {
+    "iterations": 32847,
+    "span_ns": 105007672466,
+    "iteration_sum_ns": 104991317636,
+    "span_minus_iterations_ns": 16354830,
+    "stage_residual_ns": 7775523,
+    "busy_idle_undercount_ns": 768904466
+  },
+  "capacity": {
+    "io_records": 16777216,
+    "record_memory_ceiling_mib": 1312,
+    "log_ceiling_bytes": 2147483648,
+    "minimum_tmpfs_free_bytes": 3221225472,
+    "actual_log_bytes": 998090680,
+    "records_above_failed_remote_attempt": 3481527,
+    "unused_io_records": 3852789,
+    "unused_io_fraction": 0.22964411973953247
+  },
+  "tests": {
+    "collector_passed": 5,
+    "backend_passed": 2,
+    "python_passed": 24,
+    "legacy_gate_invalid_cases_accepted": 16,
+    "new_gate_refuses_those_cases": true
+  },
+  "implementation": "Only the probe I/O constant and record-memory assertion change in compiled Rust. Harness limits and the full-capacity qualification gate change separately. Production candidate unchanged.",
+  "warnings": {
+    "runner_missing_documentation": 4,
+    "runner_client_only_unused_codec_items": 5,
+    "unclassified": 0,
+    "disposition": "All nine warnings also occur in the prior remote runner build. Four adapter scrub fields lack docs. The client-only API build includes its codec module while re-exporting clients from riffdb-proto; its five server-codec items are unused in that feature shape. The daemon build reports no warnings. No code or lint was changed to suppress these existing warnings."
+  },
+  "artifacts_sha256": {
+    "source-freeze.json": "95490c27b6e82e091edf34165a0500058eeef50e69f39aaa279985be9d4a9fb4",
+    "observer.patch": "368205b8bebf4aec1f90b9ce8d519278aa9f147d1074a6c135d618b65cb89b3e",
+    "collector-tests.log": "40e3930caee883b67213cc617e9257c41ec5278cfc2699365250fd2eb1acca35",
+    "backend-tests.log": "172685eb96c18e8c1eec41ab0f328415463808f018035d07b72c9ceda73b5fef",
+    "daemon-build.log": "3b1351e8cbd059042568e52b660f6cd6df908258f136fc73d0add65507f38afe",
+    "runner-build.log": "1ae914dde7d2173e894e3e2921c91afc2e544a8e1b52373bdc697c64b540581f",
+    "gate-before-fix.log": "f937d842796793a11557cd55524f18eb5598b47dfeedbc78e711e1fc06d498fe",
+    "gate-legacy-behavior.log": "929f066b6364d63770f6f39b67a6fbc2ba985a1f0ceaba0ef5feef0fde8d84dc",
+    "python-tests.log": "e417dd04070e0574d7581a93f4b1e93193d4ad1c4ac413940d329e50c881c764",
+    "local-full-qualification/cell/report.json": "a8326e5f98ab5a51a5efcc77f4b9b11039004bbce95419f7b3aca2e9c311c530",
+    "local-full-qualification/cell/raw/raw-request-tail.json": "8d098e382a98374e238971896a11fbd93fcfeb5019e97cc482844d9be1341774",
+    "local-full-qualification/cell/run.log": "893e3700f46a5029214b23f1d8bdecc74ed487658d31a591d64d7a0079293a6f",
+    "local-full-qualification/cell/materialization-analysis.json": "56494d81e3d7c91368c47880dad46e10524b8f7bf992e23ed8780c6c5330d98c",
+    "local-full-qualification/local-functional-qualified.json": "52efa38bb789e3b1188104689e5231439f00e4c4729232a84f6aa021f863a13b"
+  },
+  "limitations": [
+    "Local latency is not qualified performance evidence.",
+    "The larger probe memory footprint and observer overhead are not measured as production cost.",
+    "Prior failed traces remain incomplete; capacity changes do not retroactively qualify them.",
+    "One replacement remote cell needs a fresh exclusive interval. Its exact rebuilt binaries must pass the full local gate; stop on any failed attempt.",
+    "WP-810 still needs a maintainer-reviewed shared-delay resolution and final implementation/fixture acceptance."
+  ]
+}

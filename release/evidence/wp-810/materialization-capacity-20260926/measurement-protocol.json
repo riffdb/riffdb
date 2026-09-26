@@ -1,0 +1,72 @@
+{
+  "schema": "riffdb.wp810-materialization-protocol/v1",
+  "status": "Preparation only: full-dataset local capacity qualification and a new exclusive interval are required; earlier failed remote attempt retained.",
+  "source_revision": "31aeab76fa7c41b5d3a05d191905fd8b53e43dd2",
+  "question": "Within slow journal write/sync intervals, which checkpoint phase and actual primary-engine I/O operations overlap?",
+  "scope": "One proposed observation-only diagnostic on frozen integration 31aeab76. This supersedes the undersized probe prospectively; previous evidence and source/binary identities remain unchanged.",
+  "host_specifications": "8 vCPU AMD EPYC 9B14; sha_ni aes pclmulqdq sse4_2 required",
+  "toolchain": "1.98.1",
+  "build": {
+    "release_lto": "thin",
+    "codegen_units": 1,
+    "target_cpu": "x86-64",
+    "allocator": "unchanged server jemalloc"
+  },
+  "maximum_cells": 1,
+  "scale": "full",
+  "clients": 32,
+  "load": "write_only",
+  "warmup_seconds": 15,
+  "measurement_seconds": 90,
+  "archive": "disabled",
+  "observer_limits": {
+    "groups": 65536,
+    "checkpoints": 512,
+    "io_records": 16777216,
+    "page_records": 32768,
+    "record_storage_maximum_mib": 1312,
+    "raw_samples_per_worker": 32768,
+    "workers": 32,
+    "maximum_log_mib": 2048
+  },
+  "output": "run.log stays in private tmpfs during the cell; require at least 3 GiB free; enforce a 2 GiB log ceiling, copy on success or failure, and remove only the owned spool",
+  "validation": [
+    "local full-dataset full-duration capacity gate passes on exact remote binaries before the only remote measurement",
+    "production default FileBackend with unchanged open flags and locking, observed wrapper only",
+    "no failed requests, backend I/O or checkpoints",
+    "no dropped records; final emitted equals reserved equals parsed",
+    "all measured commit sequences join exactly one group and physical flush",
+    "exact journal write/sync/queue census reconciliation; shared physical flushes counted once",
+    "checkpoint selections reconcile with actual counts and reasons",
+    "phase boundaries ordered; phase-scoped backend calls fit within their checkpoint phase",
+    "independent continuous writer wall minus iterations; signed level-0 residual retained",
+    "preflight and whole-cell postflight host validity"
+  ],
+  "analysis": "Half-open intervals; overlapping engine I/O union before subtraction; phases disjoint. Server clocks only; cross-process requests join by commit sequence. All observations and unexplained time retained. Association does not prove kernel/device causation.",
+  "attempt_policy": "Stop at first failed attempt, retain it; no automatic reruns or best-cell selection. A fixed-capacity overflow invalidates completeness and is not silently filtered.",
+  "limitations": [
+    "observer overhead is not measured; do not compare its latency directly against uninstrumented cells",
+    "old integrations and prior measurements keep their exact source identities",
+    "no completion, gate, or mitigation verdict from this diagnostic alone"
+  ],
+  "cleanup": "restore only task-owned firewall/timer changes, hash and copy all private evidence, remove task build/source/database and tmpfs directories, report host release",
+  "cell_deadline_seconds": 900,
+  "setup_disposition": "Main restores the commit-time outbox refresh that warms the index. Recheck full seeding on the integration; the admission prototype and superseded one-hour retained-binary preparation are excluded.",
+  "qualification_note": "Production source already passed full CI; diagnostic collector/backend/refusal tests and full-capacity local qualification must pass. A short functional case cannot substitute.",
+  "local_capacity_gate": {
+    "dataset": "full",
+    "clients": 32,
+    "load": "write_only",
+    "warmup_seconds": 15,
+    "measurement_seconds": 90,
+    "cell_deadline_seconds": 900,
+    "require_zero_drops": true,
+    "minimum_qualification": "Complete trace, request/flush joins, all checkpoint lifecycle and census checks, signed writer-wall reconciliation. No shortening after overflow.",
+    "sizing_basis": {
+      "failed_remote_io_attempts": 9442900,
+      "new_fixed_io_limit": 16777216,
+      "capacity_over_observed_ratio": 1.776701648857872
+    },
+    "limitations": "Local checks establish functional coverage and workload sizing, never qualified latency. Remote binaries must be qualified again after build, with both exact binary digests retained."
+  }
+}
