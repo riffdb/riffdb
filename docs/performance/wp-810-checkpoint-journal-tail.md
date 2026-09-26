@@ -290,6 +290,33 @@ its checkpoint boundaries are retained under
 host reservation was used for this analysis. It narrows the next investigation;
 it neither resolves the candidate's mixed P99 nor closes either package.
 
+#### Materialization diagnostic prepared
+
+Integration `5d9b8cc4c` adds committed main `539330cec`. An observation-only
+patch against that source now separates checkpoint transaction setup, replay
+and durable commit, and records the real engine's read/write/resize/sync calls
+alongside journal flushes and request/group identities. It uses the production
+daemon constructor and the existing redb file backend with unchanged open
+flags, locking, bytes and error handling. The patch remains outside the
+production candidate.
+
+Local functional validation joins 9,504 measured requests to 594 groups and
+flushes, retaining three checkpoints and 65,912 engine operations without
+dropped records. Journal write, sync and queue timing reconciles exactly with
+the existing census. The pre-close census reports two completed checkpoints;
+the final trace includes the third completing after the last publication.
+These populations remain separate. All collector, backend, raw-sample and
+analyzer checks pass; this debug-build check is not performance evidence.
+
+The prepared diagnostic and qualification are retained under
+`release/evidence/wp-810/materialization-probe-20260926/`. They freeze one
+90-second archive-disabled c32 cell, after a 15-second warmup, on
+admitted hardware with Rust 1.98.1. Trace output stays in RAM during measurement.
+The analyzer reports phase and I/O overlap and explicit unexplained time; it
+does not infer device causation from overlap. No remote run has started, and
+a fresh exclusive reservation is pending. There is no new mitigation,
+latency-benefit or completion claim.
+
 #### Integration qualification
 
 The fixed comparison is complete and the host is released with its original
@@ -327,9 +354,11 @@ boundary/refusal tests also pass. These results do not waive the independently
 reproduced full-CI corpus failure. All eleven non-test acceptance steps pass,
 including scoped Clippy, generated artifacts, handbook and dependency checks.
 
-The remaining decision is a maintainer-reviewed disposition of the shared
-journal delay and this common-case improvement. **No merge or completion is
-claimed, and no extra timing run follows this comparison.** The candidate does
+The remaining decision is a maintainer-reviewed resolution of the shared
+journal delay and disposition of this common-case improvement. **No merge or
+completion is claimed.** The bounded diagnostic above addresses the remaining
+materialization mechanism; it is separate from the finished comparison and
+requires a fresh host reservation. The candidate does
 not establish that WP-749's shared tail prerequisite is resolved. Archive
 presence must still be assessed separately after that prerequisite is met.
 

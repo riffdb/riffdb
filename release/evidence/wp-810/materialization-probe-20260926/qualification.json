@@ -1,0 +1,79 @@
+{
+  "schema": "riffdb.wp810-materialization-preparation/v1",
+  "source_revision": "5d9b8cc4c597e8868bb60c7fb5fcdc721463aa68",
+  "observer_patch_sha256": "13f3bfbf2e16f59aaa3a8ce8a3d70d65b9ebfe34e6e9758c93ec2df9a7ce4d41",
+  "runtime_mitigation_change": false,
+  "remote_measurement": false,
+  "status": "local functional checks pass; awaiting a fresh exclusive measurement interval",
+  "scope": "Observation-only patch; production candidate unchanged. Debug-build functional evidence, no performance verdict.",
+  "checks": {
+    "collector_tests": 5,
+    "real_and_fake_backend_tests": 2,
+    "raw_request_capture_tests": 4,
+    "analyzer_boundary_and_refusal_tests": 11,
+    "harness_retention_tests": 2,
+    "checkpoint_related_library_tests_prior_to_capacity_resize": {
+      "passed": 40,
+      "ignored": 1
+    },
+    "storage_redb_library_clippy_all_features": "pass, -D warnings",
+    "workspace_format_check": "pass",
+    "default_daemon_and_runner_debug_builds": "pass",
+    "runner_build_warnings": "Four missing-doc warnings in existing background-scrub evidence fields; retained in private log. No warning suppression added."
+  },
+  "local_functional": {
+    "profile": "smoke, c32 write_only, 2 seconds warmup, 20 seconds measurement, Standard, archive disabled",
+    "source": "default production daemon constructor with observation wrapper around real FileBackend",
+    "daemon_sha256": "923217629ed054d3d6fd1f93af3fd5eaf9f2dc2100dcea63b8ad131f82bb8b1d",
+    "runner_sha256": "9922007928225dc1a25ff0ede34c66971ccccfa1fb07f120a86d71424abc75b5",
+    "correctness": "clean; no request or I/O errors",
+    "trace_coverage": {
+      "final": 1,
+      "groups": 634,
+      "checkpoints": 3,
+      "io": 65912,
+      "reserved_groups": 634,
+      "reserved_checkpoints": 3,
+      "reserved_io": 65912,
+      "dropped_groups": 0,
+      "dropped_checkpoints": 0,
+      "dropped_io": 0
+    },
+    "populations": {
+      "requests": 9504,
+      "measured_groups": 594,
+      "measured_flushes": 594
+    },
+    "checkpoint_completion_coverage": {
+      "census_scope": "before graceful close; no exact snapshot timestamp",
+      "trace_scope": "complete process lifetime, including graceful close",
+      "preclose_materialized": 2,
+      "preclose_installed": 2,
+      "final_materialized": 3,
+      "final_installed": 3,
+      "additional_completion_constraint": "Each completion absent from the pre-close census must be after the last command publication."
+    },
+    "census_reconciliation": "Exact physical-flush write/sync and group queue counts, sums and maxima; measured request samples exactly reproduce published histogram; checkpoint selections/counts and independent writer wall verified",
+    "retained_files": {
+      "attempt.json": "a153442cebb3ded13ca592db0e19df4feeac92b52d19e32425e0be430389059c",
+      "execution.json": "def44195c37000e75cd4a92ce222223c235e5d9f1d23128d5f7f4ae0f3540483",
+      "report.json": "bb49ea661c61adc9507d783f7079a63522b7e58393e06f22baacecd34f42f0cc",
+      "raw/raw-request-tail.json": "bc2205fb891e3338e216928d78718436ba451236a5510ee7f6d7f288a789a7ae",
+      "run.log": "41000a2ccaeb084ee5ed52dc12baa4008ad27ff716fc8dc563daf9e9d48ee5c5",
+      "materialization-analysis.json": "36b4bc5ddccaa375186fc3fe2faf3df0e319adfb9ab6365258c96e56261cba67",
+      "joined-requests.json": "93d4286d4b6e3630c89032387942d3f2d94aa2450eb5b32bc1a8a11935c47bd5"
+    }
+  },
+  "limitations": [
+    "This preparation has no latency-benefit or package-completion verdict.",
+    "Probe overhead is unmeasured; compare phases and I/O overlap inside the trace, not absolute times against uninstrumented runs.",
+    "The pre-close census excludes later graceful-close completion, which the final trace retains separately.",
+    "The prior full-CI corpus failure remains open; these observer checks do not qualify a production merge."
+  ],
+  "documentation_acceptance": {
+    "initial_invocation": "3 steps pass; generated-file guard fails because evidence files were edited during the check, and handbook fails on an out-of-book relative link. Both original failures retained.",
+    "corrections": "Freeze evidence files during the generated check; replace the broken book link with the retained artifact path.",
+    "final_checks": "Scope, workspace formatting and version topology passed in the initial invocation. Both failed steps pass on the corrected frozen files: all 30 generators current and zero handbook link errors.",
+    "full_ci": "The prior reproduced main corpus coverage failure is not rerun or waived by documentation checks."
+  }
+}

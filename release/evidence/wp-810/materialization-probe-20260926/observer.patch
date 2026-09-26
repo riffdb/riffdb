@@ -1,0 +1,1664 @@
+diff --git a/crates/riffdb-commit/src/writer_census.rs b/crates/riffdb-commit/src/writer_census.rs
+index 3b3ef5105..e8b282171 100644
+--- a/crates/riffdb-commit/src/writer_census.rs
++++ b/crates/riffdb-commit/src/writer_census.rs
+@@ -326,6 +326,8 @@ impl Default for WriterBatchWindowV1 {
+ #[doc(hidden)]
+ #[derive(Clone, Copy, Debug)]
+ pub struct WriterBatchCensusV1 {
++    /// Private WP-810 diagnostic: completed iterations, continuous span, iteration sum.
++    pub observed_wall: [u64; 3],
+     /// Total writer loop iterations observed.
+     pub total_count: u64,
+     /// Bounded ordinal windows in admission order.
+@@ -366,6 +368,10 @@ impl Census {
+ 
+ static WRITER_BATCH_DIAGNOSTICS: OnceLock<bool> = OnceLock::new();
+ static WRITER_BATCH_CENSUS: OnceLock<Census> = OnceLock::new();
++static WALL_ORIGIN: OnceLock<Instant> = OnceLock::new();
++static WALL_ITERATIONS: AtomicU64 = AtomicU64::new(0);
++static WALL_SPAN_NS: AtomicU64 = AtomicU64::new(0);
++static WALL_ITERATION_SUM_NS: AtomicU64 = AtomicU64::new(0);
+ 
+ thread_local! {
+     /// Per-iteration stage accumulation for the sole writer thread.
+@@ -423,6 +429,7 @@ pub(crate) fn begin_iteration() {
+     if !writer_batch_diagnostics_enabled() {
+         return;
+     }
++    WALL_ORIGIN.get_or_init(Instant::now);
+     PROFILE.with(|profile| profile.set([0; WRITER_BATCH_STAGE_LABELS_V1.len()]));
+     COMMANDS.with(|count| count.set(0));
+ }
+@@ -459,6 +466,14 @@ pub(crate) fn end_iteration(iteration_ns: u64, submitted_unit: bool) {
+         .saturating_sub(stages[EXEC_QUEUE_TELEMETRY])
+         .saturating_sub(stages[EXEC_FINISH_GROUP]);
+     publish(stages, COMMANDS.with(Cell::get), submitted_unit);
++    saturating_atomic_add(&WALL_ITERATION_SUM_NS, iteration_ns);
++    if let Some(origin) = WALL_ORIGIN.get() {
++        WALL_SPAN_NS.store(
++            u64::try_from(origin.elapsed().as_nanos()).unwrap_or(u64::MAX),
++            Ordering::Relaxed,
++        );
++    }
++    WALL_ITERATIONS.fetch_add(1, Ordering::Relaxed);
+ }
+ 
+ fn publish(stages: [u64; WRITER_BATCH_STAGE_LABELS_V1.len()], commands: u64, submitted_unit: bool) {
+@@ -490,11 +505,17 @@ fn saturating_atomic_add(target: &AtomicU64, value: u64) {
+ pub fn writer_batch_stage_census_v1() -> WriterBatchCensusV1 {
+     let Some(census) = WRITER_BATCH_CENSUS.get() else {
+         return WriterBatchCensusV1 {
++            observed_wall: [0; 3],
+             total_count: 0,
+             windows: [WriterBatchWindowV1::default(); WRITER_BATCH_WINDOW_COUNT_V1],
+         };
+     };
+     WriterBatchCensusV1 {
++        observed_wall: [
++            WALL_ITERATIONS.load(Ordering::Relaxed),
++            WALL_SPAN_NS.load(Ordering::Relaxed),
++            WALL_ITERATION_SUM_NS.load(Ordering::Relaxed),
++        ],
+         total_count: census.total_count.load(Ordering::Relaxed),
+         windows: std::array::from_fn(|index| {
+             let window = &census.windows[index];
+@@ -541,8 +562,16 @@ pub fn format_writer_batch_stages_v1_line(census: &WriterBatchCensusV1) -> Strin
+         })
+         .collect::<Vec<_>>()
+         .join(";");
++    let wall = if census.observed_wall[0] == 0 {
++        String::new()
++    } else {
++        format!(
++            "\nriffdb-writer-wall-probe-v1\titerations={}\tspan_ns={}\titeration_sum_ns={}",
++            census.observed_wall[0], census.observed_wall[1], census.observed_wall[2]
++        )
++    };
+     format!(
+-        "riffdb-writer-batch-stages-v1\ttotal={}\tlabels={labels}\twindows={windows}",
++        "riffdb-writer-batch-stages-v1\ttotal={}\tlabels={labels}\twindows={windows}{wall}",
+         census.total_count
+     )
+ }
+@@ -691,6 +720,7 @@ mod tests {
+     #[test]
+     fn an_empty_census_formats_without_windows() {
+         let census = WriterBatchCensusV1 {
++            observed_wall: [0; 3],
+             total_count: 0,
+             windows: [WriterBatchWindowV1::default(); WRITER_BATCH_WINDOW_COUNT_V1],
+         };
+@@ -711,6 +741,7 @@ mod tests {
+         let mut windows = [WriterBatchWindowV1::default(); WRITER_BATCH_WINDOW_COUNT_V1];
+         windows[0] = window;
+         let census = WriterBatchCensusV1 {
++            observed_wall: [0; 3],
+             total_count: 3,
+             windows,
+         };
+@@ -728,3 +759,50 @@ mod tests {
+         assert_eq!(values[WRITER_BATCH_STAGE_LABELS_V1.len() + 2], "2");
+     }
+ }
++
++#[cfg(test)]
++mod wp810_wall_tests {
++    use super::*;
++
++    // req: PERF-018
++    #[test]
++    fn a_frozen_wall_snapshot_cannot_advance_when_later_iterations_finish() {
++        if !writer_batch_diagnostics_enabled() {
++            let child = std::process::Command::new(std::env::current_exe().unwrap())
++                .args(["--exact", "writer_census::wp810_wall_tests::a_frozen_wall_snapshot_cannot_advance_when_later_iterations_finish"])
++                .env("RIFFDB_WRITER_BATCH_DIAGNOSTICS", "1").output().unwrap();
++            assert!(
++                child.status.success(),
++                "{}",
++                String::from_utf8_lossy(&child.stderr)
++            );
++            return;
++        }
++        begin_iteration();
++        end_iteration(7, false);
++        let first = writer_batch_stage_census_v1();
++        begin_iteration();
++        end_iteration(11, true);
++        let second = writer_batch_stage_census_v1();
++        assert_eq!(
++            (
++                first.total_count,
++                first.observed_wall[0],
++                first.observed_wall[2]
++            ),
++            (1, 1, 7)
++        );
++        assert_eq!(
++            (
++                second.total_count,
++                second.observed_wall[0],
++                second.observed_wall[2]
++            ),
++            (2, 2, 18)
++        );
++        assert!(second.observed_wall[1] >= first.observed_wall[1]);
++        let line = format_writer_batch_stages_v1_line(&first);
++        assert!(line.contains("\nriffdb-writer-wall-probe-v1\titerations=1\t"));
++        assert!(line.ends_with("\titeration_sum_ns=7"));
++    }
++}
+diff --git a/crates/riffdb-storage-redb/src/checkpoint_census.rs b/crates/riffdb-storage-redb/src/checkpoint_census.rs
+index 4935dd686..57136cbc4 100644
+--- a/crates/riffdb-storage-redb/src/checkpoint_census.rs
++++ b/crates/riffdb-storage-redb/src/checkpoint_census.rs
+@@ -46,6 +46,7 @@ impl CheckpointCensus {
+         let transitions = u64::try_from(transitions).unwrap_or(u64::MAX);
+         let commands = u64::try_from(commands).unwrap_or(u64::MAX);
+         let bytes = u64::try_from(bytes).unwrap_or(u64::MAX);
++        crate::writer_correlation::checkpoint_started(transitions, commands, bytes, triggers);
+         self.add(1, transitions);
+         self.add(2, commands);
+         self.add(3, bytes);
+@@ -62,12 +63,15 @@ impl CheckpointCensus {
+     }
+ 
+     pub(crate) fn materialized(&self) {
++        crate::writer_correlation::checkpoint_finished(2);
+         self.add(12, 1);
+     }
+     pub(crate) fn installed(&self) {
++        crate::writer_correlation::checkpoint_finished(3);
+         self.add(13, 1);
+     }
+     pub(crate) fn failed(&self) {
++        crate::writer_correlation::checkpoint_finished(8);
+         self.add(14, 1);
+     }
+ 
+diff --git a/crates/riffdb-storage-redb/src/journal.rs b/crates/riffdb-storage-redb/src/journal.rs
+index d89ff671e..20c0215be 100644
+--- a/crates/riffdb-storage-redb/src/journal.rs
++++ b/crates/riffdb-storage-redb/src/journal.rs
+@@ -1817,6 +1817,7 @@ struct JournalFenceCompletion {
+     result: Mutex<Option<Result<JournalFence, JournalIoError>>>,
+     ready: Condvar,
+     command_bearing: bool,
++    correlation: Option<crate::writer_correlation::Group>,
+ }
+ 
+ /// Counts blocking-method invocations, including ready rechecks and errors.
+@@ -1892,6 +1893,10 @@ impl JournalFenceCompletion {
+         before_park: impl Fn(),
+     ) -> Result<JournalFence, JournalIoError> {
+         let started = self.command_bearing.then(&now);
++        let first = self
++            .correlation
++            .zip(started)
++            .map(|(group, at)| (group, group.wait_begin(at)));
+         let result = (|| {
+             let mut slot = self.result.lock().map_err(|_| JournalIoError::Stopped)?;
+             while slot.is_none() {
+@@ -1901,7 +1906,11 @@ impl JournalFenceCompletion {
+             slot.clone().expect("journal completion is present")
+         })();
+         if let Some(started) = started {
+-            census.record(now().saturating_duration_since(started), result.is_err());
++            let finished = now();
++            census.record(finished.saturating_duration_since(started), result.is_err());
++            if let Some((group, first)) = first {
++                group.wait_end(finished, first, result.is_err());
++            }
+         }
+         result
+     }
+@@ -1913,6 +1922,10 @@ pub(crate) struct JournalFenceReceipt {
+ }
+ 
+ impl JournalFenceReceipt {
++    pub(crate) fn correlation(&self) -> Option<crate::writer_correlation::Group> {
++        self.completion.correlation
++    }
++
+     pub(crate) fn try_wait(&self) -> Result<Option<JournalFence>, JournalIoError> {
+         self.completion.try_wait()
+     }
+@@ -1980,8 +1993,13 @@ impl JournalLane {
+         &self,
+         frame: EncodedJournalFrame,
+     ) -> Result<JournalFenceReceipt, JournalIoError> {
++        let submitted_at = Instant::now();
++        let correlation = frame.covered_sequence().and_then(|last| {
++            crate::writer_correlation::submitted(last.get(), frame.command_count(), submitted_at)
++        });
+         let completion = Arc::new(JournalFenceCompletion {
+             command_bearing: frame.command_count() > 0,
++            correlation,
+             ..JournalFenceCompletion::default()
+         });
+         self.sender
+@@ -1990,7 +2008,7 @@ impl JournalLane {
+             .send(JournalSubmission {
+                 frame,
+                 completion: Arc::clone(&completion),
+-                submitted_at: Instant::now(),
++                submitted_at,
+             })
+             .map_err(|_| JournalIoError::Stopped)?;
+         Ok(JournalFenceReceipt { completion })
+@@ -2143,7 +2161,8 @@ fn journal_worker(
+                     Ok(())
+                 })
+         };
+-        let write_elapsed = write_started.elapsed();
++        let write_finished = Instant::now();
++        let write_elapsed = write_finished.saturating_duration_since(write_started);
+         #[cfg(feature = "test-fixtures")]
+         if let Some(controller) = &controller {
+             controller
+@@ -2152,7 +2171,15 @@ fn journal_worker(
+         let sync_started = Instant::now();
+         let write =
+             positional_write.and_then(|()| file.sync_data().map_err(|_| JournalIoError::Io));
+-        let sync_elapsed = sync_started.elapsed();
++        let sync_finished = Instant::now();
++        let sync_elapsed = sync_finished.saturating_duration_since(sync_started);
++        let flush = crate::writer_correlation::next_flush();
++        for submission in &batch {
++            if let Some(group) = submission.completion.correlation {
++                group.sync(sync_started, sync_finished, flush, write.is_err());
++                group.io_phases(encode_started, write_started, write_finished);
++            }
++        }
+         if write.is_ok() {
+             durable_flushes.fetch_add(1, Ordering::Relaxed);
+             record_command_flush_census(
+diff --git a/crates/riffdb-storage-redb/src/lib.rs b/crates/riffdb-storage-redb/src/lib.rs
+index 87904891c..ca7560547 100644
+--- a/crates/riffdb-storage-redb/src/lib.rs
++++ b/crates/riffdb-storage-redb/src/lib.rs
+@@ -38,6 +38,8 @@ mod changelog_v3_journal;
+ mod changelog_v3_roots;
+ mod changelog_v3_write;
+ mod checkpoint_census;
++#[doc(hidden)]
++mod checkpoint_io_probe;
+ mod checkpoint_root;
+ mod clean_close;
+ mod codec;
+@@ -69,6 +71,7 @@ mod primary_fence_write;
+ mod projection_replay;
+ mod promotion_cutover;
+ mod replication_registration_links;
++mod writer_correlation;
+ #[cfg(feature = "test-fixtures")]
+ #[doc(hidden)]
+ pub use migration_stage::{RedbMigrationStageFixture, RedbMigrationStageSnapshot};
+@@ -116,6 +119,7 @@ pub fn writer_command_flush_census_v1() -> [u64; 7] {
+ #[doc(hidden)]
+ #[must_use]
+ pub fn writer_journal_stage_census_v1() -> [u64; 10] {
++    writer_correlation::emit(true);
+     journal::command_journal_stage_census()
+ }
+ 
+@@ -160,6 +164,7 @@ pub fn writer_publication_stage_census_v2() -> [u64; 11] {
+ #[doc(hidden)]
+ #[must_use]
+ pub fn writer_checkpoint_census_v1() -> [u64; 15] {
++    writer_correlation::emit(false);
+     checkpoint_census::CHECKPOINTS.snapshot()
+ }
+ 
+diff --git a/crates/riffdb-storage-redb/src/store.rs b/crates/riffdb-storage-redb/src/store.rs
+index 73f6310d0..a46e86957 100644
+--- a/crates/riffdb-storage-redb/src/store.rs
++++ b/crates/riffdb-storage-redb/src/store.rs
+@@ -68,6 +68,9 @@ mod changelog_lifecycle_tests;
+ #[path = "store_v3_layout_tests.rs"]
+ mod v3_layout_tests;
+ 
++#[path = "store_command_fence.rs"]
++mod command_fence;
++
+ #[path = "store_journal_checkpoint.rs"]
+ mod journal_checkpoint;
+ 
+@@ -2361,6 +2364,10 @@ impl RedbStore {
+         let derived_in_memory = false;
+         let database = match engine_backend {
+             Some(backend) => builder.create_with_backend(DynStorageBackend(backend)),
++            None if crate::writer_correlation::enabled() => builder.create_with_backend(
++                crate::checkpoint_io_probe::ObservedFileBackend::open(path)
++                    .map_err(database_error)?,
++            ),
+             None => builder.create(path),
+         }
+         .map_err(database_error)?;
+@@ -8012,46 +8019,6 @@ fn recovery_journal_error(error: crate::journal::JournalIoError) -> StorageError
+     }
+ }
+ 
+-impl DeferredCommandFence for RedbSubmittedCommandFence {
+-    fn requires_pipeline_drain(&self) -> bool {
+-        command_fence_requires_pipeline_drain(self.journaled, self.pipeline_drain_required)
+-    }
+-
+-    fn try_wait(
+-        &mut self,
+-    ) -> Result<Option<Vec<riffdb_storage_api::AuditedCommittedBatchV1>>, StorageError> {
+-        (|| {
+-            if !self.journaled {
+-                return self.publish_direct().map(Some);
+-            }
+-            let fenced = self
+-                .receipt
+-                .as_ref()
+-                .ok_or_else(|| storage_error(StorageErrorKind::InvariantViolation))?
+-                .try_wait()
+-                .map_err(journal_io_error)?;
+-            let Some(fenced) = fenced else {
+-                return Ok(None);
+-            };
+-            self.receipt.take();
+-            self.publish_fenced(fenced).map(Some)
+-        })()
+-    }
+-
+-    fn wait(mut self) -> Result<Vec<riffdb_storage_api::AuditedCommittedBatchV1>, StorageError> {
+-        if !self.journaled {
+-            return self.publish_direct();
+-        }
+-        let fenced = self
+-            .receipt
+-            .take()
+-            .ok_or_else(|| storage_error(StorageErrorKind::InvariantViolation))?
+-            .wait()
+-            .map_err(journal_io_error)?;
+-        self.publish_fenced(fenced)
+-    }
+-}
+-
+ const fn command_fence_requires_pipeline_drain(
+     journaled: bool,
+     checkpoint_installation_pending: bool,
+diff --git a/crates/riffdb-storage-redb/src/store_journal_checkpoint.rs b/crates/riffdb-storage-redb/src/store_journal_checkpoint.rs
+index 11392f37e..9cf2d9733 100644
+--- a/crates/riffdb-storage-redb/src/store_journal_checkpoint.rs
++++ b/crates/riffdb-storage-redb/src/store_journal_checkpoint.rs
+@@ -28,7 +28,9 @@ impl SharedRedb {
+                 crate::hooks::RedbCheckpointTestPoint::BeforeMaterialization,
+             );
+         }
++        let phase = crate::writer_correlation::CheckpointPhase::begin();
+         let mut transaction = self.database.begin_write().map_err(transaction_error)?;
++        phase.replay();
+         transaction.set_two_phase_commit(false);
+         transaction
+             .set_durability(Durability::Immediate)
+@@ -159,6 +161,7 @@ impl SharedRedb {
+             );
+             controller.before_commit(crate::hooks::RedbTestOperation::JournalCheckpoint)?;
+         }
++        phase.commit();
+         self.commit_durable(transaction)?;
+         #[cfg(test)]
+         crate::changelog_v3_journal::recovery_crash_edge("checkpoint-committed");
+diff --git a/examples/app-baseline/core/src/lib.rs b/examples/app-baseline/core/src/lib.rs
+index 52e56f57d..93f3d8f86 100644
+--- a/examples/app-baseline/core/src/lib.rs
++++ b/examples/app-baseline/core/src/lib.rs
+@@ -8,6 +8,7 @@ mod histogram;
+ mod ids;
+ mod journeys;
+ mod load;
++mod raw_tail;
+ mod report;
+ mod scale;
+ mod scenarios;
+@@ -49,6 +50,12 @@ pub trait AppBackend {
+     /// Backend-specific failure.
+     type Error: std::fmt::Display;
+ 
++    /// Diagnostic identity of the preceding write, consumed after its timer ends.
++    /// Backends without commit-sequence evidence keep the default absence.
++    fn take_diagnostic_commit_sequence(&mut self) -> Option<u64> {
++        None
++    }
++
+     /// Installs empty schema / resets state for a dedicated database.
+     fn reset(&mut self) -> Result<(), Self::Error>;
+ 
+diff --git a/examples/app-baseline/core/src/load.rs b/examples/app-baseline/core/src/load.rs
+index 4af1c6e54..1dcdcb125 100644
+--- a/examples/app-baseline/core/src/load.rs
++++ b/examples/app-baseline/core/src/load.rs
+@@ -758,6 +758,7 @@ impl LoadReport {
+ 
+ /// Per-worker load result: op stats plus absolute measure bounds.
+ struct WorkerLoadResult {
++    raw_tail: Option<crate::raw_tail::Capture>,
+     by_op: Vec<(LoadOp, OpStats)>,
+     /// Instant the worker started its first measured sample (if any).
+     measure_start: Option<Instant>,
+@@ -939,6 +940,20 @@ where
+         .saturating_mul(fanout)
+         .clamp(1, worker_ceiling);
+ 
++    let raw_tail_directory =
++        std::env::var_os("RIFFDB_APP_BASELINE_RAW_TAIL_DIR").map(std::path::PathBuf::from);
++    let raw_tail_enabled = raw_tail_directory.is_some();
++    if raw_tail_enabled && (worker_count > crate::raw_tail::MAX_WORKERS || config.saturate) {
++        return Err(
++            "raw-tail diagnostic requires at most 32 ordinary closed-loop workers".to_owned(),
++        );
++    }
++    if raw_tail_directory
++        .as_ref()
++        .is_some_and(|p| !p.is_dir() || p.join("raw-request-tail.json").exists())
++    {
++        return Err("raw-tail diagnostic needs an existing unused output directory".to_owned());
++    }
+     let ready = Arc::new(std::sync::Barrier::new(worker_count + 1));
+     let go = Arc::new(std::sync::Barrier::new(worker_count + 1));
+     let mut workers = Vec::with_capacity(worker_count);
+@@ -972,6 +987,7 @@ where
+                         probes[warm_tenant].ticket_id,
+                     )
+                     .map_err(|error| error.to_string())?;
++                let mut raw_tail = raw_tail_enabled.then(crate::raw_tail::Capture::new);
+                 ready.wait();
+                 go.wait();
+ 
+@@ -1020,6 +1036,12 @@ where
+                     );
+                     let ended = Instant::now();
+                     if record {
++                        if let Some(capture) = raw_tail.as_mut() {
++                            capture.record(
++                                u64::try_from(elapsed.as_nanos()).unwrap_or(u64::MAX),
++                                backend.take_diagnostic_commit_sequence(),
++                            );
++                        }
+                         if measure_start.is_none() {
+                             measure_start = Some(started);
+                         }
+@@ -1051,6 +1073,7 @@ where
+                 }
+ 
+                 Ok(WorkerLoadResult {
++                    raw_tail,
+                     by_op,
+                     measure_start,
+                     measure_end,
+@@ -1092,9 +1115,13 @@ where
+     let mut global_start: Option<Instant> = None;
+     let mut global_end: Option<Instant> = None;
+     let mut join_error: Option<String> = None;
++    let mut raw_captures = Vec::with_capacity(if raw_tail_enabled { worker_count } else { 0 });
+     for worker in workers {
+         match worker.join() {
+             Ok(Ok(worker_result)) => {
++                if let Some(capture) = worker_result.raw_tail {
++                    raw_captures.push(capture);
++                }
+                 let interval = match (worker_result.measure_start, worker_result.measure_end) {
+                     (Some(start), Some(end)) => {
+                         global_start = Some(match global_start {
+@@ -1141,6 +1168,10 @@ where
+             }
+         }
+     }
++    if let Some(directory) = raw_tail_directory.as_ref() {
++        let expected = worker_completed_operations.iter().copied().sum();
++        crate::raw_tail::write_report(directory, &raw_captures, expected)?;
++    }
+     if let Some(reason) = abort_reason {
+         return Err(reason);
+     }
+@@ -1358,6 +1389,7 @@ where
+                 }
+                 Ok((
+                     WorkerLoadResult {
++                        raw_tail: None,
+                         by_op,
+                         measure_start,
+                         measure_end,
+diff --git a/examples/app-baseline/riffdb/src/lib.rs b/examples/app-baseline/riffdb/src/lib.rs
+index 7d8af7755..d6018e330 100644
+--- a/examples/app-baseline/riffdb/src/lib.rs
++++ b/examples/app-baseline/riffdb/src/lib.rs
+@@ -92,6 +92,7 @@ pub struct RiffDbPublicBackend {
+     query_module_hash: [u8; 32],
+     /// Max commit sequence observed during seed (for Causal catch-up).
+     last_seed_commit_sequence: Option<u64>,
++    diagnostic_commit_sequence: Option<u64>,
+     /// History incarnation for Causal tokens (fresh DBs use 1).
+     history_incarnation: u64,
+     /// Whether the projected catch-up + equivalence gates have passed.
+@@ -184,6 +185,7 @@ impl RiffDbPublicBackend {
+             contract_bundle_hash,
+             query_module_hash,
+             last_seed_commit_sequence: None,
++            diagnostic_commit_sequence: None,
+             history_incarnation,
+             projected_gates_ready: false,
+         })
+@@ -227,6 +229,7 @@ impl RiffDbPublicBackend {
+             contract_bundle_hash: self.contract_bundle_hash,
+             query_module_hash: self.query_module_hash,
+             last_seed_commit_sequence: self.last_seed_commit_sequence,
++            diagnostic_commit_sequence: None,
+             history_incarnation: self.history_incarnation,
+             projected_gates_ready: self.projected_gates_ready,
+         })
+@@ -284,6 +287,7 @@ impl RiffDbPublicBackend {
+             contract_bundle_hash: self.contract_bundle_hash,
+             query_module_hash: self.query_module_hash,
+             last_seed_commit_sequence: self.last_seed_commit_sequence,
++            diagnostic_commit_sequence: None,
+             history_incarnation: self.history_incarnation,
+             projected_gates_ready: self.projected_gates_ready,
+         })
+@@ -572,6 +576,10 @@ impl RiffDbPublicBackend {
+ }
+ 
+ impl AppBackend for RiffDbPublicBackend {
++    fn take_diagnostic_commit_sequence(&mut self) -> Option<u64> {
++        self.diagnostic_commit_sequence.take()
++    }
++
+     type Error = RiffDbError;
+ 
+     fn reset(&mut self) -> Result<(), Self::Error> {
+@@ -1254,8 +1262,10 @@ impl AppBackend for RiffDbPublicBackend {
+     }
+ 
+     fn create_comment(&mut self, comment: &CommentSeed) -> Result<(), Self::Error> {
+-        self.block_on(async {
+-            self.ticketdesk()
++        self.diagnostic_commit_sequence = None;
++        let sequence = self.block_on(async {
++            let committed = self
++                .ticketdesk()
+                 .create_comment(CreateCommentInput {
+                     body: comment.row.body.clone(),
+                     author_id: uuid_text(comment.row.author_id),
+@@ -1266,8 +1276,10 @@ impl AppBackend for RiffDbPublicBackend {
+                 })
+                 .await
+                 .map_err(map_app)?;
+-            Ok(())
+-        })
++            Ok(committed.commit_sequence)
++        })?;
++        self.diagnostic_commit_sequence = sequence;
++        Ok(())
+     }
+ 
+     fn replay_comment(&mut self, comment: &CommentSeed) -> Result<(), Self::Error> {
+@@ -1280,8 +1292,10 @@ impl AppBackend for RiffDbPublicBackend {
+         &mut self,
+         input: &CloseTicketWithCommentSeed,
+     ) -> Result<(), Self::Error> {
+-        self.block_on(async {
+-            self.ticketdesk()
++        self.diagnostic_commit_sequence = None;
++        let sequence = self.block_on(async {
++            let committed = self
++                .ticketdesk()
+                 .close_ticket_with_comment(CloseTicketWithCommentInput {
+                     body: input.body.clone(),
+                     author_id: uuid_text(input.author_id),
+@@ -1292,8 +1306,10 @@ impl AppBackend for RiffDbPublicBackend {
+                 })
+                 .await
+                 .map_err(map_app)?;
+-            Ok(())
+-        })
++            Ok(committed.commit_sequence)
++        })?;
++        self.diagnostic_commit_sequence = sequence;
++        Ok(())
+     }
+ 
+     fn swap_member_roles(&mut self, input: &SwapMemberRolesSeed) -> Result<(), Self::Error> {
+@@ -1318,8 +1334,10 @@ impl AppBackend for RiffDbPublicBackend {
+         &mut self,
+         input: &OpenTicketWithLabelsSeed,
+     ) -> Result<(), Self::Error> {
+-        self.block_on(async {
+-            self.ticketdesk()
++        self.diagnostic_commit_sequence = None;
++        let sequence = self.block_on(async {
++            let committed = self
++                .ticketdesk()
+                 .open_ticket_with_labels(OpenTicketWithLabelsInput {
+                     title: input.title.clone(),
+                     label_a: uuid_text(input.label_a),
+@@ -1333,8 +1351,10 @@ impl AppBackend for RiffDbPublicBackend {
+                 })
+                 .await
+                 .map_err(map_app)?;
+-            Ok(())
+-        })
++            Ok(committed.commit_sequence)
++        })?;
++        self.diagnostic_commit_sequence = sequence;
++        Ok(())
+     }
+ }
+ 
+diff --git a/crates/riffdb-storage-redb/src/checkpoint_io_probe.rs b/crates/riffdb-storage-redb/src/checkpoint_io_probe.rs
+new file mode 100644
+index 000000000..4f2730b3e
+--- /dev/null
++++ b/crates/riffdb-storage-redb/src/checkpoint_io_probe.rs
+@@ -0,0 +1,137 @@
++//! Observation-only wrapper around the exact production redb file backend.
++
++use std::io;
++use std::path::Path;
++
++#[derive(Debug)]
++pub(crate) struct ObservedFileBackend<T = redb::backends::FileBackend> {
++    inner: T,
++}
++
++impl ObservedFileBackend {
++    pub(crate) fn open(path: &Path) -> Result<Self, redb::DatabaseError> {
++        // Exactly redb 4.2.0 Builder::create's flags and FileBackend lock.
++        let file = std::fs::OpenOptions::new()
++            .read(true)
++            .write(true)
++            .create(true)
++            .truncate(false)
++            .open(path)?;
++        Ok(Self {
++            inner: redb::backends::FileBackend::new(file)?,
++        })
++    }
++}
++
++impl<T: redb::StorageBackend> redb::StorageBackend for ObservedFileBackend<T> {
++    fn len(&self) -> io::Result<u64> {
++        self.inner.len()
++    }
++
++    fn read(&self, offset: u64, out: &mut [u8]) -> io::Result<()> {
++        crate::writer_correlation::observe_io(4, out.len() as u64, || self.inner.read(offset, out))
++    }
++
++    fn set_len(&self, len: u64) -> io::Result<()> {
++        crate::writer_correlation::observe_io(3, len, || self.inner.set_len(len))
++    }
++
++    fn sync_data(&self) -> io::Result<()> {
++        crate::writer_correlation::observe_io(2, 0, || self.inner.sync_data())
++    }
++
++    fn write(&self, offset: u64, data: &[u8]) -> io::Result<()> {
++        crate::writer_correlation::observe_io(1, data.len() as u64, || {
++            self.inner.write(offset, data)
++        })
++    }
++
++    fn close(&self) -> io::Result<()> {
++        let result = self.inner.close();
++        // Final drain supplements the periodic observer. Coverage must still
++        // match all reserved rows after the daemon has actually exited.
++        crate::writer_correlation::emit(true);
++        result
++    }
++}
++
++#[cfg(test)]
++mod tests {
++    use super::*;
++    use redb::StorageBackend;
++    use std::sync::Mutex;
++
++    // req: STO-001, REC-001
++    #[test]
++    fn checkpoint_observer_uses_real_file_lock_and_never_truncates_existing_bytes() {
++        let directory = crate::test_path::ScopedDirectory::new("checkpoint-observer-backend");
++        let path = directory.join("backend");
++        let first = ObservedFileBackend::open(&path).unwrap();
++        first.set_len(4096).unwrap();
++        first.write(128, b"checked").unwrap();
++        first.sync_data().unwrap();
++        assert!(ObservedFileBackend::open(&path).is_err());
++        drop(first);
++        let second = ObservedFileBackend::open(&path).unwrap();
++        assert_eq!(second.len().unwrap(), 4096);
++        let mut bytes = [0; 7];
++        second.read(128, &mut bytes).unwrap();
++        assert_eq!(&bytes, b"checked");
++    }
++
++    #[derive(Debug, Default)]
++    struct Backend {
++        calls: Mutex<Vec<u8>>,
++    }
++
++    impl redb::StorageBackend for Backend {
++        fn len(&self) -> io::Result<u64> {
++            self.calls.lock().unwrap().push(0);
++            Ok(17)
++        }
++        fn read(&self, offset: u64, out: &mut [u8]) -> io::Result<()> {
++            assert_eq!(offset, 8);
++            self.calls.lock().unwrap().push(4);
++            out.copy_from_slice(b"read");
++            Ok(())
++        }
++        fn set_len(&self, len: u64) -> io::Result<()> {
++            assert_eq!(len, 23);
++            self.calls.lock().unwrap().push(3);
++            Ok(())
++        }
++        fn sync_data(&self) -> io::Result<()> {
++            self.calls.lock().unwrap().push(2);
++            Err(io::Error::from(io::ErrorKind::PermissionDenied))
++        }
++        fn write(&self, offset: u64, data: &[u8]) -> io::Result<()> {
++            assert_eq!((offset, data), (11, b"write".as_slice()));
++            self.calls.lock().unwrap().push(1);
++            Ok(())
++        }
++        fn close(&self) -> io::Result<()> {
++            self.calls.lock().unwrap().push(5);
++            Ok(())
++        }
++    }
++
++    // req: STO-001, REC-001
++    #[test]
++    fn checkpoint_observer_preserves_backend_calls_bytes_errors_and_order() {
++        let backend = ObservedFileBackend {
++            inner: Backend::default(),
++        };
++        assert_eq!(backend.len().unwrap(), 17);
++        let mut bytes = [0; 4];
++        backend.read(8, &mut bytes).unwrap();
++        assert_eq!(&bytes, b"read");
++        backend.set_len(23).unwrap();
++        backend.write(11, b"write").unwrap();
++        assert_eq!(
++            backend.sync_data().unwrap_err().kind(),
++            io::ErrorKind::PermissionDenied
++        );
++        backend.close().unwrap();
++        assert_eq!(*backend.inner.calls.lock().unwrap(), [0, 4, 3, 1, 2, 5]);
++    }
++}
+diff --git a/crates/riffdb-storage-redb/src/store_command_fence.rs b/crates/riffdb-storage-redb/src/store_command_fence.rs
+new file mode 100644
+index 000000000..5a0ffb028
+--- /dev/null
++++ b/crates/riffdb-storage-redb/src/store_command_fence.rs
+@@ -0,0 +1,65 @@
++//! Command completion with optional bounded diagnostic correlation.
++
++use super::*;
++
++impl DeferredCommandFence for RedbSubmittedCommandFence {
++    fn requires_pipeline_drain(&self) -> bool {
++        let required =
++            command_fence_requires_pipeline_drain(self.journaled, self.pipeline_drain_required);
++        if let Some(group) = self
++            .receipt
++            .as_ref()
++            .and_then(crate::journal::JournalFenceReceipt::correlation)
++        {
++            group.drain(required);
++        }
++        required
++    }
++
++    fn try_wait(
++        &mut self,
++    ) -> Result<Option<Vec<riffdb_storage_api::AuditedCommittedBatchV1>>, StorageError> {
++        (|| {
++            if !self.journaled {
++                return self.publish_direct().map(Some);
++            }
++            let fenced = self
++                .receipt
++                .as_ref()
++                .ok_or_else(|| storage_error(StorageErrorKind::InvariantViolation))?
++                .try_wait()
++                .map_err(journal_io_error)?;
++            let Some(fenced) = fenced else {
++                return Ok(None);
++            };
++            let group = self
++                .receipt
++                .take()
++                .and_then(|receipt| receipt.correlation());
++            let begin = group.map(|_| Instant::now());
++            let result = self.publish_fenced(fenced).map(Some);
++            if let Some((group, begin)) = group.zip(begin) {
++                group.published(begin, Instant::now(), result.is_err());
++            }
++            result
++        })()
++    }
++
++    fn wait(mut self) -> Result<Vec<riffdb_storage_api::AuditedCommittedBatchV1>, StorageError> {
++        if !self.journaled {
++            return self.publish_direct();
++        }
++        let receipt = self
++            .receipt
++            .take()
++            .ok_or_else(|| storage_error(StorageErrorKind::InvariantViolation))?;
++        let group = receipt.correlation();
++        let fenced = receipt.wait().map_err(journal_io_error)?;
++        let begin = group.map(|_| Instant::now());
++        let result = self.publish_fenced(fenced);
++        if let Some((group, begin)) = group.zip(begin) {
++            group.published(begin, Instant::now(), result.is_err());
++        }
++        result
++    }
++}
+diff --git a/crates/riffdb-storage-redb/src/writer_correlation.rs b/crates/riffdb-storage-redb/src/writer_correlation.rs
+new file mode 100644
+index 000000000..16ea43f73
+--- /dev/null
++++ b/crates/riffdb-storage-redb/src/writer_correlation.rs
+@@ -0,0 +1,580 @@
++//! Temporary WP-810 observation build: no values, keys, paths or durable bytes.
++//! Atomics on the write path; completed rows are drained by the supervisor.
++
++use std::cell::Cell;
++use std::io::Write;
++use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
++use std::sync::{Mutex, OnceLock};
++use std::time::Instant;
++
++const GROUP_LIMIT: usize = 65_536;
++const CHECKPOINT_LIMIT: usize = 512;
++const PAGE_LIMIT: usize = 32_768;
++const IO_LIMIT: usize = 4_194_304;
++
++struct Row<const N: usize> {
++    values: [AtomicU64; N],
++    ready: AtomicBool,
++}
++
++impl<const N: usize> Default for Row<N> {
++    fn default() -> Self {
++        Self {
++            values: std::array::from_fn(|_| AtomicU64::new(0)),
++            ready: AtomicBool::new(false),
++        }
++    }
++}
++
++impl<const N: usize> Row<N> {
++    fn set(&self, index: usize, value: u64) {
++        self.values[index].store(value, Ordering::Relaxed);
++    }
++
++    fn snapshot(&self) -> Option<[u64; N]> {
++        self.ready
++            .load(Ordering::Acquire)
++            .then(|| std::array::from_fn(|index| self.values[index].load(Ordering::Relaxed)))
++    }
++}
++
++struct Trace {
++    origin: Instant,
++    groups: Box<[Row<20>]>,
++    checkpoints: Box<[Row<12>]>,
++    used_groups: AtomicUsize,
++    used_checkpoints: AtomicUsize,
++    active_checkpoint: AtomicU64,
++    flushes: AtomicU64,
++    dropped: [AtomicU64; 3],
++    io: Box<[Row<9>]>,
++    used_io: AtomicUsize,
++    emitted: Mutex<[usize; 3]>,
++    emission_started: AtomicBool,
++}
++
++impl Trace {
++    fn new(groups: usize, checkpoints: usize, io: usize) -> Self {
++        Self {
++            origin: Instant::now(),
++            groups: (0..groups).map(|_| Row::default()).collect(),
++            checkpoints: (0..checkpoints).map(|_| Row::default()).collect(),
++            io: (0..io).map(|_| Row::default()).collect(),
++            used_io: AtomicUsize::new(0),
++            emitted: Mutex::new([0; 3]),
++            emission_started: AtomicBool::new(false),
++            used_groups: AtomicUsize::new(0),
++            used_checkpoints: AtomicUsize::new(0),
++            active_checkpoint: AtomicU64::new(0),
++            flushes: AtomicU64::new(0),
++            dropped: std::array::from_fn(|_| AtomicU64::new(0)),
++        }
++    }
++
++    fn time(&self, at: Instant) -> u64 {
++        u64::try_from(at.saturating_duration_since(self.origin).as_nanos())
++            .unwrap_or(u64::MAX)
++            .max(1)
++    }
++
++    fn reserve(&self, counter: &AtomicUsize, limit: usize, kind: usize) -> Option<usize> {
++        match counter.fetch_update(Ordering::Relaxed, Ordering::Relaxed, |old| {
++            (old < limit).then_some(old + 1)
++        }) {
++            Ok(index) => Some(index),
++            Err(_) => {
++                self.dropped[kind].fetch_add(1, Ordering::Relaxed);
++                None
++            }
++        }
++    }
++}
++
++fn trace() -> Option<&'static Trace> {
++    static TRACE: OnceLock<Option<Trace>> = OnceLock::new();
++    TRACE
++        .get_or_init(|| {
++            std::env::var_os("RIFFDB_WRITER_CORRELATION")
++                .is_some_and(|value| value == "1")
++                .then(|| Trace::new(GROUP_LIMIT, CHECKPOINT_LIMIT, IO_LIMIT))
++        })
++        .as_ref()
++}
++
++pub(crate) fn enabled() -> bool {
++    trace().is_some()
++}
++
++thread_local! {
++    // A checkpoint transaction runs on one materializer thread. This identity
++    // only labels observations; it cannot confer storage authority.
++    static PHASE: Cell<(u64, u64)> = const { Cell::new((0, 0)) };
++}
++
++pub(crate) struct CheckpointPhase(Option<(u64, u64)>);
++
++impl CheckpointPhase {
++    pub(crate) fn begin() -> Self {
++        let previous = trace().map(|trace| {
++            let id = trace.active_checkpoint.load(Ordering::Relaxed);
++            let previous = PHASE.replace((id, 1));
++            if id > 0 {
++                trace.checkpoints[id as usize - 1].set(9, trace.time(Instant::now()));
++            }
++            previous
++        });
++        Self(previous)
++    }
++
++    fn stage(&self, phase: u64, slot: usize) {
++        if self.0.is_some()
++            && let Some(trace) = trace()
++        {
++            let (id, _) = PHASE.get();
++            PHASE.set((id, phase));
++            if id > 0 {
++                trace.checkpoints[id as usize - 1].set(slot, trace.time(Instant::now()));
++            }
++        }
++    }
++
++    pub(crate) fn replay(&self) {
++        self.stage(2, 10);
++    }
++
++    pub(crate) fn commit(&self) {
++        self.stage(3, 11);
++    }
++}
++
++impl Drop for CheckpointPhase {
++    fn drop(&mut self) {
++        if let Some(previous) = self.0 {
++            PHASE.set(previous);
++        }
++    }
++}
++
++impl Trace {
++    fn observe_io<T>(
++        &self,
++        kind: u64,
++        bytes: u64,
++        operation: impl FnOnce() -> std::io::Result<T>,
++    ) -> std::io::Result<T> {
++        let slot = self.reserve(&self.used_io, self.io.len(), 2);
++        let context = PHASE.get();
++        let active = self.active_checkpoint.load(Ordering::Relaxed);
++        let start = Instant::now();
++        let result = operation();
++        let end = Instant::now();
++        if let Some(slot) = slot {
++            let row = &self.io[slot];
++            for (index, value) in [
++                slot as u64 + 1,
++                context.0,
++                context.1,
++                kind,
++                self.time(start),
++                self.time(end),
++                bytes,
++                u64::from(result.is_err()),
++                active,
++            ]
++            .into_iter()
++            .enumerate()
++            {
++                row.set(index, value);
++            }
++            row.ready.store(true, Ordering::Release);
++        }
++        result
++    }
++}
++
++pub(crate) fn observe_io<T>(
++    kind: u64,
++    bytes: u64,
++    operation: impl FnOnce() -> std::io::Result<T>,
++) -> std::io::Result<T> {
++    match trace() {
++        Some(trace) => trace.observe_io(kind, bytes, operation),
++        None => operation(),
++    }
++}
++
++/// Called only from existing supervisor census reads and backend close. Never
++/// called by command apply, the journal worker or checkpoint I/O operations.
++pub(crate) fn emit(final_snapshot: bool) {
++    let Some(trace) = trace() else { return };
++    // The app-baseline stdout consumer starts retaining diagnostic lines only
++    // after READY. Its periodic census is the first post-readiness caller.
++    // An initialization-time temporary backend close must not discard rows.
++    if final_snapshot && !trace.emission_started.load(Ordering::Acquire) {
++        return;
++    }
++    trace.emission_started.store(true, Ordering::Release);
++    let Ok(mut cursors) = trace.emitted.lock() else {
++        return;
++    };
++    let mut output = std::io::stdout().lock();
++    let pages = if final_snapshot {
++        IO_LIMIT / PAGE_LIMIT + 1
++    } else {
++        1
++    };
++    for _ in 0..pages {
++        let previous = *cursors;
++        let Some(snapshot) = writer_correlation_snapshot_v1([cursors[0], cursors[1]]) else {
++            return;
++        };
++        for row in &snapshot.groups {
++            let values = row.map(|value| value.to_string()).join(",");
++            let _ = writeln!(
++                output,
++                "riffdb-wp810-group-v1\tpid={}\t{values}",
++                std::process::id()
++            );
++        }
++        for row in &snapshot.checkpoints {
++            let values = row.map(|value| value.to_string()).join(",");
++            let _ = writeln!(
++                output,
++                "riffdb-wp810-checkpoint-v1\tpid={}\t{values}",
++                std::process::id()
++            );
++        }
++        let mut io_count = 0;
++        for row in trace
++            .io
++            .iter()
++            .skip(cursors[2])
++            .take(PAGE_LIMIT)
++            .map_while(Row::snapshot)
++        {
++            let values = row.map(|value| value.to_string()).join(",");
++            let _ = writeln!(
++                output,
++                "riffdb-wp810-io-v1\tpid={}\t{values}",
++                std::process::id()
++            );
++            io_count += 1;
++        }
++        *cursors = [snapshot.next[0], snapshot.next[1], cursors[2] + io_count];
++        if previous == *cursors || !final_snapshot {
++            let _ = writeln!(
++                output,
++                "riffdb-wp810-coverage-v1\tpid={}\tfinal={}\tgroups={}\tcheckpoints={}\tio={}\treserved_groups={}\treserved_checkpoints={}\treserved_io={}\tdropped_groups={}\tdropped_checkpoints={}\tdropped_io={}",
++                std::process::id(),
++                u8::from(final_snapshot),
++                cursors[0],
++                cursors[1],
++                cursors[2],
++                snapshot.reserved[0],
++                snapshot.reserved[1],
++                trace.used_io.load(Ordering::Relaxed),
++                snapshot.dropped[0],
++                snapshot.dropped[1],
++                snapshot.dropped[2]
++            );
++            break;
++        }
++    }
++    let _ = output.flush();
++}
++
++#[derive(Clone, Copy)]
++pub(crate) struct Group(usize);
++
++pub(crate) fn submitted(last: u64, commands: u16, at: Instant) -> Option<Group> {
++    let trace = trace()?;
++    if commands == 0 {
++        return None;
++    }
++    let first = last.checked_sub(u64::from(commands) - 1)?;
++    let index = trace.reserve(&trace.used_groups, trace.groups.len(), 0)?;
++    let row = &trace.groups[index];
++    for (slot, value) in [
++        (0, index as u64 + 1),
++        (1, first),
++        (2, last),
++        (3, u64::from(commands)),
++        (4, trace.time(at)),
++        (16, trace.active_checkpoint.load(Ordering::Relaxed)),
++    ] {
++        row.set(slot, value);
++    }
++    Some(Group(index))
++}
++
++impl Group {
++    pub(crate) fn io_phases(self, encode: Instant, write: Instant, write_end: Instant) {
++        if let Some(trace) = trace() {
++            let row = &trace.groups[self.0];
++            row.set(17, trace.time(encode));
++            row.set(18, trace.time(write));
++            row.set(19, trace.time(write_end));
++        }
++    }
++    pub(crate) fn sync(self, begin: Instant, end: Instant, flush: u64, failed: bool) {
++        if let Some(trace) = trace() {
++            let row = &trace.groups[self.0];
++            row.set(5, trace.time(begin));
++            row.set(6, trace.time(end));
++            row.set(7, flush);
++            if failed {
++                row.set(15, 1);
++            }
++        }
++    }
++
++    pub(crate) fn wait_begin(self, at: Instant) -> bool {
++        trace().is_some_and(|trace| {
++            let row = &trace.groups[self.0];
++            row.values[14].fetch_add(1, Ordering::Relaxed);
++            row.values[8]
++                .compare_exchange(0, trace.time(at), Ordering::Relaxed, Ordering::Relaxed)
++                .is_ok()
++        })
++    }
++
++    pub(crate) fn wait_end(self, at: Instant, first: bool, failed: bool) {
++        if let Some(trace) = trace() {
++            let row = &trace.groups[self.0];
++            if first {
++                row.set(9, trace.time(at));
++            }
++            if failed {
++                row.set(15, 1);
++                row.ready.store(true, Ordering::Release);
++            }
++        }
++    }
++
++    pub(crate) fn drain(self, required: bool) {
++        if let Some(trace) = trace() {
++            let row = &trace.groups[self.0];
++            row.set(12, if required { 1 } else { 2 });
++            row.set(13, trace.active_checkpoint.load(Ordering::Relaxed));
++        }
++    }
++
++    pub(crate) fn published(self, begin: Instant, end: Instant, failed: bool) {
++        if let Some(trace) = trace() {
++            let row = &trace.groups[self.0];
++            row.set(10, trace.time(begin));
++            row.set(11, trace.time(end));
++            if failed {
++                row.set(15, 1);
++            }
++            row.ready.store(true, Ordering::Release);
++        }
++    }
++}
++
++pub(crate) fn next_flush() -> u64 {
++    trace().map_or(0, |trace| trace.flushes.fetch_add(1, Ordering::Relaxed) + 1)
++}
++
++pub(crate) fn checkpoint_started(transitions: u64, commands: u64, bytes: u64, triggers: [bool; 4]) {
++    if let Some(trace) = trace() {
++        let Some(index) = trace.reserve(&trace.used_checkpoints, trace.checkpoints.len(), 1) else {
++            return;
++        };
++        let id = index as u64 + 1;
++        let row = &trace.checkpoints[index];
++        for (slot, value) in [
++            (0, id),
++            (1, trace.time(Instant::now())),
++            (4, transitions),
++            (5, commands),
++            (6, bytes),
++        ] {
++            row.set(slot, value);
++        }
++        row.set(
++            7,
++            triggers
++                .into_iter()
++                .enumerate()
++                .fold(0, |bits, (i, yes)| bits | (u64::from(yes) << i)),
++        );
++        trace.active_checkpoint.store(id, Ordering::Relaxed);
++    }
++}
++
++pub(crate) fn checkpoint_finished(stage: usize) {
++    if let Some(trace) = trace() {
++        let id = if stage == 2 {
++            trace.active_checkpoint.load(Ordering::Relaxed)
++        } else {
++            trace.active_checkpoint.swap(0, Ordering::Relaxed)
++        };
++        if id == 0 {
++            return;
++        }
++        let row = &trace.checkpoints[id as usize - 1];
++        row.set(
++            stage,
++            if stage == 8 {
++                1
++            } else {
++                trace.time(Instant::now())
++            },
++        );
++        if stage != 2 {
++            row.ready.store(true, Ordering::Release);
++        }
++    }
++}
++
++/// Completed diagnostic rows; numeric sequence identities only. Not durable evidence.
++#[doc(hidden)]
++struct WriterCorrelationSnapshotV1 {
++    /// Resume cursors for the next bounded page.
++    pub next: [usize; 2],
++    /// id, first/last sequence, commands, submit, sync begin/end, flush id,
++    /// first wait begin/end, publication begin/end, drain flag (1=yes, 2=no),
++    /// checkpoint at drain, wait calls, failed, checkpoint at submission,
++    /// encoding begin, positional write begin/end.
++    /// All times are nanoseconds on one process-local monotonic clock.
++    pub groups: Vec<[u64; 20]>,
++    /// id, start/materialized/installed ns, transitions, commands, bytes,
++    /// crossed-limit bits (transition/byte/physical/reanchor), failed,
++    /// materializer entry, transaction ready, durable commit begin.
++    pub checkpoints: Vec<[u64; 12]>,
++    /// Group/checkpoint/I/O overflows; nonzero invalidates correlation coverage.
++    pub dropped: [u64; 3],
++    /// Reserved rows; compare against emitted rows after clean shutdown.
++    pub reserved: [usize; 2],
++}
++
++/// Bounded observer page. No authority, state mutation or disk I/O.
++#[doc(hidden)]
++fn writer_correlation_snapshot_v1(start: [usize; 2]) -> Option<WriterCorrelationSnapshotV1> {
++    let trace = trace()?;
++    fn page<const N: usize>(rows: &[Row<N>], start: usize) -> Vec<[u64; N]> {
++        rows.iter()
++            .skip(start)
++            .take(PAGE_LIMIT)
++            .map_while(Row::snapshot)
++            .collect()
++    }
++    let groups = page(&trace.groups, start[0]);
++    let checkpoints = page(&trace.checkpoints, start[1]);
++    Some(WriterCorrelationSnapshotV1 {
++        next: [start[0] + groups.len(), start[1] + checkpoints.len()],
++        groups,
++        checkpoints,
++        dropped: std::array::from_fn(|i| trace.dropped[i].load(Ordering::Relaxed)),
++        reserved: [
++            trace.used_groups.load(Ordering::Relaxed),
++            trace.used_checkpoints.load(Ordering::Relaxed),
++        ],
++    })
++}
++
++#[cfg(test)]
++mod tests {
++    use super::*;
++
++    // req: PERF-018
++    #[test]
++    fn checkpoint_trace_has_a_fixed_record_memory_ceiling() {
++        let bytes = GROUP_LIMIT * std::mem::size_of::<Row<20>>()
++            + CHECKPOINT_LIMIT * std::mem::size_of::<Row<12>>()
++            + IO_LIMIT * std::mem::size_of::<Row<9>>();
++        assert!(bytes <= 352 * 1024 * 1024);
++    }
++
++    // req: STO-001, PERF-018
++    #[test]
++    fn full_io_trace_preserves_the_operation_and_never_overwrites_evidence() {
++        let trace = Trace::new(1, 1, 1);
++        let error = trace
++            .observe_io(2, 0, || {
++                Err::<(), _>(std::io::Error::from(std::io::ErrorKind::StorageFull))
++            })
++            .unwrap_err();
++        assert_eq!(error.kind(), std::io::ErrorKind::StorageFull);
++        let first = trace.io[0].snapshot().unwrap();
++        assert_eq!((first[3], first[6], first[7]), (2, 0, 1));
++        assert!(first[4] <= first[5]);
++        assert_eq!(trace.observe_io(1, 7, || Ok(23)).unwrap(), 23);
++        assert_eq!(trace.dropped[2].load(Ordering::Relaxed), 1);
++        assert_eq!(trace.io[0].snapshot().unwrap(), first);
++    }
++
++    // req: PERF-018
++    #[test]
++    fn checkpoint_io_context_is_thread_local_and_restores_on_error() {
++        let previous = PHASE.replace((7, 3));
++        let trace = Trace::new(1, 1, 2);
++        let row = std::thread::scope(|scope| {
++            scope
++                .spawn(|| {
++                    trace.observe_io(1, 64, || Ok(())).unwrap();
++                    trace.io[0].snapshot().unwrap()
++                })
++                .join()
++                .unwrap()
++        });
++        assert_eq!((row[1], row[2]), (0, 0));
++        let guard = CheckpointPhase(Some(previous));
++        trace
++            .observe_io(2, 0, || Err::<(), _>(std::io::Error::other("test")))
++            .unwrap_err();
++        assert_eq!(
++            (
++                trace.io[1].snapshot().unwrap()[1],
++                trace.io[1].snapshot().unwrap()[2]
++            ),
++            (7, 3)
++        );
++        drop(guard);
++        assert_eq!(PHASE.get(), previous);
++    }
++
++    // req: REP-007
++    #[test]
++    fn correlation_bounds_fail_observability_without_overwriting_rows() {
++        let trace = Trace::new(1, 1, 1);
++        assert_eq!(trace.reserve(&trace.used_groups, 1, 0), Some(0));
++        trace.groups[0].set(2, 42);
++        assert_eq!(trace.groups[0].snapshot(), None);
++        trace.groups[0].ready.store(true, Ordering::Release);
++        assert_eq!(trace.reserve(&trace.used_groups, 1, 0), None);
++        assert_eq!(trace.used_groups.load(Ordering::Relaxed), 1);
++        assert_eq!(trace.dropped[0].load(Ordering::Relaxed), 1);
++        assert_eq!(trace.groups[0].snapshot().expect("published row")[2], 42);
++    }
++
++    // req: REP-007
++    #[test]
++    fn completed_row_acquire_observes_cross_thread_evidence() {
++        let row = Row::<20>::default();
++        let partial = std::sync::Barrier::new(2);
++        let finish = std::sync::Barrier::new(2);
++        std::thread::scope(|scope| {
++            let writer = scope.spawn(|| {
++                for slot in 0..8 {
++                    row.set(slot, slot as u64 + 1);
++                }
++                partial.wait();
++                finish.wait();
++                for slot in 8..20 {
++                    row.set(slot, slot as u64 + 1);
++                }
++                row.ready.store(true, Ordering::Release);
++            });
++            partial.wait();
++            assert_eq!(row.snapshot(), None, "partial evidence is never emitted");
++            finish.wait();
++            while !row.ready.load(Ordering::Acquire) {
++                std::thread::yield_now();
++            }
++            assert_eq!(row.snapshot(), Some(std::array::from_fn(|i| i as u64 + 1)));
++            writer.join().expect("writer");
++        });
++    }
++}
+diff --git a/examples/app-baseline/core/src/raw_tail.rs b/examples/app-baseline/core/src/raw_tail.rs
+new file mode 100644
+index 000000000..dd608a944
+--- /dev/null
++++ b/examples/app-baseline/core/src/raw_tail.rs
+@@ -0,0 +1,207 @@
++//! Private bounded diagnostic: measured latency samples, emitted only after join.
++use std::io::Write;
++use std::path::Path;
++
++pub(crate) const LIMIT: usize = 32_768;
++pub(crate) const MAX_WORKERS: usize = 32;
++
++pub(crate) struct Capture {
++    values: Vec<u64>,
++    sequences: Vec<u64>,
++    retained: usize,
++    dropped: u64,
++}
++
++impl Capture {
++    pub(crate) fn new() -> Self {
++        Self {
++            values: vec![0; LIMIT],
++            sequences: vec![0; LIMIT],
++            retained: 0,
++            dropped: 0,
++        }
++    }
++
++    pub(crate) fn record(&mut self, elapsed_ns: u64, commit_sequence: Option<u64>) {
++        if self.retained < LIMIT {
++            self.values[self.retained] = elapsed_ns.max(1);
++            self.sequences[self.retained] = commit_sequence.unwrap_or(0);
++            self.retained += 1;
++        } else {
++            self.dropped = self.dropped.saturating_add(1);
++        }
++    }
++
++    fn samples(&self) -> &[u64] {
++        &self.values[..self.retained]
++    }
++}
++
++fn report(captures: &[Capture], expected: u64) -> Result<serde_json::Value, String> {
++    if captures.is_empty() || captures.len() > MAX_WORKERS {
++        return Err("raw-tail worker bound violated".to_owned());
++    }
++    let count = captures.iter().map(|c| c.retained as u64).sum::<u64>();
++    let dropped = captures.iter().map(|c| c.dropped).sum::<u64>();
++    let missing = captures
++        .iter()
++        .map(|c| {
++            c.sequences[..c.retained]
++                .iter()
++                .filter(|sequence| **sequence == 0)
++                .count()
++        })
++        .sum::<usize>();
++    let mut slowest = captures
++        .iter()
++        .enumerate()
++        .flat_map(|(worker, capture)| {
++            capture
++                .samples()
++                .iter()
++                .enumerate()
++                .map(move |(ordinal, value)| (*value, worker, ordinal))
++        })
++        .collect::<Vec<_>>();
++    slowest.sort_unstable_by(|a, b| b.0.cmp(&a.0).then(a.1.cmp(&b.1)).then(a.2.cmp(&b.2)));
++    slowest.truncate(20);
++    Ok(serde_json::json!({
++        "schema": "private.wp810-request-tail/v2",
++        "scope": "measured requests only; all outcomes; per-worker completion order; no global chronological ordering claim",
++        "valid": dropped == 0 && count == expected && missing == 0,
++        "missing_commit_sequences": missing,
++        "sample_count": count,
++        "expected_sample_count": expected,
++        "dropped_samples": dropped,
++        "maximum_workers": MAX_WORKERS,
++        "maximum_samples_per_worker": LIMIT,
++        "workers": captures.iter().enumerate().map(|(id, c)| serde_json::json!({
++            "worker": id, "dropped_samples": c.dropped, "samples_ns": c.samples(),
++            "commit_sequences": &c.sequences[..c.retained],
++        })).collect::<Vec<_>>(),
++        "slowest_20": slowest.iter().map(|(ns, worker, ordinal)| serde_json::json!({
++            "elapsed_ns": ns, "worker": worker, "worker_ordinal": ordinal,
++            "commit_sequence": captures[*worker].sequences[*ordinal],
++        })).collect::<Vec<_>>(),
++    }))
++}
++
++pub(crate) fn write_report(
++    directory: &Path,
++    captures: &[Capture],
++    expected: u64,
++) -> Result<(), String> {
++    let value = report(captures, expected)?;
++    let path = directory.join("raw-request-tail.json");
++    let mut file = std::fs::OpenOptions::new()
++        .write(true)
++        .create_new(true)
++        .open(path)
++        .map_err(|_| "raw-tail output unavailable or already exists".to_owned())?;
++    serde_json::to_writer(&mut file, &value)
++        .map_err(|_| "raw-tail serialization failed".to_owned())?;
++    file.write_all(b"\n")
++        .and_then(|()| file.sync_all())
++        .map_err(|_| "raw-tail output write failed".to_owned())?;
++    if value["valid"] != true {
++        return Err(
++            "raw-tail overflow or sample-count mismatch; partial evidence retained".to_owned(),
++        );
++    }
++    Ok(())
++}
++
++#[cfg(test)]
++mod tests {
++    use super::*;
++
++    // req: PERF-018
++    #[test]
++    fn raw_values_and_worker_order_survive_even_in_one_histogram_bucket() {
++        let mut a = Capture::new();
++        let mut b = Capture::new();
++        for ns in [71_303_168, 75_497_471, 73_000_003] {
++            a.record(ns, Some(ns));
++        }
++        for ns in [72_000_019, 74_999_997] {
++            b.record(ns, Some(ns));
++        }
++        let value = report(&[a, b], 5).unwrap();
++        assert_eq!(value["valid"], true);
++        assert_eq!(
++            value["workers"][0]["samples_ns"],
++            serde_json::json!([71_303_168, 75_497_471, 73_000_003])
++        );
++        assert_eq!(
++            value["workers"][1]["samples_ns"],
++            serde_json::json!([72_000_019, 74_999_997])
++        );
++        let top: Vec<_> = value["slowest_20"]
++            .as_array()
++            .unwrap()
++            .iter()
++            .map(|v| v["elapsed_ns"].as_u64().unwrap())
++            .collect();
++        assert_eq!(
++            top,
++            vec![75_497_471, 74_999_997, 73_000_003, 72_000_019, 71_303_168]
++        );
++    }
++
++    // req: PERF-018
++    #[test]
++    fn slowest_twenty_are_exact_across_workers_and_ties_keep_identity() {
++        let mut a = Capture::new();
++        let mut b = Capture::new();
++        for ns in 1..=30 {
++            a.record(ns, Some(ns));
++            b.record(ns, Some(ns + 30));
++        }
++        let value = report(&[a, b], 60).unwrap();
++        let top = value["slowest_20"].as_array().unwrap();
++        assert_eq!(top.len(), 20);
++        assert_eq!(top[0]["elapsed_ns"], 30);
++        assert_eq!(top[0]["worker"], 0);
++        assert_eq!(top[1]["elapsed_ns"], 30);
++        assert_eq!(top[1]["worker"], 1);
++        assert_eq!(top[19]["elapsed_ns"], 21);
++        assert_eq!(value["sample_count"], 60);
++    }
++
++    // req: PERF-018
++    #[test]
++    fn overflow_and_wrong_population_invalidate_instead_of_silently_truncating() {
++        let mut a = Capture::new();
++        for _ in 0..LIMIT + 3 {
++            a.record(5, Some(1));
++        }
++        let value = report(&[a], (LIMIT + 3) as u64).unwrap();
++        assert_eq!(value["valid"], false);
++        assert_eq!(value["dropped_samples"], 3);
++        assert_eq!(
++            value["workers"][0]["samples_ns"].as_array().unwrap().len(),
++            LIMIT
++        );
++        let mut b = Capture::new();
++        b.record(10, Some(1));
++        assert_eq!(report(&[b], 2).unwrap()["valid"], false);
++    }
++
++    // req: REP-007
++    #[test]
++    fn commit_sequence_is_retained_with_its_duration_and_missing_is_invalid() {
++        let mut capture = Capture::new();
++        capture.record(25, Some(901));
++        capture.record(45, Some(902));
++        let value = report(&[capture], 2).unwrap();
++        assert_eq!(value["valid"], true);
++        assert_eq!(
++            value["workers"][0]["commit_sequences"],
++            serde_json::json!([901, 902])
++        );
++        assert_eq!(value["slowest_20"][0]["commit_sequence"], 902);
++        let mut missing = Capture::new();
++        missing.record(25, None);
++        assert_eq!(report(&[missing], 1).unwrap()["valid"], false);
++    }
++}
