@@ -37,6 +37,9 @@ review_triggers:
 ---
 # ADR-0260: Bounded Dirty Startup For V2 Sources
 
+Amendment 1 accepted 2026-09-25 by the maintainer in session as exact text:
+Decision 2's refusal scope, recorded in Decision 2. No other decision changes.
+
 ## Context
 
 ADR-0182 (accepted 2026-09-01) makes a startup without a valid clean-close
@@ -75,6 +78,14 @@ such a row either, since it would lack any index entry.
    source evidence against that fence. A missing, contradictory, or corrupt
    admission or fence refuses before readiness. Validation never synthesizes
    Active and never clears a fence.
+   Amendment 1: Decision 2's "contradictory" means contradictory with what
+   point lookups read. Before readiness the bounded path refuses a missing
+   admission, an admission of another lineage, a corrupt admission, and a
+   referenced fence record or receipt that is missing or differs from its
+   exact reconstruction. An admission that reads Active while an unreferenced
+   fence row of its lineage exists cannot be seen by any point lookup; like
+   every stray fence row it is corruption, never a crash state, and Decision
+   3's scrub refuses it with Decision 4's authority withdrawal.
 3. The exhaustive retained-fence validation (no fence of the current lineage
    other than the referenced one, none from the same or a later incarnation
    under another lineage) runs in the background scrub and in the offline
@@ -144,16 +155,3 @@ such a row either, since it would lack any index entry.
   with incident, offline scrub refusal.
 - The existing V2 clean-certificate decline tests, re-baselined to route to
   the Decision 1 path.
-
-## Amendment 1 — Decision 2's refusal scope (Accepted 2026-09-25)
-
-The maintainer accepted this exact text in session on 2026-09-25.
-
-Decision 2's "contradictory" means contradictory with what point lookups
-read. Before readiness the bounded path refuses a missing admission, an
-admission of another lineage, a corrupt admission, and a referenced fence
-record or receipt that is missing or differs from its exact reconstruction.
-An admission that reads Active while an unreferenced fence row of its lineage
-exists cannot be seen by any point lookup; like every stray fence row it is
-corruption, never a crash state, and Decision 3's scrub refuses it with
-Decision 4's authority withdrawal. No other decision changes.
