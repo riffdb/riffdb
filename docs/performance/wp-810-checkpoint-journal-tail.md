@@ -334,7 +334,8 @@ The one authorized remote attempt on `3514c4af2` stopped at its fixed
 900-second cell deadline during full-dataset seeding, before warmup or the
 90-second c32 workload. The last seed progress report was 7,837 of 19,220
 commands at 785.391 seconds; batch-completion reporting does not establish
-the final applied-command count. The slow seed's cause is unestablished.
+the final applied-command count. This remote trace does not establish the
+slow seed's cause; the subsequent local CPU diagnosis is recorded below.
 There was no retry or deadline extension.
 
 The last periodic checkpoint snapshot, at process elapsed 599.001 seconds,
@@ -354,6 +355,52 @@ locally before removing the remote source, build and data directories. The
 owned processes stopped, firewall and prior timer states were verified
 restored, and the host was released. This attempt does not resolve WP-810's
 shared delay or WP-749's prerequisite.
+
+#### Local seed diagnosis
+
+A bounded local reproduction on production source `09188882f`, with no
+checkpoint-I/O observation patch, identifies repeated admission-history
+decoding during full-dataset seeding. The 120-second frame-pointer CPU sample
+retains 12,188 samples and loses none. Inclusive
+`decode_command_segment_v1` samples account for 52.22% on the command writer
+and 41.34% on the idempotency inspection thread: 93.56% across those disjoint
+threads. These are sampled CPU proportions, not a writer wall-clock tiling.
+Nested call-stack percentages must not be added.
+
+`AdmissionRepository::lookup_admission_group` pins one composite snapshot,
+but each novel identity independently decodes the same bounded suffix after
+the derived-member, durable-locator and index-coverage checks miss. The cold
+index state is supported behavior after bounded startup. No checkpoint
+selection occurs in this 120-second sample, so checkpoint I/O cannot explain
+the sampled CPU work. A separate observer-disabled release attempt records
+its first byte-triggered checkpoint at 158 seconds and installation at
+169 seconds; it is not evidence that the entire seed runs without checkpoints.
+
+The regression test `cold_admission_batch_scans_its_pinned_suffix_once`
+initially records nine scans for ten lookups against one snapshot. A local
+prototype reuses only the requested keys proved absent by that complete
+suffix scan, within that one call. Each identity still checks its derived
+member and exact durable locator first. Positive suffix matches retain their
+existing decoding and validation path. The batch stores no segment payloads,
+warms no population index, and discards its results on return. This is not
+the persistent fresh-locator coverage removed by ADR-0236.
+
+Single-request writer rechecks also account for substantial CPU and cannot
+share this batch's scan. The prototype passes all 185 storage-recovery tests
+and eight scoped acceptance checks. A second fixed 120-second CPU sample
+loses no samples, but still does not complete full seeding; writer rechecks
+account for 97.39% of its samples. These proportions identify the work left
+after batch reuse, not a qualified speedup. The tested patch is retained as
+`release/evidence/wp-810/cold-admission-batch-prototype.patch`, outside the
+production candidate. No admission optimization is selected as a WP-810
+mitigation and no setup-success claim is made.
+
+Passing the regression test does not establish that
+the prototype fixes setup or improves checkpoint latency. The reproduction
+uses Rust 1.98.1 and a local AMD Ryzen 9 7950X with the required accelerators;
+it has no host-validity qualification or performance verdict. Source, binary,
+sampling and retained-evidence identities are in
+`release/evidence/wp-810/seed-diagnosis-20260926.json`.
 
 #### Integration qualification
 

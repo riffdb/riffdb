@@ -12,6 +12,24 @@ stopped during seeding at its 900-second deadline, before the timed workload;
 its partial trace is not complete measurement evidence. The candidate's
 existing comparison keeps its original source identities and verdict.
 
+The subsequent local seed diagnosis is banked in
+[`../seed-diagnosis-20260926.json`](../seed-diagnosis-20260926.json).
+`retained-measurement-protocol.json` prepares a separate, unexecuted attempt
+using the same release binaries. `run_retained.py` checks both executable
+digests against the build receipt **and** local functional qualification,
+checks the frozen source bundle and observer patch, and performs no build.
+`supervise_retained.py` owns the same isolation, lease and cleanup lifecycle.
+The full-cell deadline is fixed at 3,600 seconds to accommodate slow full
+seeding; warmup remains 15 seconds and measurement remains 90 seconds. It
+requires at least 3,900 seconds remaining in a fresh exclusive reservation,
+stops at the first failure and cannot extend its deadline. The earlier failed
+attempt remains evidence. The admission prototype is not part of either
+binary or this diagnostic.
+
+The periodic checkpoint-progress reporter stops after 600 samples and may
+expire during setup. Completeness still requires the final observer footer
+and pre-close census; a partial periodic snapshot cannot replace either.
+
 ## Question and production path
 
 The retained trace places long journal syncs before checkpoint materialization

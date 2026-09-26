@@ -12,7 +12,7 @@ import build_run
 
 
 class Retention(unittest.TestCase):
-    def exercise(self, exit_code):
+    def exercise(self, exit_code, cell_deadline_seconds=900):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             cell = root / 'cell'
@@ -27,9 +27,9 @@ class Retention(unittest.TestCase):
                  patch.object(build_run.tempfile, 'mkdtemp', return_value=str(ram)):
                 if exit_code:
                     with self.assertRaisesRegex(AssertionError, 'cell failed'):
-                        build_run.run_in_ram(command, cell, os.environ.copy())
+                        build_run.run_in_ram(command, cell, os.environ.copy(), cell_deadline_seconds)
                 else:
-                    build_run.run_in_ram(command, cell, os.environ.copy())
+                    build_run.run_in_ram(command, cell, os.environ.copy(), cell_deadline_seconds)
             self.assertEqual((cell / 'run.log').read_text(), 'retained diagnostic\n')
             self.assertFalse(ram.exists())
             self.assertTrue(cell.exists())
@@ -39,6 +39,13 @@ class Retention(unittest.TestCase):
 
     def test_failure_retains_ram_output_without_retry(self):
         self.exercise(7)
+
+    def test_bounded_setup_budget_keeps_failed_output(self):
+        self.exercise(7, cell_deadline_seconds=3600)
+
+    def test_unfrozen_deadline_is_refused_before_launch(self):
+        with self.assertRaisesRegex(AssertionError, 'unfrozen cell deadline'):
+            build_run.run_in_ram([], Path('.'), {}, 3601)
 
 
 if __name__ == '__main__':

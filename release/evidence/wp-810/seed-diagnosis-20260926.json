@@ -1,0 +1,114 @@
+{
+  "schema": "wp810-local-seed-diagnosis-v1",
+  "date": "2026-09-26",
+  "purpose": "Local CPU diagnosis of full-dataset seed; not qualified latency or throughput evidence",
+  "source_revision": "09188882fd12d5f3f57629d49ba9fce45fb0db1f",
+  "observer_patch_applied": false,
+  "toolchain": "Rust 1.98.1",
+  "build_profile": "profiling, target-cpu=x86-64, force-frame-pointers=yes",
+  "hardware": {
+    "cpu_model": "AMD Ryzen 9 7950X 16-Core Processor",
+    "logical_cpus": 32,
+    "accelerators": {
+      "sha_ni": true,
+      "aes": true,
+      "pclmulqdq": true,
+      "sse4_2": true
+    },
+    "qualification": "unqualified local reproduction; CPU sample attribution only, no latency delta verdict"
+  },
+  "workload": "Full app-baseline seed-only, no PostgreSQL; planned 120-second sample limit",
+  "profiler": "perf record, cpu-clock:u, 99 Hz, frame-pointer call chains, 32 mmap pages",
+  "samples": 12188,
+  "lost_samples": 0,
+  "decode_attribution": [
+    {
+      "thread": "riffdb-command-",
+      "inclusive_sample_percent": 52.22,
+      "symbol": "decode_command_segment_v1"
+    },
+    {
+      "thread": "riffdb-idempote",
+      "inclusive_sample_percent": 41.34,
+      "symbol": "decode_command_segment_v1"
+    }
+  ],
+  "combined_disjoint_thread_sample_percent": 93.56,
+  "findings": [
+    "Novel identity lookup reaches the bounded published-history fallback while command-derived indexes are cold.",
+    "lookup_admission_group pins one composite read but independently decodes its suffix for each requested identity.",
+    "Single-request writer rechecks also scan the suffix; batch reuse cannot eliminate these."
+  ],
+  "limits": [
+    "Inclusive CPU samples are not group wall time; nested percentages must not be added.",
+    "The full seed did not complete within this fixed sampling window.",
+    "The remote failed attempt has no equivalent call stacks; no remote causal or latency verdict is inferred.",
+    "No checkpoint selection was observed in this 120-second profile. A separate 180-second observer-disabled release attempt recorded its first byte-triggered selection at process elapsed 158000 ms and installation at 169000 ms."
+  ],
+  "binaries": {
+    "daemon_sha256": "e91b977e4ac92129b06864146f995f99291f4f9ee497d7db667df10504733613",
+    "runner_sha256": "83796dd015a84f0380a723f69c6dec6d9cd3f2bb863dda233adad0c7288ba7b5"
+  },
+  "retained_private_artifacts": {
+    "perf.data": "263bc771d59fd8e9265d1d9ad803f41981a26484edb5b3cf1ad6166df560e766",
+    "run.log": "e2eec8ca39f57bbaf70855a7cbb44af492457caafa5def42722c6ffd98c256b5",
+    "attempt.json": "51db17cf609c7b98f0a21741ea44e8b4489ce0a07b673b70aed956ba2aa4de6f",
+    "execution.json": "510aa092eefdb4545bbd015ce2fd97539d708a40cc363fb786b70a98d70074e7",
+    "callers-no-inline.txt": "9a5c651e89eb77d4c8817cc82ad17a8d7ff43cc749fed41d92b9fa170ea1747f",
+    "callgraph-no-inline.txt": "55ae02ec0e5ed22ed3bef89171dfb3dbc46ecf1dec15110dd6fad23092956b88"
+  },
+  "prototype": {
+    "disposition": "Retained separately as a tested prototype; not applied to the production candidate or selected as a WP-810 mitigation.",
+    "patch_file": "cold-admission-batch-prototype.patch",
+    "patch_sha256": "da4ca612493bf234601372cd6ad52a68bf7c9ca6973182da23fd9e993ccf62f2",
+    "base_revision": "09188882fd12d5f3f57629d49ba9fce45fb0db1f",
+    "daemon_sha256": "dc683d75f9509e98ab1fb926e617d8ea7fc152123822da5b6552b0466f2aba71",
+    "runner_sha256": "83796dd015a84f0380a723f69c6dec6d9cd3f2bb863dda233adad0c7288ba7b5",
+    "sampling_window_seconds": 120,
+    "lost_samples": 0,
+    "full_seed_completed": false,
+    "decode_attribution": [
+      {
+        "thread": "riffdb-command-",
+        "inclusive_sample_percent": 92.39
+      },
+      {
+        "thread": "riffdb-idempote",
+        "inclusive_sample_percent": 1.44
+      }
+    ],
+    "writer_recheck_inclusive_sample_percent": 97.39,
+    "checks": {
+      "initial_regression": "Fails: 9 actual suffix scans, 1 required.",
+      "expanded_regression": "Pass: mixed pending/outcome/absent/multiple-match results, one actual scan, no reuse across calls, later publications visible, no population index rebuild.",
+      "storage_recovery_matrix": {
+        "passed": 185,
+        "failed": 0
+      },
+      "scoped_acceptance_without_tests": {
+        "passed": 8,
+        "failed": 0
+      }
+    },
+    "limits": [
+      "The bounded profile did not complete full seeding; setup is not declared unblocked.",
+      "CPU proportions changed; they do not establish a latency or throughput delta.",
+      "Single-request rechecks remain outside the batch reuse."
+    ],
+    "retained_private_artifacts": {
+      "perf.data": "68ead6a25203c31c53afc796e7a80517fe4ce7f097170d6e87825e7b16011464",
+      "run.log": "1c21ccf6bfb6b39f9ff6b10d03de478dadaa737eecd7d73f25749bd7ab7df9ce",
+      "attempt.json": "4f8648b9914b280b92eddaf13ed8349f42d363ec7e84ab317e098083349fac9c",
+      "execution.json": "643a39c533d6047d5fdc3028e3decdaaa815ffb845469ea3e512a5ae2c1b8c3b",
+      "callers-no-inline.txt": "458fdc5081d9b3c66b7260946857ae47ccc072b154770f1c39c5f251d423a960"
+    },
+    "check_artifacts": {
+      "batch-regression-before.log": "bca4281e626f3b3c43e31303debfbd923a11fe4ab7ccce2855295340b9da686e",
+      "batch-regression-after.log": "ec97469f1bcbeeb2a6679790183f652c4add5bd452fe5d075b4f6e3ba1553371",
+      "recovery-suite-after.log": "28e764f502f8de38ef641ff531fbc9f5f97a62cf851861cef4ae477dac6cba0e",
+      "prototype-acceptance.log": "1347ff936b8e13a3d6c485f557fd45b68b5e292981f68c86e883ee5243724d2c"
+    },
+    "build_patch_sha256": "40587384e8025127ab322504f688652dd7fedddd1ba0fd18e22ce426f396b9b5",
+    "patch_normalization": "The public patch omits whitespace-only context markers on four empty lines; the exact build patch is retained privately. Applying either patch produces identical source bytes."
+  }
+}

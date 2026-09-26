@@ -86,7 +86,8 @@ def validity(path,env,baseline=None):
     assert result.returncode==0 and json.loads(path.read_text())['valid'] is True,path.name
 
 
-def run_in_ram(command,cell,env):
+def run_in_ram(command,cell,env,cell_deadline_seconds=900):
+    assert cell_deadline_seconds in (900,3600), 'unfrozen cell deadline'
     assert subprocess.check_output(['findmnt','-n','-o','FSTYPE','--target','/dev/shm'],text=True).strip()=='tmpfs'
     available=os.statvfs('/dev/shm')
     assert available.f_bavail*available.f_frsize >= 1024*1024*1024,'insufficient tmpfs headroom'
@@ -96,7 +97,7 @@ def run_in_ram(command,cell,env):
     try:
         with (ram/'run.log').open('x') as out:
             child=subprocess.Popen(command,cwd=SOURCE,env=env,stdout=out,stderr=subprocess.STDOUT,start_new_session=True)
-            deadline=time.monotonic()+min(900,remaining()-90)
+            deadline=time.monotonic()+min(cell_deadline_seconds,remaining()-90)
             while True:
                 try:
                     code=child.wait(timeout=1)
@@ -119,9 +120,10 @@ def run_in_ram(command,cell,env):
         shutil.rmtree(ram)
 
 
-def measure(env,receipt):
+def measure(env,receipt,cell_deadline_seconds=900):
     from analyze_materialization import analyze
-    assert remaining()>1200,'insufficient reservation for complete fixed diagnostic'
+    assert cell_deadline_seconds in (900,3600), 'unfrozen cell deadline'
+    assert remaining()>cell_deadline_seconds+300,'insufficient reservation for complete fixed diagnostic'
     assert os.readlink('/proc/self/ns/pid')==subprocess.check_output(['sudo','-n','readlink','/proc/1/ns/pid'],text=True).strip()
     cell=ROOT/'results/01-materialization'
     cell.mkdir(parents=True)
@@ -139,11 +141,12 @@ def measure(env,receipt):
              '--load-duration-secs','90','--load-warmup-secs','15','--reps','1','--skip-postgres',
              '--database-root',str(ROOT/'perf-db'),'--output',str(cell/'report.json')]
     write(cell/'attempt.json',dict(started_at=now(),command=command,source_revision=receipt['source_freeze']['revision'],
-                                  daemon_sha256=sha(daemon),runner_sha256=sha(runner)))
+                                  daemon_sha256=sha(daemon),runner_sha256=sha(runner),
+                                  cell_deadline_seconds=cell_deadline_seconds))
     time.sleep(10) # measurement cooldown; never correctness synchronization
     validity(cell/'preflight.json',cellenv)
     started=time.monotonic()
-    run_in_ram(command,cell,cellenv)
+    run_in_ram(command,cell,cellenv,cell_deadline_seconds)
     write(cell/'execution.json',dict(exit_code=0,elapsed_seconds=time.monotonic()-started,finished_at=now(),
                                    daemon_sha256=sha(daemon),runner_sha256=sha(runner)))
     time.sleep(5)
