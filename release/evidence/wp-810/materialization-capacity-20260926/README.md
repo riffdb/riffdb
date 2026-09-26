@@ -1,6 +1,6 @@
 # WP-810 full-workload diagnostic capacity
 
-This is a prospective replacement for the undersized checkpoint-I/O probe.
+This is the qualified replacement for the undersized checkpoint-I/O probe.
 The earlier source, binaries, 4,194,304-record patch and failed evidence remain
 in `../materialization-probe-20260926/` and
 [`../materialization-overflow-20260926.json`](../materialization-overflow-20260926.json).
@@ -57,5 +57,31 @@ The 998,090,680-byte log also exceeds the old 768 MiB log ceiling and fits the
 new 2 GiB ceiling. The trace exercises 3,481,527 more records than the failed
 remote cell, leaving 3,852,789 entries unused in the new fixed buffer.
 [`qualification.json`](qualification.json) records the exact binaries and proofs.
-No new remote interval or remote run is authorized by this preparation.
-WP-810 remains open pending a reviewed resolution of the shared delay.
+The authorized remote rebuild then passed full local qualification with its
+exact executable digests: 328,819 measured requests and 11,801,889 I/O rows,
+without drops. The single remote diagnostic subsequently completed 282,003
+measured requests, 105 byte-triggered checkpoints and 9,431,998 I/O rows with
+complete joins, phase bounds, counter reconciliation and valid host checks.
+There was no retry. All 50 retained files were verified locally; host isolation
+was restored and task-owned remote build/data directories were removed.
+
+[`result.json`](result.json) records identities, qualification, raw percentiles,
+counts, phase/backend distributions, timing limits and private-evidence digests.
+[`derived-result.json`](derived-result.json) narrows the remaining wait: all 43
+measured journal syncs above 100 ms occur entirely inside checkpoint durable
+commit and a checkpoint backend sync. A 156.209 ms journal sync sits inside a
+156.302 ms receipt wait. Without a registered checkpoint, journal sync peaks
+at 3.056 ms. This is same-clock association, not kernel/device causation.
+
+Reproduce the derived result from the retained validated cell with:
+
+```bash
+python3 summarize_result.py <private-cell-directory> derived-result.json
+```
+
+The script checks the trace digest, coverage and measured-flush distribution
+before deriving witnesses. Request/server clocks are never subtracted.
+The complete [performance report](../../../../docs/performance/wp-810-checkpoint-journal-tail.md#complete-replacement-journal-sync-overlaps-checkpoint-commit-sync)
+preserves the distinction between this diagnostic and the earlier comparison.
+WP-810 remains open pending a reviewed resolution of the shared delay. No
+additional measurement or completion is authorized by these results.

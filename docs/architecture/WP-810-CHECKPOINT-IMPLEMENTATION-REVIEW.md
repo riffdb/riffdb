@@ -2,8 +2,9 @@
 
 **Draft: implementation and correctness evidence are ready; the shared-delay
 disposition and human acceptance remain outstanding.** This document does not
-request closure or replace the package's exit gate. The refreshed diagnostic
-completed its workload but failed backend-I/O coverage.
+request closure or replace the package's exit gate. The replacement diagnostic
+now has complete backend-I/O coverage and identifies concurrent journal and
+checkpoint sync calls; it does not establish resolution of the shared tail.
 
 ## Scope and source
 
@@ -77,7 +78,7 @@ No durable-format or protocol golden fixtures change.
 | PERF-018: attributable measurement evidence | The six-cell comparison retains exact sources, binaries, raw percentiles, host validity, checkpoint counts and signed wall remainders. It is a bounded comparison, not an alpha release sweep. |
 | Standalone finding | [Performance report](../performance/wp-810-checkpoint-journal-tail.md), with retained archive-disabled trace and instrument limitations. |
 | Current correctness qualification | `release/evidence/wp-810/index-warming-qualification-20260926.json`: full CI, 23 coordinator tests, 20 diagnostic tests and all 19,220 seed commands pass. Earlier failed invocations remain retained. |
-| Reviewed shared-delay resolution | **Not met.** The common-case improvement does not establish reduction of the shared acknowledgement tail. The refreshed diagnostic overflowed its I/O buffer; complete attribution and maintainer disposition remain outstanding. |
+| Reviewed shared-delay resolution | **Not met.** The common-case improvement does not establish reduction of the shared acknowledgement tail. The replacement diagnostic validates complete coverage and identifies journal sync overlapping checkpoint commit sync. Device causation, resolution and maintainer disposition remain outstanding. |
 | Final human implementation/fixture review and closure | **Not met.** No acceptance or completion is recorded. |
 
 ## Performance evidence and its limits
@@ -111,19 +112,34 @@ The replacement probe is locally qualified for the full workload, retaining
 12,924,427 I/O records and 139 checkpoints without drops. Its larger fixed
 capacity and stricter full-workload gate are recorded in
 `release/evidence/wp-810/materialization-capacity-20260926/qualification.json`.
-This is capacity and correctness proof only; a replacement remote diagnostic
-and reviewed disposition are still outstanding.
+The exact rebuilt remote binaries subsequently pass the same full local
+qualification with 11,801,889 I/O records and zero drops. The authorized one-cell
+replacement then passes both host checks, full trace validation, exact joins
+and wall reconciliation: 282,003 measured requests, 105 byte-triggered
+checkpoints and 9,431,998 I/O rows, without drops or failures. The numerical
+result, binary identities, witnesses and retained-evidence digests are in
+`release/evidence/wp-810/materialization-capacity-20260926/result.json` and
+`derived-result.json`.
+
+All 43 measured journal syncs over 100 ms occur entirely during checkpoint
+durable commit and entirely inside an actual checkpoint backend sync call.
+The clearest witness is 156.209 ms of journal sync inside a 156.302 ms receipt
+wait, with checkpoint 39 concurrently syncing for 192.498 ms. No-checkpoint
+journal syncs peak at 3.056 ms. The maximum measured journal write is 0.741 ms.
+This names the blocked operation and overlap, not the kernel/device cause or
+a demonstrated tail reduction. Raw P50/P95/P99 are 8.022/10.741/97.471 ms;
+single-cell observer timings do not replace the earlier paired comparison.
+The [performance report](../performance/wp-810-checkpoint-journal-tail.md#complete-replacement-journal-sync-overlaps-checkpoint-commit-sync)
+records the full limits and signed wall remainders. C3D is released and the
+task-owned remote build/data directories are removed.
 
 ## Remaining completion actions
 
-1. Reserve a new exclusive interval for the prepared replacement diagnostic.
-   Rebuild and fully qualify the exact remote binaries before its one measured
-   cell. The earlier failed cell remains retained, and the host is released.
-2. Record what the evidence proves about the shared delay and any remaining
-   limits. Resolve the package's exit gate with the maintainer; do not substitute
-   a renamed follow-up for an unmet gate.
-3. Obtain final implementation/fixture acceptance for the selected implementation.
-4. Record acceptance, `completed_at` and decisions in the proposed closure;
+1. Resolve the remaining concurrent checkpoint/journal sync delay and the
+   package's exit gate with the maintainer. The bounded diagnostic is complete;
+   a named operation alone does not satisfy the required reviewed resolution.
+2. Obtain final implementation/fixture acceptance for the selected implementation.
+3. Record acceptance, `completed_at` and decisions in the proposed closure;
    validate the final merge tree including that record, and land only after
    the required approval.
 

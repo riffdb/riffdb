@@ -5,9 +5,9 @@ then WP-808 and WP-809. Main independently assigned those numbers to the
 semantic write-path comparison, governance verification, and same-root revision
 fence tasks. WP-810 preserves this package's original checkpoint scope and evidence.
 
-**Open storage/journal package.** A registered asynchronous checkpoint makes
-the Standard-profile writer drain journal durability and ordered publication
-before continuing. This shared writer path can stall command acknowledgement
+**Open storage/journal package.** In the original measured writer path, a
+registered asynchronous checkpoint makes the Standard-profile writer drain
+journal durability and ordered publication before continuing. This can stall command acknowledgement
 without any archive consumer. **WP-749 is now blocked on reduction of this shared
 term**, per maintainer direction on 2026-09-21. WP-810 owns its repair;
 WP-749 subsequently assesses its separate archive-presence gate by the defined
@@ -575,16 +575,90 @@ or smoke qualification; the new gate refuses them. Five collector tests, two
 backend tests and 24 analyzer/gate/retention tests pass. Source, binary and
 private evidence digests are retained in the new directory's `qualification.json`.
 These are local correctness and capacity results, not qualified latency or
-evidence that the shared delay is resolved. A new exclusive interval and full
-qualification of the exact rebuilt remote binaries are still required before
-one replacement remote cell. No additional run has started.
+evidence that the shared delay is resolved. The subsequently authorized
+replacement and its exact-binary qualification are recorded below.
+
+#### Complete replacement: journal sync overlaps checkpoint commit sync
+
+The replacement on `31aeab76` completes its full workload and every validation
+check. The exact rebuilt remote binaries first pass the full local workload:
+328,819 measured requests and 11,801,889 I/O observations, with no drops.
+The one remote cell then records 282,003 successful measured requests, 21,048
+process-lifetime groups, 105 checkpoints and 9,431,998 I/O observations, again
+without drops. Both host checks pass, with zero observed CPU steal. No retry
+occurs. The same fixed observer, Rust 1.98.1 and archive-disabled c32 workload
+remain in use. See the source/binary identities and retained evidence digests in
+`release/evidence/wp-810/materialization-capacity-20260926/result.json`.
+
+**The remaining observed journal delay is in `sync_data`, overwhelmingly while
+the checkpoint backend is also inside `sync_data`.** Of 17,853 measured
+physical flushes, 260 journal syncs exceed 10 ms and 182 exceed 50 ms:
+
+| Measured journal sync population | Count | Entire interval inside checkpoint backend sync | Checkpoint phase |
+| --- | ---: | ---: | --- |
+| Over 50 ms | 182 | 179 | 174 entirely in durable commit; 8 entirely in replay |
+| Over 100 ms | 43 | 43 | All entirely in durable commit |
+| No checkpoint registered during sync | 7,773 | 0 | Maximum journal sync 3.056 ms |
+
+The 260 syncs over 10 ms total 17.367 seconds; 17.017 seconds overlap actual
+checkpoint backend sync calls. Of the remaining 350.403 ms, 205.238 ms have no
+observed backend I/O overlap at all. The remainder is retained explicitly: overlapping I/O classes
+are unioned before subtraction, never summed as if they tile writer wall.
+These are associations on the same process-local clock, not proof of a kernel
+or device cause. They distinguish the blocked production operation from the
+earlier broader observation that a checkpoint was merely active.
+
+The clearest witness is flush 7,847: **156.209 ms in journal sync inside a
+156.302 ms first receipt wait** for group 7,870. Checkpoint 39's backend sync
+lasts 192.498 ms and contains that entire journal sync. Its preceding backend
+operation is a 4 KiB write, not file growth. The 29 measured requests covered
+by this flush take 164.712 ms at their median and 165.303 ms at their maximum.
+The actual journal write is 0.040 ms; the maximum journal write anywhere in
+the measured cell is 0.741 ms. The earlier 141.387 ms journal-write witness
+remains valid evidence from its own run; this cell has a different slow boundary.
+
+The slowest request also shows propagation through the journal queue. Its
+group queues for 88.766 ms, of which 88.757 ms overlap the preceding flush's
+95.024 ms sync; its own sync is 12.221 ms. The request takes 176.176 ms.
+The server intervals identify the queueing edge by sequence, but do not form
+a complete decomposition of that client duration: clocks are not subtracted
+across processes. `derived-result.json` retains both witnesses and
+`summarize_result.py` reproduces them from the verified private trace.
+
+Five replay-phase syncs immediately follow file growth across the complete
+process lifetime, including warmup. Growth is therefore a real secondary
+boundary, but cannot explain the 43 longest journal syncs, which are all in
+durable commit. ADR-0004 Amendment 5 requires growth to become durable before
+the larger file length is published; this diagnostic does not authorize
+removing that sync. All 105 checkpoint selections are byte-triggered, at
+2,996–3,326 transitions; none reaches the 4,096-transition trigger.
+
+Raw measured acknowledgement P50/P95/P99 are 8.022 / 10.741 / 97.471 ms, with
+3,133 reported operations per second. These are **single-cell instrumented
+values**, not a new baseline or comparison against the earlier failed probe.
+Observer overhead is unmeasured, and this cell cannot retrospectively assign
+the older paired P99 changes to a device mechanism. Complete phase totals also
+include graceful shutdown: the longest installation interval is the final
+checkpoint's shutdown completion, not a measured request wait.
+
+Independent writer wall is 105.020806 seconds. The level-0 iteration sum is
+105.002763 seconds, leaving 18.043 ms between iterations; the included
+level-0 residual is 7.852 ms. Busy plus idle undercounts the independent span
+by 234.901 ms. W2's level-2 mapping still overcounts its parent by 3.795077
+seconds and is not used for attribution. Journal and checkpoint I/O timers
+overlap writer wall and are not added to it.
+
+All 50 retained remote files pass local digest verification. The supervisor
+restores firewall/timer isolation; the task's remote build/data directories
+are removed, and the host is released at 18:17 UTC. No additional campaign
+is started. This answers the bounded checkpoint-I/O diagnostic question;
+**the shared-delay resolution and final implementation review remain open**.
 
 The remaining decision is a maintainer-reviewed resolution of the shared
 journal delay and disposition of this common-case improvement. **No merge or
-completion is claimed.** The earlier diagnostic failed during setup; the
-refreshed diagnostic finished its workload but failed I/O coverage. Neither
-answers the remaining materialization question. These are separate from
-the finished comparison. The candidate does
+completion is claimed.** The earlier setup and coverage failures remain
+retained. The replacement now supplies complete operation/phase evidence,
+separate from the finished comparison. The candidate does
 not establish that WP-749's shared tail prerequisite is resolved. Archive
 presence must still be assessed separately after that prerequisite is met.
 
@@ -596,7 +670,8 @@ existing predecessors under capacity pressure and fence observed checkpoint
 errors immediately. Checks: deterministic real coordinator/storage schedules,
 six process-crash edges, scoped storage/commit tests, path-triggered acceptance,
 six valid comparison cells, current-main integration qualification, the
-retained-trace overlap checks and the causally verified corpus-receipt repair.
+complete replacement checkpoint-I/O diagnostic and the causally verified
+corpus-receipt repair.
 The complete CI battery passes on `31aeab76`, including the merged dirty-recovery
 evidence and pinned Python proofs; the full-seed functional check also passes.
 The [draft implementation/fixture review](../architecture/WP-810-CHECKPOINT-IMPLEMENTATION-REVIEW.md)

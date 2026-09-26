@@ -1,0 +1,410 @@
+{
+  "schema": "riffdb.wp810-materialization-result/v1",
+  "date": "2026-09-26",
+  "status": "One complete checkpoint-I/O diagnostic, validated without drops. Shared-delay resolution and package completion remain open.",
+  "source_revision": "31aeab76fa7c41b5d3a05d191905fd8b53e43dd2",
+  "observer_patch_sha256": "368205b8bebf4aec1f90b9ce8d519278aa9f147d1074a6c135d618b65cb89b3e",
+  "daemon_sha256": "44858c2ed67bf5ca23060c918a8bfe78ddc7646478b1923235434ea6468e76c8",
+  "runner_sha256": "b96e421d5fdc115cd6ff171ef604800ed4dd10e0ff047c7e6437a352487fd5fe",
+  "toolchain": "1.98.1",
+  "host_specifications": {
+    "logical_cpus": 8,
+    "cpu": "AMD EPYC 9B14",
+    "required_accelerators_verified": true
+  },
+  "workload": {
+    "dataset": "full",
+    "load": "write_only",
+    "clients": 32,
+    "warmup_seconds": 15,
+    "measurement_seconds": 90,
+    "archive": "disabled",
+    "cell_deadline_seconds": 900,
+    "attempts": 1
+  },
+  "exact_remote_binary_local_qualification": {
+    "source_revision": "31aeab76fa7c41b5d3a05d191905fd8b53e43dd2",
+    "observer_patch_sha256": "368205b8bebf4aec1f90b9ce8d519278aa9f147d1074a6c135d618b65cb89b3e",
+    "daemon_sha256": "44858c2ed67bf5ca23060c918a8bfe78ddc7646478b1923235434ea6468e76c8",
+    "runner_sha256": "b96e421d5fdc115cd6ff171ef604800ed4dd10e0ff047c7e6437a352487fd5fe",
+    "local_functional_passed": true,
+    "completed_at": "2026-09-26T18:09:12.613452+00:00",
+    "performance_verdict": false,
+    "capacity_qualification": {
+      "workload": {
+        "dataset": "full",
+        "clients": 32,
+        "load": "write_only",
+        "warmup_seconds": 15,
+        "measurement_seconds": 90
+      },
+      "report_scale": {
+        "approximate_row_count": 19220,
+        "board_dense_open": 600,
+        "comment_payload_bytes": 0,
+        "comments_per_ticket": 4,
+        "labels_per_ticket": 2,
+        "organizations": 10,
+        "payload_bytes": 0,
+        "profile": "full",
+        "projects_per_org": 10,
+        "ticket_title_payload_bytes": 0,
+        "tickets_per_project": 20
+      },
+      "measured_elapsed_ns": 90005941269,
+      "complete_analysis_passed": true,
+      "io_record_limit": 16777216,
+      "coverage": {
+        "final": 1,
+        "groups": 31053,
+        "checkpoints": 129,
+        "io": 11801889,
+        "reserved_groups": 31053,
+        "reserved_checkpoints": 129,
+        "reserved_io": 11801889,
+        "dropped_groups": 0,
+        "dropped_checkpoints": 0,
+        "dropped_io": 0
+      },
+      "populations": {
+        "requests": 328819,
+        "measured_groups": 26091,
+        "measured_flushes": 22843
+      },
+      "report_sha256": "09a92de4c14770b89e1394372157fb38bb4851a5cabab12c7cbd617c57c2b353",
+      "analysis_sha256": "9045d9360646e98a805f779c157874c7dc393be76a224d53a9d33cd4f41e515c",
+      "log_sha256": "30bfe06f4f626da34b9b5b5c363054d48fcc173b4efe74060b2944a046edc47f"
+    }
+  },
+  "remote_execution": {
+    "exit_code": 0,
+    "elapsed_seconds": 141.8325767160859,
+    "finished_at": "2026-09-26T18:14:41.181333+00:00",
+    "daemon_sha256": "44858c2ed67bf5ca23060c918a8bfe78ddc7646478b1923235434ea6468e76c8",
+    "runner_sha256": "b96e421d5fdc115cd6ff171ef604800ed4dd10e0ff047c7e6437a352487fd5fe",
+    "preflight_valid": true,
+    "postflight_valid": true,
+    "whole_cell_steal_percent": 0.0,
+    "outcomes": {
+      "conflict": 0,
+      "error": 0,
+      "success": 282003,
+      "unavailable": 0
+    }
+  },
+  "diagnostic_values": {
+    "scope": "One instrumented diagnostic; observer overhead unmeasured, no before/after or mitigation-effect verdict.",
+    "throughput_ops_s": 3133,
+    "raw_percentiles_ns": {
+      "p50_ns": 8022000,
+      "p95_ns": 10740540,
+      "p99_ns": 97470640
+    },
+    "histogram_percentiles_ns": {
+      "p50_ns": 8126463,
+      "p95_ns": 11010047,
+      "p99_ns": 100663295
+    }
+  },
+  "coverage": {
+    "final": 1,
+    "groups": 21048,
+    "checkpoints": 105,
+    "io": 9431998,
+    "reserved_groups": 21048,
+    "reserved_checkpoints": 105,
+    "reserved_io": 9431998,
+    "dropped_groups": 0,
+    "dropped_checkpoints": 0,
+    "dropped_io": 0
+  },
+  "populations": {
+    "requests": 282003,
+    "measured_groups": 17954,
+    "measured_flushes": 17853
+  },
+  "checkpoint_census": {
+    "failures": 0,
+    "installed": 104,
+    "materialized": 105,
+    "max_bytes": 18226230,
+    "max_transitions": 3326,
+    "min_bytes": 16783751,
+    "min_transitions": 2996,
+    "scope": "actual_async_checkpoint_selections_before_graceful_close",
+    "selected_bytes": 1822674676,
+    "selected_commands": 330324,
+    "selected_transitions": 330324,
+    "starts": 105,
+    "trigger_counts_nonexclusive": {
+      "bytes": 105,
+      "physical": 0,
+      "reanchor": 0,
+      "transitions": 0
+    }
+  },
+  "checkpoint_completion_coverage": {
+    "census_scope": "before graceful close; no exact snapshot timestamp",
+    "trace_scope": "complete process lifetime, including graceful close",
+    "preclose_materialized": 105,
+    "preclose_installed": 104,
+    "final_materialized": 105,
+    "final_installed": 105,
+    "additional_completion_constraint": "Each completion absent from the pre-close census must be after the last command publication."
+  },
+  "checkpoint_phase_distributions": {
+    "dispatch": {
+      "count": 105,
+      "sum_ns": 7070870,
+      "max_ns": 127290,
+      "p50_ns": 64270,
+      "p95_ns": 84250,
+      "p99_ns": 103650
+    },
+    "begin_transaction": {
+      "count": 105,
+      "sum_ns": 814480,
+      "max_ns": 28270,
+      "p50_ns": 6090,
+      "p95_ns": 21270,
+      "p99_ns": 25670
+    },
+    "replay": {
+      "count": 105,
+      "sum_ns": 39922343363,
+      "max_ns": 696312861,
+      "p50_ns": 373363920,
+      "p95_ns": 431508420,
+      "p99_ns": 560026430
+    },
+    "durable_commit": {
+      "count": 105,
+      "sum_ns": 27490647369,
+      "max_ns": 1106966281,
+      "p50_ns": 240744360,
+      "p95_ns": 384693740,
+      "p99_ns": 884871671
+    },
+    "installation": {
+      "count": 105,
+      "sum_ns": 11680667089,
+      "max_ns": 9583941210,
+      "p50_ns": 18921400,
+      "p95_ns": 28029320,
+      "p99_ns": 29651920
+    }
+  },
+  "engine_io": {
+    "phase_0_write": {
+      "count": 6601,
+      "sum_ns": 15221760,
+      "max_ns": 114390,
+      "p50_ns": 1820,
+      "p95_ns": 2750,
+      "p99_ns": 15240,
+      "bytes": 38984192
+    },
+    "phase_0_sync": {
+      "count": 9,
+      "sum_ns": 67695240,
+      "max_ns": 60236000,
+      "p50_ns": 744880,
+      "p95_ns": 60236000,
+      "p99_ns": 60236000,
+      "bytes": 0
+    },
+    "phase_0_resize": {
+      "count": 0,
+      "sum_ns": 0,
+      "bytes": 0
+    },
+    "phase_0_read": {
+      "count": 2775129,
+      "sum_ns": 6407948979,
+      "max_ns": 1128330,
+      "p50_ns": 1990,
+      "p95_ns": 3400,
+      "p99_ns": 8440,
+      "bytes": 14600978761
+    },
+    "phase_1_write": {
+      "count": 0,
+      "sum_ns": 0,
+      "bytes": 0
+    },
+    "phase_1_sync": {
+      "count": 0,
+      "sum_ns": 0,
+      "bytes": 0
+    },
+    "phase_1_resize": {
+      "count": 0,
+      "sum_ns": 0,
+      "bytes": 0
+    },
+    "phase_1_read": {
+      "count": 0,
+      "sum_ns": 0,
+      "bytes": 0
+    },
+    "phase_2_write": {
+      "count": 2057468,
+      "sum_ns": 7318520942,
+      "max_ns": 11779909,
+      "p50_ns": 2400,
+      "p95_ns": 6120,
+      "p99_ns": 40860,
+      "bytes": 12460240896
+    },
+    "phase_2_sync": {
+      "count": 5,
+      "sum_ns": 743772810,
+      "max_ns": 312786660,
+      "p50_ns": 118250190,
+      "p95_ns": 312786660,
+      "p99_ns": 312786660,
+      "bytes": 0
+    },
+    "phase_2_resize": {
+      "count": 5,
+      "sum_ns": 53670,
+      "max_ns": 12760,
+      "p50_ns": 10290,
+      "p95_ns": 12760,
+      "p99_ns": 12760,
+      "bytes": 20795379712
+    },
+    "phase_2_read": {
+      "count": 2816086,
+      "sum_ns": 4971296352,
+      "max_ns": 405650,
+      "p50_ns": 1640,
+      "p95_ns": 2430,
+      "p99_ns": 5190,
+      "bytes": 13874737152
+    },
+    "phase_3_write": {
+      "count": 910495,
+      "sum_ns": 2227652138,
+      "max_ns": 2078750,
+      "p50_ns": 1890,
+      "p95_ns": 6020,
+      "p99_ns": 13410,
+      "bytes": 7879242560
+    },
+    "phase_3_sync": {
+      "count": 105,
+      "sum_ns": 22214090031,
+      "max_ns": 1052961991,
+      "p50_ns": 188645860,
+      "p95_ns": 329391420,
+      "p99_ns": 824514261,
+      "bytes": 0
+    },
+    "phase_3_resize": {
+      "count": 2,
+      "sum_ns": 52560,
+      "max_ns": 28040,
+      "p50_ns": 24520,
+      "p95_ns": 28040,
+      "p99_ns": 28040,
+      "bytes": 10748829696
+    },
+    "phase_3_read": {
+      "count": 866093,
+      "sum_ns": 1821614969,
+      "max_ns": 663430,
+      "p50_ns": 1690,
+      "p95_ns": 4780,
+      "p99_ns": 10900,
+      "bytes": 7638077440
+    }
+  },
+  "measured_journal_write": {
+    "count": 17853,
+    "sum_ns": 626155621,
+    "max_ns": 741450,
+    "p50_ns": 31720,
+    "p95_ns": 56180,
+    "p99_ns": 68130
+  },
+  "measured_journal_sync": {
+    "count": 17853,
+    "sum_ns": 29173639468,
+    "max_ns": 156208529,
+    "p50_ns": 608500,
+    "p95_ns": 1063480,
+    "p99_ns": 52267899
+  },
+  "writer_reconciliation": {
+    "independent_wall": {
+      "iterations": 21048,
+      "span_ns": 105020806234,
+      "iteration_sum_ns": 105002763036,
+      "span_minus_iterations_ns": 18043198,
+      "stage_residual_ns": 7851591,
+      "busy_idle_undercount_ns": 234901234
+    },
+    "level0_ns": {
+      "loop_drain_ready": 4536860,
+      "loop_work_recv": 19791735367,
+      "loop_admit_gate": 214668231,
+      "loop_drain_all_pre": 2332843255,
+      "unit_execute": 82456664858,
+      "post_submit_enqueue": 82693897,
+      "post_drain_all": 33333030,
+      "post_feedback": 78435947,
+      "loop_residual": 7851591
+    },
+    "level2_parent_minus_children_ns": -3795076600,
+    "limits": "Level 0 reconciles to independent writer wall with the signed remainder shown. W2 serial mapping remains invalid. I/O and receipt timers overlap writer wall and cannot be added to it."
+  },
+  "limits": [
+    "All server intervals share one process-local clock. Requests join by commit sequence; clocks are never subtracted across processes. Overlap does not prove causation. Engine I/O classes overlap on different threads; only their union is subtracted. Journal flushes are deduplicated. First wait may be absent for nonblocking publication. Census and checkpoint totals include warmup; selected flushes and requests are measured-only.",
+    "Full phase/I/O populations include warmup and graceful shutdown. The longest installation interval belongs to final checkpoint completion during shutdown, not a measured request.",
+    "This cell identifies the journal sync boundary and overlapping checkpoint backend sync. It does not prove kernel/device causation, attribute older paired P99 deltas, establish a fresh baseline, or resolve WP-749."
+  ],
+  "private_evidence_digests": {
+    "report.json": "e3358eaf9dd2d19effc4e9eccb7c28dec18db499d33815e181708268410cf9c0",
+    "run.log": "985e61726212081caaca71bf4d3b128c8e63e14a38f08c6a8b750932b14ec35f",
+    "raw/raw-request-tail.json": "60d47edfc5c6154daae71c2807657823a59ddf0316506b409c7454e339f52aa8",
+    "joined-requests.json": "d011bf882547dc81c45714d504485ecec52d80cd654b4cb35fc487898985cc0d",
+    "materialization-analysis.json": "836390da5decf2b36b8e47c546dd6b9df321b0821c13bf9854426b1ce0bf91cc",
+    "preflight.json": "2b0d0ad17246ca8de524ce037e4c7366319d02d7697e042782ff2f8578fe30d5",
+    "postflight.json": "76c60d20912b7a093e159de611fd2f3ad71285d84aca1c7856cd1da17fcceb3c"
+  },
+  "retention": {
+    "verified_at": "2026-09-26T18:17:15.992966+00:00",
+    "files": 50,
+    "bytes": 849551036,
+    "archive_sha256": "57df08aa85960d598e5c8dbb559ea090422089961c3d76d7c5802a6d62cee67e",
+    "all_match": true
+  },
+  "host_release": {
+    "released_at": "2026-09-26T18:17:34.286391+00:00",
+    "isolation_restored": true,
+    "task_processes_remaining": false,
+    "remote_root_removed": true,
+    "remote_archive_removed": true,
+    "removed_apparent_bytes": 3854049407,
+    "no_more_remote_work": true
+  },
+  "checks": {
+    "scoped_acceptance": {
+      "passed": 5,
+      "failed": 0,
+      "scope": "Evidence and documentation changes only; full runtime CI already passed on the frozen source.",
+      "log_sha256": "5a2b3dd5232cfbf020ab656fd1618ce8e78be5a1e0f00408a1b35b05908170f9"
+    },
+    "evidence_tests": {
+      "passed": 24,
+      "failed": 0,
+      "log_sha256": "41452ad54d8a7f1fb29cf6f524bbbd144483388086dc79a5ebb5197ce064e5c8"
+    },
+    "derived_result_reproduced": true,
+    "earlier_acceptance_environment_failure": {
+      "retained_log_sha256": "ebe6287bbbf8a035bf24d5ebe92f0a7ae8761cff956cd582a207c8f180f1ef95",
+      "reason": "Initial shell PATH selected Cargo outside rustup and omitted pinned lychee. Explicit rustup/pinned-tool PATH restored; complete scoped acceptance rerun passed. No source workaround."
+    }
+  }
+}

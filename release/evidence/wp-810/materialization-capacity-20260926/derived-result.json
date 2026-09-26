@@ -1,0 +1,271 @@
+{
+  "schema": "riffdb.wp810-materialization-derived/v1",
+  "analysis_sha256": "836390da5decf2b36b8e47c546dd6b9df321b0821c13bf9854426b1ce0bf91cc",
+  "scope": "One validated instrumented diagnostic; checkpoint sync overlap is association, not kernel/device causation or mitigation effect.",
+  "slow_journal_syncs": [
+    {
+      "threshold_ms": 10,
+      "count": 260,
+      "duration_ns": 17367189229,
+      "checkpoint_sync_overlap_ns": 17016786471,
+      "checkpoint_sync_any": 251,
+      "checkpoint_sync_full": 248,
+      "checkpoint_phase_overlap_ns": {
+        "dispatch": 0,
+        "begin_transaction": 0,
+        "replay": 813527218,
+        "durable_commit": 16553622581,
+        "installation": 39430
+      },
+      "without_observed_engine_io_ns": 205238496
+    },
+    {
+      "threshold_ms": 50,
+      "count": 182,
+      "duration_ns": 15181122219,
+      "checkpoint_sync_overlap_ns": 15060916310,
+      "checkpoint_sync_any": 180,
+      "checkpoint_sync_full": 179,
+      "checkpoint_phase_overlap_ns": {
+        "dispatch": 0,
+        "begin_transaction": 0,
+        "replay": 527113839,
+        "durable_commit": 14654008380,
+        "installation": 0
+      },
+      "without_observed_engine_io_ns": 73205707
+    },
+    {
+      "threshold_ms": 100,
+      "count": 43,
+      "duration_ns": 5431220554,
+      "checkpoint_sync_overlap_ns": 5431220554,
+      "checkpoint_sync_any": 43,
+      "checkpoint_sync_full": 43,
+      "checkpoint_phase_overlap_ns": {
+        "dispatch": 0,
+        "begin_transaction": 0,
+        "replay": 0,
+        "durable_commit": 5431220554,
+        "installation": 0
+      },
+      "without_observed_engine_io_ns": 0
+    }
+  ],
+  "measured_sync_without_registered_checkpoint": {
+    "count": 7773,
+    "sum_ns": 4695957355,
+    "max_ns": 3055630,
+    "p50_ns": 593790,
+    "p95_ns": 760410,
+    "p99_ns": 917800
+  },
+  "measured_sync_without_materialization": {
+    "count": 7832,
+    "sum_ns": 4732589155,
+    "max_ns": 3055630,
+    "p50_ns": 593890,
+    "p95_ns": 761460,
+    "p99_ns": 922300
+  },
+  "longest_sync_witness": {
+    "flush": 7847,
+    "journal_sync_start_ns": 38256813902,
+    "journal_sync_end_ns": 38413022431,
+    "journal_sync_ns": 156208529,
+    "journal_write_ns": 40010,
+    "groups": [
+      {
+        "group": 7870,
+        "first_sequence": 143343,
+        "last_sequence": 143365,
+        "commands": 23,
+        "first_wait_start_ns": 38256745172,
+        "first_wait_end_ns": 38413047111,
+        "first_wait_ns": 156301939,
+        "queue_ns": 2114930,
+        "publication_ns": 421330
+      },
+      {
+        "group": 7871,
+        "first_sequence": 143366,
+        "last_sequence": 143371,
+        "commands": 6,
+        "first_wait_start_ns": 38413635961,
+        "first_wait_end_ns": 38413636091,
+        "first_wait_ns": 130,
+        "queue_ns": 814850,
+        "publication_ns": 128700
+      }
+    ],
+    "checkpoint_syncs": [
+      {
+        "io": 2992764,
+        "checkpoint": 39,
+        "phase": 3,
+        "start_ns": 38222187732,
+        "end_ns": 38414685901,
+        "duration_ns": 192498169,
+        "previous_same_phase_io": [
+          2992763,
+          39,
+          3,
+          1,
+          38222184452,
+          38222186672,
+          4096,
+          0,
+          39
+        ],
+        "immediately_preceded_by_resize": false
+      }
+    ],
+    "joined_request_durations": {
+      "count": 29,
+      "sum_ns": 4776217561,
+      "max_ns": 165303249,
+      "p50_ns": 164712009,
+      "p95_ns": 165258519,
+      "p99_ns": 165303249
+    }
+  },
+  "slowest_request_queue_witness": {
+    "request": {
+      "sequence": 275729,
+      "elapsed_ns": 176176271,
+      "worker": 24,
+      "worker_ordinal": 6489,
+      "group": 16293,
+      "flush": 16237,
+      "queue_ns": 88766140,
+      "first_receipt_wait_ns": 12221000,
+      "first_wait_observed": true,
+      "publication_ns": 389180
+    },
+    "own_sync_ns": 12221230,
+    "prior_sync_queue_overlap": [
+      {
+        "flush": 16236,
+        "sync_ns": 95023840,
+        "overlap_with_queue_ns": 88756700
+      }
+    ]
+  },
+  "checkpoint_growth_syncs": [
+    {
+      "io": 137451,
+      "checkpoint": 3,
+      "phase": 2,
+      "start_ns": 4045929510,
+      "end_ns": 4073403710,
+      "duration_ns": 27474200,
+      "previous_same_phase_io": [
+        137450,
+        3,
+        2,
+        3,
+        4045919830,
+        4045929380,
+        813699072,
+        0,
+        3
+      ],
+      "immediately_preceded_by_resize": true
+    },
+    {
+      "io": 672210,
+      "checkpoint": 11,
+      "phase": 2,
+      "start_ns": 11383578881,
+      "end_ns": 11501829071,
+      "duration_ns": 118250190,
+      "previous_same_phase_io": [
+        672209,
+        11,
+        2,
+        3,
+        11383569781,
+        11383578731,
+        1627394048,
+        0,
+        11
+      ],
+      "immediately_preceded_by_resize": true
+    },
+    {
+      "io": 1931317,
+      "checkpoint": 27,
+      "phase": 2,
+      "start_ns": 26447538801,
+      "end_ns": 26622995751,
+      "duration_ns": 175456950,
+      "previous_same_phase_io": [
+        1931316,
+        27,
+        2,
+        3,
+        26447525801,
+        26447538561,
+        3254784000,
+        0,
+        27
+      ],
+      "immediately_preceded_by_resize": true
+    },
+    {
+      "io": 4884537,
+      "checkpoint": 60,
+      "phase": 2,
+      "start_ns": 58348532977,
+      "end_ns": 58458337787,
+      "duration_ns": 109804810,
+      "previous_same_phase_io": [
+        4884536,
+        60,
+        2,
+        3,
+        58348520727,
+        58348532847,
+        6509563904,
+        0,
+        60
+      ],
+      "immediately_preceded_by_resize": true
+    },
+    {
+      "io": 6934834,
+      "checkpoint": 81,
+      "phase": 2,
+      "start_ns": 78785099089,
+      "end_ns": 79097885749,
+      "duration_ns": 312786660,
+      "previous_same_phase_io": [
+        6934833,
+        81,
+        2,
+        3,
+        78785088669,
+        78785098959,
+        8589938688,
+        0,
+        81
+      ],
+      "immediately_preceded_by_resize": true
+    }
+  ],
+  "all_phase_totals_include_shutdown": true,
+  "max_installation_checkpoint": [
+    105,
+    105489062704,
+    106290821264,
+    115874762474,
+    3105,
+    3105,
+    17364985,
+    2,
+    0,
+    105489131394,
+    105489137144,
+    105844050934
+  ]
+}
