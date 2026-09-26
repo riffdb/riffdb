@@ -288,7 +288,9 @@ pub(crate) const REGRESSION_CORPUS: &[CorpusEntry] = &[
             // V2 atomic source initialization returns this original coordinate to
             // 38 torn decisions, three absent commits and six recovery windows.
             restoration_returned_by: Some("9aa49dabf14f3b5511f3541b685084610ea61580"),
-            second_restoration_moved_by: None,
+            // ADR-0260 bounded V2 startup moves this coordinate to 29 torn
+            // decisions; the unchanged threshold and forward successor remain.
+            second_restoration_moved_by: Some("0d9edbce0593ec1227f66fd9af2ea934ee09ecf9"),
         }),
         retirement: None,
     },
@@ -545,7 +547,9 @@ pub(crate) const REGRESSION_CORPUS: &[CorpusEntry] = &[
             successor_seed: 0x51C2_C504,
             invalidated_by_commit: "fa5d906c3abc47af15590810676f27615233aef5",
             rotated: "2026-08-30",
-            restored_by: None,
+            // ADR-0260 bounded V2 startup restores the interrupted-admission
+            // arm, with the original threshold and rotation history retained.
+            restored_by: Some("0d9edbce0593ec1227f66fd9af2ea934ee09ecf9"),
             restoration_moved_by: None,
             restoration_returned_by: None,
             second_restoration_moved_by: None,
@@ -624,7 +628,9 @@ pub(crate) const REGRESSION_CORPUS: &[CorpusEntry] = &[
             successor_seed: 0x51C2_C404,
             invalidated_by_commit: "a29312ffbfd3cd464f4803b1a32ce8e294279d83",
             rotated: "2026-09-14",
-            restored_by: None,
+            // ADR-0260 bounded V2 startup restores both surviving predicates.
+            // The commit-PRESENT retirement below remains enforced.
+            restored_by: Some("0d9edbce0593ec1227f66fd9af2ea934ee09ecf9"),
             restoration_moved_by: None,
             restoration_returned_by: None,
             second_restoration_moved_by: None,
@@ -659,7 +665,9 @@ pub(crate) const REGRESSION_CORPUS: &[CorpusEntry] = &[
             successor_seed: 0x51C2_C500,
             invalidated_by_commit: "a29312ffbfd3cd464f4803b1a32ce8e294279d83",
             rotated: "2026-09-14",
-            restored_by: None,
+            // ADR-0260 bounded V2 startup restores the exact three-predicate
+            // territory; keep the original rotation and its successor chain.
+            restored_by: Some("0d9edbce0593ec1227f66fd9af2ea934ee09ecf9"),
             restoration_moved_by: None,
             restoration_returned_by: None,
             second_restoration_moved_by: None,
@@ -703,7 +711,9 @@ pub(crate) const REGRESSION_CORPUS: &[CorpusEntry] = &[
             // V2 initialization leaves 29 torn decisions, below the unchanged
             // 30-decision threshold; the forward successor still covers it.
             restoration_moved_by: Some("9aa49dabf14f3b5511f3541b685084610ea61580"),
-            restoration_returned_by: None,
+            // ADR-0260 bounded V2 startup returns 34 torn decisions and every
+            // other original predicate. Preserve both preceding movements.
+            restoration_returned_by: Some("0d9edbce0593ec1227f66fd9af2ea934ee09ecf9"),
             second_restoration_moved_by: None,
         }),
         retirement: None,
@@ -779,7 +789,9 @@ pub(crate) const REGRESSION_CORPUS: &[CorpusEntry] = &[
             successor_seed: 0x51C2_C420,
             invalidated_by_commit: "9aa49dabf14f3b5511f3541b685084610ea61580",
             rotated: "2026-09-19",
-            restored_by: None,
+            // ADR-0260 bounded V2 startup restores interrupted commit-ABSENT
+            // and admission resolution, retaining the later successor.
+            restored_by: Some("0d9edbce0593ec1227f66fd9af2ea934ee09ecf9"),
             restoration_moved_by: None,
             restoration_returned_by: None,
             second_restoration_moved_by: None,

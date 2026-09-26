@@ -354,6 +354,20 @@ boundary/refusal tests also pass. These results do not waive the independently
 reproduced full-CI corpus failure. All eleven non-test acceptance steps pass,
 including scoped Clippy, generated artifacts, handbook and dependency checks.
 
+Integration `ff7dd3036` additionally brings in committed main `ef0164e41`.
+The subsequent complete simulator audit identifies the corpus failure's exact
+cause: accepted ADR-0260 implementation `0d9edbce0` changes recovery's physical
+operation stream. Its immediate parent passes every corpus expectation; its
+child produces six stale historical classifications and exactly matches the
+current integration's complete audit. Twelve copied-binary repeats are
+identical. Six causal movement references repair the corpus without changing
+any seed, expectation, numeric threshold, successor, retirement or oracle.
+The exact gate now passes with the full workspace's all-feature configuration.
+The source/binary identities, full audit rows, repeatability and refusal checks
+are retained in `release/evidence/wp-810/corpus-receipts-20260926/`.
+This removes the earlier first CI blocker; it does not turn the earlier
+aborted full-CI run into a pass. A fresh full battery is still required.
+
 The remaining decision is a maintainer-reviewed resolution of the shared
 journal delay and disposition of this common-case improvement. **No merge or
 completion is claimed.** The bounded diagnostic above addresses the remaining
@@ -369,9 +383,10 @@ checkpoint materialization and the ordered drain for installation; publish
 existing predecessors under capacity pressure and fence observed checkpoint
 errors immediately. Checks: deterministic real coordinator/storage schedules,
 six process-crash edges, scoped storage/commit tests, path-triggered acceptance,
-six valid comparison cells, current-main integration qualification and the
-retained-trace overlap checks. Full merge qualification remains blocked by the
-reproduced main corpus failure; human review remains pending.
+six valid comparison cells, current-main integration qualification, the
+retained-trace overlap checks and the causally verified corpus-receipt repair.
+The corpus gate passes again; full merge qualification and human review remain
+pending.
 Compatibility: existing durable bytes, public interfaces, thresholds and
 authority guarantees remain unchanged. Updated handbook: this page and the
 writer-census defect warning. Hazards:

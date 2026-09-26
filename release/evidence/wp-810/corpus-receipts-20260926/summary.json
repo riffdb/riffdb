@@ -1,0 +1,2854 @@
+{
+  "audit_populations": {
+    "child": {
+      "0x51c2c000": {
+        "exact_territory_holds": false,
+        "expectation_verdicts": [
+          "-TornDecisionsAtLeast(30)",
+          "+InFlightCommitAbsent",
+          "+RecoveryWindowCrash",
+          "+InitializationBoundary"
+        ],
+        "receipt_mismatch": false,
+        "report": {
+          "batches_committed": 16,
+          "catalog_activation_rolled_back": 0,
+          "catalog_activation_survived": 0,
+          "commands_applied": 18,
+          "crashes": 14,
+          "final_frontier": 18,
+          "generator_version": 1,
+          "in_flight_admit_absent": 0,
+          "in_flight_admit_present": 0,
+          "in_flight_commit_absent": 4,
+          "in_flight_commit_present": 0,
+          "initialization_rolled_back": 0,
+          "initialization_survived": 10,
+          "max_torn_in_one_recovery": 8,
+          "oracle_comparisons": 11,
+          "plan_digest": 14329520858467440252,
+          "recoveries": 14,
+          "recovery_window_crashes": 4,
+          "seed": 1371717632,
+          "torn_decisions": 11
+        },
+        "rotation": "rotated"
+      },
+      "0x51c2c001": {
+        "exact_territory_holds": false,
+        "expectation_verdicts": [
+          "-InFlightCommitPresent",
+          "+InFlightCommitAbsent",
+          "+InFlightAdmitResolved"
+        ],
+        "receipt_mismatch": false,
+        "report": {
+          "batches_committed": 10,
+          "catalog_activation_rolled_back": 0,
+          "catalog_activation_survived": 0,
+          "commands_applied": 18,
+          "crashes": 32,
+          "final_frontier": 18,
+          "generator_version": 1,
+          "in_flight_admit_absent": 1,
+          "in_flight_admit_present": 0,
+          "in_flight_commit_absent": 4,
+          "in_flight_commit_present": 0,
+          "initialization_rolled_back": 0,
+          "initialization_survived": 21,
+          "max_torn_in_one_recovery": 19,
+          "oracle_comparisons": 20,
+          "plan_digest": 735909201779279932,
+          "recoveries": 32,
+          "recovery_window_crashes": 13,
+          "seed": 1371717633,
+          "torn_decisions": 80
+        },
+        "rotation": "rotated"
+      },
+      "0x51c2c003": {
+        "historical_engine_defect": "completed"
+      },
+      "0x51c2c006": {
+        "exact_territory_holds": true,
+        "expectation_verdicts": [
+          "+RecoveryWindowCrash",
+          "+TornDecisionsAtLeast(10)",
+          "+InFlightAdmitResolved"
+        ],
+        "receipt_mismatch": false,
+        "report": {
+          "batches_committed": 10,
+          "catalog_activation_rolled_back": 0,
+          "catalog_activation_survived": 0,
+          "commands_applied": 18,
+          "crashes": 14,
+          "final_frontier": 18,
+          "generator_version": 1,
+          "in_flight_admit_absent": 3,
+          "in_flight_admit_present": 0,
+          "in_flight_commit_absent": 5,
+          "in_flight_commit_present": 0,
+          "initialization_rolled_back": 0,
+          "initialization_survived": 11,
+          "max_torn_in_one_recovery": 13,
+          "oracle_comparisons": 12,
+          "plan_digest": 13651968482837865515,
+          "recoveries": 14,
+          "recovery_window_crashes": 3,
+          "seed": 1371717638,
+          "torn_decisions": 56
+        },
+        "rotation": "restored"
+      },
+      "0x51c2c022": {
+        "historical_engine_defect": "completed"
+      },
+      "0x51c2c067": {
+        "exact_territory_holds": false,
+        "expectation_verdicts": [
+          "-TornDecisionsAtLeast(30)",
+          "+InFlightCommitAbsent",
+          "+RecoveryWindowCrash",
+          "+InitializationBoundary"
+        ],
+        "receipt_mismatch": true,
+        "report": {
+          "batches_committed": 13,
+          "catalog_activation_rolled_back": 0,
+          "catalog_activation_survived": 0,
+          "commands_applied": 18,
+          "crashes": 14,
+          "final_frontier": 18,
+          "generator_version": 1,
+          "in_flight_admit_absent": 0,
+          "in_flight_admit_present": 0,
+          "in_flight_commit_absent": 2,
+          "in_flight_commit_present": 0,
+          "initialization_rolled_back": 0,
+          "initialization_survived": 10,
+          "max_torn_in_one_recovery": 15,
+          "oracle_comparisons": 11,
+          "plan_digest": 1799129603955110060,
+          "recoveries": 14,
+          "recovery_window_crashes": 4,
+          "seed": 1371717735,
+          "torn_decisions": 29
+        },
+        "rotation": "restored"
+      },
+      "0x51c2c06d": {
+        "historical_engine_defect": "completed"
+      },
+      "0x51c2c0df": {
+        "exact_territory_holds": true,
+        "expectation_verdicts": [
+          "+RecoveryWindowCrash",
+          "+TornDecisionsAtLeast(10)",
+          "+InFlightAdmitResolved"
+        ],
+        "receipt_mismatch": false,
+        "report": {
+          "batches_committed": 13,
+          "catalog_activation_rolled_back": 0,
+          "catalog_activation_survived": 0,
+          "commands_applied": 18,
+          "crashes": 14,
+          "final_frontier": 18,
+          "generator_version": 1,
+          "in_flight_admit_absent": 1,
+          "in_flight_admit_present": 0,
+          "in_flight_commit_absent": 1,
+          "in_flight_commit_present": 0,
+          "initialization_rolled_back": 0,
+          "initialization_survived": 10,
+          "max_torn_in_one_recovery": 9,
+          "oracle_comparisons": 9,
+          "plan_digest": 4583157961189945101,
+          "recoveries": 14,
+          "recovery_window_crashes": 6,
+          "seed": 1371717855,
+          "torn_decisions": 37
+        },
+        "rotation": "restored"
+      },
+      "0x51c2c0e1": {
+        "exact_territory_holds": false,
+        "expectation_verdicts": [
+          "-InFlightCommitPresent",
+          "+InFlightCommitAbsent",
+          "-InFlightAdmitResolved"
+        ],
+        "receipt_mismatch": false,
+        "report": {
+          "batches_committed": 11,
+          "catalog_activation_rolled_back": 0,
+          "catalog_activation_survived": 0,
+          "commands_applied": 18,
+          "crashes": 14,
+          "final_frontier": 18,
+          "generator_version": 1,
+          "in_flight_admit_absent": 0,
+          "in_flight_admit_present": 0,
+          "in_flight_commit_absent": 4,
+          "in_flight_commit_present": 0,
+          "initialization_rolled_back": 0,
+          "initialization_survived": 10,
+          "max_torn_in_one_recovery": 17,
+          "oracle_comparisons": 10,
+          "plan_digest": 17197154087941032589,
+          "recoveries": 14,
+          "recovery_window_crashes": 5,
+          "seed": 1371717857,
+          "torn_decisions": 59
+        },
+        "rotation": "rotated"
+      },
+      "0x51c2c147": {
+        "exact_territory_holds": false,
+        "expectation_verdicts": [
+          "-InFlightCommitPresent",
+          "+InFlightCommitAbsent",
+          "-InFlightAdmitResolved"
+        ],
+        "receipt_mismatch": false,
+        "report": {
+          "batches_committed": 11,
+          "catalog_activation_rolled_back": 0,
+          "catalog_activation_survived": 0,
+          "commands_applied": 18,
+          "crashes": 32,
+          "final_frontier": 18,
+          "generator_version": 1,
+          "in_flight_admit_absent": 0,
+          "in_flight_admit_present": 0,
+          "in_flight_commit_absent": 6,
+          "in_flight_commit_present": 0,
+          "initialization_rolled_back": 0,
+          "initialization_survived": 25,
+          "max_torn_in_one_recovery": 15,
+          "oracle_comparisons": 22,
+          "plan_digest": 3319748734105910167,
+          "recoveries": 32,
+          "recovery_window_crashes": 11,
+          "seed": 1371717959,
+          "torn_decisions": 115
+        },
+        "rotation": "rotated"
+      },
+      "0x51c2c200": {
+        "exact_territory_holds": true,
+        "expectation_verdicts": [
+          "+RecoveryWindowCrash",
+          "+TornDecisionsAtLeast(10)",
+          "+InFlightAdmitResolved"
+        ],
+        "receipt_mismatch": true,
+        "report": {
+          "batches_committed": 9,
+          "catalog_activation_rolled_back": 0,
+          "catalog_activation_survived": 0,
+          "commands_applied": 18,
+          "crashes": 14,
+          "final_frontier": 18,
+          "generator_version": 1,
+          "in_flight_admit_absent": 1,
+          "in_flight_admit_present": 0,
+          "in_flight_commit_absent": 1,
+          "in_flight_commit_present": 0,
+          "initialization_rolled_back": 0,
+          "initialization_survived": 10,
+          "max_torn_in_one_recovery": 18,
+          "oracle_comparisons": 9,
+          "plan_digest": 11546313466854665392,
+          "recoveries": 14,
+          "recovery_window_crashes": 6,
+          "seed": 1371718144,
+          "torn_decisions": 37
+        },
+        "rotation": "rotated"
+      },
+      "0x51c2c301": {
+        "exact_territory_holds": true,
+        "expectation_verdicts": [
+          "+TornDecisionsAtLeast(30)",
+          "+InFlightCommitAbsent",
+          "+RecoveryWindowCrash",
+          "+InitializationBoundary"
+        ],
+        "receipt_mismatch": true,
+        "report": {
+          "batches_committed": 10,
+          "catalog_activation_rolled_back": 0,
+          "catalog_activation_survived": 0,
+          "commands_applied": 18,
+          "crashes": 14,
+          "final_frontier": 18,
+          "generator_version": 1,
+          "in_flight_admit_absent": 0,
+          "in_flight_admit_present": 0,
+          "in_flight_commit_absent": 3,
+          "in_flight_commit_present": 0,
+          "initialization_rolled_back": 0,
+          "initialization_survived": 11,
+          "max_torn_in_one_recovery": 14,
+          "oracle_comparisons": 10,
+          "plan_digest": 8229490284079171541,
+          "recoveries": 14,
+          "recovery_window_crashes": 5,
+          "seed": 1371718401,
+          "torn_decisions": 34
+        },
+        "rotation": "rotated"
+      },
+      "0x51c2c307": {
+        "exact_territory_holds": true,
+        "expectation_verdicts": [
+          "+TornDecisionsAtLeast(30)",
+          "+InFlightCommitAbsent",
+          "+RecoveryWindowCrash",
+          "+InitializationBoundary"
+        ],
+        "receipt_mismatch": false,
+        "report": {
+          "batches_committed": 10,
+          "catalog_activation_rolled_back": 0,
+          "catalog_activation_survived": 0,
+          "commands_applied": 18,
+          "crashes": 14,
+          "final_frontier": 18,
+          "generator_version": 1,
+          "in_flight_admit_absent": 0,
+          "in_flight_admit_present": 0,
+          "in_flight_commit_absent": 8,
+          "in_flight_commit_present": 0,
+          "initialization_rolled_back": 0,
+          "initialization_survived": 11,
+          "max_torn_in_one_recovery": 14,
+          "oracle_comparisons": 12,
+          "plan_digest": 2018254464949042352,
+          "recoveries": 14,
+          "recovery_window_crashes": 3,
+          "seed": 1371718407,
+          "torn_decisions": 58
+        },
+        "rotation": "restored"
+      },
+      "0x51c2c30a": {
+        "exact_territory_holds": true,
+        "expectation_verdicts": [
+          "+TornDecisionsAtLeast(30)",
+          "+InFlightCommitAbsent",
+          "+RecoveryWindowCrash",
+          "+InitializationBoundary"
+        ],
+        "receipt_mismatch": false,
+        "report": {
+          "batches_committed": 10,
+          "catalog_activation_rolled_back": 0,
+          "catalog_activation_survived": 0,
+          "commands_applied": 18,
+          "crashes": 14,
+          "final_frontier": 18,
+          "generator_version": 1,
+          "in_flight_admit_absent": 0,
+          "in_flight_admit_present": 0,
+          "in_flight_commit_absent": 3,
+          "in_flight_commit_present": 0,
+          "initialization_rolled_back": 0,
+          "initialization_survived": 8,
+          "max_torn_in_one_recovery": 17,
+          "oracle_comparisons": 9,
+          "plan_digest": 8814662940990873861,
+          "recoveries": 14,
+          "recovery_window_crashes": 6,
+          "seed": 1371718410,
+          "torn_decisions": 36
+        },
+        "rotation": "none"
+      },
+      "0x51c2c404": {
+        "exact_territory_holds": false,
+        "expectation_verdicts": [
+          "+InFlightCommitAbsent",
+          "-InFlightAdmitResolved"
+        ],
+        "receipt_mismatch": false,
+        "report": {
+          "batches_committed": 11,
+          "catalog_activation_rolled_back": 1,
+          "catalog_activation_survived": 0,
+          "commands_applied": 18,
+          "crashes": 32,
+          "final_frontier": 18,
+          "generator_version": 1,
+          "in_flight_admit_absent": 0,
+          "in_flight_admit_present": 0,
+          "in_flight_commit_absent": 6,
+          "in_flight_commit_present": 0,
+          "initialization_rolled_back": 0,
+          "initialization_survived": 21,
+          "max_torn_in_one_recovery": 12,
+          "oracle_comparisons": 20,
+          "plan_digest": 16882929500619780991,
+          "recoveries": 32,
+          "recovery_window_crashes": 13,
+          "seed": 1371718660,
+          "torn_decisions": 65
+        },
+        "rotation": "rotated"
+      },
+      "0x51c2c406": {
+        "exact_territory_holds": true,
+        "expectation_verdicts": [
+          "+InFlightCommitAbsent",
+          "+InFlightAdmitResolved",
+          "=retired:InFlightCommitPresent"
+        ],
+        "receipt_mismatch": true,
+        "report": {
+          "batches_committed": 13,
+          "catalog_activation_rolled_back": 0,
+          "catalog_activation_survived": 0,
+          "commands_applied": 18,
+          "crashes": 32,
+          "final_frontier": 18,
+          "generator_version": 1,
+          "in_flight_admit_absent": 4,
+          "in_flight_admit_present": 0,
+          "in_flight_commit_absent": 3,
+          "in_flight_commit_present": 0,
+          "initialization_rolled_back": 0,
+          "initialization_survived": 23,
+          "max_torn_in_one_recovery": 13,
+          "oracle_comparisons": 19,
+          "plan_digest": 13694629313020205665,
+          "recoveries": 32,
+          "recovery_window_crashes": 14,
+          "seed": 1371718662,
+          "torn_decisions": 66
+        },
+        "rotation": "rotated"
+      },
+      "0x51c2c41d": {
+        "exact_territory_holds": true,
+        "expectation_verdicts": [
+          "+InFlightCommitAbsent",
+          "+InFlightAdmitResolved"
+        ],
+        "receipt_mismatch": true,
+        "report": {
+          "batches_committed": 10,
+          "catalog_activation_rolled_back": 0,
+          "catalog_activation_survived": 0,
+          "commands_applied": 18,
+          "crashes": 32,
+          "final_frontier": 18,
+          "generator_version": 1,
+          "in_flight_admit_absent": 2,
+          "in_flight_admit_present": 0,
+          "in_flight_commit_absent": 8,
+          "in_flight_commit_present": 0,
+          "initialization_rolled_back": 0,
+          "initialization_survived": 25,
+          "max_torn_in_one_recovery": 19,
+          "oracle_comparisons": 21,
+          "plan_digest": 13883482587052903833,
+          "recoveries": 32,
+          "recovery_window_crashes": 12,
+          "seed": 1371718685,
+          "torn_decisions": 106
+        },
+        "rotation": "rotated"
+      },
+      "0x51c2c420": {
+        "exact_territory_holds": true,
+        "expectation_verdicts": [
+          "+InFlightCommitAbsent",
+          "+InFlightAdmitResolved"
+        ],
+        "receipt_mismatch": false,
+        "report": {
+          "batches_committed": 10,
+          "catalog_activation_rolled_back": 1,
+          "catalog_activation_survived": 0,
+          "commands_applied": 18,
+          "crashes": 32,
+          "final_frontier": 18,
+          "generator_version": 1,
+          "in_flight_admit_absent": 2,
+          "in_flight_admit_present": 0,
+          "in_flight_commit_absent": 2,
+          "in_flight_commit_present": 0,
+          "initialization_rolled_back": 0,
+          "initialization_survived": 21,
+          "max_torn_in_one_recovery": 12,
+          "oracle_comparisons": 18,
+          "plan_digest": 3530082656534339748,
+          "recoveries": 32,
+          "recovery_window_crashes": 15,
+          "seed": 1371718688,
+          "torn_decisions": 76
+        },
+        "rotation": "none"
+      },
+      "0x51c2c500": {
+        "exact_territory_holds": false,
+        "expectation_verdicts": [
+          "+RecoveryWindowCrash",
+          "+TornDecisionsAtLeast(10)",
+          "-InFlightAdmitResolved"
+        ],
+        "receipt_mismatch": false,
+        "report": {
+          "batches_committed": 12,
+          "catalog_activation_rolled_back": 0,
+          "catalog_activation_survived": 0,
+          "commands_applied": 18,
+          "crashes": 14,
+          "final_frontier": 18,
+          "generator_version": 1,
+          "in_flight_admit_absent": 0,
+          "in_flight_admit_present": 0,
+          "in_flight_commit_absent": 3,
+          "in_flight_commit_present": 0,
+          "initialization_rolled_back": 1,
+          "initialization_survived": 10,
+          "max_torn_in_one_recovery": 9,
+          "oracle_comparisons": 8,
+          "plan_digest": 14730759273003272624,
+          "recoveries": 14,
+          "recovery_window_crashes": 7,
+          "seed": 1371718912,
+          "torn_decisions": 25
+        },
+        "rotation": "rotated"
+      },
+      "0x51c2c504": {
+        "exact_territory_holds": true,
+        "expectation_verdicts": [
+          "+RecoveryWindowCrash",
+          "+TornDecisionsAtLeast(10)",
+          "+InFlightAdmitResolved"
+        ],
+        "receipt_mismatch": true,
+        "report": {
+          "batches_committed": 9,
+          "catalog_activation_rolled_back": 0,
+          "catalog_activation_survived": 0,
+          "commands_applied": 18,
+          "crashes": 14,
+          "final_frontier": 18,
+          "generator_version": 1,
+          "in_flight_admit_absent": 5,
+          "in_flight_admit_present": 0,
+          "in_flight_commit_absent": 1,
+          "in_flight_commit_present": 0,
+          "initialization_rolled_back": 0,
+          "initialization_survived": 10,
+          "max_torn_in_one_recovery": 11,
+          "oracle_comparisons": 10,
+          "plan_digest": 2108812833841311413,
+          "recoveries": 14,
+          "recovery_window_crashes": 5,
+          "seed": 1371718916,
+          "torn_decisions": 47
+        },
+        "rotation": "rotated"
+      },
+      "0x51c2c508": {
+        "exact_territory_holds": true,
+        "expectation_verdicts": [
+          "+RecoveryWindowCrash",
+          "+TornDecisionsAtLeast(10)",
+          "+InFlightAdmitResolved"
+        ],
+        "receipt_mismatch": false,
+        "report": {
+          "batches_committed": 13,
+          "catalog_activation_rolled_back": 0,
+          "catalog_activation_survived": 0,
+          "commands_applied": 18,
+          "crashes": 14,
+          "final_frontier": 18,
+          "generator_version": 1,
+          "in_flight_admit_absent": 4,
+          "in_flight_admit_present": 0,
+          "in_flight_commit_absent": 0,
+          "in_flight_commit_present": 0,
+          "initialization_rolled_back": 0,
+          "initialization_survived": 11,
+          "max_torn_in_one_recovery": 13,
+          "oracle_comparisons": 11,
+          "plan_digest": 7774766701008001135,
+          "recoveries": 14,
+          "recovery_window_crashes": 4,
+          "seed": 1371718920,
+          "torn_decisions": 47
+        },
+        "rotation": "none"
+      }
+    },
+    "current": {
+      "0x51c2c000": {
+        "exact_territory_holds": false,
+        "expectation_verdicts": [
+          "-TornDecisionsAtLeast(30)",
+          "+InFlightCommitAbsent",
+          "+RecoveryWindowCrash",
+          "+InitializationBoundary"
+        ],
+        "receipt_mismatch": false,
+        "report": {
+          "batches_committed": 16,
+          "catalog_activation_rolled_back": 0,
+          "catalog_activation_survived": 0,
+          "commands_applied": 18,
+          "crashes": 14,
+          "final_frontier": 18,
+          "generator_version": 1,
+          "in_flight_admit_absent": 0,
+          "in_flight_admit_present": 0,
+          "in_flight_commit_absent": 4,
+          "in_flight_commit_present": 0,
+          "initialization_rolled_back": 0,
+          "initialization_survived": 10,
+          "max_torn_in_one_recovery": 8,
+          "oracle_comparisons": 11,
+          "plan_digest": 14329520858467440252,
+          "recoveries": 14,
+          "recovery_window_crashes": 4,
+          "seed": 1371717632,
+          "torn_decisions": 11
+        },
+        "rotation": "rotated"
+      },
+      "0x51c2c001": {
+        "exact_territory_holds": false,
+        "expectation_verdicts": [
+          "-InFlightCommitPresent",
+          "+InFlightCommitAbsent",
+          "+InFlightAdmitResolved"
+        ],
+        "receipt_mismatch": false,
+        "report": {
+          "batches_committed": 10,
+          "catalog_activation_rolled_back": 0,
+          "catalog_activation_survived": 0,
+          "commands_applied": 18,
+          "crashes": 32,
+          "final_frontier": 18,
+          "generator_version": 1,
+          "in_flight_admit_absent": 1,
+          "in_flight_admit_present": 0,
+          "in_flight_commit_absent": 4,
+          "in_flight_commit_present": 0,
+          "initialization_rolled_back": 0,
+          "initialization_survived": 21,
+          "max_torn_in_one_recovery": 19,
+          "oracle_comparisons": 20,
+          "plan_digest": 735909201779279932,
+          "recoveries": 32,
+          "recovery_window_crashes": 13,
+          "seed": 1371717633,
+          "torn_decisions": 80
+        },
+        "rotation": "rotated"
+      },
+      "0x51c2c003": {
+        "historical_engine_defect": "completed"
+      },
+      "0x51c2c006": {
+        "exact_territory_holds": true,
+        "expectation_verdicts": [
+          "+RecoveryWindowCrash",
+          "+TornDecisionsAtLeast(10)",
+          "+InFlightAdmitResolved"
+        ],
+        "receipt_mismatch": false,
+        "report": {
+          "batches_committed": 10,
+          "catalog_activation_rolled_back": 0,
+          "catalog_activation_survived": 0,
+          "commands_applied": 18,
+          "crashes": 14,
+          "final_frontier": 18,
+          "generator_version": 1,
+          "in_flight_admit_absent": 3,
+          "in_flight_admit_present": 0,
+          "in_flight_commit_absent": 5,
+          "in_flight_commit_present": 0,
+          "initialization_rolled_back": 0,
+          "initialization_survived": 11,
+          "max_torn_in_one_recovery": 13,
+          "oracle_comparisons": 12,
+          "plan_digest": 13651968482837865515,
+          "recoveries": 14,
+          "recovery_window_crashes": 3,
+          "seed": 1371717638,
+          "torn_decisions": 56
+        },
+        "rotation": "restored"
+      },
+      "0x51c2c022": {
+        "historical_engine_defect": "completed"
+      },
+      "0x51c2c067": {
+        "exact_territory_holds": false,
+        "expectation_verdicts": [
+          "-TornDecisionsAtLeast(30)",
+          "+InFlightCommitAbsent",
+          "+RecoveryWindowCrash",
+          "+InitializationBoundary"
+        ],
+        "receipt_mismatch": true,
+        "report": {
+          "batches_committed": 13,
+          "catalog_activation_rolled_back": 0,
+          "catalog_activation_survived": 0,
+          "commands_applied": 18,
+          "crashes": 14,
+          "final_frontier": 18,
+          "generator_version": 1,
+          "in_flight_admit_absent": 0,
+          "in_flight_admit_present": 0,
+          "in_flight_commit_absent": 2,
+          "in_flight_commit_present": 0,
+          "initialization_rolled_back": 0,
+          "initialization_survived": 10,
+          "max_torn_in_one_recovery": 15,
+          "oracle_comparisons": 11,
+          "plan_digest": 1799129603955110060,
+          "recoveries": 14,
+          "recovery_window_crashes": 4,
+          "seed": 1371717735,
+          "torn_decisions": 29
+        },
+        "rotation": "restored"
+      },
+      "0x51c2c06d": {
+        "historical_engine_defect": "completed"
+      },
+      "0x51c2c0df": {
+        "exact_territory_holds": true,
+        "expectation_verdicts": [
+          "+RecoveryWindowCrash",
+          "+TornDecisionsAtLeast(10)",
+          "+InFlightAdmitResolved"
+        ],
+        "receipt_mismatch": false,
+        "report": {
+          "batches_committed": 13,
+          "catalog_activation_rolled_back": 0,
+          "catalog_activation_survived": 0,
+          "commands_applied": 18,
+          "crashes": 14,
+          "final_frontier": 18,
+          "generator_version": 1,
+          "in_flight_admit_absent": 1,
+          "in_flight_admit_present": 0,
+          "in_flight_commit_absent": 1,
+          "in_flight_commit_present": 0,
+          "initialization_rolled_back": 0,
+          "initialization_survived": 10,
+          "max_torn_in_one_recovery": 9,
+          "oracle_comparisons": 9,
+          "plan_digest": 4583157961189945101,
+          "recoveries": 14,
+          "recovery_window_crashes": 6,
+          "seed": 1371717855,
+          "torn_decisions": 37
+        },
+        "rotation": "restored"
+      },
+      "0x51c2c0e1": {
+        "exact_territory_holds": false,
+        "expectation_verdicts": [
+          "-InFlightCommitPresent",
+          "+InFlightCommitAbsent",
+          "-InFlightAdmitResolved"
+        ],
+        "receipt_mismatch": false,
+        "report": {
+          "batches_committed": 11,
+          "catalog_activation_rolled_back": 0,
+          "catalog_activation_survived": 0,
+          "commands_applied": 18,
+          "crashes": 14,
+          "final_frontier": 18,
+          "generator_version": 1,
+          "in_flight_admit_absent": 0,
+          "in_flight_admit_present": 0,
+          "in_flight_commit_absent": 4,
+          "in_flight_commit_present": 0,
+          "initialization_rolled_back": 0,
+          "initialization_survived": 10,
+          "max_torn_in_one_recovery": 17,
+          "oracle_comparisons": 10,
+          "plan_digest": 17197154087941032589,
+          "recoveries": 14,
+          "recovery_window_crashes": 5,
+          "seed": 1371717857,
+          "torn_decisions": 59
+        },
+        "rotation": "rotated"
+      },
+      "0x51c2c147": {
+        "exact_territory_holds": false,
+        "expectation_verdicts": [
+          "-InFlightCommitPresent",
+          "+InFlightCommitAbsent",
+          "-InFlightAdmitResolved"
+        ],
+        "receipt_mismatch": false,
+        "report": {
+          "batches_committed": 11,
+          "catalog_activation_rolled_back": 0,
+          "catalog_activation_survived": 0,
+          "commands_applied": 18,
+          "crashes": 32,
+          "final_frontier": 18,
+          "generator_version": 1,
+          "in_flight_admit_absent": 0,
+          "in_flight_admit_present": 0,
+          "in_flight_commit_absent": 6,
+          "in_flight_commit_present": 0,
+          "initialization_rolled_back": 0,
+          "initialization_survived": 25,
+          "max_torn_in_one_recovery": 15,
+          "oracle_comparisons": 22,
+          "plan_digest": 3319748734105910167,
+          "recoveries": 32,
+          "recovery_window_crashes": 11,
+          "seed": 1371717959,
+          "torn_decisions": 115
+        },
+        "rotation": "rotated"
+      },
+      "0x51c2c200": {
+        "exact_territory_holds": true,
+        "expectation_verdicts": [
+          "+RecoveryWindowCrash",
+          "+TornDecisionsAtLeast(10)",
+          "+InFlightAdmitResolved"
+        ],
+        "receipt_mismatch": true,
+        "report": {
+          "batches_committed": 9,
+          "catalog_activation_rolled_back": 0,
+          "catalog_activation_survived": 0,
+          "commands_applied": 18,
+          "crashes": 14,
+          "final_frontier": 18,
+          "generator_version": 1,
+          "in_flight_admit_absent": 1,
+          "in_flight_admit_present": 0,
+          "in_flight_commit_absent": 1,
+          "in_flight_commit_present": 0,
+          "initialization_rolled_back": 0,
+          "initialization_survived": 10,
+          "max_torn_in_one_recovery": 18,
+          "oracle_comparisons": 9,
+          "plan_digest": 11546313466854665392,
+          "recoveries": 14,
+          "recovery_window_crashes": 6,
+          "seed": 1371718144,
+          "torn_decisions": 37
+        },
+        "rotation": "rotated"
+      },
+      "0x51c2c301": {
+        "exact_territory_holds": true,
+        "expectation_verdicts": [
+          "+TornDecisionsAtLeast(30)",
+          "+InFlightCommitAbsent",
+          "+RecoveryWindowCrash",
+          "+InitializationBoundary"
+        ],
+        "receipt_mismatch": true,
+        "report": {
+          "batches_committed": 10,
+          "catalog_activation_rolled_back": 0,
+          "catalog_activation_survived": 0,
+          "commands_applied": 18,
+          "crashes": 14,
+          "final_frontier": 18,
+          "generator_version": 1,
+          "in_flight_admit_absent": 0,
+          "in_flight_admit_present": 0,
+          "in_flight_commit_absent": 3,
+          "in_flight_commit_present": 0,
+          "initialization_rolled_back": 0,
+          "initialization_survived": 11,
+          "max_torn_in_one_recovery": 14,
+          "oracle_comparisons": 10,
+          "plan_digest": 8229490284079171541,
+          "recoveries": 14,
+          "recovery_window_crashes": 5,
+          "seed": 1371718401,
+          "torn_decisions": 34
+        },
+        "rotation": "rotated"
+      },
+      "0x51c2c307": {
+        "exact_territory_holds": true,
+        "expectation_verdicts": [
+          "+TornDecisionsAtLeast(30)",
+          "+InFlightCommitAbsent",
+          "+RecoveryWindowCrash",
+          "+InitializationBoundary"
+        ],
+        "receipt_mismatch": false,
+        "report": {
+          "batches_committed": 10,
+          "catalog_activation_rolled_back": 0,
+          "catalog_activation_survived": 0,
+          "commands_applied": 18,
+          "crashes": 14,
+          "final_frontier": 18,
+          "generator_version": 1,
+          "in_flight_admit_absent": 0,
+          "in_flight_admit_present": 0,
+          "in_flight_commit_absent": 8,
+          "in_flight_commit_present": 0,
+          "initialization_rolled_back": 0,
+          "initialization_survived": 11,
+          "max_torn_in_one_recovery": 14,
+          "oracle_comparisons": 12,
+          "plan_digest": 2018254464949042352,
+          "recoveries": 14,
+          "recovery_window_crashes": 3,
+          "seed": 1371718407,
+          "torn_decisions": 58
+        },
+        "rotation": "restored"
+      },
+      "0x51c2c30a": {
+        "exact_territory_holds": true,
+        "expectation_verdicts": [
+          "+TornDecisionsAtLeast(30)",
+          "+InFlightCommitAbsent",
+          "+RecoveryWindowCrash",
+          "+InitializationBoundary"
+        ],
+        "receipt_mismatch": false,
+        "report": {
+          "batches_committed": 10,
+          "catalog_activation_rolled_back": 0,
+          "catalog_activation_survived": 0,
+          "commands_applied": 18,
+          "crashes": 14,
+          "final_frontier": 18,
+          "generator_version": 1,
+          "in_flight_admit_absent": 0,
+          "in_flight_admit_present": 0,
+          "in_flight_commit_absent": 3,
+          "in_flight_commit_present": 0,
+          "initialization_rolled_back": 0,
+          "initialization_survived": 8,
+          "max_torn_in_one_recovery": 17,
+          "oracle_comparisons": 9,
+          "plan_digest": 8814662940990873861,
+          "recoveries": 14,
+          "recovery_window_crashes": 6,
+          "seed": 1371718410,
+          "torn_decisions": 36
+        },
+        "rotation": "none"
+      },
+      "0x51c2c404": {
+        "exact_territory_holds": false,
+        "expectation_verdicts": [
+          "+InFlightCommitAbsent",
+          "-InFlightAdmitResolved"
+        ],
+        "receipt_mismatch": false,
+        "report": {
+          "batches_committed": 11,
+          "catalog_activation_rolled_back": 1,
+          "catalog_activation_survived": 0,
+          "commands_applied": 18,
+          "crashes": 32,
+          "final_frontier": 18,
+          "generator_version": 1,
+          "in_flight_admit_absent": 0,
+          "in_flight_admit_present": 0,
+          "in_flight_commit_absent": 6,
+          "in_flight_commit_present": 0,
+          "initialization_rolled_back": 0,
+          "initialization_survived": 21,
+          "max_torn_in_one_recovery": 12,
+          "oracle_comparisons": 20,
+          "plan_digest": 16882929500619780991,
+          "recoveries": 32,
+          "recovery_window_crashes": 13,
+          "seed": 1371718660,
+          "torn_decisions": 65
+        },
+        "rotation": "rotated"
+      },
+      "0x51c2c406": {
+        "exact_territory_holds": true,
+        "expectation_verdicts": [
+          "+InFlightCommitAbsent",
+          "+InFlightAdmitResolved",
+          "=retired:InFlightCommitPresent"
+        ],
+        "receipt_mismatch": true,
+        "report": {
+          "batches_committed": 13,
+          "catalog_activation_rolled_back": 0,
+          "catalog_activation_survived": 0,
+          "commands_applied": 18,
+          "crashes": 32,
+          "final_frontier": 18,
+          "generator_version": 1,
+          "in_flight_admit_absent": 4,
+          "in_flight_admit_present": 0,
+          "in_flight_commit_absent": 3,
+          "in_flight_commit_present": 0,
+          "initialization_rolled_back": 0,
+          "initialization_survived": 23,
+          "max_torn_in_one_recovery": 13,
+          "oracle_comparisons": 19,
+          "plan_digest": 13694629313020205665,
+          "recoveries": 32,
+          "recovery_window_crashes": 14,
+          "seed": 1371718662,
+          "torn_decisions": 66
+        },
+        "rotation": "rotated"
+      },
+      "0x51c2c41d": {
+        "exact_territory_holds": true,
+        "expectation_verdicts": [
+          "+InFlightCommitAbsent",
+          "+InFlightAdmitResolved"
+        ],
+        "receipt_mismatch": true,
+        "report": {
+          "batches_committed": 10,
+          "catalog_activation_rolled_back": 0,
+          "catalog_activation_survived": 0,
+          "commands_applied": 18,
+          "crashes": 32,
+          "final_frontier": 18,
+          "generator_version": 1,
+          "in_flight_admit_absent": 2,
+          "in_flight_admit_present": 0,
+          "in_flight_commit_absent": 8,
+          "in_flight_commit_present": 0,
+          "initialization_rolled_back": 0,
+          "initialization_survived": 25,
+          "max_torn_in_one_recovery": 19,
+          "oracle_comparisons": 21,
+          "plan_digest": 13883482587052903833,
+          "recoveries": 32,
+          "recovery_window_crashes": 12,
+          "seed": 1371718685,
+          "torn_decisions": 106
+        },
+        "rotation": "rotated"
+      },
+      "0x51c2c420": {
+        "exact_territory_holds": true,
+        "expectation_verdicts": [
+          "+InFlightCommitAbsent",
+          "+InFlightAdmitResolved"
+        ],
+        "receipt_mismatch": false,
+        "report": {
+          "batches_committed": 10,
+          "catalog_activation_rolled_back": 1,
+          "catalog_activation_survived": 0,
+          "commands_applied": 18,
+          "crashes": 32,
+          "final_frontier": 18,
+          "generator_version": 1,
+          "in_flight_admit_absent": 2,
+          "in_flight_admit_present": 0,
+          "in_flight_commit_absent": 2,
+          "in_flight_commit_present": 0,
+          "initialization_rolled_back": 0,
+          "initialization_survived": 21,
+          "max_torn_in_one_recovery": 12,
+          "oracle_comparisons": 18,
+          "plan_digest": 3530082656534339748,
+          "recoveries": 32,
+          "recovery_window_crashes": 15,
+          "seed": 1371718688,
+          "torn_decisions": 76
+        },
+        "rotation": "none"
+      },
+      "0x51c2c500": {
+        "exact_territory_holds": false,
+        "expectation_verdicts": [
+          "+RecoveryWindowCrash",
+          "+TornDecisionsAtLeast(10)",
+          "-InFlightAdmitResolved"
+        ],
+        "receipt_mismatch": false,
+        "report": {
+          "batches_committed": 12,
+          "catalog_activation_rolled_back": 0,
+          "catalog_activation_survived": 0,
+          "commands_applied": 18,
+          "crashes": 14,
+          "final_frontier": 18,
+          "generator_version": 1,
+          "in_flight_admit_absent": 0,
+          "in_flight_admit_present": 0,
+          "in_flight_commit_absent": 3,
+          "in_flight_commit_present": 0,
+          "initialization_rolled_back": 1,
+          "initialization_survived": 10,
+          "max_torn_in_one_recovery": 9,
+          "oracle_comparisons": 8,
+          "plan_digest": 14730759273003272624,
+          "recoveries": 14,
+          "recovery_window_crashes": 7,
+          "seed": 1371718912,
+          "torn_decisions": 25
+        },
+        "rotation": "rotated"
+      },
+      "0x51c2c504": {
+        "exact_territory_holds": true,
+        "expectation_verdicts": [
+          "+RecoveryWindowCrash",
+          "+TornDecisionsAtLeast(10)",
+          "+InFlightAdmitResolved"
+        ],
+        "receipt_mismatch": true,
+        "report": {
+          "batches_committed": 9,
+          "catalog_activation_rolled_back": 0,
+          "catalog_activation_survived": 0,
+          "commands_applied": 18,
+          "crashes": 14,
+          "final_frontier": 18,
+          "generator_version": 1,
+          "in_flight_admit_absent": 5,
+          "in_flight_admit_present": 0,
+          "in_flight_commit_absent": 1,
+          "in_flight_commit_present": 0,
+          "initialization_rolled_back": 0,
+          "initialization_survived": 10,
+          "max_torn_in_one_recovery": 11,
+          "oracle_comparisons": 10,
+          "plan_digest": 2108812833841311413,
+          "recoveries": 14,
+          "recovery_window_crashes": 5,
+          "seed": 1371718916,
+          "torn_decisions": 47
+        },
+        "rotation": "rotated"
+      },
+      "0x51c2c508": {
+        "exact_territory_holds": true,
+        "expectation_verdicts": [
+          "+RecoveryWindowCrash",
+          "+TornDecisionsAtLeast(10)",
+          "+InFlightAdmitResolved"
+        ],
+        "receipt_mismatch": false,
+        "report": {
+          "batches_committed": 13,
+          "catalog_activation_rolled_back": 0,
+          "catalog_activation_survived": 0,
+          "commands_applied": 18,
+          "crashes": 14,
+          "final_frontier": 18,
+          "generator_version": 1,
+          "in_flight_admit_absent": 4,
+          "in_flight_admit_present": 0,
+          "in_flight_commit_absent": 0,
+          "in_flight_commit_present": 0,
+          "initialization_rolled_back": 0,
+          "initialization_survived": 11,
+          "max_torn_in_one_recovery": 13,
+          "oracle_comparisons": 11,
+          "plan_digest": 7774766701008001135,
+          "recoveries": 14,
+          "recovery_window_crashes": 4,
+          "seed": 1371718920,
+          "torn_decisions": 47
+        },
+        "rotation": "none"
+      }
+    },
+    "fixed": {
+      "0x51c2c000": {
+        "exact_territory_holds": false,
+        "expectation_verdicts": [
+          "-TornDecisionsAtLeast(30)",
+          "+InFlightCommitAbsent",
+          "+RecoveryWindowCrash",
+          "+InitializationBoundary"
+        ],
+        "receipt_mismatch": false,
+        "report": {
+          "batches_committed": 16,
+          "catalog_activation_rolled_back": 0,
+          "catalog_activation_survived": 0,
+          "commands_applied": 18,
+          "crashes": 14,
+          "final_frontier": 18,
+          "generator_version": 1,
+          "in_flight_admit_absent": 0,
+          "in_flight_admit_present": 0,
+          "in_flight_commit_absent": 4,
+          "in_flight_commit_present": 0,
+          "initialization_rolled_back": 0,
+          "initialization_survived": 10,
+          "max_torn_in_one_recovery": 8,
+          "oracle_comparisons": 11,
+          "plan_digest": 14329520858467440252,
+          "recoveries": 14,
+          "recovery_window_crashes": 4,
+          "seed": 1371717632,
+          "torn_decisions": 11
+        },
+        "rotation": "rotated"
+      },
+      "0x51c2c001": {
+        "exact_territory_holds": false,
+        "expectation_verdicts": [
+          "-InFlightCommitPresent",
+          "+InFlightCommitAbsent",
+          "+InFlightAdmitResolved"
+        ],
+        "receipt_mismatch": false,
+        "report": {
+          "batches_committed": 10,
+          "catalog_activation_rolled_back": 0,
+          "catalog_activation_survived": 0,
+          "commands_applied": 18,
+          "crashes": 32,
+          "final_frontier": 18,
+          "generator_version": 1,
+          "in_flight_admit_absent": 1,
+          "in_flight_admit_present": 0,
+          "in_flight_commit_absent": 4,
+          "in_flight_commit_present": 0,
+          "initialization_rolled_back": 0,
+          "initialization_survived": 21,
+          "max_torn_in_one_recovery": 19,
+          "oracle_comparisons": 20,
+          "plan_digest": 735909201779279932,
+          "recoveries": 32,
+          "recovery_window_crashes": 13,
+          "seed": 1371717633,
+          "torn_decisions": 80
+        },
+        "rotation": "rotated"
+      },
+      "0x51c2c003": {
+        "historical_engine_defect": "completed"
+      },
+      "0x51c2c006": {
+        "exact_territory_holds": true,
+        "expectation_verdicts": [
+          "+RecoveryWindowCrash",
+          "+TornDecisionsAtLeast(10)",
+          "+InFlightAdmitResolved"
+        ],
+        "receipt_mismatch": false,
+        "report": {
+          "batches_committed": 10,
+          "catalog_activation_rolled_back": 0,
+          "catalog_activation_survived": 0,
+          "commands_applied": 18,
+          "crashes": 14,
+          "final_frontier": 18,
+          "generator_version": 1,
+          "in_flight_admit_absent": 3,
+          "in_flight_admit_present": 0,
+          "in_flight_commit_absent": 5,
+          "in_flight_commit_present": 0,
+          "initialization_rolled_back": 0,
+          "initialization_survived": 11,
+          "max_torn_in_one_recovery": 13,
+          "oracle_comparisons": 12,
+          "plan_digest": 13651968482837865515,
+          "recoveries": 14,
+          "recovery_window_crashes": 3,
+          "seed": 1371717638,
+          "torn_decisions": 56
+        },
+        "rotation": "restored"
+      },
+      "0x51c2c022": {
+        "historical_engine_defect": "completed"
+      },
+      "0x51c2c067": {
+        "exact_territory_holds": false,
+        "expectation_verdicts": [
+          "-TornDecisionsAtLeast(30)",
+          "+InFlightCommitAbsent",
+          "+RecoveryWindowCrash",
+          "+InitializationBoundary"
+        ],
+        "receipt_mismatch": false,
+        "report": {
+          "batches_committed": 13,
+          "catalog_activation_rolled_back": 0,
+          "catalog_activation_survived": 0,
+          "commands_applied": 18,
+          "crashes": 14,
+          "final_frontier": 18,
+          "generator_version": 1,
+          "in_flight_admit_absent": 0,
+          "in_flight_admit_present": 0,
+          "in_flight_commit_absent": 2,
+          "in_flight_commit_present": 0,
+          "initialization_rolled_back": 0,
+          "initialization_survived": 10,
+          "max_torn_in_one_recovery": 15,
+          "oracle_comparisons": 11,
+          "plan_digest": 1799129603955110060,
+          "recoveries": 14,
+          "recovery_window_crashes": 4,
+          "seed": 1371717735,
+          "torn_decisions": 29
+        },
+        "rotation": "rotated"
+      },
+      "0x51c2c06d": {
+        "historical_engine_defect": "completed"
+      },
+      "0x51c2c0df": {
+        "exact_territory_holds": true,
+        "expectation_verdicts": [
+          "+RecoveryWindowCrash",
+          "+TornDecisionsAtLeast(10)",
+          "+InFlightAdmitResolved"
+        ],
+        "receipt_mismatch": false,
+        "report": {
+          "batches_committed": 13,
+          "catalog_activation_rolled_back": 0,
+          "catalog_activation_survived": 0,
+          "commands_applied": 18,
+          "crashes": 14,
+          "final_frontier": 18,
+          "generator_version": 1,
+          "in_flight_admit_absent": 1,
+          "in_flight_admit_present": 0,
+          "in_flight_commit_absent": 1,
+          "in_flight_commit_present": 0,
+          "initialization_rolled_back": 0,
+          "initialization_survived": 10,
+          "max_torn_in_one_recovery": 9,
+          "oracle_comparisons": 9,
+          "plan_digest": 4583157961189945101,
+          "recoveries": 14,
+          "recovery_window_crashes": 6,
+          "seed": 1371717855,
+          "torn_decisions": 37
+        },
+        "rotation": "restored"
+      },
+      "0x51c2c0e1": {
+        "exact_territory_holds": false,
+        "expectation_verdicts": [
+          "-InFlightCommitPresent",
+          "+InFlightCommitAbsent",
+          "-InFlightAdmitResolved"
+        ],
+        "receipt_mismatch": false,
+        "report": {
+          "batches_committed": 11,
+          "catalog_activation_rolled_back": 0,
+          "catalog_activation_survived": 0,
+          "commands_applied": 18,
+          "crashes": 14,
+          "final_frontier": 18,
+          "generator_version": 1,
+          "in_flight_admit_absent": 0,
+          "in_flight_admit_present": 0,
+          "in_flight_commit_absent": 4,
+          "in_flight_commit_present": 0,
+          "initialization_rolled_back": 0,
+          "initialization_survived": 10,
+          "max_torn_in_one_recovery": 17,
+          "oracle_comparisons": 10,
+          "plan_digest": 17197154087941032589,
+          "recoveries": 14,
+          "recovery_window_crashes": 5,
+          "seed": 1371717857,
+          "torn_decisions": 59
+        },
+        "rotation": "rotated"
+      },
+      "0x51c2c147": {
+        "exact_territory_holds": false,
+        "expectation_verdicts": [
+          "-InFlightCommitPresent",
+          "+InFlightCommitAbsent",
+          "-InFlightAdmitResolved"
+        ],
+        "receipt_mismatch": false,
+        "report": {
+          "batches_committed": 11,
+          "catalog_activation_rolled_back": 0,
+          "catalog_activation_survived": 0,
+          "commands_applied": 18,
+          "crashes": 32,
+          "final_frontier": 18,
+          "generator_version": 1,
+          "in_flight_admit_absent": 0,
+          "in_flight_admit_present": 0,
+          "in_flight_commit_absent": 6,
+          "in_flight_commit_present": 0,
+          "initialization_rolled_back": 0,
+          "initialization_survived": 25,
+          "max_torn_in_one_recovery": 15,
+          "oracle_comparisons": 22,
+          "plan_digest": 3319748734105910167,
+          "recoveries": 32,
+          "recovery_window_crashes": 11,
+          "seed": 1371717959,
+          "torn_decisions": 115
+        },
+        "rotation": "rotated"
+      },
+      "0x51c2c200": {
+        "exact_territory_holds": true,
+        "expectation_verdicts": [
+          "+RecoveryWindowCrash",
+          "+TornDecisionsAtLeast(10)",
+          "+InFlightAdmitResolved"
+        ],
+        "receipt_mismatch": false,
+        "report": {
+          "batches_committed": 9,
+          "catalog_activation_rolled_back": 0,
+          "catalog_activation_survived": 0,
+          "commands_applied": 18,
+          "crashes": 14,
+          "final_frontier": 18,
+          "generator_version": 1,
+          "in_flight_admit_absent": 1,
+          "in_flight_admit_present": 0,
+          "in_flight_commit_absent": 1,
+          "in_flight_commit_present": 0,
+          "initialization_rolled_back": 0,
+          "initialization_survived": 10,
+          "max_torn_in_one_recovery": 18,
+          "oracle_comparisons": 9,
+          "plan_digest": 11546313466854665392,
+          "recoveries": 14,
+          "recovery_window_crashes": 6,
+          "seed": 1371718144,
+          "torn_decisions": 37
+        },
+        "rotation": "restored"
+      },
+      "0x51c2c301": {
+        "exact_territory_holds": true,
+        "expectation_verdicts": [
+          "+TornDecisionsAtLeast(30)",
+          "+InFlightCommitAbsent",
+          "+RecoveryWindowCrash",
+          "+InitializationBoundary"
+        ],
+        "receipt_mismatch": false,
+        "report": {
+          "batches_committed": 10,
+          "catalog_activation_rolled_back": 0,
+          "catalog_activation_survived": 0,
+          "commands_applied": 18,
+          "crashes": 14,
+          "final_frontier": 18,
+          "generator_version": 1,
+          "in_flight_admit_absent": 0,
+          "in_flight_admit_present": 0,
+          "in_flight_commit_absent": 3,
+          "in_flight_commit_present": 0,
+          "initialization_rolled_back": 0,
+          "initialization_survived": 11,
+          "max_torn_in_one_recovery": 14,
+          "oracle_comparisons": 10,
+          "plan_digest": 8229490284079171541,
+          "recoveries": 14,
+          "recovery_window_crashes": 5,
+          "seed": 1371718401,
+          "torn_decisions": 34
+        },
+        "rotation": "restored"
+      },
+      "0x51c2c307": {
+        "exact_territory_holds": true,
+        "expectation_verdicts": [
+          "+TornDecisionsAtLeast(30)",
+          "+InFlightCommitAbsent",
+          "+RecoveryWindowCrash",
+          "+InitializationBoundary"
+        ],
+        "receipt_mismatch": false,
+        "report": {
+          "batches_committed": 10,
+          "catalog_activation_rolled_back": 0,
+          "catalog_activation_survived": 0,
+          "commands_applied": 18,
+          "crashes": 14,
+          "final_frontier": 18,
+          "generator_version": 1,
+          "in_flight_admit_absent": 0,
+          "in_flight_admit_present": 0,
+          "in_flight_commit_absent": 8,
+          "in_flight_commit_present": 0,
+          "initialization_rolled_back": 0,
+          "initialization_survived": 11,
+          "max_torn_in_one_recovery": 14,
+          "oracle_comparisons": 12,
+          "plan_digest": 2018254464949042352,
+          "recoveries": 14,
+          "recovery_window_crashes": 3,
+          "seed": 1371718407,
+          "torn_decisions": 58
+        },
+        "rotation": "restored"
+      },
+      "0x51c2c30a": {
+        "exact_territory_holds": true,
+        "expectation_verdicts": [
+          "+TornDecisionsAtLeast(30)",
+          "+InFlightCommitAbsent",
+          "+RecoveryWindowCrash",
+          "+InitializationBoundary"
+        ],
+        "receipt_mismatch": false,
+        "report": {
+          "batches_committed": 10,
+          "catalog_activation_rolled_back": 0,
+          "catalog_activation_survived": 0,
+          "commands_applied": 18,
+          "crashes": 14,
+          "final_frontier": 18,
+          "generator_version": 1,
+          "in_flight_admit_absent": 0,
+          "in_flight_admit_present": 0,
+          "in_flight_commit_absent": 3,
+          "in_flight_commit_present": 0,
+          "initialization_rolled_back": 0,
+          "initialization_survived": 8,
+          "max_torn_in_one_recovery": 17,
+          "oracle_comparisons": 9,
+          "plan_digest": 8814662940990873861,
+          "recoveries": 14,
+          "recovery_window_crashes": 6,
+          "seed": 1371718410,
+          "torn_decisions": 36
+        },
+        "rotation": "none"
+      },
+      "0x51c2c404": {
+        "exact_territory_holds": false,
+        "expectation_verdicts": [
+          "+InFlightCommitAbsent",
+          "-InFlightAdmitResolved"
+        ],
+        "receipt_mismatch": false,
+        "report": {
+          "batches_committed": 11,
+          "catalog_activation_rolled_back": 1,
+          "catalog_activation_survived": 0,
+          "commands_applied": 18,
+          "crashes": 32,
+          "final_frontier": 18,
+          "generator_version": 1,
+          "in_flight_admit_absent": 0,
+          "in_flight_admit_present": 0,
+          "in_flight_commit_absent": 6,
+          "in_flight_commit_present": 0,
+          "initialization_rolled_back": 0,
+          "initialization_survived": 21,
+          "max_torn_in_one_recovery": 12,
+          "oracle_comparisons": 20,
+          "plan_digest": 16882929500619780991,
+          "recoveries": 32,
+          "recovery_window_crashes": 13,
+          "seed": 1371718660,
+          "torn_decisions": 65
+        },
+        "rotation": "rotated"
+      },
+      "0x51c2c406": {
+        "exact_territory_holds": true,
+        "expectation_verdicts": [
+          "+InFlightCommitAbsent",
+          "+InFlightAdmitResolved",
+          "=retired:InFlightCommitPresent"
+        ],
+        "receipt_mismatch": false,
+        "report": {
+          "batches_committed": 13,
+          "catalog_activation_rolled_back": 0,
+          "catalog_activation_survived": 0,
+          "commands_applied": 18,
+          "crashes": 32,
+          "final_frontier": 18,
+          "generator_version": 1,
+          "in_flight_admit_absent": 4,
+          "in_flight_admit_present": 0,
+          "in_flight_commit_absent": 3,
+          "in_flight_commit_present": 0,
+          "initialization_rolled_back": 0,
+          "initialization_survived": 23,
+          "max_torn_in_one_recovery": 13,
+          "oracle_comparisons": 19,
+          "plan_digest": 13694629313020205665,
+          "recoveries": 32,
+          "recovery_window_crashes": 14,
+          "seed": 1371718662,
+          "torn_decisions": 66
+        },
+        "rotation": "restored"
+      },
+      "0x51c2c41d": {
+        "exact_territory_holds": true,
+        "expectation_verdicts": [
+          "+InFlightCommitAbsent",
+          "+InFlightAdmitResolved"
+        ],
+        "receipt_mismatch": false,
+        "report": {
+          "batches_committed": 10,
+          "catalog_activation_rolled_back": 0,
+          "catalog_activation_survived": 0,
+          "commands_applied": 18,
+          "crashes": 32,
+          "final_frontier": 18,
+          "generator_version": 1,
+          "in_flight_admit_absent": 2,
+          "in_flight_admit_present": 0,
+          "in_flight_commit_absent": 8,
+          "in_flight_commit_present": 0,
+          "initialization_rolled_back": 0,
+          "initialization_survived": 25,
+          "max_torn_in_one_recovery": 19,
+          "oracle_comparisons": 21,
+          "plan_digest": 13883482587052903833,
+          "recoveries": 32,
+          "recovery_window_crashes": 12,
+          "seed": 1371718685,
+          "torn_decisions": 106
+        },
+        "rotation": "restored"
+      },
+      "0x51c2c420": {
+        "exact_territory_holds": true,
+        "expectation_verdicts": [
+          "+InFlightCommitAbsent",
+          "+InFlightAdmitResolved"
+        ],
+        "receipt_mismatch": false,
+        "report": {
+          "batches_committed": 10,
+          "catalog_activation_rolled_back": 1,
+          "catalog_activation_survived": 0,
+          "commands_applied": 18,
+          "crashes": 32,
+          "final_frontier": 18,
+          "generator_version": 1,
+          "in_flight_admit_absent": 2,
+          "in_flight_admit_present": 0,
+          "in_flight_commit_absent": 2,
+          "in_flight_commit_present": 0,
+          "initialization_rolled_back": 0,
+          "initialization_survived": 21,
+          "max_torn_in_one_recovery": 12,
+          "oracle_comparisons": 18,
+          "plan_digest": 3530082656534339748,
+          "recoveries": 32,
+          "recovery_window_crashes": 15,
+          "seed": 1371718688,
+          "torn_decisions": 76
+        },
+        "rotation": "none"
+      },
+      "0x51c2c500": {
+        "exact_territory_holds": false,
+        "expectation_verdicts": [
+          "+RecoveryWindowCrash",
+          "+TornDecisionsAtLeast(10)",
+          "-InFlightAdmitResolved"
+        ],
+        "receipt_mismatch": false,
+        "report": {
+          "batches_committed": 12,
+          "catalog_activation_rolled_back": 0,
+          "catalog_activation_survived": 0,
+          "commands_applied": 18,
+          "crashes": 14,
+          "final_frontier": 18,
+          "generator_version": 1,
+          "in_flight_admit_absent": 0,
+          "in_flight_admit_present": 0,
+          "in_flight_commit_absent": 3,
+          "in_flight_commit_present": 0,
+          "initialization_rolled_back": 1,
+          "initialization_survived": 10,
+          "max_torn_in_one_recovery": 9,
+          "oracle_comparisons": 8,
+          "plan_digest": 14730759273003272624,
+          "recoveries": 14,
+          "recovery_window_crashes": 7,
+          "seed": 1371718912,
+          "torn_decisions": 25
+        },
+        "rotation": "rotated"
+      },
+      "0x51c2c504": {
+        "exact_territory_holds": true,
+        "expectation_verdicts": [
+          "+RecoveryWindowCrash",
+          "+TornDecisionsAtLeast(10)",
+          "+InFlightAdmitResolved"
+        ],
+        "receipt_mismatch": false,
+        "report": {
+          "batches_committed": 9,
+          "catalog_activation_rolled_back": 0,
+          "catalog_activation_survived": 0,
+          "commands_applied": 18,
+          "crashes": 14,
+          "final_frontier": 18,
+          "generator_version": 1,
+          "in_flight_admit_absent": 5,
+          "in_flight_admit_present": 0,
+          "in_flight_commit_absent": 1,
+          "in_flight_commit_present": 0,
+          "initialization_rolled_back": 0,
+          "initialization_survived": 10,
+          "max_torn_in_one_recovery": 11,
+          "oracle_comparisons": 10,
+          "plan_digest": 2108812833841311413,
+          "recoveries": 14,
+          "recovery_window_crashes": 5,
+          "seed": 1371718916,
+          "torn_decisions": 47
+        },
+        "rotation": "restored"
+      },
+      "0x51c2c508": {
+        "exact_territory_holds": true,
+        "expectation_verdicts": [
+          "+RecoveryWindowCrash",
+          "+TornDecisionsAtLeast(10)",
+          "+InFlightAdmitResolved"
+        ],
+        "receipt_mismatch": false,
+        "report": {
+          "batches_committed": 13,
+          "catalog_activation_rolled_back": 0,
+          "catalog_activation_survived": 0,
+          "commands_applied": 18,
+          "crashes": 14,
+          "final_frontier": 18,
+          "generator_version": 1,
+          "in_flight_admit_absent": 4,
+          "in_flight_admit_present": 0,
+          "in_flight_commit_absent": 0,
+          "in_flight_commit_present": 0,
+          "initialization_rolled_back": 0,
+          "initialization_survived": 11,
+          "max_torn_in_one_recovery": 13,
+          "oracle_comparisons": 11,
+          "plan_digest": 7774766701008001135,
+          "recoveries": 14,
+          "recovery_window_crashes": 4,
+          "seed": 1371718920,
+          "torn_decisions": 47
+        },
+        "rotation": "none"
+      }
+    },
+    "parent": {
+      "0x51c2c000": {
+        "exact_territory_holds": false,
+        "expectation_verdicts": [
+          "-TornDecisionsAtLeast(30)",
+          "+InFlightCommitAbsent",
+          "+RecoveryWindowCrash",
+          "+InitializationBoundary"
+        ],
+        "receipt_mismatch": false,
+        "report": {
+          "batches_committed": 16,
+          "catalog_activation_rolled_back": 0,
+          "catalog_activation_survived": 0,
+          "commands_applied": 18,
+          "crashes": 14,
+          "final_frontier": 18,
+          "generator_version": 1,
+          "in_flight_admit_absent": 0,
+          "in_flight_admit_present": 0,
+          "in_flight_commit_absent": 1,
+          "in_flight_commit_present": 0,
+          "initialization_rolled_back": 0,
+          "initialization_survived": 10,
+          "max_torn_in_one_recovery": 10,
+          "oracle_comparisons": 9,
+          "plan_digest": 14329520858467440252,
+          "recoveries": 14,
+          "recovery_window_crashes": 6,
+          "seed": 1371717632,
+          "torn_decisions": 24
+        },
+        "rotation": "rotated"
+      },
+      "0x51c2c001": {
+        "exact_territory_holds": false,
+        "expectation_verdicts": [
+          "-InFlightCommitPresent",
+          "-InFlightCommitAbsent",
+          "+InFlightAdmitResolved"
+        ],
+        "receipt_mismatch": false,
+        "report": {
+          "batches_committed": 10,
+          "catalog_activation_rolled_back": 0,
+          "catalog_activation_survived": 0,
+          "commands_applied": 18,
+          "crashes": 32,
+          "final_frontier": 18,
+          "generator_version": 1,
+          "in_flight_admit_absent": 1,
+          "in_flight_admit_present": 0,
+          "in_flight_commit_absent": 0,
+          "in_flight_commit_present": 0,
+          "initialization_rolled_back": 0,
+          "initialization_survived": 28,
+          "max_torn_in_one_recovery": 12,
+          "oracle_comparisons": 19,
+          "plan_digest": 735909201779279932,
+          "recoveries": 32,
+          "recovery_window_crashes": 14,
+          "seed": 1371717633,
+          "torn_decisions": 64
+        },
+        "rotation": "rotated"
+      },
+      "0x51c2c003": {
+        "historical_engine_defect": "completed"
+      },
+      "0x51c2c006": {
+        "exact_territory_holds": true,
+        "expectation_verdicts": [
+          "+RecoveryWindowCrash",
+          "+TornDecisionsAtLeast(10)",
+          "+InFlightAdmitResolved"
+        ],
+        "receipt_mismatch": false,
+        "report": {
+          "batches_committed": 10,
+          "catalog_activation_rolled_back": 0,
+          "catalog_activation_survived": 0,
+          "commands_applied": 18,
+          "crashes": 14,
+          "final_frontier": 18,
+          "generator_version": 1,
+          "in_flight_admit_absent": 1,
+          "in_flight_admit_present": 0,
+          "in_flight_commit_absent": 0,
+          "in_flight_commit_present": 0,
+          "initialization_rolled_back": 0,
+          "initialization_survived": 10,
+          "max_torn_in_one_recovery": 12,
+          "oracle_comparisons": 10,
+          "plan_digest": 13651968482837865515,
+          "recoveries": 14,
+          "recovery_window_crashes": 5,
+          "seed": 1371717638,
+          "torn_decisions": 40
+        },
+        "rotation": "restored"
+      },
+      "0x51c2c022": {
+        "historical_engine_defect": "completed"
+      },
+      "0x51c2c067": {
+        "exact_territory_holds": true,
+        "expectation_verdicts": [
+          "+TornDecisionsAtLeast(30)",
+          "+InFlightCommitAbsent",
+          "+RecoveryWindowCrash",
+          "+InitializationBoundary"
+        ],
+        "receipt_mismatch": false,
+        "report": {
+          "batches_committed": 13,
+          "catalog_activation_rolled_back": 0,
+          "catalog_activation_survived": 0,
+          "commands_applied": 18,
+          "crashes": 14,
+          "final_frontier": 18,
+          "generator_version": 1,
+          "in_flight_admit_absent": 0,
+          "in_flight_admit_present": 0,
+          "in_flight_commit_absent": 3,
+          "in_flight_commit_present": 0,
+          "initialization_rolled_back": 0,
+          "initialization_survived": 11,
+          "max_torn_in_one_recovery": 15,
+          "oracle_comparisons": 9,
+          "plan_digest": 1799129603955110060,
+          "recoveries": 14,
+          "recovery_window_crashes": 6,
+          "seed": 1371717735,
+          "torn_decisions": 38
+        },
+        "rotation": "restored"
+      },
+      "0x51c2c06d": {
+        "historical_engine_defect": "completed"
+      },
+      "0x51c2c0df": {
+        "exact_territory_holds": true,
+        "expectation_verdicts": [
+          "+RecoveryWindowCrash",
+          "+TornDecisionsAtLeast(10)",
+          "+InFlightAdmitResolved"
+        ],
+        "receipt_mismatch": false,
+        "report": {
+          "batches_committed": 13,
+          "catalog_activation_rolled_back": 0,
+          "catalog_activation_survived": 0,
+          "commands_applied": 18,
+          "crashes": 14,
+          "final_frontier": 18,
+          "generator_version": 1,
+          "in_flight_admit_absent": 1,
+          "in_flight_admit_present": 0,
+          "in_flight_commit_absent": 0,
+          "in_flight_commit_present": 0,
+          "initialization_rolled_back": 0,
+          "initialization_survived": 9,
+          "max_torn_in_one_recovery": 6,
+          "oracle_comparisons": 8,
+          "plan_digest": 4583157961189945101,
+          "recoveries": 14,
+          "recovery_window_crashes": 7,
+          "seed": 1371717855,
+          "torn_decisions": 28
+        },
+        "rotation": "restored"
+      },
+      "0x51c2c0e1": {
+        "exact_territory_holds": false,
+        "expectation_verdicts": [
+          "-InFlightCommitPresent",
+          "+InFlightCommitAbsent",
+          "+InFlightAdmitResolved"
+        ],
+        "receipt_mismatch": false,
+        "report": {
+          "batches_committed": 11,
+          "catalog_activation_rolled_back": 0,
+          "catalog_activation_survived": 0,
+          "commands_applied": 18,
+          "crashes": 14,
+          "final_frontier": 18,
+          "generator_version": 1,
+          "in_flight_admit_absent": 1,
+          "in_flight_admit_present": 0,
+          "in_flight_commit_absent": 1,
+          "in_flight_commit_present": 0,
+          "initialization_rolled_back": 0,
+          "initialization_survived": 11,
+          "max_torn_in_one_recovery": 10,
+          "oracle_comparisons": 11,
+          "plan_digest": 17197154087941032589,
+          "recoveries": 14,
+          "recovery_window_crashes": 4,
+          "seed": 1371717857,
+          "torn_decisions": 38
+        },
+        "rotation": "rotated"
+      },
+      "0x51c2c147": {
+        "exact_territory_holds": false,
+        "expectation_verdicts": [
+          "-InFlightCommitPresent",
+          "+InFlightCommitAbsent",
+          "-InFlightAdmitResolved"
+        ],
+        "receipt_mismatch": false,
+        "report": {
+          "batches_committed": 11,
+          "catalog_activation_rolled_back": 0,
+          "catalog_activation_survived": 0,
+          "commands_applied": 18,
+          "crashes": 32,
+          "final_frontier": 18,
+          "generator_version": 1,
+          "in_flight_admit_absent": 0,
+          "in_flight_admit_present": 0,
+          "in_flight_commit_absent": 3,
+          "in_flight_commit_present": 0,
+          "initialization_rolled_back": 0,
+          "initialization_survived": 25,
+          "max_torn_in_one_recovery": 9,
+          "oracle_comparisons": 19,
+          "plan_digest": 3319748734105910167,
+          "recoveries": 32,
+          "recovery_window_crashes": 14,
+          "seed": 1371717959,
+          "torn_decisions": 65
+        },
+        "rotation": "rotated"
+      },
+      "0x51c2c200": {
+        "exact_territory_holds": false,
+        "expectation_verdicts": [
+          "+RecoveryWindowCrash",
+          "+TornDecisionsAtLeast(10)",
+          "-InFlightAdmitResolved"
+        ],
+        "receipt_mismatch": false,
+        "report": {
+          "batches_committed": 9,
+          "catalog_activation_rolled_back": 0,
+          "catalog_activation_survived": 0,
+          "commands_applied": 18,
+          "crashes": 14,
+          "final_frontier": 18,
+          "generator_version": 1,
+          "in_flight_admit_absent": 0,
+          "in_flight_admit_present": 0,
+          "in_flight_commit_absent": 1,
+          "in_flight_commit_present": 0,
+          "initialization_rolled_back": 0,
+          "initialization_survived": 11,
+          "max_torn_in_one_recovery": 18,
+          "oracle_comparisons": 8,
+          "plan_digest": 11546313466854665392,
+          "recoveries": 14,
+          "recovery_window_crashes": 7,
+          "seed": 1371718144,
+          "torn_decisions": 26
+        },
+        "rotation": "rotated"
+      },
+      "0x51c2c301": {
+        "exact_territory_holds": false,
+        "expectation_verdicts": [
+          "-TornDecisionsAtLeast(30)",
+          "+InFlightCommitAbsent",
+          "+RecoveryWindowCrash",
+          "+InitializationBoundary"
+        ],
+        "receipt_mismatch": false,
+        "report": {
+          "batches_committed": 10,
+          "catalog_activation_rolled_back": 0,
+          "catalog_activation_survived": 0,
+          "commands_applied": 18,
+          "crashes": 14,
+          "final_frontier": 18,
+          "generator_version": 1,
+          "in_flight_admit_absent": 0,
+          "in_flight_admit_present": 0,
+          "in_flight_commit_absent": 1,
+          "in_flight_commit_present": 0,
+          "initialization_rolled_back": 0,
+          "initialization_survived": 10,
+          "max_torn_in_one_recovery": 12,
+          "oracle_comparisons": 9,
+          "plan_digest": 8229490284079171541,
+          "recoveries": 14,
+          "recovery_window_crashes": 6,
+          "seed": 1371718401,
+          "torn_decisions": 29
+        },
+        "rotation": "rotated"
+      },
+      "0x51c2c307": {
+        "exact_territory_holds": true,
+        "expectation_verdicts": [
+          "+TornDecisionsAtLeast(30)",
+          "+InFlightCommitAbsent",
+          "+RecoveryWindowCrash",
+          "+InitializationBoundary"
+        ],
+        "receipt_mismatch": false,
+        "report": {
+          "batches_committed": 10,
+          "catalog_activation_rolled_back": 0,
+          "catalog_activation_survived": 0,
+          "commands_applied": 18,
+          "crashes": 14,
+          "final_frontier": 18,
+          "generator_version": 1,
+          "in_flight_admit_absent": 0,
+          "in_flight_admit_present": 0,
+          "in_flight_commit_absent": 3,
+          "in_flight_commit_present": 0,
+          "initialization_rolled_back": 0,
+          "initialization_survived": 11,
+          "max_torn_in_one_recovery": 14,
+          "oracle_comparisons": 8,
+          "plan_digest": 2018254464949042352,
+          "recoveries": 14,
+          "recovery_window_crashes": 7,
+          "seed": 1371718407,
+          "torn_decisions": 37
+        },
+        "rotation": "restored"
+      },
+      "0x51c2c30a": {
+        "exact_territory_holds": true,
+        "expectation_verdicts": [
+          "+TornDecisionsAtLeast(30)",
+          "+InFlightCommitAbsent",
+          "+RecoveryWindowCrash",
+          "+InitializationBoundary"
+        ],
+        "receipt_mismatch": false,
+        "report": {
+          "batches_committed": 10,
+          "catalog_activation_rolled_back": 0,
+          "catalog_activation_survived": 0,
+          "commands_applied": 18,
+          "crashes": 14,
+          "final_frontier": 18,
+          "generator_version": 1,
+          "in_flight_admit_absent": 0,
+          "in_flight_admit_present": 0,
+          "in_flight_commit_absent": 1,
+          "in_flight_commit_present": 0,
+          "initialization_rolled_back": 0,
+          "initialization_survived": 9,
+          "max_torn_in_one_recovery": 10,
+          "oracle_comparisons": 8,
+          "plan_digest": 8814662940990873861,
+          "recoveries": 14,
+          "recovery_window_crashes": 7,
+          "seed": 1371718410,
+          "torn_decisions": 31
+        },
+        "rotation": "none"
+      },
+      "0x51c2c404": {
+        "exact_territory_holds": false,
+        "expectation_verdicts": [
+          "-InFlightCommitAbsent",
+          "-InFlightAdmitResolved"
+        ],
+        "receipt_mismatch": false,
+        "report": {
+          "batches_committed": 11,
+          "catalog_activation_rolled_back": 1,
+          "catalog_activation_survived": 0,
+          "commands_applied": 18,
+          "crashes": 32,
+          "final_frontier": 18,
+          "generator_version": 1,
+          "in_flight_admit_absent": 0,
+          "in_flight_admit_present": 0,
+          "in_flight_commit_absent": 0,
+          "in_flight_commit_present": 0,
+          "initialization_rolled_back": 0,
+          "initialization_survived": 27,
+          "max_torn_in_one_recovery": 8,
+          "oracle_comparisons": 18,
+          "plan_digest": 16882929500619780991,
+          "recoveries": 32,
+          "recovery_window_crashes": 15,
+          "seed": 1371718660,
+          "torn_decisions": 61
+        },
+        "rotation": "rotated"
+      },
+      "0x51c2c406": {
+        "exact_territory_holds": false,
+        "expectation_verdicts": [
+          "+InFlightCommitAbsent",
+          "-InFlightAdmitResolved",
+          "=retired:InFlightCommitPresent"
+        ],
+        "receipt_mismatch": false,
+        "report": {
+          "batches_committed": 13,
+          "catalog_activation_rolled_back": 0,
+          "catalog_activation_survived": 0,
+          "commands_applied": 18,
+          "crashes": 32,
+          "final_frontier": 18,
+          "generator_version": 1,
+          "in_flight_admit_absent": 0,
+          "in_flight_admit_present": 0,
+          "in_flight_commit_absent": 5,
+          "in_flight_commit_present": 0,
+          "initialization_rolled_back": 0,
+          "initialization_survived": 27,
+          "max_torn_in_one_recovery": 17,
+          "oracle_comparisons": 24,
+          "plan_digest": 13694629313020205665,
+          "recoveries": 32,
+          "recovery_window_crashes": 9,
+          "seed": 1371718662,
+          "torn_decisions": 108
+        },
+        "rotation": "rotated"
+      },
+      "0x51c2c41d": {
+        "exact_territory_holds": false,
+        "expectation_verdicts": [
+          "-InFlightCommitAbsent",
+          "+InFlightAdmitResolved"
+        ],
+        "receipt_mismatch": false,
+        "report": {
+          "batches_committed": 10,
+          "catalog_activation_rolled_back": 0,
+          "catalog_activation_survived": 0,
+          "commands_applied": 18,
+          "crashes": 32,
+          "final_frontier": 18,
+          "generator_version": 1,
+          "in_flight_admit_absent": 3,
+          "in_flight_admit_present": 0,
+          "in_flight_commit_absent": 0,
+          "in_flight_commit_present": 0,
+          "initialization_rolled_back": 0,
+          "initialization_survived": 26,
+          "max_torn_in_one_recovery": 9,
+          "oracle_comparisons": 21,
+          "plan_digest": 13883482587052903833,
+          "recoveries": 32,
+          "recovery_window_crashes": 12,
+          "seed": 1371718685,
+          "torn_decisions": 103
+        },
+        "rotation": "rotated"
+      },
+      "0x51c2c420": {
+        "exact_territory_holds": true,
+        "expectation_verdicts": [
+          "+InFlightCommitAbsent",
+          "+InFlightAdmitResolved"
+        ],
+        "receipt_mismatch": false,
+        "report": {
+          "batches_committed": 10,
+          "catalog_activation_rolled_back": 1,
+          "catalog_activation_survived": 0,
+          "commands_applied": 18,
+          "crashes": 32,
+          "final_frontier": 18,
+          "generator_version": 1,
+          "in_flight_admit_absent": 1,
+          "in_flight_admit_present": 0,
+          "in_flight_commit_absent": 1,
+          "in_flight_commit_present": 0,
+          "initialization_rolled_back": 0,
+          "initialization_survived": 24,
+          "max_torn_in_one_recovery": 8,
+          "oracle_comparisons": 12,
+          "plan_digest": 3530082656534339748,
+          "recoveries": 32,
+          "recovery_window_crashes": 21,
+          "seed": 1371718688,
+          "torn_decisions": 67
+        },
+        "rotation": "none"
+      },
+      "0x51c2c500": {
+        "exact_territory_holds": false,
+        "expectation_verdicts": [
+          "+RecoveryWindowCrash",
+          "+TornDecisionsAtLeast(10)",
+          "-InFlightAdmitResolved"
+        ],
+        "receipt_mismatch": false,
+        "report": {
+          "batches_committed": 12,
+          "catalog_activation_rolled_back": 1,
+          "catalog_activation_survived": 0,
+          "commands_applied": 18,
+          "crashes": 14,
+          "final_frontier": 18,
+          "generator_version": 1,
+          "in_flight_admit_absent": 0,
+          "in_flight_admit_present": 0,
+          "in_flight_commit_absent": 2,
+          "in_flight_commit_present": 0,
+          "initialization_rolled_back": 1,
+          "initialization_survived": 9,
+          "max_torn_in_one_recovery": 10,
+          "oracle_comparisons": 10,
+          "plan_digest": 14730759273003272624,
+          "recoveries": 14,
+          "recovery_window_crashes": 5,
+          "seed": 1371718912,
+          "torn_decisions": 39
+        },
+        "rotation": "rotated"
+      },
+      "0x51c2c504": {
+        "exact_territory_holds": false,
+        "expectation_verdicts": [
+          "+RecoveryWindowCrash",
+          "+TornDecisionsAtLeast(10)",
+          "-InFlightAdmitResolved"
+        ],
+        "receipt_mismatch": false,
+        "report": {
+          "batches_committed": 9,
+          "catalog_activation_rolled_back": 0,
+          "catalog_activation_survived": 0,
+          "commands_applied": 18,
+          "crashes": 14,
+          "final_frontier": 18,
+          "generator_version": 1,
+          "in_flight_admit_absent": 0,
+          "in_flight_admit_present": 0,
+          "in_flight_commit_absent": 5,
+          "in_flight_commit_present": 0,
+          "initialization_rolled_back": 0,
+          "initialization_survived": 11,
+          "max_torn_in_one_recovery": 17,
+          "oracle_comparisons": 11,
+          "plan_digest": 2108812833841311413,
+          "recoveries": 14,
+          "recovery_window_crashes": 4,
+          "seed": 1371718916,
+          "torn_decisions": 52
+        },
+        "rotation": "rotated"
+      },
+      "0x51c2c508": {
+        "exact_territory_holds": true,
+        "expectation_verdicts": [
+          "+RecoveryWindowCrash",
+          "+TornDecisionsAtLeast(10)",
+          "+InFlightAdmitResolved"
+        ],
+        "receipt_mismatch": false,
+        "report": {
+          "batches_committed": 13,
+          "catalog_activation_rolled_back": 0,
+          "catalog_activation_survived": 0,
+          "commands_applied": 18,
+          "crashes": 14,
+          "final_frontier": 18,
+          "generator_version": 1,
+          "in_flight_admit_absent": 1,
+          "in_flight_admit_present": 0,
+          "in_flight_commit_absent": 0,
+          "in_flight_commit_present": 0,
+          "initialization_rolled_back": 0,
+          "initialization_survived": 10,
+          "max_torn_in_one_recovery": 8,
+          "oracle_comparisons": 7,
+          "plan_digest": 7774766701008001135,
+          "recoveries": 14,
+          "recovery_window_crashes": 8,
+          "seed": 1371718920,
+          "torn_decisions": 23
+        },
+        "rotation": "none"
+      }
+    }
+  },
+  "causal_child": "0d9edbce0593ec1227f66fd9af2ea934ee09ecf9",
+  "causal_parent": "e6755d37cc92635f992e4e184a956735bb1f11b7",
+  "changed_receipts": {
+    "0x51c2c067": {
+      "child_report": {
+        "batches_committed": 13,
+        "catalog_activation_rolled_back": 0,
+        "catalog_activation_survived": 0,
+        "commands_applied": 18,
+        "crashes": 14,
+        "final_frontier": 18,
+        "generator_version": 1,
+        "in_flight_admit_absent": 0,
+        "in_flight_admit_present": 0,
+        "in_flight_commit_absent": 2,
+        "in_flight_commit_present": 0,
+        "initialization_rolled_back": 0,
+        "initialization_survived": 10,
+        "max_torn_in_one_recovery": 15,
+        "oracle_comparisons": 11,
+        "plan_digest": 1799129603955110060,
+        "recoveries": 14,
+        "recovery_window_crashes": 4,
+        "seed": 1371717735,
+        "torn_decisions": 29
+      },
+      "child_territory_holds": false,
+      "parent_report": {
+        "batches_committed": 13,
+        "catalog_activation_rolled_back": 0,
+        "catalog_activation_survived": 0,
+        "commands_applied": 18,
+        "crashes": 14,
+        "final_frontier": 18,
+        "generator_version": 1,
+        "in_flight_admit_absent": 0,
+        "in_flight_admit_present": 0,
+        "in_flight_commit_absent": 3,
+        "in_flight_commit_present": 0,
+        "initialization_rolled_back": 0,
+        "initialization_survived": 11,
+        "max_torn_in_one_recovery": 15,
+        "oracle_comparisons": 9,
+        "plan_digest": 1799129603955110060,
+        "recoveries": 14,
+        "recovery_window_crashes": 6,
+        "seed": 1371717735,
+        "torn_decisions": 38
+      },
+      "parent_territory_holds": true,
+      "repaired_receipt_state": "rotated",
+      "unchanged_predicates": [
+        "-TornDecisionsAtLeast(30)",
+        "+InFlightCommitAbsent",
+        "+RecoveryWindowCrash",
+        "+InitializationBoundary"
+      ]
+    },
+    "0x51c2c200": {
+      "child_report": {
+        "batches_committed": 9,
+        "catalog_activation_rolled_back": 0,
+        "catalog_activation_survived": 0,
+        "commands_applied": 18,
+        "crashes": 14,
+        "final_frontier": 18,
+        "generator_version": 1,
+        "in_flight_admit_absent": 1,
+        "in_flight_admit_present": 0,
+        "in_flight_commit_absent": 1,
+        "in_flight_commit_present": 0,
+        "initialization_rolled_back": 0,
+        "initialization_survived": 10,
+        "max_torn_in_one_recovery": 18,
+        "oracle_comparisons": 9,
+        "plan_digest": 11546313466854665392,
+        "recoveries": 14,
+        "recovery_window_crashes": 6,
+        "seed": 1371718144,
+        "torn_decisions": 37
+      },
+      "child_territory_holds": true,
+      "parent_report": {
+        "batches_committed": 9,
+        "catalog_activation_rolled_back": 0,
+        "catalog_activation_survived": 0,
+        "commands_applied": 18,
+        "crashes": 14,
+        "final_frontier": 18,
+        "generator_version": 1,
+        "in_flight_admit_absent": 0,
+        "in_flight_admit_present": 0,
+        "in_flight_commit_absent": 1,
+        "in_flight_commit_present": 0,
+        "initialization_rolled_back": 0,
+        "initialization_survived": 11,
+        "max_torn_in_one_recovery": 18,
+        "oracle_comparisons": 8,
+        "plan_digest": 11546313466854665392,
+        "recoveries": 14,
+        "recovery_window_crashes": 7,
+        "seed": 1371718144,
+        "torn_decisions": 26
+      },
+      "parent_territory_holds": false,
+      "repaired_receipt_state": "restored",
+      "unchanged_predicates": [
+        "+RecoveryWindowCrash",
+        "+TornDecisionsAtLeast(10)",
+        "+InFlightAdmitResolved"
+      ]
+    },
+    "0x51c2c301": {
+      "child_report": {
+        "batches_committed": 10,
+        "catalog_activation_rolled_back": 0,
+        "catalog_activation_survived": 0,
+        "commands_applied": 18,
+        "crashes": 14,
+        "final_frontier": 18,
+        "generator_version": 1,
+        "in_flight_admit_absent": 0,
+        "in_flight_admit_present": 0,
+        "in_flight_commit_absent": 3,
+        "in_flight_commit_present": 0,
+        "initialization_rolled_back": 0,
+        "initialization_survived": 11,
+        "max_torn_in_one_recovery": 14,
+        "oracle_comparisons": 10,
+        "plan_digest": 8229490284079171541,
+        "recoveries": 14,
+        "recovery_window_crashes": 5,
+        "seed": 1371718401,
+        "torn_decisions": 34
+      },
+      "child_territory_holds": true,
+      "parent_report": {
+        "batches_committed": 10,
+        "catalog_activation_rolled_back": 0,
+        "catalog_activation_survived": 0,
+        "commands_applied": 18,
+        "crashes": 14,
+        "final_frontier": 18,
+        "generator_version": 1,
+        "in_flight_admit_absent": 0,
+        "in_flight_admit_present": 0,
+        "in_flight_commit_absent": 1,
+        "in_flight_commit_present": 0,
+        "initialization_rolled_back": 0,
+        "initialization_survived": 10,
+        "max_torn_in_one_recovery": 12,
+        "oracle_comparisons": 9,
+        "plan_digest": 8229490284079171541,
+        "recoveries": 14,
+        "recovery_window_crashes": 6,
+        "seed": 1371718401,
+        "torn_decisions": 29
+      },
+      "parent_territory_holds": false,
+      "repaired_receipt_state": "restored",
+      "unchanged_predicates": [
+        "+TornDecisionsAtLeast(30)",
+        "+InFlightCommitAbsent",
+        "+RecoveryWindowCrash",
+        "+InitializationBoundary"
+      ]
+    },
+    "0x51c2c406": {
+      "child_report": {
+        "batches_committed": 13,
+        "catalog_activation_rolled_back": 0,
+        "catalog_activation_survived": 0,
+        "commands_applied": 18,
+        "crashes": 32,
+        "final_frontier": 18,
+        "generator_version": 1,
+        "in_flight_admit_absent": 4,
+        "in_flight_admit_present": 0,
+        "in_flight_commit_absent": 3,
+        "in_flight_commit_present": 0,
+        "initialization_rolled_back": 0,
+        "initialization_survived": 23,
+        "max_torn_in_one_recovery": 13,
+        "oracle_comparisons": 19,
+        "plan_digest": 13694629313020205665,
+        "recoveries": 32,
+        "recovery_window_crashes": 14,
+        "seed": 1371718662,
+        "torn_decisions": 66
+      },
+      "child_territory_holds": true,
+      "parent_report": {
+        "batches_committed": 13,
+        "catalog_activation_rolled_back": 0,
+        "catalog_activation_survived": 0,
+        "commands_applied": 18,
+        "crashes": 32,
+        "final_frontier": 18,
+        "generator_version": 1,
+        "in_flight_admit_absent": 0,
+        "in_flight_admit_present": 0,
+        "in_flight_commit_absent": 5,
+        "in_flight_commit_present": 0,
+        "initialization_rolled_back": 0,
+        "initialization_survived": 27,
+        "max_torn_in_one_recovery": 17,
+        "oracle_comparisons": 24,
+        "plan_digest": 13694629313020205665,
+        "recoveries": 32,
+        "recovery_window_crashes": 9,
+        "seed": 1371718662,
+        "torn_decisions": 108
+      },
+      "parent_territory_holds": false,
+      "repaired_receipt_state": "restored",
+      "unchanged_predicates": [
+        "+InFlightCommitAbsent",
+        "+InFlightAdmitResolved",
+        "=retired:InFlightCommitPresent"
+      ]
+    },
+    "0x51c2c41d": {
+      "child_report": {
+        "batches_committed": 10,
+        "catalog_activation_rolled_back": 0,
+        "catalog_activation_survived": 0,
+        "commands_applied": 18,
+        "crashes": 32,
+        "final_frontier": 18,
+        "generator_version": 1,
+        "in_flight_admit_absent": 2,
+        "in_flight_admit_present": 0,
+        "in_flight_commit_absent": 8,
+        "in_flight_commit_present": 0,
+        "initialization_rolled_back": 0,
+        "initialization_survived": 25,
+        "max_torn_in_one_recovery": 19,
+        "oracle_comparisons": 21,
+        "plan_digest": 13883482587052903833,
+        "recoveries": 32,
+        "recovery_window_crashes": 12,
+        "seed": 1371718685,
+        "torn_decisions": 106
+      },
+      "child_territory_holds": true,
+      "parent_report": {
+        "batches_committed": 10,
+        "catalog_activation_rolled_back": 0,
+        "catalog_activation_survived": 0,
+        "commands_applied": 18,
+        "crashes": 32,
+        "final_frontier": 18,
+        "generator_version": 1,
+        "in_flight_admit_absent": 3,
+        "in_flight_admit_present": 0,
+        "in_flight_commit_absent": 0,
+        "in_flight_commit_present": 0,
+        "initialization_rolled_back": 0,
+        "initialization_survived": 26,
+        "max_torn_in_one_recovery": 9,
+        "oracle_comparisons": 21,
+        "plan_digest": 13883482587052903833,
+        "recoveries": 32,
+        "recovery_window_crashes": 12,
+        "seed": 1371718685,
+        "torn_decisions": 103
+      },
+      "parent_territory_holds": false,
+      "repaired_receipt_state": "restored",
+      "unchanged_predicates": [
+        "+InFlightCommitAbsent",
+        "+InFlightAdmitResolved"
+      ]
+    },
+    "0x51c2c504": {
+      "child_report": {
+        "batches_committed": 9,
+        "catalog_activation_rolled_back": 0,
+        "catalog_activation_survived": 0,
+        "commands_applied": 18,
+        "crashes": 14,
+        "final_frontier": 18,
+        "generator_version": 1,
+        "in_flight_admit_absent": 5,
+        "in_flight_admit_present": 0,
+        "in_flight_commit_absent": 1,
+        "in_flight_commit_present": 0,
+        "initialization_rolled_back": 0,
+        "initialization_survived": 10,
+        "max_torn_in_one_recovery": 11,
+        "oracle_comparisons": 10,
+        "plan_digest": 2108812833841311413,
+        "recoveries": 14,
+        "recovery_window_crashes": 5,
+        "seed": 1371718916,
+        "torn_decisions": 47
+      },
+      "child_territory_holds": true,
+      "parent_report": {
+        "batches_committed": 9,
+        "catalog_activation_rolled_back": 0,
+        "catalog_activation_survived": 0,
+        "commands_applied": 18,
+        "crashes": 14,
+        "final_frontier": 18,
+        "generator_version": 1,
+        "in_flight_admit_absent": 0,
+        "in_flight_admit_present": 0,
+        "in_flight_commit_absent": 5,
+        "in_flight_commit_present": 0,
+        "initialization_rolled_back": 0,
+        "initialization_survived": 11,
+        "max_torn_in_one_recovery": 17,
+        "oracle_comparisons": 11,
+        "plan_digest": 2108812833841311413,
+        "recoveries": 14,
+        "recovery_window_crashes": 4,
+        "seed": 1371718916,
+        "torn_decisions": 52
+      },
+      "parent_territory_holds": false,
+      "repaired_receipt_state": "restored",
+      "unchanged_predicates": [
+        "+RecoveryWindowCrash",
+        "+TornDecisionsAtLeast(10)",
+        "+InFlightAdmitResolved"
+      ]
+    }
+  },
+  "coordinate_count": 21,
+  "earlier_exploration": {
+    "child": {
+      "audit_sha256": "476f6a8f18c4f46793b8afe84e4955304747f65d36dbbf77a12e8f53c218bacd",
+      "mismatched_coordinates": [
+        "0x51c2c0df",
+        "0x51c2c200",
+        "0x51c2c406",
+        "0x51c2c500",
+        "0x51c2c504"
+      ],
+      "revision": "0ef986b052f0d850391a9cd4de9386f2c81e60cd"
+    },
+    "migration-child": {
+      "audit_sha256": "9af044669a758eca45cec15b5079b0f1ce9517d0ee52e0705549d17039b6f095",
+      "mismatched_coordinates": [
+        "0x51c2c067",
+        "0x51c2c200",
+        "0x51c2c301",
+        "0x51c2c307",
+        "0x51c2c30a",
+        "0x51c2c500",
+        "0x51c2c504"
+      ],
+      "revision": "bade83c21962494c46f19a66079803fa1230ab54"
+    },
+    "migration-parent": {
+      "audit_sha256": "eebd04ef38776380b1317f92813dd32609b79e21218a21a4966567c7d899b04c",
+      "mismatched_coordinates": [
+        "0x51c2c0df",
+        "0x51c2c200",
+        "0x51c2c406",
+        "0x51c2c500",
+        "0x51c2c504"
+      ],
+      "revision": "997135e749b5a52d8db138d8049e2652835d4b3b"
+    },
+    "parent": {
+      "audit_sha256": "8ecd9e69039d20be560db1addd68771ab122922d894a8096c0dfc1550d70ae52",
+      "mismatched_coordinates": [],
+      "revision": "f590478fbf6f9a5cd5dea2b41251c6ad09605ce9"
+    }
+  },
+  "gate_sha256": {
+    "after": "022c13dd1dcb4c874a9c61c9f9bace682f9cc32c258f33b6b7dfdb7ccefd9995",
+    "before": "73fe308c12ec5af1f3cfc57efd3cd45a44705bce340f085f945fa5c68fc9072f",
+    "parent": "6dd68399403569e03d4f005b8be6f15094e6f5d1bf67a0d7731fb3208134a47b"
+  },
+  "history_limit": "The whole-gate history is not monotone. Initial bisection found an earlier failure period that was repaired before the causal parent. It is not used to attribute the current six mismatches; exact parent/child audits do that.",
+  "input_sha256": {
+    "child": "2016ef13a9be75a32a5d585066de0fdcaf03ddfffe4f3d35bc28fc4904b2e477",
+    "current": "6dbd587a77dca1a6ba5271040f385f1bed7118ba9d4e0895450bd073179440b4",
+    "fixed": "d80a515b28b0a08b5e524ea404dcf0093cf48f087f9ee1fffd3087fbe1649af0",
+    "parent": "dac3c30b5cbaf99e6d7f31221dbf82a595ac20c8b4a68070b651ca8ea4c43d7a"
+  },
+  "preserved": [
+    "all seeds and generator versions",
+    "all numeric and semantic expectations",
+    "every original rotation/restoration receipt",
+    "successor chains",
+    "commit-PRESENT retirement",
+    "recovery oracle and final frontiers"
+  ],
+  "repeatability": {
+    "assertion": "All parsed reports and historical expectation verdicts identical to the independently frozen child audit.",
+    "count": 12,
+    "runs": [
+      {
+        "complete_reports_identical": true,
+        "log_sha256": "b8cc5a5379b948c53247fc698c51acf0a99c22c773fb6aae0f68a5a289f2a3ed",
+        "ordinal": 1
+      },
+      {
+        "complete_reports_identical": true,
+        "log_sha256": "fc04a1464224f8b4928222322f8bb7480e441b498ab89b1c3d2d6d3941992d56",
+        "ordinal": 2
+      },
+      {
+        "complete_reports_identical": true,
+        "log_sha256": "2636bc8faf3456605bad4ea746c39056091f959a0929c4cd62b17334cfcf59b9",
+        "ordinal": 3
+      },
+      {
+        "complete_reports_identical": true,
+        "log_sha256": "15d28215d9d91fd8ee7a81da88fac949668be036ab55c451755c6574dd0222b4",
+        "ordinal": 4
+      },
+      {
+        "complete_reports_identical": true,
+        "log_sha256": "605d3cbfc41521870a543ff7f23d36566d4741a12a2dbe6513ed56a0b449aba6",
+        "ordinal": 5
+      },
+      {
+        "complete_reports_identical": true,
+        "log_sha256": "0f4578fe387212e66cb6f9e4a5ad22adf2b39dbc5769aea0bd954b28dd8c491f",
+        "ordinal": 6
+      },
+      {
+        "complete_reports_identical": true,
+        "log_sha256": "bb611905ccaf55a0b45ff4376da918de0015b87942be478989d314cac40448a8",
+        "ordinal": 7
+      },
+      {
+        "complete_reports_identical": true,
+        "log_sha256": "325b4c9e422c230fa8f6821b88e9361af6d8126df7e9ea7c7eb3784fbe7b6333",
+        "ordinal": 8
+      },
+      {
+        "complete_reports_identical": true,
+        "log_sha256": "62c2b8d7cbf67da283a45248daa91321c1f1c4fcf5bf7d4004f195c4a0102d15",
+        "ordinal": 9
+      },
+      {
+        "complete_reports_identical": true,
+        "log_sha256": "62c2b8d7cbf67da283a45248daa91321c1f1c4fcf5bf7d4004f195c4a0102d15",
+        "ordinal": 10
+      },
+      {
+        "complete_reports_identical": true,
+        "log_sha256": "79b1dbbcfbb38c098ae840e6ce6561519a78a68a337ebb24959caf0e95a13792",
+        "ordinal": 11
+      },
+      {
+        "complete_reports_identical": true,
+        "log_sha256": "4ac7d203a5441f051f4cc4b57f762d88513f6cbaed1265a3b01aea60fa4d574c",
+        "ordinal": 12
+      }
+    ],
+    "seeds_per_run": 21,
+    "source": {
+      "exit_code": 0,
+      "finished_at": "2026-09-26T13:30:24.860265+00:00",
+      "revision": "0d9edbce0593ec1227f66fd9af2ea934ee09ecf9",
+      "scope": "Copied exact test executable; no runtime edits or changed assertions",
+      "test_binary_sha256": "ce1bed7900c39a5399320d9623ee8dd496ba2169ac4a88480403d01f7dab5afa",
+      "toolchain": "1.98.1"
+    }
+  },
+  "schema": "riffdb.wp810-corpus-receipt-repair/v1",
+  "scope": "Integration CI repair only; no runtime, performance or WP-810 completion verdict.",
+  "source_and_binary_receipts": {
+    "child": {
+      "exit_code": 0,
+      "finished_at": "2026-09-26T13:30:24.860265+00:00",
+      "revision": "0d9edbce0593ec1227f66fd9af2ea934ee09ecf9",
+      "scope": "Copied exact test executable; no runtime edits or changed assertions",
+      "test_binary_sha256": "ce1bed7900c39a5399320d9623ee8dd496ba2169ac4a88480403d01f7dab5afa",
+      "toolchain": "1.98.1"
+    },
+    "fixed": {
+      "base_revision": "ff7dd30366de41470728d3b114f2807e37052454",
+      "diff_sha256": "1ead0f70b996afa03fe322d15d5a40f660952c6157e7588ff0691fc41158933a",
+      "exit_code": 0,
+      "features": "workspace all-features",
+      "test_binary_sha256": "bf8a3dd76f463c389dc80fab1bd29b20272a9b757a314464756c3092947f3ea6"
+    },
+    "parent": {
+      "exit_code": 0,
+      "finished_at": "2026-09-26T13:29:45.155779+00:00",
+      "revision": "e6755d37cc92635f992e4e184a956735bb1f11b7",
+      "scope": "Copied exact test executable; no runtime edits or changed assertions",
+      "test_binary_sha256": "56018f4ddcb7b0d085934dee2c5aa672b4b28db5b6be1aa37dde210a556fface",
+      "toolchain": "1.98.1"
+    }
+  }
+}
