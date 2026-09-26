@@ -1859,6 +1859,23 @@ fn target_directory_state(path: &Path) -> Result<TargetDirectoryState, StorageEr
     }
 }
 
+/// Opens `path` with the default engine configuration. When this is the
+/// process's first engine open after a crash, redb's whole-file repair runs
+/// here; record it so the store's later open reports it as its own.
+fn open_recording_repair(path: &Path) -> Result<Database, redb::DatabaseError> {
+    let repaired = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let observed = std::sync::Arc::clone(&repaired);
+    let mut builder = Database::builder();
+    builder.set_repair_callback(move |_| {
+        observed.store(true, std::sync::atomic::Ordering::Release);
+    });
+    let opened = builder.open(path);
+    if repaired.load(std::sync::atomic::Ordering::Acquire) {
+        crate::store::note_engine_repaired_by_prior_open(path);
+    }
+    opened
+}
+
 pub(crate) fn lock_existing_target(path: &Path) -> Result<Option<Database>, StorageError> {
     match fs::symlink_metadata(path) {
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
@@ -1866,7 +1883,7 @@ pub(crate) fn lock_existing_target(path: &Path) -> Result<Option<Database>, Stor
         Ok(metadata) if !metadata.file_type().is_file() => {
             Err(storage_error(StorageErrorKind::Unavailable))
         }
-        Ok(_) => match Database::open(path) {
+        Ok(_) => match open_recording_repair(path) {
             Ok(database) => Ok(Some(database)),
             Err(redb::DatabaseError::Storage(redb::StorageError::Io(error)))
                 if matches!(

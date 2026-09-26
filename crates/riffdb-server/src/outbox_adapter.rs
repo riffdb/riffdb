@@ -51,6 +51,14 @@ impl NoDestinationOutboxHealth {
         self.state.store(u8::from(degraded), Ordering::Release);
     }
 
+    /// Refreshes from warm transient indexes only. With cold indexes the
+    /// state stays degraded, exactly as a bounded startup reports it, rather
+    /// than rebuilding the whole command history inside a commit group.
+    pub(crate) fn refresh_without_warming(&self, source: &SharedRedbOperationalPorts) {
+        let degraded = !matches!(source.has_undelivered_outbox_if_warm(), Ok(Some(false)));
+        self.state.store(u8::from(degraded), Ordering::Release);
+    }
+
     /// Returns the current payload-free aggregate classification.
     pub(crate) fn readiness(&self) -> OutboxDerivedReadiness {
         if self.state.load(Ordering::Acquire) == 0 {
@@ -110,7 +118,7 @@ impl ApplicationCommitNotificationSink for ServerCommitNotificationSink {
             self.authoritative.publish_first_commit(*sequence)?;
         }
         if !sequences.is_empty() {
-            self.outbox.refresh(&self.storage);
+            self.outbox.refresh_without_warming(&self.storage);
         }
         Ok(())
     }

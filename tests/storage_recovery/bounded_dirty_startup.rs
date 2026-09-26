@@ -172,6 +172,54 @@ fn bounded_dirty_startup_claims_a_command_owned_outbox_event() {
     );
 }
 
+// req: REC-001, REC-004
+/// ADR-0182 Decision 1 after readiness: the commit-time outbox health sample
+/// answers only from warm transient indexes. With the bounded start's cold
+/// indexes it reports "unknown" instead of rebuilding the whole command
+/// history inside the first commit group, which at production scale held the
+/// mutation gate for tens of seconds.
+#[test]
+fn commit_time_outbox_sample_never_warms_cold_indexes() {
+    let path = TestDatabasePath::new("bounded-dirty-outbox-sample");
+    prepare_command_database(&path.0);
+    let ports = {
+        let store = RedbStore::open(&path.0).expect("dirty reopen");
+        let session = store
+            .begin_structural_evidence(startup_inputs())
+            .expect("begin bounded dirty evidence");
+        assert!(session.bounded_dirty_startup_path());
+        complete_structural_open_from(session)
+            .into_parts()
+            .3
+            .into_operational_after_catalog_validation()
+            .expect("bounded dirty startup reaches readiness")
+    };
+    commit_command_fixture(&ports, &command_fixture_at(1));
+    assert_eq!(
+        ports
+            .has_undelivered_outbox_if_warm()
+            .expect("sample cold indexes"),
+        None,
+        "cold indexes answer unknown"
+    );
+    assert_eq!(
+        ports.transient_index_rebuilds(),
+        0,
+        "the sample warmed nothing"
+    );
+
+    // Once a real derived read warms the indexes, the sample answers exactly.
+    use riffdb_storage_api::OutboxRepository;
+    let undelivered = ports.has_undelivered_outbox().expect("warm read");
+    assert_eq!(ports.transient_index_rebuilds(), 1);
+    assert_eq!(
+        ports
+            .has_undelivered_outbox_if_warm()
+            .expect("sample warm indexes"),
+        Some(undelivered)
+    );
+}
+
 /// Where an out-of-band corruption was refused under the ADR-0182 layering.
 #[derive(Debug)]
 pub(crate) enum CorruptionRefusal {
