@@ -24292,6 +24292,50 @@ work_packages:
     export; the background scrub and the public offline scrub both detect the same planted
     defects; and repeated dirty restart creates no command, event, outcome, provenance, audit,
     projection, outbox, or allocator advance.
+  closure:
+    status: complete
+    completed_at: '2026-09-26'
+    evidence: release/evidence/wp-760/dirty-recovery-receipt.json
+    decision: A startup without a valid clean-close certificate (and, per ADR-0260, every
+      V2-source restart) reaches readiness through engine open, journal-suffix recovery,
+      bounded-root validation against the validated-prefix checkpoint, and dirty-generation
+      consumption, with no population walk and a 64 MiB recovery-owned ceiling (149 bytes
+      measured). Corrupt population rows fail closed on first touch; one background scrub with
+      the closed storage_scrub health member and the authorized `riffdb storage scrub` (receipt
+      V4, six gRPC-only maintenance registry declarations) own exhaustive discovery. The
+      complete validator retains a compact audit index instead of the decoded command history,
+      so both scrubs pass at the production population.
+    decisions_taken:
+    - Fast-path proofs whose premise was a primary clean-certificate restart were re-homed to
+      follower startup, which keeps that path (maintainer, in session).
+    - Under-reported validated-prefix checkpoint counts on bounded primaries were accepted and
+      documented rather than recomputed before readiness (maintainer, in session).
+    - V2 sources take the bounded path under ADR-0260; the exhaustive stray-fence scan belongs
+      to the scrubs, and a retained-history scrub failure withdraws V2 source authority; a
+      fence index was rejected as adding no detection (maintainer, in session).
+    - Scrub receipt is V4 and the maintenance registry covers six RPCs per ADR-0203 Amendment 1
+      (maintainer accepted exact text).
+    - Storage-engine crash repair after a kill is attributed to the engine rather than
+      avoided; redb quick_repair stays off because it changes commit behavior (maintainer, in
+      session).
+    - The complete validator was bounded with a compact derived-audit index and on-demand
+      command resolution instead of reclassifying over-limit refusals (maintainer, in session).
+    - An interrupted scrub reruns its whole pass on the next start; a failed scrub exits the
+      process fail-closed and the next start opens the database with the terminal receipt.
+    hazards:
+    - The first write after any restart rebuilds the in-memory command indexes once (tens of
+      seconds at the production population, holding writes); steady-state writes need them. A
+      post-readiness background warm-up is a follow-up.
+    - Crash-restart wall time at scale is dominated by storage-engine repair (52.7 s at the
+      production population on the WP-760 host) and grows with file size.
+    - The background scrub was still in its retained-history step at each measured shutdown,
+      so throughput evidence is the offline pass (14.3 s at 65,536 rows, 220.8 s at production)
+      rather than background rows per second.
+    - Six RPCs that predate registry coverage (CheckContractMigration,
+      GetContractMigrationOperation, ExecuteBatch, session Open, GetApplicationCatalog,
+      GetQueryModule) still lack declarations; OBL-0203-2's proof pins that exact residual.
+    - The shared complete validator is proven reused by staged restore and format upgrade;
+      backup verification and retention preflight reuse was not re-proven in this package.
   standing_design_tests:
     interface_safety: No public request, contract, flag, or transport option can skip
       validation, force readiness, suppress the scrub, or obtain a storage handle; the only
