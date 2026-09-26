@@ -1,6 +1,6 @@
 {
   "schema": "riffdb.wp810-materialization-protocol/v1",
-  "status": "Prepared; requires a fresh exclusive host interval. Not executed.",
+  "status": "Superseded before execution by main a1809310f and its a696db66c index-warming repair; requires integration requalification and rebuilt observed binaries.",
   "source_revision": "3514c4af29f4b266f2d5be726d7510cf8e54a73f",
   "question": "Within slow journal write/sync intervals, which checkpoint phase and actual primary-engine I/O operations overlap?",
   "scope": "One observation-only diagnostic on the frozen integration, reusing its exact qualified binaries. No admission prototype, runtime mitigation comparison, or WP-749 qualification.",

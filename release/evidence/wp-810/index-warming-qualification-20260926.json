@@ -1,0 +1,109 @@
+{
+  "schema": "riffdb.wp810-index-warming-qualification/v1",
+  "date": "2026-09-26",
+  "status": "Local checks passed; no remote diagnostic or package-completion verdict",
+  "integration_revision": "422d172ee405536a59cc7aee058d0c0730646bd6",
+  "qualified_revision": "31aeab76fa7c41b5d3a05d191905fd8b53e43dd2",
+  "main_revision": "a1809310f1e1823a7ae7c14a7fd89deb83d24304",
+  "main_repair": "a696db66c3ee724b44d7fc74848e319e298773fe",
+  "toolchain": "Rust 1.98.1",
+  "production_change": "Main restores the commit-time outbox refresh that warms command indexes. No batch-admission prototype is applied.",
+  "failed_ci": {
+    "source_revision": "422d172ee405536a59cc7aee058d0c0730646bd6",
+    "exit_code": 101,
+    "log_sha256": "4ed2beba41155845e8249f3155be2a0b851c5d4bd9c341206db4183468fdbf54",
+    "failures": [
+      "audited_standard_group_uses_one_unpublished_root_and_one_immediate_tail",
+      "hardened_audited_group_stays_direct_and_keeps_independent_results"
+    ],
+    "observed_failure": "The fixed 10000-yield waits ended before the first admission-clock call.",
+    "repair": "Use the existing bounded first-call notification, with a 10-second failure watchdog and unchanged semantic assertions."
+  },
+  "successful_ci": {
+    "source_revision": "31aeab76fa7c41b5d3a05d191905fd8b53e43dd2",
+    "exit_code": 0,
+    "log_sha256": "b3348486388c1ec8b666f316f64b85098868b9f859f517e61ebbcea6345571d8",
+    "elapsed_seconds": 1054.067739868071,
+    "reported_test_passes": 6133,
+    "reported_result_groups": 555,
+    "count_scope": "Includes repeated proof invocations and process-crash children; not a count of unique tests.",
+    "dirty_recovery_evidence": "The newly merged default evidence passes for both WP-760 checkpoints.",
+    "warnings": {
+      "legacy_adr_length_warnings": 84,
+      "allowed_duplicate_dependency_warnings": 10,
+      "unclassified_warnings": 0,
+      "disposition": "Existing policy warnings retained; no accepted record or dependency changed to suppress them."
+    }
+  },
+  "targeted_repaired_suite": {
+    "passed": 23,
+    "failed": 0
+  },
+  "diagnostic_identity_and_retention_tests": {
+    "passed": 20,
+    "failed": 0
+  },
+  "full_seed_functional": {
+    "source_revision": "31aeab76fa7c41b5d3a05d191905fd8b53e43dd2",
+    "build_profile": "debug",
+    "host": "Unqualified local AMD Ryzen 9 7950X with the required accelerators",
+    "observer_patch_applied": false,
+    "exit_code": 0,
+    "seed_generation": 2,
+    "logical_commands_committed": 19220,
+    "seed_ns": 35983688107,
+    "whole_process_seconds": 60.126400847919285,
+    "checkpoint_census_scope": "Pre-close report; not final observer coverage",
+    "checkpoint_census": {
+      "failures": 0,
+      "installed": 4,
+      "materialized": 4,
+      "max_bytes": 17286340,
+      "max_transitions": 4096,
+      "min_bytes": 16914023,
+      "min_transitions": 2942,
+      "scope": "actual_async_checkpoint_selections_before_graceful_close",
+      "selected_bytes": 85531926,
+      "selected_commands": 18018,
+      "selected_transitions": 18018,
+      "starts": 5,
+      "trigger_counts_nonexclusive": {
+        "bytes": 5,
+        "physical": 0,
+        "reanchor": 0,
+        "transitions": 1
+      }
+    },
+    "daemon_sha256": "5f7ecbd48cd7fa32390d33544dd82db54895425eece003e184079ee12d752a42",
+    "runner_sha256": "2eb35e4ab71f45482cca691578fc94f6ff27275e0b9d1ee2730d24a78b7074da",
+    "limitations": [
+      "Functional setup proof only; do not compare these debug timings against the earlier release builds or another host.",
+      "Does not qualify the next observed release binaries or establish a checkpoint-I/O latency verdict.",
+      "The example adapter build retains four pre-existing missing-documentation warnings on scrub diagnostic fields."
+    ]
+  },
+  "next_diagnostic": {
+    "protocol": "materialization-probe-20260926/index-warming-measurement-protocol.json",
+    "source_revision": "31aeab76fa7c41b5d3a05d191905fd8b53e43dd2",
+    "cell_deadline_seconds": 900,
+    "warmup_seconds": 15,
+    "measurement_seconds": 90,
+    "maximum_cells": 1,
+    "state": "Requires a fresh exclusive interval, observed release builds and exact-binary local functional qualification.",
+    "supersedes": "The unexecuted older-binary preparation with a 3600-second deadline is withdrawn."
+  },
+  "private_artifacts": {
+    "ci-attempt.json": "81c6977396444153149ee22087835a628a77fbd829912e8b1ff1a9b4cb6d6e0c",
+    "ci-execution.json": "f0c5c1592c07fa523d96dab48168455fad7279cade66ef3a5b95a6a9edbb7866",
+    "ci-rerun-attempt.json": "d8110b5b3a66f09527b3626028b1d139c4bc60a2d6ff6386038d5e13081c3fdd",
+    "ci-rerun-execution.json": "31a1c1b389ea6b4c2b8e0514af62d25a821fc378f5b65ea07ff577c0ae480e5e",
+    "command-concurrency-repair.log": "ebd1da82dddde5206e949d7586c6229528dcdb624cb47472a2515b5d4f36b54f",
+    "diagnostic-tests.log": "19e98665095e3cac1236df3f6d85d1798f0f10e9e3a450f4c8e821967d01c02a",
+    "full-seed-functional/attempt.json": "bacceaaf0538f68e6f03a18698c02e27aeccc3136da76232e971c0696d4a71e9",
+    "full-seed-functional/execution.json": "50fe5c7198b566d6f645960a21002a32e37f03db6aaab1e8c4920127cdbd177b",
+    "full-seed-functional/run.log": "03ab1cc9685fdc38fcf6dbb292705501240ee06ca99e2bcd6fa9230c64312f57",
+    "full-seed-functional/report.json": "c4cc01a8beebc2d5ba56ae5b436c5e634815b759fbd86c6718a541673ef89eb1",
+    "functional-build-1.log": "7a80a57be348af88cb015634ab5f811029698954eacb06aef6d18a57eff3dd3d",
+    "functional-build-2.log": "bc47a6470a11be559bd6271e9dc462e304327283f014d0da71b85c4b98e68e3a"
+  }
+}

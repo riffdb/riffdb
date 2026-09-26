@@ -12,9 +12,7 @@ def verify_retained(freeze, receipt, gate, daemon_digest, runner_digest):
     for name in ('source.bundle', 'observer.patch'):
         assert prior['inputs'][name] == freeze['inputs'][name], name
     assert gate['observer_patch_sha256'] == freeze['inputs']['observer.patch']
-    assert gate['local_functional_passed'] is True
-    assert daemon_digest == receipt['daemon_sha256'] == gate['daemon_sha256']
-    assert runner_digest == receipt['runner_sha256'] == gate['runner_sha256']
+    run.verify_qualified_binary_digests(receipt, gate, daemon_digest, runner_digest)
 
 
 def main():

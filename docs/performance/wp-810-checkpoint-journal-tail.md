@@ -472,6 +472,48 @@ that script is not part of this revision's CI battery. These results, explicit
 limits and private-log digests are retained in
 `release/evidence/wp-810/integration-qualification-20260926.json`.
 
+#### Integration of main's index-warming repair
+
+While the seed diagnosis was being banked, main merged `a696db66c`, followed
+by WP-760's evidence and closure through `a1809310f`. That repair restores
+the commit-time outbox refresh that warms the command index. It addresses
+the repeated cold admission-history scans identified by the local profile.
+The first write after restart again pays the one-time rebuild documented in
+[startup integrity](../operations/STARTUP-INTEGRITY.md); the work is not
+eliminated or moved into the measured CPU sample retroactively.
+
+Integration `422d172ee` takes those three main commits. The batch-reuse
+prototype remains outside production. The prepared diagnostic using older
+binaries and a longer setup budget was superseded before execution, and its
+reservation question was withdrawn. C3D remained released.
+
+Full CI on that integration reached two existing grouped-command tests before
+their fixed 10,000-yield waits observed the writer's admission-clock call.
+`31aeab76` replaces those scheduling guesses with the fixture's existing
+bounded first-call notification, retaining every outcome, grouping and
+durability assertion. All 23 tests in that target pass; the failed complete
+CI invocation is retained. Full CI then passes on `31aeab76`, with 6,133
+reported test passes including repeated proofs and crash children. The merged
+WP-760 default evidence now passes too. Existing legacy-ADR length and
+dependency-duplicate warnings remain policy warnings, not suppressed failures.
+
+The local debug-build functional check seeds all 19,220 commands, records zero
+checkpoint failures, exits successfully and writes its complete report.
+Seeding takes 35.984 seconds and the whole process 60.126 seconds on the local
+host. This verifies setup completion; it is not a latency comparison against
+the earlier release build or another host. The example adapter retains four
+existing missing-documentation warnings on scrub diagnostic fields. Source,
+binary, result and private-log identities are retained in
+`release/evidence/wp-810/index-warming-qualification-20260926.json`.
+
+`index-warming-measurement-protocol.json` in the diagnostic evidence directory
+freezes `31aeab76` and restores the original 900-second full-cell deadline.
+It excludes the admission prototype. After a fresh reservation, rebuilt
+observer binaries must match both their build receipt and the exact-binary
+local functional qualification before the unchanged 15-second warmup and
+90-second measurement can start. No result is transferred from the older
+binaries or source.
+
 The remaining decision is a maintainer-reviewed resolution of the shared
 journal delay and disposition of this common-case improvement. **No merge or
 completion is claimed.** The bounded diagnostic above failed during setup and

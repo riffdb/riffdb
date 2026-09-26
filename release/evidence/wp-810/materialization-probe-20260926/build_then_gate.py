@@ -16,7 +16,7 @@ try:
     gate = json.loads((ROOT / 'local-functional-qualified.json').read_text())
     assert gate['source_revision'] == freeze['revision']
     assert gate['observer_patch_sha256'] == freeze['inputs']['observer.patch']
-    assert gate['local_functional_passed'] is True
+    run.verify_qualified_binary_digests(receipt, gate, run.sha(ROOT / 'binaries/riffdbd'), run.sha(ROOT / 'binaries/runner'))
     assert not (ROOT / 'cancel-before-measurement.json').exists()
     run.write(ROOT / 'measurement-gate-passed.json', dict(at=run.now(), gate=gate))
     run.measure(env, receipt)

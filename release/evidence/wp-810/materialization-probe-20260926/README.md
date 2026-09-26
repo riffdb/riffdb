@@ -12,6 +12,15 @@ stopped during seeding at its 900-second deadline, before the timed workload;
 its partial trace is not complete measurement evidence. The candidate's
 existing comparison keeps its original source identities and verdict.
 
+**The retained-binary preparation below was superseded before execution.**
+Main `a1809310f` includes `a696db66c`, restoring the commit-time outbox refresh
+that warms the index. Integration `422d172ee` includes that repair. Check the
+integration before another reservation, then rebuild and locally qualify its
+observed binaries before measurement;
+the older qualified binaries retain their identities but are not selected
+for the next diagnostic. The previous reservation question was withdrawn,
+and no remote work ran from this preparation.
+
 The subsequent local seed diagnosis is banked in
 [`../seed-diagnosis-20260926.json`](../seed-diagnosis-20260926.json).
 `retained-measurement-protocol.json` prepares a separate, unexecuted attempt

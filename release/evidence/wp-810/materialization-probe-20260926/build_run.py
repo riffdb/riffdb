@@ -17,6 +17,11 @@ def write(path, value):
         json.dump(value, stream, indent=2)
         stream.write('\n')
 
+def verify_qualified_binary_digests(receipt, gate, daemon_digest, runner_digest):
+    assert gate['local_functional_passed'] is True
+    assert daemon_digest == receipt['daemon_sha256'] == gate['daemon_sha256']
+    assert runner_digest == receipt['runner_sha256'] == gate['runner_sha256']
+
 def remaining():
     lease = json.loads((ROOT / 'lease.json').read_text())
     return (datetime.datetime.fromisoformat(lease['expires_at']) - datetime.datetime.now(UTC)).total_seconds()
