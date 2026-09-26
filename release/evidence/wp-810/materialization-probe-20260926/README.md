@@ -12,6 +12,15 @@ stopped during seeding at its 900-second deadline, before the timed workload;
 its partial trace is not complete measurement evidence. The candidate's
 existing comparison keeps its original source identities and verdict.
 
+The rebuilt diagnostic on `31aeab76` completed its one remote workload and both
+host checks, then failed the fixed I/O-record capacity check. The full receipt
+is [`../materialization-overflow-20260926.json`](../materialization-overflow-20260926.json):
+9,442,900 attempted I/O records, 4,194,304 retained and 5,248,596 dropped. No
+complete attribution or retry is claimed. The earlier local 90-second overflow
+and later 20-second functional pass are both retained; the shorter pass did not
+qualify full-cell capacity. Future preparation must resolve that known sizing
+failure before another remote run. The host and task-owned resources are released.
+
 **The retained-binary preparation below was superseded before execution.**
 Main `a1809310f` includes `a696db66c`, restoring the commit-time outbox refresh
 that warms the index. Integration `422d172ee` includes that repair. Check the

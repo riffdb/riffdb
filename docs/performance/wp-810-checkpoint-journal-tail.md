@@ -514,10 +514,48 @@ local functional qualification before the unchanged 15-second warmup and
 90-second measurement can start. No result is transferred from the older
 binaries or source.
 
+#### Refreshed diagnostic completed, but I/O coverage overflowed
+
+The single reserved diagnostic on `31aeab76` completed full seeding, the
+15-second warmup and the 90-second c32 write-only measurement. Both host checks
+passed. All 282,570 measured commands succeeded; the process including warmup
+committed 331,006 commands. There was no remote retry or deadline extension.
+
+The analyzer **refused complete attribution**: the load process attempted
+9,442,900 backend I/O observations, retained its fixed 4,194,304 rows and dropped
+5,248,596. The last retained I/O ended at process elapsed 51.151 seconds. The
+discarded records have no retained operation-class breakdown. The complete
+run cannot be attributed from this prefix or by extrapolating its operation mix.
+
+The pre-close census records 105 byte-triggered checkpoints, selecting between
+3,011 and 3,328 transitions, with no failures: 105 materialized and 104 installed
+at the snapshot. The final trace has all 105 completions and 21,000 groups,
+without dropped checkpoint or group rows. Raw request values and independent
+writer-wall reconciliation pass their separate checks; neither establishes
+complete backend-I/O coverage. Unqualified diagnostic values are retained in
+`release/evidence/wp-810/materialization-overflow-20260926.json`, with source,
+binary and evidence digests. Observer overhead remains unmeasured, so these
+values do not establish a mitigation effect or a new baseline.
+
+Local qualification exposed the sizing error first: its 90-second functional
+case completed 99 checkpoints but dropped 495,276 I/O records. A separately
+retained 20-second case with the same binaries passed every completeness and
+join assertion across 91,216 requests, 31 checkpoints and 1,178,078 I/O rows.
+That shorter case proved tracing correctness, not full-cell capacity. **The
+known long-case overflow should have blocked the remote run.** A future
+diagnostic must qualify record and log capacity for the intended full workload
+before booking a host; shortening the functional check is not that proof.
+
+All 43 retained remote files were verified locally. Task-owned firewall and
+timer changes were restored, task processes ended, and remote source, build
+and data directories were removed before releasing the host. This attempt
+does not answer the complete materialization question or close WP-810.
+
 The remaining decision is a maintainer-reviewed resolution of the shared
 journal delay and disposition of this common-case improvement. **No merge or
-completion is claimed.** The bounded diagnostic above failed during setup and
-does not answer the remaining materialization question. It is separate from
+completion is claimed.** The earlier diagnostic failed during setup; the
+refreshed diagnostic finished its workload but failed I/O coverage. Neither
+answers the remaining materialization question. These are separate from
 the finished comparison. The candidate does
 not establish that WP-749's shared tail prerequisite is resolved. Archive
 presence must still be assessed separately after that prerequisite is met.

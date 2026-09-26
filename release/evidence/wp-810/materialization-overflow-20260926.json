@@ -1,0 +1,221 @@
+{
+  "schema": "riffdb.wp810-materialization-overflow/v1",
+  "date": "2026-09-26",
+  "status": "One remote cell finished; complete checkpoint-I/O attribution refused due to diagnostic overflow. No retry, mitigation verdict or package completion.",
+  "source_revision": "31aeab76fa7c41b5d3a05d191905fd8b53e43dd2",
+  "observer_patch_sha256": "13f3bfbf2e16f59aaa3a8ce8a3d70d65b9ebfe34e6e9758c93ec2df9a7ce4d41",
+  "daemon_sha256": "dc2652634c06e94b5ed6659cf983c050a9fae94949f94a0c0879f0b3b7d42a7d",
+  "runner_sha256": "2832f8e57436f2eb1818862efc738c6d78b0907fd421de67879be0bbe254226d",
+  "toolchain": "1.98.1",
+  "host_specifications": {
+    "logical_cpus": 8,
+    "cpu": "AMD EPYC 9B14",
+    "required_accelerators_verified": true
+  },
+  "workload": {
+    "dataset": "full",
+    "load": "write_only",
+    "clients": 32,
+    "warmup_seconds": 15,
+    "measurement_seconds": 90,
+    "archive": "disabled",
+    "cell_deadline_seconds": 900,
+    "attempts": 1
+  },
+  "local_qualification": {
+    "earlier_90_second_case": {
+      "workload_exit_code": 0,
+      "successful_commands": 307666,
+      "checkpoints": 99,
+      "retained_io": 4194304,
+      "dropped_io": 495276,
+      "completeness_passed": false,
+      "retained": true
+    },
+    "later_20_second_functional_case": {
+      "exact_same_binaries": true,
+      "coverage": {
+        "final": 1,
+        "groups": 6433,
+        "checkpoints": 31,
+        "io": 1178078,
+        "reserved_groups": 6433,
+        "reserved_checkpoints": 31,
+        "reserved_io": 1178078,
+        "dropped_groups": 0,
+        "dropped_checkpoints": 0,
+        "dropped_io": 0
+      },
+      "populations": {
+        "requests": 91216,
+        "measured_groups": 5863,
+        "measured_flushes": 5846
+      },
+      "completeness_passed": true,
+      "performance_verdict": null
+    },
+    "limitation": "The shorter case proved functional tracing and exact joins, not capacity for a complete remote cell. The known 90-second overflow should have blocked remote measurement pending capacity qualification."
+  },
+  "remote_execution": {
+    "started_at": "2026-09-26T16:51:00.918081+00:00",
+    "completed_at": "2026-09-26T16:53:25.035548+00:00",
+    "workload_exit_code": 0,
+    "whole_cell_seconds": 130.94628918194212,
+    "preflight_valid": true,
+    "postflight_valid": true,
+    "correctness_clean": true,
+    "outcomes": {
+      "conflict": 0,
+      "error": 0,
+      "success": 282570,
+      "unavailable": 0
+    },
+    "logical_ops": 282570,
+    "process_scope_commands_including_warmup": 331006
+  },
+  "unqualified_instrumented_values": {
+    "scope": "Disclosure of this failed diagnostic only. Observer overhead unmeasured; no before/after, mitigation or release verdict.",
+    "throughput_ops_s": 3140,
+    "raw_percentiles_ns": {
+      "p50_ns": 8136140,
+      "p95_ns": 10947740,
+      "p99_ns": 94444880
+    },
+    "histogram_percentiles_ns": {
+      "p50_ns": 8388607,
+      "p95_ns": 11010047,
+      "p99_ns": 96468991
+    },
+    "raw_array_sha256": "fc304788626ff379365b379610e977e829e2a36ad42537a9dd7818d814dcad7f"
+  },
+  "checkpoint_census_before_close": {
+    "failures": 0,
+    "installed": 104,
+    "materialized": 105,
+    "max_bytes": 18214720,
+    "max_transitions": 3328,
+    "min_bytes": 16789261,
+    "min_transitions": 3011,
+    "scope": "actual_async_checkpoint_selections_before_graceful_close",
+    "selected_bytes": 1826102982,
+    "selected_commands": 330958,
+    "selected_transitions": 330958,
+    "starts": 105,
+    "trigger_counts_nonexclusive": {
+      "bytes": 105,
+      "physical": 0,
+      "reanchor": 0,
+      "transitions": 0
+    }
+  },
+  "final_trace_coverage": {
+    "final": 1,
+    "groups": 21000,
+    "checkpoints": 105,
+    "io": 4194304,
+    "reserved_groups": 21000,
+    "reserved_checkpoints": 105,
+    "reserved_io": 4194304,
+    "dropped_groups": 0,
+    "dropped_checkpoints": 0,
+    "dropped_io": 5248596
+  },
+  "total_io_attempts": 9442900,
+  "last_retained_io_end_ns": 51150884580,
+  "retained_io_by_phase_and_kind": [
+    {
+      "phase": 0,
+      "kind": 1,
+      "records": 492
+    },
+    {
+      "phase": 0,
+      "kind": 2,
+      "records": 3
+    },
+    {
+      "phase": 0,
+      "kind": 4,
+      "records": 1204870
+    },
+    {
+      "phase": 2,
+      "kind": 1,
+      "records": 961789
+    },
+    {
+      "phase": 2,
+      "kind": 2,
+      "records": 3
+    },
+    {
+      "phase": 2,
+      "kind": 3,
+      "records": 3
+    },
+    {
+      "phase": 2,
+      "kind": 4,
+      "records": 1245563
+    },
+    {
+      "phase": 3,
+      "kind": 1,
+      "records": 401639
+    },
+    {
+      "phase": 3,
+      "kind": 2,
+      "records": 52
+    },
+    {
+      "phase": 3,
+      "kind": 4,
+      "records": 379890
+    }
+  ],
+  "retained_io_population_limit": "Counts describe the retained prefix only; discarded records have no retained operation-class breakdown. Do not extrapolate its mix or attribute the complete run from it.",
+  "independent_writer_wall": {
+    "iterations": 21000,
+    "span_ns": 105029164830,
+    "iteration_sum_ns": 105010469630,
+    "span_minus_iterations_ns": 18695200,
+    "stage_residual_ns": 8764170,
+    "busy_idle_undercount_ns": 263913830
+  },
+  "validated_subsets": [
+    "Raw sample counts, percentiles, extrema, mean and slowest-20 values match the report.",
+    "Writer iteration population and signed level-0 wall reconciliation pass.",
+    "Checkpoint selection counters and group/ checkpoint trace populations retained without drops."
+  ],
+  "failed_gate": {
+    "analyzer_error": "diagnostic overflow",
+    "complete_io_attribution": false,
+    "assertions_weakened": false,
+    "remote_retry": false,
+    "observer_or_production_changed_between_cells": false
+  },
+  "disposition": "WP-810 remains open. The shared delay and candidate P99 disposition are unresolved. Before another remote diagnostic, repair and qualify record/log capacity for the full intended population. No additional remote run is authorized by this receipt.",
+  "retention": {
+    "verified_files": 43,
+    "verified_bytes": 342736916,
+    "private_archive_sha256": "d2e17420d191a3c9ef526e1c653bffef10b31085df241525c459a26a873e3c3b",
+    "private_artifacts_sha256": {
+      "remote-attempt/results/01-materialization/report.json": "98390b8342eb61a2d3299b4aa27fdfaaf50f5ddf3699852b244509b7a4c28afd",
+      "remote-attempt/results/01-materialization/run.log": "d32d0b5d7567d1d5c9fefa38458e11d1045222041895a1bb3af90ba7dac6d440",
+      "remote-attempt/results/01-materialization/raw/raw-request-tail.json": "4bde0eaf6b06410b749d730fceaf93aa06c838eb51e3dcb1912c55bbeb0ed2f3",
+      "local-release-functional/run.log": "e520628cc796a062511faa4202ec6287c610c10e51da8371d1b44fa41d640da8",
+      "local-release-functional-20/materialization-analysis.json": "9d2ad79bcbb305ee44d4c33059ea0fd0441165c03a3789fa0a2fa322afb7291a",
+      "local-functional-sizing-decision.json": "d8b7c0c5289c68e8b609b014505491fdd38859b88044e63b14d5b64508d55023"
+    }
+  },
+  "cleanup": {
+    "released_at": "2026-09-26T16:56:36.719382+00:00",
+    "isolation_restored": true,
+    "task_processes_remaining": false,
+    "remote_root_removed": true,
+    "remote_archive_removed": true,
+    "removed_apparent_bytes": 3208761514,
+    "no_more_remote_work": true
+  }
+}

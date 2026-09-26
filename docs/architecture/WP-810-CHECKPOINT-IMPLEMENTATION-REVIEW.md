@@ -2,7 +2,8 @@
 
 **Draft: implementation and correctness evidence are ready; the shared-delay
 disposition and human acceptance remain outstanding.** This document does not
-request closure before the pending diagnostic or replace the package's exit gate.
+request closure or replace the package's exit gate. The refreshed diagnostic
+completed its workload but failed backend-I/O coverage.
 
 ## Scope and source
 
@@ -76,7 +77,7 @@ No durable-format or protocol golden fixtures change.
 | PERF-018: attributable measurement evidence | The six-cell comparison retains exact sources, binaries, raw percentiles, host validity, checkpoint counts and signed wall remainders. It is a bounded comparison, not an alpha release sweep. |
 | Standalone finding | [Performance report](../performance/wp-810-checkpoint-journal-tail.md), with retained archive-disabled trace and instrument limitations. |
 | Current correctness qualification | `release/evidence/wp-810/index-warming-qualification-20260926.json`: full CI, 23 coordinator tests, 20 diagnostic tests and all 19,220 seed commands pass. Earlier failed invocations remain retained. |
-| Reviewed shared-delay resolution | **Not met.** The common-case improvement does not establish reduction of the shared acknowledgement tail. Diagnostic result and maintainer disposition are pending. |
+| Reviewed shared-delay resolution | **Not met.** The common-case improvement does not establish reduction of the shared acknowledgement tail. The refreshed diagnostic overflowed its I/O buffer; complete attribution and maintainer disposition remain outstanding. |
 | Final human implementation/fixture review and closure | **Not met.** No acceptance or completion is recorded. |
 
 ## Performance evidence and its limits
@@ -92,19 +93,25 @@ Aggregate counters do not assign the P99 changes to individual requests or
 establish a kernel/device cause. ADR-0249 does not supply a numeric P99 gate;
 it still requires a named mechanism for a published regression.
 
-The prepared diagnostic at
+The frozen diagnostic at
 `release/evidence/wp-810/materialization-probe-20260926/index-warming-measurement-protocol.json`
 allows one archive-disabled c32 cell on admitted exclusive hardware, with a
 900-second total deadline, 15-second warmup and 90-second measurement. It
 requires rebuilt observer binaries and exact-binary local qualification. It
 measures overlap of checkpoint phases and actual backend I/O, preserving
 unexplained time; overlap alone is not device causation. A result informs the
-disposition and does not automatically close WP-810 or WP-749.
+disposition and does not automatically close WP-810 or WP-749. Its one remote
+cell completed, but 5,248,596 I/O records were dropped beyond the fixed
+4,194,304 limit. The analyzer refused complete attribution. The earlier local
+long-case overflow should have blocked remote execution; the subsequent short
+functional pass did not prove full-cell capacity. Both local cases and the
+remote failure are retained in `release/evidence/wp-810/materialization-overflow-20260926.json`.
 
 ## Remaining completion actions
 
-1. Obtain the pending exclusive interval, execute the frozen diagnostic once,
-   retain its result or failure, restore host settings and release the host.
+1. Qualify diagnostic capacity for the intended full workload before proposing
+   another remote run. The authorized cell and its failure are retained;
+   host settings are restored and the host is released.
 2. Record what the evidence proves about the shared delay and any remaining
    limits. Resolve the package's exit gate with the maintainer; do not substitute
    a renamed follow-up for an unmet gate.
