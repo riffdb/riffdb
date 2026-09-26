@@ -103,6 +103,13 @@ failed full-CI invocation into a pass. The final main measurement-only merge
 does not supply a repair for these failures; verification source identities
 remain as stated above.
 
+**Maintainer landing approval, 2026-09-25:** the maintainer answered "yes"
+to landing candidate `3c1098b6` with the 13 reproduced baseline failures
+explicitly recorded, granting the requested exception to a passing full-CI
+run for this incremental landing. The verification results above remain
+unchanged. WP-749 remains blocked on the open WP-810 checkpoint package;
+the archive-presence gate and the required remeasurement remain unchanged.
+
 Compatibility: existing durable bytes, checkpoint selection, acknowledgement
 ordering and public APIs remain unchanged by this handoff. The diagnostic
 publication line is V2, and the runner recognizes its corrected wait coverage.
@@ -319,7 +326,7 @@ compatibility and promotion proofs. See the
 [combined verification record](../architecture/WP-748-LIFECYCLE-VERIFICATION.md#final-combined-integration-verification).
 This settles final integration verification at that source identity; the
 WP-748 implementation was subsequently approved and landed independently.
-WP-749 changes remain on the review branch. The measured revision adds only
+At that checkpoint, WP-749 changes remained on the review branch. The measured revision adds only
 documentation to that qualified runtime; subsequent main integration changed
 only catalog tests, documentation and package metadata. The added catalog test
 passed separately. No archive-latency result is inferred from correctness tests.
