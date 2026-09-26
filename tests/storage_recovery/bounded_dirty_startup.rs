@@ -84,38 +84,49 @@ fn dirty_startup_reaches_readiness_without_a_population_walk() {
             .expect("activate probe ports")
     }
 
-    let path = TestDatabasePath::new("dirty-bounded-readiness");
-    prepare_v1_command_database(&path.0);
-    // Give the database a real population beyond the fixture command: entity
-    // rows, index rows, events, provenance, audit, and idempotency rows that
-    // the old complete path would have enumerated before readiness.
-    {
-        let ports = open_operational(RedbStore::open(&path.0).expect("open populated source"));
-        for ordinal in 1..=24 {
-            let fixture = command_fixture_at(ordinal);
-            commit_command_fixture(&ports, &fixture);
+    // Both source catalogs: V2 (every new database, ADR-0260) and V1.
+    for v1 in [false, true] {
+        let path = TestDatabasePath::new(if v1 {
+            "dirty-bounded-readiness-v1"
+        } else {
+            "dirty-bounded-readiness-v2"
+        });
+        if v1 {
+            prepare_v1_command_database(&path.0);
+        } else {
+            prepare_command_database(&path.0);
         }
+        // Give the database a real population beyond the fixture command: entity
+        // rows, index rows, events, provenance, audit, and idempotency rows that
+        // the old complete path would have enumerated before readiness.
+        {
+            let ports = open_operational(RedbStore::open(&path.0).expect("open populated source"));
+            for ordinal in 1..=24 {
+                let fixture = command_fixture_at(ordinal);
+                commit_command_fixture(&ports, &fixture);
+            }
+            drop(ports);
+        }
+        let authority_before =
+            riffdb_storage_redb::benchmark_support::recovery_authority_snapshot_v1(&path.0)
+                .expect("read pre-restart authority");
+        let (ports, walk_total, authority_after) = bounded_dirty_open(&path.0);
+        assert!(
+            authority_before.same_authority(&authority_after),
+            "a bounded dirty restart must create no command, event, outcome, provenance, audit, projection, outbox, or allocator advance"
+        );
         drop(ports);
-    }
-    let authority_before =
-        riffdb_storage_redb::benchmark_support::recovery_authority_snapshot_v1(&path.0)
-            .expect("read pre-restart authority");
-    let (ports, walk_total, authority_after) = bounded_dirty_open(&path.0);
-    assert!(
-        authority_before.same_authority(&authority_after),
-        "a bounded dirty restart must create no command, event, outcome, provenance, audit, projection, outbox, or allocator advance"
-    );
-    drop(ports);
 
-    // A second dirty restart repeats the same bounded shape and again
-    // advances nothing.
-    let (ports, second_walk_total, authority_final) = bounded_dirty_open(&path.0);
-    drop(ports);
-    assert_eq!(
-        second_walk_total, walk_total,
-        "the bounded dirty walk total is stable across dirty generations"
-    );
-    assert!(authority_before.same_authority(&authority_final));
+        // A second dirty restart repeats the same bounded shape and again
+        // advances nothing.
+        let (ports, second_walk_total, authority_final) = bounded_dirty_open(&path.0);
+        drop(ports);
+        assert_eq!(
+            second_walk_total, walk_total,
+            "the bounded dirty walk total is stable across dirty generations"
+        );
+        assert!(authority_before.same_authority(&authority_final));
+    }
 }
 
 // req: REC-001, REC-004
@@ -127,7 +138,7 @@ fn dirty_startup_reaches_readiness_without_a_population_walk() {
 #[test]
 fn bounded_dirty_startup_claims_a_command_owned_outbox_event() {
     let path = TestDatabasePath::new("bounded-dirty-outbox-claim");
-    prepare_v1_command_database(&path.0);
+    prepare_command_database(&path.0);
     let mut ports = {
         let store = RedbStore::open(&path.0).expect("dirty reopen");
         let session = store
@@ -242,6 +253,9 @@ pub(crate) fn corruption_refusal(path: &Path) -> Option<CorruptionRefusal> {
     else {
         return Some(CorruptionRefusal::ScrubRefused);
     };
+    if scrub.validate_retained_history().is_err() {
+        return Some(CorruptionRefusal::ScrubRefused);
+    }
     let structural_end = loop {
         match scrub.read_structural_page(limit) {
             Ok(riffdb_storage_redb::BackgroundScrubPage::Page { findings: page, .. }) => {

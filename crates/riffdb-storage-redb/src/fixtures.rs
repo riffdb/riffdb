@@ -15,7 +15,7 @@ use crate::error::{
     transaction_error,
 };
 use crate::layout::{
-    CATALOG_ACTIVE, CATALOG_ACTIVE_KEY, COMMITS, CONTRACT_BUNDLES, ENTITIES, EVENT_ROUTES,
+    AUDIT, CATALOG_ACTIVE, CATALOG_ACTIVE_KEY, COMMITS, CONTRACT_BUNDLES, ENTITIES, EVENT_ROUTES,
     IDEMPOTENCY, META, META_APPLICATION_SEQUENCE, META_CLEAN_CLOSE_LIFECYCLE,
     META_VALIDATED_PREFIX_CHECKPOINT, PROVENANCE, SECONDARY_INDEXES,
 };
@@ -305,13 +305,17 @@ pub fn downgrade_all_index_rows_to_v1_fixture(path: &Path) -> Result<usize, Stor
         }
     }
     // This test-only stopped-database rewrite happens after the source process
-    // closed. It must invalidate that process's clean evidence so startup takes
-    // the complete migration-discovery path.
-    transaction
-        .open_table(META)
-        .map_err(table_error)?
-        .remove(META_CLEAN_CLOSE_LIFECYCLE)
-        .map_err(precommit_storage_error)?;
+    // closed. It must invalidate that process's clean evidence and its
+    // validated-prefix checkpoint (a real database never holds V1 rows under a
+    // current-registry checkpoint) so startup takes the complete
+    // migration-discovery path rather than the ADR-0182 bounded dirty path.
+    {
+        let mut meta = transaction.open_table(META).map_err(table_error)?;
+        meta.remove(META_CLEAN_CLOSE_LIFECYCLE)
+            .map_err(precommit_storage_error)?;
+        meta.remove(META_VALIDATED_PREFIX_CHECKPOINT)
+            .map_err(precommit_storage_error)?;
+    }
     transaction.commit().map_err(commit_error)?;
     Ok(replacements.len())
 }
@@ -355,6 +359,96 @@ pub fn read_malformed_population_row_fixture(path: &Path) -> Result<Option<Vec<u
         .map_err(precommit_storage_error)?
         .map(|value| value.value().to_vec());
     Ok(row)
+}
+
+/// Overwrites one existing, non-tail `AUDIT` row of a stopped V2 database with
+/// a decodable primary-fence administration record for the current lineage,
+/// written outside every transaction (ADR-0260's stray fence row).
+///
+/// Bounded startup reads neither that row (it is not the tail) nor, for an
+/// unfenced admission, any fence; only the exhaustive retained-fence scan
+/// refuses it. Absent from default builds; call only after the owning process
+/// stopped.
+pub fn replace_audit_row_with_stray_fence_fixture(
+    path: &Path,
+    administration_sequence: u64,
+) -> Result<(), StorageError> {
+    use riffdb_storage_api::{
+        AuditPrincipalV1, ChangelogHistoryPointV3, StoredPrimaryFenceAdministrationV1,
+        proto_codec::encode_primary_fence_administration_v1,
+    };
+    use riffdb_types::{
+        ActorId, ActorKind, AdministrationSequence, CapabilityId, DualFrontier,
+        ReplicationFenceOperationId, ReplicationFollowerAuditTargetV1, ReplicationSourceHoldIdV1,
+        RequestId, Timestamp,
+    };
+    let invalid = || storage_error(StorageErrorKind::InvariantViolation);
+    let uuid = |last: u8| {
+        [
+            0x01, 0x9b, 0xf6, 0xaa, 0xa6, 0x40, 0x7d, 0xe6, 0x89, 0xc9, 0x8a, 0x7f, 0x70, 0xbb,
+            0xbd, last,
+        ]
+    };
+    let database = Database::create(path).map_err(database_error)?;
+    let (history, tail_key) = {
+        let read = database.begin_read().map_err(transaction_error)?;
+        let history =
+            crate::changelog_v3_roots::read_checkpoint_roots(&read)?.ok_or_else(invalid)?;
+        let audit = read.open_table(AUDIT).map_err(table_error)?;
+        let tail_key = audit
+            .last()
+            .map_err(precommit_storage_error)?
+            .map(|(key, _)| key.value().to_vec())
+            .ok_or_else(invalid)?;
+        (history, tail_key)
+    };
+    let sequence = AdministrationSequence::new(administration_sequence).ok_or_else(invalid)?;
+    let key = crate::keys::encode_audit_key(sequence);
+    if key.as_slice() >= tail_key.as_slice() {
+        return Err(invalid());
+    }
+    let lineage = history.lineage();
+    let tail = history.tail();
+    let observed = ChangelogHistoryPointV3::new(
+        tail.sequence(),
+        tail.history_hash(),
+        DualFrontier::new(
+            tail.frontier().application(),
+            AdministrationSequence::new(administration_sequence - 1),
+        ),
+    );
+    let record = StoredPrimaryFenceAdministrationV1::new(
+        sequence,
+        Timestamp::new(1, 0).map_err(|_| invalid())?,
+        ReplicationFenceOperationId::from_bytes(uuid(0x31)).map_err(|_| invalid())?,
+        RequestId::from_bytes(uuid(0x32)).map_err(|_| invalid())?,
+        AuditPrincipalV1::new(
+            ActorId::new("stray-fence-fixture").map_err(|_| invalid())?,
+            ActorKind::Human,
+            CapabilityId::from_bytes(uuid(0x33)).map_err(|_| invalid())?,
+            std::num::NonZeroU64::MIN,
+        ),
+        None,
+        ReplicationFollowerAuditTargetV1::new(
+            lineage.database_id(),
+            lineage.history_incarnation(),
+            lineage.leadership_epoch(),
+            ReplicationSourceHoldIdV1::new([0x5a; 16]).ok_or_else(invalid)?,
+        )
+        .ok_or_else(invalid)?,
+        tail.sequence(),
+        observed,
+    )
+    .map_err(|_| invalid())?;
+    let encoded = encode_primary_fence_administration_v1(&record).map_err(codec_error)?;
+    let transaction = database.begin_write().map_err(transaction_error)?;
+    transaction
+        .open_table(AUDIT)
+        .map_err(table_error)?
+        .insert(key.as_slice(), encoded.as_bytes())
+        .map_err(precommit_storage_error)?
+        .ok_or_else(invalid)?;
+    transaction.commit().map_err(commit_error)
 }
 
 /// Reads the commit sequence S bound in a stopped database's durable

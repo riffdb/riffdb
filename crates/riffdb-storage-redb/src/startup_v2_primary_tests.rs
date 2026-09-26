@@ -230,10 +230,10 @@ fn v2_clean_close_requires_complete_startup_and_keeps_lifecycle_bytes() {
         session.clean_close_declined_reason(),
         Some("bounded_roots_unavailable")
     );
-    // ADR-0156 Amendment 6: a V2 source performs complete ordinary validation
-    // before source authority, so the declined certificate never routes to the
-    // ADR-0182 bounded dirty path either.
-    assert!(!session.bounded_dirty_startup_path());
+    // ADR-0260: the declined certificate routes this V2 reopen to the
+    // ADR-0182 bounded dirty path (its admission and any referenced fence are
+    // point-validated at open), never to the clean-certificate fast path.
+    assert!(session.bounded_dirty_startup_path());
     let structural_end = finish_structural(&mut session);
     let (catalog, historical_end) = validate_catalog_history(&mut session).unwrap().into_parts();
     assert!(matches!(catalog, CatalogHistoryOutcome::Ready(_)));

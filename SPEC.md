@@ -10188,6 +10188,17 @@ behavior:
   bytes, hashes, transitions and behavior and attached-follower lifecycle rules
   remain unchanged. A bounded V2 path requires a separately accepted successor
   design and its durable-format and crash proofs.
+  Accepted successor (ADR-0260, 2026-09-25): a V2 source startup that meets
+  the ADR-0182 bounded dirty preconditions takes the bounded dirty path. Before
+  source authority it point-validates the fixed V3 roots, the history tail and
+  allocator frontier, the source admission and, when fenced, the referenced
+  fence record and its exact reconstructed receipt; the exhaustive
+  retained-fence scan runs in the background and offline scrubs, and a
+  background-scrub retained-history failure on a V2 source withdraws
+  authoritative readiness. Such V2 startup has bounded cost and reports the
+  closed mode `complete_validation` with `population_table_walk=none`; V2
+  evidence MUST NOT claim a bounded clean-certificate startup, and V1 CLEAN
+  remains declined for V2.
 
 ### 24.5.11 Secret field classification and display-surface redaction
 

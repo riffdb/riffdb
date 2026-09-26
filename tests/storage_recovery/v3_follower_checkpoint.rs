@@ -91,11 +91,11 @@ fn follower_checkpoint_accepts_prefix_only_entities_via_seeded_chains() {
     );
 }
 
-/// An under-reported but possible prefix count binds at load. Every complete
-/// walk refuses it at its exact end: a follower's, and a V2 primary's, which
-/// validates completely before source authority (ADR-0156 Amendment 6). A V1
-/// primary admits the ADR-0182 bounded dirty path, which never consumes those
-/// counts: the accepted WP-760 boundary, corrected by the next complete walk.
+/// An under-reported but possible prefix count binds at load. A complete walk
+/// (a follower's) refuses it at its exact end. A primary of either catalog
+/// admits the ADR-0182 bounded dirty path (ADR-0260 for V2), which never
+/// consumes those counts: the accepted WP-760 boundary, corrected by the next
+/// complete walk.
 #[test]
 fn under_reported_checkpoint_counts_fail_closed_on_the_complete_walk_only() {
     let under_report = |base: &StoredValidatedPrefixCheckpointV1| {
@@ -168,21 +168,15 @@ fn under_reported_checkpoint_counts_fail_closed_on_the_complete_walk_only() {
         primary
     };
 
-    let v2 = checkpointed_primary("v2-primary-count-mismatch", false);
-    let session = RedbStore::open(&v2.0)
-        .expect("open V2 primary")
-        .begin_structural_evidence(inputs())
-        .expect("begin V2 primary evidence");
-    assert!(!session.bounded_dirty_startup_path());
-    assert!(
-        walk_end_refuses(session),
-        "a V2 primary's complete walk refuses an under-reported below-S commits_count"
-    );
-
-    let v1 = checkpointed_primary("v1-primary-count-mismatch", true);
-    let (_, bounded_dirty) = super::super::super::startup_path_observation(&v1.0);
-    assert!(
-        bounded_dirty,
-        "on a V1 primary a possible count admits the bounded dirty path, which does not consume it"
-    );
+    for (name, v1) in [
+        ("v2-primary-count-mismatch", false),
+        ("v1-primary-count-mismatch", true),
+    ] {
+        let primary = checkpointed_primary(name, v1);
+        let (_, bounded_dirty) = super::super::super::startup_path_observation(&primary.0);
+        assert!(
+            bounded_dirty,
+            "{name}: a possible count admits the bounded dirty path, which does not consume it"
+        );
+    }
 }

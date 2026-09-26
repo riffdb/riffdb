@@ -359,7 +359,7 @@ fn actual_v3_full_startup_refuses_unknown_source_holds_before_lifecycle_writes()
     // retained-history validation the background scrub drives (and by the
     // offline scrub). Every layer must refuse it without writing.
     let refused = store.begin_structural_evidence(inputs()).is_err()
-        || crate::startup::begin_background_scrub_on_shared(&shared, inputs()).is_err();
+        || scrub_refuses_retained_history(&shared);
     assert!(
         refused,
         "the bounded startup and the background scrub both accepted an unknown source-hold record"
@@ -496,7 +496,7 @@ fn actual_v3_full_startup_refuses_substituted_source_fences_without_writes() {
         // retained-history validation the background scrub drives (and by the
         // offline scrub). Every layer must refuse it without writing.
         let refused = store.begin_structural_evidence(inputs()).is_err()
-            || crate::startup::begin_background_scrub_on_shared(&shared, inputs()).is_err();
+            || scrub_refuses_retained_history(&shared);
         assert!(
             refused,
             "arm {arm}: every layer accepted a substituted source fence"
@@ -546,7 +546,8 @@ fn actual_v3_full_startup_bounds_combined_source_hold_population() {
         // exact population at MAX must still open and finish; MAX + 1 must be
         // refused with the typed bound and no writes.
         let bounded_admitted = store.begin_structural_evidence(inputs()).is_ok();
-        let scrub = crate::startup::begin_background_scrub_on_shared(&shared, inputs());
+        let scrub = crate::startup::begin_background_scrub_on_shared(&shared, inputs())
+            .and_then(|mut scrub| scrub.validate_retained_history());
         match (count, bounded_admitted, scrub) {
             (MAX, _, Ok(_)) => {
                 // The bounded startup may or may not admit; the scrub's
@@ -621,8 +622,7 @@ fn actual_v3_startup_and_scrub_refuse_missing_or_corrupt_interior_history_before
                     let shared = Arc::clone(&store.shared);
                     let epoch = shared.durable_commit_epoch();
                     let refused = store.begin_structural_evidence(inputs()).is_err()
-                        || crate::startup::begin_background_scrub_on_shared(&shared, inputs())
-                            .is_err();
+                        || scrub_refuses_retained_history(&shared);
                     assert!(
                         refused,
                         "arm {arm}: every layer accepted corrupt interior history"
@@ -970,4 +970,13 @@ fn newly_materialized_follower_preserves_validated_prefix_and_reopens_with_uncha
                 .unwrap()
         );
     }
+}
+
+/// The background scrub's complete retained-history validation, including the
+/// retained-fence scan, refuses this database. Since ADR-0260 this is the
+/// scrub's first explicit step rather than part of its session open.
+fn scrub_refuses_retained_history(shared: &Arc<crate::store::SharedRedb>) -> bool {
+    crate::startup::begin_background_scrub_on_shared(shared, inputs())
+        .and_then(|mut scrub| scrub.validate_retained_history())
+        .is_err()
 }
