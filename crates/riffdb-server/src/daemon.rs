@@ -15,6 +15,8 @@ pub(crate) mod promotion_retry;
 #[path = "daemon_replication_roles.rs"]
 pub(crate) mod replication_roles;
 
+mod checkpoint_progress;
+
 #[path = "replication_peer.rs"]
 pub(crate) mod replication_peer;
 
@@ -3415,8 +3417,19 @@ async fn supervise_ready_process(
     maintenance_receiver: &mut tokio::sync::mpsc::Receiver<MaintenanceTrigger>,
     recovery: &MaintenanceRecoveryController,
 ) -> Result<ReadyProcessCompletion, DaemonError> {
+    // Live diagnostic copies survive a later harness/daemon failure. They do
+    // not run on the writer, change checkpoint selection, or replace the final
+    // shutdown census. Preserve the same observer settings in compared arms.
+    let mut checkpoint_progress = checkpoint_progress::CheckpointProgress::new(
+        std::env::var_os("RIFFDB_WRITER_BATCH_DIAGNOSTICS").is_some_and(|value| value == "1"),
+    );
     let trigger = loop {
         let selected = tokio::select! {
+            line = checkpoint_progress.next_line(riffdb_storage_redb::writer_checkpoint_census_v1),
+                if checkpoint_progress.enabled() => {
+                let _ = writeln!(std::io::stderr().lock(), "{line}");
+                None
+            },
             command = wait_for_shutdown_input(shutdown) => command,
             signal = process_signal.received() => Some(ReadyProcessTrigger::Signal(signal)),
             reason = routing.stopped() => Some(ReadyProcessTrigger::Runtime(reason)),
@@ -3460,7 +3473,8 @@ async fn supervise_ready_process(
     let writer_frame_census = riffdb_storage_redb::writer_command_frame_census_v1();
     let writer_flush_census = riffdb_storage_redb::writer_command_flush_census_v1();
     let writer_journal_stage_census = riffdb_storage_redb::writer_journal_stage_census_v1();
-    let writer_publication_stage_census = riffdb_storage_redb::writer_publication_stage_census_v1();
+    let writer_publication_stage_census = riffdb_storage_redb::writer_publication_stage_census_v2();
+    let writer_checkpoint_census = riffdb_storage_redb::writer_checkpoint_census_v1();
     let query_execute_census = riffdb_storage_redb::query_execute_census_v1();
     let writer_batch_census = riffdb_commit::writer_batch_stage_census_v1();
     let notification_stop_failed = graph.begin_transport_shutdown().is_err();
@@ -3582,7 +3596,16 @@ async fn supervise_ready_process(
             .join(",");
         let _ = writeln!(
             stdout,
-            "riffdb-writer-publication-stages-v1\t{writer_publication_stage_census}"
+            "riffdb-writer-publication-stages-v2\t{writer_publication_stage_census}"
+        );
+        let writer_checkpoint_census = writer_checkpoint_census
+            .iter()
+            .map(u64::to_string)
+            .collect::<Vec<_>>()
+            .join(",");
+        let _ = writeln!(
+            stdout,
+            "riffdb-writer-checkpoint-census-v1\t{writer_checkpoint_census}"
         );
         // Diagnostic-only, and zero unless RIFFDB_COMMAND_SERVICE_DIAGNOSTICS=1
         // populated it. The writer censuses start where the writer picks a

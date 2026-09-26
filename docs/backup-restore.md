@@ -377,9 +377,19 @@ prefix. The collector never reports its uncertain frame as confirmed.
 
 Full CI at `71ae34a7` and the later sink-failure matrix checks passed;
 the repository bundle at
-`release/evidence/wp-749/verification-71ae34a7/README.md` records their exact scope. WP-749 remains incomplete because host-qualified
-write-path measurements are still pending. The local host preflight refused
-measurement due to interference. WP-750's full replication campaign is also
+`release/evidence/wp-749/verification-71ae34a7/README.md` records their exact scope.
+The later combined implementation also passed full integration CI. The
+[same-binary archive comparison](performance/wp749-archive-qualification-2026-09.md#result-recorded-on-2026-09-21)
+completed twenty valid cells and found measurable archive overhead: write-only
+median throughput fell 8.49% and request P95 rose 4.35%. **WP-749 is blocked on
+WP-810**, which owns the shared checkpoint/journal delay. The isolated diagnostic
+measured acknowledgement P99 at 88.35 ms off and 114.93 ms on. Checkpoint-coupled
+journal durability is the named dominant mechanism, present without archive;
+roughly 11.7 ms remains unattributed. After that shared term is reduced, the
+[defined direct off/on remeasurement](performance/wp749-archive-qualification-2026-09.md#remeasurement-that-clears-the-block)
+assesses the unchanged acknowledgement-latency gate. Further subtraction-based
+investigation is stopped; no completion or latency waiver is claimed.
+WP-750's full replication campaign is also
 outstanding, so these paths do not yet constitute a qualified disaster-recovery
 deployment.
 
@@ -449,23 +459,27 @@ compatible marker-only format upgrade preserves an otherwise unchanged
 lifecycle unit. An offline integrity scrub deliberately preserves the bytes but
 does not consume, refresh, or replace them.
 
-A destructive restore removes every observation created after the backup's
-included frontier. The removed application and administration sequence suffixes
-may later be reused for different records. An idempotency key that existed only
-in the removed suffix may be accepted again.
+A destructive restore removes every observation created after the restored
+frontier: the full backup's included frontier for ordinary restore, or the
+verified selected frontier for archive-suffix restore. The removed application
+and administration sequence suffixes may later be reused for different records.
+An idempotency key that existed only in the removed suffix may be accepted again.
 
 After restore, discard all pre-restore:
 
 - outcome, commit, provenance, event, outbox, projection, and audit locators
-  beyond the backup frontier;
+  beyond the restored frontier;
 - idempotency assumptions about the removed suffix;
 - pagination cursors, subscriptions, sessions, and process generations;
-- read-after-sequence expectations beyond the backup frontier; and
+- read-after-sequence expectations beyond the restored frontier; and
 - capability and authorization facts learned from the removed suffix.
 
-Preserving `DatabaseId` does not make those observations valid. Globally stable
-pre-restore locators, point-in-time recovery, online backup, incremental backup,
-encrypted backup, and remote object storage are outside the POC.
+Preserving `DatabaseId` does not make those observations valid. Archive-suffix
+restore supports recovery at an exact commit sequence within its verified
+coverage. It makes no wall-clock point-in-time recovery promise. Globally stable
+pre-restore locators, online backup, built-in backup encryption, and a built-in
+remote object-store sink remain outside the POC. The archive collector currently
+uses an operator-configured filesystem directory.
 
 ### Promotion recovery evidence
 

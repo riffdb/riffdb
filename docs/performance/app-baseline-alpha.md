@@ -77,7 +77,7 @@ All temporary build/test roots honor `RIFFDB_TMP_ROOT` and default to
 | `riffdb.app-baseline-alpha-matrix/v1` | required cells and evidence hashes |
 | `riffdb.app-baseline-qualified-candidate/v1` | clean source, lock, harness, runner, and daemon identity attached to an evidentiary report |
 | `riffdb.app-baseline-host-validity/v1` | immutable historical bounded endpoint host inventory |
-| `riffdb.app-baseline-host-validity/v2` | bounded endpoint inventory plus exact whole-cell CPU-steal evidence |
+| `riffdb.app-baseline-host-validity/v2` | bounded endpoint inventory plus exact whole-cell CPU-steal evidence; current receipts also retain bounded changed process identities |
 | `riffdb.wp-674-unary-profile/v2` | one fixed host profile and every retained attempt |
 | `riffdb.wp-674-unary-manifest/v2` | exact three-profile unary evidence inventory |
 | `riffdb.wp-674-unary-baseline/v2` | frozen absolute and low-water unary baseline |
@@ -451,9 +451,12 @@ Details and the new refused preflight are in
 
 The complete raw reports, build identities, fixed protocol and reproducible summary
 are in the source tree at `release/evidence/wp-749/local-paired-20260916/`.
-No performance-selected retries were taken. This local point supplies disclosure;
-the required N1/E2 campaign, interactive and concurrency sweeps, and repeated-kill
-qualification remain outstanding. No performance threshold or freeze state changes.
+No performance-selected retries were taken. This local point supplies disclosure.
+N1 was subsequently retired by ADR-0245; release qualification requires two
+accelerator-compliant profiles. The current WP-749 step is the bounded
+[archive-presence comparison](wp749-archive-qualification-2026-09.md), separate
+from WP-750's complete release campaign. No historical result is reclassified
+by that host change.
 
 A follow-up diagnostic trace found 11 sync calls per archived frame, with the
 collector spending most of that traced run waiting inside those calls. Normal

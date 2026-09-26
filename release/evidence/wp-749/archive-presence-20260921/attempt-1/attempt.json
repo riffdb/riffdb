@@ -1,0 +1,1409 @@
+{
+  "schema": "riffdb.wp749.archive-presence-attempt/v1",
+  "host_attempt": 1,
+  "host": "8 vCPU AMD EPYC 9B14; SHA-NI, AES, PCLMULQDQ, SSE4.2",
+  "source_revision": "11f1ffbc3f1ee1d579e971c3a0e694317ebc1a7d",
+  "source_tree": "150c4c0d1e84c62bca15e5d053c47e1a6df9d921",
+  "compiler": "rustc 1.98.1 (48a229cea 2026-09-01)\nbinary: rustc\ncommit-hash: 48a229ceaefd4985c50990b14116b6d856af0985\ncommit-date: 2026-09-01\nhost: x86_64-unknown-linux-gnu\nrelease: 1.98.1\nLLVM version: 22.1.8\n",
+  "build_flags": {
+    "RUSTUP_TOOLCHAIN": "1.98.1",
+    "RUSTFLAGS": "-C target-cpu=x86-64",
+    "CARGO_BUILD_JOBS": "4",
+    "CARGO_INCREMENTAL": "0",
+    "RUSTC_WRAPPER": "",
+    "CARGO_PROFILE_RELEASE_LTO": "thin",
+    "CARGO_PROFILE_RELEASE_CODEGEN_UNITS": "1"
+  },
+  "daemon_sha256": "4d8f7c1991cc4e40d8aefa71d7d686e48e8712ee60c4dbfd2269444cb6e080e5",
+  "runner_sha256": "6746d28d9173b9b5e527c67893aff8a60e866d28435a829f0f8c25f00105f0d3",
+  "original_build_receipt_sha256": "c582bd86209e62aeb883c3bb21bdc4a28650f1bd92429290d37c94a65baee95c",
+  "protocol": {
+    "schema": "private.wp749-archive-presence/v1",
+    "cells": [
+      {
+        "load": "write_only",
+        "pair": 1,
+        "mode": "disabled"
+      },
+      {
+        "load": "write_only",
+        "pair": 1,
+        "mode": "enabled"
+      },
+      {
+        "load": "write_only",
+        "pair": 2,
+        "mode": "enabled"
+      },
+      {
+        "load": "write_only",
+        "pair": 2,
+        "mode": "disabled"
+      },
+      {
+        "load": "write_only",
+        "pair": 3,
+        "mode": "disabled"
+      },
+      {
+        "load": "write_only",
+        "pair": 3,
+        "mode": "enabled"
+      },
+      {
+        "load": "write_only",
+        "pair": 4,
+        "mode": "enabled"
+      },
+      {
+        "load": "write_only",
+        "pair": 4,
+        "mode": "disabled"
+      },
+      {
+        "load": "write_only",
+        "pair": 5,
+        "mode": "disabled"
+      },
+      {
+        "load": "write_only",
+        "pair": 5,
+        "mode": "enabled"
+      },
+      {
+        "load": "interactive",
+        "pair": 1,
+        "mode": "disabled"
+      },
+      {
+        "load": "interactive",
+        "pair": 1,
+        "mode": "enabled"
+      },
+      {
+        "load": "interactive",
+        "pair": 2,
+        "mode": "enabled"
+      },
+      {
+        "load": "interactive",
+        "pair": 2,
+        "mode": "disabled"
+      },
+      {
+        "load": "interactive",
+        "pair": 3,
+        "mode": "disabled"
+      },
+      {
+        "load": "interactive",
+        "pair": 3,
+        "mode": "enabled"
+      },
+      {
+        "load": "interactive",
+        "pair": 4,
+        "mode": "enabled"
+      },
+      {
+        "load": "interactive",
+        "pair": 4,
+        "mode": "disabled"
+      },
+      {
+        "load": "interactive",
+        "pair": 5,
+        "mode": "disabled"
+      },
+      {
+        "load": "interactive",
+        "pair": 5,
+        "mode": "enabled"
+      }
+    ],
+    "scale": "full",
+    "clients": 32,
+    "warmup_seconds": 15,
+    "measurement_seconds": 90,
+    "reps": 1,
+    "postgres": false,
+    "optional_writer_observers": false,
+    "lease_sha256": "e86b2f658596a875f68a074ea97b8ba4e019a14483e100cf6f99863dd3ce8517",
+    "build_sha256": "c582bd86209e62aeb883c3bb21bdc4a28650f1bd92429290d37c94a65baee95c",
+    "script_sha256": "a00f268b1e20c234fde34cab53197c93a7691cc4472bc96b034ea2614d77954b",
+    "rule": "Exactly 20 cells, no retry or omission. Stop on invalid host, correctness, collector failure, timeout or reservation expiry. P99 is disclosure, no new tail investigation. Within-arm stability is not between-arm parity.",
+    "started_at": "2026-09-21T12:48:40.426629+00:00"
+  },
+  "terminal": {
+    "started_at": "2026-09-21T12:40:49.992560+00:00",
+    "phases": [
+      {
+        "script": "build.py",
+        "started_at": "2026-09-21T12:40:49.992638+00:00",
+        "finished_at": "2026-09-21T12:48:40.396377+00:00",
+        "exit_code": 0
+      },
+      {
+        "script": "run.py",
+        "started_at": "2026-09-21T12:48:40.396394+00:00",
+        "finished_at": "2026-09-21T13:03:30.404888+00:00",
+        "exit_code": 1
+      }
+    ],
+    "automatic_retries": false,
+    "finished_at": "2026-09-21T13:03:30.404919+00:00",
+    "complete": false
+  },
+  "cells": [
+    {
+      "load": "write_only",
+      "pair": 1,
+      "mode": "disabled",
+      "started_at": "2026-09-21T12:48:40.499130+00:00",
+      "daemon_sha256": "4d8f7c1991cc4e40d8aefa71d7d686e48e8712ee60c4dbfd2269444cb6e080e5",
+      "runner_sha256": "6746d28d9173b9b5e527c67893aff8a60e866d28435a829f0f8c25f00105f0d3",
+      "cell": "01-write_only-1-disabled",
+      "original_attempt_sha256": "ff2be9938bb093448b69611cdbf21164b053c461ea8e8c780b0e522eb03e1914",
+      "execution": {
+        "load": "write_only",
+        "pair": 1,
+        "mode": "disabled",
+        "exit_code": 0,
+        "elapsed_seconds": 146.7376973379869,
+        "daemon_sha256": "4d8f7c1991cc4e40d8aefa71d7d686e48e8712ee60c4dbfd2269444cb6e080e5",
+        "runner_sha256": "6746d28d9173b9b5e527c67893aff8a60e866d28435a829f0f8c25f00105f0d3"
+      },
+      "execution_original_sha256": "41b89ff73b18b0faa1244a00f24bce856c4c82d8ee251d037a7f2663b9aa00b1",
+      "preflight": {
+        "active_processes": [],
+        "baseline_report_sha256": null,
+        "boot_identity_sha256": "2993ed160380a949097565c07adef79de50ae980b984e8bf5aac2bb324e8d889",
+        "cpu_accounting": {
+          "steal_ticks": 0,
+          "total_ticks": 174305294
+        },
+        "hardware_identity": {
+          "cpu_model": "AMD EPYC 9B14",
+          "operating_system": {
+            "id": "ubuntu",
+            "version_id": "26.04"
+          },
+          "system_product": "Google Compute Engine",
+          "system_vendor": "Google"
+        },
+        "interfering_processes": [],
+        "inventory_bounds": {
+          "maximum_reported_processes": 32,
+          "maximum_scanned_processes": 4096,
+          "process_arguments_included": false
+        },
+        "load_average_after": [
+          2.34,
+          2.39,
+          1.26
+        ],
+        "load_average_before": [
+          2.54,
+          2.43,
+          1.27
+        ],
+        "logical_cpus": 8,
+        "memory_available_bytes": 32577802240,
+        "process_identity_evidence": {
+          "exited": [],
+          "exited_omitted": 0,
+          "maximum_per_endpoint": 32,
+          "started": [],
+          "started_omitted": 0
+        },
+        "process_interval": {
+          "exited_processes": 0,
+          "kernel_thread_events_excluded": 0,
+          "pid_reuses": 0,
+          "stable_identity_required": true,
+          "started_processes": 0
+        },
+        "reason": null,
+        "sample_interval_ms": 3000,
+        "schema": "riffdb.app-baseline-host-validity/v2",
+        "thresholds": {
+          "cpu_percent_of_one_logical_cpu": 5.0,
+          "io_bytes_per_sec": 8388608,
+          "maximum_whole_cell_steal_percent": 1.0
+        },
+        "valid": true,
+        "whole_cell": null
+      },
+      "preflight_original_sha256": "27d0e78549bb3484dd5a336f99477020a3f2d67449eeda3425dfc903768c96a2",
+      "postflight": {
+        "active_processes": [],
+        "baseline_report_sha256": "27d0e78549bb3484dd5a336f99477020a3f2d67449eeda3425dfc903768c96a2",
+        "boot_identity_sha256": "2993ed160380a949097565c07adef79de50ae980b984e8bf5aac2bb324e8d889",
+        "cpu_accounting": {
+          "steal_ticks": 0,
+          "total_ticks": 174428346
+        },
+        "hardware_identity": {
+          "cpu_model": "AMD EPYC 9B14",
+          "operating_system": {
+            "id": "ubuntu",
+            "version_id": "26.04"
+          },
+          "system_product": "Google Compute Engine",
+          "system_vendor": "Google"
+        },
+        "interfering_processes": [],
+        "inventory_bounds": {
+          "maximum_reported_processes": 32,
+          "maximum_scanned_processes": 4096,
+          "process_arguments_included": false
+        },
+        "load_average_after": [
+          2.83,
+          2.68,
+          1.55
+        ],
+        "load_average_before": [
+          3.08,
+          2.72,
+          1.56
+        ],
+        "logical_cpus": 8,
+        "memory_available_bytes": 32602546176,
+        "process_identity_evidence": {
+          "exited": [],
+          "exited_omitted": 0,
+          "maximum_per_endpoint": 32,
+          "started": [],
+          "started_omitted": 0
+        },
+        "process_interval": {
+          "exited_processes": 0,
+          "kernel_thread_events_excluded": 0,
+          "pid_reuses": 0,
+          "stable_identity_required": true,
+          "started_processes": 0
+        },
+        "reason": null,
+        "sample_interval_ms": 3000,
+        "schema": "riffdb.app-baseline-host-validity/v2",
+        "thresholds": {
+          "cpu_percent_of_one_logical_cpu": 5.0,
+          "io_bytes_per_sec": 8388608,
+          "maximum_whole_cell_steal_percent": 1.0
+        },
+        "valid": true,
+        "whole_cell": {
+          "elapsed_steal_ticks": 0,
+          "elapsed_total_ticks": 123052,
+          "maximum_steal_percent": 1.0,
+          "reason": null,
+          "steal_percent": 0.0,
+          "valid": true
+        }
+      },
+      "postflight_original_sha256": "2b76f62517b28bf2441feffaecf93d7d4ab48b418e4bd95cc991e5f0e7b8b781",
+      "validated_summary": {
+        "load": "write_only",
+        "pair": 1,
+        "mode": "disabled",
+        "report_sha256": "a951ce82910ac2132bc55cf790f6c80024b6c8ff87ca2f2bce27946fe7b1396a",
+        "throughput_ops_s": 2934,
+        "p50_ns": 9437183,
+        "p95_ns": 11534335,
+        "p99_ns": 96468991,
+        "mean_commit_us": 3219.458773676418,
+        "commands": 311252,
+        "groups": 19587,
+        "outcomes": {
+          "conflict": 0,
+          "error": 0,
+          "success": 264113,
+          "unavailable": 0
+        },
+        "archive": {
+          "archived_application_sequence": null,
+          "archived_history_transactions": 0,
+          "backup_application_sequence": 19220,
+          "caught_up_at_shutdown": "not_claimed",
+          "collector_terminal_failure_observed": false,
+          "enabled": false,
+          "manifest_digest": null
+        },
+        "source_final_application_sequence_inferred": 330472,
+        "source_frontier_method": "Inference from stopped backup plus all process command commits including warmup; not an independent frontier read."
+      },
+      "validated_summary_original_sha256": "97dda7c171a72a3a5acdad32283106a806b423f5c9119cecca2b8d192a98eecf",
+      "original_report_sha256": "a951ce82910ac2132bc55cf790f6c80024b6c8ff87ca2f2bce27946fe7b1396a",
+      "report_extract": "01-write_only-1-disabled-report-extract.json",
+      "report_extract_sha256": "9f2cedada30a50c07f75a3303d45594758876e1e887b363fa06f837acbd89280",
+      "cell_checks_passed": true
+    },
+    {
+      "load": "write_only",
+      "pair": 1,
+      "mode": "enabled",
+      "started_at": "2026-09-21T12:51:33.593889+00:00",
+      "daemon_sha256": "4d8f7c1991cc4e40d8aefa71d7d686e48e8712ee60c4dbfd2269444cb6e080e5",
+      "runner_sha256": "6746d28d9173b9b5e527c67893aff8a60e866d28435a829f0f8c25f00105f0d3",
+      "cell": "02-write_only-1-enabled",
+      "original_attempt_sha256": "516064b56e69359bb9882fef7cdcef79fb010cd2522de1a2d91314cb1d0079fd",
+      "execution": {
+        "load": "write_only",
+        "pair": 1,
+        "mode": "enabled",
+        "exit_code": 0,
+        "elapsed_seconds": 159.0223902699945,
+        "daemon_sha256": "4d8f7c1991cc4e40d8aefa71d7d686e48e8712ee60c4dbfd2269444cb6e080e5",
+        "runner_sha256": "6746d28d9173b9b5e527c67893aff8a60e866d28435a829f0f8c25f00105f0d3"
+      },
+      "execution_original_sha256": "ca633bbc4d5947a2f9d673dc39fc16bfe7a4c1ed349f250199fb900dd71db002",
+      "preflight": {
+        "active_processes": [],
+        "baseline_report_sha256": null,
+        "boot_identity_sha256": "2993ed160380a949097565c07adef79de50ae980b984e8bf5aac2bb324e8d889",
+        "cpu_accounting": {
+          "steal_ticks": 0,
+          "total_ticks": 174442892
+        },
+        "hardware_identity": {
+          "cpu_model": "AMD EPYC 9B14",
+          "operating_system": {
+            "id": "ubuntu",
+            "version_id": "26.04"
+          },
+          "system_product": "Google Compute Engine",
+          "system_vendor": "Google"
+        },
+        "interfering_processes": [],
+        "inventory_bounds": {
+          "maximum_reported_processes": 32,
+          "maximum_scanned_processes": 4096,
+          "process_arguments_included": false
+        },
+        "load_average_after": [
+          2.2,
+          2.55,
+          1.52
+        ],
+        "load_average_before": [
+          2.2,
+          2.55,
+          1.52
+        ],
+        "logical_cpus": 8,
+        "memory_available_bytes": 32609792000,
+        "process_identity_evidence": {
+          "exited": [],
+          "exited_omitted": 0,
+          "maximum_per_endpoint": 32,
+          "started": [],
+          "started_omitted": 0
+        },
+        "process_interval": {
+          "exited_processes": 0,
+          "kernel_thread_events_excluded": 0,
+          "pid_reuses": 0,
+          "stable_identity_required": true,
+          "started_processes": 0
+        },
+        "reason": null,
+        "sample_interval_ms": 3000,
+        "schema": "riffdb.app-baseline-host-validity/v2",
+        "thresholds": {
+          "cpu_percent_of_one_logical_cpu": 5.0,
+          "io_bytes_per_sec": 8388608,
+          "maximum_whole_cell_steal_percent": 1.0
+        },
+        "valid": true,
+        "whole_cell": null
+      },
+      "preflight_original_sha256": "8e24983022ead7b17a6adffb3394549d4c12e472604e1f44f2b51b4b7cbf1bfc",
+      "postflight": {
+        "active_processes": [
+          {
+            "comm": "kworker/u32:3-events_unbound",
+            "cpu_percent_of_one_logical_cpu": 1.0,
+            "pid": 234201,
+            "read_bytes_per_sec": 0,
+            "rss_bytes": 0,
+            "write_bytes_per_sec": 0
+          },
+          {
+            "comm": "kworker/1:1H-kblockd",
+            "cpu_percent_of_one_logical_cpu": 0.333,
+            "pid": 277,
+            "read_bytes_per_sec": 0,
+            "rss_bytes": 0,
+            "write_bytes_per_sec": 0
+          },
+          {
+            "comm": "kworker/5:1H-kblockd",
+            "cpu_percent_of_one_logical_cpu": 0.333,
+            "pid": 220,
+            "read_bytes_per_sec": 0,
+            "rss_bytes": 0,
+            "write_bytes_per_sec": 0
+          }
+        ],
+        "baseline_report_sha256": "8e24983022ead7b17a6adffb3394549d4c12e472604e1f44f2b51b4b7cbf1bfc",
+        "boot_identity_sha256": "2993ed160380a949097565c07adef79de50ae980b984e8bf5aac2bb324e8d889",
+        "cpu_accounting": {
+          "steal_ticks": 0,
+          "total_ticks": 174575346
+        },
+        "hardware_identity": {
+          "cpu_model": "AMD EPYC 9B14",
+          "operating_system": {
+            "id": "ubuntu",
+            "version_id": "26.04"
+          },
+          "system_product": "Google Compute Engine",
+          "system_vendor": "Google"
+        },
+        "interfering_processes": [],
+        "inventory_bounds": {
+          "maximum_reported_processes": 32,
+          "maximum_scanned_processes": 4096,
+          "process_arguments_included": false
+        },
+        "load_average_after": [
+          3.3,
+          3.33,
+          2.02
+        ],
+        "load_average_before": [
+          3.59,
+          3.38,
+          2.03
+        ],
+        "logical_cpus": 8,
+        "memory_available_bytes": 32603287552,
+        "process_identity_evidence": {
+          "exited": [],
+          "exited_omitted": 0,
+          "maximum_per_endpoint": 32,
+          "started": [],
+          "started_omitted": 0
+        },
+        "process_interval": {
+          "exited_processes": 0,
+          "kernel_thread_events_excluded": 0,
+          "pid_reuses": 0,
+          "stable_identity_required": true,
+          "started_processes": 0
+        },
+        "reason": null,
+        "sample_interval_ms": 3000,
+        "schema": "riffdb.app-baseline-host-validity/v2",
+        "thresholds": {
+          "cpu_percent_of_one_logical_cpu": 5.0,
+          "io_bytes_per_sec": 8388608,
+          "maximum_whole_cell_steal_percent": 1.0
+        },
+        "valid": true,
+        "whole_cell": {
+          "elapsed_steal_ticks": 0,
+          "elapsed_total_ticks": 132454,
+          "maximum_steal_percent": 1.0,
+          "reason": null,
+          "steal_percent": 0.0,
+          "valid": true
+        }
+      },
+      "postflight_original_sha256": "9c3cd660ecda6bc6c10782c85273ea1c53f14f00eb2956bea422c66783e0441c",
+      "validated_summary": {
+        "load": "write_only",
+        "pair": 1,
+        "mode": "enabled",
+        "report_sha256": "ecde1f75d7ddc27701de70d77629f0052229784521320b593e926abc7d52fae0",
+        "throughput_ops_s": 2696,
+        "p50_ns": 9961471,
+        "p95_ns": 12582911,
+        "p99_ns": 121634815,
+        "mean_commit_us": 3466.3207971889756,
+        "commands": 288710,
+        "groups": 18214,
+        "outcomes": {
+          "conflict": 0,
+          "error": 0,
+          "success": 243003,
+          "unavailable": 0
+        },
+        "archive": {
+          "archived_application_sequence": 307930,
+          "archived_history_transactions": 18216,
+          "backup_application_sequence": 19220,
+          "caught_up_at_shutdown": "not_claimed",
+          "collector_terminal_failure_observed": false,
+          "enabled": true,
+          "manifest_digest": "43e3d650f86f154713843fa20d9cf5416023c80cfafee320b03e39b990139ac7"
+        },
+        "source_final_application_sequence_inferred": 307930,
+        "source_frontier_method": "Inference from stopped backup plus all process command commits including warmup; not an independent frontier read.",
+        "terminal_archive_lag_inferred": 0
+      },
+      "validated_summary_original_sha256": "68703b7dbd16e4504740618d92d35790886fccf5e955f28ce5d6dcbc31655f7c",
+      "original_report_sha256": "ecde1f75d7ddc27701de70d77629f0052229784521320b593e926abc7d52fae0",
+      "report_extract": "02-write_only-1-enabled-report-extract.json",
+      "report_extract_sha256": "8ee63118c5074767f194d3e5ef2d171cb06b3b27a1385a0e5db2662148fed0a7",
+      "cell_checks_passed": true
+    },
+    {
+      "load": "write_only",
+      "pair": 2,
+      "mode": "enabled",
+      "started_at": "2026-09-21T12:54:38.973750+00:00",
+      "daemon_sha256": "4d8f7c1991cc4e40d8aefa71d7d686e48e8712ee60c4dbfd2269444cb6e080e5",
+      "runner_sha256": "6746d28d9173b9b5e527c67893aff8a60e866d28435a829f0f8c25f00105f0d3",
+      "cell": "03-write_only-2-enabled",
+      "original_attempt_sha256": "d09e93c94ca155c368db3ba54a544a2a342f3db11ee91a6f538a1dd1b591a92a",
+      "execution": {
+        "load": "write_only",
+        "pair": 2,
+        "mode": "enabled",
+        "exit_code": 0,
+        "elapsed_seconds": 159.8772757909901,
+        "daemon_sha256": "4d8f7c1991cc4e40d8aefa71d7d686e48e8712ee60c4dbfd2269444cb6e080e5",
+        "runner_sha256": "6746d28d9173b9b5e527c67893aff8a60e866d28435a829f0f8c25f00105f0d3"
+      },
+      "execution_original_sha256": "baab4627b50cc1abbb936fd83e59b7149dc5c99ff518162529d2afa4de0f3592",
+      "preflight": {
+        "active_processes": [],
+        "baseline_report_sha256": null,
+        "boot_identity_sha256": "2993ed160380a949097565c07adef79de50ae980b984e8bf5aac2bb324e8d889",
+        "cpu_accounting": {
+          "steal_ticks": 0,
+          "total_ticks": 174589932
+        },
+        "hardware_identity": {
+          "cpu_model": "AMD EPYC 9B14",
+          "operating_system": {
+            "id": "ubuntu",
+            "version_id": "26.04"
+          },
+          "system_product": "Google Compute Engine",
+          "system_vendor": "Google"
+        },
+        "interfering_processes": [],
+        "inventory_bounds": {
+          "maximum_reported_processes": 32,
+          "maximum_scanned_processes": 4096,
+          "process_arguments_included": false
+        },
+        "load_average_after": [
+          2.57,
+          3.16,
+          1.98
+        ],
+        "load_average_before": [
+          2.57,
+          3.16,
+          1.98
+        ],
+        "logical_cpus": 8,
+        "memory_available_bytes": 32593100800,
+        "process_identity_evidence": {
+          "exited": [],
+          "exited_omitted": 0,
+          "maximum_per_endpoint": 32,
+          "started": [],
+          "started_omitted": 0
+        },
+        "process_interval": {
+          "exited_processes": 0,
+          "kernel_thread_events_excluded": 0,
+          "pid_reuses": 0,
+          "stable_identity_required": true,
+          "started_processes": 0
+        },
+        "reason": null,
+        "sample_interval_ms": 3000,
+        "schema": "riffdb.app-baseline-host-validity/v2",
+        "thresholds": {
+          "cpu_percent_of_one_logical_cpu": 5.0,
+          "io_bytes_per_sec": 8388608,
+          "maximum_whole_cell_steal_percent": 1.0
+        },
+        "valid": true,
+        "whole_cell": null
+      },
+      "preflight_original_sha256": "94ab4b06fa05311d075e0e788b4a69ca3ab1b188d80220e7e1cc91eee8c9b223",
+      "postflight": {
+        "active_processes": [
+          {
+            "comm": "kworker/u32:3-writeback",
+            "cpu_percent_of_one_logical_cpu": 0.667,
+            "pid": 234201,
+            "read_bytes_per_sec": 0,
+            "rss_bytes": 0,
+            "write_bytes_per_sec": 0
+          },
+          {
+            "comm": "kworker/2:1H-kblockd",
+            "cpu_percent_of_one_logical_cpu": 0.667,
+            "pid": 217,
+            "read_bytes_per_sec": 0,
+            "rss_bytes": 0,
+            "write_bytes_per_sec": 0
+          },
+          {
+            "comm": "containerd",
+            "cpu_percent_of_one_logical_cpu": 0.333,
+            "pid": 3160,
+            "read_bytes_per_sec": 0,
+            "rss_bytes": 56717312,
+            "write_bytes_per_sec": 0
+          },
+          {
+            "comm": "kworker/6:1H-kblockd",
+            "cpu_percent_of_one_logical_cpu": 0.333,
+            "pid": 193,
+            "read_bytes_per_sec": 0,
+            "rss_bytes": 0,
+            "write_bytes_per_sec": 0
+          }
+        ],
+        "baseline_report_sha256": "94ab4b06fa05311d075e0e788b4a69ca3ab1b188d80220e7e1cc91eee8c9b223",
+        "boot_identity_sha256": "2993ed160380a949097565c07adef79de50ae980b984e8bf5aac2bb324e8d889",
+        "cpu_accounting": {
+          "steal_ticks": 0,
+          "total_ticks": 174723205
+        },
+        "hardware_identity": {
+          "cpu_model": "AMD EPYC 9B14",
+          "operating_system": {
+            "id": "ubuntu",
+            "version_id": "26.04"
+          },
+          "system_product": "Google Compute Engine",
+          "system_vendor": "Google"
+        },
+        "interfering_processes": [],
+        "inventory_bounds": {
+          "maximum_reported_processes": 32,
+          "maximum_scanned_processes": 4096,
+          "process_arguments_included": false
+        },
+        "load_average_after": [
+          2.81,
+          3.25,
+          2.23
+        ],
+        "load_average_before": [
+          2.96,
+          3.29,
+          2.23
+        ],
+        "logical_cpus": 8,
+        "memory_available_bytes": 32592502784,
+        "process_identity_evidence": {
+          "exited": [],
+          "exited_omitted": 0,
+          "maximum_per_endpoint": 32,
+          "started": [],
+          "started_omitted": 0
+        },
+        "process_interval": {
+          "exited_processes": 0,
+          "kernel_thread_events_excluded": 0,
+          "pid_reuses": 0,
+          "stable_identity_required": true,
+          "started_processes": 0
+        },
+        "reason": null,
+        "sample_interval_ms": 3000,
+        "schema": "riffdb.app-baseline-host-validity/v2",
+        "thresholds": {
+          "cpu_percent_of_one_logical_cpu": 5.0,
+          "io_bytes_per_sec": 8388608,
+          "maximum_whole_cell_steal_percent": 1.0
+        },
+        "valid": true,
+        "whole_cell": {
+          "elapsed_steal_ticks": 0,
+          "elapsed_total_ticks": 133273,
+          "maximum_steal_percent": 1.0,
+          "reason": null,
+          "steal_percent": 0.0,
+          "valid": true
+        }
+      },
+      "postflight_original_sha256": "3c8fdf9ab12dcacfa2b753d7741b2477d0d85655e0291b18980736185a3c6ccf",
+      "validated_summary": {
+        "load": "write_only",
+        "pair": 2,
+        "mode": "enabled",
+        "report_sha256": "c9946f8a70844af47b78e45ef3efd71399b6ffb10cf3153dbca9fd67f0f5edc1",
+        "throughput_ops_s": 2668,
+        "p50_ns": 9961471,
+        "p95_ns": 12582911,
+        "p99_ns": 130023423,
+        "mean_commit_us": 3510.5042730299665,
+        "commands": 285450,
+        "groups": 18020,
+        "outcomes": {
+          "conflict": 0,
+          "error": 0,
+          "success": 240152,
+          "unavailable": 0
+        },
+        "archive": {
+          "archived_application_sequence": 304670,
+          "archived_history_transactions": 18022,
+          "backup_application_sequence": 19220,
+          "caught_up_at_shutdown": "not_claimed",
+          "collector_terminal_failure_observed": false,
+          "enabled": true,
+          "manifest_digest": "32f9e83b5e79d3e6bbb7170305d9b2a9e4d4834d38b9059d81268ff3d68b0a25"
+        },
+        "source_final_application_sequence_inferred": 304670,
+        "source_frontier_method": "Inference from stopped backup plus all process command commits including warmup; not an independent frontier read.",
+        "terminal_archive_lag_inferred": 0
+      },
+      "validated_summary_original_sha256": "f2e10a61f9378472fcfc51afdcf7c6b77914ee9bd594f0f30b2ba13c3ed79ef0",
+      "original_report_sha256": "c9946f8a70844af47b78e45ef3efd71399b6ffb10cf3153dbca9fd67f0f5edc1",
+      "report_extract": "03-write_only-2-enabled-report-extract.json",
+      "report_extract_sha256": "ea76c8278b8309201f0d86b0efbc11d00309992b9a782cc926aae791715551e6",
+      "cell_checks_passed": true
+    },
+    {
+      "load": "write_only",
+      "pair": 2,
+      "mode": "disabled",
+      "started_at": "2026-09-21T12:57:45.259530+00:00",
+      "daemon_sha256": "4d8f7c1991cc4e40d8aefa71d7d686e48e8712ee60c4dbfd2269444cb6e080e5",
+      "runner_sha256": "6746d28d9173b9b5e527c67893aff8a60e866d28435a829f0f8c25f00105f0d3",
+      "cell": "04-write_only-2-disabled",
+      "original_attempt_sha256": "142530abb792725b823e3bd927b264d157c5d10190ab8a8e1158b352fd086611",
+      "execution": {
+        "load": "write_only",
+        "pair": 2,
+        "mode": "disabled",
+        "exit_code": 0,
+        "elapsed_seconds": 146.54674921100377,
+        "daemon_sha256": "4d8f7c1991cc4e40d8aefa71d7d686e48e8712ee60c4dbfd2269444cb6e080e5",
+        "runner_sha256": "6746d28d9173b9b5e527c67893aff8a60e866d28435a829f0f8c25f00105f0d3"
+      },
+      "execution_original_sha256": "6dab02444f9224fe8211a1901f55a4ba32d812cd7ef8cc99305bf5c2a2f2ac83",
+      "preflight": {
+        "active_processes": [],
+        "baseline_report_sha256": null,
+        "boot_identity_sha256": "2993ed160380a949097565c07adef79de50ae980b984e8bf5aac2bb324e8d889",
+        "cpu_accounting": {
+          "steal_ticks": 0,
+          "total_ticks": 174737791
+        },
+        "hardware_identity": {
+          "cpu_model": "AMD EPYC 9B14",
+          "operating_system": {
+            "id": "ubuntu",
+            "version_id": "26.04"
+          },
+          "system_product": "Google Compute Engine",
+          "system_vendor": "Google"
+        },
+        "interfering_processes": [],
+        "inventory_bounds": {
+          "maximum_reported_processes": 32,
+          "maximum_scanned_processes": 4096,
+          "process_arguments_included": false
+        },
+        "load_average_after": [
+          2.01,
+          3.04,
+          2.18
+        ],
+        "load_average_before": [
+          2.18,
+          3.09,
+          2.19
+        ],
+        "logical_cpus": 8,
+        "memory_available_bytes": 32596615168,
+        "process_identity_evidence": {
+          "exited": [],
+          "exited_omitted": 0,
+          "maximum_per_endpoint": 32,
+          "started": [],
+          "started_omitted": 0
+        },
+        "process_interval": {
+          "exited_processes": 0,
+          "kernel_thread_events_excluded": 0,
+          "pid_reuses": 0,
+          "stable_identity_required": true,
+          "started_processes": 0
+        },
+        "reason": null,
+        "sample_interval_ms": 3000,
+        "schema": "riffdb.app-baseline-host-validity/v2",
+        "thresholds": {
+          "cpu_percent_of_one_logical_cpu": 5.0,
+          "io_bytes_per_sec": 8388608,
+          "maximum_whole_cell_steal_percent": 1.0
+        },
+        "valid": true,
+        "whole_cell": null
+      },
+      "preflight_original_sha256": "2290ca0a25efcd06f6be7b9cdf7708bc9ce3112c25799c2aa0848e0b3f65c180",
+      "postflight": {
+        "active_processes": [],
+        "baseline_report_sha256": "2290ca0a25efcd06f6be7b9cdf7708bc9ce3112c25799c2aa0848e0b3f65c180",
+        "boot_identity_sha256": "2993ed160380a949097565c07adef79de50ae980b984e8bf5aac2bb324e8d889",
+        "cpu_accounting": {
+          "steal_ticks": 0,
+          "total_ticks": 174860595
+        },
+        "hardware_identity": {
+          "cpu_model": "AMD EPYC 9B14",
+          "operating_system": {
+            "id": "ubuntu",
+            "version_id": "26.04"
+          },
+          "system_product": "Google Compute Engine",
+          "system_vendor": "Google"
+        },
+        "interfering_processes": [],
+        "inventory_bounds": {
+          "maximum_reported_processes": 32,
+          "maximum_scanned_processes": 4096,
+          "process_arguments_included": false
+        },
+        "load_average_after": [
+          3.46,
+          3.43,
+          2.46
+        ],
+        "load_average_before": [
+          3.76,
+          3.49,
+          2.47
+        ],
+        "logical_cpus": 8,
+        "memory_available_bytes": 32573198336,
+        "process_identity_evidence": {
+          "exited": [],
+          "exited_omitted": 0,
+          "maximum_per_endpoint": 32,
+          "started": [],
+          "started_omitted": 0
+        },
+        "process_interval": {
+          "exited_processes": 0,
+          "kernel_thread_events_excluded": 0,
+          "pid_reuses": 0,
+          "stable_identity_required": true,
+          "started_processes": 0
+        },
+        "reason": null,
+        "sample_interval_ms": 3000,
+        "schema": "riffdb.app-baseline-host-validity/v2",
+        "thresholds": {
+          "cpu_percent_of_one_logical_cpu": 5.0,
+          "io_bytes_per_sec": 8388608,
+          "maximum_whole_cell_steal_percent": 1.0
+        },
+        "valid": true,
+        "whole_cell": {
+          "elapsed_steal_ticks": 0,
+          "elapsed_total_ticks": 122804,
+          "maximum_steal_percent": 1.0,
+          "reason": null,
+          "steal_percent": 0.0,
+          "valid": true
+        }
+      },
+      "postflight_original_sha256": "cc5a602a759932b8d3c52bbab3791ecfd222ca03739f53c3bdceed6d309ecd8a",
+      "validated_summary": {
+        "load": "write_only",
+        "pair": 2,
+        "mode": "disabled",
+        "report_sha256": "6f77d28ddd762894417756ac4aa3552b23d08bb01037c72935470824e8d12d58",
+        "throughput_ops_s": 2938,
+        "p50_ns": 9437183,
+        "p95_ns": 11534335,
+        "p99_ns": 96468991,
+        "mean_commit_us": 3220.617443164441,
+        "commands": 311879,
+        "groups": 19618,
+        "outcomes": {
+          "conflict": 0,
+          "error": 0,
+          "success": 264643,
+          "unavailable": 0
+        },
+        "archive": {
+          "archived_application_sequence": null,
+          "archived_history_transactions": 0,
+          "backup_application_sequence": 19220,
+          "caught_up_at_shutdown": "not_claimed",
+          "collector_terminal_failure_observed": false,
+          "enabled": false,
+          "manifest_digest": null
+        },
+        "source_final_application_sequence_inferred": 331099,
+        "source_frontier_method": "Inference from stopped backup plus all process command commits including warmup; not an independent frontier read."
+      },
+      "validated_summary_original_sha256": "12314c76389a02327b8a972fbc70f7a2ae9d2e795159377786a125a209450eaf",
+      "original_report_sha256": "6f77d28ddd762894417756ac4aa3552b23d08bb01037c72935470824e8d12d58",
+      "report_extract": "04-write_only-2-disabled-report-extract.json",
+      "report_extract_sha256": "f62a56e1c70c04c6da823791b2ef5cca7663732bcbe25e462328014025fbcff7",
+      "cell_checks_passed": true
+    },
+    {
+      "load": "write_only",
+      "pair": 3,
+      "mode": "disabled",
+      "started_at": "2026-09-21T13:00:38.115991+00:00",
+      "daemon_sha256": "4d8f7c1991cc4e40d8aefa71d7d686e48e8712ee60c4dbfd2269444cb6e080e5",
+      "runner_sha256": "6746d28d9173b9b5e527c67893aff8a60e866d28435a829f0f8c25f00105f0d3",
+      "cell": "05-write_only-3-disabled",
+      "original_attempt_sha256": "7a73fe4d11ac1b0b15fa67df5fd194dcc2ef3b0c6b13227a1065872d8bc546de",
+      "execution": {
+        "load": "write_only",
+        "pair": 3,
+        "mode": "disabled",
+        "exit_code": 0,
+        "elapsed_seconds": 145.9338872230146,
+        "daemon_sha256": "4d8f7c1991cc4e40d8aefa71d7d686e48e8712ee60c4dbfd2269444cb6e080e5",
+        "runner_sha256": "6746d28d9173b9b5e527c67893aff8a60e866d28435a829f0f8c25f00105f0d3"
+      },
+      "execution_original_sha256": "b9d293cf2fc036a0b19c5026eea110606c7e1653e1ba09c5ce29cf9872a8cc73",
+      "preflight": {
+        "active_processes": [
+          {
+            "comm": "dockerd",
+            "cpu_percent_of_one_logical_cpu": 0.333,
+            "pid": 3287,
+            "read_bytes_per_sec": 0,
+            "rss_bytes": 92864512,
+            "write_bytes_per_sec": 0
+          }
+        ],
+        "baseline_report_sha256": null,
+        "boot_identity_sha256": "2993ed160380a949097565c07adef79de50ae980b984e8bf5aac2bb324e8d889",
+        "cpu_accounting": {
+          "steal_ticks": 0,
+          "total_ticks": 174875144
+        },
+        "hardware_identity": {
+          "cpu_model": "AMD EPYC 9B14",
+          "operating_system": {
+            "id": "ubuntu",
+            "version_id": "26.04"
+          },
+          "system_product": "Google Compute Engine",
+          "system_vendor": "Google"
+        },
+        "interfering_processes": [],
+        "inventory_bounds": {
+          "maximum_reported_processes": 32,
+          "maximum_scanned_processes": 4096,
+          "process_arguments_included": false
+        },
+        "load_average_after": [
+          2.69,
+          3.27,
+          2.42
+        ],
+        "load_average_before": [
+          2.69,
+          3.27,
+          2.42
+        ],
+        "logical_cpus": 8,
+        "memory_available_bytes": 32586063872,
+        "process_identity_evidence": {
+          "exited": [],
+          "exited_omitted": 0,
+          "maximum_per_endpoint": 32,
+          "started": [],
+          "started_omitted": 0
+        },
+        "process_interval": {
+          "exited_processes": 0,
+          "kernel_thread_events_excluded": 0,
+          "pid_reuses": 0,
+          "stable_identity_required": true,
+          "started_processes": 0
+        },
+        "reason": null,
+        "sample_interval_ms": 3000,
+        "schema": "riffdb.app-baseline-host-validity/v2",
+        "thresholds": {
+          "cpu_percent_of_one_logical_cpu": 5.0,
+          "io_bytes_per_sec": 8388608,
+          "maximum_whole_cell_steal_percent": 1.0
+        },
+        "valid": true,
+        "whole_cell": null
+      },
+      "preflight_original_sha256": "58cfedde8c4ed0cedaa99e6d9f81871728163c6234609e1dce6bdf73b89e295b",
+      "postflight": {
+        "active_processes": [
+          {
+            "comm": "kworker/u32:1-events_unbound",
+            "cpu_percent_of_one_logical_cpu": 0.333,
+            "pid": 234093,
+            "read_bytes_per_sec": 0,
+            "rss_bytes": 0,
+            "write_bytes_per_sec": 0
+          }
+        ],
+        "baseline_report_sha256": "58cfedde8c4ed0cedaa99e6d9f81871728163c6234609e1dce6bdf73b89e295b",
+        "boot_identity_sha256": "2993ed160380a949097565c07adef79de50ae980b984e8bf5aac2bb324e8d889",
+        "cpu_accounting": {
+          "steal_ticks": 0,
+          "total_ticks": 174997458
+        },
+        "hardware_identity": {
+          "cpu_model": "AMD EPYC 9B14",
+          "operating_system": {
+            "id": "ubuntu",
+            "version_id": "26.04"
+          },
+          "system_product": "Google Compute Engine",
+          "system_vendor": "Google"
+        },
+        "interfering_processes": [],
+        "inventory_bounds": {
+          "maximum_reported_processes": 32,
+          "maximum_scanned_processes": 4096,
+          "process_arguments_included": false
+        },
+        "load_average_after": [
+          2.23,
+          2.84,
+          2.38
+        ],
+        "load_average_before": [
+          2.42,
+          2.88,
+          2.39
+        ],
+        "logical_cpus": 8,
+        "memory_available_bytes": 32545398784,
+        "process_identity_evidence": {
+          "exited": [],
+          "exited_omitted": 0,
+          "maximum_per_endpoint": 32,
+          "started": [
+            {
+              "comm": "sshd-session",
+              "identity_available": true,
+              "pid": 250384,
+              "starttime_ticks": 21890840
+            },
+            {
+              "comm": "sshd-auth",
+              "identity_available": true,
+              "pid": 250385,
+              "starttime_ticks": 21890840
+            }
+          ],
+          "started_omitted": 0
+        },
+        "process_interval": {
+          "exited_processes": 0,
+          "kernel_thread_events_excluded": 0,
+          "pid_reuses": 0,
+          "stable_identity_required": true,
+          "started_processes": 2
+        },
+        "reason": "host_interference",
+        "sample_interval_ms": 3000,
+        "schema": "riffdb.app-baseline-host-validity/v2",
+        "thresholds": {
+          "cpu_percent_of_one_logical_cpu": 5.0,
+          "io_bytes_per_sec": 8388608,
+          "maximum_whole_cell_steal_percent": 1.0
+        },
+        "valid": false,
+        "whole_cell": {
+          "elapsed_steal_ticks": 0,
+          "elapsed_total_ticks": 122314,
+          "maximum_steal_percent": 1.0,
+          "reason": null,
+          "steal_percent": 0.0,
+          "valid": true
+        }
+      },
+      "postflight_original_sha256": "66c33ae9a49439c2ad9722ec93e3e50b4020c71824c562ea0a73d6fbc8c5ecb7",
+      "original_report_sha256": "2dd0342488dd0b40295f2d2233e2076d5d8dd72bc1aead6b6d29b378d7fdec84",
+      "report_extract": "05-write_only-3-disabled-report-extract.json",
+      "report_extract_sha256": "7945ea6ee8578a56cc32561f8d76efbbdae5410b5b24c6f52a3e4d7b912c56a0",
+      "cell_checks_passed": false
+    }
+  ],
+  "qualification": "Not established by this receipt. Host validity, complete set, stability, and between-arm effect are distinct.",
+  "limits": [
+    "P99 disclosure, no numeric P99 gate.",
+    "Archive lag uses inferred source frontier, not an independent frontier read; caught-up status is not claimed.",
+    "The runner omits PostgreSQL by design: its full-comparison evidence_eligibility flag remains false.",
+    "Original reports and logs retained privately. Public extracts preserve original and extracted-report digests separately."
+  ],
+  "analysis": {
+    "schema": "private.wp749-archive-analysis/v1",
+    "attempts": [
+      "01-write_only-1-disabled-attempt.json",
+      "02-write_only-1-enabled-attempt.json",
+      "03-write_only-2-enabled-attempt.json",
+      "04-write_only-2-disabled-attempt.json",
+      "05-write_only-3-disabled-attempt.json"
+    ],
+    "completed_cells": [
+      {
+        "load": "write_only",
+        "pair": 1,
+        "mode": "disabled",
+        "report_sha256": "a951ce82910ac2132bc55cf790f6c80024b6c8ff87ca2f2bce27946fe7b1396a",
+        "throughput_ops_s": 2934,
+        "p50_ns": 9437183,
+        "p95_ns": 11534335,
+        "p99_ns": 96468991,
+        "mean_commit_us": 3219.458773676418,
+        "commands": 311252,
+        "groups": 19587,
+        "outcomes": {
+          "conflict": 0,
+          "error": 0,
+          "success": 264113,
+          "unavailable": 0
+        },
+        "archive": {
+          "archived_application_sequence": null,
+          "archived_history_transactions": 0,
+          "backup_application_sequence": 19220,
+          "caught_up_at_shutdown": "not_claimed",
+          "collector_terminal_failure_observed": false,
+          "enabled": false,
+          "manifest_digest": null
+        },
+        "source_final_application_sequence_inferred": 330472,
+        "source_frontier_method": "Inference from stopped backup plus all process command commits including warmup; not an independent frontier read.",
+        "cell": "01-write_only-1-disabled",
+        "daemon_sha256": "4d8f7c1991cc4e40d8aefa71d7d686e48e8712ee60c4dbfd2269444cb6e080e5",
+        "runner_sha256": "6746d28d9173b9b5e527c67893aff8a60e866d28435a829f0f8c25f00105f0d3"
+      },
+      {
+        "load": "write_only",
+        "pair": 1,
+        "mode": "enabled",
+        "report_sha256": "ecde1f75d7ddc27701de70d77629f0052229784521320b593e926abc7d52fae0",
+        "throughput_ops_s": 2696,
+        "p50_ns": 9961471,
+        "p95_ns": 12582911,
+        "p99_ns": 121634815,
+        "mean_commit_us": 3466.3207971889756,
+        "commands": 288710,
+        "groups": 18214,
+        "outcomes": {
+          "conflict": 0,
+          "error": 0,
+          "success": 243003,
+          "unavailable": 0
+        },
+        "archive": {
+          "archived_application_sequence": 307930,
+          "archived_history_transactions": 18216,
+          "backup_application_sequence": 19220,
+          "caught_up_at_shutdown": "not_claimed",
+          "collector_terminal_failure_observed": false,
+          "enabled": true,
+          "manifest_digest": "43e3d650f86f154713843fa20d9cf5416023c80cfafee320b03e39b990139ac7"
+        },
+        "source_final_application_sequence_inferred": 307930,
+        "source_frontier_method": "Inference from stopped backup plus all process command commits including warmup; not an independent frontier read.",
+        "terminal_archive_lag_inferred": 0,
+        "cell": "02-write_only-1-enabled",
+        "daemon_sha256": "4d8f7c1991cc4e40d8aefa71d7d686e48e8712ee60c4dbfd2269444cb6e080e5",
+        "runner_sha256": "6746d28d9173b9b5e527c67893aff8a60e866d28435a829f0f8c25f00105f0d3"
+      },
+      {
+        "load": "write_only",
+        "pair": 2,
+        "mode": "enabled",
+        "report_sha256": "c9946f8a70844af47b78e45ef3efd71399b6ffb10cf3153dbca9fd67f0f5edc1",
+        "throughput_ops_s": 2668,
+        "p50_ns": 9961471,
+        "p95_ns": 12582911,
+        "p99_ns": 130023423,
+        "mean_commit_us": 3510.5042730299665,
+        "commands": 285450,
+        "groups": 18020,
+        "outcomes": {
+          "conflict": 0,
+          "error": 0,
+          "success": 240152,
+          "unavailable": 0
+        },
+        "archive": {
+          "archived_application_sequence": 304670,
+          "archived_history_transactions": 18022,
+          "backup_application_sequence": 19220,
+          "caught_up_at_shutdown": "not_claimed",
+          "collector_terminal_failure_observed": false,
+          "enabled": true,
+          "manifest_digest": "32f9e83b5e79d3e6bbb7170305d9b2a9e4d4834d38b9059d81268ff3d68b0a25"
+        },
+        "source_final_application_sequence_inferred": 304670,
+        "source_frontier_method": "Inference from stopped backup plus all process command commits including warmup; not an independent frontier read.",
+        "terminal_archive_lag_inferred": 0,
+        "cell": "03-write_only-2-enabled",
+        "daemon_sha256": "4d8f7c1991cc4e40d8aefa71d7d686e48e8712ee60c4dbfd2269444cb6e080e5",
+        "runner_sha256": "6746d28d9173b9b5e527c67893aff8a60e866d28435a829f0f8c25f00105f0d3"
+      },
+      {
+        "load": "write_only",
+        "pair": 2,
+        "mode": "disabled",
+        "report_sha256": "6f77d28ddd762894417756ac4aa3552b23d08bb01037c72935470824e8d12d58",
+        "throughput_ops_s": 2938,
+        "p50_ns": 9437183,
+        "p95_ns": 11534335,
+        "p99_ns": 96468991,
+        "mean_commit_us": 3220.617443164441,
+        "commands": 311879,
+        "groups": 19618,
+        "outcomes": {
+          "conflict": 0,
+          "error": 0,
+          "success": 264643,
+          "unavailable": 0
+        },
+        "archive": {
+          "archived_application_sequence": null,
+          "archived_history_transactions": 0,
+          "backup_application_sequence": 19220,
+          "caught_up_at_shutdown": "not_claimed",
+          "collector_terminal_failure_observed": false,
+          "enabled": false,
+          "manifest_digest": null
+        },
+        "source_final_application_sequence_inferred": 331099,
+        "source_frontier_method": "Inference from stopped backup plus all process command commits including warmup; not an independent frontier read.",
+        "cell": "04-write_only-2-disabled",
+        "daemon_sha256": "4d8f7c1991cc4e40d8aefa71d7d686e48e8712ee60c4dbfd2269444cb6e080e5",
+        "runner_sha256": "6746d28d9173b9b5e527c67893aff8a60e866d28435a829f0f8c25f00105f0d3"
+      }
+    ],
+    "protocol_cells": 20,
+    "phases": {
+      "write_only": {
+        "arms": {
+          "disabled": {
+            "n": 2,
+            "metrics": {
+              "throughput_ops_s": {
+                "all_sorted": [
+                  2934,
+                  2938
+                ],
+                "median": 2936.0
+              },
+              "p50_ns": {
+                "all_sorted": [
+                  9437183,
+                  9437183
+                ],
+                "median": 9437183.0
+              },
+              "p95_ns": {
+                "all_sorted": [
+                  11534335,
+                  11534335
+                ],
+                "median": 11534335.0
+              },
+              "p99_ns": {
+                "all_sorted": [
+                  96468991,
+                  96468991
+                ],
+                "median": 96468991.0
+              },
+              "mean_commit_us": {
+                "all_sorted": [
+                  3219.458773676418,
+                  3220.617443164441
+                ],
+                "median": 3220.038108420429
+              }
+            }
+          },
+          "enabled": {
+            "n": 2,
+            "metrics": {
+              "throughput_ops_s": {
+                "all_sorted": [
+                  2668,
+                  2696
+                ],
+                "median": 2682.0
+              },
+              "p50_ns": {
+                "all_sorted": [
+                  9961471,
+                  9961471
+                ],
+                "median": 9961471.0
+              },
+              "p95_ns": {
+                "all_sorted": [
+                  12582911,
+                  12582911
+                ],
+                "median": 12582911.0
+              },
+              "p99_ns": {
+                "all_sorted": [
+                  121634815,
+                  130023423
+                ],
+                "median": 125829119.0
+              },
+              "mean_commit_us": {
+                "all_sorted": [
+                  3466.3207971889756,
+                  3510.5042730299665
+                ],
+                "median": 3488.412535109471
+              }
+            }
+          }
+        },
+        "complete_pairs": [
+          {
+            "pair": 1,
+            "enabled_over_disabled_percent": {
+              "throughput_ops_s": -8.111792774369464,
+              "p50_ns": 5.555556144243479,
+              "p95_ns": 9.090909879069752,
+              "p99_ns": 26.086956792157178,
+              "mean_commit_us": 7.667811295830229
+            }
+          },
+          {
+            "pair": 2,
+            "enabled_over_disabled_percent": {
+              "throughput_ops_s": -9.189925119128661,
+              "p50_ns": 5.555556144243479,
+              "p95_ns": 9.090909879069752,
+              "p99_ns": 34.78260905620958,
+              "mean_commit_us": 9.00097062073586
+            }
+          }
+        ],
+        "all_five_pair_median_contrast_percent": null
+      },
+      "interactive": {
+        "arms": {},
+        "complete_pairs": [],
+        "all_five_pair_median_contrast_percent": null
+      }
+    },
+    "limits": "Within-arm stability is not between-arm parity. P99 disclosed, no numeric gate. Archive source-final frontier is inferred; no caught-up claim. No automatic qualification verdict.",
+    "complete": false
+  }
+}

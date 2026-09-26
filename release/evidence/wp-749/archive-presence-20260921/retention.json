@@ -1,0 +1,23 @@
+{
+  "schema": "riffdb.wp749.archive-presence-retention/v1",
+  "first_attempt": {
+    "archive_sha256": "d7f4f9c78a14723e04d3a7e5517a19bc3fb8bde28f120400960672a7a34ebf9e",
+    "verified_files": 54,
+    "attempted_cells": 5,
+    "valid_completed_cells": 4,
+    "complete": false
+  },
+  "replacement": {
+    "archive_sha256": "6a93492a10844010cc4089c708301bf4e9070a061173e2b5358b938ff28be6f0",
+    "verified_files": 159,
+    "attempted_cells": 20,
+    "valid_completed_cells": 20,
+    "complete": true
+  },
+  "maximum_host_attempts": 2,
+  "reason_for_single_replacement": "Predeclared host process-identity failure, independent of measured performance; ADR-0143 section 3.",
+  "no_cells_combined_between_attempts": true,
+  "raw_evidence_second_copy_verified": true,
+  "host_released_at": "2026-09-21T14:12:32.948668+00:00",
+  "qualification": "Open: archive acknowledgement latency unchanged is not established."
+}

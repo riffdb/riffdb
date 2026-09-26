@@ -1,6 +1,10 @@
 # WP-749 capture investigation: closed on measured headroom
 
-Status: **investigation closed by maintainer direction, 2026-09-19**. WP-749
+Follow-up, 2026-09-20: the [final correlated tail result](wp749-correlated-tail-2026-09.md)
+ends the later tail investigation and lifts the WP-748 pause. The capture
+representation closure below remains in force.
+
+Status at the original checkpoint: **investigation closed by maintainer direction, 2026-09-19**. WP-749
 remains open. Minimal-evidence, allocation/encoding, packing and checked-hash
 optimization are closed; no further capture experiment is scheduled. WP-748
 promotion and lifecycle consolidation remain paused. P99 remains a hard gate.

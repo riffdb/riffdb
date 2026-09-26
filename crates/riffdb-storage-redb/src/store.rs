@@ -7681,6 +7681,7 @@ impl SharedRedb {
                 return Err(journal_io_error(error));
             }
             *checkpoint = None;
+            crate::checkpoint_census::CHECKPOINTS.installed();
             Ok(())
         })();
         match rebase_result {

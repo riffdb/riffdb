@@ -1,0 +1,506 @@
+[
+  {
+    "attempt": 1,
+    "attempted_cells": 5,
+    "cells_passing_checks": 4,
+    "complete": false,
+    "phases": {
+      "write_only": {
+        "arms": {
+          "disabled": {
+            "n": 2,
+            "metrics": {
+              "throughput_ops_s": {
+                "values": [
+                  2934,
+                  2938
+                ],
+                "median": 2936.0
+              },
+              "p50_ns": {
+                "values": [
+                  9437183,
+                  9437183
+                ],
+                "median": 9437183.0
+              },
+              "p95_ns": {
+                "values": [
+                  11534335,
+                  11534335
+                ],
+                "median": 11534335.0
+              },
+              "p99_ns": {
+                "values": [
+                  96468991,
+                  96468991
+                ],
+                "median": 96468991.0
+              },
+              "mean_commit_us": {
+                "values": [
+                  3219.458773676418,
+                  3220.617443164441
+                ],
+                "median": 3220.038108420429
+              }
+            }
+          },
+          "enabled": {
+            "n": 2,
+            "metrics": {
+              "throughput_ops_s": {
+                "values": [
+                  2668,
+                  2696
+                ],
+                "median": 2682.0
+              },
+              "p50_ns": {
+                "values": [
+                  9961471,
+                  9961471
+                ],
+                "median": 9961471.0
+              },
+              "p95_ns": {
+                "values": [
+                  12582911,
+                  12582911
+                ],
+                "median": 12582911.0
+              },
+              "p99_ns": {
+                "values": [
+                  121634815,
+                  130023423
+                ],
+                "median": 125829119.0
+              },
+              "mean_commit_us": {
+                "values": [
+                  3466.3207971889756,
+                  3510.5042730299665
+                ],
+                "median": 3488.412535109471
+              }
+            }
+          }
+        },
+        "complete_pairs": [
+          {
+            "pair": 1,
+            "enabled_over_disabled_percent": {
+              "throughput_ops_s": -8.111792774369464,
+              "p50_ns": 5.555556144243479,
+              "p95_ns": 9.090909879069752,
+              "p99_ns": 26.086956792157178,
+              "mean_commit_us": 7.667811295830229
+            }
+          },
+          {
+            "pair": 2,
+            "enabled_over_disabled_percent": {
+              "throughput_ops_s": -9.189925119128661,
+              "p50_ns": 5.555556144243479,
+              "p95_ns": 9.090909879069752,
+              "p99_ns": 34.78260905620958,
+              "mean_commit_us": 9.00097062073586
+            }
+          }
+        ],
+        "median_contrast_percent": null
+      },
+      "interactive": {
+        "arms": {},
+        "complete_pairs": [],
+        "median_contrast_percent": null
+      }
+    },
+    "qualification_verdict": "Not assigned by this arithmetic."
+  },
+  {
+    "attempt": 2,
+    "attempted_cells": 20,
+    "cells_passing_checks": 20,
+    "complete": true,
+    "phases": {
+      "write_only": {
+        "arms": {
+          "disabled": {
+            "n": 5,
+            "metrics": {
+              "throughput_ops_s": {
+                "values": [
+                  2921,
+                  2931,
+                  2933,
+                  2938,
+                  2951
+                ],
+                "median": 2933,
+                "central_three_spread": 1.002388263391334
+              },
+              "p50_ns": {
+                "values": [
+                  9437183,
+                  9437183,
+                  9437183,
+                  9961471,
+                  9961471
+                ],
+                "median": 9437183,
+                "central_three_spread": 1.0555555614424348,
+                "stability_passed": true
+              },
+              "p95_ns": {
+                "values": [
+                  12058623,
+                  12058623,
+                  12058623,
+                  12058623,
+                  12058623
+                ],
+                "median": 12058623,
+                "central_three_spread": 1.0,
+                "stability_passed": true
+              },
+              "p99_ns": {
+                "values": [
+                  92274687,
+                  92274687,
+                  96468991,
+                  96468991,
+                  100663295
+                ],
+                "median": 96468991,
+                "central_three_spread": 1.0454545459471458
+              },
+              "mean_commit_us": {
+                "values": [
+                  3203.6789513871213,
+                  3217.494359079075,
+                  3218.8438057381645,
+                  3219.7164354813945,
+                  3238.4721751194697
+                ],
+                "median": 3218.8438057381645,
+                "central_three_spread": 1.0006906232472637
+              }
+            }
+          },
+          "enabled": {
+            "n": 5,
+            "metrics": {
+              "throughput_ops_s": {
+                "values": [
+                  2659,
+                  2682,
+                  2684,
+                  2705,
+                  2714
+                ],
+                "median": 2684,
+                "central_three_spread": 1.0085756897837435
+              },
+              "p50_ns": {
+                "values": [
+                  9961471,
+                  9961471,
+                  9961471,
+                  10485759,
+                  10485759
+                ],
+                "median": 9961471,
+                "central_three_spread": 1.052631584230883,
+                "stability_passed": true
+              },
+              "p95_ns": {
+                "values": [
+                  12582911,
+                  12582911,
+                  12582911,
+                  12582911,
+                  13107199
+                ],
+                "median": 12582911,
+                "central_three_spread": 1.0,
+                "stability_passed": true
+              },
+              "p99_ns": {
+                "values": [
+                  121634815,
+                  121634815,
+                  121634815,
+                  125829119,
+                  130023423
+                ],
+                "median": 121634815,
+                "central_three_spread": 1.0344827589041838
+              },
+              "mean_commit_us": {
+                "values": [
+                  3418.9234044876343,
+                  3465.282010524008,
+                  3482.3289626556016,
+                  3503.5075210755413,
+                  3518.7605961549116
+                ],
+                "median": 3482.3289626556016,
+                "central_three_spread": 1.0110309955828827
+              }
+            }
+          }
+        },
+        "complete_pairs": [
+          {
+            "pair": 1,
+            "enabled_over_disabled_percent": {
+              "throughput_ops_s": -8.113659705580279,
+              "p50_ns": 0.0,
+              "p95_ns": 4.347826447513947,
+              "p99_ns": 30.43478292418338,
+              "mean_commit_us": 8.183962425006609
+            }
+          },
+          {
+            "pair": 2,
+            "enabled_over_disabled_percent": {
+              "throughput_ops_s": -9.280109177755037,
+              "p50_ns": 0.0,
+              "p95_ns": 4.347826447513947,
+              "p99_ns": 31.818182163002074,
+              "mean_commit_us": 9.287903660646624
+            }
+          },
+          {
+            "pair": 3,
+            "enabled_over_disabled_percent": {
+              "throughput_ops_s": -7.466757586089323,
+              "p50_ns": 11.111112288486936,
+              "p95_ns": 8.695652895027894,
+              "p99_ns": 31.818182163002074,
+              "mean_commit_us": 6.2604319675082065
+            }
+          },
+          {
+            "pair": 4,
+            "enabled_over_disabled_percent": {
+              "throughput_ops_s": -8.713410483321994,
+              "p50_ns": 11.111112288486936,
+              "p95_ns": 4.347826447513947,
+              "p99_ns": 20.833333540293907,
+              "mean_commit_us": 8.185708062246677
+            }
+          },
+          {
+            "pair": 5,
+            "enabled_over_disabled_percent": {
+              "throughput_ops_s": -8.33615723483565,
+              "p50_ns": 5.555556144243479,
+              "p95_ns": 4.347826447513947,
+              "p99_ns": 34.78260905620958,
+              "mean_commit_us": 8.165707709994429
+            }
+          }
+        ],
+        "median_contrast_percent": {
+          "throughput_ops_s": -8.489601091033073,
+          "p50_ns": 5.555556144243479,
+          "p95_ns": 4.347826447513947,
+          "p99_ns": 26.086956792157178,
+          "mean_commit_us": 8.185708062246677
+        }
+      },
+      "interactive": {
+        "arms": {
+          "disabled": {
+            "n": 5,
+            "metrics": {
+              "throughput_ops_s": {
+                "values": [
+                  15066,
+                  15096,
+                  15304,
+                  15308,
+                  15350
+                ],
+                "median": 15304,
+                "central_three_spread": 1.0140434552199258
+              },
+              "p50_ns": {
+                "values": [
+                  655359,
+                  688127,
+                  688127,
+                  688127,
+                  688127
+                ],
+                "median": 688127,
+                "central_three_spread": 1.0,
+                "stability_passed": true
+              },
+              "p95_ns": {
+                "values": [
+                  9437183,
+                  9437183,
+                  9961471,
+                  9961471,
+                  9961471
+                ],
+                "median": 9961471,
+                "central_three_spread": 1.0555555614424348,
+                "stability_passed": true
+              },
+              "p99_ns": {
+                "values": [
+                  12058623,
+                  12058623,
+                  12058623,
+                  12582911,
+                  12582911
+                ],
+                "median": 12058623,
+                "central_three_spread": 1.0434782644751395
+              },
+              "mean_commit_us": {
+                "values": [
+                  2912.8794763188293,
+                  2937.6034616503443,
+                  2937.9771594483427,
+                  3011.3572419258967,
+                  3024.493233830846
+                ],
+                "median": 2937.9771594483427,
+                "central_three_spread": 1.0251067855952611
+              }
+            }
+          },
+          "enabled": {
+            "n": 5,
+            "metrics": {
+              "throughput_ops_s": {
+                "values": [
+                  14486,
+                  14559,
+                  14599,
+                  14633,
+                  14642
+                ],
+                "median": 14599,
+                "central_three_spread": 1.0050827666735354
+              },
+              "p50_ns": {
+                "values": [
+                  753663,
+                  753663,
+                  753663,
+                  753663,
+                  753663
+                ],
+                "median": 753663,
+                "central_three_spread": 1.0,
+                "stability_passed": true
+              },
+              "p95_ns": {
+                "values": [
+                  9961471,
+                  9961471,
+                  9961471,
+                  9961471,
+                  9961471
+                ],
+                "median": 9961471,
+                "central_three_spread": 1.0,
+                "stability_passed": true
+              },
+              "p99_ns": {
+                "values": [
+                  12582911,
+                  12582911,
+                  12582911,
+                  12582911,
+                  13107199
+                ],
+                "median": 12582911,
+                "central_three_spread": 1.0
+              },
+              "mean_commit_us": {
+                "values": [
+                  2869.401912266372,
+                  2884.577087378641,
+                  2890.320441722525,
+                  2916.2572624203203,
+                  2961.2883393270604
+                ],
+                "median": 2890.320441722525,
+                "central_three_spread": 1.0109826064903222
+              }
+            }
+          }
+        },
+        "complete_pairs": [
+          {
+            "pair": 1,
+            "enabled_over_disabled_percent": {
+              "throughput_ops_s": -4.606638787245165,
+              "p50_ns": 9.523823364001128,
+              "p95_ns": 5.555556144243479,
+              "p99_ns": 4.347826447513947,
+              "mean_commit_us": -1.6095780300195983
+            }
+          },
+          {
+            "pair": 2,
+            "enabled_over_disabled_percent": {
+              "throughput_ops_s": -4.4094591063496225,
+              "p50_ns": 9.523823364001128,
+              "p95_ns": 0.0,
+              "p99_ns": 4.347826447513947,
+              "mean_commit_us": -1.8175795512218595
+            }
+          },
+          {
+            "pair": 3,
+            "enabled_over_disabled_percent": {
+              "throughput_ops_s": -5.15309446254072,
+              "p50_ns": 9.523823364001128,
+              "p95_ns": 5.555556144243479,
+              "p99_ns": 4.347826447513947,
+              "mean_commit_us": 0.11596037971881579
+            }
+          },
+          {
+            "pair": 4,
+            "enabled_over_disabled_percent": {
+              "throughput_ops_s": -3.00741918388977,
+              "p50_ns": 15.000022888218512,
+              "p95_ns": 0.0,
+              "p99_ns": 0.0,
+              "mean_commit_us": -5.127844884216648
+            }
+          },
+          {
+            "pair": 5,
+            "enabled_over_disabled_percent": {
+              "throughput_ops_s": -3.849727864064778,
+              "p50_ns": 9.523823364001128,
+              "p95_ns": 0.0,
+              "p99_ns": 4.166666997803614,
+              "mean_commit_us": -1.66266897536258
+            }
+          }
+        ],
+        "median_contrast_percent": {
+          "throughput_ops_s": -4.606638787245165,
+          "p50_ns": 9.523823364001128,
+          "p95_ns": 0.0,
+          "p99_ns": 4.347826447513947,
+          "mean_commit_us": -1.6220928597949325
+        }
+      }
+    },
+    "qualification_verdict": "Not assigned by this arithmetic."
+  }
+]
