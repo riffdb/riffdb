@@ -2552,6 +2552,14 @@ pub enum AuthorizedOfflineMaintenanceStart {
         /// Fresh current-database policy proof for this exact input hash.
         authorization: Box<AuthorizedOfflineMaintenance>,
     },
+    /// Drive the one complete exact-end validation over the closed database
+    /// under the same global authority (ADR-0203).
+    StorageScrub {
+        /// The caller-stable receipt identity; the scrub has no other input.
+        request: crate::StartOfflineStorageScrubRequest,
+        /// Fresh current-database policy proof for the fixed scrub input.
+        authorization: Box<AuthorizedOfflineMaintenance>,
+    },
 }
 
 impl std::fmt::Debug for AuthorizedOfflineMaintenanceStart {
@@ -2568,6 +2576,9 @@ impl std::fmt::Debug for AuthorizedOfflineMaintenanceStart {
             }
             Self::RetireBackup { .. } => {
                 "AuthorizedOfflineMaintenanceStart::RetireBackup([REDACTED])"
+            }
+            Self::StorageScrub { .. } => {
+                "AuthorizedOfflineMaintenanceStart::StorageScrub([REDACTED])"
             }
         })
     }

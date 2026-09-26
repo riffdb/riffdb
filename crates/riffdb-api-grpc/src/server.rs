@@ -316,6 +316,8 @@ pub enum GrpcOfflineMaintenanceOperation {
     CreateBackup,
     /// Start or resolve immutable backup retirement.
     RetireBackup,
+    /// Start or resolve the selector-free offline storage scrub (ADR-0203).
+    StorageScrub,
     /// Start or resolve staged restore with its checked receipt and semantic-input identity.
     RestoreBackup {
         /// Caller-stable receipt identity.
@@ -3249,6 +3251,26 @@ impl AdminService for GrpcApplication {
         let result = map_service(service.retire_offline_backup(context, request).await)?;
         let (disposition, operation) = offline_maintenance_start_result_to_proto(&result);
         Ok(Response::new(v1::RetireOfflineBackupResponse {
+            disposition,
+            operation,
+        }))
+    }
+
+    async fn start_offline_storage_scrub(
+        &self,
+        request: Request<v1::StartOfflineStorageScrubRequest>,
+    ) -> Result<Response<v1::StartOfflineStorageScrubResponse>, Status> {
+        let (metadata, _peer, message) = split_request(request);
+        let lifecycle = self.select_lifecycle(&metadata)?;
+        let (service, security) = self.ready_maintenance_admission(
+            lifecycle.as_ref(),
+            GrpcOfflineMaintenanceOperation::StorageScrub,
+        )?;
+        let (request_id, request) = start_offline_storage_scrub_request_from_proto(message)?;
+        let (context, _cancellation) = self.normal_context(&metadata, request_id, &security)?;
+        let result = map_service(service.start_offline_storage_scrub(context, request).await)?;
+        let (disposition, operation) = offline_maintenance_start_result_to_proto(&result);
+        Ok(Response::new(v1::StartOfflineStorageScrubResponse {
             disposition,
             operation,
         }))

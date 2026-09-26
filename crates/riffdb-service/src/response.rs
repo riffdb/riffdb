@@ -1904,7 +1904,7 @@ impl ServiceResponseCharge for OfflineMaintenanceOperationObservation {
         let mut charge = ChargeAccumulator::message();
         charge.bytes(self.operation_id().as_bytes().len())?;
         charge.fields(1)?;
-        charge.bytes(self.backup_name().as_bytes().len())?;
+        charge.bytes(self.backup_name().map_or(0, |name| name.as_bytes().len()))?;
         charge.bytes(self.input_hash().as_bytes().len())?;
         charge.fields(1)?;
         if self.failure().is_some() {

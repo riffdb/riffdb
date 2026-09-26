@@ -820,6 +820,7 @@ const EXPECTED_METHODS: &[(&str, &str, bool)] = &[
     ("AdminService", "CheckContractMigration", false),
     ("AdminService", "GetContractMigrationOperation", false),
     ("AdminService", "GetOfflineMaintenanceOperation", false),
+    ("AdminService", "StartOfflineStorageScrub", false),
     ("AdminService", "GetApplicationInstallation", false),
     ("AdminService", "StartApplicationExport", false),
     ("AdminService", "GetApplicationExportPage", false),
@@ -5529,6 +5530,7 @@ fn public_maintenance_operation(
             v1::OfflineMaintenanceOperationKind::RestoreBackup as i32
         }
         OfflineMaintenanceOperationKind::RetireBackup => 3,
+        OfflineMaintenanceOperationKind::StorageScrub => 4,
     };
     v1::OfflineMaintenanceOperation {
         operation_id: public_request_id(),
@@ -7773,7 +7775,8 @@ fn response_charge_offline_maintenance_operation(
         OfflineMaintenanceOperationKind::RestoreBackup => {
             OfflineMaintenanceReplacementConfirmation::AllowReplaceNonemptyTarget
         }
-        OfflineMaintenanceOperationKind::RetireBackup => {
+        OfflineMaintenanceOperationKind::RetireBackup
+        | OfflineMaintenanceOperationKind::StorageScrub => {
             OfflineMaintenanceReplacementConfirmation::NotProvided
         }
     };

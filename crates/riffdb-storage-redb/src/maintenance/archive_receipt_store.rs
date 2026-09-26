@@ -45,11 +45,15 @@ impl OfflineArchiveReceiptPersistencePort for RedbMaintenanceStorage {
         receipt: &OfflineMaintenanceReceiptV3,
     ) -> Result<OfflineMaintenanceReceiptCreateResultV3, StorageError> {
         self.verify_path_ownership()?;
-        let (v1, v2, v3, _) = self.read_complete_inventory(false)?;
+        let (v1, v2, v3, v4, _) = self.read_complete_inventory(false)?;
         if v1
             .receipts()
             .iter()
             .any(|r| r.operation_id() == receipt.operation_id())
+            || v4
+                .receipts()
+                .iter()
+                .any(|r| r.operation_id() == receipt.operation_id())
             || v2
                 .receipts()
                 .iter()
@@ -69,8 +73,12 @@ impl OfflineArchiveReceiptPersistencePort for RedbMaintenanceStorage {
             return Ok(result);
         }
         if receipt.current_phase() != OfflineMaintenanceReceiptPhaseV1::Accepted
-            || v1.receipts().len() + v2.receipts().len() + v3.receipts().len()
+            || v1.receipts().len() + v2.receipts().len() + v3.receipts().len() + v4.receipts().len()
                 >= MAX_OFFLINE_MAINTENANCE_RECEIPTS_V1
+            || v4
+                .receipts()
+                .iter()
+                .any(|r| !r.current_phase().is_terminal())
             || v1
                 .receipts()
                 .iter()
@@ -144,7 +152,7 @@ impl OfflineArchiveReceiptPersistencePort for RedbMaintenanceStorage {
         &mut self,
     ) -> Result<OfflineMaintenanceReceiptInventoryV3, StorageError> {
         self.verify_path_ownership()?;
-        let (_, _, v3, _) = self.read_complete_inventory(false)?;
+        let (_, _, v3, _, _) = self.read_complete_inventory(false)?;
         self.verify_path_ownership()?;
         Ok(v3)
     }

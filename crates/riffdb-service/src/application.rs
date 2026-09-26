@@ -278,6 +278,13 @@ pub trait OfflineMaintenanceApplication: Send + Sync {
         request: RetireOfflineBackupRequest,
     ) -> ServiceFuture<'_, OfflineMaintenanceStartResult>;
 
+    /// Admits or resolves the selector-free offline storage scrub (ADR-0203).
+    fn start_offline_storage_scrub(
+        &self,
+        context: RequestContext,
+        request: crate::StartOfflineStorageScrubRequest,
+    ) -> ServiceFuture<'_, OfflineMaintenanceStartResult>;
+
     /// Reads one bounded receipt-derived maintenance observation.
     fn get_offline_maintenance_operation(
         &self,

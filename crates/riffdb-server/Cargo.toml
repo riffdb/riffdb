@@ -100,6 +100,10 @@ name = "offline_maintenance_recovery"
 path = "../../tests/maintenance/offline_maintenance_recovery.rs"
 
 [[test]]
+name = "storage_scrub"
+path = "../../tests/maintenance/storage_scrub.rs"
+
+[[test]]
 name = "contract_migration_recovery"
 path = "../../tests/recovery/contract_migration_recovery.rs"
 

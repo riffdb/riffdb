@@ -63,7 +63,7 @@ fn observation_matches_archive(
 ) -> bool {
     observation.operation_id() == request.operation_id()
         && observation.kind() == OfflineMaintenanceOperationKind::RestoreBackup
-        && observation.backup_name() == request.backup_name()
+        && observation.backup_name() == Some(request.backup_name())
         && observation.input_hash() == request.input_hash()
         && observation.archive_restore().is_some_and(|archive| {
             archive.archive_name() == request.archive_name() && archive.stop() == request.stop()

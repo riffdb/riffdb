@@ -73,6 +73,7 @@ pub use installation::StartApplicationInstallation;
 pub use maintenance::{
     ApplyContractMigration, CheckContractMigration, ContractMigrationSubmissionError,
     CreateOfflineBackup, RestoreArchivedBackup, RestoreOfflineBackup, RetireOfflineBackup,
+    StartOfflineStorageScrub,
 };
 pub use metadata::{
     BearerCredential, BootstrapCallMetadata, BootstrapCredential, CallMetadata, MetadataError,

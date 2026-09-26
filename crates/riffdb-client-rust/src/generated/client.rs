@@ -29,7 +29,7 @@ use riffdb_proto::{
     validate_retire_offline_backup_exchange, validate_scan_commits_exchange,
     validate_scan_index_exchange, validate_start_application_export_exchange,
     validate_start_application_installation_exchange, validate_start_application_reimport_exchange,
-    validate_trace_provenance_exchange,
+    validate_start_offline_storage_scrub_exchange, validate_trace_provenance_exchange,
 };
 use riffdb_proto::{app::v1 as app_v1, v1};
 use riffdb_types::{
@@ -48,7 +48,8 @@ use crate::{
     ApplyContractMigration, AttemptBudget, BootstrapCallMetadata,
     BootstrapCapabilityCreateTemplate, CallMetadata, CheckContractMigration, CreateOfflineBackup,
     IdempotentCommand, NormalCapabilityCreateTemplate, RestoreArchivedBackup, RestoreOfflineBackup, RetireOfflineBackup,
-    StartApplicationExport, StartApplicationInstallation, StartApplicationReimport, SystemIdSource,
+    StartApplicationExport, StartApplicationInstallation, StartApplicationReimport,
+    StartOfflineStorageScrub, SystemIdSource,
 };
 
 pub(crate) trait RetryRequestIdSource {
@@ -724,6 +725,14 @@ impl RiffDbClient {
         validate_retire_offline_backup_exchange
     );
     unary_exchange!(
+        start_offline_storage_scrub,
+        admin,
+        start_offline_storage_scrub,
+        v1::StartOfflineStorageScrubRequest,
+        v1::StartOfflineStorageScrubResponse,
+        validate_start_offline_storage_scrub_exchange
+    );
+    unary_exchange!(
         get_offline_maintenance_operation,
         admin,
         get_offline_maintenance_operation,
@@ -1112,6 +1121,39 @@ impl RiffDbClient {
             retry.note_request_id(&request_id);
             match self
                 .retire_offline_backup(retire.request(request_id), metadata)
+                .await
+            {
+                Ok(response) => return Ok(response),
+                Err(error) => match retry.handle_failure(error) {
+                    RetryDecision::Retry => {}
+                    RetryDecision::RetryAfter(delay) => {
+                        apply_overloaded_backoff(delay).await;
+                    }
+                    RetryDecision::Return(error) => return Err(error),
+                },
+            }
+        }
+    }
+
+    /// Starts or resolves the selector-free offline storage scrub with bounded retry.
+    pub async fn start_offline_storage_scrub_with_retry(
+        &mut self,
+        scrub: &StartOfflineStorageScrub,
+        attempt_budget: AttemptBudget,
+        metadata: &CallMetadata,
+    ) -> Result<v1::StartOfflineStorageScrubResponse, ClientError> {
+        let mut request_ids = SystemIdSource::new();
+        let mut retry = RetryState::new(attempt_budget);
+        loop {
+            if !retry.begin_submission() {
+                return Err(ClientError::OutcomeUnknown(crate::OutcomeUnknown));
+            }
+            let request_id = request_ids
+                .next_request_id()
+                .map_err(|error| retry.request_id_failure(error))?;
+            retry.note_request_id(&request_id);
+            match self
+                .start_offline_storage_scrub(scrub.request(request_id), metadata)
                 .await
             {
                 Ok(response) => return Ok(response),

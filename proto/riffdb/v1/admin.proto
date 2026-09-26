@@ -466,6 +466,9 @@ enum OfflineMaintenanceOperationKind {
   OFFLINE_MAINTENANCE_OPERATION_KIND_CREATE_BACKUP = 1;
   OFFLINE_MAINTENANCE_OPERATION_KIND_RESTORE_BACKUP = 2;
   OFFLINE_MAINTENANCE_OPERATION_KIND_RETIRE_BACKUP = 3;
+  // ADR-0203: the selector-free storage scrub; backup_name is empty exactly
+  // for this kind.
+  OFFLINE_MAINTENANCE_OPERATION_KIND_STORAGE_SCRUB = 4;
 }
 
 enum OfflineMaintenanceReplacementConfirmation {
@@ -578,6 +581,18 @@ message RetireOfflineBackupResponse {
 message GetOfflineMaintenanceOperationRequest {
   bytes request_id = 1;
   bytes operation_id = 2;
+}
+
+// ADR-0203 Decision 1: exactly these two fields. No target, database, path,
+// scope, backend, repair, force, skip, readiness, rate, or kind selector.
+message StartOfflineStorageScrubRequest {
+  bytes request_id = 1;
+  bytes operation_id = 2;
+}
+
+message StartOfflineStorageScrubResponse {
+  OfflineMaintenanceStartDisposition disposition = 1;
+  OfflineMaintenanceOperation operation = 2;
 }
 
 message GetOfflineMaintenanceOperationResponse {

@@ -12,6 +12,8 @@
 
 #[path = "maintenance_archive_driver.rs"]
 mod archive;
+#[path = "maintenance_scrub_driver.rs"]
+mod scrub;
 
 use std::fmt;
 use std::sync::Arc;
@@ -138,6 +140,9 @@ pub(crate) enum MaintenanceDriverRequest {
     RetireBackup {
         operation_id: OfflineMaintenanceOperationId,
     },
+    StorageScrub {
+        operation_id: OfflineMaintenanceOperationId,
+    },
     ResumePublishedRestore {
         operation_id: OfflineMaintenanceOperationId,
     },
@@ -165,6 +170,11 @@ impl MaintenanceDriverRequest {
         Self::RetireBackup { operation_id }
     }
 
+    #[must_use]
+    pub(crate) const fn storage_scrub(operation_id: OfflineMaintenanceOperationId) -> Self {
+        Self::StorageScrub { operation_id }
+    }
+
     /// Resumes only when exact reconciliation proves publication already occurred.
     #[must_use]
     pub(crate) const fn resume_published_restore(
@@ -178,6 +188,7 @@ impl MaintenanceDriverRequest {
             Self::CreateBackup { operation_id }
             | Self::RestoreBackup { operation_id, .. }
             | Self::RetireBackup { operation_id }
+            | Self::StorageScrub { operation_id }
             | Self::ResumePublishedRestore { operation_id } => *operation_id,
         }
     }
@@ -189,6 +200,7 @@ impl MaintenanceDriverRequest {
                 OfflineMaintenanceOperationKind::RestoreBackup
             }
             Self::RetireBackup { .. } => OfflineMaintenanceOperationKind::RetireBackup,
+            Self::StorageScrub { .. } => OfflineMaintenanceOperationKind::StorageScrub,
         }
     }
 }
@@ -199,6 +211,7 @@ impl fmt::Debug for MaintenanceDriverRequest {
             Self::CreateBackup { .. } => "MaintenanceDriverRequest::CreateBackup([REDACTED])",
             Self::RestoreBackup { .. } => "MaintenanceDriverRequest::RestoreBackup([REDACTED])",
             Self::RetireBackup { .. } => "MaintenanceDriverRequest::RetireBackup([REDACTED])",
+            Self::StorageScrub { .. } => "MaintenanceDriverRequest::StorageScrub([REDACTED])",
             Self::ResumePublishedRestore { .. } => {
                 "MaintenanceDriverRequest::ResumePublishedRestore([REDACTED])"
             }
@@ -259,6 +272,7 @@ pub(crate) enum MaintenanceTerminalReceipt {
     V1(OfflineMaintenanceReceiptV1),
     V2(OfflineMaintenanceReceiptV2),
     V3(riffdb_storage_api::OfflineMaintenanceReceiptV3),
+    V4(riffdb_storage_api::OfflineMaintenanceReceiptV4),
 }
 
 impl MaintenanceTerminalReceipt {
@@ -267,6 +281,7 @@ impl MaintenanceTerminalReceipt {
             Self::V1(receipt) => receipt.operation_id(),
             Self::V2(receipt) => receipt.operation_id(),
             Self::V3(receipt) => receipt.operation_id(),
+            Self::V4(receipt) => receipt.operation_id(),
         }
     }
 }
@@ -376,6 +391,14 @@ pub(crate) fn mark_draining(
                 OfflineMaintenanceReceiptPhaseV1::Draining,
             );
         }
+        if let Some(receipt) = scrub::read(storage, lifecycle, operation_id)? {
+            return scrub::mark_phase(
+                storage,
+                lifecycle,
+                receipt,
+                OfflineMaintenanceReceiptPhaseV1::Draining,
+            );
+        }
         let retirement = storage
             .read_retire_receipt(operation_id)
             .map_err(|_| {
@@ -459,6 +482,14 @@ pub(crate) fn mark_offline(
     let Some(mut receipt) = receipt else {
         if let Some(receipt) = archive::read(storage, lifecycle, operation_id)? {
             return archive::mark_phase(
+                storage,
+                lifecycle,
+                receipt,
+                OfflineMaintenanceReceiptPhaseV1::Offline,
+            );
+        }
+        if let Some(receipt) = scrub::read(storage, lifecycle, operation_id)? {
+            return scrub::mark_phase(
                 storage,
                 lifecycle,
                 receipt,
@@ -587,6 +618,9 @@ pub(crate) fn run_offline_maintenance(
     if matches!(request, MaintenanceDriverRequest::RetireBackup { .. }) {
         return run_retirement(storage, lifecycle, dependencies, operation_id);
     }
+    if let Some(receipt) = scrub::read(storage, lifecycle, operation_id)? {
+        return scrub::run(storage, lifecycle, dependencies, receipt, request);
+    }
 
     let mut receipt = match read_required_receipt(storage, operation_id) {
         Ok(receipt) => receipt,
@@ -623,7 +657,8 @@ pub(crate) fn run_offline_maintenance(
         MaintenanceDriverRequest::ResumePublishedRestore { .. } => {
             run_restore(storage, lifecycle, dependencies, &mut receipt, None, None)
         }
-        MaintenanceDriverRequest::RetireBackup { .. } => Err(DriverFault::ReceiptIntegrity),
+        MaintenanceDriverRequest::RetireBackup { .. }
+        | MaintenanceDriverRequest::StorageScrub { .. } => Err(DriverFault::ReceiptIntegrity),
     };
     match operation {
         Ok(startup) => Ok(MaintenanceDriverSuccess {
@@ -1308,7 +1343,8 @@ fn complete_post_publication_validation(
     let expected_database_id = match receipt.operation_kind() {
         OfflineMaintenanceOperationKind::CreateBackup => receipt.source_database_id(),
         OfflineMaintenanceOperationKind::RestoreBackup => receipt.staged_database_id(),
-        OfflineMaintenanceOperationKind::RetireBackup => None,
+        OfflineMaintenanceOperationKind::RetireBackup
+        | OfflineMaintenanceOperationKind::StorageScrub => None,
     }
     .ok_or(DriverFault::ReceiptIntegrity)?;
     if startup.database_id() != expected_database_id
@@ -1844,6 +1880,7 @@ enum DriverFault {
     ReceiptValue,
     ReceiptIntegrity,
     Lifecycle,
+    ScrubUnavailable,
 }
 
 impl DriverFault {
@@ -1852,7 +1889,9 @@ impl DriverFault {
             Self::ArtifactUnavailable => OfflineMaintenanceReceiptFailureV1::ArtifactUnavailable,
             Self::ArtifactInvalid => OfflineMaintenanceReceiptFailureV1::ArtifactInvalid,
             Self::ArtifactStorage(error) => artifact_storage_failure(error),
-            Self::PublicationUncertain => OfflineMaintenanceReceiptFailureV1::StorageUnavailable,
+            Self::PublicationUncertain | Self::ScrubUnavailable => {
+                OfflineMaintenanceReceiptFailureV1::StorageUnavailable
+            }
             Self::StagedAuthorization => {
                 OfflineMaintenanceReceiptFailureV1::StagedAuthorizationFailed
             }
@@ -1881,6 +1920,7 @@ impl fmt::Debug for DriverFault {
             Self::ReceiptValue => "DriverFault::ReceiptValue([REDACTED])",
             Self::ReceiptIntegrity => "DriverFault::ReceiptIntegrity",
             Self::Lifecycle => "DriverFault::Lifecycle",
+            Self::ScrubUnavailable => "DriverFault::ScrubUnavailable",
         })
     }
 }

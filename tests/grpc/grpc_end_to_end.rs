@@ -321,6 +321,10 @@ enum ObservedMaintenanceInvocation {
         operation_id: OfflineMaintenanceOperationId,
         backup_name: String,
     },
+    Scrub {
+        request_id: RequestId,
+        operation_id: OfflineMaintenanceOperationId,
+    },
     Get {
         request_id: RequestId,
         operation_id: OfflineMaintenanceOperationId,
@@ -959,6 +963,32 @@ impl OfflineMaintenanceApplication for ProjectionService {
             None,
         )
         .expect("matching backup-retire observation");
+        let result = OfflineMaintenanceStartResult::new(
+            OfflineMaintenanceStartDisposition::Accepted,
+            observation,
+        )
+        .expect("matching accepted start result");
+        Box::pin(async move { Ok(result) })
+    }
+
+    fn start_offline_storage_scrub(
+        &self,
+        context: RequestContext,
+        request: riffdb_service::StartOfflineStorageScrubRequest,
+    ) -> ServiceFuture<'_, OfflineMaintenanceStartResult> {
+        self.maintenance_invocations
+            .lock()
+            .expect("maintenance observation lock remains available")
+            .push(ObservedMaintenanceInvocation::Scrub {
+                request_id: context.request_id(),
+                operation_id: request.operation_id(),
+            });
+        let observation = OfflineMaintenanceOperationObservation::storage_scrub(
+            request.operation_id(),
+            OfflineMaintenanceObservationPhase::Accepted,
+            None,
+        )
+        .expect("matching storage-scrub observation");
         let result = OfflineMaintenanceStartResult::new(
             OfflineMaintenanceStartDisposition::Accepted,
             observation,

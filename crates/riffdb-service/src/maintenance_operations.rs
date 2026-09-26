@@ -96,6 +96,19 @@ impl OfflineMaintenanceApplication for RiffDbService {
         })
     }
 
+    fn start_offline_storage_scrub(
+        &self,
+        context: RequestContext,
+        request: crate::StartOfflineStorageScrubRequest,
+    ) -> ServiceFuture<'_, OfflineMaintenanceStartResult> {
+        let service = Arc::clone(&self.inner);
+        let submission = Arc::new(MaintenanceSubmissionState::new());
+        let operation_submission = Arc::clone(&submission);
+        self.spawn_tracked_maintenance_operation(submission, async move {
+            start_storage_scrub(service, context, request, operation_submission).await
+        })
+    }
+
     fn get_offline_maintenance_operation(
         &self,
         context: RequestContext,
@@ -502,6 +515,56 @@ async fn start_retire_backup(
     Ok(result)
 }
 
+async fn start_storage_scrub(
+    service: Arc<RiffDbServiceInner>,
+    context: RequestContext,
+    request: crate::StartOfflineStorageScrubRequest,
+    submission: Arc<MaintenanceSubmissionState>,
+) -> ServiceResult<OfflineMaintenanceStartResult> {
+    ensure_control_open(context.control())?;
+    let policy_request =
+        OfflineMaintenanceAuthorizationRequest::storage_scrub(request.operation_id());
+    authorize_current(&service, &context, policy_request.clone())?;
+    let coordinator = service
+        .providers
+        .maintenance
+        .as_ref()
+        .map(Arc::clone)
+        .ok_or_else(|| ServiceFailure::from(PublicError::storage_unavailable()))?;
+    let permit = match wait_with_control(
+        context.control(),
+        service.providers.deadline_scheduler.as_ref(),
+        coordinator.reserve_start(context.control()),
+    )
+    .await
+    {
+        Ok(Ok(permit)) => permit,
+        Ok(Err(error)) => return Err(pre_submit_admission_failure(error)),
+        Err(error) => return Err(controlled_wait_failure(error)),
+    };
+    ensure_control_open(context.control())?;
+    let authorization = authorize_current(&service, &context, policy_request)?;
+    ensure_control_open(context.control())?;
+    let expected = request.clone();
+    submission.mark_submit_in_flight();
+    let receipt = match permit.submit(AuthorizedOfflineMaintenanceStart::StorageScrub {
+        request,
+        authorization,
+    }) {
+        Ok(receipt) => receipt,
+        Err(error) => {
+            submission.mark_submit_rejected();
+            return Err(pre_submit_admission_failure(error));
+        }
+    };
+    let result = await_start_result(&service, &context, receipt).await?;
+    if !observation_matches_storage_scrub(result.operation(), &expected) {
+        return Err(service.maintenance_internal_failure(MaintenanceInternalDefect::LowerIntegrity));
+    }
+    ensure_response_budget(&result)?;
+    Ok(result)
+}
+
 async fn get_operation(
     service: Arc<RiffDbServiceInner>,
     context: RequestContext,
@@ -792,7 +855,7 @@ fn observation_matches_create(
 ) -> bool {
     observation.operation_id() == request.operation_id()
         && observation.kind() == OfflineMaintenanceOperationKind::CreateBackup
-        && observation.backup_name() == request.backup_name()
+        && observation.backup_name() == Some(request.backup_name())
         && observation.input_hash() == request.input_hash()
 }
 
@@ -803,7 +866,7 @@ fn observation_matches_restore(
     observation.archive_restore().is_none()
         && observation.operation_id() == request.operation_id()
         && observation.kind() == OfflineMaintenanceOperationKind::RestoreBackup
-        && observation.backup_name() == request.backup_name()
+        && observation.backup_name() == Some(request.backup_name())
         && observation.input_hash() == request.input_hash()
 }
 
@@ -813,7 +876,17 @@ fn observation_matches_retire(
 ) -> bool {
     observation.operation_id() == request.operation_id()
         && observation.kind() == OfflineMaintenanceOperationKind::RetireBackup
-        && observation.backup_name() == request.backup_name()
+        && observation.backup_name() == Some(request.backup_name())
+        && observation.input_hash() == request.input_hash()
+}
+
+fn observation_matches_storage_scrub(
+    observation: &OfflineMaintenanceOperationObservation,
+    request: &crate::StartOfflineStorageScrubRequest,
+) -> bool {
+    observation.operation_id() == request.operation_id()
+        && observation.kind() == OfflineMaintenanceOperationKind::StorageScrub
+        && observation.backup_name().is_none()
         && observation.input_hash() == request.input_hash()
 }
 

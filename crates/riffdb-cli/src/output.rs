@@ -102,6 +102,7 @@ pub(crate) enum CommandIdentity {
     ReimportStatus,
     ReimportCancel,
     StorageRestore,
+    StorageScrub,
     StoragePreflight,
     StorageUpgrade,
     RetentionStatus,
@@ -192,6 +193,7 @@ impl CommandIdentity {
             Self::ReimportStatus => "reimport.status",
             Self::ReimportCancel => "reimport.cancel",
             Self::StorageRestore => "storage.restore",
+            Self::StorageScrub => "storage.scrub",
             Self::StoragePreflight => "storage.preflight",
             Self::StorageUpgrade => "storage.upgrade",
             Self::RetentionStatus => "retention.status",
@@ -891,6 +893,16 @@ pub(crate) fn render_archive_restore_maintenance_start(
 ) -> Terminal {
     render_maintenance_start(
         CommandIdentity::StorageRestore,
+        response.disposition,
+        response.operation.as_ref(),
+    )
+}
+
+pub(crate) fn render_storage_scrub_maintenance_start(
+    response: &v1::StartOfflineStorageScrubResponse,
+) -> Terminal {
+    render_maintenance_start(
+        CommandIdentity::StorageScrub,
         response.disposition,
         response.operation.as_ref(),
     )
@@ -2457,7 +2469,9 @@ struct MaintenanceOperationDto<'a> {
     status: &'a str,
     maintenance_operation_id: String,
     kind: &'static str,
-    backup_name: &'a str,
+    /// Absent exactly for the selector-free storage scrub (ADR-0203).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    backup_name: Option<&'a str>,
     input_hash: LowerHex<'a>,
     phase: &'static str,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -2669,6 +2683,7 @@ impl<'a> MaintenanceOperationDto<'a> {
             v1::OfflineMaintenanceOperationKind::CreateBackup => "create_backup",
             v1::OfflineMaintenanceOperationKind::RestoreBackup => "restore_backup",
             v1::OfflineMaintenanceOperationKind::RetireBackup => "retire_backup",
+            v1::OfflineMaintenanceOperationKind::StorageScrub => "storage_scrub",
             v1::OfflineMaintenanceOperationKind::Unspecified => return None,
         };
         let phase = match v1::OfflineMaintenancePhase::try_from(operation.phase).ok()? {
@@ -2694,14 +2709,17 @@ impl<'a> MaintenanceOperationDto<'a> {
             v1::OfflineMaintenanceFailureClass::ReceiptUnavailable => Some("receipt_unavailable"),
             v1::OfflineMaintenanceFailureClass::InternalFailure => Some("internal_failure"),
         };
-        if operation.input_hash.len() != 32 || (phase == "failed_closed") != failure.is_some() {
+        if operation.input_hash.len() != 32
+            || (phase == "failed_closed") != failure.is_some()
+            || (kind == "storage_scrub") != operation.backup_name.is_empty()
+        {
             return None;
         }
         Some(Self {
             status,
             maintenance_operation_id: format_uuid(&operation.operation_id)?,
             kind,
-            backup_name: &operation.backup_name,
+            backup_name: (kind != "storage_scrub").then_some(operation.backup_name.as_str()),
             input_hash: LowerHex(&operation.input_hash),
             phase,
             failure,
@@ -3143,6 +3161,46 @@ mod tests {
     #[derive(Serialize)]
     struct Status<'a> {
         status: &'a str,
+    }
+
+    #[test]
+    // req: REC-008
+    fn storage_scrub_output_has_no_backup_name_and_refuses_one() {
+        let operation = |backup_name: &str| v1::OfflineMaintenanceOperation {
+            operation_id: parse_uuid("018f2f85-3c20-7a31-8f11-112233445566")
+                .unwrap()
+                .to_vec(),
+            kind: v1::OfflineMaintenanceOperationKind::StorageScrub as i32,
+            backup_name: backup_name.into(),
+            input_hash: vec![1; 32],
+            phase: v1::OfflineMaintenancePhase::FailedClosed as i32,
+            failure: v1::OfflineMaintenanceFailureClass::ValidationFailed as i32,
+            archive_restore: None,
+        };
+        let terminal =
+            render_storage_scrub_maintenance_start(&v1::StartOfflineStorageScrubResponse {
+                disposition: v1::OfflineMaintenanceStartDisposition::Terminal as i32,
+                operation: Some(operation("")),
+            });
+        let value: JsonValue = serde_json::from_slice(terminal.json_bytes().unwrap()).unwrap();
+        assert_eq!(value["command"], "storage.scrub");
+        assert_eq!(value["ok"], true);
+        let result = &value["result"];
+        assert_eq!(result["kind"], "storage_scrub");
+        assert_eq!(result["status"], "terminal");
+        assert_eq!(result["phase"], "failed_closed");
+        assert_eq!(result["failure"], "validation_failed");
+        assert!(result.get("backup_name").is_none());
+        // A scrub carrying a backup name is a contradictory observation.
+        let refused =
+            render_storage_scrub_maintenance_start(&v1::StartOfflineStorageScrubResponse {
+                disposition: v1::OfflineMaintenanceStartDisposition::Terminal as i32,
+                operation: Some(operation("baseline")),
+            });
+        assert!(
+            refused.json_bytes().is_none(),
+            "contradictory scrub fails rendering"
+        );
     }
 
     #[test]
@@ -3758,6 +3816,12 @@ mod tests {
                 operation: Some(maintenance_operation(result)),
             });
         }
+        if name.starts_with("storage.scrub.") {
+            return render_storage_scrub_maintenance_start(&v1::StartOfflineStorageScrubResponse {
+                disposition: maintenance_disposition(status),
+                operation: Some(maintenance_operation(result)),
+            });
+        }
         if name.starts_with("backup.operation.") {
             let result = match status {
                 "not_found" => {
@@ -3888,6 +3952,7 @@ mod tests {
             "backup.restore" => CommandIdentity::BackupRestore,
             "backup.retire" => CommandIdentity::BackupRetire,
             "backup.operation" => CommandIdentity::BackupOperation,
+            "storage.scrub" => CommandIdentity::StorageScrub,
             "storage.preflight" => CommandIdentity::StoragePreflight,
             "storage.upgrade" => CommandIdentity::StorageUpgrade,
             "demo.budget" => CommandIdentity::DemoBudget,

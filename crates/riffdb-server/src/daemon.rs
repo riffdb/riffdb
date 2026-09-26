@@ -292,6 +292,9 @@ fn initial_database_action(
     reconciliation: &RedbMaintenanceReconciliation,
     target_requires_recovery: bool,
 ) -> Result<InitialDatabaseAction, DaemonError> {
+    if let Some(action) = archive::scrub_initial_action(reconciliation)? {
+        return Ok(action);
+    }
     if let Some(action) =
         archive::initial_action(storage, reconciliation, target_requires_recovery)?
     {
@@ -2690,6 +2693,9 @@ fn normal_driver_request(
         MaintenanceTrigger::RetireBackup { request, .. } => Ok(
             MaintenanceDriverRequest::retire_backup(request.operation_id()),
         ),
+        MaintenanceTrigger::StorageScrub { request, .. } => Ok(
+            MaintenanceDriverRequest::storage_scrub(request.operation_id()),
+        ),
         MaintenanceTrigger::RecoveryRestore { .. }
         | MaintenanceTrigger::ContractMigrationApply { .. } => Err(DaemonError::MaintenanceDriver),
     }
@@ -3159,7 +3165,9 @@ fn terminal_restore_result(
                 receipt,
             )
         }
-        MaintenanceTerminalReceipt::V2(_) => return Err(DaemonError::MaintenanceDriver),
+        MaintenanceTerminalReceipt::V2(_) | MaintenanceTerminalReceipt::V4(_) => {
+            return Err(DaemonError::MaintenanceDriver);
+        }
     }
     .map_err(|_| DaemonError::MaintenanceDriver)
 }

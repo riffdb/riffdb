@@ -251,6 +251,42 @@ impl fmt::Debug for RetireOfflineBackup {
     }
 }
 
+/// One selector-free offline storage scrub (ADR-0203). Its only input is the
+/// caller-stable operation ID: there is no target, scope, or validation choice.
+pub struct StartOfflineStorageScrub {
+    operation_id: OfflineMaintenanceOperationId,
+}
+
+impl StartOfflineStorageScrub {
+    /// Creates a scrub submission with a caller-stable operation identity.
+    #[must_use]
+    pub const fn new(operation_id: OfflineMaintenanceOperationId) -> Self {
+        Self { operation_id }
+    }
+
+    /// Returns the caller-stable maintenance operation ID.
+    #[must_use]
+    pub const fn operation_id(&self) -> OfflineMaintenanceOperationId {
+        self.operation_id
+    }
+
+    pub(crate) fn request(&self, request_id: RequestId) -> v1::StartOfflineStorageScrubRequest {
+        v1::StartOfflineStorageScrubRequest {
+            request_id: request_id.into_bytes().to_vec(),
+            operation_id: self.operation_id.into_bytes().to_vec(),
+        }
+    }
+}
+
+impl fmt::Debug for StartOfflineStorageScrub {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("StartOfflineStorageScrub")
+            .field("operation_id", &self.operation_id)
+            .finish()
+    }
+}
+
 /// One checked immutable offline-backup restore.
 pub struct RestoreOfflineBackup {
     operation_id: OfflineMaintenanceOperationId,
