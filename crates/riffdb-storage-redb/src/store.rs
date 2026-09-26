@@ -2037,6 +2037,31 @@ pub fn last_repair_progress_basis_points() -> u64 {
     LAST_REPAIR_PROGRESS_BPS.load(Ordering::Relaxed)
 }
 
+/// Databases whose storage-engine crash repair ran in an earlier open by this
+/// process (the maintenance owner's target probe) rather than in the store's
+/// own open. The next store open of that path consumes the entry and reports
+/// the repair as its own, so startup evidence attributes the repair's cost to
+/// the engine instead of reporting a repair-free open.
+static ENGINE_REPAIRED_BY_PRIOR_OPEN: std::sync::Mutex<Vec<std::path::PathBuf>> =
+    std::sync::Mutex::new(Vec::new());
+
+/// Records that an engine open of `path` outside the store ran crash repair.
+pub(crate) fn note_engine_repaired_by_prior_open(path: &Path) {
+    if let Ok(mut paths) = ENGINE_REPAIRED_BY_PRIOR_OPEN.lock()
+        && !paths.iter().any(|recorded| recorded == path)
+    {
+        paths.push(path.to_path_buf());
+    }
+}
+
+fn take_engine_repaired_by_prior_open(path: &Path) -> bool {
+    ENGINE_REPAIRED_BY_PRIOR_OPEN.lock().is_ok_and(|mut paths| {
+        let before = paths.len();
+        paths.retain(|recorded| recorded != path);
+        paths.len() != before
+    })
+}
+
 /// Sentinel for [`reset_last_repair_progress_for_tests`]: never produced by the
 /// repair callback, so "changed from sentinel" proves the callback fired even
 /// at 0% progress.
@@ -2408,7 +2433,8 @@ impl RedbStore {
                 application_commit_profile,
                 mutation_gate: ExclusiveGate::default(),
                 write_fenced: AtomicBool::new(open_mode.is_private_validation()),
-                engine_repaired_at_open: repair_observed.load(Ordering::Acquire),
+                engine_repaired_at_open: repair_observed.load(Ordering::Acquire)
+                    | take_engine_repaired_by_prior_open(path),
                 engine_initialized_at_open: initialize_marker_witness.is_some(),
                 bounded_clean_startup: AtomicBool::new(false),
                 clean_certificate_startup: AtomicBool::new(false),
@@ -5286,6 +5312,27 @@ impl RedbOperationalPorts {
     #[must_use]
     pub fn transient_index_commit_rows(&self) -> u64 {
         self.shared.transient_index_commit_rows()
+    }
+
+    /// Whether any committed outbox entry is undelivered, answered only from
+    /// already-warm transient indexes. `None` means they are cold: a
+    /// commit-time health sample must never trigger the whole-history rebuild
+    /// (ADR-0182 Decision 1), so its caller keeps its conservative state.
+    pub fn has_undelivered_outbox_if_warm(&self) -> Result<Option<bool>, StorageError> {
+        let _lease = self.acquire_indexed_read_lease()?;
+        let state = self
+            .shared
+            .transient_indexes
+            .read()
+            .map_err(|_| storage_error(StorageErrorKind::InvariantViolation))?;
+        match &*state {
+            TransientIndexState::Ready(indexes) => indexes
+                .undelivered_outbox_page(None, 1)
+                .map(|(event_ids, _)| Some(!event_ids.is_empty()))
+                .ok_or_else(|| storage_error(StorageErrorKind::Unavailable)),
+            TransientIndexState::Dormant => Ok(None),
+            TransientIndexState::Invalid => Err(storage_error(StorageErrorKind::Unavailable)),
+        }
     }
 
     /// Per-reason counts of ignored validated-prefix checkpoints on this database.

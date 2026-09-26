@@ -495,6 +495,9 @@ impl ProductionGraphBuilder {
         // rebuild is visible on the readiness line rather than only in wall
         // clock.
         storage.record_transient_index_census();
+        crate::startup_census::bind_transient_index_source(Box::new(
+            storage.transient_index_census_reader(),
+        ));
         let outbox_health = NoDestinationOutboxHealth::new(if bounded_clean_startup {
             OutboxRecoveryReadiness::Degraded
         } else {

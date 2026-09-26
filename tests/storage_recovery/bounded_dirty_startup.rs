@@ -172,6 +172,98 @@ fn bounded_dirty_startup_claims_a_command_owned_outbox_event() {
     );
 }
 
+// req: REC-001, REC-004
+/// ADR-0182 Decision 1 after readiness: the commit-time outbox health sample
+/// answers only from warm transient indexes. With the bounded start's cold
+/// indexes it reports "unknown" instead of rebuilding the whole command
+/// history inside the first commit group, which at production scale held the
+/// mutation gate for tens of seconds.
+#[test]
+fn commit_time_outbox_sample_never_warms_cold_indexes() {
+    let path = TestDatabasePath::new("bounded-dirty-outbox-sample");
+    prepare_command_database(&path.0);
+    let ports = {
+        let store = RedbStore::open(&path.0).expect("dirty reopen");
+        let session = store
+            .begin_structural_evidence(startup_inputs())
+            .expect("begin bounded dirty evidence");
+        assert!(session.bounded_dirty_startup_path());
+        complete_structural_open_from(session)
+            .into_parts()
+            .3
+            .into_operational_after_catalog_validation()
+            .expect("bounded dirty startup reaches readiness")
+    };
+    commit_command_fixture(&ports, &command_fixture_at(1));
+    assert_eq!(
+        ports
+            .has_undelivered_outbox_if_warm()
+            .expect("sample cold indexes"),
+        None,
+        "cold indexes answer unknown"
+    );
+    assert_eq!(
+        ports.transient_index_rebuilds(),
+        0,
+        "the sample warmed nothing"
+    );
+
+    // Once a real derived read warms the indexes, the sample answers exactly.
+    use riffdb_storage_api::OutboxRepository;
+    let undelivered = ports.has_undelivered_outbox().expect("warm read");
+    assert_eq!(ports.transient_index_rebuilds(), 1);
+    assert_eq!(
+        ports
+            .has_undelivered_outbox_if_warm()
+            .expect("sample warm indexes"),
+        Some(undelivered)
+    );
+}
+
+// req: REC-008
+/// ADR-0203 Decision 8 at scale: the complete walk (the path both scrubs and
+/// every non-bounded startup drive) retains a fixed-size audit index per
+/// command instead of the decoded command history, so its memory no longer
+/// tracks command payload size and a production population stays under the
+/// evidence ceiling. The walk still cross-checks every command.
+#[test]
+fn complete_walk_retains_a_compact_command_history() {
+    let path = TestDatabasePath::new("complete-walk-compact-history");
+    prepare_command_database(&path.0);
+    let commands = 24_usize;
+    {
+        let ports = open_operational(RedbStore::open(&path.0).expect("open populated source"));
+        for ordinal in 1..=commands {
+            commit_command_fixture(&ports, &command_fixture_at(ordinal as u64));
+        }
+    }
+    // No checkpoint: the complete walk covers the whole command history.
+    super::strip_checkpoint_meta(&path.0);
+    let store = RedbStore::open(&path.0).expect("reopen for the complete walk");
+    let mut session = store
+        .begin_structural_evidence(startup_inputs())
+        .expect("begin complete evidence");
+    assert!(!session.bounded_dirty_startup_path());
+    let structural_end = drive_structural_to_end(&mut session);
+    let (entries, retained) = session.command_history_retained();
+    assert!(
+        entries >= 2 * commands,
+        "every command contributes its Started and Terminal members: {entries}"
+    );
+    assert_eq!(retained % entries, 0, "fixed-size entries");
+    assert!(
+        retained / entries <= 32,
+        "an entry is an index slot, not a decoded command: {} bytes",
+        retained / entries
+    );
+    let opened = finish_structural_open_from(session, structural_end);
+    opened
+        .into_parts()
+        .3
+        .into_operational_after_catalog_validation()
+        .expect("the complete walk still validates every command");
+}
+
 /// Where an out-of-band corruption was refused under the ADR-0182 layering.
 #[derive(Debug)]
 pub(crate) enum CorruptionRefusal {

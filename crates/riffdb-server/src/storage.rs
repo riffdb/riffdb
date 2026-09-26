@@ -196,6 +196,11 @@ impl SharedRedbOperationalPorts {
     /// True only when bounded startup proved no in-flight `Delivering` outbox
     /// entry exists. False on the complete path, and false when the bounded
     /// probe could not decide, so ignorance never reads as proof.
+    pub(crate) fn has_undelivered_outbox_if_warm(&self) -> Result<Option<bool>, StorageError> {
+        self.cell
+            .with_mut(|ports| ports.has_undelivered_outbox_if_warm())
+    }
+
     pub(crate) fn outbox_delivering_proven_absent(&self) -> bool {
         self.cell
             .with_mut(|ports| Ok(ports.outbox_delivering_proven_absent()))
@@ -214,6 +219,24 @@ impl SharedRedbOperationalPorts {
         });
         if let Ok((rebuilds, commit_rows)) = census {
             crate::startup_census::record_transient_index_rebuilds(rebuilds, commit_rows);
+        }
+    }
+
+    /// A census reader that never keeps the storage alive: it reads the
+    /// transient-index counters while these ports exist and yields `None`
+    /// once they are dropped, so binding it in a process-global cannot hold
+    /// the database open past shutdown.
+    pub(crate) fn transient_index_census_reader(
+        &self,
+    ) -> impl Fn() -> Option<(u64, u64)> + Send + Sync + 'static {
+        let weak = Arc::downgrade(&self.cell.inner);
+        move || {
+            let inner = weak.upgrade()?;
+            let ports = inner.read().ok()?;
+            Some((
+                ports.transient_index_rebuilds(),
+                ports.transient_index_commit_rows(),
+            ))
         }
     }
 

@@ -2249,6 +2249,52 @@ fn process_recovery_child() {
     panic!("the armed failpoint did not terminate the child");
 }
 
+// req: PERF-014, REC-001
+/// The daemon's maintenance owner probes the target before the store opens,
+/// so after a crash that probe is the open where redb's whole-file repair
+/// runs. The store must still report the repair as its open's, so startup
+/// evidence attributes the cost to the storage engine instead of reporting a
+/// repair-free open.
+#[cfg(all(feature = "test-fixtures", feature = "benchmark-support"))]
+#[test]
+fn engine_repair_run_by_the_target_probe_is_attributed_to_the_store_open() {
+    let path = TestDatabasePath::new("probe-repair-attribution");
+    prepare_command_database(&path.0);
+    let clean = open_operational(RedbStore::open(&path.0).expect("open clean-close fixture"));
+    clean
+        .write_clean_close_lifecycle()
+        .expect("write a matching clean-close certificate");
+    drop(clean);
+    run_externally_killed_command_child(&path.0);
+
+    let backups = path.0.with_extension("backups");
+    let (owner, _) = riffdb_storage_redb::RedbMaintenanceStorage::open(&path.0, &backups)
+        .expect("maintenance owner over the killed target");
+    assert!(
+        !owner
+            .configured_target_requires_recovery()
+            .expect("probe the killed target"),
+        "a repairable target does not require recovery"
+    );
+    drop(owner);
+
+    riffdb_storage_redb::reset_last_repair_progress_for_tests();
+    let store = RedbStore::open(&path.0).expect("store open after the probe");
+    assert_eq!(
+        riffdb_storage_redb::last_repair_progress_basis_points(),
+        riffdb_storage_redb::REPAIR_PROGRESS_SENTINEL,
+        "the probe already repaired the engine, so the store's own open did not"
+    );
+    let session = store
+        .begin_structural_evidence(startup_inputs())
+        .expect("startup evidence after the probe");
+    assert_eq!(
+        session.clean_close_declined_reason(),
+        Some("engine_repaired_at_open"),
+        "the probe's repair is the store open's repair"
+    );
+}
+
 // req: PERF-014
 #[cfg(all(feature = "test-fixtures", feature = "benchmark-support"))]
 #[test]

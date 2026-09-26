@@ -207,6 +207,32 @@ pub(crate) fn record_recovery_owned_bytes(bytes: u64) {
     RECOVERY_OWNED_BYTES.store(bytes, Ordering::Relaxed);
 }
 
+type TransientIndexSource = Box<dyn Fn() -> Option<(u64, u64)> + Send + Sync>;
+
+/// The storage whose transient-index census the readiness line re-reads.
+static TRANSIENT_SOURCE: std::sync::Mutex<Option<TransientIndexSource>> =
+    std::sync::Mutex::new(None);
+
+/// Binds the storage whose transient-index census the readiness line reads.
+/// The line re-reads it when formatted, so a rebuild that any startup
+/// consumer performs before readiness is published is counted, not only one
+/// performed before the census point inside the graph build.
+pub(crate) fn bind_transient_index_source(source: TransientIndexSource) {
+    if let Ok(mut slot) = TRANSIENT_SOURCE.lock() {
+        *slot = Some(source);
+    }
+}
+
+fn refresh_transient_index_census() {
+    let observed = TRANSIENT_SOURCE
+        .lock()
+        .ok()
+        .and_then(|slot| slot.as_ref().and_then(|source| source()));
+    if let Some((rebuilds, commit_rows)) = observed {
+        record_transient_index_rebuilds(rebuilds, commit_rows);
+    }
+}
+
 /// Records the transient-index rebuild census observed at graph build.
 pub(crate) fn record_transient_index_rebuilds(rebuilds: u64, commit_rows: u64) {
     TRANSIENT_REBUILDS.store(rebuilds, Ordering::Relaxed);
@@ -250,6 +276,7 @@ pub(crate) fn format_v1_line() -> String {
     if let Some(started) = PROCESS_START.get() {
         record(StartupStage::ProcessToReady, *started);
     }
+    refresh_transient_index_census();
     let mut line = String::from("riffdb-startup-stages-v1");
     line.push_str("\tmode=");
     line.push_str(startup_mode_label(
