@@ -280,3 +280,179 @@ pub(crate) fn corruption_refusal(path: &Path) -> Option<CorruptionRefusal> {
         .err()
         .map(|_| CorruptionRefusal::ScrubRefused)
 }
+
+/// One planted population-row defect class for the WP-760 exit gate.
+#[derive(Clone, Copy, Debug)]
+enum PlantedDefect {
+    /// Every current entity row: read, mutation, and export touch it.
+    Entity,
+    /// The oldest command segment, which carries its events: delivery and the
+    /// projection source touch it. The tail segment stays intact, so the
+    /// bounded header's tail check is not what refuses it.
+    Commit,
+}
+
+/// Flips the last byte of the defect's rows, outside every receipt, in a
+/// stopped database. Returns the number of rows damaged.
+fn plant_population_defect(path: &Path, defect: PlantedDefect) -> usize {
+    const COMMITS_RAW: TableDefinition<&[u8], &[u8]> = TableDefinition::new("commits");
+    let (table, rows_to_damage) = match defect {
+        PlantedDefect::Entity => (ENTITIES_RAW, usize::MAX),
+        PlantedDefect::Commit => (COMMITS_RAW, 1),
+    };
+    let raw = redb::Database::open(path).expect("open raw for planting");
+    let write = raw.begin_write().expect("begin planting");
+    let damaged = {
+        let mut rows = write.open_table(table).expect("open population table");
+        let damaged = rows
+            .iter()
+            .expect("iterate population rows")
+            .take(rows_to_damage)
+            .map(|row| {
+                let (key, value) = row.expect("population row");
+                let mut bytes = value.value().to_vec();
+                let last = bytes.len() - 1;
+                bytes[last] = bytes[last].wrapping_add(1);
+                (key.value().to_vec(), bytes)
+            })
+            .collect::<Vec<_>>();
+        for (key, bytes) in &damaged {
+            rows.insert(key.as_slice(), bytes.as_slice())
+                .expect("plant damaged row");
+        }
+        damaged.len()
+    };
+    write.commit().expect("publish planted corruption");
+    damaged
+}
+
+fn assert_corrupt<T>(result: Result<T, riffdb_storage_api::StorageError>, surface: &str) {
+    let Err(error) = result else {
+        panic!("{surface} must not produce an outcome or absence");
+    };
+    assert_eq!(
+        error.kind(),
+        riffdb_storage_api::StorageErrorKind::CorruptData,
+        "{surface} must fail closed with the typed corruption outcome"
+    );
+}
+
+// req: REC-001, REC-004, REC-008
+/// WP-760 exit gate. Planted population-row corruption outside the bounded
+/// roots does not stop the bounded dirty startup from reaching readiness; the
+/// first touch through read, mutation, delivery, projection, and export fails
+/// closed with the typed corruption outcome, never absence, a business
+/// outcome, partial output, or repair; the refusals advance no authority; and
+/// the background scrub and the public offline scrub's complete validator
+/// both detect exactly the same planted defects.
+#[test]
+fn planted_population_corruption_fails_closed_on_every_first_touch_and_both_scrubs_detect_it() {
+    use riffdb_storage_api::{
+        ApplicationExportSnapshotPort, AuthoritativePointReader, CommitScanRequest,
+    };
+    use riffdb_storage_redb::RedbOfflineIntegrityScrub;
+
+    for defect in [PlantedDefect::Entity, PlantedDefect::Commit] {
+        let path = TestDatabasePath::new("dirty-first-touch-exit-gate");
+        prepare_command_database(&path.0);
+        let fixtures = (1..=4).map(command_fixture_at).collect::<Vec<_>>();
+        {
+            let ports = open_operational(RedbStore::open(&path.0).expect("open source"));
+            for fixture in &fixtures {
+                commit_command_fixture(&ports, fixture);
+            }
+        }
+        let expected_damage = match defect {
+            PlantedDefect::Entity => 4,
+            PlantedDefect::Commit => 1,
+        };
+        assert_eq!(
+            plant_population_defect(&path.0, defect),
+            expected_damage,
+            "{defect:?}"
+        );
+        let authority_before =
+            riffdb_storage_redb::benchmark_support::recovery_authority_snapshot_v1(&path.0)
+                .expect("authority before the dirty open");
+
+        let mut ports = {
+            let store = RedbStore::open(&path.0).expect("dirty reopen over the defect");
+            let session = store
+                .begin_structural_evidence(startup_inputs())
+                .expect("bounded dirty evidence over the defect");
+            assert!(session.bounded_dirty_startup_path(), "{defect:?}");
+            complete_structural_open_from(session)
+                .into_parts()
+                .3
+                .into_operational_after_catalog_validation()
+                .expect("readiness despite the planted population defect")
+        };
+        let limit = StorageScanLimit::new(64).expect("scan limit");
+        match defect {
+            PlantedDefect::Entity => {
+                let (target, _, _) = target_and_index_at(1, 1);
+                assert_corrupt(ports.read_entity(&target), "entity read");
+                let rewrite = superseding_command_fixture_at(5, 1, &fixtures[0]);
+                assert_corrupt(
+                    try_commit_command_fixture_with_audit(
+                        &ports,
+                        &rewrite,
+                        command_audit_transition(&rewrite),
+                    ),
+                    "mutation of the damaged entity",
+                );
+                let snapshot = ports
+                    .capture_application_export_snapshot(validated_contract_bundle().lineage())
+                    .expect("export snapshot binds bounded roots only");
+                assert_corrupt(
+                    snapshot.read_application_export_entity_page(
+                        EntityTypeId::new(1).expect("entity type"),
+                        None,
+                        limit,
+                    ),
+                    "export entity page",
+                );
+            }
+            PlantedDefect::Commit => {
+                let claim = OutboxClaimV1::new(
+                    fixtures[0].records.events()[0].event_id(),
+                    OutboxStatusObservationV1::AbsentInitialPending,
+                    OutboxDestinationIdV1::new("exit-gate").expect("destination"),
+                    Timestamp::new(1_700_000_010, 0).expect("claimed at"),
+                    Timestamp::new(1_700_000_020, 0).expect("lease expiry"),
+                )
+                .expect("claim transition");
+                assert_corrupt(ports.claim_outbox(&claim), "outbox delivery claim");
+                assert_corrupt(
+                    ports.scan_commits(CommitScanRequest::initial(limit)),
+                    "projection source scan",
+                );
+            }
+        }
+        drop(ports);
+        let authority_after =
+            riffdb_storage_redb::benchmark_support::recovery_authority_snapshot_v1(&path.0)
+                .expect("authority after first touch");
+        assert!(
+            authority_before.same_authority(&authority_after),
+            "{defect:?}: fail-closed first touch must advance no authority"
+        );
+
+        // The background scrub reaches readiness first, then refuses.
+        let background = corruption_refusal(&path.0).expect("background scrub must refuse");
+        assert!(
+            matches!(
+                background,
+                CorruptionRefusal::ScrubFindings(_) | CorruptionRefusal::ScrubRefused
+            ),
+            "{defect:?}: only the scrub, not startup, may refuse: {background:?}"
+        );
+        // The public offline scrub drives the complete exact-end validator.
+        assert!(
+            RedbOfflineIntegrityScrub::from_inputs(&path.0, startup_inputs())
+                .run()
+                .is_err(),
+            "{defect:?}: the complete validator must refuse the same database"
+        );
+    }
+}

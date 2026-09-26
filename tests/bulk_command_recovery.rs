@@ -366,6 +366,11 @@ fn run_crash_case(operation: Operation, phase: CrashPhase) {
             Operation::Put
         };
         let outcome = execute_healthy(&database, seed_operation, 0x91, 0xe1, 0xf1, 0x81);
+        // A retained checkpoint routes the reopen to the ADR-0182 bounded
+        // dirty path, which never writes one; strip it so this open validates
+        // completely and checkpoints the seed.
+        riffdb_storage_redb::strip_validated_prefix_checkpoint_fixture(database.path())
+            .expect("strip the pre-seed checkpoint");
         let ports = database.open();
         if operation == Operation::DecisionNoEffect {
             assert_decision_rows_present(&database, &ports, true);

@@ -1152,20 +1152,22 @@ fn production_dirty_lifecycle_evidence(
         clean_resources,
         false,
     )?;
-    // ADR-0156 Amendment 6: a V2-catalog source must decline the clean
-    // certificate and perform complete ordinary validation, and the evidence
-    // must state that cost without claiming population-independent clean
-    // startup. The bounded clean-certificate assertions this arm originally
-    // made are the successor lifecycle record's evidence, not this run's.
-    if clean_startup.mode != "complete_validation"
+    // ADR-0260: a V2-catalog source declines the clean certificate (so the
+    // closed mode stays complete_validation) and takes the ADR-0182 bounded
+    // dirty path even after a graceful close: no population table walk and
+    // no transient index rebuild before readiness.
+    if !bounded_v2_restart(&clean_startup)
         || clean_startup.columnar_activations != 0
         || clean_startup.columnar_population_passes != 0
     {
-        return Err("production V2 restart was not complete ordinary validation".to_owned());
+        return Err("production V2 graceful restart was not the bounded dirty path".to_owned());
     }
     let (dirty_restarted, dirty) = runtime
         .block_on(clean_restarted.force_kill_and_restart_for_evidence(crash_probe))
         .map_err(|error| error.to_string())?;
+    if !bounded_v2_restart(&dirty.startup) {
+        return Err("production V2 kill restart was not the bounded dirty path".to_owned());
+    }
     let dirty_initial_memory = dirty_restarted.initial_process_memory();
     let dirty_resources = process_resource_snapshot(
         dirty_restarted.child_pid(),
@@ -1195,10 +1197,10 @@ fn production_dirty_lifecycle_evidence(
         ));
     }
     if !after.same_authority_after_clean_generations(&repeated_snapshot, 2)
-        || repeated_startup.mode != "complete_validation"
+        || !bounded_v2_restart(&repeated_startup)
     {
         return Err(
-            "second recovery restart added authority or missed complete validation".to_owned(),
+            "second recovery restart added authority or left the bounded dirty path".to_owned(),
         );
     }
     let clean_process_to_ready_us = if committed {
@@ -1214,18 +1216,17 @@ fn production_dirty_lifecycle_evidence(
     let background_scrub = dirty_shutdown.background_scrub;
     let measured_clean_close = &dirty.clean_comparison_close;
     require_no_columnar_demand(measured_clean_close, "measured clean close")?;
-    // The close window spans process spawn to shutdown admission, so under
-    // V2 it carries the startup's legitimate complete-validation memory;
-    // report-only, like the startup window (the bounded close-path envelope
-    // is the successor lifecycle record's claim).
+    // The close window spans process spawn to shutdown admission; it is
+    // report-only, like the startup window. The recovery-owned bound is the
+    // startup census's recovery_owned_bytes, not this process envelope.
     let measured_close_memory = shutdown_memory_window_json(&dirty.clean_comparison_close, false)?;
     let dirty_final_close_memory = shutdown_memory_window_json(&dirty_shutdown, false)?;
     Ok((
         measured_close,
         json!({
-            "schema": "riffdb.wp-705-production-lifecycle/v1",
+            "schema": "riffdb.wp-760-dirty-recovery-lifecycle/v1",
             "scale_checkpoint": scale_checkpoint,
-            "v2_complete_validation": true,
+            "v2_bounded_restart": true,
             "bounded_clean_claim": false,
             "clean_restart": {
                 "startup": startup_evidence_json(&clean_startup),
@@ -1236,7 +1237,6 @@ fn production_dirty_lifecycle_evidence(
             },
             "dirty_recovery": {
                 "startup": startup_evidence_json(&dirty.startup),
-                "complete_exact_end_reached": true,
                 "recovery_elapsed_us": dirty.recovery_elapsed_us,
                 "rss_bytes_at_ready": dirty_resources.rss_bytes,
                 "peak_rss_bytes_at_ready": dirty_resources.peak_rss_bytes,
@@ -1254,6 +1254,14 @@ fn production_dirty_lifecycle_evidence(
             "background_scrub": background_scrub_json(background_scrub),
         }),
     ))
+}
+
+/// ADR-0260: the V2 restart declined the clean certificate and took the
+/// ADR-0182 bounded dirty path, walking no population table.
+fn bounded_v2_restart(evidence: &riffdb_app_baseline_riffdb::RiffDbStartupEvidence) -> bool {
+    evidence.mode == "complete_validation"
+        && evidence.population_table_walk == "none"
+        && evidence.transient_index_rebuilds == 0
 }
 
 /// The ADR-0182 background scrub's closed observation, or an explicit absent

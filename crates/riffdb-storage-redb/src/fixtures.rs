@@ -489,6 +489,23 @@ pub fn read_validated_prefix_checkpoint_bytes_fixture(
         .map(|encoded| encoded.value().to_vec()))
 }
 
+/// Removes the retained validated-prefix checkpoint from a stopped database, so
+/// its next open validates completely and may write a checkpoint covering the
+/// current prefix. A bounded dirty open (ADR-0182) never writes one.
+///
+/// Absent from default builds; call only after the owning process stopped.
+pub fn strip_validated_prefix_checkpoint_fixture(path: &Path) -> Result<(), StorageError> {
+    let database = Database::create(path).map_err(database_error)?;
+    let transaction = database.begin_write().map_err(transaction_error)?;
+    transaction
+        .open_table(META)
+        .map_err(table_error)?
+        .remove(META_VALIDATED_PREFIX_CHECKPOINT)
+        .map_err(precommit_storage_error)?;
+    transaction.commit().map_err(commit_error)?;
+    Ok(())
+}
+
 /// Constructs a frozen predecessor for V1 compatibility tests only. The normal
 /// initialization port always creates current V2 source state.
 #[doc(hidden)]
