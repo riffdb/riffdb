@@ -3496,3 +3496,38 @@ mod tests {
         TestDirectory(path)
     }
 }
+
+/// Runs the complete offline integrity scrub, the validator the public
+/// `riffdb storage scrub` operation drives (ADR-0203), over one stopped
+/// database, and returns its wall time. A refusal returns only its closed
+/// storage error kind: no path, row, key, or diagnostic crosses this boundary.
+pub fn offline_integrity_scrub_v1(
+    path: &Path,
+    capability_key_id: u32,
+    idempotency_key_id: u32,
+) -> Result<Duration, riffdb_storage_api::StorageErrorKind> {
+    use riffdb_storage_api::StorageErrorKind;
+    let key = |id: u32| {
+        u16::try_from(id)
+            .ok()
+            .and_then(|id| riffdb_types::DigestKeyId::new(id.into()))
+            .ok_or(StorageErrorKind::InvariantViolation)
+    };
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_err(|_| StorageErrorKind::InvariantViolation)?;
+    let authorization_time = i64::try_from(now.as_secs())
+        .ok()
+        .and_then(|seconds| Timestamp::new(seconds, 0).ok())
+        .ok_or(StorageErrorKind::InvariantViolation)?;
+    let scrub = crate::startup::RedbOfflineIntegrityScrub::bind(
+        path,
+        authorization_time,
+        vec![key(capability_key_id)?],
+        vec![key(idempotency_key_id)?],
+    )
+    .map_err(|error| error.kind())?;
+    let started = Instant::now();
+    scrub.run().map_err(|error| error.kind())?;
+    Ok(started.elapsed())
+}

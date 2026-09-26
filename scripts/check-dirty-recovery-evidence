@@ -176,6 +176,15 @@ def check_scrub_observation(lifecycle: dict[str, Any], label: str) -> None:
     refuse(f"{label} background scrub state {state!r} is not closed")
 
 
+def check_offline_scrub(lifecycle: dict[str, Any], label: str) -> None:
+    # ADR-0203: the complete validator the public `riffdb storage scrub`
+    # drives must pass over the healthy final database at this scale.
+    scrub = object_value(lifecycle.get("offline_scrub"), f"{label} offline scrub")
+    if scrub.get("result") != "passed":
+        refuse(f"{label} offline scrub did not pass: {scrub.get('refusal_kind', scrub.get('result'))}")
+    integer(scrub.get("total_us"), f"{label} offline scrub total time")
+
+
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--rows-65536", required=True, type=Path)
@@ -190,6 +199,8 @@ def main() -> int:
     check_dirty_restart(production, "production")
     check_scrub_observation(rows, "rows_65536")
     check_scrub_observation(production, "production")
+    check_offline_scrub(rows, "rows_65536")
+    check_offline_scrub(production, "production")
 
     receipt = {
         "schema": "riffdb.wp-760-dirty-recovery-evidence/v1",

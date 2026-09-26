@@ -1214,6 +1214,7 @@ fn production_dirty_lifecycle_evidence(
         .and_then(|value| value.checked_div(clean_process_to_ready_us))
         .ok_or_else(|| "startup ratio could not be represented".to_owned())?;
     let background_scrub = dirty_shutdown.background_scrub;
+    let offline_scrub = dirty_shutdown.offline_scrub.clone();
     let measured_clean_close = &dirty.clean_comparison_close;
     require_no_columnar_demand(measured_clean_close, "measured clean close")?;
     // The close window spans process spawn to shutdown admission; it is
@@ -1252,8 +1253,21 @@ fn production_dirty_lifecycle_evidence(
             "dirty_recovery_final_close": clean_close_evidence_json(&dirty_shutdown),
             "dirty_recovery_final_close_memory": dirty_final_close_memory,
             "background_scrub": background_scrub_json(background_scrub),
+            "offline_scrub": offline_scrub_json(offline_scrub),
         }),
     ))
+}
+
+/// The ADR-0203 complete offline validator's result over the final database.
+fn offline_scrub_json(result: Option<Result<std::time::Duration, String>>) -> serde_json::Value {
+    match result {
+        Some(Ok(elapsed)) => json!({
+            "result": "passed",
+            "total_us": u64::try_from(elapsed.as_micros()).unwrap_or(u64::MAX),
+        }),
+        Some(Err(kind)) => json!({"result": "refused", "refusal_kind": kind}),
+        None => json!({"result": "absent"}),
+    }
 }
 
 /// ADR-0260: the V2 restart declined the clean certificate and took the
