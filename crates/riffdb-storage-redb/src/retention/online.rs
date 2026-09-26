@@ -87,8 +87,15 @@ impl RedbOperationalPorts {
             .database
             .begin_read()
             .map_err(transaction_error)?;
-        let derived = self.shared.derived_database()?;
-        let derived_read = derived.begin_read().map_err(transaction_error)?;
+        // A sidecar that was never created holds no projection frontier; the
+        // step reads it as empty rather than creating it, as offline does.
+        let derived_read = match self.begin_derived_read() {
+            Ok(read) => read,
+            Err(error) => {
+                let _ = access.abort();
+                return Err(error);
+            }
+        };
 
         let plan = match plan_step(&read, &derived_read, retain_sequences, allowance) {
             Ok(Ok(plan)) => plan,

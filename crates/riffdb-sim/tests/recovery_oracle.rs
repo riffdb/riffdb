@@ -1350,3 +1350,6 @@ fn every_coordinator_crash_window_recovers_to_the_model() {
         }
     }
 }
+
+#[path = "recovery_oracle/online_retention.rs"]
+mod online_retention;
