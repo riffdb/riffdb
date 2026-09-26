@@ -224,19 +224,12 @@ fn command_attribution_preserves_exact_pending_failure_and_audit_receipts_on_rep
         drop(ports);
         let exact = command_receipts(&path.0);
         assert_pair(&exact, &fixture, audited);
-        for complete in [true, false] {
-            // The first reopen has no covering checkpoint, so it validates
-            // completely and may write one; the second is the ADR-0182 bounded
-            // dirty path, whose process may not. Both preserve the receipts.
-            if complete {
-                super::strip_checkpoint_meta(&path.0);
-            }
+        for _ in 0..2 {
+            // A V2 source validates completely on every reopen (ADR-0156
+            // Amendment 6), so each may write the checkpoint.
             let reopened = open_operational(RedbStore::open(&path.0).unwrap());
             assert_replay(&reopened, &fixture);
-            assert_eq!(
-                reopened.write_validated_prefix_checkpoint().unwrap(),
-                complete
-            );
+            assert!(reopened.write_validated_prefix_checkpoint().unwrap());
             drop(reopened);
             assert_eq!(
                 command_receipts(&path.0),

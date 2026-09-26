@@ -343,6 +343,37 @@ impl RedbBackgroundScrubSession {
         }
     }
 
+    /// Drives the complete catalog-semantic validation over the historical
+    /// stream after the structural exact end, exactly as startup and the
+    /// offline scrub do, and returns the historical exact end. Each page is
+    /// clamped to `rows_per_step`, and `proceed` runs before every page so the
+    /// caller can yield and observe cancellation; it returning `false` stops
+    /// the walk with `Unavailable`. A pending index migration is not a state
+    /// a live scrub can finish over and refuses as an incompatible format.
+    pub fn validate_catalog_history(
+        &mut self,
+        rows_per_step: EvidencePageLimit,
+        proceed: impl FnMut() -> bool,
+    ) -> Result<RedbHistoricalEvidenceEnd, StorageError> {
+        let mut view = ScrubCatalogView {
+            session: &mut self.session,
+            rows_per_step,
+            proceed,
+        };
+        let validation = validate_catalog_history(&mut view).map_err(|error| {
+            storage_error(
+                error
+                    .storage_kind()
+                    .unwrap_or(StorageErrorKind::CorruptData),
+            )
+        })?;
+        let (catalog, historical_end) = validation.into_parts();
+        if !matches!(catalog, CatalogHistoryOutcome::Ready(_)) {
+            return Err(storage_error(StorageErrorKind::IncompatibleFormat));
+        }
+        Ok(historical_end)
+    }
+
     /// Completes the scrub after both exact ends, proving the walk finished
     /// with zero findings and touching no durable state.
     pub fn finish(
@@ -352,6 +383,88 @@ impl RedbBackgroundScrubSession {
     ) -> Result<(), StorageError> {
         self.session
             .finish_background_scrub(structural_end, historical_end)
+    }
+}
+
+/// The background scrub's view of its session for the shared catalog-history
+/// validator: historical pages clamped to the scrub's rows-per-step bound with
+/// the caller's yield and cancellation check before each page, the validator's
+/// point lookups, and nothing else. It cannot read structural evidence or
+/// finish the session.
+struct ScrubCatalogView<'a, F> {
+    session: &'a mut RedbStructuralEvidenceSession,
+    rows_per_step: EvidencePageLimit,
+    proceed: F,
+}
+
+impl<F: FnMut() -> bool> StructuralEvidenceSession for ScrubCatalogView<'_, F> {
+    type DormantPorts = RedbDormantPorts;
+    type StructuralEnd = RedbStructuralEvidenceEnd;
+    type HistoricalEnd = RedbHistoricalEvidenceEnd;
+    type MigrationPort = RedbStartupIndexMigrationPort;
+
+    fn database_id(&self) -> DatabaseId {
+        self.session.database_id
+    }
+
+    fn open_session_id(&self) -> OpenSessionId {
+        self.session.open_session_id
+    }
+
+    fn read_structural_evidence(
+        &mut self,
+        _cursor: StructuralEvidenceCursor,
+        _limit: EvidencePageLimit,
+    ) -> Result<StructuralEvidencePage<Self::StructuralEnd>, StorageError> {
+        Err(invariant())
+    }
+
+    fn read_historical_evidence(
+        &mut self,
+        cursor: HistoricalEvidenceCursor,
+        limit: EvidencePageLimit,
+    ) -> Result<HistoricalEvidencePage<Self::HistoricalEnd>, StorageError> {
+        if !(self.proceed)() {
+            return Err(storage_error(StorageErrorKind::Unavailable));
+        }
+        let limit = if limit.get() > self.rows_per_step.get() {
+            self.rows_per_step
+        } else {
+            limit
+        };
+        self.session.read_historical_evidence(cursor, limit)
+    }
+
+    fn read_historical_bundle(
+        &mut self,
+        lineage: &ContractLineage,
+        contract_version: ContractVersion,
+        bundle_hash: ContractBundleHash,
+    ) -> Result<Option<HistoricalBundleEvidence>, StorageError> {
+        self.session
+            .read_historical_bundle(lineage, contract_version, bundle_hash)
+    }
+
+    fn read_integrity_entity(
+        &mut self,
+        target: &riffdb_storage_api::EntityTarget,
+    ) -> Result<Option<riffdb_storage_api::StoredEntityRecordV1>, StorageError> {
+        self.session.read_integrity_entity(target)
+    }
+
+    fn read_integrity_unique_occupancy(
+        &mut self,
+        target: &riffdb_storage_api::UniqueIndexTarget,
+    ) -> Result<riffdb_storage_api::UniqueOccupancyKind, StorageError> {
+        self.session.read_integrity_unique_occupancy(target)
+    }
+
+    fn finish(
+        self,
+        _structural_end: Self::StructuralEnd,
+        _historical_end: Self::HistoricalEnd,
+    ) -> Result<StructuralOpenOutcome<Self::DormantPorts, Self::MigrationPort>, StorageError> {
+        Err(invariant())
     }
 }
 
@@ -845,11 +958,22 @@ impl RedbStore {
             .begin_read()
             .map_err(transaction_error)?;
         let snapshot = collect_startup_snapshot(&transaction, private)?;
-        let v3_active = if private.is_some() {
-            true // The private inventory check proved the distinct reconstruction roots.
+        let v3_history = if private.is_some() {
+            None
         } else {
-            crate::changelog_v3_roots::read_checkpoint_roots(&transaction)?.is_some()
+            crate::changelog_v3_roots::read_checkpoint_roots(&transaction)?
         };
+        // The private inventory check proved the distinct reconstruction roots.
+        let v3_active = private.is_some() || v3_history.is_some();
+        // ADR-0156 Amendment 6: an AuthoritativeStateCatalogV2 source must
+        // perform complete ordinary validation, including retained fence
+        // evidence, before it is granted source authority. The ADR-0182
+        // bounded dirty path does not, so it is not selected for V2 sources
+        // until a successor design is accepted.
+        let v2_source = v3_history.is_some_and(|history| {
+            history.lineage().catalog_digest()
+                == riffdb_storage_api::AuthoritativeStateCatalogV2.digest()
+        });
         if self.shared.durable_commit_epoch() != durable_commit_epoch {
             return Err(corrupt());
         }
@@ -986,6 +1110,7 @@ impl RedbStore {
             .is_ok();
         if purpose == EvidenceOpenPurpose::Startup
             && v3_active
+            && !v2_source
             && checkpoint_admits_bounded
             && !self.shared.is_follower_mode()
         {

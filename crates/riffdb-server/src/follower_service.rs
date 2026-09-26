@@ -359,6 +359,14 @@ impl FollowerOperationalStatus {
                 ),
                 ComponentHealth::replication(follower_replication_statistics(&view)?),
             ])
+            .and_then(|snapshot| {
+                // ADR-0203: the member is present in authenticated health. A
+                // follower's startup always takes the complete path and runs no
+                // background scrub, so its member honestly stays pending.
+                snapshot.with_storage_scrub(riffdb_service::StorageScrubHealth::new(
+                    riffdb_service::StorageScrubHealthState::Pending,
+                )?)
+            })
             .map_err(|_| OperationalStatusError::Integrity)
         });
         let statistics = driver.executor(move |()| {

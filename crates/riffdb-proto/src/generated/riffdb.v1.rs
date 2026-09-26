@@ -63,6 +63,13 @@ pub struct BuildInfo {
     #[prost(string, tag = "7")]
     pub mcp_protocol_baseline: ::prost::alloc::string::String,
 }
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct StorageScrubHealth {
+    #[prost(enumeration = "StorageScrubHealthState", tag = "1")]
+    pub state: i32,
+    #[prost(bytes = "vec", optional, tag = "2")]
+    pub incident_id: ::core::option::Option<::prost::alloc::vec::Vec<u8>>,
+}
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct AuthenticatedHealth {
     #[prost(enumeration = "HealthStatus", tag = "1")]
@@ -79,6 +86,8 @@ pub struct AuthenticatedHealth {
     pub build: ::core::option::Option<BuildInfo>,
     #[prost(uint64, tag = "7")]
     pub history_incarnation: u64,
+    #[prost(message, optional, tag = "8")]
+    pub storage_scrub: ::core::option::Option<StorageScrubHealth>,
 }
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct HealthResponse {
@@ -1292,6 +1301,44 @@ impl ReplicationRole {
             "REPLICATION_ROLE_UNSPECIFIED" => Some(Self::Unspecified),
             "REPLICATION_ROLE_PRIMARY" => Some(Self::Primary),
             "REPLICATION_ROLE_FOLLOWER" => Some(Self::Follower),
+            _ => None,
+        }
+    }
+}
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, ::prost::Enumeration)]
+#[repr(i32)]
+pub enum StorageScrubHealthState {
+    Unspecified = 0,
+    Pending = 1,
+    Running = 2,
+    Complete = 3,
+    Failed = 4,
+    Cancelled = 5,
+}
+impl StorageScrubHealthState {
+    /// String value of the enum field names used in the ProtoBuf definition.
+    ///
+    /// The values are not transformed in any way and thus are considered stable
+    /// (if the ProtoBuf definition does not change) and safe for programmatic use.
+    pub fn as_str_name(&self) -> &'static str {
+        match self {
+            Self::Unspecified => "STORAGE_SCRUB_HEALTH_STATE_UNSPECIFIED",
+            Self::Pending => "STORAGE_SCRUB_HEALTH_STATE_PENDING",
+            Self::Running => "STORAGE_SCRUB_HEALTH_STATE_RUNNING",
+            Self::Complete => "STORAGE_SCRUB_HEALTH_STATE_COMPLETE",
+            Self::Failed => "STORAGE_SCRUB_HEALTH_STATE_FAILED",
+            Self::Cancelled => "STORAGE_SCRUB_HEALTH_STATE_CANCELLED",
+        }
+    }
+    /// Creates an enum from field names used in the ProtoBuf definition.
+    pub fn from_str_name(value: &str) -> ::core::option::Option<Self> {
+        match value {
+            "STORAGE_SCRUB_HEALTH_STATE_UNSPECIFIED" => Some(Self::Unspecified),
+            "STORAGE_SCRUB_HEALTH_STATE_PENDING" => Some(Self::Pending),
+            "STORAGE_SCRUB_HEALTH_STATE_RUNNING" => Some(Self::Running),
+            "STORAGE_SCRUB_HEALTH_STATE_COMPLETE" => Some(Self::Complete),
+            "STORAGE_SCRUB_HEALTH_STATE_FAILED" => Some(Self::Failed),
+            "STORAGE_SCRUB_HEALTH_STATE_CANCELLED" => Some(Self::Cancelled),
             _ => None,
         }
     }

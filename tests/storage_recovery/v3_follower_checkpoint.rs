@@ -91,10 +91,11 @@ fn follower_checkpoint_accepts_prefix_only_entities_via_seeded_chains() {
     );
 }
 
-/// An under-reported but possible prefix count binds at load. On a follower
-/// the complete walk's exact end refuses it. On a primary it admits the
-/// ADR-0182 bounded dirty path, which never consumes those counts: the
-/// accepted WP-760 boundary, corrected by the next complete walk.
+/// An under-reported but possible prefix count binds at load. Every complete
+/// walk refuses it at its exact end: a follower's, and a V2 primary's, which
+/// validates completely before source authority (ADR-0156 Amendment 6). A V1
+/// primary admits the ADR-0182 bounded dirty path, which never consumes those
+/// counts: the accepted WP-760 boundary, corrected by the next complete walk.
 #[test]
 fn under_reported_checkpoint_counts_fail_closed_on_the_complete_walk_only() {
     let under_report = |base: &StoredValidatedPrefixCheckpointV1| {
@@ -119,43 +120,69 @@ fn under_reported_checkpoint_counts_fail_closed_on_the_complete_walk_only() {
         .expect("rehash under-reported counts")
     };
 
-    let (_source, path) = checkpointed_follower("follower-count-mismatch");
-    super::super::super::rewrite_checkpoint(&path, under_report);
-    let mut session = follower_session(&path);
-    assert!(
-        session.checkpoint_verified(),
-        "under-reported counts still bind at load; the walk end verifies them"
-    );
-    let mut cursor =
-        StructuralEvidenceCursor::start(session.database_id(), session.open_session_id());
-    let limit = EvidencePageLimit::new(64).expect("page limit");
-    let failed_closed = loop {
-        match session.read_structural_evidence(cursor, limit) {
-            Ok(StructuralEvidencePage::Page { findings, next, .. }) => {
-                if !findings.is_empty() {
-                    break true;
+    let walk_end_refuses = |mut session: riffdb_storage_redb::RedbStructuralEvidenceSession| {
+        assert!(
+            session.checkpoint_verified(),
+            "under-reported counts still bind at load; the walk end verifies them"
+        );
+        let mut cursor =
+            StructuralEvidenceCursor::start(session.database_id(), session.open_session_id());
+        let limit = EvidencePageLimit::new(64).expect("page limit");
+        loop {
+            match session.read_structural_evidence(cursor, limit) {
+                Ok(StructuralEvidencePage::Page { findings, next, .. }) => {
+                    if !findings.is_empty() {
+                        break true;
+                    }
+                    cursor = next;
                 }
-                cursor = next;
+                Ok(StructuralEvidencePage::ExactEnd(_)) => break false,
+                Err(_) => break true,
             }
-            Ok(StructuralEvidencePage::ExactEnd(_)) => break false,
-            Err(_) => break true,
         }
     };
+
+    let (_source, path) = checkpointed_follower("follower-count-mismatch");
+    super::super::super::rewrite_checkpoint(&path, under_report);
     assert!(
-        failed_closed,
-        "an under-reported below-S commits_count must fail closed at the walk end"
+        walk_end_refuses(follower_session(&path)),
+        "a follower's complete walk refuses an under-reported below-S commits_count"
     );
 
-    let primary = TestDatabasePath::new("primary-count-mismatch");
-    let _ = super::super::super::prepare_committed_command_database(&primary.0);
-    super::super::super::strip_checkpoint_meta(&primary.0);
-    drop(super::super::super::complete_startup_pass(
-        RedbStore::open(&primary.0).expect("write the S=head checkpoint"),
-    ));
-    super::super::super::rewrite_checkpoint(&primary.0, under_report);
-    let (_, bounded_dirty) = super::super::super::startup_path_observation(&primary.0);
+    // Written at S=head by a complete walk on each catalog version.
+    let checkpointed_primary = |name: &str, v1: bool| {
+        let primary = TestDatabasePath::new(name);
+        if v1 {
+            super::super::super::prepare_v1_command_database(&primary.0);
+        } else {
+            super::super::super::prepare_command_database(&primary.0);
+        }
+        let ports = open_operational(RedbStore::open(&primary.0).expect("open primary"));
+        commit_command_fixture(&ports, &command_fixture_at(1));
+        drop(ports);
+        super::super::super::strip_checkpoint_meta(&primary.0);
+        drop(super::super::super::complete_startup_pass(
+            RedbStore::open(&primary.0).expect("write the S=head checkpoint"),
+        ));
+        super::super::super::rewrite_checkpoint(&primary.0, under_report);
+        primary
+    };
+
+    let v2 = checkpointed_primary("v2-primary-count-mismatch", false);
+    let session = RedbStore::open(&v2.0)
+        .expect("open V2 primary")
+        .begin_structural_evidence(inputs())
+        .expect("begin V2 primary evidence");
+    assert!(!session.bounded_dirty_startup_path());
+    assert!(
+        walk_end_refuses(session),
+        "a V2 primary's complete walk refuses an under-reported below-S commits_count"
+    );
+
+    let v1 = checkpointed_primary("v1-primary-count-mismatch", true);
+    let (_, bounded_dirty) = super::super::super::startup_path_observation(&v1.0);
     assert!(
         bounded_dirty,
-        "a possible count admits the bounded dirty path, which does not consume it"
+        "on a V1 primary a possible count admits the bounded dirty path, which does not consume it"
     );
 }

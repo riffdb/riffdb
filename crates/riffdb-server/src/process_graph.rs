@@ -767,6 +767,9 @@ impl ProductionGraphBuilder {
             &blocking,
         ));
         let outbox = Arc::new(ServerOutboxStatusPort::new(storage.clone(), &blocking));
+        // ADR-0182/ADR-0203: the background scrub's process-local status is
+        // shared by its worker and the authenticated health it reports into.
+        let scrub_status = crate::scrub_worker::BackgroundScrubStatus::new();
         let operational: Arc<dyn OperationalStatusPort> = Arc::new(
             ProductionOperationalStatusPort::new_with_vector_storage(
                 allocator_capacity,
@@ -777,14 +780,20 @@ impl ProductionGraphBuilder {
                 columnar_status,
                 storage.clone(),
             )
+            .with_storage_scrub(scrub_status.clone())
             .with_replication(replication_observations, &blocking),
         );
         let health: Arc<dyn ServiceHealthHooks> = Arc::new(
             ProductionObservabilityHealthHooks::new(runtime.clone(), observability.clone()),
         );
-        // The ADR-0182 background scrub degrades Storage through the same
-        // production health hooks the storage bundle uses.
-        let scrub_health: Arc<dyn ServiceHealthHooks> = Arc::clone(&health);
+        // A failed ADR-0182 background scrub records an internal incident and
+        // degrades Storage through its health member; the production health
+        // hooks are only its fail-closed fallback without an incident identity.
+        let scrub_failure = crate::scrub_worker::ScrubFailureSinks {
+            incident_ids: Arc::clone(&incident_ids),
+            diagnostics: Arc::clone(&diagnostics) as Arc<dyn ServiceDiagnostics>,
+            health: Arc::clone(&health),
+        };
         let service_spawner: Arc<dyn ServiceJobSpawner> = Arc::new(spawner.clone());
         let deadline_scheduler: Arc<dyn RequestDeadlineScheduler> =
             Arc::new(TokioRequestDeadlineScheduler);
@@ -993,7 +1002,8 @@ impl ProductionGraphBuilder {
             crate::scrub_worker::RunningScrubWorker::start(
                 storage.shared_read_ports(),
                 scrub_inputs,
-                scrub_health,
+                scrub_status,
+                scrub_failure,
             )
             .map_err(|_| ProductionGraphBuildError::CurrentView)?
         };

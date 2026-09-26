@@ -19,11 +19,11 @@ use std::sync::atomic::{AtomicBool, AtomicU8, AtomicU64, Ordering};
 use std::sync::{Arc, Condvar, Mutex};
 use std::thread::{self, JoinHandle};
 
+use riffdb_errors::{DefectScope, IncidentIdSource, InternalError};
+use riffdb_observability::{ServiceDiagnostics, ServiceHealthHooks};
 use riffdb_storage_api::{EvidencePageLimit, StorageError, StorageErrorKind};
-use riffdb_storage_redb::{
-    BackgroundScrubHistoricalPage, BackgroundScrubPage, RedbHistoricalEvidenceEnd, RedbSharedPorts,
-    RedbStructuralEvidenceEnd,
-};
+use riffdb_storage_redb::{BackgroundScrubPage, RedbSharedPorts};
+use riffdb_types::IncidentId;
 
 /// Closed background-scrub states, exactly the five ADR-0182 Decision 3 names.
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
@@ -85,6 +85,7 @@ pub(crate) struct BackgroundScrubStatus {
     rows_walked: Arc<AtomicU64>,
     started_at: Arc<Mutex<Option<std::time::Instant>>>,
     finished_at: Arc<Mutex<Option<std::time::Instant>>>,
+    incident: Arc<Mutex<Option<IncidentId>>>,
 }
 
 const STATE_PENDING: u8 = 0;
@@ -94,17 +95,67 @@ const STATE_FAILED: u8 = 3;
 const STATE_CANCELLED: u8 = 4;
 
 impl BackgroundScrubStatus {
-    fn new() -> Self {
+    /// A fresh process-local status. Every process starts at `pending`.
+    pub(crate) fn new() -> Self {
         Self {
             state: Arc::new(AtomicU8::new(STATE_PENDING)),
             rows_walked: Arc::new(AtomicU64::new(0)),
             started_at: Arc::new(Mutex::new(None)),
             finished_at: Arc::new(Mutex::new(None)),
+            incident: Arc::new(Mutex::new(None)),
         }
     }
 
-    fn store(&self, state: u8) {
-        self.state.store(state, Ordering::Release);
+    /// Applies one ADR-0203 Decision 4 transition: `pending -> running |
+    /// cancelled` and `running -> complete | failed | cancelled`. Terminal
+    /// states never transition; an invalid request is ignored and reported.
+    fn transition(&self, to: u8) -> bool {
+        let valid_from: &[u8] = match to {
+            STATE_RUNNING => &[STATE_PENDING],
+            STATE_CANCELLED => &[STATE_PENDING, STATE_RUNNING],
+            STATE_COMPLETE | STATE_FAILED => &[STATE_RUNNING],
+            _ => &[],
+        };
+        valid_from.iter().any(|from| {
+            self.state
+                .compare_exchange(*from, to, Ordering::AcqRel, Ordering::Acquire)
+                .is_ok()
+        })
+    }
+
+    fn fail(&self, incident: Option<IncidentId>) {
+        *self
+            .incident
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = incident;
+        self.note_finished();
+        let _ = self.transition(STATE_FAILED);
+    }
+
+    /// The authenticated-health member (ADR-0203 Decision 4), or `None` for a
+    /// failure that could not be assigned an incident identity; that case has
+    /// already failed readiness, so no FAILED member without its incident is
+    /// ever published.
+    pub(crate) fn health(&self) -> Option<riffdb_service::StorageScrubHealth> {
+        use riffdb_service::{StorageScrubHealth, StorageScrubHealthState};
+        let state = match self.state() {
+            BackgroundScrubState::Pending => StorageScrubHealthState::Pending,
+            BackgroundScrubState::Running => StorageScrubHealthState::Running,
+            BackgroundScrubState::Complete => StorageScrubHealthState::Complete,
+            BackgroundScrubState::Cancelled => StorageScrubHealthState::Cancelled,
+            BackgroundScrubState::Failed => {
+                return self.incident().map(StorageScrubHealth::failed);
+            }
+        };
+        StorageScrubHealth::new(state).ok()
+    }
+
+    /// The incident identity recorded with a failure.
+    pub(crate) fn incident(&self) -> Option<IncidentId> {
+        *self
+            .incident
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
     }
 
     fn note_running(&self) {
@@ -215,18 +266,44 @@ pub(crate) enum ScrubStopObservation {
 }
 
 impl RunningScrubWorker {
-    /// Starts the one background scrub over the live shared handle. The
-    /// `health` hook receives the Storage degradation on failure.
+    /// Starts the one background scrub over the live shared handle, reporting
+    /// through the process's shared `status`. A failure is recorded as an
+    /// internal incident through `diagnostics` and degrades Storage through
+    /// the status's health member while serving continues (ADR-0203 Decision
+    /// 5). `health` is the fail-closed fallback when no incident identity can
+    /// be assigned.
     pub(crate) fn start(
         storage: RedbSharedPorts,
         inputs: riffdb_storage_api::StartupValidationInputs,
-        health: Arc<dyn riffdb_observability::ServiceHealthHooks>,
+        status: BackgroundScrubStatus,
+        failure: ScrubFailureSinks,
+    ) -> Result<Self, StorageError> {
+        Self::spawn(storage, inputs, status, failure, false)
+    }
+
+    /// Starts a worker whose shutdown was requested before its first page,
+    /// the deterministic cancellation schedule for tests.
+    #[cfg(test)]
+    fn start_with_shutdown_requested(
+        storage: RedbSharedPorts,
+        inputs: riffdb_storage_api::StartupValidationInputs,
+        status: BackgroundScrubStatus,
+        failure: ScrubFailureSinks,
+    ) -> Result<Self, StorageError> {
+        Self::spawn(storage, inputs, status, failure, true)
+    }
+
+    fn spawn(
+        storage: RedbSharedPorts,
+        inputs: riffdb_storage_api::StartupValidationInputs,
+        status: BackgroundScrubStatus,
+        failure: ScrubFailureSinks,
+        shutdown_requested: bool,
     ) -> Result<Self, StorageError> {
         let stop = Arc::new(ScrubStopState {
-            requested: Mutex::new(false),
+            requested: Mutex::new(shutdown_requested),
             changed: Condvar::new(),
         });
-        let status = BackgroundScrubStatus::new();
         let cancellation = Arc::new(AtomicBool::new(false));
         let worker_stop = Arc::clone(&stop);
         let worker_status = status.clone();
@@ -237,10 +314,10 @@ impl RunningScrubWorker {
                 run_scrub(
                     storage,
                     inputs,
-                    worker_stop,
-                    worker_status,
+                    &worker_stop,
+                    &worker_status,
                     worker_cancellation,
-                    health,
+                    &failure,
                 );
             })
             .map_err(|_| storage_error(StorageErrorKind::Unavailable))?;
@@ -296,107 +373,156 @@ impl Drop for RunningScrubWorker {
     }
 }
 
+/// Where a failed scrub records itself: the incident identity source, the
+/// trusted diagnostic sink, and the fail-closed readiness fallback.
+#[derive(Clone)]
+pub(crate) struct ScrubFailureSinks {
+    pub(crate) incident_ids: Arc<dyn IncidentIdSource>,
+    pub(crate) diagnostics: Arc<dyn ServiceDiagnostics>,
+    pub(crate) health: Arc<dyn ServiceHealthHooks>,
+}
+
+/// The closed, payload-free reason a scrub failed, retained only in trusted
+/// diagnostics under its incident identity.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum ScrubFailure {
+    SnapshotUnavailable,
+    StructuralFinding,
+    StructuralRead,
+    CatalogHistory,
+    ExactEnd,
+}
+
+impl fmt::Display for ScrubFailure {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str(match self {
+            Self::SnapshotUnavailable => "background scrub could not pin its snapshot",
+            Self::StructuralFinding => "background scrub observed a structural finding",
+            Self::StructuralRead => "background scrub structural read failed",
+            Self::CatalogHistory => "background scrub catalog-history validation failed",
+            Self::ExactEnd => "background scrub exact-end proof failed",
+        })
+    }
+}
+
+impl std::error::Error for ScrubFailure {}
+
 fn storage_error(kind: StorageErrorKind) -> StorageError {
     StorageError::new(kind, None)
+}
+
+/// Records one failure: an incident identity, its trusted diagnostic, and the
+/// failed state. Without an identity the failure cannot be published as a
+/// FAILED member, so readiness fails closed instead.
+fn record_failure(
+    status: &BackgroundScrubStatus,
+    sinks: &ScrubFailureSinks,
+    failure: ScrubFailure,
+) {
+    match sinks.incident_ids.next_incident_id() {
+        Ok(incident) => {
+            sinks.diagnostics.record_internal(InternalError::new(
+                incident,
+                DefectScope::Process,
+                failure,
+            ));
+            status.fail(Some(incident));
+        }
+        Err(_) => {
+            status.fail(None);
+            sinks.health.fail_authoritative_readiness(
+                riffdb_observability::AuthoritativeReadinessFailure::Integrity,
+            );
+        }
+    }
 }
 
 fn run_scrub(
     storage: RedbSharedPorts,
     inputs: riffdb_storage_api::StartupValidationInputs,
-    stop: Arc<ScrubStopState>,
-    status: BackgroundScrubStatus,
+    stop: &ScrubStopState,
+    status: &BackgroundScrubStatus,
     cancellation: Arc<AtomicBool>,
-    health: Arc<dyn riffdb_observability::ServiceHealthHooks>,
+    sinks: &ScrubFailureSinks,
 ) {
+    let cancel = || {
+        status.note_finished();
+        let _ = status.transition(STATE_CANCELLED);
+    };
+    if stop.is_requested() {
+        cancel();
+        return;
+    }
     // The scrub is running from its first instruction: the session open
     // itself performs the retained-history validation, which is
     // population-proportional work the state must not hide as pending.
     status.note_running();
-    status.store(STATE_RUNNING);
+    if !status.transition(STATE_RUNNING) {
+        return;
+    }
     let mut session = match storage.begin_background_scrub(inputs) {
         Ok(session) => session,
         Err(_) => {
-            // The scrub cannot even pin its snapshot: a bounded, redaction-
-            // safe failure. Degrade Storage; do not retry.
-            status.note_finished();
-            status.store(STATE_FAILED);
-            health.fail_authoritative_readiness(
-                riffdb_observability::AuthoritativeReadinessFailure::Integrity,
-            );
+            record_failure(status, sinks, ScrubFailure::SnapshotUnavailable);
             return;
         }
     };
     session.set_cancellation(cancellation);
     let limit = EvidencePageLimit::new(BACKGROUND_SCRUB_ROWS_PER_STEP)
         .unwrap_or(EvidencePageLimit::new(1).expect("bounded page limit"));
-    // Drive the structural stream page by page.
-    let structural_end: Option<RedbStructuralEvidenceEnd> = loop {
+    // The structural stream, one bounded page per scheduling step.
+    let structural_end = loop {
         if stop.is_requested() {
-            status.store(STATE_CANCELLED);
+            cancel();
             return;
         }
         match session.read_structural_page(limit) {
             Ok(BackgroundScrubPage::Page { findings, .. }) => {
                 if !findings.is_empty() {
-                    status.store(STATE_FAILED);
-                    health.fail_authoritative_readiness(
-                        riffdb_observability::AuthoritativeReadinessFailure::Integrity,
-                    );
+                    record_failure(status, sinks, ScrubFailure::StructuralFinding);
                     return;
                 }
                 status.note_rows(session.rows_walked());
-                // One bounded page per scheduling step: yield the thread so
-                // the writer and workers keep their share of the core.
+                // Yield so the writer and workers keep their share of the core.
                 thread::yield_now();
             }
-            Ok(BackgroundScrubPage::ExactEnd(end)) => break Some(end),
+            Ok(BackgroundScrubPage::ExactEnd(end)) => break end,
+            Err(_) if stop.is_requested() => {
+                cancel();
+                return;
+            }
             Err(_) => {
-                status.store(STATE_FAILED);
-                health.fail_authoritative_readiness(
-                    riffdb_observability::AuthoritativeReadinessFailure::Integrity,
-                );
+                record_failure(status, sinks, ScrubFailure::StructuralRead);
                 return;
             }
         }
     };
-    // Drive the historical stream page by page. The scrub hands each page's
-    // semantic evidence to the catalog validator; the bounded evidence itself
-    // is not a finding, and validation failures degrade Storage.
-    let historical_end: Option<RedbHistoricalEvidenceEnd> = loop {
+    // The catalog-semantic validation over the historical stream, under the
+    // same rows-per-step bound, yielding between pages and observing shutdown.
+    let historical_end = match session.validate_catalog_history(limit, || {
         if stop.is_requested() {
-            status.store(STATE_CANCELLED);
+            false
+        } else {
+            thread::yield_now();
+            true
+        }
+    }) {
+        Ok(end) => end,
+        Err(_) if stop.is_requested() => {
+            cancel();
             return;
         }
-        match session.read_historical_page(limit) {
-            Ok(BackgroundScrubHistoricalPage::Page { .. }) => {
-                thread::yield_now();
-            }
-            Ok(BackgroundScrubHistoricalPage::ExactEnd(end)) => break Some(end),
-            Err(_) => {
-                status.store(STATE_FAILED);
-                health.fail_authoritative_readiness(
-                    riffdb_observability::AuthoritativeReadinessFailure::Integrity,
-                );
-                return;
-            }
+        Err(_) => {
+            record_failure(status, sinks, ScrubFailure::CatalogHistory);
+            return;
         }
-    };
-    let (Some(structural_end), Some(historical_end)) = (structural_end, historical_end) else {
-        status.store(STATE_FAILED);
-        return;
     };
     match session.finish(structural_end, historical_end) {
         Ok(()) => {
             status.note_finished();
-            status.store(STATE_COMPLETE);
+            let _ = status.transition(STATE_COMPLETE);
         }
-        Err(_) => {
-            status.note_finished();
-            status.store(STATE_FAILED);
-            health.fail_authoritative_readiness(
-                riffdb_observability::AuthoritativeReadinessFailure::Integrity,
-            );
-        }
+        Err(_) => record_failure(status, sinks, ScrubFailure::ExactEnd),
     }
 }
 
@@ -424,6 +550,72 @@ mod tests {
                 .unwrap_or_else(std::sync::PoisonError::into_inner)
                 .push(reason);
         }
+    }
+
+    #[derive(Default)]
+    struct RecordingDiagnostics {
+        incidents: Mutex<Vec<(IncidentId, DefectScope)>>,
+    }
+
+    impl ServiceDiagnostics for RecordingDiagnostics {
+        fn record_internal(&self, error: InternalError) {
+            self.incidents
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .push((*error.incident_id(), error.scope()));
+        }
+    }
+
+    struct FixedIncidents;
+
+    impl IncidentIdSource for FixedIncidents {
+        fn next_incident_id(&self) -> Result<IncidentId, riffdb_errors::IncidentIdSourceError> {
+            IncidentId::from_bytes([
+                0x01, 0x9b, 0xf6, 0xaa, 0xa6, 0x40, 0x7d, 0xe6, 0x89, 0xc9, 0x8a, 0x7f, 0x70, 0xbb,
+                0xbd, 0x23,
+            ])
+            .map_err(|_| riffdb_errors::IncidentIdSourceError)
+        }
+    }
+
+    struct Sinks {
+        health: Arc<RecordingHealth>,
+        diagnostics: Arc<RecordingDiagnostics>,
+    }
+
+    impl Sinks {
+        fn new() -> Self {
+            Self {
+                health: Arc::default(),
+                diagnostics: Arc::default(),
+            }
+        }
+
+        fn failure(&self) -> ScrubFailureSinks {
+            ScrubFailureSinks {
+                incident_ids: Arc::new(FixedIncidents),
+                diagnostics: self.diagnostics.clone(),
+                health: self.health.clone(),
+            }
+        }
+    }
+
+    fn await_terminal(worker: &RunningScrubWorker) -> BackgroundScrubState {
+        // The scrub runs on its own thread; the closed state is the only
+        // signal, observed without sleeps-as-synchronization.
+        for _ in 0..1_000_000 {
+            let state = worker.status().state();
+            if matches!(
+                state,
+                BackgroundScrubState::Complete
+                    | BackgroundScrubState::Failed
+                    | BackgroundScrubState::Cancelled
+            ) {
+                return state;
+            }
+            std::thread::yield_now();
+        }
+        panic!("scrub must reach a terminal state");
     }
 
     struct Scratch {
@@ -537,88 +729,111 @@ mod tests {
     }
 
     // req: REC-001, REC-002, REC-007
-    /// OBL-0182-3 proof (ADR-0182 Decision 3). The background scrub exposes
-    /// exactly the closed states, honors its rows-per-step rate bound, is
-    /// cancelled by shutdown, and a failed scrub degrades the Storage
-    /// component with an incident without repairing or hiding the affected
-    /// row.
+    /// OBL-0182-3 proof (ADR-0182 Decision 3, ADR-0203 Decisions 4 and 5).
+    /// The background scrub exposes exactly the closed states with only the
+    /// valid transitions, honors its rows-per-step bound, is cancelled by
+    /// shutdown, and a failed scrub records an internal incident and degrades
+    /// Storage through its health member without failing readiness, repairing,
+    /// or hiding the affected row.
     #[test]
     fn background_scrub_health_transitions_are_closed_and_cancellable() {
-        // Complete path: pending -> running -> complete over a healthy source.
+        // pending -> running -> complete over a healthy source.
         {
             let scratch = scratch_source("scrub-complete");
-            let shared = scratch_shared(&scratch);
-            let health: Arc<RecordingHealth> = Arc::default();
-            let mut worker = RunningScrubWorker::start(shared, test_inputs(), health.clone())
-                .expect("start scrub worker");
-            // The worker sets Running from its first instruction (the session
-            // open itself is population-proportional work), so the immediate
-            // observation is Pending or Running — both legal pre-terminal
-            // states, never a terminal one.
-            assert!(
-                matches!(
-                    worker.status().state(),
-                    BackgroundScrubState::Pending | BackgroundScrubState::Running
-                ),
-                "the scrub starts in a pre-terminal state"
+            let sinks = Sinks::new();
+            let status = BackgroundScrubStatus::new();
+            assert_eq!(status.state(), BackgroundScrubState::Pending);
+            let health = status.health().expect("pending member");
+            assert_eq!(
+                health.state(),
+                riffdb_service::StorageScrubHealthState::Pending
             );
-            // The scrub runs to completion on its own thread; poll the closed
-            // state without sleeps-as-synchronization by joining through
-            // shutdown once the terminal state is observed.
-            let mut observed_running = false;
-            let mut iterations = 0;
-            loop {
-                iterations += 1;
-                assert!(iterations < 10_000, "scrub must reach a terminal state");
-                match worker.status().state() {
-                    BackgroundScrubState::Pending => {}
-                    BackgroundScrubState::Running => observed_running = true,
-                    BackgroundScrubState::Complete
-                    | BackgroundScrubState::Failed
-                    | BackgroundScrubState::Cancelled => break,
-                }
-                std::thread::yield_now();
-            }
-            assert!(
-                observed_running || iterations > 1,
-                "the running state is observable on a nonempty walk"
+            let mut worker = RunningScrubWorker::start(
+                scratch_shared(&scratch),
+                test_inputs(),
+                status.clone(),
+                sinks.failure(),
+            )
+            .expect("start scrub worker");
+            assert_eq!(await_terminal(&worker), BackgroundScrubState::Complete);
+            assert_eq!(worker.shutdown(), ScrubStopObservation::Complete);
+            assert_eq!(
+                status.state(),
+                BackgroundScrubState::Complete,
+                "terminal states never transition"
             );
-            let observation = worker.shutdown();
-            assert_eq!(observation, ScrubStopObservation::Complete);
-            assert_eq!(worker.status().state(), BackgroundScrubState::Complete);
-            assert!(
-                health.failures.lock().unwrap().is_empty(),
-                "a completed scrub degrades nothing"
+            let health = status.health().expect("complete member");
+            assert_eq!(
+                health.state(),
+                riffdb_service::StorageScrubHealthState::Complete
             );
+            assert_eq!(health.incident_id(), None);
+            assert!(sinks.health.failures.lock().unwrap().is_empty());
+            assert!(sinks.diagnostics.incidents.lock().unwrap().is_empty());
         }
-        // Cancelled path: shutdown before completion cancels at a page
-        // boundary. A source with a population large enough that the scrub is
-        // still walking when shutdown arrives.
+        // Shutdown before the first page: pending -> cancelled, deterministically.
         {
             let scratch = scratch_source("scrub-cancel");
-            let shared = scratch_shared(&scratch);
-            let health: Arc<RecordingHealth> = Arc::default();
-            let mut worker = RunningScrubWorker::start(shared, test_inputs(), health.clone())
-                .expect("start scrub worker for cancellation");
-            // Request shutdown immediately: the scrub observes it at its next
-            // page boundary and reports cancelled, never a false complete.
-            let observation = worker.shutdown();
-            assert!(
-                matches!(
-                    observation,
-                    ScrubStopObservation::Cancelled | ScrubStopObservation::Complete
-                ),
-                "an immediate shutdown cancels or completes a tiny walk, never fails: {observation:?}"
+            let sinks = Sinks::new();
+            let status = BackgroundScrubStatus::new();
+            let mut worker = RunningScrubWorker::start_with_shutdown_requested(
+                scratch_shared(&scratch),
+                test_inputs(),
+                status.clone(),
+                sinks.failure(),
+            )
+            .expect("start scrub worker for cancellation");
+            assert_eq!(worker.shutdown(), ScrubStopObservation::Cancelled);
+            assert_eq!(status.state(), BackgroundScrubState::Cancelled);
+            assert_eq!(status.rows_walked(), 0, "a cancelled scrub walked no page");
+            assert!(sinks.health.failures.lock().unwrap().is_empty());
+            assert!(sinks.diagnostics.incidents.lock().unwrap().is_empty());
+        }
+        // A planted malformed population row: running -> failed with one
+        // internal incident, Storage degraded through the FAILED member,
+        // readiness untouched, and the row left exactly as planted.
+        {
+            let scratch = scratch_source("scrub-failed");
+            riffdb_storage_redb::plant_malformed_population_row_fixture(&scratch.path)
+                .expect("plant malformed row");
+            let sinks = Sinks::new();
+            let status = BackgroundScrubStatus::new();
+            let mut worker = RunningScrubWorker::start(
+                scratch_shared(&scratch),
+                test_inputs(),
+                status.clone(),
+                sinks.failure(),
+            )
+            .expect("start scrub worker over corruption");
+            assert_eq!(await_terminal(&worker), BackgroundScrubState::Failed);
+            assert_eq!(worker.shutdown(), ScrubStopObservation::Failed);
+            drop(worker);
+            let incident = FixedIncidents.next_incident_id().expect("fixed incident");
+            let health = status.health().expect("failed member carries its incident");
+            assert_eq!(
+                health.state(),
+                riffdb_service::StorageScrubHealthState::Failed
             );
-            let state = worker.status().state();
-            assert!(
-                matches!(
-                    state,
-                    BackgroundScrubState::Cancelled | BackgroundScrubState::Complete
-                ),
-                "closed terminal state after shutdown, got {state}"
+            assert_eq!(health.incident_id(), Some(incident));
+            assert_eq!(
+                *sinks.diagnostics.incidents.lock().unwrap(),
+                vec![(incident, DefectScope::Process)],
+                "exactly one internal incident is recorded"
             );
-            assert!(health.failures.lock().unwrap().is_empty());
+            assert!(
+                sinks.health.failures.lock().unwrap().is_empty(),
+                "a failed scrub degrades Storage; it does not fail readiness"
+            );
+            assert_eq!(
+                riffdb_storage_redb::read_malformed_population_row_fixture(&scratch.path)
+                    .expect("read planted row"),
+                Some(
+                    riffdb_storage_redb::MALFORMED_POPULATION_ROW_FIXTURE
+                        .1
+                        .to_vec()
+                ),
+                "the scrub neither repairs nor removes the affected row"
+            );
         }
         // Closed-state registry: exactly the five ADR-0182 states, by name.
         assert_eq!(BackgroundScrubState::Pending.as_str(), "pending");
@@ -626,6 +841,23 @@ mod tests {
         assert_eq!(BackgroundScrubState::Complete.as_str(), "complete");
         assert_eq!(BackgroundScrubState::Failed.as_str(), "failed");
         assert_eq!(BackgroundScrubState::Cancelled.as_str(), "cancelled");
+        // Only the ADR-0203 transitions apply.
+        let status = BackgroundScrubStatus::new();
+        assert!(
+            !status.transition(STATE_COMPLETE),
+            "pending cannot complete"
+        );
+        assert!(!status.transition(STATE_FAILED), "pending cannot fail");
+        assert!(status.transition(STATE_RUNNING));
+        assert!(
+            !status.transition(STATE_RUNNING),
+            "running does not re-enter"
+        );
+        assert!(status.transition(STATE_COMPLETE));
+        assert!(
+            !status.transition(STATE_CANCELLED),
+            "terminal states never transition"
+        );
         // The rate bound is rows per scheduling step, never wall-clock.
         assert_eq!(BACKGROUND_SCRUB_ROWS_PER_STEP, 64);
     }

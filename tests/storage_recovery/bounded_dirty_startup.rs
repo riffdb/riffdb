@@ -85,7 +85,7 @@ fn dirty_startup_reaches_readiness_without_a_population_walk() {
     }
 
     let path = TestDatabasePath::new("dirty-bounded-readiness");
-    prepare_command_database(&path.0);
+    prepare_v1_command_database(&path.0);
     // Give the database a real population beyond the fixture command: entity
     // rows, index rows, events, provenance, audit, and idempotency rows that
     // the old complete path would have enumerated before readiness.
@@ -127,7 +127,7 @@ fn dirty_startup_reaches_readiness_without_a_population_walk() {
 #[test]
 fn bounded_dirty_startup_claims_a_command_owned_outbox_event() {
     let path = TestDatabasePath::new("bounded-dirty-outbox-claim");
-    prepare_command_database(&path.0);
+    prepare_v1_command_database(&path.0);
     let mut ports = {
         let store = RedbStore::open(&path.0).expect("dirty reopen");
         let session = store

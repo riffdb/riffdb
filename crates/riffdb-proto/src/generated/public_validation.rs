@@ -2822,10 +2822,45 @@ fn validate_health_response(message: &v1::HealthResponse) -> Result<(), PublicWi
                 }
                 previous = component.component;
             }
+            if let Some(scrub) = &health.storage_scrub {
+                validate_storage_scrub_health(scrub, health)?;
+            }
             validate_timestamp(health.started_at.as_ref())?;
             validate_build_info(health.build.as_ref())
         }
     }
+}
+
+/// ADR-0203 Decisions 4 and 5: exactly one non-UNSPECIFIED state; the checked
+/// UUIDv7 incident identity is present exactly in FAILED; and FAILED is
+/// reported only beside a DEGRADED authoritative-storage component.
+fn validate_storage_scrub_health(
+    scrub: &v1::StorageScrubHealth,
+    health: &v1::AuthenticatedHealth,
+) -> Result<(), PublicWireError> {
+    let state = v1::StorageScrubHealthState::try_from(scrub.state)
+        .map_err(|_| PublicWireError::InvalidEnum)?;
+    if state == v1::StorageScrubHealthState::Unspecified {
+        return Err(PublicWireError::InvalidEnum);
+    }
+    let failed = state == v1::StorageScrubHealthState::Failed;
+    match (&scrub.incident_id, failed) {
+        (Some(bytes), true) => {
+            if !valid_uuid(bytes, riffdb_types::IncidentId::from_bytes) {
+                return Err(PublicWireError::InvalidUuidV7);
+            }
+        }
+        (None, false) => {}
+        _ => return Err(PublicWireError::InconsistentFields),
+    }
+    let storage_degraded = health.components.iter().any(|component| {
+        component.component == v1::HealthComponentKind::AuthoritativeStorage as i32
+            && component.status == v1::HealthComponentStatus::Degraded as i32
+    });
+    if failed != storage_degraded {
+        return Err(PublicWireError::InconsistentFields);
+    }
+    Ok(())
 }
 
 fn replication_frontier_pair(value: &v1::ReplicationFrontier) -> Result<(u64, u64), PublicWireError> {
