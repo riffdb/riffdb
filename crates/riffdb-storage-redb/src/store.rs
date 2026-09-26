@@ -5314,27 +5314,6 @@ impl RedbOperationalPorts {
         self.shared.transient_index_commit_rows()
     }
 
-    /// Whether any committed outbox entry is undelivered, answered only from
-    /// already-warm transient indexes. `None` means they are cold: a
-    /// commit-time health sample must never trigger the whole-history rebuild
-    /// (ADR-0182 Decision 1), so its caller keeps its conservative state.
-    pub fn has_undelivered_outbox_if_warm(&self) -> Result<Option<bool>, StorageError> {
-        let _lease = self.acquire_indexed_read_lease()?;
-        let state = self
-            .shared
-            .transient_indexes
-            .read()
-            .map_err(|_| storage_error(StorageErrorKind::InvariantViolation))?;
-        match &*state {
-            TransientIndexState::Ready(indexes) => indexes
-                .undelivered_outbox_page(None, 1)
-                .map(|(event_ids, _)| Some(!event_ids.is_empty()))
-                .ok_or_else(|| storage_error(StorageErrorKind::Unavailable)),
-            TransientIndexState::Dormant => Ok(None),
-            TransientIndexState::Invalid => Err(storage_error(StorageErrorKind::Unavailable)),
-        }
-    }
-
     /// Per-reason counts of ignored validated-prefix checkpoints on this database.
     #[doc(hidden)]
     #[must_use]
