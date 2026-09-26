@@ -324,7 +324,10 @@ pub use migration_stage::{
     RedbContractMigrationContext, RedbContractMigrationImmutableWitness,
     RedbContractMigrationPreflight, RedbContractMigrationStage, RedbMigrationProjectionPorts,
 };
-pub use retention::{RedbOfflineRetention, RetentionStatusV1};
+pub use retention::{
+    ONLINE_RETENTION_STEP_SEQUENCES, OnlineRetentionHold, OnlineRetentionStep,
+    RedbOfflineRetention, RetentionStatusV1,
+};
 pub use shared_ports::RedbSharedPorts;
 pub use startup::{
     BackgroundScrubHistoricalPage, BackgroundScrubPage, OfflineIntegrityScrubReceiptV1,

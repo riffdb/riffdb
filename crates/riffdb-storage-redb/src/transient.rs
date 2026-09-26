@@ -93,13 +93,22 @@ pub(crate) enum TransientIndexDelta {
         was_undelivered: bool,
         undelivered: bool,
     },
+    /// ADR-0182 online retention removed every command row through `through`,
+    /// including these whole segments. Their derived locators go with them;
+    /// the retained views the prune materialized answer those lookups.
+    HistoryPruned {
+        through: CommitSequence,
+        segments: Vec<Arc<StoredCommandSegmentV1>>,
+    },
 }
 
 impl TransientIndexDelta {
     pub(crate) fn command_segment(&self) -> Option<&Arc<StoredCommandSegmentV1>> {
         match self {
             Self::CommandSegmentPublished(segment) => Some(segment),
-            Self::PendingOutboxInserted(_) | Self::PendingOutboxMembership { .. } => None,
+            Self::PendingOutboxInserted(_)
+            | Self::PendingOutboxMembership { .. }
+            | Self::HistoryPruned { .. } => None,
         }
     }
 
@@ -544,6 +553,9 @@ impl TransientIndexes {
                     }
                 }
             }
+            TransientIndexDelta::HistoryPruned { through, segments } => {
+                self.prune_history(through, &segments);
+            }
             TransientIndexDelta::PendingOutboxMembership {
                 event_id,
                 was_pending,
@@ -569,6 +581,31 @@ impl TransientIndexes {
                     self.invalidate_outbox();
                 }
             }
+        }
+    }
+
+    fn prune_history(&mut self, through: CommitSequence, segments: &[Arc<StoredCommandSegmentV1>]) {
+        if let Some(command_derived) = self.command_derived.as_mut()
+            && command_derived.prune_segments(segments).is_err()
+        {
+            self.command_derived = None;
+            self.invalidate_outbox();
+            return;
+        }
+        let Some(after) = through.checked_next() else {
+            self.invalidate_outbox();
+            return;
+        };
+        let boundary = EventId::new(after, 0);
+        for set in [
+            self.outbox_intents.as_mut(),
+            self.pending_outbox.as_mut(),
+            self.undelivered_outbox.as_mut(),
+        ]
+        .into_iter()
+        .flatten()
+        {
+            *set = set.split_off(&boundary);
         }
     }
 
@@ -794,6 +831,32 @@ impl CommandDerivedIndexes {
             CommandDerivedIndexKindV1::EventRoute => &self.event_route,
             CommandDerivedIndexKindV1::PendingOutbox => &self.pending_outbox,
         }
+    }
+
+    /// Removes whole pruned segments and exactly their manifest locators. A
+    /// locator that does not point into the removed segment is refused, so a
+    /// mismatched index is dropped and rebuilt rather than half-trimmed.
+    fn prune_segments(
+        &mut self,
+        segments: &[Arc<StoredCommandSegmentV1>],
+    ) -> Result<(), StorageError> {
+        for segment in segments {
+            let first = segment.first_commit_sequence();
+            if self.segments.remove(&first).is_none() {
+                return Err(corrupt());
+            }
+            self.payloads.remove(first)?;
+            for entry in segment.manifest().entries() {
+                let index = self.index_mut(entry.kind());
+                match index.get(entry.exact_key()) {
+                    Some(locator) if locator.segment_first == first => {
+                        index.remove(entry.exact_key());
+                    }
+                    _ => return Err(corrupt()),
+                }
+            }
+        }
+        Ok(())
     }
 
     fn apply_segment_arc(

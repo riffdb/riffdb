@@ -90,6 +90,8 @@ const CHILD_MODE: &str = "RIFFDB_STORAGE_RECOVERY_CHILD_MODE";
 #[path = "bounded_dirty_startup.rs"]
 mod bounded_dirty_startup;
 mod changelog_compatibility;
+#[path = "online_retention.rs"]
+mod online_retention;
 #[path = "../replication_promotion.rs"]
 mod replication_promotion;
 #[path = "v3_command_attribution.rs"]

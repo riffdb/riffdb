@@ -5,7 +5,7 @@ use riffdb_storage_api::{
     FollowerHoldBudget, OutboxSucceedV1, ReplicationSourceHoldIdV1, ReplicationSourceHoldKindV1,
     ReplicationSourceHoldV1,
 };
-use riffdb_storage_redb::RedbOfflineRetention;
+use riffdb_storage_redb::{OnlineRetentionHold, OnlineRetentionStep, RedbOfflineRetention};
 
 #[path = "replication_registration_maintenance.rs"]
 mod registration_maintenance;
@@ -44,6 +44,64 @@ fn deliver_command_event(ports: &mut RedbOperationalPorts, fixture: &CommandFixt
         ports.succeed_outbox(&success).unwrap(),
         OutboxTransitionResultV1::Applied(_)
     ));
+}
+
+// req: STO-031
+#[test]
+fn online_retention_refuses_to_pass_registered_follower_frontier() {
+    let path = TestDatabasePath::new("registered-follower-online-retention");
+    prepare_command_database(&path.0);
+    let mut ports = open_operational(RedbStore::open(&path.0).unwrap());
+    let first = attach_follower(&ports, &path.0.with_extension("first-bootstrap"), 0x41);
+    let second = attach_follower(&ports, &path.0.with_extension("second-bootstrap"), 0x42);
+    let pruned = command_fixture_at(1);
+    commit_command_fixture(&ports, &pruned);
+    deliver_command_event(&mut ports, &pruned);
+    commit_command_fixture(&ports, &command_fixture_at(2));
+    let head = ports
+        .published_changelog_snapshot_v3()
+        .unwrap()
+        .authoritative_state_v3()
+        .unwrap()
+        .history();
+    ports
+        .acknowledge_replication_follower_v3(first.fence().hold_id(), head.lineage(), head.tail())
+        .unwrap();
+    let retain = std::num::NonZeroU64::new(1).unwrap();
+    let step = riffdb_storage_redb::ONLINE_RETENTION_STEP_SEQUENCES;
+    let step = std::num::NonZeroU64::new(step).unwrap();
+    // The lagging follower still needs sequence 1; the online lane holds.
+    assert_eq!(
+        ports.online_retention_step(retain, step).unwrap(),
+        OnlineRetentionStep::Held(OnlineRetentionHold::Fenced(
+            riffdb_storage_api::RetentionFenceBinding::FollowerLowWater
+        ))
+    );
+    assert_eq!(
+        ports.read_commit(CommitSequence::new(1).unwrap()).unwrap(),
+        Some(pruned.records.commit().clone())
+    );
+    ports
+        .acknowledge_replication_follower_v3(second.fence().hold_id(), head.lineage(), head.tail())
+        .unwrap();
+    assert_eq!(
+        ports.online_retention_step(retain, step).unwrap(),
+        OnlineRetentionStep::Advanced {
+            through: 1,
+            sequences: 1
+        }
+    );
+    assert_eq!(
+        ports
+            .read_commit(CommitSequence::new(1).unwrap())
+            .unwrap_err()
+            .kind(),
+        riffdb_storage_api::StorageErrorKind::HistoryPruned
+    );
+    assert_eq!(
+        ports.read_entity(&pruned.target).unwrap(),
+        Some(pruned.records.entities()[0].post_image().clone())
+    );
 }
 
 #[test]

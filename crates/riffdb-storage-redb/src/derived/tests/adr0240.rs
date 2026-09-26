@@ -414,3 +414,35 @@ fn retention_fences_on_the_derived_sidecar_projection_frontier() {
         "the refused prune deleted nothing"
     );
 }
+
+// req: STO-030
+/// The online lane reads the same sidecar projection fence while it holds the
+/// ordered writer gate, and a fenced step deletes nothing.
+#[test]
+fn online_retention_fences_on_the_derived_sidecar_projection_frontier() {
+    let (path, ports) = operational("online-retention-derived-projection-fence");
+    let schema = recovery_projection_schema();
+    seed_command(&ports, CommitSequence::first(), 0);
+    seed_command(&ports, CommitSequence::new(2).unwrap(), 0);
+    install_control(&ports, schema.identity(), &catching_up(&schema));
+    let step = ports
+        .online_retention_step(
+            std::num::NonZeroU64::new(1).unwrap(),
+            std::num::NonZeroU64::new(256).unwrap(),
+        )
+        .expect("fenced online step");
+    assert_eq!(
+        step,
+        crate::OnlineRetentionStep::Held(crate::OnlineRetentionHold::Fenced(
+            riffdb_storage_api::RetentionFenceBinding::ProjectionDurableFrontier
+        ))
+    );
+    drop(ports);
+    assert_eq!(
+        crate::RedbOfflineRetention::bind(&path.0)
+            .status()
+            .expect("status")
+            .watermark_sequence,
+        0
+    );
+}
