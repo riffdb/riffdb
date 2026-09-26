@@ -6,7 +6,8 @@ tier: guarantee
 date: 2026-09-25
 accepted: 2026-09-25
 acceptance: 'maintainer, in session, 2026-09-25: exact text selected ("Accept exact
-  text")'
+  text"); Amendment 1 accepted 2026-09-25, maintainer, in session: exact text selected
+  ("Accept exact text")'
 requires: [ADR-0156, ADR-0157, ADR-0182, ADR-0203]
 amends:
   - ADR-0156 Amendment 6 for V2 source startup that meets the ADR-0182 bounded dirty preconditions
@@ -143,3 +144,16 @@ such a row either, since it would lack any index entry.
   with incident, offline scrub refusal.
 - The existing V2 clean-certificate decline tests, re-baselined to route to
   the Decision 1 path.
+
+## Amendment 1 — Decision 2's refusal scope (Accepted 2026-09-25)
+
+The maintainer accepted this exact text in session on 2026-09-25.
+
+Decision 2's "contradictory" means contradictory with what point lookups
+read. Before readiness the bounded path refuses a missing admission, an
+admission of another lineage, a corrupt admission, and a referenced fence
+record or receipt that is missing or differs from its exact reconstruction.
+An admission that reads Active while an unreferenced fence row of its lineage
+exists cannot be seen by any point lookup; like every stray fence row it is
+corruption, never a crash state, and Decision 3's scrub refuses it with
+Decision 4's authority withdrawal. No other decision changes.
