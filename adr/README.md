@@ -294,7 +294,7 @@ record with no front matter.
 | [0257](0257-cache-only-closed-authoritative-catalog-digests.md) | Cache Only Closed Authoritative Catalog Digests | Accepted | surface |
 | [0258](0258-retire-stranded-fresh-locator-obligations.md) | Retire Stranded Fresh-Locator Obligations | Accepted | guarantee |
 | [0259](0259-terminal-audit-cause-preservation-path-authority.md) | Terminal-Audit Cause Preservation Path Authority | Accepted | guarantee |
-| [0260](0260-bounded-dirty-startup-for-v2-sources.md) | Bounded Dirty Startup For V2 Sources | Proposed | guarantee |
+| [0260](0260-bounded-dirty-startup-for-v2-sources.md) | Bounded Dirty Startup For V2 Sources | Accepted | guarantee |
 <!-- adr-index:end -->
 
 The human architecture review on 2026-07-12 approved the direction represented

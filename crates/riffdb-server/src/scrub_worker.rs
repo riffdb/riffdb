@@ -387,6 +387,7 @@ pub(crate) struct ScrubFailureSinks {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum ScrubFailure {
     SnapshotUnavailable,
+    RetainedHistory,
     StructuralFinding,
     StructuralRead,
     CatalogHistory,
@@ -397,6 +398,7 @@ impl fmt::Display for ScrubFailure {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         formatter.write_str(match self {
             Self::SnapshotUnavailable => "background scrub could not pin its snapshot",
+            Self::RetainedHistory => "background scrub retained-history validation failed",
             Self::StructuralFinding => "background scrub observed a structural finding",
             Self::StructuralRead => "background scrub structural read failed",
             Self::CatalogHistory => "background scrub catalog-history validation failed",
@@ -413,27 +415,29 @@ fn storage_error(kind: StorageErrorKind) -> StorageError {
 
 /// Records one failure: an incident identity, its trusted diagnostic, and the
 /// failed state. Without an identity the failure cannot be published as a
-/// FAILED member, so readiness fails closed instead.
+/// FAILED member, so readiness fails closed instead. A failure that puts
+/// source authority itself in doubt also withdraws authoritative readiness
+/// (ADR-0260 Decision 4); every other failure degrades Storage while serving
+/// continues (ADR-0203 Decision 5).
 fn record_failure(
     status: &BackgroundScrubStatus,
     sinks: &ScrubFailureSinks,
     failure: ScrubFailure,
+    withdraw_authority: bool,
 ) {
-    match sinks.incident_ids.next_incident_id() {
-        Ok(incident) => {
-            sinks.diagnostics.record_internal(InternalError::new(
-                incident,
-                DefectScope::Process,
-                failure,
-            ));
-            status.fail(Some(incident));
-        }
-        Err(_) => {
-            status.fail(None);
-            sinks.health.fail_authoritative_readiness(
-                riffdb_observability::AuthoritativeReadinessFailure::Integrity,
-            );
-        }
+    let incident = sinks.incident_ids.next_incident_id().ok();
+    if let Some(incident) = incident {
+        sinks.diagnostics.record_internal(InternalError::new(
+            incident,
+            DefectScope::Process,
+            failure,
+        ));
+    }
+    status.fail(incident);
+    if withdraw_authority || incident.is_none() {
+        sinks.health.fail_authoritative_readiness(
+            riffdb_observability::AuthoritativeReadinessFailure::Integrity,
+        );
     }
 }
 
@@ -463,11 +467,23 @@ fn run_scrub(
     let mut session = match storage.begin_background_scrub(inputs) {
         Ok(session) => session,
         Err(_) => {
-            record_failure(status, sinks, ScrubFailure::SnapshotUnavailable);
+            record_failure(status, sinks, ScrubFailure::SnapshotUnavailable, false);
             return;
         }
     };
     session.set_cancellation(cancellation);
+    // The complete retained V3 history, including the exhaustive
+    // retained-fence scan. On a V2 source its failure puts source authority
+    // in doubt and withdraws it (ADR-0260 Decision 4).
+    if session.validate_retained_history().is_err() {
+        if stop.is_requested() {
+            cancel();
+        } else {
+            let v2_source = session.source_catalog_v2();
+            record_failure(status, sinks, ScrubFailure::RetainedHistory, v2_source);
+        }
+        return;
+    }
     let limit = EvidencePageLimit::new(BACKGROUND_SCRUB_ROWS_PER_STEP)
         .unwrap_or(EvidencePageLimit::new(1).expect("bounded page limit"));
     // The structural stream, one bounded page per scheduling step.
@@ -479,7 +495,7 @@ fn run_scrub(
         match session.read_structural_page(limit) {
             Ok(BackgroundScrubPage::Page { findings, .. }) => {
                 if !findings.is_empty() {
-                    record_failure(status, sinks, ScrubFailure::StructuralFinding);
+                    record_failure(status, sinks, ScrubFailure::StructuralFinding, false);
                     return;
                 }
                 status.note_rows(session.rows_walked());
@@ -492,7 +508,7 @@ fn run_scrub(
                 return;
             }
             Err(_) => {
-                record_failure(status, sinks, ScrubFailure::StructuralRead);
+                record_failure(status, sinks, ScrubFailure::StructuralRead, false);
                 return;
             }
         }
@@ -513,7 +529,7 @@ fn run_scrub(
             return;
         }
         Err(_) => {
-            record_failure(status, sinks, ScrubFailure::CatalogHistory);
+            record_failure(status, sinks, ScrubFailure::CatalogHistory, false);
             return;
         }
     };
@@ -522,7 +538,7 @@ fn run_scrub(
             status.note_finished();
             let _ = status.transition(STATE_COMPLETE);
         }
-        Err(_) => record_failure(status, sinks, ScrubFailure::ExactEnd),
+        Err(_) => record_failure(status, sinks, ScrubFailure::ExactEnd, false),
     }
 }
 
@@ -681,6 +697,15 @@ mod tests {
     /// bounded dirty open (the scratch has no clean certificate), then the
     /// activated ports' cloneable pure-read handle.
     fn scratch_shared(scratch: &Scratch) -> riffdb_storage_redb::RedbSharedPorts {
+        let ports = scratch_ports(scratch);
+        let shared = ports.shared_ports();
+        drop(ports);
+        shared
+    }
+
+    /// One dirty (bounded, since the first open wrote the checkpoint) open of
+    /// the scratch source through readiness, returning its operational ports.
+    fn scratch_ports(scratch: &Scratch) -> riffdb_storage_redb::RedbOperationalPorts {
         let store = RedbStore::open(&scratch.path).expect("open for shared handle");
         let mut session = store
             .begin_structural_evidence(test_inputs())
@@ -711,12 +736,9 @@ mod tests {
             panic!("shared-handle open must be clean")
         };
         let (_, _, _, dormant) = opened.into_parts();
-        let ports = dormant
+        dormant
             .into_operational_after_catalog_validation()
-            .expect("activate shared-handle ports");
-        let shared = ports.shared_ports();
-        drop(ports);
-        shared
+            .expect("activate shared-handle ports")
     }
 
     fn test_inputs() -> StartupValidationInputs {
@@ -860,5 +882,95 @@ mod tests {
         );
         // The rate bound is rows per scheduling step, never wall-clock.
         assert_eq!(BACKGROUND_SCRUB_ROWS_PER_STEP, 64);
+    }
+
+    // req: REC-004, REC-007, REP-005
+    /// OBL-0260-2 proof (ADR-0260 Decisions 3 and 4). A stray fence row that
+    /// no transaction wrote (an existing, non-tail audit row replaced by a
+    /// fence record for the current V2 lineage) passes every point lookup, so
+    /// bounded readiness is reached; the background scrub's retained-history
+    /// validation refuses it, records an incident, and withdraws authoritative
+    /// readiness, and the offline scrub refuses the same database.
+    #[test]
+    fn stray_fence_row_withdraws_v2_source_authority_after_bounded_readiness() {
+        use riffdb_storage_api::{
+            AuditPrincipalV1, ServiceAuditAppendIntentV1, ServiceAuditAppendRepository,
+            ServiceAuditGroupAppend,
+        };
+        use riffdb_types::{
+            ActorId, ActorKind, CapabilityId, RequestId, ServiceAuditLinkV1, ServiceAuditPhaseV1,
+            ServiceAuditTargetsV1, ServiceIngressKindV1, ServiceOperationV1,
+        };
+        let scratch = scratch_source("scrub-stray-fence");
+        {
+            // Three real administration records, so the planted row is not
+            // the audit tail the bounded header reads.
+            let mut ports = scratch_ports(&scratch);
+            for last in [0x41, 0x42, 0x43] {
+                let uuid = [
+                    0x01, 0x9b, 0xf6, 0xaa, 0xa6, 0x40, 0x7d, 0xe6, 0x89, 0xc9, 0x8a, 0x7f, 0x70,
+                    0xbb, 0xbd, last,
+                ];
+                let intent = ServiceAuditAppendIntentV1::new(
+                    RequestId::from_bytes(uuid).unwrap(),
+                    Timestamp::new(i64::from(last), 0).unwrap(),
+                    ServiceOperationV1::GetHealth,
+                    ServiceAuditPhaseV1::Denied,
+                    AuditPrincipalV1::new(
+                        ActorId::new("scrub-stray-fence").unwrap(),
+                        ActorKind::Human,
+                        CapabilityId::from_bytes(uuid).unwrap(),
+                        std::num::NonZeroU64::MIN,
+                    ),
+                    ServiceIngressKindV1::Grpc,
+                    ServiceAuditTargetsV1::empty(),
+                    None,
+                    ServiceAuditLinkV1::None,
+                )
+                .unwrap();
+                match ports.submit_service_audit_group(&[intent]).unwrap() {
+                    ServiceAuditGroupAppend::Complete(_) => {}
+                    ServiceAuditGroupAppend::Submitted(fence) => {
+                        fence.wait().unwrap();
+                    }
+                }
+            }
+        }
+        // Reopen once so journal recovery materializes those audit rows in the
+        // stopped database file the fixture edits.
+        drop(scratch_ports(&scratch));
+        riffdb_storage_redb::replace_audit_row_with_stray_fence_fixture(&scratch.path, 2)
+            .expect("plant the stray fence row");
+
+        // Bounded readiness is reached over it.
+        let shared = scratch_shared(&scratch);
+        let sinks = Sinks::new();
+        let status = BackgroundScrubStatus::new();
+        let mut worker =
+            RunningScrubWorker::start(shared, test_inputs(), status.clone(), sinks.failure())
+                .expect("start scrub worker over the stray fence");
+        assert_eq!(await_terminal(&worker), BackgroundScrubState::Failed);
+        assert_eq!(worker.shutdown(), ScrubStopObservation::Failed);
+        drop(worker);
+        let incident = FixedIncidents.next_incident_id().expect("fixed incident");
+        assert_eq!(status.incident(), Some(incident));
+        assert_eq!(
+            *sinks.diagnostics.incidents.lock().unwrap(),
+            vec![(incident, DefectScope::Process)]
+        );
+        assert_eq!(
+            *sinks.health.failures.lock().unwrap(),
+            vec![AuthoritativeReadinessFailure::Integrity],
+            "a V2 retained-history failure withdraws source authority"
+        );
+        assert!(
+            riffdb_storage_redb::RedbOfflineIntegrityScrub::from_inputs(
+                &scratch.path,
+                test_inputs()
+            )
+            .run()
+            .is_err(),
+            "the offline scrub refuses the same database"
+        );
     }
 }

@@ -297,8 +297,8 @@ async fn real_riffdbd_restart_preserves_budget_and_bootstrap_replay() -> TestRes
     drop(first_client);
     first_process.shutdown_cleanly()?;
 
-    // Complete V2 startup may replace the checkpoint before these commands.
-    // ADR-0188 still forbids refreshing it at shutdown to cover the commands.
+    // A bounded V2 startup (ADR-0260) keeps the pre-command checkpoint; ADR-0188
+    // forbids refreshing it at shutdown to cover the commands.
     assert_graceful_shutdown_preserves_pre_command_checkpoint(
         &database_path,
         checkpoint_before_commands.as_deref(),
@@ -310,9 +310,10 @@ async fn real_riffdbd_restart_preserves_budget_and_bootstrap_replay() -> TestRes
         &idempotency_keys_path,
     )?;
     let second_address = second_process.wait_for_ready_address()?;
-    // Accepted WP-748 qualification: a V2 source takes complete validation
-    // after CLEAN. Pin its census rather than claiming V1 bounded startup.
-    assert_readiness_path_rebuild_census(&second_process, 1)?;
+    // Accepted WP-748 qualification: a V2 source declines CLEAN; per ADR-0260
+    // it then takes the ADR-0182 bounded dirty path. Pin that census: the
+    // closed mode complete_validation, no rebuild, and no population walk.
+    assert_readiness_path_rebuild_census(&second_process, 0, "none")?;
     let mut second_client = connect(second_address).await?;
 
     assert_principal_less_liveness(&mut second_client).await?;
@@ -1535,7 +1536,11 @@ fn replayed_commit_sequences(page: &v1::EventPage) -> TestResult<Vec<u64>> {
 ///
 /// Reads the child's own `riffdb-startup-stages-v1` census rather than timing
 /// anything, so the assertion is exact and host-independent.
-fn assert_readiness_path_rebuild_census(process: &ServerProcess, expected: u64) -> TestResult<()> {
+fn assert_readiness_path_rebuild_census(
+    process: &ServerProcess,
+    expected: u64,
+    expected_walk: &str,
+) -> TestResult<()> {
     let census = process.startup_census()?;
     let mode = census
         .split('\t')
@@ -1561,7 +1566,6 @@ fn assert_readiness_path_rebuild_census(process: &ServerProcess, expected: u64) 
         .split('\t')
         .find_map(|field| field.strip_prefix("population_table_walk="))
         .ok_or_else(|| test_failure("startup census omitted population_table_walk"))?;
-    let expected_walk = "observed";
     if population_walk != expected_walk {
         return Err(test_failure(format!(
             "readiness path reported population_table_walk={population_walk}, expected {expected_walk}"
@@ -1591,10 +1595,13 @@ fn assert_graceful_shutdown_preserves_pre_command_checkpoint(
     let after = checkpoint.value().base();
     assert_eq!(after.database_id(), before.database_id());
     assert_eq!(after.history_incarnation(), before.history_incarnation());
+    // ADR-0260: the first process's dirty startup took the bounded path and
+    // wrote no checkpoint, so the retained checkpoint is still the seed's;
+    // ADR-0188 forbids shutdown adding one that covers the commands.
     assert_eq!(
-        after.previous_checkpoint_hash(),
-        Some(before.checkpoint_hash()),
-        "exactly one complete startup replaced the seed; shutdown must not add a checkpoint"
+        after.checkpoint_hash(),
+        before.checkpoint_hash(),
+        "the bounded startup kept the seed checkpoint; shutdown must not add a checkpoint"
     );
     assert_eq!(
         after.checkpoint_commit_sequence(),

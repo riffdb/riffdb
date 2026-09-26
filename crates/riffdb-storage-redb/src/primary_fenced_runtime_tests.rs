@@ -355,8 +355,8 @@ fn fenced_v2_clean_reopen_validates_retained_admission_without_repair() {
                 let ports =
                     crate::startup::open_validated_source_fixture(&path.0, profile, inputs());
                 // ADR-0156 Amendment 6: the V2 source declines the V1 clean
-                // certificate; the reopen takes the ADR-0182 bounded dirty
-                // path instead, so no clean CERTIFICATE was trusted.
+                // certificate; per ADR-0260 the reopen takes the ADR-0182
+                // bounded dirty path, so no clean CERTIFICATE was trusted.
                 assert!(!ports.clean_certificate_startup());
                 assert_eq!(
                     ports.read_replication_primary_admission().unwrap().fence(),
@@ -383,15 +383,21 @@ fn fenced_v2_clean_reopen_validates_retained_admission_without_repair() {
                     let shared = std::sync::Arc::clone(&store.shared);
                     match store.begin_structural_evidence(inputs()) {
                     Err(error) => error,
-                    Ok(_) => match crate::startup::begin_background_scrub_on_shared(
-                        &shared,
-                        inputs(),
-                    ) {
-                        Err(error) => error,
-                        Ok(_) => panic!(
-                            "{corruption}: the scrub must refuse the contradictory admission"
-                        ),
-                    },
+                    Ok(session) => {
+                        // ADR-0260 Amendment 1: only an Active admission beside
+                        // an unreferenced fence row passes every point lookup.
+                        assert_eq!(corruption, "stale_active");
+                        assert!(session.bounded_dirty_startup_path());
+                        drop(session);
+                        match crate::startup::begin_background_scrub_on_shared(&shared, inputs())
+                            .and_then(|mut scrub| scrub.validate_retained_history())
+                        {
+                            Err(error) => error,
+                            Ok(()) => panic!(
+                                "{corruption}: the scrub must refuse the contradictory admission"
+                            ),
+                        }
+                    }
                     }
                 }
             };
@@ -413,5 +419,105 @@ fn fenced_v2_clean_reopen_validates_retained_admission_without_repair() {
                 "refused startup must not consume CLEAN"
             );
         }
+    }
+}
+
+// req: REC-004, REC-005, PERF-019
+/// OBL-0260-1 proof (ADR-0260 Decisions 1 and 2). A V2 source meeting the
+/// bounded dirty preconditions reaches readiness on the ADR-0182 bounded path
+/// after point-validating its admission and, when fenced, the referenced fence
+/// record and its exact receipt. A deleted referenced fence or a damaged fence
+/// receipt refuses before readiness, and nothing synthesizes Active or clears
+/// the fence.
+#[test]
+fn v2_dirty_startup_is_bounded_and_point_validates_its_fence() {
+    use riffdb_storage_api::StructuralEvidenceOpen;
+    let profile = crate::RedbCommitProfile::Standard;
+    let bounded = |path: &std::path::Path| {
+        let store = RedbStore::open_with_commit_profile(path, profile)?;
+        let session = store.begin_structural_evidence(inputs())?;
+        Ok::<bool, riffdb_storage_api::StorageError>(session.bounded_dirty_startup_path())
+    };
+
+    // Unfenced: the attached source's first open wrote its checkpoint, so
+    // this dirty reopen is bounded and its admission reads Active.
+    let (path, ports, _) = attached_source(profile);
+    drop(ports);
+    assert!(bounded(&path.0).expect("unfenced V2 dirty open"));
+    let ports = crate::startup::open_validated_source_fixture(&path.0, profile, inputs());
+    assert_eq!(ports.read_replication_primary_admission().unwrap().fence(), None);
+    drop(ports);
+
+    // Fenced: bounded, and the admission still names exactly its fence.
+    let (path, fence) = fenced_source(profile);
+    assert!(bounded(&path.0).expect("fenced V2 dirty open"));
+    let ports = crate::startup::open_validated_source_fixture(&path.0, profile, inputs());
+    assert_eq!(
+        ports.read_replication_primary_admission().unwrap().fence(),
+        Some(&fence)
+    );
+    drop(ports);
+
+    // The referenced fence record deleted, and separately its receipt damaged:
+    // both refuse at open, before any readiness, leaving the admission fenced.
+    for damage in ["fence-record", "fence-receipt"] {
+        let (path, fence) = fenced_source(profile);
+        let raw = redb::Database::open(&path.0).unwrap();
+        let write = raw.begin_write().unwrap();
+        match damage {
+            "fence-record" => {
+                write
+                    .open_table(crate::layout::AUDIT)
+                    .unwrap()
+                    .remove(crate::keys::encode_audit_key(fence.administration_sequence()).as_slice())
+                    .unwrap()
+                    .expect("the referenced fence row existed");
+            }
+            _ => {
+                let mut history = write
+                    .open_table(crate::changelog_v3_activation::HISTORY)
+                    .unwrap();
+                let fence_key = crate::keys::encode_audit_key(fence.administration_sequence());
+                let (key, mut bytes) = history
+                    .iter()
+                    .unwrap()
+                    .map(|row| {
+                        let (key, value) = row.unwrap();
+                        (key.value().to_vec(), value.value().to_vec())
+                    })
+                    .find(|(_, value)| {
+                        riffdb_storage_api::AuthoritativeTransactionV3::decode(value)
+                            .is_ok_and(|receipt| {
+                                receipt.mutations().iter().any(|mutation| {
+                                    mutation.namespace()
+                                        == riffdb_storage_api::AuthoritativeNamespaceV1::Audit
+                                        && mutation.key() == fence_key.as_slice()
+                                })
+                            })
+                    })
+                    .expect("the fence receipt");
+                let last = bytes.len() - 1;
+                bytes[last] ^= 0xff;
+                history.insert(key.as_slice(), bytes.as_slice()).unwrap();
+            }
+        }
+        write.commit().unwrap();
+        drop(raw);
+        let refused = bounded(&path.0).expect_err("a damaged fence refuses before readiness");
+        assert_eq!(refused.kind(), StorageErrorKind::CorruptData, "{damage}");
+        let raw = redb::Database::open(&path.0).unwrap();
+        let read = raw.begin_read().unwrap();
+        let admission = read
+            .open_table(META)
+            .unwrap()
+            .get(crate::primary_admission_roots::key().unwrap())
+            .unwrap()
+            .expect("the admission is never removed");
+        let admission =
+            riffdb_storage_api::proto_codec::decode_replication_primary_admission_v1(
+                admission.value(),
+            )
+            .unwrap();
+        assert_eq!(admission.value().fence(), Some(&fence), "{damage}: never unfenced");
     }
 }

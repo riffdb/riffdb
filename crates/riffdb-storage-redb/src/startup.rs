@@ -109,8 +109,7 @@ enum EvidenceOpenPurpose {
 /// The receipt deliberately carries neither database identity nor population,
 /// path, frontier, hash, table, key, or application-value observations.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-#[allow(dead_code)] // Sealed until the authorized WP-760 maintenance owner calls it.
-pub(crate) struct OfflineIntegrityScrubReceiptV1 {
+pub struct OfflineIntegrityScrubReceiptV1 {
     _private: (),
 }
 
@@ -118,7 +117,7 @@ pub(crate) struct OfflineIntegrityScrubReceiptV1 {
 impl OfflineIntegrityScrubReceiptV1 {
     /// Closed receipt version.
     #[must_use]
-    pub(crate) const fn receipt_version(self) -> u32 {
+    pub const fn receipt_version(self) -> u32 {
         1
     }
 
@@ -153,14 +152,17 @@ impl OfflineIntegrityScrubReceiptV1 {
 /// ignores clean-certificate and validated-prefix shortcuts, consumes both
 /// evidence streams through exact end, and publishes a receipt only on total
 /// structural and catalog-semantic success.
-pub(crate) struct RedbOfflineIntegrityScrub {
+pub struct RedbOfflineIntegrityScrub {
     cancellation: Option<Arc<AtomicBool>>,
     path: PathBuf,
     inputs: StartupValidationInputs,
 }
 
 impl RedbOfflineIntegrityScrub {
-    pub(crate) fn from_inputs(path: &Path, inputs: StartupValidationInputs) -> Self {
+    /// Binds one closed database file and the startup validation inputs the
+    /// production startup uses (ADR-0203 Decision 8's complete validator).
+    #[must_use]
+    pub fn from_inputs(path: &Path, inputs: StartupValidationInputs) -> Self {
         Self {
             cancellation: None,
             path: path.to_path_buf(),
@@ -198,7 +200,7 @@ impl RedbOfflineIntegrityScrub {
     }
 
     /// Runs the unchanged complete structural and catalog-semantic path.
-    pub(crate) fn run(self) -> Result<OfflineIntegrityScrubReceiptV1, StorageError> {
+    pub fn run(self) -> Result<OfflineIntegrityScrubReceiptV1, StorageError> {
         let store = RedbStore::open(&self.path)?;
         let session = store.begin_structural_evidence_for(
             self.inputs,
@@ -285,6 +287,7 @@ pub(crate) fn begin_background_scrub_on_shared(
     Ok(RedbBackgroundScrubSession {
         session,
         rows_walked: 0,
+        retained_history_validated: false,
     })
 }
 
@@ -292,6 +295,7 @@ pub(crate) fn begin_background_scrub_on_shared(
 pub struct RedbBackgroundScrubSession {
     session: RedbStructuralEvidenceSession,
     rows_walked: u64,
+    retained_history_validated: bool,
 }
 
 impl RedbBackgroundScrubSession {
@@ -304,6 +308,31 @@ impl RedbBackgroundScrubSession {
     #[must_use]
     pub const fn rows_walked(&self) -> u64 {
         self.rows_walked
+    }
+
+    /// Whether the scrubbed source is on AuthoritativeStateCatalogV2, whose
+    /// source authority depends on the retained-history validation.
+    #[must_use]
+    pub const fn source_catalog_v2(&self) -> bool {
+        self.session.v2_source
+    }
+
+    /// Validates the complete retained V3 history over the pinned snapshot,
+    /// including the exhaustive retained-fence scan. It must succeed before
+    /// the scrub can finish; a failure is the one scrub outcome that puts a V2
+    /// source's authority in doubt (ADR-0260 Decision 4).
+    pub fn validate_retained_history(&mut self) -> Result<(), StorageError> {
+        let transaction = self
+            .session
+            .validation_read
+            .as_ref()
+            .ok_or_else(invariant)?;
+        if crate::changelog_v3_roots::read_checkpoint_roots(transaction)?.is_some() {
+            crate::changelog_v3_roots::validate_retained_history(transaction)?
+                .ok_or_else(corrupt)?;
+        }
+        self.retained_history_validated = true;
+        Ok(())
     }
 
     /// Reads the next bounded structural page. Empty findings advance the
@@ -381,6 +410,9 @@ impl RedbBackgroundScrubSession {
         structural_end: RedbStructuralEvidenceEnd,
         historical_end: RedbHistoricalEvidenceEnd,
     ) -> Result<(), StorageError> {
+        if !self.retained_history_validated {
+            return Err(invariant());
+        }
         self.session
             .finish_background_scrub(structural_end, historical_end)
     }
@@ -827,6 +859,8 @@ pub struct RedbStructuralEvidenceSession {
     command_cache_built: bool,
     /// COMMITS rows decoded into the startup command cache (observation only).
     command_history_rows_decoded: u64,
+    /// Whether this session's source is on AuthoritativeStateCatalogV2.
+    v2_source: bool,
     /// Peak bytes held together by this session's recovery-owned structures:
     /// the historical evidence plan's locator index and the startup command
     /// cache (observation only; ADR-0182 Decision 5 bounds the dirty path).
@@ -965,16 +999,21 @@ impl RedbStore {
         };
         // The private inventory check proved the distinct reconstruction roots.
         let v3_active = private.is_some() || v3_history.is_some();
-        // ADR-0156 Amendment 6: an AuthoritativeStateCatalogV2 source must
-        // perform complete ordinary validation, including retained fence
-        // evidence, before it is granted source authority. The ADR-0182
-        // bounded dirty path does not, so it is not selected for V2 sources
-        // until a successor design is accepted.
+        // ADR-0260: a V2 source meeting the bounded dirty preconditions takes
+        // the ADR-0182 bounded path. Its source admission and referenced fence
+        // were point-validated by read_checkpoint_roots above; the exhaustive
+        // stray-fence scan belongs to the scrubs, whose retained-history
+        // failure on a V2 source withdraws source authority.
         let v2_source = v3_history.is_some_and(|history| {
             history.lineage().catalog_digest()
                 == riffdb_storage_api::AuthoritativeStateCatalogV2.digest()
         });
-        if self.shared.durable_commit_epoch() != durable_commit_epoch {
+        // The background scrub validates its pinned MVCC snapshot beside the
+        // live writer; a concurrent commit advancing the epoch is not a
+        // contradiction for it (every later continuity check exempts it too).
+        if purpose != EvidenceOpenPurpose::BackgroundScrub
+            && self.shared.durable_commit_epoch() != durable_commit_epoch
+        {
             return Err(corrupt());
         }
         let database_id = snapshot.retained_metadata.database_id();
@@ -1044,6 +1083,7 @@ impl RedbStore {
                 command_cache_built: false,
                 command_history_rows_decoded: 0,
                 recovery_owned_peak_bytes: 0,
+                v2_source,
                 publication_audits: None,
                 binding_bundles,
                 entity_chains: None,
@@ -1110,7 +1150,6 @@ impl RedbStore {
             .is_ok();
         if purpose == EvidenceOpenPurpose::Startup
             && v3_active
-            && !v2_source
             && checkpoint_admits_bounded
             && !self.shared.is_follower_mode()
         {
@@ -1193,6 +1232,7 @@ impl RedbStore {
                 command_cache_built: false,
                 command_history_rows_decoded: 0,
                 recovery_owned_peak_bytes: 0,
+                v2_source,
                 publication_audits: None,
                 binding_bundles,
                 entity_chains: None,
@@ -1211,7 +1251,11 @@ impl RedbStore {
         // The CLEAN branch above checks bounded terminal roots only. A full
         // session instead validates every retained receipt from THIS pin before
         // any prefix checkpoint or DIRTY write can follow successful evidence.
-        if v3_active && private.is_none() {
+        // The background scrub runs this as its own explicit step
+        // (RedbBackgroundScrubSession::validate_retained_history), so a
+        // retained-history failure, which puts a V2 source's authority in
+        // doubt, is distinguishable from its other findings (ADR-0260).
+        if v3_active && private.is_none() && purpose != EvidenceOpenPurpose::BackgroundScrub {
             crate::changelog_v3_roots::validate_retained_history(&transaction)?
                 .ok_or_else(corrupt)?;
         }
@@ -1361,6 +1405,7 @@ impl RedbStore {
             command_cache_built: false,
             command_history_rows_decoded: 0,
             recovery_owned_peak_bytes: 0,
+            v2_source,
             publication_audits: Some(publication_audits),
             binding_bundles,
             entity_chains: None,

@@ -2530,6 +2530,7 @@ fn only_commit_durable_advances_a_root_an_operational_reader_can_select() {
         ("fixtures.rs", "downgrade_all_index_rows_to_v1_fixture"),
         // Test-only corruption planting, likewise on a stopped database.
         ("fixtures.rs", "plant_malformed_population_row_fixture"),
+        ("fixtures.rs", "replace_audit_row_with_stray_fence_fixture"),
         // Journal recovery, which runs before operational readiness is claimed.
         ("journal.rs", "replay_frames"),
         // Sidecar create for rebuildable derived state (ADR-0240). It is a

@@ -1,11 +1,13 @@
 ---
 adr: "0260"
 title: Bounded Dirty Startup For V2 Sources
-status: proposed
+status: accepted
 tier: guarantee
 date: 2026-09-25
-accepted: null
-acceptance: null
+accepted: 2026-09-25
+acceptance: 'maintainer, in session, 2026-09-25: exact text selected ("Accept exact
+  text"); Amendment 1 accepted 2026-09-25, maintainer, in session: exact text selected
+  ("Accept exact text")'
 requires: [ADR-0156, ADR-0157, ADR-0182, ADR-0203]
 amends:
   - ADR-0156 Amendment 6 for V2 source startup that meets the ADR-0182 bounded dirty preconditions
@@ -34,6 +36,9 @@ review_triggers:
   - A durable format, catalog namespace, or public surface would change under this record.
 ---
 # ADR-0260: Bounded Dirty Startup For V2 Sources
+
+Amendment 1 accepted 2026-09-25 by the maintainer in session as exact text:
+Decision 2's refusal scope, recorded in Decision 2. No other decision changes.
 
 ## Context
 
@@ -73,6 +78,14 @@ such a row either, since it would lack any index entry.
    source evidence against that fence. A missing, contradictory, or corrupt
    admission or fence refuses before readiness. Validation never synthesizes
    Active and never clears a fence.
+   Amendment 1: Decision 2's "contradictory" means contradictory with what
+   point lookups read. Before readiness the bounded path refuses a missing
+   admission, an admission of another lineage, a corrupt admission, and a
+   referenced fence record or receipt that is missing or differs from its
+   exact reconstruction. An admission that reads Active while an unreferenced
+   fence row of its lineage exists cannot be seen by any point lookup; like
+   every stray fence row it is corruption, never a crash state, and Decision
+   3's scrub refuses it with Decision 4's authority withdrawal.
 3. The exhaustive retained-fence validation (no fence of the current lineage
    other than the referenced one, none from the same or a later incarnation
    under another lineage) runs in the background scrub and in the offline
