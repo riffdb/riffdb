@@ -531,9 +531,11 @@ errors immediately. Checks: deterministic real coordinator/storage schedules,
 six process-crash edges, scoped storage/commit tests, path-triggered acceptance,
 six valid comparison cells, current-main integration qualification, the
 retained-trace overlap checks and the causally verified corpus-receipt repair.
-The corpus gate and complete CI battery pass on `3514c4af2`, including the
-subsequent pinned Python proofs. Human review and resolution of the shared
-journal delay remain pending.
+The complete CI battery passes on `31aeab76`, including the merged dirty-recovery
+evidence and pinned Python proofs; the full-seed functional check also passes.
+The [draft implementation/fixture review](../architecture/WP-810-CHECKPOINT-IMPLEMENTATION-REVIEW.md)
+maps the requirements to their proofs and identifies the unmet exit-gate items.
+Human review and resolution of the shared journal delay remain pending.
 Compatibility: existing durable bytes, public interfaces, thresholds and
 authority guarantees remain unchanged. Updated handbook: this page and the
 writer-census defect warning. Hazards:

@@ -1,0 +1,117 @@
+# WP-810 checkpoint implementation and fixture review
+
+**Draft: implementation and correctness evidence are ready; the shared-delay
+disposition and human acceptance remain outstanding.** This document does not
+request closure before the pending diagnostic or replace the package's exit gate.
+
+## Scope and source
+
+Package: WP-810. Tier: guarantee. Qualified source:
+`31aeab76fa7c41b5d3a05d191905fd8b53e43dd2`, including main's index-warming
+repair through `a1809310f`. Later evidence-only commits preserve that runtime.
+The work package remains open. WP-749's archive-presence gate is separate.
+
+The decisions are within ADR-0101, ADR-0104 and ADR-0132: keep bounded foreground
+apply running during checkpoint materialization, then retain the ordered drain
+required for checkpoint installation. No checkpoint threshold, journal/capsule
+encoding, public interface, durability requirement or sequence owner changes.
+
+## Implementation to review
+
+In `crates/riffdb-storage-redb/src/store.rs`:
+
+- Command sealing uses `async_checkpoint_installation_pending`, rather than
+  materializer registration alone, to request the pipeline drain. Completion
+  racing a seal is observed by the next epoch-opening poll.
+- `poll_async_checkpoint_locked` refuses an observed materialization failure
+  before admitting more apply, even with an outstanding publication prefix.
+  Successful installation still requires quiescence and exact checked roots.
+- `ensure_journal_frame_headroom` publishes only already-submitted FIFO
+  predecessors under capacity pressure. The staged next frame is excluded;
+  original completion tickets remain valid. The retry bound is five steps.
+- Rebase precedes extent reclamation. Existing unpublished, retained suffix,
+  encoded-byte, physical-extent and overlay-memory bounds remain enforced.
+
+The compiled limits remain 256 unpublished transitions / 16 MiB, an 8,192
+transition / 32 MiB retained recovery suffix, a 40 MiB data region per physical
+extent, and a 128 MiB composite overlay. The 4,096-transition / 16 MiB
+checkpoint triggers and existing physical-reserve trigger are unchanged.
+
+The admission scan-reuse prototype and checkpoint-I/O observation patch are
+retained as evidence outside production. The first post-restart command-index
+rebuild restored by main remains a disclosed baseline cost.
+
+## Fixtures and semantic assertions
+
+`tests/storage_recovery/checkpoint_pipeline.rs` uses real I/O and explicit
+bounded hooks, with no sleeps or fabricated receipts:
+
+| Proof | What is asserted |
+| --- | --- |
+| `checkpoint_materialization_allows_pipeline_but_installation_requires_publication` | Materialization and real journal sync pause independently; durability alone exposes no result or state; publication precedes installation and reclamation. |
+| `unpublished_capacity_wait_publishes_the_prefix_without_losing_original_tickets` | The real 256-transition ceiling blocks the 257th until predecessor publication; every original completion ticket remains exact. |
+| `failed_checkpoint_refuses_new_apply_while_a_durable_predecessor_awaits_publication` | Observed failure fences new apply; the already durable predecessor still publishes and survives restart. |
+| `checkpoint_pipeline_process_crashes_recover_exactly_and_idempotently` | Six abrupt process exits cover before sync, durable/unpublished, checkpoint staged, checkpoint durable, installed/before reclaim, and reclaimed. Two restarts retain exact atomic authority. |
+
+Immediate reads compare entity, outcome, commit, provenance and event values;
+restart also checks audit counts and absence of invented successors. Before
+sync, an unacknowledged complete frame may survive or disappear, but the result
+must be atomic and stable across the second restart.
+
+The coordinator schedule in `tests/command_semantics/checkpoint_pipeline.rs`,
+`writer_pipelines_during_checkpoint_without_releasing_results_or_effects_early`,
+proves that later apply/seal can proceed while the predecessor's real journal
+sync is paused. Responses and application notifications remain withheld until
+ordered publication. Two older grouped-command tests now wait for the existing
+first-admission notification; their outcome and durability assertions are intact.
+No durable-format or protocol golden fixtures change.
+
+## Requirement and deliverable audit
+
+| Requirement or deliverable | Evidence and present disposition |
+| --- | --- |
+| STO-001: semantic storage boundary | Production coordinator plus real-redb schedules above; first-party coordinator remains the only sequence/apply owner. |
+| STO-002: explicit versioned encodings | Encodings are unchanged; generated-artifact checks and the full compatibility/recovery battery pass. The new schedule tests do not independently redefine encoding validity. |
+| REC-001 / REC-002: idempotent recovery | The six crash edges reopen twice, compare complete authority and audit counts, and refuse invented successors. |
+| PERF-018: attributable measurement evidence | The six-cell comparison retains exact sources, binaries, raw percentiles, host validity, checkpoint counts and signed wall remainders. It is a bounded comparison, not an alpha release sweep. |
+| Standalone finding | [Performance report](../performance/wp-810-checkpoint-journal-tail.md), with retained archive-disabled trace and instrument limitations. |
+| Current correctness qualification | `release/evidence/wp-810/index-warming-qualification-20260926.json`: full CI, 23 coordinator tests, 20 diagnostic tests and all 19,220 seed commands pass. Earlier failed invocations remain retained. |
+| Reviewed shared-delay resolution | **Not met.** The common-case improvement does not establish reduction of the shared acknowledgement tail. Diagnostic result and maintainer disposition are pending. |
+| Final human implementation/fixture review and closure | **Not met.** No acceptance or completion is recorded. |
+
+## Performance evidence and its limits
+
+The [three paired comparisons](../performance/wp-810-checkpoint-journal-tail.md#bounded-comparison-result)
+compare control `d9ae2633` with candidate `66c394fc` on the same baseline,
+toolchain and observation patch. Median paired changes are +5.06% throughput,
+−2.80% P50 and −12.62% P95. P99 changes are +23.40%, +9.92% and −12.33%.
+Those results belong to those exact sources, not the later integration.
+
+The writer drain shrinks, while queueing behind long journal service remains.
+Aggregate counters do not assign the P99 changes to individual requests or
+establish a kernel/device cause. ADR-0249 does not supply a numeric P99 gate;
+it still requires a named mechanism for a published regression.
+
+The prepared diagnostic at
+`release/evidence/wp-810/materialization-probe-20260926/index-warming-measurement-protocol.json`
+allows one archive-disabled c32 cell on admitted exclusive hardware, with a
+900-second total deadline, 15-second warmup and 90-second measurement. It
+requires rebuilt observer binaries and exact-binary local qualification. It
+measures overlap of checkpoint phases and actual backend I/O, preserving
+unexplained time; overlap alone is not device causation. A result informs the
+disposition and does not automatically close WP-810 or WP-749.
+
+## Remaining completion actions
+
+1. Obtain the pending exclusive interval, execute the frozen diagnostic once,
+   retain its result or failure, restore host settings and release the host.
+2. Record what the evidence proves about the shared delay and any remaining
+   limits. Resolve the package's exit gate with the maintainer; do not substitute
+   a renamed follow-up for an unmet gate.
+3. Obtain final implementation/fixture acceptance for the selected implementation.
+4. Record acceptance, `completed_at` and decisions in the proposed closure;
+   validate the final merge tree including that record, and land only after
+   the required approval.
+
+No additional campaign, format change or numeric threshold is authorized by
+this checklist. The existing source-bound evidence must remain intact.
