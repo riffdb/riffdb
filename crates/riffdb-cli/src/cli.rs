@@ -1266,6 +1266,10 @@ pub(crate) enum StorageCommand {
         #[arg(long)]
         confirm_replace_current_database: bool,
     },
+    /// Requests the complete offline storage validation pass. It
+    /// takes the database offline, validates it, and reopens it; observe the
+    /// printed operation with `riffdb backup operation`.
+    Scrub,
     /// Compares the retained format identity without opening the database.
     Preflight {
         #[arg(long, value_name = "PATH")]

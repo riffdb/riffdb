@@ -1249,6 +1249,13 @@ mod tests {
         );
 
         denied_operation!(
+            start_offline_storage_scrub,
+            RequestContext,
+            riffdb_service::StartOfflineStorageScrubRequest,
+            riffdb_service::OfflineMaintenanceStartResult
+        );
+
+        denied_operation!(
             get_offline_maintenance_operation,
             RequestContext,
             riffdb_service::GetOfflineMaintenanceOperationRequest,

@@ -83,10 +83,11 @@ def report_lifecycle(path: Path, checkpoint: str) -> dict[str, Any]:
     )
     if lifecycle.get("scale_checkpoint") != checkpoint:
         refuse(f"{path.name} has the wrong scale checkpoint")
-    if lifecycle.get("schema") != "riffdb.wp-705-production-lifecycle/v1":
+    if lifecycle.get("schema") != "riffdb.wp-760-dirty-recovery-lifecycle/v1":
         refuse(f"{path.name} is not a dirty-recovery lifecycle report")
-    if lifecycle.get("v2_complete_validation") is not True:
-        refuse(f"{path.name} does not state the V2 complete-validation cost")
+    # ADR-0260: V2 sources restart on the bounded dirty path, graceful or not.
+    if lifecycle.get("v2_bounded_restart") is not True:
+        refuse(f"{path.name} does not state the V2 bounded restart")
     if lifecycle.get("bounded_clean_claim") is not False:
         refuse(f"{path.name} must not claim bounded clean startup")
     return lifecycle
@@ -154,7 +155,12 @@ def check_scrub_observation(lifecycle: dict[str, Any], label: str) -> None:
         integer(scrub.get("total_us"), f"{label} scrub total time")
         integer(scrub.get("rows_walked"), f"{label} scrub rows walked")
         return
-    if state in ("failed", "cancelled"):
+    if state == "failed":
+        # The evidence database is healthy: a failed scrub is a false
+        # corruption report (for example an evidence-ceiling refusal), never
+        # an acceptable observation.
+        refuse(f"{label} background scrub failed on a healthy database")
+    if state == "cancelled":
         return
     if state in ("pending", "running"):
         # The dirty generation's lifetime is bounded by its measurement and
@@ -168,6 +174,15 @@ def check_scrub_observation(lifecycle: dict[str, Any], label: str) -> None:
             refuse(f"{label} background scrub never started before shutdown")
         return
     refuse(f"{label} background scrub state {state!r} is not closed")
+
+
+def check_offline_scrub(lifecycle: dict[str, Any], label: str) -> None:
+    # ADR-0203: the complete validator the public `riffdb storage scrub`
+    # drives must pass over the healthy final database at this scale.
+    scrub = object_value(lifecycle.get("offline_scrub"), f"{label} offline scrub")
+    if scrub.get("result") != "passed":
+        refuse(f"{label} offline scrub did not pass: {scrub.get('refusal_kind', scrub.get('result'))}")
+    integer(scrub.get("total_us"), f"{label} offline scrub total time")
 
 
 def main() -> int:
@@ -184,6 +199,8 @@ def main() -> int:
     check_dirty_restart(production, "production")
     check_scrub_observation(rows, "rows_65536")
     check_scrub_observation(production, "production")
+    check_offline_scrub(rows, "rows_65536")
+    check_offline_scrub(production, "production")
 
     receipt = {
         "schema": "riffdb.wp-760-dirty-recovery-evidence/v1",

@@ -972,6 +972,113 @@ pub const OPERATIONS: [OperationDeclaration; 62] = [
     },
 ];
 
+/// Complete registry declaration for one public receipted offline-maintenance
+/// RPC (ADR-0203 Decision 2, Amendment 1).
+///
+/// It is keyed only by its fully qualified service/method identity and is
+/// deliberately distinct from [`ServiceOperationV1`]: these operations add no
+/// durable audit operation or tag, because the external maintenance receipt
+/// is their sole audit record. The declaration is not an exemption from
+/// generation or coverage, and it admits exactly gRPC ingress: the CLI is a
+/// gRPC client, and MCP and in-process comparison are never public ingress.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct MaintenanceOperationDeclaration {
+    /// Fully qualified `package.Service/Method` identity.
+    pub method: &'static str,
+    /// Fully qualified Protobuf request message.
+    pub proto_request: &'static str,
+    /// Fully qualified Protobuf response message.
+    pub proto_response: &'static str,
+    /// Checked service request DTO path.
+    pub dto_request: &'static str,
+    /// Checked service result DTO path.
+    pub dto_result: &'static str,
+    /// Every bound enforced by the generated public-message exchange.
+    pub bounds: &'static [BoundDeclaration],
+    /// Trusted ingress kinds permitted to reach the shared service path.
+    pub ingress: &'static [ServiceIngressKindV1],
+    /// Capability permission checked by the shared authorizer.
+    pub permission: CapabilityPermissionKindV1,
+    /// Replay classification.
+    pub idempotency: IdempotencyClass,
+    /// Redaction class of released output.
+    pub output_redaction: OutputRedactionClass,
+    /// Intended public audiences.
+    pub audiences: &'static [OperationAudience],
+    /// Closed message-root mappings; field expansion is descriptor-driven.
+    pub field_map: &'static [FieldMapping],
+}
+
+const GRPC_INGRESS: &[ServiceIngressKindV1] = &[ServiceIngressKindV1::Grpc];
+
+macro_rules! maintenance_declaration {
+    ($method:literal, $dto_request:literal, $dto_result:literal, $idempotency:ident) => {
+        MaintenanceOperationDeclaration {
+            method: concat!("riffdb.v1.AdminService/", $method),
+            proto_request: concat!("riffdb.v1.", $method, "Request"),
+            proto_response: concat!("riffdb.v1.", $method, "Response"),
+            dto_request: concat!("riffdb_service::", $dto_request),
+            dto_result: concat!("riffdb_service::", $dto_result),
+            bounds: STANDARD_EXCHANGE_BOUNDS,
+            ingress: GRPC_INGRESS,
+            permission: CapabilityPermissionKindV1::AdministerCapabilities,
+            idempotency: IdempotencyClass::$idempotency,
+            output_redaction: OutputRedactionClass::OperatorProtected,
+            audiences: OPERATOR_AUDIENCE,
+            field_map: ROOT_FIELD_MAP,
+        }
+    };
+}
+
+/// Exactly one declaration per public receipted offline-maintenance RPC, in
+/// `AdminService` method order.
+pub const MAINTENANCE_OPERATIONS: [MaintenanceOperationDeclaration; 6] = [
+    maintenance_declaration!(
+        "CreateOfflineBackup",
+        "CreateOfflineBackupRequest",
+        "OfflineMaintenanceStartResult",
+        IdempotentMutation
+    ),
+    maintenance_declaration!(
+        "RestoreOfflineBackup",
+        "RestoreOfflineBackupRequest",
+        "OfflineMaintenanceStartResult",
+        IdempotentMutation
+    ),
+    maintenance_declaration!(
+        "RestoreArchivedBackup",
+        "RestoreArchivedBackupRequest",
+        "OfflineMaintenanceStartResult",
+        IdempotentMutation
+    ),
+    maintenance_declaration!(
+        "RetireOfflineBackup",
+        "RetireOfflineBackupRequest",
+        "OfflineMaintenanceStartResult",
+        IdempotentMutation
+    ),
+    maintenance_declaration!(
+        "GetOfflineMaintenanceOperation",
+        "GetOfflineMaintenanceOperationRequest",
+        "GetOfflineMaintenanceOperationResult",
+        ReadOnly
+    ),
+    maintenance_declaration!(
+        "StartOfflineStorageScrub",
+        "StartOfflineStorageScrubRequest",
+        "OfflineMaintenanceStartResult",
+        IdempotentMutation
+    ),
+];
+
+/// Looks up one maintenance declaration by its fully qualified method.
+#[must_use]
+pub fn maintenance_declaration(method: &str) -> Option<&'static MaintenanceOperationDeclaration> {
+    MAINTENANCE_OPERATIONS
+        .iter()
+        .find(|entry| entry.method == method)
+}
+
 /// Looks up one declaration by its stable semantic operation.
 #[must_use]
 pub fn declaration(operation: ServiceOperationV1) -> &'static OperationDeclaration {
@@ -1032,6 +1139,49 @@ mod tests {
         assert_eq!(
             entry.output_redaction,
             OutputRedactionClass::OperatorProtected
+        );
+    }
+
+    // req: REC-008
+    #[test]
+    fn maintenance_declarations_are_grpc_only_operator_protected_and_unique() {
+        let methods = MAINTENANCE_OPERATIONS
+            .iter()
+            .map(|entry| entry.method)
+            .collect::<BTreeSet<_>>();
+        assert_eq!(methods.len(), MAINTENANCE_OPERATIONS.len());
+        for entry in MAINTENANCE_OPERATIONS {
+            assert_eq!(maintenance_declaration(entry.method), Some(&entry));
+            assert_eq!(entry.ingress, &[ServiceIngressKindV1::Grpc]);
+            assert_eq!(
+                entry.permission,
+                CapabilityPermissionKindV1::AdministerCapabilities
+            );
+            assert_eq!(entry.audiences, OPERATOR_AUDIENCE);
+            assert_eq!(
+                entry.output_redaction,
+                OutputRedactionClass::OperatorProtected
+            );
+            assert_eq!(entry.bounds, STANDARD_EXCHANGE_BOUNDS);
+            // Audit-exempt: no semantic service operation shares its messages.
+            assert!(OPERATIONS.iter().all(|operation| {
+                operation.proto_request != entry.proto_request
+                    && operation.proto_response != entry.proto_response
+            }));
+        }
+        assert_eq!(
+            maintenance_declaration("riffdb.v1.AdminService/StartOfflineStorageScrub")
+                .map(|entry| entry.idempotency),
+            Some(IdempotencyClass::IdempotentMutation)
+        );
+        assert_eq!(
+            maintenance_declaration("riffdb.v1.AdminService/GetOfflineMaintenanceOperation")
+                .map(|entry| entry.idempotency),
+            Some(IdempotencyClass::ReadOnly)
+        );
+        assert_eq!(
+            maintenance_declaration("riffdb.v1.AdminService/Health"),
+            None
         );
     }
 

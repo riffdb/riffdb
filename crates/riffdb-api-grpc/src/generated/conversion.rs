@@ -3962,6 +3962,17 @@ pub fn retire_offline_backup_request_from_proto(
     Ok((request_id, request))
 }
 
+/// Converts one selector-free storage-scrub start request (ADR-0203).
+pub fn start_offline_storage_scrub_request_from_proto(
+    request: v1::StartOfflineStorageScrubRequest,
+) -> Result<(RequestId, riffdb_service::StartOfflineStorageScrubRequest), Status> {
+    let request_id = request_id_from_bytes(&request.request_id)?;
+    let operation_id = offline_maintenance_operation_id_from_bytes(&request.operation_id)?;
+    let request = riffdb_service::StartOfflineStorageScrubRequest::new(operation_id)
+        .map_err(|_| invalid_request())?;
+    Ok((request_id, request))
+}
+
 /// Converts one protected receipt-observation request.
 pub fn get_offline_maintenance_operation_request_from_proto(
     request: v1::GetOfflineMaintenanceOperationRequest,
@@ -4586,6 +4597,9 @@ fn offline_maintenance_operation_to_proto(
         OfflineMaintenanceOperationKind::RetireBackup => {
             v1::OfflineMaintenanceOperationKind::RetireBackup
         }
+        OfflineMaintenanceOperationKind::StorageScrub => {
+            v1::OfflineMaintenanceOperationKind::StorageScrub
+        }
     };
     let phase = match operation.phase() {
         OfflineMaintenanceObservationPhase::Accepted => v1::OfflineMaintenancePhase::Accepted,
@@ -4630,7 +4644,9 @@ fn offline_maintenance_operation_to_proto(
     v1::OfflineMaintenanceOperation {
         operation_id: operation.operation_id().into_bytes().to_vec(),
         kind: kind as i32,
-        backup_name: operation.backup_name().as_str().to_owned(),
+        backup_name: operation
+            .backup_name()
+            .map_or_else(String::new, |name| name.as_str().to_owned()),
         input_hash: operation.input_hash().into_bytes().to_vec(),
         phase: phase as i32,
         failure: failure as i32,

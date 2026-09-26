@@ -983,24 +983,11 @@ if ((skip_riffdb == 0)); then
         riffdbd_feature_args=()
         riffdbd_feature_identity=default
         if [[ "${RIFFDB_APP_BASELINE_WP705_LIFECYCLE_EVIDENCE:-}" == "1" ]]; then
-            lifecycle_organizations="${organizations:-200}"
-            lifecycle_tickets="${tickets_per_project:-50}"
-            lifecycle_comments="${comments_per_ticket:-5}"
-            lifecycle_ticket_labels="${labels_per_ticket:-3}"
-            lifecycle_board_density="${board_density:-600}"
-            lifecycle_payload_bytes="${payload_bytes:-256}"
-            if [[ "$lifecycle_organizations" == 4 \
-               && "$lifecycle_tickets" == 86 \
-               && "$lifecycle_comments" == 5 \
-               && "$lifecycle_ticket_labels" == 8 \
-               && "$lifecycle_board_density" == 600 \
-               && "$lifecycle_payload_bytes" == 256 ]]; then
-                # Only the real SIGKILL arm needs the closed external-kill
-                # fixture. Canonical production-clean evidence is built from
-                # the default production feature set.
-                riffdbd_feature_args=(--features test-fixtures)
-                riffdbd_feature_identity=test-fixtures
-            fi
+            # WP-760: both lifecycle checkpoints (65,536 rows and production)
+            # run the genuine SIGKILL arm, which needs the closed external-kill
+            # fixture in the sealed daemon.
+            riffdbd_feature_args=(--features test-fixtures)
+            riffdbd_feature_identity=test-fixtures
         fi
         cargo +1.98.1 build --locked --release -p riffdb-server --bin riffdbd "${riffdbd_feature_args[@]}"
         export RIFFDB_APP_BASELINE_RIFFDBD_BIN="$(cargo_target_directory)/release/riffdbd"
@@ -1602,7 +1589,8 @@ if [[ "$wp705_lifecycle_evidence" == 1 ]]; then
             and $lifecycle.seeded_close.columnar_population_passes == 0
             and $lifecycle.final_close.columnar_activations == 0
             and $lifecycle.final_close.columnar_population_passes == 0
-          elif $lifecycle.schema == "riffdb.wp-705-production-lifecycle/v1" then
+          elif $lifecycle.schema == "riffdb.wp-705-production-lifecycle/v1"
+            or $lifecycle.schema == "riffdb.wp-760-dirty-recovery-lifecycle/v1" then
             ($lifecycle.scale_checkpoint == "production"
               or $lifecycle.scale_checkpoint == "rows_65536")
             and $lifecycle.measured_clean_close.columnar_activations == 0

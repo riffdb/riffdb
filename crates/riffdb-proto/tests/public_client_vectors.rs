@@ -1672,6 +1672,7 @@ fn expected_enum_values() -> BTreeSet<String> {
                 "OFFLINE_MAINTENANCE_OPERATION_KIND_CREATE_BACKUP",
                 "OFFLINE_MAINTENANCE_OPERATION_KIND_RESTORE_BACKUP",
                 "OFFLINE_MAINTENANCE_OPERATION_KIND_RETIRE_BACKUP",
+                "OFFLINE_MAINTENANCE_OPERATION_KIND_STORAGE_SCRUB",
             ][..],
         ),
         (

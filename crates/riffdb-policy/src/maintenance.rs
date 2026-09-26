@@ -10,7 +10,7 @@ use riffdb_types::{
 
 use crate::{Obligations, PolicyCode};
 
-/// The four public offline-maintenance actions known to policy.
+/// The public offline-maintenance actions known to policy.
 ///
 /// This is a process-local policy registry. It deliberately has no stable tag
 /// or serialization API and is not a [`riffdb_types::ServiceOperationV1`].
@@ -73,6 +73,19 @@ impl OfflineMaintenanceAuthorizationRequest {
                 OfflineMaintenanceOperationKind::RetireBackup,
             ),
             input_hash: Some(input_hash),
+        }
+    }
+
+    /// Constructs authorization facts for the selector-free storage scrub
+    /// (ADR-0203); its semantic input is the fixed scrub identity.
+    #[must_use]
+    pub fn storage_scrub(operation_id: OfflineMaintenanceOperationId) -> Self {
+        Self {
+            operation_id,
+            operation: OfflineMaintenancePolicyOperation::Start(
+                OfflineMaintenanceOperationKind::StorageScrub,
+            ),
+            input_hash: Some(riffdb_types::storage_scrub_input_hash()),
         }
     }
 

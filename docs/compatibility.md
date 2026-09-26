@@ -110,18 +110,22 @@ Clean-close compatibility is exact rather than best effort:
 | Offline operation | Certificate bytes | Next startup decision |
 |---|---|---|
 | Immutable named backup creation | Preserved in the verified artifact | Private restore staging first runs complete exact-end validation; the later staged-authorization open consumes matching CLEAN into DIRTY before publication |
-| Destructive restore or maintenance replacement | May be copied as source bytes | Invalidated by the new history incarnation; complete validation |
+| Destructive restore or maintenance replacement | May be copied as source bytes | Invalidated by the new history incarnation; dirty startup |
 | Complete stopped lifecycle-unit copy | Preserved with its matching journal and format marker | Preserved while every bound root and identity remains exact |
-| Bare database-file copy | May be copied | Ineligible without the matching journal, marker, and lifecycle unit; complete validation |
+| Bare database-file copy | May be copied | Ineligible without the matching journal, marker, and lifecycle unit; dirty startup |
 | Registry migration or incompatible internal format | Old bytes may remain readable during the transition | Invalidated or refused fail-closed; complete validation is never skipped |
 | Compatible marker-only format upgrade | Preserved with the unchanged internal lifecycle unit | Preserved after the backup-bound marker transition |
-| History-incarnation rotation | Preserved until ordinary lifecycle replacement | Invalidated; complete validation |
-| Retention hold change or prune | Preserved until ordinary lifecycle replacement | Invalidated by changed retention roots; complete validation |
-| Sealed internal integrity scrub | Engine repair, journal recovery, or compatible registry migration may physically change bytes | Complete validation fails closed as applicable, creates no eligibility, and makes no new semantic application-authority mutation |
+| History-incarnation rotation | Preserved until ordinary lifecycle replacement | Invalidated; dirty startup |
+| Retention hold change or prune | Preserved until ordinary lifecycle replacement | Invalidated by changed retention roots; dirty startup |
+| Offline storage scrub (`riffdb storage scrub`) | Engine repair, journal recovery, or compatible registry migration may physically change bytes | Complete validation fails closed as applicable, creates no eligibility, and makes no new semantic application-authority mutation; the reopen is an ordinary startup |
 
 Only an unchanged, completely and gracefully stopped lifecycle unit can reuse a
-matching record. The sealed primitive and its internal receipt are not public;
-the authorized maintenance operation and durable receipt are not yet available.
+matching record. A dirty startup recovers the journal suffix and validates the
+bounded roots without a population walk when a validated-prefix checkpoint
+loads, and otherwise performs complete validation; see [Startup
+Integrity](operations/STARTUP-INTEGRITY.md). The offline storage scrub is the
+authorized maintenance operation described there, and its receipt is the
+version-4 maintenance receipt.
 
 The current registry also adds durable tag 67
 `StoredColumnarProjectionControlV1` and the `columnar_projection_controls`

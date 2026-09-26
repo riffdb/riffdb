@@ -415,6 +415,28 @@ pub fn validate_retire_offline_backup_exchange(
     )
 }
 
+/// ADR-0203: the scrub's response echoes its operation identity, the fixed
+/// storage-scrub kind, an empty backup name, and the fixed scrub input hash.
+pub fn validate_start_offline_storage_scrub_exchange(
+    request: &v1::StartOfflineStorageScrubRequest,
+    response: &v1::StartOfflineStorageScrubResponse,
+) -> Result<(), PublicWireError> {
+    validate_public_message(request)?;
+    validate_public_message(response)?;
+    let operation = response
+        .operation
+        .as_ref()
+        .ok_or(PublicWireError::MissingRequiredField)?;
+    if operation.operation_id != request.operation_id
+        || operation.kind != v1::OfflineMaintenanceOperationKind::StorageScrub as i32
+        || !operation.backup_name.is_empty()
+        || operation.input_hash != riffdb_types::storage_scrub_input_hash().into_bytes()
+    {
+        return Err(PublicWireError::InconsistentFields);
+    }
+    Ok(())
+}
+
 /// Validates maintenance-poll request/response identity without expanding `not_found`.
 pub fn validate_get_offline_maintenance_operation_exchange(
     request: &v1::GetOfflineMaintenanceOperationRequest,
@@ -685,6 +707,7 @@ fn validate_offline_maintenance_exchange(
             v1::OfflineMaintenanceOperationKind::RestoreBackup as i32
         }
         riffdb_types::OfflineMaintenanceOperationKind::RetireBackup => 3,
+        riffdb_types::OfflineMaintenanceOperationKind::StorageScrub => 4,
     };
     let expected_hash =
         offline_maintenance_input_hash(expected_kind, &checked_name, confirmation).into_bytes();
@@ -4008,15 +4031,28 @@ fn validate_offline_maintenance_operation(
     operation: &v1::OfflineMaintenanceOperation,
 ) -> Result<(), PublicWireError> {
     offline_maintenance_operation_id(&operation.operation_id)?;
+    let kind = v1::OfflineMaintenanceOperationKind::try_from(operation.kind)
+        .map_err(|_| PublicWireError::InvalidEnum)?;
     if !matches!(
-        v1::OfflineMaintenanceOperationKind::try_from(operation.kind),
-        Ok(v1::OfflineMaintenanceOperationKind::CreateBackup
+        kind,
+        v1::OfflineMaintenanceOperationKind::CreateBackup
             | v1::OfflineMaintenanceOperationKind::RestoreBackup
-            | v1::OfflineMaintenanceOperationKind::RetireBackup)
+            | v1::OfflineMaintenanceOperationKind::RetireBackup
+            | v1::OfflineMaintenanceOperationKind::StorageScrub
     ) {
         return Err(PublicWireError::InvalidEnum);
     }
-    validate_backup_name_v1(&operation.backup_name)?;
+    // ADR-0203 Decision 3: backup_name is empty exactly for the scrub, and a
+    // scrub publishes no artifact.
+    if kind == v1::OfflineMaintenanceOperationKind::StorageScrub {
+        if !operation.backup_name.is_empty()
+            || operation.phase == v1::OfflineMaintenancePhase::ArtifactPublished as i32
+        {
+            return Err(PublicWireError::InconsistentFields);
+        }
+    } else {
+        validate_backup_name_v1(&operation.backup_name)?;
+    }
     hash(&operation.input_hash)?;
     let phase = v1::OfflineMaintenancePhase::try_from(operation.phase)
         .map_err(|_| PublicWireError::InvalidEnum)?;
@@ -4144,6 +4180,19 @@ fn validate_retire_offline_backup_request(
 
 fn validate_retire_offline_backup_response(
     message: &v1::RetireOfflineBackupResponse,
+) -> Result<(), PublicWireError> {
+    validate_offline_maintenance_start(message.disposition, message.operation.as_ref())
+}
+
+fn validate_start_offline_storage_scrub_request(
+    message: &v1::StartOfflineStorageScrubRequest,
+) -> Result<(), PublicWireError> {
+    request_id(&message.request_id)?;
+    offline_maintenance_operation_id(&message.operation_id)
+}
+
+fn validate_start_offline_storage_scrub_response(
+    message: &v1::StartOfflineStorageScrubResponse,
 ) -> Result<(), PublicWireError> {
     validate_offline_maintenance_start(message.disposition, message.operation.as_ref())
 }
@@ -10867,6 +10916,24 @@ impl_public_message!(
     validate_retire_offline_backup_response
 );
 impl_public_message!(
+    v1::StartOfflineStorageScrubRequest,
+    MAX_PUBLIC_REQUEST_BYTES,
+    2,
+    &[],
+    &[],
+    preflight_noop,
+    validate_start_offline_storage_scrub_request
+);
+impl_public_message!(
+    v1::StartOfflineStorageScrubResponse,
+    MAX_PUBLIC_RESPONSE_BYTES,
+    2,
+    &[],
+    &[],
+    preflight_offline_maintenance_start_response,
+    validate_start_offline_storage_scrub_response
+);
+impl_public_message!(
     v1::GetOfflineMaintenanceOperationRequest,
     MAX_PUBLIC_REQUEST_BYTES,
     2,
@@ -12199,5 +12266,32 @@ pub const GENERATED_PUBLIC_VALIDATION_MESSAGES: &[GeneratedPublicValidationMessa
     GeneratedPublicValidationMessage { tag: 60, operation: "FenceReplicationPrimary", request: "riffdb.v1.FenceReplicationPrimaryRequest", request_fields: 4, response: "riffdb.v1.FenceReplicationPrimaryResponse", response_fields: 2, request_bytes: 1048576, response_bytes: 4194304 },
     GeneratedPublicValidationMessage { tag: 61, operation: "StreamChangelog", request: "riffdb.v1.StreamChangelogRequest", request_fields: 13, response: "riffdb.v1.StreamChangelogResponse", response_fields: 6, request_bytes: 1024, response_bytes: 33555456 },
     GeneratedPublicValidationMessage { tag: 62, operation: "PromoteFollower", request: "riffdb.v1.PromoteFollowerRequest", request_fields: 5, response: "riffdb.v1.PromoteFollowerResponse", response_fields: 1, request_bytes: 1048576, response_bytes: 4194304 },
+];
+/// Descriptor-checked audit-exempt maintenance declaration (ADR-0203).
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct GeneratedMaintenanceValidationMessage {
+    /// Fully qualified `package.Service/Method` identity.
+    pub method: &'static str,
+    /// Fully qualified Protobuf request message.
+    pub request: &'static str,
+    /// Descriptor-declared request field count.
+    pub request_fields: usize,
+    /// Fully qualified Protobuf response message.
+    pub response: &'static str,
+    /// Descriptor-declared response field count.
+    pub response_fields: usize,
+    /// Inclusive encoded request-byte maximum.
+    pub request_bytes: usize,
+    /// Inclusive encoded response-byte maximum.
+    pub response_bytes: usize,
+}
+/// Descriptor-checked receipted-maintenance RPCs in `AdminService` order.
+pub const GENERATED_MAINTENANCE_VALIDATION_MESSAGES: &[GeneratedMaintenanceValidationMessage] = &[
+    GeneratedMaintenanceValidationMessage { method: "riffdb.v1.AdminService/CreateOfflineBackup", request: "riffdb.v1.CreateOfflineBackupRequest", request_fields: 3, response: "riffdb.v1.CreateOfflineBackupResponse", response_fields: 2, request_bytes: 1048576, response_bytes: 4194304 },
+    GeneratedMaintenanceValidationMessage { method: "riffdb.v1.AdminService/RestoreOfflineBackup", request: "riffdb.v1.RestoreOfflineBackupRequest", request_fields: 4, response: "riffdb.v1.RestoreOfflineBackupResponse", response_fields: 2, request_bytes: 1048576, response_bytes: 4194304 },
+    GeneratedMaintenanceValidationMessage { method: "riffdb.v1.AdminService/RestoreArchivedBackup", request: "riffdb.v1.RestoreArchivedBackupRequest", request_fields: 6, response: "riffdb.v1.RestoreArchivedBackupResponse", response_fields: 2, request_bytes: 1048576, response_bytes: 4194304 },
+    GeneratedMaintenanceValidationMessage { method: "riffdb.v1.AdminService/RetireOfflineBackup", request: "riffdb.v1.RetireOfflineBackupRequest", request_fields: 3, response: "riffdb.v1.RetireOfflineBackupResponse", response_fields: 2, request_bytes: 1048576, response_bytes: 4194304 },
+    GeneratedMaintenanceValidationMessage { method: "riffdb.v1.AdminService/GetOfflineMaintenanceOperation", request: "riffdb.v1.GetOfflineMaintenanceOperationRequest", request_fields: 2, response: "riffdb.v1.GetOfflineMaintenanceOperationResponse", response_fields: 2, request_bytes: 1048576, response_bytes: 4194304 },
+    GeneratedMaintenanceValidationMessage { method: "riffdb.v1.AdminService/StartOfflineStorageScrub", request: "riffdb.v1.StartOfflineStorageScrubRequest", request_fields: 2, response: "riffdb.v1.StartOfflineStorageScrubResponse", response_fields: 2, request_bytes: 1048576, response_bytes: 4194304 },
 ];
 

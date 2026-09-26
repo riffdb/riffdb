@@ -549,6 +549,11 @@ fn receipt(
                 "retirement requires the V2 receipt helper and is not a V1 operation",
             ));
         }
+        OfflineMaintenanceOperationKind::StorageScrub => {
+            return Err(test_failure(
+                "scrub writes receipt V4 and is not a V1 operation",
+            ));
+        }
     };
     Ok(OfflineMaintenanceReceiptV1::accepted(
         operation_id(seed),

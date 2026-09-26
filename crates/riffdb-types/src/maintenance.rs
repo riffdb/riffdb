@@ -196,6 +196,9 @@ pub enum OfflineMaintenanceOperationKind {
     RestoreBackup,
     /// Permanently retire one previously published immutable backup.
     RetireBackup,
+    /// Drive the one complete exact-end validation over the closed database
+    /// (ADR-0203). It has no backup name or any other semantic input.
+    StorageScrub,
 }
 
 impl OfflineMaintenanceOperationKind {
@@ -204,6 +207,7 @@ impl OfflineMaintenanceOperationKind {
             Self::CreateBackup => 1,
             Self::RestoreBackup => 2,
             Self::RetireBackup => 3,
+            Self::StorageScrub => 4,
         }
     }
 }
@@ -295,6 +299,17 @@ pub fn offline_maintenance_input_hash(
     canonical.push(u8::try_from(name.len()).expect("backup-name length is bounded to 64"));
     canonical.extend_from_slice(name);
     canonical.push(confirmation.tag());
+    hash_offline_maintenance_input(&canonical)
+}
+
+/// The storage scrub's fixed semantic-input identity (ADR-0203 Decision 9):
+/// domain-separated over the fixed scrub kind and its empty input. Every
+/// retry of one scrub operation, and every scrub, has this same identity.
+#[must_use]
+pub fn storage_scrub_input_hash() -> OfflineMaintenanceInputHash {
+    let mut canonical = Vec::with_capacity(33);
+    canonical.extend_from_slice(b"riffdb.storage-scrub-input/v1\0");
+    canonical.push(OfflineMaintenanceOperationKind::StorageScrub.tag());
     hash_offline_maintenance_input(&canonical)
 }
 
@@ -520,6 +535,47 @@ mod tests {
                 migration,
                 ContractMigrationApplyConfirmation::AllowApplyContractMigration,
             )
+        );
+    }
+    // req: REC-008
+    #[test]
+    fn storage_scrub_input_identity_is_fixed_and_disjoint_from_every_backup_input() {
+        assert_eq!(storage_scrub_input_hash(), storage_scrub_input_hash());
+        // The identity is durable in every scrub receipt; pin its exact bytes.
+        let pinned: String = storage_scrub_input_hash()
+            .as_bytes()
+            .iter()
+            .map(|byte| format!("{byte:02x}"))
+            .collect();
+        assert_eq!(
+            pinned,
+            "9b2940429ed8e93442aae0ee1dbfb27019fe8ad2f3795899c7cc12d271ed4252"
+        );
+        let name = BackupNameV1::new("a").expect("checked name");
+        for kind in [
+            OfflineMaintenanceOperationKind::CreateBackup,
+            OfflineMaintenanceOperationKind::RestoreBackup,
+            OfflineMaintenanceOperationKind::RetireBackup,
+            OfflineMaintenanceOperationKind::StorageScrub,
+        ] {
+            for confirmation in [
+                OfflineMaintenanceReplacementConfirmation::NotProvided,
+                OfflineMaintenanceReplacementConfirmation::AllowReplaceNonemptyTarget,
+            ] {
+                assert_ne!(
+                    offline_maintenance_input_hash(kind, &name, confirmation),
+                    storage_scrub_input_hash()
+                );
+            }
+        }
+        assert_ne!(
+            archive_restore_input_hash(
+                &name,
+                &ArchiveNameV1::new("a").expect("checked archive"),
+                ArchiveRestoreStopV1::LastArchived,
+                OfflineMaintenanceReplacementConfirmation::NotProvided,
+            ),
+            storage_scrub_input_hash()
         );
     }
 }

@@ -30,6 +30,10 @@ use crate::error::storage_error;
 mod archive_receipt;
 pub(super) use archive_receipt::{decode_archive_receipt, encode_archive_receipt};
 
+#[path = "scrub_receipt_codec.rs"]
+mod scrub_receipt;
+pub(super) use scrub_receipt::{decode_scrub_receipt, encode_scrub_receipt};
+
 #[path = "promotion_receipt_codec.rs"]
 mod promotion_receipt;
 pub(super) use promotion_receipt::{
@@ -42,6 +46,8 @@ pub(super) const RETIRE_RECEIPT_FILE_SUFFIX: &str = ".receipt-v2";
 pub(super) const RETIRE_RECEIPT_TEMP_SUFFIX: &str = ".receipt-v2.tmp";
 pub(super) const ARCHIVE_RECEIPT_FILE_SUFFIX: &str = ".receipt-v3";
 pub(super) const ARCHIVE_RECEIPT_TEMP_SUFFIX: &str = ".receipt-v3.tmp";
+pub(super) const SCRUB_RECEIPT_FILE_SUFFIX: &str = ".receipt-v4";
+pub(super) const SCRUB_RECEIPT_TEMP_SUFFIX: &str = ".receipt-v4.tmp";
 pub(super) const MAX_RECEIPT_BYTES: usize = 4 * 1024;
 
 const RECEIPT_MAGIC: &[u8] = b"RIFFDB-MAINT-RECEIPT\0";
@@ -772,6 +778,8 @@ const fn operation_kind_tag(kind: OfflineMaintenanceOperationKind) -> u8 {
         OfflineMaintenanceOperationKind::CreateBackup => 0x01,
         OfflineMaintenanceOperationKind::RestoreBackup => 0x02,
         OfflineMaintenanceOperationKind::RetireBackup => 0x03,
+        // Only the V4 codec writes the scrub; V1 values cannot hold it.
+        OfflineMaintenanceOperationKind::StorageScrub => 0x04,
     }
 }
 

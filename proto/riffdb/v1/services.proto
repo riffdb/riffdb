@@ -78,6 +78,7 @@ service AdminService {
   rpc RestoreArchivedBackup(RestoreArchivedBackupRequest) returns (RestoreArchivedBackupResponse);
   rpc RetireOfflineBackup(RetireOfflineBackupRequest) returns (RetireOfflineBackupResponse);
   rpc GetOfflineMaintenanceOperation(GetOfflineMaintenanceOperationRequest) returns (GetOfflineMaintenanceOperationResponse);
+  rpc StartOfflineStorageScrub(StartOfflineStorageScrubRequest) returns (StartOfflineStorageScrubResponse);
   rpc CheckContractMigration(CheckContractMigrationRequest) returns (CheckContractMigrationResponse);
   rpc ApplyContractMigration(ApplyContractMigrationRequest) returns (ApplyContractMigrationResponse);
   rpc GetContractMigrationOperation(GetContractMigrationOperationRequest) returns (GetContractMigrationOperationResponse);

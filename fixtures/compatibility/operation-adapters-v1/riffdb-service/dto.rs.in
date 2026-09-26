@@ -5951,6 +5951,41 @@ impl fmt::Debug for RetireOfflineBackupRequest {
     }
 }
 
+/// Checked request to start the selector-free offline storage scrub
+/// (ADR-0203). It carries only the caller-stable operation identity: no
+/// target, path, scope, backend, repair, force, readiness, rate, or kind.
+#[derive(Clone, Eq, PartialEq)]
+pub struct StartOfflineStorageScrubRequest {
+    operation_id: OfflineMaintenanceOperationId,
+}
+
+impl StartOfflineStorageScrubRequest {
+    /// Joins the checked operation identity.
+    pub fn new(operation_id: OfflineMaintenanceOperationId) -> Result<Self, ServiceDtoError> {
+        let request = Self { operation_id };
+        ensure_service_request_bound(&request)?;
+        Ok(request)
+    }
+
+    /// Returns the caller-stable receipt identity.
+    #[must_use]
+    pub const fn operation_id(&self) -> OfflineMaintenanceOperationId {
+        self.operation_id
+    }
+
+    /// Returns the fixed scrub semantic-input identity.
+    #[must_use]
+    pub fn input_hash(&self) -> OfflineMaintenanceInputHash {
+        riffdb_types::storage_scrub_input_hash()
+    }
+}
+
+impl fmt::Debug for StartOfflineStorageScrubRequest {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("StartOfflineStorageScrubRequest([REDACTED])")
+    }
+}
+
 /// Checked request to restore one immutable offline backup.
 #[derive(Clone, Eq, PartialEq)]
 pub struct RestoreOfflineBackupRequest {
@@ -6430,7 +6465,7 @@ impl fmt::Debug for ArchiveRestoreObservation {
 pub struct OfflineMaintenanceOperationObservation {
     operation_id: OfflineMaintenanceOperationId,
     kind: OfflineMaintenanceOperationKind,
-    backup_name: BackupNameV1,
+    backup_name: Option<BackupNameV1>,
     input_hash: OfflineMaintenanceInputHash,
     phase: OfflineMaintenanceObservationPhase,
     failure: Option<OfflineMaintenanceObservationFailure>,
@@ -6447,7 +6482,8 @@ impl OfflineMaintenanceOperationObservation {
         phase: OfflineMaintenanceObservationPhase,
         failure: Option<OfflineMaintenanceObservationFailure>,
     ) -> Result<Self, ServiceDtoError> {
-        if matches!(phase, OfflineMaintenanceObservationPhase::FailedClosed) != failure.is_some()
+        if kind == OfflineMaintenanceOperationKind::StorageScrub
+            || matches!(phase, OfflineMaintenanceObservationPhase::FailedClosed) != failure.is_some()
             || (kind == OfflineMaintenanceOperationKind::CreateBackup
                 && failure == Some(OfflineMaintenanceObservationFailure::StagedAuthorizationFailed))
         {
@@ -6456,8 +6492,32 @@ impl OfflineMaintenanceOperationObservation {
         Ok(Self {
             operation_id,
             kind,
-            backup_name,
+            backup_name: Some(backup_name),
             input_hash,
+            phase,
+            failure,
+            archive_restore: None,
+        })
+    }
+
+    /// The storage scrub's observation (ADR-0203 Decision 3): no backup name,
+    /// the fixed scrub input identity, and never an artifact-published phase.
+    pub fn storage_scrub(
+        operation_id: OfflineMaintenanceOperationId,
+        phase: OfflineMaintenanceObservationPhase,
+        failure: Option<OfflineMaintenanceObservationFailure>,
+    ) -> Result<Self, ServiceDtoError> {
+        if matches!(phase, OfflineMaintenanceObservationPhase::FailedClosed) != failure.is_some()
+            || phase == OfflineMaintenanceObservationPhase::ArtifactPublished
+            || failure == Some(OfflineMaintenanceObservationFailure::StagedAuthorizationFailed)
+        {
+            return Err(ServiceDtoError::InvalidShape);
+        }
+        Ok(Self {
+            operation_id,
+            kind: OfflineMaintenanceOperationKind::StorageScrub,
+            backup_name: None,
+            input_hash: riffdb_types::storage_scrub_input_hash(),
             phase,
             failure,
             archive_restore: None,
@@ -6490,10 +6550,10 @@ impl OfflineMaintenanceOperationObservation {
         self.kind
     }
 
-    /// Borrows the checked backup name.
+    /// Borrows the checked backup name; absent exactly for the storage scrub.
     #[must_use]
-    pub const fn backup_name(&self) -> &BackupNameV1 {
-        &self.backup_name
+    pub const fn backup_name(&self) -> Option<&BackupNameV1> {
+        self.backup_name.as_ref()
     }
 
     /// Returns the immutable semantic-input identity.
@@ -10243,6 +10303,12 @@ impl ServiceRequestCharge for RetireOfflineBackupRequest {
         charge.add_framed_bytes(self.backup_name.as_bytes().len())?;
         charge.add(self.input_hash.as_bytes().len())?;
         Ok(charge.finish())
+    }
+}
+
+impl ServiceRequestCharge for StartOfflineStorageScrubRequest {
+    fn structural_charge(&self) -> Result<usize, ServiceDtoError> {
+        Ok(self.operation_id.as_bytes().len())
     }
 }
 

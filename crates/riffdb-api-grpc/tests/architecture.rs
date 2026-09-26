@@ -308,7 +308,7 @@ fn operator_campaigns_maintenance_and_migration_are_additive_and_never_an_mcp_su
             .lines()
             .filter(|line| line.trim_start().starts_with("rpc "))
             .count(),
-        63
+        64
     );
     assert_eq!(services.matches("rpc ExecuteBatch(").count(), 1);
     for rpc in [
@@ -557,4 +557,35 @@ fn restore_handoffs_keep_ready_retry_and_recovery_authority_disjoint() {
     assert!(!recovery.contains("authenticate_normal_request"));
     assert!(!recovery.contains("authenticate_and_retain_normal_request"));
     assert!(!recovery.contains("RequestContext::from_authenticated_grpc"));
+}
+
+// req: REC-008
+/// ADR-0203 Decision 2 routing: each generated maintenance declaration has
+/// exactly one gRPC handler, and that handler admits through the shared
+/// offline-maintenance route rather than an ordinary or MCP path.
+#[test]
+fn every_maintenance_declaration_routes_through_maintenance_admission() {
+    let source = include_str!("../src/server.rs");
+    for entry in riffdb_proto::GENERATED_MAINTENANCE_VALIDATION_MESSAGES {
+        let method = entry.method.rsplit('/').next().expect("method name");
+        let mut snake = String::new();
+        for (index, character) in method.char_indices() {
+            if character.is_ascii_uppercase() && index > 0 {
+                snake.push('_');
+            }
+            snake.push(character.to_ascii_lowercase());
+        }
+        let signature = format!("async fn {snake}(");
+        assert_eq!(source.matches(&signature).count(), 1, "{method}");
+        let handler = source
+            .split(&signature)
+            .nth(1)
+            .and_then(|tail| tail.split("\n    async fn ").next())
+            .expect("maintenance handler");
+        assert!(
+            handler.contains("admit_offline_maintenance(")
+                || handler.contains("ready_maintenance_admission("),
+            "{method} must admit through the offline-maintenance route"
+        );
+    }
 }

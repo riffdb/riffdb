@@ -3076,6 +3076,12 @@ messages
     7 canonical_export_receipt_json optional bytes
   riffdb.v1.StartApplicationReimportResponse fields=1
     1 operation optional .riffdb.v1.ApplicationReimportOperation
+  riffdb.v1.StartOfflineStorageScrubRequest fields=2
+    1 request_id optional bytes
+    2 operation_id optional bytes
+  riffdb.v1.StartOfflineStorageScrubResponse fields=2
+    1 disposition optional .riffdb.v1.OfflineMaintenanceStartDisposition
+    2 operation optional .riffdb.v1.OfflineMaintenanceOperation
   riffdb.v1.StatsRequest fields=1
     1 request_id optional bytes
   riffdb.v1.StatsResponse fields=7
@@ -3959,11 +3965,12 @@ enums
     6 OFFLINE_MAINTENANCE_FAILURE_CLASS_VALIDATION_FAILED
     7 OFFLINE_MAINTENANCE_FAILURE_CLASS_RECEIPT_UNAVAILABLE
     8 OFFLINE_MAINTENANCE_FAILURE_CLASS_INTERNAL_FAILURE
-  riffdb.v1.OfflineMaintenanceOperationKind values=4
+  riffdb.v1.OfflineMaintenanceOperationKind values=5
     0 OFFLINE_MAINTENANCE_OPERATION_KIND_UNSPECIFIED
     1 OFFLINE_MAINTENANCE_OPERATION_KIND_CREATE_BACKUP
     2 OFFLINE_MAINTENANCE_OPERATION_KIND_RESTORE_BACKUP
     3 OFFLINE_MAINTENANCE_OPERATION_KIND_RETIRE_BACKUP
+    4 OFFLINE_MAINTENANCE_OPERATION_KIND_STORAGE_SCRUB
   riffdb.v1.OfflineMaintenancePhase values=8
     0 OFFLINE_MAINTENANCE_PHASE_UNSPECIFIED
     1 OFFLINE_MAINTENANCE_PHASE_ACCEPTED
@@ -4108,6 +4115,7 @@ services
     RestoreArchivedBackup .riffdb.v1.RestoreArchivedBackupRequest -> .riffdb.v1.RestoreArchivedBackupResponse (unary)
     RetireOfflineBackup .riffdb.v1.RetireOfflineBackupRequest -> .riffdb.v1.RetireOfflineBackupResponse (unary)
     GetOfflineMaintenanceOperation .riffdb.v1.GetOfflineMaintenanceOperationRequest -> .riffdb.v1.GetOfflineMaintenanceOperationResponse (unary)
+    StartOfflineStorageScrub .riffdb.v1.StartOfflineStorageScrubRequest -> .riffdb.v1.StartOfflineStorageScrubResponse (unary)
     CheckContractMigration .riffdb.v1.CheckContractMigrationRequest -> .riffdb.v1.CheckContractMigrationResponse (unary)
     ApplyContractMigration .riffdb.v1.ApplyContractMigrationRequest -> .riffdb.v1.ApplyContractMigrationResponse (unary)
     GetContractMigrationOperation .riffdb.v1.GetContractMigrationOperationRequest -> .riffdb.v1.GetContractMigrationOperationResponse (unary)

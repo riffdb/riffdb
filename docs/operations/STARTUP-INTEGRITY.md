@@ -26,41 +26,94 @@ replaces that clean state with its next dirty generation. A crash after
 readiness therefore cannot leave reusable clean evidence.
 
 Missing, dirty, malformed, stale, copied, or contradictory lifecycle evidence
-selects complete startup validation. So do storage-engine repair, format or
-registry migration, restore, history-incarnation change, an incomplete journal
-tail, or any mismatch in a bound root. These cases are ordinary fail-closed
-recovery behavior; RiffDB does not ask the operator to classify the preceding
-shutdown.
+does not select a population walk. Such a startup opens the storage engine,
+checks the durable-format identity, recovers the complete journal suffix,
+validates the same bounded roots the clean path verifies against the retained
+validated-prefix checkpoint, consumes the dirty generation, and only then
+publishes readiness. It does not enumerate entity, index, history, event,
+audit, provenance, projection, outbox, or idempotency rows, and repeating it
+creates no command, event, outcome, provenance, audit, projection, outbox, or
+allocator advance. The state that recovery itself owns is capped at a compiled
+64 MiB; exceeding the cap is a typed internal-defect refusal, never a partial
+start.
+
+Complete startup validation is still used when those bounded-recovery
+preconditions do not hold: a database with no loadable validated-prefix
+checkpoint (such as its first start) or without an active, current
+durable-format registry, and a follower start without a valid clean-close
+certificate. A mismatch in a bound root fails closed. None of these cases asks
+the operator to classify the preceding shutdown.
 
 ## Assurance boundary
 
-A clean restart is a continuity proof, not a full database scrub. It verifies
-the bounded roots needed to establish operational readiness without walking
-every live or retained population row. Rows skipped by clean startup retain
-their local envelope, checksum, canonical-key, schema, size, and required
-relationship checks before they can affect authorization, execution, output,
-delivery, projection, or mutation. Latent corruption unrelated to the bounded
-roots can therefore be reported when the affected row is first accessed.
+A clean or bounded dirty restart is a continuity proof, not a full database
+scrub. It verifies the bounded roots needed to establish operational readiness
+without walking every live or retained population row. Rows skipped by startup
+retain their local envelope, checksum, canonical-key, schema, size, and
+required relationship checks before they can affect authorization, execution,
+output, delivery, projection, or mutation. Latent corruption unrelated to the
+bounded roots can therefore be reported when the affected row is first
+accessed.
 
 Databases created by current binaries carry the V2 authoritative state
-catalog. For those databases every restart — including one after a graceful
-close — performs complete ordinary validation and pays its full cost; the
-clean-close certificate does not select a bounded fast path for a V2 source.
-At the 65,536-row benchmark checkpoint that validation measured about 24
-seconds to readiness and roughly one gigabyte of private memory; at the
-production benchmark population (about 1.1 million rows) the complete path
-currently fails closed with the typed `LimitExceeded` historical-evidence
-ceiling and does not publish readiness. A bounded clean-start path for V2
-catalogs requires a separately accepted successor lifecycle design and is
-not available in this release. V1-catalog databases retain the bounded
-clean-certificate path exactly as documented above.
+catalog. A V2 database never takes the clean-certificate fast path; each of its
+restarts that meets the preconditions above uses the bounded recovery path,
+so a graceful restart and a crash restart pay the same bounded cost. Before
+readiness, RiffDB point-validates the database's source admission and, when it
+is fenced, the referenced fence record and its exact receipt; a missing or
+contradictory record refuses startup. The exhaustive search for a fence row
+written outside any transaction belongs to the scrubs described below.
+V1-catalog databases retain the bounded clean-certificate path exactly as
+documented above.
 
-Dirty startup retains the complete exact-end structural and historical
-validation path. RiffDB also retains a sealed internal primitive for that
-complete-integrity work. It is not a public operation, storage handle,
-startup-mode selector, or operator shortcut. The authorized maintenance
-service and CLI are not yet available, so operators cannot request an on-demand
-full scrub. Do not simulate one by editing or deleting lifecycle metadata.
+## Background and offline scrubs
+
+Because no restart walks the population, exhaustive corruption discovery
+happens in two places, both read-only: a background scrub after every start,
+and an offline scrub an operator requests. Neither repairs, deletes, or hides
+a row, and neither is an application, agent, or MCP operation.
+
+After readiness, one server-owned background scrub reads the complete
+structural and retained-history evidence through a least-authority reader at a
+fixed rows-per-step rate. Authenticated health reports it as the
+`storage_scrub` member, which holds exactly one state: `pending`, `running`,
+`complete`, `failed`, or `cancelled`. Every process start begins at `pending`,
+and shutdown cancels a running scrub. A failure records one incident ID in the
+member and sets the `authoritative_storage` component to degraded, so aggregate
+health reports `degraded` while service continues and the damaged rows keep
+failing closed when accessed. On a V2 database a retained-history failure, such
+as a stray fence row, instead withdraws authoritative readiness. Health carries
+no diagnostic text, row, key, count, path, or hash. The scrub has no rate,
+schedule, scope, or suppression setting.
+
+`riffdb storage scrub` requests the complete exact-end validation on demand. It
+uses the same global `AdministerCapabilities` authorization and offline
+maintenance lifecycle as backup and restore: the server stops admission, drains
+accepted work, closes the database, streams the same complete structural and
+catalog-semantic validator that staged restore and format upgrade use, and then
+reopens through ordinary startup. The command
+takes no arguments. It generates the operation ID and prints it; observe the
+operation with `riffdb backup operation <maintenance-operation-id>`. Its phases
+are `accepted`, `draining`, `offline`, `validating`, and then `succeeded` or
+`failed_closed`. A scrub observation has kind `storage_scrub` and no backup
+name.
+
+A `validation_failed` scrub means the pass refused the database: incomplete,
+contradictory, corrupt, or over-limit evidence all fail closed. The server
+process then exits. Its next start opens the database through ordinary startup
+with the terminal receipt retained, and the background scrub reports the same
+defect. Keep the incident, and restore from a verified backup when directed. A
+succeeded scrub creates no clean certificate, forces no readiness, and does not
+suppress the next background scrub.
+
+Only one maintenance operation of any kind may be incomplete at a time. If the
+process stops during a scrub, the next start reruns the pass from its beginning
+before ordinary startup; there is no resume point. Retrying the same operation
+ID returns its stored observation, and reusing that ID for a backup, restore,
+or retirement is refused as idempotency-key reuse. The scrub's receipt is a
+bounded, checksummed version-4 maintenance receipt beside the other receipts in
+the maintenance directory. Do not edit or delete lifecycle metadata or receipts
+to simulate a scrub.
 
 ## Graceful shutdown
 

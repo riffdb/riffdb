@@ -6,8 +6,12 @@ use std::collections::BTreeSet;
 use std::fs;
 use std::path::Path;
 
-use riffdb_operation_registry::{BoundTarget, OPERATIONS, declaration};
-use riffdb_types::ServiceOperationV1;
+use prost::Message;
+use prost_types::FileDescriptorSet;
+use riffdb_operation_registry::{
+    BoundTarget, MAINTENANCE_OPERATIONS, OPERATIONS, declaration, maintenance_declaration,
+};
+use riffdb_types::{ServiceIngressKindV1, ServiceOperationV1};
 
 const GENERATED: &str = include_str!("../src/generated/public_validation.rs");
 const FROZEN: &str = include_str!("../../../fixtures/proto/public-validation-v1.rs.in");
@@ -30,8 +34,92 @@ fn visit_hand_written_rust(path: &Path, files: &mut Vec<std::path::PathBuf>) {
     }
 }
 
+/// Every public RPC and its request/response pair, from the checked descriptor.
+fn public_rpcs() -> Vec<(String, String, String)> {
+    let descriptors = FileDescriptorSet::decode(riffdb_proto::PRODUCTION_FILE_DESCRIPTOR_SET)
+        .expect("checked descriptor fixture");
+    let mut rpcs = Vec::new();
+    for file in &descriptors.file {
+        for service in &file.service {
+            for method in &service.method {
+                rpcs.push((
+                    format!("{}.{}/{}", file.package(), service.name(), method.name()),
+                    method.input_type().trim_start_matches('.').to_owned(),
+                    method.output_type().trim_start_matches('.').to_owned(),
+                ));
+            }
+        }
+    }
+    rpcs
+}
+
+// req: REC-008
+/// OBL-0203-2 proof (and the WP-751 ownership proof). Every public RPC in the
+/// checked descriptor resolves to exactly one registry declaration: a durable
+/// semantic [`ServiceOperationV1`] declaration or, for the six receipted
+/// maintenance RPCs of ADR-0203 Amendment 1, one audit-exempt gRPC-only
+/// maintenance declaration keyed by method identity, never both; the six RPCs
+/// that predate registry coverage are pinned as an exact residual. The
+/// generated inventory reproduces the maintenance declarations exactly.
 #[test]
 fn every_public_operation_has_exactly_one_registry_declaration() {
+    let mut uncovered = Vec::new();
+    for (method, request, response) in public_rpcs() {
+        let semantic = OPERATIONS
+            .iter()
+            .filter(|entry| entry.proto_request == request && entry.proto_response == response)
+            .count();
+        let maintenance = MAINTENANCE_OPERATIONS
+            .iter()
+            .filter(|entry| entry.method == method)
+            .count();
+        assert!(semantic + maintenance <= 1, "{method} is declared twice");
+        if let Some(entry) = maintenance_declaration(&method) {
+            assert_eq!(
+                (entry.proto_request, entry.proto_response),
+                (request.as_str(), response.as_str())
+            );
+            assert_eq!(entry.ingress, &[ServiceIngressKindV1::Grpc]);
+        }
+        if semantic + maintenance == 0 {
+            uncovered.push(method);
+        }
+    }
+    // RPCs that predate registry coverage and belong to no ADR-0203 family.
+    // Pinned exactly: a new undeclared RPC fails here, and closing one of
+    // these debts must remove it from the list.
+    uncovered.sort();
+    assert_eq!(
+        uncovered,
+        [
+            "riffdb.app.v1.ApplicationQueryService/GetApplicationCatalog",
+            "riffdb.app.v1.ApplicationQueryService/GetQueryModule",
+            "riffdb.v1.AdminService/CheckContractMigration",
+            "riffdb.v1.AdminService/GetContractMigrationOperation",
+            "riffdb.v1.ApplicationSessionService/Open",
+            "riffdb.v1.CommandService/ExecuteBatch",
+        ]
+    );
+    assert_eq!(
+        riffdb_proto::GENERATED_MAINTENANCE_VALIDATION_MESSAGES.len(),
+        MAINTENANCE_OPERATIONS.len()
+    );
+    for (generated, entry) in riffdb_proto::GENERATED_MAINTENANCE_VALIDATION_MESSAGES
+        .iter()
+        .zip(MAINTENANCE_OPERATIONS)
+    {
+        assert_eq!(generated.method, entry.method);
+        assert_eq!(generated.request, entry.proto_request);
+        assert_eq!(generated.response, entry.proto_response);
+        for bound in entry.bounds {
+            let generated_bound = match bound.target {
+                BoundTarget::EncodedRequestBytes => generated.request_bytes,
+                BoundTarget::EncodedResponseBytes => generated.response_bytes,
+            };
+            assert_eq!(generated_bound, bound.maximum);
+        }
+    }
+
     assert_eq!(OPERATIONS.len(), ServiceOperationV1::ALL.len());
     let declared = OPERATIONS
         .iter()

@@ -632,6 +632,20 @@ pub struct GetOfflineMaintenanceOperationRequest {
     pub operation_id: ::prost::alloc::vec::Vec<u8>,
 }
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct StartOfflineStorageScrubRequest {
+    #[prost(bytes = "vec", tag = "1")]
+    pub request_id: ::prost::alloc::vec::Vec<u8>,
+    #[prost(bytes = "vec", tag = "2")]
+    pub operation_id: ::prost::alloc::vec::Vec<u8>,
+}
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct StartOfflineStorageScrubResponse {
+    #[prost(enumeration = "OfflineMaintenanceStartDisposition", tag = "1")]
+    pub disposition: i32,
+    #[prost(message, optional, tag = "2")]
+    pub operation: ::core::option::Option<OfflineMaintenanceOperation>,
+}
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct GetOfflineMaintenanceOperationResponse {
     #[prost(oneof = "get_offline_maintenance_operation_response::Result", tags = "1, 2")]
     pub result: ::core::option::Option<
@@ -1735,6 +1749,7 @@ pub enum OfflineMaintenanceOperationKind {
     CreateBackup = 1,
     RestoreBackup = 2,
     RetireBackup = 3,
+    StorageScrub = 4,
 }
 impl OfflineMaintenanceOperationKind {
     /// String value of the enum field names used in the ProtoBuf definition.
@@ -1747,6 +1762,7 @@ impl OfflineMaintenanceOperationKind {
             Self::CreateBackup => "OFFLINE_MAINTENANCE_OPERATION_KIND_CREATE_BACKUP",
             Self::RestoreBackup => "OFFLINE_MAINTENANCE_OPERATION_KIND_RESTORE_BACKUP",
             Self::RetireBackup => "OFFLINE_MAINTENANCE_OPERATION_KIND_RETIRE_BACKUP",
+            Self::StorageScrub => "OFFLINE_MAINTENANCE_OPERATION_KIND_STORAGE_SCRUB",
         }
     }
     /// Creates an enum from field names used in the ProtoBuf definition.
@@ -1761,6 +1777,9 @@ impl OfflineMaintenanceOperationKind {
             }
             "OFFLINE_MAINTENANCE_OPERATION_KIND_RETIRE_BACKUP" => {
                 Some(Self::RetireBackup)
+            }
+            "OFFLINE_MAINTENANCE_OPERATION_KIND_STORAGE_SCRUB" => {
+                Some(Self::StorageScrub)
             }
             _ => None,
         }

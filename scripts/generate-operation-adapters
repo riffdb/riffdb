@@ -127,7 +127,10 @@ abort registry_error unless registry_status.success?
 lines = registry.lines(chomp: true)
 version = lines.shift&.split("\t", 2)
 abort "operation registry has no version" unless version == ["version", "1"]
-operations = lines.map { |line| line.split("\t", -1) }
+exported = lines.map { |line| line.split("\t", -1) }
+operations = exported.select { |fields| fields.first == "operation" }
+maintenance = exported.select { |fields| fields.first == "maintenance" }
+abort "operation registry export has an unknown row kind" unless operations.length + maintenance.length == exported.length
 abort "operation registry must contain exactly 62 declarations" unless operations.length == 62
 tags = operations.map { |fields| Integer(fields.fetch(1), 10) }
 abort "operation registry tags are not exact and ordered" unless tags == (1..62).to_a
@@ -252,6 +255,51 @@ inventory << "/// Descriptor-checked request and response identities in semantic
 inventory << "pub const GENERATED_PUBLIC_VALIDATION_MESSAGES: &[GeneratedPublicValidationMessage] = &[\n"
 rows.each do |tag, operation, request, request_fields, response, response_fields, request_bytes, response_bytes|
   inventory << "    GeneratedPublicValidationMessage { tag: #{tag}, operation: \"#{operation}\", request: \"#{request}\", request_fields: #{request_fields}, response: \"#{response}\", response_fields: #{response_fields}, request_bytes: #{request_bytes}, response_bytes: #{response_bytes} },\n"
+end
+inventory << "];\n"
+
+# ADR-0203 Decision 2: the six receipted-maintenance RPCs are declared by
+# method identity, audit-exempt, gRPC-only, and descriptor-checked here.
+expected_maintenance = %w[
+  CreateOfflineBackup RestoreOfflineBackup RestoreArchivedBackup
+  RetireOfflineBackup GetOfflineMaintenanceOperation StartOfflineStorageScrub
+].map { |method| "riffdb.v1.AdminService/#{method}" }
+abort "maintenance registry must declare exactly the six receipted RPCs" unless maintenance.map { |fields| fields.fetch(1) } == expected_maintenance
+maintenance_rows = maintenance.map do |fields|
+  abort "malformed maintenance registry export" unless fields.length == 11
+  method, request, response = fields.fetch(1), fields.fetch(2), fields.fetch(3)
+  request_fields = messages[request]
+  response_fields = messages[response]
+  abort "maintenance request message is absent from descriptor: #{request}" unless request_fields
+  abort "maintenance response message is absent from descriptor: #{response}" unless response_fields
+  abort "maintenance declaration must admit exactly gRPC: #{method}" unless fields.fetch(9) == "Grpc"
+  abort "maintenance declaration must require AdministerCapabilities: #{method}" unless fields.fetch(6) == "AdministerCapabilities"
+  bounds = validate_exchange_bounds!(method.split("/").last, fields.fetch(10).split(","))
+  [method, request, request_fields, response, response_fields,
+   bounds.fetch("EncodedRequestBytes"), bounds.fetch("EncodedResponseBytes")]
+end
+inventory << "/// Descriptor-checked audit-exempt maintenance declaration (ADR-0203).\n"
+inventory << "#[derive(Clone, Copy, Debug, Eq, PartialEq)]\n"
+inventory << "pub struct GeneratedMaintenanceValidationMessage {\n"
+inventory << "    /// Fully qualified `package.Service/Method` identity.\n"
+inventory << "    pub method: &'static str,\n"
+inventory << "    /// Fully qualified Protobuf request message.\n"
+inventory << "    pub request: &'static str,\n"
+inventory << "    /// Descriptor-declared request field count.\n"
+inventory << "    pub request_fields: usize,\n"
+inventory << "    /// Fully qualified Protobuf response message.\n"
+inventory << "    pub response: &'static str,\n"
+inventory << "    /// Descriptor-declared response field count.\n"
+inventory << "    pub response_fields: usize,\n"
+inventory << "    /// Inclusive encoded request-byte maximum.\n"
+inventory << "    pub request_bytes: usize,\n"
+inventory << "    /// Inclusive encoded response-byte maximum.\n"
+inventory << "    pub response_bytes: usize,\n"
+inventory << "}\n"
+inventory << "/// Descriptor-checked receipted-maintenance RPCs in `AdminService` order.\n"
+inventory << "pub const GENERATED_MAINTENANCE_VALIDATION_MESSAGES: &[GeneratedMaintenanceValidationMessage] = &[\n"
+maintenance_rows.each do |method, request, request_fields, response, response_fields, request_bytes, response_bytes|
+  inventory << "    GeneratedMaintenanceValidationMessage { method: \"#{method}\", request: \"#{request}\", request_fields: #{request_fields}, response: \"#{response}\", response_fields: #{response_fields}, request_bytes: #{request_bytes}, response_bytes: #{response_bytes} },\n"
 end
 inventory << "];\n\n"
 

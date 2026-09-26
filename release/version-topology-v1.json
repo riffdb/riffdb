@@ -1453,34 +1453,39 @@
           "identities": [
             "1",
             "2",
-            "3"
+            "3",
+            "4"
           ]
         }
       ],
       "readable_identities": [
         "1",
         "2",
-        "3"
+        "3",
+        "4"
       ],
       "writable_identities": [
         "1",
         "2",
-        "3"
+        "3",
+        "4"
       ],
       "current_identities": [
         "1",
         "2",
-        "3"
+        "3",
+        "4"
       ],
       "writer_policy": "multi_current",
-      "compatibility_rule": "Ordinary create/restore V1, retire V2, and archive restore V3 emit distinct closed receipt versions.",
+      "compatibility_rule": "Ordinary create/restore V1, retire V2, archive restore V3, and storage scrub V4 emit distinct closed receipt versions.",
       "breaking_when": "Any operation class changes frozen bytes or accepts an unknown receipt.",
-      "supported_release_posture": "V1 ordinary create/restore, V2 retire, and V3 archive restore receipts are current.",
+      "supported_release_posture": "V1 ordinary create/restore, V2 retire, V3 archive restore, and V4 storage scrub receipts are current.",
       "lifecycle": {
         "active": [
           "1",
           "2",
-          "3"
+          "3",
+          "4"
         ],
         "read_only": [],
         "retirement_candidate": [],
@@ -1490,14 +1495,15 @@
       "evidence": [
         "fixtures/compatibility/offline-maintenance-retire-receipt-v2.hex",
         "fixtures/compatibility/offline-maintenance-archive-accepted-receipt-v3.hex",
-        "fixtures/compatibility/offline-maintenance-archive-selected-receipt-v3.hex"
+        "fixtures/compatibility/offline-maintenance-archive-selected-receipt-v3.hex",
+        "fixtures/compatibility/offline-maintenance-scrub-receipt-v4.hex"
       ],
       "checks": [
         "./scripts/check-durable-format-manifest"
       ],
       "last_change": {
         "classification": "new_domain_identity",
-        "decision": "ADR-0050/WP-749 accepted archive receipt V3 amendment"
+        "decision": "ADR-0203 Amendment 1/WP-760 accepted storage-scrub receipt V4"
       },
       "durable_manifest": {
         "readable_key": "readable_offline_maintenance_receipt_versions",
@@ -1618,27 +1624,31 @@
       "readable_identities": [
         "1",
         "2",
-        "3"
+        "3",
+        "4"
       ],
       "writable_identities": [
         "1",
         "2",
-        "3"
+        "3",
+        "4"
       ],
       "current_identities": [
         "1",
         "2",
-        "3"
+        "3",
+        "4"
       ],
       "writer_policy": "multi_current",
       "compatibility_rule": "The release manifest retains the closed union of maintenance receipt identities.",
       "breaking_when": "A receipt family enters or leaves the union without its own governed transition.",
-      "supported_release_posture": "Receipt union V1, V2 and V3 are current for distinct operation classes.",
+      "supported_release_posture": "Receipt union V1, V2, V3 and V4 are current for distinct operation classes.",
       "lifecycle": {
         "active": [
           "1",
           "2",
-          "3"
+          "3",
+          "4"
         ],
         "read_only": [],
         "retirement_candidate": [],
@@ -1653,7 +1663,7 @@
       ],
       "last_change": {
         "classification": "new_domain_identity",
-        "decision": "ADR-0050/WP-749 accepted archive receipt V3 amendment"
+        "decision": "ADR-0203 Amendment 1/WP-760 accepted storage-scrub receipt V4"
       },
       "durable_manifest": {
         "readable_key": "readable_receipt_versions",

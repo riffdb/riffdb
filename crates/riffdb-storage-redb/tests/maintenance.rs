@@ -111,6 +111,9 @@ fn receipt(seed: u8, kind: OfflineMaintenanceOperationKind) -> OfflineMaintenanc
         OfflineMaintenanceOperationKind::RetireBackup => {
             panic!("retire operations require V2 receipt evidence")
         }
+        OfflineMaintenanceOperationKind::StorageScrub => {
+            panic!("scrub operations write receipt V4")
+        }
     };
     receipt_with_confirmation(seed, kind, confirmation)
 }

@@ -279,7 +279,7 @@ pub use fixtures::{
     initialize_legacy_database_fixture, plant_malformed_population_row_fixture,
     read_malformed_population_row_fixture, read_validated_prefix_checkpoint_bytes_fixture,
     read_validated_prefix_checkpoint_commit_sequence_fixture,
-    replace_audit_row_with_stray_fence_fixture,
+    replace_audit_row_with_stray_fence_fixture, strip_validated_prefix_checkpoint_fixture,
 };
 pub use format_preflight::{
     RedbDurableFormatPreflight, RedbDurableFormatPreflightError, durable_format_marker_path,

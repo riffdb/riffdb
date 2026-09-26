@@ -369,7 +369,11 @@ impl OfflineMaintenanceReceiptV1 {
         published_history_incarnation: Option<u64>,
         transitions: Vec<OfflineMaintenanceReceiptTransitionV1>,
     ) -> Result<Self, StorageValueError> {
-        if operation_kind == OfflineMaintenanceOperationKind::RetireBackup {
+        if matches!(
+            operation_kind,
+            OfflineMaintenanceOperationKind::RetireBackup
+                | OfflineMaintenanceOperationKind::StorageScrub
+        ) {
             return Err(StorageValueError::InvalidShape);
         }
         if offline_maintenance_input_hash(operation_kind, &backup_name, replacement_confirmation)
@@ -895,6 +899,193 @@ pub enum OfflineMaintenanceReceiptReplaceResultV2 {
     Replaced,
 }
 
+/// One complete storage-scrub-only maintenance receipt in external format V4
+/// (ADR-0203 Decision 9, Amendment 1).
+///
+/// V1, V2, and V3 remain separate and byte-frozen. A scrub has no backup name
+/// or other semantic input: its input identity is the fixed domain-separated
+/// scrub hash, and its only success sequence is
+/// `Accepted -> Draining -> Offline -> Validating -> Succeeded`.
+#[derive(Clone, Eq, PartialEq)]
+pub struct OfflineMaintenanceReceiptV4 {
+    operation_id: OfflineMaintenanceOperationId,
+    admission: OfflineMaintenanceAdmissionV1,
+    transitions: Vec<OfflineMaintenanceReceiptTransitionV1>,
+}
+
+impl OfflineMaintenanceReceiptV4 {
+    /// Creates the accepted scrub receipt.
+    pub fn accepted_storage_scrub(
+        operation_id: OfflineMaintenanceOperationId,
+        admission: OfflineMaintenanceAdmissionV1,
+    ) -> Result<Self, StorageValueError> {
+        Self::from_canonical_parts(
+            operation_id,
+            riffdb_types::storage_scrub_input_hash(),
+            admission,
+            vec![OfflineMaintenanceReceiptTransitionV1::phase(
+                OfflineMaintenanceReceiptPhaseV1::Accepted,
+            )],
+        )
+    }
+
+    /// Reconstructs one canonical scrub-only V4 receipt. The stored input
+    /// identity must be exactly the fixed scrub identity.
+    pub fn from_canonical_parts(
+        operation_id: OfflineMaintenanceOperationId,
+        input_hash: OfflineMaintenanceInputHash,
+        admission: OfflineMaintenanceAdmissionV1,
+        transitions: Vec<OfflineMaintenanceReceiptTransitionV1>,
+    ) -> Result<Self, StorageValueError> {
+        if input_hash != riffdb_types::storage_scrub_input_hash() {
+            return Err(StorageValueError::IdentityMismatch);
+        }
+        validate_receipt_history(
+            OfflineMaintenanceOperationKind::StorageScrub,
+            None,
+            &transitions,
+        )?;
+        Ok(Self {
+            operation_id,
+            admission,
+            transitions,
+        })
+    }
+
+    /// Returns the caller-stable operation identity.
+    #[must_use]
+    pub const fn operation_id(&self) -> OfflineMaintenanceOperationId {
+        self.operation_id
+    }
+
+    /// Returns the closed scrub operation kind.
+    #[must_use]
+    pub const fn operation_kind(&self) -> OfflineMaintenanceOperationKind {
+        OfflineMaintenanceOperationKind::StorageScrub
+    }
+
+    /// Returns the fixed scrub semantic-input identity.
+    #[must_use]
+    pub fn input_hash(&self) -> OfflineMaintenanceInputHash {
+        riffdb_types::storage_scrub_input_hash()
+    }
+
+    /// Borrows the narrow admitted audit identity.
+    #[must_use]
+    pub const fn admission(&self) -> &OfflineMaintenanceAdmissionV1 {
+        &self.admission
+    }
+
+    /// Returns the complete bounded append-only phase history.
+    #[must_use]
+    pub fn transitions(&self) -> &[OfflineMaintenanceReceiptTransitionV1] {
+        &self.transitions
+    }
+
+    /// Returns the current durable phase.
+    #[must_use]
+    pub fn current_phase(&self) -> OfflineMaintenanceReceiptPhaseV1 {
+        self.transitions
+            .last()
+            .map_or(OfflineMaintenanceReceiptPhaseV1::Accepted, |entry| {
+                entry.receipt_phase()
+            })
+    }
+
+    /// Appends one legal monotonic scrub transition.
+    pub fn advance(
+        &mut self,
+        transition: OfflineMaintenanceReceiptTransitionV1,
+    ) -> Result<(), StorageValueError> {
+        if self.transitions.len() == MAX_OFFLINE_MAINTENANCE_RECEIPT_TRANSITIONS_V1 {
+            return Err(StorageValueError::LimitExceeded);
+        }
+        let prior = self
+            .transitions
+            .last()
+            .copied()
+            .ok_or(StorageValueError::Empty)?;
+        if !valid_receipt_transition(
+            OfflineMaintenanceOperationKind::StorageScrub,
+            None,
+            prior.receipt_phase(),
+            transition,
+        ) {
+            return Err(StorageValueError::InvalidShape);
+        }
+        self.transitions.push(transition);
+        Ok(())
+    }
+
+    /// Returns whether this is the same receipt or a monotonic extension.
+    #[must_use]
+    pub fn monotonically_extends(&self, prior: &Self) -> bool {
+        self.operation_id == prior.operation_id
+            && self.admission == prior.admission
+            && self.transitions.starts_with(&prior.transitions)
+    }
+}
+
+impl std::fmt::Debug for OfflineMaintenanceReceiptV4 {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("OfflineMaintenanceReceiptV4")
+            .field("operation_id", &self.operation_id)
+            .field(
+                "operation_kind",
+                &OfflineMaintenanceOperationKind::StorageScrub,
+            )
+            .field("phase", &self.current_phase())
+            .field("details", &"[REDACTED]")
+            .finish()
+    }
+}
+
+/// Bounded canonical startup inventory of scrub-only V4 receipts.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct OfflineMaintenanceReceiptInventoryV4(Vec<OfflineMaintenanceReceiptV4>);
+
+impl OfflineMaintenanceReceiptInventoryV4 {
+    /// Sorts by operation ID and rejects duplicates or excessive receipts.
+    pub fn new(mut receipts: Vec<OfflineMaintenanceReceiptV4>) -> Result<Self, StorageValueError> {
+        if receipts.len() > MAX_OFFLINE_MAINTENANCE_RECEIPTS_V1 {
+            return Err(StorageValueError::LimitExceeded);
+        }
+        receipts.sort_by_key(OfflineMaintenanceReceiptV4::operation_id);
+        if receipts
+            .windows(2)
+            .any(|pair| pair[0].operation_id == pair[1].operation_id)
+        {
+            return Err(StorageValueError::Duplicate);
+        }
+        Ok(Self(receipts))
+    }
+
+    /// Borrows receipts in canonical operation-ID order.
+    #[must_use]
+    pub fn receipts(&self) -> &[OfflineMaintenanceReceiptV4] {
+        &self.0
+    }
+}
+
+/// Result of atomically creating one scrub-only V4 receipt.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum OfflineMaintenanceReceiptCreateResultV4 {
+    /// The candidate became the first durable receipt for this operation.
+    Created,
+    /// A checked V4 receipt with the same operation ID already exists.
+    Existing(Box<OfflineMaintenanceReceiptV4>),
+}
+
+/// Result of atomically replacing one V4 receipt with a monotonic extension.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum OfflineMaintenanceReceiptReplaceResultV4 {
+    /// The exact candidate was already durable.
+    AlreadyCurrent,
+    /// The monotonic extension replaced its predecessor.
+    Replaced,
+}
+
 /// Bounded canonical startup inventory of all external maintenance receipts.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct OfflineMaintenanceReceiptInventoryV1(Vec<OfflineMaintenanceReceiptV1>);
@@ -987,6 +1178,31 @@ pub trait OfflineMaintenanceReceiptPersistencePort {
     fn validate_retire_receipt_inventory(
         &mut self,
     ) -> Result<OfflineMaintenanceReceiptInventoryV2, StorageError>;
+
+    /// Creates the scrub-only V4 receipt or returns the existing checked
+    /// value. Admission refuses while any other maintenance operation is
+    /// incomplete (ADR-0203 Decision 7).
+    fn create_or_read_scrub_receipt(
+        &mut self,
+        receipt: &OfflineMaintenanceReceiptV4,
+    ) -> Result<OfflineMaintenanceReceiptCreateResultV4, StorageError>;
+
+    /// Atomically installs one checked monotonic V4 extension.
+    fn replace_scrub_receipt(
+        &mut self,
+        receipt: &OfflineMaintenanceReceiptV4,
+    ) -> Result<OfflineMaintenanceReceiptReplaceResultV4, StorageError>;
+
+    /// Reads one scrub-only V4 receipt by caller-stable operation identity.
+    fn read_scrub_receipt(
+        &mut self,
+        operation_id: OfflineMaintenanceOperationId,
+    ) -> Result<Option<OfflineMaintenanceReceiptV4>, StorageError>;
+
+    /// Validates and returns the complete bounded V4 receipt inventory.
+    fn validate_scrub_receipt_inventory(
+        &mut self,
+    ) -> Result<OfflineMaintenanceReceiptInventoryV4, StorageError>;
 }
 
 /// Nonzero semantic version of the offline backup manifest.
@@ -1803,6 +2019,26 @@ fn valid_receipt_transition(
     if next.receipt_phase() == OfflineMaintenanceReceiptPhaseV1::FailedClosed {
         return true;
     }
+    // ADR-0203 Decision 9: the scrub's sole success sequence publishes no
+    // artifact, so it validates straight after going offline.
+    if operation_kind == OfflineMaintenanceOperationKind::StorageScrub {
+        return matches!(
+            (prior, next.receipt_phase()),
+            (
+                OfflineMaintenanceReceiptPhaseV1::Accepted,
+                OfflineMaintenanceReceiptPhaseV1::Draining
+            ) | (
+                OfflineMaintenanceReceiptPhaseV1::Draining,
+                OfflineMaintenanceReceiptPhaseV1::Offline
+            ) | (
+                OfflineMaintenanceReceiptPhaseV1::Offline,
+                OfflineMaintenanceReceiptPhaseV1::Validating
+            ) | (
+                OfflineMaintenanceReceiptPhaseV1::Validating,
+                OfflineMaintenanceReceiptPhaseV1::Succeeded
+            )
+        );
+    }
     (prior == OfflineMaintenanceReceiptPhaseV1::Accepted
         && next.receipt_phase() == OfflineMaintenanceReceiptPhaseV1::Offline
         && operation_kind == OfflineMaintenanceOperationKind::RestoreBackup
@@ -1870,7 +2106,8 @@ fn validate_receipt_evidence(
             }
             OfflineMaintenanceOperationKind::CreateBackup
             | OfflineMaintenanceOperationKind::RestoreBackup => {}
-            OfflineMaintenanceOperationKind::RetireBackup => {
+            OfflineMaintenanceOperationKind::RetireBackup
+            | OfflineMaintenanceOperationKind::StorageScrub => {
                 return Err(StorageValueError::InvalidShape);
             }
         }

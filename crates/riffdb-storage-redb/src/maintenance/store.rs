@@ -9,11 +9,13 @@ use riffdb_storage_api::{
     ContractMigrationReceiptV1, MAX_OFFLINE_MAINTENANCE_RECEIPTS_V1,
     OfflineArchiveReceiptPersistencePort, OfflineBackupManifestIdentityV1, OfflineBackupManifestV1,
     OfflineBackupPersistencePort, OfflineMaintenanceReceiptCreateResultV1,
-    OfflineMaintenanceReceiptCreateResultV2, OfflineMaintenanceReceiptInventoryV1,
-    OfflineMaintenanceReceiptInventoryV2, OfflineMaintenanceReceiptInventoryV3,
+    OfflineMaintenanceReceiptCreateResultV2, OfflineMaintenanceReceiptCreateResultV4,
+    OfflineMaintenanceReceiptInventoryV1, OfflineMaintenanceReceiptInventoryV2,
+    OfflineMaintenanceReceiptInventoryV3, OfflineMaintenanceReceiptInventoryV4,
     OfflineMaintenanceReceiptPersistencePort, OfflineMaintenanceReceiptPhaseV1,
     OfflineMaintenanceReceiptReplaceResultV1, OfflineMaintenanceReceiptReplaceResultV2,
-    OfflineMaintenanceReceiptV1, OfflineMaintenanceReceiptV2, OfflineMaintenanceReceiptV3,
+    OfflineMaintenanceReceiptReplaceResultV4, OfflineMaintenanceReceiptV1,
+    OfflineMaintenanceReceiptV2, OfflineMaintenanceReceiptV3, OfflineMaintenanceReceiptV4,
     OfflineRestoreOverwritePolicyV1, OfflineRestoreResultV1, StartupValidationInputs, StorageError,
     StorageErrorKind, StorageValueError,
 };
@@ -25,8 +27,10 @@ use riffdb_types::{
 use super::codec::{
     ARCHIVE_RECEIPT_FILE_SUFFIX, ARCHIVE_RECEIPT_TEMP_SUFFIX, MAX_MIGRATION_RECEIPT_BYTES,
     MAX_RECEIPT_BYTES, RECEIPT_FILE_SUFFIX, RECEIPT_TEMP_SUFFIX, RETIRE_RECEIPT_FILE_SUFFIX,
-    RETIRE_RECEIPT_TEMP_SUFFIX, decode_archive_receipt, decode_migration_receipt, decode_receipt,
-    decode_retire_receipt, encode_migration_receipt, encode_receipt, encode_retire_receipt,
+    RETIRE_RECEIPT_TEMP_SUFFIX, SCRUB_RECEIPT_FILE_SUFFIX, SCRUB_RECEIPT_TEMP_SUFFIX,
+    decode_archive_receipt, decode_migration_receipt, decode_receipt, decode_retire_receipt,
+    decode_scrub_receipt, encode_migration_receipt, encode_receipt, encode_retire_receipt,
+    encode_scrub_receipt,
 };
 use super::failpoint::{RedbMaintenanceFailpoint, RedbMaintenanceTestController};
 use super::path_guard::{PinnedDirectory, verify_regular_file_path};
@@ -148,6 +152,7 @@ pub struct RedbMaintenanceReconciliation {
     receipts: OfflineMaintenanceReceiptInventoryV1,
     retire_receipts: OfflineMaintenanceReceiptInventoryV2,
     archive_receipts: OfflineMaintenanceReceiptInventoryV3,
+    scrub_receipts: OfflineMaintenanceReceiptInventoryV4,
     migration_receipts: Vec<ContractMigrationReceiptV1>,
     operations: Vec<RedbMaintenanceOperationEvidence>,
     removed_unpublished_receipt_temps: usize,
@@ -183,12 +188,20 @@ impl RedbMaintenanceReconciliation {
             .iter()
             .filter(|receipt| !receipt.current_phase().is_terminal())
             .count();
+        let scrub_incomplete = self
+            .scrub_receipts
+            .receipts()
+            .iter()
+            .filter(|receipt| !receipt.current_phase().is_terminal())
+            .count();
         if ordinary_incomplete
             .checked_add(retire_incomplete)
             .ok_or_else(limit_exceeded)?
             .checked_add(migration_incomplete)
             .ok_or_else(limit_exceeded)?
             .checked_add(archive_incomplete)
+            .ok_or_else(limit_exceeded)?
+            .checked_add(scrub_incomplete)
             .ok_or_else(limit_exceeded)?
             > 1
         {
@@ -215,6 +228,12 @@ impl RedbMaintenanceReconciliation {
     #[must_use]
     pub const fn archive_receipts(&self) -> &OfflineMaintenanceReceiptInventoryV3 {
         &self.archive_receipts
+    }
+
+    /// Borrows every checksum-validated scrub-only V4 receipt (ADR-0203).
+    #[must_use]
+    pub const fn scrub_receipts(&self) -> &OfflineMaintenanceReceiptInventoryV4 {
+        &self.scrub_receipts
     }
 
     /// Borrows every checksum-validated migration receipt in operation order.
@@ -476,7 +495,7 @@ impl RedbMaintenanceStorage {
         let directory = self.migration_operation_directory(receipt.operation_id());
         match fs::symlink_metadata(&directory) {
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-                let (v1, v2, v3, _) = self.read_complete_inventory(false)?;
+                let (v1, v2, v3, v4, _) = self.read_complete_inventory(false)?;
                 if v1
                     .receipts()
                     .iter()
@@ -486,6 +505,10 @@ impl RedbMaintenanceStorage {
                         .iter()
                         .any(|r| !r.current_phase().is_terminal())
                     || v3
+                        .receipts()
+                        .iter()
+                        .any(|r| !r.current_phase().is_terminal())
+                    || v4
                         .receipts()
                         .iter()
                         .any(|r| !r.current_phase().is_terminal())
@@ -957,7 +980,7 @@ impl RedbMaintenanceStorage {
         StorageError,
     > {
         self.verify_path_ownership()?;
-        let (v1, v2, _, _) = self.read_complete_inventory(false)?;
+        let (v1, v2, _, _, _) = self.read_complete_inventory(false)?;
         if v2
             .receipts()
             .iter()
@@ -1170,11 +1193,15 @@ impl RedbMaintenanceStorage {
         operation_id: OfflineMaintenanceOperationId,
     ) -> Result<(), StorageError> {
         self.verify_path_ownership()?;
-        let (ordinary, retirement, archive, _) = self.read_complete_inventory(false)?;
+        let (ordinary, retirement, archive, scrub, _) = self.read_complete_inventory(false)?;
         if ordinary
             .receipts()
             .iter()
             .any(|r| r.operation_id() == operation_id)
+            || scrub
+                .receipts()
+                .iter()
+                .any(|r| r.operation_id() == operation_id)
             || retirement
                 .receipts()
                 .iter()
@@ -1224,7 +1251,7 @@ impl RedbMaintenanceStorage {
     /// Revalidates every receipt and associated exact filesystem evidence.
     pub fn reconcile(&mut self) -> Result<RedbMaintenanceReconciliation, StorageError> {
         self.verify_path_ownership()?;
-        let (inventory, retire_inventory, archive_inventory, removed_temps) =
+        let (inventory, retire_inventory, archive_inventory, scrub_inventory, removed_temps) =
             self.read_complete_inventory(true)?;
         let incomplete_count = inventory
             .receipts()
@@ -1241,10 +1268,17 @@ impl RedbMaintenanceStorage {
             .iter()
             .filter(|receipt| !receipt.current_phase().is_terminal())
             .count();
+        let scrub_incomplete_count = scrub_inventory
+            .receipts()
+            .iter()
+            .filter(|receipt| !receipt.current_phase().is_terminal())
+            .count();
         if incomplete_count
             .checked_add(retire_incomplete_count)
             .ok_or_else(limit_exceeded)?
             .checked_add(archive_incomplete_count)
+            .ok_or_else(limit_exceeded)?
+            .checked_add(scrub_incomplete_count)
             .ok_or_else(limit_exceeded)?
             > 1
         {
@@ -1479,6 +1513,7 @@ impl RedbMaintenanceStorage {
             receipts: inventory,
             retire_receipts: retire_inventory,
             archive_receipts: archive_inventory,
+            scrub_receipts: scrub_inventory,
             migration_receipts: Vec::new(),
             operations,
             removed_unpublished_receipt_temps: removed_temps,
@@ -1556,6 +1591,7 @@ impl RedbMaintenanceStorage {
             OfflineMaintenanceReceiptInventoryV1,
             OfflineMaintenanceReceiptInventoryV2,
             OfflineMaintenanceReceiptInventoryV3,
+            OfflineMaintenanceReceiptInventoryV4,
             usize,
         ),
         StorageError,
@@ -1563,6 +1599,7 @@ impl RedbMaintenanceStorage {
         let mut receipts = Vec::new();
         let mut retire_receipts = Vec::new();
         let mut archive_receipts = Vec::new();
+        let mut scrub_receipts = Vec::new();
         let mut temporaries = Vec::new();
         let mut identities = BTreeSet::new();
         for entry in fs::read_dir(&self.receipts_directory).map_err(io_unavailable)? {
@@ -1578,6 +1615,7 @@ impl RedbMaintenanceStorage {
                     .strip_suffix(RECEIPT_TEMP_SUFFIX)
                     .or_else(|| value.strip_suffix(RETIRE_RECEIPT_TEMP_SUFFIX))
                     .or_else(|| value.strip_suffix(ARCHIVE_RECEIPT_TEMP_SUFFIX))
+                    .or_else(|| value.strip_suffix(SCRUB_RECEIPT_TEMP_SUFFIX))
             });
             if let Some(operation_text) = temporary_operation {
                 if !remove_temps {
@@ -1617,6 +1655,14 @@ impl RedbMaintenanceStorage {
                 let id = receipt.operation_id();
                 archive_receipts.push(receipt);
                 id
+            } else if name.ends_with(SCRUB_RECEIPT_FILE_SUFFIX) {
+                let receipt = read_scrub_receipt_file(&entry.path())?;
+                if name != scrub_receipt_file_name(receipt.operation_id()) {
+                    return Err(corrupt());
+                }
+                let id = receipt.operation_id();
+                scrub_receipts.push(receipt);
+                id
             } else {
                 return Err(corrupt());
             };
@@ -1630,18 +1676,50 @@ impl RedbMaintenanceStorage {
         let v2 = OfflineMaintenanceReceiptInventoryV2::new(retire_receipts).map_err(value_error)?;
         let v3 =
             OfflineMaintenanceReceiptInventoryV3::new(archive_receipts).map_err(value_error)?;
+        let v4 = OfflineMaintenanceReceiptInventoryV4::new(scrub_receipts).map_err(value_error)?;
         for path in &temporaries {
             fs::remove_file(path).map_err(io_unavailable)?;
         }
         if !temporaries.is_empty() {
             self.receipts_directory_guard.sync()?;
         }
-        Ok((v1, v2, v3, temporaries.len()))
+        Ok((v1, v2, v3, v4, temporaries.len()))
     }
 
     fn receipt_path(&self, operation_id: OfflineMaintenanceOperationId) -> PathBuf {
         self.receipts_directory
             .join(receipt_file_name(operation_id))
+    }
+
+    fn scrub_receipt_path(&self, operation_id: OfflineMaintenanceOperationId) -> PathBuf {
+        self.receipts_directory
+            .join(scrub_receipt_file_name(operation_id))
+    }
+
+    fn write_scrub_receipt(
+        &self,
+        receipt: &OfflineMaintenanceReceiptV4,
+    ) -> Result<(), StorageError> {
+        let destination = self.scrub_receipt_path(receipt.operation_id());
+        let temporary = self.receipts_directory.join(format!(
+            ".{}{}",
+            receipt.operation_id(),
+            SCRUB_RECEIPT_TEMP_SUFFIX
+        ));
+        let bytes = encode_scrub_receipt(receipt)?;
+        let mut temporary_file = TemporaryReceiptFile::create(&temporary)?;
+        temporary_file.write_all(&bytes)?;
+        self.hit(RedbMaintenanceFailpoint::BeforeReceiptFileSync, false)?;
+        temporary_file.sync_all()?;
+        self.hit(RedbMaintenanceFailpoint::AfterReceiptFileSync, false)?;
+        self.hit(RedbMaintenanceFailpoint::BeforeReceiptRename, false)?;
+        fs::rename(&temporary, &destination).map_err(io_unavailable)?;
+        temporary_file.published = true;
+        self.hit(RedbMaintenanceFailpoint::AfterReceiptRename, true)?;
+        if crate::backup::sync_directory(&self.receipts_directory).is_err() {
+            return Err(unknown());
+        }
+        self.hit(RedbMaintenanceFailpoint::AfterReceiptParentSync, true)
     }
 
     fn retire_receipt_path(&self, operation_id: OfflineMaintenanceOperationId) -> PathBuf {
@@ -1839,19 +1917,21 @@ impl OfflineMaintenanceReceiptPersistencePort for RedbMaintenanceStorage {
             }
             Ok(_) => Err(corrupt()),
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-                let (inventory, retire_inventory, archive_inventory, _) =
+                let (inventory, retire_inventory, archive_inventory, scrub_inventory, _) =
                     self.read_complete_inventory(false)?;
                 if inventory.receipts().len()
                     + retire_inventory.receipts().len()
                     + archive_inventory.receipts().len()
+                    + scrub_inventory.receipts().len()
                     >= MAX_OFFLINE_MAINTENANCE_RECEIPTS_V1
                 {
                     return Err(limit_exceeded());
                 }
-                if retire_inventory
-                    .receipts()
-                    .iter()
-                    .any(|r| r.operation_id() == receipt.operation_id())
+                if scrub_conflicts(&scrub_inventory, receipt.operation_id())
+                    || retire_inventory
+                        .receipts()
+                        .iter()
+                        .any(|r| r.operation_id() == receipt.operation_id())
                     || archive_inventory.receipts().iter().any(|r| {
                         r.operation_id() == receipt.operation_id()
                             || !r.current_phase().is_terminal()
@@ -1942,7 +2022,7 @@ impl OfflineMaintenanceReceiptPersistencePort for RedbMaintenanceStorage {
         &mut self,
     ) -> Result<OfflineMaintenanceReceiptInventoryV1, StorageError> {
         self.verify_path_ownership()?;
-        let (inventory, _, _, _) = self.read_complete_inventory(false)?;
+        let (inventory, _, _, _, _) = self.read_complete_inventory(false)?;
         self.verify_path_ownership()?;
         Ok(inventory)
     }
@@ -1966,18 +2046,24 @@ impl OfflineMaintenanceReceiptPersistencePort for RedbMaintenanceStorage {
             }
             Ok(_) => Err(corrupt()),
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-                let (v1, v2, v3, _) = self.read_complete_inventory(false)?;
-                if v1.receipts().len() + v2.receipts().len() + v3.receipts().len()
+                let (v1, v2, v3, v4, _) = self.read_complete_inventory(false)?;
+                if v1.receipts().len()
+                    + v2.receipts().len()
+                    + v3.receipts().len()
+                    + v4.receipts().len()
                     >= MAX_OFFLINE_MAINTENANCE_RECEIPTS_V1
                 {
                     return Err(limit_exceeded());
                 }
-                if v3.receipts().iter().any(|r| {
-                    r.operation_id() == receipt.operation_id() || !r.current_phase().is_terminal()
-                }) || self
-                    .validate_migration_inventory()?
-                    .iter()
-                    .any(|r| !r.current_phase().is_terminal())
+                if scrub_conflicts(&v4, receipt.operation_id())
+                    || v3.receipts().iter().any(|r| {
+                        r.operation_id() == receipt.operation_id()
+                            || !r.current_phase().is_terminal()
+                    })
+                    || self
+                        .validate_migration_inventory()?
+                        .iter()
+                        .any(|r| !r.current_phase().is_terminal())
                 {
                     return Err(invariant());
                 }
@@ -2073,7 +2159,122 @@ impl OfflineMaintenanceReceiptPersistencePort for RedbMaintenanceStorage {
         &mut self,
     ) -> Result<OfflineMaintenanceReceiptInventoryV2, StorageError> {
         self.verify_path_ownership()?;
-        let (_, inventory, _, _) = self.read_complete_inventory(false)?;
+        let (_, inventory, _, _, _) = self.read_complete_inventory(false)?;
+        self.verify_path_ownership()?;
+        Ok(inventory)
+    }
+
+    fn create_or_read_scrub_receipt(
+        &mut self,
+        receipt: &OfflineMaintenanceReceiptV4,
+    ) -> Result<OfflineMaintenanceReceiptCreateResultV4, StorageError> {
+        self.verify_path_ownership()?;
+        let (v1, v2, v3, v4, _) = self.read_complete_inventory(false)?;
+        if v1
+            .receipts()
+            .iter()
+            .any(|r| r.operation_id() == receipt.operation_id())
+            || v2
+                .receipts()
+                .iter()
+                .any(|r| r.operation_id() == receipt.operation_id())
+            || v3
+                .receipts()
+                .iter()
+                .any(|r| r.operation_id() == receipt.operation_id())
+        {
+            return Err(corrupt());
+        }
+        if let Some(existing) = v4
+            .receipts()
+            .iter()
+            .find(|r| r.operation_id() == receipt.operation_id())
+        {
+            let result =
+                OfflineMaintenanceReceiptCreateResultV4::Existing(Box::new(existing.clone()));
+            self.verify_path_ownership()?;
+            return Ok(result);
+        }
+        if receipt.current_phase() != OfflineMaintenanceReceiptPhaseV1::Accepted {
+            return Err(invariant());
+        }
+        if v1.receipts().len() + v2.receipts().len() + v3.receipts().len() + v4.receipts().len()
+            >= MAX_OFFLINE_MAINTENANCE_RECEIPTS_V1
+        {
+            return Err(limit_exceeded());
+        }
+        // ADR-0203 Decision 7: one incomplete maintenance operation of any kind.
+        if v1
+            .receipts()
+            .iter()
+            .any(|r| !r.current_phase().is_terminal())
+            || v2
+                .receipts()
+                .iter()
+                .any(|r| !r.current_phase().is_terminal())
+            || v3
+                .receipts()
+                .iter()
+                .any(|r| !r.current_phase().is_terminal())
+            || v4
+                .receipts()
+                .iter()
+                .any(|r| !r.current_phase().is_terminal())
+            || self
+                .validate_migration_inventory()?
+                .iter()
+                .any(|r| !r.current_phase().is_terminal())
+        {
+            return Err(invariant());
+        }
+        self.write_scrub_receipt(receipt)?;
+        self.verify_path_ownership()?;
+        Ok(OfflineMaintenanceReceiptCreateResultV4::Created)
+    }
+
+    fn replace_scrub_receipt(
+        &mut self,
+        receipt: &OfflineMaintenanceReceiptV4,
+    ) -> Result<OfflineMaintenanceReceiptReplaceResultV4, StorageError> {
+        self.verify_path_ownership()?;
+        let path = self.scrub_receipt_path(receipt.operation_id());
+        let current = read_scrub_receipt_file(&path)?;
+        if current == *receipt {
+            return Ok(OfflineMaintenanceReceiptReplaceResultV4::AlreadyCurrent);
+        }
+        if !receipt.monotonically_extends(&current) {
+            return Err(invariant());
+        }
+        self.write_scrub_receipt(receipt)?;
+        self.verify_path_ownership()?;
+        Ok(OfflineMaintenanceReceiptReplaceResultV4::Replaced)
+    }
+
+    fn read_scrub_receipt(
+        &mut self,
+        operation_id: OfflineMaintenanceOperationId,
+    ) -> Result<Option<OfflineMaintenanceReceiptV4>, StorageError> {
+        self.verify_path_ownership()?;
+        let path = self.scrub_receipt_path(operation_id);
+        let result = match fs::symlink_metadata(&path) {
+            Ok(metadata)
+                if metadata.file_type().is_file() && !metadata.file_type().is_symlink() =>
+            {
+                read_scrub_receipt_file(&path).map(Some)
+            }
+            Ok(_) => Err(corrupt()),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
+            Err(error) => Err(io_unavailable(error)),
+        }?;
+        self.verify_path_ownership()?;
+        Ok(result)
+    }
+
+    fn validate_scrub_receipt_inventory(
+        &mut self,
+    ) -> Result<OfflineMaintenanceReceiptInventoryV4, StorageError> {
+        self.verify_path_ownership()?;
+        let (_, _, _, inventory, _) = self.read_complete_inventory(false)?;
         self.verify_path_ownership()?;
         Ok(inventory)
     }
@@ -2496,6 +2697,40 @@ fn read_receipt_file(path: &Path) -> Result<OfflineMaintenanceReceiptV1, Storage
         return Err(limit_exceeded());
     }
     decode_receipt(&bytes)
+}
+
+/// Whether an existing scrub receipt conflicts with admitting `operation_id`:
+/// the identity is already a scrub's, or a scrub is still incomplete
+/// (ADR-0203 Decision 7's one-incomplete-operation rule).
+fn scrub_conflicts(
+    scrubs: &OfflineMaintenanceReceiptInventoryV4,
+    operation_id: OfflineMaintenanceOperationId,
+) -> bool {
+    scrubs
+        .receipts()
+        .iter()
+        .any(|r| r.operation_id() == operation_id || !r.current_phase().is_terminal())
+}
+
+fn read_scrub_receipt_file(path: &Path) -> Result<OfflineMaintenanceReceiptV4, StorageError> {
+    let metadata = fs::symlink_metadata(path).map_err(io_unavailable)?;
+    if !metadata.file_type().is_file() || metadata.file_type().is_symlink() {
+        return Err(corrupt());
+    }
+    let mut file = File::open(path).map_err(io_unavailable)?;
+    let mut bytes = Vec::new();
+    Read::by_ref(&mut file)
+        .take(u64::try_from(MAX_RECEIPT_BYTES + 1).map_err(|_| limit_exceeded())?)
+        .read_to_end(&mut bytes)
+        .map_err(io_unavailable)?;
+    if bytes.len() > MAX_RECEIPT_BYTES {
+        return Err(limit_exceeded());
+    }
+    decode_scrub_receipt(&bytes)
+}
+
+fn scrub_receipt_file_name(operation_id: OfflineMaintenanceOperationId) -> String {
+    format!("{operation_id}{SCRUB_RECEIPT_FILE_SUFFIX}")
 }
 
 fn read_retire_receipt_file(path: &Path) -> Result<OfflineMaintenanceReceiptV2, StorageError> {

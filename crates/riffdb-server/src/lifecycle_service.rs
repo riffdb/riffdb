@@ -510,6 +510,20 @@ impl OfflineMaintenanceApplication for LifecycleApplicationService {
         Box::pin(async move { service.retire_offline_backup(context, request).await })
     }
 
+    fn start_offline_storage_scrub(
+        &self,
+        context: RequestContext,
+        request: riffdb_service::StartOfflineStorageScrubRequest,
+    ) -> ServiceFuture<'_, OfflineMaintenanceStartResult> {
+        let Some(service) = self
+            .route
+            .admit_offline_maintenance(GrpcOfflineMaintenanceOperation::StorageScrub)
+        else {
+            return unavailable();
+        };
+        Box::pin(async move { service.start_offline_storage_scrub(context, request).await })
+    }
+
     fn get_offline_maintenance_operation(
         &self,
         context: RequestContext,

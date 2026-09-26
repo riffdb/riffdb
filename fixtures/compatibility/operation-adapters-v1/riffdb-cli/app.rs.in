@@ -26,7 +26,7 @@ use riffdb_client_rust::{
     ProjectedOrder, ProjectedPredicate, ProjectedQuery, ProjectedQueryOutcome,
     ProjectedResponseEncoding, ProjectedSortDirection, RestoreArchivedBackup, RestoreOfflineBackup, RetireOfflineBackup,
     RiffDbClient, StartApplicationExport, StartApplicationInstallation, StartApplicationReimport,
-    app_v1, canonical_value_from_proto, canonical_value_to_proto,
+    StartOfflineStorageScrub, app_v1, canonical_value_from_proto, canonical_value_to_proto,
     generate_application_export_operation_id, generate_application_installation_campaign_id,
     generate_capability_id, generate_offline_maintenance_operation_id, generate_request_id, v1,
 };
@@ -77,7 +77,7 @@ use crate::output::{
     render_contract_migration_start, render_contract_validation, render_create_maintenance_start,
     render_entity, render_execution, render_health, render_installation_observation,
     render_installation_start, render_maintenance_operation, render_normal_create, render_outcome,
-    render_projection, render_archive_restore_maintenance_start, render_restore_maintenance_start, render_retire_maintenance_start,
+    render_projection, render_archive_restore_maintenance_start, render_restore_maintenance_start, render_retire_maintenance_start, render_storage_scrub_maintenance_start,
     render_revoke, success, take_normal_create_disposition, uncertain,
 };
 use crate::project::{DEFAULT_PROJECT_FILE, ProjectError, PushCeremony, push_ceremony};
@@ -1604,6 +1604,9 @@ async fn dispatch(
         TopLevel::Reimport { command } => reimport_command(command, config, environment).await,
         TopLevel::Storage { command: StorageCommand::Restore { name, archive, stop_at_sequence, confirm_replace_current_database } } => {
             archive_restore_command(name, archive, stop_at_sequence, confirm_replace_current_database, config, environment).await
+        }
+        TopLevel::Storage { command: StorageCommand::Scrub } => {
+            storage_scrub_command(config, environment).await
         }
         TopLevel::Storage { command } => storage_command(command),
         TopLevel::Retention { command } => retention_command(command),
@@ -11898,6 +11901,7 @@ const fn command_identity(command: &TopLevel) -> CommandIdentity {
             command: ReimportCommand::Cancel { .. },
         } => CommandIdentity::ReimportCancel,
         TopLevel::Storage { command: StorageCommand::Restore { .. } } => CommandIdentity::StorageRestore,
+        TopLevel::Storage { command: StorageCommand::Scrub } => CommandIdentity::StorageScrub,
         TopLevel::Storage {
             command: StorageCommand::Preflight { .. },
         } => CommandIdentity::StoragePreflight,
@@ -11960,10 +11964,29 @@ async fn archive_restore_command(
     }
 }
 
+/// ADR-0203: the selector-free scrub has no argument; the CLI generates the
+/// caller-stable operation ID and prints it in the bounded envelope.
+async fn storage_scrub_command(config: &EffectiveConfig, environment: &dyn Environment) -> Terminal {
+    let identity = CommandIdentity::StorageScrub;
+    let operation_id = match generate_offline_maintenance_operation_id() {
+        Ok(id) => id, Err(error) => return client_error(identity, &ClientError::IdentifierGeneration(error)),
+    };
+    let metadata = match required_metadata(identity, config, environment) { Ok(metadata) => metadata, Err(terminal) => return terminal };
+    let mut client = match connect(config).await { Ok(client) => client, Err(error) => return client_error(identity, &error) };
+    let scrub = StartOfflineStorageScrub::new(operation_id);
+    let attempts = AttemptBudget::new(config.max_attempts).expect("configuration bound");
+    match client.start_offline_storage_scrub_with_retry(&scrub, attempts, &metadata).await {
+        Ok(response) => render_storage_scrub_maintenance_start(&response),
+        Err(ClientError::OutcomeUnknown(_)) => maintenance_uncertain(identity, operation_id),
+        Err(error) => client_error(identity, &error),
+    }
+}
+
 fn storage_command(command: StorageCommand) -> Terminal {
     match command {
         // Network maintenance is dispatched by the asynchronous command router.
         StorageCommand::Restore { .. } => invalid_input(CommandIdentity::StorageRestore),
+        StorageCommand::Scrub => invalid_input(CommandIdentity::StorageScrub),
         StorageCommand::Preflight { database_path } => {
             let identity = CommandIdentity::StoragePreflight;
             if validate_path(&database_path).is_err() {

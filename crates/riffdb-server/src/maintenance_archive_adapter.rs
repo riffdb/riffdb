@@ -57,6 +57,10 @@ fn admit_candidate(
             .read_retire_receipt(id)
             .map_err(|e| map_start_read_error(controller, id, e))?
             .is_some()
+        || storage
+            .read_scrub_receipt(id)
+            .map_err(|e| map_start_read_error(controller, id, e))?
+            .is_some()
     {
         return Err(OfflineMaintenanceStartPortError::InputMismatch);
     }

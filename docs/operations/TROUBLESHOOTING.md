@@ -37,14 +37,26 @@ epoch requires the retained source binary and the documented symbolic
 export/reimport ceremony. Never remove the marker or upgrade receipt, copy a
 marker from another database, or look for a force/reset flag.
 
-If a clean restart reports corruption only when a particular record is used,
-that is the documented accessed-row integrity boundary, not evidence that
-validation was disabled. Keep the service stopped if the error affects required
-authority or active application state, retain the incident ID, and restore from
-a verified backup when directed. The sealed complete-integrity scrub primitive
-is not directly invocable, and the authorized maintenance operation and CLI are
-not yet available. Do not edit lifecycle metadata or invoke internal storage
-APIs as a substitute.
+If a restart reports corruption only when a particular record is used, that is
+the documented accessed-row integrity boundary, not evidence that validation was
+disabled. Keep the service stopped if the error affects required authority or
+active application state, retain the incident ID, and restore from a verified
+backup when directed. To check the whole database, run `riffdb storage scrub`
+and observe the printed operation with `riffdb backup operation`; it takes the
+database offline for the pass. Do not edit lifecycle metadata or invoke
+internal storage APIs as a substitute.
+
+## Health reports `degraded` with a failed storage scrub
+
+The background scrub found a row that fails validation. The `storage_scrub`
+member is `failed` with an incident ID, and `authoritative_storage` is
+degraded. Service continues, and any request that touches the damaged row fails
+closed. Retain the incident ID, avoid the affected data where possible, and
+restore from a verified backup when directed. A restart does not clear the
+defect: the next background scrub starts at `pending` and finds it again. On a
+V2 database a failure in retained history withdraws authoritative readiness
+instead; the server then reports `not_ready`. See [Startup
+Integrity](STARTUP-INTEGRITY.md#background-and-offline-scrubs).
 
 ## CLI connects to the wrong database
 

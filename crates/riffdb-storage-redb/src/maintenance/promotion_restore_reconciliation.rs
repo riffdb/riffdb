@@ -70,7 +70,7 @@ pub(super) fn verify_receipts(
     if expected.is_empty() {
         return Ok(());
     }
-    let (ordinary, _, archived, _) = owner.read_complete_inventory(false)?;
+    let (ordinary, _, archived, _, _) = owner.read_complete_inventory(false)?;
     for receipt in expected {
         let present = match receipt {
             RestoreReceipt::Ordinary(prior) => ordinary
@@ -163,7 +163,7 @@ impl RedbMaintenanceStorage {
         // This role join precedes ordinary startup reconciliation. Preserve its
         // existing crash cleanup: validate the complete inventory first, then
         // remove only recognized unpublished receipt temporaries under custody.
-        let (ordinary, _, archived, _) = self.read_complete_inventory(true)?;
+        let (ordinary, _, archived, _, _) = self.read_complete_inventory(true)?;
         let mut candidates: Vec<_> = ordinary
             .receipts()
             .iter()

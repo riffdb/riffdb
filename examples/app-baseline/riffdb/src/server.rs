@@ -359,6 +359,9 @@ pub struct RiffDbShutdownEvidence {
     /// Opaque post-close authority proof retained only for lifecycle comparison.
     pub recovery_authority_snapshot_after_measurement:
         Option<riffdb_storage_redb::benchmark_support::RecoveryAuthoritySnapshotV1>,
+    /// ADR-0203 complete offline validator over the final stopped database:
+    /// its wall time, or the closed refusal kind.
+    pub offline_scrub: Option<Result<Duration, String>>,
 }
 
 /// Closed redaction-safe startup observation emitted by the runner-owned daemon.
@@ -1264,6 +1267,16 @@ impl RiffDbServerSession {
                 detail: format!("read repeated-recovery table inventory: {error}"),
             })?;
         evidence.recovery_authority_snapshot_after_measurement = Some(first);
+        // The validator the public `riffdb storage scrub` drives, over the
+        // final stopped database (capability key 7, idempotency key 9).
+        evidence.offline_scrub = Some(
+            riffdb_storage_redb::benchmark_support::offline_integrity_scrub_v1(
+                &database_path,
+                7,
+                9,
+            )
+            .map_err(|kind| format!("{kind:?}")),
+        );
         Ok((evidence, second, repeat_startup))
     }
 
@@ -2583,6 +2596,7 @@ fn read_server_stdout(
                                                 table_inventory_before_measurement: None,
                                                 table_inventory_after_measurement: Vec::new(),
                                                 recovery_authority_snapshot_after_measurement: None,
+                                                offline_scrub: None,
                                             })
                                         })
                                     })

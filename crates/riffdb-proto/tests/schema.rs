@@ -388,6 +388,7 @@ fn offline_maintenance_surface_is_exact_and_additive() {
                 ("OFFLINE_MAINTENANCE_OPERATION_KIND_CREATE_BACKUP", 1),
                 ("OFFLINE_MAINTENANCE_OPERATION_KIND_RESTORE_BACKUP", 2),
                 ("OFFLINE_MAINTENANCE_OPERATION_KIND_RETIRE_BACKUP", 3),
+                ("OFFLINE_MAINTENANCE_OPERATION_KIND_STORAGE_SCRUB", 4),
             ],
         ),
         (
@@ -497,7 +498,7 @@ fn service_inventory_and_completed_phase_zero_messages_are_exact() {
         }
     }
     methods.sort();
-    assert_eq!(methods.len(), 74);
+    assert_eq!(methods.len(), 75);
     let descriptor_order = descriptors
         .file
         .iter()
@@ -598,6 +599,7 @@ fn service_inventory_and_completed_phase_zero_messages_are_exact() {
             "RestoreArchivedBackup",
             "RetireOfflineBackup",
             "GetOfflineMaintenanceOperation",
+            "StartOfflineStorageScrub",
             "CheckContractMigration",
             "ApplyContractMigration",
             "GetContractMigrationOperation",
@@ -816,7 +818,7 @@ fn service_inventory_and_completed_phase_zero_messages_are_exact() {
             .keys()
             .filter(|name| name.starts_with("riffdb.v1."))
             .count(),
-        310
+        312
     );
     assert_eq!(
         messages
