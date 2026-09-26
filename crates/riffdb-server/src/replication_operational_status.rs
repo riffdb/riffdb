@@ -63,8 +63,14 @@ impl ProductionOperationalStatusPort {
                     HealthComponentStatus::Unavailable,
                 )
             }));
-            OperationalHealthSnapshot::new(components)
-                .map_err(|_| OperationalStatusError::Integrity)
+            let snapshot = OperationalHealthSnapshot::new(components)
+                .map_err(|_| OperationalStatusError::Integrity)?;
+            attach_storage_scrub(
+                snapshot,
+                base.storage_scrub
+                    .as_ref()
+                    .and_then(crate::scrub_worker::BackgroundScrubStatus::health),
+            )
         });
         let statistics = driver.executor(move |()| {
             // Preserve the existing stopped-cache refusal, then use a single

@@ -3471,6 +3471,7 @@ mod tests {
                         mcp_protocol_baseline: "2025-11-25".to_owned(),
                     }),
                     history_incarnation: 1,
+                    storage_scrub: None,
                 },
             )),
             database_alias: "ea".to_owned(),

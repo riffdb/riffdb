@@ -169,7 +169,7 @@ fn every_client_vector_passes_its_strict_public_boundary() {
         }
         count += 1;
     }
-    assert_eq!(count, 174);
+    assert_eq!(count, 176);
     assert_eq!(rpcs.len(), 30);
     assert_eq!(request_rpcs, rpcs);
     assert_eq!(visible_rpcs, rpcs);
@@ -1537,6 +1537,36 @@ fn expected_enum_values() -> BTreeSet<String> {
             "HEALTH_COMPONENT_KIND_REPLICATION",
         ),
         (
+            "riffdb.v1.StorageScrubHealthState",
+            0,
+            "STORAGE_SCRUB_HEALTH_STATE_UNSPECIFIED",
+        ),
+        (
+            "riffdb.v1.StorageScrubHealthState",
+            1,
+            "STORAGE_SCRUB_HEALTH_STATE_PENDING",
+        ),
+        (
+            "riffdb.v1.StorageScrubHealthState",
+            2,
+            "STORAGE_SCRUB_HEALTH_STATE_RUNNING",
+        ),
+        (
+            "riffdb.v1.StorageScrubHealthState",
+            3,
+            "STORAGE_SCRUB_HEALTH_STATE_COMPLETE",
+        ),
+        (
+            "riffdb.v1.StorageScrubHealthState",
+            4,
+            "STORAGE_SCRUB_HEALTH_STATE_FAILED",
+        ),
+        (
+            "riffdb.v1.StorageScrubHealthState",
+            5,
+            "STORAGE_SCRUB_HEALTH_STATE_CANCELLED",
+        ),
+        (
             "riffdb.v1.ReplicationRole",
             0,
             "REPLICATION_ROLE_UNSPECIFIED",
@@ -1730,6 +1760,16 @@ fn expected_enum_values() -> BTreeSet<String> {
 fn expected_optional_registry() -> BTreeSet<String> {
     [
         (
+            "riffdb.v1.AuthenticatedHealth.storage_scrub",
+            "AdminService.Health:response:authenticated",
+            "AdminService.Health:response:scrub-failed",
+        ),
+        (
+            "riffdb.v1.StorageScrubHealth.incident_id",
+            "AdminService.Health:response:scrub-complete",
+            "AdminService.Health:response:scrub-failed",
+        ),
+        (
             "riffdb.v1.RegisterFollowerRequest.expires_at_application_sequence",
             "AdminService.RegisterFollower:request:no-expiry",
             "AdminService.RegisterFollower:request:configured-expiry",
@@ -1907,7 +1947,20 @@ fn strict_decode<M: PublicMessage>(vector: &FixtureVector<'_>, message_type: &st
 }
 
 fn optional_field_present(field: &str, vector: &FixtureVector<'_>) -> bool {
+    let storage_scrub = |vector: &FixtureVector<'_>| match strict_decode::<v1::HealthResponse>(
+        vector,
+        "riffdb.v1.HealthResponse",
+    )
+    .result
+    {
+        Some(v1::health_response::Result::Authenticated(health)) => health.storage_scrub,
+        _ => None,
+    };
     match field {
+        "riffdb.v1.AuthenticatedHealth.storage_scrub" => storage_scrub(vector).is_some(),
+        "riffdb.v1.StorageScrubHealth.incident_id" => {
+            storage_scrub(vector).is_some_and(|scrub| scrub.incident_id.is_some())
+        }
         "riffdb.v1.RegisterFollowerRequest.expires_at_application_sequence" => {
             strict_decode::<v1::RegisterFollowerRequest>(
                 vector,
@@ -2241,7 +2294,7 @@ fn assert_unspecified_enum_rejected(enumeration: &str, message_type: &str, bytes
 #[test]
 fn wp137_enum_optional_and_page_registry_is_complete() {
     let (vectors, registry) = fixture_sections();
-    assert_eq!(vectors.len(), 174);
+    assert_eq!(vectors.len(), 176);
 
     let expected_enums = expected_enum_values();
     let expected_optionals = expected_optional_registry();

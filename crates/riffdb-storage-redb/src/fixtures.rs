@@ -15,9 +15,9 @@ use crate::error::{
     transaction_error,
 };
 use crate::layout::{
-    CATALOG_ACTIVE, CATALOG_ACTIVE_KEY, COMMITS, CONTRACT_BUNDLES, ENTITIES, IDEMPOTENCY, META,
-    META_APPLICATION_SEQUENCE, META_CLEAN_CLOSE_LIFECYCLE, META_VALIDATED_PREFIX_CHECKPOINT,
-    PROVENANCE, SECONDARY_INDEXES,
+    CATALOG_ACTIVE, CATALOG_ACTIVE_KEY, COMMITS, CONTRACT_BUNDLES, ENTITIES, EVENT_ROUTES,
+    IDEMPOTENCY, META, META_APPLICATION_SEQUENCE, META_CLEAN_CLOSE_LIFECYCLE,
+    META_VALIDATED_PREFIX_CHECKPOINT, PROVENANCE, SECONDARY_INDEXES,
 };
 
 /// Appends exact contiguous authoritative entity/commit pairs for server worker tests.
@@ -314,6 +314,47 @@ pub fn downgrade_all_index_rows_to_v1_fixture(path: &Path) -> Result<usize, Stor
         .map_err(precommit_storage_error)?;
     transaction.commit().map_err(commit_error)?;
     Ok(replacements.len())
+}
+
+/// The fixed key and bytes of the malformed population row planted by
+/// [`plant_malformed_population_row_fixture`].
+pub const MALFORMED_POPULATION_ROW_FIXTURE: (&[u8], &[u8]) = (
+    b"fixture-malformed-event-route-key",
+    b"fixture-malformed-event-route-value",
+);
+
+/// Plants one malformed `EVENT_ROUTES` row in a stopped database, outside
+/// every receipt, for corruption-detection tests. The table is population
+/// state that bounded dirty admission and its header neither count, probe,
+/// nor cross-link, so a later bounded dirty startup reaches readiness over it
+/// and only first access or a complete walk can refuse it.
+///
+/// Absent from default builds; call only after the owning process stopped.
+pub fn plant_malformed_population_row_fixture(path: &Path) -> Result<(), StorageError> {
+    let database = Database::create(path).map_err(database_error)?;
+    let transaction = database.begin_write().map_err(transaction_error)?;
+    transaction
+        .open_table(EVENT_ROUTES)
+        .map_err(table_error)?
+        .insert(
+            MALFORMED_POPULATION_ROW_FIXTURE.0,
+            MALFORMED_POPULATION_ROW_FIXTURE.1,
+        )
+        .map_err(precommit_storage_error)?;
+    transaction.commit().map_err(commit_error)
+}
+
+/// Reads the planted malformed row's raw bytes, proving a detector neither
+/// repaired nor removed it. Call only after the owning process stopped.
+pub fn read_malformed_population_row_fixture(path: &Path) -> Result<Option<Vec<u8>>, StorageError> {
+    let database = Database::create(path).map_err(database_error)?;
+    let transaction = database.begin_read().map_err(transaction_error)?;
+    let table = transaction.open_table(EVENT_ROUTES).map_err(table_error)?;
+    let row = table
+        .get(MALFORMED_POPULATION_ROW_FIXTURE.0)
+        .map_err(precommit_storage_error)?
+        .map(|value| value.value().to_vec());
+    Ok(row)
 }
 
 /// Reads the commit sequence S bound in a stopped database's durable

@@ -2033,6 +2033,7 @@ fn health_and_subscription_closed_bounds_are_checked() {
                     mcp_protocol_baseline: "2025-06-18".to_owned(),
                 }),
                 history_incarnation: 1,
+                storage_scrub: None,
             },
         )),
         database_alias: "default".to_owned(),
@@ -2152,6 +2153,103 @@ fn health_and_subscription_closed_bounds_are_checked() {
     assert_eq!(
         validate_public_message(&subscribe),
         Err(PublicWireError::InvalidIdentity)
+    );
+}
+
+// req: REC-007
+/// ADR-0203 Decisions 4 and 5 at the public wire: the scrub member has one
+/// non-UNSPECIFIED state, a checked UUIDv7 incident present exactly in FAILED,
+/// and FAILED appears exactly beside a DEGRADED authoritative-storage
+/// component. Every other combination is refused before it reaches a client.
+#[test]
+fn storage_scrub_health_member_is_closed_and_incident_only_when_failed() {
+    let incident = vec![
+        0x01, 0x9b, 0xf6, 0xaa, 0xa6, 0x40, 0x7d, 0xe6, 0x89, 0xc9, 0x8a, 0x7f, 0x70, 0xbb, 0xbd,
+        0x23,
+    ];
+    let health = |storage: v1::HealthComponentStatus, scrub: Option<v1::StorageScrubHealth>| {
+        v1::HealthResponse {
+            result: Some(v1::health_response::Result::Authenticated(
+                v1::AuthenticatedHealth {
+                    status: v1::HealthStatus::Degraded as i32,
+                    active_contract_version: Some(1),
+                    last_commit_sequence: Some(1),
+                    components: vec![v1::HealthComponent {
+                        component: v1::HealthComponentKind::AuthoritativeStorage as i32,
+                        status: storage as i32,
+                        replication: None,
+                    }],
+                    started_at: Some(v1::Timestamp {
+                        seconds: 1,
+                        nanos: 0,
+                    }),
+                    build: Some(v1::BuildInfo {
+                        semantic_version: "0.1.0".to_owned(),
+                        git_revision: "0123456".to_owned(),
+                        rust_version: "1.97.0".to_owned(),
+                        enabled_features: vec!["default".to_owned()],
+                        storage_format_version: 1,
+                        contract_ir_version: 1,
+                        mcp_protocol_baseline: "2025-06-18".to_owned(),
+                    }),
+                    history_incarnation: 1,
+                    storage_scrub: scrub,
+                },
+            )),
+            database_alias: "default".to_owned(),
+            authentication_audience: "riffdb-grpc-loopback".to_owned(),
+        }
+    };
+    let scrub = |state: v1::StorageScrubHealthState, incident_id: Option<Vec<u8>>| {
+        Some(v1::StorageScrubHealth {
+            state: state as i32,
+            incident_id,
+        })
+    };
+    use v1::HealthComponentStatus::{Degraded, Healthy};
+    use v1::StorageScrubHealthState::{Cancelled, Complete, Failed, Pending, Running};
+
+    for state in [Pending, Running, Complete, Cancelled] {
+        validate_public_message(&health(Healthy, scrub(state, None)))
+            .expect("a non-failed member without an incident");
+        assert_eq!(
+            validate_public_message(&health(Healthy, scrub(state, Some(incident.clone())))),
+            Err(PublicWireError::InconsistentFields),
+            "an incident appears only in FAILED"
+        );
+    }
+    validate_public_message(&health(Degraded, scrub(Failed, Some(incident.clone()))))
+        .expect("FAILED with its incident beside degraded storage");
+    validate_public_message(&health(Healthy, None)).expect("an absent member is accepted");
+    assert_eq!(
+        validate_public_message(&health(Degraded, scrub(Failed, None))),
+        Err(PublicWireError::InconsistentFields),
+        "FAILED requires its incident"
+    );
+    assert_eq!(
+        validate_public_message(&health(Healthy, scrub(Failed, Some(incident.clone())))),
+        Err(PublicWireError::InconsistentFields),
+        "FAILED appears only beside degraded storage"
+    );
+    assert_eq!(
+        validate_public_message(&health(Degraded, scrub(Running, None))),
+        Err(PublicWireError::InconsistentFields),
+        "only a failed scrub accounts for degraded storage in the member"
+    );
+    assert_eq!(
+        validate_public_message(&health(Degraded, scrub(Failed, Some(vec![0; 16])))),
+        Err(PublicWireError::InvalidUuidV7),
+        "the incident is a checked UUIDv7"
+    );
+    assert_eq!(
+        validate_public_message(&health(
+            Healthy,
+            Some(v1::StorageScrubHealth {
+                state: v1::StorageScrubHealthState::Unspecified as i32,
+                incident_id: None,
+            })
+        )),
+        Err(PublicWireError::InvalidEnum)
     );
 }
 

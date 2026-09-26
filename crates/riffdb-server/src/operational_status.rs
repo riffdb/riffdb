@@ -57,6 +57,7 @@ pub(crate) struct ProductionOperationalStatusPort {
     projection: ProjectionWorkerStatus,
     columnar: ColumnarWorkerStatus,
     vector_storage: Option<SharedRedbOperationalPorts>,
+    storage_scrub: Option<crate::scrub_worker::BackgroundScrubStatus>,
 }
 
 impl ProductionOperationalStatusPort {
@@ -77,7 +78,18 @@ impl ProductionOperationalStatusPort {
             projection,
             columnar,
             vector_storage: Some(vector_storage),
+            storage_scrub: None,
         }
+    }
+
+    /// Reports the ADR-0182 background scrub's member (ADR-0203 Decision 4)
+    /// from the status the scrub worker shares.
+    pub(crate) fn with_storage_scrub(
+        mut self,
+        status: crate::scrub_worker::BackgroundScrubStatus,
+    ) -> Self {
+        self.storage_scrub = Some(status);
+        self
     }
 
     #[cfg(test)]
@@ -97,6 +109,7 @@ impl ProductionOperationalStatusPort {
             projection,
             columnar,
             vector_storage: None,
+            storage_scrub: None,
         }
     }
 }
@@ -118,6 +131,7 @@ impl OperationalStatusPort for ProductionOperationalStatusPort {
                 projection: self.projection.clone(),
                 columnar: self.columnar.clone(),
                 vector_storage: self.vector_storage.clone(),
+                storage_scrub: self.storage_scrub.clone(),
             })
                 as BoxPortCapacityPermit<(), OperationalHealthSnapshot, OperationalStatusError>
         });
@@ -165,6 +179,7 @@ struct OperationalHealthPermit {
     projection: ProjectionWorkerStatus,
     columnar: ColumnarWorkerStatus,
     vector_storage: Option<SharedRedbOperationalPorts>,
+    storage_scrub: Option<crate::scrub_worker::BackgroundScrubStatus>,
 }
 
 impl PortCapacityPermit<(), OperationalHealthSnapshot, OperationalStatusError>
@@ -186,6 +201,14 @@ impl PortCapacityPermit<(), OperationalHealthSnapshot, OperationalStatusError>
                 vector_staleness_readiness,
             ),
         );
+        let result = result.and_then(|snapshot| {
+            attach_storage_scrub(
+                snapshot,
+                self.storage_scrub
+                    .as_ref()
+                    .and_then(crate::scrub_worker::BackgroundScrubStatus::health),
+            )
+        });
         let (completion, receipt) = port_completion_channel();
         completion.complete(result);
         Ok(receipt)
@@ -261,6 +284,45 @@ fn required_health_snapshot(
         ));
     }
     OperationalHealthSnapshot::new(components).map_err(|_| OperationalStatusError::Integrity)
+}
+
+/// ADR-0203 Decision 5: a failed background scrub degrades a healthy
+/// authoritative-storage component and carries its incident while serving
+/// continues. An unavailable storage component (the runtime is stopping)
+/// dominates; a failed member is then omitted, because FAILED is published
+/// only beside DEGRADED storage.
+fn attach_storage_scrub(
+    snapshot: OperationalHealthSnapshot,
+    scrub: Option<riffdb_service::StorageScrubHealth>,
+) -> Result<OperationalHealthSnapshot, OperationalStatusError> {
+    let Some(scrub) = scrub else {
+        return Ok(snapshot);
+    };
+    let failed = scrub.state() == riffdb_service::StorageScrubHealthState::Failed;
+    let mut components = snapshot.into_components();
+    let mut storage_available = true;
+    for component in &mut components {
+        if component.component() == HealthComponentKind::AuthoritativeStorage {
+            match component.status() {
+                HealthComponentStatus::Unavailable => storage_available = false,
+                _ if failed => {
+                    *component = ComponentHealth::new(
+                        HealthComponentKind::AuthoritativeStorage,
+                        HealthComponentStatus::Degraded,
+                    );
+                }
+                _ => {}
+            }
+        }
+    }
+    let snapshot = OperationalHealthSnapshot::new(components)
+        .map_err(|_| OperationalStatusError::Integrity)?;
+    if failed && !storage_available {
+        return Ok(snapshot);
+    }
+    snapshot
+        .with_storage_scrub(scrub)
+        .map_err(|_| OperationalStatusError::Integrity)
 }
 
 /// Resolves the active vector contract and its maintained global observation

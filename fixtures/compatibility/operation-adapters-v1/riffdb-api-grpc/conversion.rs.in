@@ -4423,9 +4423,30 @@ pub fn health_result_to_proto(
                     }
                 })
                 .collect();
+            let storage_scrub = report.storage_scrub().map(|scrub| v1::StorageScrubHealth {
+                state: match scrub.state() {
+                    riffdb_service::StorageScrubHealthState::Pending => {
+                        v1::StorageScrubHealthState::Pending
+                    }
+                    riffdb_service::StorageScrubHealthState::Running => {
+                        v1::StorageScrubHealthState::Running
+                    }
+                    riffdb_service::StorageScrubHealthState::Complete => {
+                        v1::StorageScrubHealthState::Complete
+                    }
+                    riffdb_service::StorageScrubHealthState::Failed => {
+                        v1::StorageScrubHealthState::Failed
+                    }
+                    riffdb_service::StorageScrubHealthState::Cancelled => {
+                        v1::StorageScrubHealthState::Cancelled
+                    }
+                } as i32,
+                incident_id: scrub.incident_id().map(|incident| incident.into_bytes().to_vec()),
+            });
             let started_at = report.started_at();
             let build = report.build();
             v1::health_response::Result::Authenticated(v1::AuthenticatedHealth {
+                storage_scrub,
                 status: status as i32,
                 active_contract_version: report.active_contract_version().map(ContractVersion::get),
                 last_commit_sequence: report.last_commit_sequence().map(CommitSequence::get),

@@ -5116,6 +5116,54 @@ impl fmt::Debug for BuildInfo {
     }
 }
 
+/// Closed ADR-0182 background-scrub state (ADR-0203 Decision 4).
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+pub enum StorageScrubHealthState {
+    /// Armed; not yet walking. Every process starts here.
+    Pending,
+    /// Walking its bounded pages.
+    Running,
+    /// Reached both exact ends with zero findings.
+    Complete,
+    /// Observed corruption or failed; Storage is degraded with an incident.
+    Failed,
+    /// Cancelled by shutdown.
+    Cancelled,
+}
+
+/// The background scrub's dedicated health member. The incident identity is
+/// present exactly in `Failed`; health carries no other incident detail.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct StorageScrubHealth {
+    state: StorageScrubHealthState,
+    incident_id: Option<riffdb_types::IncidentId>,
+}
+
+impl StorageScrubHealth {
+    /// A non-failed state, which carries no incident.
+    pub const fn new(state: StorageScrubHealthState) -> Result<Self, ServiceDtoError> {
+        if matches!(state, StorageScrubHealthState::Failed) {
+            return Err(ServiceDtoError::OutOfRange);
+        }
+        Ok(Self { state, incident_id: None })
+    }
+    /// The failed state with its server-generated incident identity.
+    #[must_use]
+    pub const fn failed(incident_id: riffdb_types::IncidentId) -> Self {
+        Self { state: StorageScrubHealthState::Failed, incident_id: Some(incident_id) }
+    }
+    /// Returns the closed state.
+    #[must_use]
+    pub const fn state(self) -> StorageScrubHealthState {
+        self.state
+    }
+    /// Returns the incident identity, present exactly when failed.
+    #[must_use]
+    pub const fn incident_id(self) -> Option<riffdb_types::IncidentId> {
+        self.incident_id
+    }
+}
+
 /// Complete authenticated health result from the specification.
 #[derive(Clone, Eq, PartialEq)]
 pub struct HealthReport {
@@ -5123,6 +5171,7 @@ pub struct HealthReport {
     active_contract_version: Option<ContractVersion>,
     last_commit_sequence: Option<CommitSequence>,
     components: Vec<ComponentHealth>,
+    storage_scrub: Option<StorageScrubHealth>,
     started_at: Timestamp,
     build: BuildInfo,
 }
@@ -5136,13 +5185,15 @@ impl HealthReport {
         started_at: Timestamp,
         build: BuildInfo,
     ) -> Self {
+        let storage_scrub = operational.storage_scrub();
         let components = operational.into_components();
-        let status = classify_health(active_contract_version, &components);
+        let status = classify_health(active_contract_version, &components, storage_scrub);
         Self {
             status,
             active_contract_version,
             last_commit_sequence,
             components,
+            storage_scrub,
             started_at,
             build,
         }
@@ -5151,7 +5202,12 @@ impl HealthReport {
     /// live replication component in place of the absent primary coordinator.
     #[must_use]
     pub fn for_role(mut self, role: crate::ReplicationRole) -> Self {
-        self.status = classify_health_for_role(role, self.active_contract_version, &self.components);
+        self.status = classify_health_for_role(
+            role,
+            self.active_contract_version,
+            &self.components,
+            self.storage_scrub,
+        );
         self
     }
     /// Returns overall health status.
@@ -5174,6 +5230,11 @@ impl HealthReport {
     pub fn components(&self) -> &[ComponentHealth] {
         &self.components
     }
+    /// Returns the background scrub's health member, when reported.
+    #[must_use]
+    pub const fn storage_scrub(&self) -> Option<StorageScrubHealth> {
+        self.storage_scrub
+    }
     /// Returns process start time.
     #[must_use]
     pub const fn started_at(&self) -> Timestamp {
@@ -5193,6 +5254,10 @@ impl fmt::Debug for HealthReport {
 }
 
 /// Closed authenticated or restricted health result.
+#[expect(
+    clippy::large_enum_variant,
+    reason = "one health report per request; boxing would change every consumer's match shape"
+)]
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum HealthResult {
     /// Exact pre-marker three-field report.
@@ -5205,13 +5270,33 @@ pub enum HealthResult {
 #[derive(Clone, Eq, PartialEq)]
 pub struct OperationalHealthSnapshot {
     components: Vec<ComponentHealth>,
+    storage_scrub: Option<StorageScrubHealth>,
 }
 
 impl OperationalHealthSnapshot {
     /// Canonicalizes closed component signals without classifying overall readiness.
     pub fn new(mut components: Vec<ComponentHealth>) -> Result<Self, ServiceDtoError> {
         canonicalize_health_components(&mut components)?;
-        Ok(Self { components })
+        Ok(Self { components, storage_scrub: None })
+    }
+    /// Attaches the background scrub's member. A failed scrub requires the
+    /// authoritative-storage component to be exactly `Degraded`, and only a
+    /// failed scrub may degrade it (ADR-0203 Decision 5).
+    pub fn with_storage_scrub(mut self, scrub: StorageScrubHealth) -> Result<Self, ServiceDtoError> {
+        let storage_degraded = self.components.iter().any(|component| {
+            component.component() == HealthComponentKind::AuthoritativeStorage
+                && component.status() == HealthComponentStatus::Degraded
+        });
+        if storage_degraded != (scrub.state() == StorageScrubHealthState::Failed) {
+            return Err(ServiceDtoError::OutOfRange);
+        }
+        self.storage_scrub = Some(scrub);
+        Ok(self)
+    }
+    /// Returns the background scrub's member, when attached.
+    #[must_use]
+    pub const fn storage_scrub(&self) -> Option<StorageScrubHealth> {
+        self.storage_scrub
     }
     /// Borrows canonical raw component signals.
     #[must_use]
@@ -5250,17 +5335,33 @@ fn canonicalize_health_components(
 fn classify_health(
     active_contract_version: Option<ContractVersion>,
     components: &[ComponentHealth],
+    storage_scrub: Option<StorageScrubHealth>,
 ) -> HealthStatus {
-    classify_health_for_role(crate::ReplicationRole::Primary, active_contract_version, components)
+    classify_health_for_role(
+        crate::ReplicationRole::Primary,
+        active_contract_version,
+        components,
+        storage_scrub,
+    )
 }
 
 fn classify_health_for_role(
     role: crate::ReplicationRole,
     active_contract_version: Option<ContractVersion>,
     components: &[ComponentHealth],
+    storage_scrub: Option<StorageScrubHealth>,
 ) -> HealthStatus {
     let component_ready = |kind| components.iter().any(|component| {
         component.component() == kind && component.status() == HealthComponentStatus::Healthy
+    });
+    // ADR-0203 Decision 5: a failed background scrub degrades authoritative
+    // storage with its incident while serving continues. Exactly that
+    // combination is Degraded rather than NotReady.
+    let scrub_failed = storage_scrub
+        .is_some_and(|scrub| scrub.state() == StorageScrubHealthState::Failed);
+    let storage_scrub_degraded = scrub_failed && components.iter().any(|component| {
+        component.component() == HealthComponentKind::AuthoritativeStorage
+            && component.status() == HealthComponentStatus::Degraded
     });
     let role_ready = match role {
         crate::ReplicationRole::Primary => component_ready(HealthComponentKind::CommitCoordinator),
@@ -5271,7 +5372,7 @@ fn classify_health_for_role(
         }),
     };
     if active_contract_version.is_none()
-        || !component_ready(HealthComponentKind::AuthoritativeStorage)
+        || !(component_ready(HealthComponentKind::AuthoritativeStorage) || storage_scrub_degraded)
         || !component_ready(HealthComponentKind::Catalog)
         || !role_ready
         || components.iter().any(|component| component.replication_statistics()
@@ -5279,7 +5380,7 @@ fn classify_health_for_role(
     {
         return HealthStatus::NotReady;
     }
-    if components.iter().any(|component| {
+    if storage_scrub_degraded || components.iter().any(|component| {
         matches!(component.component(),
             HealthComponentKind::Projection | HealthComponentKind::Outbox
                 | HealthComponentKind::VectorStaleness | HealthComponentKind::Replication
@@ -11100,12 +11201,13 @@ contract OutcomeShapes version 1 {
         assert_eq!(
             classify_health(
                 Some(ContractVersion::new(1).expect("version")),
-                operational.components()
+                operational.components(),
+                None
             ),
             HealthStatus::Ready
         );
         assert_eq!(
-            classify_health(None, operational.components()),
+            classify_health(None, operational.components(), None),
             HealthStatus::NotReady
         );
 
@@ -11118,7 +11220,8 @@ contract OutcomeShapes version 1 {
         assert_eq!(
             classify_health(
                 Some(ContractVersion::new(1).expect("version")),
-                degraded.components()
+                degraded.components(),
+                None
             ),
             HealthStatus::Degraded
         );
@@ -11131,6 +11234,85 @@ contract OutcomeShapes version 1 {
                 ),
             ]),
             Err(ServiceDtoError::Duplicate)
+        );
+    }
+
+    // req: REC-007
+    /// ADR-0203 Decision 5: only a failed scrub degrades authoritative
+    /// storage, it must carry its incident, and exactly that combination
+    /// classifies Degraded while serving continues; pending, running, and
+    /// complete leave an otherwise ready server Ready.
+    #[test]
+    fn failed_storage_scrub_degrades_health_without_withdrawing_readiness() {
+        let version = Some(ContractVersion::new(1).expect("version"));
+        let components = |storage| vec![
+            ComponentHealth::new(HealthComponentKind::AuthoritativeStorage, storage),
+            ComponentHealth::new(HealthComponentKind::Catalog, HealthComponentStatus::Healthy),
+            ComponentHealth::new(
+                HealthComponentKind::CommitCoordinator,
+                HealthComponentStatus::Healthy,
+            ),
+        ];
+        for state in [
+            StorageScrubHealthState::Pending,
+            StorageScrubHealthState::Running,
+            StorageScrubHealthState::Complete,
+        ] {
+            let scrub = StorageScrubHealth::new(state).expect("non-failed state");
+            assert_eq!(scrub.incident_id(), None);
+            let snapshot = OperationalHealthSnapshot::new(components(HealthComponentStatus::Healthy))
+                .expect("components")
+                .with_storage_scrub(scrub)
+                .expect("healthy storage beside a non-failed scrub");
+            assert_eq!(
+                classify_health(version, snapshot.components(), snapshot.storage_scrub()),
+                HealthStatus::Ready
+            );
+        }
+        assert_eq!(
+            StorageScrubHealth::new(StorageScrubHealthState::Failed),
+            Err(ServiceDtoError::OutOfRange),
+            "a failed scrub cannot be built without its incident"
+        );
+        let incident = riffdb_types::IncidentId::from_bytes([
+            0x01, 0x9b, 0xf6, 0xaa, 0xa6, 0x40, 0x7d, 0xe6, 0x89, 0xc9, 0x8a, 0x7f, 0x70, 0xbb,
+            0xbd, 0x23,
+        ])
+        .expect("UUIDv7 incident");
+        let failed = StorageScrubHealth::failed(incident);
+        let snapshot = OperationalHealthSnapshot::new(components(HealthComponentStatus::Degraded))
+            .expect("components")
+            .with_storage_scrub(failed)
+            .expect("degraded storage beside a failed scrub");
+        assert_eq!(
+            classify_health(version, snapshot.components(), snapshot.storage_scrub()),
+            HealthStatus::Degraded
+        );
+        assert_eq!(snapshot.storage_scrub().and_then(StorageScrubHealth::incident_id), Some(incident));
+        assert_eq!(
+            classify_health(
+                version,
+                &components(HealthComponentStatus::Degraded),
+                None
+            ),
+            HealthStatus::NotReady,
+            "storage degraded for any other reason still withdraws readiness"
+        );
+        assert_eq!(
+            OperationalHealthSnapshot::new(components(HealthComponentStatus::Healthy))
+                .expect("components")
+                .with_storage_scrub(failed),
+            Err(ServiceDtoError::OutOfRange),
+            "a failed scrub must degrade storage"
+        );
+        assert_eq!(
+            OperationalHealthSnapshot::new(components(HealthComponentStatus::Degraded))
+                .expect("components")
+                .with_storage_scrub(
+                    StorageScrubHealth::new(StorageScrubHealthState::Running).expect("running")
+                ),
+            Err(ServiceDtoError::OutOfRange),
+            "only a failed scrub may degrade storage"
         );
     }
 

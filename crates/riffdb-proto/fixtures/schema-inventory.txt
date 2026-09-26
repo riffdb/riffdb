@@ -1921,7 +1921,7 @@ messages
     2 stop_at_sequence optional uint64 proto3-optional oneof=_stop_at_sequence
     3 backup_frontier optional .riffdb.v1.ArchiveBackupFrontier
     4 restored_frontier optional .riffdb.v1.ReplicationFrontier
-  riffdb.v1.AuthenticatedHealth fields=7
+  riffdb.v1.AuthenticatedHealth fields=8
     1 status optional .riffdb.v1.HealthStatus
     2 active_contract_version optional uint64 proto3-optional oneof=_active_contract_version
     3 last_commit_sequence optional uint64 proto3-optional oneof=_last_commit_sequence
@@ -1929,6 +1929,7 @@ messages
     5 started_at optional .riffdb.v1.Timestamp
     6 build optional .riffdb.v1.BuildInfo
     7 history_incarnation optional uint64
+    8 storage_scrub optional .riffdb.v1.StorageScrubHealth proto3-optional oneof=_storage_scrub
   riffdb.v1.AvailableContextualReaction fields=4
     1 name optional string
     2 command_name optional string
@@ -3085,6 +3086,9 @@ messages
     5 known_projections optional uint32 proto3-optional oneof=_known_projections
     6 history_incarnation optional uint64
     7 replication optional .riffdb.v1.ReplicationStatistics
+  riffdb.v1.StorageScrubHealth fields=2
+    1 state optional .riffdb.v1.StorageScrubHealthState
+    2 incident_id optional bytes proto3-optional oneof=_incident_id
   riffdb.v1.StreamChangelogRequest fields=13
     1 request_id optional bytes
     2 database_id optional bytes
@@ -4063,6 +4067,13 @@ enums
     2 REVOCATION_REASON_REPLACED
     3 REVOCATION_REASON_SUSPECTED_COMPROMISE
     4 REVOCATION_REASON_POLICY_CHANGE
+  riffdb.v1.StorageScrubHealthState values=6
+    0 STORAGE_SCRUB_HEALTH_STATE_UNSPECIFIED
+    1 STORAGE_SCRUB_HEALTH_STATE_PENDING
+    2 STORAGE_SCRUB_HEALTH_STATE_RUNNING
+    3 STORAGE_SCRUB_HEALTH_STATE_COMPLETE
+    4 STORAGE_SCRUB_HEALTH_STATE_FAILED
+    5 STORAGE_SCRUB_HEALTH_STATE_CANCELLED
   riffdb.v1.ValidationCode values=9
     0 VALIDATION_CODE_UNSPECIFIED
     1 VALIDATION_CODE_MISSING_REQUIRED_VALUE

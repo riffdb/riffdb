@@ -893,7 +893,17 @@ const DISCOVERY_PAGE_BOUNDARIES: [(&str, usize, bool, &str); 4] = [
     ("limit-500-exact-end", 500, false, "exact_end"),
 ];
 
-const WP137_OPTIONAL_COVERAGE: [(&str, &str, &str); 25] = [
+const WP137_OPTIONAL_COVERAGE: [(&str, &str, &str); 27] = [
+    (
+        "riffdb.v1.AuthenticatedHealth.storage_scrub",
+        "AdminService.Health:response:authenticated",
+        "AdminService.Health:response:scrub-failed",
+    ),
+    (
+        "riffdb.v1.StorageScrubHealth.incident_id",
+        "AdminService.Health:response:scrub-complete",
+        "AdminService.Health:response:scrub-failed",
+    ),
     (
         "riffdb.v1.RegisterFollowerRequest.expires_at_application_sequence",
         "AdminService.RegisterFollower:request:no-expiry",
@@ -4144,6 +4154,45 @@ fn public_client_vectors(descriptors: &FileDescriptorSet) -> Result<String, Box<
         "riffdb.v1.HealthResponse",
         &public_authenticated_health(),
     );
+    // ADR-0203 Decision 4: a completed background scrub carries no incident.
+    let mut scrub_complete = public_authenticated_health();
+    if let Some(v1::health_response::Result::Authenticated(health)) = scrub_complete.result.as_mut()
+    {
+        health.storage_scrub = Some(v1::StorageScrubHealth {
+            state: v1::StorageScrubHealthState::Complete as i32,
+            incident_id: None,
+        });
+    }
+    append_client_vector(
+        &mut output,
+        "AdminService.Health",
+        "response",
+        "scrub-complete",
+        "riffdb.v1.HealthResponse",
+        &scrub_complete,
+    );
+    // ADR-0203 Decision 5: a failed background scrub degrades the storage
+    // component and carries only its checked UUIDv7 incident identity.
+    let mut scrub_failed = public_authenticated_health();
+    if let Some(v1::health_response::Result::Authenticated(health)) = scrub_failed.result.as_mut() {
+        health.status = v1::HealthStatus::Degraded as i32;
+        health.components[0].status = v1::HealthComponentStatus::Degraded as i32;
+        health.storage_scrub = Some(v1::StorageScrubHealth {
+            state: v1::StorageScrubHealthState::Failed as i32,
+            incident_id: Some(vec![
+                0x01, 0x9b, 0xf6, 0xaa, 0xa6, 0x40, 0x7d, 0xe6, 0x89, 0xc9, 0x8a, 0x7f, 0x70, 0xbb,
+                0xbd, 0x23,
+            ]),
+        });
+    }
+    append_client_vector(
+        &mut output,
+        "AdminService.Health",
+        "response",
+        "scrub-failed",
+        "riffdb.v1.HealthResponse",
+        &scrub_failed,
+    );
 
     append_client_vector(
         &mut output,
@@ -6246,6 +6295,7 @@ fn public_authenticated_health() -> v1::HealthResponse {
                     mcp_protocol_baseline: "2025-06-18".to_owned(),
                 }),
                 history_incarnation: 1,
+                storage_scrub: None,
             },
         )),
         database_alias: "default".to_owned(),
@@ -7868,6 +7918,7 @@ fn response_charge_authenticated_health() -> v1::HealthResponse {
                     mcp_protocol_baseline: "2025-06-18".to_owned(),
                 }),
                 history_incarnation: 1,
+                storage_scrub: None,
             },
         )),
         database_alias: "d".repeat(64),

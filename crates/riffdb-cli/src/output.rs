@@ -1087,6 +1087,7 @@ pub(crate) fn render_health(response: &v1::HealthResponse) -> Terminal {
                         .map(|value| value.to_string()),
                     history_incarnation: health.history_incarnation.to_string(),
                     components: HealthComponents(&health.components),
+                    storage_scrub: health.storage_scrub.as_ref().map(StorageScrubDto),
                     started_at: TimestampDto(started_at),
                     build: BuildDto(build),
                 },
@@ -2820,8 +2821,37 @@ struct AuthenticatedHealth<'a> {
     last_commit_sequence: Option<String>,
     history_incarnation: String,
     components: HealthComponents<'a>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    storage_scrub: Option<StorageScrubDto<'a>>,
     started_at: TimestampDto<'a>,
     build: BuildDto<'a>,
+}
+
+/// ADR-0203's background-scrub member: the closed state and, only when failed,
+/// the incident identity an operator correlates with trusted diagnostics.
+struct StorageScrubDto<'a>(&'a v1::StorageScrubHealth);
+
+impl Serialize for StorageScrubDto<'_> {
+    fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        let state = match v1::StorageScrubHealthState::try_from(self.0.state) {
+            Ok(v1::StorageScrubHealthState::Pending) => "pending",
+            Ok(v1::StorageScrubHealthState::Running) => "running",
+            Ok(v1::StorageScrubHealthState::Complete) => "complete",
+            Ok(v1::StorageScrubHealthState::Failed) => "failed",
+            Ok(v1::StorageScrubHealthState::Cancelled) => "cancelled",
+            _ => return Err(S::Error::custom("storage scrub state")),
+        };
+        let mut map = serializer.serialize_map(None)?;
+        map.serialize_entry("state", state)?;
+        if let Some(bytes) = &self.0.incident_id {
+            let incident = <[u8; 16]>::try_from(bytes.as_slice())
+                .ok()
+                .and_then(|bytes| riffdb_types::IncidentId::from_bytes(bytes).ok())
+                .ok_or_else(|| S::Error::custom("storage scrub incident"))?;
+            map.serialize_entry("incident_id", &incident.to_string())?;
+        }
+        map.end()
+    }
 }
 
 struct HealthComponents<'a>(&'a [v1::HealthComponent]);
@@ -4362,6 +4392,7 @@ mod tests {
                 started_at: Some(timestamp(&value["started_at"])),
                 build: Some(build(&value["build"])),
                 history_incarnation: optional_u64_string(value, "history_incarnation").unwrap_or(1),
+                storage_scrub: None,
             })
         };
         v1::HealthResponse {

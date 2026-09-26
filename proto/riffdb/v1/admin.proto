@@ -91,6 +91,26 @@ message BuildInfo {
   string mcp_protocol_baseline = 7;
 }
 
+// ADR-0203 Decision 4: the ADR-0182 background scrub's closed state. The
+// process-local machine starts PENDING; only PENDING -> RUNNING|CANCELLED and
+// RUNNING -> COMPLETE|FAILED|CANCELLED are valid, and a restart begins again
+// at PENDING.
+enum StorageScrubHealthState {
+  STORAGE_SCRUB_HEALTH_STATE_UNSPECIFIED = 0;
+  STORAGE_SCRUB_HEALTH_STATE_PENDING = 1;
+  STORAGE_SCRUB_HEALTH_STATE_RUNNING = 2;
+  STORAGE_SCRUB_HEALTH_STATE_COMPLETE = 3;
+  STORAGE_SCRUB_HEALTH_STATE_FAILED = 4;
+  STORAGE_SCRUB_HEALTH_STATE_CANCELLED = 5;
+}
+
+// incident_id is present exactly in FAILED: one checked 16-byte
+// server-generated UUIDv7 incident identity, never incident detail.
+message StorageScrubHealth {
+  StorageScrubHealthState state = 1;
+  optional bytes incident_id = 2;
+}
+
 message AuthenticatedHealth {
   HealthStatus status = 1;
   optional uint64 active_contract_version = 2;
@@ -102,6 +122,9 @@ message AuthenticatedHealth {
   // initializing and has not yet retained serving identity (pre-ready path);
   // once authenticated serving is ready the value is ≥ 1.
   uint64 history_incarnation = 7;
+  // ADR-0203: the background scrub's dedicated member beside the bounded
+  // components list; present in authenticated health.
+  optional StorageScrubHealth storage_scrub = 8;
 }
 
 message HealthResponse {
