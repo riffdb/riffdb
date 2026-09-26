@@ -1,11 +1,16 @@
 # WP-810 materialization observation preparation
 
-This is a **prepared diagnostic, not a performance result**. No remote cell has
-run. The observation patch applies to integration
-`5d9b8cc4c597e8868bb60c7fb5fcdc721463aa68`; it is not part of the production
-candidate. `qualification.json` records local checks and private evidence
-digests. The runtime candidate's existing comparison keeps its original source
-identities and verdict.
+This bank retains **diagnostic preparation and functional qualification**.
+The unchanged observation patch applies to original integration
+`5d9b8cc4c597e8868bb60c7fb5fcdc721463aa68` and refreshed integration
+`3514c4af29f4b266f2d5be726d7510cf8e54a73f`; it is outside the production
+candidate. `qualification.json` retains the original checks, and
+`refresh-qualification.json` records the current checks and private evidence
+digests. The remote attempt in
+[`../materialization-attempt-20260926.json`](../materialization-attempt-20260926.json)
+stopped during seeding at its 900-second deadline, before the timed workload;
+its partial trace is not complete measurement evidence. The candidate's
+existing comparison keeps its original source identities and verdict.
 
 ## Question and production path
 
@@ -25,11 +30,22 @@ same checkpoint phase, including any resize. This distinguishes observed
 growth-barrier sequences from final-commit sequences without removing a fence
 or assuming that either sequence caused a concurrent journal delay.
 
-The final local functional check joins 9,504 measured requests to 594 command
+The original local functional check joins 9,504 measured requests to 594 command
 groups and physical flushes. It retains three checkpoints and 65,912 backend
 operations with no dropped rows. Journal write, sync and queue durations match
 the existing census exactly. These are debug-build functional observations on
 an unqualified local host; their latency is not performance evidence.
+
+The refreshed check uses the exact release daemon and runner built for the
+remote diagnostic, with both executable digests verified locally. Its
+90-second local workload joins 2,652 requests to 221 measured groups and
+flushes; the complete trace retains one real checkpoint and 16,856 backend
+operations with no drops. The earlier local attempts remain recorded: one
+debug seed stopped with `AuditUnavailable`, and two clean short workloads
+were refused by the analyzer because they never reached a checkpoint. The
+first stop's cause is not established. Extending the functional workload
+preserves the real checkpoint thresholds and all coverage assertions. These
+local observations support no performance conclusion.
 
 ## Bounds and lifecycle
 
@@ -55,13 +71,21 @@ generated host records, logs, source bundle or binaries.
 
 ## Frozen diagnostic
 
-`measurement-protocol.json` fixes one archive-disabled c32 write-only cell:
+`measurement-protocol.json` retains the original source freeze;
+`refresh-measurement-protocol.json` records the current source freeze. Both
+fix one archive-disabled c32 write-only cell:
 15 seconds warmup and 90 seconds measurement, Rust 1.98.1, thin LTO, one codegen
 unit, generic x86-64 and the existing server allocator. A fresh exclusive
 interval on an admitted 8-vCPU AMD EPYC 9B14 host is required before remote work.
 The runner writes trace output to a private tmpfs spool during the cell and
 banks it afterward; it refuses insufficient RAM or a non-tmpfs destination.
 It stops at the first failed attempt and retains that attempt.
+
+`build_then_gate.py` and `supervise_gated.py` allow the authorized release
+build to finish while local qualification proceeds. Measurement waits for an
+atomic, source- and patch-bound success receipt. The same copied release
+binaries must pass local functional coverage before that receipt is released.
+The supervisor retains the deadline and restores task-owned host isolation.
 
 The analyzer requires complete final coverage, exact request/group joins,
 consistent deduplicated flushes, valid phase bounds, checkpoint counts and

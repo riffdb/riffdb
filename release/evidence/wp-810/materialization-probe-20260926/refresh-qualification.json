@@ -1,0 +1,95 @@
+{
+  "schema": "riffdb.wp810-materialization-refresh/v1",
+  "source_revision": "3514c4af29f4b266f2d5be726d7510cf8e54a73f",
+  "observer_patch_sha256": "13f3bfbf2e16f59aaa3a8ce8a3d70d65b9ebfe34e6e9758c93ec2df9a7ce4d41",
+  "previous_preparation_retained_at_source": "5d9b8cc4c597e8868bb60c7fb5fcdc721463aa68",
+  "runtime_mitigation_change": false,
+  "local_functional": {
+    "schema": "private.wp810-local-functional-gate/v1",
+    "source_revision": "3514c4af29f4b266f2d5be726d7510cf8e54a73f",
+    "observer_patch_sha256": "13f3bfbf2e16f59aaa3a8ce8a3d70d65b9ebfe34e6e9758c93ec2df9a7ce4d41",
+    "local_functional_passed": true,
+    "qualified_at": "2026-09-26T14:40:25.604756+00:00",
+    "daemon_sha256": "ea54d69b7b704507110caab3e50b9c20f73ff5357e2e74b4a688de4027fdced8",
+    "runner_sha256": "b914b6a40f5d6ef1fff7561d53b730963e089b003a7ae80f3bc7bfabdc573dd3",
+    "scope": "Exact release binaries built on the admitted 8-vCPU AMD EPYC 9B14 host, local smoke c32 write_only, 2-second warmup, 90-second functional workload. Unqualified local host; no performance conclusion.",
+    "coverage": {
+      "final": 1,
+      "groups": 256,
+      "checkpoints": 1,
+      "io": 16856,
+      "reserved_groups": 256,
+      "reserved_checkpoints": 1,
+      "reserved_io": 16856,
+      "dropped_groups": 0,
+      "dropped_checkpoints": 0,
+      "dropped_io": 0
+    },
+    "populations": {
+      "requests": 2652,
+      "measured_groups": 221,
+      "measured_flushes": 221
+    },
+    "checkpoint_completion_coverage": {
+      "census_scope": "before graceful close; no exact snapshot timestamp",
+      "trace_scope": "complete process lifetime, including graceful close",
+      "preclose_materialized": 1,
+      "preclose_installed": 1,
+      "final_materialized": 1,
+      "final_installed": 1,
+      "additional_completion_constraint": "Each completion absent from the pre-close census must be after the last command publication."
+    },
+    "evidence": {
+      "attempt.json": "e67be684ab5de92f45266284a8246f51860e14fc9bd2bf5956b71d9d84a8fb50",
+      "execution.json": "5facfb828e0a7bdeaadb06a83a17f34060d4446d63617f6b605934ec0c086d20",
+      "report.json": "d0283464dae1d36adb19e843a1bac77efba1b55c26559866189b48ff573cbdc9",
+      "run.log": "453004253d16334286ed583f8c2c796debf22927f34ecb99c65bc9ef209ab010",
+      "materialization-analysis.json": "184775a686552e8ac6b5938a9b8d1919950e56ea5476493ac29e9330e0870cd9",
+      "joined-requests.json": "9ff37eada25956defe59f623abcb4e29f16679821f623fd07d8f727bef185c5d",
+      "raw/raw-request-tail.json": "088edd6942ee0041bf01bb327e318b6b653d5d5b409f36946a637474afd6369d"
+    },
+    "prior_attempts_retained": [
+      "debug seed AuditUnavailable",
+      "same-debug-binary repeat clean but no checkpoint",
+      "20-second release workload clean but no checkpoint"
+    ],
+    "first_failure_cause": "not established; no attribution to local CI contention is claimed"
+  },
+  "checks": {
+    "collector_tests": 5,
+    "backend_tests": 2,
+    "raw_request_tests": 4,
+    "analyzer_and_retention_tests": 13,
+    "storage_library_clippy": "passed with -D warnings",
+    "workspace_format": "passed",
+    "production_source_ci": "complete CI passed at this source; see integration-qualification-20260926.json"
+  },
+  "attempts": [
+    {
+      "profile": "local debug, lower scheduling priority during CI",
+      "outcome": "seeding stopped with AuditUnavailable; no checkpoint or measurement",
+      "qualification": "failed; source and binary identities plus stderr retained"
+    },
+    {
+      "profile": "same local debug binaries, normal priority after CI",
+      "outcome": "workload clean, 224 measured writes, no checkpoint",
+      "qualification": "refused by coverage analyzer"
+    },
+    {
+      "profile": "exact remote release binaries, local 20-second functional workload",
+      "outcome": "workload clean, no checkpoint",
+      "qualification": "refused by coverage analyzer"
+    },
+    {
+      "profile": "same exact release binaries, local 90-second functional workload",
+      "outcome": "clean, complete real checkpoint and backend trace coverage",
+      "qualification": "passed; no performance conclusion"
+    }
+  ],
+  "first_readiness_failure_cause": "not established; no claim that CI contention caused it",
+  "isolation": "Current observer builds used a fresh separate target, removed after copied debug and release binaries were hash-verified.",
+  "remote_gate": "The detached builder verifies frozen inputs and waits for an exact source/patch-bound local success receipt before the one authorized diagnostic. Both binary digests are matched before atomically releasing that gate. Missing success with 20 minutes left, cancellation or a failed attempt stops measurement.",
+  "private_source_bundle_sha256": "03364b08441daf580c35f6ff056a20ac8514d929783add23bf8273b17e870bad",
+  "source_freeze_sha256": "31375fc7406b3c050fb6c248d9422b7250deb58c3c3acaaf6e68ce777a2f2fed",
+  "scope": "This refresh qualifies the observer on current integrated source. The remote diagnostic result is reported separately; local functional timing establishes no performance benefit."
+}

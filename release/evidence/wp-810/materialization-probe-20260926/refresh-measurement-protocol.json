@@ -1,0 +1,52 @@
+{
+  "schema": "riffdb.wp810-materialization-protocol/v1",
+  "status": "refresh prepared; local requalification and fresh exclusive host reservation required",
+  "source_revision": "3514c4af29f4b266f2d5be726d7510cf8e54a73f",
+  "question": "Within slow journal write/sync intervals, which checkpoint phase and actual primary-engine I/O operations overlap?",
+  "scope": "One observation-only diagnostic on the current integrated candidate. Not a runtime mitigation comparison or WP-749 qualification.",
+  "host_specifications": "8 vCPU AMD EPYC 9B14; sha_ni aes pclmulqdq sse4_2 required",
+  "toolchain": "1.98.1",
+  "build": {
+    "release_lto": "thin",
+    "codegen_units": 1,
+    "target_cpu": "x86-64",
+    "allocator": "unchanged server jemalloc"
+  },
+  "maximum_cells": 1,
+  "scale": "full",
+  "clients": 32,
+  "load": "write_only",
+  "warmup_seconds": 15,
+  "measurement_seconds": 90,
+  "archive": "disabled",
+  "observer_limits": {
+    "groups": 65536,
+    "checkpoints": 512,
+    "io_records": 4194304,
+    "page_records": 32768,
+    "record_storage_maximum_mib": 352,
+    "raw_samples_per_worker": 32768,
+    "workers": 32,
+    "maximum_log_mib": 768
+  },
+  "output": "run.log written to a private tmpfs directory during the cell, copied into the evidence bank after the process exits; refuse non-tmpfs or insufficient capacity",
+  "validation": [
+    "production default FileBackend with unchanged open flags and locking, observed wrapper only",
+    "no failed requests, backend I/O or checkpoints",
+    "no dropped records; final emitted equals reserved equals parsed",
+    "all measured commit sequences join exactly one group and physical flush",
+    "exact journal write/sync/queue census reconciliation; shared physical flushes counted once",
+    "checkpoint selections reconcile with actual counts and reasons",
+    "phase boundaries ordered; phase-scoped backend calls fit within their checkpoint phase",
+    "independent continuous writer wall minus iterations; signed level-0 residual retained",
+    "preflight and whole-cell postflight host validity"
+  ],
+  "analysis": "Half-open intervals; overlapping engine I/O union before subtraction; phases disjoint. Server clocks only; cross-process requests join by commit sequence. All observations and unexplained time retained. Association does not prove kernel/device causation.",
+  "attempt_policy": "Stop at first failed attempt, retain it; no automatic reruns or best-cell selection. A fixed-capacity overflow invalidates completeness and is not silently filtered.",
+  "limitations": [
+    "observer overhead is not measured; do not compare its latency directly against uninstrumented cells",
+    "old integrations and prior measurements keep their exact source identities",
+    "no completion, gate, or mitigation verdict from this diagnostic alone"
+  ],
+  "cleanup": "restore only task-owned firewall/timer changes, hash and copy all private evidence, remove task build/source/database and tmpfs directories, report host release"
+}

@@ -313,9 +313,47 @@ The prepared diagnostic and qualification are retained under
 90-second archive-disabled c32 cell, after a 15-second warmup, on
 admitted hardware with Rust 1.98.1. Trace output stays in RAM during measurement.
 The analyzer reports phase and I/O overlap and explicit unexplained time; it
-does not infer device causation from overlap. No remote run has started, and
-a fresh exclusive reservation is pending. There is no new mitigation,
-latency-benefit or completion claim.
+does not infer device causation from overlap. That original preparation had
+no remote result or mitigation-benefit claim.
+
+The same observation patch is now qualified on integration `3514c4af2` using
+the exact release binaries built for the remote diagnostic. A local
+90-second functional workload joins 2,652 requests to 221 groups and flushes,
+with one completed checkpoint and 16,856 backend operations; no rows are
+dropped. Earlier attempts remain retained: one debug seed stopped with
+`AuditUnavailable`, and two clean short workloads were refused because they
+did not trigger a checkpoint. The first stop's cause is not established.
+Only the local functional duration was extended; the real thresholds and
+coverage assertions are unchanged. The refreshed qualification and frozen
+protocol are in the same evidence directory. These local observations are
+not performance evidence.
+
+#### Remote diagnostic stopped during setup
+
+The one authorized remote attempt on `3514c4af2` stopped at its fixed
+900-second cell deadline during full-dataset seeding, before warmup or the
+90-second c32 workload. The last seed progress report was 7,837 of 19,220
+commands at 785.391 seconds; batch-completion reporting does not establish
+the final applied-command count. The slow seed's cause is unestablished.
+There was no retry or deadline extension.
+
+The last periodic checkpoint snapshot, at process elapsed 599.001 seconds,
+records two byte-triggered selections, both materialized and installed, with
+2,921 and 3,572 selected transitions and no checkpoint failures. These are
+partial observations: the reporter reached its fixed 600-sample limit before
+the cell stopped. The seed trace retains 188 groups, two checkpoints and
+22,590 backend operations, but no final coverage footer. The analyzer therefore
+refuses completeness. No measured request samples, workload report or
+postflight qualification exist, and no latency or materialization attribution
+is claimed from this attempt.
+
+`release/evidence/wp-810/materialization-attempt-20260926.json` retains the
+source/binary identities, snapshot limits and private evidence digests.
+All 60 retained files, including the failed database snapshot, were verified
+locally before removing the remote source, build and data directories. The
+owned processes stopped, firewall and prior timer states were verified
+restored, and the host was released. This attempt does not resolve WP-810's
+shared delay or WP-749's prerequisite.
 
 #### Integration qualification
 
@@ -340,7 +378,7 @@ the pinned coverage assertion. The exact test on clean main `0d9edbce0`
 produces the same report and fails at the same assertion. Both logs and source
 identities are retained; the temporary control worktree was removed. No
 assertion is relaxed, and the earlier WP-749 landing exception does not apply
-to this package. Full CI remains failed and its later commands have not run.
+to this package. That invocation failed and its later commands did not run.
 The integrated source has no performance measurement; the timing verdict
 remains bound to the frozen candidate above.
 
@@ -366,13 +404,32 @@ The exact gate now passes with the full workspace's all-feature configuration.
 The source/binary identities, full audit rows, repeatability and refusal checks
 are retained in `release/evidence/wp-810/corpus-receipts-20260926/`.
 This removes the earlier first CI blocker; it does not turn the earlier
-aborted full-CI run into a pass. A fresh full battery is still required.
+aborted full-CI run into a pass.
+
+Full CI subsequently passes on `3514c4af2`, with 6,134 reported test passes
+including repeated checks and crash children. An intervening invocation
+stopped at the expansion proof because Cargo treated an older `riffdb-types`
+artifact in the shared build directory as fresh. The exact proof passed after
+rebuilding that artifact without changing source bytes. Every tracked Rust
+input was then timestamp-invalidated before the complete successful CI rerun.
+The old artifact, both failed attempts and their logs remain retained. Observer
+qualification now uses a separate temporary build directory.
+
+The successful CI invocation also exposed a nonfatal tool-selection warning:
+`python3 -m maturin` selected system 1.15.0 even though the executable on `PATH`
+was pinned to 1.14.1. A private Python environment fixes both entry points at
+1.14.1; the affected operator acceptance and both dependent generated-surface
+proofs pass again with that pin. A separate supplemental invocation of main's
+WP-760 dirty-recovery referee refuses its missing default evidence files;
+that script is not part of this revision's CI battery. These results, explicit
+limits and private-log digests are retained in
+`release/evidence/wp-810/integration-qualification-20260926.json`.
 
 The remaining decision is a maintainer-reviewed resolution of the shared
 journal delay and disposition of this common-case improvement. **No merge or
-completion is claimed.** The bounded diagnostic above addresses the remaining
-materialization mechanism; it is separate from the finished comparison and
-requires a fresh host reservation. The candidate does
+completion is claimed.** The bounded diagnostic above failed during setup and
+does not answer the remaining materialization question. It is separate from
+the finished comparison. The candidate does
 not establish that WP-749's shared tail prerequisite is resolved. Archive
 presence must still be assessed separately after that prerequisite is met.
 
@@ -385,8 +442,9 @@ errors immediately. Checks: deterministic real coordinator/storage schedules,
 six process-crash edges, scoped storage/commit tests, path-triggered acceptance,
 six valid comparison cells, current-main integration qualification, the
 retained-trace overlap checks and the causally verified corpus-receipt repair.
-The corpus gate passes again; full merge qualification and human review remain
-pending.
+The corpus gate and complete CI battery pass on `3514c4af2`, including the
+subsequent pinned Python proofs. Human review and resolution of the shared
+journal delay remain pending.
 Compatibility: existing durable bytes, public interfaces, thresholds and
 authority guarantees remain unchanged. Updated handbook: this page and the
 writer-census defect warning. Hazards:

@@ -1,0 +1,164 @@
+{
+  "schema": "riffdb.wp810-materialization-attempt/v1",
+  "source_revision": "3514c4af29f4b266f2d5be726d7510cf8e54a73f",
+  "observer_patch_sha256": "13f3bfbf2e16f59aaa3a8ce8a3d70d65b9ebfe34e6e9758c93ec2df9a7ce4d41",
+  "daemon_sha256": "ea54d69b7b704507110caab3e50b9c20f73ff5357e2e74b4a688de4027fdced8",
+  "runner_sha256": "b914b6a40f5d6ef1fff7561d53b730963e089b003a7ae80f3bc7bfabdc573dd3",
+  "toolchain": "1.98.1",
+  "host": {
+    "logical_cpus": 8,
+    "cpu": "AMD EPYC 9B14",
+    "required_accelerators_verified": true
+  },
+  "planned_workload": {
+    "dataset": "full",
+    "load": "write_only",
+    "clients": 32,
+    "warmup_seconds": 15,
+    "measurement_seconds": 90,
+    "archive": "disabled",
+    "cell_deadline_seconds": 900
+  },
+  "started_at": "2026-09-26T14:40:40.943994+00:00",
+  "stopped_at": "2026-09-26T14:55:54.387927+00:00",
+  "outcome": {
+    "eligible": false,
+    "reason": "cell deadline exceeded",
+    "phase": "seed",
+    "warmup_reached": false,
+    "measurement_reached": false,
+    "automatic_retries": false,
+    "latency_or_mitigation_verdict": null
+  },
+  "seed_progress": [
+    {
+      "phase": "user",
+      "reported_completed": 11,
+      "total": 19220,
+      "elapsed_ms": 4770
+    },
+    {
+      "phase": "project",
+      "reported_completed": 511,
+      "total": 19220,
+      "elapsed_ms": 7164
+    },
+    {
+      "phase": "member",
+      "reported_completed": 611,
+      "total": 19220,
+      "elapsed_ms": 26951
+    },
+    {
+      "phase": "label",
+      "reported_completed": 1111,
+      "total": 19220,
+      "elapsed_ms": 29215
+    },
+    {
+      "phase": "ticket",
+      "reported_completed": 1161,
+      "total": 19220,
+      "elapsed_ms": 215935
+    },
+    {
+      "phase": "comment",
+      "reported_completed": 3741,
+      "total": 19220,
+      "elapsed_ms": 474706
+    },
+    {
+      "phase": "comment",
+      "reported_completed": 7837,
+      "total": 19220,
+      "elapsed_ms": 785391
+    }
+  ],
+  "seed_progress_limit": "Progress is reported after a bounded batch returns. The last report is not the final applied-command count.",
+  "checkpoint_snapshot": {
+    "sample": 600,
+    "sample_limit": 600,
+    "process_elapsed_ms": 599001,
+    "starts": 2,
+    "selected_transitions": 6493,
+    "selected_commands": 6492,
+    "selected_bytes": 33861843,
+    "min_transitions": 2921,
+    "max_transitions": 3572,
+    "min_bytes": 16898716,
+    "max_bytes": 16963127,
+    "transition_triggers": 0,
+    "byte_triggers": 2,
+    "physical_triggers": 0,
+    "reanchor_triggers": 0,
+    "materialized": 2,
+    "installed": 2,
+    "failures": 0
+  },
+  "checkpoint_snapshot_limit": "This is the last periodic snapshot, not a final count. The reporter stops after 600 samples; the cell deadline is later. No inference is made about the unsampled remainder.",
+  "partial_trace": {
+    "groups": 188,
+    "checkpoints": 2,
+    "engine_operations": 22590,
+    "last_coverage": {
+      "final": 0,
+      "groups": 188,
+      "checkpoints": 2,
+      "io": 22590,
+      "reserved_groups": 188,
+      "reserved_checkpoints": 2,
+      "reserved_io": 22590,
+      "dropped_groups": 0,
+      "dropped_checkpoints": 0,
+      "dropped_io": 0
+    },
+    "complete_coverage_refusal": "missing final coverage footer"
+  },
+  "host_validity": {
+    "preflight_passed": true,
+    "postflight_present": false,
+    "qualified_cell": false,
+    "monitoring_limit": "Several bounded SSH status reads occurred during setup. No timed workload completed; no performance claim is made."
+  },
+  "missing_outputs": [
+    "report.json",
+    "execution.json",
+    "postflight.json",
+    "raw/raw-request-tail.json",
+    "materialization-analysis.json"
+  ],
+  "evidence": {
+    "files_sha256": {
+      "source.bundle": "03364b08441daf580c35f6ff056a20ac8514d929783add23bf8273b17e870bad",
+      "source-freeze.json": "31375fc7406b3c050fb6c248d9422b7250deb58c3c3acaaf6e68ce777a2f2fed",
+      "build-complete.json": "a181fbc03ffc138d74aef0c40834bb0d08c12a21702c1c0ab27326630971c3ce",
+      "measurement-protocol.json": "8ec8ad4605e0ca5f40cb2dba22f73119e03ca4f70cd786df556f9631f4bcbb09",
+      "measurement-gate-passed.json": "f7b9eb2a447a339aa9053c4110755b131438dee2e08349db035b2ab41e426006",
+      "results/01-materialization/attempt.json": "47ad4ec60ed3bddf9dd61852132e3ba810969b8904b9db60b8db16e9c1995cc3",
+      "results/01-materialization/run.log": "ae049c607d857bbb73464126a4500f1296cdbb72bd179afc6999b5d785f8e1d8",
+      "results/01-materialization/preflight.json": "f98d4d374b411acb50260d85f811778218082fc6a2988f0c44144df6f40733d1",
+      "stopped.json": "eb2525173bb71c23bdd601b8056be74fb7d88b1b721b66fb6155195da67d7943",
+      "supervisor-status.json": "bcaf15a174ea22871bb8542562c7c5e5622230cd18bef26c9b660d59502afe25",
+      "restoration-verified.json": "95b02f9a8a59c62a63a54eb1eb8eaca8c328f18743e105147c1371601df57bf7",
+      "retained-files.json": "2906c5b560d7ca7e9e355f884a9443d336674e05393421f858b5f48e866dd009"
+    },
+    "private_retained_archive_sha256": "35b62004d7c347755c3552fded901ba36958cc285afa133605d1cee63fb292f1",
+    "verified_files": 60,
+    "failed_database_snapshot_retained": true
+  },
+  "restoration": {
+    "isolation_restored": true,
+    "finished_at": "2026-09-26T14:55:54.569346+00:00",
+    "owned_processes_stopped": true,
+    "firewall_restoration_verified": true,
+    "original_timer_states_verified": true,
+    "remote_task_removed": true,
+    "host_released_at": "2026-09-26T14:57:43.507959+00:00"
+  },
+  "disposition": [
+    "One authorized attempt retained; no retry and no deadline extension.",
+    "The slow seed cause is unestablished. Neither main integration nor the observer is assigned causation from this attempt.",
+    "The partial trace does not answer the requested c32 checkpoint-I/O attribution.",
+    "WP-810 remains open; the shared journal delay and WP-749 prerequisite are unresolved."
+  ]
+}

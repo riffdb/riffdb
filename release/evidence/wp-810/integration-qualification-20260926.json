@@ -1,0 +1,76 @@
+{
+  "schema": "riffdb.wp810-integration-qualification/v1",
+  "source_revision": "3514c4af29f4b266f2d5be726d7510cf8e54a73f",
+  "toolchain": "1.98.1",
+  "production_source_changes_in_this_qualification": false,
+  "full_ci": {
+    "command": "./scripts/ci-all",
+    "exit_code": 0,
+    "log_sha256": "86cbd310bdb6d932d21715ea1dcb5961fc3ebe520b1fd674f3c393b3e6b7b922",
+    "ci_script_sha256": "d2ba9761c2d25c316a464c9d034123d01cdd6d8f0434fbb993b470c4e922b24b",
+    "completed_test_groups": 555,
+    "reported_test_passes_including_repeated_checks_and_crash_children": 6134,
+    "reported_failures": 0,
+    "reported_ignored_tests": 23,
+    "source_tree_clean_at_run": true
+  },
+  "earlier_attempt": {
+    "exit_code": 101,
+    "log_sha256": "fe3fb4a6bc8ff8e90db8338292ba9fcdab76318811057b3aade0924c6fe5c772",
+    "failed_step": "./scripts/expansion_completes_every_driver_before_release_or_refuses_whole",
+    "disposition": "Retained failed invocation. The complete later invocation passes; it does not relabel this attempt."
+  },
+  "artifact_repair": {
+    "source_revision": "3514c4af29f4b266f2d5be726d7510cf8e54a73f",
+    "at": "2026-09-26T14:01:21.939517+00:00",
+    "reproduction_exit": 101,
+    "after_root_timestamp_invalidation_exit": 0,
+    "source_bytes_changed": false,
+    "type_metadata_before_sha256": "1116b80a3b1d5c251319a9df8676d0527b8119c0756a3a1134274796c44b51c1",
+    "type_metadata_after_sha256": "2760cbdbfea61822b2ded4489d5555ad3164459ed7e0c287ed11519d43c54aff",
+    "all_tracked_rust_source_timestamps_invalidated": 1538,
+    "reason": "Shared target reused an older first-party artifact as Fresh. Invalidate every tracked Rust input before the required complete CI rerun; later observer builds use an isolated temporary target.",
+    "logs": {
+      "ci-after-corpus-repair-20260926.log": "fe3fb4a6bc8ff8e90db8338292ba9fcdab76318811057b3aade0924c6fe5c772",
+      "expansion-build-reproduction-20260926.log": "0d48757c4fc2301634a7f160e8ddfa08011d8df2be2256681fa1d42787eed044",
+      "expansion-build-after-touch-20260926.log": "18be4032ae5a7ef7b378255a3364e691f0c970327c3f93e70f0479f631c8b0b4"
+    },
+    "public_note": "No source contents changed. Initial CI and verbose reproduction both failed against an artifact Cargo labelled Fresh. Invalidating the root source timestamp rebuilt that dependency and the exact proof passed. All tracked Rust inputs were then timestamp-invalidated for a full CI rerun. This was a local shared-build-directory defect, not a demonstrated source defect or a performance result."
+  },
+  "pinned_python_followup": {
+    "cause": "The selected maturin executable was 1.14.1, but python3 -m maturin searched interpreter installation schemes and selected system 1.15.0. A private virtual environment makes both entry points use 1.14.1.",
+    "verified_module_version": "maturin 1.14.1",
+    "checks": [
+      {
+        "command": "./scripts/check-operator-acceptance",
+        "exit_code": 0,
+        "log_sha256": "5d0a9fd6f337c31fea31b0831cea5a00d1e7eb0bec6381cbbb5dd48fe2e43fc8"
+      },
+      {
+        "command": "./scripts/generated_binary_text_interval_surfaces_preserve_logical_strings <retained proof directory>",
+        "exit_code": 0,
+        "log_sha256": "04d8b106920a5e077eaf410be9d1bd6e48ce4a37d1ef8d2362eabc2e93654377"
+      },
+      {
+        "command": "./scripts/generated_mcp_query_cursor_round_trip_preserves_authority_and_redaction <retained proof directory>",
+        "exit_code": 0,
+        "log_sha256": "f7db150c7ed8a7e442b3f682478cc22cb2c38ba1b77a2470b9055abe13698c5b"
+      }
+    ]
+  },
+  "supplemental_wp760_check": {
+    "command": "./scripts/check-dirty-recovery-evidence",
+    "exit_code": 1,
+    "cause": "Default reports and receipt are absent from committed source at this revision. This referee is not invoked by this revision of scripts/ci-all. No WP-810 assertion is waived.",
+    "log_sha256": "fa09d8c0eb8e3ebec104ac10ce5a2c4fccb9cd6a96d4675414ee0de200413a79"
+  },
+  "other_tool_diagnostics": [
+    "cargo-machete reports absent src directories in the application template and negative dependency fixture, exits successfully and finds no unused dependency.",
+    "Four existing missing-doc warnings in the standalone application baseline runner remain identified in the observer build logs. No suppression added."
+  ],
+  "limits": [
+    "No performance measurement or mitigation verdict is supplied by these CI checks.",
+    "The observation patch and its functional qualification are separate from this production source CI run.",
+    "Human implementation and fixture review and a resolution of the shared journal delay remain required; WP-810 is open."
+  ]
+}
