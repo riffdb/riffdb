@@ -1,11 +1,12 @@
 ---
 adr: "0260"
 title: Bounded Dirty Startup For V2 Sources
-status: proposed
+status: accepted
 tier: guarantee
 date: 2026-09-25
-accepted: null
-acceptance: null
+accepted: 2026-09-25
+acceptance: 'maintainer, in session, 2026-09-25: exact text selected ("Accept exact
+  text")'
 requires: [ADR-0156, ADR-0157, ADR-0182, ADR-0203]
 amends:
   - ADR-0156 Amendment 6 for V2 source startup that meets the ADR-0182 bounded dirty preconditions
