@@ -37,6 +37,21 @@ allocator advance. The state that recovery itself owns is capped at a compiled
 64 MiB; exceeding the cap is a typed internal-defect refusal, never a partial
 start.
 
+After an abrupt stop the storage engine also repairs its own allocator state on
+the first open, reading the whole database file. That repair is storage-engine
+recovery, not a RiffDB population walk; startup reports it as an engine repair,
+and its duration grows with file size. On the WP-760 benchmark host a kill
+restart reached readiness in about 0.5 seconds at 65,536 rows and about 53
+seconds at the production benchmark population (about 1.1 million rows), almost
+all of it engine repair; the RiffDB startup stages together took well under a
+second. RiffDB leaves the engine's quick-repair mode off because it would change
+commit behavior. These figures are host-specific observations, not guarantees.
+
+The first write after any restart also rebuilds the process's in-memory command
+indexes once, because steady-state writes depend on them. At the production
+benchmark population that rebuild holds writes for tens of seconds; reads and
+readiness are unaffected, and later writes run at normal speed.
+
 Complete startup validation is still used when those bounded-recovery
 preconditions do not hold: a database with no loadable validated-prefix
 checkpoint (such as its first start) or without an active, current
