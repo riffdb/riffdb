@@ -22,6 +22,12 @@ impl SharedRedb {
         &self,
         batch: &JournalCheckpointBatch,
     ) -> Result<(), StorageError> {
+        #[cfg(feature = "test-fixtures")]
+        if let Some(controller) = &self.test_controller {
+            controller.checkpoint_test_pause(
+                crate::hooks::RedbCheckpointTestPoint::BeforeMaterialization,
+            );
+        }
         let mut transaction = self.database.begin_write().map_err(transaction_error)?;
         transaction.set_two_phase_commit(false);
         transaction
@@ -146,6 +152,13 @@ impl SharedRedb {
         }
         #[cfg(test)]
         crate::changelog_v3_journal::recovery_crash_edge("checkpoint-staged");
+        #[cfg(feature = "test-fixtures")]
+        if let Some(controller) = &self.test_controller {
+            controller.checkpoint_test_pause(
+                crate::hooks::RedbCheckpointTestPoint::BeforeCheckpointCommit,
+            );
+            controller.before_commit(crate::hooks::RedbTestOperation::JournalCheckpoint)?;
+        }
         self.commit_durable(transaction)?;
         #[cfg(test)]
         crate::changelog_v3_journal::recovery_crash_edge("checkpoint-committed");

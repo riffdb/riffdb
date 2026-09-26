@@ -2,6 +2,7 @@
 
 //! Real-redb command serialization and idempotency evidence.
 
+mod checkpoint_pipeline;
 mod support;
 
 use std::sync::Arc;

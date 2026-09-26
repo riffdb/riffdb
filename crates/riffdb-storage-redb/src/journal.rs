@@ -1933,13 +1933,20 @@ impl JournalLane {
     /// production caller routes through the media-parameterized form.
     #[cfg(test)]
     pub(crate) fn open(path: &Path, header: &JournalFileHeader) -> Result<Self, JournalIoError> {
-        Self::open_with_media(&RealJournalMedia, path, header)
+        Self::open_with_media(
+            &RealJournalMedia,
+            path,
+            header,
+            #[cfg(feature = "test-fixtures")]
+            None,
+        )
     }
 
     pub(crate) fn open_with_media(
         media: &dyn JournalMedia,
         path: &Path,
         header: &JournalFileHeader,
+        #[cfg(feature = "test-fixtures")] controller: Option<crate::hooks::RedbTestController>,
     ) -> Result<Self, JournalIoError> {
         let state = initialize_or_validate_file_with_media(media, path, header)?;
         let file = media
@@ -1951,7 +1958,16 @@ impl JournalLane {
         let worker = thread::Builder::new()
             .name("riffdb-journal".to_string())
             .stack_size(crate::PRODUCTION_THREAD_STACK_BYTES)
-            .spawn(move || journal_worker(file, receiver, &worker_flushes, state))
+            .spawn(move || {
+                journal_worker(
+                    file,
+                    receiver,
+                    &worker_flushes,
+                    state,
+                    #[cfg(feature = "test-fixtures")]
+                    controller,
+                )
+            })
             .map_err(|_| JournalIoError::Io)?;
         Ok(Self {
             sender: Some(sender),
@@ -2048,6 +2064,7 @@ fn journal_worker(
     receiver: mpsc::Receiver<JournalSubmission>,
     durable_flushes: &AtomicU64,
     state: ExtentState,
+    #[cfg(feature = "test-fixtures")] controller: Option<crate::hooks::RedbTestController>,
 ) {
     let generation = state.header.generation;
     let mut next_position = state.next_position;
@@ -2127,6 +2144,11 @@ fn journal_worker(
                 })
         };
         let write_elapsed = write_started.elapsed();
+        #[cfg(feature = "test-fixtures")]
+        if let Some(controller) = &controller {
+            controller
+                .checkpoint_test_pause(crate::hooks::RedbCheckpointTestPoint::BeforeJournalSync);
+        }
         let sync_started = Instant::now();
         let write =
             positional_write.and_then(|()| file.sync_data().map_err(|_| JournalIoError::Io));

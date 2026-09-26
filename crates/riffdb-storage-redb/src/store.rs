@@ -5457,6 +5457,11 @@ impl RedbOperationalPorts {
         let composite_stage = crate::composite_view::RedbCompositeMutationStage::from_published(
             &composite_predecessor,
         );
+        #[cfg(feature = "test-fixtures")]
+        if let Some(controller) = &self.shared.test_controller {
+            controller
+                .checkpoint_test_pause(crate::hooks::RedbCheckpointTestPoint::BeforeCommandApply);
+        }
         Ok(RedbDurabilityEpoch {
             shared: Arc::clone(&self.shared),
             lease: Some(lease),
@@ -6925,9 +6930,14 @@ impl RedbDurabilityEpoch {
         // Registration is part of sealing: releasing the sole-writer lease
         // first would let a later service-audit frame enter the publication
         // queue ahead of this already-submitted command frame.
-        let pipeline_drain_required = self.shared.async_checkpoint_in_flight()?;
+        let pipeline_drain_required = self.shared.async_checkpoint_installation_pending()?;
         self.completed = true;
         drop(self.lease.take());
+        #[cfg(feature = "test-fixtures")]
+        if let Some(controller) = &self.shared.test_controller {
+            controller
+                .checkpoint_test_pause(crate::hooks::RedbCheckpointTestPoint::AfterCommandSeal);
+        }
         Ok(RedbSubmittedCommandFence {
             shared: Arc::clone(&self.shared),
             receipt,
@@ -7225,6 +7235,11 @@ impl SharedRedb {
             self.fence_writes();
             return Err(storage_error(StorageErrorKind::CommitStatusUnknown));
         }
+        #[cfg(feature = "test-fixtures")]
+        if let Some(controller) = &self.test_controller {
+            controller
+                .checkpoint_test_pause(crate::hooks::RedbCheckpointTestPoint::BeforePublication);
+        }
         self.after_test_commit(RedbTestOperation::CommandEpochTail)?;
         let published_snapshot = Arc::clone(&publication.composite_successor);
         let mut transient = self
@@ -7446,6 +7461,22 @@ impl SharedRedb {
             .map_err(|_| storage_error(StorageErrorKind::InvariantViolation))
     }
 
+    /// Materialization does not change the published view or reclaim its
+    /// extent. Keep bounded pipelining until the epoch-opening poll observes
+    /// completion; installation then needs the existing ordered drain. The
+    /// poll refuses failed completions before opening another epoch. Completion
+    /// racing this seal is observed at the next epoch open.
+    fn async_checkpoint_installation_pending(&self) -> Result<bool, StorageError> {
+        self.journal_checkpoint
+            .lock()
+            .map(|checkpoint| {
+                checkpoint
+                    .as_ref()
+                    .is_some_and(|state| state.result.is_some())
+            })
+            .map_err(|_| storage_error(StorageErrorKind::InvariantViolation))
+    }
+
     /// Reserves exact capacity for one already-staged frame.
     ///
     /// A checkpoint can be slower than the foreground writer. Reaching its
@@ -7470,9 +7501,11 @@ impl SharedRedb {
             return Err(storage_error(StorageErrorKind::LimitExceeded));
         }
         let mut rebased = false;
-        for _ in 0..4 {
+        // At most: publish the pending prefix, finish the covered checkpoint,
+        // start and finish a checkpoint of its newer suffix, admit the frame.
+        for _ in 0..5 {
             let (checkpoint_transitions, checkpoint_bytes) = self.async_checkpoint_charge()?;
-            let admits = {
+            let charge = {
                 let runtime = self.journal_runtime()?;
                 let runtime = runtime
                     .as_ref()
@@ -7486,10 +7519,18 @@ impl SharedRedb {
                     unpublished_transitions: runtime.unpublished_transitions,
                     unpublished_bytes: runtime.unpublished_bytes,
                 }
-                .admits(transitions, bytes, physical_bytes)
             };
-            if admits {
+            if charge.admits(transitions, bytes, physical_bytes) {
                 return Ok(rebased);
+            }
+            if charge.unpublished_transitions != 0 || charge.unpublished_bytes != 0 {
+                // This caller holds the sole mutation lease. Publish only the
+                // already-submitted FIFO prefix; the staged frame is not in it.
+                // Otherwise a ready checkpoint cannot install and capacity
+                // retries cannot make progress. The original completion owner
+                // retains its ticket and still releases results in order.
+                self.publish_pending_journal_prefix()?;
+                continue;
             }
             if self.async_checkpoint_in_flight()? {
                 self.poll_async_checkpoint_locked(true)?;
@@ -7561,6 +7602,13 @@ impl SharedRedb {
                     checkpoint.completion = None;
                     checkpoint.result = Some(result);
                 }
+            }
+            if let Some(Err(error)) = &checkpoint.result {
+                // Quiescence is required to install a successful checkpoint,
+                // not to notice failure. Pending publication must not hide an
+                // observed I/O failure from the next authoritative apply.
+                self.fence_writes();
+                return Err(error.clone());
             }
         }
         self.finish_async_checkpoint_if_quiescent()
@@ -7660,6 +7708,11 @@ impl SharedRedb {
                 self.fence_writes();
                 return Err(storage_error(StorageErrorKind::InvariantViolation));
             }
+            #[cfg(feature = "test-fixtures")]
+            if let Some(controller) = &self.test_controller {
+                controller
+                    .checkpoint_test_pause(crate::hooks::RedbCheckpointTestPoint::BeforeReclaim);
+            }
             media
                 .rename(&checkpoint_path, &spare_path)
                 .map_err(|_| storage_error(StorageErrorKind::Unavailable))?;
@@ -7679,6 +7732,10 @@ impl SharedRedb {
             ) {
                 self.fence_writes();
                 return Err(journal_io_error(error));
+            }
+            #[cfg(feature = "test-fixtures")]
+            if let Some(controller) = &self.test_controller {
+                controller.checkpoint_test_pause(crate::hooks::RedbCheckpointTestPoint::Reclaimed);
             }
             *checkpoint = None;
             crate::checkpoint_census::CHECKPOINTS.installed();
@@ -7997,9 +8054,9 @@ impl DeferredCommandFence for RedbSubmittedCommandFence {
 
 const fn command_fence_requires_pipeline_drain(
     journaled: bool,
-    checkpoint_in_flight: bool,
+    checkpoint_installation_pending: bool,
 ) -> bool {
-    !journaled || checkpoint_in_flight
+    !journaled || checkpoint_installation_pending
 }
 
 impl RedbSubmittedCommandFence {

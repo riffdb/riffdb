@@ -289,6 +289,8 @@ pub use format_upgrade::{
     durable_format_upgrade_receipt_path,
 };
 #[doc(hidden)]
+#[cfg(feature = "test-fixtures")]
+pub use hooks::{RedbCheckpointTestPoint, RedbCheckpointTestSchedule};
 pub use hooks::{RedbTestController, RedbTestEvent, RedbTestOperation, RedbTestPhase};
 #[cfg(feature = "test-fixtures")]
 #[doc(hidden)]

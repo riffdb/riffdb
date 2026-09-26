@@ -14,6 +14,11 @@ use std::sync::{Arc, Mutex};
 
 use riffdb_storage_api::{StorageError, StorageErrorKind};
 
+#[cfg(feature = "test-fixtures")]
+mod checkpoint_schedule;
+#[cfg(feature = "test-fixtures")]
+pub use checkpoint_schedule::{RedbCheckpointTestPoint, RedbCheckpointTestSchedule};
+
 /// Closed operation classes exposed only to recovery-test composition.
 #[doc(hidden)]
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -26,6 +31,9 @@ pub enum RedbTestOperation {
     DeferredCommandBatch,
     /// Immediate empty tail that makes every prior deferred subgroup durable.
     CommandEpochTail,
+    /// Real asynchronous checkpoint transaction; fixture-only failure boundary.
+    #[cfg(feature = "test-fixtures")]
+    JournalCheckpoint,
     StorageFormatMigrationBatch,
     ContractMigrationBatch,
     ContractMigrationCutover,
@@ -110,6 +118,8 @@ pub struct RedbTestController {
 }
 
 struct TestControllerInner {
+    #[cfg(feature = "test-fixtures")]
+    checkpoint_schedule: Option<Arc<checkpoint_schedule::CheckpointScheduleInner>>,
     /// Closed failpoint sequence for one operation. Each matching phase hit
     /// consumes the front step whose phase matches; unmatched phases are ignored.
     operation: Option<RedbTestOperation>,
@@ -176,6 +186,8 @@ impl RedbTestController {
     pub fn observe_index_migration() -> Self {
         Self {
             inner: Arc::new(TestControllerInner {
+                #[cfg(feature = "test-fixtures")]
+                checkpoint_schedule: None,
                 operation: None,
                 steps: Mutex::new(VecDeque::new()),
                 events: Mutex::new(Vec::new()),
@@ -253,6 +265,8 @@ impl RedbTestController {
         });
         let controller = Self {
             inner: Arc::new(TestControllerInner {
+                #[cfg(feature = "test-fixtures")]
+                checkpoint_schedule: None,
                 operation: None,
                 steps: Mutex::new(VecDeque::new()),
                 events: Mutex::new(Vec::new()),
@@ -346,6 +360,8 @@ impl RedbTestController {
     ) -> Self {
         Self {
             inner: Arc::new(TestControllerInner {
+                #[cfg(feature = "test-fixtures")]
+                checkpoint_schedule: None,
                 operation: Some(operation),
                 steps: Mutex::new(VecDeque::from([(
                     RedbTestPhase::BeforeEngineCommit,
@@ -379,6 +395,8 @@ impl RedbTestController {
     ) -> Self {
         Self {
             inner: Arc::new(TestControllerInner {
+                #[cfg(feature = "test-fixtures")]
+                checkpoint_schedule: None,
                 operation: Some(operation),
                 steps: Mutex::new(VecDeque::from([(
                     RedbTestPhase::BeforeEngineCommit,
@@ -464,6 +482,8 @@ impl RedbTestController {
     fn sequence(operation: RedbTestOperation, steps: &[(RedbTestPhase, FailpointAction)]) -> Self {
         Self {
             inner: Arc::new(TestControllerInner {
+                #[cfg(feature = "test-fixtures")]
+                checkpoint_schedule: None,
                 operation: Some(operation),
                 steps: Mutex::new(steps.iter().copied().collect()),
                 events: Mutex::new(Vec::new()),

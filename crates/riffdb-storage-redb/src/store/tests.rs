@@ -585,7 +585,7 @@ fn async_checkpoint_starts_half_full_and_reserves_one_maximum_physical_frame() {
 }
 
 #[test]
-fn command_fence_drains_for_direct_commits_and_in_flight_checkpoints() {
+fn command_fence_drains_for_direct_commits_and_pending_checkpoint_installation() {
     assert!(!command_fence_requires_pipeline_drain(true, false));
     assert!(command_fence_requires_pipeline_drain(false, false));
     assert!(command_fence_requires_pipeline_drain(true, true));

@@ -120,6 +120,8 @@ impl SharedRedb {
                     self.journal_media.as_ref(),
                     &path,
                     &header,
+                    #[cfg(feature = "test-fixtures")]
+                    self.test_controller.clone(),
                 )
                 .map_err(journal_io_error)?,
             );
@@ -177,7 +179,16 @@ impl SharedRedb {
         if runtime.unpublished_transitions != 0 || runtime.unpublished_bytes != 0 {
             return Ok(());
         }
-        if !runtime.reanchor_required
+        #[cfg(feature = "test-fixtures")]
+        let requested = runtime.suffix_transitions != 0
+            && self
+                .test_controller
+                .as_ref()
+                .is_some_and(RedbTestController::take_checkpoint_test_request);
+        #[cfg(not(feature = "test-fixtures"))]
+        let requested = false;
+        if !requested
+            && !runtime.reanchor_required
             && runtime.suffix_transitions < JOURNAL_CHECKPOINT_START_TRANSITIONS
             && runtime.suffix_bytes < JOURNAL_CHECKPOINT_START_BYTES
             && runtime.suffix_physical_bytes < start_physical_bytes
@@ -277,8 +288,14 @@ impl SharedRedb {
         crate::journal::sync_parent_directory_with_media(media, &active_path)
             .map_err(journal_io_error)?;
         let lane = Arc::new(
-            crate::journal::JournalLane::open_with_media(media, &active_path, &next_header)
-                .map_err(journal_io_error)?,
+            crate::journal::JournalLane::open_with_media(
+                media,
+                &active_path,
+                &next_header,
+                #[cfg(feature = "test-fixtures")]
+                self.test_controller.clone(),
+            )
+            .map_err(journal_io_error)?,
         );
         *self
             .journal_runtime
@@ -332,7 +349,15 @@ impl SharedRedb {
                 } else {
                     crate::checkpoint_census::CHECKPOINTS.failed();
                 }
+                #[cfg(feature = "test-fixtures")]
+                let controller = worker_shared.test_controller.clone();
                 let _ = sender.send(result);
+                drop(worker_shared);
+                #[cfg(feature = "test-fixtures")]
+                if let Some(controller) = controller {
+                    controller
+                        .checkpoint_test_pause(crate::hooks::RedbCheckpointTestPoint::Materialized);
+                }
             })
             .is_err()
         {

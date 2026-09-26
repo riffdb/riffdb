@@ -28,7 +28,7 @@ tokio = { version = "=1.52.0", default-features = false, features = ["rt", "sync
 [dev-dependencies]
 riffdb-auth = { version = "0.1.0", path = "../riffdb-auth", default-features = false }
 riffdb-contract-compiler = { version = "0.1.0", path = "../riffdb-contract-compiler", default-features = false }
-riffdb-storage-redb = { version = "0.1.0", path = "../riffdb-storage-redb", default-features = false }
+riffdb-storage-redb = { version = "0.1.0", path = "../riffdb-storage-redb", default-features = false, features = ["test-fixtures"] }
 riffdb-testkit = { version = "0.1.0", path = "../riffdb-testkit", default-features = false }
 
 [[test]]

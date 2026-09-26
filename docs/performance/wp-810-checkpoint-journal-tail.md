@@ -34,7 +34,7 @@ predicate false, the maximum first wait is only 4.036 ms.
 | Checkpoint transitions, minimum–maximum | 3,008–3,327 |
 | Byte-triggered / transition-triggered selections | 98 / 0 |
 
-The current source makes the connection explicit:
+The measured source makes the connection explicit:
 `RedbStore` consults `async_checkpoint_in_flight` when setting the submitted
 group's drain requirement; the commit writer's `POST_DRAIN_ALL` then waits for
 completion. The real journal media writes bytes and performs durability sync;
@@ -93,6 +93,90 @@ that investigation; it does not start a campaign or reserve a host. A future
 implementation must re-baseline its actual source/toolchain
 under ADR-0239 and preserve ADR-0249's named-mechanism disclosure discipline.
 No P99 threshold is invented here.
+
+## Candidate repair, 2026-09-25
+
+The local candidate keeps the ordered installation barrier while allowing the
+existing bounded pipeline to run during checkpoint materialization. It changes
+no checkpoint threshold, journal or capsule encoding, durability worker,
+publication order, or acknowledgement requirement. Performance benefit is
+**not yet measured**; WP-810 remains open and WP-749 remains blocked.
+
+Implementation decisions within ADR-0101/0104/0132:
+
+- A pending materializer alone no longer sets `requires_pipeline_drain`.
+  The epoch-opening poll requests that drain after it observes successful
+  materialization with unpublished predecessors. Completion racing a seal is
+  observed at the next epoch opening. If the prefix is already quiescent, the
+  existing poll can install directly before new apply.
+- Installation still requires zero unpublished transitions and bytes, exact
+  covered-root/frontier/hash checks, and publication of the rebased view before
+  the covered extent is recycled. A completed checkpoint is not permission to
+  acknowledge an unpublished command.
+- At capacity pressure, the sole writer publishes the already-submitted FIFO
+  prefix before retrying capacity or checkpoint installation. The staged next
+  frame is excluded. Original completion tickets retain their results. The
+  existing transition, encoded-byte, physical-extent and overlay bounds remain
+  enforced; no larger queue or reserve is introduced.
+- An observed checkpoint failure fences new apply immediately, even if earlier
+  durable groups still await publication. Quiescence gates successful
+  installation, not error detection.
+
+The deterministic real-storage test failed on the old predicate and passes on
+the candidate. Separate controls pause checkpoint materialization, the actual
+journal sync, and ordered publication. The production coordinator test proves
+that the next command can reach apply and seal while its predecessor's journal
+sync is held, with both responses and application notifications withheld until
+ordered publication. The fixture has no sleeps or replacement I/O results.
+
+`tests/storage_recovery/checkpoint_pipeline.rs` also exercises the actual
+256-transition unpublished ceiling and the 257th transition's backpressure,
+original completion tickets after a pressure drain, and immediate reads of
+entities, outcomes, commits, provenance and events. A checkpoint-failure arm
+proves refusal of new apply with an outstanding predecessor. Six abrupt
+process-exit cases cover before journal sync, durable-but-unpublished state,
+checkpoint staging, checkpoint durability, installed-before-reclaim, and
+reclaimed extent. Every case reopens twice and checks atomic, idempotent
+authority without extra commits, events or outcomes. Before sync, an
+unacknowledged complete frame may survive or disappear; both outcomes must be
+atomic and stable on the second restart.
+
+Local qualification exercised 1,315 storage/commit tests: 1,313 passed in the
+broad run and two existing promotion/bootstrap crash tests reached its
+120-second watchdog. Both passed in a serial rerun, together with all six new
+schedule/recovery tests, without changing a deadline or assertion. One existing
+test remains skipped by the normal runner. A fixture-only Clippy allowance was
+corrected before the passing lint recheck. The initial failures remain in the
+private qualification bank; they are not represented as a clean first run.
+
+The bounded measurement plan is three counterbalanced control/candidate pairs,
+c32 write-only, 15 seconds warmup and 90 seconds measurement per cell. Both
+arms use the same source baseline, Rust 1.98.1, release flags and common
+observation patch, with one client binary and distinct server digests. Retain
+all attempts, exact raw P50/P95/P99 samples, throughput, checkpoint counts and
+corrected waits. Reconcile disjoint writer stages against an independently
+retained iteration sum and continuous span, with signed remainders; busy plus
+idle is not wall time. A local debug smoke check verifies evidence plumbing
+only and supplies no performance conclusion.
+
+Next: finish scoped checks, run that comparison on an exclusively reserved
+admitted host, complete merge qualification and obtain implementation/fixture
+review. This candidate addresses the writer's dependency on a pending
+checkpoint; it does not claim to eliminate the underlying device write stalls
+or quantify their client-latency effect without measurement.
+
+### Candidate PR note
+
+Package WP-810; tier guarantee. Behavior: retain bounded pipelining during
+checkpoint materialization and the ordered drain for installation; publish
+existing predecessors under capacity pressure and fence observed checkpoint
+errors immediately. Checks: deterministic real coordinator/storage schedules,
+six process-crash edges, scoped storage/commit tests and path-triggered
+acceptance; full merge checks and performance comparison remain pending.
+Compatibility: existing durable bytes, public interfaces, thresholds and
+authority guarantees remain unchanged. Updated handbook: this page. Hazards:
+the device's long writes remain possible; no acknowledgement improvement or
+WP-749 gate result is claimed before measurement and review.
 
 ## Registration PR note
 
