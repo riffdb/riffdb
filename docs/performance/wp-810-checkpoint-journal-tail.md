@@ -248,6 +248,50 @@ factor. See the [writer-census warnings](wp749-writer-census-defects.md).
 
 ### Checkpoint and next decision
 
+#### Retained trace narrows the next investigation
+
+Reanalysis on 2026-09-26 checks actual sync intervals against checkpoint
+registration, materialization completion and installation in the already
+qualified isolated pair. This is the historical source `be189cac4325`; it is
+**not new timing evidence for the pipeline candidate**. Input hashes match the
+original public bank. Shared physical flushes are counted once, and selection
+uses the measured command-sequence range.
+
+| Journal sync observation | Archive disabled | Archive enabled |
+| --- | ---: | ---: |
+| Measured physical flushes | 16,607 | 15,198 |
+| Over 10 ms, overlapping materialization | 158 / 158 | 173 / 173 |
+| Over 50 ms, overlapping materialization | 123 / 123 | 116 / 116 |
+| Over 10 ms, extending into post-materialization | 0 | 1 |
+| Maximum with no registered checkpoint overlap | 3.917 ms | 2.521 ms |
+
+All 158 disabled slow syncs finish before their checkpoint materializes. The
+159.922 ms maximum finishes 1.967 ms before that event. This localizes the
+association to the materialization interval rather than installation or
+reclamation. The separate **141.387 ms positional write inside a 142.265 ms
+receipt wait** remains the earlier pre-sync observation; it is not reclassified
+as a sync here.
+
+Source inspection at integration `a8b3737d9` identifies the next boundary to
+observe: `materialize_checkpoint_batch` begins one redb transaction, replays
+the retained frames, and calls `commit_durable` with `Immediate` durability
+and two-phase commit disabled. Concurrently, `journal_worker` calls the real
+file's `sync_data`; it dequeues no successor while that syscall is pending.
+The trace's registration-to-materialized interval includes replay **and**
+durable commit. It cannot distinguish their effects or establish a
+kernel/device cause. The next useful diagnostic must separate checkpoint
+replay, page writes and engine sync, while retaining journal write/sync
+intervals and request/group joins on the same source. Aggregate queue means
+or another subtraction of P99 values cannot answer that question.
+
+The reproducible analyzer, seven boundary/refusal tests, every slow flush and
+its checkpoint boundaries are retained under
+`release/evidence/wp-810/checkpoint-overlap-20260926/`. No remote work or new
+host reservation was used for this analysis. It narrows the next investigation;
+it neither resolves the candidate's mixed P99 nor closes either package.
+
+#### Integration qualification
+
 The fixed comparison is complete and the host is released with its original
 firewall/timer state restored. All 124 retained private evidence files were
 hash-verified locally before removing the remote task's source, build and data
@@ -258,9 +302,30 @@ Full CI on the frozen candidate stopped at two startup/restart failures already
 seen on its older main baseline. Newer main `408cbff3b` fixes both: its clean
 control passed all seven tests in that target. Local integration `fcc6e1183`
 includes that main and passes the six WP-810 schedule/recovery tests plus all
-seven startup/restart tests. Full CI has not yet been rerun on that integration,
-and it has no performance measurement. The timing verdict remains bound to the
-frozen candidate above.
+seven startup/restart tests. Integration `a8b3737d9` additionally merges
+committed main `0d9edbce0`, including accepted ADR-0260's bounded V2 dirty
+startup. Full CI on that integration passes workspace Clippy and 3,975 tests
+before stopping at
+`corpus::regression_corpus_replays_and_reproduces_its_territory`. Seed
+`0x51c2c067` records 29 torn decisions against a retained minimum of 30. The
+campaign completes with 14 recoveries and its oracle intact; the failure is
+the pinned coverage assertion. The exact test on clean main `0d9edbce0`
+produces the same report and fails at the same assertion. Both logs and source
+identities are retained; the temporary control worktree was removed. No
+assertion is relaxed, and the earlier WP-749 landing exception does not apply
+to this package. Full CI remains failed and its later commands have not run.
+The integrated source has no performance measurement; the timing verdict
+remains bound to the frozen candidate above.
+
+Scoped storage/commit qualification runs 1,316 tests: 1,314 pass concurrently;
+the same two promotion/bootstrap cases named in the earlier qualification hit
+the 120-second watchdog. Both pass in a serial rerun totaling 49.209 seconds,
+with unchanged deadlines and assertions. One existing test is skipped by the
+normal runner. The concurrent failure remains recorded; the serial result does
+not relabel that first invocation as a pass. The overlap analyzer's seven
+boundary/refusal tests also pass. These results do not waive the independently
+reproduced full-CI corpus failure. All eleven non-test acceptance steps pass,
+including scoped Clippy, generated artifacts, handbook and dependency checks.
 
 The remaining decision is a maintainer-reviewed disposition of the shared
 journal delay and this common-case improvement. **No merge or completion is
@@ -275,8 +340,9 @@ checkpoint materialization and the ordered drain for installation; publish
 existing predecessors under capacity pressure and fence observed checkpoint
 errors immediately. Checks: deterministic real coordinator/storage schedules,
 six process-crash edges, scoped storage/commit tests, path-triggered acceptance,
-six valid comparison cells and focused checks after current-main integration;
-full merge qualification and human review remain pending.
+six valid comparison cells, current-main integration qualification and the
+retained-trace overlap checks. Full merge qualification remains blocked by the
+reproduced main corpus failure; human review remains pending.
 Compatibility: existing durable bytes, public interfaces, thresholds and
 authority guarantees remain unchanged. Updated handbook: this page and the
 writer-census defect warning. Hazards:

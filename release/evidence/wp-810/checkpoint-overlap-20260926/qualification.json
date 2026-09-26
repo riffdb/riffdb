@@ -1,0 +1,66 @@
+{
+  "schema": "riffdb.wp810.integration-qualification/v1",
+  "candidate_revision": "a8b3737d904ee788f15456618f3afa3ee40b144d",
+  "main_control_revision": "0d9edbce0593ec1227f66fd9af2ea934ee09ecf9",
+  "full_ci": {
+    "command": "./scripts/ci-all",
+    "exit_code": 101,
+    "log_sha256": "909d0f3b7454bc7e9bda2716d6ef76fa279ce9b329953f46419a06c0febccf87",
+    "completed_tests_passed": 3975,
+    "failed": 1,
+    "ignored": 22,
+    "workspace_clippy_passed": true,
+    "remaining_ci_steps_not_run": true
+  },
+  "main_control": {
+    "command": "cargo test -p riffdb-sim --all-features --test seeded_campaign corpus::regression_corpus_replays_and_reproduces_its_territory -- --exact --nocapture",
+    "exit_code": 101,
+    "clean_checkout": true,
+    "log_sha256": "ba03aafd3cf6a5f05cfa1a87d861a8827cf82f4b1f4d546bce69ae93b020756a"
+  },
+  "shared_failure": {
+    "test": "corpus::regression_corpus_replays_and_reproduces_its_territory",
+    "seed": "0x51c2c067",
+    "expected_torn_decisions_at_least": 30,
+    "actual_torn_decisions": 29,
+    "crashes": 14,
+    "recoveries": 14,
+    "oracle_comparisons": 11,
+    "final_frontier": 18,
+    "same_report_on_both_revisions": true
+  },
+  "disposition": "Baseline reproduction, not a waiver. No corpus assertion changed; full CI remains failed. The temporary main-control worktree was removed after retaining evidence.",
+  "scoped_acceptance": {
+    "command": "./scripts/acceptance --wp WP-810",
+    "exit_code": 1,
+    "non_test_steps_passed": 11,
+    "test_step": {
+      "tests_run": 1316,
+      "passed": 1314,
+      "timed_out": 2,
+      "normal_runner_skipped": 1,
+      "seconds": 1223.64
+    },
+    "log_sha256": "d362523ed96268eec61314eb989f8f2cba709d96564e7edd20758a8f44f0e902"
+  },
+  "serial_timeout_rerun": {
+    "tests": [
+      "maintenance::bootstrap_materialize_tests::promotion_cutover::promotion_cutover_refuses_missing_audit_indexes_or_substituted_anchor",
+      "maintenance::bootstrap_materialize_tests::publication::bootstrap_publication_repeated_crashes_keep_a_recoverable_candidate_and_gate_partial_replacements"
+    ],
+    "profile": "ci",
+    "test_threads": 1,
+    "deadline_changed": false,
+    "assertions_changed": false,
+    "tests_run": 2,
+    "passed": 2,
+    "seconds": 49.209,
+    "exit_code": 0,
+    "log_sha256": "2a500bc35064201138df39d48479df631f1970c803447e7c19c05464be6994df"
+  },
+  "analysis_tests": {
+    "command": "python3 -m unittest discover -s release/evidence/wp-810/checkpoint-overlap-20260926 -v",
+    "tests_run": 7,
+    "passed": 7
+  }
+}
