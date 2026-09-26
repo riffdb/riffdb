@@ -2,8 +2,10 @@
 
 mod archive_private;
 mod archive_private_graph;
+mod command_history;
 mod promotion;
 pub(crate) use archive_private::validate_private_archive;
+use command_history::{CommandLookup, MapCommandLookup};
 pub(crate) use promotion::{validate_committed_promotion, validate_reconciled_promotion};
 
 mod archive_follower;
@@ -846,16 +848,11 @@ pub struct RedbStructuralEvidenceSession {
     validation_read: Option<ReadTransaction>,
     historical_tables: Option<HistoricalMaterializationTables>,
     structural_cursors: Option<StructuralCursors>,
-    /// Exact command-audit members derived once from validated segments. This
-    /// avoids decoding an entire segment again for each audit locator.
-    command_audits:
-        std::collections::BTreeMap<riffdb_types::AdministrationSequence, CachedCommandAudit>,
+    /// The bounded command history of the complete walk: a compact derived
+    /// audit index plus on-demand command resolution (never the decoded
+    /// whole history, which exceeded the evidence ceiling at scale).
+    command_history: command_history::CommandHistory,
     command_audit_bytes: usize,
-    command_capsules:
-        std::collections::BTreeMap<CommitSequence, riffdb_storage_api::StoredCommandCapsuleV1>,
-    /// Commands whose complete authority graph was decoded from one physical
-    /// segment/capsule row during the cache's exact forward `COMMITS` pass.
-    embedded_command_authority: BTreeSet<CommitSequence>,
     command_cache_built: bool,
     /// COMMITS rows decoded into the startup command cache (observation only).
     command_history_rows_decoded: u64,
@@ -1076,10 +1073,8 @@ impl RedbStore {
                 validation_read: Some(transaction),
                 historical_tables: None,
                 structural_cursors: None,
-                command_audits: BTreeMap::new(),
+                command_history: command_history::CommandHistory::empty(),
                 command_audit_bytes: 0,
-                command_capsules: BTreeMap::new(),
-                embedded_command_authority: BTreeSet::new(),
                 command_cache_built: false,
                 command_history_rows_decoded: 0,
                 recovery_owned_peak_bytes: 0,
@@ -1225,10 +1220,8 @@ impl RedbStore {
                 validation_read: Some(transaction),
                 historical_tables: None,
                 structural_cursors: None,
-                command_audits: BTreeMap::new(),
+                command_history: command_history::CommandHistory::empty(),
                 command_audit_bytes: 0,
-                command_capsules: BTreeMap::new(),
-                embedded_command_authority: BTreeSet::new(),
                 command_cache_built: false,
                 command_history_rows_decoded: 0,
                 recovery_owned_peak_bytes: 0,
@@ -1398,10 +1391,8 @@ impl RedbStore {
             validation_read: Some(transaction),
             historical_tables: None,
             structural_cursors: None,
-            command_audits: std::collections::BTreeMap::new(),
+            command_history: command_history::CommandHistory::empty(),
             command_audit_bytes: 0,
-            command_capsules: std::collections::BTreeMap::new(),
-            embedded_command_authority: BTreeSet::new(),
             command_cache_built: false,
             command_history_rows_decoded: 0,
             recovery_owned_peak_bytes: 0,
@@ -2164,6 +2155,18 @@ impl RedbStructuralEvidenceSession {
         self.command_history_rows_decoded
     }
 
+    /// Test/evidence observability: the complete walk's command history as
+    /// (derived audit entries, retained bytes). The history holds only this
+    /// fixed-size index, never decoded commands. Observation only.
+    #[doc(hidden)]
+    #[must_use]
+    pub fn command_history_retained(&self) -> (usize, usize) {
+        (
+            self.command_history.audit_entries(),
+            self.command_history.retained_bytes(),
+        )
+    }
+
     /// Test/evidence observability: the peak bytes this session's
     /// recovery-owned structures held together (the historical evidence
     /// plan's locator index and the startup command cache). The bounded dirty
@@ -2304,8 +2307,10 @@ fn run_checkpoint_sample_windows(
                     command_capsules.keys().copied().collect::<BTreeSet<_>>();
                 let (finding, _) = inspect_commit_row(
                     transaction,
-                    &command_capsules,
-                    &embedded_command_authority,
+                    &MapCommandLookup {
+                        capsules: &command_capsules,
+                        embedded: &embedded_command_authority,
+                    },
                     binding_bundles,
                     seq,
                     key.value(),
@@ -2333,7 +2338,10 @@ fn run_checkpoint_sample_windows(
                 inspected = inspected.saturating_add(1);
                 if let Some(finding) = inspect_event_row(
                     transaction,
-                    &sampled_command_capsules,
+                    &MapCommandLookup {
+                        capsules: &sampled_command_capsules,
+                        embedded: &BTreeSet::new(),
+                    },
                     key.value(),
                     value.value(),
                 )? {
@@ -2457,7 +2465,7 @@ impl RedbStructuralEvidenceSession {
                 self.database_id,
                 HeaderProof::Complete {
                     checkpoint: self.checkpoint.as_ref(),
-                    command_audits: &self.command_audits,
+                    command_audits: &self.command_history,
                     publication_audits: self.publication_audits.as_ref().ok_or_else(invariant)?,
                 },
             );
@@ -2572,8 +2580,7 @@ impl RedbStructuralEvidenceSession {
             let transaction = self.validation_read.as_ref().ok_or_else(invariant)?;
             let (finding, last) = inspect_commit_row(
                 transaction,
-                &self.command_capsules,
-                &self.embedded_command_authority,
+                &self.command_history,
                 &self.binding_bundles,
                 expected,
                 &key,
@@ -2587,19 +2594,19 @@ impl RedbStructuralEvidenceSession {
         }
         if phase == 11 {
             let transaction = self.validation_read.as_ref().ok_or_else(invariant)?;
-            return inspect_provenance_row(transaction, &self.command_capsules, &key, &value);
+            return inspect_provenance_row(transaction, &self.command_history, &key, &value);
         }
         if phase == 12 {
             let transaction = self.validation_read.as_ref().ok_or_else(invariant)?;
-            return inspect_event_row(transaction, &self.command_capsules, &key, &value);
+            return inspect_event_row(transaction, &self.command_history, &key, &value);
         }
         if phase == 13 {
             let transaction = self.validation_read.as_ref().ok_or_else(invariant)?;
-            return inspect_event_route_row(transaction, &self.command_capsules, &key, &value);
+            return inspect_event_route_row(transaction, &self.command_history, &key, &value);
         }
         if phase == 14 {
             let transaction = self.validation_read.as_ref().ok_or_else(invariant)?;
-            return inspect_outbox_row(transaction, &self.command_capsules, &key, &value);
+            return inspect_outbox_row(transaction, &self.command_history, &key, &value);
         }
         if phase == 21 {
             self.ensure_command_cache()?;
@@ -2607,8 +2614,7 @@ impl RedbStructuralEvidenceSession {
         if phase == 21
             && let Some(finding) = inspect_cached_command_audit_row(
                 self.validation_read.as_ref().ok_or_else(invariant)?,
-                &self.command_audits,
-                &self.embedded_command_authority,
+                &self.command_history,
                 keys::decode_audit_key(&key)
                     .map(|sequence| sequence.get().saturating_sub(1))
                     .unwrap_or(index),
@@ -2651,127 +2657,23 @@ impl RedbStructuralEvidenceSession {
             return Ok(());
         }
         let transaction = self.validation_read.as_ref().ok_or_else(invariant)?;
-        let commits = transaction.open_table(COMMITS).map_err(table_error)?;
-        let events = transaction.open_table(EVENTS).map_err(table_error)?;
-        let mut capsules = std::collections::BTreeMap::new();
-        let mut audits = std::collections::BTreeMap::new();
-        let mut embedded_authority = BTreeSet::new();
-        let mut retained_bytes = 0usize;
-        let mut decoded_rows = 0_u64;
-        let checkpoint_sequence = self
+        let floor = self
             .checkpoint
             .as_ref()
-            .map(|checkpoint| checkpoint.checkpoint_commit_sequence)
-            .unwrap_or(0);
-        let mut rows = if checkpoint_sequence == 0 {
-            commits.iter().map_err(precommit_storage_error)?
-        } else {
-            let checkpoint_key = keys::encode_application_sequence_key(
-                CommitSequence::new(checkpoint_sequence).ok_or_else(invariant)?,
-            );
-            commits
-                .range::<&[u8]>((Excluded(checkpoint_key.as_slice()), Unbounded))
-                .map_err(precommit_storage_error)?
-        };
-        for entry in &mut rows {
-            let (key, value) = entry.map_err(precommit_storage_error)?;
-            decoded_rows = decoded_rows.saturating_add(1);
-            retained_bytes = retained_bytes
-                .checked_add(value.value().len())
-                .ok_or_else(limit_exceeded)?;
-            if retained_bytes > MAX_STARTUP_EVIDENCE_INDEX_BYTES {
-                return Err(limit_exceeded());
-            }
-            let physical =
-                keys::decode_application_sequence_key(key.value()).map_err(|_| corrupt())?;
-            let (commands, embedded) = match crate::command_prefix::decode_segment(value.value()) {
-                Ok(segment) => {
-                    let segment = segment.into_parts().0;
-                    if segment.first_commit_sequence() != physical {
-                        return Err(corrupt());
-                    }
-                    (
-                        segment
-                            .commands()
-                            .iter()
-                            .map(|command| command.base().clone())
-                            .collect::<Vec<_>>(),
-                        true,
-                    )
-                }
-                Err(error)
-                    if error.kind()
-                        == riffdb_storage_api::DurableCodecErrorKind::UnexpectedRecordType =>
-                {
-                    match command_member_at(&commits, &events, physical) {
-                        Ok(Some(command)) => {
-                            let embedded = matches!(
-                                &command,
-                                crate::command_authority::CommandAuthorityMember::CapsuleV2(_)
-                            );
-                            (vec![command.into_base()], embedded)
-                        }
-                        Ok(None) => (Vec::new(), false),
-                        Err(error) if error.kind() == StorageErrorKind::CorruptData => {
-                            (Vec::new(), false)
-                        }
-                        Err(error) => return Err(error),
-                    }
-                }
-                // The physical commit phase owns malformed-row reporting. Do
-                // not let this auxiliary cache turn that expected finding into
-                // a storage-level abort.
-                Err(_) => (Vec::new(), false),
-            };
-            for command in commands {
-                let sequence = command.commit_sequence();
-                if embedded && !embedded_authority.insert(sequence) {
-                    return Err(corrupt());
-                }
-                let started = command.started_audit();
-                let terminal = command.terminal_audit();
-                for (member, record, peer_sequence) in [
-                    (
-                        riffdb_storage_api::StoredCommandAuditMemberV1::Started,
-                        started,
-                        terminal.administration_sequence(),
-                    ),
-                    (
-                        riffdb_storage_api::StoredCommandAuditMemberV1::Terminal,
-                        terminal,
-                        started.administration_sequence(),
-                    ),
-                ] {
-                    if audits
-                        .insert(
-                            record.administration_sequence(),
-                            CachedCommandAudit {
-                                commit_sequence: sequence,
-                                member,
-                                record: record.clone(),
-                                peer_sequence,
-                            },
-                        )
-                        .is_some()
-                    {
-                        return Err(corrupt());
-                    }
-                }
-                if capsules.insert(sequence, command).is_some() {
-                    return Err(corrupt());
-                }
-            }
-        }
-        self.command_audit_bytes = retained_bytes;
-        self.command_history_rows_decoded = decoded_rows;
+            .map_or(0, |checkpoint| checkpoint.checkpoint_commit_sequence);
+        let history = command_history::CommandHistory::build(
+            transaction,
+            floor,
+            MAX_STARTUP_EVIDENCE_INDEX_BYTES,
+        )?;
+        self.command_audit_bytes = history.retained_bytes();
+        self.command_history_rows_decoded = history.rows_decoded();
+        self.command_history = history;
         let plan_bytes = self
             .historical_plan
             .as_ref()
             .map_or(0, |plan| plan.retained_bytes);
         self.note_recovery_owned_bytes(plan_bytes);
-        self.command_audits = audits;
-        self.command_capsules = capsules;
-        self.embedded_command_authority = embedded_authority;
         self.command_cache_built = true;
         Ok(())
     }
@@ -2912,7 +2814,7 @@ impl RedbStructuralEvidenceSession {
         let transaction = self.validation_read.as_ref().ok_or_else(invariant)?;
         let finding = inspect_terminal_row(
             transaction,
-            &self.command_capsules,
+            &self.command_history,
             &self.inputs,
             self.database_id,
             key,
@@ -4063,10 +3965,7 @@ enum HeaderProof<'a> {
     /// last-activation reciprocity, over the session's cached evidence.
     Complete {
         checkpoint: Option<&'a crate::validated_prefix::ActiveCheckpoint>,
-        command_audits: &'a std::collections::BTreeMap<
-            riffdb_types::AdministrationSequence,
-            CachedCommandAudit,
-        >,
+        command_audits: &'a dyn command_history::DerivedAuditSource,
         publication_audits: &'a PublicationAuditCache,
     },
     /// The ADR-0182 bounded dirty path: every check is a point lookup, a
@@ -4127,7 +4026,7 @@ fn inspect_header(
             transaction,
             administration,
             *checkpoint,
-            command_audits,
+            *command_audits,
         )?,
         HeaderProof::BoundedDirty => {
             administration_allocator_matches_tail(transaction, administration)?
@@ -4422,10 +4321,7 @@ fn inspect_epoch_row(
 
 fn inspect_terminal_row(
     transaction: &ReadTransaction,
-    command_capsules: &std::collections::BTreeMap<
-        CommitSequence,
-        riffdb_storage_api::StoredCommandCapsuleV1,
-    >,
+    commands: &dyn CommandLookup,
     inputs: &StartupValidationInputs,
     database_id: DatabaseId,
     key: &[u8],
@@ -4451,15 +4347,19 @@ fn inspect_terminal_row(
             None,
         ),
         IdempotencyRecordV1::CommandLocator(locator) => {
-            let Some(capsule) = command_capsules.get(&locator.commit_sequence()) else {
+            let Some(capsule) = commands
+                .command(transaction, locator.commit_sequence())?
+                .map(|loaded| loaded.capsule)
+            else {
                 return Ok(Some(authoritative(StructuralFindingCode::MissingCrossLink)));
             };
-            command_capsule = Some(capsule);
-            (
+            let resolved = (
                 capsule.outcome().identity().clone(),
                 capsule.outcome().plan().clone(),
                 Some(capsule.outcome().clone()),
-            )
+            );
+            command_capsule = Some(capsule);
+            resolved
         }
     };
     if identity.storage_key().ok().as_ref() != Some(&physical)
@@ -4485,7 +4385,7 @@ fn inspect_terminal_row(
                 outcome == capsule.outcome()
                     && outcome_matches_commit(outcome, capsule.commit())
                     && provenance_matches(outcome, capsule.commit(), capsule.provenance())
-                    && command_capsule_graph_is_reciprocal(transaction, capsule)?
+                    && command_capsule_graph_is_reciprocal(transaction, &capsule)?
             }
             None => outcome_graph_is_reciprocal(transaction, outcome)?,
         };
@@ -4531,11 +4431,7 @@ fn inspect_pending_row(
 
 fn inspect_commit_row(
     transaction: &ReadTransaction,
-    command_capsules: &std::collections::BTreeMap<
-        CommitSequence,
-        riffdb_storage_api::StoredCommandCapsuleV1,
-    >,
-    embedded_command_authority: &BTreeSet<CommitSequence>,
+    commands: &dyn CommandLookup,
     binding_bundles: &BTreeSet<riffdb_storage_api::DurableKeySchemaBindingV1>,
     expected_first: CommitSequence,
     key: &[u8],
@@ -4578,10 +4474,10 @@ fn inspect_commit_row(
                 && binding.contract_version() == record.plan().contract_version()
                 && binding.bundle_hash() == record.plan().contract_bundle_hash()
         });
-        let reciprocal = match command_capsules.get(&record.commit_sequence()) {
-            Some(capsule) if capsule.commit() == record => {
-                embedded_command_authority.contains(&record.commit_sequence())
-                    || command_capsule_graph_is_reciprocal(transaction, capsule)?
+        let reciprocal = match commands.command(transaction, record.commit_sequence())? {
+            Some(loaded) if loaded.capsule.commit() == record => {
+                loaded.embedded
+                    || command_capsule_graph_is_reciprocal(transaction, &loaded.capsule)?
             }
             Some(_) => false,
             None => commit_graph_is_reciprocal(transaction, record)?,
@@ -4605,10 +4501,7 @@ fn inspect_commit_row(
 
 fn inspect_provenance_row(
     transaction: &ReadTransaction,
-    command_capsules: &std::collections::BTreeMap<
-        CommitSequence,
-        riffdb_storage_api::StoredCommandCapsuleV1,
-    >,
+    commands: &dyn CommandLookup,
     key: &[u8],
     value: &[u8],
 ) -> Result<Option<StructuralFinding>, StorageError> {
@@ -4623,11 +4516,15 @@ fn inspect_provenance_row(
                 Ok(locator) => locator,
                 Err(code) => return Ok(Some(authoritative(code))),
             };
-            let Some(capsule) = command_capsules.get(&locator.commit_sequence()) else {
+            let Some(capsule) = commands
+                .command(transaction, locator.commit_sequence())?
+                .map(|loaded| loaded.capsule)
+            else {
                 return Ok(Some(authoritative(StructuralFindingCode::MissingCrossLink)));
             };
+            let provenance = capsule.provenance().clone();
             command_capsule = Some(capsule);
-            capsule.provenance().clone()
+            provenance
         }
     };
     let reciprocal = match command_capsule {
@@ -4645,10 +4542,7 @@ fn inspect_provenance_row(
 
 fn inspect_event_row(
     transaction: &ReadTransaction,
-    command_capsules: &std::collections::BTreeMap<
-        CommitSequence,
-        riffdb_storage_api::StoredCommandCapsuleV1,
-    >,
+    commands: &dyn CommandLookup,
     key: &[u8],
     value: &[u8],
 ) -> Result<Option<StructuralFinding>, StorageError> {
@@ -4659,37 +4553,33 @@ fn inspect_event_row(
         Ok(value) => value,
         Err(code) => return Ok(Some(authoritative(code))),
     };
-    let route_matches = if let Some(commit) =
-        get_commit_cached(transaction, command_capsules, id.commit_sequence())?
-    {
-        let route_key = keys::encode_event_route_key(commit.partition_hash(), id);
-        matches!(
-            get_decoded(
-                transaction,
-                EVENT_ROUTES,
-                &route_key,
-                codec::decode_event_route_v1,
-            )?,
-            Ok(Some(route))
-                if route.event_id() == id
-                    && route.event_type_id() == event.event_type_id()
-                    && route.event_hash() == event.event_hash()
-        )
-    } else {
-        false
-    };
+    let route_matches =
+        if let Some(commit) = get_commit_cached(transaction, commands, id.commit_sequence())? {
+            let route_key = keys::encode_event_route_key(commit.partition_hash(), id);
+            matches!(
+                get_decoded(
+                    transaction,
+                    EVENT_ROUTES,
+                    &route_key,
+                    codec::decode_event_route_v1,
+                )?,
+                Ok(Some(route))
+                    if route.event_id() == id
+                        && route.event_type_id() == event.event_type_id()
+                        && route.event_hash() == event.event_hash()
+            )
+        } else {
+            false
+        };
     Ok((event.event_id() != id
-        || !event_graph_is_reciprocal(transaction, command_capsules, &event)?
+        || !event_graph_is_reciprocal(transaction, commands, &event)?
         || !route_matches)
         .then(|| authoritative(StructuralFindingCode::CrossLinkMismatch)))
 }
 
 fn inspect_event_route_row(
     transaction: &ReadTransaction,
-    command_capsules: &std::collections::BTreeMap<
-        CommitSequence,
-        riffdb_storage_api::StoredCommandCapsuleV1,
-    >,
+    commands: &dyn CommandLookup,
     key: &[u8],
     value: &[u8],
 ) -> Result<Option<StructuralFinding>, StorageError> {
@@ -4714,8 +4604,7 @@ fn inspect_event_route_row(
     let Some(event) = get_event(transaction, id)? else {
         return Ok(Some(authoritative(StructuralFindingCode::MissingCrossLink)));
     };
-    let Some(commit) = get_commit_cached(transaction, command_capsules, id.commit_sequence())?
-    else {
+    let Some(commit) = get_commit_cached(transaction, commands, id.commit_sequence())? else {
         return Ok(Some(authoritative(StructuralFindingCode::MissingCrossLink)));
     };
     let ordinal = usize::try_from(id.event_ordinal()).map_err(|_| limit_exceeded())?;
@@ -4729,10 +4618,7 @@ fn inspect_event_route_row(
 
 fn inspect_outbox_row(
     transaction: &ReadTransaction,
-    command_capsules: &std::collections::BTreeMap<
-        CommitSequence,
-        riffdb_storage_api::StoredCommandCapsuleV1,
-    >,
+    commands: &dyn CommandLookup,
     key: &[u8],
     value: &[u8],
 ) -> Result<Option<StructuralFinding>, StorageError> {
@@ -4745,7 +4631,7 @@ fn inspect_outbox_row(
         Err(code) => return Ok(Some(authoritative(code))),
     };
     Ok((intent.event_id() != id
-        || !event_graph_is_reciprocal(transaction, command_capsules, intent.event())?)
+        || !event_graph_is_reciprocal(transaction, commands, intent.event())?)
     .then(|| authoritative(StructuralFindingCode::CrossLinkMismatch)))
 }
 
@@ -5056,8 +4942,7 @@ fn inspect_capability_lookup_row(
 
 fn inspect_cached_command_audit_row(
     transaction: &ReadTransaction,
-    cached: &std::collections::BTreeMap<riffdb_types::AdministrationSequence, CachedCommandAudit>,
-    embedded_command_authority: &BTreeSet<CommitSequence>,
+    history: &command_history::CommandHistory,
     index: u64,
     key: &[u8],
     value: &[u8],
@@ -5071,7 +4956,7 @@ fn inspect_cached_command_audit_row(
             StructuralFindingCode::MalformedRecord,
         ))));
     };
-    let Some(command) = cached.get(&sequence) else {
+    let Some(command) = history.audit(transaction, sequence)? else {
         return Ok(Some(Some(authoritative(
             StructuralFindingCode::MissingCrossLink,
         ))));
@@ -5102,12 +4987,15 @@ fn inspect_cached_command_audit_row(
             StructuralFindingCode::CrossLinkMismatch,
         ))));
     }
-    let Some(peer) = cached.get(&command.peer_sequence) else {
+    let Some(peer) = history.audit(transaction, command.peer_sequence)? else {
         return Ok(Some(Some(authoritative(
             StructuralFindingCode::MissingCrossLink,
         ))));
     };
-    let request_index_exists = embedded_command_authority.contains(&command.commit_sequence)
+    let embedded = history
+        .command(transaction, command.commit_sequence)?
+        .is_some_and(|loaded| loaded.embedded);
+    let request_index_exists = embedded
         || service_audit_request_index_exists(transaction, command.record.request_id(), sequence)?;
     if peer.commit_sequence != command.commit_sequence
         || peer.record.request_id() != command.record.request_id()
@@ -6818,14 +6706,11 @@ fn get_commit(
 
 fn get_commit_cached(
     transaction: &ReadTransaction,
-    command_capsules: &std::collections::BTreeMap<
-        CommitSequence,
-        riffdb_storage_api::StoredCommandCapsuleV1,
-    >,
+    commands: &dyn CommandLookup,
     sequence: CommitSequence,
 ) -> Result<Option<riffdb_storage_api::StoredCommitRecordV1>, StorageError> {
-    if let Some(capsule) = command_capsules.get(&sequence) {
-        return Ok(Some(capsule.commit().clone()));
+    if let Some(loaded) = commands.command(transaction, sequence)? {
+        return Ok(Some(loaded.capsule.commit().clone()));
     }
     get_commit(transaction, sequence)
 }
@@ -7748,17 +7633,11 @@ fn provenance_graph_is_reciprocal(
 
 fn event_graph_is_reciprocal(
     transaction: &ReadTransaction,
-    command_capsules: &std::collections::BTreeMap<
-        CommitSequence,
-        riffdb_storage_api::StoredCommandCapsuleV1,
-    >,
+    commands: &dyn CommandLookup,
     event: &riffdb_storage_api::StoredDurableEventV1,
 ) -> Result<bool, StorageError> {
-    let Some(commit) = get_commit_cached(
-        transaction,
-        command_capsules,
-        event.event_id().commit_sequence(),
-    )?
+    let Some(commit) =
+        get_commit_cached(transaction, commands, event.event_id().commit_sequence())?
     else {
         return Ok(false);
     };
@@ -8631,10 +8510,10 @@ fn administration_allocator_matches(
     transaction: &ReadTransaction,
     allocator: riffdb_storage_api::AdministrationSequenceAllocator,
     checkpoint: Option<&crate::validated_prefix::ActiveCheckpoint>,
-    derived: &std::collections::BTreeMap<riffdb_types::AdministrationSequence, CachedCommandAudit>,
+    derived: &dyn command_history::DerivedAuditSource,
 ) -> Result<bool, StorageError> {
     let table = transaction.open_table(AUDIT).map_err(table_error)?;
-    let mut derived_sequences = derived.keys().copied().peekable();
+    let mut derived_sequences = derived.derived_sequences().peekable();
     let mut expected = checkpoint.map_or_else(
         || Some(riffdb_types::AdministrationSequence::first()),
         |checkpoint| {
@@ -8723,10 +8602,10 @@ fn administration_allocator_matches(
             // sequences are not disjoint: two-phase admission makes the overlap
             // legitimate. Only a provably equal pair collapses — a disagreeing
             // pair falls through to the refusal below, exactly as a gap does.
-            let Some(derived_record) = derived.get(&physical).map(|cached| &cached.record) else {
+            let Some(derived_record) = derived.derived_record(transaction, physical)? else {
                 return Ok(false);
             };
-            if !physical_audit_row_repeats_derived(transaction, value.value(), derived_record)? {
+            if !physical_audit_row_repeats_derived(transaction, value.value(), &derived_record)? {
                 return Ok(false);
             }
             derived_sequences.next();

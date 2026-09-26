@@ -820,16 +820,33 @@ fn startup_fast_path_does_not_rebuild_whole_history_accelerators() {
 #[test]
 fn startup_full_validation_reuses_exact_embedded_command_authority() {
     let startup = production_source(crate_root().join("src/startup.rs"));
+    // The complete walk keeps only a compact audit index and resolves each
+    // command on demand; the decoded whole history is never retained.
+    let history = production_source(crate_root().join("src/startup/command_history.rs"));
+    assert!(history.contains("crate::command_prefix::decode_segment"));
+    assert!(history.contains("if last_claimed.is_some_and(|last| sequence <= last)"));
+    assert!(history.contains("return Err(corrupt())"));
+    assert!(history.contains("const RECENT_COMMANDS: usize"));
+    let retained = history
+        .split_once("pub(super) struct CommandHistory {")
+        .expect("history state")
+        .1
+        .split_once("\n}")
+        .expect("history state end")
+        .0;
+    assert!(
+        !retained.contains("BTreeMap") && !retained.contains("HashMap"),
+        "the history retains no whole-history map"
+    );
     let cache = startup
         .split_once("fn ensure_command_cache(")
         .expect("command cache")
         .1
-        .split_once("\n    fn ensure_entity_chains_built(")
+        .split_once("\n    fn ensure_publication_audit_cache(")
         .expect("command cache end")
         .0;
-    assert!(cache.contains("crate::command_prefix::decode_segment"));
-    assert!(cache.contains("embedded_authority.insert(sequence)"));
-    assert!(cache.contains("return Err(corrupt())"));
+    assert!(cache.contains("command_history::CommandHistory::build("));
+    assert!(cache.contains("MAX_STARTUP_EVIDENCE_INDEX_BYTES"));
 
     let commit = startup
         .split_once("fn inspect_commit_row(")
@@ -838,7 +855,7 @@ fn startup_full_validation_reuses_exact_embedded_command_authority() {
         .split_once("\nfn inspect_provenance_row(")
         .expect("commit inspector end")
         .0;
-    assert!(commit.contains("embedded_command_authority.contains"));
+    assert!(commit.contains("loaded.embedded"));
     assert!(commit.contains("command_capsule_graph_is_reciprocal"));
     assert!(!commit.contains("plan_bundle_exists"));
 
@@ -849,7 +866,8 @@ fn startup_full_validation_reuses_exact_embedded_command_authority() {
         .split_once("\nfn inspect_audit_row(")
         .expect("cached audit inspector end")
         .0;
-    assert!(audit.contains("embedded_command_authority.contains"));
+    assert!(audit.contains("loaded.embedded"));
+    assert!(audit.contains("history.audit(transaction, command.peer_sequence)"));
     assert!(!audit.contains("command_member_at"));
 }
 
@@ -957,7 +975,7 @@ fn checkpoint_prefix_skips_before_building_the_command_history_cache() {
         .0;
     assert!(allocator.contains("checkpoint.retained.next_administration_sequence"));
     assert!(allocator.contains("Excluded(lower.as_slice()), Unbounded"));
-    assert!(allocator.contains("derived.keys().copied().peekable()"));
+    assert!(allocator.contains("derived.derived_sequences().peekable()"));
     assert!(!startup.contains("fn command_audit_cache_from_segments("));
 
     let header_dispatch = dispatch
@@ -968,7 +986,7 @@ fn checkpoint_prefix_skips_before_building_the_command_history_cache() {
         .expect("header dispatch end")
         .0;
     assert!(header_dispatch.contains("self.ensure_command_cache()?"));
-    assert!(header_dispatch.contains("&self.command_audits"));
+    assert!(header_dispatch.contains("&self.command_history"));
 }
 
 #[test]
@@ -2531,6 +2549,8 @@ fn only_commit_durable_advances_a_root_an_operational_reader_can_select() {
         // Test-only corruption planting, likewise on a stopped database.
         ("fixtures.rs", "plant_malformed_population_row_fixture"),
         ("fixtures.rs", "replace_audit_row_with_stray_fence_fixture"),
+        // Test-only checkpoint strip, likewise on a stopped database.
+        ("fixtures.rs", "strip_validated_prefix_checkpoint_fixture"),
         // Journal recovery, which runs before operational readiness is claimed.
         ("journal.rs", "replay_frames"),
         // Sidecar create for rebuildable derived state (ADR-0240). It is a
