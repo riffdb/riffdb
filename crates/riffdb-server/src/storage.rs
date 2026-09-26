@@ -196,11 +196,6 @@ impl SharedRedbOperationalPorts {
     /// True only when bounded startup proved no in-flight `Delivering` outbox
     /// entry exists. False on the complete path, and false when the bounded
     /// probe could not decide, so ignorance never reads as proof.
-    pub(crate) fn has_undelivered_outbox_if_warm(&self) -> Result<Option<bool>, StorageError> {
-        self.cell
-            .with_mut(|ports| ports.has_undelivered_outbox_if_warm())
-    }
-
     pub(crate) fn outbox_delivering_proven_absent(&self) -> bool {
         self.cell
             .with_mut(|ports| Ok(ports.outbox_delivering_proven_absent()))

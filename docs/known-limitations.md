@@ -245,7 +245,13 @@ These limits are part of the POC release posture, not hidden roadmap promises.
   readiness or by `riffdb storage scrub`. The offline scrub takes the database
   offline for the whole pass, has no target, scope, resume, or repair option,
   and serializes with every other maintenance operation. There is no MCP scrub
-  tool.
+  tool. At the production benchmark population the complete pass took about
+  four minutes on the WP-760 benchmark host.
+- Restart after an abrupt stop pays a storage-engine repair proportional to
+  the database file size (about 53 seconds at the production benchmark
+  population on the WP-760 host), and the first write after any restart
+  rebuilds the in-memory command indexes once, holding writes for tens of
+  seconds at that scale.
 - Outbox delivery has only the explicitly configured POC connector behavior.
 - Projection state is rebuildable and can be degraded while authoritative
   commits remain available.
