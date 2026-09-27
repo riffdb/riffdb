@@ -1,0 +1,14 @@
+{
+  "at": "2026-09-27T04:35:41.301190+00:00",
+  "removed": [
+    {
+      "name": "db.redb",
+      "bytes": 134746112
+    },
+    {
+      "name": "verified-db.redb",
+      "bytes": 134746112
+    }
+  ],
+  "source_counts_and_results_retained": true
+}

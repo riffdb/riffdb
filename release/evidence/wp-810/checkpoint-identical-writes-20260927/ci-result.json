@@ -1,0 +1,14 @@
+{
+  "schema": "riffdb.wp810-identical-write-ci/v1",
+  "source_revision": "f6b4315b8e73614bf6038d153d9f7ae2ca1c4d59",
+  "checked_at": "2026-09-27T05:04:00.070887+00:00",
+  "command": "./scripts/ci-all",
+  "exit_code": 0,
+  "log_sha256": "11b2e01c4e35237874a4ef420bb89c2259e521ba86a2f90458cccc8ea524fadf",
+  "log_bytes": 998148,
+  "toolchain": "1.98.1",
+  "scope": "Full CI for the identical-write candidate; not a control or performance verdict.",
+  "code_and_tests_unchanged_since_source_freeze": true,
+  "additional_uncommitted_document": "docs/architecture/WP-810-CHECKPOINT-IMPLEMENTATION-REVIEW.md",
+  "pinned_python_tools_used": true
+}

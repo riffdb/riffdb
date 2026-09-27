@@ -1,0 +1,22 @@
+{
+  "schema": "riffdb.wp810-evidence-checks/v1",
+  "checked_at": "2026-09-27T05:35:21.216360+00:00",
+  "runtime_source_unchanged": "f6b4315b8e73614bf6038d153d9f7ae2ca1c4d59",
+  "acceptance_command": "./scripts/acceptance --wp WP-810 --base f6b4315b",
+  "acceptance_exit_code": 0,
+  "steps_passed": 5,
+  "steps_failed": 0,
+  "acceptance_log_sha256": "a5e36bfb4ad064cd8fd804c22682d23adefe9e375f6404795f1d03125f139288",
+  "prior_attempt": {
+    "exit_code": 1,
+    "log_sha256": "971eac5893d0ab07955f2e6451b181ab6902ae51d7e4ae93baca603f698d81f9",
+    "cause": "Two new links to evidence Markdown outside the handbook source became nonexistent HTML links (four rendered errors). Replaced with a handbook anchor and a repository-relative code path; complete acceptance rerun passes."
+  },
+  "evidence_helper_tests_passed": 10,
+  "public_result_regenerates_exactly": true,
+  "frozen_input_digests_match": true,
+  "privacy_scan_passed": true,
+  "scope": "Final documentation/evidence checks. Full runtime CI is bound separately in ci-result.json.",
+  "package_tier_warning": "Expected: WP-810 declares guarantee; the final documentation/evidence diff computes as surface. No tier is lowered.",
+  "patch_whitespace": "Single-space unified-diff context lines in the frozen observation and prototype patches are intentional artifact bytes."
+}

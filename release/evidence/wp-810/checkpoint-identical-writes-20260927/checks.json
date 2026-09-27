@@ -1,0 +1,33 @@
+{
+  "source_revision": "f6b4315b8e73614bf6038d153d9f7ae2ca1c4d59",
+  "completed_at": "2026-09-27T04:44:06.928787+00:00",
+  "storage_acceptance_exit_code": 0,
+  "coordinator_exit_code": 0,
+  "storage_tests_passed": 1046,
+  "coordinator_tests_passed": 294,
+  "targeted_tests_passed": 9,
+  "preexisting_storage_skip": "startup/tests.rs large synthetic history timing generation",
+  "full_ci": {
+    "schema": "riffdb.wp810-identical-write-ci/v1",
+    "source_revision": "f6b4315b8e73614bf6038d153d9f7ae2ca1c4d59",
+    "checked_at": "2026-09-27T05:04:00.070887+00:00",
+    "command": "./scripts/ci-all",
+    "exit_code": 0,
+    "log_sha256": "11b2e01c4e35237874a4ef420bb89c2259e521ba86a2f90458cccc8ea524fadf",
+    "log_bytes": 998148,
+    "toolchain": "1.98.1",
+    "scope": "Full CI for the identical-write candidate; not a control or performance verdict.",
+    "code_and_tests_unchanged_since_source_freeze": true,
+    "additional_uncommitted_document": "docs/architecture/WP-810-CHECKPOINT-IMPLEMENTATION-REVIEW.md",
+    "pinned_python_tools_used": true
+  },
+  "logs": {
+    "acceptance.log": "46f60c0762fa28b4dbeb87235b687c44d7735ab8d1107a844db47c72107bc254",
+    "coordinator.log": "6d52a1a82af3873b69ea6af6172ee163546fde6ccf40bf917643eb6775cf4521",
+    "green-tests.log": "776a58ecbc8f7d8b125a1e052c41ab9246e33850503491bb64dfe22ba37c6a4a",
+    "red-test.log": "b7ae68ea571110fc565013205a5056575950eef28854194d0bb626504dbf1362",
+    "handbook.log": "536464ff2fde8108e644ec425941ba2dd37ad636db0cd285dc6f296cdbcae025",
+    "harness-tests.log": "38eeff1237d74275801617a271eced659e08b1cad8069897d18e659ae40641d8"
+  },
+  "scope": "Final correctness summary; the prospective qualification receipt remains unchanged."
+}

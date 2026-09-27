@@ -1,0 +1,14 @@
+{
+  "schema": "riffdb.wp810-remote-cleanup/v1",
+  "completed_at": "2026-09-27T05:25:41.363082+00:00",
+  "task_processes_absent": true,
+  "supervisor_exit_code": 0,
+  "isolation_restored": true,
+  "source_clean_after_reversing_retained_observer": true,
+  "source_bundle_and_all_three_binary_hashes_match_retained_copies": true,
+  "verified_archive_sha256": "00b7cca7de577a76d2f36d7efcb2c83ca1dc350b39986ec0e2e9db409576a717",
+  "removed_task_files": 8966,
+  "removed_apparent_bytes": 2912680163,
+  "owned_remote_root_and_archive_removed": true,
+  "standing_exclusive_grant": "unchanged; host idle"
+}

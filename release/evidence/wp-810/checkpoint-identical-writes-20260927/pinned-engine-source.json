@@ -1,0 +1,11 @@
+{
+  "version": "4.2.0",
+  "package_checksum": "de6c3b63e007e90ce536ec2ae4690826136a20ec8dbbbb400daef1bb999d2e36",
+  "checked_files": {
+    "src/tree_store/btree.rs": "1635d8eac6e4d5f02edc77954bf4d46f6ab0993a723ded3d333e1590b3c38c56",
+    "src/tree_store/page_store/cached_file.rs": "3670f99df6e83d70327d4ac6680e0eedde14e0dc3602c17d0bf706156907aeb5",
+    "src/transactions.rs": "18fc74991b203b8426275d095c21ba60fc9a10eb63ffbbb84ad3908d6e7f474e",
+    "src/db.rs": "ae0e73b1fd57f9c40ff00568dfc3869f6037d6863233868b1b3978744bc26dbc"
+  },
+  "all_match": true
+}

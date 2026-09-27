@@ -1,0 +1,30 @@
+{
+  "schema": "riffdb.wp810-private-retention/v1",
+  "archive_sha256": "00b7cca7de577a76d2f36d7efcb2c83ca1dc350b39986ec0e2e9db409576a717",
+  "archive_bytes": 6377522,
+  "verified_files": 125,
+  "verified_bytes": 16203365,
+  "manifest_sha256": "279dbbf190f799c99da8a136ebaa520b45bb638dc3fa65e3ea1fe1487e1b6da1",
+  "all_files_verified": true,
+  "excluded_reproducible_artifacts": [
+    "build-target",
+    "source",
+    "perf-db",
+    "__pycache__"
+  ],
+  "source_bundle_retained_separately": true,
+  "exact_binaries_retained_separately": true,
+  "retained_binaries_sha256": {
+    "riffdbd-control": "10a7d6fff4132d6160d0b9b10312013b22437ecef549f65ddd29e257c2199ec9",
+    "riffdbd-candidate": "e5f17fc067e73395adfe2f89993046dbc12daeeb571ed3e1f945aaaa231e4397",
+    "runner": "3e9248959b68ce4640a2fb67188521edb9ab497b20a3b2b77073dde525c59b1b"
+  },
+  "retained_source_bundle_sha256": "1ac3f79d622c1199dc724ae125745e97383b2dd1fc7302e3fef9325fb3c200c5",
+  "raw_reproduction": {
+    "all_six_cell_analyses_byte_identical": true,
+    "comparison_byte_identical": true,
+    "comparison_sha256": "d7706d9a1eefd1a2e084843de72db36072b1c8837af7b1b6badc846b4bfdede7",
+    "analyze_sha256": "2108da960f8614248c3a79232fb909e91be8157d9c21ff712143b4585aba707b",
+    "validate_sha256": "d193992fb982ddb4afe7c0928e821dd67c397154213e188ff2638117b299140a"
+  }
+}

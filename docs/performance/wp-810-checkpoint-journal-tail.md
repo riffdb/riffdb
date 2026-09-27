@@ -13,6 +13,16 @@ term**, per maintainer direction on 2026-09-21. WP-810 owns its repair;
 WP-749 subsequently assesses its separate archive-presence gate by the defined
 direct off/on measurement. WP-810 does not depend on WP-749.
 
+**Latest checkpoint, 2026-09-27:** the byte-identical-write candidate passes
+full CI and all six fixed comparison cells. Median paired throughput is
++0.06%, P95 +1.29%, P99 −9.30%; the P99 improvement is substantial in two
+pairs and nearly flat in one. Journal sync remains long, including a 210 ms
+candidate sync. This is a limited measured benefit, not proof that the shared
+term is sufficiently reduced for WP-749. The
+[implementation review](../architecture/WP-810-CHECKPOINT-IMPLEMENTATION-REVIEW.md)
+now has complete evidence for a maintainer disposition. No merge or completion
+is recorded, and no additional experiment follows automatically.
+
 ## Established finding
 
 The valid archive-disabled cell from the
@@ -769,7 +779,7 @@ presence must still be assessed separately after that prerequisite is met.
 
 #### Byte-identical checkpoint finalization writes
 
-The next candidate tests a different mechanism, without more early syncs.
+The later candidate tests a different mechanism, without more early syncs.
 In pinned redb 4.2.0, `finalize_dirty_checksums_helper` borrows every changed
 leaf through `get_page_mut`, although its leaf arm only reads the page to
 calculate its checksum. Pages evicted from the 4 MiB cache during replay can
@@ -802,10 +812,54 @@ public interface or operator setting changes.
 The pass-through implementation first fails the new redundant-write test.
 The candidate passes nine targeted tests, including competing backend
 mutations, a changed trailing byte, real-engine final-sync failure, and abrupt
-exits before/after that sync with two reopens. All 294 coordinator tests pass.
-Storage acceptance and the fixed same-source comparison remain pending.
-Extra reads could erase the byte benefit; no latency improvement or package
-completion is claimed.
+exits before/after that sync with two reopens. All 1,046 storage tests, 294
+coordinator tests, six scoped acceptance steps and full CI pass. The actual
+server storage opener installs the wrapper; the asynchronous checkpoint worker
+enters its comparison scope immediately around the existing durable commit.
+Both exact remote-built servers pass local full-workload qualification before
+remote measurement. That functional qualification overlaps CI and supplies
+no performance evidence.
+
+Three fixed counterbalanced pairs compare control `df7ad5b2` with candidate
+`f6b4315b`, both including main `aa77f9622`, using Rust 1.98.1, the same runner
+and common light observer. All six complete c32 write-only cells pass host and
+correctness checks, with no retries or dropped samples. Full identities,
+per-cell figures, raw-tail witnesses and limits are in
+`release/evidence/wp-810/checkpoint-identical-writes-20260927/README.md`.
+
+| Paired change | Pair 1 | Pair 2 | Pair 3 | Median |
+| --- | ---: | ---: | ---: | ---: |
+| Throughput | +0.06% | −0.91% | +1.01% | +0.06% |
+| P50 | +0.48% | +1.23% | +0.02% | +0.48% |
+| P95 | −5.21% | +3.10% | +1.29% | +1.29% |
+| P99 | −10.61% | −0.40% | −9.30% | −9.30% |
+| Mean journal sync per flush | −5.95% | +1.94% | −2.78% | −2.78% |
+
+Throughput is within ADR-0239's recorded 2–4% host variance. That range is
+**not** a calibrated P95/P99 noise band. P95 is mixed; P99 improves substantially
+in two pairs and is nearly flat in one. Its repeatability is not qualified.
+Candidate peak syncs are 154.0, 210.0 and 169.1 ms, versus 167.9, 152.9 and
+165.0 ms in control. The candidate provides a modest possible benefit while
+the shared durability delay persists. The mechanism remains journal file
+writeback/device flush concurrent with checkpoint commit, established by the
+separate native diagnostic. This comparison cannot causally join each request
+to native I/O or measure production bytes omitted; it does not assign the
+whole P99 change to redundant-write removal.
+
+All cells have 105–107 checkpoint starts, all byte-triggered and with no
+failures. Approximately 105-second writer spans reconcile with signed
+span-minus-iteration gaps of 16.16–18.33 ms, level-0 residuals of 8.47–9.95 ms,
+and busy-plus-idle undercounts of 246.18–282.08 ms. Counters include warmup;
+client percentiles do not. Overlapping journal and publication timers are
+never summed into wall time.
+
+All 125 remote evidence files are verified locally; recomputation from raw
+samples produces byte-identical analyses and comparison. Exact binaries and
+source are retained privately. Host isolation is restored and 2.91 GB of
+task-owned remote artifacts are removed. The standing exclusive-use grant is
+unchanged and the host is idle. The candidate remains on the review branch;
+its measured benefit does not establish WP-749's prerequisite or automatically
+satisfy WP-810's reviewed-resolution gate.
 
 ### Candidate PR note
 
@@ -824,6 +878,12 @@ maps the requirements to their proofs and identifies the unmet exit-gate items.
 Human review and resolution of the shared journal delay remain pending.
 The later 8 MiB early-sync experiment is withdrawn after the six consistent
 regressions above; it contributes evidence, not selected runtime behavior.
+The subsequent byte-identical-write candidate is retained for review at
+`f6b4315b`, with full CI, exact-binary qualification and the fixed six-cell
+comparison passing. Its limited tail benefit and persistent long sync waits
+are disclosed above. The prospective protocol and qualification receipts
+retain their original pending statuses; final results live in `checks.json`
+and `ci-result.json` beside the comparison.
 Compatibility: existing durable bytes, public interfaces, thresholds and
 authority guarantees remain unchanged. Updated handbook: this page and the
 writer-census defect warning. Hazards:

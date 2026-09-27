@@ -1,0 +1,111 @@
+{
+  "source_freeze": {
+    "control": "df7ad5b20231bcb64f402dc8c26cd51f8fe959d3",
+    "candidate": "f6b4315b8e73614bf6038d153d9f7ae2ca1c4d59",
+    "inputs": {
+      "source.bundle": "1ac3f79d622c1199dc724ae125745e97383b2dd1fc7302e3fef9325fb3c200c5",
+      "common-observation.patch": "7218f0ba42ebb96f824103d5f868176db143d7b25d139c4ad21cce258bb1b242",
+      "build_run.py": "fa16129aea6b46c65c3a5531a5c8c18a3bb55a40b11e8e2bdf6f9458c8e51b7c",
+      "supervise.py": "a07f6d7a2e56162cd471d02d0bddfe309d24e3f961878ddcf53dfc0e305d6604",
+      "isolate_host.py": "e0c8e2f20e312dc8c822718247939107c936b1104904020b7682a622459eb96a",
+      "validate_cell.py": "d193992fb982ddb4afe7c0928e821dd67c397154213e188ff2638117b299140a",
+      "analyze.py": "2108da960f8614248c3a79232fb909e91be8157d9c21ff712143b4585aba707b",
+      "qualification_gate.py": "3e2079fdf1755457a27b97449c9659515ca7cc9f8cb5017116995cf9a5ef1a93",
+      "measurement-protocol.json": "87859ac926fbcde2ce845d24bc7d2c275e92e434261e24ed5192bc5c5fbcd014"
+    }
+  },
+  "runner_sha256": "3e9248959b68ce4640a2fb67188521edb9ab497b20a3b2b77073dde525c59b1b",
+  "local_correctness_passed": true,
+  "performance_verdict": false,
+  "arms": {
+    "control": {
+      "revision": "df7ad5b20231bcb64f402dc8c26cd51f8fe959d3",
+      "daemon_sha256": "10a7d6fff4132d6160d0b9b10312013b22437ecef549f65ddd29e257c2199ec9",
+      "workload": {
+        "dataset": "full",
+        "clients": 32,
+        "load": "write_only",
+        "warmup_seconds": 15,
+        "measurement_seconds": 90
+      },
+      "correctness_clean": true,
+      "complete_analysis_passed": true,
+      "report_scale": {
+        "approximate_row_count": 19220,
+        "board_dense_open": 600,
+        "comment_payload_bytes": 0,
+        "comments_per_ticket": 4,
+        "labels_per_ticket": 2,
+        "organizations": 10,
+        "payload_bytes": 0,
+        "profile": "full",
+        "projects_per_org": 10,
+        "ticket_title_payload_bytes": 0,
+        "tickets_per_project": 20
+      },
+      "measured_elapsed_ns": 90017094186,
+      "samples": 157124,
+      "checkpoints": 68,
+      "dropped_samples": 0,
+      "exit_code": 0,
+      "report_sha256": "b921d1e2bfe89a4682b61cddebfe3148a0aeed868874bbc3eedba1eeb069c7d3",
+      "analysis_sha256": "3aa9e5c0b3880c971ee6bdd26388f42655c4f81fefc17795e66dcbd82f05404f",
+      "log_sha256": "a9debe6a77dd22d815181860d79df2c1d0a1d773c6bfb3ee7ca62d3df6b896ee"
+    },
+    "candidate": {
+      "revision": "f6b4315b8e73614bf6038d153d9f7ae2ca1c4d59",
+      "daemon_sha256": "e5f17fc067e73395adfe2f89993046dbc12daeeb571ed3e1f945aaaa231e4397",
+      "workload": {
+        "dataset": "full",
+        "clients": 32,
+        "load": "write_only",
+        "warmup_seconds": 15,
+        "measurement_seconds": 90
+      },
+      "correctness_clean": true,
+      "complete_analysis_passed": true,
+      "report_scale": {
+        "approximate_row_count": 19220,
+        "board_dense_open": 600,
+        "comment_payload_bytes": 0,
+        "comments_per_ticket": 4,
+        "labels_per_ticket": 2,
+        "organizations": 10,
+        "payload_bytes": 0,
+        "profile": "full",
+        "projects_per_org": 10,
+        "ticket_title_payload_bytes": 0,
+        "tickets_per_project": 20
+      },
+      "measured_elapsed_ns": 90002991974,
+      "samples": 289786,
+      "checkpoints": 101,
+      "dropped_samples": 0,
+      "exit_code": 0,
+      "report_sha256": "1f809f185dc5bf93ff46bf2492d4bbabc1b479a38450ac4246de1314260e0b66",
+      "analysis_sha256": "248e25e2090c08d54c43582265cad0b89d00640080264aaed5dda3c54ed71bff",
+      "log_sha256": "96e4ab93b868efbe857db024e948bf4dcbc362e3d45d0feaabe56a8d8e3e9411"
+    }
+  },
+  "local_correctness_proof": {
+    "source_revision": "f6b4315b8e73614bf6038d153d9f7ae2ca1c4d59",
+    "completed_at": "2026-09-27T04:44:06.928787+00:00",
+    "storage_acceptance_exit_code": 0,
+    "coordinator_exit_code": 0,
+    "storage_tests_passed": 1046,
+    "coordinator_tests_passed": 294,
+    "targeted_tests_passed": 9,
+    "preexisting_storage_skip": "startup/tests.rs large synthetic history timing generation",
+    "full_ci": "pending",
+    "logs": {
+      "acceptance.log": "46f60c0762fa28b4dbeb87235b687c44d7735ab8d1107a844db47c72107bc254",
+      "coordinator.log": "6d52a1a82af3873b69ea6af6172ee163546fde6ccf40bf917643eb6775cf4521",
+      "green-tests.log": "776a58ecbc8f7d8b125a1e052c41ab9246e33850503491bb64dfe22ba37c6a4a",
+      "red-test.log": "b7ae68ea571110fc565013205a5056575950eef28854194d0bb626504dbf1362",
+      "handbook.log": "536464ff2fde8108e644ec425941ba2dd37ad636db0cd285dc6f296cdbcae025",
+      "harness-tests.log": "38eeff1237d74275801617a271eced659e08b1cad8069897d18e659ae40641d8"
+    }
+  },
+  "local_correctness_proof_sha256": "8507c553bfc3bd7dcfb7b372a3b826d75b21f9b04f2a66ccf80310f9baff1bc3",
+  "completed_at": "2026-09-27T04:58:16.957515+00:00"
+}

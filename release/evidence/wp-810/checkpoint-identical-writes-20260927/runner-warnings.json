@@ -1,0 +1,21 @@
+{
+  "total_warnings": 9,
+  "source_files_unchanged_between_arms": {
+    "crates/riffdb-api-grpc/src/codec.rs": "0128f5a86346b5f841ffe737395c9b8b0a36859a9db0c823fc99b6d2c2ae5066",
+    "examples/app-baseline/riffdb/src/server.rs": "9ece2fc66e8ec847e26abc8ef573804218345292d309be354557b32d89bbe286"
+  },
+  "classes": [
+    {
+      "count": 5,
+      "source": "crates/riffdb-api-grpc/src/codec.rs",
+      "reason": "The common client-only runner build leaves INVALID_MESSAGE, StrictProstCodec, StrictProstEncoder, StrictProstDecoder and invalid_message_status unused."
+    },
+    {
+      "count": 4,
+      "source": "examples/app-baseline/riffdb/src/server.rs",
+      "reason": "Existing public benchmark fields state, rows_walked, total_us and rows_per_second lack documentation."
+    }
+  ],
+  "suppressed": false,
+  "disposition": "Retain and explain the unchanged runner warnings; no runtime or fixture changes are made for this experiment."
+}

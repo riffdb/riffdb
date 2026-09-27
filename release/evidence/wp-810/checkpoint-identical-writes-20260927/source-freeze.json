@@ -1,0 +1,15 @@
+{
+  "control": "df7ad5b20231bcb64f402dc8c26cd51f8fe959d3",
+  "candidate": "f6b4315b8e73614bf6038d153d9f7ae2ca1c4d59",
+  "inputs": {
+    "source.bundle": "1ac3f79d622c1199dc724ae125745e97383b2dd1fc7302e3fef9325fb3c200c5",
+    "common-observation.patch": "7218f0ba42ebb96f824103d5f868176db143d7b25d139c4ad21cce258bb1b242",
+    "build_run.py": "fa16129aea6b46c65c3a5531a5c8c18a3bb55a40b11e8e2bdf6f9458c8e51b7c",
+    "supervise.py": "a07f6d7a2e56162cd471d02d0bddfe309d24e3f961878ddcf53dfc0e305d6604",
+    "isolate_host.py": "e0c8e2f20e312dc8c822718247939107c936b1104904020b7682a622459eb96a",
+    "validate_cell.py": "d193992fb982ddb4afe7c0928e821dd67c397154213e188ff2638117b299140a",
+    "analyze.py": "2108da960f8614248c3a79232fb909e91be8157d9c21ff712143b4585aba707b",
+    "qualification_gate.py": "3e2079fdf1755457a27b97449c9659515ca7cc9f8cb5017116995cf9a5ef1a93",
+    "measurement-protocol.json": "87859ac926fbcde2ce845d24bc7d2c275e92e434261e24ed5192bc5c5fbcd014"
+  }
+}

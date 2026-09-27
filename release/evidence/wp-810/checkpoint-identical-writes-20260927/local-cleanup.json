@@ -1,0 +1,16 @@
+{
+  "at": "2026-09-27T05:07:19.506936+00:00",
+  "source_revision": "f6b4315b8e73614bf6038d153d9f7ae2ca1c4d59",
+  "clone_removed": true,
+  "clone_was_clean_after_reversing_frozen_observer": true,
+  "removed_clone_bytes": null,
+  "cleanup_note": "The first attempt removed the clone, then rmdir refused nonempty roots containing only empty subdirectories. Those directories are now removed; the first attempt did not retain its byte count.",
+  "verified_bundle_binaries_raw_reports_and_logs_retained": true,
+  "empty_roots_removed": [
+    "control/db",
+    "control/tmp",
+    "candidate/db",
+    "candidate/tmp"
+  ],
+  "shared_build_cache_untouched": true
+}
