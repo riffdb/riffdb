@@ -217,6 +217,49 @@ fn online_retention_refuses_to_cross_a_fence() {
     assert!(retention_tombstones(&path.0).is_empty());
 }
 
+// req: STO-030
+/// History still in the journal suffix is invisible to an engine snapshot.
+/// When that stale head is all that holds a step, the step materializes the
+/// suffix under the gate and plans again, so an otherwise idle lane still
+/// reaches its target.
+#[test]
+fn online_retention_sees_history_still_in_the_journal_suffix() {
+    let path = TestDatabasePath::new("online-retention-journal-suffix");
+    prepare_segmented_history(&path.0, true);
+    let ports = open_operational(RedbStore::open(&path.0).expect("open live store"));
+    let retain = sequences(2 * GROUP);
+    assert_eq!(
+        ports
+            .online_retention_step(retain, sequences(256))
+            .expect("prune to the materialized target"),
+        OnlineRetentionStep::Advanced {
+            through: 2 * GROUP,
+            sequences: 2 * GROUP,
+        }
+    );
+    // Two more whole segments commit through deferred durability epochs, so
+    // they are acknowledged in the journal suffix, not yet in the engine.
+    for group in GROUPS..GROUPS + 2 {
+        let batch = (1..=GROUP)
+            .map(|ordinal| command_fixture_at(group * GROUP + ordinal))
+            .collect::<Vec<_>>();
+        fence_deferred_epoch(&ports, &batch);
+    }
+    assert_eq!(
+        ports
+            .online_retention_step(retain, sequences(256))
+            .expect("step past the stale snapshot head"),
+        OnlineRetentionStep::Advanced {
+            through: 4 * GROUP,
+            sequences: 2 * GROUP,
+        }
+    );
+    assert_pruned(&ports, 4 * GROUP);
+    drop(ports);
+    let findings = open_operational(RedbStore::open(&path.0).expect("reopen"));
+    drop(findings);
+}
+
 /// An unreadable fencing source refuses the online step with a typed error
 /// and deletes nothing; the offline status refuses the same source.
 #[test]
@@ -506,4 +549,105 @@ fn commit_scans_into_pruned_history_are_typed_pruned() {
         .expect("offline prune");
     let ports = open_operational(RedbStore::open(&path.0).expect("reopen"));
     assert_scans_classify_pruned_history(&ports, 3 * GROUP);
+}
+
+fn replay_audit_pair(
+    seed: u8,
+    link: ServiceAuditLinkV1,
+) -> (ServiceAuditAppendIntentV1, ServiceAuditAppendIntentV1) {
+    let request = RequestId::from_bytes(uuid_bytes(seed)).expect("replay request ID");
+    let intent = |seconds, phase, link| {
+        ServiceAuditAppendIntentV1::new(
+            request,
+            Timestamp::new(seconds, 0).expect("audit timestamp"),
+            ServiceOperationV1::ExecuteCommand,
+            phase,
+            catalog_principal(),
+            ServiceIngressKindV1::Grpc,
+            ServiceAuditTargetsV1::empty(),
+            None,
+            link,
+        )
+        .expect("replay audit")
+    };
+    (
+        intent(
+            1_700_000_020,
+            ServiceAuditPhaseV1::Started,
+            ServiceAuditLinkV1::None,
+        ),
+        intent(1_700_000_021, ServiceAuditPhaseV1::Succeeded, link),
+    )
+}
+
+// req: STO-032
+/// A pruned command keeps its outcome and provenance (ADR-0085 Amendment 2),
+/// so a replay of it stays auditable: its succeeded audit may link the pruned
+/// commit, proven by the retained provenance row, on both the direct and the
+/// journaled audit paths. A link whose provenance does not match stays a
+/// refused append. The command's events are typed pruned.
+#[test]
+fn a_pruned_command_replay_audit_links_its_retained_provenance() {
+    use riffdb_storage_api::{AuthoritativePointReader, ServiceAuditGroupAppend};
+    let path = TestDatabasePath::new("online-retention-replay-audit");
+    let fixtures = prepare_segmented_history(&path.0, true);
+    let mut ports = open_operational(RedbStore::open(&path.0).expect("open"));
+    ports
+        .online_retention_step(sequences(2 * GROUP), sequences(256))
+        .expect("online step");
+    let pruned = &fixtures[0];
+    assert!(
+        ports
+            .read_stored_outcome(pruned.pending.identity())
+            .expect("retained outcome")
+            .is_some()
+    );
+    assert!(
+        ports
+            .read_provenance(pruned.records.provenance().provenance_id())
+            .expect("retained provenance")
+            .is_some()
+    );
+    assert_eq!(
+        ports
+            .read_durable_event(pruned.records.events()[0].event_id())
+            .expect_err("pruned event")
+            .kind(),
+        riffdb_storage_api::StorageErrorKind::HistoryPruned
+    );
+    let link = |fixture: &CommandFixture| ServiceAuditLinkV1::Command {
+        commit_sequence: pruned.records.commit().commit_sequence(),
+        provenance_id: fixture.records.provenance().provenance_id(),
+    };
+
+    let (started, terminal) = replay_audit_pair(0xb0, link(pruned));
+    ports
+        .append_service_audit_fused_pair(&started, &terminal)
+        .expect("a pruned command's replay audit links its retained provenance");
+    let (started, terminal) = replay_audit_pair(0xb1, link(pruned));
+    for intent in [started, terminal] {
+        match ports
+            .submit_service_audit_group(&[intent])
+            .expect("journaled replay audit")
+        {
+            ServiceAuditGroupAppend::Complete(_) => {}
+            ServiceAuditGroupAppend::Submitted(fence) => {
+                fence.wait().expect("journaled replay audit durable");
+            }
+        }
+    }
+    let (started, terminal) = replay_audit_pair(0xb2, link(&fixtures[1]));
+    assert_eq!(
+        ports
+            .append_service_audit_fused_pair(&started, &terminal)
+            .expect_err("a mismatched pruned link is refused")
+            .kind(),
+        riffdb_storage_api::StorageErrorKind::InvariantViolation
+    );
+    drop(ports);
+    let findings = collect_structural_findings(RedbStore::open(&path.0).expect("reopen"));
+    assert!(
+        findings.is_empty(),
+        "replay audits reopen clean: {findings:?}"
+    );
 }

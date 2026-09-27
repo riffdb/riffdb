@@ -446,3 +446,78 @@ fn online_retention_fences_on_the_derived_sidecar_projection_frontier() {
         0
     );
 }
+
+// req: STO-031
+/// The online lane honors the durable event-consumer low water: it prunes up
+/// to the lowest consumer checkpoint's retention frontier and then holds with
+/// the consumer binding, deleting nothing the consumer may still need.
+#[test]
+fn online_retention_fences_on_the_durable_consumer_low_water() {
+    use riffdb_storage_api::{
+        AuthoritativePointReader, ConsumerCheckpointV1, EventConsumerIdentityV1,
+        StoredEventConsumerV1, proto_codec::encode_event_consumer_v1,
+    };
+    use riffdb_types::EventConsumerRevision;
+    let (_path, ports) = operational("online-retention-consumer-fence");
+    for sequence in 1..=3 {
+        seed_command(&ports, CommitSequence::new(sequence).unwrap(), 0);
+    }
+    // A checkpoint after sequence 2 still needs sequence 2: the consumer's
+    // retention frontier is sequence 1.
+    let identity = EventConsumerIdentityV1::new(
+        database_id(),
+        riffdb_types::ReactiveModuleHash::from_bytes([0x41; 32]),
+        riffdb_types::ReactiveOperationName::new("RowChanges").unwrap(),
+        riffdb_types::QueryParameterHash::from_bytes([0x42; 32]),
+        riffdb_types::EventConsumerName::new("retention-fence").unwrap(),
+    );
+    let consumer = StoredEventConsumerV1::checked(
+        identity.clone(),
+        riffdb_types::PartitionKeyHash::from_bytes([0x43; 32]),
+        1,
+        EventConsumerRevision::first(),
+        ConsumerCheckpointV1::After(riffdb_types::EventId::new(
+            CommitSequence::new(2).unwrap(),
+            0,
+        )),
+        Vec::new(),
+    )
+    .unwrap();
+    let encoded = encode_event_consumer_v1(&consumer).unwrap();
+    let access = ports.begin_write().expect("begin consumer seed");
+    access
+        .transaction()
+        .expect("consumer seed transaction")
+        .open_table(crate::layout::EVENT_CONSUMERS)
+        .expect("consumer table")
+        .insert(
+            crate::keys::encode_event_consumer_key(identity.identity_hash()).as_slice(),
+            encoded.as_bytes(),
+        )
+        .expect("insert consumer");
+    access.commit().expect("commit consumer seed");
+
+    let retain = std::num::NonZeroU64::new(1).unwrap();
+    let budget = std::num::NonZeroU64::new(256).unwrap();
+    assert_eq!(
+        ports.online_retention_step(retain, budget).expect("step"),
+        crate::OnlineRetentionStep::Advanced {
+            through: 1,
+            sequences: 1
+        }
+    );
+    assert_eq!(
+        ports
+            .online_retention_step(retain, budget)
+            .expect("fenced step"),
+        crate::OnlineRetentionStep::Held(crate::OnlineRetentionHold::Fenced(
+            riffdb_storage_api::RetentionFenceBinding::ConsumerLowWater
+        ))
+    );
+    assert!(
+        ports
+            .read_commit(CommitSequence::new(2).unwrap())
+            .expect("read the fenced commit")
+            .is_some()
+    );
+}

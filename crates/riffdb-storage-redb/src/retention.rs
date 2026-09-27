@@ -1747,6 +1747,21 @@ pub(crate) fn watermark_at_access(
     Ok(item.into_parts().0.watermark_sequence())
 }
 
+/// The durable retention watermark in one `META` table view, 0 when nothing
+/// was ever pruned.
+pub(crate) fn watermark_in_meta(
+    meta: &impl ReadableTable<&'static str, &'static [u8]>,
+) -> Result<u64, StorageError> {
+    let Some(encoded) = meta
+        .get(META_RETENTION_WATERMARK)
+        .map_err(precommit_storage_error)?
+    else {
+        return Ok(0);
+    };
+    let item = decode_retention_watermark_v1(encoded.value()).map_err(crate::error::codec_error)?;
+    Ok(item.into_parts().0.watermark_sequence())
+}
+
 /// Returns true when `sequence` is covered by the watermark (below-or-equal).
 #[must_use]
 pub(crate) const fn sequence_covered_by_watermark(sequence: u64, watermark: u64) -> bool {
