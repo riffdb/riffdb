@@ -5,6 +5,11 @@ The [disclosure and resumption condition](wp749-archive-qualification-2026-09.md
 record the named shared mechanism, the unattributed remainder and the direct
 remeasurement required after the shared term is reduced.
 
+WP-810's limited mitigation and remaining shared tail were accepted on
+2026-09-27. This does not change these historical measurements or establish
+WP-749's prerequisite and archive-presence gate; see the current
+[qualification status](wp749-archive-qualification-2026-09.md).
+
 **Checkpoint-coupled journal waiting exists with archive disabled.** In the
 disabled cell, 123 measured groups waited more than 50 ms for their first
 journal receipt; every one had the actual checkpoint drain predicate set.

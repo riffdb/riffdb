@@ -9,6 +9,11 @@ WP-748 promotion is already complete on main, dated 2026-09-21, and has no
 dependency on this block. Capture representation,
 hashing and allocation experiments remain closed.
 
+**WP-810 update, 2026-09-27:** the maintainer accepted its bounded mitigation
+and the explicitly retained shared journal tail. Its completion supplies no
+archive-latency waiver or new archive comparison. WP-749's prerequisite review
+and direct off/on qualification remain separate; the evidence below is unchanged.
+
 ## Blocked handoff and disclosure, 2026-09-21
 
 **Acknowledgement P99 moves from 88.35 ms to 114.93 ms with archive enabled.**

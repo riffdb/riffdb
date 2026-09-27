@@ -27587,8 +27587,49 @@ work_packages:
     unexplained residual alone does not close this package, and WP-749's archive gate
     is assessed separately.
   closure:
-    status: open
+    status: complete
+    completed_at: '2026-09-27'
+    requirements_satisfied: [STO-001, STO-002, REC-001, REC-002, PERF-018]
     evidence: docs/performance/wp-810-checkpoint-journal-tail.md
+    decision: >-
+      The maintainer accepted the implementation, fixtures and limited-mitigation
+      disposition reviewed at 0a71cadf, with runtime source f6b4315b, in session
+      on 2026-09-27: "i accept it". Bounded foreground pipelining continues during
+      checkpoint materialization; installation retains its exact ordered barrier.
+      Byte-identical finalization writes may be omitted after a serialized full
+      comparison, while every growth and final durability sync remains required.
+      Production schedule, capacity, failure and process-crash proofs pass. The
+      fixed six-cell comparison has median paired throughput +0.06%, P95 +1.29%
+      and P99 -9.30%, with substantial P99 improvement in two pairs and a nearly
+      flat third. Long journal waits remain, including a 210 ms candidate sync.
+      This measured limitation is explicitly accepted as WP-810's resolution;
+      it does not establish WP-749's archive gate or waive its remeasurement.
+    decisions_taken:
+    - Record the maintainer's acceptance of the shared-delay disposition and
+      implementation/fixtures separately from the performance measurements;
+      retain all original source identities, failed attempts and uncertainty.
+    - Drain for ready checkpoint installation rather than materializer registration.
+      Observe checkpoint failure before admitting new apply; preserve ordered
+      publication, exact-root installation and rebase before reclamation.
+    - Under capacity pressure publish only already-submitted FIFO predecessors,
+      retain their original completion tickets and exclude the staged next frame;
+      use the existing five-step bound and every existing capacity ceiling.
+    - Compare complete finalization writes against current backend bytes using
+      one fixed 4 KiB scratch buffer. Serialize comparison with backend mutations,
+      omit only exact equality and propagate I/O errors. Keep the 4 MiB engine
+      cache, mutation replay order, growth/final syncs and existing durable bytes.
+    - Reject and withdraw the measured 8 MiB early-sync experiment. Keep admission
+      and observation prototypes outside production; introduce no new codec,
+      durable identity, dependency, public setting or performance threshold.
+    hazards:
+    - The shared file-writeback/device-flush tail persists; its measured duration
+      is not proven irreducible. The limited P99 improvement is not a predictable
+      service-level guarantee, and throughput variance is not a latency noise band.
+    - Identical-write comparison adds reads and backend serialization. Cold-cache
+      and other workload effects are not qualified by the c32 write-only comparison.
+    - WP-749's acknowledgement-latency prerequisite and archive off/on gate remain
+      separate; accepting WP-810 does not claim that the archive-specific residual
+      is attributed or that the existing archive latency clause passes.
   standing_design_tests:
     interface_safety: No application or operator can bypass a journal fence, publish a
       hole, acknowledge before publication, or opt out of checkpoint-installation safety.

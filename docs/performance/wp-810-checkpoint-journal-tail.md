@@ -5,23 +5,29 @@ then WP-808 and WP-809. Main independently assigned those numbers to the
 semantic write-path comparison, governance verification, and same-root revision
 fence tasks. WP-810 preserves this package's original checkpoint scope and evidence.
 
-**Open storage/journal package.** In the original measured writer path, a
-registered asynchronous checkpoint makes the Standard-profile writer drain
-journal durability and ordered publication before continuing. This can stall command acknowledgement
-without any archive consumer. **WP-749 is now blocked on reduction of this shared
-term**, per maintainer direction on 2026-09-21. WP-810 owns its repair;
-WP-749 subsequently assesses its separate archive-presence gate by the defined
-direct off/on measurement. WP-810 does not depend on WP-749.
+**Closure accepted, 2026-09-27.** The maintainer said **"i accept it"** in
+response to review `0a71cadf`, accepting the implementation/fixtures and limited
+mitigation at runtime source `f6b4315b`, including the remaining shared journal
+delay, as WP-810's resolution. The manifest records completion and the
+[implementation review](../architecture/WP-810-CHECKPOINT-IMPLEMENTATION-REVIEW.md)
+records the acceptance. Final integration checks and landing follow separately.
 
-**Latest checkpoint, 2026-09-27:** the byte-identical-write candidate passes
+In the original writer path, a registered asynchronous checkpoint makes the
+Standard-profile writer drain journal durability and ordered publication before
+continuing, including without archive. The accepted implementation permits
+bounded foreground apply during materialization and retains the exact ordered
+barrier for installation. It also omits fully byte-identical checkpoint
+finalization writes while preserving every durability sync and capacity bound.
+
+**Measured effect:** the byte-identical-write candidate passes
 full CI and all six fixed comparison cells. Median paired throughput is
 +0.06%, P95 +1.29%, P99 −9.30%; the P99 improvement is substantial in two
 pairs and nearly flat in one. Journal sync remains long, including a 210 ms
-candidate sync. This is a limited measured benefit, not proof that the shared
-term is sufficiently reduced for WP-749. The
-[implementation review](../architecture/WP-810-CHECKPOINT-IMPLEMENTATION-REVIEW.md)
-now has complete evidence for a maintainer disposition. No merge or completion
-is recorded, and no additional experiment follows automatically.
+candidate sync. This limitation is explicitly accepted. It supplies no
+predictable P99 guarantee or proof that WP-749's prerequisite and archive gate
+pass. WP-749 retains its separate direct archive off/on qualification; no
+additional benchmark follows from this closure. The dated investigations below
+retain their original source-specific conclusions and limitations.
 
 ## Established finding
 
@@ -769,9 +775,9 @@ After withdrawal, the restored control passes 16 targeted checkpoint,
 retention and receipt-materialization tests. The full-CI verdict belongs to
 the withdrawn `d4735146` prototype.
 
-The remaining decision is a maintainer-reviewed resolution of the shared
-journal delay and disposition of this common-case improvement. **No merge or
-completion is claimed.** The earlier setup and coverage failures remain
+At that checkpoint, the remaining decision was a maintainer-reviewed resolution
+of the shared journal delay and disposition of the common-case improvement.
+No merge or completion was claimed by the rejected experiment. The earlier setup and coverage failures remain
 retained. The replacement now supplies complete operation/phase evidence,
 separate from the finished comparison. The candidate does
 not establish that WP-749's shared tail prerequisite is resolved. Archive
@@ -857,38 +863,42 @@ All 125 remote evidence files are verified locally; recomputation from raw
 samples produces byte-identical analyses and comparison. Exact binaries and
 source are retained privately. Host isolation is restored and 2.91 GB of
 task-owned remote artifacts are removed. The standing exclusive-use grant is
-unchanged and the host is idle. The candidate remains on the review branch;
-its measured benefit does not establish WP-749's prerequisite or automatically
-satisfy WP-810's reviewed-resolution gate.
+unchanged and the host is idle. The maintainer subsequently accepted this
+limited mitigation and its remaining tail on 2026-09-27. That acceptance
+satisfies WP-810's reviewed-resolution gate; the measurement alone does not
+establish WP-749's prerequisite or archive gate.
 
-### Candidate PR note
+### Closure PR note
 
-Package WP-810; tier guarantee. Behavior: retain bounded pipelining during
-checkpoint materialization and the ordered drain for installation; publish
-existing predecessors under capacity pressure and fence observed checkpoint
-errors immediately. Checks: deterministic real coordinator/storage schedules,
-six process-crash edges, scoped storage/commit tests, path-triggered acceptance,
-six valid comparison cells, current-main integration qualification, the
-complete replacement checkpoint-I/O diagnostic and the causally verified
-corpus-receipt repair.
-The complete CI battery passes on `31aeab76`, including the merged dirty-recovery
-evidence and pinned Python proofs; the full-seed functional check also passes.
-The [draft implementation/fixture review](../architecture/WP-810-CHECKPOINT-IMPLEMENTATION-REVIEW.md)
-maps the requirements to their proofs and identifies the unmet exit-gate items.
-Human review and resolution of the shared journal delay remain pending.
-The later 8 MiB early-sync experiment is withdrawn after the six consistent
-regressions above; it contributes evidence, not selected runtime behavior.
-The subsequent byte-identical-write candidate is retained for review at
-`f6b4315b`, with full CI, exact-binary qualification and the fixed six-cell
-comparison passing. Its limited tail benefit and persistent long sync waits
-are disclosed above. The prospective protocol and qualification receipts
-retain their original pending statuses; final results live in `checks.json`
-and `ci-result.json` beside the comparison.
-Compatibility: existing durable bytes, public interfaces, thresholds and
-authority guarantees remain unchanged. Updated handbook: this page and the
-writer-census defect warning. Hazards:
-long journal service times and mixed acknowledgement P99 remain; the measured
-P50/P95 benefit does not establish WP-749's gate or close WP-810.
+**Package:** WP-810. **Tier:** guarantee.
+
+**Behavior:** bounded pipelining continues during checkpoint materialization;
+installation retains the ordered barrier. Capacity pressure publishes only
+submitted predecessors, observed checkpoint errors fence new apply, and rebase
+precedes reclamation. During checkpoint finalization, a serialized full-byte
+comparison omits identical writes while retaining growth and final syncs.
+
+**Checks:** full CI on runtime `f6b4315b`; 1,046 storage tests, 294 coordinator
+tests, deterministic production schedules, six pipeline process-crash edges,
+two finalization fence crash edges, scoped acceptance, complete exact-binary
+qualification and six fixed valid comparison cells. Evidence helper tests,
+raw-data reproduction and final handbook/evidence acceptance pass. Final
+integration validation is recorded separately. The maintainer accepted the
+implementation, fixtures and limited-mitigation disposition on 2026-09-27.
+
+**Compatibility:** existing durable bytes, interfaces, thresholds, cache budget
+and authority guarantees remain unchanged. The failed early-sync experiment
+is withdrawn; admission and observation experiments remain outside production.
+
+**Updated handbook:** this page, the implementation review, the writer-census
+defect warning and the WP-749 qualification/decomposition status notes.
+Measurement packets retain their original prospective statuses; current closure
+is recorded here and in the manifest.
+
+**Hazards and follow-ups:** long journal waits remain and the measured P99
+benefit is not a predictable service level. Extra comparison reads and backend
+serialization are unqualified on other workloads. The accepted WP-810
+disposition supplies no WP-749 latency waiver or archive qualification result.
 
 ## Registration PR note
 

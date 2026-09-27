@@ -1,29 +1,28 @@
 # WP-810 checkpoint implementation and fixture review
 
-**Ready for maintainer disposition and implementation/fixture review.** All
-planned checks and the fixed six-cell comparison are complete. The later
-candidate has a limited measured benefit; long shared journal waits remain.
-The package is open. This document does not record acceptance or claim that
-WP-749's prerequisite is satisfied.
+**Accepted by the maintainer on 2026-09-27.** In response to the final review
+at `0a71cadf`, the maintainer said **"i accept it"**. This accepts the
+implementation and fixtures at runtime source `f6b4315b` and the limited
+mitigation, including the remaining shared journal delay, as WP-810's reviewed
+resolution. Final integration checks and landing are recorded separately.
+WP-749's prerequisite and archive-presence gate remain separate.
 
-## Decision needed
+## Accepted disposition
 
-Decide whether the bounded mitigations below constitute WP-810's required
-reviewed resolution, accepting the explicitly retained journal tail, or whether
-the package needs a deeper checkpoint-I/O design change. The exact implementation
-and fixtures are ready for review at `f6b4315b`; no additional benchmark follows
-automatically. Acceptance of implementation alone must not be recorded as
-acceptance of the shared-delay disposition.
+The bounded mitigations below constitute the maintainer-reviewed resolution,
+with the remaining journal tail explicitly accepted. No additional benchmark
+or deeper checkpoint-I/O redesign is required to close WP-810. This disposition
+accepts the implementation and the disclosed limitation together; it changes no
+durability guarantee or performance threshold.
 
 The evidence supports retaining the pipeline correction. Its earlier unchanged-
 control comparison improves throughput/P95 and removes the checkpoint-wide
 writer drain while preserving installation safety. The later identical-write
 candidate is a modest further mitigation: P99 improves substantially in two
-pairs and is nearly flat in one, with no throughput improvement. It remains
-on the unmerged review branch. **It does not demonstrate removal of the shared
+pairs and is nearly flat in one, with no throughput improvement.
+**It does not demonstrate removal of the shared
 tail**, and no predictable P99 reduction or sufficient reduction for WP-749 is
-claimed. A decision to close WP-810 would explicitly accept that limitation;
-the agent has not made that decision.
+claimed. The maintainer's acceptance explicitly retains that limitation.
 
 ## Scope and source
 
@@ -156,8 +155,8 @@ workload effects are not qualified by this c32 write-only comparison.
 
 The [complete result](../performance/wp-810-checkpoint-journal-tail.md#byte-identical-checkpoint-finalization-writes)
 includes all cell values, signed wall remainders, input digests, limitations,
-checks and cleanup receipts. This candidate has no merge or performance
-acceptance yet; the rejected early-sync strategy remains withdrawn.
+checks and cleanup receipts. The maintainer accepted the limited measured
+effect on 2026-09-27; the rejected early-sync strategy remains withdrawn.
 
 ## Requirement and deliverable audit
 
@@ -169,8 +168,8 @@ acceptance yet; the rejected early-sync strategy remains withdrawn.
 | PERF-018: attributable measurement evidence | The six-cell comparison retains exact sources, binaries, raw percentiles, host validity, checkpoint counts and signed wall remainders. It is a bounded comparison, not an alpha release sweep. |
 | Standalone finding | [Performance report](../performance/wp-810-checkpoint-journal-tail.md), with retained archive-disabled trace and instrument limitations. |
 | Current correctness qualification | `release/evidence/wp-810/checkpoint-identical-writes-20260927/checks.json`: full CI at `f6b4315b`, 1,046 storage tests, 294 coordinator tests, nine targeted proofs, scoped acceptance and complete exact-binary workload qualification pass. Earlier failed invocations remain retained. |
-| Reviewed shared-delay resolution | **Not met.** Native timing locates measured slow journal sync time in file writeback (80.37%) and device flush (19.61%), with zero JBD2 commit-wait time and 0.02% residual. The later candidate has the limited measured effect above; maintainer disposition remains outstanding. |
-| Final human implementation/fixture review and closure | **Not met.** No acceptance or completion is recorded. |
+| Reviewed shared-delay resolution | **Accepted, 2026-09-27.** Native timing locates measured slow journal sync time in file writeback (80.37%) and device flush (19.61%), with zero JBD2 commit-wait time and 0.02% residual. The maintainer accepts the limited mitigation and remaining tail together. |
+| Final human implementation/fixture review and closure | **Accepted, 2026-09-27:** "i accept it", referring to review `0a71cadf` and runtime `f6b4315b`. The manifest records `completed_at`; final integration validation and landing follow this acceptance. |
 
 ## Performance evidence and its limits
 
@@ -242,17 +241,16 @@ of task-owned remote files are removed. C3D is idle; the standing exclusive-use
 grant remains unchanged. Only main and this unfinished implementation worktree
 remain registered locally.
 
-## Remaining completion actions
+## Closure and integration
 
-1. Obtain the explicit shared-delay disposition described above. All planned
-   measurements are complete; another parameter or representation experiment
-   is not selected by this report.
-2. Obtain final implementation/fixture acceptance for the selected implementation.
-3. Record acceptance, `completed_at` and decisions in the proposed closure;
-   validate the final merge tree including that record, and land only after
-   the required approval.
+The manifest records the accepted disposition, `completed_at`, implementation
+decisions and remaining hazards. Original evidence packets retain their
+prospective and measurement-time statuses; they are not rewritten to imply
+earlier acceptance. Final integration must pass acceptance and the complete CI
+battery before landing. The finished worktree is removed after landing and
+verification that main retains the complete implementation and evidence.
 
-AGENTS.md requires human implementation/fixture review before merge; WP-810's
-exit gate separately requires a maintainer-reviewed resolution. These are the
-remaining approval requirements. No new format or numeric threshold is proposed.
-The existing source-bound evidence must remain intact.
+The maintainer's in-session acceptance satisfies AGENTS.md's implementation/
+fixture review and WP-810's reviewed-resolution requirement. No additional
+approval, format or numeric threshold is proposed. The source-bound evidence
+and WP-749's separate gate remain intact.

@@ -8,6 +8,12 @@ limit. It is not a request for further analysis. After the shared term is
 reduced, the defined isolated pair measures archive acknowledgement cost
 directly.
 
+WP-810's limited mitigation and remaining shared tail were accepted on
+2026-09-27. That disposition does not identify the residual below or provide an
+archive-latency waiver. WP-749's prerequisite review and direct qualification
+remain separate, as recorded in the
+[qualification status](wp749-archive-qualification-2026-09.md).
+
 **The data do not establish a small, named archive-specific residual. The
 unchanged-acknowledgement-latency gate remains unmet.** The observed P99 movement
 is **26.582760 ms**. Request-by-request subtraction of the measured pre-sync
@@ -15,7 +21,7 @@ wait changes that contrast by **14.895930 ms**, leaving **11.686830 ms**.
 These are exact arithmetic results on the retained traces, not an identified
 causal split into shared and archive-specific time.
 
-The shared checkpoint/journal finding now has its own open package,
+The shared checkpoint/journal finding was assigned its own package,
 [WP-810](wp-810-checkpoint-journal-tail.md). This analysis used the existing
 [host-valid isolated pair](wp749-archive-isolated-pair-2026-09.md); no new run,
 host reservation, runtime change or gate amendment was made.
