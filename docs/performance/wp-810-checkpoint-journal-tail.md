@@ -715,12 +715,49 @@ pass before launch. Both attempts are retained; 32 failed-attempt files and
 files are removed and isolation is restored. The continuing exclusive-use
 grant remains active; it is not a new authorization to ignore measurement gates.
 
-The next implementation question is bounded checkpoint writeback: spread
-the dirty-page flush work while preserving the existing final sync, exact
-checkpoint installation and recovery/capacity bounds. The journal extents are
-already fully zero-filled and synced before use, so ordinary extent
-preallocation is not a missing step. No pacing implementation or measured
-benefit is claimed by this diagnostic.
+That diagnostic motivated one bounded checkpoint-writeback prototype,
+preserving the existing final sync, exact checkpoint installation and
+recovery/capacity bounds. The journal extents are already fully zero-filled
+and synced before use, so ordinary extent preallocation is not a missing step.
+
+### Rejected checkpoint early-sync prototype
+
+The six-cell comparison in
+`release/evidence/wp-810/checkpoint-writeback-20260927/` uses control `983881ea`
+(main through `aa77f9622`) and prototype `d4735146`,
+with Rust 1.98.1, distinct server digests and one common runner. Three
+counterbalanced c32 write-only pairs use the full dataset, 15-second warmup
+and 90-second measurement. The prototype adds a backend sync before more
+than 8 MiB of checkpoint writes accumulate between syncs; growth and final
+commit syncs, authority and capacity guarantees are unchanged.
+
+Every pair regresses. Median paired throughput falls **67.75%**, P50 rises
+**19.42%**, P95 rises **1,104.08%**, and P99 rises **34.57%**. Control throughput
+is 3,160–3,182 operations/s with P95 10.61–10.84 ms; the prototype yields
+1,021–1,025 operations/s with P95 129.62–130.55 ms. All six host and correctness
+checks pass. Raw sample arrays are distinct, and the comparison reproduces
+byte-for-byte from the retained raw data.
+
+Peak journal sync falls from 156.5–167.7 ms to 128.1–128.8 ms, while mean
+sync per physical flush rises from 1.54–1.62 ms to 10.12–10.44 ms. Cumulative
+journal sync grows from 32.58–34.18 to 80.10–81.78 seconds per roughly
+105-second writer interval, despite much less completed work. Added early
+checkpoint syncs worsen the shared durability wait. These counters include
+warmup and overlap writer/publication time; they are not added into wall time.
+Signed independent-wall and level-0 remainders are retained for all six cells.
+
+This comparison does not prove page-write coalescing loss or identify a better
+budget: it has no native checkpoint interval or device-byte census. The
+8 MiB strategy is rejected without a parameter sweep. `0e85750c` withdraws
+it and restores the control runtime exactly. The patch and exact binaries
+remain retained. Full CI passed on the withdrawn prototype, in addition to
+1,045 storage tests, 294 coordinator tests and complete exact-binary functional
+qualification; safety correctness did not establish performance suitability.
+All 126 remote evidence files were verified locally, host isolation was
+restored, and approximately 2.97 GB of task-owned remote files were removed.
+After withdrawal, the restored control passes 16 targeted checkpoint,
+retention and receipt-materialization tests. The full-CI verdict belongs to
+the withdrawn `d4735146` prototype.
 
 The remaining decision is a maintainer-reviewed resolution of the shared
 journal delay and disposition of this common-case improvement. **No merge or
@@ -745,6 +782,8 @@ evidence and pinned Python proofs; the full-seed functional check also passes.
 The [draft implementation/fixture review](../architecture/WP-810-CHECKPOINT-IMPLEMENTATION-REVIEW.md)
 maps the requirements to their proofs and identifies the unmet exit-gate items.
 Human review and resolution of the shared journal delay remain pending.
+The later 8 MiB early-sync experiment is withdrawn after the six consistent
+regressions above; it contributes evidence, not selected runtime behavior.
 Compatibility: existing durable bytes, public interfaces, thresholds and
 authority guarantees remain unchanged. Updated handbook: this page and the
 writer-census defect warning. Hazards:

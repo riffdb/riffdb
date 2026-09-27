@@ -1,0 +1,7 @@
+{
+  "source_revision": "0e85750c98f87b7386f30db130afa9c21f6cc595",
+  "runtime_identical_to_control": true,
+  "tests_passed": 16,
+  "tests_scope": "checkpoint pipeline, online retention and exact retained V3 receipt materialization",
+  "log_sha256": "8d96dcea7f78bca9fc4b12812f0e617162d1207d5834e4898fb3863fd9cab814"
+}

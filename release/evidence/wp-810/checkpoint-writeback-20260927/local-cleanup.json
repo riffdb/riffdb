@@ -1,0 +1,27 @@
+{
+  "cleaned_at": "2026-09-27T04:01:00.645080+00:00",
+  "directories": [
+    {
+      "directory": "qualification-source",
+      "removed_apparent_bytes": 109153270
+    },
+    {
+      "directory": "local-functional/control/db",
+      "removed_apparent_bytes": 0
+    },
+    {
+      "directory": "local-functional/control/tmp",
+      "removed_apparent_bytes": 0
+    },
+    {
+      "directory": "local-functional/candidate/db",
+      "removed_apparent_bytes": 0
+    },
+    {
+      "directory": "local-functional/candidate/tmp",
+      "removed_apparent_bytes": 0
+    }
+  ],
+  "total_removed_apparent_bytes": 109153270,
+  "raw_reports_logs_binaries_and_source_bundle_preserved": true
+}

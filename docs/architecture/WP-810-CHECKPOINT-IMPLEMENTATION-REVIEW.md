@@ -8,9 +8,11 @@ in file writeback and device flush; resolution of the shared tail is still open.
 
 ## Scope and source
 
-Package: WP-810. Tier: guarantee. Qualified source:
+Package: WP-810. Tier: guarantee. The completed native diagnostic used source:
 `31aeab76fa7c41b5d3a05d191905fd8b53e43dd2`, including main's index-warming
-repair through `a1809310f`. Later evidence-only commits preserve that runtime.
+repair through `a1809310f`. The later writeback comparison uses control
+`983881ea`, including main through `aa77f9622`, and prototype `d4735146`.
+`0e85750c` withdraws that prototype and restores the control runtime exactly.
 The work package remains open. WP-749's archive-presence gate is separate.
 
 The decisions are within ADR-0101, ADR-0104 and ADR-0132: keep bounded foreground
@@ -67,6 +69,25 @@ sync is paused. Responses and application notifications remain withheld until
 ordered publication. Two older grouped-command tests now wait for the existing
 first-admission notification; their outcome and durability assertions are intact.
 No durable-format or protocol golden fixtures change.
+
+### Withdrawn early-sync experiment
+
+The [retained experiment](../performance/wp-810-checkpoint-journal-tail.md#rejected-checkpoint-early-sync-prototype)
+added an 8 MiB checkpoint backend-write budget with earlier syncs and preserved
+all existing fences and limits. It passed 1,045 storage tests, 294 coordinator
+tests, scoped acceptance, full CI and exact-binary full-workload qualification.
+Its new proofs covered real engine sync failure, deterministic budget ownership,
+and abrupt crashes before/after an early sync with repeated reopen.
+
+Three fixed counterbalanced pairs all regress: median paired throughput
+−67.75%, P50 +19.42%, P95 +1,104.08%, P99 +34.57%. All host and correctness
+checks pass; raw-data reproduction is byte-identical. Added checkpoint syncs
+raise mean journal sync from about 1.6 ms to about 10.3 ms, despite lowering
+its maximum. This implementation is rejected and removed, with its patch and
+exact binaries retained. No budget tuning, format change, merge or completion
+follows. The selected pipeline implementation described above is unchanged.
+The restored control passes 16 targeted checkpoint, retention and receipt
+tests; the full-CI result above belongs to the withdrawn prototype.
 
 ## Requirement and deliverable audit
 

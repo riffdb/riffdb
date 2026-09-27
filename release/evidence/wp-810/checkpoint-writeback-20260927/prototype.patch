@@ -1,0 +1,666 @@
+diff --git a/crates/riffdb-storage-redb/src/checkpoint_writeback.rs b/crates/riffdb-storage-redb/src/checkpoint_writeback.rs
+new file mode 100644
+index 000000000..5af594436
+--- /dev/null
++++ b/crates/riffdb-storage-redb/src/checkpoint_writeback.rs
+@@ -0,0 +1,116 @@
++//! Bounded writeback for the physical checkpoint transaction only.
++//!
++//! Earlier syncs do not publish or install a checkpoint. redb still owns its
++//! transaction, growth fences, and unconditional final Immediate commit sync.
++
++use std::io;
++use std::sync::{Arc, Mutex, MutexGuard};
++
++use redb::StorageBackend;
++
++/// Internal I/O batching choice, independent of every journal capacity bound.
++const WRITEBACK_BYTES: usize = 8 * 1024 * 1024;
++
++#[derive(Debug, Default)]
++pub(crate) struct CheckpointWriteback {
++    pending: Mutex<Option<usize>>,
++}
++
++impl CheckpointWriteback {
++    fn lock(&self) -> io::Result<MutexGuard<'_, Option<usize>>> {
++        self.pending
++            .lock()
++            .map_err(|_| io::Error::other("checkpoint writeback state poisoned"))
++    }
++
++    /// Enter only after acquiring redb's exclusive write transaction.
++    pub(crate) fn enter(&self) -> io::Result<CheckpointWritebackScope<'_>> {
++        let mut pending = self.lock()?;
++        if pending.is_some() {
++            return Err(io::Error::other("checkpoint writeback already active"));
++        }
++        *pending = Some(0);
++        Ok(CheckpointWritebackScope(self))
++    }
++}
++
++pub(crate) struct CheckpointWritebackScope<'a>(&'a CheckpointWriteback);
++
++impl Drop for CheckpointWritebackScope<'_> {
++    fn drop(&mut self) {
++        if let Ok(mut pending) = self.0.pending.lock() {
++            *pending = None;
++        }
++    }
++}
++
++#[derive(Debug)]
++pub(crate) struct CheckpointWritebackBackend<T> {
++    inner: T,
++    state: Arc<CheckpointWriteback>,
++}
++
++impl<T> CheckpointWritebackBackend<T> {
++    pub(crate) fn new(inner: T, state: Arc<CheckpointWriteback>) -> Self {
++        Self { inner, state }
++    }
++}
++
++impl<T: StorageBackend> StorageBackend for CheckpointWritebackBackend<T> {
++    fn len(&self) -> io::Result<u64> {
++        self.inner.len()
++    }
++
++    fn read(&self, offset: u64, out: &mut [u8]) -> io::Result<()> {
++        self.inner.read(offset, out)
++    }
++
++    fn set_len(&self, len: u64) -> io::Result<()> {
++        self.inner.set_len(len)
++    }
++
++    fn sync_data(&self) -> io::Result<()> {
++        let mut pending = self.state.lock()?;
++        self.inner.sync_data()?;
++        if let Some(bytes) = pending.as_mut() {
++            *bytes = 0;
++        }
++        Ok(())
++    }
++
++    fn write(&self, offset: u64, data: &[u8]) -> io::Result<()> {
++        let mut pending = self.state.lock()?;
++        let Some(bytes) = pending.as_mut() else {
++            return self.inner.write(offset, data);
++        };
++        let invalid = || io::Error::new(io::ErrorKind::InvalidInput, "checkpoint write offset");
++        let len = u64::try_from(data.len()).map_err(|_| invalid())?;
++        offset.checked_add(len).ok_or_else(invalid)?;
++        let mut cursor = offset;
++        let mut remaining = data;
++        while !remaining.is_empty() {
++            if *bytes == WRITEBACK_BYTES {
++                // Keep the state lock through synchronous I/O so another
++                // backend caller cannot exceed the same budget concurrently.
++                // This is additional durability, never an engine commit or
++                // checkpoint installation. A failure stops before more writes.
++                self.inner.sync_data()?;
++                *bytes = 0;
++            }
++            let count = remaining.len().min(WRITEBACK_BYTES - *bytes);
++            self.inner.write(cursor, &remaining[..count])?;
++            *bytes += count;
++            cursor += count as u64; // The complete end offset was checked above.
++            remaining = &remaining[count..];
++        }
++        Ok(())
++    }
++
++    fn close(&self) -> io::Result<()> {
++        self.inner.close()
++    }
++}
++
++#[cfg(test)]
++#[path = "checkpoint_writeback_tests.rs"]
++mod tests;
+diff --git a/crates/riffdb-storage-redb/src/checkpoint_writeback_engine_tests.rs b/crates/riffdb-storage-redb/src/checkpoint_writeback_engine_tests.rs
+new file mode 100644
+index 000000000..6b477d0bc
+--- /dev/null
++++ b/crates/riffdb-storage-redb/src/checkpoint_writeback_engine_tests.rs
+@@ -0,0 +1,221 @@
++//! Real redb I/O and abrupt exits at the added early durability boundary.
++// req: STO-001, REC-001, REC-002
++
++use super::*;
++use redb::{Database, ReadableDatabase, ReadableTableMetadata, TableDefinition};
++use std::path::Path;
++use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
++
++const ROWS: TableDefinition<u64, &[u8]> = TableDefinition::new("checkpoint-writeback-proof");
++const ROW_COUNT: u64 = 384;
++const VALUE_BYTES: usize = 64 * 1024;
++const CHILD_PATH: &str = "RIFFDB_WP810_WRITEBACK_CRASH_PATH";
++const CHILD_EDGE: &str = "RIFFDB_WP810_WRITEBACK_CRASH_EDGE";
++
++#[derive(Clone, Copy, Debug)]
++enum Action {
++    Observe,
++    Fail,
++    ExitBefore,
++    ExitAfter,
++}
++
++#[derive(Debug, Default)]
++struct PhysicalIo {
++    armed: AtomicBool,
++    unsynced: AtomicUsize,
++    largest_unsynced: AtomicUsize,
++    budget_fences: AtomicUsize,
++}
++
++#[derive(Debug)]
++struct PhysicalBackend {
++    file: redb::backends::FileBackend,
++    io: Arc<PhysicalIo>,
++    action: Action,
++}
++
++impl StorageBackend for PhysicalBackend {
++    fn len(&self) -> io::Result<u64> {
++        self.file.len()
++    }
++    fn read(&self, offset: u64, out: &mut [u8]) -> io::Result<()> {
++        self.file.read(offset, out)
++    }
++    fn set_len(&self, len: u64) -> io::Result<()> {
++        self.file.set_len(len)
++    }
++    fn sync_data(&self) -> io::Result<()> {
++        let early = self.io.armed.load(Ordering::SeqCst)
++            && self.io.unsynced.load(Ordering::SeqCst) == WRITEBACK_BYTES;
++        if early {
++            self.io.budget_fences.fetch_add(1, Ordering::SeqCst);
++            match self.action {
++                Action::Fail => {
++                    return Err(io::Error::other("injected early checkpoint sync failure"));
++                }
++                Action::ExitBefore => std::process::exit(73),
++                Action::Observe | Action::ExitAfter => {}
++            }
++        }
++        self.file.sync_data()?;
++        self.io.unsynced.store(0, Ordering::SeqCst);
++        if early && matches!(self.action, Action::ExitAfter) {
++            std::process::exit(73);
++        }
++        Ok(())
++    }
++    fn write(&self, offset: u64, data: &[u8]) -> io::Result<()> {
++        self.file.write(offset, data)?;
++        let pending = self.io.unsynced.fetch_add(data.len(), Ordering::SeqCst) + data.len();
++        if self.io.armed.load(Ordering::SeqCst) {
++            self.io
++                .largest_unsynced
++                .fetch_max(pending, Ordering::SeqCst);
++        }
++        Ok(())
++    }
++    fn close(&self) -> io::Result<()> {
++        self.file.close()
++    }
++}
++
++fn open(path: &Path, action: Action) -> (Database, Arc<CheckpointWriteback>, Arc<PhysicalIo>) {
++    let state = Arc::new(CheckpointWriteback::default());
++    let observed = Arc::new(PhysicalIo::default());
++    let file = std::fs::OpenOptions::new()
++        .read(true)
++        .write(true)
++        .create(true)
++        .truncate(false)
++        .open(path)
++        .unwrap();
++    let backend = PhysicalBackend {
++        file: redb::backends::FileBackend::new(file).unwrap(),
++        io: Arc::clone(&observed),
++        action,
++    };
++    let mut builder = redb::Builder::new();
++    builder.set_cache_size(4 * 1024 * 1024); // Production cache size.
++    let database = builder
++        .create_with_backend(CheckpointWritebackBackend::new(backend, Arc::clone(&state)))
++        .unwrap();
++    (database, state, observed)
++}
++
++fn seed(path: &Path) {
++    let (database, _, _) = open(path, Action::Observe);
++    let transaction = database.begin_write().unwrap();
++    transaction
++        .open_table(ROWS)
++        .unwrap()
++        .insert(0, b"original".as_slice())
++        .unwrap();
++    transaction.commit().unwrap();
++}
++
++fn checkpoint(
++    database: &Database,
++    state: &CheckpointWriteback,
++    observed: &PhysicalIo,
++) -> Result<(), Box<dyn std::error::Error>> {
++    let mut transaction = database.begin_write()?;
++    let scope = state.enter()?;
++    transaction.set_two_phase_commit(false);
++    transaction.set_durability(redb::Durability::Immediate)?;
++    observed.armed.store(true, Ordering::SeqCst);
++    {
++        let mut table = transaction.open_table(ROWS)?;
++        for key in 1..=ROW_COUNT {
++            table.insert(key, vec![key as u8; VALUE_BYTES].as_slice())?;
++        }
++    }
++    transaction.commit()?;
++    drop(scope);
++    Ok(())
++}
++
++fn assert_reopened(path: &Path, committed: bool) {
++    for _ in 0..2 {
++        let database = Database::create(path).unwrap();
++        let transaction = database.begin_read().unwrap();
++        let table = transaction.open_table(ROWS).unwrap();
++        assert_eq!(table.get(0).unwrap().unwrap().value(), b"original");
++        assert_eq!(
++            table.len().unwrap(),
++            if committed { ROW_COUNT + 1 } else { 1 }
++        );
++        for key in 1..=ROW_COUNT {
++            let row = table.get(key).unwrap();
++            if committed {
++                assert_eq!(row.unwrap().value(), vec![key as u8; VALUE_BYTES]);
++            } else {
++                assert!(
++                    row.is_none(),
++                    "early durability cannot commit a partial transaction"
++                );
++            }
++        }
++    }
++}
++
++#[test]
++fn checkpoint_writeback_real_engine_commits_exactly_or_refuses_early_sync_failure() {
++    for action in [Action::Observe, Action::Fail] {
++        let directory = crate::test_path::ScopedDirectory::new("checkpoint-writeback-engine");
++        let path = directory.join("db.redb");
++        seed(&path);
++        let (database, state, observed) = open(&path, action);
++        let result = checkpoint(&database, &state, &observed);
++        assert_eq!(result.is_ok(), matches!(action, Action::Observe));
++        assert!(
++            observed.budget_fences.load(Ordering::SeqCst) > 0,
++            "real early sync reached"
++        );
++        assert!(observed.largest_unsynced.load(Ordering::SeqCst) <= WRITEBACK_BYTES);
++        drop(database);
++        assert_reopened(&path, matches!(action, Action::Observe));
++    }
++}
++
++#[test]
++fn checkpoint_writeback_crash_child() {
++    let Ok(edge) = std::env::var(CHILD_EDGE) else {
++        return;
++    };
++    let path = std::path::PathBuf::from(std::env::var_os(CHILD_PATH).unwrap());
++    let action = match edge.as_str() {
++        "before-early-sync" => Action::ExitBefore,
++        "after-early-sync" => Action::ExitAfter,
++        _ => panic!("unknown fixed checkpoint crash edge"),
++    };
++    let (database, state, observed) = open(&path, action);
++    checkpoint(&database, &state, &observed).unwrap();
++    panic!("early sync crash boundary not reached");
++}
++
++#[test]
++fn checkpoint_writeback_process_crashes_do_not_publish_partial_transactions() {
++    for edge in ["before-early-sync", "after-early-sync"] {
++        let directory = crate::test_path::ScopedDirectory::new("checkpoint-writeback-crash");
++        let path = directory.join("db.redb");
++        seed(&path);
++        let output = std::process::Command::new(std::env::current_exe().unwrap())
++            .args([
++                "--exact",
++                "checkpoint_writeback::tests::engine::checkpoint_writeback_crash_child",
++                "--nocapture",
++            ])
++            .env(CHILD_PATH, &path)
++            .env(CHILD_EDGE, edge)
++            .output()
++            .unwrap();
++        assert_eq!(
++            output.status.code(),
++            Some(73),
++            "{edge}: {}",
++            String::from_utf8_lossy(&output.stderr)
++        );
++        assert_reopened(&path, false);
++    }
++}
+diff --git a/crates/riffdb-storage-redb/src/checkpoint_writeback_tests.rs b/crates/riffdb-storage-redb/src/checkpoint_writeback_tests.rs
+new file mode 100644
+index 000000000..4bc597adf
+--- /dev/null
++++ b/crates/riffdb-storage-redb/src/checkpoint_writeback_tests.rs
+@@ -0,0 +1,220 @@
++//! The writeback budget bounds submitted bytes, not elapsed I/O time.
++// req: STO-001, REC-001, REC-002
++
++use super::*;
++
++#[path = "checkpoint_writeback_engine_tests.rs"]
++mod engine;
++
++#[derive(Debug, Default)]
++struct RecordedIo {
++    bytes: Vec<u8>,
++    unsynced: usize,
++    largest_unsynced: usize,
++    syncs: usize,
++    fail_sync: bool,
++}
++
++#[derive(Debug, Default, Clone)]
++struct RecordingBackend(Arc<Mutex<RecordedIo>>);
++
++impl StorageBackend for RecordingBackend {
++    fn len(&self) -> io::Result<u64> {
++        Ok(self.0.lock().unwrap().bytes.len() as u64)
++    }
++
++    fn read(&self, offset: u64, out: &mut [u8]) -> io::Result<()> {
++        let record = self.0.lock().unwrap();
++        let start = usize::try_from(offset).unwrap();
++        out.copy_from_slice(&record.bytes[start..start + out.len()]);
++        Ok(())
++    }
++
++    fn set_len(&self, len: u64) -> io::Result<()> {
++        self.0.lock().unwrap().bytes.resize(len as usize, 0);
++        Ok(())
++    }
++
++    fn sync_data(&self) -> io::Result<()> {
++        let mut record = self.0.lock().unwrap();
++        record.syncs += 1;
++        if record.fail_sync {
++            return Err(io::Error::other("injected sync failure"));
++        }
++        record.unsynced = 0;
++        Ok(())
++    }
++
++    fn write(&self, offset: u64, data: &[u8]) -> io::Result<()> {
++        let mut record = self.0.lock().unwrap();
++        let start = usize::try_from(offset).unwrap();
++        let len = record.bytes.len().max(start + data.len());
++        record.bytes.resize(len, 0);
++        record.bytes[start..start + data.len()].copy_from_slice(data);
++        record.unsynced += data.len();
++        record.largest_unsynced = record.largest_unsynced.max(record.unsynced);
++        Ok(())
++    }
++}
++
++#[test]
++fn checkpoint_writeback_bounds_submitted_bytes_and_keeps_the_final_fence() {
++    let state = Arc::new(CheckpointWriteback::default());
++    let inner = RecordingBackend::default();
++    let backend = CheckpointWritebackBackend::new(inner.clone(), Arc::clone(&state));
++    let _scope = state.enter().unwrap();
++    let data = vec![0x6b; WRITEBACK_BYTES * 2 + 1];
++    backend.write(0, &data).unwrap();
++    backend.sync_data().unwrap();
++    let record = inner.0.lock().unwrap();
++    assert_eq!(
++        record.bytes, data,
++        "chunking preserves every byte and offset"
++    );
++    assert!(record.largest_unsynced <= WRITEBACK_BYTES);
++    assert_eq!(
++        record.syncs, 3,
++        "two early fences plus the final engine fence"
++    );
++    assert_eq!(record.unsynced, 0);
++}
++
++#[test]
++fn checkpoint_writeback_leaves_ordinary_writes_unchanged_and_resets_scope() {
++    let state = Arc::new(CheckpointWriteback::default());
++    let inner = RecordingBackend::default();
++    let backend = CheckpointWritebackBackend::new(inner.clone(), Arc::clone(&state));
++    let data = vec![0x7c; WRITEBACK_BYTES + 1];
++    backend.write(3, &data).unwrap();
++    assert_eq!(inner.0.lock().unwrap().syncs, 0);
++    assert_eq!(inner.0.lock().unwrap().unsynced, data.len());
++    backend.sync_data().unwrap();
++    for _ in 0..2 {
++        let scope = state.enter().unwrap();
++        assert!(state.enter().is_err(), "nested ownership is refused");
++        backend.write(3, &data[..WRITEBACK_BYTES]).unwrap();
++        backend.sync_data().unwrap();
++        backend.sync_data().unwrap();
++        drop(scope);
++    }
++    assert_eq!(inner.0.lock().unwrap().syncs, 5, "no final fence elision");
++    let mut read = vec![0; data.len()];
++    backend.read(3, &mut read).unwrap();
++    assert_eq!(read, data);
++    assert_eq!(backend.len().unwrap(), (data.len() + 3) as u64);
++}
++
++#[test]
++fn checkpoint_writeback_sync_failure_stops_before_the_next_byte() {
++    let state = Arc::new(CheckpointWriteback::default());
++    let inner = RecordingBackend::default();
++    let backend = CheckpointWritebackBackend::new(inner.clone(), Arc::clone(&state));
++    let _scope = state.enter().unwrap();
++    inner.0.lock().unwrap().fail_sync = true;
++    assert!(backend.write(0, &vec![0x2a; WRITEBACK_BYTES + 1]).is_err());
++    assert_eq!(inner.0.lock().unwrap().bytes.len(), WRITEBACK_BYTES);
++    assert!(backend.write(WRITEBACK_BYTES as u64, &[0x2b]).is_err());
++    assert_eq!(inner.0.lock().unwrap().bytes.len(), WRITEBACK_BYTES);
++    assert_eq!(inner.0.lock().unwrap().syncs, 2);
++}
++
++#[test]
++fn checkpoint_writeback_rejects_offset_overflow_without_partial_io() {
++    let state = Arc::new(CheckpointWriteback::default());
++    let inner = RecordingBackend::default();
++    let backend = CheckpointWritebackBackend::new(inner.clone(), Arc::clone(&state));
++    let _scope = state.enter().unwrap();
++    assert_eq!(
++        backend.write(u64::MAX, &[1]).unwrap_err().kind(),
++        io::ErrorKind::InvalidInput,
++    );
++    assert!(inner.0.lock().unwrap().bytes.is_empty());
++    assert_eq!(inner.0.lock().unwrap().syncs, 0);
++}
++
++#[derive(Debug)]
++struct PausedBackend {
++    inner: RecordingBackend,
++    entered: std::sync::mpsc::SyncSender<()>,
++    release: Mutex<std::sync::mpsc::Receiver<()>>,
++    first: std::sync::atomic::AtomicBool,
++}
++
++impl StorageBackend for PausedBackend {
++    fn len(&self) -> io::Result<u64> {
++        self.inner.len()
++    }
++    fn read(&self, offset: u64, out: &mut [u8]) -> io::Result<()> {
++        self.inner.read(offset, out)
++    }
++    fn set_len(&self, len: u64) -> io::Result<()> {
++        self.inner.set_len(len)
++    }
++    fn sync_data(&self) -> io::Result<()> {
++        self.inner.sync_data()
++    }
++    fn write(&self, offset: u64, data: &[u8]) -> io::Result<()> {
++        if self.first.swap(false, std::sync::atomic::Ordering::SeqCst) {
++            self.entered.send(()).unwrap();
++            self.release
++                .lock()
++                .unwrap()
++                .recv_timeout(std::time::Duration::from_secs(30))
++                .unwrap();
++        }
++        self.inner.write(offset, data)
++    }
++}
++
++#[test]
++fn checkpoint_writeback_serializes_the_budget_across_backend_callers() {
++    let state = Arc::new(CheckpointWriteback::default());
++    let inner = RecordingBackend::default();
++    let (entered, entry) = std::sync::mpsc::sync_channel(1);
++    let (release, released) = std::sync::mpsc::sync_channel(1);
++    let backend = Arc::new(CheckpointWritebackBackend::new(
++        PausedBackend {
++            inner: inner.clone(),
++            entered,
++            release: Mutex::new(released),
++            first: std::sync::atomic::AtomicBool::new(true),
++        },
++        Arc::clone(&state),
++    ));
++    let _scope = state.enter().unwrap();
++    let first_backend = Arc::clone(&backend);
++    let first = std::thread::spawn(move || {
++        first_backend
++            .write(0, &vec![0x1a; WRITEBACK_BYTES])
++            .unwrap()
++    });
++    entry
++        .recv_timeout(std::time::Duration::from_secs(30))
++        .unwrap();
++    let (attempt, attempted) = std::sync::mpsc::sync_channel(1);
++    let second_backend = Arc::clone(&backend);
++    let second = std::thread::spawn(move || {
++        attempt.send(()).unwrap();
++        second_backend
++            .write(WRITEBACK_BYTES as u64, &vec![0x2b; WRITEBACK_BYTES])
++            .unwrap();
++    });
++    attempted
++        .recv_timeout(std::time::Duration::from_secs(30))
++        .unwrap();
++    assert!(
++        inner.0.lock().unwrap().bytes.is_empty(),
++        "first writer holds the I/O boundary"
++    );
++    // Reads bypass the writeback lock, including while a physical write waits.
++    assert_eq!(backend.len().unwrap(), 0);
++    release.send(()).unwrap();
++    first.join().unwrap();
++    second.join().unwrap();
++    backend.sync_data().unwrap();
++    let record = inner.0.lock().unwrap();
++    assert_eq!(record.largest_unsynced, WRITEBACK_BYTES);
++    assert_eq!(record.syncs, 2);
++    assert!(record.bytes[..WRITEBACK_BYTES].iter().all(|b| *b == 0x1a));
++    assert!(record.bytes[WRITEBACK_BYTES..].iter().all(|b| *b == 0x2b));
++}
+diff --git a/crates/riffdb-storage-redb/src/lib.rs b/crates/riffdb-storage-redb/src/lib.rs
+index 188773db9..2a257acda 100644
+--- a/crates/riffdb-storage-redb/src/lib.rs
++++ b/crates/riffdb-storage-redb/src/lib.rs
+@@ -39,6 +39,7 @@ mod changelog_v3_roots;
+ mod changelog_v3_write;
+ mod checkpoint_census;
+ mod checkpoint_root;
++mod checkpoint_writeback;
+ mod clean_close;
+ mod codec;
+ mod columnar_projection_control;
+diff --git a/crates/riffdb-storage-redb/src/store.rs b/crates/riffdb-storage-redb/src/store.rs
+index c786e8310..45672b381 100644
+--- a/crates/riffdb-storage-redb/src/store.rs
++++ b/crates/riffdb-storage-redb/src/store.rs
+@@ -321,6 +321,7 @@ pub(crate) struct SharedRedb {
+     open_mode: OpenMode,
+     follower_namespace: Mutex<Option<crate::maintenance::FollowerNamespace>>,
+     pub(crate) database: Database,
++    checkpoint_writeback: Arc<crate::checkpoint_writeback::CheckpointWriteback>,
+     /// Sidecar redb for rebuildable derived state (ADR-0240). Writes here never
+     /// acquire `mutation_gate` or the primary store's write transaction.
+     /// Opened on first derived read or write so archive inventories that never
+@@ -2396,9 +2397,33 @@ impl RedbStore {
+         // wrapper: a FileBackend kill-barrier still has to observe the
+         // sidecar after process death (ADR-0240 two-store crash).
+         let derived_in_memory = false;
++        let checkpoint_writeback =
++            Arc::new(crate::checkpoint_writeback::CheckpointWriteback::default());
+         let database = match engine_backend {
+-            Some(backend) => builder.create_with_backend(DynStorageBackend(backend)),
+-            None => builder.create(path),
++            Some(backend) => builder.create_with_backend(
++                crate::checkpoint_writeback::CheckpointWritebackBackend::new(
++                    DynStorageBackend(backend),
++                    Arc::clone(&checkpoint_writeback),
++                ),
++            ),
++            None => {
++                // Identical open options and exclusive FileBackend lock to
++                // Builder::create; the wrapper also serves injected media.
++                let file = std::fs::OpenOptions::new()
++                    .read(true)
++                    .write(true)
++                    .create(true)
++                    .truncate(false)
++                    .open(path)
++                    .map_err(|error| database_error(error.into()))?;
++                let backend = redb::backends::FileBackend::new(file).map_err(database_error)?;
++                builder.create_with_backend(
++                    crate::checkpoint_writeback::CheckpointWritebackBackend::new(
++                        backend,
++                        Arc::clone(&checkpoint_writeback),
++                    ),
++                )
++            }
+         }
+         .map_err(database_error)?;
+         // Source-mode construction cannot reinterpret attached follower state
+@@ -2437,6 +2462,7 @@ impl RedbStore {
+                 open_mode: open_mode.clone(),
+                 follower_namespace: Mutex::new(None),
+                 database,
++                checkpoint_writeback,
+                 derived: std::sync::OnceLock::new(),
+                 derived_open: std::sync::Mutex::new(()),
+                 derived_in_memory,
+diff --git a/crates/riffdb-storage-redb/src/store_journal_checkpoint.rs b/crates/riffdb-storage-redb/src/store_journal_checkpoint.rs
+index 11392f37e..fde2b29e6 100644
+--- a/crates/riffdb-storage-redb/src/store_journal_checkpoint.rs
++++ b/crates/riffdb-storage-redb/src/store_journal_checkpoint.rs
+@@ -29,6 +29,10 @@ impl SharedRedb {
+             );
+         }
+         let mut transaction = self.database.begin_write().map_err(transaction_error)?;
++        let writeback = self
++            .checkpoint_writeback
++            .enter()
++            .map_err(|_| storage_error(StorageErrorKind::Unavailable))?;
+         transaction.set_two_phase_commit(false);
+         transaction
+             .set_durability(Durability::Immediate)
+@@ -160,6 +164,7 @@ impl SharedRedb {
+             controller.before_commit(crate::hooks::RedbTestOperation::JournalCheckpoint)?;
+         }
+         self.commit_durable(transaction)?;
++        drop(writeback);
+         #[cfg(test)]
+         crate::changelog_v3_journal::recovery_crash_edge("checkpoint-committed");
+         Ok(())

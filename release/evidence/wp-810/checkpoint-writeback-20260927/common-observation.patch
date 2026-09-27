@@ -1,0 +1,382 @@
+diff --git a/crates/riffdb-commit/src/writer_census.rs b/crates/riffdb-commit/src/writer_census.rs
+index 3b3ef5105..e8b282171 100644
+--- a/crates/riffdb-commit/src/writer_census.rs
++++ b/crates/riffdb-commit/src/writer_census.rs
+@@ -326,6 +326,8 @@ impl Default for WriterBatchWindowV1 {
+ #[doc(hidden)]
+ #[derive(Clone, Copy, Debug)]
+ pub struct WriterBatchCensusV1 {
++    /// Private WP-810 diagnostic: completed iterations, continuous span, iteration sum.
++    pub observed_wall: [u64; 3],
+     /// Total writer loop iterations observed.
+     pub total_count: u64,
+     /// Bounded ordinal windows in admission order.
+@@ -366,6 +368,10 @@ impl Census {
+ 
+ static WRITER_BATCH_DIAGNOSTICS: OnceLock<bool> = OnceLock::new();
+ static WRITER_BATCH_CENSUS: OnceLock<Census> = OnceLock::new();
++static WALL_ORIGIN: OnceLock<Instant> = OnceLock::new();
++static WALL_ITERATIONS: AtomicU64 = AtomicU64::new(0);
++static WALL_SPAN_NS: AtomicU64 = AtomicU64::new(0);
++static WALL_ITERATION_SUM_NS: AtomicU64 = AtomicU64::new(0);
+ 
+ thread_local! {
+     /// Per-iteration stage accumulation for the sole writer thread.
+@@ -423,6 +429,7 @@ pub(crate) fn begin_iteration() {
+     if !writer_batch_diagnostics_enabled() {
+         return;
+     }
++    WALL_ORIGIN.get_or_init(Instant::now);
+     PROFILE.with(|profile| profile.set([0; WRITER_BATCH_STAGE_LABELS_V1.len()]));
+     COMMANDS.with(|count| count.set(0));
+ }
+@@ -459,6 +466,14 @@ pub(crate) fn end_iteration(iteration_ns: u64, submitted_unit: bool) {
+         .saturating_sub(stages[EXEC_QUEUE_TELEMETRY])
+         .saturating_sub(stages[EXEC_FINISH_GROUP]);
+     publish(stages, COMMANDS.with(Cell::get), submitted_unit);
++    saturating_atomic_add(&WALL_ITERATION_SUM_NS, iteration_ns);
++    if let Some(origin) = WALL_ORIGIN.get() {
++        WALL_SPAN_NS.store(
++            u64::try_from(origin.elapsed().as_nanos()).unwrap_or(u64::MAX),
++            Ordering::Relaxed,
++        );
++    }
++    WALL_ITERATIONS.fetch_add(1, Ordering::Relaxed);
+ }
+ 
+ fn publish(stages: [u64; WRITER_BATCH_STAGE_LABELS_V1.len()], commands: u64, submitted_unit: bool) {
+@@ -490,11 +505,17 @@ fn saturating_atomic_add(target: &AtomicU64, value: u64) {
+ pub fn writer_batch_stage_census_v1() -> WriterBatchCensusV1 {
+     let Some(census) = WRITER_BATCH_CENSUS.get() else {
+         return WriterBatchCensusV1 {
++            observed_wall: [0; 3],
+             total_count: 0,
+             windows: [WriterBatchWindowV1::default(); WRITER_BATCH_WINDOW_COUNT_V1],
+         };
+     };
+     WriterBatchCensusV1 {
++        observed_wall: [
++            WALL_ITERATIONS.load(Ordering::Relaxed),
++            WALL_SPAN_NS.load(Ordering::Relaxed),
++            WALL_ITERATION_SUM_NS.load(Ordering::Relaxed),
++        ],
+         total_count: census.total_count.load(Ordering::Relaxed),
+         windows: std::array::from_fn(|index| {
+             let window = &census.windows[index];
+@@ -541,8 +562,16 @@ pub fn format_writer_batch_stages_v1_line(census: &WriterBatchCensusV1) -> Strin
+         })
+         .collect::<Vec<_>>()
+         .join(";");
++    let wall = if census.observed_wall[0] == 0 {
++        String::new()
++    } else {
++        format!(
++            "\nriffdb-writer-wall-probe-v1\titerations={}\tspan_ns={}\titeration_sum_ns={}",
++            census.observed_wall[0], census.observed_wall[1], census.observed_wall[2]
++        )
++    };
+     format!(
+-        "riffdb-writer-batch-stages-v1\ttotal={}\tlabels={labels}\twindows={windows}",
++        "riffdb-writer-batch-stages-v1\ttotal={}\tlabels={labels}\twindows={windows}{wall}",
+         census.total_count
+     )
+ }
+@@ -691,6 +720,7 @@ mod tests {
+     #[test]
+     fn an_empty_census_formats_without_windows() {
+         let census = WriterBatchCensusV1 {
++            observed_wall: [0; 3],
+             total_count: 0,
+             windows: [WriterBatchWindowV1::default(); WRITER_BATCH_WINDOW_COUNT_V1],
+         };
+@@ -711,6 +741,7 @@ mod tests {
+         let mut windows = [WriterBatchWindowV1::default(); WRITER_BATCH_WINDOW_COUNT_V1];
+         windows[0] = window;
+         let census = WriterBatchCensusV1 {
++            observed_wall: [0; 3],
+             total_count: 3,
+             windows,
+         };
+@@ -728,3 +759,50 @@ mod tests {
+         assert_eq!(values[WRITER_BATCH_STAGE_LABELS_V1.len() + 2], "2");
+     }
+ }
++
++#[cfg(test)]
++mod wp810_wall_tests {
++    use super::*;
++
++    // req: PERF-018
++    #[test]
++    fn a_frozen_wall_snapshot_cannot_advance_when_later_iterations_finish() {
++        if !writer_batch_diagnostics_enabled() {
++            let child = std::process::Command::new(std::env::current_exe().unwrap())
++                .args(["--exact", "writer_census::wp810_wall_tests::a_frozen_wall_snapshot_cannot_advance_when_later_iterations_finish"])
++                .env("RIFFDB_WRITER_BATCH_DIAGNOSTICS", "1").output().unwrap();
++            assert!(
++                child.status.success(),
++                "{}",
++                String::from_utf8_lossy(&child.stderr)
++            );
++            return;
++        }
++        begin_iteration();
++        end_iteration(7, false);
++        let first = writer_batch_stage_census_v1();
++        begin_iteration();
++        end_iteration(11, true);
++        let second = writer_batch_stage_census_v1();
++        assert_eq!(
++            (
++                first.total_count,
++                first.observed_wall[0],
++                first.observed_wall[2]
++            ),
++            (1, 1, 7)
++        );
++        assert_eq!(
++            (
++                second.total_count,
++                second.observed_wall[0],
++                second.observed_wall[2]
++            ),
++            (2, 2, 18)
++        );
++        assert!(second.observed_wall[1] >= first.observed_wall[1]);
++        let line = format_writer_batch_stages_v1_line(&first);
++        assert!(line.contains("\nriffdb-writer-wall-probe-v1\titerations=1\t"));
++        assert!(line.ends_with("\titeration_sum_ns=7"));
++    }
++}
+diff --git a/examples/app-baseline/core/src/lib.rs b/examples/app-baseline/core/src/lib.rs
+index 52e56f57d..bcac7a64f 100644
+--- a/examples/app-baseline/core/src/lib.rs
++++ b/examples/app-baseline/core/src/lib.rs
+@@ -8,6 +8,7 @@ mod histogram;
+ mod ids;
+ mod journeys;
+ mod load;
++mod raw_tail;
+ mod report;
+ mod scale;
+ mod scenarios;
+diff --git a/examples/app-baseline/core/src/load.rs b/examples/app-baseline/core/src/load.rs
+index 4af1c6e54..42d557687 100644
+--- a/examples/app-baseline/core/src/load.rs
++++ b/examples/app-baseline/core/src/load.rs
+@@ -758,6 +758,7 @@ impl LoadReport {
+ 
+ /// Per-worker load result: op stats plus absolute measure bounds.
+ struct WorkerLoadResult {
++    raw_tail: Option<crate::raw_tail::Capture>,
+     by_op: Vec<(LoadOp, OpStats)>,
+     /// Instant the worker started its first measured sample (if any).
+     measure_start: Option<Instant>,
+@@ -939,6 +940,18 @@ where
+         .saturating_mul(fanout)
+         .clamp(1, worker_ceiling);
+ 
++    let raw_tail_directory =
++        std::env::var_os("RIFFDB_APP_BASELINE_RAW_TAIL_DIR").map(std::path::PathBuf::from);
++    let raw_tail_enabled = raw_tail_directory.is_some();
++    if raw_tail_enabled && (worker_count > crate::raw_tail::MAX_WORKERS || config.saturate) {
++        return Err("raw-tail requires at most 32 ordinary closed-loop workers".to_owned());
++    }
++    if raw_tail_directory
++        .as_ref()
++        .is_some_and(|p| !p.is_dir() || p.join("raw-request-tail.json").exists())
++    {
++        return Err("raw-tail requires an existing unused directory".to_owned());
++    }
+     let ready = Arc::new(std::sync::Barrier::new(worker_count + 1));
+     let go = Arc::new(std::sync::Barrier::new(worker_count + 1));
+     let mut workers = Vec::with_capacity(worker_count);
+@@ -972,6 +985,7 @@ where
+                         probes[warm_tenant].ticket_id,
+                     )
+                     .map_err(|error| error.to_string())?;
++                let mut raw_tail = raw_tail_enabled.then(crate::raw_tail::Capture::new);
+                 ready.wait();
+                 go.wait();
+ 
+@@ -1020,6 +1034,9 @@ where
+                     );
+                     let ended = Instant::now();
+                     if record {
++                        if let Some(capture) = raw_tail.as_mut() {
++                            capture.record(u64::try_from(elapsed.as_nanos()).unwrap_or(u64::MAX));
++                        }
+                         if measure_start.is_none() {
+                             measure_start = Some(started);
+                         }
+@@ -1051,6 +1068,7 @@ where
+                 }
+ 
+                 Ok(WorkerLoadResult {
++                    raw_tail,
+                     by_op,
+                     measure_start,
+                     measure_end,
+@@ -1089,12 +1107,16 @@ where
+     let mut worker_completed_operations = Vec::with_capacity(worker_count);
+     let mut worker_longest_pause = Vec::with_capacity(worker_count);
+     let mut tenant_stats = vec![TenantLoadStats::default(); config.tenant_count];
++    let mut raw_captures = Vec::with_capacity(if raw_tail_enabled { worker_count } else { 0 });
+     let mut global_start: Option<Instant> = None;
+     let mut global_end: Option<Instant> = None;
+     let mut join_error: Option<String> = None;
+     for worker in workers {
+         match worker.join() {
+             Ok(Ok(worker_result)) => {
++                if let Some(capture) = worker_result.raw_tail {
++                    raw_captures.push(capture);
++                }
+                 let interval = match (worker_result.measure_start, worker_result.measure_end) {
+                     (Some(start), Some(end)) => {
+                         global_start = Some(match global_start {
+@@ -1141,6 +1163,13 @@ where
+             }
+         }
+     }
++    if let Some(directory) = raw_tail_directory.as_ref() {
++        crate::raw_tail::write_report(
++            directory,
++            &raw_captures,
++            worker_completed_operations.iter().copied().sum(),
++        )?;
++    }
+     if let Some(reason) = abort_reason {
+         return Err(reason);
+     }
+@@ -1358,6 +1387,7 @@ where
+                 }
+                 Ok((
+                     WorkerLoadResult {
++                        raw_tail: None,
+                         by_op,
+                         measure_start,
+                         measure_end,
+diff --git a/examples/app-baseline/core/src/raw_tail.rs b/examples/app-baseline/core/src/raw_tail.rs
+new file mode 100644
+index 000000000..6ba8f869a
+--- /dev/null
++++ b/examples/app-baseline/core/src/raw_tail.rs
+@@ -0,0 +1,118 @@
++//! Private bounded sample retention, identical in both WP-810 timing arms.
++use std::io::Write;
++use std::path::Path;
++
++pub(crate) const MAX_WORKERS: usize = 32;
++const LIMIT: usize = 32_768;
++
++pub(crate) struct Capture {
++    samples: Vec<u64>,
++    retained: usize,
++    dropped: u64,
++}
++
++impl Capture {
++    pub(crate) fn new() -> Self {
++        Self {
++            samples: vec![0; LIMIT],
++            retained: 0,
++            dropped: 0,
++        }
++    }
++    pub(crate) fn record(&mut self, ns: u64) {
++        if self.retained == LIMIT {
++            self.dropped = self.dropped.saturating_add(1);
++        } else {
++            self.samples[self.retained] = ns.max(1);
++            self.retained += 1;
++        }
++    }
++}
++
++fn report(captures: &[Capture], expected: u64) -> Result<serde_json::Value, String> {
++    if captures.is_empty() || captures.len() > MAX_WORKERS {
++        return Err("raw-tail worker bound violated".to_owned());
++    }
++    let count = captures.iter().map(|c| c.retained as u64).sum::<u64>();
++    let dropped = captures.iter().map(|c| c.dropped).sum::<u64>();
++    let mut top = captures
++        .iter()
++        .enumerate()
++        .flat_map(|(worker, capture)| {
++            capture.samples[..capture.retained]
++                .iter()
++                .enumerate()
++                .map(move |(ordinal, value)| (*value, worker, ordinal))
++        })
++        .collect::<Vec<_>>();
++    top.sort_unstable_by(|a, b| b.0.cmp(&a.0).then(a.1.cmp(&b.1)).then(a.2.cmp(&b.2)));
++    top.truncate(20);
++    Ok(serde_json::json!({
++        "schema": "private.wp810-request-tail/v1",
++        "scope": "measured requests; all outcomes; worker-local completion order",
++        "valid": dropped == 0 && count == expected,
++        "sample_count": count, "expected_sample_count": expected, "dropped_samples": dropped,
++        "maximum_workers": MAX_WORKERS, "maximum_samples_per_worker": LIMIT,
++        "workers": captures.iter().enumerate().map(|(id,c)| serde_json::json!({
++            "worker": id, "dropped_samples": c.dropped, "samples_ns": &c.samples[..c.retained],
++        })).collect::<Vec<_>>(),
++        "slowest_20": top.iter().map(|(ns, worker, ordinal)| serde_json::json!({
++            "elapsed_ns": ns, "worker": worker, "worker_ordinal": ordinal,
++        })).collect::<Vec<_>>(),
++    }))
++}
++
++pub(crate) fn write_report(
++    directory: &Path,
++    captures: &[Capture],
++    expected: u64,
++) -> Result<(), String> {
++    let value = report(captures, expected)?;
++    let mut file = std::fs::OpenOptions::new()
++        .write(true)
++        .create_new(true)
++        .open(directory.join("raw-request-tail.json"))
++        .map_err(|_| "raw-tail output exists or unavailable")?;
++    serde_json::to_writer(&mut file, &value).map_err(|_| "raw-tail serialization failed")?;
++    file.write_all(b"\n")
++        .and_then(|()| file.sync_all())
++        .map_err(|_| "raw-tail write failed")?;
++    if value["valid"] != true {
++        return Err("raw-tail overflow/count mismatch; partial evidence retained".to_owned());
++    }
++    Ok(())
++}
++
++#[cfg(test)]
++mod tests {
++    use super::*;
++    // req: PERF-018
++    #[test]
++    fn raw_samples_preserve_order_and_resolve_histogram_bucket_collisions() {
++        let mut capture = Capture::new();
++        for ns in [71_303_168, 75_497_471, 73_000_003] {
++            capture.record(ns);
++        }
++        let value = report(&[capture], 3).unwrap();
++        assert_eq!(value["valid"], true);
++        assert_eq!(
++            value["workers"][0]["samples_ns"],
++            serde_json::json!([71_303_168, 75_497_471, 73_000_003])
++        );
++        assert_eq!(value["slowest_20"][0]["worker_ordinal"], 1);
++    }
++    // req: PERF-018
++    #[test]
++    fn overflow_and_population_mismatch_refuse_qualification() {
++        let mut capture = Capture::new();
++        for _ in 0..LIMIT + 3 {
++            capture.record(5);
++        }
++        let value = report(&[capture], (LIMIT + 3) as u64).unwrap();
++        assert_eq!(value["valid"], false);
++        assert_eq!(value["dropped_samples"], 3);
++        let mut capture = Capture::new();
++        capture.record(10);
++        assert_eq!(report(&[capture], 2).unwrap()["valid"], false);
++    }
++}

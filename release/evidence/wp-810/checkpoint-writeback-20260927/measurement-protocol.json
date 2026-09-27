@@ -1,0 +1,51 @@
+{
+  "schema": "riffdb.wp810-writeback-comparison/v1",
+  "status": "Implementation and targeted proofs committed; broader acceptance and exact-binary qualification gate measurement.",
+  "authorization": "maintainer authorized the next bounded mitigation and granted exclusive C3D use until revoked, in session 2026-09-26",
+  "control_base": "983881ea28746b2e9fdb4bf20ff45d12c6d01f53",
+  "candidate": "d47351466a276ba14c9a3a136e6ae586d2d24d2b",
+  "host_specifications": "8 vCPU AMD EPYC 9B14; sha_ni aes pclmulqdq sse4_2 required",
+  "toolchain": "1.98.1",
+  "build": {
+    "release_lto": "thin",
+    "codegen_units": 1,
+    "target_cpu": "x86-64",
+    "allocator": "unchanged server jemalloc"
+  },
+  "pairs": [
+    [
+      "control",
+      "candidate"
+    ],
+    [
+      "candidate",
+      "control"
+    ],
+    [
+      "control",
+      "candidate"
+    ]
+  ],
+  "maximum_cells": 6,
+  "scale": "full",
+  "clients": 32,
+  "load": "write_only",
+  "warmup_seconds": 15,
+  "measurement_seconds": 90,
+  "archive": "disabled",
+  "observers": [
+    "existing writer-batch stages",
+    "existing corrected publication V2 waits",
+    "existing checkpoint census/progress",
+    "common bounded raw request retention",
+    "common independent writer span/iteration sum"
+  ],
+  "comparison": "One fixed 8 MiB checkpoint-writeback prototype versus its unchanged parent, common observer and identical runner; distinct daemon digests required.",
+  "gate": "All local correctness and host validity checks; measured reduction required before claiming repair. P99 disclosure with mechanism under ADR-0249; WP-749 remains separate.",
+  "arithmetic": "Signed span minus iteration sum; signed iteration sum minus eight disjoint level-0 stages; reconcile to loop_residual. Busy+idle and overlapping journal/publication timers are not wall.",
+  "attempt_policy": "Six fixed cells, three counterbalanced pairs; stop at first failure, retain it, no automatic retry or budget tuning.",
+  "cleanup": "Restore only task-owned firewall/timer changes; verify local evidence copies; remove owned build/source/database directories. Standing exclusive-use grant remains in force until revoked.",
+  "hypothesis": "Earlier bounded checkpoint file syncs reduce concurrent journal sync stalls; extra syncs may instead reduce checkpoint progress or throughput.",
+  "prototype_budget_bytes": 8388608,
+  "qualification": "Local acceptance and production recovery checks, then a complete full-dataset c32 15-second warmup/90-second functional qualification of each exact built daemon and the common runner before any host-validity interval. Raw/census reconciliation must pass; no performance conclusion from qualification."
+}

@@ -1,0 +1,104 @@
+{
+  "source_freeze": {
+    "control": "983881ea28746b2e9fdb4bf20ff45d12c6d01f53",
+    "candidate": "d47351466a276ba14c9a3a136e6ae586d2d24d2b",
+    "inputs": {
+      "source.bundle": "34ddd0860121bab2bb0f720c6b913656bfcb748c33461b96fccb80c71796a6fb",
+      "common-observation.patch": "7218f0ba42ebb96f824103d5f868176db143d7b25d139c4ad21cce258bb1b242",
+      "build_run.py": "fa16129aea6b46c65c3a5531a5c8c18a3bb55a40b11e8e2bdf6f9458c8e51b7c",
+      "supervise.py": "a07f6d7a2e56162cd471d02d0bddfe309d24e3f961878ddcf53dfc0e305d6604",
+      "isolate_host.py": "e0c8e2f20e312dc8c822718247939107c936b1104904020b7682a622459eb96a",
+      "validate_cell.py": "d193992fb982ddb4afe7c0928e821dd67c397154213e188ff2638117b299140a",
+      "analyze.py": "2108da960f8614248c3a79232fb909e91be8157d9c21ff712143b4585aba707b",
+      "qualification_gate.py": "3e2079fdf1755457a27b97449c9659515ca7cc9f8cb5017116995cf9a5ef1a93",
+      "measurement-protocol.json": "a7fe79dcd3db28fbd6a39988e49049c1db3d03c3b6a1ec7fe9eda14ecc643926"
+    }
+  },
+  "runner_sha256": "0e4af77757db74d9527d6f63c8a944f9002c8f5203d588e61eb2ffd1cc7fb11d",
+  "local_correctness_passed": true,
+  "performance_verdict": false,
+  "arms": {
+    "control": {
+      "revision": "983881ea28746b2e9fdb4bf20ff45d12c6d01f53",
+      "daemon_sha256": "db75e0de895d153e098a79cea346090589ce34217ab26354f75dce40bdcdc880",
+      "workload": {
+        "dataset": "full",
+        "clients": 32,
+        "load": "write_only",
+        "warmup_seconds": 15,
+        "measurement_seconds": 90
+      },
+      "correctness_clean": true,
+      "complete_analysis_passed": true,
+      "report_scale": {
+        "approximate_row_count": 19220,
+        "board_dense_open": 600,
+        "comment_payload_bytes": 0,
+        "comments_per_ticket": 4,
+        "labels_per_ticket": 2,
+        "organizations": 10,
+        "payload_bytes": 0,
+        "profile": "full",
+        "projects_per_org": 10,
+        "ticket_title_payload_bytes": 0,
+        "tickets_per_project": 20
+      },
+      "measured_elapsed_ns": 90007600678,
+      "samples": 385716,
+      "checkpoints": 148,
+      "dropped_samples": 0,
+      "exit_code": 0,
+      "report_sha256": "34900b8b96586435d094f3d116678786ac1ccd16068528b6c543384937dea0fb",
+      "analysis_sha256": "154f145cd9e127df9b85bdbcf38bb7f298498d1f7c1441d0f9d1a76e97e320da",
+      "log_sha256": "29398388c4a3d56d2cd09c03d3ed84a07d087155b7a97119aefc40137605f87c"
+    },
+    "candidate": {
+      "revision": "d47351466a276ba14c9a3a136e6ae586d2d24d2b",
+      "daemon_sha256": "d29360e6017938e21c5d1e9246e0c9f1688ddbd26a5860506f8e21fa8b693ff8",
+      "workload": {
+        "dataset": "full",
+        "clients": 32,
+        "load": "write_only",
+        "warmup_seconds": 15,
+        "measurement_seconds": 90
+      },
+      "correctness_clean": true,
+      "complete_analysis_passed": true,
+      "report_scale": {
+        "approximate_row_count": 19220,
+        "board_dense_open": 600,
+        "comment_payload_bytes": 0,
+        "comments_per_ticket": 4,
+        "labels_per_ticket": 2,
+        "organizations": 10,
+        "payload_bytes": 0,
+        "profile": "full",
+        "projects_per_org": 10,
+        "ticket_title_payload_bytes": 0,
+        "tickets_per_project": 20
+      },
+      "measured_elapsed_ns": 90002145799,
+      "samples": 283581,
+      "checkpoints": 107,
+      "dropped_samples": 0,
+      "exit_code": 0,
+      "report_sha256": "1496906ccfbc6302e9fad1a8aa217d6eed757dcadf1633f961902a4a5c6bd035",
+      "analysis_sha256": "b4a54df7f9dc91d28393165f36737a37781c5c571197f000d38d8450f3db29a5",
+      "log_sha256": "a6f3ed1f83ea9bc8979fe83e79f36c2febe4d7354f3b91719f3a142d32a65467"
+    }
+  },
+  "local_correctness_proof": {
+    "source_revision": "d47351466a276ba14c9a3a136e6ae586d2d24d2b",
+    "storage_acceptance_exit_code": 0,
+    "coordinator_exit_code": 0,
+    "storage_tests_passed": 1045,
+    "coordinator_tests_passed": 294,
+    "acceptance_steps_passed": 7,
+    "preexisting_ignored_test": "large synthetic history timing case; unchanged",
+    "storage_acceptance_sha256": "a383ab8bb161e2c868b54380a5f1e91896a3b8f9d11c681cd6cb4c5cf793f941",
+    "coordinator_sha256": "427a444c963a12eaefa58d2bd4f956bbecd94b63c186071506bb396075303888",
+    "completed_at": "2026-09-27T03:27:18.748906+00:00"
+  },
+  "local_correctness_proof_sha256": "d7332de0fdf04d7e92229afabd1b121e632d3edd811a10ad80e82df7d345b5fa",
+  "completed_at": "2026-09-27T03:31:31.775714+00:00"
+}

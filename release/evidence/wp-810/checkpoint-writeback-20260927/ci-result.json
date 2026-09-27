@@ -1,0 +1,8 @@
+{
+  "exit_code": 0,
+  "rust_reported_passes": 6157,
+  "rust_result_groups": 556,
+  "count_scope": "Includes recursive crash children and repeated validation groups; not a unique-test count.",
+  "source_revision": "d47351466a276ba14c9a3a136e6ae586d2d24d2b",
+  "log_sha256": "6463ce8e0f4b0556f55069ea2afe9007f381e1e7ff506f9347cd7c8fcfbc983e"
+}
