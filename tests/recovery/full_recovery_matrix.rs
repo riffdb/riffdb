@@ -93,6 +93,9 @@ const BUDGET_CONTRACT: &str = include_str!("../../contracts/examples/budget.riff
 
 type TestResult<T> = Result<T, Box<dyn Error + Send + Sync>>;
 
+#[path = "online_retention_daemon.rs"]
+mod online_retention_daemon;
+
 #[derive(Clone, Copy, Debug)]
 enum ResponseLoss {
     IncompleteFrame,
@@ -197,8 +200,13 @@ fn main() -> ExitCode {
     }
     let multi_database_only =
         std::env::args().any(|argument| argument == "--multi-database-recovery-only");
-    if !multi_database_only && !std::env::args().any(|argument| argument == "--ignored") {
-        println!("full_recovery_matrix: 9 ignored");
+    let online_retention_only =
+        std::env::args().any(|argument| argument == "--online-retention-only");
+    if !multi_database_only
+        && !online_retention_only
+        && !std::env::args().any(|argument| argument == "--ignored")
+    {
+        println!("full_recovery_matrix: 10 ignored");
         return ExitCode::SUCCESS;
     }
 
@@ -215,6 +223,8 @@ fn main() -> ExitCode {
     };
     let result = if multi_database_only {
         runtime.block_on(run_multi_database_staged_authorization_case())
+    } else if online_retention_only {
+        runtime.block_on(online_retention_daemon::run_online_retention_kill_case())
     } else {
         runtime.block_on(run_matrix())
     };
@@ -222,8 +232,10 @@ fn main() -> ExitCode {
         Ok(()) => {
             if multi_database_only {
                 println!("full_recovery_matrix: multi-database recovery passed");
+            } else if online_retention_only {
+                println!("full_recovery_matrix: online retention recovery passed");
             } else {
-                println!("full_recovery_matrix: 9 passed");
+                println!("full_recovery_matrix: 10 passed");
             }
             ExitCode::SUCCESS
         }
@@ -256,6 +268,7 @@ async fn run_matrix() -> TestResult<()> {
     run_maintenance_daemon_case(MaintenanceDaemonCrash::DatabaseClosed).await?;
     run_maintenance_daemon_case(MaintenanceDaemonCrash::StagedAuthorizationComplete).await?;
     run_maintenance_daemon_case(MaintenanceDaemonCrash::FreshValidationComplete).await?;
+    online_retention_daemon::run_online_retention_kill_case().await?;
     run_multi_database_staged_authorization_case().await
 }
 
@@ -1548,6 +1561,7 @@ struct ProcessFixture {
     second_database: PathBuf,
     second_backup_root: PathBuf,
     multi_config: PathBuf,
+    single_config: PathBuf,
     capability_keys: PathBuf,
     idempotency_keys: PathBuf,
     bootstrap: PathBuf,
@@ -1561,6 +1575,7 @@ impl ProcessFixture {
         let second_database = directory.path().join("other.redb");
         let second_backup_root = directory.path().join("other-backups");
         let multi_config = directory.path().join("riffdb-multi.toml");
+        let single_config = directory.path().join("riffdb.toml");
         let capability_keys = directory.path().join("capability.keys");
         let idempotency_keys = directory.path().join("idempotency.keys");
         let bootstrap = directory.path().join("bootstrap.credential");
@@ -1578,6 +1593,7 @@ impl ProcessFixture {
             second_database,
             second_backup_root,
             multi_config,
+            single_config,
             capability_keys,
             idempotency_keys,
             bootstrap,
@@ -1596,11 +1612,31 @@ impl ProcessFixture {
         self.spawn_riffdbd_with_mode(CHILD_RIFFDBD, "127.0.0.1:0")
     }
 
+    /// Spawns the ordinary single-database daemon with an additional
+    /// configuration document (for sections with no command-line form).
+    fn spawn_riffdbd_with_config(&self, document: &str) -> TestResult<ChildProcessController> {
+        fs::write(&self.single_config, document)?;
+        let specification = self
+            .riffdbd_specification(CHILD_RIFFDBD, "127.0.0.1:0")?
+            .arg("--config")?
+            .arg(self.single_config.as_os_str())?;
+        Ok(ChildProcessController::spawn(&specification)?)
+    }
+
     fn spawn_riffdbd_with_mode(
         &self,
         mode: &str,
         listen_address: &str,
     ) -> TestResult<ChildProcessController> {
+        let specification = self.riffdbd_specification(mode, listen_address)?;
+        Ok(ChildProcessController::spawn(&specification)?)
+    }
+
+    fn riffdbd_specification(
+        &self,
+        mode: &str,
+        listen_address: &str,
+    ) -> TestResult<ChildProcessSpec> {
         let executable = std::env::current_exe()?;
         let specification = ChildProcessSpec::new(executable)?
             .env(CHILD_MODE, mode)?
@@ -1618,7 +1654,7 @@ impl ProcessFixture {
             .arg(self.capability_keys.as_os_str())?
             .arg("--idempotency-keys")?
             .arg(self.idempotency_keys.as_os_str())?;
-        Ok(ChildProcessController::spawn(&specification)?)
+        Ok(specification)
     }
 
     fn spawn_multi_riffdbd_with_mode(

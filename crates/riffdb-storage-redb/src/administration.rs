@@ -2239,6 +2239,9 @@ fn service_link_is_valid(
             commit_sequence,
             provenance_id,
         } => {
+            let retention_watermark = crate::retention::watermark_in_meta(
+                &transaction.open_table(META).map_err(table_error)?,
+            )?;
             let commits = transaction.open_table(COMMITS).map_err(table_error)?;
             let events = transaction.open_table(EVENTS).map_err(table_error)?;
             let provenance = transaction.open_table(PROVENANCE).map_err(table_error)?;
@@ -2246,6 +2249,7 @@ fn service_link_is_valid(
                 &commits,
                 &events,
                 &provenance,
+                retention_watermark,
                 commit_sequence,
                 provenance_id,
             )
@@ -2380,6 +2384,26 @@ fn service_link_is_valid_access(
             {
                 return Ok(false);
             }
+            // A pruned command's retained provenance row alone proves the link.
+            let retention_watermark = match access.read_command_value(
+                JournalTable::Meta,
+                crate::layout::META_RETENTION_WATERMARK.as_bytes(),
+            )? {
+                Some(encoded) => {
+                    riffdb_storage_api::proto_codec::decode_retention_watermark_v1(&encoded)
+                        .map_err(crate::error::codec_error)?
+                        .into_parts()
+                        .0
+                        .watermark_sequence()
+                }
+                None => 0,
+            };
+            if crate::retention::sequence_covered_by_watermark(
+                commit_sequence.get(),
+                retention_watermark,
+            ) {
+                return Ok(true);
+            }
             let commit_key = encode_application_sequence_key(commit_sequence);
             Ok(access
                 .read_command_value(JournalTable::Commits, commit_key.as_slice())?
@@ -2457,6 +2481,7 @@ fn command_service_link_is_valid<C, E, P>(
     commits: &C,
     events: &E,
     provenance: &P,
+    retention_watermark: u64,
     commit_sequence: riffdb_types::CommitSequence,
     provenance_id: riffdb_types::ProvenanceId,
 ) -> Result<bool, StorageError>
@@ -2465,6 +2490,12 @@ where
     E: ReadableTable<&'static [u8], &'static [u8]>,
     P: ReadableTable<&'static [u8], &'static [u8]>,
 {
+    // A pruned command keeps its materialized provenance row (ADR-0085
+    // Amendment 2) while its commit is gone: the retained row alone proves
+    // the link, so a pruned command's replay stays auditable.
+    if crate::retention::sequence_covered_by_watermark(commit_sequence.get(), retention_watermark) {
+        return retained_provenance_matches(provenance, commit_sequence, provenance_id);
+    }
     // ADR-0102: a committed command is a member of a bounded segment keyed by the
     // segment's first commit sequence, and its provenance record is carried inside
     // that member rather than in an independent `provenance` row. Resolve the
@@ -2510,6 +2541,17 @@ where
     if commit.commit_sequence() != commit_sequence || commit.provenance_id() != provenance_id {
         return Ok(false);
     }
+    retained_provenance_matches(provenance, commit_sequence, provenance_id)
+}
+
+fn retained_provenance_matches<P>(
+    provenance: &P,
+    commit_sequence: riffdb_types::CommitSequence,
+    provenance_id: riffdb_types::ProvenanceId,
+) -> Result<bool, StorageError>
+where
+    P: ReadableTable<&'static [u8], &'static [u8]>,
+{
     let key = encode_provenance_key(provenance_id);
     let Some(provenance) = provenance
         .get(key.as_slice())
@@ -3125,6 +3167,9 @@ fn stage_service_audit_group_with_command_evidence(
             transaction.open_table(COMMITS).map_err(table_error)?,
             transaction.open_table(EVENTS).map_err(table_error)?,
             transaction.open_table(PROVENANCE).map_err(table_error)?,
+            crate::retention::watermark_in_meta(
+                &transaction.open_table(META).map_err(table_error)?,
+            )?,
         ))
     } else {
         None
@@ -3182,13 +3227,14 @@ fn stage_service_audit_group_with_command_evidence(
             } => {
                 if let Some(evidence) = staged_commands.next() {
                     evidence.matches(commit_sequence, provenance_id)
-                } else if let Some((commits, events, provenance)) =
+                } else if let Some((commits, events, provenance, retention_watermark)) =
                     authoritative_command_tables.as_ref()
                 {
                     command_service_link_is_valid(
                         commits,
                         events,
                         provenance,
+                        *retention_watermark,
                         commit_sequence,
                         provenance_id,
                     )?

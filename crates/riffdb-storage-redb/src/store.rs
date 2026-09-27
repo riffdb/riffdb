@@ -5411,12 +5411,35 @@ impl RedbOperationalPorts {
         &self,
         source: riffdb_storage_api::ChangelogAttributionV3,
     ) -> Result<RedbWriteAccess, StorageError> {
+        self.begin_attributed_write_inner(source, false)
+    }
+
+    /// The same direct write, except that under the held gate it first
+    /// materializes the published journal suffix into the engine (the
+    /// source-control barrier), so an engine snapshot opened afterward sees
+    /// every acknowledged transition ordered before this write.
+    pub(crate) fn begin_attributed_write_after_checkpoint(
+        &self,
+        source: riffdb_storage_api::ChangelogAttributionV3,
+    ) -> Result<RedbWriteAccess, StorageError> {
+        self.begin_attributed_write_inner(source, true)
+    }
+
+    fn begin_attributed_write_inner(
+        &self,
+        source: riffdb_storage_api::ChangelogAttributionV3,
+        checkpoint_first: bool,
+    ) -> Result<RedbWriteAccess, StorageError> {
         crate::changelog_v3_write::require_direct_attribution(source)?;
         let lease = self.shared.mutation_gate.acquire()?;
         if self.shared.write_fenced.load(Ordering::Acquire) {
             return Err(storage_error(StorageErrorKind::Unavailable));
         }
         self.shared.publish_pending_journal_prefix()?;
+        if checkpoint_first {
+            self.shared
+                .checkpoint_published_journal_suffix_for_barrier()?;
+        }
         self.shared.poll_async_checkpoint_locked(true)?;
         let journal_checkpoint = self.shared.take_published_journal_suffix_locked(true)?;
         let mut transaction = match self.shared.database.begin_write() {
@@ -5895,6 +5918,14 @@ impl RedbWriteAccess {
                 .map_err(journal_storage_error)?;
         }
         Ok(())
+    }
+
+    /// Application commands in the journal suffix this write drained, which
+    /// an engine snapshot opened before its commit does not yet contain.
+    pub(crate) fn drained_journal_commands(&self) -> usize {
+        self.journal_checkpoint
+            .as_ref()
+            .map_or(0, |runtime| runtime.suffix_commands)
     }
 
     pub(crate) fn transaction(&self) -> Result<&OperationalWriteTransaction, StorageError> {
