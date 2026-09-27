@@ -1,0 +1,29 @@
+{
+  "schema": "riffdb.wp749-post-wp810-custody/v1",
+  "finished": {
+    "at": "2026-09-27T15:20:09.369303+00:00",
+    "exit_code": 0
+  },
+  "inputs": {
+    "01-disabled": {
+      "raw_report_sha256": "4ffb15da5c13ddeef4fa4e319e364cef6af713b21637cc48e84802824f5c179b",
+      "raw_samples_sha256": "93748cdab3bae59776178d9c1ac775d28100cb33dfbbb81d8137390e0a6f121f",
+      "original_attempt_sha256": "b3c25e5728e213af78380d4e6c031e41ed8167c51ab717a1967e0810eb0097f9",
+      "analysis_sha256": "92498535d4c5476f17c297a905efd00557b00ffc1d2bfbe7798eb1bdaa0d1756",
+      "run_log_sha256": "c2425e0d7d2541533f1e698283b910e57d70b8de3d9ae98518a6c845cda52f4d"
+    },
+    "02-enabled": {
+      "raw_report_sha256": "3a97336a2c3479550eec2b84ca3e1a49bcbd93f2f660dc2874d1af7cd10e010a",
+      "raw_samples_sha256": "034c9d8f5fa586eecb5d437cb3dc128fc184ce617fec05cb13537d5dd104bf45",
+      "original_attempt_sha256": "278e6b4ca86626bceae86998402a6f9cfafae39386890216671a72671692430d",
+      "analysis_sha256": "703945203849da909e2bee512ae9a9a5cdd50d7b92b61d9679721ec170721f42",
+      "run_log_sha256": "ff3295e7dbe59e83f2d4f3026e06d8bdf617a4bbdfdee39af03f5cd56a0234b5"
+    }
+  },
+  "isolation_restored": true,
+  "exact_binaries_retained": true,
+  "raw_logs_retained": true,
+  "source_bundle_sha256": "bb6c0865d83b972cbaac533bfbc51d3d47028613a028db4fe9a7dda2ce6dd678",
+  "original_isolation_receipt_sha256": "d6981f55855d87160fe48e0590272c19d9739fd86ea5d0042bb1f47c5d52452f",
+  "limits": "Exported build receipt omits its private target directory; its checksum is distinct from the retained original. Raw reports/logs and binaries are private."
+}

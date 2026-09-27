@@ -23190,26 +23190,37 @@ work_packages:
       the whole history in memory.
   closure:
     status: blocked
-    blocked_at: '2026-09-21'
-    blocked_by: [WP-810]
-    evidence: docs/performance/wp749-archive-qualification-2026-09.md
-    reason: The acknowledgement-latency gate is unmet. The isolated archive comparison
-      moves P99 from 88.35 to 114.93 ms. Its dominant named mechanism is checkpoint-coupled
-      journal durability, present without archive and owned by WP-810. The roughly
-      11.7 ms fixed-trace residual remains unattributed; existing subtraction analyses
-      do not identify a causal archive cost. Stop WP-749 investigation until the shared
-      term is reduced, then measure archive acknowledgement cost directly.
-    resume_when: WP-810 lands a guarantee-preserving reduction of the shared checkpoint
-      term with its own correctness and performance evidence. Closing or renaming that
-      package without reducing the term does not clear this dependency.
-    remeasurement: After the prerequisite, freeze refreshed source and toolchain and use
-      identical binaries in one exclusively isolated archive off/on pair, full dataset,
-      c32 write-only, Standard durability, 15-second warmup and 90-second measurement.
-      Retain raw command acknowledgement P50/P95/P99, host checks, source/binary digests,
-      repaired wait counters, checkpoint counts, archive progress and throughput disclosure.
-      Compare acknowledgements directly without decomposition. Review the unchanged exit
-      gate from that evidence; neither this block nor ADR-0249 supplies a latency waiver.
+    blocked_at: '2026-09-27'
+    blocked_by: []
+    evidence: docs/performance/wp749-archive-post-wp810-2026-09.md
+    reason: WP-810 is complete and its landed reduction has been exercised by the
+      defined same-binary archive off/on pair at 10c312d74. Both cells pass host,
+      correctness and raw-sample checks, but acknowledgement P50 rises 7.953 to
+      8.393 ms, P95 rises 10.649 to 11.775 ms and P99 rises 92.710 to 130.032 ms.
+      Throughput falls 11.62 percent and is disclosed separately. The archive gate
+      remains unmet; the incremental tail mechanism is not identified by aggregate
+      counters. This is now WP-749's own archive-presence cost, not an outstanding
+      WP-810 package dependency. No completion or latency waiver is claimed.
+    resume_when: Reduce the archive-presence acknowledgement cost without weakening
+      accepted guarantees, as directed by the maintainer on 2026-09-27. Keep the
+      existing latency clause. Neither WP-810 completion nor a numeric P99 allowance discharges
+      the current gate. Capture and codec investigations remain closed.
+    remeasurement: The prescribed post-WP-810 pair is complete and retained. Any
+      candidate comparison must preserve the frozen full dataset, same toolchain,
+      identical off/on executables, direct raw acknowledgements, host isolation,
+      correctness, checkpoint and repaired wait counters, and archive progress.
+      Do not reuse historical percentile subtraction or silently extend the completed
+      two-cell protocol. A new measurement requires its own recorded scope.
     decisions_taken:
+    - 'Maintainer direction, in session, 2026-09-27: Keep the gate and reduce archive
+      overhead. Continue local implementation and correctness checks; the measurement
+      host is released to another agent until the maintainer confirms availability.
+      No latency-clause amendment or additional remote work is authorized by this choice.'
+    - 'Maintainer direction, in session, 2026-09-27: complete WP-749 now that WP-810
+      is done. Run the defined direct pair on the landed production source, with
+      only a bounded runner sample observer and no daemon probe. Retain both valid
+      cells, disclose the still-unmet acknowledgement gate, and preserve all prior
+      failed evidence. This direction does not amend REP-007 or the exit gate.'
     - 'Maintainer direction, in session, 2026-09-21: block WP-749 on the checkpoint/journal
       package, publish the named dominant mechanism and explicitly unattributed remainder,
       and stop. That package was locally numbered WP-806, then WP-808 and WP-809; renumber

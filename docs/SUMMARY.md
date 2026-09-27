@@ -153,6 +153,7 @@
 - [WP-749 Receipt-wait Repair and Checkpoint Investigation](performance/wp749-receipt-wait-repair-2026-09.md)
 - [WP-749 Correlated Tail Result](performance/wp749-correlated-tail-2026-09.md)
 - [WP-749 Archive-presence Qualification](performance/wp749-archive-qualification-2026-09.md)
+- [WP-749 Archive Acknowledgement after WP-810](performance/wp749-archive-post-wp810-2026-09.md)
 - [WP-749 Archive Acknowledgement Attribution](performance/wp749-archive-ack-attribution-2026-09.md)
 - [WP-749 Isolated Checkpoint-Wait Comparison](performance/wp749-archive-isolated-pair-2026-09.md)
 - [WP-749 P99 Decomposition](performance/wp749-archive-p99-decomposition-2026-09.md)

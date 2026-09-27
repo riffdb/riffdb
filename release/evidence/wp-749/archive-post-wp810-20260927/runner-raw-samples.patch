@@ -1,0 +1,232 @@
+diff --git a/examples/app-baseline/core/src/lib.rs b/examples/app-baseline/core/src/lib.rs
+index 52e56f57d..bcac7a64f 100644
+--- a/examples/app-baseline/core/src/lib.rs
++++ b/examples/app-baseline/core/src/lib.rs
+@@ -8,6 +8,7 @@ mod histogram;
+ mod ids;
+ mod journeys;
+ mod load;
++mod raw_tail;
+ mod report;
+ mod scale;
+ mod scenarios;
+diff --git a/examples/app-baseline/core/src/load.rs b/examples/app-baseline/core/src/load.rs
+index 4af1c6e54..42d557687 100644
+--- a/examples/app-baseline/core/src/load.rs
++++ b/examples/app-baseline/core/src/load.rs
+@@ -758,6 +758,7 @@ impl LoadReport {
+ 
+ /// Per-worker load result: op stats plus absolute measure bounds.
+ struct WorkerLoadResult {
++    raw_tail: Option<crate::raw_tail::Capture>,
+     by_op: Vec<(LoadOp, OpStats)>,
+     /// Instant the worker started its first measured sample (if any).
+     measure_start: Option<Instant>,
+@@ -939,6 +940,18 @@ where
+         .saturating_mul(fanout)
+         .clamp(1, worker_ceiling);
+ 
++    let raw_tail_directory =
++        std::env::var_os("RIFFDB_APP_BASELINE_RAW_TAIL_DIR").map(std::path::PathBuf::from);
++    let raw_tail_enabled = raw_tail_directory.is_some();
++    if raw_tail_enabled && (worker_count > crate::raw_tail::MAX_WORKERS || config.saturate) {
++        return Err("raw-tail requires at most 32 ordinary closed-loop workers".to_owned());
++    }
++    if raw_tail_directory
++        .as_ref()
++        .is_some_and(|p| !p.is_dir() || p.join("raw-request-tail.json").exists())
++    {
++        return Err("raw-tail requires an existing unused directory".to_owned());
++    }
+     let ready = Arc::new(std::sync::Barrier::new(worker_count + 1));
+     let go = Arc::new(std::sync::Barrier::new(worker_count + 1));
+     let mut workers = Vec::with_capacity(worker_count);
+@@ -972,6 +985,7 @@ where
+                         probes[warm_tenant].ticket_id,
+                     )
+                     .map_err(|error| error.to_string())?;
++                let mut raw_tail = raw_tail_enabled.then(crate::raw_tail::Capture::new);
+                 ready.wait();
+                 go.wait();
+ 
+@@ -1020,6 +1034,9 @@ where
+                     );
+                     let ended = Instant::now();
+                     if record {
++                        if let Some(capture) = raw_tail.as_mut() {
++                            capture.record(u64::try_from(elapsed.as_nanos()).unwrap_or(u64::MAX));
++                        }
+                         if measure_start.is_none() {
+                             measure_start = Some(started);
+                         }
+@@ -1051,6 +1068,7 @@ where
+                 }
+ 
+                 Ok(WorkerLoadResult {
++                    raw_tail,
+                     by_op,
+                     measure_start,
+                     measure_end,
+@@ -1089,12 +1107,16 @@ where
+     let mut worker_completed_operations = Vec::with_capacity(worker_count);
+     let mut worker_longest_pause = Vec::with_capacity(worker_count);
+     let mut tenant_stats = vec![TenantLoadStats::default(); config.tenant_count];
++    let mut raw_captures = Vec::with_capacity(if raw_tail_enabled { worker_count } else { 0 });
+     let mut global_start: Option<Instant> = None;
+     let mut global_end: Option<Instant> = None;
+     let mut join_error: Option<String> = None;
+     for worker in workers {
+         match worker.join() {
+             Ok(Ok(worker_result)) => {
++                if let Some(capture) = worker_result.raw_tail {
++                    raw_captures.push(capture);
++                }
+                 let interval = match (worker_result.measure_start, worker_result.measure_end) {
+                     (Some(start), Some(end)) => {
+                         global_start = Some(match global_start {
+@@ -1141,6 +1163,13 @@ where
+             }
+         }
+     }
++    if let Some(directory) = raw_tail_directory.as_ref() {
++        crate::raw_tail::write_report(
++            directory,
++            &raw_captures,
++            worker_completed_operations.iter().copied().sum(),
++        )?;
++    }
+     if let Some(reason) = abort_reason {
+         return Err(reason);
+     }
+@@ -1358,6 +1387,7 @@ where
+                 }
+                 Ok((
+                     WorkerLoadResult {
++                        raw_tail: None,
+                         by_op,
+                         measure_start,
+                         measure_end,
+diff --git a/examples/app-baseline/core/src/raw_tail.rs b/examples/app-baseline/core/src/raw_tail.rs
+new file mode 100644
+index 000000000..6ba8f869a
+--- /dev/null
++++ b/examples/app-baseline/core/src/raw_tail.rs
+@@ -0,0 +1,118 @@
++//! Private bounded sample retention, identical in both WP-810 timing arms.
++use std::io::Write;
++use std::path::Path;
++
++pub(crate) const MAX_WORKERS: usize = 32;
++const LIMIT: usize = 32_768;
++
++pub(crate) struct Capture {
++    samples: Vec<u64>,
++    retained: usize,
++    dropped: u64,
++}
++
++impl Capture {
++    pub(crate) fn new() -> Self {
++        Self {
++            samples: vec![0; LIMIT],
++            retained: 0,
++            dropped: 0,
++        }
++    }
++    pub(crate) fn record(&mut self, ns: u64) {
++        if self.retained == LIMIT {
++            self.dropped = self.dropped.saturating_add(1);
++        } else {
++            self.samples[self.retained] = ns.max(1);
++            self.retained += 1;
++        }
++    }
++}
++
++fn report(captures: &[Capture], expected: u64) -> Result<serde_json::Value, String> {
++    if captures.is_empty() || captures.len() > MAX_WORKERS {
++        return Err("raw-tail worker bound violated".to_owned());
++    }
++    let count = captures.iter().map(|c| c.retained as u64).sum::<u64>();
++    let dropped = captures.iter().map(|c| c.dropped).sum::<u64>();
++    let mut top = captures
++        .iter()
++        .enumerate()
++        .flat_map(|(worker, capture)| {
++            capture.samples[..capture.retained]
++                .iter()
++                .enumerate()
++                .map(move |(ordinal, value)| (*value, worker, ordinal))
++        })
++        .collect::<Vec<_>>();
++    top.sort_unstable_by(|a, b| b.0.cmp(&a.0).then(a.1.cmp(&b.1)).then(a.2.cmp(&b.2)));
++    top.truncate(20);
++    Ok(serde_json::json!({
++        "schema": "private.wp810-request-tail/v1",
++        "scope": "measured requests; all outcomes; worker-local completion order",
++        "valid": dropped == 0 && count == expected,
++        "sample_count": count, "expected_sample_count": expected, "dropped_samples": dropped,
++        "maximum_workers": MAX_WORKERS, "maximum_samples_per_worker": LIMIT,
++        "workers": captures.iter().enumerate().map(|(id,c)| serde_json::json!({
++            "worker": id, "dropped_samples": c.dropped, "samples_ns": &c.samples[..c.retained],
++        })).collect::<Vec<_>>(),
++        "slowest_20": top.iter().map(|(ns, worker, ordinal)| serde_json::json!({
++            "elapsed_ns": ns, "worker": worker, "worker_ordinal": ordinal,
++        })).collect::<Vec<_>>(),
++    }))
++}
++
++pub(crate) fn write_report(
++    directory: &Path,
++    captures: &[Capture],
++    expected: u64,
++) -> Result<(), String> {
++    let value = report(captures, expected)?;
++    let mut file = std::fs::OpenOptions::new()
++        .write(true)
++        .create_new(true)
++        .open(directory.join("raw-request-tail.json"))
++        .map_err(|_| "raw-tail output exists or unavailable")?;
++    serde_json::to_writer(&mut file, &value).map_err(|_| "raw-tail serialization failed")?;
++    file.write_all(b"\n")
++        .and_then(|()| file.sync_all())
++        .map_err(|_| "raw-tail write failed")?;
++    if value["valid"] != true {
++        return Err("raw-tail overflow/count mismatch; partial evidence retained".to_owned());
++    }
++    Ok(())
++}
++
++#[cfg(test)]
++mod tests {
++    use super::*;
++    // req: PERF-018
++    #[test]
++    fn raw_samples_preserve_order_and_resolve_histogram_bucket_collisions() {
++        let mut capture = Capture::new();
++        for ns in [71_303_168, 75_497_471, 73_000_003] {
++            capture.record(ns);
++        }
++        let value = report(&[capture], 3).unwrap();
++        assert_eq!(value["valid"], true);
++        assert_eq!(
++            value["workers"][0]["samples_ns"],
++            serde_json::json!([71_303_168, 75_497_471, 73_000_003])
++        );
++        assert_eq!(value["slowest_20"][0]["worker_ordinal"], 1);
++    }
++    // req: PERF-018
++    #[test]
++    fn overflow_and_population_mismatch_refuse_qualification() {
++        let mut capture = Capture::new();
++        for _ in 0..LIMIT + 3 {
++            capture.record(5);
++        }
++        let value = report(&[capture], (LIMIT + 3) as u64).unwrap();
++        assert_eq!(value["valid"], false);
++        assert_eq!(value["dropped_samples"], 3);
++        let mut capture = Capture::new();
++        capture.record(10);
++        assert_eq!(report(&[capture], 2).unwrap()["valid"], false);
++    }
++}

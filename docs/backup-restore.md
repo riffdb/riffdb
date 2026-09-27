@@ -381,14 +381,17 @@ the repository bundle at
 The later combined implementation also passed full integration CI. The
 [same-binary archive comparison](performance/wp749-archive-qualification-2026-09.md#result-recorded-on-2026-09-21)
 completed twenty valid cells and found measurable archive overhead: write-only
-median throughput fell 8.49% and request P95 rose 4.35%. **WP-749 is blocked on
-WP-810**, which owns the shared checkpoint/journal delay. The isolated diagnostic
+median throughput fell 8.49% and request P95 rose 4.35%. The later isolated diagnostic
 measured acknowledgement P99 at 88.35 ms off and 114.93 ms on. Checkpoint-coupled
 journal durability is the named dominant mechanism, present without archive;
-roughly 11.7 ms remains unattributed. After that shared term is reduced, the
-[defined direct off/on remeasurement](performance/wp749-archive-qualification-2026-09.md#remeasurement-that-clears-the-block)
-assesses the unchanged acknowledgement-latency gate. Further subtraction-based
-investigation is stopped; no completion or latency waiver is claimed.
+roughly 11.7 ms remained unattributed. **WP-810 is complete**, with a limited
+mitigation and its remaining shared tail accepted. The
+[post-WP-810 direct pair](performance/wp749-archive-post-wp810-2026-09.md)
+passes host and correctness checks but still finds P95 10.65 to 11.77 ms and
+P99 92.71 to 130.03 ms with archive enabled. **WP-749's latency gate remains
+unmet.** This archive-presence movement is not attributed by the aggregate
+counters. Further subtraction of historical samples remains closed; no
+completion or latency waiver is claimed.
 WP-750's full replication campaign is also
 outstanding, so these paths do not yet constitute a qualified disaster-recovery
 deployment.

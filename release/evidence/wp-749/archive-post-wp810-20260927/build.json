@@ -1,0 +1,23 @@
+{
+  "source_revision": "10c312d742613daccc8e5c65eddb528f08d59f0a",
+  "compiler": "rustc 1.98.1 (48a229cea 2026-09-01)\nbinary: rustc\ncommit-hash: 48a229ceaefd4985c50990b14116b6d856af0985\ncommit-date: 2026-09-01\nhost: x86_64-unknown-linux-gnu\nrelease: 1.98.1\nLLVM version: 22.1.8\n",
+  "locks": {
+    "Cargo.lock": "a2256daf97fad88fb36f80ab8397cac38a7fcc1212e53e9ace9691dc7f430e2f",
+    "examples/app-baseline/Cargo.lock": "8b02313c259d283aa2d24279b87117d0f434535495576b933b5ca2c6ff4be5d0"
+  },
+  "daemon_sha256": "71eeac760ff4fc5f990b4ab9dbdce7ffff8245e9fbb16185e9f0583441c7788d",
+  "runner_sha256": "beae472d0cabc9043bf8929a989824cf9a3ae13cfba221d5b5136b6c99b83eec",
+  "build_environment": {
+    "RUSTFLAGS": "-C target-cpu=x86-64",
+    "CARGO_BUILD_JOBS": "6",
+    "CARGO_INCREMENTAL": "0",
+    "RUSTC_WRAPPER": "",
+    "RUSTUP_TOOLCHAIN": "1.98.1",
+    "CARGO_PROFILE_RELEASE_LTO": "thin",
+    "CARGO_PROFILE_RELEASE_CODEGEN_UNITS": "1"
+  },
+  "build_target": "fresh private task output directory",
+  "daemon_source_unmodified": true,
+  "runner_patch_sha256": "c85928e4586a18dd4596d5237ec746de162cb4864fa84d7485be3c55414df03e",
+  "original_build_receipt_sha256": "7ae3670cb91a9fb4f9a8ae5aaf07020fd7d9af0111317330dbff079807da4722"
+}

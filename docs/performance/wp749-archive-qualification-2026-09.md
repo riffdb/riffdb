@@ -1,8 +1,17 @@
 # WP-749: remaining archive-presence qualification
 
-Status: **WP-749 is blocked on [WP-810](wp-810-checkpoint-journal-tail.md)**,
-the shared checkpoint/journal package. The acknowledgement-latency gate is
-unmet; the archive investigation is stopped. The fixed archive comparison is
+**Current follow-up, 2026-09-27:** after WP-810 landed and the maintainer
+directed completion of WP-749, the defined direct pair completed on
+the committed post-WP-810 baseline. Both cells pass host and correctness
+checks, but P95 rises 10.65 to 11.77 ms and P99 rises 92.71 to 130.03 ms.
+The archive-latency gate remains unmet. See the
+[current result and implementation audit](wp749-archive-post-wp810-2026-09.md).
+The historical blocked disposition below is retained; WP-810 is now complete
+and supplies no waiver for this remaining archive-presence cost.
+
+Status: **WP-749's acknowledgement-latency gate remains unmet after WP-810**.
+The original block and stopped investigation below are historical. The current
+post-WP-810 result is linked above; the earlier fixed archive comparison is
 complete, and the
 [correlated tail investigation](wp749-correlated-tail-2026-09.md) is closed.
 WP-748 promotion is already complete on main, dated 2026-09-21, and has no

@@ -1,0 +1,11 @@
+{
+  "valid_full_cell_recomputed": true,
+  "rejected": [
+    "count mismatch",
+    "altered sample",
+    "overflow",
+    "invalid host"
+  ],
+  "source_cell_raw_sha256": "dde4c2e1e7b7f9455fa4460c873c7ecf955009ea1f3529c5ea13a43df5460927",
+  "qualified_analyzer_sha256": "fca996a125a623e88303de585a9b2c9d08f749aef06497bc031ee50b06d5974d"
+}

@@ -1,0 +1,22 @@
+{
+  "schema": "riffdb.wp749-post-wp810-freeze/v1",
+  "source_revision": "10c312d742613daccc8e5c65eddb528f08d59f0a",
+  "source_tree": "7e9c34846b5e20f95c04e830a7d592e057d21571",
+  "inputs": {
+    "source.bundle": "bb6c0865d83b972cbaac533bfbc51d3d47028613a028db4fe9a7dda2ce6dd678",
+    "runner-raw-samples.patch": "c85928e4586a18dd4596d5237ec746de162cb4864fa84d7485be3c55414df03e",
+    "protocol.json": "268fc908aaf07f9b097ba9a2188c45fdb93f90bc0270e538547a870789203df3",
+    "analyze.py": "fca996a125a623e88303de585a9b2c9d08f749aef06497bc031ee50b06d5974d",
+    "build_run.py": "47a7241cebff14ac4b3386cf10278de24ed5f2547c5192e47cb8b82122b57e1f",
+    "isolate_host.py": "be90f866e55f0d91ce56026d2457e889e61a250d9763a8527ea2bc5352bb943e",
+    "analyzer-tests.json": "5e7317587e65f3dd80e0e241d6762a472231a79278dca59a552d04f55739f76b"
+  },
+  "production_daemon_unmodified": true,
+  "runner_only_observer": true,
+  "existing_ci_qualified_revision": "ccadaf508bff1362401db911ec5d94e2185126ac",
+  "local_raw_sample_tests": {
+    "passed": 2,
+    "failed": 0,
+    "command": "cargo test --locked --manifest-path examples/app-baseline/Cargo.toml -p riffdb-app-baseline-core raw_tail"
+  }
+}

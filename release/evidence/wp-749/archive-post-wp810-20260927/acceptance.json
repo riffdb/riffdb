@@ -1,0 +1,62 @@
+{
+  "schema": "wp749-documentation-acceptance-v1",
+  "base": "10c312d742613daccc8e5c65eddb528f08d59f0a",
+  "command": "./scripts/acceptance --wp WP-749 --base 10c312d74",
+  "exit_code": 0,
+  "steps": [
+    {
+      "seconds": 0.5,
+      "command": "./scripts/check-allowed-paths --wp WP-749 --base 10c312d74"
+    },
+    {
+      "seconds": 37.6,
+      "command": "cargo fmt --all -- --check"
+    },
+    {
+      "seconds": 66.9,
+      "command": "./scripts/check-generated"
+    },
+    {
+      "seconds": 0.1,
+      "command": "./scripts/check-version-topology"
+    },
+    {
+      "seconds": 28.1,
+      "command": "./scripts/handbook check"
+    },
+    {
+      "seconds": 1.0,
+      "command": "./scripts/check-requirement-coverage"
+    },
+    {
+      "seconds": 1.6,
+      "command": "./scripts/check-adr-obligations"
+    },
+    {
+      "seconds": 0.1,
+      "command": "./scripts/adr-new --self-test"
+    },
+    {
+      "seconds": 0.1,
+      "command": "./scripts/adr-index --check"
+    },
+    {
+      "seconds": 0.3,
+      "command": "./scripts/check-acceptance-commits"
+    },
+    {
+      "seconds": 1.1,
+      "command": "./scripts/check-performance-freeze"
+    }
+  ],
+  "log_sha256": "4c575ac54c7863753162e8a8c336172a28f8404c36d03b4520f7d92d3ef7866f",
+  "prior_attempt": {
+    "exit_code": 1,
+    "passed": 10,
+    "failed": 1,
+    "log_sha256": "ad4eb4f9b6909e1db484747e5facebf90c427fdae900fd6e89fe4cb24c928241",
+    "failure": "Missing pinned TypeScript compiler in the new worktree; Node fallback rejected generated TypeScript syntax."
+  },
+  "repair": "npm ci --ignore-scripts using the existing TypeScript runtime lockfile; no tracked dependency changes",
+  "scope": "Documentation and retained evidence only; no runtime or fixture change; gate remains unmet"
+}
