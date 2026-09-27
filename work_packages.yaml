@@ -23212,6 +23212,13 @@ work_packages:
       Do not reuse historical percentile subtraction or silently extend the completed
       two-cell protocol. A new measurement requires its own recorded scope.
     decisions_taken:
+    - 'D-003 implementation choice, 2026-09-27: stage the archive CURRENT selector
+      from its already-synced immutable manifest using the existing checked directory
+      hard-link mechanism. Retain source and destination descriptor checks, both
+      directory barriers, exact retry, all ten crash edges and legacy independent
+      selectors. Remove only the duplicate selector payload write and file sync;
+      no format, identity, primary capture, acknowledgement clause or guarantee change.
+      Performance benefit remains unmeasured.'
     - 'Maintainer direction, in session, 2026-09-27: Keep the gate and reduce archive
       overhead. Continue local implementation and correctness checks; the measurement
       host is released to another agent until the maintainer confirms availability.

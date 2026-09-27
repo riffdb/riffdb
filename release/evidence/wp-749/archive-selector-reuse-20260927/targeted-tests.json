@@ -1,0 +1,21 @@
+{
+  "schema": "wp749-selector-targeted-tests-v1",
+  "command": "cargo test --locked -p riffdb-storage-redb --lib archive_",
+  "passed": 39,
+  "failed": 0,
+  "ignored": 0,
+  "log_sha256": "dad80614ae1cab29377b120ac72da50583bf51586d44d293c16024c2811a1092",
+  "key_proofs": [
+    "archive_repository_process_crashes_recover_only_a_complete_selected_prefix",
+    "archive_repository_uncertain_io_retries_exact_pending_bytes_at_every_boundary",
+    "archive_repository_selector_advance_preserves_legacy_and_retained_selections",
+    "archive_selector_refuses_replaced_manifest_before_publication"
+  ],
+  "scope": "Archive-focused storage tests only; broader acceptance and measurement remain pending.",
+  "clippy": {
+    "command": "cargo clippy -p riffdb-storage-redb --all-targets --all-features -- -D warnings",
+    "exit_code": 0,
+    "log_sha256": "2adc83ca385ea083408fb8d89a23126472911de2459113356cfb846d7791d068",
+    "initial_failure": "duplicate test-fixture module inclusion; corrected by sharing the existing fixture module without suppressions"
+  }
+}

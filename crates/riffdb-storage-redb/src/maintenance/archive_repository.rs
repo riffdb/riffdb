@@ -476,7 +476,7 @@ impl RedbArchiveRepository {
         self.directory.sync().map_err(storage)
     }
 
-    fn compare_and_sync(&self, name: &str, expected: &[u8]) -> Result<(), Error> {
+    fn compare_and_sync(&self, name: &str, expected: &[u8]) -> Result<File, Error> {
         if self
             .directory
             .regular_file_length(OsStr::new(name))
@@ -500,7 +500,8 @@ impl RedbArchiveRepository {
         if file.read(&mut buffer[..1]).map_err(io)? != 0 {
             return Err(Error::InvalidFrame);
         }
-        self.sync_retained(name, &file)
+        self.sync_retained(name, &file)?;
+        Ok(file)
     }
 
     fn write_temporary(&self, name: &str, bytes: &[u8], maximum: usize) -> Result<File, Error> {
@@ -525,7 +526,7 @@ impl RedbArchiveRepository {
         bytes: &[u8],
         maximum: usize,
         edges: [&str; 3],
-    ) -> Result<(), Error> {
+    ) -> Result<File, Error> {
         self.verify()?;
         if self
             .directory
@@ -548,7 +549,24 @@ impl RedbArchiveRepository {
         self.boundary(edges[1])?;
         self.remove_bounded(temporary, maximum)?;
         self.boundary(edges[2])?;
-        self.verify()
+        self.verify()?;
+        Ok(file)
+    }
+
+    fn stage_current(&self, manifest_name: &str, manifest: &File) -> Result<(), Error> {
+        self.remove_bounded(CURRENT_TEMP, ARCHIVE_MANIFEST_V1_BYTES)?;
+        self.verify_retained(manifest_name, manifest)?;
+        self.directory
+            .hard_link_to(
+                OsStr::new(manifest_name),
+                &self.directory,
+                OsStr::new(CURRENT_TEMP),
+            )
+            .map_err(storage)?;
+        // Reuse the already-synced immutable bytes. Check both names against
+        // the retained descriptor so a substituted source cannot be published.
+        self.verify_retained(manifest_name, manifest)?;
+        self.verify_retained(CURRENT_TEMP, manifest)
     }
 
     fn confirm_pair(
@@ -627,7 +645,7 @@ impl ArchiveFrameSinkV1 for RedbArchiveRepository {
             ["frame-staged", "frame-linked", "frame-published"],
         )?;
         let manifest_bytes = expected.encode();
-        self.immutable(
+        let manifest = self.immutable(
             &manifest_name,
             MANIFEST_TEMP,
             &manifest_bytes,
@@ -640,8 +658,7 @@ impl ArchiveFrameSinkV1 for RedbArchiveRepository {
         // which recovery validates the old prefix before discarding.
         self.directory.sync().map_err(storage)?;
         self.boundary("artifacts-synced")?;
-        let current =
-            self.write_temporary(CURRENT_TEMP, &manifest_bytes, ARCHIVE_MANIFEST_V1_BYTES)?;
+        self.stage_current(&manifest_name, &manifest)?;
         self.boundary("current-staged")?;
         self.verify()?;
         if self.read_current()?.map(|(manifest, _)| manifest) != self.head {
@@ -653,7 +670,7 @@ impl ArchiveFrameSinkV1 for RedbArchiveRepository {
         self.boundary("current-renamed")?;
         // The selector bytes were synced before rename. Only its directory
         // entry changed; verify the retained inode and persist that entry.
-        self.verify_retained(CURRENT, &current)?;
+        self.verify_retained(CURRENT, &manifest)?;
         self.directory.sync().map_err(storage)?;
         self.boundary("current-synced")?;
         self.verify()?;
@@ -661,6 +678,10 @@ impl ArchiveFrameSinkV1 for RedbArchiveRepository {
         Ok(())
     }
 }
+
+#[cfg(all(test, unix))]
+#[path = "archive_repository_stage_tests.rs"]
+mod stage_tests;
 impl std::fmt::Debug for RedbArchiveRepository {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.write_str("RedbArchiveRepository([redacted])")

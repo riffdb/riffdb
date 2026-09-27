@@ -362,6 +362,12 @@ writes still succeed after the collector stops, then restores only the confirmed
 prefix after the directory is returned. This proves write availability and prefix
 recovery for that failure; acknowledgement latency is measured separately.
 
+Filesystem archive files are immutable. The collector may publish `CURRENT`
+as a checked hard link to the durable manifest, retaining the same selector
+bytes and atomic rename; existing independent selector files remain readable.
+Do not edit archive artifacts in place. The [selector I/O investigation](performance/wp749-archive-selector-reuse-2026-09.md)
+records the compatibility and crash checks; it does not award a latency pass.
+
 The Linux acceptance runner `./scripts/check-archive-cli` builds the production
 CLI and runs both stop modes against a real daemon with verified TLS and automatic
 collection. It checks the generated operation ID, terminal JSON frontiers,

@@ -1,0 +1,47 @@
+{
+  "baseline": {
+    "successful_syncs_by_archive_entry": {
+      "CURRENT": 2,
+      "[archive directory]": 10,
+      "current.tmp": 2,
+      "frame-0000000000000002.v3": 2,
+      "frame-0000000000000003.v3": 1,
+      "frame.tmp": 2,
+      "inventory.lock": 2,
+      "manifest-0000000000000002.v1": 2,
+      "manifest-0000000000000003.v1": 1,
+      "manifest.tmp": 2
+    },
+    "trace_sha256": "6688ab435aaf0dd7fda080b46f07bda7e20d6823fb5575e7cdc1083ac533d02a",
+    "test_log_sha256": "29da5a5ea59b2601cf723cb952ab8d77f4ecd45bbc55ed4f33daff5c26c04315"
+  },
+  "candidate": {
+    "successful_syncs_by_archive_entry": {
+      "CURRENT": 2,
+      "[archive directory]": 10,
+      "frame-0000000000000002.v3": 2,
+      "frame-0000000000000003.v3": 1,
+      "frame.tmp": 2,
+      "inventory.lock": 2,
+      "manifest-0000000000000002.v1": 2,
+      "manifest-0000000000000003.v1": 1,
+      "manifest.tmp": 2
+    },
+    "trace_sha256": "97fa6302e181c108d1611bb0d092f8c895151c79a79dc3bd7314b50298dc6397",
+    "test_log_sha256": "a50f1a895cd094248509f696a34d2bde4e4c37ef62ec6a7bf3bd901b6b08ff46"
+  },
+  "schema": "wp749-selector-sync-comparison-v1",
+  "command": "strace -f -qq -yy -e trace=fsync,fdatasync cargo test --locked -p riffdb-storage-redb --lib maintenance::archive_repository_tests::archive_repository_exact_retry_and_reopen_preserve_complete_linked_frames -- --exact",
+  "baseline_source": "10c312d742613daccc8e5c65eddb528f08d59f0a",
+  "candidate_base": "be4e1a25cae14ce9ba05566d85290cdce2579cef",
+  "candidate_working_sources": {
+    "crates/riffdb-storage-redb/src/maintenance/archive_repository.rs": "a4f3183d2200b03ba3c0ce97c502c059414d3a58140af28c3e821c14f5618d82",
+    "crates/riffdb-storage-redb/src/maintenance/archive_repository_tests.rs": "b3aa81da305c789dfa0381be362093f890f0230fafbcb36dabb5d5c727fc4f86",
+    "crates/riffdb-storage-redb/src/maintenance/archive_repository_stage_tests.rs": "8b4a4ea738af10ad695b86b7c17e65b92eb67756872ceee8d343da3ed3529d93"
+  },
+  "new_frames": 2,
+  "removed_selector_payload_bytes_per_frame": 386,
+  "timing_claim": false,
+  "comparison_result": "Only the two current.tmp file syncs disappear; all other archive sync counts are identical.",
+  "local_test_repair": "Share the existing fixture module with the new identity test; duplicate inclusion refused by clippy. Repeated exact-retry/reopen census retains the same sync counts."
+}

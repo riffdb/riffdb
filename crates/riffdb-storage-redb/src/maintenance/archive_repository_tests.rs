@@ -5,7 +5,7 @@ use riffdb_storage_api::*;
 use std::{fs, path::Path};
 
 #[path = "../../../riffdb-storage-api/tests/support/archive_manifest_fixture.rs"]
-mod fixture;
+pub(super) mod fixture;
 
 fn open(path: &Path) -> Result<RedbArchiveRepository, ArchiveConsumerErrorV1> {
     let (lineage, fence) = fixture::fixture();
@@ -76,6 +76,67 @@ fn archive_repository_exact_retry_and_reopen_preserve_complete_linked_frames() {
         fs::read(path.join("frame-0000000000000003.v3")).unwrap(),
         second_bytes
     );
+}
+
+#[test]
+fn archive_repository_selector_advance_preserves_legacy_and_retained_selections() {
+    use std::io::Read;
+
+    for legacy_selector in [false, true] {
+        let scope = crate::test_path::ScopedDirectory::new("archive-selector-advance");
+        let path = scope.join("archive");
+        let (lineage, fence) = fixture::fixture();
+        let first_bytes = fixture::frame(lineage, fence, 1);
+        let mut consumer = ArchiveConsumerV1::new(open(&path).unwrap(), lineage, fence);
+        let first = consumer.append(first_bytes.clone()).unwrap();
+        let first_manifest = consumer.into_sink().head().unwrap();
+        let selected = fs::read(path.join("CURRENT")).unwrap();
+        if legacy_selector {
+            // Old writers published an independent copy of the same bytes.
+            fs::write(path.join("legacy-selector"), &selected).unwrap();
+            fs::File::open(path.join("legacy-selector"))
+                .unwrap()
+                .sync_all()
+                .unwrap();
+            fs::rename(path.join("legacy-selector"), path.join("CURRENT")).unwrap();
+            fs::File::open(&path).unwrap().sync_all().unwrap();
+        }
+        let repository = open(&path).unwrap();
+        assert_eq!(repository.head(), Some(first_manifest));
+        let mut retained = fs::File::open(path.join("CURRENT")).unwrap();
+        // A stale staging name may share selected bytes. It must be unlinked,
+        // never truncated or overwritten when staging the next selector.
+        fs::hard_link(path.join("CURRENT"), path.join("current.tmp")).unwrap();
+        let mut consumer = ArchiveConsumerV1::new(repository, lineage, first);
+        let second_bytes = fixture::frame(lineage, first, 2);
+        let second = consumer.append(second_bytes.clone()).unwrap();
+        let repository = consumer.into_sink();
+        let mut retained_bytes = Vec::new();
+        retained.read_to_end(&mut retained_bytes).unwrap();
+        assert_eq!(retained_bytes, selected);
+        assert_eq!(
+            fs::read(path.join("manifest-0000000000000002.v1")).unwrap(),
+            selected,
+            "advancing CURRENT cannot mutate a previously selected manifest"
+        );
+        let frozen = selection(first_manifest, false);
+        let frames = repository
+            .frames_for_selection(&frozen)
+            .unwrap()
+            .collect::<Result<Vec<_>, _>>()
+            .unwrap();
+        assert_eq!(frames.len(), 1);
+        assert_eq!(frames[0].1, first_bytes);
+        assert_eq!(frames[0].0.covered(), first);
+        drop(repository);
+        let reopened = open(&path).unwrap();
+        assert_eq!(reopened.position(), second);
+        let frames = reopened.frames().collect::<Result<Vec<_>, _>>().unwrap();
+        assert_eq!(frames.len(), 2);
+        assert_eq!(frames[0].1, first_bytes);
+        assert_eq!(frames[1].1, second_bytes);
+        assert!(!path.join("current.tmp").exists());
+    }
 }
 
 #[test]
