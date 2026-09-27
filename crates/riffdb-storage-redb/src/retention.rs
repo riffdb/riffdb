@@ -1730,6 +1730,23 @@ pub(crate) fn verify_tombstone_chain(
     Ok(())
 }
 
+/// The durable retention watermark inside one composite read view, 0 when
+/// nothing was ever pruned. Scans classify their start against the view they
+/// read, so an absent pruned row is typed pruned rather than corrupt.
+pub(crate) fn watermark_at_access(
+    access: &crate::store::RedbReadAccess,
+) -> Result<u64, StorageError> {
+    let Some(encoded) = access.read_value(
+        crate::journal::JournalTable::Meta,
+        META_RETENTION_WATERMARK.as_bytes(),
+    )?
+    else {
+        return Ok(0);
+    };
+    let item = decode_retention_watermark_v1(&encoded).map_err(crate::error::codec_error)?;
+    Ok(item.into_parts().0.watermark_sequence())
+}
+
 /// Returns true when `sequence` is covered by the watermark (below-or-equal).
 #[must_use]
 pub(crate) const fn sequence_covered_by_watermark(sequence: u64, watermark: u64) -> bool {

@@ -449,3 +449,61 @@ fn a_pruned_command_still_answers_its_idempotent_retry() {
         "removing the pruned locators keeps the database structurally valid"
     );
 }
+
+/// Asserts a commit scan starting at or below `watermark` is typed pruned and
+/// one starting above it reads the retained history.
+fn assert_scans_classify_pruned_history(
+    reader: &impl riffdb_storage_api::AuthoritativeScanReader,
+    watermark: u64,
+) {
+    use riffdb_storage_api::{CommitScanRequest, StorageScanLimit};
+    let limit = StorageScanLimit::new(4).expect("scan limit");
+    for request in [
+        CommitScanRequest::initial(limit),
+        CommitScanRequest::initial_after(CommitSequence::new(watermark - 1).expect("after"), limit),
+    ] {
+        assert_eq!(
+            reader
+                .scan_commits(request)
+                .expect_err("a scan into pruned history is refused")
+                .kind(),
+            riffdb_storage_api::StorageErrorKind::HistoryPruned
+        );
+    }
+    let page = reader
+        .scan_commits(CommitScanRequest::initial_after(
+            CommitSequence::new(watermark).expect("after"),
+            limit,
+        ))
+        .expect("a scan from the watermark reads retained history");
+    assert_eq!(
+        page.records()[0].value().commit_sequence(),
+        CommitSequence::new(watermark + 1).expect("first retained")
+    );
+}
+
+// req: STO-032
+/// A commit scan that starts in pruned history is typed `HistoryPruned`, as
+/// a point read is, whether the prefix was pruned online or offline, and
+/// through the live reader or an owned snapshot.
+#[test]
+fn commit_scans_into_pruned_history_are_typed_pruned() {
+    use riffdb_storage_api::OwnedSnapshotReader;
+    let path = TestDatabasePath::new("online-retention-scan-pruned");
+    prepare_segmented_history(&path.0, true);
+    let ports = open_operational(RedbStore::open(&path.0).expect("open"));
+    ports
+        .online_retention_step(sequences(2 * GROUP), sequences(256))
+        .expect("online step");
+    assert_scans_classify_pruned_history(&ports, 2 * GROUP);
+    let snapshot = ports.open_owned_snapshot().expect("owned snapshot");
+    assert_scans_classify_pruned_history(&snapshot, 2 * GROUP);
+    drop(snapshot);
+    drop(ports);
+
+    riffdb_storage_redb::RedbOfflineRetention::bind(&path.0)
+        .prune_to(3 * GROUP)
+        .expect("offline prune");
+    let ports = open_operational(RedbStore::open(&path.0).expect("reopen"));
+    assert_scans_classify_pruned_history(&ports, 3 * GROUP);
+}

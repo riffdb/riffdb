@@ -447,6 +447,12 @@ impl AuthoritativeScanReader for RedbOwnedSnapshot {
             return CommitScanPageV1::exact_end(request, inclusive_upper, Vec::new())
                 .map_err(value_error);
         }
+        if crate::retention::sequence_covered_by_watermark(
+            first_expected.get(),
+            crate::retention::watermark_at_access(&self.access)?,
+        ) {
+            return Err(storage_error(StorageErrorKind::HistoryPruned));
+        }
         let first_key = encode_application_sequence_key(CommitSequence::first());
         let mut first_end = encode_application_sequence_key(first_expected).to_vec();
         first_end.push(0);
