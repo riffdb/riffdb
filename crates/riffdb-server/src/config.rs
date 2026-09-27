@@ -6,6 +6,10 @@
 mod archive;
 pub(crate) use archive::ConfiguredArchive;
 use archive::{ArchiveDocument, parse_archives};
+#[path = "config_retention.rs"]
+mod retention;
+pub(crate) use retention::{RetentionConfig, RetentionTarget};
+use retention::{RetentionDocument, parse_retention};
 #[path = "config_follower.rs"]
 mod follower;
 use follower::FollowerSourceDocument;
@@ -78,6 +82,7 @@ pub(crate) struct ServerConfig {
 /// One independently hosted database's non-secret process configuration.
 pub(crate) struct DatabaseConfig {
     archives: Vec<ConfiguredArchive>,
+    retention: RetentionConfig,
     follower: Option<FollowerSourceConfig>,
     alias: DatabaseAlias,
     database_path: PathBuf,
@@ -137,6 +142,11 @@ impl ConfiguredProjection {
 impl DatabaseConfig {
     pub(crate) fn archives(&self) -> &[ConfiguredArchive] {
         &self.archives
+    }
+
+    /// The ADR-0182 online retention lane's target and budget.
+    pub(crate) const fn retention(&self) -> RetentionConfig {
+        self.retention
     }
 
     pub(crate) fn follower(&self) -> Option<&FollowerSourceConfig> {
@@ -266,6 +276,7 @@ impl ServerConfig {
             || maintenance.backup_root.is_some()
             || maintenance.projections_root.is_some()
             || !maintenance.archives.is_empty()
+            || maintenance.retention.is_some()
             || !top_level_projections.is_empty();
         if !named_databases.is_empty() && uses_legacy_database_configuration {
             return Err(ServerConfigError::MixedDatabaseConfiguration);
@@ -273,6 +284,7 @@ impl ServerConfig {
         let databases = if named_databases.is_empty() {
             vec![DatabaseConfig {
                 archives: parse_archives(maintenance.archives)?,
+                retention: parse_retention(maintenance.retention)?,
                 follower: server
                     .replication_source
                     .map(FollowerSourceDocument::resolve)
@@ -723,6 +735,7 @@ struct MaintenanceDocument {
     archives: Vec<ArchiveDocument>,
     backup_root: Option<String>,
     projections_root: Option<String>,
+    retention: Option<RetentionDocument>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -739,6 +752,7 @@ struct DatabaseDocument {
     projections_root: Option<String>,
     #[serde(default)]
     projections: Vec<ProjectionDocument>,
+    retention: Option<RetentionDocument>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -815,6 +829,7 @@ fn parse_named_databases(
             };
             Ok(DatabaseConfig {
                 archives: parse_archives(document.archives)?,
+                retention: parse_retention(document.retention)?,
                 follower: document
                     .replication_source
                     .map(FollowerSourceDocument::resolve)
@@ -1147,6 +1162,7 @@ impl fmt::Display for ConfiguredPathRole {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) enum ServerConfigError {
     InvalidArchiveConfiguration,
+    InvalidRetentionConfiguration,
     InvalidFollowerConfiguration,
     UnknownOption,
     MissingValue,
@@ -1175,6 +1191,9 @@ impl fmt::Display for ServerConfigError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         formatter.write_str(match self {
             Self::InvalidArchiveConfiguration => "archive configuration is invalid or incomplete",
+            Self::InvalidRetentionConfiguration => {
+                "retention configuration must name retained_sequences or hold, with sequences_per_epoch in 1..=256"
+            }
             Self::InvalidFollowerConfiguration => {
                 "follower source configuration is invalid or incomplete"
             }

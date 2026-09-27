@@ -57,7 +57,10 @@ type RetentionWriteTable<'txn, 'capture> = CapturedTable<'txn, 'capture, &'stati
 
 #[path = "retention/online.rs"]
 mod online;
-pub use online::{ONLINE_RETENTION_STEP_SEQUENCES, OnlineRetentionHold, OnlineRetentionStep};
+pub use online::{
+    ONLINE_RETENTION_STEP_SEQUENCES, OnlineRetentionHold, OnlineRetentionStep,
+    RedbOnlineRetentionLane,
+};
 
 #[cfg(test)]
 fn prune_crash_edge(edge: &str) {

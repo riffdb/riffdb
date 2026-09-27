@@ -91,24 +91,36 @@ fn online_retention_prunes_whole_segments_through_the_ordered_writer() {
     let rebuilds = ports.transient_index_rebuilds();
     let retain = sequences(2 * GROUP);
 
-    // An allowance smaller than one whole segment cannot split it.
+    // A budget smaller than one whole segment removes that segment alone
+    // rather than splitting it or wedging the lane.
     assert_eq!(
         ports
             .online_retention_step(retain, sequences(GROUP - 1))
             .expect("undersized step"),
+        OnlineRetentionStep::Advanced {
+            through: GROUP,
+            sequences: GROUP,
+        }
+    );
+    // A target inside the next segment is a row boundary, not a split.
+    assert_eq!(
+        ports
+            .online_retention_step(
+                sequences(GROUP * GROUPS - GROUP - GROUP / 2),
+                sequences(256)
+            )
+            .expect("target inside a segment"),
         OnlineRetentionStep::Held(OnlineRetentionHold::RowBoundary)
     );
-    for expected in [GROUP, 2 * GROUP] {
-        assert_eq!(
-            ports
-                .online_retention_step(retain, sequences(GROUP))
-                .expect("online step"),
-            OnlineRetentionStep::Advanced {
-                through: expected,
-                sequences: GROUP,
-            }
-        );
-    }
+    assert_eq!(
+        ports
+            .online_retention_step(retain, sequences(GROUP))
+            .expect("online step"),
+        OnlineRetentionStep::Advanced {
+            through: 2 * GROUP,
+            sequences: GROUP,
+        }
+    );
     assert_eq!(
         ports
             .online_retention_step(retain, sequences(256))
@@ -203,6 +215,37 @@ fn online_retention_refuses_to_cross_a_fence() {
     );
     drop(ports);
     assert!(retention_tombstones(&path.0).is_empty());
+}
+
+/// An unreadable fencing source refuses the online step with a typed error
+/// and deletes nothing; the offline status refuses the same source.
+#[test]
+fn online_retention_refuses_an_unreadable_fencing_source() {
+    let path = TestDatabasePath::new("online-retention-unreadable-fence");
+    prepare_segmented_history(&path.0, true);
+    riffdb_storage_redb::plant_unreadable_projection_frontier_fixture(&path.0)
+        .expect("plant unreadable projection frontier");
+    let ports = open_operational(RedbStore::open(&path.0).expect("open unreadable"));
+    let error = ports
+        .online_retention_step(sequences(1), sequences(256))
+        .expect_err("an unreadable fence refuses");
+    assert_eq!(
+        error.kind(),
+        riffdb_storage_api::StorageErrorKind::InvariantViolation
+    );
+    assert!(
+        ports
+            .read_commit(CommitSequence::new(1).expect("sequence"))
+            .expect("first commit retained")
+            .is_some()
+    );
+    drop(ports);
+    assert!(retention_tombstones(&path.0).is_empty());
+    assert!(
+        riffdb_storage_redb::RedbOfflineRetention::bind(&path.0)
+            .status()
+            .is_err()
+    );
 }
 
 /// Plants an open staged contract migration whose frozen application

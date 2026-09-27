@@ -177,6 +177,16 @@ impl SharedRedbOperationalPorts {
         self.bounded_clean_startup
     }
 
+    /// The online retention lane's step-only handle (ADR-0182 section 6). It
+    /// never takes this bridge's lock: each step queues on the storage
+    /// mutation gate like every other writer.
+    pub(crate) fn online_retention_lane(
+        &self,
+    ) -> Result<riffdb_storage_redb::RedbOnlineRetentionLane, StorageError> {
+        self.cell
+            .with_mut(|ports| Ok(ports.online_retention_lane()))
+    }
+
     /// Assembles the sole executor implementation over this cloneable lower reader.
     /// The cloneable pure-read shared handle (the ADR-0182 background scrub's
     /// least-authority reader).

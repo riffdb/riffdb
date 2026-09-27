@@ -285,6 +285,7 @@ pub(crate) struct ProductionGraphBuilder {
     archives: Vec<crate::config::ConfiguredArchive>,
     coordinator_durability: CoordinatorDurability,
     backup_root: std::path::PathBuf,
+    retention: crate::config::RetentionConfig,
 }
 
 impl ProductionGraphBuilder {
@@ -332,6 +333,7 @@ impl ProductionGraphBuilder {
                 riffdb_storage_redb::RedbCommitProfile::Hardened => CoordinatorDurability::Sync,
             },
             backup_root: database.backup_root().to_path_buf(),
+            retention: database.retention(),
         }
     }
 
@@ -366,6 +368,7 @@ impl ProductionGraphBuilder {
             archives,
             coordinator_durability,
             backup_root,
+            retention,
         } = self;
 
         let server_generation = server_generation
@@ -792,6 +795,10 @@ impl ProductionGraphBuilder {
         // A failed ADR-0182 background scrub records an internal incident and
         // degrades Storage through its health member; the production health
         // hooks are only its fail-closed fallback without an incident identity.
+        let retention_failure = crate::retention_worker::RetentionLaneFailureSinks {
+            incident_ids: Arc::clone(&incident_ids),
+            diagnostics: Arc::clone(&diagnostics) as Arc<dyn ServiceDiagnostics>,
+        };
         let scrub_failure = crate::scrub_worker::ScrubFailureSinks {
             incident_ids: Arc::clone(&incident_ids),
             diagnostics: Arc::clone(&diagnostics) as Arc<dyn ServiceDiagnostics>,
@@ -1010,6 +1017,17 @@ impl ProductionGraphBuilder {
             )
             .map_err(|_| ProductionGraphBuildError::CurrentView)?
         };
+        // ADR-0182 sections 6 and 7: the online retention lane, driven only
+        // by this database's configuration. Its handle runs retention steps
+        // and nothing else, each one queued on the sole ordered writer.
+        let retention_lane = crate::retention_worker::RunningRetentionLane::start(
+            retention,
+            storage
+                .online_retention_lane()
+                .map_err(|_| ProductionGraphBuildError::CurrentView)?,
+            retention_failure,
+        )
+        .map_err(|_| ProductionGraphBuildError::CurrentView)?;
         Ok(RunningProductionGraph {
             registration_worker,
             archive_workers,
@@ -1024,6 +1042,7 @@ impl ProductionGraphBuilder {
             observability,
             storage: shutdown_storage,
             scrub_worker,
+            retention_lane,
             exact_worker: Some(exact_worker),
             columnar_worker: Some(columnar_worker),
             projection_worker: Some(projection_worker),
@@ -1104,6 +1123,7 @@ pub(crate) struct RunningProductionGraph {
     /// Activated storage retained for the bounded graceful-close ceremony.
     storage: SharedRedbOperationalPorts,
     scrub_worker: crate::scrub_worker::RunningScrubWorker,
+    retention_lane: crate::retention_worker::RunningRetentionLane,
     exact_worker: Option<RunningExactTextWorker>,
     columnar_worker: Option<RunningColumnarWorker>,
     projection_worker: Option<RunningProjectionWorker>,
@@ -1124,6 +1144,14 @@ impl RunningProductionGraph {
     /// second when complete. Redaction-safe: counters only.
     pub(crate) fn scrub_observation(&self) -> crate::scrub_worker::ScrubObservation {
         self.scrub_worker.observation()
+    }
+
+    /// The online retention lane's closed state and bounded counters for the
+    /// shutdown census. Internal only: no health member or RPC carries it.
+    pub(crate) fn retention_observation(
+        &self,
+    ) -> crate::retention_worker::RetentionLaneObservation {
+        self.retention_lane.observation()
     }
 
     /// Dispatch-reason counts plus selected/deferred totals for shutdown evidence.
@@ -1237,6 +1265,10 @@ impl RunningProductionGraph {
         let graph_started = Instant::now();
         let mut elapsed_us = [0_u64; PRODUCTION_SHUTDOWN_STAGE_COUNT];
         self.lifecycle.stop();
+        // The online retention lane is a writer: it stops before any drain
+        // so no step overlaps the coordinator drain or the graceful close. A
+        // step in progress completes as one atomic transition first.
+        let _retention_stop = self.retention_lane.shutdown();
         // The background scrub is read-only and cancellable at any page
         // boundary; it stops first so the drain below observes a settled
         // health classification.

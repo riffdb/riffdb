@@ -320,6 +320,9 @@ pub struct RiffDbShutdownEvidence {
     /// The ADR-0182 background scrub's closed terminal observation from this
     /// process generation's shutdown census line.
     pub background_scrub: Option<BackgroundScrubObservation>,
+    /// The ADR-0182 online retention lane's closed state and counters from
+    /// this process generation's shutdown census line.
+    pub online_retention: Option<OnlineRetentionObservation>,
     /// First-demand columnar activations observed across the process generation.
     pub columnar_activations: Option<u64>,
     /// Columnar population passes observed across the process generation.
@@ -2321,11 +2324,16 @@ impl ServerProcess {
             let stderr = self.stderr_tail();
             evidence.startup = Some(parse_startup_evidence(&stderr)?);
             evidence.clean_close = Some(parse_clean_close_evidence(&stderr)?);
-            let (columnar_activations, columnar_population_passes, background_scrub) =
-                parse_shutdown_release_evidence(&stderr)?;
+            let (
+                columnar_activations,
+                columnar_population_passes,
+                background_scrub,
+                online_retention,
+            ) = parse_shutdown_release_evidence(&stderr)?;
             evidence.columnar_activations = Some(columnar_activations);
             evidence.columnar_population_passes = Some(columnar_population_passes);
             evidence.background_scrub = Some(background_scrub);
+            evidence.online_retention = Some(online_retention);
             evidence.process_memory_at_spawn = Some(self.initial_process_memory);
             evidence.process_memory_before_shutdown = Some(process_memory_before_shutdown);
             evidence.harness_shutdown_elapsed_us =
@@ -2578,6 +2586,7 @@ fn read_server_stdout(
                                                 shutdown_stages_us,
                                                 harness_shutdown_elapsed_us: 0,
                                                 background_scrub: None,
+                                                online_retention: None,
                                                 columnar_activations: None,
                                                 columnar_population_passes: None,
                                                 write_completion_groups,
@@ -3026,6 +3035,15 @@ pub struct BackgroundScrubObservation {
     pub rows_per_second: u64,
 }
 
+/// The online retention lane's closed state and bounded counters at shutdown
+/// (ADR-0182 section 7 evidence).
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct OnlineRetentionObservation {
+    pub state: &'static str,
+    pub steps: u64,
+    pub sequences: u64,
+}
+
 fn parse_startup_evidence(stderr: &str) -> io::Result<RiffDbStartupEvidence> {
     let lines = stderr
         .lines()
@@ -3082,7 +3100,12 @@ fn parse_startup_evidence(stderr: &str) -> io::Result<RiffDbStartupEvidence> {
 
 fn parse_shutdown_release_evidence(
     stderr: &str,
-) -> io::Result<(u64, u64, BackgroundScrubObservation)> {
+) -> io::Result<(
+    u64,
+    u64,
+    BackgroundScrubObservation,
+    OnlineRetentionObservation,
+)> {
     let lines = stderr
         .lines()
         .filter(|line| line.starts_with(SHUTDOWN_RELEASE_PREFIX))
@@ -3092,7 +3115,7 @@ fn parse_shutdown_release_evidence(
     }
     let parse_line = |line: &str| {
         let fields = parse_key_values(line, SHUTDOWN_RELEASE_PREFIX)?;
-        const EXPECTED_FIELDS: [&str; 8] = [
+        const EXPECTED_FIELDS: [&str; 11] = [
             "graph_storage_release",
             "post_graph_release",
             "columnar_activations",
@@ -3102,6 +3125,10 @@ fn parse_shutdown_release_evidence(
             "background_scrub_rows",
             "background_scrub_total_us",
             "background_scrub_rows_per_second",
+            // ADR-0182 section 7: the online retention lane's closed state.
+            "online_retention",
+            "online_retention_steps",
+            "online_retention_sequences",
         ];
         if fields.len() != EXPECTED_FIELDS.len()
             || EXPECTED_FIELDS
@@ -3129,6 +3156,19 @@ fn parse_shutdown_release_evidence(
                 ));
             }
         };
+        let retention_state = match fields.get("online_retention").map(String::as_str) {
+            Some("holding") => "holding",
+            Some("idle") => "idle",
+            Some("advancing") => "advancing",
+            Some("fenced") => "fenced",
+            Some("refused") => "refused",
+            Some("cancelled") => "cancelled",
+            _ => {
+                return Err(io::Error::other(
+                    "shutdown release online_retention state invalid",
+                ));
+            }
+        };
         Ok::<_, io::Error>((
             parse_count("columnar_activations")?,
             parse_count("columnar_population_passes")?,
@@ -3137,6 +3177,11 @@ fn parse_shutdown_release_evidence(
                 rows_walked: parse_count("background_scrub_rows")?,
                 total_us: parse_count("background_scrub_total_us")?,
                 rows_per_second: parse_count("background_scrub_rows_per_second")?,
+            },
+            OnlineRetentionObservation {
+                state: retention_state,
+                steps: parse_count("online_retention_steps")?,
+                sequences: parse_count("online_retention_sequences")?,
             },
         ))
     };
@@ -3500,8 +3545,8 @@ mod tests {
         );
         assert_eq!(
             parse_shutdown_release_evidence(
-                "riffdb-shutdown-release-v1\tgraph_storage_release=1\tpost_graph_release=0\tcolumnar_activations=0\tcolumnar_population_passes=0\tbackground_scrub=complete\tbackground_scrub_rows=7\tbackground_scrub_total_us=9\tbackground_scrub_rows_per_second=11\n\
-                 riffdb-shutdown-release-v1\tgraph_storage_release=1\tpost_graph_release=2\tcolumnar_activations=0\tcolumnar_population_passes=0\tbackground_scrub=complete\tbackground_scrub_rows=7\tbackground_scrub_total_us=9\tbackground_scrub_rows_per_second=11\n"
+                "riffdb-shutdown-release-v1\tgraph_storage_release=1\tpost_graph_release=0\tcolumnar_activations=0\tcolumnar_population_passes=0\tbackground_scrub=complete\tbackground_scrub_rows=7\tbackground_scrub_total_us=9\tbackground_scrub_rows_per_second=11\tonline_retention=idle\tonline_retention_steps=3\tonline_retention_sequences=40\n\
+                 riffdb-shutdown-release-v1\tgraph_storage_release=1\tpost_graph_release=2\tcolumnar_activations=0\tcolumnar_population_passes=0\tbackground_scrub=complete\tbackground_scrub_rows=7\tbackground_scrub_total_us=9\tbackground_scrub_rows_per_second=11\tonline_retention=idle\tonline_retention_steps=3\tonline_retention_sequences=40\n"
             )
             .expect("columnar shutdown evidence"),
             (
@@ -3512,6 +3557,11 @@ mod tests {
                     rows_walked: 7,
                     total_us: 9,
                     rows_per_second: 11,
+                },
+                OnlineRetentionObservation {
+                    state: "idle",
+                    steps: 3,
+                    sequences: 40,
                 }
             )
         );

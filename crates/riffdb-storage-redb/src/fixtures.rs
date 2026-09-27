@@ -506,6 +506,26 @@ pub fn strip_validated_prefix_checkpoint_fixture(path: &Path) -> Result<(), Stor
     Ok(())
 }
 
+/// Plants one projection frontier row no decoder accepts in the derived
+/// sidecar (ADR-0240), creating the sidecar if needed. Startup does not read
+/// sidecar frontiers, so the next online retention step is the first reader
+/// and meets an unreadable fencing source.
+///
+/// Absent from default builds; call only after the owning process stopped.
+#[doc(hidden)]
+pub fn plant_unreadable_projection_frontier_fixture(path: &Path) -> Result<(), StorageError> {
+    let database =
+        Database::create(crate::store::derived_store_path(path)).map_err(database_error)?;
+    let transaction = database.begin_write().map_err(transaction_error)?;
+    transaction
+        .open_table(crate::layout::PROJECTION_FRONTIER)
+        .map_err(table_error)?
+        .insert(b"unreadable".as_slice(), [0xff_u8; 3].as_slice())
+        .map_err(precommit_storage_error)?;
+    transaction.commit().map_err(commit_error)?;
+    Ok(())
+}
+
 /// Constructs a frozen predecessor for V1 compatibility tests only. The normal
 /// initialization port always creates current V2 source state.
 #[doc(hidden)]

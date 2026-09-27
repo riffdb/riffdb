@@ -31,7 +31,8 @@ pub enum OnlineRetentionHold {
     TargetReached,
     /// A fencing input stops advancement below the target.
     Fenced(RetentionFenceBinding),
-    /// The next whole command row extends past what this step may remove.
+    /// The retained-sequence target falls inside the next whole command row,
+    /// or the budget was spent before it.
     RowBoundary,
 }
 
@@ -56,11 +57,51 @@ struct StepPlan {
     pruned_segments: Vec<Arc<StoredCommandSegmentV1>>,
 }
 
+/// The least-authority handle a background retention lane holds: it runs
+/// online retention steps and nothing else. Each step queues on the same
+/// first-come mutation gate as every other writer, so the lane is never a
+/// second writer and a writer that queued behind a step is served before the
+/// lane's next one.
+#[derive(Clone)]
+pub struct RedbOnlineRetentionLane {
+    shared: Arc<crate::store::SharedRedb>,
+}
+
+impl RedbOnlineRetentionLane {
+    /// Runs one step; see [`RedbOperationalPorts::online_retention_step`].
+    pub fn step(
+        &self,
+        retain_sequences: NonZeroU64,
+        max_sequences: NonZeroU64,
+    ) -> Result<OnlineRetentionStep, StorageError> {
+        RedbOperationalPorts {
+            shared: Arc::clone(&self.shared),
+        }
+        .online_retention_step(retain_sequences, max_sequences)
+    }
+}
+
+impl std::fmt::Debug for RedbOnlineRetentionLane {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str("RedbOnlineRetentionLane([STORAGE])")
+    }
+}
+
 impl RedbOperationalPorts {
+    /// The retention lane's step-only handle over this store.
+    #[must_use]
+    pub fn online_retention_lane(&self) -> RedbOnlineRetentionLane {
+        RedbOnlineRetentionLane {
+            shared: Arc::clone(&self.shared),
+        }
+    }
+
     /// Runs one bounded online retention step toward retaining
     /// `retain_sequences` sequences below the durable application head.
     ///
-    /// At most `max_sequences` (capped at 256) sequences are removed, in one
+    /// At most `max_sequences` (capped at 256) sequences are removed, except
+    /// that a single whole command segment larger than `max_sequences` is
+    /// removed alone (never more than 256 sequences), in one
     /// administration-class transaction that deletes whole command rows,
     /// appends the chained tombstone, advances the watermark, and deletes any
     /// validated-prefix checkpoint. Every fence (projection frontiers in the
@@ -298,9 +339,12 @@ fn plan_step(
     if max_permissible <= current {
         return Ok(Err(OnlineRetentionHold::Fenced(binding)));
     }
-    let limit = target
-        .min(max_permissible)
-        .min(current.saturating_add(allowance));
+    // Fences and the target bound every step; the budget binds too, except
+    // that one whole segment larger than the budget is removed alone (still
+    // within the 256-sequence hard bound), so a small budget cannot wedge
+    // the lane behind a large group commit.
+    let limit = target.min(max_permissible);
+    let budget_end = current.saturating_add(allowance);
     let first = current + 1;
 
     let commits = read.open_table(COMMITS).map_err(table_error)?;
@@ -328,7 +372,14 @@ fn plan_step(
     let mut last = current;
     let mut bytes = 0_usize;
     let mut pruned_segments = Vec::new();
-    let mut stopped = OnlineRetentionHold::RowBoundary;
+    // A row that crosses the limit leaves the step at a row boundary unless
+    // a fence, not the target, is what the row crosses.
+    let crossed_limit = if max_permissible < target {
+        OnlineRetentionHold::Fenced(binding)
+    } else {
+        OnlineRetentionHold::RowBoundary
+    };
+    let mut stopped = crossed_limit;
     for entry in commits
         .range::<&[u8]>(first_key.as_slice()..)
         .map_err(precommit_storage_error)?
@@ -346,9 +397,12 @@ fn plan_step(
             None => physical.get(),
         };
         if end > limit {
-            if limit == max_permissible && limit < target.min(current + allowance) {
-                stopped = OnlineRetentionHold::Fenced(binding);
-            }
+            stopped = crossed_limit;
+            break;
+        }
+        if end > budget_end && (last > current || end - current > ONLINE_RETENTION_STEP_SEQUENCES) {
+            // The budget is spent, or a single row exceeds the hard bound.
+            stopped = OnlineRetentionHold::RowBoundary;
             break;
         }
         bytes = bytes.saturating_add(value.value().len());
@@ -374,7 +428,7 @@ fn plan_step(
         if let Some(segment) = segment {
             pruned_segments.push(Arc::new(segment));
         }
-        if last == limit {
+        if last >= limit.min(budget_end) {
             break;
         }
     }

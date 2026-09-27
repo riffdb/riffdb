@@ -59,6 +59,7 @@ pub mod replication_publication;
 mod replication_registration_worker;
 mod replication_source;
 mod restore_retry_host;
+mod retention_worker;
 mod runtime_support;
 mod scrub_worker;
 mod server_generation;
