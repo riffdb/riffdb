@@ -203,7 +203,7 @@ summary = {
         "repetitions": 3,
         "order": ORDER,
         "idle_arm": {"retention": "hold"},
-        "active_arm": {"retained_sequences": retained, "sequences_per_epoch": 256},
+        "active_arm": {"retained_sequences": retained, "sequences_per_epoch": 64},
         "maximum_p95_ratio": MAXIMUM_P95_RATIO,
         "latency_gate_statistic": "median_of_repetition_aggregate_p95",
         "percentiles": "fixed_log_linear_histogram_16_sub_buckets_per_octave",

@@ -1580,9 +1580,9 @@ fn online_retention_arm() -> Result<Option<OnlineRetentionArm>, RiffDbError> {
 fn online_retention_section(arm: OnlineRetentionArm) -> String {
     match arm {
         OnlineRetentionArm::Hold => "\n[maintenance.retention]\nhold = true\n".to_owned(),
-        OnlineRetentionArm::RetainSequences(count) => format!(
-            "\n[maintenance.retention]\nretained_sequences = {count}\nsequences_per_epoch = 256\n"
-        ),
+        OnlineRetentionArm::RetainSequences(count) => {
+            format!("\n[maintenance.retention]\nretained_sequences = {count}\n")
+        }
     }
 }
 
@@ -3384,7 +3384,7 @@ mod tests {
     fn online_retention_arms_render_the_daemon_retention_section() {
         assert_eq!(
             online_retention_section(OnlineRetentionArm::RetainSequences(64)),
-            "\n[maintenance.retention]\nretained_sequences = 64\nsequences_per_epoch = 256\n"
+            "\n[maintenance.retention]\nretained_sequences = 64\n"
         );
         assert_eq!(
             online_retention_section(OnlineRetentionArm::Hold),

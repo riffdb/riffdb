@@ -1,0 +1,205 @@
+#!/usr/bin/env python3
+# req: STO-030
+"""Fail-closed referee for the banked WP-761 online-retention interference evidence.
+
+ADR-0182 section 7: the 32-client interactive p95 with the online retention
+lane active must stay within five percent of the same workload with the lane
+idle. The banked summary (written by benchmarks/run-wp761-interference) is
+accepted only when:
+
+- it was produced from a clean tree at a full commit, on a host whose
+  preflight and postflight inventories were both valid;
+- its method is the exact counterbalanced six-cell 32-client interactive
+  design, at full or production scale, with the 1.05 p95 bound;
+- every idle cell shows a holding lane that removed nothing, and every active
+  cell shows a lane that removed history and was never fenced;
+- the medians and ratios it states re-derive exactly from its cells, and the
+  median active p95 is within 1.05 of the median idle p95.
+
+The raw cell reports and host inventories stay off-repo (they carry host
+paths and process lists); the summary binds each one by SHA-256.
+"""
+
+from __future__ import annotations
+
+import argparse
+import json
+import math
+import re
+import statistics
+import sys
+from pathlib import Path
+from typing import Any
+
+REPOSITORY = Path(__file__).resolve().parent.parent
+DEFAULT_SUMMARY = (
+    REPOSITORY / "release" / "evidence" / "wp-761" / "online-retention-interference.json"
+)
+SCHEMA = "riffdb.wp-761-online-retention-interference/v1"
+ORDER = ["idle", "active", "active", "idle", "idle", "active"]
+MAXIMUM_P95_RATIO = 1.05
+MAX_SUMMARY_BYTES = 1024 * 1024
+SHA256 = re.compile(r"[0-9a-f]{64}")
+COMMIT = re.compile(r"[0-9a-f]{40}")
+FENCES = {
+    "none",
+    "durable_application_head",
+    "projection_durable_frontier",
+    "operator_hold",
+    "undelivered_outbox",
+    "staged_migration",
+    "consumer_low_water",
+    "follower_low_water",
+    "unbounded",
+}
+STATES = {"holding", "idle", "advancing", "fenced", "refused", "cancelled"}
+
+
+def refuse(message: str) -> None:
+    print(f"wp761_online_retention_interference_invalid: {message}", file=sys.stderr)
+    raise SystemExit(1)
+
+
+def mapping(value: Any, label: str) -> dict[str, Any]:
+    if not isinstance(value, dict):
+        refuse(f"{label} is not an object")
+    return value
+
+
+def count(value: Any, label: str, positive: bool = False) -> int:
+    if not isinstance(value, int) or isinstance(value, bool) or value < (1 if positive else 0):
+        refuse(f"{label} is not a {'positive' if positive else 'nonnegative'} integer")
+    return value
+
+
+def digest(value: Any, label: str) -> str:
+    if not isinstance(value, str) or not SHA256.fullmatch(value):
+        refuse(f"{label} is not a SHA-256 digest")
+    return value
+
+
+def close(left: Any, right: float, label: str) -> None:
+    if not isinstance(left, (int, float)) or isinstance(left, bool):
+        refuse(f"{label} is not a number")
+    if not math.isclose(float(left), right, rel_tol=1e-12, abs_tol=1e-9):
+        refuse(f"{label} does not re-derive from the cells ({left} != {right})")
+
+
+def check(summary: dict[str, Any]) -> None:
+    if summary.get("schema") != SCHEMA:
+        refuse("wrong schema")
+    source = mapping(summary.get("source"), "source")
+    if source.get("clean_tree") is not True:
+        refuse("the evidence was not produced from a clean tree")
+    if not isinstance(source.get("commit"), str) or not COMMIT.fullmatch(source["commit"]):
+        refuse("source commit is not a full commit id")
+
+    method = mapping(summary.get("method"), "method")
+    expected_method = {
+        "load": "interactive",
+        "clients": 32,
+        "repetitions": 3,
+        "order": ORDER,
+        "idle_arm": {"retention": "hold"},
+        "maximum_p95_ratio": MAXIMUM_P95_RATIO,
+        "latency_gate_statistic": "median_of_repetition_aggregate_p95",
+        "outbox": "seeded_events_marked_delivered_on_the_stopped_database_in_both_arms",
+        "projections": "board_projection_undeclared_in_both_arms",
+        "lane_observation_scope": "measured_process_generation",
+    }
+    for key, expected in expected_method.items():
+        if method.get(key) != expected:
+            refuse(f"method.{key} is not the qualifying design")
+    if method.get("scale") not in {"full", "production"}:
+        refuse("method.scale must be full or production")
+    count(method.get("duration_secs"), "method.duration_secs", positive=True)
+    count(method.get("warmup_secs"), "method.warmup_secs")
+    active_arm = mapping(method.get("active_arm"), "method.active_arm")
+    count(active_arm.get("retained_sequences"), "method.active_arm.retained_sequences", True)
+    budget = count(active_arm.get("sequences_per_epoch"), "sequences_per_epoch", True)
+    if budget > 256:
+        refuse("the active arm's per-epoch budget exceeds 256")
+
+    artifacts = mapping(summary.get("artifacts"), "artifacts")
+    digest(artifacts.get("riffdbd_sha256"), "artifacts.riffdbd_sha256")
+    digest(artifacts.get("runner_sha256"), "artifacts.runner_sha256")
+    host = mapping(summary.get("host"), "host")
+    if host.get("valid") is not True:
+        refuse("the host inventories were not valid")
+    digest(host.get("preflight_sha256"), "host.preflight_sha256")
+    digest(host.get("postflight_sha256"), "host.postflight_sha256")
+    count(host.get("logical_cpus"), "host.logical_cpus", positive=True)
+
+    cells = summary.get("cells")
+    if not isinstance(cells, list) or len(cells) != len(ORDER):
+        refuse("the summary does not carry exactly six cells")
+    reps = {"idle": 0, "active": 0}
+    seen_reports = set()
+    for index, (cell, arm) in enumerate(zip(cells, ORDER)):
+        cell = mapping(cell, f"cells[{index}]")
+        reps[arm] += 1
+        if cell.get("arm") != arm or cell.get("rep") != reps[arm]:
+            refuse(f"cells[{index}] is out of the counterbalanced order")
+        report = digest(cell.get("report_sha256"), f"cells[{index}].report_sha256")
+        if report in seen_reports:
+            refuse("two cells bind the same report")
+        seen_reports.add(report)
+        count(cell.get("aggregate_p95_ns"), f"cells[{index}].aggregate_p95_ns", True)
+        count(cell.get("throughput_ops_s"), f"cells[{index}].throughput_ops_s", True)
+        lane = mapping(cell.get("lane"), f"cells[{index}].lane")
+        state, fence = lane.get("state"), lane.get("fence")
+        if state not in STATES or fence not in FENCES:
+            refuse(f"cells[{index}].lane carries an unknown state or fence")
+        steps = count(lane.get("steps"), f"cells[{index}].lane.steps")
+        sequences = count(lane.get("sequences"), f"cells[{index}].lane.sequences")
+        if arm == "idle" and (state != "holding" or steps or sequences):
+            refuse(f"cells[{index}] is an idle arm whose lane was not holding")
+        if arm == "active" and (
+            state not in {"idle", "advancing"} or fence != "none" or not steps or not sequences
+        ):
+            refuse(f"cells[{index}] is an active arm whose lane did not compact unfenced")
+
+    def median(arm: str, metric: str) -> float:
+        return float(statistics.median(c[metric] for c in cells if c["arm"] == arm))
+
+    comparison = mapping(summary.get("comparison"), "comparison")
+    idle_p95, active_p95 = median("idle", "aggregate_p95_ns"), median("active", "aggregate_p95_ns")
+    idle_tp, active_tp = median("idle", "throughput_ops_s"), median("active", "throughput_ops_s")
+    close(comparison.get("idle_median_p95_ns"), idle_p95, "comparison.idle_median_p95_ns")
+    close(comparison.get("active_median_p95_ns"), active_p95, "comparison.active_median_p95_ns")
+    close(comparison.get("p95_ratio"), active_p95 / idle_p95, "comparison.p95_ratio")
+    close(comparison.get("idle_median_throughput_ops_s"), idle_tp, "idle throughput median")
+    close(comparison.get("active_median_throughput_ops_s"), active_tp, "active throughput median")
+    close(comparison.get("throughput_ratio"), active_tp / idle_tp, "comparison.throughput_ratio")
+    if comparison.get("lane_valid") is not True:
+        refuse("comparison.lane_valid is not true")
+    if active_p95 / idle_p95 > MAXIMUM_P95_RATIO:
+        refuse(
+            f"active p95 is {active_p95 / idle_p95:.4f}x idle, outside the "
+            f"{MAXIMUM_P95_RATIO} bound"
+        )
+    if summary.get("qualified") is not True:
+        refuse("the summary is not qualified")
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
+    parser.add_argument("--summary", type=Path, default=DEFAULT_SUMMARY)
+    args = parser.parse_args()
+    try:
+        data = args.summary.read_bytes()
+    except OSError as error:
+        refuse(f"cannot read the banked summary: {error}")
+    if not data or len(data) > MAX_SUMMARY_BYTES:
+        refuse("the banked summary has an invalid size")
+    try:
+        summary = json.loads(data)
+    except json.JSONDecodeError as error:
+        refuse(f"the banked summary is not JSON: {error}")
+    check(mapping(summary, "summary"))
+    print("wp761 online-retention interference evidence: qualified")
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

@@ -295,6 +295,31 @@ These limits are part of the POC release posture, not hidden roadmap promises.
 - A POC-exit decision still requires all POC-001 through POC-010 evidence plus
   a human architecture review: proceed to alpha, revise and repeat, or stop.
 
+## Retention
+
+Online retention (see [Configuration](configuration.md#online-retention)) never
+passes a fence, and in this POC three fences bind more than an operator may
+expect:
+
+- This POC composes no outbox delivery destination, so an emitted event is
+  never marked delivered. History from the first undelivered event onward is
+  retained, online and offline. A contract that emits events compacts only the
+  history before its first event.
+- A declared columnar projection that has not been populated in the current
+  process holds retention at its last populated frontier, or at the beginning
+  of history if it was never populated, until something queries it.
+- The first online retention step deletes the validated-prefix checkpoint.
+  The next restart after the lane advances therefore takes complete startup
+  validation, which is proportional to the live population, and earns a fresh
+  checkpoint. A database whose lane keeps advancing takes that path on most
+  restarts. See [Startup integrity](operations/STARTUP-INTEGRITY.md).
+
+The WP-761 interference evidence measured the 32-client interactive mix with
+the lane active against the same run with it held. It covers that one
+workload on one benchmark host, is not a general latency guarantee, and marked
+the seeded events delivered on the stopped database first because of the
+outbox limit above.
+
 ## Storage reclamation
 
 Retention pruning deletes rows; it does not shrink the database file. redb 4.2

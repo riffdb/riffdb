@@ -34,6 +34,9 @@ pub enum OnlineRetentionHold {
     /// The retained-sequence target falls inside the next whole command row,
     /// or the budget was spent before it.
     RowBoundary,
+    /// An asynchronous journal checkpoint is in flight. The step yields to it
+    /// rather than wait for it while holding the writer gate; retry shortly.
+    CheckpointInFlight,
 }
 
 /// The durable result of one online retention step.
@@ -65,19 +68,30 @@ struct StepPlan {
 #[derive(Clone)]
 pub struct RedbOnlineRetentionLane {
     shared: Arc<crate::store::SharedRedb>,
+    /// The journal's last application sequence at the previous step, so the
+    /// lane materializes the journal suffix only once the database is idle.
+    last_journal_sequence: Arc<std::sync::atomic::AtomicU64>,
 }
 
 impl RedbOnlineRetentionLane {
-    /// Runs one step; see [`RedbOperationalPorts::online_retention_step`].
+    /// Runs one step, as [`RedbOperationalPorts::online_retention_step`] does,
+    /// except that history still in the journal suffix is materialized only
+    /// when no transition was journaled since this lane's previous step: a busy
+    /// database's own checkpoints materialize it instead.
     pub fn step(
         &self,
         retain_sequences: NonZeroU64,
         max_sequences: NonZeroU64,
     ) -> Result<OnlineRetentionStep, StorageError> {
+        let (journal_sequence, _) = self.shared.journal_suffix_activity()?;
+        let idle = self
+            .last_journal_sequence
+            .swap(journal_sequence, std::sync::atomic::Ordering::AcqRel)
+            == journal_sequence;
         RedbOperationalPorts {
             shared: Arc::clone(&self.shared),
         }
-        .online_retention_step(retain_sequences, max_sequences)
+        .online_retention_step_inner(retain_sequences, max_sequences, idle)
     }
 }
 
@@ -93,6 +107,7 @@ impl RedbOperationalPorts {
     pub fn online_retention_lane(&self) -> RedbOnlineRetentionLane {
         RedbOnlineRetentionLane {
             shared: Arc::clone(&self.shared),
+            last_journal_sequence: Arc::new(std::sync::atomic::AtomicU64::new(u64::MAX)),
         }
     }
 
@@ -115,10 +130,61 @@ impl RedbOperationalPorts {
         retain_sequences: NonZeroU64,
         max_sequences: NonZeroU64,
     ) -> Result<OnlineRetentionStep, StorageError> {
+        self.online_retention_step_inner(retain_sequences, max_sequences, true)
+    }
+
+    fn online_retention_step_inner(
+        &self,
+        retain_sequences: NonZeroU64,
+        max_sequences: NonZeroU64,
+        may_materialize_suffix: bool,
+    ) -> Result<OnlineRetentionStep, StorageError> {
         let allowance = max_sequences.get().min(ONLINE_RETENTION_STEP_SEQUENCES);
-        let access = self
-            .begin_attributed_write(riffdb_storage_api::ChangelogAttributionV3::RetentionPrune)?;
-        self.online_retention_step_with(access, retain_sequences, allowance, true)
+        // Plan first without the writer gate, from an engine snapshot: most
+        // checks find nothing to prune, and they must not drain the journal
+        // suffix or delay a writer to learn that.
+        let hold = {
+            let read = self
+                .shared
+                .database
+                .begin_read()
+                .map_err(transaction_error)?;
+            let derived_read = self.begin_derived_read()?;
+            plan_step(&read, &derived_read, retain_sequences, allowance)?.err()
+        };
+        let materialize_suffix = match hold {
+            None => false,
+            Some(hold) => {
+                // Held only because the snapshot's head is stale (history in
+                // the journal suffix): materialize it under the gate and plan
+                // again, but only when the caller allows it.
+                let head_bound = matches!(
+                    hold,
+                    OnlineRetentionHold::TargetReached
+                        | OnlineRetentionHold::RowBoundary
+                        | OnlineRetentionHold::Fenced(
+                            RetentionFenceBinding::DurableApplicationHead
+                        )
+                );
+                if !(may_materialize_suffix
+                    && head_bound
+                    && self.shared.journal_suffix_activity()?.1)
+                {
+                    return Ok(OnlineRetentionStep::Held(hold));
+                }
+                true
+            }
+        };
+        let Some(access) = self.begin_attributed_write_unless_checkpointing(
+            riffdb_storage_api::ChangelogAttributionV3::RetentionPrune,
+            materialize_suffix,
+        )?
+        else {
+            return Ok(OnlineRetentionStep::Held(
+                OnlineRetentionHold::CheckpointInFlight,
+            ));
+        };
+        self.online_retention_step_with(access, retain_sequences, allowance)
     }
 
     fn online_retention_step_with(
@@ -126,7 +192,6 @@ impl RedbOperationalPorts {
         access: crate::store::RedbWriteAccess,
         retain_sequences: NonZeroU64,
         allowance: u64,
-        may_checkpoint: bool,
     ) -> Result<OnlineRetentionStep, StorageError> {
         // Opened while the gate is held: every fence row is a direct
         // administration transition that commits under the same gate, so this
@@ -151,33 +216,9 @@ impl RedbOperationalPorts {
         let plan = match plan_step(&read, &derived_read, retain_sequences, allowance) {
             Ok(Ok(plan)) => plan,
             Ok(Err(hold)) => {
-                // Held only because the snapshot's head is stale: materialize
-                // the suffix under a fresh gate hold and plan once more, so an
-                // idle lane still reaches its target. A busy lane never pays
-                // this, since its own step commit folds the suffix in.
-                let head_bound = matches!(
-                    hold,
-                    OnlineRetentionHold::TargetReached
-                        | OnlineRetentionHold::RowBoundary
-                        | OnlineRetentionHold::Fenced(
-                            RetentionFenceBinding::DurableApplicationHead
-                        )
-                );
-                let unmaterialized = access.drained_journal_commands() > 0;
                 drop(derived_read);
                 drop(read);
                 access.abort()?;
-                if may_checkpoint && head_bound && unmaterialized {
-                    let access = self.begin_attributed_write_after_checkpoint(
-                        riffdb_storage_api::ChangelogAttributionV3::RetentionPrune,
-                    )?;
-                    return self.online_retention_step_with(
-                        access,
-                        retain_sequences,
-                        allowance,
-                        false,
-                    );
-                }
                 return Ok(OnlineRetentionStep::Held(hold));
             }
             Err(error) => {

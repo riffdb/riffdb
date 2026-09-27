@@ -693,6 +693,22 @@ impl SharedRedb {
             .fetch_add(commit_rows, Ordering::Relaxed);
     }
 
+    /// Gate-free journal activity for the online retention lane: the
+    /// journal's last application sequence, and whether any journaled
+    /// transition is not yet materialized in the engine.
+    pub(crate) fn journal_suffix_activity(&self) -> Result<(u64, bool), StorageError> {
+        let runtime = self
+            .journal_runtime
+            .lock()
+            .map_err(|_| storage_error(StorageErrorKind::InvariantViolation))?;
+        Ok(runtime.as_ref().map_or((0, false), |runtime| {
+            (
+                runtime.last_sequence.map_or(0, CommitSequence::get),
+                runtime.suffix_commands > 0 || runtime.unpublished_transitions > 0,
+            )
+        }))
+    }
+
     pub(crate) fn transient_index_rebuilds(&self) -> u64 {
         self.transient_index_rebuilds.load(Ordering::Relaxed)
     }
@@ -5436,31 +5452,44 @@ impl RedbOperationalPorts {
         &self,
         source: riffdb_storage_api::ChangelogAttributionV3,
     ) -> Result<RedbWriteAccess, StorageError> {
-        self.begin_attributed_write_inner(source, false)
+        self.begin_attributed_write_inner(source, false, false)?
+            .ok_or_else(|| storage_error(StorageErrorKind::InvariantViolation))
     }
 
-    /// The same direct write, except that under the held gate it first
-    /// materializes the published journal suffix into the engine (the
-    /// source-control barrier), so an engine snapshot opened afterward sees
-    /// every acknowledged transition ordered before this write.
-    pub(crate) fn begin_attributed_write_after_checkpoint(
+    /// A deferrable direct write: `None`, with the gate already released,
+    /// when an asynchronous journal checkpoint is in flight, so the caller
+    /// never waits for that checkpoint while holding the writer gate. With
+    /// `checkpoint_first` it then materializes the published journal suffix
+    /// into the engine under the held gate (the source-control barrier), so an
+    /// engine snapshot opened afterward sees every acknowledged transition
+    /// ordered before this write.
+    pub(crate) fn begin_attributed_write_unless_checkpointing(
         &self,
         source: riffdb_storage_api::ChangelogAttributionV3,
-    ) -> Result<RedbWriteAccess, StorageError> {
-        self.begin_attributed_write_inner(source, true)
+        checkpoint_first: bool,
+    ) -> Result<Option<RedbWriteAccess>, StorageError> {
+        self.begin_attributed_write_inner(source, checkpoint_first, true)
     }
 
     fn begin_attributed_write_inner(
         &self,
         source: riffdb_storage_api::ChangelogAttributionV3,
         checkpoint_first: bool,
-    ) -> Result<RedbWriteAccess, StorageError> {
+        yield_to_checkpoint: bool,
+    ) -> Result<Option<RedbWriteAccess>, StorageError> {
         crate::changelog_v3_write::require_direct_attribution(source)?;
         let lease = self.shared.mutation_gate.acquire()?;
         if self.shared.write_fenced.load(Ordering::Acquire) {
             return Err(storage_error(StorageErrorKind::Unavailable));
         }
         self.shared.publish_pending_journal_prefix()?;
+        if yield_to_checkpoint {
+            self.shared.poll_async_checkpoint_locked(false)?;
+            if self.shared.async_checkpoint_in_flight()? {
+                drop(lease);
+                return Ok(None);
+            }
+        }
         if checkpoint_first {
             self.shared
                 .checkpoint_published_journal_suffix_for_barrier()?;
@@ -5502,7 +5531,7 @@ impl RedbOperationalPorts {
                 return Err(error);
             }
         };
-        Ok(RedbWriteAccess {
+        Ok(Some(RedbWriteAccess {
             shared: Arc::clone(&self.shared),
             transaction: Some(transaction),
             direct_changelog_attribution: Some(source),
@@ -5513,7 +5542,7 @@ impl RedbOperationalPorts {
             composite_predecessor: None,
             composite_stage: None,
             command_prefix_capture: RefCell::default(),
-        })
+        }))
     }
 
     pub(crate) fn begin_deferred_epoch(&self) -> Result<RedbDurabilityEpoch, StorageError> {
@@ -5948,14 +5977,6 @@ impl RedbWriteAccess {
                 .map_err(journal_storage_error)?;
         }
         Ok(())
-    }
-
-    /// Application commands in the journal suffix this write drained, which
-    /// an engine snapshot opened before its commit does not yet contain.
-    pub(crate) fn drained_journal_commands(&self) -> usize {
-        self.journal_checkpoint
-            .as_ref()
-            .map_or(0, |runtime| runtime.suffix_commands)
     }
 
     pub(crate) fn transaction(&self) -> Result<&OperationalWriteTransaction, StorageError> {

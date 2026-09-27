@@ -54,7 +54,8 @@ readiness are unaffected, and later writes run at normal speed.
 
 Complete startup validation is still used when those bounded-recovery
 preconditions do not hold: a database with no loadable validated-prefix
-checkpoint (such as its first start) or without an active, current
+checkpoint (such as its first start, or the first start after an online
+retention step deleted it) or without an active, current
 durable-format registry, and a follower start without a valid clean-close
 certificate. A mismatch in a bound root fails closed. None of these cases asks
 the operator to classify the preceding shutdown.
