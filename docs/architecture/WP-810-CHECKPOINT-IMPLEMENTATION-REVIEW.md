@@ -4,7 +4,8 @@
 at `0a71cadf`, the maintainer said **"i accept it"**. This accepts the
 implementation and fixtures at runtime source `f6b4315b` and the limited
 mitigation, including the remaining shared journal delay, as WP-810's reviewed
-resolution. Final integration checks and landing are recorded separately.
+resolution. Integration `ccadaf50`, including main `dfd16a1e`, passes all 16
+acceptance steps including the complete CI battery.
 WP-749's prerequisite and archive-presence gate remain separate.
 
 ## Accepted disposition
@@ -33,15 +34,17 @@ repair through `a1809310f`. The later writeback comparison uses control
 `0e85750c` withdraws that prototype and restores the control runtime exactly.
 The latest fixed comparison uses control `df7ad5b2` and candidate `f6b4315b`,
 including the same main `aa77f9622`; the control runtime equals the restored
-`983881ea` runtime. Full CI passes on `f6b4315b`. Only this review and evidence
-documentation change afterward. WP-749's archive-presence gate is separate.
+`983881ea` runtime. Full CI passes on `f6b4315b`. The final integration
+`ccadaf50` additionally includes main's retention repair at `dfd16a1e` and
+passes full acceptance/CI. Measurements remain bound to their original
+sources. WP-749's archive-presence gate is separate.
 
 The decisions are within ADR-0101, ADR-0104 and ADR-0132: keep bounded foreground
 apply running during checkpoint materialization, then retain the ordered drain
 required for checkpoint installation. No checkpoint threshold, journal/capsule
 encoding, public interface, durability requirement or sequence owner changes.
 
-## Implementation to review
+## Accepted implementation
 
 In `crates/riffdb-storage-redb/src/store.rs`:
 
@@ -167,9 +170,9 @@ effect on 2026-09-27; the rejected early-sync strategy remains withdrawn.
 | REC-001 / REC-002: idempotent recovery | The six crash edges reopen twice, compare complete authority and audit counts, and refuse invented successors. |
 | PERF-018: attributable measurement evidence | The six-cell comparison retains exact sources, binaries, raw percentiles, host validity, checkpoint counts and signed wall remainders. It is a bounded comparison, not an alpha release sweep. |
 | Standalone finding | [Performance report](../performance/wp-810-checkpoint-journal-tail.md), with retained archive-disabled trace and instrument limitations. |
-| Current correctness qualification | `release/evidence/wp-810/checkpoint-identical-writes-20260927/checks.json`: full CI at `f6b4315b`, 1,046 storage tests, 294 coordinator tests, nine targeted proofs, scoped acceptance and complete exact-binary workload qualification pass. Earlier failed invocations remain retained. |
+| Current correctness qualification | `release/evidence/wp-810/closure-20260927.json`: all 16 final acceptance steps, including complete CI, pass on integration `ccadaf50`. The earlier packet binds the original 1,046 storage tests, 294 coordinator tests, nine targeted proofs and exact-binary qualification to `f6b4315b`. Earlier failed/superseded attempts remain retained. |
 | Reviewed shared-delay resolution | **Accepted, 2026-09-27.** Native timing locates measured slow journal sync time in file writeback (80.37%) and device flush (19.61%), with zero JBD2 commit-wait time and 0.02% residual. The maintainer accepts the limited mitigation and remaining tail together. |
-| Final human implementation/fixture review and closure | **Accepted, 2026-09-27:** "i accept it", referring to review `0a71cadf` and runtime `f6b4315b`. The manifest records `completed_at`; final integration validation and landing follow this acceptance. |
+| Final human implementation/fixture review and closure | **Accepted, 2026-09-27:** "i accept it", referring to review `0a71cadf` and runtime `f6b4315b`. The manifest records `completed_at`; the complete final integration battery passes at `ccadaf50`. |
 
 ## Performance evidence and its limits
 
@@ -246,9 +249,13 @@ remain registered locally.
 The manifest records the accepted disposition, `completed_at`, implementation
 decisions and remaining hazards. Original evidence packets retain their
 prospective and measurement-time statuses; they are not rewritten to imply
-earlier acceptance. Final integration must pass acceptance and the complete CI
-battery before landing. The finished worktree is removed after landing and
-verification that main retains the complete implementation and evidence.
+earlier acceptance. `release/evidence/wp-810/closure-20260927.json` binds the
+successful 16-step final acceptance, complete CI, source tree, log digest and
+key production proofs to `ccadaf50`. It also retains the earlier CI attempt
+stopped when main advanced, and explains the handbook/template warnings.
+Only documentation and this validation receipt follow the checked integration;
+their scoped acceptance runs before landing. The finished worktree is removed
+after main retains the complete implementation and evidence.
 
 The maintainer's in-session acceptance satisfies AGENTS.md's implementation/
 fixture review and WP-810's reviewed-resolution requirement. No additional

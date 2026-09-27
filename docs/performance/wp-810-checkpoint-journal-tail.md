@@ -10,7 +10,10 @@ response to review `0a71cadf`, accepting the implementation/fixtures and limited
 mitigation at runtime source `f6b4315b`, including the remaining shared journal
 delay, as WP-810's resolution. The manifest records completion and the
 [implementation review](../architecture/WP-810-CHECKPOINT-IMPLEMENTATION-REVIEW.md)
-records the acceptance. Final integration checks and landing follow separately.
+records the acceptance. Integration `ccadaf50`, including main `dfd16a1e`,
+passes all 16 final acceptance steps including complete CI. The source/tree
+identity, retained log digest, key proofs and superseded attempt are recorded
+in `release/evidence/wp-810/closure-20260927.json`.
 
 In the original writer path, a registered asynchronous checkpoint makes the
 Standard-profile writer drain journal durability and ordered publication before
@@ -882,8 +885,10 @@ comparison omits identical writes while retaining growth and final syncs.
 tests, deterministic production schedules, six pipeline process-crash edges,
 two finalization fence crash edges, scoped acceptance, complete exact-binary
 qualification and six fixed valid comparison cells. Evidence helper tests,
-raw-data reproduction and final handbook/evidence acceptance pass. Final
-integration validation is recorded separately. The maintainer accepted the
+raw-data reproduction and final handbook/evidence acceptance pass. Integration
+`ccadaf50`, including current main's retention fix, passes all 16 final
+acceptance steps and complete CI; its validation receipt retains the exact
+source and log identities. The maintainer accepted the
 implementation, fixtures and limited-mitigation disposition on 2026-09-27.
 
 **Compatibility:** existing durable bytes, interfaces, thresholds, cache budget

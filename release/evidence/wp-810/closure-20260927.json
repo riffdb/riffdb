@@ -1,0 +1,139 @@
+{
+  "schema": "riffdb.wp810-accepted-closure/v1",
+  "accepted_at": "2026-09-27",
+  "acceptance": "maintainer, in session: \"i accept it\", accepting the implementation, fixtures and limited-mitigation disposition reviewed at 0a71cadf",
+  "review_revision": "0a71cadfd911742f7d9e53a2d90cb19de8eb15e6",
+  "accepted_implementation_revision": "f6b4315b8e73614bf6038d153d9f7ae2ca1c4d59",
+  "closure_revision": "af4029b6fe2f7af0b227dc33618e1ff01d13d430",
+  "integration_revision": "ccadaf508bff1362401db911ec5d94e2185126ac",
+  "integration_tree": "a2802ce39d54e7e8a26736d0996806a636e5ce7f",
+  "included_main_revision": "dfd16a1e0ffb30f601c607f4de77473dc4bce508",
+  "qualification": {
+    "finished_at": "2026-09-27T14:33:23.316063+00:00",
+    "command": "./scripts/acceptance --wp WP-810 --full",
+    "toolchain": "1.98.1",
+    "exit_code": 0,
+    "steps": [
+      {
+        "result": "pass",
+        "seconds": 0.3,
+        "command": "./scripts/check-allowed-paths --wp WP-810"
+      },
+      {
+        "result": "pass",
+        "seconds": 58.3,
+        "command": "./scripts/check-generated"
+      },
+      {
+        "result": "pass",
+        "seconds": 0.1,
+        "command": "./scripts/check-version-topology"
+      },
+      {
+        "result": "pass",
+        "seconds": 4.9,
+        "command": "./scripts/handbook check"
+      },
+      {
+        "result": "pass",
+        "seconds": 40.7,
+        "command": "./scripts/check-workspace-policy"
+      },
+      {
+        "result": "pass",
+        "seconds": 0.6,
+        "command": "cargo deny check"
+      },
+      {
+        "result": "pass",
+        "seconds": 0.2,
+        "command": "cargo machete"
+      },
+      {
+        "result": "pass",
+        "seconds": 1.0,
+        "command": "./scripts/check-requirement-coverage"
+      },
+      {
+        "result": "pass",
+        "seconds": 1.6,
+        "command": "./scripts/check-adr-obligations"
+      },
+      {
+        "result": "pass",
+        "seconds": 0.0,
+        "command": "./scripts/adr-new --self-test"
+      },
+      {
+        "result": "pass",
+        "seconds": 0.1,
+        "command": "./scripts/adr-index --check"
+      },
+      {
+        "result": "pass",
+        "seconds": 0.2,
+        "command": "./scripts/check-acceptance-commits"
+      },
+      {
+        "result": "pass",
+        "seconds": 1.0,
+        "command": "./scripts/check-performance-freeze"
+      },
+      {
+        "result": "pass",
+        "seconds": 0.1,
+        "command": "./scripts/check-file-size-guard"
+      },
+      {
+        "result": "pass",
+        "seconds": 0.1,
+        "command": "./scripts/check-panic-allowances"
+      },
+      {
+        "result": "pass",
+        "seconds": 1005.3,
+        "command": "./scripts/ci-all"
+      }
+    ],
+    "log_sha256": "db30218ac1d9f3cdfa7f09bfca185ba1c01276a44dacbf56362d54e97a090bd1",
+    "log_bytes": 1338773,
+    "key_proofs_passed": [
+      "checkpoint_materialization_allows_pipeline_but_installation_requires_publication",
+      "unpublished_capacity_wait_publishes_the_prefix_without_losing_original_tickets",
+      "failed_checkpoint_refuses_new_apply_while_a_durable_predecessor_awaits_publication",
+      "checkpoint_pipeline_process_crashes_recover_exactly_and_idempotently",
+      "writer_pipelines_during_checkpoint_without_releasing_results_or_effects_early",
+      "real_redb_elides_redundant_finalization_writes_but_syncs_and_reopens",
+      "rewrite_final_fence_crashes_reopen_atomically_and_idempotently"
+    ]
+  },
+  "superseded_attempt": {
+    "revision": "af4029b6fe2f7af0b227dc33618e1ff01d13d430",
+    "exit_code": 143,
+    "disposition": "Stopped after main advanced; retained without a pass/fail verdict. The complete replacement qualifies the integrated tree.",
+    "log_sha256": "f7bad25feaba4c0cea049d2d1845f734336860d5c225bde6f2129c6f529156ff",
+    "all_recorded_process_group_members_stopped": true
+  },
+  "warnings": [
+    {
+      "kind": "handbook_search_index_size",
+      "disposition": "mdBook reports a roughly 10 MB search index; handbook checks pass without warning suppression."
+    },
+    {
+      "kind": "cargo_machete_template_source_not_present",
+      "disposition": "The application template keeps rust-main.rs until riffdb new materializes src/main.rs. Its manifest documents this layout."
+    },
+    {
+      "kind": "cargo_machete_negative_fixture_source_not_present",
+      "disposition": "The negative kernel-dependency fixture intentionally contains only an invalid manifest for boundary tests. Its manifest documents that it has no compilable target."
+    }
+  ],
+  "performance_scope": "Original observations remain bound to their frozen source/binary identities. This integration qualification adds no timing result or WP-749 archive verdict.",
+  "remaining_limitations": [
+    "Long shared journal waits remain, including the disclosed 210 ms candidate sync; the maintainer accepts that limitation as WP-810 resolution.",
+    "The limited P99 improvement is not a predictable service level; throughput variance is not a latency noise band.",
+    "Cold-cache and other workload effects of extra comparison reads are not qualified by the c32 write-only experiment.",
+    "WP-749 retains its separate prerequisite review and archive acknowledgement-latency gate."
+  ],
+  "custody": "Full private logs, source bundles, exact measured binaries and all measurement attempts remain retained. No additional remote work was started for closure."
+}
