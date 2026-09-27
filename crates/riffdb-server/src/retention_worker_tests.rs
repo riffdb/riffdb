@@ -168,6 +168,7 @@ fn retention_lane_states_are_closed_and_shutdown_cancels_the_lane() {
         lane.observation(),
         RetentionLaneObservation {
             state: RetentionLaneState::Cancelled,
+            fence: None,
             steps: 0,
             sequences: 0,
         }
@@ -219,6 +220,17 @@ fn retention_lane_states_are_closed_and_shutdown_cancels_the_lane() {
             "cancelled"
         ]
     );
+    let status = RetentionLaneStatus::new(RetentionLaneState::Idle);
+    for binding in FENCE_BINDINGS {
+        status.note_fence(Some(binding));
+        assert_eq!(status.fence(), Some(binding), "every binding round-trips");
+    }
+    assert_eq!(
+        fence_name(Some(RetentionFenceBinding::ProjectionDurableFrontier)),
+        "projection_durable_frontier"
+    );
+    status.note_fence(None);
+    assert_eq!(status.fence(), None);
     for state in [RetentionLaneState::Refused, RetentionLaneState::Cancelled] {
         let status = RetentionLaneStatus::new(state);
         status.set(RetentionLaneState::Advancing);

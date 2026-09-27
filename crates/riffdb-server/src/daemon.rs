@@ -3473,12 +3473,7 @@ async fn supervise_ready_process(
         scrub_observation.total_us.unwrap_or(0),
         scrub_observation.rows_per_second.unwrap_or(0),
     );
-    let retention_observation = graph.retention_observation();
-    crate::shutdown_census::record_online_retention(
-        retention_observation.state,
-        retention_observation.steps,
-        retention_observation.sequences,
-    );
+    crate::shutdown_census::record_online_retention(graph.retention_observation());
     let read_stages = graph.read_stage_snapshot();
     let write_service_stages = graph.write_service_stage_snapshot();
     let command_stages = graph.command_stage_snapshot();

@@ -1604,6 +1604,14 @@ fn riffdb_shutdown_evidence_json(evidence: &RiffDbShutdownEvidence) -> serde_jso
         })),
         "startup": evidence.startup.as_ref().map(startup_evidence_json),
         "clean_close": clean_close_evidence_json(evidence),
+        // ADR-0182 section 7: the online retention lane's closed state and
+        // bounded counters for this process generation.
+        "online_retention": evidence.online_retention.map(|lane| json!({
+            "state": lane.state,
+            "fence": lane.fence,
+            "steps": lane.steps,
+            "sequences": lane.sequences,
+        })),
         "graph_shutdown_elapsed_us": evidence.graph_shutdown_elapsed_us,
         "shutdown_stages_us": evidence.shutdown_stages_us,
         "harness_shutdown_elapsed_us": evidence.harness_shutdown_elapsed_us,

@@ -281,6 +281,79 @@ impl RecoveryAuthoritySnapshotV1 {
     }
 }
 
+/// Marks every outbox event of a stopped database delivered and returns how
+/// many statuses it wrote.
+///
+/// WP-761 interference evidence only: this POC composes no outbox delivery
+/// destination, so a seeded event would otherwise fence online retention for
+/// the whole measured window (ADR-0182 section 6 keeps undelivered history).
+/// Both measured arms receive the same call, so they differ only in their
+/// retention configuration. Call only after the owning process stopped.
+pub fn mark_all_outbox_events_delivered_v1(
+    path: &Path,
+) -> Result<u64, riffdb_storage_api::StorageError> {
+    use crate::error::{precommit_storage_error, storage_error, table_error, transaction_error};
+    use riffdb_storage_api::StorageErrorKind;
+    let database = Database::open(path).map_err(crate::error::database_error)?;
+    let mut event_ids = std::collections::BTreeSet::new();
+    {
+        let read = database.begin_read().map_err(transaction_error)?;
+        let commits = read.open_table(COMMITS).map_err(table_error)?;
+        for entry in commits.iter().map_err(precommit_storage_error)? {
+            let (_, value) = entry.map_err(precommit_storage_error)?;
+            match riffdb_storage_api::decode_command_segment_v1(value.value()) {
+                Ok(segment) => {
+                    for command in segment.value().commands() {
+                        event_ids.extend(command.events().iter().map(|event| event.event_id()));
+                    }
+                }
+                Err(error)
+                    if error.kind()
+                        == riffdb_storage_api::DurableCodecErrorKind::UnexpectedRecordType => {}
+                Err(error) => return Err(crate::error::codec_error(error)),
+            }
+        }
+        let intents = read.open_table(OUTBOX).map_err(table_error)?;
+        for entry in intents.iter().map_err(precommit_storage_error)? {
+            let (key, _) = entry.map_err(precommit_storage_error)?;
+            event_ids.insert(
+                crate::keys::decode_event_key(key.value())
+                    .map_err(|_| storage_error(StorageErrorKind::CorruptData))?,
+            );
+        }
+    }
+    let destination = riffdb_storage_api::OutboxDestinationIdV1::new("wp761-interference-evidence")
+        .map_err(|_| storage_error(StorageErrorKind::InvariantViolation))?;
+    let delivered_at = Timestamp::new(1_700_000_000, 0)
+        .map_err(|_| storage_error(StorageErrorKind::InvariantViolation))?;
+    let write = database.begin_write().map_err(transaction_error)?;
+    let mut written = 0_u64;
+    {
+        let mut statuses = write
+            .open_table(crate::layout::OUTBOX_STATUS)
+            .map_err(table_error)?;
+        for event_id in event_ids {
+            let status = riffdb_storage_api::StoredOutboxStatusV1::delivered(
+                event_id,
+                std::num::NonZeroU32::MIN,
+                destination.clone(),
+                delivered_at,
+            );
+            let encoded = riffdb_storage_api::proto_codec::encode_outbox_status_v1(&status)
+                .map_err(crate::error::codec_error)?;
+            statuses
+                .insert(
+                    crate::keys::encode_event_key(event_id).as_slice(),
+                    encoded.as_bytes(),
+                )
+                .map_err(precommit_storage_error)?;
+            written += 1;
+        }
+    }
+    write.commit().map_err(crate::error::commit_error)?;
+    Ok(written)
+}
+
 /// Reads a bounded-memory canonical authority snapshot from a stopped durable
 /// unit without opening a writer or publishing diagnostic cardinalities.
 pub fn recovery_authority_snapshot_v1(
