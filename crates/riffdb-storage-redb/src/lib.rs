@@ -38,6 +38,7 @@ mod changelog_v3_journal;
 mod changelog_v3_roots;
 mod changelog_v3_write;
 mod checkpoint_census;
+mod checkpoint_rewrite;
 mod checkpoint_root;
 mod clean_close;
 mod codec;

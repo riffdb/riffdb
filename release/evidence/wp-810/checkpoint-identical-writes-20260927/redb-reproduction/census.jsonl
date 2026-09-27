@@ -1,0 +1,9 @@
+{"round":0,"phase":0,"writes":0,"bytes":0,"equal_writes":0,"equal_bytes":0,"syncs":0}
+{"round":0,"phase":1,"writes":2089,"bytes":32174080,"equal_writes":13,"equal_bytes":53248,"syncs":6}
+{"round":0,"phase":2,"writes":2212,"bytes":35770688,"equal_writes":2049,"equal_bytes":33558528,"syncs":1}
+{"round":1,"phase":0,"writes":0,"bytes":0,"equal_writes":0,"equal_bytes":0,"syncs":0}
+{"round":1,"phase":1,"writes":1960,"bytes":31633408,"equal_writes":0,"equal_bytes":0,"syncs":1}
+{"round":1,"phase":2,"writes":2219,"bytes":35811648,"equal_writes":2048,"equal_bytes":33554432,"syncs":1}
+{"round":2,"phase":0,"writes":0,"bytes":0,"equal_writes":0,"equal_bytes":0,"syncs":0}
+{"round":2,"phase":1,"writes":3126,"bytes":37957632,"equal_writes":0,"equal_bytes":0,"syncs":0}
+{"round":2,"phase":2,"writes":2093,"bytes":33747264,"equal_writes":2049,"equal_bytes":33558528,"syncs":1}

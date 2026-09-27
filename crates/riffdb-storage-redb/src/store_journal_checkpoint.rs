@@ -159,6 +159,12 @@ impl SharedRedb {
             );
             controller.before_commit(crate::hooks::RedbTestOperation::JournalCheckpoint)?;
         }
+        // This changes backend write selection only. redb still finalizes all
+        // checksums and performs every growth and final Immediate sync.
+        let _rewrite = self
+            .checkpoint_rewrite
+            .enter()
+            .map_err(|_| storage_error(StorageErrorKind::Unavailable))?;
         self.commit_durable(transaction)?;
         #[cfg(test)]
         crate::changelog_v3_journal::recovery_crash_edge("checkpoint-committed");

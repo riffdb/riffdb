@@ -321,6 +321,7 @@ pub(crate) struct SharedRedb {
     open_mode: OpenMode,
     follower_namespace: Mutex<Option<crate::maintenance::FollowerNamespace>>,
     pub(crate) database: Database,
+    pub(super) checkpoint_rewrite: Arc<crate::checkpoint_rewrite::CheckpointRewrite>,
     /// Sidecar redb for rebuildable derived state (ADR-0240). Writes here never
     /// acquire `mutation_gate` or the primary store's write transaction.
     /// Opened on first derived read or write so archive inventories that never
@@ -2396,9 +2397,32 @@ impl RedbStore {
         // wrapper: a FileBackend kill-barrier still has to observe the
         // sidecar after process death (ADR-0240 two-store crash).
         let derived_in_memory = false;
+        let checkpoint_rewrite = Arc::new(crate::checkpoint_rewrite::CheckpointRewrite::default());
         let database = match engine_backend {
-            Some(backend) => builder.create_with_backend(DynStorageBackend(backend)),
-            None => builder.create(path),
+            Some(backend) => builder.create_with_backend(
+                crate::checkpoint_rewrite::CheckpointRewriteBackend::new(
+                    DynStorageBackend(backend),
+                    Arc::clone(&checkpoint_rewrite),
+                ),
+            ),
+            None => {
+                // Preserve Builder::create's exact opening and exclusive-lock
+                // behavior; the wrapper only compares checkpoint commit writes.
+                let file = std::fs::OpenOptions::new()
+                    .read(true)
+                    .write(true)
+                    .create(true)
+                    .truncate(false)
+                    .open(path)
+                    .map_err(|_| storage_error(StorageErrorKind::Unavailable))?;
+                let backend = redb::backends::FileBackend::new(file).map_err(database_error)?;
+                builder.create_with_backend(
+                    crate::checkpoint_rewrite::CheckpointRewriteBackend::new(
+                        backend,
+                        Arc::clone(&checkpoint_rewrite),
+                    ),
+                )
+            }
         }
         .map_err(database_error)?;
         // Source-mode construction cannot reinterpret attached follower state
@@ -2437,6 +2461,7 @@ impl RedbStore {
                 open_mode: open_mode.clone(),
                 follower_namespace: Mutex::new(None),
                 database,
+                checkpoint_rewrite,
                 derived: std::sync::OnceLock::new(),
                 derived_open: std::sync::Mutex::new(()),
                 derived_in_memory,

@@ -767,6 +767,46 @@ separate from the finished comparison. The candidate does
 not establish that WP-749's shared tail prerequisite is resolved. Archive
 presence must still be assessed separately after that prerequisite is met.
 
+#### Byte-identical checkpoint finalization writes
+
+The next candidate tests a different mechanism, without more early syncs.
+In pinned redb 4.2.0, `finalize_dirty_checksums_helper` borrows every changed
+leaf through `get_page_mut`, although its leaf arm only reads the page to
+calculate its checksum. Pages evicted from the 4 MiB cache during replay can
+therefore be buffered and written again during finalization. The complete
+native diagnostic records 7,931,516,032 bytes of backend writes during its
+106 checkpoint commits; its trace lacks offsets and cannot identify which
+of those bytes repeat.
+
+A separate local real-file reproduction directly compares every backend
+write with the file's current bytes, then forwards the original write in
+full. Three transactions each insert or replace 2,048 rows of 8,192 bytes
+using the production 4 MiB cache and one-phase Immediate commit. Respectively
+**93.82%, 93.70% and 99.44%** of finalization write bytes are already identical
+in the file. Every row is checked after each commit and after reopen. Source,
+counts and input digests are retained under
+`release/evidence/wp-810/checkpoint-identical-writes-20260927/`.
+This proves a redundant-write mechanism in the pinned engine; it is not
+production-workload attribution or a timing result.
+
+The implementation candidate compares writes of at least 4 KiB only while
+the existing asynchronous checkpoint transaction finalizes. It omits a write
+only after comparing every byte with the current backend, using one fixed
+4 KiB scratch buffer. A shared mutex excludes competing writes and resizes
+between comparison and omission. It keeps every growth and final sync, the
+4 MiB engine cache, original mutation replay order, all capacity limits and
+the exact installation/publication sequence. Comparison I/O errors fail the
+commit through redb's existing failure path. No codec, hash, dependency,
+public interface or operator setting changes.
+
+The pass-through implementation first fails the new redundant-write test.
+The candidate passes nine targeted tests, including competing backend
+mutations, a changed trailing byte, real-engine final-sync failure, and abrupt
+exits before/after that sync with two reopens. All 294 coordinator tests pass.
+Storage acceptance and the fixed same-source comparison remain pending.
+Extra reads could erase the byte benefit; no latency improvement or package
+completion is claimed.
+
 ### Candidate PR note
 
 Package WP-810; tier guarantee. Behavior: retain bounded pipelining during

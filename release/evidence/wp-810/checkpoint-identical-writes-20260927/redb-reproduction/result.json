@@ -1,0 +1,63 @@
+{
+  "schema": "riffdb.wp810-identical-redb-write-reproduction/v1",
+  "redb_version": "4.2.0",
+  "cache_bytes": 4194304,
+  "rows": 2048,
+  "value_bytes": 8192,
+  "transactions": 3,
+  "observation_only": true,
+  "all_original_writes_forwarded": true,
+  "all_final_rows_verified_after_reopen": true,
+  "performance_verdict": false,
+  "scope": "Local engine reproduction, not the production workload. Counts prove repeated byte-identical writes; no timing or shared-tail reduction claim.",
+  "finalization": [
+    {
+      "round": 0,
+      "phase": 2,
+      "writes": 2212,
+      "bytes": 35770688,
+      "equal_writes": 2049,
+      "equal_bytes": 33558528,
+      "syncs": 1,
+      "equal_byte_fraction": 0.9381571861296042
+    },
+    {
+      "round": 1,
+      "phase": 2,
+      "writes": 2219,
+      "bytes": 35811648,
+      "equal_writes": 2048,
+      "equal_bytes": 33554432,
+      "syncs": 1,
+      "equal_byte_fraction": 0.936969781452113
+    },
+    {
+      "round": 2,
+      "phase": 2,
+      "writes": 2093,
+      "bytes": 33747264,
+      "equal_writes": 2049,
+      "equal_bytes": 33558528,
+      "syncs": 1,
+      "equal_byte_fraction": 0.9944073688462567
+    }
+  ],
+  "checks": {
+    "targeted_tests": 9,
+    "targeted_test_exit_code": 0,
+    "initial_pass_through_test_failed": true,
+    "storage_acceptance": "running",
+    "coordinator": {
+      "tests": 294,
+      "exit_code": 0
+    }
+  },
+  "sources": {
+    "src/main.rs": "cec4e5ca54537249924d0f67ddb211c98864386befb477e73b1433029ad17bf0",
+    "census.jsonl": "3a444d3fb7f628187e5019179d266a33beae298915ba0c9ad1d9c8fa857b9e6b"
+  },
+  "private_build_inputs": {
+    "Cargo.toml": "f46f37180f1f5503bd4dca0433daba0ae7cb0f529cae0d1c846ece224c654de4",
+    "Cargo.lock": "4b77bf51c603f71d3c8e26e39b6d99e0cb01c1f4195d369efdc87895ddaae540"
+  }
+}
