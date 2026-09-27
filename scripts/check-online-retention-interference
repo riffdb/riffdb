@@ -14,7 +14,10 @@ accepted only when:
 - every idle cell shows a holding lane that removed nothing, and every active
   cell shows a lane that removed history and was never fenced;
 - the medians and ratios it states re-derive exactly from its cells, and the
-  median active p95 is within 1.05 of the median idle p95.
+  median active p95 is within 1.05 of the median idle p95;
+- it states the lane's keep-up fraction (sequences pruned per command the
+  measured process committed), which WP-761's restated exit gate requires
+  under writer saturation and WP-811 exists to raise.
 
 The raw cell reports and host inventories stay off-repo (they carry host
 paths and process lists); the summary binds each one by SHA-256.
@@ -146,6 +149,7 @@ def check(summary: dict[str, Any]) -> None:
         seen_reports.add(report)
         count(cell.get("aggregate_p95_ns"), f"cells[{index}].aggregate_p95_ns", True)
         count(cell.get("throughput_ops_s"), f"cells[{index}].throughput_ops_s", True)
+        count(cell.get("commands_committed"), f"cells[{index}].commands_committed", True)
         lane = mapping(cell.get("lane"), f"cells[{index}].lane")
         state, fence = lane.get("state"), lane.get("fence")
         if state not in STATES or fence not in FENCES:
@@ -171,6 +175,18 @@ def check(summary: dict[str, Any]) -> None:
     close(comparison.get("idle_median_throughput_ops_s"), idle_tp, "idle throughput median")
     close(comparison.get("active_median_throughput_ops_s"), active_tp, "active throughput median")
     close(comparison.get("throughput_ratio"), active_tp / idle_tp, "comparison.throughput_ratio")
+    # WP-761's restated exit gate: under writer saturation the evidence states
+    # the lane's keep-up fraction, sequences pruned per command committed.
+    keep_up = float(
+        statistics.median(
+            c["lane"]["sequences"] / c["commands_committed"] for c in cells if c["arm"] == "active"
+        )
+    )
+    close(
+        comparison.get("active_median_pruned_per_committed"),
+        keep_up,
+        "comparison.active_median_pruned_per_committed",
+    )
     if comparison.get("lane_valid") is not True:
         refuse("comparison.lane_valid is not true")
     if active_p95 / idle_p95 > MAXIMUM_P95_RATIO:

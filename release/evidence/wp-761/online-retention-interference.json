@@ -1,0 +1,152 @@
+{
+  "artifacts": {
+    "riffdbd_sha256": "101b194274b4707e27d6a8a9bbb29476c599823f5f110ea3c7573fbe0e59ad91",
+    "runner_sha256": "f872cef1b41b78ef50126d235b64a74da5804ca74455ed5d06cf367e47834dd1"
+  },
+  "cells": [
+    {
+      "aggregate_p95_ns": 7864319,
+      "arm": "idle",
+      "commands_committed": 166939,
+      "lane": {
+        "fence": "none",
+        "sequences": 0,
+        "state": "holding",
+        "steps": 0
+      },
+      "rep": 1,
+      "report_sha256": "a0c6a7f24560a53c75c3a6f07d2cfb6bb7433f435dfdbe510b5b6d49ee09f808",
+      "throughput_ops_s": 16177
+    },
+    {
+      "aggregate_p95_ns": 7864319,
+      "arm": "active",
+      "commands_committed": 165413,
+      "lane": {
+        "fence": "none",
+        "sequences": 500,
+        "state": "advancing",
+        "steps": 7
+      },
+      "rep": 1,
+      "report_sha256": "55712af868d0d5e5771103fcb62f0df2b148c4010a8c0acac43ae131be4c527c",
+      "throughput_ops_s": 15879
+    },
+    {
+      "aggregate_p95_ns": 7864319,
+      "arm": "active",
+      "commands_committed": 164787,
+      "lane": {
+        "fence": "none",
+        "sequences": 480,
+        "state": "advancing",
+        "steps": 7
+      },
+      "rep": 2,
+      "report_sha256": "9d08d0170da25e74d148425c25c76c2a29cc244c1c04c804b9eb75e67f87d47b",
+      "throughput_ops_s": 15789
+    },
+    {
+      "aggregate_p95_ns": 7864319,
+      "arm": "idle",
+      "commands_committed": 167280,
+      "lane": {
+        "fence": "none",
+        "sequences": 0,
+        "state": "holding",
+        "steps": 0
+      },
+      "rep": 2,
+      "report_sha256": "576cb241fb86d3cdb76e88bfdfcbc73cbf6d1eaa07b3f9e8983b42afdb912705",
+      "throughput_ops_s": 16204
+    },
+    {
+      "aggregate_p95_ns": 7864319,
+      "arm": "idle",
+      "commands_committed": 166639,
+      "lane": {
+        "fence": "none",
+        "sequences": 0,
+        "state": "holding",
+        "steps": 0
+      },
+      "rep": 3,
+      "report_sha256": "1a43196c0e243fb5854f8e2108ad325b02b818fb2e4a1c2f13d0286fef9d0869",
+      "throughput_ops_s": 16135
+    },
+    {
+      "aggregate_p95_ns": 8126463,
+      "arm": "active",
+      "commands_committed": 165181,
+      "lane": {
+        "fence": "none",
+        "sequences": 328,
+        "state": "advancing",
+        "steps": 5
+      },
+      "rep": 3,
+      "report_sha256": "6f1192a06e0371352b1520f14123c1dc3192089b5e7f4110a2df183a38680b12",
+      "throughput_ops_s": 15839
+    }
+  ],
+  "comparison": {
+    "active_median_p95_ns": 7864319,
+    "active_median_pruned_per_committed": 0.0029128511351016765,
+    "active_median_throughput_ops_s": 15839,
+    "idle_median_p95_ns": 7864319,
+    "idle_median_throughput_ops_s": 16177,
+    "lane_valid": true,
+    "p95_ratio": 1.0,
+    "throughput_ratio": 0.9791061383445633
+  },
+  "host": {
+    "hardware_identity": {
+      "cpu_model": "AMD EPYC 9B14",
+      "operating_system": {
+        "id": "ubuntu",
+        "version_id": "26.04"
+      },
+      "system_product": "Google Compute Engine",
+      "system_vendor": "Google"
+    },
+    "logical_cpus": 8,
+    "postflight_sha256": "9618067c5f244d3f9e8ba73bce58dd698d418fe7f5aee87ad3bed61e59850825",
+    "preflight_sha256": "e8e257462343d7acedacf0addc80ad629cad9abc3e744c131a199c414229d7a3",
+    "valid": true
+  },
+  "method": {
+    "active_arm": {
+      "retained_sequences": 1024,
+      "sequences_per_epoch": 64
+    },
+    "clients": 32,
+    "duration_secs": 60,
+    "idle_arm": {
+      "retention": "hold"
+    },
+    "lane_observation_scope": "measured_process_generation",
+    "latency_gate_statistic": "median_of_repetition_aggregate_p95",
+    "load": "interactive",
+    "maximum_p95_ratio": 1.05,
+    "order": [
+      "idle",
+      "active",
+      "active",
+      "idle",
+      "idle",
+      "active"
+    ],
+    "outbox": "seeded_events_marked_delivered_on_the_stopped_database_in_both_arms",
+    "percentiles": "fixed_log_linear_histogram_16_sub_buckets_per_octave",
+    "projections": "board_projection_undeclared_in_both_arms",
+    "repetitions": 3,
+    "scale": "full",
+    "warmup_secs": 10
+  },
+  "qualified": true,
+  "schema": "riffdb.wp-761-online-retention-interference/v1",
+  "source": {
+    "clean_tree": true,
+    "commit": "f0e7f6ab25159a3eed625b649ad7aa769c2f149e"
+  }
+}

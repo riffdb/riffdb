@@ -314,11 +314,16 @@ expect:
   checkpoint. A database whose lane keeps advancing takes that path on most
   restarts. See [Startup integrity](operations/STARTUP-INTEGRITY.md).
 
-The WP-761 interference evidence measured the 32-client interactive mix with
-the lane active against the same run with it held. It covers that one
-workload on one benchmark host, is not a general latency guarantee, and marked
-the seeded events delivered on the stopped database first because of the
-outbox limit above.
+The lane is bounded to about five percent of the writer's time, so under a
+write-saturated load it compacts far more slowly than the database commits.
+Pruning a command relocates its retained outcome, provenance, and audit out of
+its commit segment, which costs about as much writer time as committing it. On
+the WP-761 benchmark host, with 32 interactive clients, the lane kept p95
+unchanged and throughput at 0.98 of the held run while pruning about 0.3
+percent as many sequences as the load committed. Where writes leave the writer
+idle capacity, it compacts to its target. That evidence covers one workload on
+one host, is not a general latency guarantee, and marked the seeded events
+delivered on the stopped database first because of the outbox limit above.
 
 ## Storage reclamation
 
