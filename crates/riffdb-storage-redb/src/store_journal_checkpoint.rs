@@ -29,10 +29,6 @@ impl SharedRedb {
             );
         }
         let mut transaction = self.database.begin_write().map_err(transaction_error)?;
-        let writeback = self
-            .checkpoint_writeback
-            .enter()
-            .map_err(|_| storage_error(StorageErrorKind::Unavailable))?;
         transaction.set_two_phase_commit(false);
         transaction
             .set_durability(Durability::Immediate)
@@ -164,7 +160,6 @@ impl SharedRedb {
             controller.before_commit(crate::hooks::RedbTestOperation::JournalCheckpoint)?;
         }
         self.commit_durable(transaction)?;
-        drop(writeback);
         #[cfg(test)]
         crate::changelog_v3_journal::recovery_crash_edge("checkpoint-committed");
         Ok(())

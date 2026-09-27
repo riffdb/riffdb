@@ -8,11 +8,9 @@ in file writeback and device flush; resolution of the shared tail is still open.
 
 ## Scope and source
 
-Package: WP-810. Tier: guarantee. The completed diagnostics used source:
+Package: WP-810. Tier: guarantee. Qualified source:
 `31aeab76fa7c41b5d3a05d191905fd8b53e43dd2`, including main's index-warming
-repair through `a1809310f`. The writeback prototype starts from `983881ea`,
-which integrates main through `aa77f9622`; the older timing results do not
-qualify that newer integration or the prototype.
+repair through `a1809310f`. Later evidence-only commits preserve that runtime.
 The work package remains open. WP-749's archive-presence gate is separate.
 
 The decisions are within ADR-0101, ADR-0104 and ADR-0132: keep bounded foreground
@@ -69,37 +67,6 @@ sync is paused. Responses and application notifications remain withheld until
 ordered publication. Two older grouped-command tests now wait for the existing
 first-admission notification; their outcome and durability assertions are intact.
 No durable-format or protocol golden fixtures change.
-
-### Bounded checkpoint-writeback prototype
-
-The primary redb backend limits submitted checkpoint writes to 8 MiB between
-successful syncs, adding an early sync before further writes would exceed the
-budget. Oversized writes are split without copying their contents. This is a
-fixed implementation experiment, not an operator setting or a millisecond
-latency bound. Only the physical materialization transaction activates it;
-ordinary writes and the derived sidecar do not activate the budget.
-
-The checkpoint remains one redb transaction. Growth syncs, final Immediate
-commit sync, exact installation, reclamation, command acknowledgement, and all
-existing capacity limits stay intact. Early sync failure propagates through
-redb and the existing failed-checkpoint fence. No early sync publishes roots.
-A per-backend mutex serializes budget accounting with synchronous writes and
-syncs; reads bypass it. The scope is acquired after the exclusive redb write
-transaction and released after commit (or on error).
-
-The same wrapper serves the real FileBackend and injected media. The new
-proofs cover byte/offset preservation, scope isolation, final-fence retention,
-early I/O failure, checked offsets, and a deterministic two-writer schedule.
-A real redb transaction writes 24 MiB with the production 4 MiB cache and
-proves complete commit or refusal on early-sync failure. Two abrupt child exits
-before/after the first early sync prove that restart twice retains the old
-complete transaction with no partially published rows. The existing six
-production checkpoint/journal/publication crash edges remain mandatory.
-
-The budget test failed against the pass-through backend before implementation.
-All 14 targeted tests pass after implementation, including the new real-I/O
-and process-crash tests. Broader acceptance and a same-baseline measurement
-remain pending. No latency benefit or closure is claimed.
 
 ## Requirement and deliverable audit
 
