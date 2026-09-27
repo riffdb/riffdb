@@ -5,7 +5,8 @@
 The maintainer directed keeping WP-749's unchanged-acknowledgement-latency gate
 and reducing archive overhead after the [post-WP-810 comparison](wp749-archive-post-wp810-2026-09.md)
 failed it. This candidate removes redundant archive-side I/O. Its latency
-benefit is unmeasured; WP-749 remains incomplete. Remote work is paused until
+benefit is unmeasured; WP-749 remains incomplete. Candidate `f77159c0` passes
+the complete local acceptance plan, including full CI. Remote work is paused until
 the maintainer releases the measurement host.
 
 The integrated source baseline is `be4e1a25`, which incorporates main's
@@ -61,7 +62,7 @@ The production path is connected: `process_graph.rs` starts
 `ArchiveConsumerV1` to that sink's `persist`. The changed selector path is
 therefore used by automatic production collection. It is not a test-only sink.
 
-## Validation required before measurement
+## Local validation
 
 - Exact retry and reopen syscall comparison: two selector file syncs must
   become zero, with frame/manifest syncs retained.
@@ -80,8 +81,18 @@ validation. Both traces retain ten directory syncs. The evidence packet at
 counts and private trace/test-log digests. Clippy passes with warnings denied
 after replacing a duplicate test-fixture module inclusion with an import of
 the existing module. The syscall census was repeated on that corrected test
-source with identical counts. Full package acceptance is running; there is no
-timed result.
+source with identical counts.
+
+The full plan `./scripts/acceptance --wp WP-749 --base c8d388b0 --full`
+passes all thirteen steps on `f77159c0`, including the complete CI battery.
+The preceding scoped run passed all 1,051 storage tests; its only failed step
+was the subsequently corrected fixture-import lint. Its one ignored test is
+the existing manual `shutdown_checkpoint_build_scale_evidence` timing experiment.
+The complete qualification also verifies all 84 existing archive/restore
+proofs and the two new selector proofs, including both dedicated CLI restore
+tests. `qualification.json` and `full-proof-audit.json` retain the source/tree
+identities, successful steps, 86 named proofs, 24 source digests and exact
+private-log digests. This is correctness qualification; there is no timed result.
 
 The source change alone cannot satisfy the acknowledgement gate. Its subsequent
 measurement requires a recorded bounded protocol and an available exclusive
@@ -92,9 +103,10 @@ separately; a tail movement still needs a named mechanism under ADR-0249.
 ## PR note
 
 Package: WP-749. Tier: guarantee, implementing accepted ADR-0178. Behavior:
-reuse durable manifest bytes for selector publication. Checks: 39 archive
-tests, Clippy and syscall census pass; broader acceptance is in progress. No performance
-verdict or completion claim. Compatibility: existing names,
+reuse durable manifest bytes for selector publication. Checks: all thirteen
+full-acceptance steps, complete CI, 86 named archive proofs, 1,051 scoped storage
+tests and the syscall census pass. No performance verdict or completion claim.
+Compatibility: existing names,
 bytes, readers and retry semantics remain. Hazards: the latency gate is still
 unmet and sharing an inode requires retaining immutable-file discipline.
 Handbook: [backup and restore](../backup-restore.md) describes the unchanged

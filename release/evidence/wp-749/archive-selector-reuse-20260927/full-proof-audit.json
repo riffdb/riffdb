@@ -1,0 +1,463 @@
+{
+  "source_revision": "f77159c0a02115ca7c95a8c048efd77abb28e5e0",
+  "ci_log_sha256": "0b60d80366b56ae37247797545e26662e76a7564b79d1e8affd053b3737f2026",
+  "proofs": [
+    {
+      "file": "crates/riffdb-server/src/archive_worker_tests.rs",
+      "test": "archive_worker_collects_real_published_history_and_restarts_at_durable_position",
+      "passed_in_full_ci": true
+    },
+    {
+      "file": "crates/riffdb-server/src/archive_worker_tests.rs",
+      "test": "archive_pump_retries_only_pending_bytes_before_considering_a_new_source_pin",
+      "passed_in_full_ci": true
+    },
+    {
+      "file": "crates/riffdb-server/src/archive_worker_tests.rs",
+      "test": "archive_sink_wait_does_not_hold_the_source_publication_slot",
+      "passed_in_full_ci": true
+    },
+    {
+      "file": "crates/riffdb-server/src/archive_worker_tests.rs",
+      "test": "archive_worker_missing_backup_refuses_before_creating_sink",
+      "passed_in_full_ci": true
+    },
+    {
+      "file": "crates/riffdb-server/src/archive_worker_tests.rs",
+      "test": "archive_worker_refuses_foreign_publication_without_advancing_existing_sink",
+      "passed_in_full_ci": true
+    },
+    {
+      "file": "crates/riffdb-server/src/archive_worker_tests.rs",
+      "test": "archive_worker_held_sink_refuses_without_waiting_for_its_lock",
+      "passed_in_full_ci": true
+    },
+    {
+      "file": "tests/replication_archive_restore.rs",
+      "test": "archived_suffix_restore_recovers_to_last_archived_sequence",
+      "passed_in_full_ci": true
+    },
+    {
+      "file": "tests/replication_archive_restore.rs",
+      "test": "archived_suffix_restore_stops_at_an_earlier_application_sequence",
+      "passed_in_full_ci": true
+    },
+    {
+      "file": "tests/replication_archive_restore.rs",
+      "test": "archive_collector_process_crash_preserves_a_restorable_prefix",
+      "passed_in_full_ci": true
+    },
+    {
+      "file": "tests/replication_archive_restore.rs",
+      "test": "truncated_archive_refuses_without_replacing_application_state",
+      "passed_in_full_ci": true
+    },
+    {
+      "file": "tests/replication_archive_restore.rs",
+      "test": "reordered_archive_refuses_without_replacing_application_state",
+      "passed_in_full_ci": true
+    },
+    {
+      "file": "tests/replication_archive_restore.rs",
+      "test": "cli_archive_restore_recovers_last_archived_and_polls_exact_operation",
+      "passed_in_full_ci": true
+    },
+    {
+      "file": "tests/replication_archive_restore.rs",
+      "test": "cli_archive_restore_honors_the_explicit_earlier_stop",
+      "passed_in_full_ci": true
+    },
+    {
+      "file": "tests/replication_archive_restore.rs",
+      "test": "archive_sink_loss_keeps_primary_writable_and_confirmed_prefix_restorable",
+      "passed_in_full_ci": true
+    },
+    {
+      "file": "tests/grpc/archive_restore_retry.rs",
+      "test": "archive_restore_retry_authenticates_only_exact_archive_input",
+      "passed_in_full_ci": true
+    },
+    {
+      "file": "tests/grpc/archive_restore_retry.rs",
+      "test": "archive_recovery_rpc_has_no_current_authentication_or_ordinary_fallback",
+      "passed_in_full_ci": true
+    },
+    {
+      "file": "tests/storage_recovery/v3_private_archive_crash.rs",
+      "test": "private_archive_reconstruction_recovers_quarantined_marker",
+      "passed_in_full_ci": true
+    },
+    {
+      "file": "tests/storage_recovery/v3_private_archive_crash.rs",
+      "test": "private_archive_reconstruction_recovers_uncommitted_cut",
+      "passed_in_full_ci": true
+    },
+    {
+      "file": "tests/storage_recovery/v3_private_archive_crash.rs",
+      "test": "private_archive_reconstruction_recovers_committed_cut",
+      "passed_in_full_ci": true
+    },
+    {
+      "file": "tests/storage_recovery/v3_private_archive_publication.rs",
+      "test": "private_archive_publication_restores_exact_prefix_in_both_profiles",
+      "passed_in_full_ci": true
+    },
+    {
+      "file": "tests/storage_recovery/v3_private_archive_publication.rs",
+      "test": "private_archive_publication_requires_receipt_and_closed_authorization_readers",
+      "passed_in_full_ci": true
+    },
+    {
+      "file": "tests/storage_recovery/v3_archive_sink_crash.rs",
+      "test": "archive_sink_failure_crash_preserves_source_and_only_durable_archive_prefix",
+      "passed_in_full_ci": true
+    },
+    {
+      "file": "tests/storage_recovery/v3_private_archive_validation.rs",
+      "test": "private_archive_validation_refuses_rewritten_frontier",
+      "passed_in_full_ci": true
+    },
+    {
+      "file": "tests/storage_recovery/v3_private_archive_validation.rs",
+      "test": "private_archive_validation_refuses_missing_reciprocal_locator",
+      "passed_in_full_ci": true
+    },
+    {
+      "file": "tests/storage_recovery/v3_private_archive_validation.rs",
+      "test": "private_archive_validation_cancellation_discards_without_publication",
+      "passed_in_full_ci": true
+    },
+    {
+      "file": "tests/storage_recovery/v3_private_archive_validation.rs",
+      "test": "private_archive_authorization_refuses_changes_after_validation",
+      "passed_in_full_ci": true
+    },
+    {
+      "file": "tests/storage_recovery/v3_private_archive_validation.rs",
+      "test": "private_archive_validation_refuses_reinstated_normal_marker",
+      "passed_in_full_ci": true
+    },
+    {
+      "file": "tests/storage_recovery/v3_archive_preparation.rs",
+      "test": "archive_preparation_covers_standard_physical_and_interior_stops",
+      "passed_in_full_ci": true
+    },
+    {
+      "file": "tests/storage_recovery/v3_archive_preparation.rs",
+      "test": "archive_preparation_covers_hardened_physical_and_interior_stops",
+      "passed_in_full_ci": true
+    },
+    {
+      "file": "tests/storage_recovery/v3_archive_preparation.rs",
+      "test": "archive_preparation_requires_closed_readers_and_unchanged_validated_bytes",
+      "passed_in_full_ci": true
+    },
+    {
+      "file": "tests/storage_recovery/v3_archive_preparation.rs",
+      "test": "archive_preparation_covers_the_exact_positive_backup_fence",
+      "passed_in_full_ci": true
+    },
+    {
+      "file": "tests/storage_recovery/v3_private_archive_prefix.rs",
+      "test": "private_archive_reconstruction_restores_standard_group_without_source_identity",
+      "passed_in_full_ci": true
+    },
+    {
+      "file": "tests/storage_recovery/v3_private_archive_prefix.rs",
+      "test": "private_archive_reconstruction_restores_hardened_group_without_source_identity",
+      "passed_in_full_ci": true
+    },
+    {
+      "file": "crates/riffdb-storage-redb/src/maintenance/archive_prefix_validation_tests.rs",
+      "test": "private_archive_roots_bind_exact_catalog_and_exclude_primary_admission",
+      "passed_in_full_ci": true
+    },
+    {
+      "file": "crates/riffdb-storage-redb/src/maintenance/archive_preparation_tests.rs",
+      "test": "archive_preparation_empty_suffix_keeps_the_backup_frontier_and_selection",
+      "passed_in_full_ci": true
+    },
+    {
+      "file": "crates/riffdb-storage-redb/src/maintenance/archive_restore_tests.rs",
+      "test": "archive_restore_replays_current_v2_source_without_transferring_primary_admission",
+      "passed_in_full_ci": true
+    },
+    {
+      "file": "crates/riffdb-storage-redb/src/maintenance/archive_restore_tests.rs",
+      "test": "archive_restore_replays_verified_full_backup_through_the_real_follower_applier",
+      "passed_in_full_ci": true
+    },
+    {
+      "file": "crates/riffdb-storage-redb/src/maintenance/archive_restore_tests.rs",
+      "test": "archive_restore_preflight_refuses_damaged_or_foreign_archives_without_changing_copied_bytes",
+      "passed_in_full_ci": true
+    },
+    {
+      "file": "crates/riffdb-storage-redb/src/maintenance/archive_restore_tests.rs",
+      "test": "archive_restore_rejects_an_applier_for_another_file_even_with_the_same_history",
+      "passed_in_full_ci": true
+    },
+    {
+      "file": "crates/riffdb-storage-redb/src/maintenance/archive_restore_tests.rs",
+      "test": "archive_restore_drops_a_partial_private_replay_on_later_corruption",
+      "passed_in_full_ci": true
+    },
+    {
+      "file": "crates/riffdb-storage-redb/src/maintenance/archive_restore_tests.rs",
+      "test": "archive_restore_crashes_rebuild_the_private_stage_from_the_original_backup",
+      "passed_in_full_ci": true
+    },
+    {
+      "file": "crates/riffdb-storage-redb/src/maintenance/archive_restore_tests.rs",
+      "test": "archive_restore_retries_replay_the_frozen_prefix_after_archive_advances",
+      "passed_in_full_ci": true
+    },
+    {
+      "file": "crates/riffdb-storage-redb/src/maintenance/archive_backup_tests.rs",
+      "test": "archive_backup_binding_uses_the_v3_fence_when_retained_commands_are_pruned",
+      "passed_in_full_ci": true
+    },
+    {
+      "file": "crates/riffdb-storage-redb/src/maintenance/archive_backup_tests.rs",
+      "test": "archive_backup_binding_is_read_only_and_uses_the_exact_backup_receipt",
+      "passed_in_full_ci": true
+    },
+    {
+      "file": "crates/riffdb-storage-redb/src/maintenance/archive_backup_tests.rs",
+      "test": "archive_backup_binding_refuses_damage_and_lost_custody_before_creating_archive",
+      "passed_in_full_ci": true
+    },
+    {
+      "file": "crates/riffdb-storage-redb/src/maintenance/archive_backup_tests.rs",
+      "test": "archive_backup_binding_rehashes_retained_files_before_archive_creation",
+      "passed_in_full_ci": true
+    },
+    {
+      "file": "crates/riffdb-storage-redb/src/maintenance/archive_publication_tests.rs",
+      "test": "archive_publication_requires_durable_exact_receipt_and_preserves_original_manifest",
+      "passed_in_full_ci": true
+    },
+    {
+      "file": "crates/riffdb-storage-redb/src/maintenance/archive_publication_tests.rs",
+      "test": "archive_publication_recovers_before_stamp",
+      "passed_in_full_ci": true
+    },
+    {
+      "file": "crates/riffdb-storage-redb/src/maintenance/archive_publication_tests.rs",
+      "test": "archive_publication_recovers_after_incarnation_stamp",
+      "passed_in_full_ci": true
+    },
+    {
+      "file": "crates/riffdb-storage-redb/src/maintenance/archive_publication_tests.rs",
+      "test": "archive_publication_recovers_after_journal_creation",
+      "passed_in_full_ci": true
+    },
+    {
+      "file": "crates/riffdb-storage-redb/src/maintenance/archive_publication_tests.rs",
+      "test": "archive_publication_recovers_after_source_validation",
+      "passed_in_full_ci": true
+    },
+    {
+      "file": "crates/riffdb-storage-redb/src/maintenance/archive_publication_tests.rs",
+      "test": "archive_publication_recovers_before_target_publication",
+      "passed_in_full_ci": true
+    },
+    {
+      "file": "crates/riffdb-storage-redb/src/maintenance/archive_publication_tests.rs",
+      "test": "archive_publication_recovers_after_target_publication",
+      "passed_in_full_ci": true
+    },
+    {
+      "file": "crates/riffdb-storage-redb/src/maintenance/archive_publication_tests.rs",
+      "test": "archive_publication_recovers_after_parent_sync",
+      "passed_in_full_ci": true
+    },
+    {
+      "file": "crates/riffdb-storage-redb/src/maintenance/archive_publication_tests.rs",
+      "test": "archive_publication_reconciliation_requires_exact_retained_stage_and_target_bytes",
+      "passed_in_full_ci": true
+    },
+    {
+      "file": "crates/riffdb-storage-redb/src/maintenance/archive_repository_tests.rs",
+      "test": "archive_repository_exact_retry_and_reopen_preserve_complete_linked_frames",
+      "passed_in_full_ci": true
+    },
+    {
+      "file": "crates/riffdb-storage-redb/src/maintenance/archive_repository_tests.rs",
+      "test": "archive_repository_refuses_changed_binding_and_damaged_prefix_without_cleanup",
+      "passed_in_full_ci": true
+    },
+    {
+      "file": "crates/riffdb-storage-redb/src/maintenance/archive_repository_tests.rs",
+      "test": "archive_repository_process_crashes_recover_only_a_complete_selected_prefix",
+      "passed_in_full_ci": true
+    },
+    {
+      "file": "crates/riffdb-storage-redb/src/maintenance/archive_repository_tests.rs",
+      "test": "archive_repository_discards_only_exact_unconfirmed_names_and_bounds_cleanup",
+      "passed_in_full_ci": true
+    },
+    {
+      "file": "crates/riffdb-storage-redb/src/maintenance/archive_repository_tests.rs",
+      "test": "archive_repository_refuses_symlinks_nonprivate_roots_and_lock_substitution",
+      "passed_in_full_ci": true
+    },
+    {
+      "file": "crates/riffdb-storage-redb/src/maintenance/archive_repository_tests.rs",
+      "test": "archive_repository_cancelled_open_creates_no_inventory",
+      "passed_in_full_ci": true
+    },
+    {
+      "file": "crates/riffdb-storage-redb/src/maintenance/archive_repository_tests.rs",
+      "test": "archive_repository_uncertain_io_retries_exact_pending_bytes_at_every_boundary",
+      "passed_in_full_ci": true
+    },
+    {
+      "file": "crates/riffdb-storage-redb/src/maintenance/archive_repository_tests.rs",
+      "test": "archive_repository_reader_streams_exact_selected_frames_and_fuses_on_corruption",
+      "passed_in_full_ci": true
+    },
+    {
+      "file": "crates/riffdb-storage-redb/src/maintenance/archive_repository_tests.rs",
+      "test": "archive_repository_reader_refuses_selector_withdrawal_between_frames",
+      "passed_in_full_ci": true
+    },
+    {
+      "file": "crates/riffdb-storage-redb/src/maintenance/archive_repository_tests.rs",
+      "test": "archive_selection_reader_keeps_frozen_terminal_and_empty_suffix_after_current_advances",
+      "passed_in_full_ci": true
+    },
+    {
+      "file": "crates/riffdb-storage-redb/src/maintenance/archive_repository_tests.rs",
+      "test": "archive_selection_reader_refuses_foreign_backup_or_fence_before_reading_frames",
+      "passed_in_full_ci": true
+    },
+    {
+      "file": "crates/riffdb-storage-api/tests/archive_manifest.rs",
+      "test": "archive_manifest_roundtrip_binds_backup_identity_range_and_exact_frame",
+      "passed_in_full_ci": true
+    },
+    {
+      "file": "crates/riffdb-storage-api/tests/archive_manifest.rs",
+      "test": "archive_manifest_chain_rejects_reorder_duplicate_and_changed_backup_binding",
+      "passed_in_full_ci": true
+    },
+    {
+      "file": "crates/riffdb-storage-api/tests/archive_manifest.rs",
+      "test": "archive_manifest_refuses_unknown_noncanonical_truncated_and_oversized_bytes",
+      "passed_in_full_ci": true
+    },
+    {
+      "file": "crates/riffdb-storage-api/tests/archive_manifest.rs",
+      "test": "archive_manifest_frozen_vectors_preserve_both_encryption_declarations",
+      "passed_in_full_ci": true
+    },
+    {
+      "file": "crates/riffdb-storage-api/tests/archive_manifest.rs",
+      "test": "archive_manifest_refuses_checksumming_over_impossible_ranges_and_lengths",
+      "passed_in_full_ci": true
+    },
+    {
+      "file": "crates/riffdb-storage-api/tests/archive_consumer.rs",
+      "test": "archive_sink_uncertainty_retains_exact_frame_without_advancing_progress",
+      "passed_in_full_ci": true
+    },
+    {
+      "file": "crates/riffdb-storage-api/tests/archive_consumer.rs",
+      "test": "archive_overflow_requires_resync_without_skipping_unconfirmed_frame",
+      "passed_in_full_ci": true
+    },
+    {
+      "file": "crates/riffdb-storage-api/tests/archive_consumer.rs",
+      "test": "archive_reconnect_resets_only_frame_chain_at_exact_durable_history",
+      "passed_in_full_ci": true
+    },
+    {
+      "file": "crates/riffdb-storage-api/tests/archive_consumer.rs",
+      "test": "archive_rejects_corrupt_foreign_duplicate_and_wrong_chain_before_sink",
+      "passed_in_full_ci": true
+    },
+    {
+      "file": "crates/riffdb-storage-api/tests/archive_consumer.rs",
+      "test": "archive_rejects_gap_wrong_frontier_and_oversize_without_sink_io",
+      "passed_in_full_ci": true
+    },
+    {
+      "file": "crates/riffdb-storage-api/tests/archive_receipt.rs",
+      "test": "archive_receipt_requires_offline_exact_selection_replay_and_incarnation_before_publication",
+      "passed_in_full_ci": true
+    },
+    {
+      "file": "crates/riffdb-storage-api/tests/archive_receipt.rs",
+      "test": "archive_receipt_source_less_candidate_can_be_bound_before_admission_but_cannot_publish_early",
+      "passed_in_full_ci": true
+    },
+    {
+      "file": "crates/riffdb-storage-api/tests/archive_receipt.rs",
+      "test": "archive_receipt_failed_before_selection_cannot_acquire_new_replay_evidence",
+      "passed_in_full_ci": true
+    },
+    {
+      "file": "crates/riffdb-storage-api/tests/archive_receipt.rs",
+      "test": "archive_receipt_canonical_reconstruction_refuses_impossible_presence_and_regressing_history",
+      "passed_in_full_ci": true
+    },
+    {
+      "file": "crates/riffdb-storage-api/tests/archive_restore_selection.rs",
+      "test": "archive_selection_retains_exact_terminal_bytes_and_distinct_restored_frontier",
+      "passed_in_full_ci": true
+    },
+    {
+      "file": "crates/riffdb-storage-api/tests/archive_restore_selection.rs",
+      "test": "archive_selection_refuses_foreign_backup_lineage_and_fence",
+      "passed_in_full_ci": true
+    },
+    {
+      "file": "crates/riffdb-storage-api/tests/archive_restore_selection.rs",
+      "test": "archive_selection_empty_suffix_keeps_complete_backup_frontier_after_pruning",
+      "passed_in_full_ci": true
+    },
+    {
+      "file": "crates/riffdb-storage-redb/src/backup.rs",
+      "test": "incompatible_backup_range_refuses_before_creating_or_replacing_target",
+      "passed_in_full_ci": true
+    },
+    {
+      "file": "crates/riffdb-storage-redb/src/maintenance/archive_repository_tests.rs",
+      "test": "archive_repository_selector_advance_preserves_legacy_and_retained_selections",
+      "passed_in_full_ci": true
+    },
+    {
+      "file": "crates/riffdb-storage-redb/src/maintenance/archive_repository_stage_tests.rs",
+      "test": "archive_selector_refuses_replaced_manifest_before_publication",
+      "passed_in_full_ci": true
+    }
+  ],
+  "source_file_sha256": {
+    "crates/riffdb-server/src/archive_worker.rs": "782c64093ee797c73968716f617d94cd9d70800a24e77f5ed065365a1a7ed684",
+    "crates/riffdb-server/src/archive_worker_tests.rs": "96ab36f57221bc76371ac19dacc649f3115aefc53281bc2994dd85cb16711ff6",
+    "crates/riffdb-server/src/process_graph.rs": "da64928c1981d260a29b1c6c3d6f74fe915ff98a885db3d9a78d95a567fd02c0",
+    "crates/riffdb-storage-api/tests/archive_consumer.rs": "2850d374ffe4adf9f2544f5b5f934a3834ad1ca2792eac6db603c97b0c7c77ed",
+    "crates/riffdb-storage-api/tests/archive_manifest.rs": "ff6023b89dfdec069a721244dd9d2100dafb26066c30e95335ebdff4b07b2978",
+    "crates/riffdb-storage-api/tests/archive_receipt.rs": "64875c9742b80d1fcd255121b570b0c60d54b3ee294cd11cca3682eb42dad2a5",
+    "crates/riffdb-storage-api/tests/archive_restore_selection.rs": "9773081920629ffb8f4b850093076c2114563d5b1415b17b5e1d31c459e0a8e1",
+    "crates/riffdb-storage-redb/src/backup.rs": "d1703ac789110aafbb4ef4e4915f20460491e1830e25dc3fc4e226caeb0cf9ec",
+    "crates/riffdb-storage-redb/src/maintenance/archive_backup_tests.rs": "1c3537e8d46694a682a2fce500508d01a2230b10f87cedcde03dcf9e2c7f0b88",
+    "crates/riffdb-storage-redb/src/maintenance/archive_prefix_validation_tests.rs": "77a4354d6c225d43440a509828af2dec4b563331d028e9b104f1d15813aad2c0",
+    "crates/riffdb-storage-redb/src/maintenance/archive_preparation_tests.rs": "70842b26cf48ba6f1c2b5584d98d7202fa8f818e183085b2283838b5ac71bc32",
+    "crates/riffdb-storage-redb/src/maintenance/archive_publication_tests.rs": "c3e60f91ac0ce914e9c17594a6b870d31227978e0a911ff529666980ab4c97b0",
+    "crates/riffdb-storage-redb/src/maintenance/archive_repository.rs": "a4f3183d2200b03ba3c0ce97c502c059414d3a58140af28c3e821c14f5618d82",
+    "crates/riffdb-storage-redb/src/maintenance/archive_repository_stage_tests.rs": "8b4a4ea738af10ad695b86b7c17e65b92eb67756872ceee8d343da3ed3529d93",
+    "crates/riffdb-storage-redb/src/maintenance/archive_repository_tests.rs": "b3aa81da305c789dfa0381be362093f890f0230fafbcb36dabb5d5c727fc4f86",
+    "crates/riffdb-storage-redb/src/maintenance/archive_restore_tests.rs": "02a525a9cebb811c77b4a16ad756814e21c9c40a6084e76671fcd57c5ec807f4",
+    "tests/grpc/archive_restore_retry.rs": "cdb4ed6eb53ae7163da2a1cbb4bd4bbcdaad8534d484710b89f7cdafb098b5f0",
+    "tests/replication_archive_restore.rs": "46a0a4ba95e946273a3a42f2989930365172abc9486dc7b9145dbe391467fd37",
+    "tests/storage_recovery/v3_archive_preparation.rs": "d52b4bee61c77cf2b64e0125fde806aab075420ccf6ef113a5c8d58b1b8c3972",
+    "tests/storage_recovery/v3_archive_sink_crash.rs": "faee88fea2843fddf602a6194bce7ea014968a9fa2671e40ce563a741eeabec6",
+    "tests/storage_recovery/v3_private_archive_crash.rs": "c46cacaca4c1b9cf1abc8fcc9e090fc0a5dfa56dd12e029f306c18faaf1f61d8",
+    "tests/storage_recovery/v3_private_archive_prefix.rs": "f913f86b17571eeedaa9f457d4a326779d505ebce7e3802a13d85a88f749a1ae",
+    "tests/storage_recovery/v3_private_archive_publication.rs": "ffd2e1dbc9f89044ccf85f5bb8f86ae751c4874ef8ca311a97af36b64dc88205",
+    "tests/storage_recovery/v3_private_archive_validation.rs": "31c97ab48b62b010a21b0cdd32d0844b922c23010aa5095b6695a0f3eb6a3363"
+  },
+  "scope": "84 existing archive/restore proofs plus two selector compatibility/identity proofs in a successful full-CI plan; no performance qualification."
+}

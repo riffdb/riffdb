@@ -1,0 +1,95 @@
+{
+  "schema": "wp749-selector-local-qualification-v1",
+  "recorded_at": "2026-09-27T16:40:03.211572+00:00",
+  "source_revision": "f77159c0a02115ca7c95a8c048efd77abb28e5e0",
+  "source_tree": "cf2e5bab1575d65580d70002cd4bcf479a66b38e",
+  "included_main": "c8d388b0ea0acd8719c0a374afae8703d4875cb3",
+  "command": "./scripts/acceptance --wp WP-749 --base c8d388b0 --full",
+  "toolchain": "1.98.1",
+  "exit_code": 0,
+  "steps": [
+    {
+      "result": "pass",
+      "seconds": 0.2,
+      "command": "./scripts/check-allowed-paths --wp WP-749 --base c8d388b0"
+    },
+    {
+      "result": "pass",
+      "seconds": 16.5,
+      "command": "./scripts/check-generated"
+    },
+    {
+      "result": "pass",
+      "seconds": 0.1,
+      "command": "./scripts/check-version-topology"
+    },
+    {
+      "result": "pass",
+      "seconds": 5.1,
+      "command": "./scripts/handbook check"
+    },
+    {
+      "result": "pass",
+      "seconds": 1.1,
+      "command": "./scripts/check-requirement-coverage"
+    },
+    {
+      "result": "pass",
+      "seconds": 1.9,
+      "command": "./scripts/check-adr-obligations"
+    },
+    {
+      "result": "pass",
+      "seconds": 0.1,
+      "command": "./scripts/adr-new --self-test"
+    },
+    {
+      "result": "pass",
+      "seconds": 0.1,
+      "command": "./scripts/adr-index --check"
+    },
+    {
+      "result": "pass",
+      "seconds": 0.1,
+      "command": "./scripts/check-acceptance-commits"
+    },
+    {
+      "result": "pass",
+      "seconds": 1.3,
+      "command": "./scripts/check-performance-freeze"
+    },
+    {
+      "result": "pass",
+      "seconds": 0.2,
+      "command": "./scripts/check-file-size-guard"
+    },
+    {
+      "result": "pass",
+      "seconds": 0.1,
+      "command": "./scripts/check-panic-allowances"
+    },
+    {
+      "result": "pass",
+      "seconds": 1285.7,
+      "command": "./scripts/ci-all"
+    }
+  ],
+  "ci_log_sha256": "0b60d80366b56ae37247797545e26662e76a7564b79d1e8affd053b3737f2026",
+  "ci_log_bytes": 1054516,
+  "named_archive_proofs_passed": 86,
+  "proof_audit_sha256": "503cd35ee0780fd104ab4404a1264d67b0c96b39242d21c2f4498fa2c37391b1",
+  "prior_scoped_plan": {
+    "exit_code": 1,
+    "passed_steps": 14,
+    "failed_steps": 1,
+    "storage_tests_passed": 1051,
+    "ignored_test": "shutdown_checkpoint_build_scale_evidence: pre-existing manual synthetic timing experiment",
+    "ci_log_sha256": "6acaf9cc33756e80c3af2447c703d764d95b1129f0f5adc7374e0ba5044d721c",
+    "failure": "Initial duplicate fixture-module inclusion. Replaced by an import of the existing test fixture; corrected Clippy and complete full acceptance pass without lint suppression."
+  },
+  "environment": "Rustup Rust 1.98.1, cleared stale compiler wrapper, pinned Maturin 1.14.1, existing locked TypeScript development dependencies. No dependency or lockfile change.",
+  "scope": "Local implementation and correctness qualification only. Control/candidate latency has not been measured; archive-presence gate remains unmet.",
+  "performance_gate_satisfied": false,
+  "work_package_complete": false,
+  "merged": false
+}
