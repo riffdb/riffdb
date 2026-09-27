@@ -76,6 +76,9 @@ pub enum RedbTestOperation {
     RetentionPruneCheckpointDelete,
     /// Offline retention prune: one sub-range delete+tombstone+watermark transaction.
     RetentionPruneSubrange,
+    /// Online retention (ADR-0182 section 6): one step's delete, tombstone,
+    /// watermark, and first-step checkpoint deletion transaction.
+    OnlineRetentionStep,
 }
 
 /// Closed transaction boundary exposed by redaction-safe test diagnostics.

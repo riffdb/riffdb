@@ -44,15 +44,23 @@ use crate::keys::{
     encode_provenance_key,
 };
 use crate::layout::{
-    AUDIT, AUDIT_BY_REQUEST, COMMITS, CONTRACT_MIGRATION_JOURNAL, EVENT_CONSUMERS, EVENT_ROUTES,
-    EVENTS, HISTORY_TOMBSTONES, IDEMPOTENCY, META, META_APPLICATION_SEQUENCE, META_DATABASE_ID,
-    META_HISTORY_INCARNATION, META_RETENTION_HOLDS, META_RETENTION_WATERMARK,
-    META_VALIDATED_PREFIX_CHECKPOINT, OUTBOX, OUTBOX_STATUS, PROJECTION_FRONTIER, PROVENANCE,
+    AUDIT, AUDIT_BY_REQUEST, AUDIT_BY_REQUEST_LOCATORS, COMMITS, CONTRACT_MIGRATION_JOURNAL,
+    EVENT_CONSUMERS, EVENT_ROUTES, EVENTS, HISTORY_TOMBSTONES, IDEMPOTENCY, IDEMPOTENCY_LOCATORS,
+    META, META_APPLICATION_SEQUENCE, META_DATABASE_ID, META_HISTORY_INCARNATION,
+    META_RETENTION_HOLDS, META_RETENTION_WATERMARK, META_VALIDATED_PREFIX_CHECKPOINT, OUTBOX,
+    OUTBOX_STATUS, PROJECTION_FRONTIER, PROVENANCE, PROVENANCE_LOCATORS,
 };
 use crate::store::OperationalWriteTransaction as WriteTransaction;
 use crate::store::RedbStore;
 
 type RetentionWriteTable<'txn, 'capture> = CapturedTable<'txn, 'capture, &'static [u8]>;
+
+#[path = "retention/online.rs"]
+mod online;
+pub use online::{
+    ONLINE_RETENTION_STEP_SEQUENCES, OnlineRetentionHold, OnlineRetentionStep,
+    RedbOnlineRetentionLane,
+};
 
 #[cfg(test)]
 fn prune_crash_edge(edge: &str) {
@@ -115,7 +123,12 @@ impl RedbOfflineRetention {
         let watermark = load_watermark(&transaction)?;
         let holds = load_holds(&transaction)?;
         let incarnation = load_history_incarnation(&transaction)?;
-        let fencing = collect_fencing_inputs(&transaction, &holds)?;
+        let derived = open_derived_sidecar(&self.database_path)?;
+        let derived_read = derived
+            .as_ref()
+            .map(|database| database.begin_read().map_err(transaction_error))
+            .transpose()?;
+        let fencing = collect_fencing_inputs(&transaction, derived_read.as_ref(), &holds)?;
         let (max_perm, binding) = compute_max_permissible_watermark(&fencing);
         let tombstones = transaction
             .open_table(HISTORY_TOMBSTONES)
@@ -358,6 +371,8 @@ impl RedbOfflineRetention {
         let store = RedbStore::open(&self.database_path)?;
         let preparation = store.prepare_offline_retention()?;
         let database = preparation.database();
+        // Document projection frontiers live in the ADR-0240 sidecar.
+        let derived = open_derived_sidecar(&self.database_path)?;
 
         // Pre-verification: refuse to extend a watermark/chain state that
         // does not verify (fail toward NOT deleting). Also fixes the chain
@@ -405,7 +420,11 @@ impl RedbOfflineRetention {
                 break;
             }
             let holds = load_holds(&transaction)?;
-            let fencing = collect_fencing_inputs(&transaction, &holds)?;
+            let derived_read = derived
+                .as_ref()
+                .map(|database| database.begin_read().map_err(transaction_error))
+                .transpose()?;
+            let fencing = collect_fencing_inputs(&transaction, derived_read.as_ref(), &holds)?;
             let (max_perm, _) = compute_max_permissible_watermark(&fencing);
             let Some(max_perm) = max_perm else {
                 return Err(storage_error(StorageErrorKind::InvariantViolation));
@@ -447,9 +466,9 @@ impl RedbOfflineRetention {
             }
             materialize_retained_command_views(&write, first, last)?;
             rewrite_pruned_command_segments(&mut write, first, last)?;
-            delete_event_keyed_range(&mut write, EVENTS, first, last)?;
-            delete_event_keyed_range(&mut write, OUTBOX, first, last)?;
-            delete_event_keyed_range(&mut write, OUTBOX_STATUS, first, last)?;
+            delete_event_keyed_range(&write, EVENTS, first, last)?;
+            delete_event_keyed_range(&write, OUTBOX, first, last)?;
+            delete_event_keyed_range(&write, OUTBOX_STATUS, first, last)?;
 
             let prev = match previous_hash {
                 Some(hash) => Some(hash),
@@ -540,6 +559,15 @@ fn materialize_retained_command_views(
     let mut audit = write.open_table(AUDIT).map_err(table_error)?;
     let mut audit_by_request = write.open_table(AUDIT_BY_REQUEST).map_err(table_error)?;
     let mut event_routes = write.open_table(EVENT_ROUTES).map_err(table_error)?;
+    let mut locators = RetainedViewLocators {
+        idempotency: write
+            .open_table(IDEMPOTENCY_LOCATORS)
+            .map_err(table_error)?,
+        provenance: write.open_table(PROVENANCE_LOCATORS).map_err(table_error)?,
+        audit_by_request: write
+            .open_table(AUDIT_BY_REQUEST_LOCATORS)
+            .map_err(table_error)?,
+    };
     let first_key = encode_application_sequence_key(
         CommitSequence::new(first)
             .ok_or_else(|| storage_error(StorageErrorKind::InvariantViolation))?,
@@ -574,6 +602,7 @@ fn materialize_retained_command_views(
                             &mut audit,
                             &mut audit_by_request,
                             &mut event_routes,
+                            &mut locators,
                             command.base(),
                             command.events(),
                         )?;
@@ -620,6 +649,7 @@ fn materialize_retained_command_views(
             &mut audit,
             &mut audit_by_request,
             &mut event_routes,
+            &mut locators,
             &capsule,
             &[],
         )?;
@@ -627,12 +657,45 @@ fn materialize_retained_command_views(
     Ok(())
 }
 
+/// The ADR-0165 command locator tables. A locator asserts its command's
+/// segment exists, and lookups read it before any materialized row, so a
+/// pruned command's locators are removed in the same transaction that
+/// materializes its retained views.
+struct RetainedViewLocators<'txn, 'capture> {
+    idempotency: RetentionWriteTable<'txn, 'capture>,
+    provenance: RetentionWriteTable<'txn, 'capture>,
+    audit_by_request: RetentionWriteTable<'txn, 'capture>,
+}
+
+/// Removes one pruned command's locator row. A row naming another command is
+/// corruption and refuses the whole sub-range.
+fn remove_pruned_locator(
+    table: &mut RetentionWriteTable<'_, '_>,
+    key: &[u8],
+    sequence: CommitSequence,
+) -> Result<(), StorageError> {
+    let matches = match table.get(key).map_err(precommit_storage_error)? {
+        None => return Ok(()),
+        Some(value) => matches!(
+            riffdb_storage_api::decode_command_locator_v1(value.value()),
+            Ok(locator) if locator.value().commit_sequence() == sequence
+        ),
+    };
+    if !matches {
+        return Err(storage_error(StorageErrorKind::CorruptData));
+    }
+    let _ = table.remove(key).map_err(precommit_storage_error)?;
+    Ok(())
+}
+
+#[allow(clippy::too_many_arguments)]
 fn materialize_retained_capsule_views(
     idempotency: &mut RetentionWriteTable<'_, '_>,
     provenance: &mut RetentionWriteTable<'_, '_>,
     audit: &mut RetentionWriteTable<'_, '_>,
     audit_by_request: &mut RetentionWriteTable<'_, '_>,
     event_routes: &mut RetentionWriteTable<'_, '_>,
+    locators: &mut RetainedViewLocators<'_, '_>,
     capsule: &riffdb_storage_api::StoredCommandCapsuleV1,
     events: &[riffdb_storage_api::StoredDurableEventV1],
 ) -> Result<(), StorageError> {
@@ -665,6 +728,7 @@ fn materialize_retained_capsule_views(
     let _ = idempotency
         .insert(idempotency_key, encoded_outcome.as_bytes())
         .map_err(precommit_storage_error)?;
+    remove_pruned_locator(&mut locators.idempotency, idempotency_key, sequence)?;
 
     let provenance_key = encode_provenance_key(capsule.provenance().provenance_id());
     if let Some(stored_provenance) = provenance
@@ -691,6 +755,11 @@ fn materialize_retained_capsule_views(
     let _ = provenance
         .insert(provenance_key.as_slice(), encoded_provenance.as_bytes())
         .map_err(precommit_storage_error)?;
+    remove_pruned_locator(
+        &mut locators.provenance,
+        provenance_key.as_slice(),
+        sequence,
+    )?;
 
     for (member, record) in [
         (
@@ -738,6 +807,11 @@ fn materialize_retained_capsule_views(
             record.administration_sequence(),
         );
         let encoded_request = codec::encode_service_audit_request_index_v1(request_row)?;
+        remove_pruned_locator(
+            &mut locators.audit_by_request,
+            request_key.as_slice(),
+            sequence,
+        )?;
         if let Some(prior) = audit_by_request
             .insert(request_key.as_slice(), encoded_request.as_bytes())
             .map_err(precommit_storage_error)?
@@ -771,6 +845,20 @@ struct RangeCounts {
     events: u64,
     outbox: u64,
     outbox_status: u64,
+}
+
+/// Opens the stopped database's ADR-0240 derived-state sidecar when one
+/// exists. It is never created here: an absent sidecar holds no projection.
+fn open_derived_sidecar(database_path: &Path) -> Result<Option<Database>, StorageError> {
+    let sidecar = crate::store::derived_store_path(database_path);
+    match std::fs::symlink_metadata(&sidecar) {
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
+        Err(_) => Err(storage_error(StorageErrorKind::Unavailable)),
+        Ok(metadata) if !metadata.file_type().is_file() => {
+            Err(storage_error(StorageErrorKind::CorruptData))
+        }
+        Ok(_) => Database::open(&sidecar).map(Some).map_err(database_error),
+    }
 }
 
 fn begin_durable_write(database: &Database) -> Result<RawWriteTransaction, StorageError> {
@@ -843,19 +931,52 @@ fn load_last_tombstone_hash(
 }
 
 /// Collect fencing inputs. Any unreadable fencing source refuses (error).
+/// `derived` is the ADR-0240 derived-state sidecar's read pin, where document
+/// projection frontiers live. Omitting it when the sidecar exists would drop
+/// every live projection from the fence.
 pub(crate) fn collect_fencing_inputs(
     transaction: &redb::ReadTransaction,
+    derived: Option<&redb::ReadTransaction>,
     holds: &StoredRetentionHoldsV1,
 ) -> Result<RetentionFencingInputs, StorageError> {
+    collect_fencing_inputs_with(transaction, derived, holds, OutboxFence::Scan)
+}
+
+/// How the undelivered-outbox fence is established.
+#[derive(Clone, Copy, Eq, PartialEq)]
+enum OutboxFence {
+    /// Scan the whole retained history for its lowest undelivered event.
+    Scan,
+    /// The caller proves delivery of every event in its own bounded sub-range.
+    StepLocal,
+}
+
+fn collect_fencing_inputs_with(
+    transaction: &redb::ReadTransaction,
+    derived: Option<&redb::ReadTransaction>,
+    holds: &StoredRetentionHoldsV1,
+    outbox: OutboxFence,
+) -> Result<RetentionFencingInputs, StorageError> {
     let detached = detached_projection_ids(holds);
-    let min_projection = min_projection_durable_frontier(transaction, &detached)?;
+    let primary_projection = min_projection_durable_frontier(transaction, &detached)?;
+    let derived_projection = derived
+        .map(|derived| derived_projection_durable_frontier(derived, &detached))
+        .transpose()?
+        .flatten();
+    let min_projection = match (primary_projection, derived_projection) {
+        (Some(primary), Some(derived)) => Some(primary.min(derived)),
+        (primary, derived) => primary.or(derived),
+    };
     let min_hold = holds
         .holds()
         .iter()
         .filter(|h| h.kind() == RetentionHoldKind::Operator)
         .map(RetentionHoldV1::sequence)
         .min();
-    let undelivered = undelivered_outbox_low_water(transaction)?;
+    let undelivered = match outbox {
+        OutboxFence::Scan => undelivered_outbox_low_water(transaction)?,
+        OutboxFence::StepLocal => None,
+    };
     let staged = staged_migration_frozen_frontier(transaction)?;
     let head = durable_application_head(transaction)?;
     let meta = transaction.open_table(META).map_err(table_error)?;
@@ -958,14 +1079,25 @@ pub(crate) fn durable_application_head(
     })
 }
 
-pub(crate) fn min_projection_durable_frontier(
-    transaction: &redb::ReadTransaction,
+/// Minimum published frontier over the derived sidecar's document projection
+/// controls (ADR-0240), or `None` when it holds none.
+pub(crate) fn derived_projection_durable_frontier(
+    derived: &redb::ReadTransaction,
     detached: &BTreeSet<String>,
 ) -> Result<Option<u64>, StorageError> {
-    let controls = transaction
+    let controls = derived
         .open_table(PROJECTION_FRONTIER)
         .map_err(table_error)?;
     let mut min_frontier: Option<u64> = None;
+    let any = fold_projection_controls(&controls, detached, &mut min_frontier)?;
+    Ok(if any { min_frontier } else { None })
+}
+
+fn fold_projection_controls(
+    controls: &impl ReadableTable<&'static [u8], &'static [u8]>,
+    detached: &BTreeSet<String>,
+    min_frontier: &mut Option<u64>,
+) -> Result<bool, StorageError> {
     let mut any = false;
     for entry in controls.iter().map_err(precommit_storage_error)? {
         let (_, encoded) = entry.map_err(precommit_storage_error)?;
@@ -985,11 +1117,23 @@ pub(crate) fn min_projection_durable_frontier(
                 FrontierPosition::AppliedThrough(seq) => seq.get(),
             })
             .unwrap_or(0);
-        min_frontier = Some(match min_frontier {
+        *min_frontier = Some(match *min_frontier {
             None => frontier,
             Some(existing) => existing.min(frontier),
         });
     }
+    Ok(any)
+}
+
+pub(crate) fn min_projection_durable_frontier(
+    transaction: &redb::ReadTransaction,
+    detached: &BTreeSet<String>,
+) -> Result<Option<u64>, StorageError> {
+    let controls = transaction
+        .open_table(PROJECTION_FRONTIER)
+        .map_err(table_error)?;
+    let mut min_frontier: Option<u64> = None;
+    let mut any = fold_projection_controls(&controls, detached, &mut min_frontier)?;
     let columnar_controls = transaction
         .open_table(crate::layout::COLUMNAR_PROJECTION_CONTROLS)
         .map_err(table_error)?;
@@ -1487,7 +1631,7 @@ fn event_keyed_range_bounds(first: u64, last: u64) -> ([u8; 12], [u8; 12]) {
 }
 
 fn delete_event_keyed_range(
-    write: &mut WriteTransaction,
+    write: &WriteTransaction,
     definition: TableDefinition<'_, &'static [u8], &'static [u8]>,
     first: u64,
     last: u64,
@@ -1584,6 +1728,23 @@ pub(crate) fn verify_tombstone_chain(
         return Err(storage_error(StorageErrorKind::CorruptData));
     }
     Ok(())
+}
+
+/// The durable retention watermark inside one composite read view, 0 when
+/// nothing was ever pruned. Scans classify their start against the view they
+/// read, so an absent pruned row is typed pruned rather than corrupt.
+pub(crate) fn watermark_at_access(
+    access: &crate::store::RedbReadAccess,
+) -> Result<u64, StorageError> {
+    let Some(encoded) = access.read_value(
+        crate::journal::JournalTable::Meta,
+        META_RETENTION_WATERMARK.as_bytes(),
+    )?
+    else {
+        return Ok(0);
+    };
+    let item = decode_retention_watermark_v1(&encoded).map_err(crate::error::codec_error)?;
+    Ok(item.into_parts().0.watermark_sequence())
 }
 
 /// Returns true when `sequence` is covered by the watermark (below-or-equal).

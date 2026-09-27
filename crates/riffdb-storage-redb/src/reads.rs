@@ -245,8 +245,9 @@ impl AuthoritativePointReader for RedbOperationalPorts {
             return Ok(Some(command.base().commit().clone()));
         }
         let transaction = self.begin_composite_read()?;
-        // Verified once at open; prune runs only under exclusive OFFLINE
-        // access, so the watermark cannot change under a live handle.
+        // Verified at open and raised by each online retention step before
+        // its deletion becomes visible, so loading it after capturing the
+        // snapshot classifies an absent pruned row as HistoryPruned.
         let watermark = self.shared.retention_watermark();
         let Some(record) = commit_at_access(&transaction, sequence)? else {
             if crate::retention::sequence_covered_by_watermark(sequence.get(), watermark) {
@@ -334,7 +335,7 @@ impl AuthoritativePointReader for RedbOperationalPorts {
             return Ok(Some(event.clone()));
         }
         let transaction = self.begin_composite_read()?;
-        // Verified once at open (see read_commit).
+        // Verified at open and raised by online retention (see read_commit).
         let watermark = self.shared.retention_watermark();
         let encoded_key = encode_event_key(event_id);
         let Some(encoded) = transaction.read_value(JournalTable::Events, &encoded_key)? else {
@@ -565,6 +566,12 @@ impl AuthoritativeScanReader for RedbOperationalPorts {
         if first_expected > upper {
             return CommitScanPageV1::exact_end(request, inclusive_upper, Vec::new())
                 .map_err(corrupt_value);
+        }
+        if crate::retention::sequence_covered_by_watermark(
+            first_expected.get(),
+            crate::retention::watermark_at_access(&transaction)?,
+        ) {
+            return Err(storage_error(StorageErrorKind::HistoryPruned));
         }
         let first_key = encode_application_sequence_key(CommitSequence::first());
         let mut first_end = encode_application_sequence_key(first_expected).to_vec();

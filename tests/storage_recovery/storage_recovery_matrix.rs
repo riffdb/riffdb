@@ -92,6 +92,8 @@ mod bounded_dirty_startup;
 mod changelog_compatibility;
 #[cfg(feature = "test-fixtures")]
 mod checkpoint_pipeline;
+#[path = "online_retention.rs"]
+mod online_retention;
 #[path = "../replication_promotion.rs"]
 mod replication_promotion;
 #[path = "v3_command_attribution.rs"]
@@ -2278,13 +2280,11 @@ fn engine_repair_run_by_the_target_probe_is_attributed_to_the_store_open() {
     );
     drop(owner);
 
-    riffdb_storage_redb::reset_last_repair_progress_for_tests();
+    // The probe already repaired the engine, so the store's own open finds a
+    // repaired file; only the carried observation can report the repair.
+    // (The process-global progress telemetry is not asserted here: other
+    // tests in this process may repair concurrently.)
     let store = RedbStore::open(&path.0).expect("store open after the probe");
-    assert_eq!(
-        riffdb_storage_redb::last_repair_progress_basis_points(),
-        riffdb_storage_redb::REPAIR_PROGRESS_SENTINEL,
-        "the probe already repaired the engine, so the store's own open did not"
-    );
     let session = store
         .begin_structural_evidence(startup_inputs())
         .expect("startup evidence after the probe");

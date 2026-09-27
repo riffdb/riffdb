@@ -277,7 +277,8 @@ pub use fixtures::{
     MALFORMED_POPULATION_ROW_FIXTURE, append_columnar_worker_commit_fixture,
     append_columnar_worker_commit_with_crosslinks_fixture, downgrade_all_index_rows_to_v1_fixture,
     initialize_legacy_database_fixture, plant_malformed_population_row_fixture,
-    read_malformed_population_row_fixture, read_validated_prefix_checkpoint_bytes_fixture,
+    plant_unreadable_projection_frontier_fixture, read_malformed_population_row_fixture,
+    read_validated_prefix_checkpoint_bytes_fixture,
     read_validated_prefix_checkpoint_commit_sequence_fixture,
     replace_audit_row_with_stray_fence_fixture, strip_validated_prefix_checkpoint_fixture,
 };
@@ -326,7 +327,10 @@ pub use migration_stage::{
     RedbContractMigrationContext, RedbContractMigrationImmutableWitness,
     RedbContractMigrationPreflight, RedbContractMigrationStage, RedbMigrationProjectionPorts,
 };
-pub use retention::{RedbOfflineRetention, RetentionStatusV1};
+pub use retention::{
+    ONLINE_RETENTION_STEP_SEQUENCES, OnlineRetentionHold, OnlineRetentionStep,
+    RedbOfflineRetention, RedbOnlineRetentionLane, RetentionStatusV1,
+};
 pub use shared_ports::RedbSharedPorts;
 pub use startup::{
     BackgroundScrubHistoricalPage, BackgroundScrubPage, OfflineIntegrityScrubReceiptV1,

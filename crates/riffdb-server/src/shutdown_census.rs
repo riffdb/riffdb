@@ -104,6 +104,13 @@ pub(crate) fn format_v1_line() -> String {
     line.push_str(&scrub_total_us().to_string());
     line.push_str("\tbackground_scrub_rows_per_second=");
     line.push_str(&scrub_rows_per_second().to_string());
+    let (retention_state, retention_steps, retention_sequences) = RETENTION_OBSERVATION.get();
+    line.push_str("\tonline_retention=");
+    line.push_str(retention_state.as_str());
+    line.push_str("\tonline_retention_steps=");
+    line.push_str(&retention_steps.to_string());
+    line.push_str("\tonline_retention_sequences=");
+    line.push_str(&retention_sequences.to_string());
     line
 }
 
@@ -158,6 +165,26 @@ pub(crate) fn record_background_scrub(
     SCRUB_OBSERVATION.set((state, rows_walked, total_us, rows_per_second));
 }
 
+thread_local! {
+    static RETENTION_OBSERVATION: std::cell::Cell<(
+        crate::retention_worker::RetentionLaneState,
+        u64,
+        u64,
+    )> = const {
+        std::cell::Cell::new((crate::retention_worker::RetentionLaneState::Holding, 0, 0))
+    };
+}
+
+/// Records the online retention lane's closed state and bounded counters for
+/// the shutdown census line (ADR-0182 section 7 evidence). Internal only.
+pub(crate) fn record_online_retention(
+    state: crate::retention_worker::RetentionLaneState,
+    steps: u64,
+    sequences: u64,
+) {
+    RETENTION_OBSERVATION.set((state, steps, sequences));
+}
+
 #[cfg(test)]
 mod tests {
     use super::{ShutdownReleaseStage, format_v1_line};
@@ -175,5 +202,7 @@ mod tests {
         }
         assert!(line.contains("\tcolumnar_activations="));
         assert!(line.contains("\tcolumnar_population_passes="));
+        assert!(line.contains("\tonline_retention=holding"));
+        assert!(line.contains("\tonline_retention_sequences="));
     }
 }

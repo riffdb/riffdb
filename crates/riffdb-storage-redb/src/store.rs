@@ -618,6 +618,18 @@ impl SharedRedb {
         self.retention_watermark.load(Ordering::Acquire)
     }
 
+    /// Raises the live watermark for an online retention step about to
+    /// commit (ADR-0182 section 6), returning the prior value.
+    pub(crate) fn publish_retention_watermark(&self, watermark: u64) -> u64 {
+        self.retention_watermark
+            .fetch_max(watermark, Ordering::AcqRel)
+    }
+
+    /// Restores the live watermark after an online step failed to commit.
+    pub(crate) fn restore_retention_watermark(&self, watermark: u64) {
+        self.retention_watermark.store(watermark, Ordering::Release);
+    }
+
     pub(crate) fn durable_commit_epoch(&self) -> u64 {
         self.durable_commit_epoch.load(Ordering::Acquire)
     }
