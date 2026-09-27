@@ -694,17 +694,19 @@ impl SharedRedb {
     }
 
     /// Gate-free journal activity for the online retention lane: the
-    /// journal's last application sequence, and whether any journaled
-    /// transition is not yet materialized in the engine.
-    pub(crate) fn journal_suffix_activity(&self) -> Result<(u64, bool), StorageError> {
+    /// journal's last application sequence, and how many journaled
+    /// transitions are not yet materialized in the engine.
+    pub(crate) fn journal_suffix_activity(&self) -> Result<(u64, usize), StorageError> {
         let runtime = self
             .journal_runtime
             .lock()
             .map_err(|_| storage_error(StorageErrorKind::InvariantViolation))?;
-        Ok(runtime.as_ref().map_or((0, false), |runtime| {
+        Ok(runtime.as_ref().map_or((0, 0), |runtime| {
             (
                 runtime.last_sequence.map_or(0, CommitSequence::get),
-                runtime.suffix_commands > 0 || runtime.unpublished_transitions > 0,
+                runtime
+                    .suffix_transitions
+                    .saturating_add(runtime.unpublished_transitions),
             )
         }))
     }

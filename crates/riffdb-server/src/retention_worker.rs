@@ -386,9 +386,9 @@ fn run_lane(
                     .saturating_mul(RETENTION_LANE_REST_FACTOR)
                     .min(RETENTION_LANE_RECHECK.saturating_mul(RETENTION_LANE_REST_FACTOR))
             }
-            Ok(OnlineRetentionStep::Held(OnlineRetentionHold::CheckpointInFlight)) => {
-                RETENTION_LANE_CHECKPOINT_RETRY
-            }
+            Ok(OnlineRetentionStep::Held(
+                OnlineRetentionHold::CheckpointInFlight | OnlineRetentionHold::AwaitingCheckpoint,
+            )) => RETENTION_LANE_CHECKPOINT_RETRY,
             Ok(OnlineRetentionStep::Held(
                 OnlineRetentionHold::TargetReached | OnlineRetentionHold::RowBoundary,
             )) => {

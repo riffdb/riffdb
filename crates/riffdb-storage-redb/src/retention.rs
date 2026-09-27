@@ -997,7 +997,7 @@ fn collect_fencing_inputs_with(
         undelivered_outbox_low_water: undelivered,
         staged_migration_frozen_frontier: staged,
         consumer_low_water,
-        follower_low_water: follower_low_water(transaction)?,
+        follower_low_water: follower_low_water(transaction, outbox)?,
     })
 }
 
@@ -1005,16 +1005,38 @@ fn collect_fencing_inputs_with(
 /// identity, key, ancestry and exact dual frontier with the retained chain from
 /// this same read pin. Unknown or corrupt hold kinds cannot be ignored while
 /// selecting the follower subset. The existing validator enforces 4096 holds.
-fn follower_low_water(transaction: &redb::ReadTransaction) -> Result<Option<u64>, StorageError> {
-    use riffdb_storage_api::{
-        ReplicationSourceHoldKindV1, proto_codec::decode_replication_source_hold,
-    };
-    if crate::changelog_v3_roots::validate_retained_history(transaction)?.is_none() {
+///
+/// The retained-chain validation walks the whole V3 history. The offline
+/// operation always runs it; an online step (`OutboxFence::StepLocal`) runs it
+/// only when a live follower acknowledgement exists to validate, so a
+/// database without followers does not pay a history walk per step. Every
+/// hold row is still decoded strictly either way.
+fn follower_low_water(
+    transaction: &redb::ReadTransaction,
+    scope: OutboxFence,
+) -> Result<Option<u64>, StorageError> {
+    if crate::changelog_v3_roots::read_checkpoint_roots(transaction)?.is_none() {
         return Ok(None);
     }
     let holds = transaction
         .open_table(crate::changelog_v3_activation::SOURCE_HOLDS)
         .map_err(table_error)?;
+    let minimum = follower_acknowledgement_minimum(&holds)?;
+    if matches!(scope, OutboxFence::StepLocal) && minimum.is_none() {
+        return Ok(None);
+    }
+    if crate::changelog_v3_roots::validate_retained_history(transaction)?.is_none() {
+        return Ok(None);
+    }
+    Ok(minimum)
+}
+
+fn follower_acknowledgement_minimum(
+    holds: &impl ReadableTable<&'static [u8], &'static [u8]>,
+) -> Result<Option<u64>, StorageError> {
+    use riffdb_storage_api::{
+        ReplicationSourceHoldKindV1, proto_codec::decode_replication_source_hold,
+    };
     let mut minimum: Option<u64> = None;
     for row in holds.iter().map_err(precommit_storage_error)? {
         let (_, value) = row.map_err(precommit_storage_error)?;

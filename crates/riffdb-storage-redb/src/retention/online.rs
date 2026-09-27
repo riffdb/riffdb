@@ -17,6 +17,11 @@ use super::*;
 use crate::store::RedbOperationalPorts;
 use crate::transient::TransientIndexDelta;
 
+/// A busy database's lane steps only while at most this many journaled
+/// transitions await materialization, which is shortly after each background
+/// checkpoint, so a step never drains a large suffix under the writer gate.
+const ONLINE_RETENTION_SMALL_SUFFIX_TRANSITIONS: usize = 256;
+
 /// ADR-0182 section 7: an online step covers at most this many sequences.
 pub const ONLINE_RETENTION_STEP_SEQUENCES: u64 = 256;
 
@@ -37,6 +42,10 @@ pub enum OnlineRetentionHold {
     /// An asynchronous journal checkpoint is in flight. The step yields to it
     /// rather than wait for it while holding the writer gate; retry shortly.
     CheckpointInFlight,
+    /// A busy database's journal suffix is large. The lane waits for the next
+    /// background checkpoint to materialize it rather than drain it under the
+    /// writer gate; retry shortly.
+    AwaitingCheckpoint,
 }
 
 /// The durable result of one online retention step.
@@ -83,11 +92,16 @@ impl RedbOnlineRetentionLane {
         retain_sequences: NonZeroU64,
         max_sequences: NonZeroU64,
     ) -> Result<OnlineRetentionStep, StorageError> {
-        let (journal_sequence, _) = self.shared.journal_suffix_activity()?;
+        let (journal_sequence, suffix_transitions) = self.shared.journal_suffix_activity()?;
         let idle = self
             .last_journal_sequence
             .swap(journal_sequence, std::sync::atomic::Ordering::AcqRel)
             == journal_sequence;
+        if !idle && suffix_transitions > ONLINE_RETENTION_SMALL_SUFFIX_TRANSITIONS {
+            return Ok(OnlineRetentionStep::Held(
+                OnlineRetentionHold::AwaitingCheckpoint,
+            ));
+        }
         RedbOperationalPorts {
             shared: Arc::clone(&self.shared),
         }
@@ -168,7 +182,7 @@ impl RedbOperationalPorts {
                 );
                 if !(may_materialize_suffix
                     && head_bound
-                    && self.shared.journal_suffix_activity()?.1)
+                    && self.shared.journal_suffix_activity()?.1 > 0)
                 {
                     return Ok(OnlineRetentionStep::Held(hold));
                 }
