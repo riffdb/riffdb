@@ -732,6 +732,23 @@ presence must still be assessed separately after that prerequisite is met.
 
 ### Candidate PR note
 
+The next candidate is an **unmeasured bounded-writeback prototype**, based on
+`983881ea` (main through `aa77f9622`). During the physical checkpoint transaction,
+the primary redb backend syncs before submitting more than 8 MiB of writes
+since its last successful sync. It retains redb's growth fences and final
+Immediate commit sync, and adds no format or public setting. The byte budget
+does not bound elapsed device latency. Additional syncs could reduce journal
+stalls or instead slow checkpoint progress; that tradeoff needs a fresh
+same-baseline comparison. The old diagnostic timings do not measure it.
+
+The pass-through implementation first failed the byte-bound test. Fourteen
+targeted tests now pass, including deterministic concurrent budget accounting,
+early-sync failure, real redb commit/reopen, two process crashes at the added
+sync boundary, and the existing production checkpoint schedules. Broader
+acceptance and measurement are still pending. This is an implementation choice
+within the accepted durability/installation decisions; final implementation
+and fixture review remains required.
+
 Package WP-810; tier guarantee. Behavior: retain bounded pipelining during
 checkpoint materialization and the ordered drain for installation; publish
 existing predecessors under capacity pressure and fence observed checkpoint

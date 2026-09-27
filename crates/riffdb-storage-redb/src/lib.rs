@@ -39,6 +39,7 @@ mod changelog_v3_roots;
 mod changelog_v3_write;
 mod checkpoint_census;
 mod checkpoint_root;
+mod checkpoint_writeback;
 mod clean_close;
 mod codec;
 mod columnar_projection_control;
