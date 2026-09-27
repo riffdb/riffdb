@@ -24417,13 +24417,67 @@ work_packages:
   acceptance_commands:
   - ./scripts/acceptance --wp WP-761
   - ./scripts/ci-all
-  exit_gate: A database under sustained 32-client load compacts history to its configured
-    retained-sequence target with no downtime, no exclusive lease, and p95 inside the
-    five-percent bound; every armed crash window reopens with a valid watermark, contiguous
+  exit_gate: A database under sustained 32-client interactive load runs the online lane
+    with no downtime, no exclusive lease, and p95 inside the five-percent bound; where the
+    write rate leaves writer capacity the lane compacts history to its configured
+    retained-sequence target, and under writer saturation the release evidence states the
+    lane's measured keep-up fraction (sequences pruned per command committed), whose
+    improvement is WP-811's; every armed crash window reopens with a valid watermark, contiguous
     tombstone chain, and allocator agreement and creates no command, event, outcome,
     provenance, audit, projection, outbox, or allocator advance; pruning never crosses a
     projection, consumer, outbox, migration, hold, or follower fence; and the offline
     operation still passes its existing recovery matrix unchanged.
+  closure:
+    status: complete
+    completed_at: '2026-09-27'
+    requirements_satisfied: [STO-030, STO-031, STO-032, REC-001, REC-002]
+    evidence: release/evidence/wp-761/online-retention-interference.json
+    decision: riffdbd runs one online retention lane per database, configured as
+      retained_sequences or a hold with a 1..=256 sequences_per_epoch budget (default 64).
+      Each step is one direct administration transition through the FIFO writer gate that
+      removes whole command segments, appends the tombstone, advances the watermark, and
+      deletes the validated-prefix checkpoint atomically. The fencing set is read in a snapshot
+      opened under the gate (sidecar projection frontiers, consumers, step-local outbox
+      delivery, staged migration, holds, followers); unreadable sources refuse. The lane plans
+      without the gate, yields to in-flight journal checkpoints, steps only near checkpoints on
+      a busy database, and rests nineteen times each step's duration. Crash windows reopen at
+      the pre- or post-step watermark (process kills, seeded simulation, a real-daemon kill).
+      On C3D at 32 interactive clients p95 is unchanged (ratio 1.00, throughput 0.98x) and the
+      keep-up fraction is 0.0029; the exit gate was restated to that effect.
+    decisions_taken:
+    - The shared fence reads the ADR-0240 derived sidecar's projection frontiers, offline too
+      (maintainer, in session).
+    - Lane health is internal only; the shutdown census carries its closed state, closed fence
+      name, and counters (maintainer, in session).
+    - Pruning removes the durable idempotency, provenance, and audit-by-request locators of
+      materialized commands, fixing dangling locators on retry (maintainer, in session).
+    - Commit scans into pruned history are typed HistoryPruned (maintainer, in session).
+    - A pruned command's replay audit link is proven by its retained provenance row; previously
+      its retry stopped the daemon with AuditUnavailable (maintainer, in session).
+    - Steps are segment-aligned; a segment larger than the budget is removed alone, never above
+      256 (maintainer, in session).
+    - The journal suffix is materialized by the lane only when the database is idle
+      (maintainer, in session).
+    - Interference evidence marks seeded outbox events delivered on the stopped database and
+      omits the unused board projection in both arms (maintainer, in session).
+    - Lane pacing, checkpoint yielding, and the default budget of 64 bound interference; the
+      exit gate was restated to require keep-up evidence under writer saturation rather than
+      compaction to target (maintainer accepted, 2026-09-27).
+    hazards:
+    - Under writer saturation the lane prunes about 0.3 percent as many sequences as are
+      committed; pruning costs about a commit's writer time per sequence because it relocates
+      retained views out of segments. WP-811 owns raising it.
+    - The first online step deletes the validated-prefix checkpoint, so restarts after pruning
+      take complete startup validation until a fresh checkpoint is earned; re-earning it is
+      WP-811's candidate ADR-0182 amendment.
+    - This POC delivers no outbox events, so retention (online and offline) stops at the first
+      emitted event; a delivery destination or a no-destination fence amendment is a separate
+      maintainer decision.
+    - A declared columnar projection not populated in the current process holds retention at
+      its last frontier until queried.
+    - With followers attached, each online step still validates the whole retained V3 history.
+    - Each step still drains the published journal suffix under the gate; journaled prune
+      frames (ADR-0182 amendment) would remove the drain and the extra fsync.
   standing_design_tests:
     interface_safety: Retention is driven only by configuration and the existing audited
       operator verbs; no application principal can start, stop, target, or observe it beyond
@@ -27654,3 +27708,44 @@ work_packages:
     scale: Checkpoint pressure retains the existing encoded-byte, transition, physical
       extent, overlay-memory and retained-root bounds; diagnostics and waits stay bounded.
   human_review_triggers: *id001
+- id: WP-811
+  name: Online retention prune cost off the writer gate
+  tier: guarantee
+  depends_on: [WP-761]
+  objective: Raise the online retention lane's keep-up fraction under writer saturation
+    without leaving ADR-0182's five-percent p95 bound. WP-761 measured the prune body at
+    about 0.14 ms per pruned sequence under the writer gate, about a commit's writer cost,
+    because pruning relocates each command's retained outcome, provenance, and audit views
+    out of its segment. Prepare each step's complete mutation set (retained views, locator
+    removals, deletes, and a single-pass tombstone digest) from an immutable snapshot outside
+    the gate, revalidate only fences and outbox status under the gate, and apply it; measure
+    what remains under the gate before any ADR-0182 amendment (journaled prune frames and
+    validated-prefix checkpoint re-earning) is drafted.
+  requirements: [STO-030, STO-031, STO-032, REC-001, REC-002]
+  required_adrs: [ADR-0085, ADR-0101, ADR-0165, ADR-0182]
+  allowed_paths: [work_packages.yaml, crates/riffdb-storage-redb/**, crates/riffdb-server/**,
+    crates/riffdb-sim/**, tests/**, scripts/**, benchmarks/**, examples/app-baseline/**,
+    release/evidence/**, docs/**]
+  deliverables:
+  - Off-gate preparation of each online step's mutation set with under-gate revalidation of
+    every fence and outbox status, preserving step atomicity, the tombstone chain, and every
+    WP-761 crash window and fence arm
+  - A single-pass tombstone digest over the step range
+  - Phase-timed C3D evidence (gate wait, suffix drain, prepare, apply, commit) and the
+    interference summary's keep-up fraction at 32 interactive clients, against WP-761's
+    banked 0.0029
+  - A written disposition of the remaining gate-held cost stating whether an ADR-0182
+    amendment for journaled prune frames and checkpoint re-earning is needed
+  acceptance_commands:
+  - ./scripts/acceptance --wp WP-811
+  - ./scripts/ci-all
+  exit_gate: The lane's keep-up fraction under 32-client interactive load improves on
+    WP-761's banked value with p95 still inside the five-percent bound, every WP-761 crash and
+    fence test still passes, and the remaining gate-held cost has a measured, maintainer-
+    reviewed disposition.
+  standing_design_tests:
+    interface_safety: No public surface changes; retention stays configuration-driven and
+      fenced exactly as WP-761 left it.
+    scale: Moves population-proportional prune work off the single ordered writer's critical
+      section instead of spending writer time proportional to history.
+  human_review_triggers: *id0182

@@ -5,9 +5,12 @@
 //! is one administration-class transition through the sole ordered writer:
 //! the storage handle it holds runs steps and nothing else, and it queues on
 //! the same first-come mutation gate as every other writer, so a writer is
-//! blocked by at most the one step in progress. The lane yields after every
-//! step, never removes more than its per-epoch budget (one step), and
-//! rechecks on a bounded idle interval once it reaches the target or a fence.
+//! blocked by at most the one step in progress. After every advancing step
+//! the lane rests nineteen times that step's duration, so it holds the writer
+//! at most about five percent of the time; it never removes more than its
+//! per-epoch budget (one step), yields to an in-flight journal checkpoint
+//! instead of waiting for it under the gate, and rechecks on a bounded idle
+//! interval once it reaches the target or a fence.
 //!
 //! Lane health is internal and closed: `holding`, `idle`, `advancing`,
 //! `fenced`, `refused`, and `cancelled`. It appears in the shutdown census
@@ -34,6 +37,16 @@ use crate::config::{RetentionConfig, RetentionTarget};
 /// How long an idle or fenced lane waits before it looks again. A bound on
 /// how stale compaction may fall behind new commits, never a retention age.
 const RETENTION_LANE_RECHECK: Duration = Duration::from_secs(1);
+
+/// How long the lane waits before retrying a step that yielded to an
+/// in-flight asynchronous journal checkpoint.
+const RETENTION_LANE_CHECKPOINT_RETRY: Duration = Duration::from_millis(50);
+
+/// ADR-0182 section 7 interference bound: after an advancing step the lane
+/// rests this many times the step's own duration, so it holds the ordered
+/// writer at most one part in twenty of the time. A backlog therefore
+/// compacts at a bounded, not maximal, rate.
+const RETENTION_LANE_REST_FACTOR: u32 = 19;
 
 /// Closed online retention lane states.
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
@@ -362,26 +375,31 @@ fn run_lane(
             status.set(RetentionLaneState::Cancelled);
             return;
         }
+        let started = std::time::Instant::now();
         let pause = match lane.step(retain, budget) {
             Ok(OnlineRetentionStep::Advanced { sequences, .. }) => {
                 status.note_fence(None);
                 status.set(RetentionLaneState::Advancing);
                 status.note_step(sequences);
-                // Queue behind any writer that arrived during the step.
-                thread::yield_now();
-                false
+                started
+                    .elapsed()
+                    .saturating_mul(RETENTION_LANE_REST_FACTOR)
+                    .min(RETENTION_LANE_RECHECK.saturating_mul(RETENTION_LANE_REST_FACTOR))
             }
+            Ok(OnlineRetentionStep::Held(
+                OnlineRetentionHold::CheckpointInFlight | OnlineRetentionHold::AwaitingCheckpoint,
+            )) => RETENTION_LANE_CHECKPOINT_RETRY,
             Ok(OnlineRetentionStep::Held(
                 OnlineRetentionHold::TargetReached | OnlineRetentionHold::RowBoundary,
             )) => {
                 status.note_fence(None);
                 status.set(RetentionLaneState::Idle);
-                true
+                RETENTION_LANE_RECHECK
             }
             Ok(OnlineRetentionStep::Held(OnlineRetentionHold::Fenced(binding))) => {
                 status.note_fence(Some(binding));
                 status.set(RetentionLaneState::Fenced);
-                true
+                RETENTION_LANE_RECHECK
             }
             Err(_) if control.stop_requested() => {
                 status.set(RetentionLaneState::Cancelled);
@@ -399,7 +417,7 @@ fn run_lane(
                 return;
             }
         };
-        if pause && control.pause(RETENTION_LANE_RECHECK) {
+        if control.pause(pause) {
             status.set(RetentionLaneState::Cancelled);
             return;
         }

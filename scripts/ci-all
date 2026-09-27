@@ -70,6 +70,7 @@ trap - EXIT INT TERM
 ./scripts/check-performance-freeze
 ./scripts/check-wp762-baseline-bank
 ./scripts/check-dirty-recovery-evidence
+./scripts/check-online-retention-interference
 ./scripts/check-generated
 ./scripts/check-helm-render
 ./scripts/check-helm-operator-package

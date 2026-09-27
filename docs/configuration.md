@@ -113,6 +113,63 @@ collectors before closing storage. The POC supports local filesystem sinks;
 `operator_managed` encryption must be supplied outside RiffDB.
 See [Backup and Restore](backup-restore.md).
 
+### Online retention
+
+`riffdbd` can compact commit history while it serves. The legacy
+single-database form uses `[maintenance.retention]`; the named form uses
+`[databases.<alias>.retention]`:
+
+```toml
+[maintenance.retention]
+retained_sequences = 1000000
+sequences_per_epoch = 256
+```
+
+Set exactly one of `retained_sequences`, a positive count of commit sequences
+to keep below the durable application head, or `hold = true`.
+`sequences_per_epoch` bounds each step, from 1 through 256 (default 64). An
+absent section is a hold, so a configuration that never names retention prunes
+nothing online. Targets are sequence counts, never ages. Any other key, both
+forms together, or an out-of-range value rejects configuration.
+
+With a target, one background lane per database advances the retention
+watermark in steps. Each step is one administration transition through the
+database's single ordered writer. It removes whole command segments, appends the
+chained tombstone, and advances the watermark in one atomic commit. It holds no
+exclusive lease and opens no second writer. A writer waits behind at most the one
+step in progress. After each step the lane rests nineteen times that step's
+duration, so it holds the writer at most about five percent of the time and a
+large backlog compacts gradually rather than at full speed. It plans each step
+without the writer gate and takes the gate only when it has history to remove.
+It never waits for an in-flight journal checkpoint while holding the gate. Once
+it reaches its target or a fence it rechecks about once a second. History still
+in the journal suffix is compacted after the next journal checkpoint, or, once
+the database has been idle since the previous check, after the lane
+materializes the suffix itself. A single command segment larger
+than the budget is removed alone in its own step, never more than 256 sequences.
+A crash at any point in a step reopens with the watermark either before or after
+that step, and the restarted lane resumes.
+
+The lane never passes a fence: projection frontiers, durable event-consumer
+checkpoints, undelivered outbox events, a staged contract migration, operator
+holds, and registered followers' acknowledged frontiers. An unreadable fencing
+source stops the lane with an internal incident until the next restart; it never
+prunes past it. Lane state is internal. No RPC, health member, or MCP tool
+reports or drives it, and application principals have no retention operation.
+The shutdown release census line records its closed state, the name of the
+fence that last held it, and its step and sequence counts.
+
+Pruned history stays auditable. A pruned command keeps its outcome and
+provenance, so its idempotent retry answers the original result. Reads of its
+events or commit, and commit scans that start at or below the watermark,
+return the typed `HistoryPruned` error.
+
+Read the retention limits in [Known limitations](known-limitations.md#retention)
+before enabling it. In particular, this POC delivers no outbox events, so a
+contract that emits events compacts only the history before its first event.
+The offline `riffdb retention` operations remain available on a stopped
+database; see [Backup and Restore](backup-restore.md).
+
 The legacy `server.grpc_listen` form always means literal-loopback cleartext.
 For an explicit closed listener profile, omit `grpc_listen` and select exactly
 one tagged table:

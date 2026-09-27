@@ -22,8 +22,13 @@ commit together in the existing hardened transaction. This adds no commit or
 flush and changes neither watermark normalization nor the recorded tombstone
 chain-root binding.
 
-Offline retention also respects each registered follower's durable acknowledged
-application frontier. A follower that has acknowledged no application commit
+Retention also runs online inside `riffdbd` when its configuration names a
+retained-sequence target; see [Online retention](configuration.md#online-retention).
+The online lane uses the same fencing set, tombstone chain, and watermark as the
+offline operations below, which remain available on a stopped database.
+
+Offline and online retention both respect each registered follower's durable
+acknowledged application frontier. A follower that has acknowledged no application commit
 pins the watermark at zero; a faster follower cannot release a slower follower's
 fence. Retention status reports `FollowerLowWater` when this is the binding
 minimum. Unreadable or inconsistent V3 hold evidence refuses collection and

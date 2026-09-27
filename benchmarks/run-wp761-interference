@@ -139,6 +139,9 @@ def cell(arm: str, rep: int) -> dict:
         "report_sha256": digest(path),
         "aggregate_p95_ns": int(backend["aggregate"]["latency"]["p95_ns"]),
         "throughput_ops_s": int(backend["throughput_ops_s"]),
+        "commands_committed": int(
+            backend["server_stage_evidence"]["writer"]["logical_commands_committed"]
+        ),
         "lane": {
             "state": lane["state"],
             "fence": lane["fence"],
@@ -203,7 +206,7 @@ summary = {
         "repetitions": 3,
         "order": ORDER,
         "idle_arm": {"retention": "hold"},
-        "active_arm": {"retained_sequences": retained, "sequences_per_epoch": 256},
+        "active_arm": {"retained_sequences": retained, "sequences_per_epoch": 64},
         "maximum_p95_ratio": MAXIMUM_P95_RATIO,
         "latency_gate_statistic": "median_of_repetition_aggregate_p95",
         "percentiles": "fixed_log_linear_histogram_16_sub_buckets_per_octave",
@@ -230,6 +233,13 @@ summary = {
         "idle_median_throughput_ops_s": idle_tp,
         "active_median_throughput_ops_s": active_tp,
         "throughput_ratio": throughput_ratio,
+        # Informational keep-up: sequences the lane removed per command the
+        # measured process committed (1.0 keeps pace with the write rate).
+        "active_median_pruned_per_committed": statistics.median(
+            c["lane"]["sequences"] / c["commands_committed"]
+            for c in cells
+            if c["arm"] == "active" and c["commands_committed"]
+        ),
         "lane_valid": lane_valid,
     },
 }

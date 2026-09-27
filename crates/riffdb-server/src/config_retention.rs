@@ -48,17 +48,21 @@ impl RetentionConfig {
         self.target
     }
 
-    /// Sequences one lane step may remove (1..=256).
+    /// Sequences one lane step may remove (1..=256, default 64).
     pub(crate) const fn sequences_per_epoch(&self) -> NonZeroU64 {
         self.sequences_per_epoch
     }
 }
 
+/// The default per-epoch budget: a quarter of the hard bound, so a default
+/// step holds the ordered writer for a short time.
+const DEFAULT_SEQUENCES_PER_EPOCH: u64 = 64;
+
 impl Default for RetentionConfig {
     fn default() -> Self {
         Self {
             target: RetentionTarget::Hold,
-            sequences_per_epoch: NonZeroU64::new(MAX_SEQUENCES_PER_EPOCH)
+            sequences_per_epoch: NonZeroU64::new(DEFAULT_SEQUENCES_PER_EPOCH)
                 .unwrap_or(NonZeroU64::MIN),
         }
     }
