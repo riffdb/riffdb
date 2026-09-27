@@ -139,6 +139,14 @@ const APPLICATION_ROLE_NAME: &str = "TicketDeskApplication";
 const TICKETDESK_CONTRACT: &str = include_str!("../../contracts/ticketdesk.riff");
 const TICKETDESK_MANIFEST: &str =
     include_str!("../../../../fixtures/application-manifests/ticketdesk-v1.json");
+/// ADR-0182 section 7 interference evidence (WP-761): `hold` or a positive
+/// retained-sequence count for the daemon's online retention lane. When set,
+/// the seeded outbox events are marked delivered on the stopped database
+/// before the measured daemon starts, because this POC delivers no outbox
+/// events and the undelivered-outbox fence would otherwise stop the lane at
+/// the first seeded ticket. The interactive mix emits no events, so both arms
+/// differ only in the retention configuration.
+pub const ONLINE_RETENTION_ENV: &str = "RIFFDB_APP_BASELINE_ONLINE_RETENTION";
 const MODULE_NAME: &str = "ticketdesk";
 const MODULE_VERSION: u64 = 1;
 const QUERY_SOURCES: &[(&str, &str)] = &[
@@ -614,11 +622,15 @@ impl RiffDbServerSession {
             .map_err(|_| RiffDbError::Io)?;
         write_protected_file(&idempotency_keys_path, IDEMPOTENCY_KEY_DOCUMENT)
             .map_err(|_| RiffDbError::Io)?;
-        write_protected_file(
-            &projections_config_path,
-            BOARD_PROJECTIONS_TOML.trim_start().as_bytes(),
-        )
-        .map_err(|_| RiffDbError::Io)?;
+        // The retention arms omit the board projection: the interactive load
+        // never queries it, and a declared columnar projection that is not
+        // populated in this process holds retention at its last frontier.
+        let daemon_config = match online_retention_arm()? {
+            None => BOARD_PROJECTIONS_TOML.trim_start().to_owned(),
+            Some(arm) => online_retention_section(arm).trim_start().to_owned(),
+        };
+        write_protected_file(&projections_config_path, daemon_config.as_bytes())
+            .map_err(|_| RiffDbError::Io)?;
         let generated = generate_bootstrap_credential(BOOTSTRAP_UNIX_MILLISECONDS, &SystemEntropy)
             .map_err(|_| RiffDbError::Bootstrap)?;
         write_protected_file(&bootstrap_path, generated.render_document().expose_secret())
@@ -739,6 +751,14 @@ impl RiffDbServerSession {
         // being dropped. `authoritative_table_inventory_v1` still opens the
         // database fresh, just read-only, so a fresh reader is still proven to
         // see the same rows.
+        if online_retention_arm()?.is_some() {
+            riffdb_storage_redb::benchmark_support::mark_all_outbox_events_delivered_v1(
+                &database_path,
+            )
+            .map_err(|error| RiffDbError::Server {
+                detail: format!("mark seeded outbox events delivered: {error}"),
+            })?;
+        }
         let table_inventory_before_measurement =
             riffdb_storage_redb::benchmark_support::authoritative_table_inventory_v1(
                 &database_path,
@@ -1532,6 +1552,58 @@ fn runner_grant_with_projected_read(
     .map_err(|_| RiffDbError::Bootstrap)
 }
 
+/// The online retention arm selected for this process, if any.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum OnlineRetentionArm {
+    Hold,
+    RetainSequences(u64),
+}
+
+fn online_retention_arm() -> Result<Option<OnlineRetentionArm>, RiffDbError> {
+    let invalid = || RiffDbError::Server {
+        detail: format!("{ONLINE_RETENTION_ENV} must be `hold` or a positive sequence count"),
+    };
+    match std::env::var(ONLINE_RETENTION_ENV) {
+        Err(std::env::VarError::NotPresent) => Ok(None),
+        Err(std::env::VarError::NotUnicode(_)) => Err(invalid()),
+        Ok(value) if value == "hold" => Ok(Some(OnlineRetentionArm::Hold)),
+        Ok(value) => value
+            .parse::<u64>()
+            .ok()
+            .filter(|count| *count > 0)
+            .map(|count| Some(OnlineRetentionArm::RetainSequences(count)))
+            .ok_or_else(invalid),
+    }
+}
+
+/// The daemon configuration section for the selected arm.
+fn online_retention_section(arm: OnlineRetentionArm) -> String {
+    match arm {
+        OnlineRetentionArm::Hold => "\n[maintenance.retention]\nhold = true\n".to_owned(),
+        OnlineRetentionArm::RetainSequences(count) => format!(
+            "\n[maintenance.retention]\nretained_sequences = {count}\nsequences_per_epoch = 256\n"
+        ),
+    }
+}
+
+fn ticketdesk_query_module(
+    contract: &riffdb_contract_ir::ContractBundle,
+) -> Result<QueryModule, RiffDbError> {
+    let queries = QUERY_SOURCES
+        .iter()
+        .map(|(name, source)| {
+            NamedQuerySource::new(*name, *source).map_err(|_| RiffDbError::Deploy)
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    let candidate = QueryModuleCandidate::new(
+        QueryModuleName::new(MODULE_NAME).map_err(|_| RiffDbError::Deploy)?,
+        QueryModuleVersion::new(MODULE_VERSION).ok_or(RiffDbError::Deploy)?,
+        queries,
+    )
+    .map_err(|_| RiffDbError::Deploy)?;
+    QueryModule::compile(candidate, contract).map_err(|_| RiffDbError::Deploy)
+}
+
 /// Resolves TicketStatus type/variant ids from the harness contract source.
 fn ticket_status_enum_ids() -> Result<TicketStatusEnumIds, RiffDbError> {
     let bundle = compile_contract_source(TICKETDESK_CONTRACT).map_err(|_| RiffDbError::Deploy)?;
@@ -1604,19 +1676,7 @@ fn compile_ticketdesk_application_role() -> Result<CompiledApplicationRole, Riff
     let manifest = ApplicationManifest::decode_canonical(TICKETDESK_MANIFEST.as_bytes())
         .map_err(|_| RiffDbError::Deploy)?;
     let contract = compile_contract_source(TICKETDESK_CONTRACT).map_err(|_| RiffDbError::Deploy)?;
-    let queries = QUERY_SOURCES
-        .iter()
-        .map(|(name, source)| {
-            NamedQuerySource::new(*name, *source).map_err(|_| RiffDbError::Deploy)
-        })
-        .collect::<Result<Vec<_>, _>>()?;
-    let candidate = QueryModuleCandidate::new(
-        QueryModuleName::new(MODULE_NAME).map_err(|_| RiffDbError::Deploy)?,
-        QueryModuleVersion::new(MODULE_VERSION).ok_or(RiffDbError::Deploy)?,
-        queries,
-    )
-    .map_err(|_| RiffDbError::Deploy)?;
-    let module = QueryModule::compile(candidate, &contract).map_err(|_| RiffDbError::Deploy)?;
+    let module = ticketdesk_query_module(&contract)?;
     compile_application_role(&manifest, APPLICATION_ROLE_NAME, None, &contract, &[module])
         .map_err(|_| RiffDbError::Deploy)
 }
@@ -3039,8 +3099,13 @@ pub struct BackgroundScrubObservation {
 /// (ADR-0182 section 7 evidence).
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct OnlineRetentionObservation {
+    /// The lane's closed state at shutdown.
     pub state: &'static str,
+    /// The closed name of the fence that last held the lane, or `none`.
+    pub fence: &'static str,
+    /// Advancing steps the lane committed in this process generation.
     pub steps: u64,
+    /// Sequences those steps removed.
     pub sequences: u64,
 }
 
@@ -3115,7 +3180,7 @@ fn parse_shutdown_release_evidence(
     }
     let parse_line = |line: &str| {
         let fields = parse_key_values(line, SHUTDOWN_RELEASE_PREFIX)?;
-        const EXPECTED_FIELDS: [&str; 11] = [
+        const EXPECTED_FIELDS: [&str; 12] = [
             "graph_storage_release",
             "post_graph_release",
             "columnar_activations",
@@ -3127,6 +3192,7 @@ fn parse_shutdown_release_evidence(
             "background_scrub_rows_per_second",
             // ADR-0182 section 7: the online retention lane's closed state.
             "online_retention",
+            "online_retention_fence",
             "online_retention_steps",
             "online_retention_sequences",
         ];
@@ -3169,6 +3235,22 @@ fn parse_shutdown_release_evidence(
                 ));
             }
         };
+        let retention_fence = match fields.get("online_retention_fence").map(String::as_str) {
+            Some("none") => "none",
+            Some("durable_application_head") => "durable_application_head",
+            Some("projection_durable_frontier") => "projection_durable_frontier",
+            Some("operator_hold") => "operator_hold",
+            Some("undelivered_outbox") => "undelivered_outbox",
+            Some("staged_migration") => "staged_migration",
+            Some("consumer_low_water") => "consumer_low_water",
+            Some("follower_low_water") => "follower_low_water",
+            Some("unbounded") => "unbounded",
+            _ => {
+                return Err(io::Error::other(
+                    "shutdown release online_retention_fence invalid",
+                ));
+            }
+        };
         Ok::<_, io::Error>((
             parse_count("columnar_activations")?,
             parse_count("columnar_population_passes")?,
@@ -3180,6 +3262,7 @@ fn parse_shutdown_release_evidence(
             },
             OnlineRetentionObservation {
                 state: retention_state,
+                fence: retention_fence,
                 steps: parse_count("online_retention_steps")?,
                 sequences: parse_count("online_retention_sequences")?,
             },
@@ -3295,6 +3378,22 @@ fn reap_child(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // req: STO-030
+    #[test]
+    fn online_retention_arms_render_the_daemon_retention_section() {
+        assert_eq!(
+            online_retention_section(OnlineRetentionArm::RetainSequences(64)),
+            "\n[maintenance.retention]\nretained_sequences = 64\nsequences_per_epoch = 256\n"
+        );
+        assert_eq!(
+            online_retention_section(OnlineRetentionArm::Hold),
+            "\n[maintenance.retention]\nhold = true\n"
+        );
+        // Only CreateTicket emits: the measured interactive mix adds no event.
+        let contract = compile_contract_source(TICKETDESK_CONTRACT).expect("contract");
+        assert_eq!(contract.schema().events().len(), 1);
+    }
 
     #[test]
     fn embedded_application_role_and_query_module_are_exact() {
@@ -3545,8 +3644,8 @@ mod tests {
         );
         assert_eq!(
             parse_shutdown_release_evidence(
-                "riffdb-shutdown-release-v1\tgraph_storage_release=1\tpost_graph_release=0\tcolumnar_activations=0\tcolumnar_population_passes=0\tbackground_scrub=complete\tbackground_scrub_rows=7\tbackground_scrub_total_us=9\tbackground_scrub_rows_per_second=11\tonline_retention=idle\tonline_retention_steps=3\tonline_retention_sequences=40\n\
-                 riffdb-shutdown-release-v1\tgraph_storage_release=1\tpost_graph_release=2\tcolumnar_activations=0\tcolumnar_population_passes=0\tbackground_scrub=complete\tbackground_scrub_rows=7\tbackground_scrub_total_us=9\tbackground_scrub_rows_per_second=11\tonline_retention=idle\tonline_retention_steps=3\tonline_retention_sequences=40\n"
+                "riffdb-shutdown-release-v1\tgraph_storage_release=1\tpost_graph_release=0\tcolumnar_activations=0\tcolumnar_population_passes=0\tbackground_scrub=complete\tbackground_scrub_rows=7\tbackground_scrub_total_us=9\tbackground_scrub_rows_per_second=11\tonline_retention=idle\tonline_retention_fence=none\tonline_retention_steps=3\tonline_retention_sequences=40\n\
+                 riffdb-shutdown-release-v1\tgraph_storage_release=1\tpost_graph_release=2\tcolumnar_activations=0\tcolumnar_population_passes=0\tbackground_scrub=complete\tbackground_scrub_rows=7\tbackground_scrub_total_us=9\tbackground_scrub_rows_per_second=11\tonline_retention=idle\tonline_retention_fence=none\tonline_retention_steps=3\tonline_retention_sequences=40\n"
             )
             .expect("columnar shutdown evidence"),
             (
@@ -3560,6 +3659,7 @@ mod tests {
                 },
                 OnlineRetentionObservation {
                     state: "idle",
+                    fence: "none",
                     steps: 3,
                     sequences: 40,
                 }

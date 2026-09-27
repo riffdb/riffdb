@@ -1,0 +1,239 @@
+#!/usr/bin/env bash
+# Paired ADR-0182 section 7 online-retention interference evidence for WP-761.
+# req: STO-030, PERF-007, PERF-008
+#
+# Runs the 32-client interactive mix with the online retention lane idle (a
+# configured hold) and active (a retained-sequence target), counterbalanced
+# idle/active/active/idle/idle/active on one serial host, and writes
+# summary-v1.json. The lane is acceptable only when the median active p95 is
+# within five percent of the median idle p95.
+set -euo pipefail
+export LC_ALL=C
+export TZ=UTC
+repo_root="$(git rev-parse --show-toplevel)"
+
+usage() {
+    printf '%s\n' \
+        'usage: benchmarks/run-wp761-interference OUTPUT_DIR [--retained-sequences N]' \
+        '         [--duration-secs N] [--warmup-secs N] [--scale smoke|full|production]' >&2
+    exit 2
+}
+
+(($# >= 1)) || usage
+output_dir="$1"
+shift
+retained_sequences=1024
+duration_secs=60
+warmup_secs=10
+scale=full
+while (($#)); do
+    case "$1" in
+        --retained-sequences) retained_sequences="${2:?}"; shift 2 ;;
+        --duration-secs) duration_secs="${2:?}"; shift 2 ;;
+        --warmup-secs) warmup_secs="${2:?}"; shift 2 ;;
+        --scale) scale="${2:?}"; shift 2 ;;
+        *) usage ;;
+    esac
+done
+[[ "$retained_sequences" =~ ^[1-9][0-9]*$ ]] || usage
+[[ "$duration_secs" =~ ^[1-9][0-9]*$ ]] || usage
+[[ "$warmup_secs" =~ ^[0-9]+$ ]] || usage
+[[ "$scale" == smoke || "$scale" == full || "$scale" == production ]] || usage
+if [[ -e "$output_dir" ]]; then
+    printf 'output directory already exists: %s\n' "$output_dir" >&2
+    exit 2
+fi
+mkdir -p "$output_dir"
+output_dir="$(cd "$output_dir" && pwd)"
+
+set +e
+"$repo_root/scripts/app-baseline-host-validity" --interval-ms 50 \
+    >"$output_dir/host-preflight.json"
+preflight_status=$?
+set -e
+if [[ "$preflight_status" != 0 && "$preflight_status" != 3 ]]; then
+    exit "$preflight_status"
+fi
+
+run_cell() {
+    local arm="$1" rep="$2" retention
+    case "$arm" in
+        idle) retention=hold ;;
+        active) retention="$retained_sequences" ;;
+    esac
+    RIFFDB_APP_BASELINE_ONLINE_RETENTION="$retention" \
+        "$repo_root/benchmarks/run-app-baseline" \
+        "--$scale" \
+        --load interactive \
+        --load-clients 32 \
+        --load-duration-secs "$duration_secs" \
+        --load-warmup-secs "$warmup_secs" \
+        --skip-postgres \
+        --reps 1 \
+        --output "$output_dir/${arm}-r${rep}.json" \
+        >"$output_dir/${arm}-r${rep}.log" 2>&1
+}
+
+# Counterbalance process and cache order while keeping the host strictly serial.
+run_cell idle 1
+run_cell active 1
+run_cell active 2
+run_cell idle 2
+run_cell idle 3
+run_cell active 3
+
+set +e
+"$repo_root/scripts/app-baseline-host-validity" --interval-ms 50 \
+    --baseline-report "$output_dir/host-preflight.json" \
+    >"$output_dir/host-postflight.json"
+postflight_status=$?
+set -e
+if [[ "$postflight_status" != 0 && "$postflight_status" != 3 ]]; then
+    exit "$postflight_status"
+fi
+
+python3 - "$output_dir" "$repo_root" "$0" "$scale" "$retained_sequences" \
+    "$duration_secs" "$warmup_secs" <<'PY'
+import hashlib
+import json
+import math
+import statistics
+import subprocess
+import sys
+from pathlib import Path
+
+root, repo = Path(sys.argv[1]), Path(sys.argv[2])
+runner = Path(sys.argv[3])
+scale, retained, duration, warmup = sys.argv[4], int(sys.argv[5]), int(sys.argv[6]), int(sys.argv[7])
+MAX_REPORT_BYTES = 16 * 1024 * 1024
+MAXIMUM_P95_RATIO = 1.05
+ORDER = ["idle", "active", "active", "idle", "idle", "active"]
+
+
+def digest(path: Path) -> str:
+    return hashlib.sha256(path.read_bytes()).hexdigest()
+
+
+def read_bounded(path: Path, maximum: int) -> bytes:
+    if not path.is_file() or path.is_symlink():
+        raise ValueError(f"evidence file is absent or linked: {path.name}")
+    data = path.read_bytes()
+    if not data or len(data) > maximum:
+        raise ValueError(f"evidence file has invalid size: {path.name}")
+    return data
+
+
+def cell(arm: str, rep: int) -> dict:
+    path = root / f"{arm}-r{rep}.json"
+    report = json.loads(read_bounded(path, MAX_REPORT_BYTES))
+    backends = report.get("backends", [])
+    if len(backends) != 1 or backends[0].get("clients") != 32:
+        raise ValueError(f"expected one 32-client riffdb backend: {path.name}")
+    backend = backends[0]
+    lane = backend.get("server_stage_evidence", {}).get("online_retention")
+    if not isinstance(lane, dict):
+        raise ValueError(f"online retention observation is absent: {path.name}")
+    return {
+        "arm": arm,
+        "rep": rep,
+        "report_sha256": digest(path),
+        "aggregate_p95_ns": int(backend["aggregate"]["latency"]["p95_ns"]),
+        "throughput_ops_s": int(backend["throughput_ops_s"]),
+        "lane": {
+            "state": lane["state"],
+            "fence": lane["fence"],
+            "steps": int(lane["steps"]),
+            "sequences": int(lane["sequences"]),
+        },
+    }
+
+
+cells = []
+seen = {"idle": 0, "active": 0}
+for arm in ORDER:
+    seen[arm] += 1
+    cells.append(cell(arm, seen[arm]))
+
+lane_valid = all(
+    (c["lane"]["state"] == "holding" and c["lane"]["steps"] == 0 and c["lane"]["sequences"] == 0)
+    if c["arm"] == "idle"
+    else (c["lane"]["steps"] > 0 and c["lane"]["sequences"] > 0 and c["lane"]["fence"] == "none")
+    for c in cells
+)
+
+
+def median(arm: str, metric: str) -> float:
+    return statistics.median(c[metric] for c in cells if c["arm"] == arm)
+
+
+idle_p95, active_p95 = median("idle", "aggregate_p95_ns"), median("active", "aggregate_p95_ns")
+idle_tp, active_tp = median("idle", "throughput_ops_s"), median("active", "throughput_ops_s")
+p95_ratio = active_p95 / idle_p95 if idle_p95 else math.inf
+throughput_ratio = active_tp / idle_tp if idle_tp else 0.0
+
+preflight = json.loads(read_bounded(root / "host-preflight.json", 1024 * 1024))
+postflight = json.loads(read_bounded(root / "host-postflight.json", 1024 * 1024))
+host_valid = (
+    preflight.get("schema") == "riffdb.app-baseline-host-validity/v2"
+    and postflight.get("schema") == "riffdb.app-baseline-host-validity/v2"
+    and preflight.get("valid") is True
+    and postflight.get("valid") is True
+    and postflight.get("baseline_report_sha256") == digest(root / "host-preflight.json")
+)
+commit = subprocess.run(
+    ["git", "-C", str(repo), "rev-parse", "HEAD"], check=True, capture_output=True, text=True
+).stdout.strip()
+dirty = subprocess.run(
+    ["git", "-C", str(repo), "status", "--porcelain", "--untracked-files=no"],
+    check=True,
+    capture_output=True,
+    text=True,
+).stdout.strip() != ""
+
+summary = {
+    "schema": "riffdb.wp-761-online-retention-interference/v1",
+    "qualified": host_valid and lane_valid and p95_ratio <= MAXIMUM_P95_RATIO and not dirty,
+    "source": {"commit": commit, "clean_tree": not dirty},
+    "method": {
+        "scale": scale,
+        "load": "interactive",
+        "clients": 32,
+        "duration_secs": duration,
+        "warmup_secs": warmup,
+        "repetitions": 3,
+        "order": ORDER,
+        "idle_arm": {"retention": "hold"},
+        "active_arm": {"retained_sequences": retained, "sequences_per_epoch": 256},
+        "maximum_p95_ratio": MAXIMUM_P95_RATIO,
+        "latency_gate_statistic": "median_of_repetition_aggregate_p95",
+        "percentiles": "fixed_log_linear_histogram_16_sub_buckets_per_octave",
+        "outbox": "seeded_events_marked_delivered_on_the_stopped_database_in_both_arms",
+        "projections": "board_projection_undeclared_in_both_arms",
+        "lane_observation_scope": "measured_process_generation",
+    },
+    "artifacts": {
+        "riffdbd_sha256": digest(repo / "target" / "release" / "riffdbd"),
+        "runner_sha256": digest(runner),
+    },
+    "host": {
+        "valid": host_valid,
+        "hardware_identity": preflight.get("hardware_identity"),
+        "logical_cpus": preflight.get("logical_cpus"),
+        "preflight_sha256": digest(root / "host-preflight.json"),
+        "postflight_sha256": digest(root / "host-postflight.json"),
+    },
+    "cells": cells,
+    "comparison": {
+        "idle_median_p95_ns": idle_p95,
+        "active_median_p95_ns": active_p95,
+        "p95_ratio": p95_ratio,
+        "idle_median_throughput_ops_s": idle_tp,
+        "active_median_throughput_ops_s": active_tp,
+        "throughput_ratio": throughput_ratio,
+        "lane_valid": lane_valid,
+    },
+}
+encoded = json.dumps(summary, indent=2, sort_keys=True) + "\n"
+(root / "summary-v1.json").write_text(encoded, encoding="utf-8")
+print(encoded, end="")
+PY

@@ -26,6 +26,7 @@ use std::time::Duration;
 
 use riffdb_errors::{DefectScope, IncidentIdSource, InternalError};
 use riffdb_observability::ServiceDiagnostics;
+use riffdb_storage_api::RetentionFenceBinding;
 use riffdb_storage_redb::{OnlineRetentionHold, OnlineRetentionStep, RedbOnlineRetentionLane};
 
 use crate::config::{RetentionConfig, RetentionTarget};
@@ -96,11 +97,40 @@ impl fmt::Display for RetentionLaneState {
     }
 }
 
+/// The closed name of the fence that last held the lane, or `none`. A
+/// binding name only: never a frontier, sequence, or count.
+pub(crate) const fn fence_name(binding: Option<RetentionFenceBinding>) -> &'static str {
+    match binding {
+        None => "none",
+        Some(RetentionFenceBinding::DurableApplicationHead) => "durable_application_head",
+        Some(RetentionFenceBinding::ProjectionDurableFrontier) => "projection_durable_frontier",
+        Some(RetentionFenceBinding::OperatorHold) => "operator_hold",
+        Some(RetentionFenceBinding::UndeliveredOutboxLowWater) => "undelivered_outbox",
+        Some(RetentionFenceBinding::StagedMigrationFrozenFrontier) => "staged_migration",
+        Some(RetentionFenceBinding::ConsumerLowWater) => "consumer_low_water",
+        Some(RetentionFenceBinding::FollowerLowWater) => "follower_low_water",
+        Some(RetentionFenceBinding::Unbounded) => "unbounded",
+    }
+}
+
+const FENCE_BINDINGS: [RetentionFenceBinding; 8] = [
+    RetentionFenceBinding::DurableApplicationHead,
+    RetentionFenceBinding::ProjectionDurableFrontier,
+    RetentionFenceBinding::OperatorHold,
+    RetentionFenceBinding::UndeliveredOutboxLowWater,
+    RetentionFenceBinding::StagedMigrationFrozenFrontier,
+    RetentionFenceBinding::ConsumerLowWater,
+    RetentionFenceBinding::FollowerLowWater,
+    RetentionFenceBinding::Unbounded,
+];
+
 /// The lane's bounded, redaction-safe work observation for the shutdown
-/// census: the closed state and counters only.
+/// census: the closed state, the closed name of the last binding fence, and
+/// counters only.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) struct RetentionLaneObservation {
     pub(crate) state: RetentionLaneState,
+    pub(crate) fence: Option<RetentionFenceBinding>,
     pub(crate) steps: u64,
     pub(crate) sequences: u64,
 }
@@ -109,6 +139,7 @@ pub(crate) struct RetentionLaneObservation {
 #[derive(Clone)]
 pub(crate) struct RetentionLaneStatus {
     state: Arc<AtomicU8>,
+    fence: Arc<AtomicU8>,
     steps: Arc<AtomicU64>,
     sequences: Arc<AtomicU64>,
 }
@@ -117,6 +148,7 @@ impl RetentionLaneStatus {
     fn new(state: RetentionLaneState) -> Self {
         Self {
             state: Arc::new(AtomicU8::new(state.code())),
+            fence: Arc::new(AtomicU8::new(0)),
             steps: Arc::new(AtomicU64::new(0)),
             sequences: Arc::new(AtomicU64::new(0)),
         }
@@ -132,6 +164,20 @@ impl RetentionLaneStatus {
             });
     }
 
+    fn note_fence(&self, binding: Option<RetentionFenceBinding>) {
+        let code = binding
+            .and_then(|binding| FENCE_BINDINGS.iter().position(|known| *known == binding))
+            .and_then(|index| u8::try_from(index + 1).ok())
+            .unwrap_or(0);
+        self.fence.store(code, Ordering::Release);
+    }
+
+    fn fence(&self) -> Option<RetentionFenceBinding> {
+        usize::from(self.fence.load(Ordering::Acquire))
+            .checked_sub(1)
+            .and_then(|index| FENCE_BINDINGS.get(index).copied())
+    }
+
     fn note_step(&self, sequences: u64) {
         let _ = self.steps.fetch_add(1, Ordering::AcqRel);
         let _ = self.sequences.fetch_add(sequences, Ordering::AcqRel);
@@ -144,6 +190,7 @@ impl RetentionLaneStatus {
     pub(crate) fn observation(&self) -> RetentionLaneObservation {
         RetentionLaneObservation {
             state: self.state(),
+            fence: self.fence(),
             steps: self.steps.load(Ordering::Acquire),
             sequences: self.sequences.load(Ordering::Acquire),
         }
@@ -317,6 +364,7 @@ fn run_lane(
         }
         let pause = match lane.step(retain, budget) {
             Ok(OnlineRetentionStep::Advanced { sequences, .. }) => {
+                status.note_fence(None);
                 status.set(RetentionLaneState::Advancing);
                 status.note_step(sequences);
                 // Queue behind any writer that arrived during the step.
@@ -326,10 +374,12 @@ fn run_lane(
             Ok(OnlineRetentionStep::Held(
                 OnlineRetentionHold::TargetReached | OnlineRetentionHold::RowBoundary,
             )) => {
+                status.note_fence(None);
                 status.set(RetentionLaneState::Idle);
                 true
             }
-            Ok(OnlineRetentionStep::Held(OnlineRetentionHold::Fenced(_))) => {
+            Ok(OnlineRetentionStep::Held(OnlineRetentionHold::Fenced(binding))) => {
+                status.note_fence(Some(binding));
                 status.set(RetentionLaneState::Fenced);
                 true
             }
