@@ -1,0 +1,156 @@
+{
+  "schema": "riffdb.wp810-native-result/v1",
+  "date": "2026-09-27",
+  "status": "Replacement fully validated. Native delay is file writeback and device flush; no mitigation or closure claim.",
+  "source_revision": "31aeab76fa7c41b5d3a05d191905fd8b53e43dd2",
+  "daemon_sha256": "44858c2ed67bf5ca23060c918a8bfe78ddc7646478b1923235434ea6468e76c8",
+  "runner_sha256": "b96e421d5fdc115cd6ff171ef604800ed4dd10e0ff047c7e6437a352487fd5fe",
+  "host_specifications": {
+    "cpu": "AMD EPYC 9B14",
+    "logical_cpus": 8,
+    "kernel": "7.0.0-1011-gcp",
+    "filesystem": "ext4",
+    "bpftrace": "0.25.0",
+    "required_accelerators_verified": true
+  },
+  "workload": {
+    "dataset": "full",
+    "clients": 32,
+    "load": "write_only",
+    "warmup_seconds": 15,
+    "measurement_seconds": 90,
+    "archive": "disabled"
+  },
+  "application": {
+    "coverage": {
+      "final": 1,
+      "groups": 21149,
+      "checkpoints": 106,
+      "io": 9550472,
+      "reserved_groups": 21149,
+      "reserved_checkpoints": 106,
+      "reserved_io": 9550472,
+      "dropped_groups": 0,
+      "dropped_checkpoints": 0,
+      "dropped_io": 0
+    },
+    "populations": {
+      "requests": 285886,
+      "measured_groups": 18097,
+      "measured_flushes": 18029
+    },
+    "outcomes": {
+      "conflict": 0,
+      "error": 0,
+      "success": 285886,
+      "unavailable": 0
+    },
+    "raw_percentiles_ns": {
+      "p50_ns": 8071070,
+      "p95_ns": 10741200,
+      "p99_ns": 90663720
+    },
+    "throughput_ops_s": 3176,
+    "checkpoint_census": {
+      "failures": 0,
+      "installed": 105,
+      "materialized": 106,
+      "max_bytes": 18238392,
+      "max_transitions": 3326,
+      "min_bytes": 16777291,
+      "min_transitions": 3035,
+      "scope": "actual_async_checkpoint_selections_before_graceful_close",
+      "selected_bytes": 1835377974,
+      "selected_commands": 332630,
+      "selected_transitions": 332630,
+      "starts": 106,
+      "trigger_counts_nonexclusive": {
+        "bytes": 106,
+        "physical": 0,
+        "reanchor": 0,
+        "transitions": 0
+      }
+    },
+    "independent_writer_wall": {
+      "iterations": 21149,
+      "span_ns": 105020576518,
+      "iteration_sum_ns": 105001998358,
+      "span_minus_iterations_ns": 18578160,
+      "stage_residual_ns": 8816510,
+      "busy_idle_undercount_ns": 252240518
+    },
+    "values_scope": "One instrumented diagnostic; observer overhead unmeasured and no comparative performance verdict."
+  },
+  "validation": {
+    "preflight_valid": true,
+    "postflight_valid": true,
+    "kernel_stderr_bytes": 0,
+    "complete_native_counts_and_containment": true,
+    "complete_application_analysis": true
+  },
+  "kernel_log_bytes": 70272268,
+  "native_evidence_digests": {
+    "kernel.log": "d15df2c4c0f07e399711a30f41147300e1547c40a14d28ff5451789ff8a8db3a",
+    "kernel.stderr": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "kernel-analysis.json": "b352be9a98016d3a9d3f48bcab8cab28102ff92ba7cdd4f84a29e75cbf751ac3",
+    "kernel_trace.bt": "03772852fd588f9ddd82096437d981d89c9c83be86b850bc3c3218c1969830df",
+    "run_kernel.py": "a1097b124149157b6d6321db561655051cd8e66a75904ebd8192dec735b6e6cd",
+    "measurement-protocol.json": "0b9289900c0b46afc9c29b5fe7423b3847f76cde2bc0328408adad600f710434"
+  },
+  "application_evidence_digests": {
+    "run.log": "2db9ceb3137e2fefb32c0ee42184dec5b73fbf08ed66d2902bc961fb7a4d7077",
+    "report.json": "73ac111d19be0f09c29f215a66fca682d5d1cc1a2d3d6999e61b6f5ec118b4e8",
+    "materialization-analysis.json": "36d3ab0dc71e6e9434b2a3b1b77de41f18bf002b019f18d37ac3de247a0ced0d",
+    "raw/raw-request-tail.json": "9655ebd94d0d73cfabe9480aaeaea0caf4f4c2677dabfc18557fe8f1a5ca0c2f",
+    "joined-requests.json": "5cc97c2f9a6312d9f9ee0043993588de261d8517c36baae44ad2b82fed9fa7eb",
+    "preflight.json": "bd06dde3306f4b9cd76a2c1fc3626969ce8a60da62d7f217c79860f9b5250e22",
+    "postflight.json": "1ba3d29dea5e709593da9d2fc358029e5eb42db12eadf6fb8c6fae9e4be0ccc5"
+  },
+  "failed_attempt": {
+    "status": "Invalid; bpftrace process aborted, no complete cell or footer.",
+    "observed_stderr": "std::bad_alloc",
+    "kernel_log_bytes": 54353065,
+    "repair": "Remove optional stack capture/symbolication; retain all named native subcall timings and block/jbd2 events. No application change or retry without tracer qualification.",
+    "cause_limit": "Last retained subcall precedes stack output. Stack formatting is a suspected failure path, not a proved allocation root cause.",
+    "retention": {
+      "verified_at": "2026-09-27T02:35:43.804005+00:00",
+      "files": 32,
+      "bytes": 286687471,
+      "archive_sha256": "46b73cc4428a46112be6bc123fdbd5556080dce96e9e5d59dcd6d18a8dcc8d96",
+      "all_match": true
+    },
+    "cleanup": {
+      "cleaned_at": "2026-09-27T02:36:06.633606+00:00",
+      "isolation_restored": true,
+      "task_processes_remaining": false,
+      "remote_root_removed": true,
+      "remote_archive_removed": true,
+      "removed_apparent_bytes": 7628347831,
+      "exclusive_grant_still_active": true
+    }
+  },
+  "retention": {
+    "verified_at": "2026-09-27T02:43:14.028301+00:00",
+    "files": 40,
+    "bytes": 937512489,
+    "archive_sha256": "7d936ca76f22bfbfbbdb19dec143dc5201c38a56eb06e4be7ccbb45718955d78",
+    "all_match": true
+  },
+  "cleanup": {
+    "cleaned_at": "2026-09-27T02:44:43.529296+00:00",
+    "isolation_restored": true,
+    "task_processes_remaining": false,
+    "remote_root_removed": true,
+    "remote_archive_removed": true,
+    "removed_apparent_bytes": 1405422530,
+    "exclusive_grant_still_active": true
+  },
+  "next_implementation_question": "Test bounded checkpoint writeback before the final commit fence, preserving the final sync and every authority, installation, recovery and capacity invariant.",
+  "checks": {
+    "scoped_acceptance_passed": 5,
+    "evidence_tests_passed": 12,
+    "measured_join_reproduces_byte_for_byte": true,
+    "acceptance_log_sha256": "32516202caef40fc1352e9baa458054b90d5fa2c930398dd899ff406ea005529",
+    "test_log_sha256": "ddbc5bf15c26bf2c15a86c04aa1c4eb9dbb31a4d245c800b95a5282be426a476"
+  }
+}

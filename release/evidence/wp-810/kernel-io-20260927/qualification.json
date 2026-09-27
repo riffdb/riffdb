@@ -1,0 +1,31 @@
+{
+  "status": "40,000 native sync calls verified after removing optional stack symbolication.",
+  "syncs_by_role": [
+    20000,
+    20000
+  ],
+  "native_event_counts": {
+    "7": 40000,
+    "4": 40000,
+    "11": 40000,
+    "3": 40000,
+    "12": 40000,
+    "8": 40000,
+    "13": 40000,
+    "2": 40000,
+    "6": 40000,
+    "5": 40000,
+    "1": 40000,
+    "14": 40000,
+    "15": 170781,
+    "16": 210804
+  },
+  "stderr_bytes": 0,
+  "trace_bytes": 37371195,
+  "trace_sha256": "25580bcc51008354d3854f61f938078cdf057b211a4c9f4bc940cc2d010d8617",
+  "tests": {
+    "passed": 9,
+    "failed": 0
+  },
+  "scope": "Collector retention/containment proof only; no performance conclusion. Timing values intentionally omitted."
+}

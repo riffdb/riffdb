@@ -1,0 +1,68 @@
+// req: PERF-018
+// Observation only. Numeric records and bounded maps; never change an I/O call.
+config = { max_map_keys=4096; perf_rb_pages=4096; print_maps_on_exit=false; }
+BEGIN { printf("HEADER\t1\t%llu\n",nsecs); }
+tracepoint:syscalls:sys_enter_fdatasync,tracepoint:syscalls:sys_enter_fsync
+/comm == "riffdb-journal" || comm == "riffdb-checkpoi"/
+{
+  if (@start[tid]) { printf("ERROR\tnested_sync\t%u\n",tid); }
+  @start[tid]=nsecs; @seq[tid]=@seq[tid]+1;
+  @role[tid]=comm == "riffdb-journal" ? 1 : 2;
+  @fd[tid]=args.fd; @dev[tid]=0; @ino[tid]=0;
+  @counts[1]=count();
+}
+tracepoint:ext4:ext4_sync_file_enter /@start[tid]/
+{ @dev[tid]=args.dev; @ino[tid]=args.ino; @ext_start[tid]=nsecs; @counts[3]=count(); }
+tracepoint:ext4:ext4_sync_file_exit /@start[tid]/
+{
+  printf("EXT4\t%u\t%u\t%llu\t%llu\t%llu\t%u\t%llu\t%d\n",pid,tid,@seq[tid],@ext_start[tid],nsecs,args.dev,args.ino,args.ret);
+  $deleted = delete(@ext_start[tid]); @counts[4]=count();
+}
+fentry:vmlinux:file_write_and_wait_range /@start[tid]/
+{ @file_start[tid]=nsecs; @file_stack[tid]=kstack(20); @counts[5]=count(); }
+fexit:vmlinux:file_write_and_wait_range /@file_start[tid]/
+{
+  $end=nsecs;
+  printf("SUB\t%u\t%u\t%llu\t1\t%llu\t%llu\t%d\t0\n",pid,tid,@seq[tid],@file_start[tid],$end,retval);
+  if ($end-@file_start[tid] > 10000000) { printf("STACK\t%u\t%u\t%llu\t1\n%sENDSTACK\n",pid,tid,@seq[tid],@file_stack[tid]); }
+  $deleted = delete(@file_start[tid]); $deleted = delete(@file_stack[tid]); @counts[6]=count();
+}
+fentry:vmlinux:jbd2_log_wait_commit /@start[tid]/
+{ @jbd_start[tid]=nsecs; @jbd_tx[tid]=args.tid; @jbd_stack[tid]=kstack(20); @counts[7]=count(); }
+fexit:vmlinux:jbd2_log_wait_commit /@jbd_start[tid]/
+{
+  $end=nsecs;
+  printf("SUB\t%u\t%u\t%llu\t2\t%llu\t%llu\t%d\t%u\n",pid,tid,@seq[tid],@jbd_start[tid],$end,retval,@jbd_tx[tid]);
+  if ($end-@jbd_start[tid] > 10000000) { printf("STACK\t%u\t%u\t%llu\t2\n%sENDSTACK\n",pid,tid,@seq[tid],@jbd_stack[tid]); }
+  $deleted = delete(@jbd_start[tid]); $deleted = delete(@jbd_tx[tid]); $deleted = delete(@jbd_stack[tid]); @counts[8]=count();
+}
+fentry:vmlinux:blkdev_issue_flush /@start[tid]/
+{ @flush_start[tid]=nsecs; @flush_stack[tid]=kstack(20); @counts[9]=count(); }
+fexit:vmlinux:blkdev_issue_flush /@flush_start[tid]/
+{
+  $end=nsecs;
+  printf("SUB\t%u\t%u\t%llu\t3\t%llu\t%llu\t%d\t0\n",pid,tid,@seq[tid],@flush_start[tid],$end,retval);
+  if ($end-@flush_start[tid] > 10000000) { printf("STACK\t%u\t%u\t%llu\t3\n%sENDSTACK\n",pid,tid,@seq[tid],@flush_stack[tid]); }
+  $deleted = delete(@flush_start[tid]); $deleted = delete(@flush_stack[tid]); @counts[10]=count();
+}
+tracepoint:syscalls:sys_exit_fdatasync,tracepoint:syscalls:sys_exit_fsync /@start[tid]/
+{
+  printf("SYNC\t%u\t%u\t%u\t%u\t%llu\t%llu\t%llu\t%d\t%u\t%llu\n",pid,tid,@role[tid],@fd[tid],@seq[tid],@start[tid],nsecs,args.ret,@dev[tid],@ino[tid]);
+  $deleted = delete(@start[tid]); $deleted = delete(@role[tid]); $deleted = delete(@fd[tid]); $deleted = delete(@dev[tid]); $deleted = delete(@ino[tid]); @counts[2]=count();
+}
+tracepoint:jbd2:jbd2_start_commit /args.dev >> 20 == 259/
+{ printf("JBD\t1\t%llu\t%u\t%u\n",nsecs,args.dev,args.transaction); @counts[11]=count(); }
+tracepoint:jbd2:jbd2_commit_flushing /args.dev >> 20 == 259/
+{ printf("JBD\t2\t%llu\t%u\t%u\n",nsecs,args.dev,args.transaction); @counts[12]=count(); }
+tracepoint:jbd2:jbd2_commit_logging /args.dev >> 20 == 259/
+{ printf("JBD\t3\t%llu\t%u\t%u\n",nsecs,args.dev,args.transaction); @counts[13]=count(); }
+tracepoint:jbd2:jbd2_end_commit /args.dev >> 20 == 259/
+{ printf("JBD\t4\t%llu\t%u\t%u\n",nsecs,args.dev,args.transaction); @counts[14]=count(); }
+tracepoint:block:block_rq_issue /args.dev >> 20 == 259/
+{ printf("BLOCK\t1\t%llu\t%u\t%llu\t%u\t%s\t0\n",nsecs,args.dev,args.sector,args.nr_sector,str(args.rwbs)); @counts[15]=count(); }
+tracepoint:block:block_rq_complete /args.dev >> 20 == 259/
+{ printf("BLOCK\t2\t%llu\t%u\t%llu\t%u\t%s\t%d\n",nsecs,args.dev,args.sector,args.nr_sector,str(args.rwbs),args.error); @counts[16]=count(); }
+END {
+ printf("FOOTER\t1\t%llu\n",nsecs);
+ print(@counts);
+}

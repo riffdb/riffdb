@@ -3,8 +3,8 @@
 **Draft: implementation and correctness evidence are ready; the shared-delay
 disposition and human acceptance remain outstanding.** This document does not
 request closure or replace the package's exit gate. The replacement diagnostic
-now has complete backend-I/O coverage and identifies concurrent journal and
-checkpoint sync calls; it does not establish resolution of the shared tail.
+now has complete backend-I/O and native-call coverage. Journal sync waits are
+in file writeback and device flush; resolution of the shared tail is still open.
 
 ## Scope and source
 
@@ -78,7 +78,7 @@ No durable-format or protocol golden fixtures change.
 | PERF-018: attributable measurement evidence | The six-cell comparison retains exact sources, binaries, raw percentiles, host validity, checkpoint counts and signed wall remainders. It is a bounded comparison, not an alpha release sweep. |
 | Standalone finding | [Performance report](../performance/wp-810-checkpoint-journal-tail.md), with retained archive-disabled trace and instrument limitations. |
 | Current correctness qualification | `release/evidence/wp-810/index-warming-qualification-20260926.json`: full CI, 23 coordinator tests, 20 diagnostic tests and all 19,220 seed commands pass. Earlier failed invocations remain retained. |
-| Reviewed shared-delay resolution | **Not met.** The common-case improvement does not establish reduction of the shared acknowledgement tail. The replacement diagnostic validates complete coverage and identifies journal sync overlapping checkpoint commit sync. Device causation, resolution and maintainer disposition remain outstanding. |
+| Reviewed shared-delay resolution | **Not met.** Native timing now locates measured slow journal sync time in file writeback (80.37%) and device flush (19.61%), with zero JBD2 commit-wait time and 0.02% residual. A measured mitigation and maintainer disposition remain outstanding. |
 | Final human implementation/fixture review and closure | **Not met.** No acceptance or completion is recorded. |
 
 ## Performance evidence and its limits
@@ -132,6 +132,16 @@ single-cell observer timings do not replace the earlier paired comparison.
 The [performance report](../performance/wp-810-checkpoint-journal-tail.md#complete-replacement-journal-sync-overlaps-checkpoint-commit-sync)
 records the full limits and signed wall remainders. C3D is released and the
 task-owned remote build/data directories are removed.
+
+The subsequent kernel diagnostic in `release/evidence/wp-810/kernel-io-20260927/`
+joins all 21,074 native journal calls to their application flushes and selects
+18,029 measured flushes. Its longest witness is 161.775 ms of native sync
+inside a 161.970 ms receipt wait. File writeback and device flush account for
+99.98% of the native time in the measured syncs above 10 ms; ext4 journal
+transaction-commit wait accounts for zero. All application/native checks pass.
+An earlier bpftrace allocation failure is retained separately; optional stack
+formatting was removed and the collector stress-qualified before replacement.
+This supplies the basis for one bounded-writeback prototype, not a closure.
 
 ## Remaining completion actions
 

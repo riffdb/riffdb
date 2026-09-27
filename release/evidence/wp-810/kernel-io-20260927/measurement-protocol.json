@@ -1,0 +1,40 @@
+{
+  "schema": "riffdb.wp810-kernel-protocol/v1",
+  "authorized_at": "2026-09-27T02:17:42+00:00",
+  "exclusive_until_revoked": true,
+  "source_revision": "31aeab76fa7c41b5d3a05d191905fd8b53e43dd2",
+  "purpose": "Replacement after retained bpftrace std::bad_alloc failure. Discriminate file-writeback, ext4 commit wait and device-flush time inside native sync calls; no automatic retry or mitigation verdict.",
+  "binaries": "Retain and verify the exact previously fully qualified daemon and runner; no rebuild and no integration of later main into this diagnostic.",
+  "workload": {
+    "dataset": "full",
+    "clients": 32,
+    "load": "write_only",
+    "warmup_seconds": 15,
+    "measurement_seconds": 90,
+    "archive": "disabled"
+  },
+  "bounds": {
+    "cell_deadline_seconds": 900,
+    "task_deadline_seconds": 1800,
+    "kernel_log_bytes": 536870912,
+    "kernel_records": 4000000,
+    "kernel_syncs": 100000,
+    "map_keys": 4096,
+    "ring_pages": 4096
+  },
+  "validation": [
+    "All syscall entry/exit and nested-stage counts reconcile with retained records.",
+    "All nested intervals lie within matching file sync. Inclusive intervals use union-based residuals.",
+    "Any warning, dropped record, missing footer, failed I/O, bad host validity or application trace overflow refuses attribution.",
+    "Block issue and completion populations are independent; no guessed request pairing.",
+    "Native timing is not an uninstrumented latency comparison."
+  ],
+  "optional_kernel_stack_capture": false,
+  "tracer_stress_qualification": {
+    "native_sync_calls": 40000,
+    "all_entry_exit_and_retention_counts_match": true,
+    "stderr_empty": true,
+    "analysis_sha256": "bb464c9a4fab088f3b99e7f8443dd6ad9671d06e7177f4f15cb551bfd7437468",
+    "trace_sha256": "25580bcc51008354d3854f61f938078cdf057b211a4c9f4bc940cc2d010d8617"
+  }
+}

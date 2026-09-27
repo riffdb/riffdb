@@ -1,0 +1,14 @@
+{
+  "purpose": "Resolve the native waiting resource before choosing one mitigation.",
+  "comparisons": [
+    "Kernel native sync intervals nested under file_write_and_wait_range, jbd2_log_wait_commit, and blkdev_issue_flush; report their union and unattributed remainder.",
+    "Ext4 device/inode and jbd2 transaction identities for journal and checkpoint calls.",
+    "Existing application trace retains first receipt waits, queues, checkpoints and exact request sequences independently of kernel clock.",
+    "Only join kernel calls to application flushes when event population/order and enclosing intervals establish an unambiguous mapping. Never assume an offset or subtract clocks across client/server processes."
+  ],
+  "limits": [
+    "A single heavily observed diagnostic does not demonstrate a mitigation or a new performance baseline.",
+    "Block events have no retained request pointer. Preserve independent issue/completion counts; do not invent a one-to-one pairing across partial completions or boundary events.",
+    "Additional kernel work inside an unexplained residual remains unattributed."
+  ]
+}

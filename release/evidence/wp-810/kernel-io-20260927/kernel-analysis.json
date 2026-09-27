@@ -1,0 +1,1280 @@
+{
+  "schema": "riffdb.wp810-kernel-io/v1",
+  "counts": {
+    "8": 124,
+    "7": 124,
+    "13": 10830,
+    "12": 10830,
+    "11": 10830,
+    "14": 10830,
+    "9": 21396,
+    "10": 21396,
+    "6": 21520,
+    "1": 21520,
+    "2": 21520,
+    "3": 21520,
+    "5": 21520,
+    "4": 21520,
+    "16": 604354,
+    "15": 620277
+  },
+  "block_counts": [
+    {
+      "stage": 1,
+      "flags": "DS",
+      "count": 97
+    },
+    {
+      "stage": 1,
+      "flags": "FF",
+      "count": 32521
+    },
+    {
+      "stage": 1,
+      "flags": "W",
+      "count": 2180
+    },
+    {
+      "stage": 1,
+      "flags": "WFSM",
+      "count": 10843
+    },
+    {
+      "stage": 1,
+      "flags": "WM",
+      "count": 129
+    },
+    {
+      "stage": 1,
+      "flags": "WS",
+      "count": 562933
+    },
+    {
+      "stage": 1,
+      "flags": "WSM",
+      "count": 11574
+    },
+    {
+      "stage": 2,
+      "flags": "DS",
+      "count": 97
+    },
+    {
+      "stage": 2,
+      "flags": "FF",
+      "count": 32518
+    },
+    {
+      "stage": 2,
+      "flags": "W",
+      "count": 2173
+    },
+    {
+      "stage": 2,
+      "flags": "WFSM",
+      "count": 21673
+    },
+    {
+      "stage": 2,
+      "flags": "WM",
+      "count": 129
+    },
+    {
+      "stage": 2,
+      "flags": "WS",
+      "count": 536253
+    },
+    {
+      "stage": 2,
+      "flags": "WSM",
+      "count": 11511
+    }
+  ],
+  "roles": [
+    {
+      "role": 1,
+      "thresholds": [
+        {
+          "threshold_ms": 0,
+          "count": 21074,
+          "duration_ns": 31722845012,
+          "subcall_union_ns": {
+            "1": 27103878191,
+            "2": 0,
+            "3": 4402704682
+          },
+          "unattributed_ns": 216262139
+        },
+        {
+          "threshold_ms": 10,
+          "count": 237,
+          "duration_ns": 17439676725,
+          "subcall_union_ns": {
+            "1": 14379752385,
+            "2": 0,
+            "3": 3056211680
+          },
+          "unattributed_ns": 3712660
+        },
+        {
+          "threshold_ms": 50,
+          "count": 177,
+          "duration_ns": 15711608695,
+          "subcall_union_ns": {
+            "1": 12666325026,
+            "2": 0,
+            "3": 3042390659
+          },
+          "unattributed_ns": 2893010
+        },
+        {
+          "threshold_ms": 100,
+          "count": 57,
+          "duration_ns": 7299788502,
+          "subcall_union_ns": {
+            "1": 5804179572,
+            "2": 0,
+            "3": 1494634210
+          },
+          "unattributed_ns": 974720
+        }
+      ],
+      "longest": [
+        {
+          "pid": 423854,
+          "tid": 424075,
+          "sequence": 118,
+          "role": 1,
+          "fd": 62,
+          "start_ns": 699855197081818,
+          "end_ns": 699855358856658,
+          "dev": 271581185,
+          "inode": 758162,
+          "duration_ns": 161774840,
+          "subcalls": [
+            {
+              "stage": 1,
+              "start_ns": 699855197086888,
+              "end_ns": 699855358779958,
+              "transaction": 0
+            },
+            {
+              "stage": 3,
+              "start_ns": 699855358782258,
+              "end_ns": 699855358850368,
+              "transaction": 0
+            }
+          ],
+          "unattributed_ns": 13660
+        },
+        {
+          "pid": 423854,
+          "tid": 423993,
+          "sequence": 107,
+          "role": 1,
+          "fd": 62,
+          "start_ns": 699815902947609,
+          "end_ns": 699816057348279,
+          "dev": 271581185,
+          "inode": 758157,
+          "duration_ns": 154400670,
+          "subcalls": [
+            {
+              "stage": 1,
+              "start_ns": 699815902954099,
+              "end_ns": 699815923690939,
+              "transaction": 0
+            },
+            {
+              "stage": 3,
+              "start_ns": 699815923700639,
+              "end_ns": 699816057341049,
+              "transaction": 0
+            }
+          ],
+          "unattributed_ns": 23420
+        },
+        {
+          "pid": 423854,
+          "tid": 423991,
+          "sequence": 107,
+          "role": 1,
+          "fd": 62,
+          "start_ns": 699814900660000,
+          "end_ns": 699815054145970,
+          "dev": 271581185,
+          "inode": 758162,
+          "duration_ns": 153485970,
+          "subcalls": [
+            {
+              "stage": 1,
+              "start_ns": 699814900668870,
+              "end_ns": 699814914374030,
+              "transaction": 0
+            },
+            {
+              "stage": 3,
+              "start_ns": 699814914378580,
+              "end_ns": 699815054137120,
+              "transaction": 0
+            }
+          ],
+          "unattributed_ns": 22270
+        },
+        {
+          "pid": 423854,
+          "tid": 423977,
+          "sequence": 108,
+          "role": 1,
+          "fd": 62,
+          "start_ns": 699808192791647,
+          "end_ns": 699808343971567,
+          "dev": 271581185,
+          "inode": 758157,
+          "duration_ns": 151179920,
+          "subcalls": [
+            {
+              "stage": 1,
+              "start_ns": 699808192796687,
+              "end_ns": 699808220468127,
+              "transaction": 0
+            },
+            {
+              "stage": 3,
+              "start_ns": 699808220474637,
+              "end_ns": 699808343964597,
+              "transaction": 0
+            }
+          ],
+          "unattributed_ns": 18520
+        },
+        {
+          "pid": 423854,
+          "tid": 423979,
+          "sequence": 111,
+          "role": 1,
+          "fd": 62,
+          "start_ns": 699809171671476,
+          "end_ns": 699809321431036,
+          "dev": 271581185,
+          "inode": 758162,
+          "duration_ns": 149759560,
+          "subcalls": [
+            {
+              "stage": 1,
+              "start_ns": 699809171676946,
+              "end_ns": 699809209242496,
+              "transaction": 0
+            },
+            {
+              "stage": 3,
+              "start_ns": 699809209250206,
+              "end_ns": 699809321421426,
+              "transaction": 0
+            }
+          ],
+          "unattributed_ns": 22790
+        },
+        {
+          "pid": 423854,
+          "tid": 423997,
+          "sequence": 108,
+          "role": 1,
+          "fd": 62,
+          "start_ns": 699817869368957,
+          "end_ns": 699818018904457,
+          "dev": 271581185,
+          "inode": 758157,
+          "duration_ns": 149535500,
+          "subcalls": [
+            {
+              "stage": 1,
+              "start_ns": 699817869376087,
+              "end_ns": 699817967456067,
+              "transaction": 0
+            },
+            {
+              "stage": 3,
+              "start_ns": 699817967460967,
+              "end_ns": 699818018897457,
+              "transaction": 0
+            }
+          ],
+          "unattributed_ns": 19030
+        },
+        {
+          "pid": 423854,
+          "tid": 423985,
+          "sequence": 112,
+          "role": 1,
+          "fd": 62,
+          "start_ns": 699811957171243,
+          "end_ns": 699812105239563,
+          "dev": 271581185,
+          "inode": 758157,
+          "duration_ns": 148068320,
+          "subcalls": [
+            {
+              "stage": 1,
+              "start_ns": 699811957175383,
+              "end_ns": 699812034900263,
+              "transaction": 0
+            },
+            {
+              "stage": 3,
+              "start_ns": 699812034909713,
+              "end_ns": 699812105232433,
+              "transaction": 0
+            }
+          ],
+          "unattributed_ns": 20720
+        },
+        {
+          "pid": 423854,
+          "tid": 423999,
+          "sequence": 105,
+          "role": 1,
+          "fd": 62,
+          "start_ns": 699818796982166,
+          "end_ns": 699818944639976,
+          "dev": 271581185,
+          "inode": 758162,
+          "duration_ns": 147657810,
+          "subcalls": [
+            {
+              "stage": 1,
+              "start_ns": 699818796986626,
+              "end_ns": 699818905299336,
+              "transaction": 0
+            },
+            {
+              "stage": 3,
+              "start_ns": 699818905303636,
+              "end_ns": 699818944633456,
+              "transaction": 0
+            }
+          ],
+          "unattributed_ns": 15280
+        },
+        {
+          "pid": 423854,
+          "tid": 423989,
+          "sequence": 104,
+          "role": 1,
+          "fd": 62,
+          "start_ns": 699813864257781,
+          "end_ns": 699814009757011,
+          "dev": 271581185,
+          "inode": 758157,
+          "duration_ns": 145499230,
+          "subcalls": [
+            {
+              "stage": 1,
+              "start_ns": 699813864263441,
+              "end_ns": 699813939289801,
+              "transaction": 0
+            },
+            {
+              "stage": 3,
+              "start_ns": 699813939299951,
+              "end_ns": 699814009749211,
+              "transaction": 0
+            }
+          ],
+          "unattributed_ns": 23610
+        },
+        {
+          "pid": 423854,
+          "tid": 424001,
+          "sequence": 102,
+          "role": 1,
+          "fd": 62,
+          "start_ns": 699819743446345,
+          "end_ns": 699819887710095,
+          "dev": 271581185,
+          "inode": 758157,
+          "duration_ns": 144263750,
+          "subcalls": [
+            {
+              "stage": 1,
+              "start_ns": 699819743449815,
+              "end_ns": 699819790510495,
+              "transaction": 0
+            },
+            {
+              "stage": 3,
+              "start_ns": 699819790514855,
+              "end_ns": 699819887702615,
+              "transaction": 0
+            }
+          ],
+          "unattributed_ns": 15310
+        },
+        {
+          "pid": 423854,
+          "tid": 424041,
+          "sequence": 105,
+          "role": 1,
+          "fd": 62,
+          "start_ns": 699838926638275,
+          "end_ns": 699839069759625,
+          "dev": 271581185,
+          "inode": 758157,
+          "duration_ns": 143121350,
+          "subcalls": [
+            {
+              "stage": 1,
+              "start_ns": 699838926640745,
+              "end_ns": 699839069669235,
+              "transaction": 0
+            },
+            {
+              "stage": 3,
+              "start_ns": 699839069677305,
+              "end_ns": 699839069753225,
+              "transaction": 0
+            }
+          ],
+          "unattributed_ns": 16940
+        },
+        {
+          "pid": 423854,
+          "tid": 423987,
+          "sequence": 103,
+          "role": 1,
+          "fd": 62,
+          "start_ns": 699812857526222,
+          "end_ns": 699813000177542,
+          "dev": 271581185,
+          "inode": 758162,
+          "duration_ns": 142651320,
+          "subcalls": [
+            {
+              "stage": 1,
+              "start_ns": 699812857531052,
+              "end_ns": 699812910770602,
+              "transaction": 0
+            },
+            {
+              "stage": 3,
+              "start_ns": 699812910780002,
+              "end_ns": 699813000170832,
+              "transaction": 0
+            }
+          ],
+          "unattributed_ns": 20940
+        },
+        {
+          "pid": 423854,
+          "tid": 423973,
+          "sequence": 104,
+          "role": 1,
+          "fd": 62,
+          "start_ns": 699806296506848,
+          "end_ns": 699806438990568,
+          "dev": 271581185,
+          "inode": 758157,
+          "duration_ns": 142483720,
+          "subcalls": [
+            {
+              "stage": 1,
+              "start_ns": 699806296511558,
+              "end_ns": 699806314079888,
+              "transaction": 0
+            },
+            {
+              "stage": 3,
+              "start_ns": 699806314090398,
+              "end_ns": 699806438982988,
+              "transaction": 0
+            }
+          ],
+          "unattributed_ns": 22800
+        },
+        {
+          "pid": 423854,
+          "tid": 424065,
+          "sequence": 109,
+          "role": 1,
+          "fd": 62,
+          "start_ns": 699850381321064,
+          "end_ns": 699850523555945,
+          "dev": 271581185,
+          "inode": 758157,
+          "duration_ns": 142234881,
+          "subcalls": [
+            {
+              "stage": 1,
+              "start_ns": 699850381327944,
+              "end_ns": 699850523255305,
+              "transaction": 0
+            },
+            {
+              "stage": 3,
+              "start_ns": 699850523258185,
+              "end_ns": 699850523552385,
+              "transaction": 0
+            }
+          ],
+          "unattributed_ns": 13320
+        },
+        {
+          "pid": 423854,
+          "tid": 423995,
+          "sequence": 106,
+          "role": 1,
+          "fd": 62,
+          "start_ns": 699816867081638,
+          "end_ns": 699817005790608,
+          "dev": 271581185,
+          "inode": 758162,
+          "duration_ns": 138708970,
+          "subcalls": [
+            {
+              "stage": 1,
+              "start_ns": 699816867087168,
+              "end_ns": 699816954162868,
+              "transaction": 0
+            },
+            {
+              "stage": 3,
+              "start_ns": 699816954171538,
+              "end_ns": 699817005784168,
+              "transaction": 0
+            }
+          ],
+          "unattributed_ns": 20640
+        },
+        {
+          "pid": 423854,
+          "tid": 423983,
+          "sequence": 106,
+          "role": 1,
+          "fd": 62,
+          "start_ns": 699810977881734,
+          "end_ns": 699811115772994,
+          "dev": 271581185,
+          "inode": 758162,
+          "duration_ns": 137891260,
+          "subcalls": [
+            {
+              "stage": 1,
+              "start_ns": 699810977886724,
+              "end_ns": 699811058997114,
+              "transaction": 0
+            },
+            {
+              "stage": 3,
+              "start_ns": 699811059015674,
+              "end_ns": 699811115765304,
+              "transaction": 0
+            }
+          ],
+          "unattributed_ns": 31240
+        },
+        {
+          "pid": 423854,
+          "tid": 424039,
+          "sequence": 111,
+          "role": 1,
+          "fd": 62,
+          "start_ns": 699838017455826,
+          "end_ns": 699838154666926,
+          "dev": 271581185,
+          "inode": 758162,
+          "duration_ns": 137211100,
+          "subcalls": [
+            {
+              "stage": 1,
+              "start_ns": 699838017460036,
+              "end_ns": 699838154563666,
+              "transaction": 0
+            },
+            {
+              "stage": 3,
+              "start_ns": 699838154568816,
+              "end_ns": 699838154660736,
+              "transaction": 0
+            }
+          ],
+          "unattributed_ns": 15550
+        },
+        {
+          "pid": 423854,
+          "tid": 423981,
+          "sequence": 105,
+          "role": 1,
+          "fd": 62,
+          "start_ns": 699810073785905,
+          "end_ns": 699810210685515,
+          "dev": 271581185,
+          "inode": 758157,
+          "duration_ns": 136899610,
+          "subcalls": [
+            {
+              "stage": 1,
+              "start_ns": 699810073791265,
+              "end_ns": 699810210609875,
+              "transaction": 0
+            },
+            {
+              "stage": 3,
+              "start_ns": 699810210614785,
+              "end_ns": 699810210679795,
+              "transaction": 0
+            }
+          ],
+          "unattributed_ns": 15990
+        },
+        {
+          "pid": 423854,
+          "tid": 424055,
+          "sequence": 110,
+          "role": 1,
+          "fd": 62,
+          "start_ns": 699845600789619,
+          "end_ns": 699845735947479,
+          "dev": 271581185,
+          "inode": 758162,
+          "duration_ns": 135157860,
+          "subcalls": [
+            {
+              "stage": 1,
+              "start_ns": 699845600794189,
+              "end_ns": 699845735829759,
+              "transaction": 0
+            },
+            {
+              "stage": 3,
+              "start_ns": 699845735839309,
+              "end_ns": 699845735940589,
+              "transaction": 0
+            }
+          ],
+          "unattributed_ns": 21010
+        },
+        {
+          "pid": 423854,
+          "tid": 423971,
+          "sequence": 103,
+          "role": 1,
+          "fd": 62,
+          "start_ns": 699805356818310,
+          "end_ns": 699805491972969,
+          "dev": 271581185,
+          "inode": 758162,
+          "duration_ns": 135154659,
+          "subcalls": [
+            {
+              "stage": 1,
+              "start_ns": 699805356828680,
+              "end_ns": 699805456507799,
+              "transaction": 0
+            },
+            {
+              "stage": 3,
+              "start_ns": 699805456517849,
+              "end_ns": 699805491964199,
+              "transaction": 0
+            }
+          ],
+          "unattributed_ns": 29190
+        }
+      ]
+    },
+    {
+      "role": 2,
+      "thresholds": [
+        {
+          "threshold_ms": 0,
+          "count": 110,
+          "duration_ns": 21624394331,
+          "subcall_union_ns": {
+            "1": 21490903900,
+            "2": 130389821,
+            "3": 0
+          },
+          "unattributed_ns": 3100610
+        },
+        {
+          "threshold_ms": 10,
+          "count": 110,
+          "duration_ns": 21624394331,
+          "subcall_union_ns": {
+            "1": 21490903900,
+            "2": 130389821,
+            "3": 0
+          },
+          "unattributed_ns": 3100610
+        },
+        {
+          "threshold_ms": 50,
+          "count": 110,
+          "duration_ns": 21624394331,
+          "subcall_union_ns": {
+            "1": 21490903900,
+            "2": 130389821,
+            "3": 0
+          },
+          "unattributed_ns": 3100610
+        },
+        {
+          "threshold_ms": 100,
+          "count": 108,
+          "duration_ns": 21460826461,
+          "subcall_union_ns": {
+            "1": 21329543750,
+            "2": 128225111,
+            "3": 0
+          },
+          "unattributed_ns": 3057600
+        }
+      ],
+      "longest": [
+        {
+          "pid": 423854,
+          "tid": 424179,
+          "sequence": 1,
+          "role": 2,
+          "fd": 25,
+          "start_ns": 699886568673824,
+          "end_ns": 699886908475583,
+          "dev": 271581185,
+          "inode": 758144,
+          "duration_ns": 339801759,
+          "subcalls": [
+            {
+              "stage": 1,
+              "start_ns": 699886568679794,
+              "end_ns": 699886907376003,
+              "transaction": 0
+            },
+            {
+              "stage": 2,
+              "start_ns": 699886907386213,
+              "end_ns": 699886908461123,
+              "transaction": 1882887
+            }
+          ],
+          "unattributed_ns": 30640
+        },
+        {
+          "pid": 423854,
+          "tid": 424112,
+          "sequence": 1,
+          "role": 2,
+          "fd": 25,
+          "start_ns": 699873677531318,
+          "end_ns": 699874010628078,
+          "dev": 271581185,
+          "inode": 758144,
+          "duration_ns": 333096760,
+          "subcalls": [
+            {
+              "stage": 1,
+              "start_ns": 699873677538248,
+              "end_ns": 699874009454028,
+              "transaction": 0
+            },
+            {
+              "stage": 2,
+              "start_ns": 699874009462118,
+              "end_ns": 699874010614198,
+              "transaction": 1882839
+            }
+          ],
+          "unattributed_ns": 28900
+        },
+        {
+          "pid": 423854,
+          "tid": 424177,
+          "sequence": 1,
+          "role": 2,
+          "fd": 25,
+          "start_ns": 699885458120995,
+          "end_ns": 699885789670555,
+          "dev": 271581185,
+          "inode": 758144,
+          "duration_ns": 331549560,
+          "subcalls": [
+            {
+              "stage": 1,
+              "start_ns": 699885458129225,
+              "end_ns": 699885788626385,
+              "transaction": 0
+            },
+            {
+              "stage": 2,
+              "start_ns": 699885788636945,
+              "end_ns": 699885789664695,
+              "transaction": 1882883
+            }
+          ],
+          "unattributed_ns": 24650
+        },
+        {
+          "pid": 423854,
+          "tid": 424106,
+          "sequence": 1,
+          "role": 2,
+          "fd": 25,
+          "start_ns": 699870514595732,
+          "end_ns": 699870839309981,
+          "dev": 271581185,
+          "inode": 758144,
+          "duration_ns": 324714249,
+          "subcalls": [
+            {
+              "stage": 1,
+              "start_ns": 699870514602012,
+              "end_ns": 699870838100921,
+              "transaction": 0
+            },
+            {
+              "stage": 2,
+              "start_ns": 699870838116171,
+              "end_ns": 699870839304991,
+              "transaction": 1882827
+            }
+          ],
+          "unattributed_ns": 26520
+        },
+        {
+          "pid": 423854,
+          "tid": 424173,
+          "sequence": 1,
+          "role": 2,
+          "fd": 25,
+          "start_ns": 699883352151777,
+          "end_ns": 699883676723937,
+          "dev": 271581185,
+          "inode": 758144,
+          "duration_ns": 324572160,
+          "subcalls": [
+            {
+              "stage": 1,
+              "start_ns": 699883352159457,
+              "end_ns": 699883675414257,
+              "transaction": 0
+            },
+            {
+              "stage": 2,
+              "start_ns": 699883675426857,
+              "end_ns": 699883676707227,
+              "transaction": 1882875
+            }
+          ],
+          "unattributed_ns": 36990
+        },
+        {
+          "pid": 423854,
+          "tid": 424165,
+          "sequence": 1,
+          "role": 2,
+          "fd": 25,
+          "start_ns": 699879032998942,
+          "end_ns": 699879357126972,
+          "dev": 271581185,
+          "inode": 758144,
+          "duration_ns": 324128030,
+          "subcalls": [
+            {
+              "stage": 1,
+              "start_ns": 699879033024792,
+              "end_ns": 699879355917722,
+              "transaction": 0
+            },
+            {
+              "stage": 2,
+              "start_ns": 699879355924832,
+              "end_ns": 699879357121692,
+              "transaction": 1882859
+            }
+          ],
+          "unattributed_ns": 38240
+        },
+        {
+          "pid": 423854,
+          "tid": 424171,
+          "sequence": 1,
+          "role": 2,
+          "fd": 25,
+          "start_ns": 699882246020179,
+          "end_ns": 699882569461488,
+          "dev": 271581185,
+          "inode": 758144,
+          "duration_ns": 323441309,
+          "subcalls": [
+            {
+              "stage": 1,
+              "start_ns": 699882246030939,
+              "end_ns": 699882567861268,
+              "transaction": 0
+            },
+            {
+              "stage": 2,
+              "start_ns": 699882567874778,
+              "end_ns": 699882569455258,
+              "transaction": 1882871
+            }
+          ],
+          "unattributed_ns": 30500
+        },
+        {
+          "pid": 423854,
+          "tid": 424100,
+          "sequence": 1,
+          "role": 2,
+          "fd": 25,
+          "start_ns": 699867407108025,
+          "end_ns": 699867717180185,
+          "dev": 271581185,
+          "inode": 758144,
+          "duration_ns": 310072160,
+          "subcalls": [
+            {
+              "stage": 1,
+              "start_ns": 699867407115195,
+              "end_ns": 699867715897205,
+              "transaction": 0
+            },
+            {
+              "stage": 2,
+              "start_ns": 699867715902585,
+              "end_ns": 699867717175595,
+              "transaction": 1882815
+            }
+          ],
+          "unattributed_ns": 17140
+        },
+        {
+          "pid": 423854,
+          "tid": 424090,
+          "sequence": 1,
+          "role": 2,
+          "fd": 25,
+          "start_ns": 699862295868490,
+          "end_ns": 699862573528360,
+          "dev": 271581185,
+          "inode": 758144,
+          "duration_ns": 277659870,
+          "subcalls": [
+            {
+              "stage": 1,
+              "start_ns": 699862295876380,
+              "end_ns": 699862572403830,
+              "transaction": 0
+            },
+            {
+              "stage": 2,
+              "start_ns": 699862572417860,
+              "end_ns": 699862573517900,
+              "transaction": 1882795
+            }
+          ],
+          "unattributed_ns": 32380
+        },
+        {
+          "pid": 423854,
+          "tid": 424114,
+          "sequence": 1,
+          "role": 2,
+          "fd": 25,
+          "start_ns": 699874815789917,
+          "end_ns": 699875085885797,
+          "dev": 271581185,
+          "inode": 758144,
+          "duration_ns": 270095880,
+          "subcalls": [
+            {
+              "stage": 1,
+              "start_ns": 699874815801007,
+              "end_ns": 699875084688017,
+              "transaction": 0
+            },
+            {
+              "stage": 2,
+              "start_ns": 699875084700157,
+              "end_ns": 699875085880327,
+              "transaction": 1882843
+            }
+          ],
+          "unattributed_ns": 28700
+        },
+        {
+          "pid": 423854,
+          "tid": 424163,
+          "sequence": 1,
+          "role": 2,
+          "fd": 25,
+          "start_ns": 699878012724073,
+          "end_ns": 699878282805673,
+          "dev": 271581185,
+          "inode": 758144,
+          "duration_ns": 270081600,
+          "subcalls": [
+            {
+              "stage": 1,
+              "start_ns": 699878012730903,
+              "end_ns": 699878281826133,
+              "transaction": 0
+            },
+            {
+              "stage": 2,
+              "start_ns": 699878281837313,
+              "end_ns": 699878282802763,
+              "transaction": 1882855
+            }
+          ],
+          "unattributed_ns": 20920
+        },
+        {
+          "pid": 423854,
+          "tid": 424094,
+          "sequence": 1,
+          "role": 2,
+          "fd": 25,
+          "start_ns": 699864365253549,
+          "end_ns": 699864631077248,
+          "dev": 271581185,
+          "inode": 758144,
+          "duration_ns": 265823699,
+          "subcalls": [
+            {
+              "stage": 1,
+              "start_ns": 699864365262539,
+              "end_ns": 699864629624268,
+              "transaction": 0
+            },
+            {
+              "stage": 2,
+              "start_ns": 699864629639378,
+              "end_ns": 699864631063768,
+              "transaction": 1882803
+            }
+          ],
+          "unattributed_ns": 37580
+        },
+        {
+          "pid": 423854,
+          "tid": 424092,
+          "sequence": 1,
+          "role": 2,
+          "fd": 25,
+          "start_ns": 699863323064269,
+          "end_ns": 699863587856030,
+          "dev": 271581185,
+          "inode": 758144,
+          "duration_ns": 264791761,
+          "subcalls": [
+            {
+              "stage": 1,
+              "start_ns": 699863323074879,
+              "end_ns": 699863586791980,
+              "transaction": 0
+            },
+            {
+              "stage": 2,
+              "start_ns": 699863586807610,
+              "end_ns": 699863587850310,
+              "transaction": 1882799
+            }
+          ],
+          "unattributed_ns": 31960
+        },
+        {
+          "pid": 423854,
+          "tid": 424102,
+          "sequence": 1,
+          "role": 2,
+          "fd": 25,
+          "start_ns": 699868503350334,
+          "end_ns": 699868767310404,
+          "dev": 271581185,
+          "inode": 758144,
+          "duration_ns": 263960070,
+          "subcalls": [
+            {
+              "stage": 1,
+              "start_ns": 699868503358484,
+              "end_ns": 699868766226814,
+              "transaction": 0
+            },
+            {
+              "stage": 2,
+              "start_ns": 699868766240054,
+              "end_ns": 699868767301244,
+              "transaction": 1882819
+            }
+          ],
+          "unattributed_ns": 30550
+        },
+        {
+          "pid": 423854,
+          "tid": 424167,
+          "sequence": 1,
+          "role": 2,
+          "fd": 25,
+          "start_ns": 699880135680481,
+          "end_ns": 699880399261361,
+          "dev": 271581185,
+          "inode": 758144,
+          "duration_ns": 263580880,
+          "subcalls": [
+            {
+              "stage": 1,
+              "start_ns": 699880135688221,
+              "end_ns": 699880398187311,
+              "transaction": 0
+            },
+            {
+              "stage": 2,
+              "start_ns": 699880398199421,
+              "end_ns": 699880399255781,
+              "transaction": 1882863
+            }
+          ],
+          "unattributed_ns": 25430
+        },
+        {
+          "pid": 423854,
+          "tid": 424181,
+          "sequence": 1,
+          "role": 2,
+          "fd": 25,
+          "start_ns": 699887706826632,
+          "end_ns": 699887969588892,
+          "dev": 271581185,
+          "inode": 758144,
+          "duration_ns": 262762260,
+          "subcalls": [
+            {
+              "stage": 1,
+              "start_ns": 699887706836902,
+              "end_ns": 699887968242932,
+              "transaction": 0
+            },
+            {
+              "stage": 2,
+              "start_ns": 699887968255292,
+              "end_ns": 699887969579372,
+              "transaction": 1882891
+            }
+          ],
+          "unattributed_ns": 32150
+        },
+        {
+          "pid": 423854,
+          "tid": 424108,
+          "sequence": 1,
+          "role": 2,
+          "fd": 25,
+          "start_ns": 699871667950350,
+          "end_ns": 699871923148280,
+          "dev": 271581185,
+          "inode": 758144,
+          "duration_ns": 255197930,
+          "subcalls": [
+            {
+              "stage": 1,
+              "start_ns": 699871667956480,
+              "end_ns": 699871921983880,
+              "transaction": 0
+            },
+            {
+              "stage": 2,
+              "start_ns": 699871921991460,
+              "end_ns": 699871923138630,
+              "transaction": 1882831
+            }
+          ],
+          "unattributed_ns": 23360
+        },
+        {
+          "pid": 423854,
+          "tid": 424175,
+          "sequence": 1,
+          "role": 2,
+          "fd": 25,
+          "start_ns": 699884457674746,
+          "end_ns": 699884711258056,
+          "dev": 271581185,
+          "inode": 758144,
+          "duration_ns": 253583310,
+          "subcalls": [
+            {
+              "stage": 1,
+              "start_ns": 699884457680716,
+              "end_ns": 699884710221786,
+              "transaction": 0
+            },
+            {
+              "stage": 2,
+              "start_ns": 699884710233586,
+              "end_ns": 699884711252756,
+              "transaction": 1882879
+            }
+          ],
+          "unattributed_ns": 23070
+        },
+        {
+          "pid": 423854,
+          "tid": 424120,
+          "sequence": 1,
+          "role": 2,
+          "fd": 25,
+          "start_ns": 699876959241995,
+          "end_ns": 699877210346704,
+          "dev": 271581185,
+          "inode": 758144,
+          "duration_ns": 251104709,
+          "subcalls": [
+            {
+              "stage": 1,
+              "start_ns": 699876959250805,
+              "end_ns": 699877208687564,
+              "transaction": 0
+            },
+            {
+              "stage": 2,
+              "start_ns": 699877208701704,
+              "end_ns": 699877210331104,
+              "transaction": 1882851
+            }
+          ],
+          "unattributed_ns": 38550
+        },
+        {
+          "pid": 423854,
+          "tid": 424088,
+          "sequence": 2,
+          "role": 2,
+          "fd": 25,
+          "start_ns": 699861300112792,
+          "end_ns": 699861544839491,
+          "dev": 271581185,
+          "inode": 758144,
+          "duration_ns": 244726699,
+          "subcalls": [
+            {
+              "stage": 1,
+              "start_ns": 699861300119342,
+              "end_ns": 699861543742851,
+              "transaction": 0
+            },
+            {
+              "stage": 2,
+              "start_ns": 699861543760801,
+              "end_ns": 699861544827091,
+              "transaction": 1882791
+            }
+          ],
+          "unattributed_ns": 36900
+        }
+      ]
+    }
+  ],
+  "stacks": {},
+  "scope": "Native sync subcalls, inclusive time with union-based residual. Block issue/completion populations are retained independently; partial completion and boundary events prevent simple latency pairing.",
+  "load_pid": 423854
+}

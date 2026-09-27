@@ -654,6 +654,74 @@ are removed, and the host is released at 18:17 UTC. No additional campaign
 is started. This answers the bounded checkpoint-I/O diagnostic question;
 **the shared-delay resolution and final implementation review remain open**.
 
+#### Native wait attribution: file writeback and device flush
+
+The follow-up kernel diagnostic uses the same qualified `31aeab76` binaries
+and full archive-disabled workload. Its replacement completes with 285,886
+successful measured requests, 106 byte-triggered checkpoints, 9,550,472
+application I/O records, zero drops, valid host checks and empty tracer stderr.
+The native trace and application observer both pass complete count and timing
+validation. Evidence is in `release/evidence/wp-810/kernel-io-20260927/`.
+
+**The journal does not wait for ext4 transaction-commit completion in this
+cell. Its long syncs wait for file writeback and device flush.** The native
+probes cover all 21,074 load-process journal syncs, matching the application's
+physical flush census exactly. Ordered matching yields one clock-offset interval
+only 1,850 ns wide that encloses every native syscall inside its corresponding
+application sync. This selects the exact 18,029 measured flushes without
+assuming an offset or subtracting client and server clocks.
+
+| Native time inside the 213 measured journal syncs over 10 ms | Time | Share |
+| --- | ---: | ---: |
+| `file_write_and_wait_range` | 12.517877 s | 80.37% |
+| `jbd2_log_wait_commit` | 0 | 0% |
+| `blkdev_issue_flush` | 3.054099 s | 19.61% |
+| Outside the union of those nested intervals | 0.003353 s | 0.02% |
+
+This is direct nested-call timing, a stronger observation than simultaneous
+syncs on different files. The JBD2 probe is demonstrably active: the tracer
+qualification records 40,000 such calls and the checkpoint calls in the
+diagnostic also enter it. Zero journal JBD2 time is not an unwired probe.
+Across the complete load process, including warmup, the corresponding slow-sync
+split is 82.45% file writeback / 17.52% device flush; that broader population
+must not be confused with the measured-only table.
+
+Flush 14,894 is the clearest measured witness: **161.775 ms in native journal
+sync inside a 161.970 ms receipt wait** for its 32-command group. Of that
+native sync, 161.693 ms is file writeback, 0.068 ms device flush and 0.014 ms
+unattributed. A separate 154.401 ms sync spends 133.640 ms in device flush,
+so device flush is also a material tail path, not just rounding error.
+Checkpoint syncs spend 99.38% of their full-process time in file writeback.
+The trace does not assign every queued block request to a file or establish
+a particular device firmware cause; block issue and completion populations
+are retained independently because partial completions prevent simple pairing.
+
+Raw measured P50/P95/P99 are 8.071 / 10.741 / 90.664 ms, with 3,176 reported
+operations per second. These are instrumented disclosure values, not a
+comparison against the previous diagnostic. Writer wall is 105.020577 seconds;
+iteration sum is 105.001998 seconds, leaving 18.578 ms between iterations.
+The included level-0 residual is 8.817 ms; busy plus idle undercounts wall by
+252.241 ms. Existing W2 limitations remain unchanged.
+
+The initial native collector failed when bpftrace aborted with
+`std::bad_alloc` at 54.35 MB (54,353,065 bytes). The watchdog stopped
+the workload and restored isolation; it is not a valid completed diagnostic.
+The last retained subcall precedes optional stack formatting, a suspected
+failure path rather than a proven allocation root cause. The replacement
+removes optional stack capture/symbolication and preserves the native interval
+probes. Its 40,000-call stress qualification and nine refusal/containment tests
+pass before launch. Both attempts are retained; 32 failed-attempt files and
+40 successful-attempt files pass local digest verification. Task-owned remote
+files are removed and isolation is restored. The continuing exclusive-use
+grant remains active; it is not a new authorization to ignore measurement gates.
+
+The next implementation question is bounded checkpoint writeback: spread
+the dirty-page flush work while preserving the existing final sync, exact
+checkpoint installation and recovery/capacity bounds. The journal extents are
+already fully zero-filled and synced before use, so ordinary extent
+preallocation is not a missing step. No pacing implementation or measured
+benefit is claimed by this diagnostic.
+
 The remaining decision is a maintainer-reviewed resolution of the shared
 journal delay and disposition of this common-case improvement. **No merge or
 completion is claimed.** The earlier setup and coverage failures remain
