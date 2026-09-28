@@ -27847,6 +27847,24 @@ work_packages:
     writes; every new-format assignment has validated, hash-covered proof evidence;
     business checks are explicit associations rather than claims of caller freshness;
     historical artifacts retain behavior; all migrations and acceptance checks pass.
+  closure:
+    status: complete
+    completed_at: '2026-09-28'
+    requirements_satisfied: [CMP-015, CMP-013]
+    evidence: docs/architecture/WP-813-REVIEW.md
+    decision: Per-assignment evidence replaces implicit binding-wide authorization.
+      Named checked_by associations assert business relevance explicitly; only the
+      exact same-root revision protocol receives caller-version-fence evidence.
+      Canonical V25 metadata is hash-covered and revalidated, and historical bundle
+      bytes and execution remain unchanged. Package acceptance passed all 18 steps,
+      including 2815 tests, and every full CI step passed with staged reruns recorded
+      in the review note. Human review remains required before merge to main.
+    hazards:
+    - Business predicate relevance, input-delta freshness, and consistent revision
+      protocols remain application responsibilities documented by ADR-0262.
+    - Recompilation is intentionally strict and changes assignment-bearing identities;
+      historical artifacts are not silently upgraded.
+    - Remove the dedicated worktree after the human-reviewed merge, not before review.
   standing_design_tests:
     interface_safety: Implicit binding-wide authorization disappears. Business relevance
       remains an explicit author claim, and the exact ADR acceptance must acknowledge

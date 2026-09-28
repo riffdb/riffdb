@@ -3,7 +3,8 @@
 ADR-0262 was accepted on 2026-09-28, with delegated ADR acceptance during
 implementation and human review reserved before merge. Work is on a dedicated
 worktree. Main has not been merged; remove the worktree after the reviewed merge.
-Package verification is in progress; this note does not declare closure.
+Implementation and package verification completed on 2026-09-28. Merge remains
+subject to human review.
 
 ## Behavior
 
@@ -48,6 +49,10 @@ read validation, authorization, and commit sequencing are unchanged.
   identity, and explain response-charge fixtures are regenerated through their
   owning renderers. Frozen predecessor bundles keep compatibility tests distinct
   from current source recompilation.
+- The immutable WP-722 authoring campaign remains intact. Its acceptance replay
+  now proves the old library replacements receive C048, then associates only a
+  temporary copy with its existing PatronActive and CopyAvailable requirements.
+  This is a migration replay, not a new authoring-campaign score.
 
 ## Verification
 
@@ -65,18 +70,35 @@ including refusal and replay retaining outcome, sequence, and provenance.
 Proof-codec tests cover round trips, malformed tags and bounds, fabricated proof
 kinds, missing/duplicate metadata, and incorrect assignment locations.
 
+`./scripts/acceptance --wp WP-813` passed all 18 steps: 2,815 tests passed, with
+nine existing profile skips, plus scoped Clippy, formatting, all 30 generators,
+handbook, requirement coverage, ADR governance, downstream adapter, file-size,
+and panic-allowance checks.
+
+Every step of `./scripts/ci-all` passed, completed in stages. The full workspace
+test run and Clippy passed with four test threads. An earlier follower startup
+readiness disconnect passed both its isolated rerun and that full test run;
+no lifecycle assertion or timeout was weakened. Operator conformance's HEAD
+comparison required committing regenerated identities before its successful
+rerun; the comparison was retained unchanged. The remaining CI steps passed,
+including Rustdoc, dependency checks, multi-language conformance, governance,
+Helm, authoring replay, and installation smoke. The local Maturin version warning
+was resolved by using the package's pinned 1.14.1 for the successful conformance
+rerun. No dependency or tool pin changed.
+
 ## PR note
 
 - Package: WP-813; Tier: guarantee.
 - Behavior: strict per-assignment evidence replaces binding-wide dependency
   authorization; explicit named business associations and V25 proof metadata.
-- Checks: focused compiler, runtime, coordinator, and application-service tests
-  pass. Package acceptance and the full merge battery remain in progress.
+- Checks: package acceptance passed all 18 steps, including 2,815 tests. Every
+  full CI battery step passed, with the staged reruns described above.
 - Compatibility: source recompilation and new plan identities intentionally
   change. Historical artifacts keep their behavior and are not silently upgraded.
-- Handbook: language and authoring references, command/invariant cookbook, compatibility,
-  safety-by-construction, and known limitations describe the syntax, proofs, execution-scope limits, and
-  migration boundary. Generated format and diagnostic references are refreshed.
+- Handbook: language and authoring references, command/invariant cookbook,
+  compatibility, safety-by-construction, and known limitations describe the
+  syntax, proofs, execution-scope limits, and migration boundary. Generated
+  format and diagnostic references are refreshed.
 - Hazards and follow-ups: semantic predicate relevance, stale input deltas, and
   revision protocol consistency remain application responsibilities. Conditional
   fences and broader algebraic inference remain deferred. Human review precedes
