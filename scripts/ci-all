@@ -71,6 +71,7 @@ trap - EXIT INT TERM
 ./scripts/check-wp762-baseline-bank
 ./scripts/check-dirty-recovery-evidence
 ./scripts/check-online-retention-interference
+./scripts/check-online-retention-interference --summary release/evidence/wp-811/online-retention-interference.json --minimum-keep-up 0.00292
 ./scripts/check-generated
 ./scripts/check-helm-render
 ./scripts/check-helm-operator-package

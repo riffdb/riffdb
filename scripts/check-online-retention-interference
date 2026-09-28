@@ -88,7 +88,7 @@ def close(left: Any, right: float, label: str) -> None:
         refuse(f"{label} does not re-derive from the cells ({left} != {right})")
 
 
-def check(summary: dict[str, Any]) -> None:
+def check(summary: dict[str, Any], minimum_keep_up: float) -> None:
     if summary.get("schema") != SCHEMA:
         refuse("wrong schema")
     source = mapping(summary.get("source"), "source")
@@ -187,6 +187,8 @@ def check(summary: dict[str, Any]) -> None:
         keep_up,
         "comparison.active_median_pruned_per_committed",
     )
+    if keep_up <= minimum_keep_up:
+        refuse(f"keep-up {keep_up:.4f} does not exceed the required {minimum_keep_up}")
     if comparison.get("lane_valid") is not True:
         refuse("comparison.lane_valid is not true")
     if active_p95 / idle_p95 > MAXIMUM_P95_RATIO:
@@ -201,6 +203,12 @@ def check(summary: dict[str, Any]) -> None:
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("--summary", type=Path, default=DEFAULT_SUMMARY)
+    parser.add_argument(
+        "--minimum-keep-up",
+        type=float,
+        default=0.0,
+        help="refuse unless the keep-up fraction exceeds this (WP-811: above WP-761's banked 0.00291)",
+    )
     args = parser.parse_args()
     try:
         data = args.summary.read_bytes()
@@ -212,7 +220,7 @@ def main() -> int:
         summary = json.loads(data)
     except json.JSONDecodeError as error:
         refuse(f"the banked summary is not JSON: {error}")
-    check(mapping(summary, "summary"))
+    check(mapping(summary, "summary"), args.minimum_keep_up)
     print("wp761 online-retention interference evidence: qualified")
     return 0
 
