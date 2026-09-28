@@ -1,11 +1,12 @@
 ---
 adr: "0262"
 title: Separate Write Dependencies From Precondition Proofs
-status: proposed
+status: accepted
 tier: guarantee
 date: 2026-09-28
-accepted: null
-acceptance: null
+accepted: 2026-09-28
+acceptance: 'maintainer, in session, 2026-09-28: i accept; delegated acceptance of
+  further ADRs for implementing this plan, with human review before merge to main'
 requires: [ADR-0256]
 amends: [ADR-0256]
 supersedes: []
@@ -33,8 +34,9 @@ The compiler implements the accepted rule; correcting it requires changing the
 rule. The existing root compare-and-increment fence is useful evidence, but its
 local-read alternative admits the weaker pattern. This record replaces that
 alternative and the claim that every accepted set prevents a silent lost edit.
-The record is proposed; current public behavior is unchanged until acceptance
-and implementation.
+The record was accepted on 2026-09-28; public behavior changes when its
+implementation lands. The maintainer also delegated further ADR acceptance for
+this implementation and reserved review of all changes before merge to main.
 
 ## Decision
 
