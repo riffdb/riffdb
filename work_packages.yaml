@@ -27725,6 +27725,39 @@ work_packages:
     WP-761's banked value with p95 still inside the five-percent bound, every WP-761 crash and
     fence test still passes, and the remaining gate-held cost has a measured, maintainer-
     reviewed disposition.
+  closure:
+    status: complete
+    completed_at: '2026-09-28'
+    requirements_satisfied: [STO-030, STO-031, STO-032, REC-001, REC-002]
+    evidence: release/evidence/wp-811/online-retention-interference.json
+    decision: Phase-timed steps on the ADR-0239 host showed the prune body was 4 percent of
+      a step's writer-gate time and the lane was starved of steps. The lane now paces on
+      gate-held time, is woken by every finished journal checkpoint (direct drains and
+      background installs), and steps immediately with a 256-sequence default budget. At
+      32 interactive clients the keep-up fraction rose from WP-761's 0.0029 to 0.0131 with
+      p95 ratio 1.03 and throughput 0.97. The remaining gate cost (drain 63 percent, the
+      step's own commit 24 percent) is inherent to direct transitions; its reviewed
+      disposition is ADR-0261 (journaled prune frames and scrub-installed checkpoint
+      re-earning), accepted 2026-09-28 and implemented by WP-812.
+    decisions_taken:
+    - Measure before building off-gate preparation (maintainer, in session).
+    - Pace on gate-held time, not total step duration (maintainer, in session).
+    - Wake on checkpoint completion and draft the journaled-frame amendment (maintainer, in
+      session).
+    - Default sequences_per_epoch returns to the 256 cap (maintainer, in session).
+    - Off-gate preparation of the prune body was not built; it measured 4 percent of
+      gate-held time and moves into ADR-0261's frame preparation instead.
+    - A lane woken by a finished checkpoint steps whatever the suffix size; gate-held pacing
+      charges the drain.
+    - ADR-0261 accepted as written; its obligations moved to WP-812 (maintainer accepted,
+      2026-09-28).
+    hazards:
+    - Keep-up remains about 1.3 percent under a saturated interactive load until WP-812
+      lands.
+    - Restarts after online pruning still take complete startup validation until WP-812's
+      scrub-installed checkpoint.
+    - The outbox no-destination fence and the cold columnar fence from WP-761 remain open,
+      awaiting a separate maintainer decision.
   standing_design_tests:
     interface_safety: No public surface changes; retention stays configuration-driven and
       fenced exactly as WP-761 left it.
