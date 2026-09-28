@@ -27862,8 +27862,8 @@ work_packages:
     scale: Checkpoint work scales with current-state change, and a history read is one
       index lookup and one frame read.
   human_review_triggers: &id0263
-  - A command segment or V3 receipt would again be written into a redb table or a second
-    store.
+  - A command segment or V3 receipt made durable by a standard-profile journal frame
+    would be written into a redb table or a second store.
   - Acknowledgement would depend on any sync other than the ordered writer's group sync.
   - A sealed extent at or above the watermark could be missing or corrupt without a typed
     refusal, or deleted before its retained views are committed.
@@ -27905,27 +27905,28 @@ work_packages:
   name: Offline migration to retained journal history
   tier: guarantee
   depends_on: [WP-814]
-  objective: Implement ADR-0263 decision 9's offline migration. A maintenance command
-    writes an existing database's COMMITS and HISTORY rows into sealed extents, verifies
-    them against the history chain, and only then removes the tables.
+  objective: Implement ADR-0263 decision 9's offline migration as narrowed by Amendment 1.
+    An existing database's history stays in redb (A1); a maintenance command adds the
+    META checkpoint frontiers and running counts (A4) and the empty history index,
+    verifies them against the existing tables, and advances the format version.
   requirements: [REC-005]
   required_adrs: [ADR-0263]
   allowed_paths: [work_packages.yaml, crates/riffdb-storage-redb/**, crates/riffdb-cli/**,
     crates/riffdb-server/**, tests/**, fixtures/**, scripts/**, docs/**]
   deliverables:
-  - The offline migration command with verification before removal
-  - Crash coverage leaving either the old or the migrated database, never a mix
-  - Migration round-trip fixtures from a pre-ADR-0263 database
+  - The offline upgrade command with verification before the version advances
+  - Crash coverage leaving either the old or the upgraded database, never a mix
+  - Upgrade fixtures from a pre-ADR-0263 database
   acceptance_commands:
   - ./scripts/acceptance --wp WP-816
   - ./scripts/ci-all
-  exit_gate: A pre-ADR-0263 database migrates offline to an identical history, every
-    crash window leaves the old or the migrated database intact, and the migrated
-    database opens under WP-814's format.
+  exit_gate: A pre-ADR-0263 database upgrades offline with its history unchanged in
+    redb, every crash window leaves the old or the upgraded database intact, and the
+    upgraded database opens under WP-814's format.
   standing_design_tests:
     interface_safety: Migration is an explicit offline maintenance operation; no binary
       opens an unmigrated database silently.
-    scale: Migration streams history in bounded batches.
+    scale: The upgrade derives its counts and frontiers in bounded passes.
   human_review_triggers: *id0263
 
 - id: WP-813

@@ -5,7 +5,8 @@ status: accepted
 tier: guarantee
 date: 2026-09-28
 accepted: '2026-09-28'
-acceptance: 'maintainer, in session, 2026-09-28: "approved, build it" (ADR-0263 as written)'
+acceptance: 'maintainer, in session, 2026-09-28: "approved, build it" (ADR-0263 as written);
+  Amendment 1 accepted by the maintainer, in session, 2026-09-28: "Accepted"'
 requires: [ADR-0101, ADR-0102, ADR-0103, ADR-0104, ADR-0182, ADR-0186, ADR-0261]
 amends:
   - ADR-0101 and ADR-0103's recycling of a fully checkpointed journal extent, which
@@ -22,8 +23,9 @@ packages: [WP-814, WP-815, WP-816]
 # definition once the owning package is complete.
 obligations: []
 review_triggers:
-  - A command segment or V3 receipt would again be written into a redb table, or
-    into any store other than the journal extent that made it durable.
+  - A command segment or V3 receipt made durable by a standard-profile journal frame
+    would be written into a redb table, or into any store other than that journal
+    extent (Amendment 1).
   - Acknowledgement would depend on any sync other than the ordered writer's group
     sync, including an extent seal.
   - A sealed extent below the retention watermark could be missing or corrupt
@@ -118,6 +120,50 @@ rows out of redb under the writer gate (WP-761, WP-811, ADR-0261).
    maintenance command that writes its COMMITS and HISTORY rows into sealed extents
    and verifies them before removing the tables. The POC offers no online upgrade.
 
+### Amendment 1 (accepted 2026-09-28): journaled history only
+
+WP-814's inventory found history that never passes through a journal frame, so
+Decision 1 cannot hold as written. The hardened profile commits each group to redb
+directly (ADR-0101 section 1). So do standard-profile commands outside the deferred
+journal epoch, and every direct lane: administration, catalog, modules,
+capabilities, migrations, exports, consumer and outbox transitions, retention, and
+the control ceremonies. Each of these seals its receipt, and any segment, straight
+into redb. Followers have no journal (REP-002) and materialize COMMITS from
+receipts. The measured cost is in standard-profile journaled command groups. This
+amendment scopes the decision to them and replaces the parts of Decisions 1, 2, 3,
+4, 6, and 9 that it contradicts.
+
+A1. Only history made durable by a standard-profile journal frame is stored in
+    journal extents. That is each command segment the frame carries and the V3
+    receipt its checkpoint derives. History from every other path keeps today's redb
+    placement in COMMITS and HISTORY, unchanged. Each commit sequence and each
+    receipt sequence lives in exactly one of the two stores.
+A2. The checkpoint that materializes a journal frame writes one history-index row for
+    it in redb. The row carries the frame's extent, offset, and hash; its commit,
+    administration, and receipt sequence ranges; and the receipt's complete binding
+    (history incarnation, predecessor sequence, prior history hash, catalog digest).
+    The binding is not in the frame, so the receipt can be re-derived only from the
+    frame plus this row. Sealing adds one per-extent row with the footer hash.
+A3. Every reader of segments or receipts looks up the history index first and falls
+    back to COMMITS or HISTORY. A sequence found in both, or in neither while above
+    the retention watermark, is a typed corruption refusal. Changelog cursors and
+    full-history walks merge the two stores in sequence order.
+A4. redb records the checkpointed application and administration frontiers in META,
+    advanced in the checkpoint transaction. The frontier is no longer derived from
+    the COMMITS tail. META also keeps running counts and tails across both stores, so
+    bounded startup and clean close (REC-005) stay O(1).
+A5. Backup, restore, and archive copy and validate the sealed and live extents that
+    hold retained history, alongside the redb file. The empty-journal requirement no
+    longer means that no history exists outside redb.
+A6. Retention retires whole sealed extents under Decision 6, and prunes redb-held
+    history as today. It never rewrites extent bytes. Offline retention rounds its
+    target down so no segment held in an extent straddles the watermark.
+A7. Format migrations that rewrite COMMITS bytes apply only to redb-held rows. Extent
+    frames are immutable and keep their own format version, which a reader
+    decodes or refuses.
+A8. Followers are unchanged: no journal, and history in redb. They remain the same
+    database format, because the format admits both stores.
+
 ## Options considered
 
 1. **Raise the ceilings and keep history in redb:** p99 107 → 11 ms on the live
@@ -180,3 +226,4 @@ rows out of redb under the writer gate (WP-761, WP-811, ADR-0261).
 - A live-server A/B on the dev-standard host, write-only and interactive at 32
   clients: throughput, p99, and maximum against the current build, and a keep-up
   measurement for extent retirement under ADR-0182 section 7.
+
