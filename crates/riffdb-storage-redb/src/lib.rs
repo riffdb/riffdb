@@ -329,8 +329,8 @@ pub use migration_stage::{
     RedbContractMigrationPreflight, RedbContractMigrationStage, RedbMigrationProjectionPorts,
 };
 pub use retention::{
-    ONLINE_RETENTION_STEP_SEQUENCES, OnlineRetentionHold, OnlineRetentionStep,
-    RedbOfflineRetention, RedbOnlineRetentionLane, RetentionStatusV1,
+    ONLINE_RETENTION_STEP_SEQUENCES, OnlineRetentionHold, OnlineRetentionPhases,
+    OnlineRetentionStep, RedbOfflineRetention, RedbOnlineRetentionLane, RetentionStatusV1,
 };
 pub use shared_ports::RedbSharedPorts;
 pub use startup::{

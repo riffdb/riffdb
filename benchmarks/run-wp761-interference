@@ -148,6 +148,10 @@ def cell(arm: str, rep: int) -> dict:
             "steps": int(lane["steps"]),
             "sequences": int(lane["sequences"]),
         },
+        # WP-811 phase evidence: summed step phase microseconds and holds by
+        # reason over the measured process generation.
+        "lane_phases_us": {key: int(value) for key, value in lane["phases_us"].items()},
+        "lane_holds": {key: int(value) for key, value in lane["holds"].items()},
     }
 
 

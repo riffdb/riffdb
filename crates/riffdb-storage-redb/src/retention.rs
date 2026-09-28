@@ -58,8 +58,8 @@ type RetentionWriteTable<'txn, 'capture> = CapturedTable<'txn, 'capture, &'stati
 #[path = "retention/online.rs"]
 mod online;
 pub use online::{
-    ONLINE_RETENTION_STEP_SEQUENCES, OnlineRetentionHold, OnlineRetentionStep,
-    RedbOnlineRetentionLane,
+    ONLINE_RETENTION_STEP_SEQUENCES, OnlineRetentionHold, OnlineRetentionPhases,
+    OnlineRetentionStep, RedbOnlineRetentionLane,
 };
 
 #[cfg(test)]

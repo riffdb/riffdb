@@ -1426,6 +1426,19 @@ pub struct RedbOperationalPorts {
 // writable transaction. Journal epochs retain their separate mutation source.
 pub(crate) type OperationalWriteTransaction = crate::changelog_v3_write::CapturedImmediateWrite;
 
+/// Where a deferrable direct write's opening time went, in microseconds.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub(crate) struct WriteBeginTiming {
+    /// Waiting for the first-come writer gate.
+    pub(crate) gate_wait_us: u64,
+    /// Under the gate: publishing, checkpointing, and draining the journal.
+    pub(crate) drain_us: u64,
+}
+
+pub(crate) fn elapsed_us(from: std::time::Instant, to: std::time::Instant) -> u64 {
+    u64::try_from(to.saturating_duration_since(from).as_micros()).unwrap_or(u64::MAX)
+}
+
 pub(crate) struct RedbWriteAccess {
     shared: Arc<SharedRedb>,
     transaction: Option<OperationalWriteTransaction>,
@@ -5454,7 +5467,7 @@ impl RedbOperationalPorts {
         &self,
         source: riffdb_storage_api::ChangelogAttributionV3,
     ) -> Result<RedbWriteAccess, StorageError> {
-        self.begin_attributed_write_inner(source, false, false)?
+        self.begin_attributed_write_inner(source, false, false, None)?
             .ok_or_else(|| storage_error(StorageErrorKind::InvariantViolation))
     }
 
@@ -5465,12 +5478,16 @@ impl RedbOperationalPorts {
     /// into the engine under the held gate (the source-control barrier), so an
     /// engine snapshot opened afterward sees every acknowledged transition
     /// ordered before this write.
+    ///
+    /// `timing` receives the microseconds spent waiting for the writer gate
+    /// and then publishing, checkpointing, and draining the journal suffix.
     pub(crate) fn begin_attributed_write_unless_checkpointing(
         &self,
         source: riffdb_storage_api::ChangelogAttributionV3,
         checkpoint_first: bool,
+        timing: &mut WriteBeginTiming,
     ) -> Result<Option<RedbWriteAccess>, StorageError> {
-        self.begin_attributed_write_inner(source, checkpoint_first, true)
+        self.begin_attributed_write_inner(source, checkpoint_first, true, Some(timing))
     }
 
     fn begin_attributed_write_inner(
@@ -5478,9 +5495,15 @@ impl RedbOperationalPorts {
         source: riffdb_storage_api::ChangelogAttributionV3,
         checkpoint_first: bool,
         yield_to_checkpoint: bool,
+        mut timing: Option<&mut WriteBeginTiming>,
     ) -> Result<Option<RedbWriteAccess>, StorageError> {
         crate::changelog_v3_write::require_direct_attribution(source)?;
+        let began = std::time::Instant::now();
         let lease = self.shared.mutation_gate.acquire()?;
+        let gate_acquired = std::time::Instant::now();
+        if let Some(timing) = timing.as_deref_mut() {
+            timing.gate_wait_us = elapsed_us(began, gate_acquired);
+        }
         if self.shared.write_fenced.load(Ordering::Acquire) {
             return Err(storage_error(StorageErrorKind::Unavailable));
         }
@@ -5522,6 +5545,9 @@ impl RedbOperationalPorts {
             }
             self.shared.fence_writes();
             return Err(error);
+        }
+        if let Some(timing) = timing {
+            timing.drain_us = elapsed_us(gate_acquired, std::time::Instant::now());
         }
         let transaction = match OperationalWriteTransaction::from_drained(transaction, source) {
             Ok(transaction) => transaction,

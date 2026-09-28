@@ -5,8 +5,8 @@
 //! is one administration-class transition through the sole ordered writer:
 //! the storage handle it holds runs steps and nothing else, and it queues on
 //! the same first-come mutation gate as every other writer, so a writer is
-//! blocked by at most the one step in progress. After every advancing step
-//! the lane rests nineteen times that step's duration, so it holds the writer
+//! blocked by at most the one step in progress. After every attempt that held
+//! the writer gate the lane rests nineteen times that gate-held time, so it holds the writer
 //! at most about five percent of the time; it never removes more than its
 //! per-epoch budget (one step), yields to an in-flight journal checkpoint
 //! instead of waiting for it under the gate, and rechecks on a bounded idle
@@ -30,7 +30,9 @@ use std::time::Duration;
 use riffdb_errors::{DefectScope, IncidentIdSource, InternalError};
 use riffdb_observability::ServiceDiagnostics;
 use riffdb_storage_api::RetentionFenceBinding;
-use riffdb_storage_redb::{OnlineRetentionHold, OnlineRetentionStep, RedbOnlineRetentionLane};
+use riffdb_storage_redb::{
+    OnlineRetentionHold, OnlineRetentionPhases, OnlineRetentionStep, RedbOnlineRetentionLane,
+};
 
 use crate::config::{RetentionConfig, RetentionTarget};
 
@@ -42,9 +44,9 @@ const RETENTION_LANE_RECHECK: Duration = Duration::from_secs(1);
 /// in-flight asynchronous journal checkpoint.
 const RETENTION_LANE_CHECKPOINT_RETRY: Duration = Duration::from_millis(50);
 
-/// ADR-0182 section 7 interference bound: after an advancing step the lane
-/// rests this many times the step's own duration, so it holds the ordered
-/// writer at most one part in twenty of the time. A backlog therefore
+/// ADR-0182 section 7 interference bound: after any attempt that took the
+/// writer gate the lane rests this many times the time it held the gate, so
+/// it holds the ordered writer at most one part in twenty of the time. A backlog therefore
 /// compacts at a bounded, not maximal, rate.
 const RETENTION_LANE_REST_FACTOR: u32 = 19;
 
@@ -146,6 +148,11 @@ pub(crate) struct RetentionLaneObservation {
     pub(crate) fence: Option<RetentionFenceBinding>,
     pub(crate) steps: u64,
     pub(crate) sequences: u64,
+    /// Summed phase microseconds over every step attempt (WP-811 evidence).
+    pub(crate) phases: OnlineRetentionPhases,
+    /// Holds by reason: target or row boundary, fenced, checkpoint in
+    /// flight, awaiting a checkpoint.
+    pub(crate) holds: [u64; 4],
 }
 
 /// Process-local lane status shared by the worker and its owner.
@@ -155,6 +162,8 @@ pub(crate) struct RetentionLaneStatus {
     fence: Arc<AtomicU8>,
     steps: Arc<AtomicU64>,
     sequences: Arc<AtomicU64>,
+    phases: Arc<Mutex<OnlineRetentionPhases>>,
+    holds: Arc<[AtomicU64; 4]>,
 }
 
 impl RetentionLaneStatus {
@@ -164,6 +173,8 @@ impl RetentionLaneStatus {
             fence: Arc::new(AtomicU8::new(0)),
             steps: Arc::new(AtomicU64::new(0)),
             sequences: Arc::new(AtomicU64::new(0)),
+            phases: Arc::new(Mutex::new(OnlineRetentionPhases::default())),
+            holds: Arc::new([const { AtomicU64::new(0) }; 4]),
         }
     }
 
@@ -191,6 +202,32 @@ impl RetentionLaneStatus {
             .and_then(|index| FENCE_BINDINGS.get(index).copied())
     }
 
+    fn note_phases(&self, phases: &OnlineRetentionPhases) {
+        let mut guard = self
+            .phases
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let total = &mut *guard;
+        for (sum, add) in [
+            (&mut total.preplan_us, phases.preplan_us),
+            (&mut total.gate_wait_us, phases.gate_wait_us),
+            (&mut total.drain_us, phases.drain_us),
+            (&mut total.plan_us, phases.plan_us),
+            (&mut total.digest_us, phases.digest_us),
+            (&mut total.materialize_us, phases.materialize_us),
+            (&mut total.delete_us, phases.delete_us),
+            (&mut total.commit_us, phases.commit_us),
+        ] {
+            *sum = sum.saturating_add(add);
+        }
+    }
+
+    fn note_hold(&self, reason: usize) {
+        if let Some(count) = self.holds.get(reason) {
+            let _ = count.fetch_add(1, Ordering::AcqRel);
+        }
+    }
+
     fn note_step(&self, sequences: u64) {
         let _ = self.steps.fetch_add(1, Ordering::AcqRel);
         let _ = self.sequences.fetch_add(sequences, Ordering::AcqRel);
@@ -206,6 +243,11 @@ impl RetentionLaneStatus {
             fence: self.fence(),
             steps: self.steps.load(Ordering::Acquire),
             sequences: self.sequences.load(Ordering::Acquire),
+            phases: *self
+                .phases
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner),
+            holds: std::array::from_fn(|reason| self.holds[reason].load(Ordering::Acquire)),
         }
     }
 }
@@ -375,31 +417,40 @@ fn run_lane(
             status.set(RetentionLaneState::Cancelled);
             return;
         }
-        let started = std::time::Instant::now();
-        let pause = match lane.step(retain, budget) {
-            Ok(OnlineRetentionStep::Advanced { sequences, .. }) => {
-                status.note_fence(None);
-                status.set(RetentionLaneState::Advancing);
-                status.note_step(sequences);
-                started
-                    .elapsed()
-                    .saturating_mul(RETENTION_LANE_REST_FACTOR)
-                    .min(RETENTION_LANE_RECHECK.saturating_mul(RETENTION_LANE_REST_FACTOR))
-            }
-            Ok(OnlineRetentionStep::Held(
-                OnlineRetentionHold::CheckpointInFlight | OnlineRetentionHold::AwaitingCheckpoint,
-            )) => RETENTION_LANE_CHECKPOINT_RETRY,
-            Ok(OnlineRetentionStep::Held(
-                OnlineRetentionHold::TargetReached | OnlineRetentionHold::RowBoundary,
-            )) => {
-                status.note_fence(None);
-                status.set(RetentionLaneState::Idle);
-                RETENTION_LANE_RECHECK
-            }
-            Ok(OnlineRetentionStep::Held(OnlineRetentionHold::Fenced(binding))) => {
-                status.note_fence(Some(binding));
-                status.set(RetentionLaneState::Fenced);
-                RETENTION_LANE_RECHECK
+        let (pause, gate_held) = match lane.step_timed(retain, budget) {
+            Ok((step, phases)) => {
+                status.note_phases(&phases);
+                let pause = match step {
+                    OnlineRetentionStep::Advanced { sequences, .. } => {
+                        status.note_fence(None);
+                        status.set(RetentionLaneState::Advancing);
+                        status.note_step(sequences);
+                        Duration::ZERO
+                    }
+                    OnlineRetentionStep::Held(OnlineRetentionHold::CheckpointInFlight) => {
+                        status.note_hold(2);
+                        RETENTION_LANE_CHECKPOINT_RETRY
+                    }
+                    OnlineRetentionStep::Held(OnlineRetentionHold::AwaitingCheckpoint) => {
+                        status.note_hold(3);
+                        RETENTION_LANE_CHECKPOINT_RETRY
+                    }
+                    OnlineRetentionStep::Held(
+                        OnlineRetentionHold::TargetReached | OnlineRetentionHold::RowBoundary,
+                    ) => {
+                        status.note_hold(0);
+                        status.note_fence(None);
+                        status.set(RetentionLaneState::Idle);
+                        RETENTION_LANE_RECHECK
+                    }
+                    OnlineRetentionStep::Held(OnlineRetentionHold::Fenced(binding)) => {
+                        status.note_hold(1);
+                        status.note_fence(Some(binding));
+                        status.set(RetentionLaneState::Fenced);
+                        RETENTION_LANE_RECHECK
+                    }
+                };
+                (pause, Duration::from_micros(phases.gate_held_us()))
             }
             Err(_) if control.stop_requested() => {
                 status.set(RetentionLaneState::Cancelled);
@@ -417,7 +468,12 @@ fn run_lane(
                 return;
             }
         };
-        if control.pause(pause) {
+        // Rest in proportion to the time the attempt held the writer gate,
+        // never less than the outcome's own recheck interval.
+        let rest = gate_held
+            .saturating_mul(RETENTION_LANE_REST_FACTOR)
+            .min(RETENTION_LANE_RECHECK.saturating_mul(RETENTION_LANE_REST_FACTOR));
+        if control.pause(pause.max(rest)) {
             status.set(RetentionLaneState::Cancelled);
             return;
         }
