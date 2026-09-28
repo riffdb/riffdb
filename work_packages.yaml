@@ -27807,3 +27807,49 @@ work_packages:
     scale: Prune work leaves the ordered writer's critical section, whose per-frame cost
       stays bounded by 256 sequences.
   human_review_triggers: *id0182
+
+- id: WP-813
+  name: Per-write dependency and precondition proofs
+  tier: guarantee
+  depends_on: [WP-809]
+  objective: Implement ADR-0262 after exact-text human acceptance. Replace binding-wide
+    write authorization with narrow arithmetic evidence, explicit named business-check
+    associations, and the existing same-root caller-version fence; expose the distinct
+    evidence without claiming to infer business relevance or stale caller intent.
+  requirements: [CMP-015, CMP-013]
+  required_adrs: [ADR-0256, ADR-0262]
+  allowed_paths: [SPEC.md, work_packages.yaml,
+    adr/0262-separate-write-dependencies-from-precondition-proofs.md,
+    crates/riffdb-contract-syntax/**, crates/riffdb-contract-compiler/**,
+    crates/riffdb-contract-ir/**, crates/riffdb-runtime/**,
+    crates/riffdb-diagnostics/**, crates/riffdb-cli/**,
+    contracts/**, tests/**, fixtures/**, docs/**]
+  deliverables:
+  - Characterization of serialized payload replacement despite revision increments,
+    followed by a failing stricter compiler regression before semantic implementation
+  - Bounded per-assignment proof classification, checked_by source association, typed
+    diagnostics and semantic source-span snapshots, including decision and bulk scopes
+  - Versioned canonical proof metadata, validator, plan hashes, typed and rendered explain
+    evidence, historical compatibility fixtures, and regenerated version topology
+  - Individually reviewed source migrations, generated references and fixtures, renewed
+    application locks, and downstream adapter verification
+  - Deterministic application-service and coordinator coverage of stale refusal, exclusive
+    claims, accumulated deltas, explicit overwrites, idempotent replay, and provenance
+  - Handbook and verification note describing proof limits and strict recompilation
+  acceptance_commands:
+  - ./scripts/acceptance --wp WP-813
+  - ./scripts/ci-all
+  exit_gate: Revision increments and unrelated reads cannot authorize replacement set
+    writes; every new-format assignment has validated, hash-covered proof evidence;
+    business checks are explicit associations rather than claims of caller freshness;
+    historical artifacts retain behavior; all migrations and acceptance checks pass.
+  standing_design_tests:
+    interface_safety: Implicit binding-wide authorization disappears. Business relevance
+      remains an explicit author claim, and the exact ADR acceptance must acknowledge
+      that limitation without weakening transactions, idempotency, scoping, or durability.
+    scale: Proof analysis and metadata use existing bounded compiler and plan budgets;
+      no population-dependent work or runtime I/O is introduced.
+  human_review_triggers:
+  - Any widening of arithmetic or fence recognition beyond ADR-0262.
+  - Any change to transaction ordering, validation, authorization, or durable execution.
+  - Any incompatible reinterpretation of historical artifacts or paths outside this scope.

@@ -20,6 +20,9 @@ use riffdb_types::{
 #[path = "runtime/cross_binding_fence.rs"]
 mod cross_binding_fence;
 
+#[path = "runtime/write_proof_characterization.rs"]
+mod write_proof_characterization;
+
 const BUDGET_SOURCE: &str = include_str!(concat!(
     env!("CARGO_MANIFEST_DIR"),
     "/../../contracts/examples/budget.riff"
