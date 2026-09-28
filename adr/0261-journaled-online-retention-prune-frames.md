@@ -1,11 +1,11 @@
 ---
 adr: "0261"
 title: Journaled Online Retention Prune Frames
-status: proposed
+status: accepted
 tier: guarantee
 date: 2026-09-27
-accepted: null
-acceptance: null
+accepted: "2026-09-28"
+acceptance: "maintainer, in session, 2026-09-28: \"Accept as written; close WP-811\""
 requires: [ADR-0182, ADR-0085, ADR-0101, ADR-0103, ADR-0104, ADR-0165]
 amends:
   - ADR-0182 section 6's execution of a prune step as a direct engine write that drains
@@ -14,23 +14,23 @@ amends:
   - ADR-0103's closed set of journal table tags (additive)
 supersedes: []
 requirements: [STO-030, STO-031, STO-032]
-packages: [WP-811]
+packages: [WP-811, WP-812]
 obligations:
   - id: OBL-0261-1
-    package: WP-811
+    package: WP-812
     proof: journaled_prune_frame_crash_windows_recover_to_a_valid_watermark
     says: A crash before, during, or after a journaled prune frame's group sync, and
       during checkpoint materialization of it, reopens at exactly the pre-frame or
       post-frame watermark with a contiguous tombstone chain and no command, event,
       outcome, provenance, audit, projection, outbox, or allocator advance.
   - id: OBL-0261-2
-    package: WP-811
+    package: WP-812
     proof: a_prune_frame_whose_preconditions_moved_is_refused_at_sequencing
     says: A prepared prune frame whose deleted rows, watermark, or fencing inputs
       changed after preparation is refused when the writer sequences it and changes
       nothing.
   - id: OBL-0261-3
-    package: WP-811
+    package: WP-812
     proof: check-online-retention-interference
     says: Release evidence shows the journaled lane's keep-up fraction under 32-client
       interactive load, with p95 inside ADR-0182's five-percent bound.

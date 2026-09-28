@@ -27731,3 +27731,46 @@ work_packages:
     scale: Moves population-proportional prune work off the single ordered writer's critical
       section instead of spending writer time proportional to history.
   human_review_triggers: *id0182
+- id: WP-812
+  name: Journaled online retention prune frames
+  tier: guarantee
+  depends_on: [WP-811]
+  objective: Implement ADR-0261. An online retention prune step becomes one journaled
+    transition sequenced by the sole ordered writer and made durable by its group sync,
+    prepared outside the writer gate from one composite read view with expected-hash
+    preconditions on every delete and overwrite, and revalidated at sequencing against
+    the watermark and the complete fencing set. The background scrub re-earns the
+    validated-prefix checkpoint for the prefix it validated.
+  requirements: [STO-030, STO-031, STO-032, REC-001, REC-002]
+  required_adrs: [ADR-0101, ADR-0103, ADR-0104, ADR-0165, ADR-0182, ADR-0261]
+  allowed_paths: [work_packages.yaml, crates/riffdb-storage-api/**,
+    crates/riffdb-storage-redb/**, crates/riffdb-server/**, crates/riffdb-sim/**, tests/**,
+    fixtures/**, scripts/**, benchmarks/**, examples/app-baseline/**, release/evidence/**,
+    docs/**]
+  deliverables:
+  - The JournaledRetentionPrune attribution and the HistoryTombstones and OutboxStatus
+    journal table tags, with compatibility fixtures and the older-binary refusal
+  - Off-gate frame preparation with a single-pass tombstone digest, and sequencing-time
+    revalidation of expected hashes, the predecessor watermark, and the fencing set;
+    proof a_prune_frame_whose_preconditions_moved_is_refused_at_sequencing
+  - Watermark publication before visibility and restoration on refusal, and replay that
+    re-verifies the tombstone chain; proof
+    journaled_prune_frame_crash_windows_recover_to_a_valid_watermark
+  - Scrub-installed validated-prefix checkpoint, discarded when the watermark or head moved
+  - C3D interference evidence validated by check-online-retention-interference with the
+    keep-up fraction against WP-811's banked 0.0131
+  acceptance_commands:
+  - ./scripts/acceptance --wp WP-812
+  - ./scripts/ci-all
+  exit_gate: Online prune steps are journaled frames with no suffix drain or separate
+    engine commit; a moved precondition refuses the frame and changes nothing; every
+    crash window reopens at the pre- or post-frame watermark with a contiguous tombstone
+    chain; a retention-active database regains the bounded restart after its scrub
+    completes; and 32-client interactive evidence shows p95 inside the five-percent bound
+    with a keep-up fraction above WP-811's 0.0131.
+  standing_design_tests:
+    interface_safety: No public surface changes; a frame whose preconditions moved cannot
+      apply, and retention stays configuration-driven and fenced.
+    scale: Prune work leaves the ordered writer's critical section, whose per-frame cost
+      stays bounded by 256 sequences.
+  human_review_triggers: *id0182
