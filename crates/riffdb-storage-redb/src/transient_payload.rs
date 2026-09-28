@@ -6,6 +6,9 @@ use std::sync::Mutex;
 
 const MAX_PAYLOAD_BYTES: usize = 64 * 1024 * 1024;
 const MAX_PAYLOAD_ENTRIES: usize = 64;
+/// One seeded segment in this many is decoded from its canonical bytes and
+/// compared with the writer's segment before it is retained.
+pub(crate) const PAYLOAD_SEED_VERIFY_EVERY: u64 = 64;
 // Normalize through the canonical decoder before retention. Charge non-value
 // DTOs, shared scalar/key/string views and allocation headers conservatively at
 // 64 times their wire footprint, plus the complete fixed command layouts.
@@ -137,7 +140,7 @@ impl SegmentMetadata {
 }
 
 struct CachedPayload {
-    canonical: Box<[u8]>,
+    canonical: Arc<[u8]>,
     decoded: Arc<StoredCommandSegmentV1>,
     charge: usize,
 }
@@ -189,29 +192,63 @@ impl PayloadCache {
                 .0,
         );
         metadata.validate(&segment)?;
-        let charge = decoded_charge(&segment, bytes.len()).ok_or_else(corrupt)?;
-        if charge <= MAX_PAYLOAD_BYTES {
-            let mut state = self.state.lock().map_err(|_| corrupt())?;
-            if let Some(old) = state.entries.remove(&metadata.first) {
-                state.bytes -= old.charge;
-            }
-            while state.entries.len() >= MAX_PAYLOAD_ENTRIES
-                || state.bytes > MAX_PAYLOAD_BYTES - charge
-            {
-                let (_, old) = state.entries.pop_first().ok_or_else(corrupt)?;
-                state.bytes -= old.charge;
-            }
-            state.entries.insert(
-                metadata.first,
-                CachedPayload {
-                    canonical: bytes.into_boxed_slice(),
-                    decoded: Arc::clone(&segment),
-                    charge,
-                },
-            );
-            state.bytes += charge;
-        }
+        self.retain(metadata.first, Arc::from(bytes), Arc::clone(&segment))?;
         Ok(segment)
+    }
+
+    /// Retains the writer's own segment for its exact canonical bytes.
+    pub(super) fn seed(
+        &self,
+        metadata: &SegmentMetadata,
+        segment: Arc<StoredCommandSegmentV1>,
+        canonical: Arc<[u8]>,
+    ) -> Result<(), StorageError> {
+        metadata.validate(&segment)?;
+        if metadata
+            .first
+            .get()
+            .is_multiple_of(PAYLOAD_SEED_VERIFY_EVERY)
+        {
+            let decoded = crate::command_prefix::decode_segment(&canonical)
+                .map_err(|_| corrupt())?
+                .into_parts()
+                .0;
+            if decoded != *segment {
+                return Err(corrupt());
+            }
+        }
+        self.retain(metadata.first, canonical, segment)
+    }
+
+    fn retain(
+        &self,
+        first: CommitSequence,
+        canonical: Arc<[u8]>,
+        segment: Arc<StoredCommandSegmentV1>,
+    ) -> Result<(), StorageError> {
+        let charge = decoded_charge(&segment, canonical.len()).ok_or_else(corrupt)?;
+        if charge > MAX_PAYLOAD_BYTES {
+            return Ok(());
+        }
+        let mut state = self.state.lock().map_err(|_| corrupt())?;
+        if let Some(old) = state.entries.remove(&first) {
+            state.bytes -= old.charge;
+        }
+        while state.entries.len() >= MAX_PAYLOAD_ENTRIES || state.bytes > MAX_PAYLOAD_BYTES - charge
+        {
+            let (_, old) = state.entries.pop_first().ok_or_else(corrupt)?;
+            state.bytes -= old.charge;
+        }
+        state.entries.insert(
+            first,
+            CachedPayload {
+                canonical,
+                decoded: segment,
+                charge,
+            },
+        );
+        state.bytes += charge;
+        Ok(())
     }
 
     #[cfg(test)]

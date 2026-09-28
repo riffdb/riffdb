@@ -356,7 +356,7 @@ fn review_payload_eviction_preserves_exact_members_and_rejects_bad_cold_authorit
         snapshots.insert(segment.first_commit_sequence(), encoded.as_bytes().to_vec());
         let prior_cache = indexes.payload_stats();
         indexes.apply(
-            crate::transient::TransientIndexDelta::CommandSegmentPublished(Arc::new(segment)),
+            crate::transient::TransientIndexDelta::CommandSegmentPublished(Arc::new(segment), None),
         );
         assert_eq!(
             indexes.payload_stats(),
@@ -547,8 +547,9 @@ fn review_multi_command_payload_is_cached_with_its_decoded_ownership_charge() {
         .collect::<Vec<_>>();
     let (segment, encoded) = segment(commands.clone(), None);
     let mut indexes = TransientIndexes::default();
-    indexes
-        .apply(crate::transient::TransientIndexDelta::CommandSegmentPublished(Arc::new(segment)));
+    indexes.apply(
+        crate::transient::TransientIndexDelta::CommandSegmentPublished(Arc::new(segment), None),
+    );
     assert_eq!(indexes.payload_stats(), (0, 0));
     for command in &commands {
         assert_eq!(
@@ -564,4 +565,113 @@ fn review_multi_command_payload_is_cached_with_its_decoded_ownership_charge() {
     assert_eq!(entries, 1);
     assert!(bytes <= 64 * 1024 * 1024);
     assert!(bytes > 64 * std::mem::size_of::<StoredCommandCapsuleV2>());
+}
+
+// req: REP-002
+#[test]
+fn a_seeded_publication_serves_its_exact_canonical_bytes() {
+    let command = capsule(CommitSequence::first());
+    let (segment, encoded) = segment(vec![command.clone()], None);
+    let canonical: Arc<[u8]> = Arc::from(encoded.as_bytes());
+    let mut indexes = TransientIndexes::default();
+    indexes.apply(
+        crate::transient::TransientIndexDelta::CommandSegmentPublished(
+            Arc::new(segment),
+            Some(canonical),
+        ),
+    );
+    assert_eq!(
+        indexes.payload_stats().0,
+        1,
+        "publication seeds the payload"
+    );
+    assert_eq!(
+        indexes
+            .command_at(CommitSequence::first(), |_| Ok(Some(
+                encoded.as_bytes().to_vec()
+            )))
+            .unwrap(),
+        Some(command)
+    );
+}
+
+// req: REP-002
+#[test]
+fn a_seed_whose_bytes_differ_from_the_durable_row_is_never_served() {
+    // Sequence 2 is off the verification sample, so the wrong seed is retained.
+    let first = capsule(CommitSequence::first());
+    let (first_segment, _) = segment(vec![first], None);
+    let command = capsule(CommitSequence::new(2).unwrap());
+    let (published, durable) = segment(vec![command.clone()], Some(first_segment.segment_digest()));
+    let (_, foreign) = segment(vec![command.clone()], None);
+    assert_ne!(durable.as_bytes(), foreign.as_bytes());
+    let mut indexes = TransientIndexes::default();
+    indexes.apply(
+        crate::transient::TransientIndexDelta::CommandSegmentPublished(
+            Arc::new(first_segment),
+            None,
+        ),
+    );
+    indexes.apply(
+        crate::transient::TransientIndexDelta::CommandSegmentPublished(
+            Arc::new(published),
+            Some(Arc::from(foreign.as_bytes())),
+        ),
+    );
+    // The durable row does not match the seeded bytes, so the lookup decodes
+    // the durable row itself.
+    assert_eq!(
+        indexes
+            .command_at(command.commit_sequence(), |_| Ok(Some(
+                durable.as_bytes().to_vec()
+            )))
+            .unwrap(),
+        Some(command)
+    );
+}
+
+// req: REP-002
+#[test]
+fn a_sampled_seed_that_does_not_round_trip_invalidates_the_index() {
+    let sampled = crate::transient::PAYLOAD_SEED_VERIFY_EVERY;
+    let mut indexes = TransientIndexes::default();
+    let mut prior = None;
+    let mut last = None;
+    for sequence in 1..=sampled {
+        let command = capsule(CommitSequence::new(sequence).unwrap());
+        let (segment, encoded) = segment(vec![command.clone()], prior);
+        prior = Some(segment.segment_digest());
+        let canonical = if sequence == sampled {
+            // Bytes that decode to a different segment than the writer's.
+            let (_, other) = segment_for_mismatch(command.clone());
+            Arc::from(other.as_bytes())
+        } else {
+            Arc::from(encoded.as_bytes())
+        };
+        indexes.apply(
+            crate::transient::TransientIndexDelta::CommandSegmentPublished(
+                Arc::new(segment),
+                Some(canonical),
+            ),
+        );
+        last = Some((command, encoded));
+    }
+    let (command, encoded) = last.unwrap();
+    assert!(
+        indexes
+            .command_at(command.commit_sequence(), |_| Ok(Some(
+                encoded.as_bytes().to_vec()
+            )))
+            .is_err(),
+        "a seed that fails its round-trip check drops the index, fail-closed"
+    );
+}
+
+fn segment_for_mismatch(
+    command: StoredCommandCapsuleV2,
+) -> (StoredCommandSegmentV1, CanonicalStoredEnvelopeV1) {
+    segment(
+        vec![command],
+        Some(CommandSegmentDigestV1::from_bytes([7; 32])),
+    )
 }

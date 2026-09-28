@@ -159,17 +159,19 @@ fn consume_staged_command_evidence(
 /// and payload-free lookup locators before the owning transaction can commit.
 /// The full rows staged earlier are transaction-private validation material;
 /// no reader or recovery boundary can observe them.
+/// A capsulated segment, its terminal audits, and the exact canonical bytes
+/// written to its `COMMITS` row.
+type CapsulatedCommandRows = (
+    StoredCommandSegmentV1,
+    Vec<riffdb_storage_api::StoredServiceAuditRecordV1>,
+    Arc<[u8]>,
+);
+
 fn capsulate_command_rows(
     core: &mut BatchCore,
     command_links: Vec<StagedCommandAuditLinkEvidenceV1>,
     audit_records: Vec<StagedCommandAuditRecordsV1>,
-) -> Result<
-    (
-        StoredCommandSegmentV1,
-        Vec<riffdb_storage_api::StoredServiceAuditRecordV1>,
-    ),
-    StorageError,
-> {
+) -> Result<CapsulatedCommandRows, StorageError> {
     let mut terminals = Vec::with_capacity(command_links.len());
     if audit_records.len() != command_links.len()
         || audit_records.len() != core.capsule_extensions.len()
@@ -233,6 +235,7 @@ fn capsulate_command_rows(
         None => riffdb_storage_api::seal_and_encode_command_segment_with_metrics_v1(segment)
             .map_err(codec_error)?,
     };
+    let canonical: Arc<[u8]> = Arc::from(encoded_segment.as_bytes());
     if !access.put_command_segment_value(
         commit_key.to_vec(),
         encoded_segment,
@@ -242,7 +245,7 @@ fn capsulate_command_rows(
         return Err(storage_error(StorageErrorKind::InvariantViolation));
     }
     write_durable_command_locators(access, &segment)?;
-    Ok((segment, terminals))
+    Ok((segment, terminals, canonical))
 }
 
 /// Writes the ADR-0165 locator rows that make a segment-owned command
@@ -794,15 +797,16 @@ impl NonEmptyCommandBatch for RedbNonEmptyBatch {
             transitions,
             &command_links,
         )?;
-        let (segment, terminal_records) =
+        let (segment, terminal_records, canonical) =
             capsulate_command_rows(&mut self.core, command_links, records)?;
         let audited = AuditedCommittedBatchV1::new(committed, terminal_records.clone())
             .map_err(invariant_value)?;
         // Request and outbox membership are derived from the canonical segment
         // manifest. Publish their transient accelerators only after durability.
-        let delta = Some(TransientIndexDelta::CommandSegmentPublished(Arc::new(
-            segment,
-        )));
+        let delta = Some(TransientIndexDelta::CommandSegmentPublished(
+            Arc::new(segment),
+            Some(canonical),
+        ));
         flush_index_generation_post_images(&mut self.core)?;
         stage_application_allocator(&self.core.access, self.core.allocator)?;
         self.core
@@ -985,12 +989,14 @@ impl DeferredNonEmptyCommandBatch for RedbNonEmptyBatch {
             transitions,
             &command_links,
         )?;
-        let (segment, terminals) = capsulate_command_rows(&mut self.core, command_links, records)?;
+        let (segment, terminals, canonical) =
+            capsulate_command_rows(&mut self.core, command_links, records)?;
         let unpublished =
             UnpublishedAuditedBatchV1::new(outcomes, terminals).map_err(invariant_value)?;
-        let delta = Some(TransientIndexDelta::CommandSegmentPublished(Arc::new(
-            segment,
-        )));
+        let delta = Some(TransientIndexDelta::CommandSegmentPublished(
+            Arc::new(segment),
+            Some(canonical),
+        ));
         flush_index_generation_post_images(&mut self.core)?;
         stage_application_allocator(&self.core.access, self.core.allocator)?;
         self.core
