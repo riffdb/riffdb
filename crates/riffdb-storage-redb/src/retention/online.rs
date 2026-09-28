@@ -127,7 +127,7 @@ impl RedbOnlineRetentionLane {
         retain_sequences: NonZeroU64,
         max_sequences: NonZeroU64,
     ) -> Result<OnlineRetentionStep, StorageError> {
-        self.step_timed(retain_sequences, max_sequences)
+        self.step_timed(retain_sequences, max_sequences, false)
             .map(|(step, _)| step)
     }
 
@@ -145,11 +145,15 @@ impl RedbOnlineRetentionLane {
         self.shared.wait_for_journal_checkpoint(seen, timeout)
     }
 
-    /// [`Self::step`] together with the step's phase durations.
+    /// [`Self::step`] together with the step's phase durations. A lane woken
+    /// by a finished journal checkpoint passes `after_checkpoint`: that is the
+    /// smallest journal suffix it will see, so the step proceeds whatever the
+    /// suffix size, and the lane's gate-held pacing charges any drain.
     pub fn step_timed(
         &self,
         retain_sequences: NonZeroU64,
         max_sequences: NonZeroU64,
+        after_checkpoint: bool,
     ) -> Result<(OnlineRetentionStep, OnlineRetentionPhases), StorageError> {
         let mut phases = OnlineRetentionPhases::default();
         let (journal_sequence, suffix_transitions) = self.shared.journal_suffix_activity()?;
@@ -157,7 +161,10 @@ impl RedbOnlineRetentionLane {
             .last_journal_sequence
             .swap(journal_sequence, std::sync::atomic::Ordering::AcqRel)
             == journal_sequence;
-        if !idle && suffix_transitions > ONLINE_RETENTION_SMALL_SUFFIX_TRANSITIONS {
+        if !idle
+            && !after_checkpoint
+            && suffix_transitions > ONLINE_RETENTION_SMALL_SUFFIX_TRANSITIONS
+        {
             return Ok((
                 OnlineRetentionStep::Held(OnlineRetentionHold::AwaitingCheckpoint),
                 phases,

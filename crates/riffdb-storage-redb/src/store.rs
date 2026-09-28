@@ -7923,6 +7923,7 @@ impl SharedRedb {
             }
             *checkpoint = None;
             crate::checkpoint_census::CHECKPOINTS.installed();
+            self.note_journal_checkpoint_finished();
             Ok(())
         })();
         match rebase_result {

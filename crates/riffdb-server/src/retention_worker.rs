@@ -411,6 +411,7 @@ fn run_lane(
     status: &RetentionLaneStatus,
     sinks: &RetentionLaneFailureSinks,
 ) {
+    let mut after_checkpoint = false;
     loop {
         if control.stop_requested() {
             status.set(RetentionLaneState::Cancelled);
@@ -419,8 +420,9 @@ fn run_lane(
         // Counted before the attempt, so a checkpoint that finishes during it
         // releases the wait below at once.
         let checkpoints_seen = lane.journal_checkpoints_finished();
+        let woke_on_checkpoint = std::mem::take(&mut after_checkpoint);
         let mut await_checkpoint = false;
-        let (pause, gate_held) = match lane.step_timed(retain, budget) {
+        let (pause, gate_held) = match lane.step_timed(retain, budget, woke_on_checkpoint) {
             Ok((step, phases)) => {
                 status.note_phases(&phases);
                 let pause = match step {
@@ -490,8 +492,11 @@ fn run_lane(
                 if lane
                     .wait_for_journal_checkpoint(checkpoints_seen, RETENTION_LANE_CHECKPOINT_SLICE)
                     != checkpoints_seen
-                    || waiting.elapsed() >= RETENTION_LANE_RECHECK
                 {
+                    after_checkpoint = true;
+                    break;
+                }
+                if waiting.elapsed() >= RETENTION_LANE_RECHECK {
                     break;
                 }
             }
