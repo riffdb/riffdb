@@ -27826,6 +27826,7 @@ work_packages:
     crates/riffdb-catalog/**, crates/riffdb-commit/**,
     crates/riffdb-client-rust/**, crates/riffdb-query-module/**,
     crates/riffdb-query-compiler/**, crates/riffdb-service/fixtures/**,
+    crates/riffdb-proto/examples/**, crates/riffdb-proto/fixtures/**,
     contracts/**, tests/**, fixtures/**, docs/**]
   deliverables:
   - Characterization of serialized payload replacement despite revision increments,
