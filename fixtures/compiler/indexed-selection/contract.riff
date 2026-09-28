@@ -1,0 +1,24 @@
+contract SlotAllocation version 1 {
+  entity Slot {
+    key (pool_id: uuid, slot_id: uuid)
+    field available: bool
+    field holder: uuid
+    index by_available (pool_id, available, slot_id)
+  }
+  aggregate Slots {
+    root Slot
+    partition_by pool_id
+    conflict_key (pool_id)
+  }
+  command Allocate {
+    input request: uuid
+    input pool_id: uuid
+    input holder: uuid
+    idempotency_key request
+    mutate first Slot.by_available(pool_id, true) as slot else NoCapacity {}
+    require available: slot.available else NoCapacity {}
+    set slot.available = false checked_by available
+    set slot.holder = holder checked_by available
+    return Allocated { slot: slot }
+  }
+}

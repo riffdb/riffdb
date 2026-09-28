@@ -27997,3 +27997,59 @@ work_packages:
   - Any widening of arithmetic or fence recognition beyond ADR-0262.
   - Any change to transaction ordering, validation, authorization, or durable execution.
   - Any incompatible reinterpretation of historical artifacts or paths outside this scope.
+
+- id: WP-817
+  name: Atomic indexed selection within one partition
+  tier: guarantee
+  depends_on: [WP-813]
+  objective: Implement ADR-0264 after acceptance. Compile one indexed first-row
+    mutation under input-computable conflict ownership; materialize and revalidate
+    its selection evidence through the ordinary command boundary, including empty
+    results, bounded retries, authorization, atomic durability, and replay.
+  requirements: [TXN-001, TXN-002, CMP-013, CMP-015, PERF-012]
+  required_adrs: [ADR-0264, ADR-0061, ADR-0170, ADR-0252, ADR-0262]
+  allowed_paths: [SPEC.md, work_packages.yaml,
+    adr/0264-atomic-indexed-selection-within-one-partition.md,
+    crates/riffdb-contract-syntax/**, crates/riffdb-contract-compiler/**,
+    crates/riffdb-contract-ir/**, crates/riffdb-invariant/**,
+    crates/riffdb-catalog/**, crates/riffdb-storage-api/**,
+    crates/riffdb-storage-redb/**, crates/riffdb-runtime/**,
+    crates/riffdb-commit/**, crates/riffdb-policy/**,
+    crates/riffdb-service/**, crates/riffdb-cli/**,
+    crates/riffdb-diagnostics/**, crates/riffdb-client-rust/**,
+    crates/riffdb-query-module/**, crates/riffdb-proto/**,
+    crates/riffdb-api-grpc/**, crates/riffdb-api-mcp/**,
+    crates/riffdb-testkit/**, crates/riffdb-testkit-server/**,
+    crates/riffdb-server/**, crates/riffdb-sim/**,
+    contracts/**, tests/**, fixtures/**, docs/**]
+  deliverables:
+  - A failing indexed-selection compiler test before semantic implementation
+  - Contextual first syntax, bounded selector IR and versioning, complete compiler
+    proofs and source-span diagnostics, canonical codec refusal and old-artifact tests
+  - Proof-bearing one-view index/entity/root selection under pre-acquired ownership,
+    generation and row validation for every outcome, and bounded full reevaluation
+  - Ordinary assignment evidence, per-written-aggregate invariants, current policies,
+    atomic effects/outcomes/provenance, and exact uncertain-commit replay
+  - Generated application surfaces, explain output, a free-slot example, deterministic
+    races, memory/redb parity, and process-crash recovery coverage
+  - Shared/independent pool comparison at 1/8/32 clients and bounded selection-work
+    evidence across populations, with explicit contention and fairness limitations
+  - Handbook, compatibility, risk-register, and review notes with all acceptance results
+  acceptance_commands:
+  - ./scripts/acceptance --wp WP-817
+  - ./scripts/ci-all
+  exit_gate: One named command selects and allocates the first eligible indexed row
+    atomically without application-side selection; empty and successful outcomes are
+    transaction-current and replay exactly; no late conflict acquisition, unbounded
+    scan, policy bypass, or change to historical artifact identity is admitted.
+  standing_design_tests:
+    interface_safety: The compiler proves selection scope and all up-front ownership;
+      no caller may supply a range, skip validation, widen the candidate count, replace
+      the idempotency identity during retry, or turn a denial into an empty result.
+    scale: One candidate per evaluation and the existing three-attempt budget, with
+      existing byte/dependency/deadline limits; selection seeks the exact prefix and
+      never scans unrelated partitions or the population of a pool.
+  human_review_triggers:
+  - Any widening beyond ADR-0264, including selected-value conflict ownership.
+  - A selection, no-effect outcome, or grouped execution omits current validation.
+  - A new guarantee conflicts with an accepted record or requires out-of-scope paths.
