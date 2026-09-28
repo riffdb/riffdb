@@ -127,7 +127,7 @@ sequences_per_epoch = 256
 
 Set exactly one of `retained_sequences`, a positive count of commit sequences
 to keep below the durable application head, or `hold = true`.
-`sequences_per_epoch` bounds each step, from 1 through 256 (default 64). An
+`sequences_per_epoch` bounds each step, from 1 through 256 (default 256). An
 absent section is a hold, so a configuration that never names retention prunes
 nothing online. Targets are sequence counts, never ages. Any other key, both
 forms together, or an out-of-range value rejects configuration.
@@ -137,15 +137,16 @@ watermark in steps. Each step is one administration transition through the
 database's single ordered writer. It removes whole command segments, appends the
 chained tombstone, and advances the watermark in one atomic commit. It holds no
 exclusive lease and opens no second writer. A writer waits behind at most the one
-step in progress. After each step the lane rests nineteen times that step's
-duration, so it holds the writer at most about five percent of the time and a
-large backlog compacts gradually rather than at full speed. It plans each step
-without the writer gate and takes the gate only when it has history to remove.
-It never waits for an in-flight journal checkpoint while holding the gate. Once
-it reaches its target or a fence it rechecks about once a second. History still
-in the journal suffix is compacted after the next journal checkpoint, or, once
-the database has been idle since the previous check, after the lane
-materializes the suffix itself. A single command segment larger
+step in progress. After each attempt that took the writer gate, the lane rests
+nineteen times the time it held the gate, so it holds the writer at most about
+five percent of the time and a large backlog compacts gradually rather than at
+full speed. It plans each step without the writer gate and takes the gate only
+when it has history to remove. On a busy database it steps right after each
+journal checkpoint finishes, while little journaled history is waiting to be
+materialized, and it never waits for an in-flight checkpoint while holding the
+gate. Once it reaches its target or a fence it rechecks about once a second.
+When the database has been idle since the previous check, the lane
+materializes the remaining journaled history itself. A single command segment larger
 than the budget is removed alone in its own step, never more than 256 sequences.
 A crash at any point in a step reopens with the watermark either before or after
 that step, and the restarted lane resumes.

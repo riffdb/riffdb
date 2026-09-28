@@ -40,9 +40,8 @@ use crate::config::{RetentionConfig, RetentionTarget};
 /// how stale compaction may fall behind new commits, never a retention age.
 const RETENTION_LANE_RECHECK: Duration = Duration::from_secs(1);
 
-/// How long the lane waits before retrying a step that yielded to an
-/// in-flight asynchronous journal checkpoint.
-const RETENTION_LANE_CHECKPOINT_RETRY: Duration = Duration::from_millis(50);
+/// How often a lane waiting for a journal checkpoint looks for shutdown.
+const RETENTION_LANE_CHECKPOINT_SLICE: Duration = Duration::from_millis(100);
 
 /// ADR-0182 section 7 interference bound: after any attempt that took the
 /// writer gate the lane rests this many times the time it held the gate, so
@@ -417,6 +416,10 @@ fn run_lane(
             status.set(RetentionLaneState::Cancelled);
             return;
         }
+        // Counted before the attempt, so a checkpoint that finishes during it
+        // releases the wait below at once.
+        let checkpoints_seen = lane.journal_checkpoints_finished();
+        let mut await_checkpoint = false;
         let (pause, gate_held) = match lane.step_timed(retain, budget) {
             Ok((step, phases)) => {
                 status.note_phases(&phases);
@@ -429,11 +432,13 @@ fn run_lane(
                     }
                     OnlineRetentionStep::Held(OnlineRetentionHold::CheckpointInFlight) => {
                         status.note_hold(2);
-                        RETENTION_LANE_CHECKPOINT_RETRY
+                        await_checkpoint = true;
+                        Duration::ZERO
                     }
                     OnlineRetentionStep::Held(OnlineRetentionHold::AwaitingCheckpoint) => {
                         status.note_hold(3);
-                        RETENTION_LANE_CHECKPOINT_RETRY
+                        await_checkpoint = true;
+                        Duration::ZERO
                     }
                     OnlineRetentionStep::Held(
                         OnlineRetentionHold::TargetReached | OnlineRetentionHold::RowBoundary,
@@ -473,6 +478,25 @@ fn run_lane(
         let rest = gate_held
             .saturating_mul(RETENTION_LANE_REST_FACTOR)
             .min(RETENTION_LANE_RECHECK.saturating_mul(RETENTION_LANE_REST_FACTOR));
+        if await_checkpoint && rest.is_zero() {
+            // Step right after the next journal checkpoint, while its suffix
+            // is nearly empty; look for shutdown between short waits.
+            let waiting = std::time::Instant::now();
+            loop {
+                if control.stop_requested() {
+                    status.set(RetentionLaneState::Cancelled);
+                    return;
+                }
+                if lane
+                    .wait_for_journal_checkpoint(checkpoints_seen, RETENTION_LANE_CHECKPOINT_SLICE)
+                    != checkpoints_seen
+                    || waiting.elapsed() >= RETENTION_LANE_RECHECK
+                {
+                    break;
+                }
+            }
+            continue;
+        }
         if control.pause(pause.max(rest)) {
             status.set(RetentionLaneState::Cancelled);
             return;

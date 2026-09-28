@@ -651,3 +651,32 @@ fn a_pruned_command_replay_audit_links_its_retained_provenance() {
         "replay audits reopen clean: {findings:?}"
     );
 }
+
+// req: STO-031
+/// The retention lane's checkpoint signal: a journal checkpoint finished by
+/// any direct write releases a waiting lane at once, and a wait with no
+/// checkpoint returns the unchanged count after its timeout.
+#[test]
+fn a_finished_journal_checkpoint_releases_a_waiting_retention_lane() {
+    let path = TestDatabasePath::new("online-retention-checkpoint-signal");
+    prepare_segmented_history(&path.0, true);
+    let ports = open_operational(RedbStore::open(&path.0).expect("open live store"));
+    let lane = ports.online_retention_lane();
+    let seen = lane.journal_checkpoints_finished();
+    assert_eq!(
+        lane.wait_for_journal_checkpoint(seen, std::time::Duration::from_millis(1)),
+        seen,
+        "no checkpoint, no release"
+    );
+    // Journaled commands, then a direct write that drains them: that drain
+    // finishes a journal checkpoint.
+    let batch = (1..=GROUP)
+        .map(|ordinal| command_fixture_at(GROUPS * GROUP + ordinal))
+        .collect::<Vec<_>>();
+    fence_deferred_epoch(&ports, &batch);
+    ports
+        .online_retention_step(sequences(2 * GROUP), sequences(256))
+        .expect("step drains the journal suffix");
+    let after = lane.wait_for_journal_checkpoint(seen, std::time::Duration::from_secs(5));
+    assert!(after > seen, "the drained checkpoint releases the lane");
+}

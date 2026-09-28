@@ -131,6 +131,20 @@ impl RedbOnlineRetentionLane {
             .map(|(step, _)| step)
     }
 
+    /// How many journal checkpoints this process has finished.
+    #[must_use]
+    pub fn journal_checkpoints_finished(&self) -> u64 {
+        self.shared.journal_checkpoints_finished()
+    }
+
+    /// Waits up to `timeout` for a journal checkpoint to finish after `seen`
+    /// (see [`Self::journal_checkpoints_finished`]), returning the current
+    /// count. A lane held for `AwaitingCheckpoint` or `CheckpointInFlight`
+    /// steps right after one, while the journal suffix is nearly empty.
+    pub fn wait_for_journal_checkpoint(&self, seen: u64, timeout: std::time::Duration) -> u64 {
+        self.shared.wait_for_journal_checkpoint(seen, timeout)
+    }
+
     /// [`Self::step`] together with the step's phase durations.
     pub fn step_timed(
         &self,

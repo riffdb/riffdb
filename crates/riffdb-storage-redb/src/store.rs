@@ -442,6 +442,10 @@ pub(crate) struct SharedRedb {
     /// which cannot run while this handle holds the database open, so reads
     /// never re-hash the meta record per call (ADR-0085 A2 hot-path rule).
     retention_watermark: AtomicU64,
+    /// Journal checkpoints finished by this process, with a signal for the
+    /// online retention lane, which steps right after one (WP-811).
+    journal_checkpoints_finished: std::sync::Mutex<u64>,
+    journal_checkpoint_finished: std::sync::Condvar,
     /// Terminal `ExecutionFailed` rows in `IDEMPOTENCY`.
     ///
     /// The checkpoint's `idempotency_count` admits only materialized
@@ -709,6 +713,41 @@ impl SharedRedb {
                     .saturating_add(runtime.unpublished_transitions),
             )
         }))
+    }
+
+    fn note_journal_checkpoint_finished(&self) {
+        let mut finished = self
+            .journal_checkpoints_finished
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        *finished = finished.wrapping_add(1);
+        self.journal_checkpoint_finished.notify_all();
+    }
+
+    /// The number of journal checkpoints finished so far.
+    pub(crate) fn journal_checkpoints_finished(&self) -> u64 {
+        *self
+            .journal_checkpoints_finished
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+
+    /// Waits up to `timeout` for a journal checkpoint to finish after
+    /// `seen`, returning the current count. Holds no storage lock or gate.
+    pub(crate) fn wait_for_journal_checkpoint(
+        &self,
+        seen: u64,
+        timeout: std::time::Duration,
+    ) -> u64 {
+        let finished = self
+            .journal_checkpoints_finished
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let (finished, _) = self
+            .journal_checkpoint_finished
+            .wait_timeout_while(finished, timeout, |finished| *finished == seen)
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        *finished
     }
 
     pub(crate) fn transient_index_rebuilds(&self) -> u64 {
@@ -2534,6 +2573,8 @@ impl RedbStore {
                 fresh_locator_history_fallback_scans: AtomicU64::new(0),
                 fresh_locator_history_fallback_rows: AtomicU64::new(0),
                 retention_watermark: AtomicU64::new(0),
+                journal_checkpoints_finished: std::sync::Mutex::new(0),
+                journal_checkpoint_finished: std::sync::Condvar::new(),
                 terminal_execution_failure_rows: AtomicU64::new(0),
                 checkpoint_count_rows_walked: AtomicU64::new(0),
                 changelog_port,
@@ -8005,6 +8046,7 @@ impl SharedRedb {
         }
         *frontier = Some(checkpoint);
         self.clear_composite_publication()?;
+        self.note_journal_checkpoint_finished();
         Ok(())
     }
 
