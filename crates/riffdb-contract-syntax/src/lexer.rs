@@ -213,6 +213,8 @@ pub(crate) enum Token {
     Set,
     #[token("overwrite")]
     Overwrite,
+    #[token("checked_by")]
+    CheckedBy,
     #[token("embed")]
     Embed,
     #[token("emit")]

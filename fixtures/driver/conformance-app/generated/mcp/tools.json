@@ -1,5 +1,5 @@
 {
-  "application_manifest_hash": "0fa8a8ded711b22ca6fdc518abf62a7986df39b182be283a6f3a77aa0752b2cd",
+  "application_manifest_hash": "bf6f903c4f358f0cb8adb03c5544a7414f288f0da1261d847af3843dd0beada0",
   "commands": [
     {
       "annotations": {
@@ -8,7 +8,7 @@
         "openWorldHint": false,
         "readOnlyHint": false
       },
-      "contract_bundle_hash": "2fcc01955fcad80a8b6ac5fc6149e95b96889d29182301eb416b8cd1fa70bb0a",
+      "contract_bundle_hash": "395eec70cddc7d253e5b518241b19e26d44b750885eabc2c11550a34505ffb6f",
       "description": "Execute the exact ConsumeToken compiled command from contract DriverConformance.",
       "input_schema": {
         "$schema": "https://json-schema.org/draft/2020-12/schema",
@@ -430,7 +430,7 @@
         "openWorldHint": false,
         "readOnlyHint": false
       },
-      "contract_bundle_hash": "2fcc01955fcad80a8b6ac5fc6149e95b96889d29182301eb416b8cd1fa70bb0a",
+      "contract_bundle_hash": "395eec70cddc7d253e5b518241b19e26d44b750885eabc2c11550a34505ffb6f",
       "description": "Execute the exact CreateItem compiled command from contract DriverConformance.",
       "input_schema": {
         "$schema": "https://json-schema.org/draft/2020-12/schema",
@@ -724,7 +724,7 @@
       },
       "name": "driver_conformance_create_item",
       "operation_name": "CreateItem",
-      "plan_hash": "87a5eec76b98cff7209bae2bb535864c4ba5c259770db96dd159c8c407dc3273",
+      "plan_hash": "1864a0fb9a8ca3f70f973fc26aaca832d3dfe7e08155d49cfbd4b4f0f1422a1c",
       "result_schema": {
         "$schema": "https://json-schema.org/draft/2020-12/schema",
         "oneOf": [
@@ -769,7 +769,7 @@
         "openWorldHint": false,
         "readOnlyHint": false
       },
-      "contract_bundle_hash": "2fcc01955fcad80a8b6ac5fc6149e95b96889d29182301eb416b8cd1fa70bb0a",
+      "contract_bundle_hash": "395eec70cddc7d253e5b518241b19e26d44b750885eabc2c11550a34505ffb6f",
       "description": "Execute the exact IssueToken compiled command from contract DriverConformance.",
       "input_schema": {
         "$schema": "https://json-schema.org/draft/2020-12/schema",
@@ -1109,7 +1109,7 @@
       },
       "name": "driver_conformance_issue_token",
       "operation_name": "IssueToken",
-      "plan_hash": "dcb17bcfe14d85d58fc46e49c031b1bd3642c8f9beca51101c1e368fb05eba86",
+      "plan_hash": "ca76f7e3dd6e5a607ac5d503cd1e9a705af77293b24c8a5e312e92eb0e190d44",
       "result_schema": {
         "$schema": "https://json-schema.org/draft/2020-12/schema",
         "oneOf": [
@@ -1181,7 +1181,7 @@
         ],
         "type": "object"
       },
-      "module_hash": "86063e5371ce90e9ef93b7ba8c80f9b82a88a5e976b35149064095cacb51306e",
+      "module_hash": "f6dbc1558c2509767eb03cd83d6a2405185da2776de30392c413487f8a8f8476",
       "name": "driver_conformance_item_secret",
       "operation_name": "ItemSecret",
       "result_schema": {
@@ -1339,7 +1339,7 @@
           ]
         }
       },
-      "module_hash": "86063e5371ce90e9ef93b7ba8c80f9b82a88a5e976b35149064095cacb51306e",
+      "module_hash": "f6dbc1558c2509767eb03cd83d6a2405185da2776de30392c413487f8a8f8476",
       "name": "driver_conformance_item_page",
       "operation_name": "ItemPage",
       "result_schema": {
@@ -1547,7 +1547,7 @@
           ]
         }
       },
-      "module_hash": "86063e5371ce90e9ef93b7ba8c80f9b82a88a5e976b35149064095cacb51306e",
+      "module_hash": "f6dbc1558c2509767eb03cd83d6a2405185da2776de30392c413487f8a8f8476",
       "name": "driver_conformance_search_items",
       "operation_name": "SearchItems",
       "result_schema": {

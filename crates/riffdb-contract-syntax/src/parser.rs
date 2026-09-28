@@ -1487,6 +1487,9 @@ impl NodeCounter {
                 self.add(1, effect.span)?;
                 self.path(&set.target)?;
                 self.expression(&set.value)?;
+                if let Some(name) = &set.checked_by {
+                    self.name(name)?;
+                }
                 self.collection(set.reveals.len(), MAX_LIST_ITEMS, effect.span)?;
                 for reveal in &set.reveals {
                     self.add(1, reveal.span)?;

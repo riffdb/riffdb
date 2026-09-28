@@ -1,7 +1,7 @@
 format=riffdb-optional-context-fixture-v1
 lineage=OptionalArithmetic
 command_id=1
-plan_hash=fad179e67654bcb0d2f2cd1cfc78ea6f3708451d098953da44adf78d39fcec47
+plan_hash=874db02b8aff89a79f42b7e9194d933f880a0b04e9a63bccc65c232af8c1026a
 source_expression=amount + 1
 source_span=395..405
 expression_id=4

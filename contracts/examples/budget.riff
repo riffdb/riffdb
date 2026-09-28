@@ -74,7 +74,7 @@ contract LegalSpend version 1 {
       }
 
     set budget.allocated_amount = budget.allocated_amount + amount
-    set budget.updated_at = tx.time
+    set budget.updated_at = tx.time checked_by sufficient_budget
 
     emit BudgetAllocated {
       organization_id: organization_id,

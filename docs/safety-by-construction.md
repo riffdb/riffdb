@@ -127,7 +127,7 @@ silently repairs or chooses a winner.
 The stable application profile must prevent:
 
 - generic insert/update/delete and host-language transaction callbacks;
-- lost updates and write skew for declared command dependencies and invariants;
+- commits based on invalidated command dependencies or violating declared invariants;
 - duplicate mutation after uncertain retry;
 - partial mutation/outcome/event/provenance/outbox commits;
 - raw N+1 and multi-snapshot page assembly;
@@ -139,6 +139,14 @@ The stable application profile must prevent:
 - cumulative query work above the admitted budget.
 
 ## Claim boundary
+
+RiffDB validates transaction-current dependencies. This does not establish
+freshness of caller intent: two correctly serialized replacement commands can
+still overwrite an edit. Per-assignment evidence distinguishes arithmetic,
+explicitly associated business checks, and caller-version fences. Only a fence
+checks a supplied caller revision, and its effectiveness depends on the
+application maintaining that revision protocol. See the
+[write evidence cookbook](contracts/COMMAND-INVARIANT-COOKBOOK.md#declare-the-evidence-for-each-write).
 
 RiffDB proves declared semantics. It cannot infer a business rule absent from the
 contract, infer that several separately named commands were intended as one

@@ -799,7 +799,7 @@ contract BulkCreate version 1 {
             .find(|command| command.name() == "PutTuples")
             .expect("bulk command");
         let expansion = plan.collection_expansion().expect("collection expansion");
-        assert_eq!(bundle.ir_version(), 5);
+        assert_eq!(bundle.ir_version(), 25);
         assert_eq!(expansion.minimum_elements(), 1);
         assert_eq!(expansion.maximum_elements(), 8);
         assert_eq!(expansion.binding_count(), 1);
@@ -865,8 +865,8 @@ contract AggregateBulk version 1 {
 }
 "#;
         let bundle = compile_contract_source(source).expect("aggregate collection compiles");
-        assert_eq!(bundle.grammar_version(), 16);
-        assert_eq!(bundle.ir_version(), 16);
+        assert_eq!(bundle.grammar_version(), 25);
+        assert_eq!(bundle.ir_version(), 25);
         let plan = bundle
             .commands()
             .iter()
@@ -929,9 +929,9 @@ contract AtomicTagsRepro version 1 {
 }
 "#;
         let bundle = compile_contract_source(source).expect("large atomic command compiles");
-        assert_eq!(bundle.format_version(), 22);
-        assert_eq!(bundle.grammar_version(), 22);
-        assert_eq!(bundle.ir_version(), 22);
+        assert_eq!(bundle.format_version(), 25);
+        assert_eq!(bundle.grammar_version(), 25);
+        assert_eq!(bundle.ir_version(), 25);
         let plan = &bundle.commands()[0];
         assert!(plan.maximum_request_bytes() > MAX_APPLICATION_REQUEST_BYTES_V1);
         assert!(plan.maximum_request_bytes() <= MAX_ATOMIC_COMMAND_REQUEST_BYTES_V2);
@@ -1197,8 +1197,8 @@ contract NestedAggregateBudget version 1 {
 
         let v1 = compile_contract_source(include_str!("../../../contracts/examples/budget.riff"))
             .expect("legacy contract compiles");
-        assert_eq!(v1.grammar_version(), 1);
-        assert_eq!(v1.ir_version(), 1);
+        assert_eq!(v1.grammar_version(), 25);
+        assert_eq!(v1.ir_version(), 25);
     }
 
     #[test]

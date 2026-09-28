@@ -27,11 +27,15 @@ fn plan_hash_fixture_text_drives_renderer_output() {
     // This intentionally isolates renderer behavior. It is not a claim that the
     // mutated text remains consistent with the compiler-owned binary bundle.
     let replacement = "0101010101010101010101010101010101010101010101010101010101010101";
-    let changed_plans = fixtures.command_plans.replacen(
-        "e128287fe0d5245e6aaf36f3c6045127e24869e52ee40c7e1fdcc76e5a3d74ff",
-        replacement,
-        1,
-    );
+    let original_hash = fixtures
+        .command_plans
+        .lines()
+        .find_map(|line| line.strip_prefix("plan_hash="))
+        .expect("first command hash");
+    let changed_plans = fixtures
+        .command_plans
+        .replacen(original_hash, replacement, 1);
+    assert_ne!(changed_plans, fixtures.command_plans);
     let generated = generate_from(FixtureSet {
         command_plans: &changed_plans,
         ..fixtures

@@ -198,9 +198,9 @@ contract AgentOrders version 1 {
       }
     set inventory.available = inventory.available - quantity
     set inventory.reserved = inventory.reserved + quantity
-    set inventory.updated_at = tx.time
-    set order.status = OrderStatus.Reserved
-    set order.updated_at = tx.time
+    set inventory.updated_at = tx.time checked_by sufficient_stock
+    set order.status = OrderStatus.Reserved checked_by order_open
+    set order.updated_at = tx.time checked_by order_open
     return Reserved { order: order, inventory: inventory }
   }
 }

@@ -21,8 +21,8 @@ contract InitializedStateTransitionShape version 1 {
       active: false,
       revision: 0,
     }
-    set state.active = true
-    set state.payload = payload
+    overwrite state.active = true
+    overwrite state.payload = payload
     set state.revision = state.revision + 1
     return Written { revision: state.revision }
   }

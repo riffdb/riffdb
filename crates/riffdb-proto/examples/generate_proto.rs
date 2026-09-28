@@ -1058,7 +1058,7 @@ const REPRESENTATIVE_OUTCOME_SCHEMA_HASH: &str =
     "f711c1596dee5a94f03d6b727cc47ebc9a35e6f9a35cd6a84b52cdebd3850f6c";
 const REPRESENTATIVE_BUNDLE_HASH_PATH: &str = "fixtures/compiler/bundle-hash.txt";
 const REPRESENTATIVE_BUNDLE_HASH: &str =
-    "c378308ef865886bb10b9da26515c715b5e9a9fcc9c8737584df6db5bd2e889a";
+    "ea0c29158ab4205c92a0e2d79dfb50563814ee2c16e32033a548d1107a0c9994";
 
 struct OperationSchemaCheckpoint {
     manifest: String,

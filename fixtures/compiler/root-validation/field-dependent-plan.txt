@@ -3,7 +3,7 @@ format=riffdb-command-plan-fixture-v1
 [command 1]
 name=ChangeChild
 contract_version=1
-plan_hash=1d5fcee89ead98515301a3b9333adcd3e4a205b099f9ca27d3c27d79ab12df5d
+plan_hash=50e1af23902fb8e2661965d97e745224c7e716706785028b7898c4b17b50321d
 execution=idempotent-mutation
 retry=bounded-full-reevaluation
 capability=invoke-command:RootValidationFieldFixture:1

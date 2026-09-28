@@ -127,7 +127,7 @@ contract FrameworkProfileAcceptance version 1 {
     // at or after expires_at refuses with the declared typed outcome.
     require verification_token_unexpired: tx.time < token.expires_at
       else VerificationTokenExpired {}
-    set token.consumed = true
+    set token.consumed = true checked_by verification_token_unused
     return VerificationTokenConsumed {
       verification_token_id: verification_token_id,
       user_id: token.user_id
@@ -149,7 +149,7 @@ contract FrameworkProfileAcceptance version 1 {
     transition Refresh on session revision expected_revision
       stale RefreshSessionStale {}
       illegal RefreshSessionRevoked {}
-    set session.token_digest = successor_token_digest
+    set session.token_digest = successor_token_digest checked_by refresh_unexpired
     return SessionRefreshed { session: session reveals session.token_digest }
   }
 

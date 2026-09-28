@@ -91,36 +91,42 @@ The compiler rejects a relationship-changing command without the dominating
 target read. Required references use required fields; optional relationships
 must use a contract-supported optional shape.
 
-## Say which writes are last-writer-wins
+## Declare the evidence for each write
 
-A write is spelled `set` when the command constrains the record's prior value,
-and `overwrite` when it does not. The compiler proves which one is true and
-refuses the other spelling, so the two cannot be confused and a write's
-concurrency semantics are legible where the write is.
+`set` and `overwrite` are checked per assignment. Reading another stored field,
+incrementing revision, or taking a decision branch does not authorize an
+unrelated replacement `set`.
 
-A binding is constrained when a `require`, a decision arm's predicate, or the
-value of any write to it reads one of its stored fields. That makes it per
-record, not per field: a command that bumps `state.revision = state.revision +
-1` constrains `state`, so its other writes to `state` are `set` too.
+| Evidence | What it establishes | What it does not establish |
+|---|---|---|
+| Initialization | The binding is created without a prior value | Freshness of caller-supplied values |
+| State-derived update | The target is changed by a same-field arithmetic delta | Freshness or business relevance of that delta |
+| Named business check | A named requirement dominates and reads the target binding | That the author's chosen predicate captures stale caller intent |
+| Caller-version fence | The expected root revision matches and advances atomically | That every other command maintains the same revision protocol |
+| Explicit overwrite | The author declares replacement without qualifying evidence | A precondition on the replaced value |
+
+For arithmetic, this POC recognizes only `target + delta`, `delta + target`,
+and `target - delta`, using existing checked numeric types. Delta may read
+inputs, constants, and keys but no stored state. `old * 0 + replacement` and
+reading a different target field do not qualify.
+
+Associate a business transition explicitly:
 
 ```riff
 mutate Slot(tenant_id, slot_id) as slot else SlotMissing {}
 require is_free: slot.free else SlotTaken {}
-set slot.free = false
-set slot.held_by = holder
+set slot.free = false checked_by is_free
+set slot.held_by = holder checked_by is_free
 ```
 
-Delete the `require` and the command stops compiling rather than quietly
-becoming last-writer-wins. That is the point: two callers would both succeed
-and the second would silently replace the first holder.
+Removing `is_free` makes these associations fail compilation. The compiler
+checks the requirement's scope, execution order, and stored-state dependency.
+The author asserts its relevance: even a weak predicate must never be read as
+a proof of caller freshness. An invalid association fails even if another
+proof would admit the write. Use one name after the value and before any
+`reveals` annotation.
 
-Not every unconditional write is a mistake. Replacing a display name, or a
-relationship the caller names outright as above, is last-writer-wins by intent.
-Write `overwrite` and it compiles; a reviewer then sees the choice instead of
-having to reconstruct it. An `overwrite` is refused on a `create`, which has no
-prior value to overwrite.
-
-A root revision fence also protects children of that exact root:
+Use an expected revision for replacement edits:
 
 ```riff
 mutate Parent(tenant_id, parent_id) as parent else ParentMissing {}
@@ -130,19 +136,32 @@ set parent.revision = parent.revision + 1
 set item.value = value
 ```
 
-The root revision and input must both be `i64` or both `u64`. The comparison
-and increment must be unconditional; either operand order works. The compiler
-matches the aggregate and every root-key argument. Removing either the
-comparison or increment makes the child `set` fail compilation. A fence on a
-different root does not protect this child. Arithmetic overflow refuses the
-command rather than wrapping the revision. Invariants constrain final state;
-they do not guard a write against a stale caller.
+The same fence covers replacement fields on `parent` itself. Merely incrementing
+`parent.revision` does not. The comparison and increment must be unconditional;
+revision and input must both be `i64` or both `u64`, and the increment is exactly
+one, with either operand order. Children must belong to the same aggregate and
+match every root-key argument. Overflow refuses the command. Relevant writers
+must advance this revision, and callers must send the revision they observed;
+the compiler does not enforce that protocol across all commands.
 
-This POC recognizes this exact fence shape, not arbitrary equivalent
-predicates, conditional fences, or arbitrary revision arithmetic. Existing
-contracts that spelled a now-proven fenced child write `overwrite` must use
-`set` when recompiled, changing the plan hash and requiring the normal lock
-update. Already deployed plans retain their behavior.
+A deliberate replacement without these proofs uses `overwrite`. It can coexist
+with a revision increment or an independent business check. Creation uses
+`set`; initialized bindings are checked for their existing-row case. An
+invariant, an unassociated requirement, and a decision predicate do not count
+as per-write evidence. Current decision requirements execute after arm effects,
+so they cannot be associated as dominating checks. Bulk outer requirements
+execute after element effects; they cannot justify those element assignments.
+
+`riffdb contract explain` reports every assignment occurrence and its evidence,
+including decision-arm locations and requirement/fence references. Multiple
+proofs are preserved. `RDB-C048` identifies a `set` without evidence, `RDB-C049`
+a contradictory `overwrite`, and `RDB-C050` an invalid business association.
+
+Newly compiled assignment-bearing plans use grammar, IR, and bundle V25. Their
+hashes and application locks change. Review each affected contract, then use
+the normal lock-writing workflow. Existing deployed artifacts retain their
+behavior; explain labels their classification as legacy dependency evidence.
+They acquire the new checks only when their source is migrated and recompiled.
 
 ## Unique values
 

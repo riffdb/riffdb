@@ -339,10 +339,13 @@ disk will not recover any.
 
 ## What a command cannot express
 
-The safety claim is that an application's writes are proven before they run. It
-holds for what a command can express, and that boundary is narrower than the
-patterns an ordinary multi-tenant application reaches for. Three limits set it,
-and they compose:
+The compiler proves bounded structural properties of application writes. It
+cannot infer the relevance of an arbitrary business predicate or the freshness
+of an input delta. `checked_by` makes business associations explicit;
+caller-version fences additionally depend on a consistently advanced revision
+protocol. See the [write cookbook](contracts/COMMAND-INVARIANT-COOKBOOK.md#declare-the-evidence-for-each-write).
+
+The command language also has three structural limits:
 
 - A command reads by complete key. A write-influencing indexed range read is
   rejected, and no future one is admitted without accepted static target
@@ -368,8 +371,10 @@ read a bounded page, choose, then invoke a command naming that target by
 complete key. That is the intended idiom and it is safe *when the command
 re-checks the condition the choice depended on*, because a losing choice then
 becomes a declared outcome rather than a lost update. The compiler requires
-`set` for writes protected by a local pre-image dependency or a proven
-same-root revision fence, and explicit `overwrite` for last-writer-wins.
+`set` for narrow same-field arithmetic, a named business association, or a
+proven same-root revision fence, and explicit `overwrite` for replacement
+without those proofs. Only the fence checks a supplied caller revision; a
+business association does not prove the predicate is relevant to caller intent.
 The root fence must unconditionally compare an integer revision to an input
 and increment it by one; arbitrary equivalent predicates and conditional
 fences are not inferred. Invariants alone do not establish this protection.

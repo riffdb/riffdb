@@ -4,7 +4,7 @@
 
 use riffdb_contract_compiler::CompilerDiagnosticCode;
 use riffdb_contract_compiler::compile_contract_source;
-use riffdb_contract_ir::{BUNDLE_FORMAT_VERSION_V10, ContractBundle, Instruction};
+use riffdb_contract_ir::{BUNDLE_FORMAT_VERSION_V25, ContractBundle, Instruction};
 
 const REIMPORT_CONTRACT: &str = include_str!("../../../fixtures/compiler/reimport/contract.riff");
 
@@ -19,7 +19,7 @@ fn lowers_exact_workflow_records_to_a_distinct_create_only_command_class() {
         .expect("reimport plan");
 
     assert!(command.is_reimport());
-    assert_eq!(bundle.format_version(), BUNDLE_FORMAT_VERSION_V10);
+    assert_eq!(bundle.format_version(), BUNDLE_FORMAT_VERSION_V25);
     assert!(
         bundle.mcp_command_names().entries().is_empty(),
         "reimport commands must not enter application MCP discovery"

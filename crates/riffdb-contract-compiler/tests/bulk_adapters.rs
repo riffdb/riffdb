@@ -26,7 +26,7 @@ fn adapter_collection_sources_compile_to_one_bounded_v5_plan() {
         let bundle = compile_contract_source(source).unwrap_or_else(|error| {
             panic!("{name} bounded collection source must compile: {error}")
         });
-        assert_eq!(bundle.ir_version(), 5, "{name}");
+        assert_eq!(bundle.ir_version(), 25, "{name}");
         assert_eq!(bundle.commands().len(), 1, "{name}");
         let expansion = bundle.commands()[0]
             .collection_expansion()
@@ -57,5 +57,5 @@ fn neutral_index_rich_hundred_element_command_passes_correlated_budgets() {
 
     assert_eq!(expansion.maximum_elements(), 100);
     assert_eq!(expansion.maximum_aggregate_element_bytes(), Some(900_000));
-    assert_eq!(bundle.ir_version(), 16);
+    assert_eq!(bundle.ir_version(), 25);
 }

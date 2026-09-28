@@ -5,13 +5,32 @@ use super::*;
 
 #[test]
 fn revision_increment_alone_allows_serialized_payload_replacement() {
-    let (bundle, first_input) = initialized_state_fixture();
+    let bundle = ContractBundle::decode(include_bytes!(
+        "../../../../fixtures/compatibility/write-evidence-legacy/initialized-state-transition.bin"
+    ))
+    .expect("historical artifact");
+    let first_input = input_record(
+        command(&bundle, "PutState").input().record(),
+        [
+            ("request_id", CanonicalValue::Uuid([0x30; 16])),
+            ("organization_id", CanonicalValue::Uuid([0x31; 16])),
+            ("state_id", CanonicalValue::Uuid([0x32; 16])),
+            (
+                "payload",
+                CanonicalValue::Bytes(CanonicalBytes::new(vec![0x99]).expect("payload")),
+            ),
+        ],
+    );
     let plan = command(&bundle, "PutState");
     assert!(
         riffdb_contract_ir::CommandExplain::from_plan(plan)
             .unguarded_writes()
             .is_empty(),
-        "the current compiler classifies the payload replacement as guarded"
+        "the historical compiler classified the payload replacement as guarded"
+    );
+    assert!(
+        plan.write_proofs().is_none(),
+        "legacy artifacts are not reinterpreted"
     );
     let target = derive_binding_target(plan, &first_input, 0);
     let entity = bundle.schema().entities().first().expect("state entity");

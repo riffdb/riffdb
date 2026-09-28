@@ -497,6 +497,8 @@ pub(crate) struct HirBinding {
 
 #[derive(Clone, Debug)]
 pub(crate) struct HirRequirement {
+    pub(crate) name: String,
+    pub(crate) collection_local: bool,
     pub(crate) name_span: Span,
     pub(crate) condition: HirExpressionRoot,
     pub(crate) rejection: HirOutcome,
@@ -538,6 +540,8 @@ pub(crate) enum HirEffect {
         /// Which spelling the author used, checked against the classification
         /// this command actually proves (ADR-0256).
         spelling: riffdb_contract_syntax::ast::WriteSpelling,
+        checked_by: Option<Spanned<String>>,
+        collection_local: bool,
         binding: BindingId,
         field: FieldId,
         value: HirExpressionRoot,
@@ -3107,6 +3111,8 @@ fn lower_commands(
                 continue;
             };
             requirements.push(HirRequirement {
+                name: requirement.value.name.value.clone(),
+                collection_local,
                 name_span: requirement.value.name.span,
                 condition,
                 rejection,
@@ -3250,6 +3256,8 @@ fn lower_commands(
                     effects.push(HirEffect::Set {
                         target_span: set.target.span,
                         spelling: set.spelling,
+                        checked_by: set.checked_by.clone(),
+                        collection_local,
                         binding: binding.id,
                         field: field.id,
                         value,
@@ -3744,6 +3752,8 @@ fn lower_commands(
                 // Compiler-owned initialization of a freshly bound workflow
                 // state. There is no prior value for an author to constrain.
                 spelling: riffdb_contract_syntax::ast::WriteSpelling::Set,
+                checked_by: None,
+                collection_local: binding.collection_local,
                 binding: binding.id,
                 field: workflow.state_field,
                 value: HirExpressionRoot {
@@ -4125,6 +4135,7 @@ fn normalize_reimport_command(
                     // A create has no pre-image, so this write cannot be a
                     // lost update and the classification does not apply.
                     spelling: riffdb_contract_syntax::ast::WriteSpelling::Set,
+                    checked_by: None,
                     target: Spanned::new(target, target_span),
                     value: path_expression(&record_name, record_span, field),
                     reveals: Vec::new(),

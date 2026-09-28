@@ -2590,7 +2590,8 @@
             "21",
             "22",
             "23",
-            "24"
+            "24",
+            "25"
           ]
         }
       ],
@@ -2618,7 +2619,8 @@
         "21",
         "22",
         "23",
-        "24"
+        "24",
+        "25"
       ],
       "writable_identities": [
         "1",
@@ -2644,7 +2646,8 @@
         "21",
         "22",
         "23",
-        "24"
+        "24",
+        "25"
       ],
       "current_identities": [
         "1",
@@ -2670,7 +2673,8 @@
         "21",
         "22",
         "23",
-        "24"
+        "24",
+        "25"
       ],
       "writer_policy": "least_sufficient",
       "compatibility_rule": "The compiler emits the oldest bundle capable of representing the exact contract without loss.",
@@ -2701,7 +2705,8 @@
           "21",
           "22",
           "23",
-          "24"
+          "24",
+          "25"
         ],
         "read_only": [],
         "retirement_candidate": [],
@@ -2758,7 +2763,8 @@
             "21",
             "22",
             "23",
-            "24"
+            "24",
+            "25"
           ]
         }
       ],
@@ -2786,7 +2792,8 @@
         "21",
         "22",
         "23",
-        "24"
+        "24",
+        "25"
       ],
       "writable_identities": [
         "1",
@@ -2812,7 +2819,8 @@
         "21",
         "22",
         "23",
-        "24"
+        "24",
+        "25"
       ],
       "current_identities": [
         "1",
@@ -2838,7 +2846,8 @@
         "21",
         "22",
         "23",
-        "24"
+        "24",
+        "25"
       ],
       "writer_policy": "least_sufficient",
       "compatibility_rule": "Grammar identity advances only for source constructs that require a distinct checked representation.",
@@ -2869,7 +2878,8 @@
           "21",
           "22",
           "23",
-          "24"
+          "24",
+          "25"
         ],
         "read_only": [],
         "retirement_candidate": [],
@@ -2925,7 +2935,8 @@
             "21",
             "22",
             "23",
-            "24"
+            "24",
+            "25"
           ]
         }
       ],
@@ -2953,7 +2964,8 @@
         "21",
         "22",
         "23",
-        "24"
+        "24",
+        "25"
       ],
       "writable_identities": [
         "1",
@@ -2979,7 +2991,8 @@
         "21",
         "22",
         "23",
-        "24"
+        "24",
+        "25"
       ],
       "current_identities": [
         "1",
@@ -3005,7 +3018,8 @@
         "21",
         "22",
         "23",
-        "24"
+        "24",
+        "25"
       ],
       "writer_policy": "least_sufficient",
       "compatibility_rule": "IR identity is selected with the bundle from visible static dependencies and exact semantics.",
@@ -3036,7 +3050,8 @@
           "21",
           "22",
           "23",
-          "24"
+          "24",
+          "25"
         ],
         "read_only": [],
         "retirement_candidate": [],

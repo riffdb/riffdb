@@ -118,6 +118,7 @@ impl WorkflowLeaseExplain {
 /// A bounded stable-ID-only command explanation.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct CommandExplain {
+    write_proofs: Option<Vec<crate::WriteProof>>,
     command_id: CommandId,
     execution_class: ExecutionClass,
     partition_component_count: usize,
@@ -149,6 +150,12 @@ pub struct CommandExplain {
 }
 
 impl CommandExplain {
+    /// Per-assignment evidence, or None for historical dependency classification.
+    #[must_use]
+    pub fn write_proofs(&self) -> Option<&[crate::WriteProof]> {
+        self.write_proofs.as_deref()
+    }
+
     /// Derives explain metadata without evaluating inputs or exposing values.
     #[must_use]
     pub fn from_plan(plan: &CommandPlan) -> Self {
@@ -390,6 +397,7 @@ impl CommandExplain {
             })
             .collect();
         Self {
+            write_proofs: plan.write_proofs().map(<[_]>::to_vec),
             command_id: plan.command_id(),
             execution_class: plan.execution_class(),
             partition_component_count: plan.locality().partition_schema().components().len(),
@@ -772,6 +780,27 @@ impl CommandExplain {
                 read.entity_type().get(),
                 expressions,
                 fields
+            );
+        }
+        if let Some(proofs) = &self.write_proofs {
+            for proof in proofs {
+                let _ = writeln!(
+                    output,
+                    "write-proof:{:?} evidence={:?}",
+                    proof.location(),
+                    proof.evidence()
+                );
+            }
+            if !proofs.is_empty() {
+                let _ = writeln!(
+                    output,
+                    "write-proof-limits: business relevance is author-asserted; arithmetic deltas do not prove caller freshness; version fences require a consistently advanced revision protocol"
+                );
+            }
+        } else if !self.classified_writes.is_empty() {
+            let _ = writeln!(
+                output,
+                "write-proof: legacy dependency classification; no ADR-0262 evidence"
             );
         }
         for (binding, field) in &self.write_fields {

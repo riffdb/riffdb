@@ -10,6 +10,9 @@ expression:5 type=ValueType(Uuid) op=collection-element-field:3
 partition:expr=0 purpose=Partition(AggregateTypeId(1)) components=1
 conflict:0 purpose=Conflict(AggregateTypeId(1)) expressions=[0,1]
 binding:0 mode=Create entity=1 complete=false reads=[]
+write-proof:Instruction(0) evidence=[Initialization]
+write-proof:Instruction(1) evidence=[Initialization]
+write-proof-limits: business relevance is author-asserted; arithmetic deltas do not prove caller freshness; version fences require a consistently advanced revision protocol
 write:0:1 guard=set
 write:0:2 guard=set
 event:1 fields=[1,2]

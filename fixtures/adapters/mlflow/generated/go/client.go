@@ -8,10 +8,10 @@ import (
 	riffdb "riffdb.dev/application"
 )
 
-const QueryModuleHash = "74192497df9e7731cada80360b195d497f701aa0d59d8103be533b1fd21e1ba7"
+const QueryModuleHash = "f82464a4d7320b9ce20f43a6e3ed40d90776ecf5b3e2d5e841ab7847fc7d23ab"
 const ContractLineage = "MlflowScheduler"
 const ContractVersion uint64 = 1
-const ContractBundleHash = "5ac88d626905880c16ac48674dad8592719409bdca81fb9b4b22968ab06dfdf7"
+const ContractBundleHash = "d68893a9c5cf2ee88e3c660a2e06b2b7c7d85761e9e5ddbc678e7bbb19b96a72"
 
 type QueryOptions = riffdb.Options
 type QueryIdentity struct { ContractLineage string; ContractVersion uint64; ContractBundleHash string; ModuleHash string; QueryName string; PlanHash string }
@@ -196,7 +196,7 @@ raw, err = requiredField(fields, "organization_id"); if err != nil { return resu
 raw, err = requiredField(fields, "lease_expires_at"); if err != nil { return result, err }; result.LeaseExpiresAt, err = riffdb.DecodeOptional(raw, func(item riffdb.Value) (riffdb.Instant, error) { return riffdb.TimestampValue(item) }); if err != nil { return result, err }
 return result, nil }
 
-const DueRunQueryPlanHash = "05929bc3ab03b5fe7ab392f8b08f85b203ef381bac39652d1eec6ab27ae8b316"
+const DueRunQueryPlanHash = "6c42c7993f37e289d85281bf44f36700e025728a48b0ed8995c0ce6728f92202"
 var DueRunOperation = riffdb.Operation{Name: "mlflow_scheduler_due_run", InputSchemaHash: "9f0567daf98e0420fbc3c101d206c78dd315302aff10473c1e454b2c5ea22776"}
 func decodeDueRunResult(value riffdb.Value) (DueRunResult, error) { fields, err := riffdb.RecordFields(value); if err != nil { return nil, err }; outcomeValue, err := requiredField(fields, "outcome"); if err != nil { return nil, err }; outcome, err := riffdb.EnumValue(outcomeValue); if err != nil { return nil, err }; var raw riffdb.Value; switch outcome {
 case "Found": result := DueRunFound{Outcome: outcome}

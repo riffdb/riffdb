@@ -31,7 +31,7 @@ contract CommandDecisionFixture version 1 {
     decide state {
       when state.active == false => apply {
         create Change(organization_id, state_id, change_id) as change else ChangeExists {}
-        set state.active = true
+        overwrite state.active = true
         set state.revision = state.revision + 1
         set change.recorded = true
       }

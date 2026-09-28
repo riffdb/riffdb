@@ -155,6 +155,23 @@ pub(crate) fn render_contract_explain(bundle: &ContractBundle) -> String {
         ));
     }
 
+    output.push_str("\nassignment evidence\n");
+    for command in bundle.commands() {
+        output.push_str(&format!("  {}:\n", command.name()));
+        if let Some(proofs) = command.write_proofs() {
+            for proof in proofs {
+                output.push_str(&format!(
+                    "    {:?}: {:?}\n",
+                    proof.location(),
+                    proof.evidence()
+                ));
+            }
+        } else {
+            output.push_str("    no proof-bearing assignments; historical plans retain legacy dependency classification\n");
+        }
+    }
+    output.push_str("  Limits: business relevance is author-asserted; arithmetic does not prove caller freshness; caller-version fences require a consistently advanced revision protocol.\n");
+
     output.push_str(&unguarded_subtractions(bundle));
     output
 }
@@ -386,5 +403,36 @@ contract ExplainSubtract version 1 {
             explained.contains("Root: restrict — refuses while Leaf rows reference it"),
             "{explained}"
         );
+    }
+    // req: CMP-013, CMP-015
+    #[test]
+    fn local_explain_distinguishes_every_assignment_proof_and_its_limits() {
+        let budget = explain(include_str!("../../../contracts/examples/budget.riff"));
+        for text in [
+            "assignment evidence",
+            "CreateBudget:",
+            "AllocateBudget:",
+            "Initialization",
+            "StateDerived",
+            "BusinessCheck",
+            "author-asserted",
+            "does not prove caller freshness",
+        ] {
+            assert!(budget.contains(text), "{text}: {budget}");
+        }
+        let decisions = explain(include_str!(
+            "../../../fixtures/compiler/command-decision/contract.riff"
+        ));
+        assert!(decisions.contains("Decision {"));
+        assert!(decisions.contains("Overwrite"));
+        let fence = explain(include_str!(
+            "../../../fixtures/contracts/cross-binding-fence.riff"
+        ));
+        assert!(fence.contains("CallerVersionFence"));
+        let legacy = ContractBundle::decode(include_bytes!(
+            "../../../fixtures/compatibility/write-evidence-legacy/initialized-state-transition.bin"
+        ))
+        .expect("legacy plan");
+        assert!(render_contract_explain(&legacy).contains("legacy dependency classification"));
     }
 }

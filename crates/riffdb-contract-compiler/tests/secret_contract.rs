@@ -424,12 +424,15 @@ contract StickySecret version 1 {
   }
 }
 "#;
-    let sticky = base.replace("FLOW", "set row.secret_copy = row.secret_value");
+    let sticky = base.replace("FLOW", "overwrite row.secret_copy = row.secret_value");
     let bundle = compile_contract_source(&sticky).expect("secret-to-secret flow stays classified");
     assert!(bundle.commands()[0].secret_reveals().is_empty());
-    assert_eq!(bundle.format_version(), BUNDLE_FORMAT_VERSION_V8);
+    assert_eq!(
+        bundle.format_version(),
+        riffdb_contract_ir::BUNDLE_FORMAT_VERSION_V25
+    );
 
-    let leaked = base.replace("FLOW", "set row.public_copy = row.secret_value");
+    let leaked = base.replace("FLOW", "overwrite row.public_copy = row.secret_value");
     let error = compile_contract_source(&leaked).expect_err("public copy requires reveal");
     assert!(
         error
@@ -444,10 +447,13 @@ contract StickySecret version 1 {
 
     let declared = base.replace(
         "FLOW",
-        "set row.public_copy = row.secret_value reveals row.secret_value",
+        "overwrite row.public_copy = row.secret_value reveals row.secret_value",
     );
     let bundle = compile_contract_source(&declared).expect("declared entity disclosure compiles");
-    assert_eq!(bundle.format_version(), BUNDLE_FORMAT_VERSION_V11);
+    assert_eq!(
+        bundle.format_version(),
+        riffdb_contract_ir::BUNDLE_FORMAT_VERSION_V25
+    );
     assert!(matches!(
         bundle.commands()[0].secret_reveals()[0].destination(),
         SecretRevealDestinationV1::EntityField { .. }

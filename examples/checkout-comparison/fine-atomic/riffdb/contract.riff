@@ -140,7 +140,9 @@ contract StorefrontFineAtomic version 1 {
         else ReservationMissing {}
       require same_order: reservation.order_id == release.observed_order_id
         else ReservationOrderMismatch {}
-      set product.stock_on_hand = product.stock_on_hand + reservation.quantity
+      // The delta comes from another stored row, outside the narrow state-derived proof.
+      // Deleting that exact reservation and checking its order still govern this return.
+      overwrite product.stock_on_hand = product.stock_on_hand + reservation.quantity
       set product.revision = product.revision + 1
     }
     return ReservationsReleased {}

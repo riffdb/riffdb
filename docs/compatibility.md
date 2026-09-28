@@ -3,6 +3,22 @@
 RiffDB 0.1.0 is a pre-release POC. Compatibility is checked at explicit
 boundaries; it is not a blanket promise that arbitrary commits can be mixed.
 
+## Per-write evidence in V25
+
+ADR-0262 introduces grammar, executable IR, and bundle V25 for newly compiled
+commands with field assignments. Every assignment carries validated evidence
+in its plan hash. Recompilation rejects replacement `set` writes justified only
+by unrelated reads or revision increments; migrate to an explicit `checked_by`
+business association, a caller-version fence, or an intentional `overwrite`.
+Normal application-lock renewal is required, including commands whose execution
+behavior is unchanged. There is no warning-only compiler opt-out.
+
+Older deployed bundles retain their bytes, identities, validation, and execution.
+Their historical “guarded” classification is reported as legacy dependency
+evidence, not retroactively as caller-version protection. See the
+[write cookbook](contracts/COMMAND-INVARIANT-COOKBOOK.md#declare-the-evidence-for-each-write)
+for the proof limits and supported POC shapes.
+
 ## Boundaries
 
 | Boundary | POC policy |

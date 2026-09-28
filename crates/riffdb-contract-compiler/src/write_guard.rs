@@ -1,10 +1,10 @@
-//! Source spelling proof for local reads and same-root revision fences.
+//! Per-assignment source evidence and explicit business associations.
 use std::collections::BTreeSet;
 
 use riffdb_contract_ir::{
     BinaryOperator, BindingId, BindingMode, ExprId, ExpressionKind, ValueTypeTag,
 };
-use riffdb_contract_syntax::{Span, ast::WriteSpelling};
+use riffdb_contract_syntax::ast::WriteSpelling;
 use riffdb_types::{CanonicalValue, FieldId};
 
 use crate::diagnostic::{CompilerDiagnostic, CompilerDiagnosticCode};
@@ -13,91 +13,89 @@ use crate::hir::{
 };
 use crate::locality::command_expression_fingerprint;
 
-/// A local pre-image dependency guards the binding. A same-root compare-and-
-/// increment fence guards its root instance's child bindings too. Invariants
-/// only constrain post-images and cannot prove either protection.
+/// Validate each assignment independently; unrelated reads never grant evidence.
 pub(crate) fn validate_write_spellings(
     hir: &TypedContractHir,
     command: &HirCommand,
     diagnostics: &mut Vec<CompilerDiagnostic>,
 ) {
-    // Every write the command can perform, including those a compiler-sealed
-    // decision arm performs conditionally.
-    let mut writes = command.effects.iter().collect::<Vec<_>>();
-    let mut predicates = command
-        .requirements
+    let arena = match command.expressions.to_ir(command.span) {
+        Ok(arena) => arena,
+        Err(error) => {
+            diagnostics.push(error);
+            return;
+        }
+    };
+    let mut writes = command
+        .effects
         .iter()
-        .map(|requirement| &requirement.condition)
+        .map(|effect| (effect, false))
         .collect::<Vec<_>>();
     for decision in &command.decisions {
-        for arm in &decision.when_arms {
-            predicates.push(&arm.predicate);
-            if let HirDecisionAction::Apply { effects, .. } = &arm.action {
-                writes.extend(effects.iter());
+        for action in decision
+            .when_arms
+            .iter()
+            .map(|arm| &arm.action)
+            .chain(std::iter::once(&decision.else_action))
+        {
+            if let HirDecisionAction::Apply { effects, .. } = action {
+                writes.extend(effects.iter().map(|effect| (effect, true)));
             }
         }
-        if let HirDecisionAction::Apply { effects, .. } = &decision.else_action {
-            writes.extend(effects.iter());
-        }
     }
-
-    let mut guarded_bindings = BTreeSet::new();
-    for predicate in predicates {
-        collect_read_bindings(
-            &command.expressions,
-            predicate.id,
-            predicate.span,
-            &mut guarded_bindings,
-            diagnostics,
-        );
-    }
-    for effect in &writes {
-        if let HirEffect::Set { value, .. } = effect {
-            collect_read_bindings(
-                &command.expressions,
-                value.id,
-                value.span,
-                &mut guarded_bindings,
-                diagnostics,
-            );
-        }
-    }
-
-    collect_fenced_bindings(hir, command, &mut guarded_bindings);
-
-    for effect in writes {
+    let mut fenced = BTreeSet::new();
+    collect_fenced_bindings(hir, command, &mut fenced);
+    for (effect, conditional) in writes {
         let HirEffect::Set {
             target_span,
             spelling,
             binding,
+            field,
+            value,
             ..
         } = effect
         else {
             continue;
         };
-        let Some(bound) = command
-            .bindings
-            .iter()
-            .find(|candidate| candidate.id == *binding)
-        else {
+        let Some(bound) = command.bindings.iter().find(|b| b.id == *binding) else {
             continue;
         };
-
-        let has_preimage = matches!(
+        if !matches!(
             bound.mode,
-            BindingMode::Mutate | BindingMode::InitOrMutate | BindingMode::ObserveOrInitialize
-        );
-        if !has_preimage {
-            if *spelling == WriteSpelling::Overwrite {
-                diagnostics.push(CompilerDiagnostic::new(
-                    CompilerDiagnosticCode::GuardedOverwrite,
-                    *target_span,
-                ));
-            }
+            BindingMode::Mutate
+                | BindingMode::InitOrMutate
+                | BindingMode::ObserveOrInitialize
+                | BindingMode::Create
+        ) {
             continue;
         }
-
-        match (spelling, guarded_bindings.contains(binding)) {
+        let association = match association_index(hir, command, effect, conditional) {
+            Ok(association) => association,
+            Err(error) => {
+                diagnostics.push(error);
+                continue;
+            }
+        };
+        let derived = riffdb_contract_ir::is_state_derived_write(
+            &arena,
+            value.id,
+            *binding,
+            *field,
+            |b, f| {
+                command
+                    .bindings
+                    .iter()
+                    .find(|candidate| candidate.id == b)
+                    .and_then(|b| hir.entity(b.entity_id))
+                    .is_some_and(|e| e.key_fields.contains(&f))
+            },
+        )
+        .unwrap_or(false);
+        let has_evidence = bound.mode == BindingMode::Create
+            || derived
+            || association.is_some()
+            || fenced.contains(binding);
+        match (spelling, has_evidence) {
             (WriteSpelling::Set, false) => diagnostics.push(CompilerDiagnostic::new(
                 CompilerDiagnosticCode::UnguardedSet,
                 *target_span,
@@ -111,26 +109,65 @@ pub(crate) fn validate_write_spellings(
     }
 }
 
-/// Bindings whose stored fields an expression reads.
-///
-/// Reading a binding's *key* is not reading its state: a command that names a
-/// record by key has observed nothing about what the record holds.
-fn collect_read_bindings(
-    expressions: &HirExpressionArena,
-    root: ExprId,
-    span: Span,
-    into: &mut BTreeSet<BindingId>,
-    diagnostics: &mut Vec<CompilerDiagnostic>,
-) {
-    match expressions.dependencies(root, span) {
-        Ok(dependencies) => into.extend(
-            dependencies
-                .bound_fields()
-                .iter()
-                .map(|(binding, _)| *binding),
-        ),
-        Err(diagnostic) => diagnostics.push(diagnostic),
+/// Resolve the author association using source scope and actual execution dominance.
+pub(crate) fn association_index(
+    hir: &TypedContractHir,
+    command: &HirCommand,
+    effect: &HirEffect,
+    conditional: bool,
+) -> Result<Option<u32>, CompilerDiagnostic> {
+    let HirEffect::Set {
+        checked_by: Some(name),
+        target_span,
+        spelling,
+        binding,
+        collection_local,
+        ..
+    } = effect
+    else {
+        return Ok(None);
+    };
+    let invalid =
+        || CompilerDiagnostic::new(CompilerDiagnosticCode::InvalidWriteAssociation, name.span);
+    if conditional
+        || *spelling != WriteSpelling::Set
+        || command
+            .bindings
+            .iter()
+            .any(|b| b.id == *binding && b.mode == BindingMode::Create)
+    {
+        return Err(invalid());
     }
+    let matches = command
+        .requirements
+        .iter()
+        .enumerate()
+        .filter(|(_, r)| r.name == name.value && (!r.collection_local || *collection_local))
+        .collect::<Vec<_>>();
+    let [(index, requirement)] = matches.as_slice() else {
+        return Err(invalid());
+    };
+    // Bulk outer requirements execute after the repeated instruction range.
+    if requirement.collection_local != *collection_local
+        || requirement.condition.span.end() >= target_span.start()
+    {
+        return Err(invalid());
+    }
+    let deps = command
+        .expressions
+        .dependencies(requirement.condition.id, requirement.condition.span)?;
+    if !deps.bound_fields().iter().any(|(b, field)| {
+        *b == *binding
+            && command
+                .bindings
+                .iter()
+                .find(|bound| bound.id == *b)
+                .and_then(|bound| hir.entity(bound.entity_id))
+                .is_some_and(|entity| !entity.key_fields.contains(field))
+    }) {
+        return Err(invalid());
+    }
+    Ok(Some(*index as u32))
 }
 
 /// Recognize only the closed structural proof in ADR-0256. Decision-arm
@@ -142,6 +179,9 @@ fn collect_fenced_bindings(
 ) {
     let arena = &command.expressions;
     for requirement in &command.requirements {
+        if requirement.collection_local {
+            continue;
+        }
         let Some(ExpressionKind::Binary {
             operator: BinaryOperator::Equal,
             left,

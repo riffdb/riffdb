@@ -3921,13 +3921,13 @@ mod tests {
                 "agent-alpha",
                 riffdb_query_module::APPLICATION_LOCK_SCHEMA_V3,
                 GENERATED_OPERATIONS_V2,
-                "6764a4aef3745c3c7eabaf26060fec25940a7149edce6a530fcaafb465c9ae68",
+                "21c3f484f5fc630b43da4ca0972dcd84a9abb378d12231c03608a0a49bb3abb3",
             ),
             (
                 "ticketdesk",
                 riffdb_query_module::APPLICATION_LOCK_SCHEMA_V6,
                 GENERATED_OPERATIONS_V5,
-                "761a8ed9ae6a02a44e0386b87c4a8774f1bb2912f2d0b7dd3aa0b4bb632513c1",
+                "3208c8cf1cdf93748d46c8b13d00ae91fc6a8ad95c823ade1a394f3935e3d84a",
             ),
         ] {
             let root = repository.join("examples").join(application);

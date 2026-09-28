@@ -20,6 +20,23 @@ Expression constants use exactly `u32 canonical_document_byte_length || canonica
 
 ## Closed Tags
 
+### Write evidence location
+
+| Tag | Variant |
+|---:|---|
+| `0x01` | instruction |
+| `0x02` | decision arm instruction |
+
+### Write evidence
+
+| Tag | Variant |
+|---:|---|
+| `0x01` | initialization |
+| `0x02` | state derived |
+| `0x03` | associated business check |
+| `0x04` | caller version fence |
+| `0x05` | explicit overwrite |
+
 ### Stable ID namespace
 
 | Tag | Variant |
@@ -872,13 +889,14 @@ Fields below are listed in exact byte order. A collection field includes its cou
 | 16 | `instructions` | u32 count + Instruction[] |
 | 17 | `decisions` | IR v18+: u32 count + CommandDecisionPlanV1[]; omitted in v1-v17 |
 | 18 | `secret_reveals` | IR v11+: u32 count + SecretRevealSpecV1[]; omitted in v1-v10 |
-| 19 | `invocation_class` | IR v10+: Command invocation class tag; application in v1-v9 |
-| 20 | `execution_class` | Execution class tag |
-| 21 | `retry_policy` | Retry policy tag |
-| 22 | `required_capability` | CapabilityRequirement tag plus exact selected payload |
-| 23 | `entity_closure` | u32 count + EntitySchema[] |
-| 24 | `aggregate_closure` | AggregateSchema |
-| 25 | `event_closure` | u32 count + EventSchema[] |
+| 19 | `write_proofs` | IR v25+: u32 count <=4096 in assignment-location order. Location u8 1 + instruction u32, or u8 2 + decision/arm/instruction u32. Each has u32 evidence count (total <=4096), sorted unique: u8 1 initialization, 2 state-derived, 3 business check + requirement u32, 4 caller-version fence + requirement/advancement u32, 5 overwrite. Derived evidence is revalidated; absent in v1-v24 |
+| 20 | `invocation_class` | IR v10+: Command invocation class tag; application in v1-v9 |
+| 21 | `execution_class` | Execution class tag |
+| 22 | `retry_policy` | Retry policy tag |
+| 23 | `required_capability` | CapabilityRequirement tag plus exact selected payload |
+| 24 | `entity_closure` | u32 count + EntitySchema[] |
+| 25 | `aggregate_closure` | AggregateSchema |
+| 26 | `event_closure` | u32 count + EventSchema[] |
 
 ### SecretRevealSpecV1
 

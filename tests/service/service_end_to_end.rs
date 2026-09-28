@@ -2863,3 +2863,47 @@ fn read_stage_perf_smoke_reports_plan_lookup_and_authorize_means() {
         );
     });
 }
+
+// req: CMP-015, CMP-013
+#[test]
+fn associated_business_check_and_deltas_share_service_authorization_and_replay() {
+    run_async(async move {
+        let mut harness = ServiceHarness::discovery_inventory(1);
+        let (context, _cancellation) = harness.context(0x91);
+        harness
+            .service
+            .execute_command(context, harness.execute_command_request())
+            .await
+            .expect("create");
+        let requests = [
+            ("evidence-first", 6_000, "Allocated"),
+            ("evidence-second", 3_000, "Allocated"),
+            ("evidence-losing", 2_000, "InsufficientBudget"),
+            ("evidence-first", 6_000, "Allocated"),
+        ];
+        let mut first = None;
+        for (index, (key, amount, expected)) in requests.into_iter().enumerate() {
+            let (context, _cancellation) = harness.context(0x92 + index as u8);
+            let ExecuteCommandResult::Journaled(result) = harness
+                .service
+                .execute_command(context, harness.allocate_budget_request(key, amount))
+                .await
+                .expect("authorized command")
+            else {
+                panic!("journaled result");
+            };
+            assert_eq!(result.outcome().outcome_name().as_str(), expected);
+            if index == 0 {
+                first = Some(result);
+            } else if index == 3 {
+                let first = first.as_ref().expect("first commit");
+                assert_eq!(result.completion(), JournaledCompletion::Replayed);
+                assert_eq!(result.outcome(), first.outcome());
+                assert_eq!(result.commit_sequence(), first.commit_sequence());
+                assert_eq!(result.provenance_id(), first.provenance_id());
+            }
+        }
+        assert!(harness.policy.allowed_calls() >= 5);
+        harness.stop_coordinator();
+    });
+}

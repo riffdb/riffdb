@@ -8,12 +8,12 @@ used as field or declaration identifiers:
 
 ```text
 active aggregate allow approval as attempts binary_utf8_v1 bool bytes capability
-child claim command conflict_key contract count create date decimal
+checked_by child claim command conflict_key contract count create date decimal
 default delete duration_seconds else emit entity enum event
 exhausted exists expire expired expires_at fact false fence fencing_token field
 from frontier i64 idempotency_key illegal import in include index input invalid
 initialize init_or_mutate observe_or_initialize decide apply no_effect reject invariant is key lease list measure module money mutate not null on optional
-owner partition_by policy presence principal projection query read reference
+overwrite owner partition_by policy presence principal projection query read reference
 release renew require return revision root row service set source stale
 state state_machine string sum text_index text_key timestamp to
 transaction_time transactionally_ordered transition true u64 unavailable
@@ -35,6 +35,13 @@ contract. Enum variants belong to their enum, command outcomes belong to their
 command, and indexes belong to their owning entity. A duplicate diagnostic
 identifies the current declaration and includes the related span of the first
 declaration.
+
+Each `set` assignment needs initialization, a narrow same-field arithmetic
+update, an explicit `checked_by requirement_name` association, or a caller-version
+fence. Reading another field on the binding is insufficient. Use `overwrite`
+for deliberate replacement without those proofs. The
+[write evidence cookbook](COMMAND-INVARIANT-COOKBOOK.md#declare-the-evidence-for-each-write)
+explains the distinctions and limits of each proof.
 
 ## Command declaration order and relationship proofs
 

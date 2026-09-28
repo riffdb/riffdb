@@ -226,7 +226,12 @@ fn generated_aggregate_preflight_causes_are_closed_and_transport_free() {
 #[test]
 // req: ID-001, ID-004, BLK-019
 fn aggregate_budget_public_and_durable_identities_are_unchanged() {
-    let (contract, module) = aggregate_budget_application();
+    let (current, module) = aggregate_budget_application();
+    let contract = riffdb_contract_ir::ContractBundle::decode(include_bytes!(
+        "../../../fixtures/compatibility/write-evidence-legacy/aggregate-collection-budget.bin"
+    ))
+    .expect("historical contract");
+    assert_ne!(current.bundle_hash(), contract.bundle_hash());
     let command = contract
         .commands()
         .iter()
@@ -241,7 +246,7 @@ fn aggregate_budget_public_and_durable_identities_are_unchanged() {
             .collect::<String>(),
         "f727de9c81e0c211aaaa2054b3c87dba7744c8b639756fb30bdaf673e9bda6ee"
     );
-    let typescript = generate_typescript_application_client(&module, &contract, &[]);
+    let typescript = generate_typescript_application_client(&module, &current, &[]);
     assert!(typescript.contains(
         r#"inputSchemaHash: "ba2997d742db78a7dabca330fce3c282480b6c02b32397b658868aba87fb1e53""#
     ));

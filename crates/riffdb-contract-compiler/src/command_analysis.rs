@@ -918,6 +918,7 @@ fn validate_secret_flows(
                 field,
                 value,
                 reveals,
+                ..
             } => {
                 let destination_is_secret = command
                     .bindings

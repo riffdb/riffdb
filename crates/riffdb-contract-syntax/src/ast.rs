@@ -1038,6 +1038,8 @@ pub struct SetEffect {
     /// Which spelling the author used, which is a claim about the write's
     /// concurrency semantics rather than a stylistic choice (ADR-0256).
     pub spelling: WriteSpelling,
+    /// Named dominating business requirement explicitly associated with this write.
+    pub checked_by: Option<Spanned<String>>,
     /// The assignment target path.
     pub target: Spanned<Path>,
     /// The assigned value expression.

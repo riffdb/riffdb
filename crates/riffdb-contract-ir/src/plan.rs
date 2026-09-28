@@ -18,6 +18,7 @@ use crate::{
 };
 
 mod commit_coverage;
+mod write_proofs;
 use commit_coverage::{validate_commit_checks, validate_root_validation_reads};
 
 /// Maximum bindings, instructions, fields, or outcomes in one owner.
@@ -1072,18 +1073,16 @@ impl RootValidationReadPlan {
     }
 }
 
-/// Whether a command constrains the prior value of a record it writes.
+/// Source spelling retained in historical instruction encodings.
 ///
-/// A write is guarded when a `require`, or the value of any write to the same
-/// binding, reads one of that binding's stored fields: commit-time revalidation
-/// then refuses the command if the record changed under it. A compiler-proven
-/// same-root compare-and-increment revision fence also guards child writes.
-/// A write with neither protection must declare last-writer-wins (ADR-0256).
+/// For V25 and later, inspect `CommandPlan::write_proofs` for per-assignment
+/// evidence. A legacy Guarded value only records the historical classification;
+/// it does not prove protection against stale caller intent.
 #[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
 pub enum WriteGuard {
-    /// Spelled `set`: the command constrains this record's prior value.
+    /// Spelled `set`; consult the versioned evidence for its meaning.
     Guarded,
-    /// Spelled `overwrite`: it does not, and says so.
+    /// Spelled `overwrite`: explicit replacement without qualifying evidence.
     Unguarded,
 }
 
@@ -1746,6 +1745,7 @@ pub struct CommandPlan {
     retry_policy: RetryPolicy,
     required_capability: CapabilityRequirement,
     plan_hash: PlanHash,
+    write_proofs: Option<Vec<crate::WriteProof>>,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -2624,6 +2624,7 @@ impl CommandPlan {
                 command_id,
             },
             plan_hash: PlanHash::from_bytes([0; 32]),
+            write_proofs: None,
         };
         plan.plan_hash = crate::bundle::compute_command_plan_hash(&plan, contract_schema)?;
         Ok(plan)
@@ -2740,23 +2741,6 @@ impl CommandPlan {
     #[must_use]
     pub fn requires_ir_v19(&self) -> bool {
         self.locality.spans_aggregates()
-    }
-    /// Whether this command declares an unguarded write (ADR-0256).
-    ///
-    /// A command whose every write is guarded answers `false` and keeps its
-    /// existing least-sufficient identity, so no contract that compiles today
-    /// moves its plan hash.
-    #[must_use]
-    pub fn requires_ir_v24(&self) -> bool {
-        self.instructions.iter().any(|instruction| {
-            matches!(
-                instruction,
-                Instruction::SetField {
-                    guard: WriteGuard::Unguarded,
-                    ..
-                }
-            )
-        })
     }
     /// Whether this command requires the additive large atomic-input envelope.
     #[must_use]
@@ -6879,7 +6863,7 @@ fn matches_root_invariant_template(
     Ok(true)
 }
 
-fn expression_trees_equal(
+pub(crate) fn expression_trees_equal(
     left_arena: &ExpressionArena,
     left_root: ExprId,
     right_arena: &ExpressionArena,

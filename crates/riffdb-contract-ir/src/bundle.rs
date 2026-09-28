@@ -95,6 +95,8 @@ pub const BUNDLE_FORMAT_VERSION_V22: u32 = 22;
 pub const BUNDLE_FORMAT_VERSION_V23: u32 = 23;
 /// Bundle framing whose commands may declare an unguarded write (ADR-0256).
 pub const BUNDLE_FORMAT_VERSION_V24: u32 = 24;
+/// Per-assignment structural write evidence (ADR-0262).
+pub const BUNDLE_FORMAT_VERSION_V25: u32 = 25;
 /// Canonical grammar version represented by a bundle.
 pub const GRAMMAR_VERSION_V1: u32 = 1;
 /// Contract grammar containing compiled workflows and service-owned values.
@@ -143,6 +145,8 @@ pub const GRAMMAR_VERSION_V22: u32 = 22;
 pub const GRAMMAR_VERSION_V23: u32 = 23;
 /// Contract grammar admitting the `overwrite` spelling (ADR-0256).
 pub const GRAMMAR_VERSION_V24: u32 = 24;
+/// Per-assignment structural write evidence (ADR-0262).
+pub const GRAMMAR_VERSION_V25: u32 = 25;
 /// Executable IR version represented by a bundle.
 pub const EXECUTABLE_IR_VERSION_V1: u32 = 1;
 /// Executable IR containing compiled workflow transitions and service values.
@@ -198,6 +202,8 @@ pub const EXECUTABLE_IR_VERSION_V22: u32 = 22;
 pub const EXECUTABLE_IR_VERSION_V23: u32 = 23;
 /// Executable IR carrying a write's guard classification (ADR-0256).
 pub const EXECUTABLE_IR_VERSION_V24: u32 = 24;
+/// Per-assignment structural write evidence (ADR-0262).
+pub const EXECUTABLE_IR_VERSION_V25: u32 = 25;
 
 const RELATIONSHIP_SCHEMA_EXTENSION: u32 = 0xffff_fffe;
 const UNIQUE_KEY_SCHEMA_EXTENSION: u32 = 0xffff_fffd;
@@ -1127,7 +1133,9 @@ impl ContractBundle {
         mcp_command_names: McpCommandNameRegistryV2,
         compatibility: CompatibilityReport,
     ) -> Result<Self, IrValidationError> {
-        let version = if commands.iter().any(CommandPlan::requires_ir_v24) {
+        let version = if commands.iter().any(CommandPlan::requires_ir_v25) {
+            BUNDLE_FORMAT_VERSION_V25
+        } else if commands.iter().any(CommandPlan::requires_ir_v24) {
             BUNDLE_FORMAT_VERSION_V24
         } else if commands.iter().any(CommandPlan::requires_ir_v23) {
             BUNDLE_FORMAT_VERSION_V23
@@ -1315,6 +1323,10 @@ impl ContractBundle {
                 BUNDLE_FORMAT_VERSION_V24,
                 GRAMMAR_VERSION_V24,
                 EXECUTABLE_IR_VERSION_V24
+            ) | (
+                BUNDLE_FORMAT_VERSION_V25,
+                GRAMMAR_VERSION_V25,
+                EXECUTABLE_IR_VERSION_V25
             )
         ) || (ir_version < EXECUTABLE_IR_VERSION_V2
             && (!workflows.is_empty() || commands.iter().any(CommandPlan::requires_ir_v2)))
@@ -1352,6 +1364,8 @@ impl ContractBundle {
                 && commands.iter().any(CommandPlan::requires_ir_v22))
             || (ir_version < EXECUTABLE_IR_VERSION_V23
                 && commands.iter().any(CommandPlan::requires_ir_v23))
+            || (ir_version < EXECUTABLE_IR_VERSION_V25
+                && commands.iter().any(CommandPlan::requires_ir_v25))
             || (ir_version < EXECUTABLE_IR_VERSION_V24
                 && commands.iter().any(CommandPlan::requires_ir_v24))
             || (ir_version >= EXECUTABLE_IR_VERSION_V6
@@ -1413,6 +1427,13 @@ impl ContractBundle {
         }
         validate_bundle_global_bounds(&schema, &commands, &projections)?;
         for command in &commands {
+            if ir_version >= EXECUTABLE_IR_VERSION_V25 {
+                crate::write_evidence::codec::validate(
+                    command.clone(),
+                    &schema,
+                    command.write_proofs().unwrap_or_default(),
+                )?;
+            }
             let recomputed = compute_command_plan_hash(command, &schema)?;
             if recomputed != command.plan_hash() {
                 return Err(IrValidationError::HashMismatch {
@@ -2075,7 +2096,9 @@ pub(crate) fn compute_command_plan_hash(
 ) -> Result<PlanHash, IrValidationError> {
     let mut writer = Writer::new(MAX_BUNDLE_BYTES);
     writer.raw(COMMAND_PLAN_MAGIC)?;
-    let ir_version = if plan.requires_ir_v24() {
+    let ir_version = if plan.requires_ir_v25() {
+        EXECUTABLE_IR_VERSION_V25
+    } else if plan.requires_ir_v24() {
         EXECUTABLE_IR_VERSION_V24
     } else if plan.requires_ir_v23() {
         EXECUTABLE_IR_VERSION_V23
@@ -3275,7 +3298,11 @@ fn encode_command_bundle_entry(
     command: &CommandPlan,
     schema: &SchemaIr,
 ) -> Result<(), IrValidationError> {
-    let ir_version = if command.requires_ir_v23() {
+    let ir_version = if command.requires_ir_v25() {
+        EXECUTABLE_IR_VERSION_V25
+    } else if command.requires_ir_v24() {
+        EXECUTABLE_IR_VERSION_V24
+    } else if command.requires_ir_v23() {
         EXECUTABLE_IR_VERSION_V23
     } else if command.requires_ir_v22() {
         EXECUTABLE_IR_VERSION_V22
@@ -3323,7 +3350,11 @@ fn encode_command_semantics(
     schema: &SchemaIr,
     include_display_names: bool,
 ) -> Result<(), IrValidationError> {
-    let ir_version = if command.requires_ir_v23() {
+    let ir_version = if command.requires_ir_v25() {
+        EXECUTABLE_IR_VERSION_V25
+    } else if command.requires_ir_v24() {
+        EXECUTABLE_IR_VERSION_V24
+    } else if command.requires_ir_v23() {
         EXECUTABLE_IR_VERSION_V23
     } else if command.requires_ir_v22() {
         EXECUTABLE_IR_VERSION_V22
@@ -3513,6 +3544,9 @@ fn encode_command_semantics_versioned(
                 }
             }
         }
+    }
+    if ir_version >= EXECUTABLE_IR_VERSION_V25 {
+        crate::write_evidence::codec::encode(writer, command.write_proofs().unwrap_or_default())?;
     }
     if ir_version >= EXECUTABLE_IR_VERSION_V10 {
         writer.u8(command.invocation_class() as u8)?;
@@ -4159,6 +4193,10 @@ fn decode_bundle(bytes: &[u8]) -> Result<ContractBundle, IrValidationError> {
             BUNDLE_FORMAT_VERSION_V24,
             GRAMMAR_VERSION_V24,
             EXECUTABLE_IR_VERSION_V24
+        ) | (
+            BUNDLE_FORMAT_VERSION_V25,
+            GRAMMAR_VERSION_V25,
+            EXECUTABLE_IR_VERSION_V25
         )
     ) {
         return Err(IrValidationError::UnsupportedVersion {
@@ -5944,6 +5982,11 @@ fn decode_command_versioned(
     } else {
         Vec::new()
     };
+    let write_proofs = if ir_version >= EXECUTABLE_IR_VERSION_V25 {
+        Some(crate::write_evidence::codec::decode(reader)?)
+    } else {
+        None
+    };
     let invocation_class = if ir_version >= EXECUTABLE_IR_VERSION_V10 {
         decode_command_invocation_class(reader.u8()?)?
     } else {
@@ -6072,6 +6115,11 @@ fn decode_command_versioned(
                 )?
             }
         }
+    };
+    let plan = if let Some(proofs) = write_proofs {
+        crate::write_evidence::codec::validate(plan, schema, &proofs)?
+    } else {
+        plan
     };
     if encoded_relationship_checks
         != plan

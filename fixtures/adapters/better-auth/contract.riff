@@ -161,7 +161,7 @@ contract BetterAuthAcceptance version 1 {
     mutate VerificationToken(organization_id, user_id, verification_token_id) as token else VerificationTokenMissing {}
     require verification_token_unused: token.consumed == false else VerificationTokenAlreadyConsumed {}
     require verification_token_unexpired: tx.time <= token.expires_at else VerificationTokenExpired {}
-    set token.consumed = true
+    set token.consumed = true checked_by verification_token_unused
     return VerificationTokenConsumed {
       verification_token_id: verification_token_id,
       user_id: token.user_id
@@ -179,7 +179,7 @@ contract BetterAuthAcceptance version 1 {
     mutate Session(organization_id, user_id, session_id) as session else RefreshSessionMissing {}
     require refresh_unexpired: tx.time <= session.expires_at else RefreshSessionExpired {}
     transition Refresh on session revision expected_revision stale RefreshSessionStale {} illegal RefreshSessionRevoked {}
-    set session.token_digest = successor_token_digest
+    set session.token_digest = successor_token_digest checked_by refresh_unexpired
     return SessionRefreshed { session: session reveals session.token_digest }
   }
 

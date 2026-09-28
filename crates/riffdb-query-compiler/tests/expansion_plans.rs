@@ -79,9 +79,14 @@ fn expansion_plan_is_least_sufficient_and_legacy_bytes_are_unchanged() {
             "            comments: comments { comment_id created_at }\n",
             "",
         );
+    // Freeze predecessor identity against its original contract, not a V25 recompile.
+    let predecessor = riffdb_contract_ir::ContractBundle::decode(include_bytes!(
+        "../../../fixtures/compatibility/write-evidence-legacy/ticketdesk.bin"
+    ))
+    .expect("historical contract");
     let legacy = compile_query(
         &parse_query(&legacy_source).expect("legacy source"),
-        &catalog(),
+        &SymbolicCatalog::from_bundle(&predecessor).expect("historical catalog"),
     )
     .expect("legacy plan");
     assert_ne!(

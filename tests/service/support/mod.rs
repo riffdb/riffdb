@@ -571,7 +571,30 @@ impl ServiceHarness {
             capability_order,
             discovery_order,
         ));
-        let coordinator = start_coordinator_with_capacity(database.open(), workload_capacity);
+        let operational = database.open();
+        if additional_commands != 0 {
+            let bundle = database.active_catalog.bundle();
+            // Synthetic ObserveBudget commands are discovery fixtures; resolve only
+            // the allocation plan needed by the service mutation regression.
+            for command in bundle
+                .bundle()
+                .commands()
+                .iter()
+                .filter(|plan| plan.name() == "AllocateBudget")
+            {
+                let reference = ExecutablePlanRef::new(
+                    bundle.lineage().clone(),
+                    bundle.contract_version(),
+                    bundle.bundle_hash(),
+                    command.command_id(),
+                    command.plan_hash(),
+                );
+                ports.install_additional_plan(
+                    resolve_executable_plan(&operational, &reference).expect("active command plan"),
+                );
+            }
+        }
+        let coordinator = start_coordinator_with_capacity(operational, workload_capacity);
         let mut inspector =
             coordinator.command_idempotency_inspector(Arc::new(FixedDigestProvider));
         if direct_empty_idempotency {
@@ -1676,6 +1699,34 @@ impl ServiceHarness {
             SubmittedRecord::try_from(input).expect("bounded observe input"),
         )
         .expect("bounded observe request")
+    }
+
+    pub(crate) fn allocate_budget_request(&self, key: &str, amount: i128) -> ExecuteCommandRequest {
+        let plan = self
+            .database
+            .active_catalog
+            .bundle()
+            .bundle()
+            .commands()
+            .iter()
+            .find(|p| p.name() == "AllocateBudget")
+            .expect("allocation plan");
+        let input = input_record(
+            plan.input().record(),
+            [
+                ("idempotency_key", CanonicalValue::string(key).expect("key")),
+                ("organization_id", CanonicalValue::Uuid(ORGANIZATION_ID)),
+                ("fiscal_year", CanonicalValue::I64(FISCAL_YEAR)),
+                ("matter_id", CanonicalValue::Uuid([0x42; 16])),
+                ("amount", decimal(amount)),
+            ],
+        );
+        ExecuteCommandRequest::new(
+            SourceName::new("AllocateBudget").expect("name"),
+            Some(plan.contract_version()),
+            SubmittedRecord::try_from(input).expect("input"),
+        )
+        .expect("request")
     }
 
     pub(crate) fn resolve_command_outcome_request(&self) -> ResolveCommandOutcomeRequest {

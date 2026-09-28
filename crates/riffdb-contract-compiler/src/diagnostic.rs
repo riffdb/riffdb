@@ -360,6 +360,8 @@ pub enum CompilerDiagnosticCode {
     /// `RDB-C049`: an `overwrite` writes a field the command does constrain,
     /// or one with no prior value at all.
     GuardedOverwrite,
+    /// `RDB-C050`: a checked_by association is invalid or does not dominate the write.
+    InvalidWriteAssociation,
     /// `RDB-C201`: an identifier cannot form an ADR-0064 command tool-name segment.
     InvalidCommandToolName,
     /// `RDB-C202`: a complete ADR-0064 command tool name exceeds 128 bytes.
@@ -370,7 +372,7 @@ pub enum CompilerDiagnosticCode {
 
 impl CompilerDiagnosticCode {
     /// Complete pre-freeze public semantic diagnostic registry in code order.
-    pub const ALL: [Self; 51] = [
+    pub const ALL: [Self; 52] = [
         Self::InvalidContractVersion,
         Self::DuplicateName,
         Self::MissingDeclaration,
@@ -419,6 +421,7 @@ impl CompilerDiagnosticCode {
         Self::InvalidTextIndex,
         Self::UnguardedSet,
         Self::GuardedOverwrite,
+        Self::InvalidWriteAssociation,
         Self::InvalidCommandToolName,
         Self::CommandToolNameTooLong,
         Self::CommandToolNameCollision,
@@ -476,6 +479,7 @@ impl CompilerDiagnosticCode {
             Self::InvalidTextIndex => "RDB-C047",
             Self::UnguardedSet => "RDB-C048",
             Self::GuardedOverwrite => "RDB-C049",
+            Self::InvalidWriteAssociation => "RDB-C050",
             Self::InvalidCommandToolName => "RDB-C201",
             Self::CommandToolNameTooLong => "RDB-C202",
             Self::CommandToolNameCollision => "RDB-C203",
@@ -579,10 +583,13 @@ impl CompilerDiagnosticCode {
             }
             Self::InvalidTextIndex => "the tokenized text-index declaration is invalid",
             Self::UnguardedSet => {
-                "this write has no local pre-image dependency or proven root revision fence"
+                "this write has no state-derived update, associated business check, or caller-version fence"
             }
             Self::GuardedOverwrite => {
-                "this write has a local pre-image dependency or proven root revision fence"
+                "this write has per-write evidence or initializes a new record"
+            }
+            Self::InvalidWriteAssociation => {
+                "the named business requirement is invalid for this write"
             }
             Self::InvalidCommandToolName => {
                 "an identifier cannot form a valid MCP command tool-name segment"
@@ -727,9 +734,12 @@ impl CompilerDiagnosticCode {
                 "use distinct bounded string sources, keyword_v1 or standard_v1, boolean_v1, positive weights and ceilings, and max_results no greater than max_candidates",
             ),
             Self::UnguardedSet => Some(
-                "add a `require` reading this binding, derive a write from its prior value, or compare and increment its aggregate root revision; use `overwrite` only for intended last-writer-wins",
+                "use `checked_by` to associate a dominating requirement, apply a same-field arithmetic delta, or compare and increment the root revision; use `overwrite` only for intended replacement",
             ),
             Self::GuardedOverwrite => Some("write `set`"),
+            Self::InvalidWriteAssociation => Some(
+                "name one visible, dominating requirement reading this binding; business relevance remains the author's responsibility",
+            ),
             Self::InvalidCommandToolName => {
                 Some("start contract and command identifiers with an ASCII letter")
             }
@@ -1095,7 +1105,7 @@ mod tests {
 
     #[test]
     fn public_diagnostic_registry_is_complete_unique_and_code_ordered() {
-        assert_eq!(CompilerDiagnosticCode::ALL.len(), 51);
+        assert_eq!(CompilerDiagnosticCode::ALL.len(), 52);
         let codes = CompilerDiagnosticCode::ALL.map(CompilerDiagnosticCode::as_str);
         assert!(codes.windows(2).all(|pair| pair[0] < pair[1]));
         assert!(CompilerDiagnosticCode::ALL.iter().all(|code| {

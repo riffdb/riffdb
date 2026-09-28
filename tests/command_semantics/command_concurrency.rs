@@ -64,7 +64,7 @@ contract DynamicUnion version 1 {
     idempotency_key request_id
     mutate Product(tenant_id, product_id) as product else ProductMissing {}
     create Order(tenant_id, order_id) as order else OrderExists {}
-    set product.stock = product.stock
+    set product.stock = product.stock + 0
     return CheckoutCompleted {}
   }
 }
