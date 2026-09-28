@@ -6,7 +6,8 @@ tier: guarantee
 date: 2026-09-28
 accepted: '2026-09-28'
 acceptance: 'maintainer, in session, 2026-09-28: "approved, build it" (ADR-0263 as written);
-  Amendment 1 accepted by the maintainer, in session, 2026-09-28: "Accepted"'
+  Amendment 1 accepted by the maintainer, in session, 2026-09-28: "Accepted";
+  Amendment 2 accepted by the maintainer, in session, 2026-09-28: "Approved"'
 requires: [ADR-0101, ADR-0102, ADR-0103, ADR-0104, ADR-0182, ADR-0186, ADR-0261]
 amends:
   - ADR-0101 and ADR-0103's recycling of a fully checkpointed journal extent, which
@@ -163,6 +164,30 @@ A7. Format migrations that rewrite COMMITS bytes apply only to redb-held rows. E
     decodes or refuses.
 A8. Followers are unchanged: no journal, and history in redb. They remain the same
     database format, because the format admits both stores.
+
+### Amendment 2 (accepted 2026-09-28): the history index is derived sidecar state
+
+An authoritative index table would need a successor to the closed authority
+catalog, whose digest every V3 receipt binds. The index is derivable from the
+retained extents and the history chain in META, so it is derived state under
+ADR-0240. This replaces A2's placement.
+
+B1. The history index lives in the derived sidecar redb file. It is written after
+    the checkpoint commits, and each row carries A2's fields. It is never evidence
+    that a commit occurred, and a row whose frame hash does not match its extent
+    is discarded.
+B2. On open, index rows past the index high-water mark are rebuilt by scanning
+    only the retained frames after it and recomputing bindings forward from META.
+    This is journal recovery under REC-005. A missing or discarded index is rebuilt
+    after readiness; until then, reads that need it answer `Unavailable`, never
+    absence.
+B3. A4's frontiers, counts, and tails stay authoritative in the main file, through
+    the existing META allocators and retention watermark, with no new META key:
+    the checkpointed frontier is the committed allocator, and one command per
+    sequence makes the counts derivable.
+B4. Decision 3's footer also records each frame's complete receipt binding. A sealed
+    extent then describes itself, and the index can be rebuilt from footers and the
+    live extent after its predecessors are retired.
 
 ## Options considered
 
