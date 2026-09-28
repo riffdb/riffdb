@@ -297,6 +297,7 @@ record with no front matter.
 | [0260](0260-bounded-dirty-startup-for-v2-sources.md) | Bounded Dirty Startup For V2 Sources | Accepted | guarantee |
 | [0261](0261-journaled-online-retention-prune-frames.md) | Journaled Online Retention Prune Frames | Accepted | guarantee |
 | [0262](0262-separate-write-dependencies-from-precondition-proofs.md) | Separate Write Dependencies From Precondition Proofs | Accepted | guarantee |
+| [0263](0263-retained-journal-is-the-command-history-store.md) | Retained Journal Is The Command History Store | Proposed | guarantee |
 <!-- adr-index:end -->
 
 The human architecture review on 2026-07-12 approved the direction represented
