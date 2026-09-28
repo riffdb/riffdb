@@ -2639,6 +2639,16 @@ impl RedbStore {
             database_id,
         )
         .map_err(recovery_journal_error)?;
+        // An extent written before ADR-0263 raised the ceilings keeps its legacy
+        // capacity until here, where its recovered suffix is empty.
+        let active = crate::journal::journal_path(&self.shared.path);
+        if media
+            .try_exists(&active)
+            .map_err(|_| storage_error(StorageErrorKind::Unavailable))?
+        {
+            crate::journal::normalize_extent_capacity_with_media(media, &active)
+                .map_err(recovery_journal_error)?;
+        }
 
         // The spare extent is never authoritative: it is only a preallocated
         // destination for the next active generation. Recovery first proves

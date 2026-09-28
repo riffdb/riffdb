@@ -50,8 +50,30 @@ const EXTENT_FRAME_FOOTER_MAGIC: [u8; 8] = *b"RDBJPE03";
 const EXTENT_HEADER_SLOT_BYTES: usize = 4 * 1024;
 const EXTENT_HEADER_SLOT_COUNT: usize = 2;
 const EXTENT_DATA_OFFSET: usize = EXTENT_HEADER_SLOT_BYTES * EXTENT_HEADER_SLOT_COUNT;
-pub(crate) const EXTENT_DATA_BYTES: usize = 40 * 1024 * 1024;
+/// Data capacity of every extent written so far. Each extent stamps its own
+/// capacity, so recovery reads it whatever the configured size, and the open
+/// path replaces a recovered extent of another size with one of the configured
+/// capacity (`normalize_extent_capacity_with_media`).
+pub(crate) const LEGACY_EXTENT_DATA_BYTES: usize = 40 * 1024 * 1024;
+/// ADR-0263 Decision 7's extent capacity. It becomes the configured capacity
+/// together with the raised suffix ceilings, once command history leaves redb:
+/// raising the ceilings alone cost interactive throughput (WP-814 evidence).
+/// Test builds will keep the legacy capacity, since every test database
+/// zero-fills an active and a spare extent.
+pub(crate) const PRODUCTION_EXTENT_DATA_BYTES: usize = 320 * 1024 * 1024;
+/// Configured extent data capacity.
+pub(crate) const EXTENT_DATA_BYTES: usize = LEGACY_EXTENT_DATA_BYTES;
 const EXTENT_FILE_BYTES: usize = EXTENT_DATA_OFFSET + EXTENT_DATA_BYTES;
+
+const fn extent_file_bytes(data_bytes: usize) -> usize {
+    EXTENT_DATA_OFFSET + data_bytes
+}
+
+fn known_extent_data_bytes(data_bytes: usize) -> bool {
+    data_bytes == EXTENT_DATA_BYTES
+        || data_bytes == LEGACY_EXTENT_DATA_BYTES
+        || data_bytes == PRODUCTION_EXTENT_DATA_BYTES
+}
 const EXTENT_FRAME_ALIGNMENT: usize = 4 * 1024;
 const EXTENT_FRAME_HEADER_BYTES: usize = 128;
 const EXTENT_FRAME_FOOTER_BYTES: usize = 64;
@@ -1029,6 +1051,9 @@ struct ExtentHeader {
     logical: JournalFileHeader,
     generation: u64,
     slot: u16,
+    /// Stamped data capacity: the configured size, or the legacy size of an
+    /// extent written before ADR-0263 that recovery must still read.
+    data_bytes: usize,
 }
 
 impl ExtentHeader {
@@ -1037,6 +1062,7 @@ impl ExtentHeader {
             logical,
             generation: 1,
             slot: 0,
+            data_bytes: EXTENT_DATA_BYTES,
         }
     }
 
@@ -1048,6 +1074,7 @@ impl ExtentHeader {
                 .checked_add(1)
                 .ok_or(JournalIoError::Corrupt)?,
             slot: if self.slot == 0 { 1 } else { 0 },
+            data_bytes: self.data_bytes,
         })
     }
 
@@ -1084,7 +1111,7 @@ impl ExtentHeader {
                 .to_be_bytes(),
         );
         bytes[96..104].copy_from_slice(
-            &u64::try_from(EXTENT_DATA_BYTES)
+            &u64::try_from(self.data_bytes)
                 .expect("extent data capacity is bounded")
                 .to_be_bytes(),
         );
@@ -1102,7 +1129,7 @@ impl ExtentHeader {
             || read_u16(bytes, 10)? != expected_slot
             || usize::try_from(read_u32(bytes, 12)?).ok() != Some(EXTENT_HEADER_SLOT_BYTES)
             || usize::try_from(read_u64(bytes, 88)?).ok() != Some(EXTENT_DATA_OFFSET)
-            || usize::try_from(read_u64(bytes, 96)?).ok() != Some(EXTENT_DATA_BYTES)
+            || !usize::try_from(read_u64(bytes, 96)?).is_ok_and(known_extent_data_bytes)
         {
             return Err(JournalCodecError::UnknownVersion);
         }
@@ -1139,6 +1166,8 @@ impl ExtentHeader {
             ),
             generation,
             slot: expected_slot,
+            data_bytes: usize::try_from(read_u64(bytes, 96)?)
+                .map_err(|_| JournalCodecError::InvalidValue)?,
         })
     }
 }
@@ -2262,7 +2291,7 @@ fn create_extent_file_with_media(
         .create_new_read_write(path)
         .map_err(|_| JournalIoError::Io)?;
     let zeroes = vec![0_u8; 1024 * 1024];
-    let mut remaining = EXTENT_FILE_BYTES;
+    let mut remaining = extent_file_bytes(header.data_bytes);
     while remaining != 0 {
         let count = remaining.min(zeroes.len());
         if let Err(error) = file.write_all(&zeroes[..count]) {
@@ -2317,6 +2346,60 @@ fn migrate_empty_legacy_journal_with_media(
     sync_parent_with_media(media, path)
 }
 
+/// Replaces a recovered extent whose stamped capacity is not the configured one
+/// (an extent written before ADR-0263 raised the ceilings) with a zero-filled
+/// extent of the configured capacity carrying the same checkpoint anchor.
+///
+/// Runs only after recovery has re-anchored the extent, so its suffix is empty;
+/// a non-empty suffix refuses rather than dropping frames. A crash leaves either
+/// the old extent or the replacement at `path`, never a partial file: the
+/// replacement is complete and synced before the rename.
+pub(crate) fn normalize_extent_capacity_with_media(
+    media: &dyn JournalMedia,
+    path: &Path,
+) -> Result<bool, JournalIoError> {
+    normalize_extent_capacity_to(media, path, EXTENT_DATA_BYTES)
+}
+
+fn normalize_extent_capacity_to(
+    media: &dyn JournalMedia,
+    path: &Path,
+    data_bytes: usize,
+) -> Result<bool, JournalIoError> {
+    let (_, tail, state) = scan_extent_with_media(media, path, None, |_| Ok(()))?;
+    if state.header.data_bytes == data_bytes {
+        return Ok(false);
+    }
+    if tail.transition_count != 0 || tail.incomplete_tail {
+        return Err(JournalIoError::Corrupt);
+    }
+    let parent = path.parent().ok_or(JournalIoError::Io)?;
+    let mut replacement_name = path.file_name().ok_or(JournalIoError::Io)?.to_os_string();
+    replacement_name.push(".capacity");
+    let replacement = parent.join(replacement_name);
+    match media.remove_file(&replacement) {
+        Ok(()) => {}
+        Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+        Err(_) => return Err(JournalIoError::Io),
+    }
+    let header = ExtentHeader {
+        logical: state.header.logical.clone(),
+        generation: state
+            .header
+            .generation
+            .checked_add(1)
+            .ok_or(JournalIoError::Corrupt)?,
+        slot: 0,
+        data_bytes,
+    };
+    create_extent_file_with_media(media, &replacement, &header)?;
+    media
+        .rename(&replacement, path)
+        .map_err(|_| JournalIoError::Io)?;
+    sync_parent_with_media(media, path)?;
+    Ok(true)
+}
+
 fn sync_parent_with_media(media: &dyn JournalMedia, path: &Path) -> Result<(), JournalIoError> {
     media.sync_parent_data(path).map_err(|_| JournalIoError::Io)
 }
@@ -2324,7 +2407,7 @@ fn sync_parent_with_media(media: &dyn JournalMedia, path: &Path) -> Result<(), J
 fn read_selected_extent_header(file: &mut MediaFile) -> Result<ExtentHeader, JournalIoError> {
     let actual_len = usize::try_from(file.len().map_err(|_| JournalIoError::Io)?)
         .map_err(|_| JournalIoError::Corrupt)?;
-    if actual_len != EXTENT_FILE_BYTES {
+    if actual_len < EXTENT_DATA_OFFSET {
         return Err(JournalIoError::Corrupt);
     }
     let mut valid = Vec::with_capacity(EXTENT_HEADER_SLOT_COUNT);
@@ -2347,6 +2430,7 @@ fn read_selected_extent_header(file: &mut MediaFile) -> Result<ExtentHeader, Jou
     if valid
         .last()
         .is_some_and(|header| header.generation == selected.generation && header != &selected)
+        || actual_len != extent_file_bytes(selected.data_bytes)
     {
         return Err(JournalIoError::Corrupt);
     }
@@ -2398,7 +2482,8 @@ fn scan_extent_with_media(
     let mut audit_count = 0_usize;
     let mut encoded_byte_count = 0_usize;
     let mut incomplete_tail = false;
-    while position < EXTENT_FILE_BYTES {
+    let file_bytes = extent_file_bytes(extent.data_bytes);
+    while position < file_bytes {
         let mut physical_header = [0_u8; EXTENT_FRAME_HEADER_BYTES];
         file.read_exact_at(&mut physical_header, position)
             .map_err(|_| JournalIoError::Io)?;
@@ -2440,7 +2525,7 @@ fn scan_extent_with_media(
             || padded_len % EXTENT_FRAME_ALIGNMENT != 0
             || position
                 .checked_add(padded_len)
-                .filter(|end| *end <= EXTENT_FILE_BYTES)
+                .filter(|end| *end <= file_bytes)
                 .is_none()
         {
             return Err(JournalIoError::Corrupt);
@@ -4123,11 +4208,16 @@ mod tests {
         assert_eq!(MAX_JOURNAL_FRAME_BYTES, 16 * 1024 * 1024);
         assert_eq!(MAX_JOURNAL_SUFFIX_TRANSITIONS, 8_192);
         assert_eq!(MAX_JOURNAL_SUFFIX_BYTES, 32 * 1024 * 1024);
-        assert_eq!(EXTENT_DATA_BYTES, 40 * 1024 * 1024);
+        assert_eq!(PRODUCTION_EXTENT_DATA_BYTES, 320 * 1024 * 1024);
+        assert_eq!(LEGACY_EXTENT_DATA_BYTES, 40 * 1024 * 1024);
+        assert_eq!(EXTENT_DATA_BYTES, LEGACY_EXTENT_DATA_BYTES);
         let maximum_physical_frame =
             extent_frame_bytes(MAX_JOURNAL_FRAME_BYTES).expect("maximum frame fits extent");
         assert!(maximum_physical_frame > MAX_JOURNAL_FRAME_BYTES);
-        assert!(maximum_physical_frame < EXTENT_DATA_BYTES);
+        assert!(maximum_physical_frame < LEGACY_EXTENT_DATA_BYTES);
+        // Decision 7's extent holds its 256 MiB suffix ceiling plus one maximum
+        // padded frame, so a full suffix never forces an early checkpoint.
+        assert!(256 * 1024 * 1024 + maximum_physical_frame <= PRODUCTION_EXTENT_DATA_BYTES);
     }
 
     #[test]
@@ -4371,6 +4461,90 @@ mod tests {
         assert_eq!(visited, 0);
         assert_eq!(tail.transition_count, 0);
         assert!(tail.incomplete_tail);
+    }
+
+    // req: REC-005
+    #[test]
+    fn a_legacy_capacity_extent_is_replaced_at_the_configured_capacity_only_when_empty() {
+        let path = TestPath::new("capacity-empty");
+        let database_id = database_id(31);
+        let header = JournalFileHeader::new(database_id, Some(sequence(9)), [0x31; 32]);
+        initialize_or_validate_file(&path.0, &header).expect("initialize legacy extent");
+        assert_eq!(
+            inspect_extent(&path.0).expect("legacy").header.data_bytes,
+            LEGACY_EXTENT_DATA_BYTES
+        );
+
+        assert!(
+            normalize_extent_capacity_to(&RealJournalMedia, &path.0, PRODUCTION_EXTENT_DATA_BYTES)
+                .expect("replace empty legacy extent")
+        );
+        let replaced = inspect_extent(&path.0).expect("replaced extent");
+        assert_eq!(replaced.header.data_bytes, PRODUCTION_EXTENT_DATA_BYTES);
+        assert_eq!(replaced.header.generation, 2);
+        assert_eq!(
+            replaced.header.logical, header,
+            "the checkpoint anchor carries over"
+        );
+        assert_eq!(replaced.next_position, EXTENT_DATA_OFFSET);
+        assert_eq!(
+            usize::try_from(std::fs::metadata(&path.0).expect("metadata").len())
+                .expect("bounded file length"),
+            extent_file_bytes(PRODUCTION_EXTENT_DATA_BYTES)
+        );
+        assert!(
+            !normalize_extent_capacity_to(&RealJournalMedia, &path.0, PRODUCTION_EXTENT_DATA_BYTES)
+                .expect("already configured"),
+            "an extent at the configured capacity is left alone"
+        );
+
+        let nonempty = TestPath::new("capacity-nonempty");
+        let header = JournalFileHeader::new(database_id, None, [0; 32]);
+        initialize_or_validate_file(&nonempty.0, &header).expect("initialize legacy extent");
+        let frame = JournalFrame::new(
+            database_id,
+            sequence(1),
+            sequence(1),
+            1,
+            [0; 32],
+            vec![JournalMutation::put(JournalTable::Commits, vec![1], vec![7]).expect("put")],
+        )
+        .expect("frame")
+        .encode()
+        .expect("encode");
+        write_physical_frame(&nonempty.0, &frame, false);
+        assert_eq!(
+            normalize_extent_capacity_to(
+                &RealJournalMedia,
+                &nonempty.0,
+                PRODUCTION_EXTENT_DATA_BYTES
+            ),
+            Err(JournalIoError::Corrupt),
+            "a suffix that recovery has not re-anchored is never dropped"
+        );
+        assert_eq!(
+            inspect_extent(&nonempty.0)
+                .expect("unchanged")
+                .header
+                .data_bytes,
+            LEGACY_EXTENT_DATA_BYTES
+        );
+    }
+
+    // req: REC-005
+    #[test]
+    fn an_extent_header_with_an_unknown_capacity_is_refused() {
+        let path = TestPath::new("capacity-unknown");
+        let header = JournalFileHeader::new(database_id(32), None, [0; 32]);
+        let state = initialize_or_validate_file(&path.0, &header).expect("initialize extent");
+        let mut bytes = state.header.encode();
+        bytes[96..104].copy_from_slice(&(48_u64 * 1024 * 1024).to_be_bytes());
+        let checksum = digest(&bytes[..EXTENT_HEADER_CHECKSUM_OFFSET]);
+        bytes[EXTENT_HEADER_CHECKSUM_OFFSET..].copy_from_slice(&checksum);
+        assert_eq!(
+            ExtentHeader::decode(&bytes, 0),
+            Err(JournalCodecError::UnknownVersion)
+        );
     }
 
     #[test]
