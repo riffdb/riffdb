@@ -1,7 +1,7 @@
 ---
 adr: "0261"
 title: Journaled Online Retention Prune Frames
-status: accepted
+status: superseded
 tier: guarantee
 date: 2026-09-27
 accepted: "2026-09-28"
@@ -13,6 +13,7 @@ amends:
   - ADR-0101's closed set of journaled transition attributions
   - ADR-0103's closed set of journal table tags (additive)
 supersedes: []
+superseded_by: [ADR-0263]
 requirements: [STO-030, STO-031, STO-032]
 packages: [WP-811, WP-812]
 obligations:

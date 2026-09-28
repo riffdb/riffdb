@@ -1,11 +1,11 @@
 ---
 adr: "0263"
 title: Retained Journal Is The Command History Store
-status: proposed
+status: accepted
 tier: guarantee
 date: 2026-09-28
-accepted: null
-acceptance: null
+accepted: '2026-09-28'
+acceptance: 'maintainer, in session, 2026-09-28: "approved, build it" (ADR-0263 as written)'
 requires: [ADR-0101, ADR-0102, ADR-0103, ADR-0104, ADR-0182, ADR-0186, ADR-0261]
 amends:
   - ADR-0101 and ADR-0103's recycling of a fully checkpointed journal extent, which
@@ -16,7 +16,7 @@ amends:
   - ADR-0186's materialization of each V3 receipt into the redb HISTORY table
 supersedes: [ADR-0261]
 requirements: [STO-030, STO-031, STO-032, REP-002, REP-003, REC-005]
-packages: []
+packages: [WP-814, WP-815, WP-816]
 # One entry per deferred obligation. `proof` is a test function name or a
 # scripts/<name>; ./scripts/check-adr-obligations requires it to exist as a
 # definition once the owning package is complete.
