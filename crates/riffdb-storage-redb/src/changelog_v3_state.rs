@@ -204,10 +204,13 @@ impl StateCursor {
                     MAX_COMPOSITE_OVERLAY_TRANSITIONS + 2,
                 )
                 .map_err(|_| super::corrupt())?;
+            // An overlay row may be a history stub for an uncheckpointed frame.
             return page
                 .rows()
                 .first()
-                .map(|(key, value)| checked_row(namespace, key, value))
+                .map(|(key, value)| {
+                    checked_row(namespace, key, &resolve_state_value(namespace, value)?)
+                })
                 .transpose();
         }
         rows.next()

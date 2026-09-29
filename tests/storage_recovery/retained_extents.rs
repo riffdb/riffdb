@@ -10,7 +10,7 @@ use riffdb_storage_api::{
 use riffdb_storage_redb::RedbCheckpointTestPoint as Point;
 use riffdb_storage_redb::{
     HistoryStubCensusFixture, history_stub_census_fixture, hydrate_history_stubs_fixture,
-    sealed_journal_extents_fixture,
+    overlay_commits_fixture, sealed_journal_extents_fixture,
 };
 
 fn seal(
@@ -398,4 +398,35 @@ fn hydration_rewrites_every_history_stub_as_its_exact_value() {
         findings.is_empty(),
         "hydrated history validates: {findings:?}"
     );
+}
+
+// req: REC-005
+#[test]
+fn the_uncheckpointed_overlay_holds_history_stubs_not_segments() {
+    let path = TestDatabasePath::new("retained-extent-overlay");
+    prepare_command_database(&path.0);
+    let (controller, schedule) = RedbTestController::checkpoint_schedule();
+    let ports = open_operational(
+        RedbStore::open_with_test_controller(&path.0, controller).expect("controlled open"),
+    );
+    assert!(command_audit_phases(&ports).is_empty());
+    let (_, empty_charge) = overlay_commits_fixture(&ports).expect("empty overlay");
+    seal(&ports, 1).wait().expect("publish first group");
+    seal(&ports, 2).wait().expect("publish second group");
+
+    let (commits, charge) = overlay_commits_fixture(&ports).expect("overlay census");
+    assert_eq!(
+        commits,
+        (2, 0),
+        "each published segment is a stub in the overlay"
+    );
+    assert!(charge > empty_charge);
+    // Readers resolve the stubs from the uncheckpointed frames, exactly.
+    assert_committed(&ports, 1);
+    assert_committed(&ports, 2);
+    drop(ports);
+    drop(schedule);
+    let reopened = open_operational(RedbStore::open(&path.0).expect("reopen"));
+    assert_committed(&reopened, 1);
+    assert_committed(&reopened, 2);
 }

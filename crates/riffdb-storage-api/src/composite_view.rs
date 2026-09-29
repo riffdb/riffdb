@@ -663,6 +663,44 @@ impl CompositeMutationStage {
         self.apply_after_current_validation(mutation, proven_current)
     }
 
+    /// Replaces the private value of the row that staged mutation `index`
+    /// freshly inserted with an equivalent representation of it, and
+    /// recharges the overlay for it. The staged mutation, which the journal
+    /// frame and its checkpoint carry, keeps the value. The storage engine uses
+    /// this for a history stub standing for a command segment the journal
+    /// retains (ADR-0263); readers resolve it.
+    ///
+    /// Returns `false`, changing nothing, unless that mutation inserted a row
+    /// without a prior and the row's current private value is still its value.
+    pub fn represent_staged(
+        &mut self,
+        index: usize,
+        representation: &[u8],
+    ) -> Result<bool, StorageValueError> {
+        let Some(mutation) = self.mutations.get(index) else {
+            return Err(StorageValueError::IdentityMismatch);
+        };
+        let (Some(value), None) = (mutation.value(), mutation.expected_hash()) else {
+            return Ok(false);
+        };
+        let entries = &mut self.tables[mutation.table().index()];
+        let prior = match entries.get(mutation.key()) {
+            Some(prior @ OverlayValue::Value(current)) if current.as_ref() == value => prior,
+            _ => return Ok(false),
+        };
+        let key: Arc<[u8]> = Arc::from(mutation.key());
+        let replacement = OverlayValue::Value(Arc::from(representation));
+        let charge = self
+            .charged_bytes
+            .checked_sub(entry_charge(&key, prior)?)
+            .ok_or(StorageValueError::SizeOverflow)?
+            .checked_add(entry_charge(&key, &replacement)?)
+            .ok_or(StorageValueError::SizeOverflow)?;
+        entries.insert(key, replacement);
+        self.charged_bytes = charge;
+        Ok(true)
+    }
+
     fn apply_after_current_validation(
         &mut self,
         mutation: CompositeMutationV1,
@@ -2163,6 +2201,56 @@ mod tests {
         assert_eq!(
             successor.resolve_point(&base, CompositeTableV1::Entities, b"ticket"),
             Ok(Some(b"closed".to_vec()))
+        );
+    }
+
+    #[test]
+    fn a_freshly_inserted_row_takes_a_smaller_representation_and_the_frame_keeps_its_value() {
+        let mut base = Base::default();
+        base.insert(CompositeTableV1::Entities, b"ticket", b"open");
+        let predecessor = CompositeOverlayBuilder::new(checkpoint()).freeze();
+        let mut stage = CompositeMutationStage::new(&predecessor);
+        let segment = vec![0x5e; 4096];
+        let insert = CompositeMutationV1::put(
+            CompositeTableV1::Commits,
+            b"segment".as_slice(),
+            segment.clone(),
+        )
+        .expect("put");
+        let replace = CompositeMutationV1::replace(
+            CompositeTableV1::Entities,
+            b"ticket".as_slice(),
+            b"open",
+            b"closed".as_slice(),
+        )
+        .expect("replace");
+        stage.apply(insert, &base).expect("stage insert");
+        stage.apply(replace, &base).expect("stage replace");
+        let charged = stage.charged_bytes;
+
+        assert_eq!(
+            stage.represent_staged(1, b"stub"),
+            Ok(false),
+            "not an insert"
+        );
+        assert_eq!(stage.represent_staged(0, b"stub"), Ok(true));
+        assert_eq!(stage.charged_bytes, charged - segment.len() + b"stub".len());
+        assert_eq!(
+            stage.represent_staged(0, b"again"),
+            Ok(false),
+            "value changed"
+        );
+        assert_eq!(
+            stage.represent_staged(2, b"stub"),
+            Err(StorageValueError::IdentityMismatch)
+        );
+        assert_eq!(
+            stage.staged_mutations()[0].value(),
+            Some(segment.as_slice())
+        );
+        assert_eq!(
+            stage.resolve_point(&base, CompositeTableV1::Commits, b"segment"),
+            Ok(Some(b"stub".to_vec()))
         );
     }
 

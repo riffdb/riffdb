@@ -121,6 +121,9 @@ pub(crate) struct RedbCompositeMutationStage {
     changelog: crate::changelog_v3_cursor::ChangelogSuffix,
     root: Arc<CheckpointRoot>,
     stage: CompositeMutationStage,
+    /// Staged command segments by mutation index, with the summary their
+    /// history stub carries (ADR-0263 Decision 4).
+    segments: Vec<(usize, crate::history_stub::SegmentSummary)>,
 }
 
 impl RedbCompositeMutationStage {
@@ -133,7 +136,33 @@ impl RedbCompositeMutationStage {
             changelog: published.changelog.clone(),
             root: Arc::clone(&published.root),
             stage: CompositeMutationStage::new(&published.overlay),
+            segments: Vec::new(),
         }
+    }
+
+    /// Records that the mutation just staged inserted the command segment
+    /// `summary` describes.
+    pub(crate) fn note_staged_segment(&mut self, summary: crate::history_stub::SegmentSummary) {
+        if let Some(index) = self.stage.mutation_count().checked_sub(1) {
+            self.segments.push((index, summary));
+        }
+    }
+
+    /// Replaces each staged command segment in the private overlay with its
+    /// history stub at `locator`, the frame this stage seals into. The
+    /// uncheckpointed overlay then charges a locator, not the segment, and
+    /// readers resolve it from the retained frame (ADR-0263 Decision 4).
+    pub(crate) fn represent_segments(
+        &mut self,
+        locator: crate::history_stub::StubLocator,
+    ) -> Result<(), StorageError> {
+        for (index, summary) in std::mem::take(&mut self.segments) {
+            let stub = locator.summary_stub(summary)?;
+            self.stage
+                .represent_staged(index, &stub)
+                .map_err(corrupt_value)?;
+        }
+        Ok(())
     }
 
     pub(crate) fn apply(

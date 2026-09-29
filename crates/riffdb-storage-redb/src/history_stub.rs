@@ -46,6 +46,22 @@ pub(crate) struct SegmentSummary {
     pub(crate) segment_digest: [u8; 32],
 }
 
+impl SegmentSummary {
+    /// The summary a stub carries for `segment`.
+    pub(crate) fn of(
+        segment: &riffdb_storage_api::StoredCommandSegmentV1,
+    ) -> Result<Self, StorageError> {
+        Ok(Self {
+            first_commit_sequence: Some(segment.first_commit_sequence()),
+            last_commit_sequence: Some(segment.last_commit_sequence()),
+            terminal_administration_sequence: Some(segment.last_administration_sequence()),
+            command_count: u32::try_from(segment.commands().len())
+                .map_err(|_| storage_error(StorageErrorKind::LimitExceeded))?,
+            segment_digest: *segment.segment_digest().as_bytes(),
+        })
+    }
+}
+
 /// One decoded stub.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) struct HistoryStub {
@@ -184,16 +200,14 @@ impl StubLocator {
         let Ok(segment) = riffdb_storage_api::decode_command_segment_v1(value) else {
             return Ok(None);
         };
-        let segment = segment.into_parts().0;
-        let summary = SegmentSummary {
-            first_commit_sequence: Some(segment.first_commit_sequence()),
-            last_commit_sequence: Some(segment.last_commit_sequence()),
-            terminal_administration_sequence: Some(segment.last_administration_sequence()),
-            command_count: u32::try_from(segment.commands().len())
-                .map_err(|_| storage_error(StorageErrorKind::LimitExceeded))?,
-            segment_digest: *segment.segment_digest().as_bytes(),
-        };
-        self.stub(StubKind::Segment, summary).encode().map(Some)
+        self.summary_stub(SegmentSummary::of(&segment.into_parts().0)?)
+            .map(Some)
+    }
+
+    /// The encoded segment stub for a segment whose summary the writer
+    /// recorded when it built the segment, without decoding it again.
+    pub(crate) fn summary_stub(self, summary: SegmentSummary) -> Result<Vec<u8>, StorageError> {
+        self.stub(StubKind::Segment, summary).encode()
     }
 }
 
@@ -219,6 +233,19 @@ pub(crate) struct HistoryResolver {
     database_id: DatabaseId,
     location: ExtentLocation,
     media: Arc<dyn JournalMedia>,
+    /// The mutations of this store's uncheckpointed frames by frame hash. A
+    /// stub in the overlay may name a frame the journal worker has not yet
+    /// written, and the writer must not read the file for its own recent
+    /// segments. Entries are weak: the checkpoint suffix owns the mutations,
+    /// and once it drops them the frame is durable and read from its extent.
+    pending: Mutex<PendingFrames>,
+}
+
+#[derive(Debug, Default)]
+struct PendingFrames {
+    frames: std::collections::HashMap<[u8; 32], Weak<[riffdb_storage_api::CompositeMutationV1]>>,
+    /// Size at which dropped entries are next swept, keeping inserts O(1).
+    sweep_at: usize,
 }
 
 #[derive(Debug)]
@@ -285,6 +312,7 @@ impl HistoryResolver {
             database_id,
             location,
             media,
+            pending: Mutex::new(PendingFrames::default()),
         });
         if let Ok(mut resolvers) = RESOLVERS.lock() {
             resolvers.retain(|entry| entry.strong_count() > 0);
@@ -294,14 +322,55 @@ impl HistoryResolver {
     }
 }
 
-fn read_stub_frame(stub: &HistoryStub) -> Result<JournalFrame, StorageError> {
-    let resolvers = RESOLVERS
+impl HistoryResolver {
+    /// Records the mutations of an uncheckpointed frame the writer just sealed,
+    /// before any reader can see its stubs.
+    pub(crate) fn note_pending_frame(
+        &self,
+        frame_hash: [u8; 32],
+        mutations: &Arc<[riffdb_storage_api::CompositeMutationV1]>,
+    ) {
+        let Ok(mut pending) = self.pending.lock() else {
+            return;
+        };
+        if pending.frames.len() >= pending.sweep_at {
+            pending.frames.retain(|_, frame| frame.strong_count() > 0);
+            pending.sweep_at = pending.frames.len().saturating_mul(2).max(64);
+        }
+        pending.frames.insert(frame_hash, Arc::downgrade(mutations));
+    }
+
+    fn pending_segment(&self, frame_hash: &[u8; 32], key: &[u8]) -> Option<Vec<u8>> {
+        let mutations = self
+            .pending
+            .lock()
+            .ok()?
+            .frames
+            .get(frame_hash)?
+            .upgrade()?;
+        mutations
+            .iter()
+            .find(|mutation| {
+                mutation.table() == riffdb_storage_api::CompositeTableV1::Commits
+                    && mutation.key() == key
+            })
+            .and_then(riffdb_storage_api::CompositeMutationV1::value)
+            .map(<[u8]>::to_vec)
+    }
+}
+
+fn live_resolvers(database_id: DatabaseId) -> Result<Vec<Arc<HistoryResolver>>, StorageError> {
+    Ok(RESOLVERS
         .lock()
         .map_err(|_| storage_error(StorageErrorKind::InvariantViolation))?
         .iter()
         .filter_map(Weak::upgrade)
-        .filter(|resolver| resolver.database_id == stub.database_id)
-        .collect::<Vec<_>>();
+        .filter(|resolver| resolver.database_id == database_id)
+        .collect())
+}
+
+fn read_stub_frame(stub: &HistoryStub) -> Result<JournalFrame, StorageError> {
+    let resolvers = live_resolvers(stub.database_id)?;
     if resolvers.is_empty() {
         // No open store can reach the extent this stub names.
         return Err(storage_error(StorageErrorKind::Unavailable));
@@ -345,6 +414,11 @@ pub(crate) fn resolve_commits_value(value: &[u8]) -> Result<Cow<'_, [u8]>, Stora
         .filter(|_| stub.kind == StubKind::Segment)
         .ok_or_else(|| storage_error(StorageErrorKind::CorruptData))?;
     let key = crate::keys::encode_application_sequence_key(first);
+    for resolver in live_resolvers(stub.database_id)? {
+        if let Some(value) = resolver.pending_segment(&stub.placement.frame_hash, &key) {
+            return Ok(Cow::Owned(value));
+        }
+    }
     let frame = read_stub_frame(&stub)?;
     frame
         .mutations()
@@ -497,4 +571,66 @@ pub(crate) fn hydrate_history_stubs(database: &redb::Database) -> Result<(), Sto
         }
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // req: REC-005
+    #[test]
+    fn an_uncheckpointed_frame_resolves_from_memory_until_its_suffix_drops_it() {
+        let database_id =
+            DatabaseId::from_unix_milliseconds_and_random(1_700_000_000_000, [0x51; 10])
+                .expect("database id");
+        // No extent exists at this path: only the pending frame can answer.
+        let resolver = HistoryResolver::register(
+            database_id,
+            Path::new("absent/pending.redb"),
+            Arc::new(crate::media::RealJournalMedia),
+        );
+        let first = CommitSequence::new(7).expect("sequence");
+        let key = crate::keys::encode_application_sequence_key(first);
+        let segment = b"segment bytes the frame carries".to_vec();
+        let mutations: Arc<[riffdb_storage_api::CompositeMutationV1]> = Arc::from(vec![
+            riffdb_storage_api::CompositeMutationV1::put(
+                riffdb_storage_api::CompositeTableV1::Commits,
+                key.to_vec(),
+                segment.clone(),
+            )
+            .expect("mutation"),
+        ]);
+        let frame_hash = [0x5a; 32];
+        let stub = StubLocator {
+            database_id,
+            generation: 3,
+            placement: FramePlacement {
+                position: 8192,
+                padded_len: 4096,
+                frame_hash,
+            },
+        }
+        .summary_stub(SegmentSummary {
+            first_commit_sequence: Some(first),
+            last_commit_sequence: Some(first),
+            terminal_administration_sequence: None,
+            command_count: 1,
+            segment_digest: [0; 32],
+        })
+        .expect("stub");
+
+        resolver.note_pending_frame(frame_hash, &mutations);
+        assert_eq!(
+            resolve_commits_value(&stub).expect("pending").as_ref(),
+            segment.as_slice()
+        );
+        drop(mutations);
+        assert_eq!(
+            resolve_commits_value(&stub)
+                .map(|_| ())
+                .map_err(|error| error.kind()),
+            Err(StorageErrorKind::CorruptData),
+            "once the suffix drops the frame, only its extent can answer"
+        );
+    }
 }

@@ -1372,6 +1372,18 @@ impl SharedRedb {
         }
     }
 
+    /// The currently published composite view, if the standard profile has one.
+    pub(crate) fn published_composite_view(
+        &self,
+    ) -> Result<Option<Arc<crate::composite_view::RedbCompositeReadView>>, StorageError> {
+        self.composite_publication
+            .read()
+            .map_err(|_| storage_error(StorageErrorKind::InvariantViolation))?
+            .as_ref()
+            .map(crate::composite_view::RedbCompositePublication::capture)
+            .transpose()
+    }
+
     fn begin_composite_operational_read(&self) -> Result<RedbReadAccess, StorageError> {
         // A published composite view is the complete standard-profile state:
         // one immutable redb checkpoint plus the exact fenced journal suffix.
@@ -6202,6 +6214,7 @@ impl RedbWriteAccess {
         &self,
         key: Vec<u8>,
         value: riffdb_storage_api::CanonicalStoredEnvelopeV1,
+        summary: crate::history_stub::SegmentSummary,
         command_count: usize,
         raw_envelope_bytes: usize,
     ) -> Result<bool, StorageError> {
@@ -6223,10 +6236,11 @@ impl RedbWriteAccess {
             transaction.apply_journal_mutation(&mutation)?;
         }
         if let Some(stage) = self.composite_stage.as_ref() {
-            stage
+            let mut stage = stage
                 .try_borrow_mut()
-                .map_err(|_| storage_error(StorageErrorKind::InvariantViolation))?
-                .apply_with_proven_current(&mutation, None)?;
+                .map_err(|_| storage_error(StorageErrorKind::InvariantViolation))?;
+            stage.apply_with_proven_current(&mutation, None)?;
+            stage.note_staged_segment(summary);
         }
         if let Some(retained) = self.journal_mutations.as_ref() {
             retained
@@ -7050,6 +7064,16 @@ impl RedbDurabilityEpoch {
                 let predecessor_sequence = runtime.last_sequence;
                 let predecessor_administration_sequence = runtime.last_administration_sequence;
                 let previous_hash = runtime.last_hash;
+                let placement =
+                    crate::journal::frame_placement_after(runtime.suffix_physical_bytes, &frame)
+                        .ok_or_else(|| storage_error(StorageErrorKind::LimitExceeded))?;
+                // The overlay holds each segment's history stub; the frame and
+                // its checkpoint keep the segment (ADR-0263 Decision 4).
+                composite_stage.represent_segments(crate::history_stub::StubLocator {
+                    database_id: runtime.database_id,
+                    generation: runtime.lane.generation(),
+                    placement,
+                })?;
                 let (mut composite_successor, checkpoint_mutations) = composite_stage
                     .seal_encoded_frame_with_mutations(
                         riffdb_storage_api::CompositeFrameKindV1::Command,
@@ -7065,6 +7089,11 @@ impl RedbDurabilityEpoch {
                     )?;
                 let checkpoint_mutations: Arc<[riffdb_storage_api::CompositeMutationV1]> =
                     Arc::from(checkpoint_mutations);
+                self.shared.note_pending_frame(
+                    runtime.database_id,
+                    frame_hash,
+                    &checkpoint_mutations,
+                );
                 // A stage rebuilt after a checkpoint rebase re-derives its
                 // mutations from the frame; the recorded binding must still match.
                 if checkpoint_rebased
@@ -7096,11 +7125,6 @@ impl RedbDurabilityEpoch {
                 runtime.suffix_audits = next_audits;
                 runtime.suffix_bytes = next_bytes;
                 runtime.suffix_physical_bytes = next_physical_bytes;
-                let placement = crate::journal::frame_placement_after(
-                    next_physical_bytes - physical_bytes,
-                    &retained_frame,
-                )
-                .ok_or_else(|| storage_error(StorageErrorKind::LimitExceeded))?;
                 runtime.suffix_frames.push(ValidatedCheckpointFrame {
                     extent_generation: runtime.lane.generation(),
                     placement,
@@ -7876,6 +7900,20 @@ impl SharedRedb {
     }
 
     /// Makes this store's retained extents resolvable for its history stubs.
+    /// Makes an uncheckpointed frame's segments resolvable in memory before
+    /// its overlay stubs become visible (ADR-0263 Decision 4).
+    pub(super) fn note_pending_frame(
+        &self,
+        database_id: DatabaseId,
+        frame_hash: [u8; 32],
+        mutations: &Arc<[riffdb_storage_api::CompositeMutationV1]>,
+    ) {
+        self.register_history_resolver(database_id);
+        if let Some(resolver) = self.history_resolver.get() {
+            resolver.note_pending_frame(frame_hash, mutations);
+        }
+    }
+
     pub(super) fn register_history_resolver(&self, database_id: DatabaseId) {
         self.history_resolver.get_or_init(|| {
             crate::history_stub::HistoryResolver::register(

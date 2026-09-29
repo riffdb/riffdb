@@ -65,12 +65,21 @@ impl PublishedDurableSnapshot for RedbPublishedSnapshot {
         crate::changelog_v3_cursor::open(&self.access, lineage, after)
     }
 
+    /// A consumer reads resolved values: a history stub never crosses this
+    /// port (ADR-0263 Amendment 3 C3).
     fn read_value(
         &self,
         table: CompositeTableV1,
         key: &[u8],
     ) -> Result<Option<Vec<u8>>, StorageError> {
-        self.access.read_value(journal_table(table), key)
+        let value = self.access.read_value(journal_table(table), key)?;
+        match (table, value) {
+            (CompositeTableV1::Commits, Some(value)) => {
+                crate::history_stub::resolve_commits_value(&value)
+                    .map(|resolved| Some(resolved.into_owned()))
+            }
+            (_, value) => Ok(value),
+        }
     }
 
     fn read_range(
@@ -80,12 +89,24 @@ impl PublishedDurableSnapshot for RedbPublishedSnapshot {
         end_exclusive: &[u8],
         max_rows: usize,
     ) -> Result<Vec<riffdb_storage_api::CompositeRow>, StorageError> {
-        self.access.read_range(
+        let rows = self.access.read_range(
             journal_table(table),
             start_inclusive,
             end_exclusive,
             max_rows,
-        )
+        )?;
+        if table != CompositeTableV1::Commits {
+            return Ok(rows);
+        }
+        rows.into_iter()
+            .map(|(key, value)| {
+                let resolved = match crate::history_stub::resolve_commits_value(&value)? {
+                    std::borrow::Cow::Borrowed(_) => value,
+                    std::borrow::Cow::Owned(resolved) => resolved.into_boxed_slice(),
+                };
+                Ok((key, resolved))
+            })
+            .collect()
     }
 
     fn application_frontier(&self) -> Result<Option<CommitSequence>, StorageError> {

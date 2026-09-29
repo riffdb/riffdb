@@ -693,3 +693,34 @@ pub fn resolve_history_row_fixture(
         }
     }
 }
+
+/// The published overlay's COMMITS rows by representation, `(stubs, full
+/// values)`, and its charged bytes (ADR-0263 Decision 4).
+#[doc(hidden)]
+pub fn overlay_commits_fixture(
+    ports: &crate::store::RedbOperationalPorts,
+) -> Result<((usize, usize), usize), StorageError> {
+    let Some(view) = ports.shared.published_composite_view()? else {
+        return Ok(((0, 0), 0));
+    };
+    let overlay = view.overlay();
+    let page = overlay
+        .merge_bounded(
+            riffdb_storage_api::CompositeTableV1::Commits,
+            std::iter::empty(),
+            &[],
+            None,
+            usize::MAX,
+            usize::MAX,
+        )
+        .map_err(|_| storage_error(StorageErrorKind::CorruptData))?;
+    let mut counts = (0, 0);
+    for (_, value) in page.rows() {
+        if crate::history_stub::HistoryStub::decode(value)?.is_some() {
+            counts.0 += 1;
+        } else {
+            counts.1 += 1;
+        }
+    }
+    Ok((counts, overlay.charged_bytes()))
+}

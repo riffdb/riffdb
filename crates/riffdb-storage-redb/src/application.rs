@@ -239,6 +239,7 @@ fn capsulate_command_rows(
     if !access.put_command_segment_value(
         commit_key.to_vec(),
         encoded_segment,
+        crate::history_stub::SegmentSummary::of(&segment)?,
         segment.commands().len(),
         encoding_metrics.raw_envelope_bytes(),
     )? {
