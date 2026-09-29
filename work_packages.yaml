@@ -27830,7 +27830,8 @@ work_packages:
   allowed_paths: [work_packages.yaml, crates/riffdb-storage-api/**,
     crates/riffdb-storage-redb/**, crates/riffdb-server/**, crates/riffdb-sim/**,
     crates/riffdb-proto/**, proto/**, tests/**, fixtures/**, scripts/**, benchmarks/**,
-    examples/app-baseline/**, release/evidence/**, docs/**]
+    examples/app-baseline/**, release/evidence/**, release/durable-format-manifest-v1.json,
+    docs/**]
   deliverables:
   - Sealed-extent footer and history-index table with versioned encodings,
     compatibility fixtures, and refusal by a binary that does not know them
