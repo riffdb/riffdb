@@ -5,6 +5,9 @@
 
 //! Owned command snapshots, observations, and canonical read dependencies.
 
+mod indexed_selection;
+pub use indexed_selection::IndexedSelectionRequest;
+
 use std::cmp::Ordering;
 use std::fmt;
 use std::hash::{Hash, Hasher};
@@ -956,6 +959,7 @@ pub struct SnapshotRequest {
     cascade_targets: Vec<EntityTarget>,
     range_targets: Vec<IndexRangeTarget>,
     range_entry_limits: Vec<usize>,
+    indexed_selection: Option<IndexedSelectionRequest>,
 }
 
 impl SnapshotRequest {
@@ -1042,6 +1046,7 @@ impl SnapshotRequest {
             cascade_targets,
             range_targets,
             range_entry_limits,
+            indexed_selection: None,
         })
     }
 

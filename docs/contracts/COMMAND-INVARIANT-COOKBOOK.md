@@ -196,3 +196,12 @@ to escape an uncertain response. Generated command helpers own this behavior.
 An unavailable pattern is not an invitation to work around the compiler. Model
 the invariant, relationship, aggregate, command, or declared outcome so RiffDB
 can prove it.
+
+## Allocate an unspecified free slot
+
+Use [atomic indexed selection](ATOMIC-INDEXED-SELECTION.md) when an equality
+prefix fixes the partition and every conflict key. `mutate first` selects one
+row and carries its index generation through commit validation. Keep the
+availability requirement and explicit write associations: selection itself does
+not authorize replacement. Empty results are durable and replay under the same
+request identity; a new attempt after capacity changes needs a new identity.

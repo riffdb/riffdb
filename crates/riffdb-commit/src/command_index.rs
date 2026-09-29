@@ -16,15 +16,16 @@ use riffdb_contract_ir::{
     EXECUTABLE_IR_VERSION_V17, EXECUTABLE_IR_VERSION_V18, EXECUTABLE_IR_VERSION_V19,
     EXECUTABLE_IR_VERSION_V20, EXECUTABLE_IR_VERSION_V21, EXECUTABLE_IR_VERSION_V22,
     EXECUTABLE_IR_VERSION_V23, EXECUTABLE_IR_VERSION_V24, EXECUTABLE_IR_VERSION_V25,
-    ExecutionClass, GRAMMAR_VERSION_V1, GRAMMAR_VERSION_V2, GRAMMAR_VERSION_V3, GRAMMAR_VERSION_V4,
-    GRAMMAR_VERSION_V5, GRAMMAR_VERSION_V6, GRAMMAR_VERSION_V7, GRAMMAR_VERSION_V8,
-    GRAMMAR_VERSION_V9, GRAMMAR_VERSION_V10, GRAMMAR_VERSION_V11, GRAMMAR_VERSION_V12,
-    GRAMMAR_VERSION_V13, GRAMMAR_VERSION_V14, GRAMMAR_VERSION_V15, GRAMMAR_VERSION_V16,
-    GRAMMAR_VERSION_V17, GRAMMAR_VERSION_V18, GRAMMAR_VERSION_V19, GRAMMAR_VERSION_V20,
-    GRAMMAR_VERSION_V21, GRAMMAR_VERSION_V22, GRAMMAR_VERSION_V23, GRAMMAR_VERSION_V24,
-    GRAMMAR_VERSION_V25, IndexSchema, SchemaIr,
+    EXECUTABLE_IR_VERSION_V26, ExecutionClass, GRAMMAR_VERSION_V1, GRAMMAR_VERSION_V2,
+    GRAMMAR_VERSION_V3, GRAMMAR_VERSION_V4, GRAMMAR_VERSION_V5, GRAMMAR_VERSION_V6,
+    GRAMMAR_VERSION_V7, GRAMMAR_VERSION_V8, GRAMMAR_VERSION_V9, GRAMMAR_VERSION_V10,
+    GRAMMAR_VERSION_V11, GRAMMAR_VERSION_V12, GRAMMAR_VERSION_V13, GRAMMAR_VERSION_V14,
+    GRAMMAR_VERSION_V15, GRAMMAR_VERSION_V16, GRAMMAR_VERSION_V17, GRAMMAR_VERSION_V18,
+    GRAMMAR_VERSION_V19, GRAMMAR_VERSION_V20, GRAMMAR_VERSION_V21, GRAMMAR_VERSION_V22,
+    GRAMMAR_VERSION_V23, GRAMMAR_VERSION_V24, GRAMMAR_VERSION_V25, GRAMMAR_VERSION_V26,
+    IndexSchema, SchemaIr,
 };
-use riffdb_invariant::InputDerivedCommandFacts;
+
 #[cfg(test)]
 use riffdb_storage_api::command_write_set_upper_bound_v1;
 use riffdb_storage_api::{
@@ -78,7 +79,7 @@ pub(super) enum CascadeDiscoveryDecision {
 
 pub(super) fn lower_cascade_discovery(
     resolved: &ResolvedExecutablePlan,
-    facts: &InputDerivedCommandFacts,
+    facts: &riffdb_invariant::CommandTargetFacts,
     discovery: &ReadSnapshot,
 ) -> Result<CascadeDiscoveryDecision, CommandIndexError> {
     let bounded_ranges = derive_delete_ranges(resolved, facts)?;
@@ -266,7 +267,7 @@ impl std::fmt::Debug for CommandIndexError {
 /// boundary.
 pub(super) fn derive_delete_ranges(
     resolved: &ResolvedExecutablePlan,
-    facts: &InputDerivedCommandFacts,
+    facts: &riffdb_invariant::CommandTargetFacts,
 ) -> Result<Vec<(IndexRangeTarget, u16)>, CommandIndexError> {
     let plan = resolved.plan();
     if facts.binding_plan_indices().len() != facts.binding_entity_keys().len() {
@@ -1621,12 +1622,13 @@ const fn index_derivation_version_supported(grammar: u32, ir: u32) -> bool {
             | (GRAMMAR_VERSION_V23, EXECUTABLE_IR_VERSION_V23)
             | (GRAMMAR_VERSION_V24, EXECUTABLE_IR_VERSION_V24)
             | (GRAMMAR_VERSION_V25, EXECUTABLE_IR_VERSION_V25)
+            | (GRAMMAR_VERSION_V26, EXECUTABLE_IR_VERSION_V26)
     )
 }
 
 fn derive_grammar_v1_indexes(
     resolved: &ResolvedExecutablePlan,
-    facts: &InputDerivedCommandFacts,
+    facts: &riffdb_invariant::CommandTargetFacts,
     evaluated: &EvaluatedCommand,
     current: &TransactionCurrentState,
     mutation_positions: &[Option<usize>],
@@ -2031,10 +2033,10 @@ mod tests {
     // gate.
     #[test]
     fn index_derivation_admits_exactly_the_audited_identity_pairs() {
-        for grammar in 0..=GRAMMAR_VERSION_V25 + 1 {
-            for ir in 0..=EXECUTABLE_IR_VERSION_V25 + 1 {
+        for grammar in 0..=GRAMMAR_VERSION_V26 + 1 {
+            for ir in 0..=EXECUTABLE_IR_VERSION_V26 + 1 {
                 let audited_identity_pair =
-                    grammar == ir && (GRAMMAR_VERSION_V1..=GRAMMAR_VERSION_V25).contains(&grammar);
+                    grammar == ir && (GRAMMAR_VERSION_V1..=GRAMMAR_VERSION_V26).contains(&grammar);
                 assert_eq!(
                     index_derivation_version_supported(grammar, ir),
                     audited_identity_pair,

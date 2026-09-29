@@ -514,6 +514,7 @@ fn ordered_layout_registry_has_one_closed_witness_slot_per_layout() {
                 "failure",
                 "restriction_failure",
                 "cascade_failure",
+                "indexed_selection",
             ],
         ),
         (

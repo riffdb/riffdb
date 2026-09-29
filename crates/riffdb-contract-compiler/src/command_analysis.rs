@@ -102,6 +102,7 @@ fn validate_command(
     command: &HirCommand,
     diagnostics: &mut Vec<CompilerDiagnostic>,
 ) {
+    crate::indexed_selection::validate(hir, command, diagnostics);
     if !command.decisions.is_empty() {
         for effect in &command.effects {
             diagnostics.push(CompilerDiagnostic::new(
@@ -256,6 +257,9 @@ fn validate_command(
     let mut influential_roots = Vec::new();
     for binding in &command.bindings {
         influential_roots.extend(binding.arguments.iter());
+        if let Some((_, prefix)) = &binding.selection {
+            influential_roots.extend(prefix.iter());
+        }
         influential_roots.extend(binding.initializer.iter().map(|field| &field.value));
         if let Some(failure) = &binding.failure {
             influential_roots.extend(failure.fields.iter().map(|field| &field.value));

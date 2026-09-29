@@ -362,6 +362,8 @@ pub enum CompilerDiagnosticCode {
     GuardedOverwrite,
     /// `RDB-C050`: a checked_by association is invalid or does not dominate the write.
     InvalidWriteAssociation,
+    /// `RDB-C051`: indexed selection lacks a bounded static ownership proof.
+    InvalidIndexedSelection,
     /// `RDB-C201`: an identifier cannot form an ADR-0064 command tool-name segment.
     InvalidCommandToolName,
     /// `RDB-C202`: a complete ADR-0064 command tool name exceeds 128 bytes.
@@ -372,7 +374,7 @@ pub enum CompilerDiagnosticCode {
 
 impl CompilerDiagnosticCode {
     /// Complete pre-freeze public semantic diagnostic registry in code order.
-    pub const ALL: [Self; 52] = [
+    pub const ALL: [Self; 53] = [
         Self::InvalidContractVersion,
         Self::DuplicateName,
         Self::MissingDeclaration,
@@ -422,6 +424,7 @@ impl CompilerDiagnosticCode {
         Self::UnguardedSet,
         Self::GuardedOverwrite,
         Self::InvalidWriteAssociation,
+        Self::InvalidIndexedSelection,
         Self::InvalidCommandToolName,
         Self::CommandToolNameTooLong,
         Self::CommandToolNameCollision,
@@ -480,6 +483,7 @@ impl CompilerDiagnosticCode {
             Self::UnguardedSet => "RDB-C048",
             Self::GuardedOverwrite => "RDB-C049",
             Self::InvalidWriteAssociation => "RDB-C050",
+            Self::InvalidIndexedSelection => "RDB-C051",
             Self::InvalidCommandToolName => "RDB-C201",
             Self::CommandToolNameTooLong => "RDB-C202",
             Self::CommandToolNameCollision => "RDB-C203",
@@ -590,6 +594,9 @@ impl CompilerDiagnosticCode {
             }
             Self::InvalidWriteAssociation => {
                 "the named business requirement is invalid for this write"
+            }
+            Self::InvalidIndexedSelection => {
+                "indexed selection lacks a complete bounded ownership proof"
             }
             Self::InvalidCommandToolName => {
                 "an identifier cannot form a valid MCP command tool-name segment"
@@ -737,6 +744,9 @@ impl CompilerDiagnosticCode {
                 "use `checked_by` to associate a dominating requirement, apply a same-field arithmetic delta, or compare and increment the root revision; use `overwrite` only for intended replacement",
             ),
             Self::GuardedOverwrite => Some("write `set`"),
+            Self::InvalidIndexedSelection => Some(
+                "use one ordinary mutate first binding with a canonical equality prefix fixing the partition and every conflict key; keep other targets input-addressed",
+            ),
             Self::InvalidWriteAssociation => Some(
                 "name one visible, dominating requirement reading this binding; business relevance remains the author's responsibility",
             ),
@@ -1105,7 +1115,7 @@ mod tests {
 
     #[test]
     fn public_diagnostic_registry_is_complete_unique_and_code_ordered() {
-        assert_eq!(CompilerDiagnosticCode::ALL.len(), 52);
+        assert_eq!(CompilerDiagnosticCode::ALL.len(), 53);
         let codes = CompilerDiagnosticCode::ALL.map(CompilerDiagnosticCode::as_str);
         assert!(codes.windows(2).all(|pair| pair[0] < pair[1]));
         assert!(CompilerDiagnosticCode::ALL.iter().all(|code| {

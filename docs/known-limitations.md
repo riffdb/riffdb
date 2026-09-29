@@ -357,9 +357,10 @@ protocol. See the [write cookbook](contracts/COMMAND-INVARIANT-COOKBOOK.md#decla
 
 The command language also has three structural limits:
 
-- A command reads by complete key. A write-influencing indexed range read is
-  rejected, and no future one is admitted without accepted static target
-  derivation and explicit up-front exclusion.
+- Commands normally read by complete key. [Atomic indexed selection](contracts/ATOMIC-INDEXED-SELECTION.md)
+  admits one first-row selection when an equality prefix proves the partition
+  and every conflict key before the read. Other write-influencing range reads
+  remain rejected.
 - An invariant may span entities inside one aggregate, never across aggregates.
   A command may *write* two aggregates that share a partition route, and since
   ADR-0252 it carries each one's own invariants, but no invariant relates them.
@@ -376,11 +377,13 @@ The conflict key covers the root, so concurrent writers serialize and the
 invariant is checked at commit against the value the command wrote. A rollup
 maintained this way is a first-class pattern, not a workaround.
 
-Choosing a target -- a free slot, the next item -- happens in the application:
-read a bounded page, choose, then invoke a command naming that target by
-complete key. That is the intended idiom and it is safe *when the command
-re-checks the condition the choice depended on*, because a losing choice then
-becomes a declared outcome rather than a lost update. The compiler requires
+Choosing the first free slot within a statically owned indexed pool can happen
+inside one command with `mutate first`. More general selection still happens in
+the application: read a bounded page, choose, then invoke a command naming that
+target by complete key. That pattern is safe *when the command re-checks the
+condition the choice depended on*, because a losing choice becomes a declared
+outcome rather than a lost update. Application-side selection, retry scheduling,
+and multi-command recovery remain application responsibilities for those shapes. The compiler requires
 `set` for narrow same-field arithmetic, a named business association, or a
 proven same-root revision fence, and explicit `overwrite` for replacement
 without those proofs. Only the fence checks a supplied caller revision; a

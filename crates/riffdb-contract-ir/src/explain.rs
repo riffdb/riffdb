@@ -683,6 +683,21 @@ impl CommandExplain {
                 binding.complete_record_access(),
                 fields
             );
+            if let Some(selection) = binding.indexed_selection() {
+                let prefix = selection
+                    .prefix_expressions()
+                    .iter()
+                    .map(|id| id.get().to_string())
+                    .collect::<Vec<_>>()
+                    .join(",");
+                let _ = writeln!(
+                    output,
+                    "selection:{} index={} prefix-expressions=[{}] order=ascending-complete-index-key candidate-bound=1 dependency=partition-index-generation ownership=input-derived-conflict-union evaluation-attempts=3",
+                    binding.id().get(),
+                    selection.index().get(),
+                    prefix
+                );
+            }
             if !binding.initializer().is_empty() {
                 let initializer = binding
                     .initializer()

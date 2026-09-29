@@ -3010,3 +3010,6 @@ fn uuid_bytes(fill: u8) -> [u8; 16] {
 
 #[path = "write_evidence.rs"]
 mod write_evidence;
+
+#[path = "indexed_selection.rs"]
+mod indexed_selection;

@@ -509,6 +509,25 @@ fn main() -> Result<(), Box<dyn Error>> {
         .render_text(),
     )?;
 
+    let selection_source =
+        include_str!("../../../fixtures/compiler/indexed-selection/contract.riff");
+    let selection_bundle = compile_contract_source(selection_source)?;
+    let selection_root = fixture_root.join("indexed-selection");
+    fs::create_dir_all(&selection_root)?;
+    fs::write(selection_root.join("contract.riff"), selection_source)?;
+    fs::write(
+        selection_root.join("bundle.bin"),
+        selection_bundle.canonical_bytes(),
+    )?;
+    fs::write(
+        selection_root.join("bundle-hash.txt"),
+        format!("{}\n", hex(selection_bundle.bundle_hash().as_bytes())),
+    )?;
+    fs::write(
+        selection_root.join("command-explain.txt"),
+        CommandExplain::from_plan(&selection_bundle.commands()[0]).render_text(),
+    )?;
+
     let decision_bundle = compile_contract_source(COMMAND_DECISION_SOURCE)?;
     let decision_root = fixture_root.join("command-decision");
     fs::create_dir_all(&decision_root)?;
@@ -3256,6 +3275,12 @@ fn diagnostic_snapshots() -> Result<String, Box<dyn Error>> {
                 "return Claimed { slot: slot } } }",
             )
             .to_owned(),
+        ),
+        (
+            "RDB-C051-invalid-indexed-selection",
+            CompilerDiagnosticCode::InvalidIndexedSelection,
+            include_str!("../../../fixtures/compiler/indexed-selection/contract.riff")
+                .replace("conflict_key (pool_id)", "conflict_key (pool_id, slot_id)"),
         ),
         (
             "RDB-C049-guarded-overwrite",

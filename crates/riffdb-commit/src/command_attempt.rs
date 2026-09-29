@@ -45,6 +45,7 @@ pub(crate) struct PendingCommandAttempts {
     /// are immutable for the attempt's lifetime, so every later stage borrows
     /// this one proof instead of re-deriving an identical copy.
     input_facts: InputDerivedCommandFacts,
+    selected_facts: Option<riffdb_invariant::CommandTargetFacts>,
     commit_context: PreEvaluationCommitContext,
     raw_conflict_keys: Vec<ConflictKey>,
     snapshot_request: SnapshotRequest,
@@ -113,6 +114,7 @@ impl PendingCommandAttempts {
             resolved_plan,
             normalized_input,
             input_facts,
+            selected_facts: None,
             commit_context,
             raw_conflict_keys,
             snapshot_request,
@@ -137,6 +139,10 @@ impl PendingCommandAttempts {
 
     pub(crate) fn raw_conflict_keys(&self) -> &[ConflictKey] {
         &self.raw_conflict_keys
+    }
+
+    pub(crate) fn has_indexed_selection(&self) -> bool {
+        self.resolved_plan.plan().indexed_selection().is_some()
     }
 
     pub(crate) fn binding_accesses(
@@ -166,6 +172,7 @@ impl PendingCommandAttempts {
     /// the initial closed eligibility class for serial micro-batching.
     pub(crate) fn serial_micro_batch_eligible(&self) -> bool {
         self.terminal_admission
+            && self.resolved_plan.plan().indexed_selection().is_none()
             && !self
                 .resolved_plan
                 .plan()
@@ -276,9 +283,12 @@ impl EvaluatedCommandAttempt {
         &self.state.normalized_input
     }
 
-    /// Borrows the one input-derived proof this attempt retains.
-    pub(super) const fn input_facts(&self) -> &InputDerivedCommandFacts {
-        &self.state.input_facts
+    /// Borrows checked targets, including any target resolved from selection evidence.
+    pub(super) fn input_facts(&self) -> &riffdb_invariant::CommandTargetFacts {
+        self.state
+            .selected_facts
+            .as_ref()
+            .unwrap_or(&self.state.input_facts)
     }
 
     pub(super) const fn materialized_snapshot(&self) -> &MaterializedCommandSnapshot {
@@ -480,7 +490,7 @@ impl ProvenanceBoundCommandAttempt {
         self.attempt.normalized_input()
     }
 
-    pub(super) const fn input_facts(&self) -> &InputDerivedCommandFacts {
+    pub(super) fn input_facts(&self) -> &riffdb_invariant::CommandTargetFacts {
         self.attempt.input_facts()
     }
 
@@ -776,6 +786,50 @@ impl ExecutionFaultAttempt {
     ) -> Result<Self, PostEvaluationAuthorizationError> {
         authorize_state_after_evaluation(self.state())?;
         Ok(self)
+    }
+
+    /// Rechecks the selected preimage before a no-mutation execution fault is released.
+    pub(super) fn recheck_selected_fault_policy<
+        A: riffdb_storage_api::ExecutionFailureAwaitingDecision,
+    >(
+        &self,
+        awaiting: &A,
+        current: &TransactionCurrentState,
+    ) -> Result<bool, StorageError> {
+        let state = self.state();
+        if !state.has_indexed_selection() {
+            return Ok(true);
+        }
+        // Policies consume the same lineage-normalized values as successful
+        // outcomes. Keep raw evidence for the independent catalog recheck.
+        let normalized = match self {
+            Self::Arithmetic { snapshot, .. }
+            | Self::UniqueConflict { snapshot, .. }
+            | Self::ResourceLimit {
+                evidence: ResourceLimitFaultEvidence::Runtime(snapshot),
+                ..
+            } => match snapshot.materialize_transaction_current(current.clone()) {
+                Ok(TransactionCurrentMaterialization::Ready(current)) => Some(current),
+                _ => {
+                    return Err(StorageError::new(
+                        riffdb_storage_api::StorageErrorKind::InvariantViolation,
+                        None,
+                    ));
+                }
+            },
+            Self::ResourceLimit {
+                evidence: ResourceLimitFaultEvidence::Materialization(_),
+                ..
+            } => None,
+        };
+        super::command_selection_policy::check_fault(
+            &state.resolved_plan,
+            state.row_policy.as_ref(),
+            awaiting,
+            normalized
+                .as_ref()
+                .map_or(current, |normalized| normalized.state()),
+        )
     }
 
     /// Rechecks advisory request control at the final pre-transition safe point.
@@ -1111,6 +1165,15 @@ impl AcquiredCommandAttempt {
         if !snapshot_matches_request(&self.state.snapshot_request, &discovery) {
             return Err(CommandAttemptError::Integrity);
         }
+        if self
+            .state
+            .resolved_plan
+            .plan()
+            .indexed_selection()
+            .is_some()
+        {
+            return Ok(discovery);
+        }
         match crate::command_index::lower_cascade_discovery(
             &self.state.resolved_plan,
             &self.state.input_facts,
@@ -1226,6 +1289,9 @@ fn finish_acquired_discovery(
     if !snapshot_matches_request(&state.snapshot_request, &discovery) {
         return Err(CommandAttemptError::Integrity);
     }
+    if state.resolved_plan.plan().indexed_selection().is_some() {
+        return finish_acquired_evaluation(state, lease, discovery);
+    }
     match crate::command_index::lower_cascade_discovery(
         &state.resolved_plan,
         &state.input_facts,
@@ -1312,6 +1378,23 @@ fn finish_acquired_evaluation(
     if !snapshot_matches_request(&state.snapshot_request, &raw_snapshot) {
         return Err(CommandAttemptError::Integrity);
     }
+
+    state.selected_facts = if let Some(selection) = state.snapshot_request.indexed_selection() {
+        let selected = selection
+            .selected_key(&raw_snapshot)
+            .map_err(|_| CommandAttemptError::Integrity)?;
+        Some(
+            riffdb_invariant::resolve_selected_command_targets(
+                state.resolved_plan.plan(),
+                state.resolved_plan.bundle().bundle().schema(),
+                &state.input_facts,
+                selected,
+            )
+            .map_err(|_| CommandAttemptError::Integrity)?,
+        )
+    } else {
+        None
+    };
 
     state.completed_attempts = state
         .completed_attempts
@@ -1550,6 +1633,15 @@ fn transaction_context(context: &PreEvaluationCommitContext) -> TransactionConte
 }
 
 fn snapshot_matches_request(request: &SnapshotRequest, snapshot: &ReadSnapshot) -> bool {
+    if let Some(selection) = request.indexed_selection() {
+        if selection.selected_key(snapshot).is_err() || snapshot.ranges().len() != 1 {
+            return false;
+        }
+        let entry = snapshot.ranges()[0].entries().first();
+        return request
+            .resolve_indexed_selection(entry)
+            .is_ok_and(|resolved| snapshot_matches_request(&resolved, snapshot));
+    }
     snapshot.plan() == request.plan()
         && snapshot.bindings().len() == request.binding_targets().len()
         && snapshot
@@ -2008,6 +2100,7 @@ contract AttemptMaterialization version {version} {{
             resolved_plan,
             normalized_input,
             input_facts: facts,
+            selected_facts: None,
             commit_context,
             raw_conflict_keys,
             snapshot_request,
@@ -2144,6 +2237,7 @@ contract AttemptMaterialization version {version} {{
                 resolved_plan,
                 normalized_input,
                 input_facts: facts,
+                selected_facts: None,
                 commit_context,
                 raw_conflict_keys,
                 snapshot_request,
@@ -4349,5 +4443,9 @@ contract AttemptMaterialization version {version} {{
         assert_eq!(debug, "CommandAttemptResolution::OutcomeReplay([REDACTED])");
         assert!(!debug.contains(PRINCIPAL));
         assert!(!debug.contains(SENSITIVE_MARKER));
+    }
+    mod indexed_selection {
+        use super::*;
+        include!("command_attempt_selection_tests.rs");
     }
 }

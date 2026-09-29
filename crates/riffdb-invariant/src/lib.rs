@@ -8,7 +8,10 @@
 
 mod input_facts;
 
-pub use input_facts::{InputDerivedCommandFacts, derive_input_command_facts};
+pub use input_facts::{
+    CommandTargetFacts, InputDerivedCommandFacts, derive_input_command_facts,
+    resolve_selected_command_targets,
+};
 
 use std::cmp::Ordering;
 use std::error::Error;

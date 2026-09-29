@@ -6,6 +6,8 @@
 //! perform pre-snapshot admission or capability acquisition and owns no I/O,
 //! clock, entropy, provenance, or durable commit authority.
 
+mod indexed_selection;
+
 use std::collections::BTreeSet;
 use std::error::Error;
 use std::fmt;
@@ -192,6 +194,28 @@ pub fn execute_command(
 ) -> Result<ExecutionResult, ExecutionFault> {
     let plan = validate_execution_identity(bundle, snapshot, context)?;
     validate_record_exact(bundle.schema(), plan.input().record(), input)?;
+    if plan.indexed_selection().is_some() {
+        let mut evaluator = ExpressionEvaluator::new(plan.expressions());
+        validate_snapshot_targets(
+            bundle.schema(),
+            plan,
+            input,
+            snapshot,
+            context,
+            &mut evaluator,
+        )?;
+        if let Some(result) = indexed_selection::empty_outcome(
+            bundle,
+            plan,
+            input,
+            snapshot,
+            context,
+            budget,
+            &mut evaluator,
+        )? {
+            return Ok(result);
+        }
+    }
     if plan.requires_ir_v18() {
         return execute_decision_command(bundle, plan, input, snapshot, context, budget);
     }
@@ -199,7 +223,14 @@ pub fn execute_command(
         return execute_collection_command(bundle, plan, input, snapshot, context, budget);
     }
     let mut evaluator = ExpressionEvaluator::new(plan.expressions());
-    validate_snapshot_targets(plan, input, snapshot, context, &mut evaluator)?;
+    validate_snapshot_targets(
+        bundle.schema(),
+        plan,
+        input,
+        snapshot,
+        context,
+        &mut evaluator,
+    )?;
 
     let mut records = Vec::with_capacity(plan.bindings().len());
     for (binding, observation) in plan.bindings().iter().zip(snapshot.bindings()) {
@@ -942,7 +973,14 @@ fn execute_decision_command(
     }
 
     let mut evaluator = ExpressionEvaluator::new(plan.expressions());
-    validate_snapshot_targets(plan, input, snapshot, context, &mut evaluator)?;
+    validate_snapshot_targets(
+        bundle.schema(),
+        plan,
+        input,
+        snapshot,
+        context,
+        &mut evaluator,
+    )?;
     let branch_bindings = decision_branch_bindings(plan);
     let mut records = vec![None; plan.bindings().len()];
 
@@ -3222,6 +3260,7 @@ fn validate_execution_identity<'a>(
 }
 
 fn validate_snapshot_targets(
+    schema: &SchemaIr,
     plan: &CommandPlan,
     input: &CanonicalRecord,
     snapshot: &ReadSnapshot,
@@ -3230,6 +3269,9 @@ fn validate_snapshot_targets(
 ) -> Result<(), ExecutionFault> {
     let facts =
         derive_input_command_facts(plan, input.clone()).map_err(map_prepared_evaluation_error)?;
+    if plan.indexed_selection().is_some() {
+        return indexed_selection::validate_snapshot(schema, plan, &facts, snapshot, context);
+    }
     if snapshot.bindings().len() != plan.bindings().len()
         || snapshot.root_validations().len() != plan.root_validation_reads().len()
         || snapshot.ranges().len() != delete_range_count(plan, &facts)?

@@ -1354,6 +1354,7 @@ layout!(BINDING_LAYOUT, "BindingPlan", {
     "failure" => "OutcomeConstruction",
     "restriction_failure" => "IR v6+: Boolean + optional OutcomeConstruction; omitted in v1-v5",
     "cascade_failure" => "IR v13+: Boolean + optional OutcomeConstruction; omitted in v1-v12",
+    "indexed_selection" => "IR v26+: Boolean + optional (IndexId u32, prefix expression count u32 in 1..=1024, ExprId u32[]). Only one ordinary mutate binding; input-only canonical equality prefix proves partition and complete conflict ownership. Omitted in v1-v25",
 });
 layout!(ROOT_READ_LAYOUT, "RootValidationReadPlan", {
     "id" => "RootValidationReadId",

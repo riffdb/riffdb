@@ -366,6 +366,22 @@ pub(crate) fn classified_field_item(
     ))
 }
 
+/// Checks the contextual selector modifier without reserving an identifier.
+pub(crate) fn selected_binding(
+    modifier: Spanned<String>,
+    binding: EntityBinding,
+    lo: usize,
+    hi: usize,
+) -> Result<Spanned<Binding>, SyntaxDiagnostic> {
+    if modifier.value != "first" {
+        return Err(SyntaxDiagnostic::new(
+            SyntaxDiagnosticCode::InvalidToken,
+            modifier.span,
+        ));
+    }
+    Ok(spanned(Binding::Mutate(binding), lo, hi))
+}
+
 /// A temporary parser value that enforces expression bounds before boxing.
 pub(crate) struct ParsedExpression {
     syntax: Spanned<Expression>,
@@ -1632,6 +1648,9 @@ impl NodeCounter {
         span: Span,
     ) -> Result<(), SyntaxDiagnostic> {
         self.add(1, span)?;
+        if let Some(index) = &binding.selection_index {
+            self.name(index)?;
+        }
         self.name(&binding.entity)?;
         self.expressions(&binding.arguments, span)?;
         self.name(&binding.binding)?;

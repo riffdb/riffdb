@@ -38,6 +38,12 @@ fn proof_is_opaque_move_only_nonserializable_and_redacted() {
     assert!(!INPUT_FACTS_SOURCE.contains("InputDerivedEntityTarget"));
     assert!(!INPUT_FACTS_SOURCE.contains("struct EntityTarget"));
     assert!(!INPUT_FACTS_SOURCE.contains("impl Clone for InputDerivedCommandFacts"));
+    // Target descriptions are clonable; the admission proof wrapper remains
+    // move-only, also enforced by its compile-fail doctest.
+    let proof_source = INPUT_FACTS_SOURCE.replace(
+        "#[derive(Clone)]\npub struct CommandTargetFacts",
+        "pub struct CommandTargetFacts",
+    );
     for forbidden in [
         "derive(Clone",
         "derive(Copy",
@@ -48,7 +54,7 @@ fn proof_is_opaque_move_only_nonserializable_and_redacted() {
         "prost::",
         "Message",
     ] {
-        assert!(!INPUT_FACTS_SOURCE.contains(forbidden));
+        assert!(!proof_source.contains(forbidden));
     }
 }
 

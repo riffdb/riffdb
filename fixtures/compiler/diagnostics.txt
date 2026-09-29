@@ -1,7 +1,7 @@
 format=riffdb-compiler-diagnostic-fixture-v1
 
 [semantic-code-registry]
-count=52
+count=53
 code.0.id=RDB-C001
 code.0.message=contract version must be a supported nonzero integer
 code.0.help=use a base-10 application version in 1..=u64::MAX
@@ -149,15 +149,18 @@ code.47.help=write `set`
 code.48.id=RDB-C050
 code.48.message=the named business requirement is invalid for this write
 code.48.help=name one visible, dominating requirement reading this binding; business relevance remains the author's responsibility
-code.49.id=RDB-C201
-code.49.message=an identifier cannot form a valid MCP command tool-name segment
-code.49.help=start contract and command identifiers with an ASCII letter
-code.50.id=RDB-C202
-code.50.message=the complete MCP command tool name exceeds 128 bytes
-code.50.help=shorten the source contract or command identifier
-code.51.id=RDB-C203
-code.51.message=two commands normalize to the same MCP command tool name
-code.51.help=rename one command so lowercase identifiers remain distinct
+code.49.id=RDB-C051
+code.49.message=indexed selection lacks a complete bounded ownership proof
+code.49.help=use one ordinary mutate first binding with a canonical equality prefix fixing the partition and every conflict key; keep other targets input-addressed
+code.50.id=RDB-C201
+code.50.message=an identifier cannot form a valid MCP command tool-name segment
+code.50.help=start contract and command identifiers with an ASCII letter
+code.51.id=RDB-C202
+code.51.message=the complete MCP command tool name exceeds 128 bytes
+code.51.help=shorten the source contract or command identifier
+code.52.id=RDB-C203
+code.52.message=two commands normalize to the same MCP command tool name
+code.52.help=rename one command so lowercase identifiers remain distinct
 
 [RDB-C001-invalid-contract-version]
 expected=RDB-C001
@@ -698,6 +701,16 @@ diagnostic.0.message=the named business requirement is invalid for this write
 diagnostic.0.primary=2103..2110
 diagnostic.0.related=none
 diagnostic.0.help=name one visible, dominating requirement reading this binding; business relevance remains the author's responsibility
+
+[RDB-C051-invalid-indexed-selection]
+expected=RDB-C051
+kind=semantic
+count=1
+diagnostic.0.code=RDB-C051
+diagnostic.0.message=indexed selection lacks a complete bounded ownership proof
+diagnostic.0.primary=433..437
+diagnostic.0.related=none
+diagnostic.0.help=use one ordinary mutate first binding with a canonical equality prefix fixing the partition and every conflict key; keep other targets input-addressed
 
 [RDB-C201-invalid-command-tool-name]
 expected=RDB-C201

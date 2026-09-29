@@ -71,7 +71,20 @@ impl SnapshotReader for RedbOperationalPorts {
         let observed_through = transaction.application_frontier()?;
         requests
             .into_iter()
-            .map(|request| read_snapshot_from_access(request, observed_through, &transaction))
+            .map(|request| {
+                let selection = request.indexed_selection().is_some();
+                let snapshot = read_snapshot_from_access(request, observed_through, &transaction)?;
+                if selection {
+                    self.shared.observe_indexed_selection(
+                        snapshot
+                            .ranges()
+                            .iter()
+                            .map(|range| range.entries().len())
+                            .sum(),
+                    );
+                }
+                Ok(snapshot)
+            })
             .collect()
     }
 }
@@ -81,6 +94,57 @@ pub(crate) fn read_snapshot_from_access(
     observed_through: Option<CommitSequence>,
     access: &RedbReadAccess,
 ) -> Result<ReadSnapshot, StorageError> {
+    if let Some(selection) = request.indexed_selection() {
+        let target = selection.range();
+        let prefix = target.prefix().as_bytes();
+        let upper = exclusive_prefix_end(prefix).ok_or_else(corrupt)?;
+        let epoch = read_epoch_position_access(access, target.generation_target())?;
+        // ADR-0264: direct prefix seek, one live candidate after the bounded
+        // checkpoint/journal merge. Never skip another partition or denied row.
+        let entries = access.read_range(JournalTable::SecondaryIndexes, prefix, &upper, 1)?;
+        let entry = entries
+            .into_iter()
+            .next()
+            .map(|(physical_key, encoded)| {
+                let key = decode_index_entry_key(&physical_key).map_err(|_| corrupt())?;
+                let decoded = decode_and_verify_index_entry(&key, &encoded)?;
+                if decoded.value().partition_key() != target.generation_target().partition_key() {
+                    return Err(corrupt());
+                }
+                IndexRangeEntry::new(
+                    key.index_id(),
+                    key,
+                    decoded.value().covered_values().clone(),
+                )
+                .map_err(corrupt_value)
+            })
+            .transpose()?;
+        let resolved = request
+            .resolve_indexed_selection(entry.as_ref())
+            .map_err(materialization_value)?;
+        let mut snapshot =
+            ReadSnapshotBuilder::new(&resolved, observed_through).map_err(materialization_value)?;
+        for target in resolved.binding_targets() {
+            snapshot
+                .push_binding(read_entity_observation_access(access, target)?)
+                .map_err(materialization_value)?;
+        }
+        for target in resolved.root_validation_targets() {
+            snapshot
+                .push_root_validation(read_entity_observation_access(access, target)?)
+                .map_err(materialization_value)?;
+        }
+        let mut range = snapshot
+            .begin_range(target.clone(), epoch)
+            .map_err(materialization_value)?;
+        if let Some(entry) = entry {
+            range.push_entry(entry).map_err(materialization_value)?;
+        }
+        range.finish().map_err(materialization_value)?;
+        let snapshot = snapshot.finish().map_err(materialization_value)?;
+        selection.selected_key(&snapshot).map_err(corrupt_value)?;
+        return Ok(snapshot);
+    }
     let mut snapshot =
         ReadSnapshotBuilder::new(&request, observed_through).map_err(materialization_value)?;
     for target in request.binding_targets() {

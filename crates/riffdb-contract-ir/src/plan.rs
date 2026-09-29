@@ -18,8 +18,11 @@ use crate::{
 };
 
 mod commit_coverage;
+mod indexed_selection;
 mod write_proofs;
 use commit_coverage::{validate_commit_checks, validate_root_validation_reads};
+pub use indexed_selection::IndexedSelectionPlan;
+use indexed_selection::{validate_binding_plans, validate_indexed_selection};
 
 /// Maximum bindings, instructions, fields, or outcomes in one owner.
 pub const MAX_COMMAND_ITEMS: usize = 4_096;
@@ -472,6 +475,7 @@ pub struct BindingPlan {
     failure: Option<OutcomeConstruction>,
     restriction_failure: Option<OutcomeConstruction>,
     cascade_failure: Option<OutcomeConstruction>,
+    indexed_selection: Option<IndexedSelectionPlan>,
 }
 
 impl BindingPlan {
@@ -697,6 +701,7 @@ impl BindingPlan {
             failure,
             restriction_failure,
             cascade_failure,
+            indexed_selection: None,
         })
     }
 
@@ -2421,6 +2426,13 @@ impl CommandPlan {
             &instructions,
         )?;
         contract_schema.validate_expression_enum_constants(&expressions)?;
+        validate_indexed_selection(
+            &expressions,
+            &bindings,
+            collection_expansion.as_ref(),
+            &decisions,
+            contract_schema,
+        )?;
         validate_binding_plans(&expressions, &bindings, &locality, contract_schema)?;
         if collection_expansion.is_none() {
             validate_ordinary_delete_aliases(&expressions, &bindings)?;
@@ -5281,7 +5293,11 @@ fn validate_worst_case_index_derivation(
             .try_fold(0usize, |count, read| {
                 checked_index_derivation_add(count, multiplicity(read.source_binding()))
             })?;
-        let mut influential_range_count = 0usize;
+        let mut influential_range_count = usize::from(
+            bindings
+                .iter()
+                .any(|binding| binding.indexed_selection().is_some()),
+        );
         add_delete_validation_cost(
             delete_checks,
             None,
@@ -5332,7 +5348,11 @@ fn validate_worst_case_index_derivation(
                     checked_index_derivation_add(count, multiplicity(read.source_binding()))
                 }
             })?;
-    let mut influential_range_count = 0usize;
+    let mut influential_range_count = usize::from(
+        bindings
+            .iter()
+            .any(|binding| binding.indexed_selection().is_some()),
+    );
     add_delete_validation_cost(
         delete_checks,
         Some(&conditional_bindings),
@@ -6337,118 +6357,6 @@ fn validate_collection_expression_uses(
                 }
             }
             Instruction::Return(outcome) => reject_outcome(outcome)?,
-        }
-    }
-    Ok(())
-}
-
-fn validate_binding_plans(
-    arena: &ExpressionArena,
-    bindings: &[BindingPlan],
-    locality: &LocalityPlan,
-    schema: &SchemaIr,
-) -> Result<(), IrValidationError> {
-    for binding in bindings {
-        let entity =
-            schema
-                .entity(binding.entity_type)
-                .ok_or(IrValidationError::InvalidReference {
-                    kind: "binding entity",
-                })?;
-        let owner = schema.aggregate_for_entity(binding.entity_type).ok_or(
-            IrValidationError::InvalidReference {
-                kind: "binding aggregate owner",
-            },
-        )?;
-        // ADR-0170: a mutable binding may belong to any aggregate the command
-        // takes conflict ownership of, not only the partition owner. The
-        // locality's conflict keys name that set, so membership in it is the
-        // invariant; a binding whose aggregate is absent has no lease and is
-        // still rejected.
-        let owned = locality.conflict_keys.iter().any(
-            |key| matches!(key.schema().purpose(), KeyPurpose::Conflict(id) if id == owner.id()),
-        );
-        if entity.primary_key() != &binding.key_schema
-            || (matches!(
-                binding.mode,
-                BindingMode::Mutate
-                    | BindingMode::Create
-                    | BindingMode::InitOrMutate
-                    | BindingMode::ObserveOrInitialize
-                    | BindingMode::Delete
-            ) && !owned)
-        {
-            return Err(IrValidationError::InvalidDependency {
-                reason: "binding key mismatch or mutable binding has no conflict ownership",
-            });
-        }
-        for (expression, component) in binding
-            .key_expressions
-            .iter()
-            .zip(binding.key_schema.components())
-        {
-            let node = arena
-                .get(*expression)
-                .ok_or(IrValidationError::InvalidReference {
-                    kind: "binding key expression",
-                })?;
-            if node.result_type() != component.value_type()
-                || !arena.dependencies(*expression)?.is_input_computable()
-            {
-                return Err(IrValidationError::InvalidDependency {
-                    reason: "binding key is not input-computable with the declared type",
-                });
-            }
-        }
-        if binding
-            .accessed_fields
-            .iter()
-            .any(|field| entity.record().field(*field).is_none())
-        {
-            return Err(IrValidationError::InvalidReference {
-                kind: "binding accessed field",
-            });
-        }
-        let key_fields = entity
-            .primary_key_fields()
-            .iter()
-            .copied()
-            .collect::<BTreeSet<_>>();
-        for initialized in binding.initializer() {
-            let field = entity.record().field(initialized.field_id()).ok_or(
-                IrValidationError::InvalidReference {
-                    kind: "binding initializer field",
-                },
-            )?;
-            let expression =
-                arena
-                    .get(initialized.expression())
-                    .ok_or(IrValidationError::InvalidReference {
-                        kind: "binding initializer expression",
-                    })?;
-            let dependencies = arena.dependencies(initialized.expression())?;
-            if key_fields.contains(&initialized.field_id())
-                || expression.result_type() != field.value_type()
-                || !dependencies.bindings().is_empty()
-                || !dependencies.schema_fields().is_empty()
-                || !dependencies.root_validation_reads().is_empty()
-                || !dependencies.source_event_fields().is_empty()
-                || dependencies.uses_transaction_date()
-            {
-                return Err(IrValidationError::InvalidDependency {
-                    reason: "binding initializer is not state-independent with the declared type",
-                });
-            }
-        }
-        if let Some(failure) = &binding.failure {
-            for field in &failure.payload.fields {
-                let dependencies = arena.dependencies(field.expression)?;
-                if !dependencies.is_input_computable() || dependencies.uses_transaction_time() {
-                    return Err(IrValidationError::InvalidDependency {
-                        reason: "binding failure outcome is not input/constant-only",
-                    });
-                }
-            }
         }
     }
     Ok(())
@@ -7865,6 +7773,9 @@ fn validate_command_expression_reachability(
     let mut roots = Vec::new();
     for binding in bindings {
         roots.extend(binding.key_expressions.iter().copied());
+        if let Some(selection) = binding.indexed_selection() {
+            roots.extend(selection.prefix_expressions().iter().copied());
+        }
         roots.extend(binding.initializer.iter().map(|field| field.expression()));
         if let Some(failure) = &binding.failure {
             roots.extend(failure.payload.fields.iter().map(|field| field.expression));
@@ -8075,6 +7986,11 @@ fn validate_idempotency(
         Ok(())
     };
     for binding in bindings {
+        if let Some(selection) = binding.indexed_selection() {
+            for expression in selection.prefix_expressions() {
+                collect(*expression)?;
+            }
+        }
         for expression in &binding.key_expressions {
             collect(*expression)?;
         }

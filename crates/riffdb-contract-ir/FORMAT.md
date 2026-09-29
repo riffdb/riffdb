@@ -962,6 +962,7 @@ Fields below are listed in exact byte order. A collection field includes its cou
 | 9 | `failure` | OutcomeConstruction |
 | 10 | `restriction_failure` | IR v6+: Boolean + optional OutcomeConstruction; omitted in v1-v5 |
 | 11 | `cascade_failure` | IR v13+: Boolean + optional OutcomeConstruction; omitted in v1-v12 |
+| 12 | `indexed_selection` | IR v26+: Boolean + optional (IndexId u32, prefix expression count u32 in 1..=1024, ExprId u32[]). Only one ordinary mutate binding; input-only canonical equality prefix proves partition and complete conflict ownership. Omitted in v1-v25 |
 
 ### RootValidationReadPlan
 

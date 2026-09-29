@@ -129,6 +129,9 @@ struct TestControllerInner {
     steps: Mutex<VecDeque<(RedbTestPhase, FailpointAction)>>,
     events: Mutex<Vec<RedbTestEvent>>,
     index_migration: Mutex<IndexMigrationObservation>,
+    selection_reads: AtomicU64,
+    selection_entries: AtomicU64,
+    selection_max_entries: AtomicU64,
     audit_sequence_begin_reads: AtomicU64,
     fresh_locator_history_fallback_scans: AtomicU64,
     fresh_locator_history_fallback_rows: AtomicU64,
@@ -195,6 +198,9 @@ impl RedbTestController {
                 steps: Mutex::new(VecDeque::new()),
                 events: Mutex::new(Vec::new()),
                 index_migration: Mutex::new(IndexMigrationObservation::default()),
+                selection_reads: AtomicU64::new(0),
+                selection_entries: AtomicU64::new(0),
+                selection_max_entries: AtomicU64::new(0),
                 audit_sequence_begin_reads: AtomicU64::new(0),
                 fresh_locator_history_fallback_scans: AtomicU64::new(0),
                 fresh_locator_history_fallback_rows: AtomicU64::new(0),
@@ -274,6 +280,9 @@ impl RedbTestController {
                 steps: Mutex::new(VecDeque::new()),
                 events: Mutex::new(Vec::new()),
                 index_migration: Mutex::new(IndexMigrationObservation::default()),
+                selection_reads: AtomicU64::new(0),
+                selection_entries: AtomicU64::new(0),
+                selection_max_entries: AtomicU64::new(0),
                 audit_sequence_begin_reads: AtomicU64::new(0),
                 fresh_locator_history_fallback_scans: AtomicU64::new(0),
                 fresh_locator_history_fallback_rows: AtomicU64::new(0),
@@ -372,6 +381,9 @@ impl RedbTestController {
                 )])),
                 events: Mutex::new(Vec::new()),
                 index_migration: Mutex::new(IndexMigrationObservation::default()),
+                selection_reads: AtomicU64::new(0),
+                selection_entries: AtomicU64::new(0),
+                selection_max_entries: AtomicU64::new(0),
                 audit_sequence_begin_reads: AtomicU64::new(0),
                 fresh_locator_history_fallback_scans: AtomicU64::new(0),
                 fresh_locator_history_fallback_rows: AtomicU64::new(0),
@@ -407,6 +419,9 @@ impl RedbTestController {
                 )])),
                 events: Mutex::new(Vec::new()),
                 index_migration: Mutex::new(IndexMigrationObservation::default()),
+                selection_reads: AtomicU64::new(0),
+                selection_entries: AtomicU64::new(0),
+                selection_max_entries: AtomicU64::new(0),
                 audit_sequence_begin_reads: AtomicU64::new(0),
                 fresh_locator_history_fallback_scans: AtomicU64::new(0),
                 fresh_locator_history_fallback_rows: AtomicU64::new(0),
@@ -491,6 +506,9 @@ impl RedbTestController {
                 steps: Mutex::new(steps.iter().copied().collect()),
                 events: Mutex::new(Vec::new()),
                 index_migration: Mutex::new(IndexMigrationObservation::default()),
+                selection_reads: AtomicU64::new(0),
+                selection_entries: AtomicU64::new(0),
+                selection_max_entries: AtomicU64::new(0),
                 audit_sequence_begin_reads: AtomicU64::new(0),
                 fresh_locator_history_fallback_scans: AtomicU64::new(0),
                 fresh_locator_history_fallback_rows: AtomicU64::new(0),
@@ -515,6 +533,28 @@ impl RedbTestController {
             observation.v1_rewrites = observation.v1_rewrites.saturating_add(v1_rewrites);
             observation.v2_confirms = observation.v2_confirms.saturating_add(v2_confirms);
         }
+    }
+
+    /// Test evidence: successful selector reads, entries inspected in the merged
+    /// authoritative view, and maximum entries inspected by one selector read.
+    /// Underlying bounded checkpoint/overlay merge work is separate.
+    #[doc(hidden)]
+    pub fn indexed_selection_observations(&self) -> (u64, u64, u64) {
+        (
+            self.inner.selection_reads.load(Ordering::Relaxed),
+            self.inner.selection_entries.load(Ordering::Relaxed),
+            self.inner.selection_max_entries.load(Ordering::Relaxed),
+        )
+    }
+
+    pub(crate) fn observe_indexed_selection(&self, entries: usize) {
+        self.inner.selection_reads.fetch_add(1, Ordering::Relaxed);
+        self.inner
+            .selection_entries
+            .fetch_add(entries as u64, Ordering::Relaxed);
+        self.inner
+            .selection_max_entries
+            .fetch_max(entries as u64, Ordering::Relaxed);
     }
 
     pub(crate) fn observe_audit_sequence_begin_read(&self) {

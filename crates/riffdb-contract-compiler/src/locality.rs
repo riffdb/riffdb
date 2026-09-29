@@ -183,8 +183,17 @@ fn validate_input_only_binding(
     binding: &HirBinding,
     diagnostics: &mut Vec<CompilerDiagnostic>,
 ) {
-    for argument in &binding.arguments {
+    let mut arguments = binding.arguments.iter().collect::<Vec<_>>();
+    if let Some((_, prefix)) = &binding.selection {
+        arguments.extend(prefix);
+    }
+    for argument in arguments {
         visit_expression(&command.expressions, argument.id, &mut |kind, span| {
+            if binding.selection.is_some()
+                && matches!(kind, ExpressionKind::BoundField { binding: id, .. } if *id == binding.id)
+            {
+                return;
+            }
             if matches!(
                 kind,
                 ExpressionKind::BoundField { .. }

@@ -66,6 +66,7 @@
 - [Authoring Reference](contracts/AUTHORING.md)
 - [Language Reference](contracts/LANGUAGE.md)
 - [Bounded Delete Commands](contracts/BOUNDED-COMMANDS.md)
+- [Atomic Indexed Selection](contracts/ATOMIC-INDEXED-SELECTION.md)
 - [Command and Invariant Cookbook](contracts/COMMAND-INVARIANT-COOKBOOK.md)
 - [Unsafe Patterns and Corrections](contracts/examples/NEGATIVE-EXAMPLES.md)
 
