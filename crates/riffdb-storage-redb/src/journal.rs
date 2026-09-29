@@ -3520,11 +3520,26 @@ fn walk_extent_frames(
                 previous_hash,
             ));
         }
+        // A direct commit between two journaled frames advances the frontier
+        // without a frame; the hash chain stays unbroken. Recovery walks from an
+        // anchor the drain re-established, so its frames chain exactly; a walk
+        // from the origin crosses those gaps and accepts only a forward jump.
+        let chained = match walk {
+            ExtentWalk::FromAnchor => {
+                frame.predecessor_sequence() == previous_sequence
+                    && frame.predecessor_administration_sequence()
+                        == previous_administration_sequence
+            }
+            ExtentWalk::FromOrigin => {
+                frame.predecessor_sequence() >= previous_sequence
+                    && frame.predecessor_administration_sequence()
+                        >= previous_administration_sequence
+            }
+        };
         if frame_hash.as_slice() != &physical_header[36..68]
             || frame.database_id() != extent.logical.database_id()
             || frame.previous_hash() != previous_hash
-            || frame.predecessor_sequence() != previous_sequence
-            || frame.predecessor_administration_sequence() != previous_administration_sequence
+            || !chained
         {
             return Err(JournalIoError::Corrupt);
         }
@@ -6623,6 +6638,66 @@ mod tests {
             SealedExtentFooter::decode(&reserved),
             Err(JournalIoError::Corrupt),
             "a nonzero reserved byte is refused even under a valid checksum"
+        );
+    }
+
+    /// Writes `first` and a second frame starting at `second_first` that
+    /// continues its hash chain, and moves the extent to the sealing name.
+    fn sealing_extent_with_second_at(
+        database_path: &Path,
+        database_id: DatabaseId,
+        second_first: u64,
+    ) {
+        let first = recovery_frame(database_id).encode().expect("encode first");
+        write_recovery_journal(database_path, database_id, &first, None);
+        let second_sequence = sequence(second_first);
+        let second = JournalFrame::new(
+            database_id,
+            second_sequence,
+            second_sequence,
+            1,
+            first.frame_hash(),
+            vec![
+                JournalMutation::put(
+                    JournalTable::Commits,
+                    crate::keys::encode_application_sequence_key(second_sequence).to_vec(),
+                    vec![0x42],
+                )
+                .expect("commit mutation"),
+            ],
+        )
+        .expect("second frame")
+        .encode()
+        .expect("encode second");
+        write_physical_frame(&journal_path(database_path), &second, false);
+        std::fs::rename(
+            journal_path(database_path),
+            sealing_journal_path(database_path),
+        )
+        .expect("move to the sealing name");
+    }
+
+    // req: REC-005
+    #[test]
+    fn sealing_crosses_a_direct_commit_between_frames_but_never_a_backward_step() {
+        // Commit 2 was direct: frame two continues the hash chain at commit 3.
+        let database_path = TestPath::new("seal-gap");
+        let database_id = database_id(36);
+        sealing_extent_with_second_at(&database_path.0, database_id, 3);
+        let sealed = seal_extent_with_media(&RealJournalMedia, &database_path.0, database_id)
+            .expect("a forward gap seals")
+            .expect("an extent was waiting");
+        let footer =
+            read_sealed_extent_with_media(&RealJournalMedia, &sealed, database_id).expect("read");
+        assert_eq!(footer.entries.len(), 2);
+        assert_eq!(footer.entries[1].predecessor_sequence, Some(sequence(2)));
+
+        // A frame that steps back behind its predecessor is never history.
+        let backward = TestPath::new("seal-backward");
+        sealing_extent_with_second_at(&backward.0, database_id, 1);
+        assert_eq!(
+            seal_extent_with_media(&RealJournalMedia, &backward.0, database_id),
+            Err(JournalIoError::Corrupt)
         );
     }
 
