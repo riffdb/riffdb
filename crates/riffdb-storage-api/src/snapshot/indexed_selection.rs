@@ -103,7 +103,10 @@ impl IndexedSelectionRequest {
         EntityTarget::new(self.entity.id(), key)
     }
 
-    /// Reconstructs the exact selected index entry and covered values from its row.
+    /// Reconstructs the selected entry from logical index/cover values. Missing
+    /// optional fields have the logical null used by index migration; catalog
+    /// materialization must separately prove their ancestry authority. Raw row
+    /// bytes and dependency hashes are never replaced by this check.
     pub fn validate_record(
         &self,
         entry: &IndexRangeEntry,
@@ -134,14 +137,49 @@ impl IndexedSelectionRequest {
                 return Err(StorageValueError::IdentityMismatch);
             }
         }
-        let values = encode_operational_index_values_v1(&self.index, record.fields())
+        let missing: std::collections::BTreeSet<_> = self
+            .index
+            .fields()
+            .iter()
+            .chain(self.index.cover_fields())
+            .filter(|field| {
+                record
+                    .fields()
+                    .fields()
+                    .binary_search_by_key(field, |(id, _)| id)
+                    .is_err()
+            })
+            .copied()
+            .collect();
+        let logical = if missing.is_empty() {
+            None
+        } else {
+            let mut fields = record.fields().fields().to_vec();
+            for field in missing {
+                if !self
+                    .entity
+                    .record()
+                    .field(field)
+                    .is_some_and(|field| field.value_type().is_optional())
+                {
+                    return Err(StorageValueError::IdentityMismatch);
+                }
+                fields.push((field, CanonicalValue::Null));
+            }
+            Some(
+                riffdb_types::CanonicalRecord::new(fields)
+                    .map_err(|_| StorageValueError::IdentityMismatch)?,
+            )
+        };
+        let fields = logical.as_ref().unwrap_or(record.fields());
+        let values = encode_operational_index_values_v1(&self.index, fields)
             .map_err(|_| StorageValueError::IdentityMismatch)?;
         let key = self
             .index
             .key_schema()
             .encode_index(&values, target.key().clone())
             .map_err(|_| StorageValueError::IdentityMismatch)?;
-        let cover = encode_operational_index_cover_v1(&self.index, record.fields())
+        let cover = encode_operational_index_cover_v1(&self.index, fields)
             .map_err(|_| StorageValueError::IdentityMismatch)?;
         if &key != entry.key() || &cover != entry.covered_values() {
             return Err(StorageValueError::IdentityMismatch);

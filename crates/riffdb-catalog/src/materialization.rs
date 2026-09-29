@@ -3104,4 +3104,8 @@ contract EnumMaterialization version {version} {{
             CommandSnapshotMaterializationErrorKind::Integrity
         );
     }
+    mod indexed_selection {
+        use super::*;
+        include!("materialization_selection_tests.rs");
+    }
 }

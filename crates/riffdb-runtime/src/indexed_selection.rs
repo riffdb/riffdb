@@ -17,31 +17,9 @@ pub(super) fn validate_snapshot(
             .ok_or(ExecutionFault::Integrity)?,
     )
     .map_err(|_| ExecutionFault::Integrity)?;
-    // Storage and catalog reconstruct the entry from the raw stored row before
-    // normalization. Runtime must retain that physical range evidence unchanged:
-    // a historical missing optional value may now be materialized as null.
-    let range = snapshot.ranges().first().ok_or(ExecutionFault::Integrity)?;
-    if range.target() != selection.range() || range.entries().len() > 1 {
-        return Err(ExecutionFault::Integrity);
-    }
-    let key = if let Some(entry) = range.entries().first() {
-        let target = selection
-            .selected_target(entry)
-            .map_err(|_| ExecutionFault::Integrity)?;
-        let (binding, _) = plan.indexed_selection().ok_or(ExecutionFault::Integrity)?;
-        let row = snapshot
-            .bindings()
-            .get(binding.id().get() as usize)
-            .ok_or(ExecutionFault::Integrity)?;
-        if row.target() != &target
-            || !matches!(row, riffdb_storage_api::EntityObservation::Present(_))
-        {
-            return Err(ExecutionFault::Integrity);
-        }
-        Some(row.target().key())
-    } else {
-        None
-    };
+    let key = selection
+        .selected_key(snapshot)
+        .map_err(|_| ExecutionFault::Integrity)?;
     let facts = riffdb_invariant::resolve_selected_command_targets(plan, schema, input, key)
         .map_err(|_| ExecutionFault::Integrity)?;
     if context.partition_key() != facts.partition_key()

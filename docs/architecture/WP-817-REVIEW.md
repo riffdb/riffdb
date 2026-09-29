@@ -1,7 +1,8 @@
 # WP-817: Atomic indexed selection
 
 ADR-0264 was accepted verbatim by the maintainer before implementation. Work is
-isolated on `feat/atomic-indexed-selection`; maintainer review precedes merge.
+isolated on `feat/atomic-indexed-selection`, rebased onto main at `d3f0a2102`
+(including WP-814 journal-frame V3); maintainer review precedes merge.
 
 ## Behavior and boundaries
 
@@ -26,15 +27,19 @@ changes; selector contracts require grammar/IR/bundle V26, while nonselector
 artifacts retain least-sufficient encoding and identity.
 
 Canonical equality-prefix encodings are admitted. Secret-bearing indexes are
-rejected because selection would disclose their membership/order. Raw stored
-rows reconstruct index entries before catalog normalization; runtime retains the
-original physical range evidence when historical optional fields become null.
+rejected because selection would disclose their membership/order. Index
+reconstruction uses logical null for missing optional indexed or covered fields,
+matching migrated indexes. Catalog materialization proves the exact
+ancestry that authorizes those omissions and retains raw dependency hashes;
+current-writer omissions still fail closed.
 
 ## Semantic evidence
 
 - Compiler fixture, exact-key V25 control, V26 round trip/hash distinction,
   source-span diagnostic, malformed ownership proof, aliases/multiple selectors,
   secret membership/idempotency taint, and selected-child root coverage.
+- Historical selected rows reconstruct migrated presence/cover indexes with
+  logical null while preserving raw evidence; unauthorized omissions refuse.
 - Deterministic scripted snapshots cover selected/empty epoch invalidation,
   changed candidate on retry, three-attempt exhaustion, cancellation, substituted
   row refusal, selected-child invariant failure, and row-policy denial for
@@ -56,7 +61,8 @@ populations of 32 and 128 rows, 32 allocations per case, and 1/8/32 clients in a
 shared pool or 32 independent pools within one partition. Worker starts use a
 barrier. Timings include capacity admission, allocation, durable acknowledgement,
 and local client runtime setup. This is one local sample during repository
-validation, without an exclusive performance host or a stability claim.
+validation on an AMD Ryzen 9 7950X (32 logical CPUs, approximately 62 GiB
+OS-reported RAM), without an exclusive performance host or a stability claim.
 
 Every case completed 32 distinct allocations with 32 selection reads, 32 inspected
 live entries, a maximum of one candidate per evaluation, and zero retries. The
@@ -69,9 +75,9 @@ At population 128:
 
 | Clients | Shared commands/s | Independent commands/s | Shared p95 ms | Independent p95 ms |
 |---:|---:|---:|---:|---:|
-| 1 | 282.3 | 201.6 | 1.74 | 4.43 |
-| 8 | 215.8 | 233.7 | 37.87 | 36.17 |
-| 32 | 224.5 | 229.6 | 142.08 | 138.89 |
+| 1 | 74.1 | 88.2 | 19.36 | 18.78 |
+| 8 | 189.5 | 228.1 | 43.04 | 36.23 |
+| 32 | 131.4 | 195.8 | 242.88 | 162.56 |
 
 Reproduce from the repository root, using an absolute output path or one relative
 to `crates/riffdb-commit` (Cargo's test working directory):
