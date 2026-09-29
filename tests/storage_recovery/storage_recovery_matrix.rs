@@ -96,6 +96,9 @@ mod checkpoint_pipeline;
 mod online_retention;
 #[path = "../replication_promotion.rs"]
 mod replication_promotion;
+#[cfg(feature = "test-fixtures")]
+#[path = "retained_extents.rs"]
+mod retained_extents;
 #[path = "v3_command_attribution.rs"]
 mod v3_command_attribution;
 #[path = "v3_command_receipts.rs"]

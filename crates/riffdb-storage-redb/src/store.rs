@@ -394,6 +394,13 @@ pub(crate) struct SharedRedb {
     next_publication_ticket: AtomicU64,
     journal_runtime: Mutex<Option<JournalRuntime>>,
     journal_checkpoint: Mutex<Option<AsyncJournalCheckpoint>>,
+    /// Serializes every move of the spare extent name: the background spare
+    /// preparation, checkpoint start, and runtime open.
+    journal_spare: Arc<Mutex<()>>,
+    /// The background job sealing the last installed extent and preparing the
+    /// next spare (ADR-0263). At most one runs; it is joined before the next
+    /// install and when the store drops.
+    journal_sealer: Mutex<Option<std::thread::JoinHandle<()>>>,
     command_segment_preparation: crate::command_segment_preparation::CommandSegmentPreparationPool,
     test_controller: Option<RedbTestController>,
     transient_indexes: RwLock<TransientIndexState>,
@@ -2560,6 +2567,8 @@ impl RedbStore {
                 next_publication_ticket: AtomicU64::new(1),
                 journal_runtime: Mutex::new(None),
                 journal_checkpoint: Mutex::new(None),
+                journal_spare: Arc::new(Mutex::new(())),
+                journal_sealer: Mutex::new(None),
                 command_segment_preparation,
                 test_controller,
                 transient_indexes: RwLock::new(TransientIndexState::Dormant),
@@ -2650,6 +2659,18 @@ impl RedbStore {
         {
             crate::journal::normalize_extent_capacity_with_media(media, &active)
                 .map_err(recovery_journal_error)?;
+        }
+
+        // An extent whose checkpoint installed before a crash may still wait
+        // at the sealing name; its frames are materialized, so sealing it is
+        // all that remains (ADR-0263). A half-prepared spare is scratch.
+        crate::journal::seal_extent_with_media(media, &self.shared.path, database_id)
+            .map_err(recovery_journal_error)?;
+        let preparing = crate::journal::preparing_spare_journal_path(&self.shared.path);
+        match media.remove_file(&preparing) {
+            Ok(()) => {}
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(_) => return Err(storage_error(StorageErrorKind::Unavailable)),
         }
 
         // The spare extent is never authoritative: it is only a preallocated
@@ -7831,6 +7852,59 @@ impl SharedRedb {
         self.finish_async_checkpoint_if_quiescent()
     }
 
+    /// Waits for the background sealer, if one is running.
+    pub(super) fn join_journal_sealer(&self) {
+        let handle = match self.journal_sealer.lock() {
+            Ok(mut sealer) => sealer.take(),
+            Err(poisoned) => poisoned.into_inner().take(),
+        };
+        if let Some(handle) = handle {
+            let _ = handle.join();
+        }
+    }
+
+    /// Seals the extent waiting at the sealing name and prepares the next spare
+    /// off the writer's path. A failure leaves the extent at the sealing name,
+    /// and the next install or open resumes it; a missing spare is created by
+    /// the next checkpoint start instead.
+    pub(super) fn start_journal_sealer(
+        &self,
+        spare_header: crate::journal::JournalFileHeader,
+    ) -> Result<(), StorageError> {
+        let media = Arc::clone(&self.journal_media);
+        let path = self.path.clone();
+        let spare_lock = Arc::clone(&self.journal_spare);
+        let database_id = spare_header.database_id();
+        let handle = std::thread::Builder::new()
+            .name("riffdb-journal-seal".to_string())
+            .stack_size(crate::PRODUCTION_THREAD_STACK_BYTES)
+            .spawn(move || {
+                crate::journal::record_seal_outcome(crate::journal::seal_extent_with_media(
+                    media.as_ref(),
+                    &path,
+                    database_id,
+                ));
+                crate::journal::record_spare_outcome(
+                    crate::journal::prepare_spare_extent_with_media(
+                        media.as_ref(),
+                        &path,
+                        &spare_header,
+                        &spare_lock,
+                    ),
+                );
+            })
+            .map_err(|_| storage_error(StorageErrorKind::Unavailable))?;
+        let previous = self
+            .journal_sealer
+            .lock()
+            .map_err(|_| storage_error(StorageErrorKind::InvariantViolation))?
+            .replace(handle);
+        if let Some(previous) = previous {
+            let _ = previous.join();
+        }
+        Ok(())
+    }
+
     fn finish_async_checkpoint_if_quiescent(self: &Arc<Self>) -> Result<(), StorageError> {
         let mut checkpoint = match self.journal_checkpoint.lock() {
             Ok(checkpoint) => checkpoint,
@@ -7916,40 +7990,30 @@ impl SharedRedb {
                 .map_err(|_| storage_error(StorageErrorKind::CommitStatusUnknown))? =
                 Some(successor.checkpoint_root_shared());
             let checkpoint_path = crate::journal::checkpoint_journal_path(&self.path);
-            let spare_path = crate::journal::spare_journal_path(&self.path);
             let media = self.journal_media.as_ref();
-            if media
-                .try_exists(&spare_path)
-                .map_err(|_| storage_error(StorageErrorKind::Unavailable))?
-            {
-                self.fence_writes();
-                return Err(storage_error(StorageErrorKind::InvariantViolation));
-            }
             #[cfg(feature = "test-fixtures")]
             if let Some(controller) = &self.test_controller {
                 controller
                     .checkpoint_test_pause(crate::hooks::RedbCheckpointTestPoint::BeforeReclaim);
             }
-            media
-                .rename(&checkpoint_path, &spare_path)
-                .map_err(|_| storage_error(StorageErrorKind::Unavailable))?;
-            crate::journal::sync_parent_directory_with_media(media, &spare_path)
+            // The installed extent is retained history now (ADR-0263): it is
+            // sealed, not recycled. Finish any earlier seal first, so exactly
+            // one extent ever waits at the sealing name.
+            self.join_journal_sealer();
+            let sealing_path = crate::journal::sealing_journal_path(&self.path);
+            crate::journal::seal_extent_with_media(media, &self.path, runtime.database_id)
                 .map_err(journal_io_error)?;
-            let spare_header = crate::journal::JournalFileHeader::with_frontiers(
+            media
+                .rename(&checkpoint_path, &sealing_path)
+                .map_err(|_| storage_error(StorageErrorKind::Unavailable))?;
+            crate::journal::sync_parent_directory_with_media(media, &sealing_path)
+                .map_err(journal_io_error)?;
+            self.start_journal_sealer(crate::journal::JournalFileHeader::with_frontiers(
                 runtime.database_id,
                 runtime.last_sequence,
                 runtime.last_administration_sequence,
                 runtime.last_hash,
-            );
-            if let Err(error) = crate::journal::reset_journal_after_with_media(
-                media,
-                &spare_path,
-                &spare_header,
-                &crate::journal::journal_path(&self.path),
-            ) {
-                self.fence_writes();
-                return Err(journal_io_error(error));
-            }
+            ))?;
             #[cfg(feature = "test-fixtures")]
             if let Some(controller) = &self.test_controller {
                 controller.checkpoint_test_pause(crate::hooks::RedbCheckpointTestPoint::Reclaimed);
@@ -9076,7 +9140,7 @@ fn write_initial_metadata(
     Ok(())
 }
 
-fn read_identity_from_read_transaction(
+pub(crate) fn read_identity_from_read_transaction(
     transaction: &redb::ReadTransaction,
 ) -> Result<DatabaseId, StorageError> {
     let table = transaction.open_table(META).map_err(table_error)?;
@@ -9219,4 +9283,12 @@ fn frame_changelog_binding(
     successor.map(|(binding, history)| {
         crate::journal::FrameChangelogBinding::new(binding, history.lineage().catalog_digest())
     })
+}
+
+impl Drop for SharedRedb {
+    fn drop(&mut self) {
+        // The sealer holds only the media port and paths, but a store that
+        // outlived its sealing work would leave the next open to finish it.
+        self.join_journal_sealer();
+    }
 }

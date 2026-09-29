@@ -61,6 +61,9 @@ pub trait JournalMediaFile: std::fmt::Debug + Send {
     fn sync_data(&mut self) -> io::Result<()>;
     /// Flushes file data and metadata (`fsync`).
     fn sync_all(&mut self) -> io::Result<()>;
+    /// Truncates or extends the file to `len` bytes (sealing trims a retained
+    /// extent to its frames and footer). Durable only after `sync_all`.
+    fn set_len(&mut self, len: u64) -> io::Result<()>;
 }
 
 /// One open media file: a real [`File`] on the production path, a boxed
@@ -79,6 +82,14 @@ pub enum MediaFile {
 }
 
 impl MediaFile {
+    /// Truncates or extends the file to `len` bytes.
+    pub fn set_len(&mut self, len: u64) -> io::Result<()> {
+        match self {
+            Self::Fs(file) => file.set_len(len),
+            Self::Port(file) => file.set_len(len),
+        }
+    }
+
     /// Current file length.
     pub fn len(&mut self) -> io::Result<u64> {
         match self {

@@ -535,3 +535,61 @@ pub fn initialize_legacy_database_fixture(
 ) -> Result<riffdb_storage_api::DatabaseInitializationResult, StorageError> {
     store.initialize_legacy_fixture(candidate)
 }
+
+/// One sealed, retained journal extent as its verified footer describes it:
+/// generation, frame count, and the first and last covered commit sequences.
+#[doc(hidden)]
+pub type SealedJournalExtentSummaryFixture = (u64, usize, Option<u64>, Option<u64>);
+
+/// Lists the sealed journal extents beside `database_path`, in generation
+/// order, verifying each footer against the frames it indexes (ADR-0263).
+#[doc(hidden)]
+pub fn sealed_journal_extents_fixture(
+    database_path: &Path,
+) -> Result<Vec<SealedJournalExtentSummaryFixture>, StorageError> {
+    let directory = database_path
+        .parent()
+        .ok_or_else(|| storage_error(StorageErrorKind::InvariantViolation))?;
+    let prefix = format!(
+        "{}.riffjournal.sealed.",
+        database_path
+            .file_name()
+            .and_then(|name| name.to_str())
+            .ok_or_else(|| storage_error(StorageErrorKind::InvariantViolation))?
+    );
+    let database_id = {
+        let database = Database::open(database_path).map_err(database_error)?;
+        let transaction = database.begin_read().map_err(transaction_error)?;
+        crate::store::read_identity_from_read_transaction(&transaction)?
+    };
+    let mut paths = std::fs::read_dir(directory)
+        .map_err(|_| storage_error(StorageErrorKind::Unavailable))?
+        .filter_map(Result::ok)
+        .filter(|entry| entry.file_name().to_string_lossy().starts_with(&prefix))
+        .map(|entry| entry.path())
+        .collect::<Vec<_>>();
+    paths.sort();
+    paths
+        .iter()
+        .map(|path| {
+            let footer = crate::journal::read_sealed_extent_with_media(
+                &crate::media::RealJournalMedia,
+                path,
+                database_id,
+            )
+            .map_err(|_| storage_error(StorageErrorKind::CorruptData))?;
+            let first = footer
+                .entries
+                .iter()
+                .find_map(|entry| entry.covered_sequence)
+                .map(riffdb_types::CommitSequence::get);
+            let last = footer
+                .entries
+                .iter()
+                .rev()
+                .find_map(|entry| entry.covered_sequence)
+                .map(riffdb_types::CommitSequence::get);
+            Ok((footer.generation, footer.entries.len(), first, last))
+        })
+        .collect()
+}

@@ -275,13 +275,14 @@ pub use durable_fixtures::{MigrationDurableFixture, migration_durable_fixture_se
 #[cfg(feature = "test-fixtures")]
 #[doc(hidden)]
 pub use fixtures::{
-    MALFORMED_POPULATION_ROW_FIXTURE, append_columnar_worker_commit_fixture,
-    append_columnar_worker_commit_with_crosslinks_fixture, downgrade_all_index_rows_to_v1_fixture,
-    initialize_legacy_database_fixture, plant_malformed_population_row_fixture,
-    plant_unreadable_projection_frontier_fixture, read_malformed_population_row_fixture,
-    read_validated_prefix_checkpoint_bytes_fixture,
+    MALFORMED_POPULATION_ROW_FIXTURE, SealedJournalExtentSummaryFixture,
+    append_columnar_worker_commit_fixture, append_columnar_worker_commit_with_crosslinks_fixture,
+    downgrade_all_index_rows_to_v1_fixture, initialize_legacy_database_fixture,
+    plant_malformed_population_row_fixture, plant_unreadable_projection_frontier_fixture,
+    read_malformed_population_row_fixture, read_validated_prefix_checkpoint_bytes_fixture,
     read_validated_prefix_checkpoint_commit_sequence_fixture,
-    replace_audit_row_with_stray_fence_fixture, strip_validated_prefix_checkpoint_fixture,
+    replace_audit_row_with_stray_fence_fixture, sealed_journal_extents_fixture,
+    strip_validated_prefix_checkpoint_fixture,
 };
 pub use format_preflight::{
     RedbDurableFormatPreflight, RedbDurableFormatPreflightError, durable_format_marker_path,

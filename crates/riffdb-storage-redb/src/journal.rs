@@ -52,6 +52,8 @@ const EXTENT_FRAME_FOOTER_MAGIC: [u8; 8] = *b"RDBJPE03";
 const EXTENT_FRAME_VERSION: u16 = 3;
 /// Header version 3: no revision and no anchor; every frame is suffix.
 const EXTENT_HEADER_VERSION_V3: u16 = 3;
+/// Magic of a sealed extent's footer, written at its anchor (ADR-0263).
+const SEALED_FOOTER_MAGIC: [u8; 8] = *b"RDBJSF04";
 const EXTENT_HEADER_SLOT_BYTES: usize = 4 * 1024;
 const EXTENT_HEADER_SLOT_COUNT: usize = 2;
 const EXTENT_DATA_OFFSET: usize = EXTENT_HEADER_SLOT_BYTES * EXTENT_HEADER_SLOT_COUNT;
@@ -2514,6 +2516,406 @@ pub(crate) fn spare_journal_path(database_path: &Path) -> PathBuf {
     PathBuf::from(path)
 }
 
+static SEALED_EXTENTS: AtomicU64 = AtomicU64::new(0);
+static SEAL_FAILURES: AtomicU64 = AtomicU64::new(0);
+static PREPARED_SPARES: AtomicU64 = AtomicU64::new(0);
+static SPARE_FAILURES: AtomicU64 = AtomicU64::new(0);
+
+/// Counts one background seal attempt's outcome.
+pub(crate) fn record_seal_outcome(outcome: Result<Option<PathBuf>, JournalIoError>) {
+    match outcome {
+        Ok(Some(_)) => {
+            SEALED_EXTENTS.fetch_add(1, Ordering::Relaxed);
+        }
+        Ok(None) => {}
+        Err(_) => {
+            SEAL_FAILURES.fetch_add(1, Ordering::Relaxed);
+        }
+    }
+}
+
+/// Counts one background spare preparation's outcome.
+pub(crate) fn record_spare_outcome(outcome: Result<bool, JournalIoError>) {
+    match outcome {
+        Ok(true) => {
+            PREPARED_SPARES.fetch_add(1, Ordering::Relaxed);
+        }
+        Ok(false) => {}
+        Err(_) => {
+            SPARE_FAILURES.fetch_add(1, Ordering::Relaxed);
+        }
+    }
+}
+
+/// Sealed extents, seal failures, prepared spares, and spare failures.
+pub(crate) fn retained_extent_census() -> [u64; 4] {
+    [
+        SEALED_EXTENTS.load(Ordering::Relaxed),
+        SEAL_FAILURES.load(Ordering::Relaxed),
+        PREPARED_SPARES.load(Ordering::Relaxed),
+        SPARE_FAILURES.load(Ordering::Relaxed),
+    ]
+}
+
+/// The one extent being sealed after its checkpoint installed (ADR-0263).
+/// Sealing finishes before another extent may take this name.
+pub(crate) fn sealing_journal_path(database_path: &Path) -> PathBuf {
+    let mut path = database_path.as_os_str().to_os_string();
+    path.push(".riffjournal.sealing");
+    PathBuf::from(path)
+}
+
+/// A sealed, retained extent, named by its unique generation.
+pub(crate) fn sealed_journal_path(database_path: &Path, generation: u64) -> PathBuf {
+    let mut path = database_path.as_os_str().to_os_string();
+    path.push(format!(".riffjournal.sealed.{generation:020}"));
+    PathBuf::from(path)
+}
+
+/// Where a spare extent is zero-filled before it takes the spare name.
+pub(crate) fn preparing_spare_journal_path(database_path: &Path) -> PathBuf {
+    let mut path = database_path.as_os_str().to_os_string();
+    path.push(".riffjournal.next.prep");
+    PathBuf::from(path)
+}
+
+const SEALED_FOOTER_VERSION: u16 = 1;
+const SEALED_FOOTER_HEADER_BYTES: usize = 8 + 2 + 2 + 4 + 8 + 8 + 8 + HASH_BYTES + 8;
+const SEALED_FOOTER_ENTRY_BYTES: usize = 192;
+
+/// One retained frame as a sealed footer records it.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct SealedFrameEntry {
+    pub(crate) placement: FramePlacement,
+    pub(crate) kind: JournalFrameKind,
+    pub(crate) predecessor_sequence: Option<CommitSequence>,
+    pub(crate) covered_sequence: Option<CommitSequence>,
+    pub(crate) predecessor_administration_sequence: Option<AdministrationSequence>,
+    pub(crate) covered_administration_sequence: Option<AdministrationSequence>,
+    pub(crate) changelog: Option<FrameChangelogBinding>,
+}
+
+impl SealedFrameEntry {
+    fn from_frame(frame: &JournalFrame, placement: FramePlacement) -> Self {
+        Self {
+            placement,
+            kind: frame.kind,
+            predecessor_sequence: frame.predecessor_sequence,
+            covered_sequence: frame.covered_sequence,
+            predecessor_administration_sequence: frame.predecessor_administration_sequence,
+            covered_administration_sequence: frame.covered_administration_sequence,
+            changelog: frame.changelog,
+        }
+    }
+}
+
+/// A sealed extent's self-describing index (ADR-0263 Decision 3 and
+/// Amendment 2 B4): every frame's placement, frontiers, and receipt binding,
+/// so the history index can be rebuilt from footers alone.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct SealedExtentFooter {
+    pub(crate) generation: u64,
+    pub(crate) origin: ChainPoint,
+    pub(crate) entries: Vec<SealedFrameEntry>,
+}
+
+impl SealedExtentFooter {
+    fn encoded_len(entries: usize) -> Option<usize> {
+        entries
+            .checked_mul(SEALED_FOOTER_ENTRY_BYTES)?
+            .checked_add(SEALED_FOOTER_HEADER_BYTES + HASH_BYTES)
+    }
+
+    fn encode(&self) -> Result<Vec<u8>, JournalIoError> {
+        let len = Self::encoded_len(self.entries.len()).ok_or(JournalIoError::Corrupt)?;
+        let padded = align_up(len, EXTENT_FRAME_ALIGNMENT).ok_or(JournalIoError::Corrupt)?;
+        let mut bytes = Vec::with_capacity(padded);
+        bytes.extend_from_slice(&SEALED_FOOTER_MAGIC);
+        bytes.extend_from_slice(&SEALED_FOOTER_VERSION.to_be_bytes());
+        bytes.extend_from_slice(&0_u16.to_be_bytes());
+        bytes.extend_from_slice(
+            &u32::try_from(self.entries.len())
+                .map_err(|_| JournalIoError::Corrupt)?
+                .to_be_bytes(),
+        );
+        bytes.extend_from_slice(&self.generation.to_be_bytes());
+        bytes.extend_from_slice(&encode_commit_frontier(self.origin.0));
+        bytes.extend_from_slice(&encode_administration_frontier(self.origin.1));
+        bytes.extend_from_slice(&self.origin.2);
+        bytes.extend_from_slice(&[0; 8]);
+        for entry in &self.entries {
+            bytes.extend_from_slice(
+                &u64::try_from(entry.placement.position)
+                    .map_err(|_| JournalIoError::Corrupt)?
+                    .to_be_bytes(),
+            );
+            bytes.extend_from_slice(
+                &u32::try_from(entry.placement.padded_len)
+                    .map_err(|_| JournalIoError::Corrupt)?
+                    .to_be_bytes(),
+            );
+            bytes.push(entry.kind as u8);
+            bytes.extend_from_slice(&[0; 3]);
+            bytes.extend_from_slice(&entry.placement.frame_hash);
+            bytes.extend_from_slice(&encode_commit_frontier(entry.predecessor_sequence));
+            bytes.extend_from_slice(&encode_commit_frontier(entry.covered_sequence));
+            bytes.extend_from_slice(&encode_administration_frontier(
+                entry.predecessor_administration_sequence,
+            ));
+            bytes.extend_from_slice(&encode_administration_frontier(
+                entry.covered_administration_sequence,
+            ));
+            bytes.extend_from_slice(&FrameChangelogBinding::encode(entry.changelog.as_ref()));
+            bytes.extend_from_slice(&[0; 16]);
+        }
+        let checksum = digest(&bytes);
+        bytes.extend_from_slice(&checksum);
+        debug_assert_eq!(bytes.len(), len);
+        bytes.resize(padded, 0);
+        Ok(bytes)
+    }
+
+    fn decode(bytes: &[u8]) -> Result<Self, JournalIoError> {
+        let corrupt = |_| JournalIoError::Corrupt;
+        if bytes.get(..8) != Some(SEALED_FOOTER_MAGIC.as_slice())
+            || read_u16(bytes, 8).map_err(corrupt)? != SEALED_FOOTER_VERSION
+            || read_u16(bytes, 10).map_err(corrupt)? != 0
+        {
+            return Err(JournalIoError::Corrupt);
+        }
+        let count = usize::try_from(read_u32(bytes, 12).map_err(corrupt)?)
+            .map_err(|_| JournalIoError::Corrupt)?;
+        let len = Self::encoded_len(count).ok_or(JournalIoError::Corrupt)?;
+        let body = bytes
+            .get(..len - HASH_BYTES)
+            .ok_or(JournalIoError::Corrupt)?;
+        if digest(body).as_slice() != &bytes[len - HASH_BYTES..len]
+            || bytes[len..].iter().any(|byte| *byte != 0)
+            || body[64..72].iter().any(|byte| *byte != 0)
+        {
+            return Err(JournalIoError::Corrupt);
+        }
+        let origin = (
+            CommitSequence::new(read_u64(body, 24).map_err(corrupt)?),
+            AdministrationSequence::new(read_u64(body, 32).map_err(corrupt)?),
+            read_array::<HASH_BYTES>(body, 40).map_err(corrupt)?,
+        );
+        let mut entries = Vec::with_capacity(count);
+        for index in 0..count {
+            let at = SEALED_FOOTER_HEADER_BYTES + index * SEALED_FOOTER_ENTRY_BYTES;
+            let entry = &body[at..at + SEALED_FOOTER_ENTRY_BYTES];
+            if entry[13..16].iter().any(|byte| *byte != 0)
+                || entry[176..].iter().any(|byte| *byte != 0)
+            {
+                return Err(JournalIoError::Corrupt);
+            }
+            entries.push(SealedFrameEntry {
+                placement: FramePlacement {
+                    position: usize::try_from(read_u64(entry, 0).map_err(corrupt)?)
+                        .map_err(|_| JournalIoError::Corrupt)?,
+                    padded_len: usize::try_from(read_u32(entry, 8).map_err(corrupt)?)
+                        .map_err(|_| JournalIoError::Corrupt)?,
+                    frame_hash: read_array::<HASH_BYTES>(entry, 16).map_err(corrupt)?,
+                },
+                kind: JournalFrameKind::decode(entry[12]).map_err(corrupt)?,
+                predecessor_sequence: CommitSequence::new(read_u64(entry, 48).map_err(corrupt)?),
+                covered_sequence: CommitSequence::new(read_u64(entry, 56).map_err(corrupt)?),
+                predecessor_administration_sequence: AdministrationSequence::new(
+                    read_u64(entry, 64).map_err(corrupt)?,
+                ),
+                covered_administration_sequence: AdministrationSequence::new(
+                    read_u64(entry, 72).map_err(corrupt)?,
+                ),
+                changelog: FrameChangelogBinding::decode(&entry[80..176]).map_err(corrupt)?,
+            });
+        }
+        Ok(Self {
+            generation: read_u64(body, 16).map_err(corrupt)?,
+            origin,
+            entries,
+        })
+    }
+}
+
+/// Seals the extent waiting at [`sealing_journal_path`], if any, and returns
+/// the retained path it now has.
+///
+/// The caller renamed it there only after the checkpoint that materialized
+/// its last frame installed, so every frame in it is already in the engine.
+/// Each step is idempotent, so a crash at any point resumes here on the next
+/// seal or open: anchor the header at the tail, write the footer at the anchor,
+/// trim the file to frames plus footer, sync it, then rename it to its unique
+/// sealed name and sync the directory.
+pub(crate) fn seal_extent_with_media(
+    media: &dyn JournalMedia,
+    database_path: &Path,
+    database_id: DatabaseId,
+) -> Result<Option<PathBuf>, JournalIoError> {
+    let sealing = sealing_journal_path(database_path);
+    if !media.try_exists(&sealing).map_err(|_| JournalIoError::Io)? {
+        return Ok(None);
+    }
+    let mut file = media
+        .open_read_write(&sealing)
+        .map_err(|_| JournalIoError::Io)?;
+    let extent = read_selected_extent_header(&mut file, false)?;
+    if extent.logical.database_id() != database_id {
+        return Err(JournalIoError::Corrupt);
+    }
+    let file_len = usize::try_from(file.len().map_err(|_| JournalIoError::Io)?)
+        .map_err(|_| JournalIoError::Corrupt)?;
+    let mut entries = Vec::new();
+    let walk = walk_extent_frames(
+        &mut file,
+        &extent,
+        ExtentWalk::FromOrigin,
+        file_len,
+        |frame, placement| {
+            entries.push(SealedFrameEntry::from_frame(frame, placement));
+            Ok(())
+        },
+    )?;
+    if walk.tail.incomplete_tail {
+        return Err(JournalIoError::Corrupt);
+    }
+    let tail = walk.tail.complete_bytes;
+    let footer = SealedExtentFooter {
+        generation: extent.generation,
+        origin: walk.origin.unwrap_or((
+            extent.logical.checkpoint_sequence(),
+            extent.logical.checkpoint_administration_sequence(),
+            extent.logical.checkpoint_frame_hash(),
+        )),
+        entries,
+    };
+    let encoded = footer.encode()?;
+    if extent.anchor_position != tail {
+        let anchored = extent.anchored(
+            JournalFileHeader::with_frontiers(
+                database_id,
+                walk.tail
+                    .last_sequence
+                    .max(extent.logical.checkpoint_sequence()),
+                walk.tail
+                    .last_administration_sequence
+                    .max(extent.logical.checkpoint_administration_sequence()),
+                walk.tail.last_hash,
+            ),
+            tail,
+        )?;
+        file.write_all_at(
+            &anchored.encode(),
+            usize::from(anchored.slot) * EXTENT_HEADER_SLOT_BYTES,
+        )
+        .and_then(|()| file.sync_data())
+        .map_err(|_| JournalIoError::Io)?;
+    }
+    if walk.footer {
+        let mut written = vec![0_u8; encoded.len()];
+        file.read_exact_at(&mut written, tail)
+            .map_err(|_| JournalIoError::Corrupt)?;
+        if SealedExtentFooter::decode(&written)? != footer {
+            return Err(JournalIoError::Corrupt);
+        }
+    } else {
+        file.write_all_at(&encoded, tail)
+            .and_then(|()| file.sync_data())
+            .map_err(|_| JournalIoError::Io)?;
+    }
+    let end = tail
+        .checked_add(encoded.len())
+        .ok_or(JournalIoError::Corrupt)?;
+    if file_len != end {
+        file.set_len(u64::try_from(end).map_err(|_| JournalIoError::Corrupt)?)
+            .map_err(|_| JournalIoError::Io)?;
+    }
+    file.sync_all().map_err(|_| JournalIoError::Io)?;
+    drop(file);
+    let sealed = sealed_journal_path(database_path, extent.generation);
+    if media.try_exists(&sealed).map_err(|_| JournalIoError::Io)? {
+        return Err(JournalIoError::Corrupt);
+    }
+    media
+        .rename(&sealing, &sealed)
+        .map_err(|_| JournalIoError::Io)?;
+    media
+        .sync_parent_all(&sealed)
+        .map_err(|_| JournalIoError::Io)?;
+    Ok(Some(sealed))
+}
+
+/// Reads a sealed extent's footer, verifying it against the frames it indexes.
+pub(crate) fn read_sealed_extent_with_media(
+    media: &dyn JournalMedia,
+    path: &Path,
+    database_id: DatabaseId,
+) -> Result<SealedExtentFooter, JournalIoError> {
+    let mut file = media.open_read(path).map_err(|_| JournalIoError::Io)?;
+    let extent = read_selected_extent_header(&mut file, false)?;
+    if extent.logical.database_id() != database_id {
+        return Err(JournalIoError::Corrupt);
+    }
+    let file_len = usize::try_from(file.len().map_err(|_| JournalIoError::Io)?)
+        .map_err(|_| JournalIoError::Corrupt)?;
+    let mut entries = Vec::new();
+    let walk = walk_extent_frames(
+        &mut file,
+        &extent,
+        ExtentWalk::FromOrigin,
+        file_len,
+        |frame, placement| {
+            entries.push(SealedFrameEntry::from_frame(frame, placement));
+            Ok(())
+        },
+    )?;
+    let tail = walk.tail.complete_bytes;
+    if !walk.footer || extent.anchor_position != tail {
+        return Err(JournalIoError::Corrupt);
+    }
+    let mut bytes = vec![0_u8; file_len - tail];
+    file.read_exact_at(&mut bytes, tail)
+        .map_err(|_| JournalIoError::Corrupt)?;
+    let footer = SealedExtentFooter::decode(&bytes)?;
+    if footer.generation != extent.generation || footer.entries != entries {
+        return Err(JournalIoError::Corrupt);
+    }
+    Ok(footer)
+}
+
+/// Zero-fills a spare extent under a scratch name and moves it to the spare
+/// name if no spare exists, off the writer's path. `predecessor` is the
+/// active extent whose generation the spare must exceed.
+pub(crate) fn prepare_spare_extent_with_media(
+    media: &dyn JournalMedia,
+    database_path: &Path,
+    header: &JournalFileHeader,
+    spare_lock: &std::sync::Mutex<()>,
+) -> Result<bool, JournalIoError> {
+    let spare = spare_journal_path(database_path);
+    if media.try_exists(&spare).map_err(|_| JournalIoError::Io)? {
+        return Ok(false);
+    }
+    let preparing = preparing_spare_journal_path(database_path);
+    match media.remove_file(&preparing) {
+        Ok(()) => {}
+        Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+        Err(_) => return Err(JournalIoError::Io),
+    }
+    create_extent_file_with_media(media, &preparing, &ExtentHeader::initial(header.clone()))?;
+    let _guard = spare_lock.lock().map_err(|_| JournalIoError::Io)?;
+    if media.try_exists(&spare).map_err(|_| JournalIoError::Io)? {
+        media
+            .remove_file(&preparing)
+            .map_err(|_| JournalIoError::Io)?;
+        return Ok(false);
+    }
+    media
+        .rename(&preparing, &spare)
+        .map_err(|_| JournalIoError::Io)?;
+    sync_parent_with_media(media, &spare)?;
+    Ok(true)
+}
+
 pub(crate) fn sync_parent_directory_with_media(
     media: &dyn JournalMedia,
     path: &Path,
@@ -2659,7 +3061,12 @@ fn sync_parent_with_media(media: &dyn JournalMedia, path: &Path) -> Result<(), J
     media.sync_parent_data(path).map_err(|_| JournalIoError::Io)
 }
 
-fn read_selected_extent_header(file: &mut MediaFile) -> Result<ExtentHeader, JournalIoError> {
+/// Selects the current header slot. `exact_len` requires the file to have the
+/// full extent length; a sealed extent is trimmed to its frames and footer.
+fn read_selected_extent_header(
+    file: &mut MediaFile,
+    exact_len: bool,
+) -> Result<ExtentHeader, JournalIoError> {
     let actual_len = usize::try_from(file.len().map_err(|_| JournalIoError::Io)?)
         .map_err(|_| JournalIoError::Corrupt)?;
     if actual_len < EXTENT_DATA_OFFSET {
@@ -2685,7 +3092,8 @@ fn read_selected_extent_header(file: &mut MediaFile) -> Result<ExtentHeader, Jou
     if valid.last().is_some_and(|header| {
         (header.generation, header.revision) == (selected.generation, selected.revision)
             && header != &selected
-    }) || actual_len != extent_file_bytes(selected.data_bytes)
+    }) || (exact_len && actual_len != extent_file_bytes(selected.data_bytes))
+        || actual_len > extent_file_bytes(selected.data_bytes)
     {
         return Err(JournalIoError::Corrupt);
     }
@@ -2724,25 +3132,98 @@ fn scan_extent_with_media(
     mut visit: impl FnMut(&JournalFrame) -> Result<(), JournalIoError>,
 ) -> Result<(JournalFileHeader, JournalScanTail, ExtentState), JournalIoError> {
     let mut file = media.open_read(path).map_err(|_| JournalIoError::Io)?;
-    let extent = read_selected_extent_header(&mut file)?;
+    let extent = read_selected_extent_header(&mut file, true)?;
     if expected_database.is_some_and(|expected| extent.logical.database_id() != expected) {
         return Err(JournalIoError::Corrupt);
     }
+    let file_bytes = extent_file_bytes(extent.data_bytes);
+    let walk = walk_extent_frames(
+        &mut file,
+        &extent,
+        ExtentWalk::FromAnchor,
+        file_bytes,
+        |frame, _| visit(frame),
+    )?;
+    if walk.footer {
+        // A sealed footer is never part of an active or recovering extent.
+        return Err(JournalIoError::Corrupt);
+    }
+    let logical = extent.logical.clone();
+    let position = walk.tail.complete_bytes;
+    Ok((
+        logical,
+        walk.tail,
+        ExtentState {
+            header: extent,
+            next_position: position,
+        },
+    ))
+}
+
+/// Where a frame walk starts and which chain point it verifies against.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum ExtentWalk {
+    /// Recovery: from the anchor, chained from the header's checkpoint, and
+    /// bounded by the suffix ceilings.
+    FromAnchor,
+    /// Sealing and retained reads: every frame from the data offset, chained
+    /// from the first frame's own predecessor, bounded only by the file.
+    FromOrigin,
+}
+
+/// Physical placement of one complete frame inside an extent.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) struct FramePlacement {
+    pub(crate) position: usize,
+    pub(crate) padded_len: usize,
+    pub(crate) frame_hash: [u8; HASH_BYTES],
+}
+
+/// The chain point one retained extent's first frame continues from.
+type ChainPoint = (
+    Option<CommitSequence>,
+    Option<AdministrationSequence>,
+    [u8; HASH_BYTES],
+);
+
+struct ExtentWalkResult {
+    tail: JournalScanTail,
+    /// The chain point the first frame continued from (origin walks only).
+    origin: Option<ChainPoint>,
+    /// A sealed footer begins at `tail.complete_bytes`.
+    footer: bool,
+}
+
+fn walk_extent_frames(
+    file: &mut MediaFile,
+    extent: &ExtentHeader,
+    walk: ExtentWalk,
+    file_bytes: usize,
+    mut visit: impl FnMut(&JournalFrame, FramePlacement) -> Result<(), JournalIoError>,
+) -> Result<ExtentWalkResult, JournalIoError> {
     let mut previous_hash = extent.logical.checkpoint_frame_hash();
     let mut previous_sequence = extent.logical.checkpoint_sequence();
     let mut previous_administration_sequence = extent.logical.checkpoint_administration_sequence();
-    let mut position = extent.anchor_position;
+    let mut position = match walk {
+        ExtentWalk::FromAnchor => extent.anchor_position,
+        ExtentWalk::FromOrigin => EXTENT_DATA_OFFSET,
+    };
+    let mut origin = None;
+    let mut footer = false;
     let mut transition_count = 0_usize;
     let mut command_count = 0_usize;
     let mut audit_count = 0_usize;
     let mut encoded_byte_count = 0_usize;
     let mut incomplete_tail = false;
-    let file_bytes = extent_file_bytes(extent.data_bytes);
     while position < file_bytes {
         let mut physical_header = [0_u8; EXTENT_FRAME_HEADER_BYTES];
         file.read_exact_at(&mut physical_header, position)
             .map_err(|_| JournalIoError::Io)?;
         if physical_header.iter().all(|byte| *byte == 0) {
+            break;
+        }
+        if physical_header[..8] == SEALED_FOOTER_MAGIC {
+            footer = true;
             break;
         }
         if physical_header[..8] != EXTENT_FRAME_MAGIC {
@@ -2814,6 +3295,16 @@ fn scan_extent_with_media(
         let logical = &physical[EXTENT_FRAME_HEADER_BYTES..EXTENT_FRAME_HEADER_BYTES + encoded_len];
         let (frame, frame_hash) =
             JournalFrame::decode(logical).map_err(|_| JournalIoError::Corrupt)?;
+        if walk == ExtentWalk::FromOrigin && origin.is_none() {
+            previous_hash = frame.previous_hash();
+            previous_sequence = frame.predecessor_sequence();
+            previous_administration_sequence = frame.predecessor_administration_sequence();
+            origin = Some((
+                previous_sequence,
+                previous_administration_sequence,
+                previous_hash,
+            ));
+        }
         if frame_hash.as_slice() != &physical_header[36..68]
             || frame.database_id() != extent.logical.database_id()
             || frame.previous_hash() != previous_hash
@@ -2834,12 +3325,20 @@ fn scan_extent_with_media(
         encoded_byte_count = encoded_byte_count
             .checked_add(encoded_len)
             .ok_or(JournalIoError::Corrupt)?;
-        if transition_count > MAX_JOURNAL_SUFFIX_TRANSITIONS
-            || encoded_byte_count > MAX_JOURNAL_SUFFIX_BYTES
+        if walk == ExtentWalk::FromAnchor
+            && (transition_count > MAX_JOURNAL_SUFFIX_TRANSITIONS
+                || encoded_byte_count > MAX_JOURNAL_SUFFIX_BYTES)
         {
             return Err(JournalIoError::Corrupt);
         }
-        visit(&frame)?;
+        visit(
+            &frame,
+            FramePlacement {
+                position,
+                padded_len,
+                frame_hash,
+            },
+        )?;
         previous_sequence = frame.covered_sequence();
         previous_administration_sequence = frame.covered_administration_sequence();
         previous_hash = frame_hash;
@@ -2847,25 +3346,20 @@ fn scan_extent_with_media(
             .checked_add(padded_len)
             .ok_or(JournalIoError::Corrupt)?;
     }
-    let logical = extent.logical.clone();
-    let tail = JournalScanTail {
-        last_sequence: previous_sequence,
-        last_administration_sequence: previous_administration_sequence,
-        last_hash: previous_hash,
-        incomplete_tail,
-        complete_bytes: position,
-        transition_count,
-        command_count,
-        audit_count,
-    };
-    Ok((
-        logical,
-        tail,
-        ExtentState {
-            header: extent,
-            next_position: position,
+    Ok(ExtentWalkResult {
+        tail: JournalScanTail {
+            last_sequence: previous_sequence,
+            last_administration_sequence: previous_administration_sequence,
+            last_hash: previous_hash,
+            incomplete_tail,
+            complete_bytes: position,
+            transition_count,
+            command_count,
+            audit_count,
         },
-    ))
+        origin,
+        footer,
+    })
 }
 
 pub(crate) fn scan_journal(
@@ -3952,7 +4446,7 @@ pub(crate) fn reset_journal_after_with_media(
     let mut predecessor_file = media
         .open_read(predecessor_path)
         .map_err(|_| JournalIoError::Io)?;
-    let predecessor = read_selected_extent_header(&mut predecessor_file)?;
+    let predecessor = read_selected_extent_header(&mut predecessor_file, true)?;
     if predecessor.logical.database_id() != header.database_id() {
         return Err(JournalIoError::Corrupt);
     }
@@ -3992,7 +4486,7 @@ fn reset_journal_after_generation_with_media(
     if magic != EXTENT_MAGIC {
         return Err(JournalIoError::Corrupt);
     }
-    let current = read_selected_extent_header(&mut file)?;
+    let current = read_selected_extent_header(&mut file, true)?;
     if current.logical.database_id() != header.database_id() {
         return Err(JournalIoError::Corrupt);
     }
@@ -5409,6 +5903,190 @@ mod tests {
                 .header
                 .anchor_position,
             EXTENT_DATA_OFFSET + frame_physical_bytes(&frame)
+        );
+    }
+
+    /// A two-frame extent at the sealing name, as an installed checkpoint
+    /// leaves it, plus the two encoded frames.
+    fn sealing_extent(
+        database_path: &Path,
+        database_id: DatabaseId,
+    ) -> (EncodedJournalFrame, EncodedJournalFrame) {
+        let first = recovery_frame(database_id)
+            .with_changelog(Some(sample_changelog_binding()))
+            .encode()
+            .expect("encode first");
+        write_recovery_journal(database_path, database_id, &first, None);
+        let second = JournalFrame::new(
+            database_id,
+            sequence(2),
+            sequence(2),
+            1,
+            first.frame_hash(),
+            vec![
+                JournalMutation::put(
+                    JournalTable::Commits,
+                    crate::keys::encode_application_sequence_key(sequence(2)).to_vec(),
+                    vec![0x42],
+                )
+                .expect("commit mutation"),
+            ],
+        )
+        .expect("second frame")
+        .encode()
+        .expect("encode second");
+        write_physical_frame(&journal_path(database_path), &second, false);
+        std::fs::rename(
+            journal_path(database_path),
+            sealing_journal_path(database_path),
+        )
+        .expect("move to the sealing name");
+        (first, second)
+    }
+
+    // req: REC-005
+    #[test]
+    fn sealing_writes_a_footer_indexing_every_retained_frame_and_trims_the_extent() {
+        let database_path = TestPath::new("seal-extent");
+        let database_id = database_id(18);
+        let (first, second) = sealing_extent(&database_path.0, database_id);
+        let generation = inspect_extent(&sealing_journal_path(&database_path.0))
+            .expect("sealing extent")
+            .header
+            .generation;
+
+        let sealed = seal_extent_with_media(&RealJournalMedia, &database_path.0, database_id)
+            .expect("seal")
+            .expect("an extent was waiting");
+        assert_eq!(sealed, sealed_journal_path(&database_path.0, generation));
+        assert!(!sealing_journal_path(&database_path.0).exists());
+        let footer =
+            read_sealed_extent_with_media(&RealJournalMedia, &sealed, database_id).expect("read");
+        assert_eq!(footer.generation, generation);
+        assert_eq!(footer.entries.len(), 2);
+        assert_eq!(footer.entries[0].placement.position, EXTENT_DATA_OFFSET);
+        assert_eq!(footer.entries[0].placement.frame_hash, first.frame_hash());
+        assert_eq!(
+            footer.entries[0].changelog,
+            Some(sample_changelog_binding())
+        );
+        assert_eq!(footer.entries[1].placement.frame_hash, second.frame_hash());
+        assert_eq!(footer.entries[1].covered_sequence, Some(sequence(2)));
+        assert_eq!(footer.origin, (None, None, [0; HASH_BYTES]));
+        let tail =
+            EXTENT_DATA_OFFSET + frame_physical_bytes(&first) + frame_physical_bytes(&second);
+        assert_eq!(
+            usize::try_from(std::fs::metadata(&sealed).expect("metadata").len()).expect("len"),
+            tail + footer.encode().expect("encode footer").len(),
+            "the sealed extent keeps only its frames and footer"
+        );
+        assert_eq!(
+            seal_extent_with_media(&RealJournalMedia, &database_path.0, database_id)
+                .expect("nothing waiting"),
+            None
+        );
+    }
+
+    // req: REC-005
+    #[test]
+    fn sealing_resumes_from_every_crash_point_to_the_same_sealed_extent() {
+        let reference = TestPath::new("seal-reference");
+        let database_id = database_id(19);
+        sealing_extent(&reference.0, database_id);
+        let generation = inspect_extent(&sealing_journal_path(&reference.0))
+            .expect("sealing extent")
+            .header
+            .generation;
+        let expected = std::fs::read(
+            seal_extent_with_media(&RealJournalMedia, &reference.0, database_id)
+                .expect("seal")
+                .expect("sealed"),
+        )
+        .expect("read sealed");
+
+        for stop_after in ["anchor", "footer", "trim"] {
+            let database_path = TestPath::new(&format!("seal-resume-{stop_after}"));
+            sealing_extent(&database_path.0, database_id);
+            let path = sealing_journal_path(&database_path.0);
+            // Replay the seal's first steps by hand, then stop as a crash would.
+            let mut file = OpenOptions::new()
+                .read(true)
+                .write(true)
+                .open(&path)
+                .expect("open");
+            let state = inspect_extent_with_media(&RealJournalMedia, &path);
+            assert!(state.is_ok());
+            let reference_sealed = sealed_journal_path(&reference.0, generation);
+            let footer =
+                read_sealed_extent_with_media(&RealJournalMedia, &reference_sealed, database_id)
+                    .expect("reference footer");
+            let tail = footer
+                .entries
+                .last()
+                .map(|entry| entry.placement.position + entry.placement.padded_len);
+            let tail = tail.expect("frames");
+            let mut header = [0_u8; EXTENT_HEADER_SLOT_BYTES];
+            let reference_file = std::fs::read(&reference_sealed).expect("reference bytes");
+            let anchored_slot = (0..EXTENT_HEADER_SLOT_COUNT)
+                .map(|slot| {
+                    ExtentHeader::decode(
+                        &reference_file[slot * EXTENT_HEADER_SLOT_BYTES
+                            ..(slot + 1) * EXTENT_HEADER_SLOT_BYTES],
+                        u16::try_from(slot).expect("slot"),
+                    )
+                })
+                .filter_map(Result::ok)
+                .max_by_key(|header| header.revision)
+                .expect("anchored header");
+            header.copy_from_slice(&anchored_slot.encode());
+            write_all_at(
+                &mut file,
+                &header,
+                usize::from(anchored_slot.slot) * EXTENT_HEADER_SLOT_BYTES,
+            )
+            .expect("anchor");
+            if stop_after != "anchor" {
+                write_all_at(&mut file, &footer.encode().expect("footer"), tail).expect("footer");
+            }
+            if stop_after == "trim" {
+                file.set_len(u64::try_from(reference_file.len()).expect("len"))
+                    .expect("trim");
+            }
+            file.sync_all().expect("sync");
+            drop(file);
+            let sealed = seal_extent_with_media(&RealJournalMedia, &database_path.0, database_id)
+                .expect("resume seal")
+                .expect("sealed");
+            assert_eq!(
+                std::fs::read(&sealed).expect("read"),
+                expected,
+                "resuming after the {stop_after} step reaches the same sealed extent"
+            );
+        }
+    }
+
+    // req: REC-005
+    #[test]
+    fn sealing_never_overwrites_an_existing_sealed_extent() {
+        let database_path = TestPath::new("seal-collision");
+        let database_id = database_id(20);
+        sealing_extent(&database_path.0, database_id);
+        let generation = inspect_extent(&sealing_journal_path(&database_path.0))
+            .expect("sealing extent")
+            .header
+            .generation;
+        std::fs::write(
+            sealed_journal_path(&database_path.0, generation),
+            b"occupied",
+        )
+        .expect("occupy the sealed name");
+        assert_eq!(
+            seal_extent_with_media(&RealJournalMedia, &database_path.0, database_id),
+            Err(JournalIoError::Corrupt)
+        );
+        assert_eq!(
+            std::fs::read(sealed_journal_path(&database_path.0, generation)).expect("read"),
+            b"occupied"
         );
     }
 

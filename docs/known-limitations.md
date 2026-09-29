@@ -322,7 +322,8 @@ the ADR-0239 benchmark host, with 32 interactive clients, the lane kept p95
 within 3 percent and throughput at 0.97 of the held run while pruning about 1.3
 percent as many sequences as the load committed (WP-811). Most of each step's
 writer time is spent materializing journaled history and committing the step
-itself; a proposed amendment (ADR-0261) would remove both. Where writes leave the writer
+itself. ADR-0261's journaled prune frames were superseded by ADR-0263, which retires
+whole retained journal extents instead (WP-815). Where writes leave the writer
 idle capacity, it compacts to its target. That evidence covers one workload on
 one host, is not a general latency guarantee, and marked the seeded events
 delivered on the stopped database first because of the outbox limit above.
@@ -335,6 +336,15 @@ reused inside the file and the file's high-water mark is permanent for the life
 of the database. Capacity planning must size for the historical peak, not for
 the retained working set, and an operator who prunes aggressively to recover
 disk will not recover any.
+
+Journal extents are now retained after their checkpoint rather than recycled
+(ADR-0263, in progress under WP-814). Each installed checkpoint leaves one
+sealed extent beside the database, named `<database>.riffjournal.sealed.<generation>`
+and trimmed to its frames and footer. Until WP-815 retires them, retention does
+not remove sealed extents, and the history they hold is also still stored in the
+database file, so journal history occupies disk twice and grows with every
+checkpoint. Backups do not yet copy sealed extents; nothing reads them yet, and
+the database file alone still holds complete history.
 
 
 ## What a command cannot express

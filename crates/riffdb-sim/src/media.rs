@@ -124,6 +124,10 @@ impl JournalMediaFile for SimMediaFile {
     fn sync_all(&mut self) -> io::Result<()> {
         self.disk.media_sync(self.epoch, &self.name, true)
     }
+
+    fn set_len(&mut self, len: u64) -> io::Result<()> {
+        self.disk.guarded_set_len(self.epoch, &self.name, len)
+    }
 }
 
 impl SimJournalMedia {
