@@ -28042,6 +28042,23 @@ work_packages:
     atomically without application-side selection; empty and successful outcomes are
     transaction-current and replay exactly; no late conflict acquisition, unbounded
     scan, policy bypass, or change to historical artifact identity is admitted.
+  closure:
+    status: complete
+    completed_at: '2026-09-28'
+    requirements_satisfied: [TXN-001, TXN-002, CMP-013, CMP-015, PERF-012]
+    evidence: docs/architecture/WP-817-REVIEW.md
+    decision: One indexed candidate is selected and mutated under proved upfront
+      ownership, exact row and generation validation, ordinary policies, and the
+      existing retry and durable replay boundary. Package tests passed all 2711
+      cases; all 17 non-test acceptance checks and every full CI gate passed with
+      staged reruns and final compatibility checks recorded in the review note.
+      Historical nonselector identities remain unchanged. Human review precedes merge.
+    hazards:
+    - Pool design still determines contention; conservative partition/index epochs
+      and ordered execution offer no fairness or parallel-throughput guarantee.
+    - Cross-partition writes, cross-aggregate invariants, and durable multi-command
+      workflows remain unavailable.
+    - Remove the dedicated worktree after the human-reviewed merge to main.
   standing_design_tests:
     interface_safety: The compiler proves selection scope and all up-front ownership;
       no caller may supply a range, skip validation, widen the candidate count, replace

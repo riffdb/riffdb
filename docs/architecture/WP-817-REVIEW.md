@@ -2,7 +2,10 @@
 
 ADR-0264 was accepted verbatim by the maintainer before implementation. Work is
 isolated on `feat/atomic-indexed-selection`, rebased onto main at `d3f0a2102`
-(including WP-814 journal-frame V3); maintainer review precedes merge.
+(including WP-814 journal-frame V3); maintainer review precedes merge. Main
+advanced to `e2af28320` during validation with another WP-814 journal change.
+Rebase and revalidate that combined tree before merging; the results below cover
+the recorded `d3f0a2102` base.
 
 ## Behavior and boundaries
 
@@ -75,9 +78,9 @@ At population 128:
 
 | Clients | Shared commands/s | Independent commands/s | Shared p95 ms | Independent p95 ms |
 |---:|---:|---:|---:|---:|
-| 1 | 74.1 | 88.2 | 19.36 | 18.78 |
-| 8 | 189.5 | 228.1 | 43.04 | 36.23 |
-| 32 | 131.4 | 195.8 | 242.88 | 162.56 |
+| 1 | 292.7 | 240.5 | 4.67 | 5.34 |
+| 8 | 226.2 | 196.4 | 53.50 | 57.02 |
+| 32 | 207.0 | 229.4 | 154.16 | 139.15 |
 
 Reproduce from the repository root, using an absolute output path or one relative
 to `crates/riffdb-commit` (Cargo's test working directory):
@@ -88,6 +91,33 @@ cargo test --release -p riffdb-commit --test command_concurrency \
   support::indexed_selection::concurrent_selection_has_bounded_work_in_shared_and_independent_pools \
   -- --exact
 ```
+
+## Validation
+
+Package acceptance ran 2,711 tests successfully (one existing opt-in test skipped).
+Its first run found stale editor highlight fixtures; those were regenerated, and
+`./scripts/acceptance --wp WP-817 --no-tests` then passed all 17 remaining checks.
+The final optional-field compatibility fix separately passed its catalog
+regression, scoped clippy, 10 coordinator unit tests, all five redb selector
+integration tests, and the release measurement above.
+
+`./scripts/ci-all` passed workspace formatting, clippy, tests and doctests, archive
+CLI checks, documentation, dependency/security checks, architecture checks,
+operator acceptance, and governance checks before stopping at the same stale
+fixture check. After regeneration, every command from `check-generated` through
+the end of that script passed, including Helm checks, public-source authoring
+acceptance, and source-install smoke. These are staged results, not a claim that
+one uninterrupted CI invocation passed after the final fix.
+
+Earlier parallel test launches used separate PID namespaces and collided through
+the scratch-directory sweeper. Rerunning the broad suites in one PID namespace
+removed that environmental interference. Supplemental tests used an isolated
+temporary root. No test failure was ignored or test guarantee weakened.
+
+Existing tool warnings remain: legacy ADR length warnings, mdBook's large search
+index, cargo-machete's absent template source directories, and the system Python
+module's maturin 1.15.0 versus the declared 1.14.1. The corresponding checks passed;
+the repository's pinned tool declarations are unchanged.
 
 ## Risks and follow-ups
 
@@ -104,9 +134,8 @@ multi-command orchestration remain unavailable.
 - Package: WP-817. Tier: guarantee.
 - Behavior: atomic first indexed candidate with current validation, bounded full
   retries, ordinary assignment evidence, policies, and durable outcome replay.
-- Checks: targeted compiler, generated-surface, coordinator, redb concurrency,
-  uncertainty, and process-crash tests pass; scoped clippy passes. Package
-  acceptance and full CI are running; package closure is not yet claimed.
+- Checks: package tests and all acceptance checks passed; all full-CI gates passed
+  with the staged reruns and final compatibility checks described above.
 - Compatibility: additive V26 selector plans; old artifacts remain byte exact.
 - Handbook: atomic selection guide, cookbook, known limitations, language
   reference, SUMMARY; generated IR format, diagnostic and compiler fixtures.
