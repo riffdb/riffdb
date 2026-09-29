@@ -1022,7 +1022,7 @@ fn rebuild_command_derived_indexes(
     for entry in commits.iter().map_err(precommit_storage_error)? {
         check_rebuild_cancellation(cancellation)?;
         let (key, value) = entry.map_err(precommit_storage_error)?;
-        match crate::command_prefix::decode_segment(value.value()) {
+        match crate::history_stub::decode_retained_segment(value.value()) {
             Ok(segment) => {
                 let segment = segment.into_parts().0;
                 let physical =

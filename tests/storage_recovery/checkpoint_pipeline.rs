@@ -352,7 +352,10 @@ fn checkpoint_pipeline_process_crashes_recover_exactly_and_idempotently() {
         );
         let mut recovered_second = None;
         for _ in 0..2 {
-            let reopened = open_operational(RedbStore::open(&path.0).expect("crash recovery"));
+            let reopened = open_operational(
+                RedbStore::open(&path.0)
+                    .unwrap_or_else(|error| panic!("crash recovery at {edge}: {error:?}")),
+            );
             assert_visible(&reopened, 1, true);
             let present = reopened
                 .read_commit(CommitSequence::new(2).expect("sequence"))

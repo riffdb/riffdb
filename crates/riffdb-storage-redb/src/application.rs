@@ -337,7 +337,7 @@ fn last_command_segment_digest(
     let Some((_, value)) = rows.last() else {
         return Ok(None);
     };
-    match riffdb_storage_api::decode_command_segment_v1(&value[..]) {
+    match crate::history_stub::decode_segment_value(&value[..]) {
         Ok(segment) => Ok(Some(segment.value().segment_digest())),
         Err(error)
             if error.kind() == riffdb_storage_api::DurableCodecErrorKind::UnexpectedRecordType =>
@@ -2893,7 +2893,7 @@ fn command_outcome_from_operational_indexes(
     )?;
     let mut found = None;
     for (_, encoded) in rows {
-        let segment = match riffdb_storage_api::decode_command_segment_v1(&encoded) {
+        let segment = match crate::history_stub::decode_segment_value(&encoded) {
             Ok(segment) => segment.into_parts().0,
             Err(error)
                 if error.kind()

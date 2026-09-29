@@ -1538,7 +1538,16 @@ fn immutable_history_digest(
         for row in table.iter().map_err(precommit_storage_error)? {
             let (key, value) = row.map_err(precommit_storage_error)?;
             hash_component(&mut digest, key.value())?;
-            hash_component(&mut digest, value.value())?;
+            // History is digested by value, whatever its representation
+            // (ADR-0263 C3): a checkpoint that stubs a segment changes nothing.
+            if definition.name() == COMMITS.name() {
+                hash_component(
+                    &mut digest,
+                    &crate::history_stub::resolve_commits_value(value.value())?,
+                )?;
+            } else {
+                hash_component(&mut digest, value.value())?;
+            }
         }
     }
     Ok(digest.finalize().into())

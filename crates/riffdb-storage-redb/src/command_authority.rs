@@ -63,7 +63,7 @@ pub(crate) fn commits_in_physical_row_checked<E>(
 where
     E: ReadableTable<&'static [u8], &'static [u8]>,
 {
-    match crate::command_prefix::decode_segment(encoded) {
+    match crate::history_stub::decode_retained_segment(encoded) {
         Ok(segment) => {
             let segment = segment.into_parts().0;
             if segment.first_commit_sequence() != physical_sequence {
@@ -151,7 +151,7 @@ fn modern_commits_in_physical_row(
     encoded: &[u8],
     physical_sequence: CommitSequence,
 ) -> Result<Option<Vec<EncodedPageItem<StoredCommitRecordV1>>>, StorageError> {
-    match riffdb_storage_api::decode_command_segment_v1(encoded) {
+    match crate::history_stub::decode_segment_value(encoded) {
         Ok(segment) => {
             let segment = segment.into_parts().0;
             if segment.first_commit_sequence() != physical_sequence {
@@ -254,6 +254,18 @@ where
     };
     let physical_sequence = decode_application_sequence_key(key.value()).map_err(|_| corrupt())?;
     let physical_bytes = u64::try_from(encoded.value().len()).unwrap_or(u64::MAX);
+    // A history stub states its segment's tail itself (ADR-0263 Amendment 3),
+    // so a head probe reads no extent and works on an offline database file.
+    if let Some(summary) = crate::history_stub::segment_summary(encoded.value())? {
+        if summary.first_commit_sequence != Some(physical_sequence) {
+            return Err(corrupt());
+        }
+        return Ok(CommandAuthorityHeadProfileV1 {
+            head: Some(summary.last_commit_sequence.ok_or_else(corrupt)?),
+            physical_bytes,
+            logical_commands: u64::from(summary.command_count),
+        });
+    }
     let logical = commits_in_physical_row(encoded.value(), events, physical_sequence)?;
     let head = logical
         .last()
@@ -288,7 +300,7 @@ where
     let (key, row) = entry.map_err(precommit_storage_error)?;
     let physical_sequence = decode_application_sequence_key(key.value()).map_err(|_| corrupt())?;
 
-    match riffdb_storage_api::decode_command_segment_v1(row.value()) {
+    match crate::history_stub::decode_segment_value(row.value()) {
         Ok(segment) => {
             let segment = segment.into_parts().0;
             segment_member(segment, physical_sequence, sequence)
@@ -348,7 +360,7 @@ pub(crate) fn command_member_at_access(
     };
     let physical_sequence =
         decode_application_sequence_key(&physical_key).map_err(|_| corrupt())?;
-    match riffdb_storage_api::decode_command_segment_v1(&encoded) {
+    match crate::history_stub::decode_segment_value(&encoded) {
         Ok(segment) => segment_member(segment.into_parts().0, physical_sequence, sequence),
         Err(error)
             if error.kind() == riffdb_storage_api::DurableCodecErrorKind::UnexpectedRecordType =>
@@ -478,7 +490,7 @@ pub(crate) fn command_member_at_write_access(
         // Locators are only written for segment-owned commands: a historical row
         // carries its own physical outcome and needs none. So a non-segment row
         // does not own the sequence, and the caller fails closed if none does.
-        let member = match riffdb_storage_api::decode_command_segment_v1(&encoded) {
+        let member = match crate::history_stub::decode_segment_value(&encoded) {
             Ok(segment) => segment_member(segment.into_parts().0, physical_sequence, sequence)?,
             Err(error)
                 if error.kind()

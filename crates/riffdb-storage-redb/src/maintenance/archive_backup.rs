@@ -41,7 +41,11 @@ impl RedbVerifiedArchiveBackup {
         ];
         let database = read_only_database(&files[1])?;
         let (manifest, identity) = backup::validate_immutable_backup(path)?;
-        if !manifest.is_physically_restorable_by_current_binary() {
+        // History stubs in this copy resolve only against sealed extents, which
+        // an archive does not yet carry, so refuse the backup whole.
+        if !manifest.is_physically_restorable_by_current_binary()
+            || backup::carries_sealed_extents(path)?
+        {
             return Err(storage_error(StorageErrorKind::IncompatibleFormat));
         }
         backup::validate_readable_database_semantics(&database, &manifest)?;

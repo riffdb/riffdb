@@ -639,7 +639,7 @@ fn collect_online_fencing_inputs(
 }
 
 fn decode_segment_row(row: &[u8]) -> Result<Option<StoredCommandSegmentV1>, StorageError> {
-    match riffdb_storage_api::decode_command_segment_v1(row) {
+    match crate::history_stub::decode_segment_value(row) {
         Ok(segment) => Ok(Some(segment.into_parts().0)),
         Err(error)
             if error.kind() == riffdb_storage_api::DurableCodecErrorKind::UnexpectedRecordType =>

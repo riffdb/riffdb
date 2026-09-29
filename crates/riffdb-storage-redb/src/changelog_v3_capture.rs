@@ -104,6 +104,20 @@ impl MutationCapture {
         if self.inactive_legacy {
             return Ok(());
         }
+        // A receipt binds the resolved prior value of a history stub, never the
+        // stub itself, so followers holding the full segment agree (ADR-0263 C3).
+        let resolved_before = match before {
+            Some(before) if table == crate::layout::COMMITS.name() => Some(
+                crate::history_stub::resolve_commits_value(before).map_err(|_| {
+                    self.failed(redb::StorageError::Corrupted(
+                        "unresolvable history stub".into(),
+                    ))
+                })?,
+            ),
+            Some(before) => Some(std::borrow::Cow::Borrowed(before)),
+            None => None,
+        };
+        let before = resolved_before.as_deref();
         let result = (|| {
             let namespace = AuthoritativeStateCatalogV1
                 .lookup(table, key)

@@ -41,7 +41,10 @@ pub(super) fn hash_v3_prefix(
         .get(expected.tail().sequence().get().to_be_bytes().as_slice())
         .map_err(precommit_storage_error)?
         .ok_or_else(corrupt)?;
-    let receipt = AuthoritativeTransactionV3::decode(row.value()).map_err(|_| corrupt())?;
+    let receipt = AuthoritativeTransactionV3::decode(&crate::history_stub::resolve_history_value(
+        row.value(),
+    )?)
+    .map_err(|_| corrupt())?;
     expected
         .validate_terminal_receipt(&receipt)
         .map_err(|_| corrupt())?;

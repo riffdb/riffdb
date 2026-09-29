@@ -186,7 +186,7 @@ impl PayloadCache {
             return Ok(cached);
         }
         let segment = Arc::new(
-            crate::command_prefix::decode_segment(&bytes)
+            crate::history_stub::decode_retained_segment(&bytes)
                 .map_err(|_| corrupt())?
                 .into_parts()
                 .0,

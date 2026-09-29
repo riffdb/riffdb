@@ -48,6 +48,13 @@ pub(crate) const DATABASE_ARTIFACT_FILE_NAME: &str = "database.redb";
 pub(crate) const JOURNAL_ARTIFACT_FILE_NAME: &str = "journal.riffextent";
 pub(crate) const FORMAT_MARKER_ARTIFACT_FILE_NAME: &str = "format.riffdb";
 const MANIFEST_MAGIC: &[u8; 16] = b"RIFFDB-BACKUP\0\0\0";
+/// Retained sealed journal extents (ADR-0263 A5) follow the three fixed
+/// artifacts, one per extent in generation order.
+const FIRST_SEALED_ARTIFACT_ORDINAL: u32 = 4;
+const SEALED_ARTIFACT_PREFIX: &str = "journal.sealed.";
+const SEALED_ARTIFACT_SUFFIX: &str = ".riffextent";
+/// A backup never names more sealed extents than its manifest can checksum.
+const MAX_SEALED_ARTIFACTS: usize = riffdb_storage_api::MAX_BACKUP_ARTIFACT_CHECKSUMS - 3;
 const MANIFEST_MAX_BYTES: usize = 32 * 1024 * 1024;
 const COPY_BUFFER_BYTES: usize = 64 * 1024;
 const MAX_STAGING_ATTEMPTS: u16 = 256;
@@ -556,7 +563,12 @@ impl OfflineBackupPersistencePort for RedbOfflineBackup {
             &format_marker_artifact_path,
         )?;
         validate_current_format_marker_artifact(&format_marker_artifact_path)?;
-        let checksums = vec![
+        let sealed_artifacts = stage_sealed_extents(
+            &self.source_database,
+            staging.path(),
+            source_facts.database_id,
+        )?;
+        let mut checksums = vec![
             BackupArtifactChecksumV1::new(NonZeroU32::MIN, sha256_file(&artifact_path)?),
             BackupArtifactChecksumV1::new(
                 NonZeroU32::new(2).expect("journal artifact ordinal is nonzero"),
@@ -567,6 +579,9 @@ impl OfflineBackupPersistencePort for RedbOfflineBackup {
                 sha256_file(&format_marker_artifact_path)?,
             ),
         ];
+        for (ordinal, path) in sealed_artifact_ordinals(&sealed_artifacts)? {
+            checksums.push(BackupArtifactChecksumV1::new(ordinal, sha256_file(&path)?));
+        }
         let manifest = source_facts.into_manifest(checksums, build.clone())?;
         let manifest_bytes = encode_manifest(&manifest)?;
         write_new_and_sync(&staging.path().join(MANIFEST_FILE_NAME), &manifest_bytes)?;
@@ -677,6 +692,11 @@ impl OfflineRestorePersistencePort for RedbOfflineRestore {
             return Err(corrupt());
         }
         validate_manifest_format_marker(staged_format_marker.path(), &manifest)?;
+        let staged_sealed = stage_restored_sealed_extents(
+            &self.backup_directory,
+            &self.target_directory,
+            &manifest,
+        )?;
 
         if let Some(controller) = &self.test_controller {
             controller.before_commit(RedbTestOperation::Restore)?;
@@ -690,6 +710,19 @@ impl OfflineRestorePersistencePort for RedbOfflineRestore {
         staged_artifact.mark_published();
         fs::rename(staged_journal.path(), &target_journal).map_err(io_unavailable)?;
         staged_journal.mark_published();
+        // Sealed extents of whatever the target held before never survive, and
+        // the backup's own become the restored database's (ADR-0263 A5).
+        for (_, stale) in sealed_extents_beside(&target_artifact)? {
+            fs::remove_file(stale).map_err(io_unavailable)?;
+        }
+        for (generation, mut staged) in staged_sealed {
+            fs::rename(
+                staged.path(),
+                crate::journal::sealed_journal_path(&target_artifact, generation),
+            )
+            .map_err(io_unavailable)?;
+            staged.mark_published();
+        }
         fs::rename(staged_format_marker.path(), &target_format_marker).map_err(io_unavailable)?;
         staged_format_marker.mark_published();
         if sync_directory(&self.target_directory).is_err() {
@@ -1195,7 +1228,9 @@ fn manifest_artifact_checksum(
     manifest: &OfflineBackupManifestV1,
     ordinal: NonZeroU32,
 ) -> Result<BackupIntegrityChecksumV1, StorageError> {
-    if !matches!(manifest.checksums().len(), 1..=3) {
+    if !(1..=riffdb_storage_api::MAX_BACKUP_ARTIFACT_CHECKSUMS)
+        .contains(&manifest.checksums().len())
+    {
         return Err(corrupt());
     }
     let checksum = manifest
@@ -1263,7 +1298,9 @@ fn encode_manifest_for_era(
     {
         return Err(incompatible());
     }
-    if !matches!(manifest.checksums().len(), 1..=3) {
+    if !(1..=riffdb_storage_api::MAX_BACKUP_ARTIFACT_CHECKSUMS)
+        .contains(&manifest.checksums().len())
+    {
         return Err(corrupt());
     }
     for (index, checksum) in manifest.checksums().iter().enumerate() {
@@ -1484,7 +1521,8 @@ fn decode_manifest_body(
     };
 
     let checksum_count = usize::try_from(input.u32()?).map_err(|_| corrupt())?;
-    if !matches!(checksum_count, 1..=3) {
+    // Three fixed artifacts, then one per retained sealed extent (ADR-0263 A5).
+    if !(1..=riffdb_storage_api::MAX_BACKUP_ARTIFACT_CHECKSUMS).contains(&checksum_count) {
         return Err(corrupt());
     }
     let mut checksums = Vec::with_capacity(checksum_count);
@@ -1772,8 +1810,17 @@ fn validate_backup_inventory(directory: &Path) -> Result<(), StorageError> {
         return Err(corrupt());
     }
     let mut names = Vec::with_capacity(4);
+    let mut sealed = 0_usize;
     for entry in fs::read_dir(directory).map_err(io_unavailable)? {
         let entry = entry.map_err(io_unavailable)?;
+        if sealed_artifact_generation(&entry.file_name()).is_some() {
+            let metadata = fs::symlink_metadata(entry.path()).map_err(io_unavailable)?;
+            sealed += 1;
+            if !metadata.file_type().is_file() || sealed > MAX_SEALED_ARTIFACTS {
+                return Err(corrupt());
+            }
+            continue;
+        }
         if names.len() == 4 {
             return Err(corrupt());
         }
@@ -1805,6 +1852,10 @@ fn validate_backup_inventory(directory: &Path) -> Result<(), StorageError> {
     if names != legacy && names != post_journal && names != current {
         return Err(corrupt());
     }
+    // Sealed extents exist only beside the complete current artifact set.
+    if sealed != 0 && names != current {
+        return Err(corrupt());
+    }
     Ok(())
 }
 
@@ -1832,7 +1883,170 @@ fn validate_manifest_inventory(
             manifest,
         )?;
     }
+    // Every sealed artifact has exactly one checksum, at the ordinal its
+    // generation order gives it, and no checksum names a missing extent.
+    let sealed = sealed_artifacts_in(directory)?;
+    let expected = sealed_artifact_ordinals(&sealed)?
+        .into_iter()
+        .map(|(ordinal, _)| ordinal)
+        .collect::<Vec<_>>();
+    let recorded = manifest
+        .checksums()
+        .iter()
+        .map(BackupArtifactChecksumV1::artifact_ordinal)
+        .filter(|ordinal| ordinal.get() >= FIRST_SEALED_ARTIFACT_ORDINAL)
+        .collect::<Vec<_>>();
+    if expected != recorded {
+        return Err(corrupt());
+    }
     Ok(())
+}
+
+fn sealed_artifact_name(generation: u64) -> String {
+    format!("{SEALED_ARTIFACT_PREFIX}{generation:020}{SEALED_ARTIFACT_SUFFIX}")
+}
+
+fn sealed_artifact_generation(name: &OsStr) -> Option<u64> {
+    let digits = name
+        .to_str()?
+        .strip_prefix(SEALED_ARTIFACT_PREFIX)?
+        .strip_suffix(SEALED_ARTIFACT_SUFFIX)?;
+    (digits.len() == 20 && digits.bytes().all(|byte| byte.is_ascii_digit()))
+        .then(|| digits.parse().ok())
+        .flatten()
+        .filter(|generation| {
+            sealed_artifact_name(*generation).as_str() == name.to_str().unwrap_or("")
+        })
+}
+
+/// Sealed backup artifacts in `directory`, in generation order.
+/// Whether a backup directory carries sealed journal extents (ADR-0263).
+pub(crate) fn carries_sealed_extents(directory: &Path) -> Result<bool, StorageError> {
+    Ok(!sealed_artifacts_in(directory)?.is_empty())
+}
+
+fn sealed_artifacts_in(directory: &Path) -> Result<Vec<(u64, PathBuf)>, StorageError> {
+    let mut sealed = Vec::new();
+    for entry in fs::read_dir(directory).map_err(io_unavailable)? {
+        let entry = entry.map_err(io_unavailable)?;
+        if let Some(generation) = sealed_artifact_generation(&entry.file_name()) {
+            if sealed.len() == MAX_SEALED_ARTIFACTS {
+                return Err(corrupt());
+            }
+            sealed.push((generation, entry.path()));
+        }
+    }
+    sealed.sort_unstable();
+    Ok(sealed)
+}
+
+/// Sealed journal extents retained beside `database`, in generation order.
+fn sealed_extents_beside(database: &Path) -> Result<Vec<(u64, PathBuf)>, StorageError> {
+    let directory = database.parent().ok_or_else(corrupt)?;
+    let prefix = format!(
+        "{}.riffjournal.sealed.",
+        database
+            .file_name()
+            .and_then(OsStr::to_str)
+            .ok_or_else(corrupt)?
+    );
+    let mut sealed = Vec::new();
+    for entry in fs::read_dir(directory).map_err(io_unavailable)? {
+        let entry = entry.map_err(io_unavailable)?;
+        let name = entry.file_name();
+        let Some(digits) = name
+            .to_str()
+            .and_then(|name| name.strip_prefix(prefix.as_str()))
+        else {
+            continue;
+        };
+        let generation = digits.parse::<u64>().map_err(|_| corrupt())?;
+        if crate::journal::sealed_journal_path(database, generation) != entry.path()
+            || sealed.len() == MAX_SEALED_ARTIFACTS
+        {
+            return Err(corrupt());
+        }
+        sealed.push((generation, entry.path()));
+    }
+    sealed.sort_unstable();
+    Ok(sealed)
+}
+
+fn sealed_artifact_ordinals(
+    sealed: &[(u64, PathBuf)],
+) -> Result<Vec<(NonZeroU32, PathBuf)>, StorageError> {
+    sealed
+        .iter()
+        .enumerate()
+        .map(|(index, (_, path))| {
+            let ordinal = u32::try_from(index)
+                .ok()
+                .and_then(|index| index.checked_add(FIRST_SEALED_ARTIFACT_ORDINAL))
+                .and_then(NonZeroU32::new)
+                .ok_or_else(corrupt)?;
+            Ok((ordinal, path.clone()))
+        })
+        .collect()
+}
+
+/// Verifies and copies every sealed extent beside the source into the backup.
+/// A seal a crash interrupted must finish first: opening the database does.
+fn stage_sealed_extents(
+    source_database: &Path,
+    staging: &Path,
+    database_id: DatabaseId,
+) -> Result<Vec<(u64, PathBuf)>, StorageError> {
+    if crate::journal::sealing_journal_path(source_database)
+        .try_exists()
+        .map_err(io_unavailable)?
+    {
+        return Err(unknown());
+    }
+    let mut staged = Vec::new();
+    for (generation, path) in sealed_extents_beside(source_database)? {
+        crate::journal::read_sealed_extent_with_media(
+            &crate::media::RealJournalMedia,
+            &path,
+            database_id,
+        )
+        .map_err(|_| corrupt())?;
+        let artifact = staging.join(sealed_artifact_name(generation));
+        copy_and_sync(&path, &artifact)?;
+        staged.push((generation, artifact));
+    }
+    Ok(staged)
+}
+
+/// Copies each sealed backup artifact beside the restore target under a staged
+/// name, verifying its checksum and its footer.
+fn stage_restored_sealed_extents(
+    backup_directory: &Path,
+    target_directory: &Path,
+    manifest: &OfflineBackupManifestV1,
+) -> Result<Vec<(u64, StagedArtifact)>, StorageError> {
+    let sealed = sealed_artifacts_in(backup_directory)?;
+    let mut staged = Vec::with_capacity(sealed.len());
+    for (ordinal, path) in sealed_artifact_ordinals(&sealed)? {
+        let generation = sealed_artifact_generation(path.file_name().ok_or_else(corrupt)?)
+            .ok_or_else(corrupt)?;
+        let expected = manifest_artifact_checksum(manifest, ordinal)?;
+        let artifact = StagedArtifact::create_named(
+            target_directory,
+            OsStr::new(&sealed_artifact_name(generation)),
+        )?;
+        copy_and_sync(&path, artifact.path())?;
+        if sha256_file(artifact.path())? != expected {
+            return Err(corrupt());
+        }
+        crate::journal::read_sealed_extent_with_media(
+            &crate::media::RealJournalMedia,
+            artifact.path(),
+            manifest.database_id(),
+        )
+        .map_err(|_| corrupt())?;
+        staged.push((generation, artifact));
+    }
+    Ok(staged)
 }
 
 #[derive(Clone, Copy, Eq, PartialEq)]

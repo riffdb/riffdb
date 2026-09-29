@@ -587,7 +587,7 @@ fn materialize_retained_command_views(
         let (physical_key, value) = entry.map_err(precommit_storage_error)?;
         let sequence = decode_application_sequence_key(physical_key.value())
             .map_err(|_| storage_error(StorageErrorKind::CorruptData))?;
-        match riffdb_storage_api::decode_command_segment_v1(value.value()) {
+        match crate::history_stub::decode_segment_value(value.value()) {
             Ok(segment) => {
                 let segment = segment.into_parts().0;
                 if segment.first_commit_sequence() != sequence {
@@ -1204,7 +1204,7 @@ fn undelivered_outbox_low_water(
     let mut event_ids = BTreeSet::new();
     for entry in commits.iter().map_err(precommit_storage_error)? {
         let (_, value) = entry.map_err(precommit_storage_error)?;
-        match riffdb_storage_api::decode_command_segment_v1(value.value()) {
+        match crate::history_stub::decode_segment_value(value.value()) {
             Ok(segment) => {
                 for command in segment.value().commands() {
                     for event in command.events() {
@@ -1347,7 +1347,7 @@ fn walk_tombstone_preimage(
             let (key, value) = entry.map_err(precommit_storage_error)?;
             let physical_sequence = decode_application_sequence_key(key.value())
                 .map_err(|_| storage_error(StorageErrorKind::CorruptData))?;
-            match riffdb_storage_api::decode_command_segment_v1(value.value()) {
+            match crate::history_stub::decode_segment_value(value.value()) {
                 Ok(segment) => {
                     let segment = segment.into_parts().0;
                     if segment.first_commit_sequence() != physical_sequence {
@@ -1543,7 +1543,7 @@ fn rewrite_pruned_command_segments(
         let (key, value) = entry.map_err(precommit_storage_error)?;
         let physical_sequence = decode_application_sequence_key(key.value())
             .map_err(|_| storage_error(StorageErrorKind::CorruptData))?;
-        match riffdb_storage_api::decode_command_segment_v1(value.value()) {
+        match crate::history_stub::decode_segment_value(value.value()) {
             Ok(segment) => {
                 let segment = segment.into_parts().0;
                 if segment.first_commit_sequence() != physical_sequence {

@@ -168,7 +168,10 @@ pub(crate) fn validate_retained_rows(
     let mut first = true;
     for entry in table.iter().map_err(precommit_storage_error)? {
         let (key, value) = entry.map_err(precommit_storage_error)?;
-        let receipt = AuthoritativeTransactionV3::decode(value.value()).map_err(|_| corrupt())?;
+        let receipt = AuthoritativeTransactionV3::decode(
+            &crate::history_stub::resolve_history_value(value.value())?,
+        )
+        .map_err(|_| corrupt())?;
         if key.value() != receipt.binding().sequence.get().to_be_bytes()
             || receipt.binding().sequence > history.tail().sequence()
         {
@@ -248,7 +251,10 @@ fn validate_source_holds(
             .get(hold.fence().sequence().get().to_be_bytes().as_slice())
             .map_err(precommit_storage_error)?
             .ok_or_else(corrupt)?;
-        let receipt = AuthoritativeTransactionV3::decode(receipt.value()).map_err(|_| corrupt())?;
+        let receipt = AuthoritativeTransactionV3::decode(
+            &crate::history_stub::resolve_history_value(receipt.value())?,
+        )
+        .map_err(|_| corrupt())?;
         if ChangelogHistoryPointV3::from_receipt(&receipt).map_err(|_| corrupt())? != hold.fence() {
             return Err(corrupt());
         }
@@ -440,8 +446,10 @@ fn validate_roots(
         .map_err(precommit_storage_error)?
         .ok_or_else(|| storage_error(StorageErrorKind::CorruptData))?;
     // The decoder checks its frame-adjusted hard bound before hashing/copying.
-    let receipt = AuthoritativeTransactionV3::decode(receipt.value())
-        .map_err(|_| storage_error(StorageErrorKind::CorruptData))?;
+    let receipt = AuthoritativeTransactionV3::decode(&crate::history_stub::resolve_history_value(
+        receipt.value(),
+    )?)
+    .map_err(|_| storage_error(StorageErrorKind::CorruptData))?;
     history
         .validate_terminal_receipt(&receipt)
         .map_err(|_| storage_error(StorageErrorKind::CorruptData))?;

@@ -58,6 +58,7 @@ mod follower_lifecycle;
 mod format_preflight;
 mod format_upgrade;
 mod gate;
+mod history_stub;
 mod hooks;
 mod journal;
 mod keys;

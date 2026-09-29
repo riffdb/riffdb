@@ -47,7 +47,10 @@ pub(super) fn floor(
         .get(maximum.to_be_bytes().as_slice())
         .map_err(precommit_storage_error)?
         .ok_or_else(|| storage_error(StorageErrorKind::CorruptData))?;
-    let receipt = AuthoritativeTransactionV3::decode(row.value()).map_err(value_error)?;
+    let receipt = AuthoritativeTransactionV3::decode(&crate::history_stub::resolve_history_value(
+        row.value(),
+    )?)
+    .map_err(value_error)?;
     Point::from_receipt(&receipt).map(Some).map_err(value_error)
 }
 

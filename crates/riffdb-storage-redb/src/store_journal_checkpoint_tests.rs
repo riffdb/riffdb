@@ -94,8 +94,11 @@ fn live_checkpoint_materializes_the_original_v3_receipt_with_one_existing_commit
     )
     .unwrap();
     lane.submit(encoded.clone()).unwrap().wait().unwrap();
+    let extent_generation = lane.generation();
     drop(lane);
     let frame = ValidatedCheckpointFrame {
+        extent_generation,
+        placement: crate::journal::frame_placement_after(0, &encoded).unwrap(),
         changelog_binding: Some(expected.binding()),
         database_id,
         predecessor_sequence: None,

@@ -288,7 +288,10 @@ pub(crate) fn verify_materialized_frame(
         if row.value().len() > MAX_CHANGELOG_FRAME_BYTES {
             return Err(storage_error(StorageErrorKind::LimitExceeded));
         }
-        let receipt = AuthoritativeTransactionV3::decode(row.value()).map_err(value_error)?;
+        let receipt = AuthoritativeTransactionV3::decode(
+            &crate::history_stub::resolve_history_value(row.value())?,
+        )
+        .map_err(value_error)?;
         if receipt.binding().sequence != sequence
             || receipt.binding().database_id != history.lineage().database_id()
             || receipt.binding().history_incarnation != history.lineage().history_incarnation()
@@ -328,7 +331,10 @@ pub(crate) fn verify_materialized_frame(
         .get(sequence.get().to_be_bytes().as_slice())
         .map_err(precommit_storage_error)?
         .ok_or_else(|| storage_error(StorageErrorKind::CorruptData))?;
-    if recovered.encode().map_err(value_error)?.as_slice() != original.value() {
+    // A history stub is compared by the receipt it resolves to (ADR-0263 C3).
+    if recovered.encode().map_err(value_error)?.as_slice()
+        != &*crate::history_stub::resolve_history_value(original.value())?
+    {
         return Err(storage_error(StorageErrorKind::CorruptData));
     }
     Ok(recovered)

@@ -403,6 +403,9 @@ pub(crate) struct SharedRedb {
     /// next spare (ADR-0263). At most one runs; it is joined before the next
     /// install and when the store drops.
     journal_sealer: Mutex<Option<std::thread::JoinHandle<()>>>,
+    /// Registers this store's retained extents for history-stub resolution
+    /// (ADR-0263 Amendment 3) once its database identity is known.
+    history_resolver: std::sync::OnceLock<Arc<crate::history_stub::HistoryResolver>>,
     command_segment_preparation: crate::command_segment_preparation::CommandSegmentPreparationPool,
     test_controller: Option<RedbTestController>,
     transient_indexes: RwLock<TransientIndexState>,
@@ -1597,6 +1600,10 @@ struct ValidatedCheckpointFrame {
     audit_count: u16,
     encoded: crate::journal::EncodedJournalFrame,
     mutations: Arc<[riffdb_storage_api::CompositeMutationV1]>,
+    /// The extent generation and position the lane writes this frame at, which
+    /// the checkpoint's history stubs name (ADR-0263 Amendment 3).
+    extent_generation: u64,
+    placement: crate::journal::FramePlacement,
 }
 
 #[derive(Default)]
@@ -2551,6 +2558,7 @@ impl RedbStore {
                 journal_checkpoint: Mutex::new(None),
                 journal_spare: Arc::new(Mutex::new(())),
                 journal_sealer: Mutex::new(None),
+                history_resolver: std::sync::OnceLock::new(),
                 command_segment_preparation,
                 test_controller,
                 transient_indexes: RwLock::new(TransientIndexState::Dormant),
@@ -2573,6 +2581,20 @@ impl RedbStore {
                 changelog_port,
             }),
         };
+        // History stubs (ADR-0263 Amendment 3) must resolve for every open-time
+        // reader, so an initialized database registers its extents first.
+        {
+            let transaction = store
+                .shared
+                .database
+                .begin_read()
+                .map_err(transaction_error)?;
+            // Layout classification itself reads history, so the identity is
+            // read directly; an empty or unreadable one is left to the checks below.
+            if let Ok(database_id) = read_identity_from_read_transaction(&transaction) {
+                store.shared.register_history_resolver(database_id);
+            }
+        }
         if open_mode.is_source() {
             store.ensure_current_storage_format()?;
             store.install_command_locator_tables()?;
@@ -2606,6 +2628,7 @@ impl RedbStore {
         }
         let database_id = read_identity_from_read_transaction(&transaction)?;
         drop(transaction);
+        self.shared.register_history_resolver(database_id);
         let media = self.shared.journal_media.as_ref();
         let checkpoint = crate::journal::checkpoint_journal_path(&self.shared.path);
         if media
@@ -2619,10 +2642,16 @@ impl RedbStore {
                 database_id,
             )
             .map_err(recovery_journal_error)?;
+            // Its frames are materialized and back history stubs (ADR-0263),
+            // so the extent is sealed and retained, never removed. Any earlier
+            // seal a crash interrupted finishes first.
+            crate::journal::seal_extent_with_media(media, &self.shared.path, database_id)
+                .map_err(recovery_journal_error)?;
+            let sealing = crate::journal::sealing_journal_path(&self.shared.path);
             media
-                .remove_file(&checkpoint)
+                .rename(&checkpoint, &sealing)
                 .map_err(|_| storage_error(StorageErrorKind::Unavailable))?;
-            crate::journal::sync_parent_directory_with_media(media, &checkpoint)
+            crate::journal::sync_parent_directory_with_media(media, &sealing)
                 .map_err(journal_io_error)?;
         }
         crate::journal::recover_journal_with_media(
@@ -6669,7 +6698,14 @@ impl RedbWriteAccess {
             runtime.suffix_audits = next_audits;
             runtime.suffix_bytes = next_bytes;
             runtime.suffix_physical_bytes = next_physical_bytes;
+            let placement = crate::journal::frame_placement_after(
+                next_physical_bytes - physical_bytes,
+                &retained_frame,
+            )
+            .ok_or_else(|| storage_error(StorageErrorKind::LimitExceeded))?;
             runtime.suffix_frames.push(ValidatedCheckpointFrame {
+                extent_generation: runtime.lane.generation(),
+                placement,
                 database_id: runtime.database_id,
                 predecessor_sequence,
                 covered_sequence: predecessor_sequence,
@@ -7062,7 +7098,14 @@ impl RedbDurabilityEpoch {
                 runtime.suffix_audits = next_audits;
                 runtime.suffix_bytes = next_bytes;
                 runtime.suffix_physical_bytes = next_physical_bytes;
+                let placement = crate::journal::frame_placement_after(
+                    next_physical_bytes - physical_bytes,
+                    &retained_frame,
+                )
+                .ok_or_else(|| storage_error(StorageErrorKind::LimitExceeded))?;
                 runtime.suffix_frames.push(ValidatedCheckpointFrame {
+                    extent_generation: runtime.lane.generation(),
+                    placement,
                     database_id: runtime.database_id,
                     predecessor_sequence,
                     covered_sequence: Some(last_sequence),
@@ -7834,6 +7877,17 @@ impl SharedRedb {
         self.finish_async_checkpoint_if_quiescent()
     }
 
+    /// Makes this store's retained extents resolvable for its history stubs.
+    pub(super) fn register_history_resolver(&self, database_id: DatabaseId) {
+        self.history_resolver.get_or_init(|| {
+            crate::history_stub::HistoryResolver::register(
+                database_id,
+                &self.path,
+                Arc::clone(&self.journal_media),
+            )
+        });
+    }
+
     /// Waits for the background sealer, if one is running.
     pub(super) fn join_journal_sealer(&self) {
         let handle = match self.journal_sealer.lock() {
@@ -8207,18 +8261,16 @@ pub(crate) fn read_administration_tail(
     let commits = transaction.open_table(COMMITS).map_err(table_error)?;
     let command = match commits.last().map_err(precommit_storage_error)? {
         None => None,
-        Some((_, encoded)) => {
-            match riffdb_storage_api::decode_command_segment_v1(encoded.value()) {
-                Ok(segment) => Some(segment.value().last_administration_sequence()),
-                Err(error)
-                    if error.kind()
-                        == riffdb_storage_api::DurableCodecErrorKind::UnexpectedRecordType =>
-                {
-                    None
-                }
-                Err(error) => return Err(crate::error::codec_error(error)),
+        Some((_, encoded)) => match crate::history_stub::decode_segment_value(encoded.value()) {
+            Ok(segment) => Some(segment.value().last_administration_sequence()),
+            Err(error)
+                if error.kind()
+                    == riffdb_storage_api::DurableCodecErrorKind::UnexpectedRecordType =>
+            {
+                None
             }
-        }
+            Err(error) => return Err(crate::error::codec_error(error)),
+        },
     };
     match (physical, command) {
         (Some(physical), Some(command)) if physical == command => {

@@ -28,6 +28,7 @@ impl SharedRedb {
                 crate::hooks::RedbCheckpointTestPoint::BeforeMaterialization,
             );
         }
+        self.register_history_resolver(batch.database_id);
         let mut transaction = self.database.begin_write().map_err(transaction_error)?;
         transaction.set_two_phase_commit(false);
         transaction
@@ -117,11 +118,38 @@ impl SharedRedb {
                     // Only the non-recursive history writer may stage it.
                     continue;
                 }
-                crate::journal::apply_validated_composite_mutation(&transaction, mutation)
+                // A command segment is written as a history stub naming the
+                // retained frame (ADR-0263 Amendment 3); every other row as is.
+                if let Some(stub) = segment_stub(frame, mutation)? {
+                    crate::journal::apply_byte_mutation_parts(
+                        &transaction,
+                        crate::layout::COMMITS,
+                        mutation.key(),
+                        Some(&stub),
+                        None,
+                    )
                     .map_err(journal_io_error)?;
+                } else {
+                    crate::journal::apply_validated_composite_mutation(&transaction, mutation)
+                        .map_err(journal_io_error)?;
+                }
             }
             if let Some(advance) = advance {
-                advance.stage(&transaction)?;
+                if frame.encoded.records_changelog() {
+                    advance.stage_stub(
+                        &transaction,
+                        &frame_stub(
+                            frame,
+                            crate::history_stub::StubKind::Receipt,
+                            Default::default(),
+                        )
+                        .encode()?,
+                    )?;
+                } else {
+                    // Only a frame that records its binding can re-derive its
+                    // receipt, so any other keeps the receipt bytes.
+                    advance.stage(&transaction)?;
+                }
             }
             transition_count = transition_count
                 .checked_add(usize::from(frame.transition_count))
@@ -170,4 +198,52 @@ impl SharedRedb {
         crate::changelog_v3_journal::recovery_crash_edge("checkpoint-committed");
         Ok(())
     }
+}
+
+fn frame_stub(
+    frame: &super::ValidatedCheckpointFrame,
+    kind: crate::history_stub::StubKind,
+    summary: crate::history_stub::SegmentSummary,
+) -> crate::history_stub::HistoryStub {
+    crate::history_stub::HistoryStub {
+        kind,
+        database_id: frame.database_id,
+        generation: frame.extent_generation,
+        placement: frame.placement,
+        summary,
+    }
+}
+
+/// The history stub for a command segment the frame inserts, or `None` for
+/// any other mutation (and for a COMMITS change that is not a fresh insert,
+/// which keeps its exact bytes).
+fn segment_stub(
+    frame: &super::ValidatedCheckpointFrame,
+    mutation: &riffdb_storage_api::CompositeMutationV1,
+) -> Result<Option<Vec<u8>>, StorageError> {
+    let (riffdb_storage_api::CompositeTableV1::Commits, Some(value), None) =
+        (mutation.table(), mutation.value(), mutation.expected_hash())
+    else {
+        return Ok(None);
+    };
+    let segment = match riffdb_storage_api::decode_command_segment_v1(value) {
+        Ok(segment) => segment.into_parts().0,
+        Err(error)
+            if error.kind() == riffdb_storage_api::DurableCodecErrorKind::UnexpectedRecordType =>
+        {
+            return Ok(None);
+        }
+        Err(_) => return Err(storage_error(StorageErrorKind::CorruptData)),
+    };
+    let summary = crate::history_stub::SegmentSummary {
+        first_commit_sequence: Some(segment.first_commit_sequence()),
+        last_commit_sequence: Some(segment.last_commit_sequence()),
+        terminal_administration_sequence: Some(segment.last_administration_sequence()),
+        command_count: u32::try_from(segment.commands().len())
+            .map_err(|_| storage_error(StorageErrorKind::LimitExceeded))?,
+        segment_digest: *segment.segment_digest().as_bytes(),
+    };
+    frame_stub(frame, crate::history_stub::StubKind::Segment, summary)
+        .encode()
+        .map(Some)
 }

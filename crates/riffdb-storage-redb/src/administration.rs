@@ -412,7 +412,7 @@ where
     let Some((_, value)) = commits.last().map_err(precommit_storage_error)? else {
         return Ok(None);
     };
-    let Ok(segment) = riffdb_storage_api::decode_command_segment_v1(value.value()) else {
+    let Ok(segment) = crate::history_stub::decode_segment_value(value.value()) else {
         return Ok(None);
     };
     let Some(command) = segment.value().commands().last() else {

@@ -76,6 +76,18 @@ const fn extent_file_bytes(data_bytes: usize) -> usize {
     EXTENT_DATA_OFFSET + data_bytes
 }
 
+/// Where a frame lands in its extent when `used_bytes` data bytes precede it.
+pub(crate) fn frame_placement_after(
+    used_bytes: usize,
+    frame: &EncodedJournalFrame,
+) -> Option<FramePlacement> {
+    Some(FramePlacement {
+        position: EXTENT_DATA_OFFSET.checked_add(used_bytes)?,
+        padded_len: extent_frame_bytes(frame.as_bytes().len())?,
+        frame_hash: frame.frame_hash(),
+    })
+}
+
 /// Data bytes an extent already holds when its complete tail is at
 /// `complete_bytes` (zero for an absent extent).
 pub(crate) fn extent_used_bytes(complete_bytes: usize) -> usize {
@@ -846,6 +858,7 @@ impl JournalMutationBuffer {
                 .checked_sub(self.selected_command_segment_bytes)
                 .and_then(|bytes| bytes.checked_add(self.raw_command_segment_bytes))
                 .ok_or(JournalCodecError::LimitExceeded)?,
+            records_changelog: changelog.is_some(),
         })
     }
 }
@@ -1715,6 +1728,7 @@ impl JournalFrame {
             selected_command_segment_bytes: 0,
             raw_command_segment_bytes: 0,
             raw_equivalent_frame_bytes: total_len,
+            records_changelog: header_bytes == FRAME_HEADER_BYTES && self.changelog.is_some(),
         })
     }
 
@@ -1954,9 +1968,16 @@ pub(crate) struct EncodedJournalFrame {
     selected_command_segment_bytes: usize,
     raw_command_segment_bytes: usize,
     raw_equivalent_frame_bytes: usize,
+    /// Whether the frame records its changelog binding (version 3 with one).
+    records_changelog: bool,
 }
 
 impl EncodedJournalFrame {
+    /// Whether the frame records the binding its receipt re-derives with.
+    pub(crate) const fn records_changelog(&self) -> bool {
+        self.records_changelog
+    }
+
     pub(crate) fn as_bytes(&self) -> &[u8] {
         &self.bytes
     }
@@ -2209,6 +2230,8 @@ pub(crate) struct JournalLane {
     sender: Option<mpsc::SyncSender<JournalSubmission>>,
     worker: Option<thread::JoinHandle<()>>,
     durable_flushes: Arc<AtomicU64>,
+    /// Generation of the extent this lane appends to; a history stub names it.
+    generation: u64,
 }
 
 impl JournalLane {
@@ -2232,6 +2255,7 @@ impl JournalLane {
         #[cfg(feature = "test-fixtures")] controller: Option<crate::hooks::RedbTestController>,
     ) -> Result<Self, JournalIoError> {
         let state = initialize_or_validate_file_with_media(media, path, header)?;
+        let generation = state.header.generation;
         let file = media
             .open_read_write(path)
             .map_err(|_| JournalIoError::Io)?;
@@ -2256,7 +2280,13 @@ impl JournalLane {
             sender: Some(sender),
             worker: Some(worker),
             durable_flushes,
+            generation,
         })
+    }
+
+    /// Generation of the extent this lane appends to.
+    pub(crate) const fn generation(&self) -> u64 {
+        self.generation
     }
 
     pub(crate) fn submit(
@@ -3194,6 +3224,105 @@ struct ExtentWalkResult {
     footer: bool,
 }
 
+/// Validates one complete padded physical frame read at `position` of an
+/// extent of `generation`. `None` means its footer is not current: a torn tail.
+fn decode_physical_frame(
+    physical: &[u8],
+    generation: u64,
+    position: usize,
+    encoded_len: usize,
+) -> Result<Option<(JournalFrame, [u8; HASH_BYTES])>, JournalIoError> {
+    let padded_len = physical.len();
+    let frame_footer = padded_len
+        .checked_sub(EXTENT_FRAME_FOOTER_BYTES)
+        .filter(|footer| *footer >= EXTENT_FRAME_HEADER_BYTES + encoded_len)
+        .ok_or(JournalIoError::Corrupt)?;
+    let footer_is_current = physical[frame_footer..frame_footer + 8] == EXTENT_FRAME_FOOTER_MAGIC
+        && read_u64(physical, frame_footer + 8).ok() == Some(generation)
+        && usize::try_from(read_u64(physical, frame_footer + 16).unwrap_or(0)).ok()
+            == Some(position)
+        && physical[frame_footer + 24..frame_footer + 56] == physical[36..68]
+        && physical[frame_footer + 56..frame_footer + 64]
+            .iter()
+            .all(|byte| *byte == 0);
+    if !footer_is_current {
+        return Ok(None);
+    }
+    if physical[100..EXTENT_FRAME_HEADER_BYTES]
+        .iter()
+        .any(|byte| *byte != 0)
+        || physical[EXTENT_FRAME_HEADER_BYTES + encoded_len..frame_footer]
+            .iter()
+            .any(|byte| *byte != 0)
+        || extent_frame_checksum(physical).as_slice() != &physical[68..100]
+    {
+        return Err(JournalIoError::Corrupt);
+    }
+    let logical = &physical[EXTENT_FRAME_HEADER_BYTES..EXTENT_FRAME_HEADER_BYTES + encoded_len];
+    let (frame, frame_hash) = JournalFrame::decode(logical).map_err(|_| JournalIoError::Corrupt)?;
+    if frame_hash.as_slice() != &physical[36..68] {
+        return Err(JournalIoError::Corrupt);
+    }
+    Ok(Some((frame, frame_hash)))
+}
+
+/// Reads the one retained frame a history stub names (ADR-0263 Amendment 3):
+/// the extent of `generation` at any of its names, the complete physical frame
+/// at `position`, validated like a scan and required to hash to `frame_hash`.
+pub(crate) fn read_retained_frame_with_media(
+    media: &dyn JournalMedia,
+    database_path: &Path,
+    database_id: DatabaseId,
+    placement: FramePlacement,
+    generation: u64,
+) -> Result<JournalFrame, JournalIoError> {
+    for path in [
+        sealed_journal_path(database_path, generation),
+        journal_path(database_path),
+        checkpoint_journal_path(database_path),
+        sealing_journal_path(database_path),
+    ] {
+        let mut file = match media.open_read(&path) {
+            Ok(file) => file,
+            Err(error) if error.kind() == io::ErrorKind::NotFound => continue,
+            Err(_) => return Err(JournalIoError::Io),
+        };
+        let extent = read_selected_extent_header(&mut file, false)?;
+        if extent.generation != generation {
+            continue;
+        }
+        // The anchor may lag a materialized frame until the extent is sealed;
+        // the frame hash, not the anchor, proves the stub's frame.
+        if extent.logical.database_id() != database_id || placement.position < EXTENT_DATA_OFFSET {
+            return Err(JournalIoError::Corrupt);
+        }
+        let mut physical = vec![0_u8; placement.padded_len];
+        file.read_exact_at(&mut physical, placement.position)
+            .map_err(|_| JournalIoError::Corrupt)?;
+        if physical[..8] != EXTENT_FRAME_MAGIC
+            || read_u64(&physical, 12).ok() != Some(generation)
+            || read_u16(&physical, 8).ok() != Some(EXTENT_FRAME_VERSION)
+            || usize::try_from(read_u64(&physical, 20).unwrap_or(0)).ok()
+                != Some(placement.position)
+            || usize::try_from(read_u32(&physical, 32).unwrap_or(0)).ok()
+                != Some(placement.padded_len)
+        {
+            return Err(JournalIoError::Corrupt);
+        }
+        let encoded_len =
+            usize::try_from(read_u32(&physical, 28).map_err(|_| JournalIoError::Corrupt)?)
+                .map_err(|_| JournalIoError::Corrupt)?;
+        let (frame, frame_hash) =
+            decode_physical_frame(&physical, generation, placement.position, encoded_len)?
+                .ok_or(JournalIoError::Corrupt)?;
+        if frame_hash != placement.frame_hash || frame.database_id() != database_id {
+            return Err(JournalIoError::Corrupt);
+        }
+        return Ok(frame);
+    }
+    Err(JournalIoError::Corrupt)
+}
+
 fn walk_extent_frames(
     file: &mut MediaFile,
     extent: &ExtentHeader,
@@ -3269,32 +3398,12 @@ fn walk_extent_frames(
         let mut physical = vec![0_u8; padded_len];
         file.read_exact_at(&mut physical, position)
             .map_err(|_| JournalIoError::Io)?;
-        let footer = padded_len - EXTENT_FRAME_FOOTER_BYTES;
-        let footer_is_current = physical[footer..footer + 8] == EXTENT_FRAME_FOOTER_MAGIC
-            && read_u64(&physical, footer + 8).ok() == Some(extent.generation)
-            && usize::try_from(read_u64(&physical, footer + 16).unwrap_or(0)).ok()
-                == Some(position)
-            && physical[footer + 24..footer + 56] == physical_header[36..68]
-            && physical[footer + 56..footer + 64]
-                .iter()
-                .all(|byte| *byte == 0);
-        if !footer_is_current {
+        let Some((frame, frame_hash)) =
+            decode_physical_frame(&physical, extent.generation, position, encoded_len)?
+        else {
             incomplete_tail = true;
             break;
-        }
-        if physical[100..EXTENT_FRAME_HEADER_BYTES]
-            .iter()
-            .any(|byte| *byte != 0)
-            || physical[EXTENT_FRAME_HEADER_BYTES + encoded_len..footer]
-                .iter()
-                .any(|byte| *byte != 0)
-            || extent_frame_checksum(&physical).as_slice() != &physical[68..100]
-        {
-            return Err(JournalIoError::Corrupt);
-        }
-        let logical = &physical[EXTENT_FRAME_HEADER_BYTES..EXTENT_FRAME_HEADER_BYTES + encoded_len];
-        let (frame, frame_hash) =
-            JournalFrame::decode(logical).map_err(|_| JournalIoError::Corrupt)?;
+        };
         if walk == ExtentWalk::FromOrigin && origin.is_none() {
             previous_hash = frame.previous_hash();
             previous_sequence = frame.predecessor_sequence();
@@ -3681,7 +3790,7 @@ fn read_redb_frontier(
             Some((key, value)) => {
                 let physical = decode_application_sequence_key(key.value())
                     .map_err(|_| JournalIoError::Corrupt)?;
-                match riffdb_storage_api::decode_command_segment_v1(value.value()) {
+                match crate::history_stub::decode_segment_value(value.value()) {
                     Ok(segment) => {
                         let segment = segment.value();
                         if segment.first_commit_sequence() != physical {
@@ -4141,7 +4250,7 @@ fn apply_byte_mutation(
     )
 }
 
-fn apply_byte_mutation_parts(
+pub(crate) fn apply_byte_mutation_parts(
     transaction: &redb::WriteTransaction,
     definition: TableDefinition<&[u8], &[u8]>,
     key: &[u8],
@@ -4151,10 +4260,20 @@ fn apply_byte_mutation_parts(
     let mut table = transaction
         .open_table(definition)
         .map_err(|_| JournalIoError::Corrupt)?;
-    let current = table
+    let mut current = table
         .get(key)
         .map_err(|_| JournalIoError::Corrupt)?
         .map(|value| value.value().to_vec());
+    if redb::TableHandle::name(&definition) == redb::TableHandle::name(&COMMITS)
+        && let Some(stored) = current.as_deref()
+    {
+        // An expected hash binds a history stub's resolved segment (ADR-0263 C3).
+        current = Some(
+            crate::history_stub::resolve_commits_value(stored)
+                .map_err(|_| JournalIoError::Corrupt)?
+                .into_owned(),
+        );
+    }
     validate_before_image_parts(current.as_deref(), expected_hash)?;
     match value {
         Some(value) => {
@@ -4592,6 +4711,12 @@ fn validate_component(bytes: &[u8]) -> Result<(), JournalCodecError> {
         return Err(JournalCodecError::LimitExceeded);
     }
     Ok(())
+}
+
+/// The journal's SHA-256 content digest, for storage encodings that must not
+/// take their own hashing dependency (history stubs, ADR-0263).
+pub(crate) fn content_digest(bytes: &[u8]) -> [u8; HASH_BYTES] {
+    digest(bytes)
 }
 
 fn digest(bytes: &[u8]) -> [u8; HASH_BYTES] {
