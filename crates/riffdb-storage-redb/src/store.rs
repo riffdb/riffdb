@@ -1582,6 +1582,8 @@ struct JournalRuntime {
     suffix_commands: usize,
     suffix_audits: usize,
     suffix_bytes: usize,
+    /// Physical bytes the active extent holds: retained frames before its
+    /// anchor plus the padded suffix frames after it.
     suffix_physical_bytes: usize,
     suffix_frames: Vec<ValidatedCheckpointFrame>,
     unpublished_transitions: usize,
@@ -8051,7 +8053,7 @@ impl SharedRedb {
             self.fence_writes();
             return Err(storage_error(StorageErrorKind::InvariantViolation));
         }
-        if let Err(error) = crate::journal::reset_journal_with_media(
+        if let Err(error) = crate::journal::advance_journal_anchor_with_media(
             self.journal_media.as_ref(),
             &crate::journal::journal_path(&self.path),
             &crate::journal::JournalFileHeader::with_frontiers(

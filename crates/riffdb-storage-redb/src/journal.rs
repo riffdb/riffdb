@@ -47,6 +47,11 @@ const FOOTER_MAGIC: [u8; 8] = *b"RDBEND01";
 const EXTENT_MAGIC: [u8; 8] = *b"RDBJEX03";
 const EXTENT_FRAME_MAGIC: [u8; 8] = *b"RDBJPF03";
 const EXTENT_FRAME_FOOTER_MAGIC: [u8; 8] = *b"RDBJPE03";
+/// Physical frame format inside an extent. It is independent of the extent
+/// header format: header version 4 changed only the header slots.
+const EXTENT_FRAME_VERSION: u16 = 3;
+/// Header version 3: no revision and no anchor; every frame is suffix.
+const EXTENT_HEADER_VERSION_V3: u16 = 3;
 const EXTENT_HEADER_SLOT_BYTES: usize = 4 * 1024;
 const EXTENT_HEADER_SLOT_COUNT: usize = 2;
 const EXTENT_DATA_OFFSET: usize = EXTENT_HEADER_SLOT_BYTES * EXTENT_HEADER_SLOT_COUNT;
@@ -67,6 +72,12 @@ const EXTENT_FILE_BYTES: usize = EXTENT_DATA_OFFSET + EXTENT_DATA_BYTES;
 
 const fn extent_file_bytes(data_bytes: usize) -> usize {
     EXTENT_DATA_OFFSET + data_bytes
+}
+
+/// Data bytes an extent already holds when its complete tail is at
+/// `complete_bytes` (zero for an absent extent).
+pub(crate) fn extent_used_bytes(complete_bytes: usize) -> usize {
+    complete_bytes.saturating_sub(EXTENT_DATA_OFFSET)
 }
 
 fn known_extent_data_bytes(data_bytes: usize) -> bool {
@@ -1065,6 +1076,14 @@ struct ExtentHeader {
     /// Stamped data capacity: the configured size, or the legacy size of an
     /// extent written before ADR-0263 that recovery must still read.
     data_bytes: usize,
+    /// Header rewrite count within one generation. The selected slot is the
+    /// highest (generation, revision); a crash while writing the other slot
+    /// falls back to the previous header.
+    revision: u64,
+    /// Physical position of the first frame after `logical`'s checkpoint. The
+    /// frames before it are materialized history that the extent retains
+    /// (ADR-0263); recovery scans from here.
+    anchor_position: usize,
 }
 
 impl ExtentHeader {
@@ -1074,7 +1093,37 @@ impl ExtentHeader {
             generation: 1,
             slot: 0,
             data_bytes: EXTENT_DATA_BYTES,
+            revision: 0,
+            anchor_position: EXTENT_DATA_OFFSET,
         }
+    }
+
+    /// The same generation with its checkpoint anchor advanced to
+    /// `anchor_position`, written to the other slot at the next revision.
+    /// Frames before the anchor stay in place as retained history.
+    fn anchored(
+        &self,
+        logical: JournalFileHeader,
+        anchor_position: usize,
+    ) -> Result<Self, JournalIoError> {
+        if anchor_position < self.anchor_position
+            || anchor_position > extent_file_bytes(self.data_bytes)
+            || !anchor_position.is_multiple_of(EXTENT_FRAME_ALIGNMENT)
+            || logical.database_id() != self.logical.database_id()
+        {
+            return Err(JournalIoError::Corrupt);
+        }
+        Ok(Self {
+            logical,
+            generation: self.generation,
+            slot: if self.slot == 0 { 1 } else { 0 },
+            data_bytes: self.data_bytes,
+            revision: self
+                .revision
+                .checked_add(1)
+                .ok_or(JournalIoError::Corrupt)?,
+            anchor_position,
+        })
     }
 
     fn successor(&self, logical: JournalFileHeader) -> Result<Self, JournalIoError> {
@@ -1086,6 +1135,8 @@ impl ExtentHeader {
                 .ok_or(JournalIoError::Corrupt)?,
             slot: if self.slot == 0 { 1 } else { 0 },
             data_bytes: self.data_bytes,
+            revision: 0,
+            anchor_position: EXTENT_DATA_OFFSET,
         })
     }
 
@@ -1093,6 +1144,12 @@ impl ExtentHeader {
         let mut bytes = [0_u8; EXTENT_HEADER_SLOT_BYTES];
         bytes[..8].copy_from_slice(&EXTENT_MAGIC);
         bytes[8..10].copy_from_slice(&EXTENT_FORMAT_VERSION.to_be_bytes());
+        bytes[104..112].copy_from_slice(&self.revision.to_be_bytes());
+        bytes[112..120].copy_from_slice(
+            &u64::try_from(self.anchor_position)
+                .expect("extent anchor is bounded")
+                .to_be_bytes(),
+        );
         bytes[10..12].copy_from_slice(&self.slot.to_be_bytes());
         bytes[12..16].copy_from_slice(
             &u32::try_from(EXTENT_HEADER_SLOT_BYTES)
@@ -1135,8 +1192,9 @@ impl ExtentHeader {
         if bytes.len() != EXTENT_HEADER_SLOT_BYTES {
             return Err(JournalCodecError::Truncated);
         }
+        let version = read_u16(bytes, 8)?;
         if bytes[..8] != EXTENT_MAGIC
-            || read_u16(bytes, 8)? != EXTENT_FORMAT_VERSION
+            || (version != EXTENT_FORMAT_VERSION && version != EXTENT_HEADER_VERSION_V3)
             || read_u16(bytes, 10)? != expected_slot
             || usize::try_from(read_u32(bytes, 12)?).ok() != Some(EXTENT_HEADER_SLOT_BYTES)
             || usize::try_from(read_u64(bytes, 88)?).ok() != Some(EXTENT_DATA_OFFSET)
@@ -1149,12 +1207,32 @@ impl ExtentHeader {
         {
             return Err(JournalCodecError::Checksum);
         }
-        if bytes[104..EXTENT_HEADER_CHECKSUM_OFFSET]
+        let reserved_from = if version == EXTENT_HEADER_VERSION_V3 {
+            104
+        } else {
+            120
+        };
+        if bytes[reserved_from..EXTENT_HEADER_CHECKSUM_OFFSET]
             .iter()
             .any(|byte| *byte != 0)
         {
             return Err(JournalCodecError::InvalidValue);
         }
+        let data_bytes =
+            usize::try_from(read_u64(bytes, 96)?).map_err(|_| JournalCodecError::InvalidValue)?;
+        let (revision, anchor_position) = if version == EXTENT_HEADER_VERSION_V3 {
+            (0, EXTENT_DATA_OFFSET)
+        } else {
+            let anchor_position = usize::try_from(read_u64(bytes, 112)?)
+                .map_err(|_| JournalCodecError::InvalidValue)?;
+            if anchor_position < EXTENT_DATA_OFFSET
+                || anchor_position > extent_file_bytes(data_bytes)
+                || !anchor_position.is_multiple_of(EXTENT_FRAME_ALIGNMENT)
+            {
+                return Err(JournalCodecError::InvalidValue);
+            }
+            (read_u64(bytes, 104)?, anchor_position)
+        };
         let database_id = DatabaseId::from_bytes(read_array::<16>(bytes, 16)?)
             .map_err(|_| JournalCodecError::InvalidValue)?;
         let generation = read_u64(bytes, 32)?;
@@ -1177,8 +1255,9 @@ impl ExtentHeader {
             ),
             generation,
             slot: expected_slot,
-            data_bytes: usize::try_from(read_u64(bytes, 96)?)
-                .map_err(|_| JournalCodecError::InvalidValue)?,
+            data_bytes,
+            revision,
+            anchor_position,
         })
     }
 }
@@ -1949,7 +2028,7 @@ impl EncodedExtentFrame {
         let position_u64 = u64::try_from(position).map_err(|_| JournalIoError::Capacity)?;
         let mut bytes = vec![0_u8; padded_len];
         bytes[..8].copy_from_slice(&EXTENT_FRAME_MAGIC);
-        bytes[8..10].copy_from_slice(&EXTENT_FORMAT_VERSION.to_be_bytes());
+        bytes[8..10].copy_from_slice(&EXTENT_FRAME_VERSION.to_be_bytes());
         bytes[10..12].copy_from_slice(
             &u16::try_from(EXTENT_FRAME_HEADER_BYTES)
                 .expect("physical frame header is bounded")
@@ -2269,6 +2348,7 @@ fn journal_worker(
     #[cfg(feature = "test-fixtures")] controller: Option<crate::hooks::RedbTestController>,
 ) {
     let generation = state.header.generation;
+    let file_bytes = extent_file_bytes(state.header.data_bytes);
     let mut next_position = state.next_position;
     let mut deferred = None;
     loop {
@@ -2338,7 +2418,7 @@ fn journal_worker(
                     // zero header at the new tail in the same durability fence
                     // so recovery cannot mistake stale frame interior bytes for
                     // a torn current-generation frame.
-                    if tail_position < EXTENT_FILE_BYTES {
+                    if tail_position < file_bytes {
                         file.write_all_at(&[0_u8; EXTENT_FRAME_HEADER_BYTES], tail_position)
                             .map_err(|_| JournalIoError::Io)?;
                     }
@@ -2564,6 +2644,8 @@ fn normalize_extent_capacity_to(
             .ok_or(JournalIoError::Corrupt)?,
         slot: 0,
         data_bytes,
+        revision: 0,
+        anchor_position: EXTENT_DATA_OFFSET,
     };
     create_extent_file_with_media(media, &replacement, &header)?;
     media
@@ -2598,12 +2680,12 @@ fn read_selected_extent_header(file: &mut MediaFile) -> Result<ExtentHeader, Jou
             valid.push(header);
         }
     }
-    valid.sort_by_key(|header| header.generation);
+    valid.sort_by_key(|header| (header.generation, header.revision));
     let selected = valid.pop().ok_or(JournalIoError::Corrupt)?;
-    if valid
-        .last()
-        .is_some_and(|header| header.generation == selected.generation && header != &selected)
-        || actual_len != extent_file_bytes(selected.data_bytes)
+    if valid.last().is_some_and(|header| {
+        (header.generation, header.revision) == (selected.generation, selected.revision)
+            && header != &selected
+    }) || actual_len != extent_file_bytes(selected.data_bytes)
     {
         return Err(JournalIoError::Corrupt);
     }
@@ -2649,7 +2731,7 @@ fn scan_extent_with_media(
     let mut previous_hash = extent.logical.checkpoint_frame_hash();
     let mut previous_sequence = extent.logical.checkpoint_sequence();
     let mut previous_administration_sequence = extent.logical.checkpoint_administration_sequence();
-    let mut position = EXTENT_DATA_OFFSET;
+    let mut position = extent.anchor_position;
     let mut transition_count = 0_usize;
     let mut command_count = 0_usize;
     let mut audit_count = 0_usize;
@@ -2673,7 +2755,7 @@ fn scan_extent_with_media(
         }
         if generation != extent.generation
             || read_u16(&physical_header, 8).map_err(|_| JournalIoError::Corrupt)?
-                != EXTENT_FORMAT_VERSION
+                != EXTENT_FRAME_VERSION
             || usize::from(read_u16(&physical_header, 10).map_err(|_| JournalIoError::Corrupt)?)
                 != EXTENT_FRAME_HEADER_BYTES
             || usize::try_from(read_u64(&physical_header, 20).map_err(|_| JournalIoError::Corrupt)?)
@@ -3027,7 +3109,7 @@ pub(crate) fn recover_journal_path_with_media(
         }
         #[cfg(test)]
         crate::changelog_v3_journal::recovery_crash_edge("before-reclaim");
-        reset_journal_with_media(
+        advance_journal_anchor_with_media(
             media,
             path,
             &JournalFileHeader::with_frontiers(
@@ -3060,7 +3142,7 @@ pub(crate) fn recover_journal_path_with_media(
         && checkpoint_frontier.1 <= redb_frontier.1
         && checkpoint_frontier != redb_frontier
     {
-        return reset_journal_with_media(
+        return advance_journal_anchor_with_media(
             media,
             path,
             &JournalFileHeader::with_frontiers(
@@ -3080,7 +3162,7 @@ pub(crate) fn recover_journal_path_with_media(
     } else {
         return Err(JournalIoError::Corrupt);
     }
-    reset_journal_with_media(
+    advance_journal_anchor_with_media(
         media,
         path,
         &JournalFileHeader::with_frontiers(
@@ -3790,6 +3872,55 @@ pub(crate) const fn byte_table_definition(
         JournalTable::VectorObservations => Some(VECTOR_OBSERVATIONS),
         JournalTable::VectorEvidenceIndex => Some(VECTOR_EVIDENCE_INDEX),
     }
+}
+
+/// Advances the extent's checkpoint anchor to its complete tail, keeping every
+/// frame before it in place as retained history (ADR-0263).
+///
+/// `header` names the checkpoint the anchor now binds: its hash must be the
+/// tail frame's, and its frontiers at or after the tail's, since direct engine
+/// writes can advance the engine frontier without a frame. An anchor that is
+/// already exact writes nothing, so a read-only open leaves the selected header
+/// (and any clean-close certificate over it, ADR-0157) unchanged. Otherwise the
+/// other slot is written at the next revision and synced; a crash leaves the
+/// previous header selected, and recovery rescans the older suffix.
+pub(crate) fn advance_journal_anchor_with_media(
+    media: &dyn JournalMedia,
+    path: &Path,
+    header: &JournalFileHeader,
+) -> Result<(), JournalIoError> {
+    let (_, tail, state) =
+        scan_extent_with_media(media, path, Some(header.database_id()), |_| Ok(()))?;
+    if header.checkpoint_frame_hash() != tail.last_hash
+        || header.checkpoint_sequence() < tail.last_sequence
+        || header.checkpoint_administration_sequence() < tail.last_administration_sequence
+    {
+        return Err(JournalIoError::Corrupt);
+    }
+    if state.header.logical == *header
+        && state.header.anchor_position == tail.complete_bytes
+        && !tail.incomplete_tail
+    {
+        return Ok(());
+    }
+    let anchored = state.header.anchored(header.clone(), tail.complete_bytes)?;
+    let mut file = media
+        .open_read_write(path)
+        .map_err(|_| JournalIoError::Io)?;
+    if tail.incomplete_tail {
+        // A torn terminal frame stays in place under the same generation. Fence
+        // it before the anchor names its position, so no later scan mistakes it
+        // for a complete frame or an incomplete tail after the anchor.
+        file.write_all_at(&[0_u8; EXTENT_FRAME_HEADER_BYTES], tail.complete_bytes)
+            .and_then(|()| file.sync_data())
+            .map_err(|_| JournalIoError::Io)?;
+    }
+    file.write_all_at(
+        &anchored.encode(),
+        usize::from(anchored.slot) * EXTENT_HEADER_SLOT_BYTES,
+    )
+    .and_then(|()| file.sync_data())
+    .map_err(|_| JournalIoError::Io)
 }
 
 pub(crate) fn reset_journal(path: &Path, header: &JournalFileHeader) -> Result<(), JournalIoError> {
@@ -4807,6 +4938,60 @@ mod tests {
         assert_eq!(decoded.changelog(), Some(&sample_changelog_binding()));
     }
 
+    fn sample_extent_header(version: u16) -> [u8; EXTENT_HEADER_SLOT_BYTES] {
+        let logical = JournalFileHeader::new(database_id(33), Some(sequence(9)), [0x33; 32]);
+        let header = ExtentHeader::initial(logical.clone());
+        if version == EXTENT_HEADER_VERSION_V3 {
+            let mut bytes = header.encode();
+            bytes[8..10].copy_from_slice(&EXTENT_HEADER_VERSION_V3.to_be_bytes());
+            bytes[104..120].fill(0);
+            let checksum = digest(&bytes[..EXTENT_HEADER_CHECKSUM_OFFSET]);
+            bytes[EXTENT_HEADER_CHECKSUM_OFFSET..].copy_from_slice(&checksum);
+            return bytes;
+        }
+        header
+            .anchored(logical, EXTENT_DATA_OFFSET + 3 * EXTENT_FRAME_ALIGNMENT)
+            .expect("anchored header")
+            .encode()
+    }
+
+    // req: REC-005
+    #[test]
+    fn extent_header_encodings_match_their_compatibility_fixtures() {
+        let v3 = include_str!("../../../fixtures/compatibility/journal-extent-header-v3.hex");
+        let v4 = include_str!("../../../fixtures/compatibility/journal-extent-header-v4.hex");
+        let encoded_v3 = sample_extent_header(EXTENT_HEADER_VERSION_V3);
+        let encoded_v4 = sample_extent_header(EXTENT_FORMAT_VERSION);
+        if std::env::var_os("RIFFDB_REGENERATE_JOURNAL_FRAME_FIXTURES").is_some() {
+            let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../fixtures/compatibility");
+            std::fs::write(
+                root.join("journal-extent-header-v3.hex"),
+                lower_hex(&encoded_v3) + "\n",
+            )
+            .expect("write v3 header fixture");
+            std::fs::write(
+                root.join("journal-extent-header-v4.hex"),
+                lower_hex(&encoded_v4) + "\n",
+            )
+            .expect("write v4 header fixture");
+            return;
+        }
+        assert_eq!(lower_hex(&encoded_v3), v3.trim());
+        assert_eq!(lower_hex(&encoded_v4), v4.trim());
+        let legacy = ExtentHeader::decode(&hex_bytes(v3), 0).expect("decode v3 header");
+        assert_eq!(
+            (legacy.revision, legacy.anchor_position),
+            (0, EXTENT_DATA_OFFSET)
+        );
+        let current = ExtentHeader::decode(&hex_bytes(v4), 1).expect("decode v4 header");
+        assert_eq!(
+            (current.revision, current.anchor_position),
+            (1, EXTENT_DATA_OFFSET + 3 * EXTENT_FRAME_ALIGNMENT)
+        );
+        assert_eq!(current.generation, legacy.generation);
+        assert_eq!(current.logical, legacy.logical);
+    }
+
     // req: REC-005
     #[test]
     fn a_non_canonical_changelog_binding_block_is_refused() {
@@ -5088,8 +5273,9 @@ mod tests {
         );
     }
 
+    // req: REC-005
     #[test]
-    fn recovery_replays_a_complete_suffix_and_reclaims_it() {
+    fn recovery_replays_a_complete_suffix_and_anchors_after_it() {
         let database_path = TestPath::new("recovery-replay");
         let database = create_database(&database_path.0);
         let database_id = database_id(13);
@@ -5107,12 +5293,127 @@ mod tests {
             Some(vec![0x20])
         );
         let (_, tail) = scan_journal(&journal_path(&database_path.0), database_id, |_| Ok(()))
-            .expect("scan reclaimed journal")
+            .expect("scan anchored journal")
             .expect("journal exists");
         assert_eq!(tail.last_sequence, Some(sequence(1)));
-        assert_eq!(tail.command_count, 0);
-        assert_eq!(tail.complete_bytes, EXTENT_DATA_OFFSET);
+        assert_eq!(tail.command_count, 0, "no suffix remains after the anchor");
         assert!(!tail.incomplete_tail);
+        let anchored = inspect_extent(&journal_path(&database_path.0)).expect("anchored extent");
+        assert_eq!(
+            anchored.header.anchor_position,
+            EXTENT_DATA_OFFSET + frame_physical_bytes(&frame),
+            "the replayed frame is retained before the anchor"
+        );
+        assert_eq!(anchored.header.revision, 1);
+        recover_journal(&database, &database_path.0, database_id).expect("recover again");
+        assert_eq!(
+            inspect_extent(&journal_path(&database_path.0)).expect("unchanged"),
+            anchored,
+            "an exact anchor is not rewritten"
+        );
+    }
+
+    // req: REC-005
+    #[test]
+    fn frames_appended_after_an_anchor_are_retained_through_a_second_recovery() {
+        let database_path = TestPath::new("recovery-anchor-twice");
+        let database = create_database(&database_path.0);
+        let database_id = database_id(16);
+        let first = recovery_frame(database_id).encode().expect("encode first");
+        write_recovery_journal(&database_path.0, database_id, &first, None);
+        recover_journal(&database, &database_path.0, database_id).expect("first recovery");
+        let path = journal_path(&database_path.0);
+        let first_anchor = inspect_extent(&path).expect("first anchor").header;
+
+        let second = JournalFrame::new(
+            database_id,
+            sequence(2),
+            sequence(2),
+            1,
+            first.frame_hash(),
+            vec![
+                JournalMutation::put(
+                    JournalTable::Commits,
+                    crate::keys::encode_application_sequence_key(sequence(2)).to_vec(),
+                    vec![0x42],
+                )
+                .expect("commit mutation"),
+                JournalMutation::put(JournalTable::Entities, vec![0x11], vec![0x21])
+                    .expect("entity mutation"),
+            ],
+        )
+        .expect("second frame")
+        .encode()
+        .expect("encode second");
+        write_physical_frame(&path, &second, false);
+        recover_journal(&database, &database_path.0, database_id).expect("second recovery");
+
+        let anchored = inspect_extent(&path).expect("second anchor").header;
+        assert_eq!(
+            anchored.generation, first_anchor.generation,
+            "no generation bump"
+        );
+        assert_eq!(anchored.revision, first_anchor.revision + 1);
+        assert_eq!(
+            anchored.anchor_position,
+            first_anchor.anchor_position + frame_physical_bytes(&second),
+            "both frames stay in the extent, before the anchor"
+        );
+        assert_eq!(anchored.logical.checkpoint_sequence(), Some(sequence(2)));
+        let transaction = database.begin_read().expect("begin read");
+        let entities = transaction.open_table(ENTITIES).expect("open entities");
+        assert!(entities.get([0x11].as_slice()).expect("read").is_some());
+    }
+
+    // req: REC-005
+    #[test]
+    fn a_torn_anchored_header_falls_back_to_the_previous_revision() {
+        let database_path = TestPath::new("torn-anchor-header");
+        let database = create_database(&database_path.0);
+        let database_id = database_id(17);
+        let frame = recovery_frame(database_id).encode().expect("encode frame");
+        write_recovery_journal(&database_path.0, database_id, &frame, None);
+        let path = journal_path(&database_path.0);
+        let before = inspect_extent(&path).expect("before").header;
+        let anchored = before
+            .anchored(
+                JournalFileHeader::with_frontiers(
+                    database_id,
+                    Some(sequence(1)),
+                    None,
+                    frame.frame_hash(),
+                ),
+                EXTENT_DATA_OFFSET + frame_physical_bytes(&frame),
+            )
+            .expect("anchored")
+            .encode();
+        let mut file = OpenOptions::new()
+            .read(true)
+            .write(true)
+            .open(&path)
+            .expect("open extent");
+        write_all_at(
+            &mut file,
+            &anchored[..anchored.len() / 2],
+            EXTENT_HEADER_SLOT_BYTES,
+        )
+        .expect("write torn anchored header");
+        file.sync_data().expect("sync");
+        drop(file);
+        assert_eq!(inspect_extent(&path).expect("fallback").header, before);
+        recover_journal(&database, &database_path.0, database_id)
+            .expect("recovery replays the frame the torn anchor would have covered");
+        assert_eq!(
+            inspect_extent(&path)
+                .expect("anchored")
+                .header
+                .anchor_position,
+            EXTENT_DATA_OFFSET + frame_physical_bytes(&frame)
+        );
+    }
+
+    fn frame_physical_bytes(frame: &EncodedJournalFrame) -> usize {
+        extent_frame_bytes(frame.as_bytes().len()).expect("frame fits an extent")
     }
 
     #[test]
@@ -5244,9 +5545,19 @@ mod tests {
 
         recover_journal(&database, &database_path.0, database_id).expect("recover complete prefix");
         let (_, tail) = scan_journal(&journal_path(&database_path.0), database_id, |_| Ok(()))
-            .expect("scan reclaimed journal")
+            .expect("scan anchored journal")
             .expect("journal exists");
         assert_eq!(tail.command_count, 0);
-        assert!(!tail.incomplete_tail);
+        assert!(
+            !tail.incomplete_tail,
+            "the torn frame is fenced before the anchor names it"
+        );
+        assert_eq!(
+            inspect_extent(&journal_path(&database_path.0))
+                .expect("anchored extent")
+                .header
+                .anchor_position,
+            EXTENT_DATA_OFFSET + frame_physical_bytes(&frame)
+        );
     }
 }

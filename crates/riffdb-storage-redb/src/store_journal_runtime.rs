@@ -82,7 +82,7 @@ impl SharedRedb {
                     checkpoint_administration_sequence,
                     checkpoint_hash,
                 );
-                crate::journal::reset_journal_with_media(
+                crate::journal::advance_journal_anchor_with_media(
                     self.journal_media.as_ref(),
                     &path,
                     &header,
@@ -146,7 +146,9 @@ impl SharedRedb {
                 suffix_commands: 0,
                 suffix_audits: 0,
                 suffix_bytes: 0,
-                suffix_physical_bytes: 0,
+                // Frames before the anchor stay in the extent (ADR-0263), so
+                // physical capacity starts from the retained prefix.
+                suffix_physical_bytes: crate::journal::extent_used_bytes(tail.complete_bytes),
                 suffix_frames: Vec::new(),
                 unpublished_transitions: 0,
                 unpublished_commands: 0,

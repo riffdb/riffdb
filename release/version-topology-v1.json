@@ -1252,40 +1252,45 @@
         {
           "kind": "literal",
           "path": "crates/riffdb-storage-api/src/durable_format.rs",
-          "literal": "pub const DURABILITY_JOURNAL_EXTENT_VERSION: u16 = 3;"
+          "literal": "pub const DURABILITY_JOURNAL_EXTENT_VERSION: u16 = 4;"
         }
       ],
       "readable_identities": [
-        "3"
+        "3",
+        "4"
       ],
       "writable_identities": [
-        "3"
+        "4"
       ],
       "current_identities": [
-        "3"
+        "4"
       ],
       "writer_policy": "single_current",
       "compatibility_rule": "Extent generation and position framing remain exact and crash validated.",
-      "breaking_when": "Extent bytes, fence recovery, or generation semantics change under version 3.",
-      "supported_release_posture": "Journal extent V3 is current.",
+      "breaking_when": "Extent bytes, fence recovery, generation, revision, or anchor semantics change under version 3 or 4.",
+      "supported_release_posture": "Journal extent V4 is current; V3 extents remain readable and are re-anchored as V4 when recovered.",
       "lifecycle": {
         "active": [
+          "4"
+        ],
+        "read_only": [
           "3"
         ],
-        "read_only": [],
         "retirement_candidate": [],
         "retired": []
       },
       "reserved_identity_policy": "Journal extent versions are never reused.",
       "evidence": [
-        "fixtures/compatibility/physical-formats-v1.json"
+        "fixtures/compatibility/physical-formats-v1.json",
+        "fixtures/compatibility/journal-extent-header-v3.hex",
+        "fixtures/compatibility/journal-extent-header-v4.hex"
       ],
       "checks": [
         "./scripts/check-durable-format-manifest"
       ],
       "last_change": {
-        "classification": "no_format_change",
-        "decision": "ADR-0124 baseline"
+        "classification": "writer_transition",
+        "decision": "ADR-0263/WP-814 extent V4 header revision and checkpoint anchor retain materialized frames"
       },
       "durable_manifest": {
         "readable_key": "readable_journal_extent_versions",
