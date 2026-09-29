@@ -7,7 +7,8 @@ date: 2026-09-28
 accepted: '2026-09-28'
 acceptance: 'maintainer, in session, 2026-09-28: "approved, build it" (ADR-0263 as written);
   Amendment 1 accepted by the maintainer, in session, 2026-09-28: "Accepted";
-  Amendment 2 accepted by the maintainer, in session, 2026-09-28: "Approved"'
+  Amendment 2 accepted by the maintainer, in session, 2026-09-28: "Approved";
+  Amendment 3 accepted by the maintainer, in session, 2026-09-29: "i accepted it"'
 requires: [ADR-0101, ADR-0102, ADR-0103, ADR-0104, ADR-0182, ADR-0186, ADR-0261]
 amends:
   - ADR-0101 and ADR-0103's recycling of a fully checkpointed journal extent, which
@@ -188,6 +189,32 @@ B3. A4's frontiers, counts, and tails stay authoritative in the main file, throu
 B4. Decision 3's footer also records each frame's complete receipt binding. A sealed
     extent then describes itself, and the index can be rebuilt from footers and the
     live extent after its predecessors are retired.
+
+### Amendment 3 (accepted 2026-09-29): history stubs replace the sidecar index
+
+Moving every reader of COMMITS and HISTORY to a separate index would rewrite
+about 130 read sites that depend on these tables' keys, ranges, tails, and row
+counts, and a sidecar index must be reconciled after every crash. The two
+tables can carry the index instead. This replaces A2, A3, B1, and B2; B3 and B4
+stand.
+
+C1. For each segment and receipt a journal frame made durable, the checkpoint
+    transaction that materializes the frame writes a stub under the same COMMITS
+    or HISTORY key. A stub is a fixed-size locator: the extent generation, the
+    frame's position and hash, and the summary fields readers need without the
+    value. The segment and receipt bytes are never written to redb.
+C2. Key order, ranges, tails, and row counts of COMMITS and HISTORY are
+    unchanged, so bounded startup, retention accounting, and every structural
+    reader keep working. Reading a value resolves a stub by reading its frame
+    from the extent and extracting the segment or re-deriving the receipt. A
+    frame whose hash does not match its stub, or a missing extent, is a typed
+    corruption refusal.
+C3. A stub is a representation, not replicated state. Every hash of a COMMITS
+    or HISTORY value that a receipt, follower, backup comparison, or validation
+    binds is computed over the resolved value, so a primary and its followers
+    agree byte for byte on history.
+C4. Stubs are a new versioned encoding, which a binary without this amendment
+    refuses.
 
 ## Options considered
 
