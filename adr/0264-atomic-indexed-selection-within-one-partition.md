@@ -1,11 +1,11 @@
 ---
 adr: "0264"
 title: Atomic Indexed Selection Within One Partition
-status: proposed
+status: accepted
 tier: guarantee
 date: 2026-09-28
-accepted: null
-acceptance: null
+accepted: '2026-09-28'
+acceptance: 'maintainer, in session, 2026-09-28: i accept, looks good (ADR-0264 as written)'
 requires: [ADR-0061, ADR-0170, ADR-0252, ADR-0262]
 amends: [ADR-0002, ADR-0061]
 supersedes: []

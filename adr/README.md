@@ -298,7 +298,7 @@ record with no front matter.
 | [0261](0261-journaled-online-retention-prune-frames.md) | Journaled Online Retention Prune Frames | Superseded | guarantee |
 | [0262](0262-separate-write-dependencies-from-precondition-proofs.md) | Separate Write Dependencies From Precondition Proofs | Accepted | guarantee |
 | [0263](0263-retained-journal-is-the-command-history-store.md) | Retained Journal Is The Command History Store | Accepted | guarantee |
-| [0264](0264-atomic-indexed-selection-within-one-partition.md) | Atomic Indexed Selection Within One Partition | Proposed | guarantee |
+| [0264](0264-atomic-indexed-selection-within-one-partition.md) | Atomic Indexed Selection Within One Partition | Accepted | guarantee |
 <!-- adr-index:end -->
 
 The human architecture review on 2026-07-12 approved the direction represented

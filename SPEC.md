@@ -3443,6 +3443,23 @@ and any required exclusion must use explicit conflict keys known before
 evaluation. The storage epoch capability and conformance tests do not expose a
 hidden runtime scan.
 
+ADR-0264 admits one explicit `mutate first Entity.index(prefix_arguments)`
+selector in an ordinary command, under compiler-proven input-computable
+partition and complete up-front conflict ownership. It MUST seek one
+partition-constrained equality prefix in canonical ascending complete index-key
+order and retain at most one candidate per evaluation. The entry, selected
+entity, and required roots MUST belong to one authoritative snapshot; their
+exact observations and the conservative partition/index generation MUST be
+validated for every outcome, including empty and other zero-mutation outcomes.
+Changed dependencies require full reevaluation within the existing three-attempt
+and deadline limits. Empty business outcomes are durable and idempotent.
+Selection MUST NOT supply implicit assignment evidence, bypass policies, acquire
+late conflicts, scan past a denied candidate, or derive another explicit binding
+target from selected values. The accepted record defines the closed scope,
+versioned proof format, invariant coverage, and compatibility boundary. Public
+availability is gated by WP-817; historical plans retain their original meaning.
+
+
 ## 9.5 Commit intent
 
 `riffdb-storage-api` owns both `EvaluatedCommand` and the transport-neutral
