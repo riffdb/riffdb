@@ -1301,40 +1301,45 @@
         {
           "kind": "literal",
           "path": "crates/riffdb-storage-api/src/durable_format.rs",
-          "literal": "pub const DURABILITY_JOURNAL_FRAME_VERSION: u16 = 2;"
+          "literal": "pub const DURABILITY_JOURNAL_FRAME_VERSION: u16 = 3;"
         }
       ],
       "readable_identities": [
-        "2"
+        "2",
+        "3"
       ],
       "writable_identities": [
-        "2"
+        "3"
       ],
       "current_identities": [
-        "2"
+        "3"
       ],
       "writer_policy": "single_current",
       "compatibility_rule": "Frames are bounded, checksummed, position-bound, and replayed only after validation.",
-      "breaking_when": "Frame bytes or replay semantics change under version 2.",
-      "supported_release_posture": "Journal frame V2 is current.",
+      "breaking_when": "Frame bytes or replay semantics change under version 2 or 3.",
+      "supported_release_posture": "Journal frame V3 is current; V2 frames remain readable for recovery of older journals.",
       "lifecycle": {
         "active": [
+          "3"
+        ],
+        "read_only": [
           "2"
         ],
-        "read_only": [],
         "retirement_candidate": [],
         "retired": []
       },
       "reserved_identity_policy": "Journal frame versions are never reused.",
       "evidence": [
-        "fixtures/compatibility/physical-formats-v1.json"
+        "fixtures/compatibility/physical-formats-v1.json",
+        "fixtures/compatibility/journal-frame-v2.hex",
+        "fixtures/compatibility/journal-frame-v3.hex"
       ],
       "checks": [
         "./scripts/check-durable-format-manifest"
       ],
       "last_change": {
-        "classification": "no_format_change",
-        "decision": "ADR-0124 baseline"
+        "classification": "writer_transition",
+        "decision": "ADR-0263 Amendment 2 B4/WP-814 frame V3 records its changelog binding"
       },
       "durable_manifest": {
         "readable_key": "readable_journal_frame_versions",
