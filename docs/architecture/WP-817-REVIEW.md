@@ -1,11 +1,12 @@
 # WP-817: Atomic indexed selection
 
-ADR-0264 was accepted verbatim by the maintainer before implementation. Work is
-isolated on `feat/atomic-indexed-selection`, rebased onto main at `d3f0a2102`
-(including WP-814 journal-frame V3); maintainer review precedes merge. Main
-advanced to `e2af28320` during validation with another WP-814 journal change.
-Rebase and revalidate that combined tree before merging; the results below cover
-the recorded `d3f0a2102` base.
+ADR-0264 and the implementation were accepted by the maintainer. The approved
+branch was rebased without conflicts onto main at `41064ad1a`, including the
+WP-814 retained journal-extent changes. Combined-tree merge validation passed:
+`./scripts/ci-all` completed in one uninterrupted run, and
+`./scripts/acceptance --wp WP-817 --no-tests` passed all 17 checks. The full CI
+run includes workspace tests, including the final historical-row regression,
+selector concurrency/crash coverage, and the new journal recovery tests.
 
 ## Behavior and boundaries
 
@@ -66,6 +67,8 @@ barrier. Timings include capacity admission, allocation, durable acknowledgement
 and local client runtime setup. This is one local sample during repository
 validation on an AMD Ryzen 9 7950X (32 logical CPUs, approximately 62 GiB
 OS-reported RAM), without an exclusive performance host or a stability claim.
+The sample predates the merge rebase and uses main base `d3f0a2102`; it does not
+measure the later WP-814 retained-extent implementation.
 
 Every case completed 32 distinct allocations with 32 selection reads, 32 inspected
 live entries, a maximum of one candidate per evaluation, and zero retries. The
@@ -93,6 +96,8 @@ cargo test --release -p riffdb-commit --test command_concurrency \
 ```
 
 ## Validation
+
+The merge validation above supersedes the staged pre-review results below.
 
 Package acceptance ran 2,711 tests successfully (one existing opt-in test skipped).
 Its first run found stale editor highlight fixtures; those were regenerated, and
@@ -134,10 +139,11 @@ multi-command orchestration remain unavailable.
 - Package: WP-817. Tier: guarantee.
 - Behavior: atomic first indexed candidate with current validation, bounded full
   retries, ordinary assignment evidence, policies, and durable outcome replay.
-- Checks: package tests and all acceptance checks passed; all full-CI gates passed
-  with the staged reruns and final compatibility checks described above.
+- Checks: the approved branch rebased onto `41064ad1a` passes full CI in one
+  uninterrupted run and all 17 non-test acceptance checks. Earlier package
+  tests and compatibility evidence are recorded above.
 - Compatibility: additive V26 selector plans; old artifacts remain byte exact.
 - Handbook: atomic selection guide, cookbook, known limitations, language
   reference, SUMMARY; generated IR format, diagnostic and compiler fixtures.
-- Hazards: limitations above; maintainer review before merge. Remove the worktree
-  after the reviewed merge to main.
+- Hazards: limitations above. Maintainer approval received; remove the worktree
+  after merging to main.
