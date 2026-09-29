@@ -1224,7 +1224,7 @@ fn manifest_format_marker_checksum(
     .map(Some)
 }
 
-fn manifest_artifact_checksum(
+pub(crate) fn manifest_artifact_checksum(
     manifest: &OfflineBackupManifestV1,
     ordinal: NonZeroU32,
 ) -> Result<BackupIntegrityChecksumV1, StorageError> {
@@ -1902,6 +1902,15 @@ fn validate_manifest_inventory(
     Ok(())
 }
 
+/// The backup artifacts that can hold the extent of `generation`: its sealed
+/// artifact, then the copied active journal.
+pub(crate) fn extent_artifacts(directory: &Path, generation: u64) -> [PathBuf; 2] {
+    [
+        directory.join(sealed_artifact_name(generation)),
+        directory.join(JOURNAL_ARTIFACT_FILE_NAME),
+    ]
+}
+
 fn sealed_artifact_name(generation: u64) -> String {
     format!("{SEALED_ARTIFACT_PREFIX}{generation:020}{SEALED_ARTIFACT_SUFFIX}")
 }
@@ -1920,9 +1929,19 @@ fn sealed_artifact_generation(name: &OsStr) -> Option<u64> {
 }
 
 /// Sealed backup artifacts in `directory`, in generation order.
-/// Whether a backup directory carries sealed journal extents (ADR-0263).
-pub(crate) fn carries_sealed_extents(directory: &Path) -> Result<bool, StorageError> {
-    Ok(!sealed_artifacts_in(directory)?.is_empty())
+/// The sealed extent artifact names of a backup directory, in artifact
+/// ordinal order from the first sealed ordinal.
+pub(crate) fn sealed_artifact_names(
+    directory: &Path,
+) -> Result<Vec<std::ffi::OsString>, StorageError> {
+    sealed_artifacts_in(directory)?
+        .into_iter()
+        .map(|(_, path)| {
+            path.file_name()
+                .map(OsStr::to_os_string)
+                .ok_or_else(corrupt)
+        })
+        .collect()
 }
 
 fn sealed_artifacts_in(directory: &Path) -> Result<Vec<(u64, PathBuf)>, StorageError> {
@@ -1938,6 +1957,41 @@ fn sealed_artifacts_in(directory: &Path) -> Result<Vec<(u64, PathBuf)>, StorageE
     }
     sealed.sort_unstable();
     Ok(sealed)
+}
+
+/// Removes every sealed journal extent beside `database`, once nothing in it
+/// names them (a hydrated staged restore), and syncs the directory.
+pub(crate) fn remove_sealed_extents_beside(database: &Path) -> Result<(), StorageError> {
+    let sealed = sealed_extents_beside(database)?;
+    if sealed.is_empty() {
+        return Ok(());
+    }
+    for (_, path) in sealed {
+        fs::remove_file(&path).map_err(io_unavailable)?;
+    }
+    sync_parent(database)
+}
+
+/// The highest generation of any journal extent beside `database`: sealed,
+/// active, checkpoint, sealing, or spare. Zero when there is none.
+pub(crate) fn highest_extent_generation_beside(database: &Path) -> Result<u64, StorageError> {
+    let media = crate::media::RealJournalMedia;
+    let mut highest = sealed_extents_beside(database)?
+        .last()
+        .map_or(0, |(generation, _)| *generation);
+    for path in [
+        crate::journal::journal_path(database),
+        crate::journal::checkpoint_journal_path(database),
+        crate::journal::sealing_journal_path(database),
+        crate::journal::spare_journal_path(database),
+    ] {
+        if let Some(generation) = crate::journal::extent_generation_with_media(&media, &path)
+            .map_err(backup_journal_error)?
+        {
+            highest = highest.max(generation);
+        }
+    }
+    Ok(highest)
 }
 
 /// Sealed journal extents retained beside `database`, in generation order.

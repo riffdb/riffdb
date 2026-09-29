@@ -152,6 +152,51 @@ impl HistoryStub {
     }
 }
 
+/// Where one retained frame lives: every stub for that frame names it.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) struct StubLocator {
+    pub(crate) database_id: DatabaseId,
+    pub(crate) generation: u64,
+    pub(crate) placement: FramePlacement,
+}
+
+impl StubLocator {
+    fn stub(self, kind: StubKind, summary: SegmentSummary) -> HistoryStub {
+        HistoryStub {
+            kind,
+            database_id: self.database_id,
+            generation: self.generation,
+            placement: self.placement,
+            summary,
+        }
+    }
+
+    /// The encoded receipt stub for this frame.
+    pub(crate) fn receipt_stub(self) -> Result<Vec<u8>, StorageError> {
+        self.stub(StubKind::Receipt, SegmentSummary::default())
+            .encode()
+    }
+
+    /// The encoded segment stub standing for `value`, a COMMITS value this
+    /// frame inserts, or `None` when `value` is not a command segment. Such a
+    /// value keeps its exact bytes, as every COMMITS value did before stubs.
+    pub(crate) fn segment_stub(self, value: &[u8]) -> Result<Option<Vec<u8>>, StorageError> {
+        let Ok(segment) = riffdb_storage_api::decode_command_segment_v1(value) else {
+            return Ok(None);
+        };
+        let segment = segment.into_parts().0;
+        let summary = SegmentSummary {
+            first_commit_sequence: Some(segment.first_commit_sequence()),
+            last_commit_sequence: Some(segment.last_commit_sequence()),
+            terminal_administration_sequence: Some(segment.last_administration_sequence()),
+            command_count: u32::try_from(segment.commands().len())
+                .map_err(|_| storage_error(StorageErrorKind::LimitExceeded))?,
+            segment_digest: *segment.segment_digest().as_bytes(),
+        };
+        self.stub(StubKind::Segment, summary).encode().map(Some)
+    }
+}
+
 /// Copies the `N` bytes at `at` out of the fixed stub layout.
 fn fixed<const N: usize>(bytes: &[u8; STUB_BYTES], at: usize) -> [u8; N] {
     let mut out = [0; N];
@@ -168,12 +213,20 @@ pub(crate) fn segment_summary(value: &[u8]) -> Result<Option<SegmentSummary>, St
     }
 }
 
-/// Where one open store's retained extents live.
+/// Where one open store's, or one backup's, retained extents live.
 #[derive(Debug)]
 pub(crate) struct HistoryResolver {
     database_id: DatabaseId,
-    database_path: PathBuf,
+    location: ExtentLocation,
     media: Arc<dyn JournalMedia>,
+}
+
+#[derive(Debug)]
+enum ExtentLocation {
+    /// Extents named beside a database file.
+    Database(PathBuf),
+    /// A backup directory's journal and sealed extent artifacts.
+    Backup(PathBuf),
 }
 
 static RESOLVERS: Mutex<Vec<Weak<HistoryResolver>>> = Mutex::new(Vec::new());
@@ -188,9 +241,49 @@ impl HistoryResolver {
         database_path: &Path,
         media: Arc<dyn JournalMedia>,
     ) -> Arc<Self> {
+        Self::register_at(
+            database_id,
+            ExtentLocation::Database(database_path.to_path_buf()),
+            media,
+        )
+    }
+
+    /// Registers the extents beside a database file opened directly rather
+    /// than through a store, if the database has an identity; one without
+    /// can hold no stubs.
+    pub(crate) fn register_beside(
+        database_path: &Path,
+        read: &redb::ReadTransaction,
+    ) -> Option<Arc<Self>> {
+        crate::store::read_identity_from_read_transaction(read)
+            .ok()
+            .map(|database_id| {
+                Self::register(
+                    database_id,
+                    database_path,
+                    Arc::new(crate::media::RealJournalMedia),
+                )
+            })
+    }
+
+    /// Registers a verified backup's artifacts, for reading its history in
+    /// place while it stays open.
+    pub(crate) fn register_backup(database_id: DatabaseId, directory: &Path) -> Arc<Self> {
+        Self::register_at(
+            database_id,
+            ExtentLocation::Backup(directory.to_path_buf()),
+            Arc::new(crate::media::RealJournalMedia),
+        )
+    }
+
+    fn register_at(
+        database_id: DatabaseId,
+        location: ExtentLocation,
+        media: Arc<dyn JournalMedia>,
+    ) -> Arc<Self> {
         let resolver = Arc::new(Self {
             database_id,
-            database_path: database_path.to_path_buf(),
+            location,
             media,
         });
         if let Ok(mut resolvers) = RESOLVERS.lock() {
@@ -214,13 +307,25 @@ fn read_stub_frame(stub: &HistoryStub) -> Result<JournalFrame, StorageError> {
         return Err(storage_error(StorageErrorKind::Unavailable));
     }
     for resolver in resolvers {
-        if let Ok(frame) = crate::journal::read_retained_frame_with_media(
-            resolver.media.as_ref(),
-            &resolver.database_path,
-            stub.database_id,
-            stub.placement,
-            stub.generation,
-        ) {
+        let frame = match &resolver.location {
+            ExtentLocation::Database(path) => crate::journal::read_retained_frame_with_media(
+                resolver.media.as_ref(),
+                path,
+                stub.database_id,
+                stub.placement,
+                stub.generation,
+            ),
+            ExtentLocation::Backup(directory) => {
+                crate::journal::read_retained_frame_from_with_media(
+                    resolver.media.as_ref(),
+                    &crate::backup::extent_artifacts(directory, stub.generation),
+                    stub.database_id,
+                    stub.placement,
+                    stub.generation,
+                )
+            }
+        };
+        if let Ok(frame) = frame {
             return Ok(frame);
         }
     }
@@ -307,4 +412,89 @@ pub(crate) fn resolve_history_value(value: &[u8]) -> Result<Cow<'_, [u8]>, Stora
         .encode()
         .map(Cow::Owned)
         .map_err(|_| storage_error(StorageErrorKind::CorruptData))
+}
+
+/// Rows one hydration transaction rewrites.
+const HYDRATION_BATCH_ROWS: usize = 256;
+
+/// Rewrites every history stub in `database` as the exact value it resolves
+/// to, for a copy that leaves its extents behind: a staged maintenance restore
+/// becomes self-contained like a follower (ADR-0263 Amendment 1). The caller
+/// holds a resolver for the extents. Batches are bounded and each commits
+/// durably; a partly hydrated database is valid, since a stub and its value
+/// are interchangeable representations (C3).
+pub(crate) fn hydrate_history_stubs(database: &redb::Database) -> Result<(), StorageError> {
+    use redb::ReadableDatabase as _;
+
+    for (definition, resolve) in [
+        (
+            crate::layout::COMMITS,
+            resolve_commits_value as fn(&[u8]) -> Result<Cow<'_, [u8]>, StorageError>,
+        ),
+        (
+            crate::changelog_v3_activation::HISTORY,
+            resolve_history_value,
+        ),
+    ] {
+        let mut after: Option<Vec<u8>> = None;
+        loop {
+            let mut batch = Vec::new();
+            {
+                let read = database
+                    .begin_read()
+                    .map_err(crate::error::transaction_error)?;
+                let table = match read.open_table(definition) {
+                    Ok(table) => table,
+                    Err(redb::TableError::TableDoesNotExist(_)) => break,
+                    Err(error) => return Err(crate::error::table_error(error)),
+                };
+                let rows = match after.as_deref() {
+                    Some(key) => table.range::<&[u8]>((
+                        std::ops::Bound::Excluded(key),
+                        std::ops::Bound::Unbounded,
+                    )),
+                    None => table.range::<&[u8]>(..),
+                }
+                .map_err(crate::error::precommit_storage_error)?;
+                for row in rows {
+                    let (key, value) = row.map_err(crate::error::precommit_storage_error)?;
+                    after = Some(key.value().to_vec());
+                    if HistoryStub::decode(value.value())?.is_some() {
+                        let resolved = resolve(value.value())?.into_owned();
+                        batch.push((key.value().to_vec(), value.value().to_vec(), resolved));
+                        if batch.len() == HYDRATION_BATCH_ROWS {
+                            break;
+                        }
+                    }
+                }
+            }
+            if batch.is_empty() {
+                break;
+            }
+            let mut write = database
+                .begin_write()
+                .map_err(crate::error::transaction_error)?;
+            write.set_two_phase_commit(true);
+            write
+                .set_durability(redb::Durability::Immediate)
+                .map_err(|_| storage_error(StorageErrorKind::InvariantViolation))?;
+            {
+                let mut table = write
+                    .open_table(definition)
+                    .map_err(crate::error::table_error)?;
+                for (key, stub, resolved) in &batch {
+                    let previous = table
+                        .insert(key.as_slice(), resolved.as_slice())
+                        .map_err(crate::error::precommit_storage_error)?;
+                    // Nothing else writes a staged copy; the row must be the
+                    // stub just resolved.
+                    if previous.map(|previous| previous.value() == stub.as_slice()) != Some(true) {
+                        return Err(storage_error(StorageErrorKind::CorruptData));
+                    }
+                }
+            }
+            write.commit().map_err(crate::error::commit_error)?;
+        }
+    }
+    Ok(())
 }

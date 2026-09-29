@@ -4500,12 +4500,17 @@ mod tests {
         let rows = root
             .open_table(crate::changelog_v3_activation::HISTORY)
             .unwrap();
+        // The drained receipt is a history stub resolving to the original.
         assert_eq!(
-            rows.get(2u64.to_be_bytes().as_slice())
-                .unwrap()
-                .unwrap()
-                .value(),
-            original
+            crate::history_stub::resolve_history_value(
+                rows.get(2u64.to_be_bytes().as_slice())
+                    .unwrap()
+                    .unwrap()
+                    .value()
+            )
+            .unwrap()
+            .as_ref(),
+            original.as_slice()
         );
         let direct = riffdb_storage_api::AuthoritativeTransactionV3::decode(
             rows.get(3u64.to_be_bytes().as_slice())
@@ -4748,6 +4753,12 @@ mod tests {
         assert_eq!(audit_count(&ports), 3);
         drop(ports);
         let database = redb::Database::open(&path.0).unwrap();
+        // Recovery writes history stubs; resolve them as an open store would.
+        let _resolver = crate::history_stub::HistoryResolver::register(
+            database_id(),
+            &path.0,
+            std::sync::Arc::new(crate::media::RealJournalMedia),
+        );
         for _ in 0..2 {
             crate::journal::recover_journal(&database, &path.0, database_id()).unwrap();
             let pin = database.begin_read().unwrap();

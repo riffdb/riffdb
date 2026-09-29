@@ -2654,6 +2654,10 @@ impl RedbStore {
             crate::journal::sync_parent_directory_with_media(media, &sealing)
                 .map_err(journal_io_error)?;
         }
+        // A crash between retiring the active extent and creating its successor
+        // leaves only the sealing name; the successor continues after it.
+        crate::journal::recreate_missing_active_with_media(media, &self.shared.path)
+            .map_err(recovery_journal_error)?;
         crate::journal::recover_journal_with_media(
             media,
             &self.shared.database,
@@ -2663,14 +2667,8 @@ impl RedbStore {
         .map_err(recovery_journal_error)?;
         // An extent written before ADR-0263 raised the ceilings keeps its legacy
         // capacity until here, where its recovered suffix is empty.
-        let active = crate::journal::journal_path(&self.shared.path);
-        if media
-            .try_exists(&active)
-            .map_err(|_| storage_error(StorageErrorKind::Unavailable))?
-        {
-            crate::journal::normalize_extent_capacity_with_media(media, &active)
-                .map_err(recovery_journal_error)?;
-        }
+        crate::journal::normalize_active_capacity_with_media(media, &self.shared.path, database_id)
+            .map_err(recovery_journal_error)?;
 
         // An extent whose checkpoint installed before a crash may still wait
         // at the sealing name; its frames are materialized, so sealing it is
@@ -8076,17 +8074,23 @@ impl SharedRedb {
         runtime: &JournalRuntime,
     ) -> Result<(), StorageError> {
         let v3 = crate::changelog_v3_journal::has_write_recovery_roots(transaction)?;
-        let scanned = crate::journal::scan_journal_with_media(
+        // The drained frames become history stubs, which must resolve.
+        self.register_history_resolver(runtime.database_id);
+        let scanned = crate::journal::scan_located_journal_with_media(
             self.journal_media.as_ref(),
             &crate::journal::journal_path(&self.path),
             runtime.database_id,
-            |frame| {
+            |frame, locator| {
                 if v3 || crate::changelog_v3_journal::has_receipt_source(frame) {
-                    crate::changelog_v3_journal::materialize_recovered_frame(transaction, frame)
-                        .map_err(|_| crate::journal::JournalIoError::Corrupt)?;
+                    crate::changelog_v3_journal::materialize_located_frame(
+                        transaction,
+                        frame,
+                        locator,
+                    )
+                    .map_err(|_| crate::journal::JournalIoError::Corrupt)?;
                 } else {
                     for mutation in frame.mutations() {
-                        crate::journal::apply_mutation(transaction, mutation)?;
+                        crate::journal::apply_located_mutation(transaction, mutation, locator)?;
                     }
                 }
                 Ok(())

@@ -413,6 +413,14 @@ fn journal_recovery_refuses_v3_gaps_and_partial_evidence_without_reclaiming_sour
     }
 }
 
+fn register_resolver(path: &Path) -> std::sync::Arc<crate::history_stub::HistoryResolver> {
+    crate::history_stub::HistoryResolver::register(
+        lineage().database_id(),
+        path,
+        std::sync::Arc::new(crate::media::RealJournalMedia),
+    )
+}
+
 #[test]
 fn v3_journal_recovery_process_child() {
     let Some(path) = std::env::var_os("RIFFDB_V3_RECOVERY_DATABASE") else {
@@ -420,6 +428,8 @@ fn v3_journal_recovery_process_child() {
     };
     let database = Database::open(&path).unwrap();
     let journal = crate::journal::journal_path(Path::new(&path));
+    // Recovery writes history stubs; resolve them as an open store would.
+    let _resolver = register_resolver(Path::new(&path));
     crate::journal::recover_journal_path(&database, &journal, lineage().database_id()).unwrap();
     panic!("the requested recovery crash edge was not reached");
 }
@@ -448,6 +458,7 @@ fn v3_journal_recovery_process_crashes_preserve_at_least_one_exact_receipt_sourc
             .env("RIFFDB_V3_RECOVERY_EDGE", edge)
             .status().unwrap();
         assert_eq!(status.code(), Some(93), "{edge}");
+        let _resolver = register_resolver(&path);
         let database = Database::open(&path).unwrap();
         let pin = database.begin_read().unwrap();
         let actual = crate::changelog_v3_roots::validate_retained_history(&pin)

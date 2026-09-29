@@ -820,6 +820,17 @@ impl RedbMaintenanceStorage {
         {
             return Err(corrupt());
         }
+        // The stage copies only the backup's database, so its history stubs
+        // become full rows, resolved from the backup's own artifacts (ADR-0263
+        // Amendment 1). Rerunning after a crash finds nothing left to rewrite.
+        {
+            let _history = crate::history_stub::HistoryResolver::register_backup(
+                manifest.database_id(),
+                &self.named_backup_directory(backup_name),
+            );
+            let database = redb::Database::open(&stage).map_err(crate::error::database_error)?;
+            crate::history_stub::hydrate_history_stubs(&database)?;
+        }
         let stage_identity = migration_stage_identity(operation_id, expected_manifest)?;
         if receipt
             .stage_identity()

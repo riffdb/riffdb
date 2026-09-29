@@ -120,6 +120,10 @@ impl RedbOfflineRetention {
     pub fn status(&self) -> Result<RetentionStatusV1, StorageError> {
         let database = Database::open(&self.database_path).map_err(database_error)?;
         let transaction = database.begin_read().map_err(transaction_error)?;
+        let _history = crate::history_stub::HistoryResolver::register_beside(
+            &self.database_path,
+            &transaction,
+        );
         let watermark = load_watermark(&transaction)?;
         let holds = load_holds(&transaction)?;
         let incarnation = load_history_incarnation(&transaction)?;

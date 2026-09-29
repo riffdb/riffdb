@@ -136,15 +136,7 @@ impl SharedRedb {
             }
             if let Some(advance) = advance {
                 if frame.encoded.records_changelog() {
-                    advance.stage_stub(
-                        &transaction,
-                        &frame_stub(
-                            frame,
-                            crate::history_stub::StubKind::Receipt,
-                            Default::default(),
-                        )
-                        .encode()?,
-                    )?;
+                    advance.stage_stub(&transaction, &frame_locator(frame).receipt_stub()?)?;
                 } else {
                     // Only a frame that records its binding can re-derive its
                     // receipt, so any other keeps the receipt bytes.
@@ -200,20 +192,6 @@ impl SharedRedb {
     }
 }
 
-fn frame_stub(
-    frame: &super::ValidatedCheckpointFrame,
-    kind: crate::history_stub::StubKind,
-    summary: crate::history_stub::SegmentSummary,
-) -> crate::history_stub::HistoryStub {
-    crate::history_stub::HistoryStub {
-        kind,
-        database_id: frame.database_id,
-        generation: frame.extent_generation,
-        placement: frame.placement,
-        summary,
-    }
-}
-
 /// The history stub for a command segment the frame inserts, or `None` for
 /// any other mutation (and for a COMMITS change that is not a fresh insert,
 /// which keeps its exact bytes).
@@ -226,24 +204,13 @@ fn segment_stub(
     else {
         return Ok(None);
     };
-    let segment = match riffdb_storage_api::decode_command_segment_v1(value) {
-        Ok(segment) => segment.into_parts().0,
-        Err(error)
-            if error.kind() == riffdb_storage_api::DurableCodecErrorKind::UnexpectedRecordType =>
-        {
-            return Ok(None);
-        }
-        Err(_) => return Err(storage_error(StorageErrorKind::CorruptData)),
-    };
-    let summary = crate::history_stub::SegmentSummary {
-        first_commit_sequence: Some(segment.first_commit_sequence()),
-        last_commit_sequence: Some(segment.last_commit_sequence()),
-        terminal_administration_sequence: Some(segment.last_administration_sequence()),
-        command_count: u32::try_from(segment.commands().len())
-            .map_err(|_| storage_error(StorageErrorKind::LimitExceeded))?,
-        segment_digest: *segment.segment_digest().as_bytes(),
-    };
-    frame_stub(frame, crate::history_stub::StubKind::Segment, summary)
-        .encode()
-        .map(Some)
+    frame_locator(frame).segment_stub(value)
+}
+
+fn frame_locator(frame: &super::ValidatedCheckpointFrame) -> crate::history_stub::StubLocator {
+    crate::history_stub::StubLocator {
+        database_id: frame.database_id,
+        generation: frame.extent_generation,
+        placement: frame.placement,
+    }
 }

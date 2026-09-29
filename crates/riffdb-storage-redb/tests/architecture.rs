@@ -2559,6 +2559,9 @@ fn only_commit_durable_advances_a_root_an_operational_reader_can_select() {
         ("fixtures.rs", "replace_audit_row_with_stray_fence_fixture"),
         // Test-only checkpoint strip, likewise on a stopped database.
         ("fixtures.rs", "strip_validated_prefix_checkpoint_fixture"),
+        // History-stub hydration (ADR-0263 Amendment 1) rewrites a staged
+        // maintenance restore copy, which no operational reader can select.
+        ("history_stub.rs", "hydrate_history_stubs"),
         // Journal recovery, which runs before operational readiness is claimed.
         ("journal.rs", "replay_frames"),
         // Sidecar create for rebuildable derived state (ADR-0240). It is a

@@ -19,7 +19,7 @@ use crate::{
     },
     changelog_v3_write::{PreparedHistoryAdvance, table_inventory, value_error},
     error::{precommit_storage_error, storage_error, table_error},
-    journal::{JournalFrame, apply_mutation},
+    journal::JournalFrame,
 };
 
 /// Routing only, never an inactivity/activation proof. The V3 registry claim or
@@ -194,12 +194,24 @@ pub(crate) fn plan_recovery(
     })
 }
 
-/// Called only with an independently decoded/validated recovery frame. The
-/// live checkpoint has a separate retained-proof path; it does not re-decode.
-/// On error the owner must abort, as for existing ordered journal application.
+/// [`materialize_located_frame`] without a locator, for unit tests.
+#[cfg(test)]
 pub(crate) fn materialize_recovered_frame(
     transaction: &WriteTransaction,
     frame: &JournalFrame,
+) -> Result<AuthoritativeTransactionV3, StorageError> {
+    materialize_located_frame(transaction, frame, None)
+}
+
+/// Called only with an independently decoded/validated recovery frame. The
+/// live checkpoint has a separate retained-proof path; it does not re-decode.
+/// On error the owner must abort, as for existing ordered journal application.
+/// With the frame's `locator`, its segments and its receipt are written as
+/// history stubs (ADR-0263 Amendment 3).
+pub(crate) fn materialize_located_frame(
+    transaction: &WriteTransaction,
+    frame: &JournalFrame,
+    locator: Option<crate::history_stub::StubLocator>,
 ) -> Result<AuthoritativeTransactionV3, StorageError> {
     let history = read_checkpoint_roots_for_write(transaction)?
         .ok_or_else(|| storage_error(StorageErrorKind::IncompatibleFormat))?;
@@ -250,10 +262,16 @@ pub(crate) fn materialize_recovered_frame(
         }
         // Apply the original ordered source, not just net receipt mutations:
         // cancelled keys still have before-images that must be checked.
-        apply_mutation(transaction, mutation)
+        crate::journal::apply_located_mutation(transaction, mutation, locator)
             .map_err(|_| storage_error(StorageErrorKind::CorruptData))?;
     }
-    advance.stage(transaction)?;
+    match locator {
+        // Only a frame that records its binding can re-derive its receipt.
+        Some(locator) if frame.changelog().is_some() => {
+            advance.stage_stub(transaction, &locator.receipt_stub()?)?;
+        }
+        _ => advance.stage(transaction)?,
+    }
     Ok(receipt)
 }
 

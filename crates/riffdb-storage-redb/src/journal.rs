@@ -9,6 +9,7 @@
     reason = "validated journal frames have closed tags, bounded widths, and complete segment payloads"
 )]
 
+use crate::history_stub::StubLocator;
 use std::collections::BTreeMap;
 use std::fs::File;
 use std::io;
@@ -1575,6 +1576,40 @@ impl JournalFrame {
         previous_hash: [u8; HASH_BYTES],
         mutations: Vec<JournalMutation>,
     ) -> Result<Self, JournalCodecError> {
+        Self::checked_with(
+            database_id,
+            kind,
+            predecessor_sequence,
+            covered_sequence,
+            predecessor_administration_sequence,
+            covered_administration_sequence,
+            transition_count,
+            command_count,
+            audit_count,
+            previous_hash,
+            mutations,
+            true,
+        )
+    }
+
+    /// `derive_counts` re-derives the command and command-audit counts from
+    /// every command segment. Only a frame whose hash equals one recorded from
+    /// an already validated frame may skip it (see [`Self::decode_proven`]).
+    #[allow(clippy::too_many_arguments)]
+    fn checked_with(
+        database_id: DatabaseId,
+        kind: JournalFrameKind,
+        predecessor_sequence: Option<CommitSequence>,
+        covered_sequence: Option<CommitSequence>,
+        predecessor_administration_sequence: Option<AdministrationSequence>,
+        covered_administration_sequence: Option<AdministrationSequence>,
+        transition_count: u16,
+        command_count: u16,
+        audit_count: u16,
+        previous_hash: [u8; HASH_BYTES],
+        mutations: Vec<JournalMutation>,
+        derive_counts: bool,
+    ) -> Result<Self, JournalCodecError> {
         if transition_count == 0
             || usize::from(transition_count) > MAX_JOURNAL_TRANSITIONS
             || mutations.is_empty()
@@ -1586,14 +1621,14 @@ impl JournalFrame {
                 predecessor_administration_sequence.map(AdministrationSequence::get),
                 covered_administration_sequence.map(AdministrationSequence::get),
             ) != Some(u64::from(audit_count))
-            || logical_command_put_count(&mutations)? != command_count
+            || (derive_counts && logical_command_put_count(&mutations)? != command_count)
             || match kind {
                 JournalFrameKind::Command => {
-                    let physical_audits = mutation_put_count(&mutations, JournalTable::Audit)?;
-                    let command_audits = logical_command_audit_count(&mutations)?;
                     transition_count != command_count
                         || command_count == 0
-                        || (physical_audits != audit_count && command_audits != audit_count)
+                        || (derive_counts
+                            && mutation_put_count(&mutations, JournalTable::Audit)? != audit_count
+                            && logical_command_audit_count(&mutations)? != audit_count)
                 }
                 JournalFrameKind::ServiceAudit => {
                     transition_count != audit_count
@@ -1733,6 +1768,25 @@ impl JournalFrame {
     }
 
     pub(crate) fn decode(bytes: &[u8]) -> Result<(Self, [u8; HASH_BYTES]), JournalCodecError> {
+        Self::decode_with(bytes, None)
+    }
+
+    /// Decodes a retained frame a history stub names (ADR-0263 Amendment 3).
+    /// Its hash must equal `proven`, recorded from this frame after full
+    /// validation, so identical bytes skip only re-deriving the command counts
+    /// from every segment: that deep decode would otherwise run inside every
+    /// history read, on threads with fixed stacks. All other checks remain.
+    pub(crate) fn decode_proven(
+        bytes: &[u8],
+        proven: &[u8; HASH_BYTES],
+    ) -> Result<Self, JournalCodecError> {
+        Self::decode_with(bytes, Some(proven)).map(|(frame, _)| frame)
+    }
+
+    fn decode_with(
+        bytes: &[u8],
+        proven: Option<&[u8; HASH_BYTES]>,
+    ) -> Result<(Self, [u8; HASH_BYTES]), JournalCodecError> {
         if bytes.len() < FRAME_HEADER_BYTES_V2 + FRAME_FOOTER_BYTES {
             return Err(JournalCodecError::Truncated);
         }
@@ -1778,7 +1832,9 @@ impl JournalFrame {
             return Err(JournalCodecError::InvalidValue);
         }
         let frame_hash = digest(&bytes[..footer]);
-        if frame_hash != read_array::<HASH_BYTES>(bytes, footer + 16)? {
+        if frame_hash != read_array::<HASH_BYTES>(bytes, footer + 16)?
+            || proven.is_some_and(|proven| *proven != frame_hash)
+        {
             return Err(JournalCodecError::Checksum);
         }
         let mut cursor = header_bytes;
@@ -1846,7 +1902,7 @@ impl JournalFrame {
         }
         let database_id = DatabaseId::from_bytes(read_array::<16>(bytes, 10)?)
             .map_err(|_| JournalCodecError::InvalidValue)?;
-        let frame = Self::checked(
+        let frame = Self::checked_with(
             database_id,
             JournalFrameKind::decode(*bytes.get(26).ok_or(JournalCodecError::Truncated)?)?,
             CommitSequence::new(read_u64(bytes, 28)?),
@@ -1858,6 +1914,7 @@ impl JournalFrame {
             read_u16(bytes, 64)?,
             read_array::<HASH_BYTES>(bytes, 76)?,
             mutations,
+            proven.is_none(),
         )?;
         Ok((Self { changelog, ..frame }, frame_hash))
     }
@@ -2719,9 +2776,12 @@ impl SealedExtentFooter {
         let body = bytes
             .get(..len - HASH_BYTES)
             .ok_or(JournalIoError::Corrupt)?;
+        // The reserved bytes follow the origin hash at 40..72.
         if digest(body).as_slice() != &bytes[len - HASH_BYTES..len]
             || bytes[len..].iter().any(|byte| *byte != 0)
-            || body[64..72].iter().any(|byte| *byte != 0)
+            || body[72..SEALED_FOOTER_HEADER_BYTES]
+                .iter()
+                .any(|byte| *byte != 0)
         {
             return Err(JournalIoError::Corrupt);
         }
@@ -3051,7 +3111,7 @@ fn normalize_extent_capacity_to(
     path: &Path,
     data_bytes: usize,
 ) -> Result<bool, JournalIoError> {
-    let (_, tail, state) = scan_extent_with_media(media, path, None, |_| Ok(()))?;
+    let (_, tail, state) = scan_extent_with_media(media, path, None, |_, _| Ok(()))?;
     if state.header.data_bytes == data_bytes {
         return Ok(false);
     }
@@ -3141,7 +3201,7 @@ fn inspect_extent_with_media(
     media: &dyn JournalMedia,
     path: &Path,
 ) -> Result<ExtentState, JournalIoError> {
-    let (_, _, state) = scan_extent_with_media(media, path, None, |_| Ok(()))?;
+    let (_, _, state) = scan_extent_with_media(media, path, None, |_, _| Ok(()))?;
     Ok(state)
 }
 
@@ -3149,17 +3209,22 @@ fn scan_extent_journal_with_media(
     media: &dyn JournalMedia,
     path: &Path,
     expected_database: DatabaseId,
-    visit: impl FnMut(&JournalFrame) -> Result<(), JournalIoError>,
+    mut visit: impl FnMut(&JournalFrame, Option<StubLocator>) -> Result<(), JournalIoError>,
 ) -> Result<(JournalFileHeader, JournalScanTail), JournalIoError> {
-    let (header, tail, _) = scan_extent_with_media(media, path, Some(expected_database), visit)?;
+    let (header, tail, _) =
+        scan_extent_with_media(media, path, Some(expected_database), |frame, locator| {
+            visit(frame, Some(locator))
+        })?;
     Ok((header, tail))
 }
 
+/// Scans one extent from its anchor; `visit` receives each complete frame
+/// with the locator its history stubs name (ADR-0263 Amendment 3).
 fn scan_extent_with_media(
     media: &dyn JournalMedia,
     path: &Path,
     expected_database: Option<DatabaseId>,
-    mut visit: impl FnMut(&JournalFrame) -> Result<(), JournalIoError>,
+    mut visit: impl FnMut(&JournalFrame, StubLocator) -> Result<(), JournalIoError>,
 ) -> Result<(JournalFileHeader, JournalScanTail, ExtentState), JournalIoError> {
     let mut file = media.open_read(path).map_err(|_| JournalIoError::Io)?;
     let extent = read_selected_extent_header(&mut file, true)?;
@@ -3167,12 +3232,22 @@ fn scan_extent_with_media(
         return Err(JournalIoError::Corrupt);
     }
     let file_bytes = extent_file_bytes(extent.data_bytes);
+    let (database_id, generation) = (extent.logical.database_id(), extent.generation);
     let walk = walk_extent_frames(
         &mut file,
         &extent,
         ExtentWalk::FromAnchor,
         file_bytes,
-        |frame, _| visit(frame),
+        |frame, placement| {
+            visit(
+                frame,
+                StubLocator {
+                    database_id,
+                    generation,
+                    placement,
+                },
+            )
+        },
     )?;
     if walk.footer {
         // A sealed footer is never part of an active or recovering extent.
@@ -3231,6 +3306,7 @@ fn decode_physical_frame(
     generation: u64,
     position: usize,
     encoded_len: usize,
+    proven: Option<&[u8; HASH_BYTES]>,
 ) -> Result<Option<(JournalFrame, [u8; HASH_BYTES])>, JournalIoError> {
     let padded_len = physical.len();
     let frame_footer = padded_len
@@ -3259,7 +3335,14 @@ fn decode_physical_frame(
         return Err(JournalIoError::Corrupt);
     }
     let logical = &physical[EXTENT_FRAME_HEADER_BYTES..EXTENT_FRAME_HEADER_BYTES + encoded_len];
-    let (frame, frame_hash) = JournalFrame::decode(logical).map_err(|_| JournalIoError::Corrupt)?;
+    let (frame, frame_hash) = match proven {
+        Some(proven) => (JournalFrame::decode_proven(logical, proven), *proven),
+        None => match JournalFrame::decode(logical) {
+            Ok((frame, hash)) => (Ok(frame), hash),
+            Err(error) => (Err(error), [0; HASH_BYTES]),
+        },
+    };
+    let frame = frame.map_err(|_| JournalIoError::Corrupt)?;
     if frame_hash.as_slice() != &physical[36..68] {
         return Err(JournalIoError::Corrupt);
     }
@@ -3276,13 +3359,31 @@ pub(crate) fn read_retained_frame_with_media(
     placement: FramePlacement,
     generation: u64,
 ) -> Result<JournalFrame, JournalIoError> {
-    for path in [
-        sealed_journal_path(database_path, generation),
-        journal_path(database_path),
-        checkpoint_journal_path(database_path),
-        sealing_journal_path(database_path),
-    ] {
-        let mut file = match media.open_read(&path) {
+    read_retained_frame_from_with_media(
+        media,
+        &[
+            sealed_journal_path(database_path, generation),
+            journal_path(database_path),
+            checkpoint_journal_path(database_path),
+            sealing_journal_path(database_path),
+        ],
+        database_id,
+        placement,
+        generation,
+    )
+}
+
+/// [`read_retained_frame_with_media`] over explicit candidate extent files,
+/// such as a backup's artifacts; the first of `generation` is read.
+pub(crate) fn read_retained_frame_from_with_media(
+    media: &dyn JournalMedia,
+    candidates: &[PathBuf],
+    database_id: DatabaseId,
+    placement: FramePlacement,
+    generation: u64,
+) -> Result<JournalFrame, JournalIoError> {
+    for path in candidates {
+        let mut file = match media.open_read(path) {
             Ok(file) => file,
             Err(error) if error.kind() == io::ErrorKind::NotFound => continue,
             Err(_) => return Err(JournalIoError::Io),
@@ -3312,9 +3413,14 @@ pub(crate) fn read_retained_frame_with_media(
         let encoded_len =
             usize::try_from(read_u32(&physical, 28).map_err(|_| JournalIoError::Corrupt)?)
                 .map_err(|_| JournalIoError::Corrupt)?;
-        let (frame, frame_hash) =
-            decode_physical_frame(&physical, generation, placement.position, encoded_len)?
-                .ok_or(JournalIoError::Corrupt)?;
+        let (frame, frame_hash) = decode_physical_frame(
+            &physical,
+            generation,
+            placement.position,
+            encoded_len,
+            Some(&placement.frame_hash),
+        )?
+        .ok_or(JournalIoError::Corrupt)?;
         if frame_hash != placement.frame_hash || frame.database_id() != database_id {
             return Err(JournalIoError::Corrupt);
         }
@@ -3399,7 +3505,7 @@ fn walk_extent_frames(
         file.read_exact_at(&mut physical, position)
             .map_err(|_| JournalIoError::Io)?;
         let Some((frame, frame_hash)) =
-            decode_physical_frame(&physical, extent.generation, position, encoded_len)?
+            decode_physical_frame(&physical, extent.generation, position, encoded_len, None)?
         else {
             incomplete_tail = true;
             break;
@@ -3483,7 +3589,18 @@ pub(crate) fn scan_journal_with_media(
     media: &dyn JournalMedia,
     path: &Path,
     expected_database: DatabaseId,
-    visit: impl FnMut(&JournalFrame) -> Result<(), JournalIoError>,
+    mut visit: impl FnMut(&JournalFrame) -> Result<(), JournalIoError>,
+) -> Result<Option<(JournalFileHeader, JournalScanTail)>, JournalIoError> {
+    scan_located_journal_with_media(media, path, expected_database, |frame, _| visit(frame))
+}
+
+/// [`scan_journal_with_media`], also giving each frame of an extent journal
+/// the locator its history stubs name. A legacy journal has none.
+pub(crate) fn scan_located_journal_with_media(
+    media: &dyn JournalMedia,
+    path: &Path,
+    expected_database: DatabaseId,
+    mut visit: impl FnMut(&JournalFrame, Option<StubLocator>) -> Result<(), JournalIoError>,
 ) -> Result<Option<(JournalFileHeader, JournalScanTail)>, JournalIoError> {
     let mut file = match media.open_read(path) {
         Ok(file) => file,
@@ -3499,8 +3616,9 @@ pub(crate) fn scan_journal_with_media(
     if magic != FILE_MAGIC {
         return Err(JournalIoError::Corrupt);
     }
-    let result = scan_legacy_journal_with_media(media, path, expected_database, visit)?
-        .ok_or(JournalIoError::Corrupt)?;
+    let result =
+        scan_legacy_journal_with_media(media, path, expected_database, |frame| visit(frame, None))?
+            .ok_or(JournalIoError::Corrupt)?;
     if result.1.transition_count != 0 || result.1.incomplete_tail {
         return Err(JournalIoError::LegacyNonEmpty(path.to_path_buf()));
     }
@@ -3672,10 +3790,13 @@ pub(crate) fn recover_journal_path_with_media(
     database_id: DatabaseId,
 ) -> Result<(), JournalIoError> {
     let mut frames = Vec::new();
-    let Some((header, tail)) = scan_journal_with_media(media, path, database_id, |frame| {
-        frames.push(frame.clone());
-        Ok(())
-    })?
+    let mut locators = Vec::new();
+    let Some((header, tail)) =
+        scan_located_journal_with_media(media, path, database_id, |frame, locator| {
+            frames.push(frame.clone());
+            locators.push(locator);
+            Ok(())
+        })?
     else {
         return Ok(());
     };
@@ -3708,7 +3829,11 @@ pub(crate) fn recover_journal_path_with_media(
             return Err(JournalIoError::Corrupt);
         }
         if plan.replay_from < frames.len() {
-            replay_frames(database, &frames[plan.replay_from..])?;
+            replay_frames(
+                database,
+                &frames[plan.replay_from..],
+                &locators[plan.replay_from..],
+            )?;
         }
         #[cfg(test)]
         crate::changelog_v3_journal::recovery_crash_edge("before-reclaim");
@@ -3758,7 +3883,7 @@ pub(crate) fn recover_journal_path_with_media(
     }
     if redb_frontier == checkpoint_frontier {
         if !frames.is_empty() {
-            replay_frames(database, &frames)?;
+            replay_frames(database, &frames, &locators)?;
         }
     } else if redb_frontier == tail_frontier && !frames.is_empty() {
         verify_replayed_tail(database, &frames)?;
@@ -3878,7 +4003,7 @@ pub(crate) fn verify_retention_journal_rebase_with_media(
         });
     }
     let (header, tail, state) =
-        scan_extent_with_media(media, &active, Some(database_id), |_| Ok(()))?;
+        scan_extent_with_media(media, &active, Some(database_id), |_, _| Ok(()))?;
     if header.checkpoint_sequence() != application_frontier
         || header.checkpoint_administration_sequence() != administration_frontier
         || tail.last_sequence != application_frontier
@@ -3925,7 +4050,7 @@ pub(crate) fn verify_clean_close_header_digest_with_media(
         return Err(JournalIoError::Corrupt);
     }
     let (header, tail, state) =
-        scan_extent_with_media(media, &active, Some(database_id), |_| Ok(()))?;
+        scan_extent_with_media(media, &active, Some(database_id), |_, _| Ok(()))?;
     if header.checkpoint_sequence() != application_frontier
         || header.checkpoint_administration_sequence() != administration_frontier
         || tail.last_sequence != application_frontier
@@ -3941,19 +4066,26 @@ pub(crate) fn verify_clean_close_header_digest_with_media(
     Ok(digest(&state.header.encode()))
 }
 
-fn replay_frames(database: &Database, frames: &[JournalFrame]) -> Result<(), JournalIoError> {
+fn replay_frames(
+    database: &Database,
+    frames: &[JournalFrame],
+    locators: &[Option<StubLocator>],
+) -> Result<(), JournalIoError> {
+    if frames.len() != locators.len() {
+        return Err(JournalIoError::Corrupt);
+    }
     let mut transaction = database.begin_write().map_err(|_| JournalIoError::Io)?;
     transaction.set_two_phase_commit(true);
     transaction
         .set_durability(Durability::Immediate)
         .map_err(|_| JournalIoError::Io)?;
-    for frame in frames {
+    for (frame, locator) in frames.iter().zip(locators) {
         if crate::changelog_v3_journal::has_receipt_source(frame) {
-            crate::changelog_v3_journal::materialize_recovered_frame(&transaction, frame)
+            crate::changelog_v3_journal::materialize_located_frame(&transaction, frame, *locator)
                 .map_err(|_| JournalIoError::Corrupt)?;
         } else {
             for mutation in frame.mutations() {
-                apply_mutation(&transaction, mutation)?;
+                apply_located_mutation(&transaction, mutation, *locator)?;
             }
         }
     }
@@ -3979,12 +4111,44 @@ fn verify_replayed_tail(
     let transaction = database.begin_read().map_err(|_| JournalIoError::Io)?;
     for ((table, key), expected) in final_values {
         let table = JournalTable::decode(table).map_err(|_| JournalIoError::Corrupt)?;
-        let actual = read_value(&transaction, table, &key)?;
+        let mut actual = read_value(&transaction, table, &key)?;
+        if table == JournalTable::Commits
+            && let Some(stored) = actual.as_deref()
+        {
+            // A replayed segment is a history stub; compare what it resolves to.
+            actual = Some(
+                crate::history_stub::resolve_commits_value(stored)
+                    .map_err(|_| JournalIoError::Corrupt)?
+                    .into_owned(),
+            );
+        }
         if actual != expected {
             return Err(JournalIoError::Corrupt);
         }
     }
     Ok(())
+}
+
+/// Applies one mutation of a recovered or drained frame. With the frame's
+/// locator, a command segment it freshly inserts is written as its history
+/// stub (ADR-0263 Amendment 3); every other mutation is applied as recorded.
+pub(crate) fn apply_located_mutation(
+    transaction: &redb::WriteTransaction,
+    mutation: &JournalMutation,
+    locator: Option<StubLocator>,
+) -> Result<(), JournalIoError> {
+    if let (Some(locator), JournalTable::Commits, Some(value), None) = (
+        locator,
+        mutation.table(),
+        mutation.value(),
+        mutation.expected_hash(),
+    ) && let Some(stub) = locator
+        .segment_stub(value)
+        .map_err(|_| JournalIoError::Corrupt)?
+    {
+        return apply_byte_mutation_parts(transaction, COMMITS, mutation.key(), Some(&stub), None);
+    }
+    apply_mutation(transaction, mutation)
 }
 
 pub(crate) fn apply_mutation(
@@ -4503,7 +4667,7 @@ pub(crate) fn advance_journal_anchor_with_media(
     header: &JournalFileHeader,
 ) -> Result<(), JournalIoError> {
     let (_, tail, state) =
-        scan_extent_with_media(media, path, Some(header.database_id()), |_| Ok(()))?;
+        scan_extent_with_media(media, path, Some(header.database_id()), |_, _| Ok(()))?;
     if header.checkpoint_frame_hash() != tail.last_hash
         || header.checkpoint_sequence() < tail.last_sequence
         || header.checkpoint_administration_sequence() < tail.last_administration_sequence
@@ -4548,6 +4712,69 @@ pub(crate) fn reset_journal_with_media(
     reset_journal_after_generation_with_media(media, path, header, None)
 }
 
+/// Creates the active extent that a crash left absent while an extent waits at
+/// the sealing name: one generation after it, continuing its anchored header.
+/// A fresh generation-one extent would later seal under a name a retained
+/// extent already holds (ADR-0263).
+pub(crate) fn recreate_missing_active_with_media(
+    media: &dyn JournalMedia,
+    database_path: &Path,
+) -> Result<(), JournalIoError> {
+    let active = journal_path(database_path);
+    let sealing = sealing_journal_path(database_path);
+    if media.try_exists(&active).map_err(|_| JournalIoError::Io)?
+        || !media.try_exists(&sealing).map_err(|_| JournalIoError::Io)?
+    {
+        return Ok(());
+    }
+    let predecessor = inspect_extent_with_media(media, &sealing)?;
+    reset_journal_after_with_media(media, &active, &predecessor.header.logical, &sealing)?;
+    sync_parent_with_media(media, &active)
+}
+
+/// Gives the active extent the configured capacity once its recovered suffix
+/// is empty. An extent that retains materialized frames is retired to the
+/// sealing name instead of replaced, because history stubs name its frames.
+pub(crate) fn normalize_active_capacity_with_media(
+    media: &dyn JournalMedia,
+    database_path: &Path,
+    database_id: DatabaseId,
+) -> Result<(), JournalIoError> {
+    normalize_active_capacity_to(media, database_path, database_id, EXTENT_DATA_BYTES)
+}
+
+fn normalize_active_capacity_to(
+    media: &dyn JournalMedia,
+    database_path: &Path,
+    database_id: DatabaseId,
+    data_bytes: usize,
+) -> Result<(), JournalIoError> {
+    let active = journal_path(database_path);
+    if !media.try_exists(&active).map_err(|_| JournalIoError::Io)? {
+        return Ok(());
+    }
+    let (_, tail, state) =
+        scan_extent_with_media(media, &active, Some(database_id), |_, _| Ok(()))?;
+    if state.header.data_bytes == data_bytes {
+        return Ok(());
+    }
+    if state.header.anchor_position == EXTENT_DATA_OFFSET {
+        return normalize_extent_capacity_to(media, &active, data_bytes).map(drop);
+    }
+    if tail.transition_count != 0 || tail.incomplete_tail {
+        return Err(JournalIoError::Corrupt);
+    }
+    // Finish any earlier seal so the sealing name is free, then retire this
+    // extent exactly as a rotation would, successor first made durable.
+    seal_extent_with_media(media, database_path, database_id)?;
+    let sealing = sealing_journal_path(database_path);
+    media
+        .rename(&active, &sealing)
+        .map_err(|_| JournalIoError::Io)?;
+    sync_parent_with_media(media, &sealing)?;
+    recreate_missing_active_with_media(media, database_path)
+}
+
 /// Prepares one recyclable extent whose generation is strictly newer than the
 /// selected generation of `predecessor_path`.
 ///
@@ -4570,6 +4797,51 @@ pub(crate) fn reset_journal_after_with_media(
         return Err(JournalIoError::Corrupt);
     }
     reset_journal_after_generation_with_media(media, path, header, Some(predecessor.generation))
+}
+
+/// Re-issues the fully checkpointed extent at `path`, empty and with the same
+/// anchored header, at a generation above `floor` when its own is not. A
+/// restored database whose history is hydrated names none of its frames, and
+/// its future seals must never reach a generation a retained extent beside
+/// the configured database already holds (ADR-0263).
+pub(crate) fn renew_extent_above_with_media(
+    media: &dyn JournalMedia,
+    path: &Path,
+    floor: u64,
+) -> Result<(), JournalIoError> {
+    let (_, tail, state) = scan_extent_with_media(media, path, None, |_, _| Ok(()))?;
+    if state.header.generation > floor {
+        return Ok(());
+    }
+    if tail.transition_count != 0 || tail.incomplete_tail {
+        return Err(JournalIoError::Corrupt);
+    }
+    reset_journal_after_generation_with_media(
+        media,
+        path,
+        &state.header.logical,
+        Some(floor.max(state.header.generation)),
+    )
+}
+
+/// The generation of the extent at `path`, if one exists; a legacy journal
+/// file counts as generation zero.
+pub(crate) fn extent_generation_with_media(
+    media: &dyn JournalMedia,
+    path: &Path,
+) -> Result<Option<u64>, JournalIoError> {
+    let mut file = match media.open_read(path) {
+        Ok(file) => file,
+        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(None),
+        Err(_) => return Err(JournalIoError::Io),
+    };
+    let mut magic = [0_u8; 8];
+    file.read_exact(&mut magic)
+        .map_err(|_| JournalIoError::Corrupt)?;
+    if magic == FILE_MAGIC {
+        return Ok(Some(0));
+    }
+    read_selected_extent_header(&mut file, false).map(|extent| Some(extent.generation))
 }
 
 fn reset_journal_after_generation_with_media(
@@ -5390,6 +5662,124 @@ mod tests {
 
     // req: REC-005
     #[test]
+    fn a_capacity_change_retires_an_extent_that_retains_frames_instead_of_replacing_it() {
+        let database_path = TestPath::new("capacity-retained");
+        let database_id = database_id(32);
+        let (first, second) = sealing_extent(&database_path.0, database_id);
+        let active = journal_path(&database_path.0);
+        let sealing = sealing_journal_path(&database_path.0);
+        std::fs::rename(&sealing, &active).expect("back to the active name");
+        let (_, tail) = scan_journal(&active, database_id, |_| Ok(()))
+            .expect("scan")
+            .expect("extent exists");
+        let anchored = JournalFileHeader::with_frontiers(
+            database_id,
+            tail.last_sequence,
+            tail.last_administration_sequence,
+            tail.last_hash,
+        );
+        advance_journal_anchor_with_media(&RealJournalMedia, &active, &anchored)
+            .expect("materialized frames stay behind the anchor");
+        let generation = inspect_extent(&active).expect("active").header.generation;
+
+        normalize_active_capacity_to(
+            &RealJournalMedia,
+            &database_path.0,
+            database_id,
+            PRODUCTION_EXTENT_DATA_BYTES,
+        )
+        .expect("retire the retained extent");
+        let retired = inspect_extent(&sealing).expect("retired extent");
+        assert_eq!(retired.header.generation, generation);
+        let successor = inspect_extent(&active).expect("successor");
+        assert_eq!(successor.header.generation, generation + 1);
+        assert_eq!(successor.header.logical, anchored, "the chain continues");
+        assert_eq!(successor.next_position, EXTENT_DATA_OFFSET);
+
+        // History stubs naming the retired frames still resolve, before and
+        // after the retired extent is sealed.
+        let placement =
+            frame_placement_after(frame_physical_bytes(&first), &second).expect("placement");
+        for _ in 0..2 {
+            let frame = read_retained_frame_with_media(
+                &RealJournalMedia,
+                &database_path.0,
+                database_id,
+                placement,
+                generation,
+            )
+            .expect("retained frame");
+            assert_eq!(frame.covered_sequence(), Some(sequence(2)));
+            seal_extent_with_media(&RealJournalMedia, &database_path.0, database_id).expect("seal");
+        }
+        assert!(sealed_journal_path(&database_path.0, generation).exists());
+    }
+
+    // req: REC-005
+    #[test]
+    fn a_renewed_extent_rises_above_every_retained_generation_and_keeps_its_anchor() {
+        let database_path = TestPath::new("renew-above");
+        let database_id = database_id(35);
+        let _ = sealing_extent(&database_path.0, database_id);
+        let active = journal_path(&database_path.0);
+        std::fs::rename(sealing_journal_path(&database_path.0), &active).expect("activate");
+        let (_, tail) = scan_journal(&active, database_id, |_| Ok(()))
+            .expect("scan")
+            .expect("extent exists");
+        let anchored = JournalFileHeader::with_frontiers(
+            database_id,
+            tail.last_sequence,
+            tail.last_administration_sequence,
+            tail.last_hash,
+        );
+        advance_journal_anchor_with_media(&RealJournalMedia, &active, &anchored).expect("anchor");
+        let before = inspect_extent(&active).expect("before");
+
+        renew_extent_above_with_media(&RealJournalMedia, &active, 0).expect("already above");
+        assert_eq!(inspect_extent(&active).expect("unchanged"), before);
+
+        let floor = before.header.generation + 5;
+        renew_extent_above_with_media(&RealJournalMedia, &active, floor).expect("renew");
+        let renewed = inspect_extent(&active).expect("renewed");
+        assert_eq!(renewed.header.generation, floor + 1);
+        assert_eq!(renewed.header.logical, anchored, "the chain continues");
+        assert_eq!(
+            renewed.next_position, EXTENT_DATA_OFFSET,
+            "no retained prefix"
+        );
+        assert_eq!(
+            extent_generation_with_media(&RealJournalMedia, &active).expect("generation"),
+            Some(floor + 1)
+        );
+    }
+
+    // req: REC-005
+    #[test]
+    fn a_missing_active_extent_is_recreated_after_the_extent_waiting_to_seal() {
+        let database_path = TestPath::new("missing-active");
+        let database_id = database_id(33);
+        let _ = sealing_extent(&database_path.0, database_id);
+        let sealing = sealing_journal_path(&database_path.0);
+        let predecessor = inspect_extent(&sealing).expect("sealing extent");
+        let active = journal_path(&database_path.0);
+        assert!(!active.exists());
+
+        recreate_missing_active_with_media(&RealJournalMedia, &database_path.0)
+            .expect("recreate the active extent");
+        let recreated = inspect_extent(&active).expect("recreated");
+        assert_eq!(
+            recreated.header.generation,
+            predecessor.header.generation + 1,
+            "never a generation a retained extent can hold"
+        );
+        assert_eq!(recreated.header.logical, predecessor.header.logical);
+        recreate_missing_active_with_media(&RealJournalMedia, &database_path.0)
+            .expect("an existing active extent is left alone");
+        assert_eq!(inspect_extent(&active).expect("unchanged"), recreated);
+    }
+
+    // req: REC-005
+    #[test]
     fn a_legacy_capacity_extent_is_replaced_at_the_configured_capacity_only_when_empty() {
         let path = TestPath::new("capacity-empty");
         let database_id = database_id(31);
@@ -6192,6 +6582,52 @@ mod tests {
 
     // req: REC-005
     #[test]
+    fn a_proven_frame_decodes_only_under_the_hash_it_was_recorded_with() {
+        let encoded = recovery_frame(database_id(34)).encode().expect("encode");
+        let (full, hash) = JournalFrame::decode(encoded.as_bytes()).expect("full decode");
+        assert_eq!(
+            JournalFrame::decode_proven(encoded.as_bytes(), &hash).expect("proven decode"),
+            full
+        );
+        let mut other = hash;
+        other[0] ^= 1;
+        assert_eq!(
+            JournalFrame::decode_proven(encoded.as_bytes(), &other),
+            Err(JournalCodecError::Checksum),
+            "a frame is never accepted under another frame's hash"
+        );
+    }
+
+    // req: REC-005
+    #[test]
+    fn a_sealed_footer_round_trips_an_origin_that_continues_an_earlier_extent() {
+        // Every extent after the first continues a real frame hash, whose
+        // final bytes must not be mistaken for the reserved field after it.
+        let footer = SealedExtentFooter {
+            generation: 7,
+            origin: (Some(sequence(9)), None, [0xa5; HASH_BYTES]),
+            entries: Vec::new(),
+        };
+        let encoded = footer.encode().expect("encode");
+        assert_eq!(
+            SealedExtentFooter::decode(&encoded).expect("decode"),
+            footer
+        );
+
+        let mut reserved = encoded.clone();
+        reserved[72] = 1;
+        let body_len = SEALED_FOOTER_HEADER_BYTES;
+        let checksum = digest(&reserved[..body_len]);
+        reserved[body_len..body_len + HASH_BYTES].copy_from_slice(&checksum);
+        assert_eq!(
+            SealedExtentFooter::decode(&reserved),
+            Err(JournalIoError::Corrupt),
+            "a nonzero reserved byte is refused even under a valid checksum"
+        );
+    }
+
+    // req: REC-005
+    #[test]
     fn sealing_never_overwrites_an_existing_sealed_extent() {
         let database_path = TestPath::new("seal-collision");
         let database_id = database_id(20);
@@ -6282,7 +6718,8 @@ mod tests {
         let frame = recovery_frame(database_id);
         let encoded = frame.encode().expect("encode frame");
         write_recovery_journal(&database_path.0, database_id, &encoded, None);
-        replay_frames(&database, std::slice::from_ref(&frame)).expect("simulate checkpoint");
+        replay_frames(&database, std::slice::from_ref(&frame), &[None])
+            .expect("simulate checkpoint");
 
         recover_journal(&database, &database_path.0, database_id)
             .expect("verify checkpointed tail");
@@ -6317,7 +6754,8 @@ mod tests {
         let database = create_database(&database_path.0);
         let database_id = database_id(26);
         let frame = recovery_frame(database_id);
-        replay_frames(&database, std::slice::from_ref(&frame)).expect("advance redb checkpoint");
+        replay_frames(&database, std::slice::from_ref(&frame), &[None])
+            .expect("advance redb checkpoint");
         let path = journal_path(&database_path.0);
         initialize_or_validate_file(
             &path,

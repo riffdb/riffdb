@@ -340,14 +340,20 @@ disk will not recover any.
 Journal extents are now retained after their checkpoint rather than recycled
 (ADR-0263, in progress under WP-814). Each installed checkpoint leaves one
 sealed extent beside the database, named `<database>.riffjournal.sealed.<generation>`
-and trimmed to its frames and footer. For history an asynchronous checkpoint
-materializes, the database file keeps only a small locator ("history stub") per
-command segment and receipt, and the bytes live in the sealed extent. Backups
-copy every sealed extent, and a restored copy resolves its history from them;
+and trimmed to its frames and footer. For journaled history, whether a
+checkpoint, crash recovery, or a synchronous drain materializes it, the database
+file keeps only a small locator ("history stub") per command segment and
+receipt, and the bytes stay in the journal extent. Direct writes and
+administration ceremonies still store their history in the database file. Backups
+copy the journal and every sealed extent, and a restored copy resolves its history from them;
 deleting a sealed extent by hand makes that history unreadable. Until WP-815
 retires them, retention does not remove sealed extents, so they accumulate with
-every checkpoint. A private archive (WP-749) cannot yet be opened from a backup
-that holds sealed extents; it is refused rather than read partially.
+every checkpoint. A backup reads its history from its own journal and sealed
+extent artifacts. A staged maintenance restore (promotion rewind or archive
+replay) and a contract migration stage rewrite the stubs as full rows while
+staging, so the database they publish keeps its earlier history in the database
+file. The replaced database's journal extents stay beside it, unreferenced,
+until WP-815 retention reclaims them.
 
 
 ## What a command cannot express
