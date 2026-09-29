@@ -823,3 +823,61 @@ fn complete_changelog_history_validation_rejects_rechecksummed_broken_interiors(
         );
     }
 }
+
+fn recorded_binding(
+    history: ChangelogHistoryStateV3,
+    frame: &JournalFrame,
+) -> crate::journal::FrameChangelogBinding {
+    let binding = AuthoritativeTransactionBindingV3 {
+        database_id: history.lineage().database_id(),
+        history_incarnation: history.lineage().history_incarnation(),
+        predecessor: Some(history.tail().sequence()),
+        sequence: history.expected_allocator().allocate_one().unwrap().0,
+        predecessor_frontier: history.tail().frontier(),
+        covered_frontier: DualFrontier::new(
+            frame.covered_sequence(),
+            frame.covered_administration_sequence(),
+        ),
+        prior_history_hash: history.tail().history_hash(),
+    };
+    crate::journal::FrameChangelogBinding::new(&binding, history.lineage().catalog_digest())
+}
+
+// req: REC-005
+#[test]
+fn recovery_refuses_a_version_3_frame_whose_recorded_binding_disagrees_with_the_roots() {
+    let scope = crate::test_path::ScopedDirectory::new("v3-recorded-binding");
+    let database = fixture(&scope.join("db.redb"), PRE_V3_REGISTRY);
+    let history = activate_validated(
+        database.begin_write().unwrap(),
+        lineage(),
+        DualFrontier::INITIAL,
+    )
+    .unwrap();
+    let source = audit_source(history);
+    let good = recorded_binding(history, &source);
+
+    let mut wrong = good.binding(&source);
+    wrong.prior_history_hash[0] ^= 1;
+    let forged = source
+        .clone()
+        .with_changelog(Some(crate::journal::FrameChangelogBinding::new(
+            &wrong,
+            good.catalog_digest(),
+        )));
+    let transaction = database.begin_write().unwrap();
+    assert_eq!(
+        crate::changelog_v3_journal::materialize_recovered_frame(&transaction, &forged)
+            .unwrap_err()
+            .kind(),
+        StorageErrorKind::CorruptData
+    );
+    transaction.abort().unwrap();
+
+    let recorded = source.with_changelog(Some(good));
+    let transaction = database.begin_write().unwrap();
+    let receipt =
+        crate::changelog_v3_journal::materialize_recovered_frame(&transaction, &recorded).unwrap();
+    transaction.commit().unwrap();
+    assert_eq!(receipt.binding(), good.binding(&recorded));
+}

@@ -1451,6 +1451,7 @@ fn build_overlay_frame(
         command_count,
         previous_hash,
         buffer,
+        None,
     )
     .map_err(|_| EngineBenchmarkError::Engine)?;
     let mut mutations = before_segment;

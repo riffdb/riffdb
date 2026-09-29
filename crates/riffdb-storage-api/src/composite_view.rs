@@ -607,6 +607,13 @@ impl CompositeMutationStage {
         }
     }
 
+    /// The ordered mutations staged so far: exactly the list a later
+    /// [`Self::seal_encoded_frame_with_mutations`] validates and returns.
+    #[must_use]
+    pub fn staged_mutations(&self) -> &[CompositeMutationV1] {
+        &self.mutations
+    }
+
     /// Applies one exact mutation to private read-your-writes state. A failed
     /// validation leaves the complete stage unchanged.
     pub fn apply(

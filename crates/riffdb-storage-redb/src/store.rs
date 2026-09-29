@@ -6561,6 +6561,15 @@ impl RedbWriteAccess {
                 .map_err(|_| storage_error(StorageErrorKind::LimitExceeded))?;
             let predecessor_sequence = runtime.last_sequence;
             let predecessor_administration_sequence = runtime.last_administration_sequence;
+            // Derive the receipt binding before encoding so the frame records it
+            // (ADR-0263 Amendment 2 B4). The stage holds exactly the mutations
+            // its seal below validates and returns.
+            let changelog_successor = runtime.prepare_changelog_successor(
+                changelog_predecessor,
+                riffdb_storage_api::ChangelogAttributionV3::JournaledServiceAudit,
+                DualFrontier::new(covered_sequence, covered_administration_sequence),
+                composite_stage.staged_mutations(),
+            )?;
             let frame = crate::journal::JournalFrame::encode_buffered_service_audit(
                 runtime.database_id,
                 predecessor_sequence,
@@ -6569,6 +6578,7 @@ impl RedbWriteAccess {
                 audit_count,
                 runtime.last_hash,
                 mutations,
+                frame_changelog_binding(changelog_successor.as_ref()),
             )
             .map_err(journal_storage_error)?;
             let encoded_bytes = frame.as_bytes().len();
@@ -6638,12 +6648,6 @@ impl RedbWriteAccess {
                 )?;
             let checkpoint_mutations: Arc<[riffdb_storage_api::CompositeMutationV1]> =
                 Arc::from(checkpoint_mutations);
-            let changelog_successor = runtime.prepare_changelog_successor(
-                changelog_predecessor,
-                riffdb_storage_api::ChangelogAttributionV3::JournaledServiceAudit,
-                DualFrontier::new(covered_sequence, covered_administration_sequence),
-                &checkpoint_mutations,
-            )?;
             composite_successor.append_changelog_source(
                 changelog_successor,
                 riffdb_storage_api::ChangelogAttributionV3::JournaledServiceAudit,
@@ -6923,6 +6927,15 @@ impl RedbDurabilityEpoch {
             }
             let command_count = u16::try_from(self.command_count)
                 .map_err(|_| storage_error(StorageErrorKind::LimitExceeded))?;
+            // Derive the receipt binding before encoding so the frame records it
+            // (ADR-0263 Amendment 2 B4). The stage holds exactly the mutations
+            // its seal below validates and returns.
+            let changelog_successor = runtime.prepare_changelog_successor(
+                changelog_predecessor,
+                riffdb_storage_api::ChangelogAttributionV3::JournaledApplicationGroup,
+                DualFrontier::new(Some(last_sequence), last_administration_sequence),
+                composite_stage.staged_mutations(),
+            )?;
             let frame = crate::journal::JournalFrame::encode_buffered_command(
                 runtime.database_id,
                 runtime.last_sequence,
@@ -6932,6 +6945,7 @@ impl RedbDurabilityEpoch {
                 command_count,
                 runtime.last_hash,
                 mutations,
+                frame_changelog_binding(changelog_successor.as_ref()),
             )
             .map_err(journal_storage_error)?;
             let encoded_bytes = frame.as_bytes().len();
@@ -7012,12 +7026,19 @@ impl RedbDurabilityEpoch {
                     )?;
                 let checkpoint_mutations: Arc<[riffdb_storage_api::CompositeMutationV1]> =
                     Arc::from(checkpoint_mutations);
-                let changelog_successor = runtime.prepare_changelog_successor(
-                    changelog_predecessor,
-                    riffdb_storage_api::ChangelogAttributionV3::JournaledApplicationGroup,
-                    DualFrontier::new(Some(last_sequence), last_administration_sequence),
-                    &checkpoint_mutations,
-                )?;
+                // A stage rebuilt after a checkpoint rebase re-derives its
+                // mutations from the frame; the recorded binding must still match.
+                if checkpoint_rebased
+                    && runtime.prepare_changelog_successor(
+                        changelog_predecessor,
+                        riffdb_storage_api::ChangelogAttributionV3::JournaledApplicationGroup,
+                        DualFrontier::new(Some(last_sequence), last_administration_sequence),
+                        &checkpoint_mutations,
+                    )? != changelog_successor
+                {
+                    self.shared.fence_writes();
+                    return Err(storage_error(StorageErrorKind::InvariantViolation));
+                }
                 composite_successor.append_changelog_source(
                     changelog_successor,
                     riffdb_storage_api::ChangelogAttributionV3::JournaledApplicationGroup,
@@ -9183,3 +9204,17 @@ mod tests;
 #[cfg(test)]
 #[path = "store_follower_tests.rs"]
 mod follower_tests;
+
+/// The binding a journaled frame records for its receipt (ADR-0263 Amendment 2
+/// B4), from the successor [`JournalRuntime::prepare_changelog_successor`]
+/// derived for that frame.
+fn frame_changelog_binding(
+    successor: Option<&(
+        riffdb_storage_api::AuthoritativeTransactionBindingV3,
+        riffdb_storage_api::ChangelogHistoryStateV3,
+    )>,
+) -> Option<crate::journal::FrameChangelogBinding> {
+    successor.map(|(binding, history)| {
+        crate::journal::FrameChangelogBinding::new(binding, history.lineage().catalog_digest())
+    })
+}

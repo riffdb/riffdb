@@ -80,8 +80,16 @@ const EXTENT_FRAME_FOOTER_BYTES: usize = 64;
 const EXTENT_HEADER_CHECKSUM_OFFSET: usize = EXTENT_HEADER_SLOT_BYTES - HASH_BYTES;
 const HASH_BYTES: usize = 32;
 const FILE_HEADER_BYTES: usize = 8 + 2 + 16 + 8 + 8 + HASH_BYTES + HASH_BYTES;
-const FRAME_HEADER_BYTES: usize =
+/// Fixed header of a version 2 logical frame (and every legacy journal frame).
+const FRAME_HEADER_BYTES_V2: usize =
     8 + 2 + 16 + 1 + 1 + 8 + 8 + 8 + 8 + 2 + 2 + 2 + 2 + 4 + 4 + HASH_BYTES;
+/// Version 3 appends the frame's changelog binding (ADR-0263 Amendment 2 B4):
+/// presence flag and padding, history incarnation, predecessor and assigned
+/// changelog sequences, prior history hash, and catalog digest.
+const FRAME_BINDING_BYTES: usize = 8 + 8 + 8 + 8 + HASH_BYTES + HASH_BYTES;
+/// Fixed header of the current (version 3) logical frame.
+const FRAME_HEADER_BYTES: usize = FRAME_HEADER_BYTES_V2 + FRAME_BINDING_BYTES;
+const FRAME_VERSION_V2: u16 = 2;
 const FRAME_FOOTER_BYTES: usize = 8 + 8 + HASH_BYTES;
 const MUTATION_HEADER_BYTES: usize = 1 + 1 + 1 + 1 + 4 + 4 + HASH_BYTES;
 
@@ -734,6 +742,7 @@ impl JournalMutationBuffer {
         command_count: u16,
         audit_count: u16,
         previous_hash: [u8; HASH_BYTES],
+        changelog: Option<FrameChangelogBinding>,
     ) -> Result<EncodedJournalFrame, JournalCodecError> {
         let payload_len = self
             .bytes
@@ -800,6 +809,8 @@ impl JournalMutationBuffer {
                 .to_be_bytes(),
         );
         header[76..108].copy_from_slice(&previous_hash);
+        header[FRAME_HEADER_BYTES_V2..FRAME_HEADER_BYTES]
+            .copy_from_slice(&FrameChangelogBinding::encode(changelog.as_ref()));
         let frame_hash = digest(&self.bytes);
         self.bytes.extend_from_slice(&FOOTER_MAGIC);
         self.bytes.extend_from_slice(
@@ -1191,9 +1202,131 @@ pub(crate) struct JournalFrame {
     audit_count: u16,
     previous_hash: [u8; HASH_BYTES],
     mutations: Vec<JournalMutation>,
+    changelog: Option<FrameChangelogBinding>,
+}
+
+/// The V3 changelog binding a journaled frame's receipt is derived with, beyond
+/// the database identity and frontiers the frame header already carries. It is
+/// recorded in the frame so a retained extent re-derives its receipts without
+/// the history state that existed when it was written.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) struct FrameChangelogBinding {
+    history_incarnation: u64,
+    predecessor: Option<riffdb_storage_api::ChangelogTransactionSequence>,
+    sequence: riffdb_storage_api::ChangelogTransactionSequence,
+    prior_history_hash: [u8; HASH_BYTES],
+    catalog_digest: [u8; HASH_BYTES],
+}
+
+impl FrameChangelogBinding {
+    pub(crate) fn new(
+        binding: &riffdb_storage_api::AuthoritativeTransactionBindingV3,
+        catalog_digest: [u8; HASH_BYTES],
+    ) -> Self {
+        Self {
+            history_incarnation: binding.history_incarnation,
+            predecessor: binding.predecessor,
+            sequence: binding.sequence,
+            prior_history_hash: binding.prior_history_hash,
+            catalog_digest,
+        }
+    }
+
+    /// The complete binding, with identity and frontiers taken from the frame.
+    pub(crate) fn binding(
+        &self,
+        frame: &JournalFrame,
+    ) -> riffdb_storage_api::AuthoritativeTransactionBindingV3 {
+        riffdb_storage_api::AuthoritativeTransactionBindingV3 {
+            database_id: frame.database_id,
+            history_incarnation: self.history_incarnation,
+            predecessor: self.predecessor,
+            sequence: self.sequence,
+            predecessor_frontier: riffdb_types::DualFrontier::new(
+                frame.predecessor_sequence,
+                frame.predecessor_administration_sequence,
+            ),
+            covered_frontier: riffdb_types::DualFrontier::new(
+                frame.covered_sequence,
+                frame.covered_administration_sequence,
+            ),
+            prior_history_hash: self.prior_history_hash,
+        }
+    }
+
+    pub(crate) const fn catalog_digest(&self) -> [u8; HASH_BYTES] {
+        self.catalog_digest
+    }
+
+    fn encode(binding: Option<&Self>) -> [u8; FRAME_BINDING_BYTES] {
+        let mut bytes = [0_u8; FRAME_BINDING_BYTES];
+        if let Some(binding) = binding {
+            bytes[0] = 1;
+            bytes[8..16].copy_from_slice(&binding.history_incarnation.to_be_bytes());
+            bytes[16..24].copy_from_slice(
+                &binding
+                    .predecessor
+                    .map_or(0, riffdb_storage_api::ChangelogTransactionSequence::get)
+                    .to_be_bytes(),
+            );
+            bytes[24..32].copy_from_slice(&binding.sequence.get().to_be_bytes());
+            bytes[32..64].copy_from_slice(&binding.prior_history_hash);
+            bytes[64..96].copy_from_slice(&binding.catalog_digest);
+        }
+        bytes
+    }
+
+    fn decode(bytes: &[u8]) -> Result<Option<Self>, JournalCodecError> {
+        let bytes = bytes
+            .get(..FRAME_BINDING_BYTES)
+            .ok_or(JournalCodecError::Truncated)?;
+        if bytes[1..8].iter().any(|byte| *byte != 0) {
+            return Err(JournalCodecError::InvalidValue);
+        }
+        match bytes[0] {
+            0 if bytes.iter().all(|byte| *byte == 0) => Ok(None),
+            1 => {
+                let history_incarnation = read_u64(bytes, 8)?;
+                let sequence =
+                    riffdb_storage_api::ChangelogTransactionSequence::new(read_u64(bytes, 24)?)
+                        .ok_or(JournalCodecError::InvalidValue)?;
+                let predecessor =
+                    riffdb_storage_api::ChangelogTransactionSequence::new(read_u64(bytes, 16)?);
+                if history_incarnation == 0
+                    || predecessor
+                        .map(riffdb_storage_api::ChangelogTransactionSequence::get)
+                        .and_then(|value| value.checked_add(1))
+                        .is_some_and(|next| next != sequence.get())
+                {
+                    return Err(JournalCodecError::InvalidValue);
+                }
+                Ok(Some(Self {
+                    history_incarnation,
+                    predecessor,
+                    sequence,
+                    prior_history_hash: read_array::<HASH_BYTES>(bytes, 32)?,
+                    catalog_digest: read_array::<HASH_BYTES>(bytes, 64)?,
+                }))
+            }
+            _ => Err(JournalCodecError::InvalidValue),
+        }
+    }
 }
 
 impl JournalFrame {
+    /// Records a changelog binding on a constructed frame, for fixtures that
+    /// build frames outside the ordered writer.
+    #[cfg(test)]
+    pub(crate) fn with_changelog(self, changelog: Option<FrameChangelogBinding>) -> Self {
+        Self { changelog, ..self }
+    }
+
+    /// The recorded changelog binding, absent for a version 2 frame or a frame
+    /// written before the source adopted V3 history.
+    pub(crate) const fn changelog(&self) -> Option<&FrameChangelogBinding> {
+        self.changelog.as_ref()
+    }
+
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn encode_buffered_command(
         database_id: DatabaseId,
@@ -1204,6 +1337,7 @@ impl JournalFrame {
         command_count: u16,
         previous_hash: [u8; HASH_BYTES],
         mutations: JournalMutationBuffer,
+        changelog: Option<FrameChangelogBinding>,
     ) -> Result<EncodedJournalFrame, JournalCodecError> {
         let audit_count = sequence_delta(
             predecessor_administration_sequence.map(AdministrationSequence::get),
@@ -1222,6 +1356,7 @@ impl JournalFrame {
             command_count,
             audit_count,
             previous_hash,
+            changelog,
         )
     }
 
@@ -1234,6 +1369,7 @@ impl JournalFrame {
         audit_count: u16,
         previous_hash: [u8; HASH_BYTES],
         mutations: JournalMutationBuffer,
+        changelog: Option<FrameChangelogBinding>,
     ) -> Result<EncodedJournalFrame, JournalCodecError> {
         mutations.finish(
             database_id,
@@ -1246,6 +1382,7 @@ impl JournalFrame {
             0,
             audit_count,
             previous_hash,
+            changelog,
         )
     }
 
@@ -1386,6 +1523,7 @@ impl JournalFrame {
             audit_count,
             previous_hash,
             mutations,
+            changelog: None,
         };
         if frame.encoded_len()? > MAX_JOURNAL_FRAME_BYTES {
             return Err(JournalCodecError::LimitExceeded);
@@ -1394,8 +1532,27 @@ impl JournalFrame {
     }
 
     pub(crate) fn encode(&self) -> Result<EncodedJournalFrame, JournalCodecError> {
+        self.encode_as(FORMAT_VERSION)
+    }
+
+    /// A version 2 encoding, as every legacy journal and pre-ADR-0263 extent
+    /// holds. Recovery still reads these; only fixtures still write them.
+    #[cfg(test)]
+    pub(crate) fn encode_version_2(&self) -> Result<EncodedJournalFrame, JournalCodecError> {
+        if self.changelog.is_some() {
+            return Err(JournalCodecError::InvalidValue);
+        }
+        self.encode_as(FRAME_VERSION_V2)
+    }
+
+    fn encode_as(&self, version: u16) -> Result<EncodedJournalFrame, JournalCodecError> {
+        let header_bytes = match version {
+            FORMAT_VERSION => FRAME_HEADER_BYTES,
+            FRAME_VERSION_V2 => FRAME_HEADER_BYTES_V2,
+            _ => return Err(JournalCodecError::UnknownVersion),
+        };
         let payload_len = self.payload_len()?;
-        let total_len = FRAME_HEADER_BYTES
+        let total_len = header_bytes
             .checked_add(payload_len)
             .and_then(|value| value.checked_add(FRAME_FOOTER_BYTES))
             .ok_or(JournalCodecError::LimitExceeded)?;
@@ -1404,7 +1561,7 @@ impl JournalFrame {
         }
         let mut bytes = Vec::with_capacity(total_len);
         bytes.extend_from_slice(&FRAME_MAGIC);
-        bytes.extend_from_slice(&FORMAT_VERSION.to_be_bytes());
+        bytes.extend_from_slice(&version.to_be_bytes());
         bytes.extend_from_slice(self.database_id.as_bytes());
         bytes.push(self.kind as u8);
         bytes.push(0);
@@ -1431,6 +1588,9 @@ impl JournalFrame {
                 .to_be_bytes(),
         );
         bytes.extend_from_slice(&self.previous_hash);
+        if header_bytes == FRAME_HEADER_BYTES {
+            bytes.extend_from_slice(&FrameChangelogBinding::encode(self.changelog.as_ref()));
+        }
         for mutation in &self.mutations {
             bytes.push(mutation.table() as u8);
             bytes.push(u8::from(mutation.value().is_none()));
@@ -1478,12 +1638,25 @@ impl JournalFrame {
     }
 
     pub(crate) fn decode(bytes: &[u8]) -> Result<(Self, [u8; HASH_BYTES]), JournalCodecError> {
-        if bytes.len() < FRAME_HEADER_BYTES + FRAME_FOOTER_BYTES {
+        if bytes.len() < FRAME_HEADER_BYTES_V2 + FRAME_FOOTER_BYTES {
             return Err(JournalCodecError::Truncated);
         }
-        if bytes[..8] != FRAME_MAGIC || read_u16(bytes, 8)? != FORMAT_VERSION {
+        if bytes[..8] != FRAME_MAGIC {
             return Err(JournalCodecError::UnknownVersion);
         }
+        let header_bytes = match read_u16(bytes, 8)? {
+            FORMAT_VERSION => FRAME_HEADER_BYTES,
+            FRAME_VERSION_V2 => FRAME_HEADER_BYTES_V2,
+            _ => return Err(JournalCodecError::UnknownVersion),
+        };
+        if bytes.len() < header_bytes + FRAME_FOOTER_BYTES {
+            return Err(JournalCodecError::Truncated);
+        }
+        let changelog = if header_bytes == FRAME_HEADER_BYTES {
+            FrameChangelogBinding::decode(&bytes[FRAME_HEADER_BYTES_V2..FRAME_HEADER_BYTES])?
+        } else {
+            None
+        };
         if bytes.get(27) != Some(&0) || read_u16(bytes, 66)? != 0 {
             return Err(JournalCodecError::InvalidValue);
         }
@@ -1491,7 +1664,7 @@ impl JournalFrame {
             usize::try_from(read_u32(bytes, 68)?).map_err(|_| JournalCodecError::LimitExceeded)?;
         let payload_len =
             usize::try_from(read_u32(bytes, 72)?).map_err(|_| JournalCodecError::LimitExceeded)?;
-        let expected_len = FRAME_HEADER_BYTES
+        let expected_len = header_bytes
             .checked_add(payload_len)
             .and_then(|value| value.checked_add(FRAME_FOOTER_BYTES))
             .ok_or(JournalCodecError::LimitExceeded)?;
@@ -1501,7 +1674,7 @@ impl JournalFrame {
         if bytes.len() != expected_len {
             return Err(JournalCodecError::Truncated);
         }
-        let footer = FRAME_HEADER_BYTES + payload_len;
+        let footer = header_bytes + payload_len;
         if bytes[footer..footer + 8] != FOOTER_MAGIC
             || usize::try_from(read_u64(bytes, footer + 8)?)
                 .map_err(|_| JournalCodecError::LimitExceeded)?
@@ -1513,7 +1686,7 @@ impl JournalFrame {
         if frame_hash != read_array::<HASH_BYTES>(bytes, footer + 16)? {
             return Err(JournalCodecError::Checksum);
         }
-        let mut cursor = FRAME_HEADER_BYTES;
+        let mut cursor = header_bytes;
         let mut mutations = Vec::with_capacity(mutation_count);
         for _ in 0..mutation_count {
             let table =
@@ -1591,7 +1764,7 @@ impl JournalFrame {
             read_array::<HASH_BYTES>(bytes, 76)?,
             mutations,
         )?;
-        Ok((frame, frame_hash))
+        Ok((Self { changelog, ..frame }, frame_hash))
     }
 
     fn payload_len(&self) -> Result<usize, JournalCodecError> {
@@ -2675,7 +2848,7 @@ fn scan_legacy_journal_with_media(
     let mut command_count = 0_usize;
     let mut audit_count = 0_usize;
     loop {
-        let mut frame_header = [0_u8; FRAME_HEADER_BYTES];
+        let mut frame_header = [0_u8; FRAME_HEADER_BYTES_V2];
         let read = read_until_full_or_eof(&mut file, &mut frame_header)?;
         if read == 0 {
             return Ok(Some((
@@ -2692,7 +2865,7 @@ fn scan_legacy_journal_with_media(
                 },
             )));
         }
-        if read != FRAME_HEADER_BYTES {
+        if read != FRAME_HEADER_BYTES_V2 {
             return Ok(Some((
                 header,
                 JournalScanTail {
@@ -2713,7 +2886,7 @@ fn scan_legacy_journal_with_media(
         let remaining = payload_len
             .checked_add(FRAME_FOOTER_BYTES)
             .ok_or(JournalIoError::Corrupt)?;
-        let total = FRAME_HEADER_BYTES
+        let total = FRAME_HEADER_BYTES_V2
             .checked_add(remaining)
             .ok_or(JournalIoError::Corrupt)?;
         if total > MAX_JOURNAL_FRAME_BYTES {
@@ -4107,6 +4280,7 @@ mod tests {
             2,
             [0x44; HASH_BYTES],
             mutations,
+            None,
         )
         .expect("buffered encoder");
         assert_eq!(actual.as_bytes(), expected.as_bytes());
@@ -4157,6 +4331,7 @@ mod tests {
             2,
             [0x22; HASH_BYTES],
             buffer,
+            None,
         )
         .expect("encode compact frame");
         assert_eq!(frame.selected_command_segment_bytes(), selected);
@@ -4547,6 +4722,124 @@ mod tests {
         );
     }
 
+    fn sample_changelog_binding() -> FrameChangelogBinding {
+        FrameChangelogBinding {
+            history_incarnation: 7,
+            predecessor: riffdb_storage_api::ChangelogTransactionSequence::new(41),
+            sequence: riffdb_storage_api::ChangelogTransactionSequence::new(42).expect("nonzero"),
+            prior_history_hash: [0x5a; HASH_BYTES],
+            catalog_digest: [0xc3; HASH_BYTES],
+        }
+    }
+
+    // req: REC-005
+    #[test]
+    fn a_version_3_frame_round_trips_its_changelog_binding_and_version_2_carries_none() {
+        let binding = sample_changelog_binding();
+        let frame = sample_frame().with_changelog(Some(binding));
+        let encoded = frame.encode().expect("encode v3");
+        assert_eq!(
+            read_u16(encoded.as_bytes(), 8).expect("version"),
+            FORMAT_VERSION
+        );
+        let (decoded, hash) = JournalFrame::decode(encoded.as_bytes()).expect("decode v3");
+        assert_eq!(hash, encoded.frame_hash());
+        assert_eq!(decoded.changelog(), Some(&binding));
+        assert_eq!(decoded, frame);
+
+        let unbound = sample_frame();
+        let (decoded, _) = JournalFrame::decode(unbound.encode().expect("encode").as_bytes())
+            .expect("decode unbound v3");
+        assert_eq!(decoded.changelog(), None);
+        let legacy = unbound.encode_version_2().expect("encode v2");
+        assert_eq!(
+            legacy.as_bytes().len() + FRAME_BINDING_BYTES,
+            unbound.encode().expect("encode").as_bytes().len()
+        );
+        let (decoded, _) = JournalFrame::decode(legacy.as_bytes()).expect("decode v2");
+        assert_eq!(decoded.changelog(), None);
+        assert_eq!(decoded, unbound);
+    }
+
+    fn hex_bytes(text: &str) -> Vec<u8> {
+        let text = text.trim();
+        (0..text.len())
+            .step_by(2)
+            .map(|index| u8::from_str_radix(&text[index..index + 2], 16).expect("hex fixture"))
+            .collect()
+    }
+
+    fn lower_hex(bytes: &[u8]) -> String {
+        bytes.iter().map(|byte| format!("{byte:02x}")).collect()
+    }
+
+    // req: REC-005
+    #[test]
+    fn journal_frame_encodings_match_their_compatibility_fixtures() {
+        let v2 = include_str!("../../../fixtures/compatibility/journal-frame-v2.hex");
+        let v3 = include_str!("../../../fixtures/compatibility/journal-frame-v3.hex");
+        let unbound = sample_frame();
+        let bound = sample_frame().with_changelog(Some(sample_changelog_binding()));
+        let encoded_v2 = unbound.encode_version_2().expect("encode v2");
+        let encoded_v3 = bound.encode().expect("encode v3");
+        if std::env::var_os("RIFFDB_REGENERATE_JOURNAL_FRAME_FIXTURES").is_some() {
+            let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../fixtures/compatibility");
+            std::fs::write(
+                root.join("journal-frame-v2.hex"),
+                lower_hex(encoded_v2.as_bytes()) + "\n",
+            )
+            .expect("write v2 fixture");
+            std::fs::write(
+                root.join("journal-frame-v3.hex"),
+                lower_hex(encoded_v3.as_bytes()) + "\n",
+            )
+            .expect("write v3 fixture");
+            return;
+        }
+        assert_eq!(lower_hex(encoded_v2.as_bytes()), v2.trim());
+        assert_eq!(lower_hex(encoded_v3.as_bytes()), v3.trim());
+        assert_eq!(
+            JournalFrame::decode(&hex_bytes(v2)).expect("decode v2").0,
+            unbound
+        );
+        let (decoded, _) = JournalFrame::decode(&hex_bytes(v3)).expect("decode v3");
+        assert_eq!(decoded, bound);
+        assert_eq!(decoded.changelog(), Some(&sample_changelog_binding()));
+    }
+
+    // req: REC-005
+    #[test]
+    fn a_non_canonical_changelog_binding_block_is_refused() {
+        let mut valid = FrameChangelogBinding::encode(Some(&sample_changelog_binding()));
+        assert!(
+            FrameChangelogBinding::decode(&valid)
+                .expect("valid")
+                .is_some()
+        );
+        let mutations: [fn(&mut [u8; FRAME_BINDING_BYTES]); 5] = [
+            |bytes| bytes[0] = 2,
+            |bytes| bytes[3] = 1,
+            |bytes| bytes[24..32].copy_from_slice(&0_u64.to_be_bytes()),
+            |bytes| bytes[24..32].copy_from_slice(&43_u64.to_be_bytes()),
+            |bytes| bytes[8..16].copy_from_slice(&0_u64.to_be_bytes()),
+        ];
+        for mutate in mutations {
+            let mut bytes = valid;
+            mutate(&mut bytes);
+            assert_eq!(
+                FrameChangelogBinding::decode(&bytes),
+                Err(JournalCodecError::InvalidValue)
+            );
+        }
+        valid = [0; FRAME_BINDING_BYTES];
+        valid[40] = 1;
+        assert_eq!(
+            FrameChangelogBinding::decode(&valid),
+            Err(JournalCodecError::InvalidValue),
+            "an absent binding is all zero"
+        );
+    }
+
     #[test]
     fn torn_inactive_header_falls_back_to_the_complete_generation() {
         let path = TestPath::new("torn-recycle-header");
@@ -4615,7 +4908,7 @@ mod tests {
             vec![JournalMutation::put(JournalTable::Commits, vec![1], vec![2]).expect("put")],
         )
         .expect("legacy frame")
-        .encode()
+        .encode_version_2()
         .expect("encode legacy frame");
         file.write_all(frame.as_bytes())
             .expect("write legacy suffix");

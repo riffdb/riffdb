@@ -124,6 +124,10 @@ pub(crate) struct RedbCompositeMutationStage {
 }
 
 impl RedbCompositeMutationStage {
+    pub(crate) fn staged_mutations(&self) -> &[riffdb_storage_api::CompositeMutationV1] {
+        self.stage.staged_mutations()
+    }
+
     pub(crate) fn from_published(published: &Arc<RedbCompositeReadView>) -> Self {
         Self {
             changelog: published.changelog.clone(),

@@ -219,6 +219,14 @@ pub(crate) fn materialize_recovered_frame(
         ),
         prior_history_hash: history.tail().history_hash(),
     };
+    // A version 3 frame recorded the binding it was written with (ADR-0263
+    // Amendment 2 B4); it must agree with the one these roots derive.
+    if let Some(recorded) = frame.changelog()
+        && (recorded.binding(frame) != binding
+            || recorded.catalog_digest() != history.lineage().catalog_digest())
+    {
+        return Err(storage_error(StorageErrorKind::CorruptData));
+    }
     let receipt = receipt_from_journal(frame, binding, history.lineage().catalog_digest())
         .map_err(value_error)?;
     let advance = PreparedHistoryAdvance::prepare(transaction, &receipt)?;
@@ -307,6 +315,12 @@ pub(crate) fn verify_materialized_frame(
         {
             return Err(storage_error(StorageErrorKind::CorruptData));
         }
+    }
+    if let Some(recorded) = frame.changelog()
+        && (recorded.binding(frame) != binding
+            || recorded.catalog_digest() != history.lineage().catalog_digest())
+    {
+        return Err(storage_error(StorageErrorKind::CorruptData));
     }
     let recovered = receipt_from_journal(frame, binding, history.lineage().catalog_digest())
         .map_err(value_error)?;
