@@ -359,9 +359,23 @@ pub fn mark_all_outbox_events_delivered_v1(
 pub fn recovery_authority_snapshot_v1(
     path: &Path,
 ) -> Result<RecoveryAuthoritySnapshotV1, EngineBenchmarkError> {
-    let database = ReadOnlyDatabase::open(path).map_err(|_| EngineBenchmarkError::Inventory {
-        stage: InventoryStage::OpenDatabase,
-        table: None,
+    let database = ReadOnlyDatabase::open(path).map_err(|error| {
+        if crate::query_diagnostics::query_execute_diagnostics_enabled() {
+            let code = match error {
+                redb::DatabaseError::DatabaseAlreadyOpen => 1,
+                redb::DatabaseError::RepairAborted => 2,
+                redb::DatabaseError::UpgradeRequired(_) => 3,
+                redb::DatabaseError::TransactionInProgress => 4,
+                redb::DatabaseError::Storage(redb::StorageError::Corrupted(_)) => 5,
+                redb::DatabaseError::Storage(redb::StorageError::Io(_)) => 6,
+                _ => 0,
+            };
+            eprintln!("riffdb-recovery-inventory-open-probe-v1\t{code}");
+        }
+        EngineBenchmarkError::Inventory {
+            stage: InventoryStage::OpenDatabase,
+            table: None,
+        }
     })?;
     let transaction = database
         .begin_read()
