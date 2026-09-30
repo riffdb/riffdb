@@ -78,6 +78,17 @@ retains no values. A deterministic shared collision schedule and an exact-key
 collision test cover the probe. Its result does not authorize an absence fast
 path until the saved work is measured and snapshot semantics are tested.
 
+The repeated-miss probe (`d89a7fea`) measured 341,598 repeated idempotency
+locator misses taking 0.70 seconds and 291,357 repeated entity misses taking
+0.32 seconds. Including the cheap empty-table misses, repeated get work totals
+about 1.04 seconds across setup and measurement. No production negative cache
+was implemented: its hashing and locking would also have a cost, and this
+observation does not support a gain above the host's variance.
+
+The next diagnostic uses the repository's profiling build with forced frame
+pointers to attribute allocation and hashing to callers. Comparative evidence
+continues to require the release build.
+
 ## Review note
 
 Package: WP-818. Tier: internal. Current behavior change: opt-in numeric-only
