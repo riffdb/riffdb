@@ -27954,7 +27954,7 @@ work_packages:
   allowed_paths: [work_packages.yaml, adr/0263-retained-journal-is-the-command-history-store.md, crates/riffdb-storage-api/**,
     crates/riffdb-storage-redb/**, crates/riffdb-server/**, crates/riffdb-sim/**, tests/**,
     fixtures/**, scripts/**, benchmarks/**, examples/app-baseline/**, release/evidence/**,
-    docs/**]
+    release/durable-format-manifest-v1.json, release/version-topology-v1.json, docs/**]
   deliverables:
   - Bounded journaled logical pruning under every ADR-0182 fence, at most 256 sequences per step
   - Versioned prune frames, frozen V2/V3 compatibility, and backup-bound offline marker upgrade
