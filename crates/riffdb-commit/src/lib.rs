@@ -31,7 +31,6 @@ mod control_plane;
 mod coordinator_time;
 mod idempotency_inspection;
 mod initialization;
-mod intake_probe;
 mod migration;
 mod notification;
 mod outcome;

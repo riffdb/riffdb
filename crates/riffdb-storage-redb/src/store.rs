@@ -9388,6 +9388,5 @@ impl Drop for SharedRedb {
         // The sealer holds only the media port and paths, but a store that
         // outlived its sealing work would leave the next open to finish it.
         self.join_journal_sealer();
-        crate::snapshot_cache_probe::report();
     }
 }

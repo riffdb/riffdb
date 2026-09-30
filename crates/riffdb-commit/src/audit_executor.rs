@@ -3004,8 +3004,6 @@ impl CommandCoordinatorActor {
         work_tx: std::sync::mpsc::SyncSender<WorkUnit>,
         workload_capacity: usize,
     ) {
-        let mut probe = crate::intake_probe::IntakeProbe::new();
-        let mut feedback_started = None;
         let mut pending = VecDeque::new();
         let mut writer_busy = false;
         let mut shutting_down = false;
@@ -3031,7 +3029,6 @@ impl CommandCoordinatorActor {
                 // Pipelining-removal neuter (pre-split): disable the busy-path
                 // select arm *and* this multi-message drain — arm-only is not
                 // enough because this drain would re-batch at the completion edge.
-                let sweep_started = probe.start();
                 let pending_was_empty = pending.is_empty();
                 let receiver_closed = loop {
                     // Defense-in-depth: cap pending on idle drain sweeps too.
@@ -3044,7 +3041,6 @@ impl CommandCoordinatorActor {
                         Err(mpsc::error::TryRecvError::Disconnected) => break true,
                     }
                 };
-                probe.record(0, sweep_started, pending.len(), self.receiver.len());
                 if receiver_closed {
                     shutting_down = true;
                 }
@@ -3059,8 +3055,6 @@ impl CommandCoordinatorActor {
                     );
                 }
                 if !shutting_down && let Some(deadline) = formation_deadline {
-                    let formation_started = probe.start();
-                    let formation_row = if completion_edge_coalescing { 2 } else { 1 };
                     if completion_edge_coalescing {
                         collect_until_coalesce_deadline(
                             &mut self.receiver,
@@ -3081,18 +3075,9 @@ impl CommandCoordinatorActor {
                             self.monotonic_clock.as_ref(),
                         );
                     }
-                    probe.record(
-                        formation_row,
-                        formation_started,
-                        pending.len(),
-                        self.receiver.len(),
-                    );
                 }
 
-                let selection_started = probe.start();
-                let selected = form_next_unit(&mut pending);
-                probe.record(3, selection_started, pending.len(), self.receiver.len());
-                if let Some((unit, reason)) = selected {
+                if let Some((unit, reason)) = form_next_unit(&mut pending) {
                     let reason = if matches!(reason, CommitGroupDispatchReason::QueueDrained)
                         && shutting_down
                     {
@@ -3133,9 +3118,6 @@ impl CommandCoordinatorActor {
                     work_tx
                         .try_send(unit)
                         .expect("writer idle: work channel must accept the formed unit");
-                    if let Some(started) = feedback_started.take() {
-                        probe.record(4, Some(started), pending.len(), self.receiver.len());
-                    }
                     writer_busy = true;
                     // Anything left was already available behind a count bound,
                     // duplicate boundary, or hard barrier. It is not granted a
@@ -3177,8 +3159,6 @@ impl CommandCoordinatorActor {
                     completed = self.feedback.recv() => {
                         match completed {
                             Some(UnitCompleted) => {
-                                feedback_started = probe.start();
-                                probe.record(7, None, pending.len(), self.receiver.len());
                                 writer_busy = false;
                                 if matches!(
                                     lifecycle_state(&self.lifecycle.lifecycle),
@@ -3232,17 +3212,13 @@ impl CommandCoordinatorActor {
                                     );
                                 }
                                 pending.push_back(message);
-                                probe.record(6, None, pending.len(), self.receiver.len());
                             }
                             None => shutting_down = true,
                         }
                     }
                 }
             } else if !shutting_down {
-                let receive_started = probe.start();
-                let received = self.receiver.recv().await;
-                probe.record(5, receive_started, pending.len(), self.receiver.len());
-                match received {
+                match self.receiver.recv().await {
                     Some(message) => {
                         formation_anchor = self.monotonic_clock.now();
                         completion_edge_coalescing = false;
