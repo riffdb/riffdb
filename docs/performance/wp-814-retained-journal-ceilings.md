@@ -35,6 +35,21 @@ base in one write-only run. The worst journal sync fell from 686 ms, before the
 zero-fill was paced, to 171–275 ms. The peak overlay charge a checkpoint
 covered was 71–73 MiB of the 256 MiB ceiling (`riffdb-writer-overlay-census-v1`).
 
+## Bytes and memory
+
+| Load | Arm | Durable growth per mutation | Process writes per mutation | Peak RSS |
+|---|---|---|---|---|
+| Write-only | base | 19,612 / 18,983 B | 111,169 / 111,887 B | 516 / 531 MiB |
+| Write-only | candidate | 14,038 / 13,911 B | 107,439 / 107,253 B | 1,104 / 1,131 MiB |
+| Interactive | base | 19,474 / 19,529 B | 199,783 / 206,958 B | 420 / 427 MiB |
+| Interactive | candidate | 12,766 / 11,583 B | 195,154 / 193,377 B | 978 / 963 MiB |
+
+Durable growth per mutation falls 28% (write-only) and 38% (interactive). It
+includes the retained journal extents, so redb's own share falls further. Peak
+resident memory roughly doubles: the uncheckpointed suffix a checkpoint covers
+is eight times larger, and the writer keeps its frames and mutations in memory
+until the checkpoint installs.
+
 ## What the first runs found
 
 The first candidate lost 15% of write-only throughput and stalled for up to
@@ -63,3 +78,5 @@ and removed:
   for journal growth, and it is the likely source of the remaining maximum.
 - Two repetitions per arm show direction, not a distribution.
 - Test builds keep the 40 MiB extent; only release builds use 320 MiB.
+- Peak resident memory is about 1.1 GiB under write-only load, against about
+  0.5 GiB at the previous ceilings.
