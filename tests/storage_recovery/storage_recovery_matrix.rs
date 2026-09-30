@@ -245,7 +245,30 @@ impl TestDatabasePath {
     }
 }
 
-/// Crash-harness scratch directory under `CARGO_TARGET_TMPDIR`.
+// req: STO-032, REC-001
+#[cfg(target_os = "linux")]
+#[test]
+fn recovery_scratch_scope_is_owned_by_its_pid_namespace() {
+    let scope = ScratchScope::new("namespace-ownership");
+    let namespace = std::fs::read_link("/proc/self/ns/pid").expect("PID namespace");
+    let namespace = namespace
+        .to_str()
+        .unwrap()
+        .strip_prefix("pid:[")
+        .unwrap()
+        .strip_suffix(']')
+        .unwrap();
+    let expected_root = PathBuf::from(env!("CARGO_TARGET_TMPDIR")).join(format!("pid-{namespace}"));
+    assert_eq!(
+        scope.path().parent(),
+        Some(expected_root.as_path()),
+        "a sweep cannot interpret another sandbox's PIDs as dead"
+    );
+}
+
+/// Crash-harness scratch directory under `CARGO_TARGET_TMPDIR`, owned by the
+/// current PID namespace on Linux. Independent sandboxes cannot inspect each
+/// other's PIDs and must never sweep each other's live scopes.
 ///
 /// Children armed to `SIGABRT` write only under paths the parent hands them,
 /// so this parent-scope guard covers their artifacts too. A killed *parent*
@@ -262,6 +285,17 @@ impl ScratchScope {
     fn new(label: &str) -> Self {
         static SWEEP_ONCE: OnceLock<()> = OnceLock::new();
         let root = PathBuf::from(env!("CARGO_TARGET_TMPDIR"));
+        #[cfg(target_os = "linux")]
+        let root = {
+            let namespace = std::fs::read_link("/proc/self/ns/pid").expect("read PID namespace");
+            let namespace = namespace
+                .to_str()
+                .and_then(|name| name.strip_prefix("pid:["))
+                .and_then(|name| name.strip_suffix(']'))
+                .filter(|id| !id.is_empty() && id.bytes().all(|byte| byte.is_ascii_digit()))
+                .expect("kernel PID namespace identity");
+            root.join(format!("pid-{namespace}"))
+        };
         if root.exists() {
             SWEEP_ONCE.get_or_init(|| sweep_dead_scratch_scopes(&root));
         } else {
