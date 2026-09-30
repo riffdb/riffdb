@@ -52,8 +52,8 @@
 //! snapshot-visible application frontier is the one such value cached here.
 
 use std::ops::Deref;
-use std::sync::OnceLock;
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{Mutex, OnceLock};
 use std::time::Instant;
 
 use redb::{ReadOnlyTable, ReadTransaction, TableDefinition, TableError};
@@ -86,6 +86,7 @@ pub(crate) struct CheckpointRoot {
     journal_tables: [OnceLock<ByteTable>; JOURNAL_TABLE_SLOTS],
     snapshot_head: OnceLock<Option<CommitSequence>>,
     point_reads: [PointReadProbe; JOURNAL_TABLE_SLOTS],
+    absence_probe: OnceLock<Mutex<AbsenceProbe>>,
     transaction: ReadTransaction,
 }
 
@@ -99,6 +100,7 @@ impl CheckpointRoot {
             journal_tables: std::array::from_fn(|_| OnceLock::new()),
             snapshot_head: OnceLock::new(),
             point_reads: std::array::from_fn(|_| PointReadProbe::default()),
+            absence_probe: OnceLock::new(),
             transaction,
         }
     }
@@ -194,9 +196,21 @@ impl CheckpointRoot {
         crate::journal::charge_point_read_substage(0, started);
         let probe = &self.point_reads[journal_table_slot(table)];
         let above = probe.above_last(opened, key);
+        let cache = self
+            .absence_probe
+            .get_or_init(|| Mutex::new(AbsenceProbe::default()));
+        let repeated = cache
+            .lock()
+            .ok()
+            .is_some_and(|cache| cache.contains(table, key));
         let started = Instant::now();
         let found = opened.get(key).map_err(|_| JournalIoError::Corrupt)?;
-        probe.record(found.is_none(), above, started.elapsed());
+        probe.record(found.is_none(), above, repeated, started.elapsed());
+        if found.is_none()
+            && let Ok(mut cache) = cache.lock()
+        {
+            cache.remember(table, key);
+        }
         crate::journal::charge_point_read_substage(1, started);
         let started = Instant::now();
         let value = found.map(|value| value.value().to_vec());
@@ -238,6 +252,8 @@ struct PointReadProbe {
     above: AtomicU64,
     get_ns: AtomicU64,
     above_get_ns: AtomicU64,
+    repeated: AtomicU64,
+    repeated_get_ns: AtomicU64,
 }
 
 impl PointReadProbe {
@@ -261,7 +277,7 @@ impl PointReadProbe {
         ceiling.as_ref().is_none_or(|last| key > last.as_ref())
     }
 
-    fn record(&self, absent: bool, above: bool, elapsed: std::time::Duration) {
+    fn record(&self, absent: bool, above: bool, repeated: bool, elapsed: std::time::Duration) {
         self.calls.fetch_add(1, Ordering::Relaxed);
         self.misses.fetch_add(u64::from(absent), Ordering::Relaxed);
         self.above.fetch_add(u64::from(above), Ordering::Relaxed);
@@ -269,6 +285,50 @@ impl PointReadProbe {
         self.get_ns.fetch_add(nanos, Ordering::Relaxed);
         if above {
             self.above_get_ns.fetch_add(nanos, Ordering::Relaxed);
+        }
+        if repeated {
+            self.repeated.fetch_add(1, Ordering::Relaxed);
+            self.repeated_get_ns.fetch_add(nanos, Ordering::Relaxed);
+        }
+    }
+}
+
+// Direct-mapped, bounded exact-key membership. Hash collisions evict evidence,
+// never establish equality. Evidence belongs to one immutable checkpoint only.
+const ABSENCE_PROBE_SLOTS: usize = 256;
+struct AbsenceProbe {
+    slots: Vec<Option<(u8, Box<[u8]>)>>,
+}
+
+impl Default for AbsenceProbe {
+    fn default() -> Self {
+        Self {
+            slots: std::iter::repeat_with(|| None)
+                .take(ABSENCE_PROBE_SLOTS)
+                .collect(),
+        }
+    }
+}
+
+impl AbsenceProbe {
+    fn slot(table: JournalTable, key: &[u8]) -> usize {
+        use std::hash::{Hash, Hasher};
+        let mut hash = std::hash::DefaultHasher::new();
+        (table as u8).hash(&mut hash);
+        key.hash(&mut hash);
+        hash.finish() as usize % ABSENCE_PROBE_SLOTS
+    }
+
+    fn contains(&self, table: JournalTable, key: &[u8]) -> bool {
+        key.len() <= MAX_PROBE_KEY_BYTES
+            && self.slots[Self::slot(table, key)]
+                .as_ref()
+                .is_some_and(|(tag, stored)| *tag == table as u8 && stored.as_ref() == key)
+    }
+
+    fn remember(&mut self, table: JournalTable, key: &[u8]) {
+        if key.len() <= MAX_PROBE_KEY_BYTES {
+            self.slots[Self::slot(table, key)] = Some((table as u8, key.into()));
         }
     }
 }
@@ -279,13 +339,15 @@ impl Drop for CheckpointRoot {
             let calls = probe.calls.load(Ordering::Relaxed);
             if calls != 0 {
                 eprintln!(
-                    "riffdb-checkpoint-point-read-probe-v1\t{},{},{},{},{},{}",
+                    "riffdb-checkpoint-point-read-probe-v1\t{},{},{},{},{},{},{},{}",
                     index + 1,
                     calls,
                     probe.misses.load(Ordering::Relaxed),
                     probe.above.load(Ordering::Relaxed),
                     probe.get_ns.load(Ordering::Relaxed),
-                    probe.above_get_ns.load(Ordering::Relaxed)
+                    probe.above_get_ns.load(Ordering::Relaxed),
+                    probe.repeated.load(Ordering::Relaxed),
+                    probe.repeated_get_ns.load(Ordering::Relaxed)
                 );
             }
         }
@@ -362,6 +424,65 @@ const _: fn() = || {
 mod tests {
     use super::*;
     use redb::ReadableDatabase;
+
+    // req: PERF-008
+    #[test]
+    fn absence_probe_compares_exact_keys_and_tables_even_when_slots_collide() {
+        let mut cache = AbsenceProbe::default();
+        let table = JournalTable::IdempotencyLocators;
+        cache.remember(table, b"first");
+        assert!(cache.contains(table, b"first"));
+        assert!(!cache.contains(JournalTable::Entities, b"first"));
+        let collision = (0_u32..10_000)
+            .map(u32::to_be_bytes)
+            .find(|key| AbsenceProbe::slot(table, key) == AbsenceProbe::slot(table, b"first"))
+            .expect("collision in bounded slots");
+        assert!(!cache.contains(table, &collision));
+        cache.remember(table, &collision);
+        assert!(cache.contains(table, &collision));
+        assert!(!cache.contains(table, b"first"));
+        let oversized = [0_u8; MAX_PROBE_KEY_BYTES + 1];
+        cache.remember(table, &oversized);
+        assert!(!cache.contains(table, &oversized));
+        assert!(!AbsenceProbe::default().contains(table, &collision));
+    }
+
+    // req: PERF-008
+    #[test]
+    fn absence_probe_collision_replacement_has_a_deterministic_shared_schedule() {
+        let table = JournalTable::IdempotencyLocators;
+        let collision = (0_u32..10_000)
+            .map(u32::to_be_bytes)
+            .find(|key| AbsenceProbe::slot(table, key) == AbsenceProbe::slot(table, b"first"))
+            .expect("collision");
+        let cache = std::sync::Arc::new(Mutex::new(AbsenceProbe::default()));
+        let ready = std::sync::Arc::new(std::sync::Barrier::new(2));
+        let overwrite = std::sync::Arc::new(std::sync::Barrier::new(2));
+        let done = std::sync::Arc::new(std::sync::Barrier::new(2));
+        let writer = {
+            let (cache, ready, overwrite, done) = (
+                cache.clone(),
+                ready.clone(),
+                overwrite.clone(),
+                done.clone(),
+            );
+            std::thread::spawn(move || {
+                cache.lock().expect("cache").remember(table, b"first");
+                ready.wait();
+                overwrite.wait();
+                cache.lock().expect("cache").remember(table, &collision);
+                done.wait();
+            })
+        };
+        ready.wait();
+        assert!(cache.lock().expect("cache").contains(table, b"first"));
+        assert!(!cache.lock().expect("cache").contains(table, &collision));
+        overwrite.wait();
+        done.wait();
+        assert!(!cache.lock().expect("cache").contains(table, b"first"));
+        assert!(cache.lock().expect("cache").contains(table, &collision));
+        writer.join().expect("writer");
+    }
 
     // req: PERF-008
     #[test]
