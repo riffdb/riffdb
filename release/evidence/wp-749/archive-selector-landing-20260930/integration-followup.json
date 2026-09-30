@@ -1,0 +1,121 @@
+{
+  "schema": "wp749-selector-landing-integration-followup-v1",
+  "recorded_at": "2026-09-30T18:05:03.196120+00:00",
+  "source_revision": "e6c06a6a27c97b3438912eff3629d786677a5170",
+  "included_main": "5c3dfd9f394b473260bae0dc2d8cae5927632a4c",
+  "full_ci_source_revision": "6d26f3b93a6dd8ce4b09a0d278e4c39a1490180e",
+  "code_delta_from_full_ci": [
+    "crates/riffdb-storage-redb/src/benchmark_support.rs"
+  ],
+  "code_sha256": {
+    "crates/riffdb-storage-redb/src/benchmark_support.rs": "2f944a5f402737b9585f2d04f285b99fe2353a1ecc2e7f3cbee2803518ea043b"
+  },
+  "scope": "Main adds an opt-in numeric error probe within benchmark-support; original typed error remains. Archive runtime and all 26 audited proof sources are unchanged. The earlier full-CI run is not attributed to this later commit.",
+  "command": "RUST_TEST_THREADS=4 ./scripts/acceptance --wp WP-749 --base 6d26f3b93 --no-tests",
+  "exit_code": 0,
+  "steps": [
+    {
+      "result": "pass",
+      "seconds": 0.2,
+      "command": "./scripts/check-allowed-paths --wp WP-749 --base 6d26f3b93                     "
+    },
+    {
+      "result": "pass",
+      "seconds": 30.3,
+      "command": "cargo fmt --all -- --check                                                     "
+    },
+    {
+      "result": "pass",
+      "seconds": 0.2,
+      "command": "cargo clippy -p riffdb-storage-redb --all-targets --all-features -- -D warnings"
+    },
+    {
+      "result": "pass",
+      "seconds": 15.3,
+      "command": "./scripts/check-generated                                                      "
+    },
+    {
+      "result": "pass",
+      "seconds": 0.1,
+      "command": "./scripts/check-version-topology                                               "
+    },
+    {
+      "result": "pass",
+      "seconds": 4.4,
+      "command": "./scripts/handbook check                                                       "
+    },
+    {
+      "result": "pass",
+      "seconds": 1.0,
+      "command": "./scripts/check-requirement-coverage                                           "
+    },
+    {
+      "result": "pass",
+      "seconds": 1.5,
+      "command": "./scripts/check-adr-obligations                                                "
+    },
+    {
+      "result": "pass",
+      "seconds": 0.0,
+      "command": "./scripts/adr-new --self-test                                                  "
+    },
+    {
+      "result": "pass",
+      "seconds": 0.1,
+      "command": "./scripts/adr-index --check                                                    "
+    },
+    {
+      "result": "pass",
+      "seconds": 0.1,
+      "command": "./scripts/check-acceptance-commits                                             "
+    },
+    {
+      "result": "pass",
+      "seconds": 1.0,
+      "command": "./scripts/check-performance-freeze                                             "
+    },
+    {
+      "result": "pass",
+      "seconds": 0.1,
+      "command": "./scripts/check-file-size-guard                                                "
+    },
+    {
+      "result": "pass",
+      "seconds": 0.1,
+      "command": "./scripts/check-panic-allowances                                               "
+    }
+  ],
+  "log": {
+    "sha256": "3479005c5dc199781b02ff72591c19ac0f9223f516c12cda22da3948dfaf2a73",
+    "bytes": 40036
+  },
+  "targeted_tests": [
+    {
+      "command": "cargo test --locked -p riffdb-storage-redb --all-features --lib benchmark_support::tests",
+      "passed": 13,
+      "exit_code": 0,
+      "log": {
+        "sha256": "0ea05cecfa953efc1c30485b095cd0ce2d6203175d01f1b6b2cc7c8c854ab8bd",
+        "bytes": 1687
+      }
+    },
+    {
+      "command": "cargo test --locked -p riffdb-storage-redb --all-features --test storage_recovery_matrix planted_row_corruption_fails_closed_on_first_access_after_dirty_startup -- --exact",
+      "passed": 1,
+      "exit_code": 0,
+      "log": {
+        "sha256": "28820aace54541c7e40f8db68b893eb911a1baa80ef38d3535a3e4516ca00171",
+        "bytes": 548
+      }
+    }
+  ],
+  "first_documentation_failure": {
+    "log": {
+      "sha256": "c9ec6e4266fe0a4077d5d0fb06b47704e3fcf5d2304a46d97bff2c1082f9e26b",
+      "bytes": 42247
+    },
+    "result": "13 passed; handbook link check failed because the evidence directory is outside the generated handbook. Changed the report to name the repository-relative path as text; all fourteen follow-up steps then passed."
+  },
+  "performance_gate_satisfied": false,
+  "work_package_complete": false
+}

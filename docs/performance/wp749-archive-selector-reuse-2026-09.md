@@ -4,16 +4,19 @@
 
 The maintainer directed keeping WP-749's unchanged-acknowledgement-latency gate
 and reducing archive overhead after the [post-WP-810 comparison](wp749-archive-post-wp810-2026-09.md)
-failed it. This candidate removes redundant archive-side I/O. Its latency
-benefit is unmeasured; WP-749 remains incomplete. Candidate `f77159c0` passes
-the complete local acceptance plan, including full CI. Remote work is paused until
-the maintainer releases the measurement host.
+failed it. This change removes redundant archive-side I/O. Its latency
+benefit is unmeasured; WP-749 remains incomplete. The maintainer approved landing
+the implementation and historical evidence on 2026-09-30. Integrated source
+`6d26f3b93`, including main `49fb4c291`, passes all thirteen full-acceptance steps
+and full CI. The shared-effect experiment remains separate.
 
-The integrated source baseline is `be4e1a25`, which incorporates main's
-`c8d388b0` retention instrumentation. The archive repository is unchanged
-between the measured baseline `10c312d74` and this integrated baseline.
-Future comparisons must use the integrated source in both arms and retain
-separate executable identities when comparing the implementation change.
+The original syscall census used integrated baseline `be4e1a25`, incorporating
+main's `c8d388b0` retention instrumentation. The archive repository was unchanged
+between measured baseline `10c312d74` and that baseline. Those source-bound
+results remain historical; they are not measurements of current main. Future
+comparisons must use the same current baseline and retain separate executable
+identities when comparing the implementation change. No benchmark ran during
+this landing qualification.
 
 ## Redundant work observed
 
@@ -100,12 +103,52 @@ host. Retain direct raw acknowledgements, the full workload, checkpoint/wait
 counters, archive progress, source and executable digests. Disclose throughput
 separately; a tail movement still needs a named mechanism under ADR-0249.
 
+## September 30 integration qualification
+
+The landing packet at
+`release/evidence/wp-749/archive-selector-landing-20260930/` records full qualification of `6d26f3b93`, including main `49fb4c291`. The
+archive runtime and selector proofs are unchanged from `f77159c0`. All thirteen
+steps of `./scripts/acceptance --wp WP-749 --base 49fb4c291 --full` pass with
+Rust 1.98.1 and four test-harness workers. The audit retains all 86 named archive
+proofs, both real CLI restore tests, and hashes of the current proof sources.
+
+Integration exposed a fixture watchdog mismatch: normal debug daemon startup
+allowed 60 seconds, while two bootstrap attachment waits allowed 30. Two full
+attempts hit the first attachment cutoff. A diagnostic run passed all 25
+replication tests and reached the checked attachment at 27,015 ms; it does not
+prove the cause of the earlier timeouts. Commit `b9b5ac260` shares the existing
+60-second startup budget with those two waits. Explicit channels still select
+the crash boundary, and the exact prefix, lineage and recovery assertions remain.
+Command progress, process-kill, RPC and product deadlines are unchanged. The
+probe was removed before final full CI. Failed logs and the diagnostic are
+retained by digest, alongside three runs stopped when main changed.
+
+A separate intermediate run exposed the old cache architecture assertion after
+main reduced the primary cache budget. Main `29933f6e` already corrected it to
+check both explicit primary and derived budgets; final qualification includes
+that repair. The existing handbook search-index size warning remains informational.
+
+Main then added `5c3dfd9f3`, an opt-in numeric error probe in the
+`benchmark-support` feature, integrated as `e6c06a6a2`. The archive code and
+all 26 audited proof sources remain byte-identical to the full-CI source.
+The follow-up runs storage Clippy with every target and feature, all 13
+benchmark-support unit tests, and the authority-snapshot corruption/refusal
+integration test. The landing packet records this separately: full CI ran on
+`6d26f3b93`; targeted checks cover the later benchmark-only change.
+
+This lands a correctness-qualified implementation and its historical evidence.
+It does not satisfy or amend WP-749's acknowledgement-latency gate, mark the
+package complete, or merge the shared-effect experiment.
+
 ## PR note
 
 Package: WP-749. Tier: guarantee, implementing accepted ADR-0178. Behavior:
 reuse durable manifest bytes for selector publication. Checks: all thirteen
-full-acceptance steps, complete CI, 86 named archive proofs, 1,051 scoped storage
-tests and the syscall census pass. No performance verdict or completion claim.
+full-acceptance steps and complete CI pass on the integrated source, including
+86 named archive proofs and the repaired bootstrap recovery harness. The earlier
+1,051-test storage run and syscall census remain bound to their original source.
+The later benchmark-only update has separate Clippy and targeted test results.
+No performance verdict or completion claim.
 Compatibility: existing names,
 bytes, readers and retry semantics remain. Hazards: the latency gate is still
 unmet and sharing an inode requires retaining immutable-file discipline.

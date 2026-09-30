@@ -1,0 +1,160 @@
+{
+  "schema": "wp749-selector-landing-qualification-v1",
+  "recorded_at": "2026-09-30T17:58:53.614456+00:00",
+  "source_revision": "6d26f3b93a6dd8ce4b09a0d278e4c39a1490180e",
+  "source_tree": "c94034a4773c829285245ea0480e44616d9fc443",
+  "included_main": "49fb4c2910a5fcf40a755e3d412ae61bc5bb58c4",
+  "command": "RUST_TEST_THREADS=4 ./scripts/acceptance --wp WP-749 --base 49fb4c2910a5fcf40a755e3d412ae61bc5bb58c4 --full",
+  "toolchain": "1.98.1",
+  "exit_code": 0,
+  "steps": [
+    {
+      "result": "pass",
+      "seconds": 0.3,
+      "command": "./scripts/check-allowed-paths --wp WP-749 --base 49fb4c291"
+    },
+    {
+      "result": "pass",
+      "seconds": 19.0,
+      "command": "./scripts/check-generated                                 "
+    },
+    {
+      "result": "pass",
+      "seconds": 0.1,
+      "command": "./scripts/check-version-topology                          "
+    },
+    {
+      "result": "pass",
+      "seconds": 5.3,
+      "command": "./scripts/handbook check                                  "
+    },
+    {
+      "result": "pass",
+      "seconds": 1.0,
+      "command": "./scripts/check-requirement-coverage                      "
+    },
+    {
+      "result": "pass",
+      "seconds": 1.6,
+      "command": "./scripts/check-adr-obligations                           "
+    },
+    {
+      "result": "pass",
+      "seconds": 0.1,
+      "command": "./scripts/adr-new --self-test                             "
+    },
+    {
+      "result": "pass",
+      "seconds": 0.1,
+      "command": "./scripts/adr-index --check                               "
+    },
+    {
+      "result": "pass",
+      "seconds": 0.1,
+      "command": "./scripts/check-acceptance-commits                        "
+    },
+    {
+      "result": "pass",
+      "seconds": 1.1,
+      "command": "./scripts/check-performance-freeze                        "
+    },
+    {
+      "result": "pass",
+      "seconds": 0.2,
+      "command": "./scripts/check-file-size-guard                           "
+    },
+    {
+      "result": "pass",
+      "seconds": 0.1,
+      "command": "./scripts/check-panic-allowances                          "
+    },
+    {
+      "result": "pass",
+      "seconds": 1971.9,
+      "command": "./scripts/ci-all                                          "
+    }
+  ],
+  "ci_log": {
+    "sha256": "190269453f59139c57e012810e59eecfa6b847bb5edc5b831e420c5e712f10eb",
+    "bytes": 1052001
+  },
+  "named_archive_proofs_passed": 86,
+  "proof_audit_sha256": "44a10996c5e24aa3ce7dec4128f57db5155a585e4cae9dac46a6c7a1e3b891d0",
+  "bootstrap_watchdog": {
+    "failed_attempts": [
+      {
+        "source_revision": "f83dfeab7fd6fa3fe6933be872b10108e17b90be",
+        "log": {
+          "sha256": "da839f069f171e1cf2d1704416390888a82add33cb4f01ad4a3c35efe9e5fa73",
+          "bytes": 417805
+        }
+      },
+      {
+        "source_revision": "b727bd1e7098b817aaabf05188516df696a7cd91",
+        "log": {
+          "sha256": "7d164b7ae28c35e06410afe217a2bb7f3a141b085e821eb1b2fbb2a3a3fd10e0",
+          "bytes": 415109
+        }
+      }
+    ],
+    "test": "bootstrap_to_tail_fence_is_gap_free_across_crash",
+    "failure": "The 30-second first held-attachment watchdog elapsed. Other 24 replication tests passed in each run.",
+    "focused_rerun": {
+      "log": {
+        "sha256": "f39a333fd2278ab2ffd50ef2f3264edf2785f134d24465b007070f8eb0d12cdb",
+        "bytes": 3232
+      },
+      "passed": 1,
+      "seconds": 130.1,
+      "limitation": "Focused Cargo feature unification differs from the workspace run; not full qualification."
+    },
+    "diagnostic": {
+      "log": {
+        "sha256": "964ff3c5f1c59c2934c30c55f69949f60f4ca20ff97250843cd4810790dc980e",
+        "bytes": 24032
+      },
+      "passed": 25,
+      "seconds": 272.51,
+      "checked_attachment_elapsed_ms": 27015,
+      "limitation": "One successful attachment near the old cutoff. The probe did not observe completion after 30 seconds and does not establish why earlier attempts exceeded that cutoff."
+    },
+    "repair_revision": "b9b5ac260",
+    "repair": "Share the existing 60-second debug daemon startup watchdog with the two bootstrap held-attachment waits. Command progress, process kill and RPC deadlines are unchanged. Channels still select the exact crash boundary; all prefix, lineage and recovery assertions remain. The temporary diagnostic was removed before final qualification."
+  },
+  "intermediate_guard_failure": {
+    "source_revision": "1ab3bd3915a6d5de5930da1491ff2a2f55c0e108",
+    "log": {
+      "sha256": "028ca44d4cac9ae35dfdec76839aa2a3d006144293cb9e99c01e9f42d25155b4",
+      "bytes": 628102
+    },
+    "test": "production_redb_cache_is_explicitly_bounded_on_every_authoritative_open",
+    "disposition": "Runtime and crash suites passed. The source guard expected the old cache constant. Integrated main 29933f6e, which checks both the 12 MiB primary and 4 MiB derived budgets, before final qualification."
+  },
+  "withdrawn_runs": [
+    {
+      "log": {
+        "sha256": "26f6b43c60aad776a18fe0fc682b71303e42620701c37acbb1e10fdd707856d3",
+        "bytes": 50764
+      },
+      "reason": "Stopped during full CI compilation after main advanced; twelve preliminary steps passed."
+    },
+    {
+      "log": {
+        "sha256": "5bfb8b6a8edb00f564091112fce3ab023413a99ce87cfa0eab1ec8beac90737a",
+        "bytes": 393259
+      },
+      "reason": "Stopped during workspace tests after main reverted diagnostics; preliminary checks and Clippy passed."
+    },
+    {
+      "log": {
+        "sha256": "891e8dd29c7dfc8fff40b5ffb250426cb8958b3bf6dac7b6681daeae243ff077",
+        "bytes": 377066
+      },
+      "reason": "Stopped during workspace tests when main changed the primary cache budget; no observed test failure."
+    }
+  ],
+  "environment": "Rust 1.98.1; empty compiler wrapper; pinned TypeScript 7.0.2 and Maturin 1.14.1; isolated temporary directory; four Rust test-harness workers. No new ignored tests. Bootstrap startup watchdog alignment is recorded above.",
+  "scope": "Approved archive selector implementation and historical evidence only. Shared-effect experiment remains separate.",
+  "performance_gate_satisfied": false,
+  "work_package_complete": false
+}

@@ -23212,6 +23212,19 @@ work_packages:
       Do not reuse historical percentile subtraction or silently extend the completed
       two-cell protocol. A new measurement requires its own recorded scope.
     decisions_taken:
+    - 'Maintainer direction, in session, 2026-09-30: sounds good, do it. Land the
+      archive selector implementation and historical evidence after integration with
+      current main and full CI. Keep the latency clause and incomplete package status;
+      the shared-effect experiment remains separate. Source 6d26f3b93 includes main
+      49fb4c291 and passes all thirteen full-acceptance steps; qualification is retained
+      in release/evidence/wp-749/archive-selector-landing-20260930/.'
+    - 'Internal integration repair, 2026-09-30: share the existing 60-second debug
+      daemon startup watchdog with the two bootstrap held-attachment waits. The old
+      30-second cutoff failed twice; a diagnostic reached the checked attachment at
+      27015 ms, without proving the earlier timeout cause. Keep channel-selected
+      crash boundaries, exact prefix/lineage/recovery assertions and all command,
+      process-operation and product deadlines. Remove the probe before full CI and
+      retain the failed attempts in the qualification record.'
     - 'D-003 implementation choice, 2026-09-27: stage the archive CURRENT selector
       from its already-synced immutable manifest using the existing checked directory
       hard-link mechanism. Retain source and destination descriptor checks, both
