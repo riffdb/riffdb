@@ -5768,7 +5768,17 @@ impl RedbOperationalPorts {
     pub(crate) fn begin_deferred_service_audit_write(
         &self,
     ) -> Result<RedbWriteAccess, StorageError> {
+        self.begin_deferred_maintenance_write(&mut WriteBeginTiming::default())
+    }
+
+    pub(crate) fn begin_deferred_maintenance_write(
+        &self,
+        timing: &mut WriteBeginTiming,
+    ) -> Result<RedbWriteAccess, StorageError> {
+        let waiting = Instant::now();
         let lease = self.shared.mutation_gate.acquire()?;
+        let acquired = Instant::now();
+        timing.gate_wait_us = elapsed_us(waiting, acquired);
         if self.shared.write_fenced.load(Ordering::Acquire)
             || self.shared.application_commit_profile != RedbCommitProfile::Standard
         {
@@ -5790,6 +5800,7 @@ impl RedbOperationalPorts {
         let composite_stage = crate::composite_view::RedbCompositeMutationStage::from_published(
             &composite_predecessor,
         );
+        timing.drain_us = elapsed_us(acquired, Instant::now());
         Ok(RedbWriteAccess {
             shared: Arc::clone(&self.shared),
             transaction: None,

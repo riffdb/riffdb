@@ -66,7 +66,7 @@ pub struct OnlineRetentionPhases {
     pub extent_reader_holds: u64,
     /// Waiting for the first-come writer gate.
     pub gate_wait_us: u64,
-    /// Under the gate: publishing, checkpointing, and draining the journal.
+    /// Under the gate: maintenance setup and any direct-path journal drain.
     pub drain_us: u64,
     /// Under the gate: reading the fences and planning the sub-range.
     pub plan_us: u64,
@@ -326,9 +326,11 @@ impl RedbOperationalPorts {
         };
         let waiting = std::time::Instant::now();
         phases.preplan_us = elapsed_us(preparing, waiting);
-        let access = self.begin_deferred_service_audit_write()?;
+        let mut begin = WriteBeginTiming::default();
+        let access = self.begin_deferred_maintenance_write(&mut begin)?;
         let validating = std::time::Instant::now();
-        phases.gate_wait_us = elapsed_us(waiting, validating);
+        phases.gate_wait_us = begin.gate_wait_us;
+        phases.drain_us = begin.drain_us;
         let read = self
             .shared
             .database
@@ -336,6 +338,7 @@ impl RedbOperationalPorts {
             .map_err(transaction_error)?;
         let derived = self.begin_derived_read()?;
         if load_history_incarnation(&read)? != prepared.incarnation {
+            phases.plan_us = elapsed_us(validating, std::time::Instant::now());
             access.abort()?;
             return Ok(OnlineRetentionStep::Held(OnlineRetentionHold::RowBoundary));
         }
@@ -364,12 +367,14 @@ impl RedbOperationalPorts {
                 .saturating_sub(retain.get())
                 < prepared.last
         {
+            phases.plan_us = elapsed_us(validating, std::time::Instant::now());
             access.abort()?;
             return Ok(OnlineRetentionStep::Held(OnlineRetentionHold::Fenced(
                 binding,
             )));
         }
         if !prepared.validate_and_stage(&access)? {
+            phases.plan_us = elapsed_us(validating, std::time::Instant::now());
             access.abort()?;
             return Ok(OnlineRetentionStep::Held(OnlineRetentionHold::RowBoundary));
         }
