@@ -148,7 +148,7 @@ claiming that writer CPU alone limits throughput.
 A separate numeric backend-read probe counts calls and requested bytes below
 redb's page cache. It is selected once when the backend opens under the existing
 diagnostic switch, passes through every original read and error, and emits
-`riffdb-backend-read-probe-v1` at backend drop. Counts include all reader threads
+`riffdb-backend-read-probe-v1` at backend drop. Counts include all reader threads through backend drop, including shutdown,
 and exclude reads performed internally by checkpoint write comparison. Seed
 and load generations are separate. Disabled and concurrent probe tests pass.
 An initial report parser missed the runner's stderr prefix; inspecting the
@@ -173,13 +173,32 @@ this workload, not a writer-only CPU attribution. Diagnostic throughput was
 throughput result. The next batch alternates release base/candidate/candidate/
 base for write-only, interactive, and read-only, with diagnostics disabled.
 
-The completed write-only alternation measured 3,469/3,477 operations/s at base
-and 3,623/3,689 for the candidate: medians 3,473 and 3,656, a 5.27% gain.
-Approximate writer CPU medians were 208.36 and 198.49 microseconds per command.
-Interactive measured 16,083/16,035 at base and 16,216/16,113 at candidate,
-medians 16,059 and 16,164.5. Its 0.66% throughput difference is within variance;
-both candidate p95 and p99 observations were below both base observations.
-Read-only and same-run PostgreSQL qualification remain pending.
+All twelve production arms completed. Each load ran base/candidate/candidate/
+base at 32 clients, 60 seconds measured and 10 seconds warmup, with diagnostics
+and allocator overrides disabled. Base binaries came from `7eb4b37e1`; the
+scratch candidate came from `c68062e0` with only the primary constructor's
+budget changed to 12 MiB. The corresponding committed candidate is
+`fe6070308`; its clean-checkout PostgreSQL qualification is next.
+
+| Load | Base ops/s median | Candidate ops/s median | Throughput ratio | p95 ratio | p99 ratio |
+|---|---:|---:|---:|---:|---:|
+| Write-only | 3,473 | 3,656 | 1.0527 | 0.9265 | 0.8364 |
+| Interactive | 16,059 | 16,164.5 | 1.0066 | 0.9474 | 0.9474 |
+| Read-only | 24,784 | 24,902 | 1.0048 | 1.0000 | 1.0000 |
+
+Write-only arms were 3,469/3,477 at base and 3,623/3,689 at candidate. The
+5.27% median gain exceeds both pairs' within-arm spread. Approximate writer
+CPU medians were 208.36 and 198.49 microseconds per command, a 4.74% reduction.
+Interactive writer CPU medians were 272.16 and 260.38 microseconds. Interactive
+and read-only throughput differences are within variance; no gain is claimed
+for them. The candidate p95/p99 observations do not regress either workload.
+
+Median peak sampled RSS was 1,160,833,024 versus 1,187,020,800 bytes for
+write-only; 998,563,840 versus 1,019,129,856 for interactive; and 76,683,264
+versus 86,130,688 for read-only. These are loaded-process observations, not
+lifecycle heap-envelope measurements. Write-only maxima remained approximately
+0.7–1.0 seconds in both arms; this change does not resolve extent allocation
+owned by WP-815. Same-run PostgreSQL qualification remains pending.
 
 ## Review note
 

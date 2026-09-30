@@ -513,7 +513,11 @@ fn production_redb_cache_is_explicitly_bounded_on_every_authoritative_open() {
     let source = read(crate_root().join("src/store.rs"));
     assert!(
         source.contains("const REDB_CACHE_SIZE_BYTES: usize = 4 * 1024 * 1024;"),
-        "the fixed page cache must leave room for the complete production graph inside PERF-019"
+        "the derived sidecar retains its fixed small cache budget"
+    );
+    assert!(
+        source.contains("const PRIMARY_REDB_CACHE_SIZE_BYTES: usize = 12 * 1024 * 1024;"),
+        "the primary cache stays fixed and bounded under the unchanged PERF-019 lifecycle gates"
     );
     assert_eq!(
         source.matches("let mut builder = Builder::new();").count(),
@@ -522,10 +526,22 @@ fn production_redb_cache_is_explicitly_bounded_on_every_authoritative_open() {
     );
     assert_eq!(
         source
-            .matches("builder.set_cache_size(REDB_CACHE_SIZE_BYTES);")
+            .matches("builder.set_cache_size(PRIMARY_REDB_CACHE_SIZE_BYTES);")
             .count(),
         1,
         "the authoritative redb builder must apply exactly one fixed cache budget"
+    );
+    assert_eq!(
+        source
+            .matches("let sidecar_cache = REDB_CACHE_SIZE_BYTES;")
+            .count(),
+        1
+    );
+    assert_eq!(
+        source
+            .matches("sidecar_builder.set_cache_size(sidecar_cache);")
+            .count(),
+        1
     );
 }
 
