@@ -19,12 +19,14 @@ fn backend_read_probe_counts_requests_without_changing_bytes_or_errors() {
     );
     assert_eq!(
         backend
+            .state
             .read_calls
             .load(std::sync::atomic::Ordering::Relaxed),
         2
     );
     assert_eq!(
         backend
+            .state
             .read_bytes
             .load(std::sync::atomic::Ordering::Relaxed),
         8
@@ -55,12 +57,14 @@ fn backend_read_probe_concurrent_requests_and_disabled_mode_are_exact() {
     });
     assert_eq!(
         backend
+            .state
             .read_calls
             .load(std::sync::atomic::Ordering::Relaxed),
         2
     );
     assert_eq!(
         backend
+            .state
             .read_bytes
             .load(std::sync::atomic::Ordering::Relaxed),
         8
@@ -75,12 +79,14 @@ fn backend_read_probe_concurrent_requests_and_disabled_mode_are_exact() {
     assert_eq!(bytes, [9; 4]);
     assert_eq!(
         disabled
+            .state
             .read_calls
             .load(std::sync::atomic::Ordering::Relaxed),
         0
     );
     assert_eq!(
         disabled
+            .state
             .read_bytes
             .load(std::sync::atomic::Ordering::Relaxed),
         0
