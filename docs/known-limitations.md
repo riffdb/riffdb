@@ -346,7 +346,10 @@ file keeps only a small locator ("history stub") per command segment and
 receipt, and the bytes stay in the journal extent. Direct writes and
 administration ceremonies still store their history in the database file. Backups
 copy the journal and every sealed extent, and a restored copy resolves its history from them;
-deleting a sealed extent by hand makes that history unreadable. Until WP-815
+deleting a sealed extent by hand makes that history unreadable. Within one
+process, a read may resolve a history stub from any open copy of the same
+database whose retained frame has the same hash; the bytes are exact, but a
+missing extent is then reported only once no such copy is open. Until WP-815
 retires them, retention does not remove sealed extents, so they accumulate with
 every checkpoint. A backup reads its history from its own journal and sealed
 extent artifacts. A staged maintenance restore (promotion rewind or archive

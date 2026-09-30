@@ -616,22 +616,41 @@ fn missing_or_corrupt_sealed_extent_is_a_typed_refusal() {
             bytes[8192 + 256] ^= 0x5a;
             std::fs::write(&file, bytes).expect("write damaged extent");
         }
-        // The damaged history is never presented as absent or as other bytes:
-        // the open refuses, or every read of it does, with a typed error.
-        match RedbStore::open(&path.0) {
-            Err(error) => assert_eq!(error.kind(), StorageErrorKind::CorruptData, "{damage}"),
-            Ok(store) => {
-                let ports = open_operational(store);
-                let fixture = command_fixture_at(1);
-                assert_eq!(
-                    ports
-                        .read_commit(fixture.records.commit().commit_sequence())
-                        .map_err(|error| error.kind()),
-                    Err(StorageErrorKind::CorruptData),
-                    "{damage}"
-                );
-                assert_history_readers(&ports, 3);
-            }
+        // A fresh process: stub resolution may use any open copy of the same
+        // database whose frame hashes match, and parallel tests open copies
+        // of this fixture database.
+        let status = std::process::Command::new(std::env::current_exe().expect("test binary"))
+            .arg("--exact")
+            .arg("retained_extents::damaged_sealed_extent_child")
+            .arg("--nocapture")
+            .env(DAMAGED_DATABASE, &path.0)
+            .status()
+            .expect("run child");
+        assert!(status.success(), "{damage}: {status:?}");
+    }
+}
+
+const DAMAGED_DATABASE: &str = "RIFFDB_RETAINED_EXTENT_DAMAGED_DATABASE";
+
+/// The damaged history is never presented as absent or as other bytes: the
+/// open refuses, or every read of it does, with a typed error.
+#[test]
+fn damaged_sealed_extent_child() {
+    let Some(path) = std::env::var_os(DAMAGED_DATABASE) else {
+        return;
+    };
+    match RedbStore::open(std::path::Path::new(&path)) {
+        Err(error) => assert_eq!(error.kind(), StorageErrorKind::CorruptData),
+        Ok(store) => {
+            let ports = open_operational(store);
+            let fixture = command_fixture_at(1);
+            assert_eq!(
+                ports
+                    .read_commit(fixture.records.commit().commit_sequence())
+                    .map_err(|error| error.kind()),
+                Err(StorageErrorKind::CorruptData)
+            );
+            assert_history_readers(&ports, 3);
         }
     }
 }
