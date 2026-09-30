@@ -53,6 +53,7 @@
 
 use std::ops::Deref;
 use std::sync::OnceLock;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Instant;
 
 use redb::{ReadOnlyTable, ReadTransaction, TableDefinition, TableError};
@@ -84,6 +85,7 @@ pub(crate) struct CheckpointRoot {
     capabilities: OnceLock<ByteTable>,
     journal_tables: [OnceLock<ByteTable>; JOURNAL_TABLE_SLOTS],
     snapshot_head: OnceLock<Option<CommitSequence>>,
+    point_reads: [PointReadProbe; JOURNAL_TABLE_SLOTS],
     transaction: ReadTransaction,
 }
 
@@ -96,6 +98,7 @@ impl CheckpointRoot {
             capabilities: OnceLock::new(),
             journal_tables: std::array::from_fn(|_| OnceLock::new()),
             snapshot_head: OnceLock::new(),
+            point_reads: std::array::from_fn(|_| PointReadProbe::default()),
             transaction,
         }
     }
@@ -189,8 +192,11 @@ impl CheckpointRoot {
             .expect("caller proved a byte-table definition")
             .map_err(|_| JournalIoError::Corrupt)?;
         crate::journal::charge_point_read_substage(0, started);
+        let probe = &self.point_reads[journal_table_slot(table)];
+        let above = probe.above_last(opened, key);
         let started = Instant::now();
         let found = opened.get(key).map_err(|_| JournalIoError::Corrupt)?;
+        probe.record(found.is_none(), above, started.elapsed());
         crate::journal::charge_point_read_substage(1, started);
         let started = Instant::now();
         let value = found.map(|value| value.value().to_vec());
@@ -217,6 +223,72 @@ impl CheckpointRoot {
             .get(key)
             .map_err(|_| JournalIoError::Corrupt)
             .map(|value| value.map(|value| value.value().to_vec()))
+    }
+}
+
+// Profiling only: bounded, snapshot-owned last-key evidence. No probe result
+// changes a read's answer, and no key or value is emitted in the census.
+const MAX_PROBE_KEY_BYTES: usize = 256;
+
+#[derive(Default)]
+struct PointReadProbe {
+    last: OnceLock<Option<Box<[u8]>>>,
+    calls: AtomicU64,
+    misses: AtomicU64,
+    above: AtomicU64,
+    get_ns: AtomicU64,
+    above_get_ns: AtomicU64,
+}
+
+impl PointReadProbe {
+    fn above_last(&self, table: &ByteTable, key: &[u8]) -> bool {
+        use redb::ReadableTable;
+        let ceiling = if let Some(last) = self.last.get() {
+            last
+        } else {
+            let Ok(last) = table.last() else {
+                return false;
+            };
+            let last = match last {
+                Some((last, _)) if last.value().len() <= MAX_PROBE_KEY_BYTES => {
+                    Some(last.value().into())
+                }
+                Some(_) => return false,
+                None => None,
+            };
+            self.last.get_or_init(|| last)
+        };
+        ceiling.as_ref().is_none_or(|last| key > last.as_ref())
+    }
+
+    fn record(&self, absent: bool, above: bool, elapsed: std::time::Duration) {
+        self.calls.fetch_add(1, Ordering::Relaxed);
+        self.misses.fetch_add(u64::from(absent), Ordering::Relaxed);
+        self.above.fetch_add(u64::from(above), Ordering::Relaxed);
+        let nanos = u64::try_from(elapsed.as_nanos()).unwrap_or(u64::MAX);
+        self.get_ns.fetch_add(nanos, Ordering::Relaxed);
+        if above {
+            self.above_get_ns.fetch_add(nanos, Ordering::Relaxed);
+        }
+    }
+}
+
+impl Drop for CheckpointRoot {
+    fn drop(&mut self) {
+        for (index, probe) in self.point_reads.iter().enumerate() {
+            let calls = probe.calls.load(Ordering::Relaxed);
+            if calls != 0 {
+                eprintln!(
+                    "riffdb-checkpoint-point-read-probe-v1\t{},{},{},{},{},{}",
+                    index + 1,
+                    calls,
+                    probe.misses.load(Ordering::Relaxed),
+                    probe.above.load(Ordering::Relaxed),
+                    probe.get_ns.load(Ordering::Relaxed),
+                    probe.above_get_ns.load(Ordering::Relaxed)
+                );
+            }
+        }
     }
 }
 
@@ -289,6 +361,55 @@ const _: fn() = || {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use redb::ReadableDatabase;
+
+    // req: PERF-008
+    #[test]
+    fn last_key_probe_is_bounded_and_bound_to_its_checkpoint() {
+        let directory = crate::test_path::ScopedDirectory::new("point-read-probe");
+        let database = redb::Database::create(directory.join("probe.redb")).expect("database");
+        let definition: TableDefinition<&[u8], &[u8]> = TableDefinition::new("probe");
+        let write = database.begin_write().expect("write");
+        {
+            let mut table = write.open_table(definition).expect("table");
+            table
+                .insert(b"b".as_slice(), b"value".as_slice())
+                .expect("insert");
+        }
+        write.commit().expect("commit");
+        let read = database.begin_read().expect("read");
+        let table = read.open_table(definition).expect("table");
+        let probe = PointReadProbe::default();
+        assert!(!probe.above_last(&table, b"a"));
+        assert!(!probe.above_last(&table, b"b"));
+        assert!(probe.above_last(&table, b"c"));
+        let write = database.begin_write().expect("successor");
+        write
+            .open_table(definition)
+            .expect("table")
+            .insert(b"c".as_slice(), b"new".as_slice())
+            .expect("insert");
+        write.commit().expect("commit");
+        let successor = database.begin_read().expect("successor read");
+        let successor_table = successor.open_table(definition).expect("successor table");
+        assert!(probe.above_last(&table, b"c"));
+        assert!(!PointReadProbe::default().above_last(&successor_table, b"c"));
+        let write = database.begin_write().expect("long key");
+        write
+            .open_table(definition)
+            .expect("table")
+            .insert(
+                vec![255_u8; MAX_PROBE_KEY_BYTES + 1].as_slice(),
+                b"long".as_slice(),
+            )
+            .expect("insert");
+        write.commit().expect("commit");
+        let read = database.begin_read().expect("long read");
+        let table = read.open_table(definition).expect("long table");
+        let bounded = PointReadProbe::default();
+        assert!(!bounded.above_last(&table, &[255; MAX_PROBE_KEY_BYTES + 2]));
+        assert!(bounded.last.get().is_none());
+    }
 
     /// `RedbReadAccess::Current` allocates one of these per read access, so its
     /// size is a per-read cost rather than a one-off. The bound is loose enough
