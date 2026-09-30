@@ -16,35 +16,35 @@ package closes. It is measurement evidence, not a throughput promise.
   base-to-base difference.
 - Base: main at `485a40268`, before any ADR-0263 implementation, with the
   ADR-0104 ceilings (8,192 transitions, 32 MiB suffix, 40 MiB extent).
-- Candidate: main at `20e3657cb` plus the Decision 7 ceilings and the changes
-  listed below, in one tree.
+- Candidate: the committed Decision 7 build, the ceilings and every change
+  listed below.
 
 ## Result
 
-| Load | Arm | Throughput (ops/s) | p99 | Maximum |
-|---|---|---|---|---|
-| Write-only | base | 3,446 / 3,548 | 109.1 / 96.5 ms | 219 / 196 ms |
-| Write-only | candidate | 3,621 / 3,656 | 31.5 / 31.5 ms | 587 / 283 ms |
-| Interactive | base | 16,586 / 16,675 | 10.0 / 9.4 ms | 167 / 170 ms |
-| Interactive | candidate | 16,876 / 16,288 | 10.5 / 11.0 ms | 224 / 252 ms |
+| Load | Arm | Throughput (ops/s) | p95 | p99 | Maximum |
+|---|---|---|---|---|---|
+| Write-only | base | 3,438 / 3,579 | 10.0 / 10.0 ms | 109.1 / 100.7 ms | 309 / 178 ms |
+| Write-only | candidate | 3,416 / 3,546 | 8.9 / 8.4 ms | 13.6 / 13.1 ms | 718 / 742 ms |
+| Interactive | base | 16,455 / 16,583 | 7.3 / 7.1 ms | 10.0 / 9.4 ms | 166 / 181 ms |
+| Interactive | candidate | 16,023 / 16,056 | 7.3 / 7.6 ms | 10.0 / 10.0 ms | 696 / 696 ms |
 
-Write-only throughput is 4.1% higher and its p99 is a third of the base.
-Interactive throughput is unchanged within the host's 2–4% spread, with p99
-about 1 ms higher. The maximum latency is higher in both loads, up to 2.8× the
-base in one write-only run. The worst journal sync fell from 686 ms, before the
-zero-fill was paced, to 171–275 ms. The peak overlay charge a checkpoint
-covered was 71–73 MiB of the 256 MiB ceiling (`riffdb-writer-overlay-census-v1`).
+Write-only p99 falls from about 105 ms to 13 ms and p95 from 10 ms to under
+9 ms, at unchanged throughput. Interactive throughput is 2.9% lower, at the edge
+of the host's 2–4% spread, with p95 and p99 unchanged. The maximum rises to
+about 700 ms in both loads: journal syncs of up to 687 ms queue behind each
+checkpoint's 320 MiB zero-fill. The peak overlay charge a checkpoint covered
+was 72–73 MiB of the 256 MiB ceiling (`riffdb-writer-overlay-census-v1`).
 
 ## Bytes and memory
 
 | Load | Arm | Durable growth per mutation | Process writes per mutation | Peak RSS |
 |---|---|---|---|---|
-| Write-only | base | 19,612 / 18,983 B | 111,169 / 111,887 B | 516 / 531 MiB |
-| Write-only | candidate | 14,038 / 13,911 B | 107,439 / 107,253 B | 1,104 / 1,131 MiB |
-| Interactive | base | 19,474 / 19,529 B | 199,783 / 206,958 B | 420 / 427 MiB |
-| Interactive | candidate | 12,766 / 11,583 B | 195,154 / 193,377 B | 978 / 963 MiB |
+| Write-only | base | 19,636 / 18,893 B | 112,444 / 111,672 B | 519 / 530 MiB |
+| Write-only | candidate | 14,938 / 14,311 B | 108,923 / 107,431 B | 1,105 / 1,115 MiB |
+| Interactive | base | 27,226 / 27,012 B | 200,753 / 205,127 B | 421 / 426 MiB |
+| Interactive | candidate | 12,435 / 12,414 B | 197,228 / 195,281 B | 927 / 936 MiB |
 
-Durable growth per mutation falls 28% (write-only) and 38% (interactive). It
+Durable growth per mutation falls 24% (write-only) and 54% (interactive). It
 includes the retained journal extents, so redb's own share falls further. Peak
 resident memory roughly doubles: the uncheckpointed suffix a checkpoint covers
 is eight times larger, and the writer keeps its frames and mutations in memory
@@ -66,16 +66,41 @@ and removed:
   rotation waits for the checkpoint name instead.
 - **Sealing fully decoded every frame.** It now checks each frame against the
   hash its header recorded and skips re-decoding its segments.
-- **The 320 MiB spare's zero-fill was one burst** that journal syncs queued
-  behind. The background fill now syncs every 8 MiB.
+- **The 320 MiB spare's zero-fill is one writeback burst** that journal syncs
+  queue behind, and it produces the remaining maximum. Syncing the fill every
+  8 MiB cut the maximum to 283–587 ms but moved write-only p95 from under 9 ms
+  to 10–19 ms and p99 to 31 ms, so it was reverted.
 - **Sealing refused a direct commit between journaled frames** (fixed in
   `20e3657cb`), which fenced writes on the first sealed extent.
+
+## Same-run PostgreSQL comparison
+
+`run-app-baseline --full --load <load> --load-clients 32 --load-duration-secs 90
+--load-warmup-secs 15 --postgres-comparator safe-app --reps 3 --require-stable`
+(`--load-journeys` for the mixed load), on the same host. Ratios are RiffDB over
+PostgreSQL medians. PERF-008 gates the mixed load at throughput ≥ 0.90× and
+p95 ≤ 1.25×.
+
+| Load | Build | Throughput | p95 | p99 |
+|---|---|---|---|---|
+| Mixed (interactive) | base | 1.085× | 0.871× | 0.818× |
+| Mixed (interactive) | final | 1.033× | 0.937× | 0.909× |
+| Write-only | base | 0.702× | 0.950× | 8.276× |
+| Write-only | final | 0.740× | 0.857× | 1.000× |
+
+The mixed-load gate passes before and after on this host. On write-only, the
+final build removes the p99 stalls (8.3× to 1.0× PostgreSQL) and keeps p95
+below PostgreSQL. Write-only throughput stays near 0.74×: the ordered writer's
+CPU per command bounds it, and this package does not change that. The final
+write-only report is marked unstable only because PostgreSQL's p99 varied 2.14×
+across repetitions; every RiffDB metric varied at most 1.07×.
 
 ## Limits
 
 - Retained extents are not yet recycled (WP-815), so every checkpoint still
   zero-fills a new 320 MiB extent. That doubles the sequential bytes written
-  for journal growth, and it is the likely source of the remaining maximum.
+  for journal growth and produces the remaining maximum, about 700 ms.
+- Write-only throughput remains about 0.74× PostgreSQL.
 - Two repetitions per arm show direction, not a distribution.
 - Test builds keep the 40 MiB extent; only release builds use 320 MiB.
 - Peak resident memory is about 1.1 GiB under write-only load, against about

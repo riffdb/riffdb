@@ -3042,12 +3042,7 @@ pub(crate) fn prepare_spare_extent_with_media(
         Err(error) if error.kind() == io::ErrorKind::NotFound => {}
         Err(_) => return Err(JournalIoError::Io),
     }
-    create_extent_file_paced_with_media(
-        media,
-        &preparing,
-        &ExtentHeader::initial(header.clone()),
-        Some(SPARE_FILL_SYNC_BYTES),
-    )?;
+    create_extent_file_with_media(media, &preparing, &ExtentHeader::initial(header.clone()))?;
     let _guard = spare_lock.lock().map_err(|_| JournalIoError::Io)?;
     if media.try_exists(&spare).map_err(|_| JournalIoError::Io)? {
         media
@@ -3088,26 +3083,11 @@ fn create_extent_file_with_media(
     path: &Path,
     header: &ExtentHeader,
 ) -> Result<(), JournalIoError> {
-    create_extent_file_paced_with_media(media, path, header, None)
-}
-
-/// Zero-filled bytes a background spare preparation writes between syncs.
-/// Syncing each bounded run keeps at most this much zero-fill writeback ahead
-/// of a journal sync on the same device (ADR-0263 Decision 7).
-const SPARE_FILL_SYNC_BYTES: usize = 8 * 1024 * 1024;
-
-fn create_extent_file_paced_with_media(
-    media: &dyn JournalMedia,
-    path: &Path,
-    header: &ExtentHeader,
-    sync_every: Option<usize>,
-) -> Result<(), JournalIoError> {
     let mut file = media
         .create_new_read_write(path)
         .map_err(|_| JournalIoError::Io)?;
     let zeroes = vec![0_u8; 1024 * 1024];
     let mut remaining = extent_file_bytes(header.data_bytes);
-    let mut unsynced = 0_usize;
     while remaining != 0 {
         let count = remaining.min(zeroes.len());
         if let Err(error) = file.write_all(&zeroes[..count]) {
@@ -3116,15 +3096,6 @@ fn create_extent_file_paced_with_media(
             return Err(classify_extent_creation_error(&error));
         }
         remaining -= count;
-        unsynced += count;
-        if sync_every.is_some_and(|bytes| unsynced >= bytes) {
-            if let Err(error) = file.sync_data() {
-                drop(file);
-                let _ = media.remove_file(path);
-                return Err(classify_extent_creation_error(&error));
-            }
-            unsynced = 0;
-        }
     }
     if let Err(error) = file
         .write_all_at(&header.encode(), 0)
