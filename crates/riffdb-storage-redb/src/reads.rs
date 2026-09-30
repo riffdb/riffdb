@@ -94,7 +94,6 @@ pub(crate) fn read_snapshot_from_access(
     observed_through: Option<CommitSequence>,
     access: &RedbReadAccess,
 ) -> Result<ReadSnapshot, StorageError> {
-    let _read_role = crate::writer_read_probe::scope(1);
     if let Some(selection) = request.indexed_selection() {
         let target = selection.range();
         let prefix = target.prefix().as_bytes();

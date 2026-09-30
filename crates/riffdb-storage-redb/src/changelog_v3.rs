@@ -151,7 +151,6 @@ fn receipt_from_sources<'a>(
     catalog: [u8; 32],
     mutations: impl IntoIterator<Item = Result<MutationSource<'a>, ChangelogV3Error>>,
 ) -> Result<AuthoritativeTransactionV3, ChangelogV3Error> {
-    let mut probe = crate::writer_receipt_probe::Probe::new(0);
     if binding.predecessor.is_none()
         || !matches!(
             source,
@@ -183,26 +182,19 @@ fn receipt_from_sources<'a>(
             // Its only V3 control mutation is the checked allocator above.
             return Err(ChangelogV3Error::InvalidNamespace);
         }
-        let owned = match value {
+        changes.record(match value {
             Some(value) => AuthoritativeMutationV3::put(namespace, key, expected_hash, value)?,
             None => AuthoritativeMutationV3::delete(
                 namespace,
                 key,
                 expected_hash.ok_or(ChangelogV3Error::InvalidEncoding)?,
             )?,
-        };
-        probe.owned(key.len(), value.map(<[u8]>::len));
-        changes.record(owned)?;
+        })?;
     }
     if !allocator_seen {
         return Err(ChangelogV3Error::InvalidEncoding);
     }
-    let result =
-        AuthoritativeTransactionV3::new_for_catalog(binding, source, changes.finish()?, catalog);
-    if let Ok(receipt) = &result {
-        probe.complete(true, receipt.mutations().len(), receipt.encoded_len()?);
-    }
-    result
+    AuthoritativeTransactionV3::new_for_catalog(binding, source, changes.finish()?, catalog)
 }
 
 // Frozen V1 fixture entry points; production always passes its checked lineage.

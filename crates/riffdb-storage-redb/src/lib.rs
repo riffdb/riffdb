@@ -89,8 +89,6 @@ mod store;
 mod test_audit;
 #[cfg(test)]
 mod test_path;
-mod writer_read_probe;
-mod writer_receipt_probe;
 
 /// Fixed-cardinality, redaction-safe process-generation command-frame census.
 ///

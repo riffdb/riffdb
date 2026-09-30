@@ -171,7 +171,6 @@ impl RedbCompositeMutationStage {
         &mut self,
         mutation: &crate::journal::JournalMutation,
     ) -> Result<(), StorageError> {
-        let _read_role = crate::writer_read_probe::scope(4);
         let mutation = mutation.composite().map_err(corrupt_value)?;
         self.stage
             .apply(mutation, &RedbCheckpointBase { root: &self.root })

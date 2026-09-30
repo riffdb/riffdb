@@ -708,7 +708,6 @@ impl TransactionLocalCommandBatch for RedbEmptyBatch {
         &self,
         request: SnapshotRequest,
     ) -> Result<ReadSnapshot, StorageError> {
-        let _read_role = crate::writer_read_probe::scope(2);
         read_transaction_local_snapshot(&self.core, request)
     }
 }
@@ -2000,7 +1999,6 @@ fn apply_record_set(
     records: &AtomicCommandRecordSet,
     encoded: riffdb_storage_api::EncodedCapsuleCommandRecordSetV1,
 ) -> Result<Vec<CommittedEntityTransitionV1>, StorageError> {
-    let _read_role = crate::writer_read_probe::scope(3);
     core.access.begin_command_prefix_capture(
         records
             .presequence_charge()
