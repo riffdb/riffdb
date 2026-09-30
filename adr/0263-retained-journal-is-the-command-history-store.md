@@ -8,7 +8,8 @@ accepted: '2026-09-28'
 acceptance: 'maintainer, in session, 2026-09-28: "approved, build it" (ADR-0263 as written);
   Amendment 1 accepted by the maintainer, in session, 2026-09-28: "Accepted";
   Amendment 2 accepted by the maintainer, in session, 2026-09-28: "Approved";
-  Amendment 3 accepted by the maintainer, in session, 2026-09-29: "i accepted it"'
+  Amendment 3 accepted by the maintainer, in session, 2026-09-29: "i accepted it";
+  Amendment 4 accepted by the maintainer, in session, 2026-09-30: "approved"'
 requires: [ADR-0101, ADR-0102, ADR-0103, ADR-0104, ADR-0182, ADR-0186, ADR-0261]
 amends:
   - ADR-0101 and ADR-0103's recycling of a fully checkpointed journal extent, which
@@ -215,6 +216,42 @@ C3. A stub is a representation, not replicated state. Every hash of a COMMITS
     agree byte for byte on history.
 C4. Stubs are a new versioned encoding, which a binary without this amendment
     refuses.
+
+### Amendment 4 (accepted 2026-09-30): bounded pruning and whole-file reclamation
+
+Decision 6 and A6 distinguish logical pruning from physical reclamation:
+
+1. Online logical pruning uses administration transitions covering at most
+   256 application sequences each. Each transition atomically materializes
+   retained outcome, provenance, audit, and route views, deletes whole command
+   rows and the covered event/outbox rows, appends its tombstone, and advances
+   the application retention watermark under every existing fence. The first
+   transition invalidates the validated-prefix checkpoint as before. A logical
+   pruning boundary may lie inside a sealed extent; extent bytes remain
+   immutable. Commands in an unsealed extent wait for sealing.
+2. Physical reclamation deletes or recycles only an entire sealed extent,
+   after durable logical pruning has covered every application command in it
+   and the existing source checkpoint/reclamation protocol has durably removed
+   every V3 receipt reference into it. The retained resume-anchor receipt and
+   every source/follower/projection hold retain their existing meaning. No
+   acknowledgement, checkpoint, detach, or receipt deletion is manufactured to
+   make a file eligible. Unreadable or inconsistent evidence refuses reclamation.
+3. File reclamation runs off the ordered writer gate with a bounded pass and
+   at most one extent operation per pass. It cannot advance an allocator,
+   watermark, or consumer frontier. A crash before or after the file operation
+   must leave durable authoritative state sufficient to retry safely. Reuse
+   must install a fresh extent header and generation without exposing old bytes
+   as new frames. No command segment or journaled receipt is copied elsewhere.
+4. A target inside an extent may make bounded logical progress while physical
+   space remains allocated. Diagnostics and evidence report logical pruning,
+   physically reclaimed/recycled extents, and receipts or other fences still
+   retaining files separately. The five-percent p95 interference gate and
+   keep-up fraction greater than 0.0131 remain mandatory; logical progress alone
+   does not establish sustainable physical storage.
+5. Offline retention remains available. It preserves references and immutable
+   extent bytes; its existing journal rebase remains required. This amendment
+   adds no public operation, durable identity, or relaxed application guarantee.
+
 
 ## Options considered
 

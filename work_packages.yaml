@@ -27943,10 +27943,11 @@ work_packages:
   name: Online retention by sealed-extent retirement
   tier: guarantee
   depends_on: [WP-814]
-  objective: Implement ADR-0263 decision 6. Online retention retires whole sealed
-    extents, materializing ADR-0182's retained views for their commands in one bounded
-    administration transition before advancing the watermark and removing the index row,
-    and deletes or recycles the extent only after that transition is durable.
+  objective: Implement ADR-0263 Amendment 4. Online logical pruning advances in
+    administration transitions of at most 256 sequences, preserving retained views
+    and every fence. Reclaim or recycle whole sealed extents only after durable
+    pruning and the existing source reclamation protocol remove every command and
+    receipt reference; keep file operations off the ordered writer gate.
   requirements: [STO-030, STO-031, STO-032]
   required_adrs: [ADR-0182, ADR-0263]
   allowed_paths: [work_packages.yaml, adr/0263-retained-journal-is-the-command-history-store.md, crates/riffdb-storage-api/**,
@@ -27954,7 +27955,8 @@ work_packages:
     fixtures/**, scripts/**, benchmarks/**, examples/app-baseline/**, release/evidence/**,
     docs/**]
   deliverables:
-  - Extent retirement under every ADR-0182 fence, at most 256 sequences per step
+  - Bounded logical pruning under every ADR-0182 fence, at most 256 sequences per step
+  - Whole-file reclamation only after command and receipt references are durably released
   - Crash coverage across retained-view materialization, watermark advance, index
     removal, and file deletion or recycling
   - Recycling of retired extents as future journal extents
@@ -27963,8 +27965,9 @@ work_packages:
   acceptance_commands:
   - ./scripts/acceptance --wp WP-815
   - ./scripts/ci-all
-  exit_gate: Retention retires whole sealed extents under every fence without writer-gate
-    row relocation; every crash window reopens at a consistent watermark and index; and
+  exit_gate: Logical pruning stays bounded under every fence and whole sealed extents
+    are reclaimed only after all command and receipt references are durably released;
+    every crash window reopens at a consistent watermark and index; and
     32-client interactive evidence shows p95 inside the five-percent bound with keep-up
     above 0.0131.
   standing_design_tests:
