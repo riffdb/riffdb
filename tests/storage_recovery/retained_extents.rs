@@ -850,3 +850,23 @@ fn damaged_sealed_extent_child() {
         }
     }
 }
+
+// req: STO-030
+#[test]
+fn interference_seed_delivery_resolves_stopped_retained_history() {
+    let path = TestDatabasePath::new("interference-seed-history");
+    prepare_two_sealed_commands(&path.0);
+    // No operational store owns a resolver in this process at this boundary.
+    assert_eq!(
+        riffdb_storage_redb::benchmark_support::mark_all_outbox_events_delivered_v1(&path.0)
+            .unwrap(),
+        2
+    );
+    assert!(
+        retention_tombstones(&path.0).is_empty(),
+        "benchmark setup cannot prune authority"
+    );
+    let ports = open_operational(RedbStore::open(&path.0).unwrap());
+    assert_committed(&ports, 1);
+    assert_committed(&ports, 2);
+}

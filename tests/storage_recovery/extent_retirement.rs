@@ -14,6 +14,39 @@ fn extent_retirement_crash_child() {
         return;
     };
     let path = PathBuf::from(std::env::var_os(SOURCE).unwrap());
+    if mode.starts_with("recycle-") {
+        let ports = open_operational(RedbStore::open(&path).unwrap());
+        ports
+            .online_retention_lane()
+            .step(NonZeroU64::new(2).unwrap(), NonZeroU64::new(256).unwrap())
+            .unwrap();
+        let mut pool = path.as_os_str().to_os_string();
+        pool.push(".riffjournal.recycled");
+        let mut preparing = path.as_os_str().to_os_string();
+        preparing.push(".riffjournal.next.prep");
+        let pool = PathBuf::from(pool);
+        let preparing = PathBuf::from(preparing);
+        assert!(pool.exists());
+        if mode != "recycle-pool" {
+            std::fs::rename(&pool, &preparing).unwrap();
+            std::fs::File::open(path.parent().unwrap())
+                .unwrap()
+                .sync_all()
+                .unwrap();
+        }
+        if mode == "recycle-torn-header" {
+            use std::io::{Seek, SeekFrom, Write};
+            let mut file = std::fs::OpenOptions::new()
+                .write(true)
+                .open(&preparing)
+                .unwrap();
+            // A partial replacement header is scratch, never an authority source.
+            file.seek(SeekFrom::Start(0)).unwrap();
+            file.write_all(&[0x55; 127]).unwrap();
+            file.sync_all().unwrap();
+        }
+        std::process::abort();
+    }
     let (operation, after) = match mode.as_str() {
         "before-file" => (RedbTestOperation::RetentionExtentRetire, false),
         "after-file" => (RedbTestOperation::RetentionExtentRetire, true),
@@ -41,6 +74,9 @@ fn physical_retirement_crash_windows_preserve_every_authoritative_frontier() {
         "after-file",
         "before-directory",
         "after-directory",
+        "recycle-pool",
+        "recycle-claimed",
+        "recycle-torn-header",
     ] {
         let path = TestDatabasePath::new("extent-retirement-crash");
         let extent = retained_extents::prepare_two_sealed_commands(&path.0);
@@ -86,6 +122,14 @@ fn physical_retirement_crash_windows_preserve_every_authoritative_frontier() {
         assert_child_aborted(status, mode);
         let findings = collect_structural_findings(RedbStore::open(&path.0).unwrap());
         assert!(findings.is_empty(), "{mode}: {findings:?}");
+        for suffix in [".riffjournal.recycled", ".riffjournal.next.prep"] {
+            let mut scratch = path.0.as_os_str().to_os_string();
+            scratch.push(suffix);
+            assert!(
+                !PathBuf::from(scratch).exists(),
+                "{mode}: disposable scratch survives recovery"
+            );
+        }
         let after = riffdb_storage_redb::benchmark_support::recovery_authority_snapshot_v1(&path.0)
             .unwrap();
         assert!(

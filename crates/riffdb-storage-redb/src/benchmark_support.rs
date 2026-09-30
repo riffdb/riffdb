@@ -298,6 +298,9 @@ pub fn mark_all_outbox_events_delivered_v1(
     let mut event_ids = std::collections::BTreeSet::new();
     {
         let read = database.begin_read().map_err(transaction_error)?;
+        // The seed daemon has stopped, so no operational store owns a history
+        // resolver. Resolve its retained stubs from its own verified extents.
+        let _history = crate::history_stub::HistoryResolver::register_beside(path, &read);
         let commits = read.open_table(COMMITS).map_err(table_error)?;
         for entry in commits.iter().map_err(precommit_storage_error)? {
             let (_, value) = entry.map_err(precommit_storage_error)?;
