@@ -412,8 +412,10 @@ fn online_retention_crash_windows_recover_to_a_valid_watermark() {
             .expect("run online retention child");
         assert_child_aborted(status, mode);
 
-        // The step is one atomic transaction: after the kill it is either
-        // wholly absent or wholly present.
+        // Recover the journal before inspecting the engine checkpoint. A
+        // fenced prune can be durable before its checkpoint materialization.
+        drop(RedbStore::open(&path.0).expect("recover prune frame after kill"));
+        // The step is one atomic transition: either wholly absent or present.
         let tombstones = retention_tombstones(&path.0);
         let watermark = tombstones
             .last()
@@ -660,7 +662,10 @@ fn a_pruned_command_replay_audit_links_its_retained_provenance() {
 fn a_finished_journal_checkpoint_releases_a_waiting_retention_lane() {
     let path = TestDatabasePath::new("online-retention-checkpoint-signal");
     prepare_segmented_history(&path.0, true);
-    let ports = open_operational(RedbStore::open(&path.0).expect("open live store"));
+    let (controller, schedule) = RedbTestController::checkpoint_schedule();
+    let ports = open_operational(
+        RedbStore::open_with_test_controller(&path.0, controller).expect("open live store"),
+    );
     let lane = ports.online_retention_lane();
     let seen = lane.journal_checkpoints_finished();
     assert_eq!(
@@ -668,15 +673,34 @@ fn a_finished_journal_checkpoint_releases_a_waiting_retention_lane() {
         seen,
         "no checkpoint, no release"
     );
-    // Journaled commands, then a direct write that drains them: that drain
-    // finishes a journal checkpoint.
+    // Journaled commands and pruning stay in the suffix until a scheduled
+    // checkpoint materializes them through the existing checkpoint worker.
     let batch = (1..=GROUP)
         .map(|ordinal| command_fixture_at(GROUPS * GROUP + ordinal))
         .collect::<Vec<_>>();
     fence_deferred_epoch(&ports, &batch);
     ports
         .online_retention_step(sequences(2 * GROUP), sequences(256))
-        .expect("step drains the journal suffix");
+        .expect("journaled prune step");
+    assert_eq!(
+        lane.journal_checkpoints_finished(),
+        seen,
+        "pruning does not drain the command suffix"
+    );
+    schedule.arm(riffdb_storage_redb::RedbCheckpointTestPoint::Materialized);
+    schedule.request_checkpoint();
+    drop(
+        ports
+            .begin_deferred_command_epoch()
+            .expect("start checkpoint"),
+    );
+    schedule.wait(riffdb_storage_redb::RedbCheckpointTestPoint::Materialized);
+    schedule.release(riffdb_storage_redb::RedbCheckpointTestPoint::Materialized);
+    drop(
+        ports
+            .begin_deferred_command_epoch()
+            .expect("install checkpoint"),
+    );
     let after = lane.wait_for_journal_checkpoint(seen, std::time::Duration::from_secs(5));
-    assert!(after > seen, "the drained checkpoint releases the lane");
+    assert!(after > seen, "the installed checkpoint releases the lane");
 }

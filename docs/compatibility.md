@@ -452,3 +452,17 @@ fencing or promotion tool is exposed. The primary-fenced error is
 `RDB-REP-0102` with `contact_operator` recovery; older clients refuse unknown
 variants. See [follower administration](operations/FOLLOWER-ADMINISTRATION.md)
 for the experimental path and remaining recovery limits.
+
+WP-815's journal writer uses logical frame version 4 for bounded retention
+pruning. Frozen version 2 and 3 frames remain readable; the physical extent
+format and existing record encodings are unchanged. The durable-format writer
+identity advances to 2 before any version 4 frame can be written. A binary for
+writer identity 1 refuses that unit instead of attempting a downgrade.
+
+An existing writer-1 unit requires the supported offline format upgrade,
+with an exact immutable backup created by its matching binary before upgrading.
+The upgrade validates the predecessor's registry and frozen compatibility corpus,
+binds its durable receipt to that backup, and replaces the marker atomically.
+It preserves application and administration frontiers. It has no online or
+backup-free upgrade mode. WP-815 remains open while the journaled pruning path
+and its interference qualification are being completed.

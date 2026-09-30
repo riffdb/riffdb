@@ -81,10 +81,16 @@ impl SharedRedb {
                     ),
                     prior_history_hash: history.tail().history_hash(),
                 };
-                let source = if frame.command_count == 0 {
-                    ChangelogAttributionV3::JournaledServiceAudit
-                } else {
-                    ChangelogAttributionV3::JournaledApplicationGroup
+                let source = match frame.encoded.kind() {
+                    crate::journal::JournalFrameKind::Command => {
+                        ChangelogAttributionV3::JournaledApplicationGroup
+                    }
+                    crate::journal::JournalFrameKind::ServiceAudit => {
+                        ChangelogAttributionV3::JournaledServiceAudit
+                    }
+                    crate::journal::JournalFrameKind::RetentionPrune => {
+                        ChangelogAttributionV3::RetentionPrune
+                    }
                 };
                 let receipt = crate::changelog_v3::receipt_from_validated_mutations_for_catalog(
                     // The same binding was proven before admission to the lane.

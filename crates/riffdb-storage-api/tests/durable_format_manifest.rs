@@ -35,7 +35,7 @@ fn current_manifest_names_every_closed_format_family() {
     let manifest = current_durable_format_manifest();
 
     assert_eq!(manifest.epoch(), AlphaFormatEpoch::new(1).unwrap());
-    assert_eq!(manifest.writer(), DurableFormatWriter::new(1));
+    assert_eq!(manifest.writer(), DurableFormatWriter::new(2));
     assert_eq!(manifest.release(), env!("CARGO_PKG_VERSION"));
     assert_eq!(manifest.readable_storage_versions(), &[1, 2]);
     assert_eq!(manifest.writable_storage_versions(), &[2]);
@@ -43,8 +43,8 @@ fn current_manifest_names_every_closed_format_family() {
     assert_eq!(manifest.writable_redb_layout_versions(), &[1]);
     assert_eq!(manifest.readable_registry_versions(), &[2]);
     assert_eq!(manifest.writable_registry_versions(), &[2]);
-    assert_eq!(manifest.readable_journal_frame_versions(), &[2, 3]);
-    assert_eq!(manifest.writable_journal_frame_versions(), &[3]);
+    assert_eq!(manifest.readable_journal_frame_versions(), &[2, 3, 4]);
+    assert_eq!(manifest.writable_journal_frame_versions(), &[4]);
     assert_eq!(manifest.readable_journal_extent_versions(), &[3, 4]);
     assert_eq!(manifest.writable_journal_extent_versions(), &[4]);
     assert_eq!(manifest.readable_backup_versions(), &[1]);
@@ -167,4 +167,31 @@ fn retained_marker_is_fixed_checksummed_and_exact_to_the_manifest() {
         preflight_durable_format_marker(wrong_fixtures),
         Err(DurableFormatMarkerError::ManifestMismatch)
     );
+}
+
+// req: STO-030, STO-032, REC-005
+#[test]
+fn prune_writer_requires_backup_bound_offline_upgrade_from_prior_writer() {
+    let current = current_durable_format_manifest();
+    let prior = DurableFormatIdentity::new(current.epoch(), DurableFormatWriter::new(1));
+    assert!(matches!(
+        preflight_durable_format(prior),
+        Ok(DurableFormatAction::OfflineInPlace {
+            backup_required: true,
+            downtime_required: true,
+            one_way: true,
+            ..
+        })
+    ));
+    let wrong_prior_marker = DurableFormatMarker::new(
+        prior,
+        current.registry_digest(),
+        CompatibilityFixtureDigest::from_bytes([9; 32]),
+    );
+    assert_eq!(
+        preflight_durable_format_marker(wrong_prior_marker),
+        Err(DurableFormatMarkerError::ManifestMismatch)
+    );
+    let future = DurableFormatIdentity::new(current.epoch(), DurableFormatWriter::new(3));
+    assert!(preflight_durable_format(future).is_err());
 }

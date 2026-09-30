@@ -73,8 +73,23 @@ impl RedbCompositeViewBuilder {
     /// Applies one already-decoded journal frame after proving exact canonical
     /// table bytes and predecessor state against this root plus prior frames.
     pub(crate) fn apply_frame(&mut self, frame: &JournalFrame) -> Result<(), StorageError> {
-        let frame = frame.composite().map_err(corrupt_value)?;
-        self.apply_composite_frame(&frame)
+        let composite = frame.composite().map_err(corrupt_value)?;
+        if frame.kind() == crate::journal::JournalFrameKind::RetentionPrune {
+            let predecessor = self.overlay.clone().freeze();
+            let mut stage = CompositeMutationStage::new(&predecessor);
+            for mutation in frame.mutations() {
+                apply_canonical_prune_mutation(
+                    &mut stage,
+                    &self.root,
+                    mutation.composite().map_err(corrupt_value)?,
+                )?;
+            }
+            let successor = stage.seal_frame(&composite).map_err(corrupt_value)?;
+            self.overlay = CompositeOverlayBuilder::from_published(&successor);
+            Ok(())
+        } else {
+            self.apply_composite_frame(&composite)
+        }
     }
 
     /// Forks a captured published view into sole-writer private state without
@@ -175,6 +190,21 @@ impl RedbCompositeMutationStage {
         self.stage
             .apply(mutation, &RedbCheckpointBase { root: &self.root })
             .map_err(corrupt_value)
+    }
+
+    /// Validates a prune against the actual pinned view, resolving command
+    /// history stubs before checking the frame's canonical before-image hash.
+    /// The stage retains that canonical mutation for its receipt and checkpoint;
+    /// it never substitutes a physical stub digest into a durable frame.
+    pub(crate) fn apply_prune(
+        &mut self,
+        mutation: &crate::journal::JournalMutation,
+    ) -> Result<(), StorageError> {
+        apply_canonical_prune_mutation(
+            &mut self.stage,
+            &self.root,
+            mutation.composite().map_err(corrupt_value)?,
+        )
     }
 
     /// Applies a mutation against bytes read from this exact private stage by
@@ -669,6 +699,36 @@ impl RedbCompositeReadView {
     }
 }
 
+fn apply_canonical_prune_mutation(
+    stage: &mut CompositeMutationStage,
+    root: &CheckpointRoot,
+    mutation: riffdb_storage_api::CompositeMutationV1,
+) -> Result<(), StorageError> {
+    let base = RedbCheckpointBase { root };
+    base.validate_entry(mutation.table(), mutation.key(), mutation.value())
+        .map_err(corrupt_value)?;
+    let current = stage
+        .resolve_point(&base, mutation.table(), mutation.key())
+        .map_err(corrupt_value)?;
+    let canonical = if mutation.table() == CompositeTableV1::Commits {
+        if mutation.value().is_some() {
+            return Err(storage_error(StorageErrorKind::CorruptData));
+        }
+        current
+            .as_deref()
+            .map(crate::history_stub::resolve_commits_value)
+            .transpose()?
+    } else {
+        current.as_deref().map(std::borrow::Cow::Borrowed)
+    };
+    // This storage-owned path observed the current value from this exact stage
+    // and validated its stored encoding above. The shared stage independently
+    // checks the supplied canonical bytes against the mutation's expected hash.
+    stage
+        .apply_with_proven_current(mutation, canonical.as_deref())
+        .map_err(corrupt_value)
+}
+
 struct RedbCheckpointBase<'root> {
     root: &'root CheckpointRoot,
 }
@@ -738,8 +798,19 @@ fn validate_canonical_entry(
     match table {
         CompositeTableV1::Meta => {
             let key = std::str::from_utf8(key).map_err(invalid_shape)?;
+            if key == crate::layout::META_VALIDATED_PREFIX_CHECKPOINT {
+                return if value.is_none() {
+                    Ok(())
+                } else {
+                    Err(StorageValueError::InvalidShape)
+                };
+            }
             let value = value.ok_or(StorageValueError::InvalidShape)?;
             match key {
+                crate::layout::META_RETENTION_WATERMARK => {
+                    riffdb_storage_api::decode_retention_watermark_v1(value)
+                        .map_err(invalid_shape)?;
+                }
                 crate::layout::META_APPLICATION_SEQUENCE => {
                     decode_application_sequence_allocator_v1(value).map_err(invalid_shape)?;
                 }
@@ -756,6 +827,26 @@ fn validate_canonical_entry(
                     .map_err(invalid_shape)?;
                 }
                 _ => return Err(StorageValueError::InvalidShape),
+            }
+        }
+        CompositeTableV1::HistoryTombstones => {
+            let sequence = decode_application_sequence_key(key).map_err(invalid_shape)?;
+            if let Some(value) = value {
+                let row = riffdb_storage_api::decode_history_tombstone_v1(value)
+                    .map_err(invalid_shape)?;
+                if row.value().first_sequence() != sequence.get() {
+                    return Err(StorageValueError::IdentityMismatch);
+                }
+            }
+        }
+        CompositeTableV1::OutboxStatus => {
+            let event = decode_event_key(key).map_err(invalid_shape)?;
+            if let Some(value) = value {
+                let row =
+                    riffdb_storage_api::decode_outbox_status_v1(value).map_err(invalid_shape)?;
+                if row.value().event_id() != event {
+                    return Err(StorageValueError::IdentityMismatch);
+                }
             }
         }
         CompositeTableV1::Entities => {
@@ -790,18 +881,21 @@ fn validate_canonical_entry(
         // rather than reaching a reader that could report absence.
         CompositeTableV1::IdempotencyLocators => {
             crate::keys::decode_idempotency_key(key).map_err(invalid_shape)?;
-            let value = value.ok_or(StorageValueError::InvalidShape)?;
-            crate::codec::decode_command_locator_v1(value).map_err(invalid_shape)?;
+            if let Some(value) = value {
+                crate::codec::decode_command_locator_v1(value).map_err(invalid_shape)?;
+            }
         }
         CompositeTableV1::ProvenanceLocators => {
             crate::keys::decode_provenance_key(key).map_err(invalid_shape)?;
-            let value = value.ok_or(StorageValueError::InvalidShape)?;
-            crate::codec::decode_command_locator_v1(value).map_err(invalid_shape)?;
+            if let Some(value) = value {
+                crate::codec::decode_command_locator_v1(value).map_err(invalid_shape)?;
+            }
         }
         CompositeTableV1::AuditByRequestLocators => {
             crate::keys::decode_audit_by_request_key(key).map_err(invalid_shape)?;
-            let value = value.ok_or(StorageValueError::InvalidShape)?;
-            crate::codec::decode_command_locator_v1(value).map_err(invalid_shape)?;
+            if let Some(value) = value {
+                crate::codec::decode_command_locator_v1(value).map_err(invalid_shape)?;
+            }
         }
         CompositeTableV1::Idempotency => {
             let physical = decode_idempotency_key(key).map_err(invalid_shape)?;
@@ -973,6 +1067,8 @@ fn validate_canonical_entry(
 
 const fn journal_table(table: CompositeTableV1) -> crate::journal::JournalTable {
     match table {
+        CompositeTableV1::HistoryTombstones => crate::journal::JournalTable::HistoryTombstones,
+        CompositeTableV1::OutboxStatus => crate::journal::JournalTable::OutboxStatus,
         CompositeTableV1::Meta => crate::journal::JournalTable::Meta,
         CompositeTableV1::Entities => crate::journal::JournalTable::Entities,
         CompositeTableV1::SecondaryIndexes => crate::journal::JournalTable::SecondaryIndexes,
@@ -1084,6 +1180,11 @@ mod tests {
         use redb::TableHandle;
 
         for (table, expected) in [
+            (
+                CompositeTableV1::HistoryTombstones,
+                Some("history_tombstones"),
+            ),
+            (CompositeTableV1::OutboxStatus, Some("outbox_status")),
             (CompositeTableV1::Meta, None),
             (CompositeTableV1::Entities, Some("entities")),
             (
@@ -1140,7 +1241,7 @@ mod tests {
 
         // Every variant is pinned above, so no table can silently acquire a
         // mapping without also acquiring a pin.
-        assert_eq!(CompositeTableV1::ALL.len(), 20);
+        assert_eq!(CompositeTableV1::ALL.len(), 22);
     }
 
     /// The cached frontier belongs to one published view, so a successor that
@@ -1486,3 +1587,7 @@ mod tests {
         ));
     }
 }
+
+#[cfg(test)]
+#[path = "composite_view/prune_tests.rs"]
+mod prune_tests;

@@ -521,3 +521,68 @@ fn online_retention_fences_on_the_durable_consumer_low_water() {
             .is_some()
     );
 }
+
+// req: STO-030, STO-032
+#[test]
+fn prepared_prune_revalidation_abandons_a_stale_watermark_without_writes() {
+    use riffdb_storage_api::{AuthoritativePointReader, DeferredCommandEpochPort};
+    let (_path, ports) = operational("prepared-prune-stale-watermark");
+    for sequence in 1..=3 {
+        seed_command(&ports, CommitSequence::new(sequence).unwrap(), 0);
+    }
+    let retain = std::num::NonZeroU64::new(1).unwrap();
+    let prepared = crate::retention::prepared::PreparedPrune::prepare(&ports, retain, 1)
+        .expect("prepare against old watermark")
+        .expect("prunable prefix");
+    assert_eq!(
+        ports
+            .online_retention_step(retain, std::num::NonZeroU64::new(1).unwrap())
+            .unwrap(),
+        crate::OnlineRetentionStep::Advanced {
+            through: 1,
+            sequences: 1
+        }
+    );
+    let access = ports
+        .begin_deferred_service_audit_write()
+        .expect("next ordered turn");
+    let before = access
+        .read_command_value(
+            crate::journal::JournalTable::Meta,
+            crate::layout::META_RETENTION_WATERMARK.as_bytes(),
+        )
+        .unwrap();
+    assert!(
+        !prepared
+            .validate_and_stage(&access)
+            .expect("stale attempt abandoned")
+    );
+    assert_eq!(
+        access
+            .read_command_value(
+                crate::journal::JournalTable::Meta,
+                crate::layout::META_RETENTION_WATERMARK.as_bytes()
+            )
+            .unwrap(),
+        before
+    );
+    access.abort().expect("release private attempt");
+    assert_eq!(
+        ports
+            .read_commit(CommitSequence::first())
+            .unwrap_err()
+            .kind(),
+        StorageErrorKind::HistoryPruned
+    );
+    assert!(
+        ports
+            .read_commit(CommitSequence::new(2).unwrap())
+            .unwrap()
+            .is_some()
+    );
+    drop(
+        ports
+            .begin_deferred_command_epoch()
+            .expect("abandoning stale preparation does not fence the writer"),
+    );
+}

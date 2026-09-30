@@ -97,6 +97,7 @@ pub(crate) fn receipt_from_journal_for_catalog(
     let source = match frame.kind() {
         JournalFrameKind::Command => ChangelogAttributionV3::JournaledApplicationGroup,
         JournalFrameKind::ServiceAudit => ChangelogAttributionV3::JournaledServiceAudit,
+        JournalFrameKind::RetentionPrune => ChangelogAttributionV3::RetentionPrune,
     };
     receipt_from_sources(
         binding,
@@ -156,6 +157,7 @@ fn receipt_from_sources<'a>(
             source,
             ChangelogAttributionV3::JournaledApplicationGroup
                 | ChangelogAttributionV3::JournaledServiceAudit
+                | ChangelogAttributionV3::RetentionPrune
         )
     {
         return Err(ChangelogV3Error::PredecessorMismatch);

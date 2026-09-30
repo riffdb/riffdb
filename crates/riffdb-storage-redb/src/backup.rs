@@ -1091,6 +1091,16 @@ pub(crate) fn create_pre_format_compatibility_backup_fixture(
     backup_directory: &Path,
     build: &BackupBuildMetadataV1,
 ) -> Result<OfflineBackupManifestV1, StorageError> {
+    create_compatible_backup_fixture(source_database, backup_directory, build, None)
+}
+
+#[cfg(test)]
+pub(crate) fn create_compatible_backup_fixture(
+    source_database: &Path,
+    backup_directory: &Path,
+    build: &BackupBuildMetadataV1,
+    marker: Option<riffdb_storage_api::DurableFormatMarker>,
+) -> Result<OfflineBackupManifestV1, StorageError> {
     require_absent(backup_directory)?;
     fs::create_dir(backup_directory).map_err(io_unavailable)?;
     let artifact = backup_directory.join(DATABASE_ARTIFACT_FILE_NAME);
@@ -1105,18 +1115,39 @@ pub(crate) fn create_pre_format_compatibility_backup_fixture(
         facts.database_id,
         facts.last_commit_sequence,
     )?;
-    let checksums = vec![
+    let mut checksums = vec![
         BackupArtifactChecksumV1::new(NonZeroU32::MIN, sha256_file(&artifact)?),
         BackupArtifactChecksumV1::new(
             NonZeroU32::new(2).expect("journal artifact ordinal is nonzero"),
             sha256_file(&journal)?,
         ),
     ];
-    let manifest = facts.into_pre_format_compatibility_manifest(checksums, build.clone())?;
-    write_new_and_sync(
-        &backup_directory.join(MANIFEST_FILE_NAME),
-        &encode_manifest_pre_format_compatibility(&manifest)?,
-    )?;
+    let (manifest, encoded) = if let Some(marker) = marker {
+        let marker_artifact = backup_directory.join(FORMAT_MARKER_ARTIFACT_FILE_NAME);
+        write_new_and_sync(
+            &marker_artifact,
+            &riffdb_storage_api::encode_durable_format_marker(marker),
+        )?;
+        checksums.push(BackupArtifactChecksumV1::new(
+            NonZeroU32::new(3).expect("marker artifact ordinal"),
+            sha256_file(&marker_artifact)?,
+        ));
+        let range = BackupFormatCompatibilityV1::new(
+            marker.identity(),
+            marker.identity(),
+            marker.compatibility_fixture_digest(),
+        )
+        .map_err(value_error)?;
+        let manifest =
+            facts.into_manifest_with_format_compatibility(checksums, build.clone(), range)?;
+        let encoded = encode_manifest(&manifest)?;
+        (manifest, encoded)
+    } else {
+        let manifest = facts.into_pre_format_compatibility_manifest(checksums, build.clone())?;
+        let encoded = encode_manifest_pre_format_compatibility(&manifest)?;
+        (manifest, encoded)
+    };
+    write_new_and_sync(&backup_directory.join(MANIFEST_FILE_NAME), &encoded)?;
     sync_directory(backup_directory)?;
     Ok(manifest)
 }

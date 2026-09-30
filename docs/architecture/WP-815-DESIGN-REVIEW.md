@@ -95,8 +95,11 @@ STO-031 and is not proposed.
   Scoped acceptance without tests passes all 14 checks. Full CI and fresh
   counterbalanced performance qualification are still in progress; this package
   is not closed by those preliminary results.
-- Compatibility: no storage key, journal encoding, application operation, or
-  configuration key changes. Offline retention and journal rebasing remain.
+- Compatibility: logical journal V4 adds a closed prune kind and two table tags;
+  frozen V2/V3 readers remain. Writer marker 2 requires an exact backup-bound,
+  stopped-unit upgrade from writer marker 1; older binaries refuse V4 writers.
+  Application operations and configuration keys stay unchanged. Offline
+  retention and journal rebasing remain.
   The existing shutdown-release V1 registry remains unchanged; a separate
   `riffdb-retention-extents-v1` record exposes five bounded numeric counters.
 - Handbook pages updated: [Configuration](../configuration.md#online-retention),
@@ -140,7 +143,8 @@ clients, 60 seconds measured after 10 seconds warm-up, and clean source
 Median p95 was 7.078 ms in both arms. Active throughput was 14,658 operations/s
 against 16,245 held, and pruning reached only 0.002897 sequences per committed
 command. The unchanged keep-up referee rejects it against 0.0131.
-[Sanitized negative evidence](../../release/evidence/wp-815/rejected-direct-prune-20260930.json)
+Sanitized negative evidence at
+`release/evidence/wp-815/rejected-direct-prune-20260930.json`
 binds the raw reports and inventories by hash; no physical file reclamation is
 claimed. Receipt references held every eligible candidate.
 
@@ -154,3 +158,23 @@ watermark publication after durability, equivalent recovery, and an explicit
 offline marker upgrade. It preserves the existing writer, frontiers, holds,
 step bounds, pacing, and performance gates. Implementation and fresh
 qualification remain required before WP-815 closes.
+
+## Journaled implementation under qualification
+
+Standard-profile steps prepare bounded canonical before images, retained views,
+and the unchanged tombstone digest from a pinned composite view. The sole writer
+rechecks the watermark and chain predecessor, every observed row, incarnation,
+and every current retention fence. A changed precondition abandons the private
+attempt. One V4 frame uses the existing source receipt allocator and ordered
+sync lane, with unchanged application/administration frontiers and zero command
+or audit allocations. Watermark and index publication follow durability, before
+the corresponding composite deletion view. Direct Hardened and offline pruning
+remain available. File reclamation still requires every independent reference
+to be released.
+
+The online recovery matrix passes all twelve selected tests, including
+process crashes, subsequent commands, retained idempotency/provenance/audits,
+and consumer/follower fences. A deterministic stale-watermark test verifies
+abandonment without writes or fencing the writer. These are correctness checks;
+they do not establish the performance gate or sustainable composed operation.
+Fresh interference evidence and full CI remain required before closure.

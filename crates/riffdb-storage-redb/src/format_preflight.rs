@@ -218,27 +218,47 @@ pub(crate) fn publish_upgraded_current_marker(
     {
         return Err(RedbDurableFormatPreflightError::AmbiguousInventory);
     }
-    publish_current_marker_create_only(&RealJournalMedia, database_path)
+    publish_current_marker(&RealJournalMedia, database_path, Some(preflight))
 }
 
 fn publish_current_marker_create_only(
     media: &dyn JournalMedia,
     database_path: &Path,
 ) -> Result<(), RedbDurableFormatPreflightError> {
+    publish_current_marker(media, database_path, None)
+}
+
+fn publish_current_marker(
+    media: &dyn JournalMedia,
+    database_path: &Path,
+    upgrade: Option<RedbDurableFormatPreflight>,
+) -> Result<(), RedbDurableFormatPreflightError> {
     let marker_path = durable_format_marker_path(database_path);
     if media
         .try_exists(&marker_path)
         .map_err(|_| RedbDurableFormatPreflightError::Unavailable)?
     {
-        return match preflight_existing_marker(media, &marker_path)? {
-            RedbDurableFormatPreflight::OpenCurrent => Ok(()),
-            RedbDurableFormatPreflight::InitializeCurrent
-            | RedbDurableFormatPreflight::OfflineUpgradeRequired { .. } => {
-                Err(RedbDurableFormatPreflightError::AmbiguousInventory)
-            }
-        };
+        match preflight_existing_marker(media, &marker_path)? {
+            RedbDurableFormatPreflight::OpenCurrent => return Ok(()),
+            observed @ RedbDurableFormatPreflight::OfflineUpgradeRequired { .. }
+                if Some(observed) == upgrade => {}
+            _ => return Err(RedbDurableFormatPreflightError::AmbiguousInventory),
+        }
     }
     let staging_path = sibling_with_suffix(database_path, MARKER_STAGING_SUFFIX);
+    if upgrade.is_some()
+        && media
+            .try_exists(&staging_path)
+            .map_err(|_| RedbDurableFormatPreflightError::Unavailable)?
+    {
+        // The upgrade driver already proved the exact source, immutable backup,
+        // and durable receipt. This scratch name carries no authority, including
+        // when a process died partway through writing it; resume from the source
+        // marker by rebuilding the target bytes.
+        media
+            .remove_file(&staging_path)
+            .map_err(|_| RedbDurableFormatPreflightError::Unavailable)?;
+    }
     let mut staging = media
         .create_new_write_only(&staging_path)
         .map_err(|_| RedbDurableFormatPreflightError::Unavailable)?;
@@ -270,8 +290,12 @@ fn preflight_existing_marker(
 ) -> Result<RedbDurableFormatPreflight, RedbDurableFormatPreflightError> {
     let marker = read_marker(media, marker_path)?;
     let manifest = current_durable_format_manifest();
-    let action = preflight_durable_format(marker.identity())
+    // The release graph alone is insufficient for the V3 predecessor: its
+    // exact registry and frozen corpus must be proven before an offline upgrade.
+    preflight_durable_format(marker.identity())
         .map_err(RedbDurableFormatPreflightError::Unsupported)?;
+    let action = riffdb_storage_api::preflight_durable_format_marker(marker)
+        .map_err(RedbDurableFormatPreflightError::Marker)?;
     if action == DurableFormatAction::OpenCurrent {
         if marker.registry_digest() != manifest.registry_digest()
             || marker.compatibility_fixture_digest() != manifest.compatibility_fixture_digest()

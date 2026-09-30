@@ -321,16 +321,20 @@ its commit segment, which costs about as much writer time as committing it. On
 the ADR-0239 benchmark host, with 32 interactive clients, the lane kept p95
 within 3 percent and throughput at 0.97 of the held run while pruning about 1.3
 percent as many sequences as the load committed (WP-811). Most of each step's
-writer time is spent materializing journaled history and committing the step
-itself. ADR-0261's journaled prune frames were superseded by ADR-0263, which retires
-whole retained journal extents instead (WP-815). Its accepted correction separates
+writer time in that baseline was spent materializing journaled history and
+committing the step itself. ADR-0263 Amendment 5 returns Standard-profile logical
+pruning to journaled V4 transitions, with private preparation outside the writer
+gate and fresh precondition checks inside it (WP-815). Its correction separates
 logical pruning (steps of at most 256 sequences) from physical file reclamation:
 a sealed file remains allocated while any command, V3 receipt, older snapshot,
 or background scrub needs it. Receipt release uses the existing source-history
 protocol and is independent of the application watermark. The lane does not
 invent acknowledgements or source checkpoints to make files eligible. The
-1.3-percent result is the WP-811 baseline, not evidence for this repair. Where writes leave the writer
-idle capacity, it compacts to its target. That evidence covers one workload on
+1.3-percent result is the WP-811 baseline, not evidence for this repair. A fresh
+32-client qualification is required before WP-815 closes. The intermediate
+direct-prune implementation failed its keep-up gate; the negative evidence is
+recorded in the [design review](architecture/WP-815-DESIGN-REVIEW.md). Where writes
+leave the writer idle capacity, it compacts to its target. That evidence covers one workload on
 one host, is not a general latency guarantee, and marked the seeded events
 delivered on the stopped database first because of the outbox limit above.
 

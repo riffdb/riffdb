@@ -120,6 +120,8 @@ impl PublishedDurableSnapshot for RedbPublishedSnapshot {
 
 const fn journal_table(table: CompositeTableV1) -> crate::journal::JournalTable {
     match table {
+        CompositeTableV1::HistoryTombstones => crate::journal::JournalTable::HistoryTombstones,
+        CompositeTableV1::OutboxStatus => crate::journal::JournalTable::OutboxStatus,
         CompositeTableV1::Meta => crate::journal::JournalTable::Meta,
         CompositeTableV1::Entities => crate::journal::JournalTable::Entities,
         CompositeTableV1::SecondaryIndexes => crate::journal::JournalTable::SecondaryIndexes,

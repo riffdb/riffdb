@@ -4,7 +4,7 @@
   "writable_storage_versions": [2],
   "readable_redb_layout_versions": [1],
   "writable_redb_layout_versions": [1],
-  "journal_frame_versions": [2, 3],
+  "journal_frame_versions": [2, 3, 4],
   "journal_extent_versions": [3, 4],
   "backup_manifest_versions": [1],
   "maintenance_receipt_versions": [1, 2, 3, 4],

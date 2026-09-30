@@ -220,6 +220,14 @@ fn integrity() -> StorageError {
     storage_error(StorageErrorKind::CorruptData)
 }
 
+fn application_reference_survives(
+    predecessor: Option<riffdb_types::CommitSequence>,
+    covered: Option<riffdb_types::CommitSequence>,
+    watermark: u64,
+) -> bool {
+    covered > predecessor && covered.is_some_and(|head| head.get() > watermark)
+}
+
 fn eligible(
     read: &redb::ReadTransaction,
     footer: &journal::SealedExtentFooter,
@@ -229,9 +237,11 @@ fn eligible(
         .as_ref()
         .map_or(0, |watermark| watermark.watermark_sequence());
     if footer.entries.iter().any(|entry| {
-        entry
-            .covered_sequence
-            .is_some_and(|head| head.get() > watermark)
+        application_reference_survives(
+            entry.predecessor_sequence,
+            entry.covered_sequence,
+            watermark,
+        )
     }) {
         return Ok(false);
     }
@@ -253,6 +263,26 @@ fn eligible(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // req: STO-030, STO-032
+    #[test]
+    fn administration_only_extent_does_not_inherit_unpruned_command_references() {
+        use riffdb_types::CommitSequence;
+        let live_head = CommitSequence::new(3);
+        assert!(
+            !application_reference_survives(live_head, live_head, 2),
+            "an audit or prune frame covers the current head without owning a command"
+        );
+        assert!(
+            application_reference_survives(CommitSequence::new(2), live_head, 2),
+            "the actual command transition still holds the extent"
+        );
+        assert!(
+            !application_reference_survives(CommitSequence::new(2), live_head, 3),
+            "a durably pruned command releases only its application reference"
+        );
+        assert!(!application_reference_survives(None, None, 0));
+    }
 
     // req: STO-032
     #[test]

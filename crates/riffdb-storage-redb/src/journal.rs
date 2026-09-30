@@ -30,6 +30,7 @@ use redb::{Database, Durability, ReadableDatabase, ReadableTable, TableDefinitio
 use riffdb_storage_api::{
     DURABILITY_JOURNAL_EXTENT_VERSION as EXTENT_FORMAT_VERSION,
     DURABILITY_JOURNAL_FRAME_VERSION as FORMAT_VERSION,
+    DURABILITY_JOURNAL_FRAME_VERSION_V3 as FRAME_VERSION_V3,
 };
 use riffdb_types::{AdministrationSequence, CommitSequence, DatabaseId};
 
@@ -300,7 +301,7 @@ pub(crate) fn command_journal_stage_census() -> [u64; 10] {
     ]
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Ord, PartialOrd)]
 #[repr(u8)]
 pub(crate) enum JournalTable {
     Meta = 1,
@@ -325,10 +326,12 @@ pub(crate) enum JournalTable {
     IdempotencyLocators = 18,
     ProvenanceLocators = 19,
     AuditByRequestLocators = 20,
+    HistoryTombstones = 21,
+    OutboxStatus = 22,
 }
 
 impl JournalTable {
-    pub(crate) const ALL: [Self; 20] = [
+    pub(crate) const ALL: [Self; 22] = [
         Self::Meta,
         Self::Entities,
         Self::SecondaryIndexes,
@@ -349,6 +352,8 @@ impl JournalTable {
         Self::IdempotencyLocators,
         Self::ProvenanceLocators,
         Self::AuditByRequestLocators,
+        Self::HistoryTombstones,
+        Self::OutboxStatus,
     ];
 
     pub(crate) const fn label(self) -> &'static str {
@@ -373,6 +378,8 @@ impl JournalTable {
             Self::IdempotencyLocators => "idempotency_locators",
             Self::ProvenanceLocators => "provenance_locators",
             Self::AuditByRequestLocators => "audit_by_request_locators",
+            Self::HistoryTombstones => "history_tombstones",
+            Self::OutboxStatus => "outbox_status",
         }
     }
 
@@ -398,12 +405,16 @@ impl JournalTable {
             18 => Ok(Self::IdempotencyLocators),
             19 => Ok(Self::ProvenanceLocators),
             20 => Ok(Self::AuditByRequestLocators),
+            21 => Ok(Self::HistoryTombstones),
+            22 => Ok(Self::OutboxStatus),
             _ => Err(JournalCodecError::UnknownTable),
         }
     }
 
     pub(crate) const fn composite(self) -> riffdb_storage_api::CompositeTableV1 {
         match self {
+            Self::HistoryTombstones => riffdb_storage_api::CompositeTableV1::HistoryTombstones,
+            Self::OutboxStatus => riffdb_storage_api::CompositeTableV1::OutboxStatus,
             Self::Meta => riffdb_storage_api::CompositeTableV1::Meta,
             Self::Entities => riffdb_storage_api::CompositeTableV1::Entities,
             Self::SecondaryIndexes => riffdb_storage_api::CompositeTableV1::SecondaryIndexes,
@@ -435,6 +446,7 @@ impl JournalTable {
 pub(crate) enum JournalFrameKind {
     Command = 1,
     ServiceAudit = 2,
+    RetentionPrune = 3,
 }
 
 impl JournalFrameKind {
@@ -442,6 +454,7 @@ impl JournalFrameKind {
         match value {
             1 => Ok(Self::Command),
             2 => Ok(Self::ServiceAudit),
+            3 => Ok(Self::RetentionPrune),
             _ => Err(JournalCodecError::UnknownVersion),
         }
     }
@@ -585,6 +598,7 @@ pub(crate) struct JournalMutationBuffer {
     command_audit_count: u16,
     audit_put_count: u16,
     service_audit_closed: bool,
+    retention_prune_shape: retention_frame::RetentionPruneShape,
     selected_command_segment_bytes: usize,
     raw_command_segment_bytes: usize,
 }
@@ -600,6 +614,7 @@ impl Default for JournalMutationBuffer {
             command_audit_count: 0,
             audit_put_count: 0,
             service_audit_closed: true,
+            retention_prune_shape: retention_frame::RetentionPruneShape::default(),
             selected_command_segment_bytes: 0,
             raw_command_segment_bytes: 0,
         }
@@ -730,6 +745,7 @@ impl JournalMutationBuffer {
                 .ok_or(JournalCodecError::LimitExceeded)?;
         }
         self.service_audit_closed &= service_audit_mutation_is_closed(mutation);
+        self.retention_prune_shape.observe(mutation);
         self.bytes.push(mutation.table() as u8);
         self.bytes.push(u8::from(value.is_none()));
         self.bytes
@@ -802,6 +818,12 @@ impl JournalMutationBuffer {
                         || (self.audit_put_count != audit_count
                             && self.command_audit_count != audit_count)
                 }
+                JournalFrameKind::RetentionPrune => {
+                    transition_count != 1
+                        || command_count != 0
+                        || audit_count != 0
+                        || !self.retention_prune_shape.valid(covered_sequence)
+                }
                 JournalFrameKind::ServiceAudit => {
                     transition_count != audit_count
                         || command_count != 0
@@ -848,6 +870,7 @@ impl JournalMutationBuffer {
         );
         self.bytes.extend_from_slice(&frame_hash);
         Ok(EncodedJournalFrame {
+            kind,
             bytes: Arc::from(self.bytes),
             frame_hash,
             transition_count,
@@ -930,6 +953,9 @@ fn logical_command_audits_in_commit_value(value: &[u8]) -> Result<u16, JournalCo
     }
 }
 
+#[path = "journal/retention_frame.rs"]
+mod retention_frame;
+
 fn service_audit_mutation_is_closed(mutation: &JournalMutation) -> bool {
     match mutation.table() {
         JournalTable::Audit | JournalTable::AuditByRequest => mutation.value().is_some(),
@@ -958,7 +984,9 @@ fn service_audit_mutation_is_closed(mutation: &JournalMutation) -> bool {
         | JournalTable::EntityChainHeads
         | JournalTable::VectorEvidence
         | JournalTable::VectorObservations
-        | JournalTable::VectorEvidenceIndex => false,
+        | JournalTable::VectorEvidenceIndex
+        | JournalTable::HistoryTombstones
+        | JournalTable::OutboxStatus => false,
     }
 }
 
@@ -1044,7 +1072,9 @@ impl JournalFileHeader {
         if bytes.len() != FILE_HEADER_BYTES {
             return Err(JournalCodecError::Truncated);
         }
-        if bytes[..8] != FILE_MAGIC || read_u16(bytes, 8)? != FORMAT_VERSION {
+        if bytes[..8] != FILE_MAGIC
+            || !matches!(read_u16(bytes, 8)?, FRAME_VERSION_V3 | FORMAT_VERSION)
+        {
             return Err(JournalCodecError::UnknownVersion);
         }
         if digest(&bytes[..74]).as_slice() != &bytes[74..] {
@@ -1288,6 +1318,7 @@ struct ExtentState {
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) struct JournalFrame {
+    format_version: u16,
     database_id: DatabaseId,
     kind: JournalFrameKind,
     predecessor_sequence: Option<CommitSequence>,
@@ -1638,6 +1669,15 @@ impl JournalFrame {
                             && mutation_put_count(&mutations, JournalTable::Audit)? != audit_count
                             && logical_command_audit_count(&mutations)? != audit_count)
                 }
+                JournalFrameKind::RetentionPrune => {
+                    transition_count != 1
+                        || command_count != 0
+                        || audit_count != 0
+                        || !retention_frame::retention_prune_shape_is_valid(
+                            &mutations,
+                            covered_sequence,
+                        )
+                }
                 JournalFrameKind::ServiceAudit => {
                     transition_count != audit_count
                         || command_count != 0
@@ -1649,6 +1689,7 @@ impl JournalFrame {
             return Err(JournalCodecError::InvalidValue);
         }
         let frame = Self {
+            format_version: FORMAT_VERSION,
             database_id,
             kind,
             predecessor_sequence,
@@ -1669,7 +1710,7 @@ impl JournalFrame {
     }
 
     pub(crate) fn encode(&self) -> Result<EncodedJournalFrame, JournalCodecError> {
-        self.encode_as(FORMAT_VERSION)
+        self.encode_as(self.format_version)
     }
 
     /// A version 2 encoding, as every legacy journal and pre-ADR-0263 extent
@@ -1684,10 +1725,21 @@ impl JournalFrame {
 
     fn encode_as(&self, version: u16) -> Result<EncodedJournalFrame, JournalCodecError> {
         let header_bytes = match version {
-            FORMAT_VERSION => FRAME_HEADER_BYTES,
+            FRAME_VERSION_V3 | FORMAT_VERSION => FRAME_HEADER_BYTES,
             FRAME_VERSION_V2 => FRAME_HEADER_BYTES_V2,
             _ => return Err(JournalCodecError::UnknownVersion),
         };
+        if version < FORMAT_VERSION
+            && (self.kind == JournalFrameKind::RetentionPrune
+                || self.mutations.iter().any(|m| {
+                    matches!(
+                        m.table(),
+                        JournalTable::HistoryTombstones | JournalTable::OutboxStatus
+                    )
+                }))
+        {
+            return Err(JournalCodecError::UnknownVersion);
+        }
         let payload_len = self.payload_len()?;
         let total_len = header_bytes
             .checked_add(payload_len)
@@ -1761,6 +1813,7 @@ impl JournalFrame {
         bytes.extend_from_slice(&frame_hash);
         debug_assert_eq!(bytes.len(), total_len);
         Ok(EncodedJournalFrame {
+            kind: self.kind,
             bytes: Arc::from(bytes),
             frame_hash,
             transition_count: self.transition_count,
@@ -1802,7 +1855,7 @@ impl JournalFrame {
             return Err(JournalCodecError::UnknownVersion);
         }
         let header_bytes = match read_u16(bytes, 8)? {
-            FORMAT_VERSION => FRAME_HEADER_BYTES,
+            FRAME_VERSION_V3 | FORMAT_VERSION => FRAME_HEADER_BYTES,
             FRAME_VERSION_V2 => FRAME_HEADER_BYTES_V2,
             _ => return Err(JournalCodecError::UnknownVersion),
         };
@@ -1908,6 +1961,17 @@ impl JournalFrame {
         if cursor != footer {
             return Err(JournalCodecError::InvalidValue);
         }
+        if read_u16(bytes, 8)? < FORMAT_VERSION
+            && (bytes[26] == JournalFrameKind::RetentionPrune as u8
+                || mutations.iter().any(|m| {
+                    matches!(
+                        m.table(),
+                        JournalTable::HistoryTombstones | JournalTable::OutboxStatus
+                    )
+                }))
+        {
+            return Err(JournalCodecError::UnknownVersion);
+        }
         let database_id = DatabaseId::from_bytes(read_array::<16>(bytes, 10)?)
             .map_err(|_| JournalCodecError::InvalidValue)?;
         let frame = Self::checked_with(
@@ -1924,7 +1988,14 @@ impl JournalFrame {
             mutations,
             proven.is_none(),
         )?;
-        Ok((Self { changelog, ..frame }, frame_hash))
+        Ok((
+            Self {
+                format_version: read_u16(bytes, 8)?,
+                changelog,
+                ..frame
+            },
+            frame_hash,
+        ))
     }
 
     fn payload_len(&self) -> Result<usize, JournalCodecError> {
@@ -1996,6 +2067,9 @@ impl JournalFrame {
             .map_err(|_| riffdb_storage_api::StorageValueError::InvalidShape)?;
         let kind = match self.kind {
             JournalFrameKind::Command => riffdb_storage_api::CompositeFrameKindV1::Command,
+            JournalFrameKind::RetentionPrune => {
+                riffdb_storage_api::CompositeFrameKindV1::RetentionPrune
+            }
             JournalFrameKind::ServiceAudit => {
                 riffdb_storage_api::CompositeFrameKindV1::ServiceAudit
             }
@@ -2023,6 +2097,7 @@ impl JournalFrame {
 
 #[derive(Clone)]
 pub(crate) struct EncodedJournalFrame {
+    kind: JournalFrameKind,
     bytes: Arc<[u8]>,
     frame_hash: [u8; HASH_BYTES],
     transition_count: u16,
@@ -2038,6 +2113,10 @@ pub(crate) struct EncodedJournalFrame {
 }
 
 impl EncodedJournalFrame {
+    pub(crate) fn kind(&self) -> JournalFrameKind {
+        self.kind
+    }
+
     /// Whether the frame records the binding its receipt re-derives with.
     pub(crate) const fn records_changelog(&self) -> bool {
         self.records_changelog
@@ -4354,6 +4433,12 @@ pub(crate) fn apply_mutation(
         JournalTable::IdempotencyPending => {
             apply_byte_mutation(transaction, IDEMPOTENCY_PENDING, mutation)
         }
+        JournalTable::HistoryTombstones => {
+            apply_byte_mutation(transaction, crate::layout::HISTORY_TOMBSTONES, mutation)
+        }
+        JournalTable::OutboxStatus => {
+            apply_byte_mutation(transaction, crate::layout::OUTBOX_STATUS, mutation)
+        }
         JournalTable::Events => apply_byte_mutation(transaction, EVENTS, mutation),
         JournalTable::EventRoutes => apply_byte_mutation(transaction, EVENT_ROUTES, mutation),
         JournalTable::Outbox => apply_byte_mutation(transaction, crate::layout::OUTBOX, mutation),
@@ -4391,6 +4476,20 @@ pub(crate) fn apply_validated_composite_mutation(
     match mutation.table() {
         CompositeTableV1::Meta => apply_meta_mutation_parts(
             transaction,
+            mutation.key(),
+            mutation.value(),
+            mutation.expected_hash(),
+        ),
+        CompositeTableV1::HistoryTombstones => apply_byte_mutation_parts(
+            transaction,
+            crate::layout::HISTORY_TOMBSTONES,
+            mutation.key(),
+            mutation.value(),
+            mutation.expected_hash(),
+        ),
+        CompositeTableV1::OutboxStatus => apply_byte_mutation_parts(
+            transaction,
+            crate::layout::OUTBOX_STATUS,
             mutation.key(),
             mutation.value(),
             mutation.expected_hash(),
@@ -4550,11 +4649,16 @@ fn apply_meta_mutation_parts(
     expected_hash: Option<[u8; 32]>,
 ) -> Result<(), JournalIoError> {
     let key = std::str::from_utf8(key).map_err(|_| JournalIoError::Corrupt)?;
-    if !matches!(
-        key,
-        crate::layout::META_APPLICATION_SEQUENCE | crate::layout::META_ADMINISTRATION_SEQUENCE
-    ) {
-        return Err(JournalIoError::Corrupt);
+    match key {
+        crate::layout::META_APPLICATION_SEQUENCE | crate::layout::META_ADMINISTRATION_SEQUENCE => {}
+        crate::layout::META_RETENTION_WATERMARK => {
+            let bytes = value.ok_or(JournalIoError::Corrupt)?;
+            riffdb_storage_api::decode_retention_watermark_v1(bytes)
+                .map_err(|_| JournalIoError::Corrupt)?;
+        }
+        crate::layout::META_VALIDATED_PREFIX_CHECKPOINT
+            if value.is_none() && expected_hash.is_some() => {}
+        _ => return Err(JournalIoError::Corrupt),
     }
     let mut table = transaction
         .open_table(META)
@@ -4732,6 +4836,8 @@ fn read_value_inner(
         JournalTable::IdempotencyLocators => crate::layout::IDEMPOTENCY_LOCATORS,
         JournalTable::ProvenanceLocators => crate::layout::PROVENANCE_LOCATORS,
         JournalTable::AuditByRequestLocators => crate::layout::AUDIT_BY_REQUEST_LOCATORS,
+        JournalTable::HistoryTombstones => crate::layout::HISTORY_TOMBSTONES,
+        JournalTable::OutboxStatus => crate::layout::OUTBOX_STATUS,
         JournalTable::Entities => ENTITIES,
         JournalTable::SecondaryIndexes => SECONDARY_INDEXES,
         JournalTable::IndexEpochs => INDEX_EPOCHS,
@@ -4776,6 +4882,8 @@ pub(crate) fn read_write_value(
         JournalTable::IdempotencyLocators => crate::layout::IDEMPOTENCY_LOCATORS,
         JournalTable::ProvenanceLocators => crate::layout::PROVENANCE_LOCATORS,
         JournalTable::AuditByRequestLocators => crate::layout::AUDIT_BY_REQUEST_LOCATORS,
+        JournalTable::HistoryTombstones => crate::layout::HISTORY_TOMBSTONES,
+        JournalTable::OutboxStatus => crate::layout::OUTBOX_STATUS,
         JournalTable::Entities => ENTITIES,
         JournalTable::SecondaryIndexes => SECONDARY_INDEXES,
         JournalTable::IndexEpochs => INDEX_EPOCHS,
@@ -4809,6 +4917,8 @@ pub(crate) const fn byte_table_definition(
         JournalTable::IdempotencyLocators => Some(crate::layout::IDEMPOTENCY_LOCATORS),
         JournalTable::ProvenanceLocators => Some(crate::layout::PROVENANCE_LOCATORS),
         JournalTable::AuditByRequestLocators => Some(crate::layout::AUDIT_BY_REQUEST_LOCATORS),
+        JournalTable::HistoryTombstones => Some(crate::layout::HISTORY_TOMBSTONES),
+        JournalTable::OutboxStatus => Some(crate::layout::OUTBOX_STATUS),
         JournalTable::Entities => Some(ENTITIES),
         JournalTable::SecondaryIndexes => Some(SECONDARY_INDEXES),
         JournalTable::IndexEpochs => Some(INDEX_EPOCHS),
@@ -6075,7 +6185,13 @@ mod tests {
         );
         let (decoded, _) = JournalFrame::decode(legacy.as_bytes()).expect("decode v2");
         assert_eq!(decoded.changelog(), None);
-        assert_eq!(decoded, unbound);
+        assert_eq!(
+            decoded,
+            JournalFrame {
+                format_version: FRAME_VERSION_V2,
+                ..unbound
+            }
+        );
     }
 
     fn hex_bytes(text: &str) -> Vec<u8> {
@@ -6090,6 +6206,26 @@ mod tests {
         bytes.iter().map(|byte| format!("{byte:02x}")).collect()
     }
 
+    // req: STO-030, STO-032, REC-005
+    #[test]
+    fn retention_frame_version_preserves_frozen_prior_readers() {
+        assert_eq!(
+            FORMAT_VERSION, 4,
+            "pruning requires a distinct logical version"
+        );
+        for fixture in [
+            include_str!("../../../fixtures/compatibility/journal-frame-v2.hex"),
+            include_str!("../../../fixtures/compatibility/journal-frame-v3.hex"),
+        ] {
+            let bytes = hex_bytes(fixture);
+            let (decoded, hash) =
+                JournalFrame::decode(&bytes).expect("frozen prior frame remains readable");
+            let round_trip = decoded.encode().expect("preserve original version");
+            assert_eq!(round_trip.as_bytes(), bytes);
+            assert_eq!(round_trip.frame_hash(), hash);
+        }
+    }
+
     // req: REC-005
     #[test]
     fn journal_frame_encodings_match_their_compatibility_fixtures() {
@@ -6098,7 +6234,7 @@ mod tests {
         let unbound = sample_frame();
         let bound = sample_frame().with_changelog(Some(sample_changelog_binding()));
         let encoded_v2 = unbound.encode_version_2().expect("encode v2");
-        let encoded_v3 = bound.encode().expect("encode v3");
+        let encoded_v3 = bound.encode_as(FRAME_VERSION_V3).expect("encode v3");
         if std::env::var_os("RIFFDB_REGENERATE_JOURNAL_FRAME_FIXTURES").is_some() {
             let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../fixtures/compatibility");
             std::fs::write(
@@ -6117,10 +6253,19 @@ mod tests {
         assert_eq!(lower_hex(encoded_v3.as_bytes()), v3.trim());
         assert_eq!(
             JournalFrame::decode(&hex_bytes(v2)).expect("decode v2").0,
-            unbound
+            JournalFrame {
+                format_version: FRAME_VERSION_V2,
+                ..unbound
+            }
         );
         let (decoded, _) = JournalFrame::decode(&hex_bytes(v3)).expect("decode v3");
-        assert_eq!(decoded, bound);
+        assert_eq!(
+            decoded,
+            JournalFrame {
+                format_version: FRAME_VERSION_V3,
+                ..bound
+            }
+        );
         assert_eq!(decoded.changelog(), Some(&sample_changelog_binding()));
     }
 

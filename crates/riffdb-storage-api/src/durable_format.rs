@@ -11,9 +11,11 @@ use sha2::{Digest, Sha256};
 use crate::{BackupManifestVersion, StorageFormatVersion};
 
 /// Current logical writer-journal frame format.
-/// Version 3 records each frame's changelog binding (ADR-0263 Amendment 2 B4);
-/// version 2 frames remain readable.
-pub const DURABILITY_JOURNAL_FRAME_VERSION: u16 = 3;
+/// Version 4 adds fenced retention-prune transitions (ADR-0263 Amendment 5).
+/// Versions 2 and 3 remain readable.
+pub const DURABILITY_JOURNAL_FRAME_VERSION: u16 = 4;
+/// Changelog-bound logical frame format, still read during recovery.
+pub const DURABILITY_JOURNAL_FRAME_VERSION_V3: u16 = 3;
 /// Previous logical frame format, still read during recovery.
 pub const DURABILITY_JOURNAL_FRAME_VERSION_V2: u16 = 2;
 /// Current preallocated writer-journal extent format. Version 4 adds a header
@@ -55,6 +57,7 @@ const READABLE_REGISTRY_VERSIONS: &[u32] = &[DURABLE_RECORD_REGISTRY_VERSION];
 const WRITABLE_REGISTRY_VERSIONS: &[u32] = &[DURABLE_RECORD_REGISTRY_VERSION];
 const READABLE_JOURNAL_FRAME_VERSIONS: &[u16] = &[
     DURABILITY_JOURNAL_FRAME_VERSION_V2,
+    DURABILITY_JOURNAL_FRAME_VERSION_V3,
     DURABILITY_JOURNAL_FRAME_VERSION,
 ];
 const WRITABLE_JOURNAL_FRAME_VERSIONS: &[u16] = &[DURABILITY_JOURNAL_FRAME_VERSION];
@@ -406,7 +409,13 @@ impl DurableFormatReleaseEdge {
 }
 
 const CURRENT_EPOCH: AlphaFormatEpoch = AlphaFormatEpoch(NonZeroU32::MIN);
-const CURRENT_WRITER: DurableFormatWriter = DurableFormatWriter(1);
+const CURRENT_WRITER: DurableFormatWriter = DurableFormatWriter(2);
+const PRE_PRUNE_WRITER: DurableFormatWriter = DurableFormatWriter(1);
+// Frozen corpus advertised by the last logical-V3 writer (ADR-0263 Amendment 5).
+const PRE_PRUNE_FIXTURE_DIGEST: [u8; 32] = [
+    0x71, 0xf4, 0x29, 0xa8, 0x0c, 0xb6, 0x71, 0xe1, 0xd9, 0xf1, 0x7a, 0xb0, 0x96, 0x46, 0x81, 0x9d,
+    0xe0, 0x27, 0xe7, 0x0f, 0x1a, 0xd5, 0x61, 0x3d, 0xf1, 0x9b, 0x42, 0x9f, 0x88, 0x0a, 0xac, 0x36,
+];
 const PRE_MANIFEST_RELEASE: &str = "0.1.0-pre-format-manifest";
 const CURRENT_RELEASE: &str = env!("CARGO_PKG_VERSION");
 const CURRENT_IDENTITY: DurableFormatIdentity =
@@ -426,7 +435,20 @@ const PRE_MANIFEST_EDGE: DurableFormatReleaseEdge = DurableFormatReleaseEdge {
         next_command: SafeFormatCommand::Upgrade,
     },
 };
-const RELEASE_EDGES: &[DurableFormatReleaseEdge] = &[PRE_MANIFEST_EDGE];
+const PRE_PRUNE_EDGE: DurableFormatReleaseEdge = DurableFormatReleaseEdge {
+    source_release: "0.1.0-journal-frame-v3",
+    target_release: CURRENT_RELEASE,
+    source: DurableFormatIdentity::new(CURRENT_EPOCH, PRE_PRUNE_WRITER),
+    target: CURRENT_IDENTITY,
+    action: DurableFormatAction::OfflineInPlace {
+        backup_required: true,
+        free_space_source_multiples: 2,
+        downtime_required: true,
+        one_way: true,
+        next_command: SafeFormatCommand::Upgrade,
+    },
+};
+const RELEASE_EDGES: &[DurableFormatReleaseEdge] = &[PRE_MANIFEST_EDGE, PRE_PRUNE_EDGE];
 
 /// Exact generated durable-format statement carried by one release artifact.
 #[derive(Clone, Copy, Debug)]
@@ -676,13 +698,18 @@ pub fn preflight_durable_format_marker(
 ) -> Result<DurableFormatAction, DurableFormatMarkerError> {
     let action = preflight_durable_format(marker.identity())
         .map_err(|_| DurableFormatMarkerError::ManifestMismatch)?;
-    if action == DurableFormatAction::OpenCurrent {
-        let manifest = current_durable_format_manifest();
-        if marker.registry_digest() != manifest.registry_digest()
-            || marker.compatibility_fixture_digest() != manifest.compatibility_fixture_digest()
-        {
-            return Err(DurableFormatMarkerError::ManifestMismatch);
-        }
+    let manifest = current_durable_format_manifest();
+    if marker.identity() == PRE_PRUNE_EDGE.source
+        && (marker.registry_digest() != manifest.registry_digest()
+            || marker.compatibility_fixture_digest().as_bytes() != &PRE_PRUNE_FIXTURE_DIGEST)
+    {
+        return Err(DurableFormatMarkerError::ManifestMismatch);
+    }
+    if action == DurableFormatAction::OpenCurrent
+        && (marker.registry_digest() != manifest.registry_digest()
+            || marker.compatibility_fixture_digest() != manifest.compatibility_fixture_digest())
+    {
+        return Err(DurableFormatMarkerError::ManifestMismatch);
     }
     Ok(action)
 }

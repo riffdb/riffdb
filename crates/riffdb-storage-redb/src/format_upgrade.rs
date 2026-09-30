@@ -254,7 +254,10 @@ impl RedbDurableFormatUpgrade {
             .map_err(RedbDurableFormatUpgradeError::BackupInvalid)?;
         let manifest = current_durable_format_manifest();
         if binary != manifest.identity()
-            || backup_manifest.format_compatibility().is_some()
+            || match backup_manifest.format_compatibility() {
+                None => current.writer().get() != 0,
+                Some(range) => range.minimum() != current || range.maximum() != current,
+            }
             || backup_identity.manifest_checksum().as_bytes().len() != 32
         {
             return Err(RedbDurableFormatUpgradeError::BackupInvalid(
@@ -633,6 +636,88 @@ mod tests {
         crate::backup::create_pre_format_compatibility_backup_fixture(&database, &backup, &build())
             .expect("create verified predecessor backup");
         (database, backup)
+    }
+
+    // req: STO-030, STO-032, REC-005
+    #[test]
+    fn logical_v3_writer_upgrade_requires_exact_backup_and_refuses_online_open() {
+        let root = TestRoot::new("v3-writer-upgrade");
+        let database = root.join("application.redb");
+        let backup = root.join("verified-backup");
+        let mut store = RedbStore::open(&database).expect("create fixture");
+        store
+            .initialize_legacy_fixture(database_id(0x93))
+            .expect("initialize");
+        certify_clean_close(store);
+        let manifest = current_durable_format_manifest();
+        let source = riffdb_storage_api::DurableFormatIdentity::new(
+            manifest.epoch(),
+            riffdb_storage_api::DurableFormatWriter::new(1),
+        );
+        let marker = riffdb_storage_api::DurableFormatMarker::new(
+            source,
+            manifest.registry_digest(),
+            CompatibilityFixtureDigest::from_bytes([
+                0x71, 0xf4, 0x29, 0xa8, 0x0c, 0xb6, 0x71, 0xe1, 0xd9, 0xf1, 0x7a, 0xb0, 0x96, 0x46,
+                0x81, 0x9d, 0xe0, 0x27, 0xe7, 0x0f, 0x1a, 0xd5, 0x61, 0x3d, 0xf1, 0x9b, 0x42, 0x9f,
+                0x88, 0x0a, 0xac, 0x36,
+            ]),
+        );
+        fs::write(
+            crate::durable_format_marker_path(&database),
+            riffdb_storage_api::encode_durable_format_marker(marker),
+        )
+        .expect("install frozen predecessor marker");
+        assert!(
+            RedbStore::open(&database).is_err(),
+            "no silent online marker upgrade"
+        );
+        assert!(
+            RedbDurableFormatUpgrade::bind(&database, &backup)
+                .run()
+                .is_err(),
+            "backup is mandatory"
+        );
+        crate::backup::create_compatible_backup_fixture(&database, &backup, &build(), Some(marker))
+            .expect("prior-writer backup");
+        // Model the process-kill boundary after the accepted receipt but in
+        // the middle of the target-marker scratch write. Authority is still
+        // the complete predecessor marker; the scratch carries no authority.
+        let (_, backup_identity) = validate_immutable_backup(&backup).expect("immutable backup");
+        let receipt = RedbDurableFormatUpgradeReceipt {
+            phase: RedbDurableFormatUpgradePhase::Accepted,
+            source,
+            target: manifest.identity(),
+            database_id: database_id(0x93),
+            backup_manifest_checksum: backup_identity.manifest_checksum().clone(),
+            compatibility_fixture_digest: manifest.compatibility_fixture_digest(),
+        };
+        publish_receipt(&durable_format_upgrade_receipt_path(&database), &receipt)
+            .expect("accepted receipt");
+        let mut scratch = database.as_os_str().to_os_string();
+        scratch.push(".riffdb-format-v1.staging");
+        fs::write(PathBuf::from(scratch), b"RDBFMT01").expect("torn target scratch");
+        let result = RedbDurableFormatUpgrade::bind(&database, &backup)
+            .run()
+            .expect("backup-bound upgrade");
+        assert_eq!(
+            result.disposition(),
+            RedbDurableFormatUpgradeDisposition::Reconciled
+        );
+        assert_eq!(result.receipt().expect("receipt").source(), source);
+        assert_eq!(
+            result.receipt().expect("receipt").target(),
+            manifest.identity()
+        );
+        assert_eq!(
+            preflight_durable_format_path(&database),
+            Ok(RedbDurableFormatPreflight::OpenCurrent)
+        );
+        let reopened = RedbStore::open(&database).expect("reopen upgraded fixture");
+        assert_eq!(
+            reopened.probe_database_identity().expect("identity"),
+            riffdb_storage_api::DatabaseIdentityProbe::Existing(database_id(0x93))
+        );
     }
 
     // req: STO-023, REC-004

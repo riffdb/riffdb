@@ -31,7 +31,6 @@ use riffdb_types::{
     Timestamp,
 };
 
-use crate::changelog_v3_capture::CapturedTable;
 use crate::codec;
 use crate::consumer::retention_low_water_from_table;
 use crate::error::{
@@ -44,16 +43,19 @@ use crate::keys::{
     encode_provenance_key,
 };
 use crate::layout::{
-    AUDIT, AUDIT_BY_REQUEST, AUDIT_BY_REQUEST_LOCATORS, COMMITS, CONTRACT_MIGRATION_JOURNAL,
-    EVENT_CONSUMERS, EVENT_ROUTES, EVENTS, HISTORY_TOMBSTONES, IDEMPOTENCY, IDEMPOTENCY_LOCATORS,
-    META, META_APPLICATION_SEQUENCE, META_DATABASE_ID, META_HISTORY_INCARNATION,
-    META_RETENTION_HOLDS, META_RETENTION_WATERMARK, META_VALIDATED_PREFIX_CHECKPOINT, OUTBOX,
-    OUTBOX_STATUS, PROJECTION_FRONTIER, PROVENANCE, PROVENANCE_LOCATORS,
+    COMMITS, CONTRACT_MIGRATION_JOURNAL, EVENT_CONSUMERS, EVENTS, HISTORY_TOMBSTONES, META,
+    META_APPLICATION_SEQUENCE, META_DATABASE_ID, META_HISTORY_INCARNATION, META_RETENTION_HOLDS,
+    META_RETENTION_WATERMARK, META_VALIDATED_PREFIX_CHECKPOINT, OUTBOX, OUTBOX_STATUS,
+    PROJECTION_FRONTIER,
 };
 use crate::store::OperationalWriteTransaction as WriteTransaction;
 use crate::store::RedbStore;
 
-type RetentionWriteTable<'txn, 'capture> = CapturedTable<'txn, 'capture, &'static [u8]>;
+#[path = "retention/prepared.rs"]
+pub(crate) mod prepared;
+#[path = "retention/retained_views.rs"]
+mod retained_views;
+use retained_views::{DirectRetainedViews, RetainedViewAccess};
 
 #[path = "retention/online.rs"]
 mod online;
@@ -558,20 +560,7 @@ fn materialize_retained_command_views(
 ) -> Result<(), StorageError> {
     let commits = write.open_table(COMMITS).map_err(table_error)?;
     let events = write.open_table(EVENTS).map_err(table_error)?;
-    let mut idempotency = write.open_table(IDEMPOTENCY).map_err(table_error)?;
-    let mut provenance = write.open_table(PROVENANCE).map_err(table_error)?;
-    let mut audit = write.open_table(AUDIT).map_err(table_error)?;
-    let mut audit_by_request = write.open_table(AUDIT_BY_REQUEST).map_err(table_error)?;
-    let mut event_routes = write.open_table(EVENT_ROUTES).map_err(table_error)?;
-    let mut locators = RetainedViewLocators {
-        idempotency: write
-            .open_table(IDEMPOTENCY_LOCATORS)
-            .map_err(table_error)?,
-        provenance: write.open_table(PROVENANCE_LOCATORS).map_err(table_error)?,
-        audit_by_request: write
-            .open_table(AUDIT_BY_REQUEST_LOCATORS)
-            .map_err(table_error)?,
-    };
+    let mut views = DirectRetainedViews::new(write)?;
     let first_key = encode_application_sequence_key(
         CommitSequence::new(first)
             .ok_or_else(|| storage_error(StorageErrorKind::InvariantViolation))?,
@@ -601,12 +590,7 @@ fn materialize_retained_command_views(
                     let command_sequence = command.commit_sequence();
                     if command_sequence.get() >= first && command_sequence.get() <= last {
                         materialize_retained_capsule_views(
-                            &mut idempotency,
-                            &mut provenance,
-                            &mut audit,
-                            &mut audit_by_request,
-                            &mut event_routes,
-                            &mut locators,
+                            &mut views,
                             command.base(),
                             command.events(),
                         )?;
@@ -647,59 +631,35 @@ fn materialize_retained_command_views(
         if capsule.commit_sequence() != sequence {
             return Err(storage_error(StorageErrorKind::CorruptData));
         }
-        materialize_retained_capsule_views(
-            &mut idempotency,
-            &mut provenance,
-            &mut audit,
-            &mut audit_by_request,
-            &mut event_routes,
-            &mut locators,
-            &capsule,
-            &[],
-        )?;
+        materialize_retained_capsule_views(&mut views, &capsule, &[])?;
     }
     Ok(())
-}
-
-/// The ADR-0165 command locator tables. A locator asserts its command's
-/// segment exists, and lookups read it before any materialized row, so a
-/// pruned command's locators are removed in the same transaction that
-/// materializes its retained views.
-struct RetainedViewLocators<'txn, 'capture> {
-    idempotency: RetentionWriteTable<'txn, 'capture>,
-    provenance: RetentionWriteTable<'txn, 'capture>,
-    audit_by_request: RetentionWriteTable<'txn, 'capture>,
 }
 
 /// Removes one pruned command's locator row. A row naming another command is
 /// corruption and refuses the whole sub-range.
 fn remove_pruned_locator(
-    table: &mut RetentionWriteTable<'_, '_>,
+    views: &mut impl RetainedViewAccess,
+    table: crate::journal::JournalTable,
     key: &[u8],
     sequence: CommitSequence,
 ) -> Result<(), StorageError> {
-    let matches = match table.get(key).map_err(precommit_storage_error)? {
+    let matches = match views.get(table, key)? {
         None => return Ok(()),
         Some(value) => matches!(
-            riffdb_storage_api::decode_command_locator_v1(value.value()),
+            riffdb_storage_api::decode_command_locator_v1(value.as_slice()),
             Ok(locator) if locator.value().commit_sequence() == sequence
         ),
     };
     if !matches {
         return Err(storage_error(StorageErrorKind::CorruptData));
     }
-    let _ = table.remove(key).map_err(precommit_storage_error)?;
+    let _ = views.remove(table, key)?;
     Ok(())
 }
 
-#[allow(clippy::too_many_arguments)]
 fn materialize_retained_capsule_views(
-    idempotency: &mut RetentionWriteTable<'_, '_>,
-    provenance: &mut RetentionWriteTable<'_, '_>,
-    audit: &mut RetentionWriteTable<'_, '_>,
-    audit_by_request: &mut RetentionWriteTable<'_, '_>,
-    event_routes: &mut RetentionWriteTable<'_, '_>,
-    locators: &mut RetainedViewLocators<'_, '_>,
+    views: &mut impl RetainedViewAccess,
     capsule: &riffdb_storage_api::StoredCommandCapsuleV1,
     events: &[riffdb_storage_api::StoredDurableEventV1],
 ) -> Result<(), StorageError> {
@@ -710,17 +670,17 @@ fn materialize_retained_capsule_views(
         .storage_key()
         .map_err(|_| storage_error(StorageErrorKind::CorruptData))?;
     let idempotency_key = encode_idempotency_key(&identity_key);
-    if let Some(stored_outcome) = idempotency
-        .get(idempotency_key)
-        .map_err(precommit_storage_error)?
+    if let Some(stored_outcome) =
+        views.get(crate::journal::JournalTable::Idempotency, idempotency_key)?
     {
-        match riffdb_storage_api::decode_command_locator_v1(stored_outcome.value()) {
+        match riffdb_storage_api::decode_command_locator_v1(stored_outcome.as_slice()) {
             Ok(locator) if locator.value().commit_sequence() == sequence => {}
             Err(error)
                 if error.kind()
                     == riffdb_storage_api::DurableCodecErrorKind::UnexpectedRecordType =>
             {
-                let outcome = riffdb_storage_api::decode_stored_outcome_v1(stored_outcome.value());
+                let outcome =
+                    riffdb_storage_api::decode_stored_outcome_v1(stored_outcome.as_slice());
                 if !matches!(outcome, Ok(ref outcome) if outcome.value() == capsule.outcome()) {
                     return Err(storage_error(StorageErrorKind::CorruptData));
                 }
@@ -729,24 +689,31 @@ fn materialize_retained_capsule_views(
         }
     }
     let encoded_outcome = codec::encode_stored_outcome_v1(capsule.outcome())?;
-    let _ = idempotency
-        .insert(idempotency_key, encoded_outcome.as_bytes())
-        .map_err(precommit_storage_error)?;
-    remove_pruned_locator(&mut locators.idempotency, idempotency_key, sequence)?;
+    let _ = views.put(
+        crate::journal::JournalTable::Idempotency,
+        idempotency_key,
+        encoded_outcome.as_bytes(),
+    )?;
+    remove_pruned_locator(
+        views,
+        crate::journal::JournalTable::IdempotencyLocators,
+        idempotency_key,
+        sequence,
+    )?;
 
     let provenance_key = encode_provenance_key(capsule.provenance().provenance_id());
-    if let Some(stored_provenance) = provenance
-        .get(provenance_key.as_slice())
-        .map_err(precommit_storage_error)?
-    {
-        match riffdb_storage_api::decode_command_locator_v1(stored_provenance.value()) {
+    if let Some(stored_provenance) = views.get(
+        crate::journal::JournalTable::Provenance,
+        provenance_key.as_slice(),
+    )? {
+        match riffdb_storage_api::decode_command_locator_v1(stored_provenance.as_slice()) {
             Ok(locator) if locator.value().commit_sequence() == sequence => {}
             Err(error)
                 if error.kind()
                     == riffdb_storage_api::DurableCodecErrorKind::UnexpectedRecordType =>
             {
                 let retained =
-                    riffdb_storage_api::decode_provenance_record_v1(stored_provenance.value())
+                    riffdb_storage_api::decode_provenance_record_v1(stored_provenance.as_slice())
                         .map_err(crate::error::codec_error)?;
                 if retained.value() != capsule.provenance() {
                     return Err(storage_error(StorageErrorKind::CorruptData));
@@ -756,11 +723,14 @@ fn materialize_retained_capsule_views(
         }
     }
     let encoded_provenance = codec::encode_provenance_record_v1(capsule.provenance())?;
-    let _ = provenance
-        .insert(provenance_key.as_slice(), encoded_provenance.as_bytes())
-        .map_err(precommit_storage_error)?;
+    let _ = views.put(
+        crate::journal::JournalTable::Provenance,
+        provenance_key.as_slice(),
+        encoded_provenance.as_bytes(),
+    )?;
     remove_pruned_locator(
-        &mut locators.provenance,
+        views,
+        crate::journal::JournalTable::ProvenanceLocators,
         provenance_key.as_slice(),
         sequence,
     )?;
@@ -776,11 +746,10 @@ fn materialize_retained_capsule_views(
         ),
     ] {
         let audit_key = encode_audit_key(record.administration_sequence());
-        if let Some(stored_audit) = audit
-            .get(audit_key.as_slice())
-            .map_err(precommit_storage_error)?
+        if let Some(stored_audit) =
+            views.get(crate::journal::JournalTable::Audit, audit_key.as_slice())?
         {
-            match riffdb_storage_api::decode_command_audit_locator_v1(stored_audit.value()) {
+            match riffdb_storage_api::decode_command_audit_locator_v1(stored_audit.as_slice()) {
                 Ok(locator)
                     if locator.value().commit_sequence() == sequence
                         && locator.value().member() == member => {}
@@ -789,7 +758,7 @@ fn materialize_retained_capsule_views(
                         == riffdb_storage_api::DurableCodecErrorKind::UnexpectedRecordType =>
                 {
                     let retained =
-                        riffdb_storage_api::decode_service_audit_record(stored_audit.value())
+                        riffdb_storage_api::decode_service_audit_record(stored_audit.as_slice())
                             .map_err(crate::error::codec_error)?;
                     if retained.value() != record {
                         return Err(storage_error(StorageErrorKind::CorruptData));
@@ -801,9 +770,11 @@ fn materialize_retained_capsule_views(
         let encoded_audit = codec::encode_administration_audit_record_v1(
             &StoredAdministrationAuditRecordV1::Service(record.clone()),
         )?;
-        let _ = audit
-            .insert(audit_key.as_slice(), encoded_audit.as_bytes())
-            .map_err(precommit_storage_error)?;
+        let _ = views.put(
+            crate::journal::JournalTable::Audit,
+            audit_key.as_slice(),
+            encoded_audit.as_bytes(),
+        )?;
         let request_key =
             encode_audit_by_request_key(record.request_id(), record.administration_sequence());
         let request_row = riffdb_storage_api::StoredServiceAuditRequestIndexV1::new(
@@ -812,14 +783,16 @@ fn materialize_retained_capsule_views(
         );
         let encoded_request = codec::encode_service_audit_request_index_v1(request_row)?;
         remove_pruned_locator(
-            &mut locators.audit_by_request,
+            views,
+            crate::journal::JournalTable::AuditByRequestLocators,
             request_key.as_slice(),
             sequence,
         )?;
-        if let Some(prior) = audit_by_request
-            .insert(request_key.as_slice(), encoded_request.as_bytes())
-            .map_err(precommit_storage_error)?
-            && prior.value() != encoded_request.as_bytes()
+        if let Some(prior) = views.put(
+            crate::journal::JournalTable::AuditByRequest,
+            request_key.as_slice(),
+            encoded_request.as_bytes(),
+        )? && prior.as_slice() != encoded_request.as_bytes()
         {
             return Err(storage_error(StorageErrorKind::CorruptData));
         }
@@ -832,10 +805,11 @@ fn materialize_retained_capsule_views(
         );
         let key = encode_event_route_key(capsule.commit().partition_hash(), event.event_id());
         let encoded = codec::encode_event_route_v1(route)?;
-        if let Some(prior) = event_routes
-            .insert(key.as_slice(), encoded.as_bytes())
-            .map_err(precommit_storage_error)?
-            && prior.value() != encoded.as_bytes()
+        if let Some(prior) = views.put(
+            crate::journal::JournalTable::EventRoutes,
+            key.as_slice(),
+            encoded.as_bytes(),
+        )? && prior.as_slice() != encoded.as_bytes()
         {
             return Err(storage_error(StorageErrorKind::CorruptData));
         }
@@ -1333,6 +1307,56 @@ fn walk_tombstone_preimage(
     write: &WriteTransaction,
     first: u64,
     last: u64,
+    preimage: TombstoneSink<'_>,
+) -> Result<RangeCounts, StorageError> {
+    let commits = write.open_table(COMMITS).map_err(table_error)?;
+    let (lower, upper) = tombstone_commit_bounds(&commits, first, last)?;
+    let commit_rows = commits
+        .range::<&[u8]>((Included(lower.as_slice()), Included(upper.as_slice())))
+        .map_err(precommit_storage_error)?
+        .map(|row| {
+            row.map(|(key, value)| (key.value().to_vec(), value.value().to_vec()))
+                .map_err(precommit_storage_error)
+        });
+    let events = write.open_table(EVENTS).map_err(table_error)?;
+    let outbox = write.open_table(OUTBOX).map_err(table_error)?;
+    let statuses = write.open_table(OUTBOX_STATUS).map_err(table_error)?;
+    let (lower, upper) = event_keyed_range_bounds(first, last);
+    let additional_rows = [
+        (
+            "events",
+            events
+                .range::<&[u8]>((Included(lower.as_slice()), Included(upper.as_slice())))
+                .map_err(precommit_storage_error)?,
+        ),
+        (
+            "outbox",
+            outbox
+                .range::<&[u8]>((Included(lower.as_slice()), Included(upper.as_slice())))
+                .map_err(precommit_storage_error)?,
+        ),
+        (
+            "outbox_status",
+            statuses
+                .range::<&[u8]>((Included(lower.as_slice()), Included(upper.as_slice())))
+                .map_err(precommit_storage_error)?,
+        ),
+    ]
+    .into_iter()
+    .flat_map(|(label, rows)| {
+        rows.map(move |row| {
+            row.map(|(key, value)| (label, key.value().to_vec(), value.value().to_vec()))
+                .map_err(precommit_storage_error)
+        })
+    });
+    walk_tombstone_preimage_rows(first, last, commit_rows, additional_rows, preimage)
+}
+
+fn walk_tombstone_preimage_rows(
+    first: u64,
+    last: u64,
+    commits: impl IntoIterator<Item = Result<(Vec<u8>, Vec<u8>), StorageError>>,
+    additional: impl IntoIterator<Item = Result<(&'static str, Vec<u8>, Vec<u8>), StorageError>>,
     mut preimage: TombstoneSink<'_>,
 ) -> Result<RangeCounts, StorageError> {
     preimage.append(b"riffdb.history-tombstone-content/v1\0")?;
@@ -1341,120 +1365,115 @@ fn walk_tombstone_preimage(
     let mut counts = RangeCounts::default();
     let mut segment_event_ids = BTreeSet::new();
 
-    {
-        let commits = write.open_table(COMMITS).map_err(table_error)?;
-        let (lower, upper) = tombstone_commit_bounds(&commits, first, last)?;
-        for entry in commits
-            .range::<&[u8]>((Included(lower.as_slice()), Included(upper.as_slice())))
-            .map_err(precommit_storage_error)?
-        {
-            let (key, value) = entry.map_err(precommit_storage_error)?;
-            let physical_sequence = decode_application_sequence_key(key.value())
-                .map_err(|_| storage_error(StorageErrorKind::CorruptData))?;
-            match crate::history_stub::decode_segment_value(value.value()) {
-                Ok(segment) => {
-                    let segment = segment.into_parts().0;
-                    if segment.first_commit_sequence() != physical_sequence {
-                        return Err(storage_error(StorageErrorKind::CorruptData));
-                    }
-                    for command in segment.commands() {
-                        let sequence = command.commit_sequence().get();
-                        if sequence < first || sequence > last {
-                            continue;
-                        }
-                        let encoded = riffdb_storage_api::encode_command_capsule_v2(command)
-                            .map_err(crate::error::codec_error)?;
-                        append_tombstone_member(
-                            &mut preimage,
-                            b"commits",
-                            &command.commit_sequence().to_be_bytes(),
-                            encoded.as_bytes(),
-                        )?;
-                        counts.commits = counts
-                            .commits
-                            .checked_add(1)
-                            .ok_or_else(|| storage_error(StorageErrorKind::LimitExceeded))?;
-                        for event in command.events() {
-                            if segment_event_ids.len()
-                                >= riffdb_storage_api::MAX_CHANGELOG_FRAME_ENTRIES
-                            {
-                                return Err(storage_error(StorageErrorKind::LimitExceeded));
-                            }
-                            if !segment_event_ids.insert(event.event_id()) {
-                                return Err(storage_error(StorageErrorKind::CorruptData));
-                            }
-                            let event_bytes = riffdb_storage_api::encode_durable_event_v1(event)
-                                .map_err(crate::error::codec_error)?;
-                            append_tombstone_member(
-                                &mut preimage,
-                                b"events",
-                                &event.event_id().to_be_bytes(),
-                                event_bytes.as_bytes(),
-                            )?;
-                            let intent =
-                                riffdb_storage_api::StoredOutboxIntentV1::new(event.clone());
-                            let outbox_bytes = riffdb_storage_api::encode_outbox_intent_v1(&intent)
-                                .map_err(crate::error::codec_error)?;
-                            append_tombstone_member(
-                                &mut preimage,
-                                b"outbox",
-                                &event.event_id().to_be_bytes(),
-                                outbox_bytes.as_bytes(),
-                            )?;
-                            counts.events = counts
-                                .events
-                                .checked_add(1)
-                                .ok_or_else(|| storage_error(StorageErrorKind::LimitExceeded))?;
-                            counts.outbox = counts
-                                .outbox
-                                .checked_add(1)
-                                .ok_or_else(|| storage_error(StorageErrorKind::LimitExceeded))?;
-                        }
-                    }
+    for row in commits {
+        let (key, value) = row?;
+        let physical_sequence = decode_application_sequence_key(key.as_slice())
+            .map_err(|_| storage_error(StorageErrorKind::CorruptData))?;
+        match crate::history_stub::decode_segment_value(value.as_slice()) {
+            Ok(segment) => {
+                let segment = segment.into_parts().0;
+                if segment.first_commit_sequence() != physical_sequence {
+                    return Err(storage_error(StorageErrorKind::CorruptData));
                 }
-                Err(error)
-                    if error.kind()
-                        == riffdb_storage_api::DurableCodecErrorKind::UnexpectedRecordType =>
-                {
-                    let sequence = physical_sequence.get();
+                for command in segment.commands() {
+                    let sequence = command.commit_sequence().get();
                     if sequence < first || sequence > last {
                         continue;
                     }
-                    append_tombstone_member(&mut preimage, b"commits", key.value(), value.value())?;
+                    let encoded = riffdb_storage_api::encode_command_capsule_v2(command)
+                        .map_err(crate::error::codec_error)?;
+                    append_tombstone_member(
+                        &mut preimage,
+                        b"commits",
+                        &command.commit_sequence().to_be_bytes(),
+                        encoded.as_bytes(),
+                    )?;
                     counts.commits = counts
                         .commits
                         .checked_add(1)
                         .ok_or_else(|| storage_error(StorageErrorKind::LimitExceeded))?;
+                    for event in command.events() {
+                        if segment_event_ids.len()
+                            >= riffdb_storage_api::MAX_CHANGELOG_FRAME_ENTRIES
+                        {
+                            return Err(storage_error(StorageErrorKind::LimitExceeded));
+                        }
+                        if !segment_event_ids.insert(event.event_id()) {
+                            return Err(storage_error(StorageErrorKind::CorruptData));
+                        }
+                        let event_bytes = riffdb_storage_api::encode_durable_event_v1(event)
+                            .map_err(crate::error::codec_error)?;
+                        append_tombstone_member(
+                            &mut preimage,
+                            b"events",
+                            &event.event_id().to_be_bytes(),
+                            event_bytes.as_bytes(),
+                        )?;
+                        let intent = riffdb_storage_api::StoredOutboxIntentV1::new(event.clone());
+                        let outbox_bytes = riffdb_storage_api::encode_outbox_intent_v1(&intent)
+                            .map_err(crate::error::codec_error)?;
+                        append_tombstone_member(
+                            &mut preimage,
+                            b"outbox",
+                            &event.event_id().to_be_bytes(),
+                            outbox_bytes.as_bytes(),
+                        )?;
+                        counts.events = counts
+                            .events
+                            .checked_add(1)
+                            .ok_or_else(|| storage_error(StorageErrorKind::LimitExceeded))?;
+                        counts.outbox = counts
+                            .outbox
+                            .checked_add(1)
+                            .ok_or_else(|| storage_error(StorageErrorKind::LimitExceeded))?;
+                    }
                 }
-                Err(error) => return Err(crate::error::codec_error(error)),
             }
+            Err(error)
+                if error.kind()
+                    == riffdb_storage_api::DurableCodecErrorKind::UnexpectedRecordType =>
+            {
+                let sequence = physical_sequence.get();
+                if sequence < first || sequence > last {
+                    continue;
+                }
+                append_tombstone_member(
+                    &mut preimage,
+                    b"commits",
+                    key.as_slice(),
+                    value.as_slice(),
+                )?;
+                counts.commits = counts
+                    .commits
+                    .checked_add(1)
+                    .ok_or_else(|| storage_error(StorageErrorKind::LimitExceeded))?;
+            }
+            Err(error) => return Err(crate::error::codec_error(error)),
         }
     }
-
-    for (label, definition, counter) in [
-        ("events", EVENTS, &mut counts.events),
-        ("outbox", OUTBOX, &mut counts.outbox),
-        ("outbox_status", OUTBOX_STATUS, &mut counts.outbox_status),
-    ] {
-        let table = write.open_table(definition).map_err(table_error)?;
-        let (lower, upper) = event_keyed_range_bounds(first, last);
-        for entry in table
-            .range::<&[u8]>((Included(lower.as_slice()), Included(upper.as_slice())))
-            .map_err(precommit_storage_error)?
-        {
-            let (key, value) = entry.map_err(precommit_storage_error)?;
-            let event_id = decode_event_key(key.value())
-                .map_err(|_| storage_error(StorageErrorKind::CorruptData))?;
-            if label != "outbox_status" && segment_event_ids.contains(&event_id) {
-                continue;
-            }
-            append_tombstone_member(&mut preimage, label.as_bytes(), key.value(), value.value())?;
-            *counter = counter
-                .checked_add(1)
-                .ok_or_else(|| storage_error(StorageErrorKind::LimitExceeded))?;
+    for row in additional {
+        let (label, key, value) = row?;
+        let counter = match label {
+            "events" => &mut counts.events,
+            "outbox" => &mut counts.outbox,
+            "outbox_status" => &mut counts.outbox_status,
+            _ => return Err(storage_error(StorageErrorKind::InvariantViolation)),
+        };
+        let event_id = decode_event_key(key.as_slice())
+            .map_err(|_| storage_error(StorageErrorKind::CorruptData))?;
+        if label != "outbox_status" && segment_event_ids.contains(&event_id) {
+            continue;
         }
+        append_tombstone_member(
+            &mut preimage,
+            label.as_bytes(),
+            key.as_slice(),
+            value.as_slice(),
+        )?;
+        *counter = counter
+            .checked_add(1)
+            .ok_or_else(|| storage_error(StorageErrorKind::LimitExceeded))?;
     }
-
     Ok(counts)
 }
 

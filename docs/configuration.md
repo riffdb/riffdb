@@ -150,13 +150,16 @@ behind at most the one step in progress. After each attempt that took the writer
 nineteen times the time it held the gate, so it holds the writer at most about
 five percent of the time and a large backlog compacts gradually rather than at
 full speed. It plans each step without the writer gate and takes the gate only
-when it has history to remove. On a busy database it steps right after each
-journal checkpoint finishes, while little journaled history is waiting to be
-materialized, and it never waits for an in-flight checkpoint while holding the
-gate. Once it reaches its target or a fence it rechecks about once a second.
-When the database has been idle since the previous check, the lane
-materializes the remaining journaled history itself. A single command segment larger
-than the budget is removed alone in its own step, never more than 256 sequences.
+when it has history to remove. With the Standard durability profile, it prepares
+retained views and the tombstone digest from a pinned composite snapshot outside
+the gate. The writer revalidates every precondition and current fence before
+submitting one V4 prune frame through the existing group-sync journal lane.
+Durability completes after releasing the gate; watermark publication precedes
+the corresponding deletion view. It does not drain unrelated command frames
+just to prune. Checkpoint materialization remains background work. Hardened
+profile steps retain their direct engine transaction. Once the lane reaches its
+target or a fence it rechecks about once a second. A single command segment
+larger than the budget is removed alone, never more than 256 sequences.
 A crash at any point in a step reopens with the watermark either before or after
 that step, and the restarted lane resumes.
 

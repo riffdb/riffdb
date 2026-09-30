@@ -27,7 +27,7 @@ pub const ONLINE_RETENTION_STEP_SEQUENCES: u64 = 256;
 
 /// Commit-row bytes one step may remove, so its captured receipt stays well
 /// inside the changelog frame ceiling even for unusually large commands.
-const ONLINE_RETENTION_STEP_ROW_BYTES: usize = 8 * 1024 * 1024;
+pub(super) const ONLINE_RETENTION_STEP_ROW_BYTES: usize = 8 * 1024 * 1024;
 
 /// Why an online step made no progress. Closed and payload-free.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -178,7 +178,8 @@ impl RedbOnlineRetentionLane {
             .last_journal_sequence
             .swap(journal_sequence, std::sync::atomic::Ordering::AcqRel)
             == journal_sequence;
-        if !idle
+        if !self.shared.uses_journaled_retention()
+            && !idle
             && !after_checkpoint
             && suffix_transitions > ONLINE_RETENTION_SMALL_SUFFIX_TRANSITIONS
         {
@@ -246,6 +247,9 @@ impl RedbOperationalPorts {
         phases: &mut OnlineRetentionPhases,
     ) -> Result<OnlineRetentionStep, StorageError> {
         let allowance = max_sequences.get().min(ONLINE_RETENTION_STEP_SEQUENCES);
+        if self.shared.uses_journaled_retention() {
+            return self.journaled_retention_step(retain_sequences, allowance, phases);
+        }
         let preplan = std::time::Instant::now();
         // Plan first without the writer gate, from an engine snapshot: most
         // checks find nothing to prune, and they must not drain the journal
@@ -304,6 +308,87 @@ impl RedbOperationalPorts {
             ));
         };
         self.online_retention_step_with(access, retain_sequences, allowance, phases)
+    }
+
+    fn journaled_retention_step(
+        &self,
+        retain: NonZeroU64,
+        allowance: u64,
+        phases: &mut OnlineRetentionPhases,
+    ) -> Result<OnlineRetentionStep, StorageError> {
+        let preparing = std::time::Instant::now();
+        let prepared = match super::prepared::PreparedPrune::prepare(self, retain, allowance)? {
+            Ok(prepared) => prepared,
+            Err(hold) => {
+                phases.preplan_us = elapsed_us(preparing, std::time::Instant::now());
+                return Ok(OnlineRetentionStep::Held(hold));
+            }
+        };
+        let waiting = std::time::Instant::now();
+        phases.preplan_us = elapsed_us(preparing, waiting);
+        let access = self.begin_deferred_service_audit_write()?;
+        let validating = std::time::Instant::now();
+        phases.gate_wait_us = elapsed_us(waiting, validating);
+        let read = self
+            .shared
+            .database
+            .begin_read()
+            .map_err(transaction_error)?;
+        let derived = self.begin_derived_read()?;
+        if load_history_incarnation(&read)? != prepared.incarnation {
+            access.abort()?;
+            return Ok(OnlineRetentionStep::Held(OnlineRetentionHold::RowBoundary));
+        }
+        let holds = load_holds(&read)?;
+        let mut fences = collect_online_fencing_inputs(&read, &derived, &holds)?;
+        let head = access
+            .read_command_value(
+                crate::journal::JournalTable::Meta,
+                META_APPLICATION_SEQUENCE.as_bytes(),
+            )?
+            .ok_or_else(|| storage_error(StorageErrorKind::CorruptData))?;
+        fences.durable_application_head = Some(
+            match codec::decode_application_sequence_allocator_v1(&head)?
+                .into_parts()
+                .0
+            {
+                riffdb_storage_api::ApplicationSequenceAllocator::Next(next) => next.get() - 1,
+                riffdb_storage_api::ApplicationSequenceAllocator::Exhausted => u64::MAX,
+            },
+        );
+        let (limit, binding) = compute_max_permissible_watermark(&fences);
+        if limit.unwrap_or(0) < prepared.last
+            || fences
+                .durable_application_head
+                .unwrap_or(0)
+                .saturating_sub(retain.get())
+                < prepared.last
+        {
+            access.abort()?;
+            return Ok(OnlineRetentionStep::Held(OnlineRetentionHold::Fenced(
+                binding,
+            )));
+        }
+        if !prepared.validate_and_stage(&access)? {
+            access.abort()?;
+            return Ok(OnlineRetentionStep::Held(OnlineRetentionHold::RowBoundary));
+        }
+        drop(derived);
+        drop(read);
+        let submitting = std::time::Instant::now();
+        phases.plan_us = elapsed_us(validating, submitting);
+        let through = CommitSequence::new(prepared.last)
+            .ok_or_else(|| storage_error(StorageErrorKind::InvariantViolation))?;
+        let fence = access.submit_retention_prune(through, prepared.segments)?;
+        let released = std::time::Instant::now();
+        phases.commit_us = elapsed_us(submitting, released);
+        // Submission released the sole gate. The existing ordered durability
+        // fence publishes the watermark before its composite deletion view.
+        riffdb_storage_api::DeferredServiceAuditFence::wait(Box::new(fence))?;
+        Ok(OnlineRetentionStep::Advanced {
+            through: prepared.last,
+            sequences: prepared.last - prepared.first + 1,
+        })
     }
 
     fn online_retention_step_with(
@@ -666,7 +751,7 @@ fn plan_step(
 /// The fencing set without the whole-history undelivered-outbox scan: an
 /// online step instead proves delivery of every event inside its own
 /// sub-range (`plan_step`), which bounds its read cost to that sub-range.
-fn collect_online_fencing_inputs(
+pub(super) fn collect_online_fencing_inputs(
     read: &redb::ReadTransaction,
     derived: &redb::ReadTransaction,
     holds: &StoredRetentionHoldsV1,
@@ -674,7 +759,9 @@ fn collect_online_fencing_inputs(
     collect_fencing_inputs_with(read, Some(derived), holds, OutboxFence::StepLocal)
 }
 
-fn decode_segment_row(row: &[u8]) -> Result<Option<StoredCommandSegmentV1>, StorageError> {
+pub(super) fn decode_segment_row(
+    row: &[u8],
+) -> Result<Option<StoredCommandSegmentV1>, StorageError> {
     match crate::history_stub::decode_segment_value(row) {
         Ok(segment) => Ok(Some(segment.into_parts().0)),
         Err(error)
@@ -686,7 +773,7 @@ fn decode_segment_row(row: &[u8]) -> Result<Option<StoredCommandSegmentV1>, Stor
     }
 }
 
-fn row_last(row: &[u8], physical: CommitSequence) -> Result<u64, StorageError> {
+pub(super) fn row_last(row: &[u8], physical: CommitSequence) -> Result<u64, StorageError> {
     Ok(decode_segment_row(row)?.map_or(physical.get(), |segment| {
         segment.last_commit_sequence().get()
     }))

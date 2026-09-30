@@ -30,7 +30,7 @@ pub const MAX_COMPOSITE_OVERLAY_BYTES: usize = 256 * 1024 * 1024;
 pub const MAX_COMPOSITE_COMPONENT_BYTES: usize = 16 * 1024 * 1024;
 /// Conservative per-entry ordered-map and enum overhead charge.
 const OVERLAY_ENTRY_OVERHEAD: usize = 64;
-const TABLE_COUNT: usize = 20;
+const TABLE_COUNT: usize = 22;
 
 /// Closed authoritative table catalog shared by journal overlays.
 #[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
@@ -76,6 +76,10 @@ pub enum CompositeTableV1 {
     ProvenanceLocators = 19,
     /// ADR-0165 durable audit-request locators.
     AuditByRequestLocators = 20,
+    /// Chained history-prune evidence.
+    HistoryTombstones = 21,
+    /// Durable event delivery state.
+    OutboxStatus = 22,
 }
 
 impl CompositeTableV1 {
@@ -101,6 +105,8 @@ impl CompositeTableV1 {
         Self::IdempotencyLocators,
         Self::ProvenanceLocators,
         Self::AuditByRequestLocators,
+        Self::HistoryTombstones,
+        Self::OutboxStatus,
     ];
 
     const fn index(self) -> usize {
@@ -354,6 +360,8 @@ pub enum CompositeFrameKindV1 {
     Command,
     /// One or more standalone service-audit transitions.
     ServiceAudit,
+    /// One bounded prune, with application and administration frontiers unchanged.
+    RetentionPrune,
 }
 
 impl CompositeFrameV1 {
@@ -394,6 +402,9 @@ impl CompositeFrameV1 {
                 app_delta == transitions && (admin_delta == 0 || admin_delta >= transitions)
             }
             CompositeFrameKindV1::ServiceAudit => app_delta == 0 && admin_delta == transitions,
+            CompositeFrameKindV1::RetentionPrune => {
+                app_delta == 0 && admin_delta == 0 && transitions == 1
+            }
         };
         if !counts_match {
             return Err(StorageValueError::InvalidShape);
@@ -440,6 +451,7 @@ pub trait CompositeViewBase {
 }
 
 /// Mutable, unpublished construction state for one exact overlay suffix.
+#[derive(Clone)]
 pub struct CompositeOverlayBuilder {
     checkpoint: CompositeCheckpointV1,
     current_application: Option<CommitSequence>,
