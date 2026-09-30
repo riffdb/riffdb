@@ -27949,7 +27949,7 @@ work_packages:
     and deletes or recycles the extent only after that transition is durable.
   requirements: [STO-030, STO-031, STO-032]
   required_adrs: [ADR-0182, ADR-0263]
-  allowed_paths: [work_packages.yaml, crates/riffdb-storage-api/**,
+  allowed_paths: [work_packages.yaml, adr/0263-retained-journal-is-the-command-history-store.md, crates/riffdb-storage-api/**,
     crates/riffdb-storage-redb/**, crates/riffdb-server/**, crates/riffdb-sim/**, tests/**,
     fixtures/**, scripts/**, benchmarks/**, examples/app-baseline/**, release/evidence/**,
     docs/**]
