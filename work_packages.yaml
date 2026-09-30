@@ -28272,3 +28272,55 @@ work_packages:
   - Transaction ordering, conflict ownership, validation, atomicity, outcome
     sequencing, authorization, or redaction would change.
   - A guarantee appears impossible or implementation requires out-of-scope paths.
+  closure:
+    status: complete
+    completed_at: '2026-09-30'
+    requirements_satisfied: [PERF-008, PERF-019, TXN-041, TXN-042, TXN-043,
+      TXN-044, REP-002, REP-003, REC-001, REC-002]
+    evidence: release/evidence/wp-819/closure-20260930.json
+    decision: Retain no runtime optimization. Against frozen base 9fa3bfb28,
+      immutable rebase-key sharing changes write throughput by minus 0.79 percent
+      at 60 seconds and plus 0.41 percent at 90 seconds, with no reproducible
+      benefit and worse 90-second p99. Remove the candidate and all temporary
+      probes. Clean restored-runtime same-run PostgreSQL medians are 0.758x
+      throughput, 0.800x p95, and 0.931x p99 write-only; interactive is 1.021x,
+      0.903x, and 0.864x and passes the development-machine PERF-008 gate.
+    decisions_taken:
+    - D-003 implementation choices within the listed accepted records; no SPEC
+      MUST, accepted decision, public surface, or durable format changes.
+    - Count caller-scoped logical reads separately from checkpoint fallbacks,
+      and count actual shared-node clones and named payload allocation sites.
+      Retire the probes before production A/B; preserve the fixed checkpoint
+      census and every diagnostics, stack, cache, overlay, and suffix bound.
+    - Select immutable rebase-key sharing by measured opportunity and low
+      implementation cost. Reject it after repeated alternating comparisons;
+      restore the frozen-base implementation and identify existing exact-lineage
+      semantic coverage with requirement tags.
+    - Defer bounded prefetch and borrowed receipt representation changes after
+      measuring their remaining opportunity and implementation cost. Preserve
+      current-overlay precedence, exact checkpoint identity, dependent lookup
+      bounds, validation, absence, epochs, errors, canonical bytes, and export.
+    - Treat execution and journal I/O durations as overlapping wall windows,
+      rather than CPU or disjoint costs. Do not change required drains, batching
+      limits, or delays without caller attribution and the required review.
+    hazards:
+    - Write throughput remains below PostgreSQL; this package closes an
+      investigation and negative experiment, rather than the throughput gap.
+    - The 90-second A/B round has common throughput drift. Matched comparisons
+      and same-run stable PostgreSQL evidence are separate series; no cause
+      is inferred. Named allocation payload counts are not total heap accounting.
+    - Work-receive idle is 45.843 microseconds per write-command attempt.
+      Intake and preparation need profiling before selecting another mechanism.
+      Exact useful CPU overlap and cause-specific drain counts were not collected.
+    - Interactive temporary diagnostics evicted the startup line from the
+      bounded stderr ring; that failed run is not qualification evidence. Its
+      output probes are removed; no parser bound or failure check is weakened.
+    - Long maximum stalls and extent recycling remain WP-815. WP-816 owns
+      pre-ADR-0263 upgrades; the alternate-machine gate is not run.
+    - WP-818's additional read-only lifecycle authority oracle still has its
+      RepairAborted qualification gap. No repair or replacement oracle is used.
+    - Loaded RSS remains about 1.3 GB write-only. Process heap, recovery-owned
+      memory, and named allocation payloads are different measurements; accepted
+      lifecycle ceilings and the 384 KiB production stack remain unchanged.
+    - TicketDesk evidence does not qualify projection, tokenized-text, or
+      row-policy performance. No new borrowed receipt or prefetch surface exists.
