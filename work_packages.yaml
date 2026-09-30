@@ -28137,7 +28137,7 @@ work_packages:
     mechanism at a time. Preserve formats, validation, ordering, snapshot isolation,
     acknowledgement durability, authorization, and all existing bounds.
   requirements: [PERF-008, PERF-019, REP-002, REP-003]
-  required_adrs: [ADR-0104, ADR-0195, ADR-0239, ADR-0263]
+  required_adrs: [ADR-0104, ADR-0195, ADR-0239, ADR-0260, ADR-0263]
   allowed_paths: [work_packages.yaml, crates/riffdb-storage-redb/**,
     crates/riffdb-storage-api/src/composite_view.rs, benchmarks/**,
     examples/app-baseline/**, docs/performance/**, tests/**, scripts/**]
@@ -28157,7 +28157,8 @@ work_packages:
     interface_safety: No public interface, durable encoding, validation, ordering,
       authorization, or acknowledgement boundary changes.
     scale: Preserve bounded overlay, suffix, scans, diagnostics, production stacks,
-      and the accepted 64 MiB lifecycle envelope when changing private cache budgets.
+      and the accepted clean-lifecycle and recovery-owned-state ceilings when
+      changing private cache budgets. V2 evidence retains ADR-0260's scope.
   human_review_triggers:
   - Any durable format, public surface, or accepted ADR decision would change.
   - Any transaction ordering, conflict ownership, validation, atomicity, or outcome
