@@ -131,3 +131,26 @@ Implementation decisions within the accepted amendment:
 
 No performance improvement or sustainable physical-storage claim is made before
 qualification.
+
+## Negative direct-prune qualification and delegated amendment
+
+The completed reference-host run used six counterbalanced cells, 32 interactive
+clients, 60 seconds measured after 10 seconds warm-up, and clean source
+`851890fc6c6ed0746fd09006e3a5eacd7ca46c02`. Both host inventories passed.
+Median p95 was 7.078 ms in both arms. Active throughput was 14,658 operations/s
+against 16,245 held, and pruning reached only 0.002897 sequences per committed
+command. The unchanged keep-up referee rejects it against 0.0131.
+[Sanitized negative evidence](../../release/evidence/wp-815/rejected-direct-prune-20260930.json)
+binds the raw reports and inventories by hash; no physical file reclamation is
+claimed. Receipt references held every eligible candidate.
+
+The dominant cost is synchronous draining of unrelated pending journal work:
+about seven seconds of drain and two seconds of commit in each active cell's
+two advancing steps. Bounded file recycling cannot remove that cost.
+ADR-0263 Amendment 5 was accepted on the maintainer's behalf under the explicit
+in-session ADR delegation. It specifies a private, versioned journaled prune
+transition, current fencing and exact-before-image checks at sequencing,
+watermark publication after durability, equivalent recovery, and an explicit
+offline marker upgrade. It preserves the existing writer, frontiers, holds,
+step bounds, pacing, and performance gates. Implementation and fresh
+qualification remain required before WP-815 closes.

@@ -1,0 +1,295 @@
+{
+  "cells": [
+    {
+      "aggregate_p95_ns": 7077887,
+      "arm": "idle",
+      "commands_committed": 169422,
+      "lane": {
+        "fence": "none",
+        "sequences": 0,
+        "state": "holding",
+        "steps": 0
+      },
+      "lane_holds": {
+        "awaiting_checkpoint": 0,
+        "checkpoint_in_flight": 0,
+        "fenced": 0,
+        "target": 0
+      },
+      "lane_phases_us": {
+        "commit": 0,
+        "delete": 0,
+        "digest": 0,
+        "drain": 0,
+        "gate_wait": 0,
+        "materialize": 0,
+        "plan": 0,
+        "preplan": 0
+      },
+      "rep": 1,
+      "report_sha256": "e287d5fb49dc329574792339acbadfbf4335d3a07b857789a60d33c441452e88",
+      "retention_extents": {
+        "deleted": 0,
+        "held_readers": 0,
+        "held_references": 0,
+        "reclaim_us": 0,
+        "recycled": 0
+      },
+      "throughput_ops_s": 16246
+    },
+    {
+      "aggregate_p95_ns": 7077887,
+      "arm": "active",
+      "commands_committed": 155711,
+      "lane": {
+        "fence": "none",
+        "sequences": 442,
+        "state": "advancing",
+        "steps": 2
+      },
+      "lane_holds": {
+        "awaiting_checkpoint": 33,
+        "checkpoint_in_flight": 0,
+        "fenced": 0,
+        "target": 3
+      },
+      "lane_phases_us": {
+        "commit": 2289205,
+        "delete": 17736,
+        "digest": 32615,
+        "drain": 6929425,
+        "gate_wait": 126549,
+        "materialize": 26447,
+        "plan": 18446,
+        "preplan": 23499
+      },
+      "rep": 1,
+      "report_sha256": "366709c0f3daaba20d260a603add09a5aec30b6eef0d38e6bffbe850a7b11a64",
+      "retention_extents": {
+        "deleted": 0,
+        "held_readers": 0,
+        "held_references": 12,
+        "reclaim_us": 14466,
+        "recycled": 0
+      },
+      "throughput_ops_s": 14638
+    },
+    {
+      "aggregate_p95_ns": 7077887,
+      "arm": "active",
+      "commands_committed": 156103,
+      "lane": {
+        "fence": "none",
+        "sequences": 458,
+        "state": "advancing",
+        "steps": 2
+      },
+      "lane_holds": {
+        "awaiting_checkpoint": 33,
+        "checkpoint_in_flight": 0,
+        "fenced": 0,
+        "target": 3
+      },
+      "lane_phases_us": {
+        "commit": 2312190,
+        "delete": 18539,
+        "digest": 33497,
+        "drain": 7015030,
+        "gate_wait": 112871,
+        "materialize": 27455,
+        "plan": 18426,
+        "preplan": 22425
+      },
+      "rep": 2,
+      "report_sha256": "89811f77065f17515d6c1a5511c1feb522cf02583b4bc7d8eb3aee257cd97bb5",
+      "retention_extents": {
+        "deleted": 0,
+        "held_readers": 0,
+        "held_references": 12,
+        "reclaim_us": 16448,
+        "recycled": 0
+      },
+      "throughput_ops_s": 14658
+    },
+    {
+      "aggregate_p95_ns": 7077887,
+      "arm": "idle",
+      "commands_committed": 169740,
+      "lane": {
+        "fence": "none",
+        "sequences": 0,
+        "state": "holding",
+        "steps": 0
+      },
+      "lane_holds": {
+        "awaiting_checkpoint": 0,
+        "checkpoint_in_flight": 0,
+        "fenced": 0,
+        "target": 0
+      },
+      "lane_phases_us": {
+        "commit": 0,
+        "delete": 0,
+        "digest": 0,
+        "drain": 0,
+        "gate_wait": 0,
+        "materialize": 0,
+        "plan": 0,
+        "preplan": 0
+      },
+      "rep": 2,
+      "report_sha256": "5e20d7f1ada8aafad5e09ef5b2ab5342df528f84256fd176eeeeabb8aa7020fb",
+      "retention_extents": {
+        "deleted": 0,
+        "held_readers": 0,
+        "held_references": 0,
+        "reclaim_us": 0,
+        "recycled": 0
+      },
+      "throughput_ops_s": 16157
+    },
+    {
+      "aggregate_p95_ns": 7077887,
+      "arm": "idle",
+      "commands_committed": 170259,
+      "lane": {
+        "fence": "none",
+        "sequences": 0,
+        "state": "holding",
+        "steps": 0
+      },
+      "lane_holds": {
+        "awaiting_checkpoint": 0,
+        "checkpoint_in_flight": 0,
+        "fenced": 0,
+        "target": 0
+      },
+      "lane_phases_us": {
+        "commit": 0,
+        "delete": 0,
+        "digest": 0,
+        "drain": 0,
+        "gate_wait": 0,
+        "materialize": 0,
+        "plan": 0,
+        "preplan": 0
+      },
+      "rep": 3,
+      "report_sha256": "7fe7c8418f381da4b7a246403060c1e1f2435cd45e265261dc038e12718fb623",
+      "retention_extents": {
+        "deleted": 0,
+        "held_readers": 0,
+        "held_references": 0,
+        "reclaim_us": 0,
+        "recycled": 0
+      },
+      "throughput_ops_s": 16245
+    },
+    {
+      "aggregate_p95_ns": 7077887,
+      "arm": "active",
+      "commands_committed": 158076,
+      "lane": {
+        "fence": "none",
+        "sequences": 458,
+        "state": "advancing",
+        "steps": 2
+      },
+      "lane_holds": {
+        "awaiting_checkpoint": 31,
+        "checkpoint_in_flight": 0,
+        "fenced": 0,
+        "target": 3
+      },
+      "lane_phases_us": {
+        "commit": 2320180,
+        "delete": 18689,
+        "digest": 33668,
+        "drain": 6955492,
+        "gate_wait": 116982,
+        "materialize": 27671,
+        "plan": 19129,
+        "preplan": 22375
+      },
+      "rep": 3,
+      "report_sha256": "13dc9d25791c7834f47cf2cf06ab0f2eb8638c14c4c015ee509d712010df9c12",
+      "retention_extents": {
+        "deleted": 0,
+        "held_readers": 0,
+        "held_references": 11,
+        "reclaim_us": 12772,
+        "recycled": 0
+      },
+      "throughput_ops_s": 14860
+    }
+  ],
+  "comparison": {
+    "active_median_p95_ns": 7077887,
+    "active_median_pruned_per_committed": 0.0028973405197499935,
+    "active_median_throughput_ops_s": 14658,
+    "idle_median_p95_ns": 7077887,
+    "idle_median_throughput_ops_s": 16245,
+    "lane_valid": true,
+    "p95_ratio": 1.0,
+    "throughput_ratio": 0.9023084025854109
+  },
+  "decision": "Reject direct pruning: synchronous journal draining dominates gate-held work. Journaled prune transitions must qualify against the unchanged gates. Physical reclamation remains held by legitimate receipt references.",
+  "gates": {
+    "keep_up_passes": false,
+    "minimum_keep_up": 0.0131,
+    "p95_passes": true,
+    "referee_exit": 1
+  },
+  "host": {
+    "hardware_identity": {
+      "cpu_model": "AMD EPYC 9B14",
+      "operating_system": {
+        "id": "ubuntu",
+        "version_id": "26.04"
+      },
+      "system_product": "Google Compute Engine",
+      "system_vendor": "Google"
+    },
+    "logical_cpus": 8,
+    "postflight_sha256": "7977a776bbb50a91c8a2e6d75825517c27884dce23cb8e5c2b578460b2580467",
+    "preflight_sha256": "56bbaac0fd62b0d892d8ae572f370942c8414ffe153b627a3d9929d501c4c313",
+    "valid": true
+  },
+  "method": {
+    "active_arm": {
+      "retained_sequences": 1024,
+      "sequences_per_epoch": 256
+    },
+    "clients": 32,
+    "duration_secs": 60,
+    "idle_arm": {
+      "retention": "hold"
+    },
+    "lane_observation_scope": "measured_process_generation",
+    "latency_gate_statistic": "median_of_repetition_aggregate_p95",
+    "load": "interactive",
+    "maximum_p95_ratio": 1.05,
+    "order": [
+      "idle",
+      "active",
+      "active",
+      "idle",
+      "idle",
+      "active"
+    ],
+    "outbox": "seeded_events_marked_delivered_on_the_stopped_database_in_both_arms",
+    "percentiles": "fixed_log_linear_histogram_16_sub_buckets_per_octave",
+    "projections": "board_projection_undeclared_in_both_arms",
+    "repetitions": 3,
+    "scale": "full",
+    "warmup_secs": 10
+  },
+  "package": "WP-815",
+  "qualified": false,
+  "raw_summary_sha256": "fcc36af158527aca6f85ccf4ddfc92826761043a314e8b479e149fbde83f90d0",
+  "schema": "riffdb.wp-815-rejected-direct-prune/v1",
+  "source": {
+    "clean_tree": true,
+    "commit": "851890fc6c6ed0746fd09006e3a5eacd7ca46c02"
+  }
+}
