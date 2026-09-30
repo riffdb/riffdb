@@ -4,6 +4,8 @@
 pub(crate) mod follower;
 #[path = "transient_payload.rs"]
 mod payload;
+#[cfg(test)]
+pub(crate) use payload::PAYLOAD_SEED_VERIFY_EVERY;
 use payload::{PayloadCache, SegmentMetadata};
 
 use std::collections::{BTreeMap, BTreeSet};
@@ -85,7 +87,11 @@ pub(crate) enum TransientIndexState {
 
 pub(crate) enum TransientIndexDelta {
     PendingOutboxInserted(Vec<EventId>),
-    CommandSegmentPublished(Arc<StoredCommandSegmentV1>),
+    /// A published command segment, with the exact canonical `COMMITS` row
+    /// bytes the writer encoded when it has them. Those bytes seed the
+    /// byte-checked payload cache, so the next writer's tail lookup does not
+    /// re-decode a segment it just built.
+    CommandSegmentPublished(Arc<StoredCommandSegmentV1>, Option<Arc<[u8]>>),
     PendingOutboxMembership {
         event_id: EventId,
         was_pending: bool,
@@ -105,7 +111,7 @@ pub(crate) enum TransientIndexDelta {
 impl TransientIndexDelta {
     pub(crate) fn command_segment(&self) -> Option<&Arc<StoredCommandSegmentV1>> {
         match self {
-            Self::CommandSegmentPublished(segment) => Some(segment),
+            Self::CommandSegmentPublished(segment, _) => Some(segment),
             Self::PendingOutboxInserted(_)
             | Self::PendingOutboxMembership { .. }
             | Self::HistoryPruned { .. } => None,
@@ -139,7 +145,7 @@ impl TransientIndexDelta {
         request_ids: &BTreeSet<riffdb_types::RequestId>,
         output: &mut BTreeMap<riffdb_types::RequestId, Vec<riffdb_types::AdministrationSequence>>,
     ) -> Result<(), StorageError> {
-        let Self::CommandSegmentPublished(segment) = self else {
+        let Self::CommandSegmentPublished(segment, _) = self else {
             return Ok(());
         };
         for entry in segment.manifest().entries() {
@@ -498,12 +504,16 @@ impl TransientIndexes {
                     }
                 }
             }
-            TransientIndexDelta::CommandSegmentPublished(segment) => {
+            TransientIndexDelta::CommandSegmentPublished(segment, canonical) => {
                 let Some(command_derived) = self.command_derived.as_mut() else {
                     return;
                 };
                 if command_derived
                     .apply_segment_arc(Arc::clone(&segment))
+                    .and_then(|()| match canonical {
+                        Some(canonical) => command_derived.seed_payload(&segment, canonical),
+                        None => Ok(()),
+                    })
                     .is_err()
                 {
                     self.command_derived = None;
@@ -727,7 +737,7 @@ impl UnpublishedCommandIndexes {
     > {
         let mut output = BTreeMap::new();
         for segment in self.segments.values() {
-            TransientIndexDelta::CommandSegmentPublished(Arc::clone(segment))
+            TransientIndexDelta::CommandSegmentPublished(Arc::clone(segment), None)
                 .command_audit_sequences_for(request_ids, &mut output)?;
         }
         Ok(output)
@@ -857,6 +867,21 @@ impl CommandDerivedIndexes {
             }
         }
         Ok(())
+    }
+
+    /// Seeds the payload cache with the writer's own segment for its exact
+    /// canonical bytes. Every hit still compares the stored row byte for byte
+    /// and validates the segment against its metadata; one seed in
+    /// `PAYLOAD_SEED_VERIFY_EVERY` also decodes the bytes and refuses a
+    /// segment that does not round-trip, which invalidates the index.
+    fn seed_payload(
+        &mut self,
+        segment: &Arc<StoredCommandSegmentV1>,
+        canonical: Arc<[u8]>,
+    ) -> Result<(), StorageError> {
+        let first = segment.first_commit_sequence();
+        let metadata = self.segments.get(&first).ok_or_else(corrupt)?;
+        self.payloads.seed(metadata, Arc::clone(segment), canonical)
     }
 
     fn apply_segment_arc(
@@ -997,7 +1022,7 @@ fn rebuild_command_derived_indexes(
     for entry in commits.iter().map_err(precommit_storage_error)? {
         check_rebuild_cancellation(cancellation)?;
         let (key, value) = entry.map_err(precommit_storage_error)?;
-        match crate::command_prefix::decode_segment(value.value()) {
+        match crate::history_stub::decode_retained_segment(value.value()) {
             Ok(segment) => {
                 let segment = segment.into_parts().0;
                 let physical =

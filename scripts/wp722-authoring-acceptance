@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# req: CMP-015
 set -euo pipefail
 
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -12,7 +13,7 @@ cleanup() {
 }
 trap cleanup EXIT INT TERM
 
-for tool in cargo jq rg sha256sum; do
+for tool in cargo jq rg sed sha256sum; do
     command -v "$tool" >/dev/null 2>&1 || {
         echo "required WP-722 acceptance tool is missing: $tool" >&2
         exit 1
@@ -193,6 +194,21 @@ cli_target_dir="$(cargo metadata --locked --no-deps --format-version 1 | jq -er 
 for domain in clinic fleet library; do
     (
         cd "$work_root/$domain-application"
+        if [[ "$domain" == library ]]; then
+            # ADR-0262: retain the immutable campaign and prove its old implicit
+            # associations are refused before migrating only this temporary copy.
+            if "$cli_target_dir/debug/riffdb" --output json \
+                application check --source-only >"$work_root/library-legacy.out" 2>&1; then
+                echo "WP-722 legacy library replacements unexpectedly compiled" >&2
+                exit 1
+            fi
+            jq -e '[.diagnostics[].code] == ["RDB-C048", "RDB-C048"]' \
+                "$work_root/library-legacy.out" >/dev/null
+            sed -i \
+                -e 's/^    set patron.last_checkout_at = tx.time$/    set patron.last_checkout_at = tx.time checked_by PatronActive/' \
+                -e 's/^    set copy.status = CopyStatus.CheckedOut$/    set copy.status = CopyStatus.CheckedOut checked_by CopyAvailable/' \
+                riffdb/contract.riff
+        fi
         "$cli_target_dir/debug/riffdb" --output json \
             application check --source-only >"$work_root/$domain-final.out"
     )
@@ -201,7 +217,7 @@ for domain in clinic fleet library; do
         echo "WP-722 $domain final source did not report checked status" >&2
         exit 1
     }
-    printf 'WP-722 %s: 10/10\n' "$domain"
+    printf 'WP-722 %s: retained campaign evidence and current source replay passed\n' "$domain"
 done
 
 cargo test --quiet --locked -p riffdb-diagnostics --all-features

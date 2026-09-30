@@ -318,9 +318,12 @@ The lane is bounded to about five percent of the writer's time, so under a
 write-saturated load it compacts far more slowly than the database commits.
 Pruning a command relocates its retained outcome, provenance, and audit out of
 its commit segment, which costs about as much writer time as committing it. On
-the WP-761 benchmark host, with 32 interactive clients, the lane kept p95
-unchanged and throughput at 0.98 of the held run while pruning about 0.3
-percent as many sequences as the load committed. Where writes leave the writer
+the ADR-0239 benchmark host, with 32 interactive clients, the lane kept p95
+within 3 percent and throughput at 0.97 of the held run while pruning about 1.3
+percent as many sequences as the load committed (WP-811). Most of each step's
+writer time is spent materializing journaled history and committing the step
+itself. ADR-0261's journaled prune frames were superseded by ADR-0263, which retires
+whole retained journal extents instead (WP-815). Where writes leave the writer
 idle capacity, it compacts to its target. That evidence covers one workload on
 one host, is not a general latency guarantee, and marked the seeded events
 delivered on the stopped database first because of the outbox limit above.
@@ -334,17 +337,42 @@ of the database. Capacity planning must size for the historical peak, not for
 the retained working set, and an operator who prunes aggressively to recover
 disk will not recover any.
 
+Journal extents are now retained after their checkpoint rather than recycled
+(ADR-0263, in progress under WP-814). Each installed checkpoint leaves one
+sealed extent beside the database, named `<database>.riffjournal.sealed.<generation>`
+and trimmed to its frames and footer. For journaled history, whether a
+checkpoint, crash recovery, or a synchronous drain materializes it, the database
+file keeps only a small locator ("history stub") per command segment and
+receipt, and the bytes stay in the journal extent. Direct writes and
+administration ceremonies still store their history in the database file. Backups
+copy the journal and every sealed extent, and a restored copy resolves its history from them;
+deleting a sealed extent by hand makes that history unreadable. Within one
+process, a read may resolve a history stub from any open copy of the same
+database whose retained frame has the same hash; the bytes are exact, but a
+missing extent is then reported only once no such copy is open. Until WP-815
+retires them, retention does not remove sealed extents, so they accumulate with
+every checkpoint. A backup reads its history from its own journal and sealed
+extent artifacts. A staged maintenance restore (promotion rewind or archive
+replay) and a contract migration stage rewrite the stubs as full rows while
+staging, so the database they publish keeps its earlier history in the database
+file. The replaced database's journal extents stay beside it, unreferenced,
+until WP-815 retention reclaims them.
+
 
 ## What a command cannot express
 
-The safety claim is that an application's writes are proven before they run. It
-holds for what a command can express, and that boundary is narrower than the
-patterns an ordinary multi-tenant application reaches for. Three limits set it,
-and they compose:
+The compiler proves bounded structural properties of application writes. It
+cannot infer the relevance of an arbitrary business predicate or the freshness
+of an input delta. `checked_by` makes business associations explicit;
+caller-version fences additionally depend on a consistently advanced revision
+protocol. See the [write cookbook](contracts/COMMAND-INVARIANT-COOKBOOK.md#declare-the-evidence-for-each-write).
 
-- A command reads by complete key. A write-influencing indexed range read is
-  rejected, and no future one is admitted without accepted static target
-  derivation and explicit up-front exclusion.
+The command language also has three structural limits:
+
+- Commands normally read by complete key. [Atomic indexed selection](contracts/ATOMIC-INDEXED-SELECTION.md)
+  admits one first-row selection when an equality prefix proves the partition
+  and every conflict key before the read. Other write-influencing range reads
+  remain rejected.
 - An invariant may span entities inside one aggregate, never across aggregates.
   A command may *write* two aggregates that share a partition route, and since
   ADR-0252 it carries each one's own invariants, but no invariant relates them.
@@ -361,13 +389,17 @@ The conflict key covers the root, so concurrent writers serialize and the
 invariant is checked at commit against the value the command wrote. A rollup
 maintained this way is a first-class pattern, not a workaround.
 
-Choosing a target -- a free slot, the next item -- happens in the application:
-read a bounded page, choose, then invoke a command naming that target by
-complete key. That is the intended idiom and it is safe *when the command
-re-checks the condition the choice depended on*, because a losing choice then
-becomes a declared outcome rather than a lost update. The compiler requires
-`set` for writes protected by a local pre-image dependency or a proven
-same-root revision fence, and explicit `overwrite` for last-writer-wins.
+Choosing the first free slot within a statically owned indexed pool can happen
+inside one command with `mutate first`. More general selection still happens in
+the application: read a bounded page, choose, then invoke a command naming that
+target by complete key. That pattern is safe *when the command re-checks the
+condition the choice depended on*, because a losing choice becomes a declared
+outcome rather than a lost update. Application-side selection, retry scheduling,
+and multi-command recovery remain application responsibilities for those shapes. The compiler requires
+`set` for narrow same-field arithmetic, a named business association, or a
+proven same-root revision fence, and explicit `overwrite` for replacement
+without those proofs. Only the fence checks a supplied caller revision; a
+business association does not prove the predicate is relevant to caller intent.
 The root fence must unconditionally compare an integer revision to an input
 and increment it by one; arbitrary equivalent predicates and conditional
 fences are not inferred. Invariants alone do not establish this protection.

@@ -22,8 +22,8 @@ def _compact_tag(value: object, tag: str, keys: frozenset[str]) -> dict[str, obj
 
 CONTRACT_LINEAGE: Final[str] = "OneTimeTokenAcceptance"
 CONTRACT_VERSION: Final[int] = 1
-CONTRACT_BUNDLE_HASH: Final[str] = "aa5c19da0fd5994991e20b68c62e49b251501951b1847d29a2dd1389f3eb1b71"
-QUERY_MODULE_HASH: Final[str] = "5f8ff11ab269d01bc46d7fc470247d1b26f273de4cb1bd4a7c8e5aa161003cd6"
+CONTRACT_BUNDLE_HASH: Final[str] = "93ce102c5dcbc82e8a26d9c4c8163976f4c868f74ae84e9b0ea3c8cedea2892f"
+QUERY_MODULE_HASH: Final[str] = "4803d7e0f30088627f15e99d9789c1827e6c631f624b6da4c14d39287721bbdb"
 
 @dataclass(frozen=True, slots=True, kw_only=True)
 class OneTimeToken:
@@ -34,7 +34,7 @@ class OneTimeToken:
     identifier: str
     organization_id: UUID
 
-GET_TOKEN_QUERY_PLAN_HASH: Final[str] = "8921af1b5811cae7459574dd4c5b57a17f79cdedb3501a656b83fc054bda0b60"
+GET_TOKEN_QUERY_PLAN_HASH: Final[str] = "b4920313c300155e5d70a1c5aa6c56ec553794dfae316ea436f496d77c474369"
 
 @dataclass(frozen=True, slots=True, kw_only=True)
 class GetTokenParams:
@@ -102,7 +102,7 @@ class IssueTokenInput:
     request_id: UUID
     organization_id: UUID
 
-ISSUE_TOKEN_PLAN_HASH: Final[str] = "78176cd7418c41fb346a742bf10856c364829b4a3ae7e6176e0791172b2f03ff"
+ISSUE_TOKEN_PLAN_HASH: Final[str] = "9db88ad2da13526f606ca497d31323b02066a625ca6614c5aef06f53ed677d2d"
 @dataclass(frozen=True, slots=True, kw_only=True)
 class IssueTokenTokenIssued:
     token_id: UUID

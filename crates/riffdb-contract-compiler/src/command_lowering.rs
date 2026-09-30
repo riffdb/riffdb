@@ -445,6 +445,15 @@ fn lower_command(
                         .map(|occurrence| constructions[*occurrence].clone()),
                 )
             }
+            .and_then(|plan| match &binding.selection {
+                Some((index, prefix)) => {
+                    plan.with_indexed_selection(riffdb_contract_ir::IndexedSelectionPlan::new(
+                        *index,
+                        prefix.iter().map(|value| value.id).collect(),
+                    )?)
+                }
+                None => Ok(plan),
+            })
             .map_err(|_| ir_diagnostic(binding.name_span))
         })
         .collect::<Result<Vec<_>, _>>()
@@ -767,6 +776,20 @@ fn lower_command(
             schema,
         )
     };
+    let result = result.and_then(|plan| {
+        let mut associations = BTreeMap::new();
+        for (index, instruction) in plan.instructions().iter().enumerate() {
+            let Instruction::SetField { binding, field, value, .. } = instruction else { continue; };
+            let Some(effect) = command.effects.iter().find(|effect| matches!(effect,
+                HirEffect::Set {binding: b, field: f, value: v, ..} if b == binding && f == field && v.id == *value))
+            else { continue; };
+            if let Some(requirement) = crate::write_guard::association_index(hir, command, effect, false)
+                .map_err(|_| IrValidationError::InvalidDependency {reason: "invalid write association"})? {
+                associations.insert(riffdb_contract_ir::WriteLocation::Instruction(index as u32), requirement);
+            }
+        }
+        plan.with_write_proofs(&associations, schema)
+    });
     result.map_err(|error| {
         let span = match &error {
             IrValidationError::LimitExceeded {

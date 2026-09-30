@@ -823,7 +823,11 @@ fn startup_full_validation_reuses_exact_embedded_command_authority() {
     // The complete walk keeps only a compact audit index and resolves each
     // command on demand; the decoded whole history is never retained.
     let history = production_source(crate_root().join("src/startup/command_history.rs"));
-    assert!(history.contains("crate::command_prefix::decode_segment"));
+    // ADR-0263 Amendment 3: a history stub is resolved first; the resolved
+    // segment is still decoded by the exact embedded-authority decoder.
+    assert!(history.contains("crate::history_stub::decode_retained_segment"));
+    let stubs = production_source(crate_root().join("src/history_stub.rs"));
+    assert!(stubs.contains("crate::command_prefix::decode_segment(&resolved)"));
     assert!(history.contains("if last_claimed.is_some_and(|last| sequence <= last)"));
     assert!(history.contains("return Err(corrupt())"));
     assert!(history.contains("const RECENT_COMMANDS: usize"));
@@ -2555,6 +2559,9 @@ fn only_commit_durable_advances_a_root_an_operational_reader_can_select() {
         ("fixtures.rs", "replace_audit_row_with_stray_fence_fixture"),
         // Test-only checkpoint strip, likewise on a stopped database.
         ("fixtures.rs", "strip_validated_prefix_checkpoint_fixture"),
+        // History-stub hydration (ADR-0263 Amendment 1) rewrites a staged
+        // maintenance restore copy, which no operational reader can select.
+        ("history_stub.rs", "hydrate_history_stubs"),
         // Journal recovery, which runs before operational readiness is claimed.
         ("journal.rs", "replay_frames"),
         // Sidecar create for rebuildable derived state (ADR-0240). It is a

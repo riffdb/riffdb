@@ -163,6 +163,21 @@ fn retention_lane_states_are_closed_and_shutdown_cancels_the_lane() {
     await_state(&lane, RetentionLaneState::Idle);
     lane.wake();
     await_state(&lane, RetentionLaneState::Idle);
+    // The lane starts idle, so wait on the counter itself, not the state.
+    let mut spins = 0_u32;
+    while lane.observation().holds[0] == 0 {
+        spins += 1;
+        assert!(
+            spins < 10_000_000,
+            "an idle lane counts its target-reached holds"
+        );
+        thread::yield_now();
+    }
+    assert_eq!(
+        lane.observation().phases.gate_held_us(),
+        0,
+        "planning at the target never takes the writer gate"
+    );
     assert_eq!(lane.shutdown(), RetentionLaneState::Cancelled);
     assert_eq!(
         lane.observation(),
@@ -171,6 +186,8 @@ fn retention_lane_states_are_closed_and_shutdown_cancels_the_lane() {
             fence: None,
             steps: 0,
             sequences: 0,
+            phases: lane.observation().phases,
+            holds: lane.observation().holds,
         }
     );
     assert!(diagnostics.incidents.lock().unwrap().is_empty());

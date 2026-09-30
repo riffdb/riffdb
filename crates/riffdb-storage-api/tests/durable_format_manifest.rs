@@ -43,10 +43,10 @@ fn current_manifest_names_every_closed_format_family() {
     assert_eq!(manifest.writable_redb_layout_versions(), &[1]);
     assert_eq!(manifest.readable_registry_versions(), &[2]);
     assert_eq!(manifest.writable_registry_versions(), &[2]);
-    assert_eq!(manifest.readable_journal_frame_versions(), &[2]);
-    assert_eq!(manifest.writable_journal_frame_versions(), &[2]);
-    assert_eq!(manifest.readable_journal_extent_versions(), &[3]);
-    assert_eq!(manifest.writable_journal_extent_versions(), &[3]);
+    assert_eq!(manifest.readable_journal_frame_versions(), &[2, 3]);
+    assert_eq!(manifest.writable_journal_frame_versions(), &[3]);
+    assert_eq!(manifest.readable_journal_extent_versions(), &[3, 4]);
+    assert_eq!(manifest.writable_journal_extent_versions(), &[4]);
     assert_eq!(manifest.readable_backup_versions(), &[1]);
     assert_eq!(manifest.writable_backup_versions(), &[1]);
     assert_eq!(manifest.readable_receipt_versions(), &[1, 2, 3, 4]);

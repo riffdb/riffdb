@@ -2,6 +2,8 @@
 #[path = "store/transient_access.rs"]
 mod transient_access;
 
+mod read_census;
+
 use std::cell::RefCell;
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::ops::Bound::{Excluded, Unbounded};
@@ -394,6 +396,16 @@ pub(crate) struct SharedRedb {
     next_publication_ticket: AtomicU64,
     journal_runtime: Mutex<Option<JournalRuntime>>,
     journal_checkpoint: Mutex<Option<AsyncJournalCheckpoint>>,
+    /// Serializes every move of the spare extent name: the background spare
+    /// preparation, checkpoint start, and runtime open.
+    journal_spare: Arc<Mutex<()>>,
+    /// The background job sealing the last installed extent and preparing the
+    /// next spare (ADR-0263). At most one runs; it is joined before the next
+    /// install and when the store drops.
+    journal_sealer: Mutex<Option<std::thread::JoinHandle<()>>>,
+    /// Registers this store's retained extents for history-stub resolution
+    /// (ADR-0263 Amendment 3) once its database identity is known.
+    history_resolver: std::sync::OnceLock<Arc<crate::history_stub::HistoryResolver>>,
     command_segment_preparation: crate::command_segment_preparation::CommandSegmentPreparationPool,
     test_controller: Option<RedbTestController>,
     transient_indexes: RwLock<TransientIndexState>,
@@ -442,6 +454,10 @@ pub(crate) struct SharedRedb {
     /// which cannot run while this handle holds the database open, so reads
     /// never re-hash the meta record per call (ADR-0085 A2 hot-path rule).
     retention_watermark: AtomicU64,
+    /// Journal checkpoints finished by this process, with a signal for the
+    /// online retention lane, which steps right after one (WP-811).
+    journal_checkpoints_finished: std::sync::Mutex<u64>,
+    journal_checkpoint_finished: std::sync::Condvar,
     /// Terminal `ExecutionFailed` rows in `IDEMPOTENCY`.
     ///
     /// The checkpoint's `idempotency_count` admits only materialized
@@ -711,32 +727,47 @@ impl SharedRedb {
         }))
     }
 
+    fn note_journal_checkpoint_finished(&self) {
+        let mut finished = self
+            .journal_checkpoints_finished
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        *finished = finished.wrapping_add(1);
+        self.journal_checkpoint_finished.notify_all();
+    }
+
+    /// The number of journal checkpoints finished so far.
+    pub(crate) fn journal_checkpoints_finished(&self) -> u64 {
+        *self
+            .journal_checkpoints_finished
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+
+    /// Waits up to `timeout` for a journal checkpoint to finish after
+    /// `seen`, returning the current count. Holds no storage lock or gate.
+    pub(crate) fn wait_for_journal_checkpoint(
+        &self,
+        seen: u64,
+        timeout: std::time::Duration,
+    ) -> u64 {
+        let finished = self
+            .journal_checkpoints_finished
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let (finished, _) = self
+            .journal_checkpoint_finished
+            .wait_timeout_while(finished, timeout, |finished| *finished == seen)
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        *finished
+    }
+
     pub(crate) fn transient_index_rebuilds(&self) -> u64 {
         self.transient_index_rebuilds.load(Ordering::Relaxed)
     }
 
     pub(crate) fn transient_index_commit_rows(&self) -> u64 {
         self.transient_index_commit_rows.load(Ordering::Relaxed)
-    }
-
-    /// ADR-0236 obligation three: the bounded history fallback is the only
-    /// absence backstop, so both how often it runs and how much it reads are
-    /// evidence. `rows` is the span it covered, bounded by the distance from
-    /// the checkpoint application frontier to the captured frontier.
-    fn note_fresh_locator_history_fallback_scan(&self, rows: u64) {
-        if let Some(controller) = &self.test_controller {
-            controller.observe_fresh_locator_history_fallback_scan(rows);
-        }
-        let _ = self.fresh_locator_history_fallback_scans.fetch_update(
-            Ordering::Relaxed,
-            Ordering::Relaxed,
-            |current| Some(current.saturating_add(1)),
-        );
-        let _ = self.fresh_locator_history_fallback_rows.fetch_update(
-            Ordering::Relaxed,
-            Ordering::Relaxed,
-            |current| Some(current.saturating_add(rows)),
-        );
     }
 
     #[cfg(test)]
@@ -1341,6 +1372,19 @@ impl SharedRedb {
         }
     }
 
+    /// The currently published composite view, if the standard profile has one.
+    #[cfg(feature = "test-fixtures")]
+    pub(crate) fn published_composite_view(
+        &self,
+    ) -> Result<Option<Arc<crate::composite_view::RedbCompositeReadView>>, StorageError> {
+        self.composite_publication
+            .read()
+            .map_err(|_| storage_error(StorageErrorKind::InvariantViolation))?
+            .as_ref()
+            .map(crate::composite_view::RedbCompositePublication::capture)
+            .transpose()
+    }
+
     fn begin_composite_operational_read(&self) -> Result<RedbReadAccess, StorageError> {
         // A published composite view is the complete standard-profile state:
         // one immutable redb checkpoint plus the exact fenced journal suffix.
@@ -1425,6 +1469,19 @@ pub struct RedbOperationalPorts {
 // All operational helpers receive the sealed captured owner, never a raw
 // writable transaction. Journal epochs retain their separate mutation source.
 pub(crate) type OperationalWriteTransaction = crate::changelog_v3_write::CapturedImmediateWrite;
+
+/// Where a deferrable direct write's opening time went, in microseconds.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub(crate) struct WriteBeginTiming {
+    /// Waiting for the first-come writer gate.
+    pub(crate) gate_wait_us: u64,
+    /// Under the gate: publishing, checkpointing, and draining the journal.
+    pub(crate) drain_us: u64,
+}
+
+pub(crate) fn elapsed_us(from: std::time::Instant, to: std::time::Instant) -> u64 {
+    u64::try_from(to.saturating_duration_since(from).as_micros()).unwrap_or(u64::MAX)
+}
 
 pub(crate) struct RedbWriteAccess {
     shared: Arc<SharedRedb>,
@@ -1530,6 +1587,8 @@ struct JournalRuntime {
     suffix_commands: usize,
     suffix_audits: usize,
     suffix_bytes: usize,
+    /// Physical bytes the active extent holds: retained frames before its
+    /// anchor plus the padded suffix frames after it.
     suffix_physical_bytes: usize,
     suffix_frames: Vec<ValidatedCheckpointFrame>,
     unpublished_transitions: usize,
@@ -1554,6 +1613,13 @@ struct ValidatedCheckpointFrame {
     audit_count: u16,
     encoded: crate::journal::EncodedJournalFrame,
     mutations: Arc<[riffdb_storage_api::CompositeMutationV1]>,
+    /// The extent generation and position the lane writes this frame at, which
+    /// the checkpoint's history stubs name (ADR-0263 Amendment 3).
+    extent_generation: u64,
+    placement: crate::journal::FramePlacement,
+    /// Summaries of the command segments the writer staged, by mutation index,
+    /// so materialization writes their stubs without decoding them again.
+    segment_summaries: Arc<[(usize, crate::history_stub::SegmentSummary)]>,
 }
 
 #[derive(Default)]
@@ -2506,6 +2572,9 @@ impl RedbStore {
                 next_publication_ticket: AtomicU64::new(1),
                 journal_runtime: Mutex::new(None),
                 journal_checkpoint: Mutex::new(None),
+                journal_spare: Arc::new(Mutex::new(())),
+                journal_sealer: Mutex::new(None),
+                history_resolver: std::sync::OnceLock::new(),
                 command_segment_preparation,
                 test_controller,
                 transient_indexes: RwLock::new(TransientIndexState::Dormant),
@@ -2521,11 +2590,27 @@ impl RedbStore {
                 fresh_locator_history_fallback_scans: AtomicU64::new(0),
                 fresh_locator_history_fallback_rows: AtomicU64::new(0),
                 retention_watermark: AtomicU64::new(0),
+                journal_checkpoints_finished: std::sync::Mutex::new(0),
+                journal_checkpoint_finished: std::sync::Condvar::new(),
                 terminal_execution_failure_rows: AtomicU64::new(0),
                 checkpoint_count_rows_walked: AtomicU64::new(0),
                 changelog_port,
             }),
         };
+        // History stubs (ADR-0263 Amendment 3) must resolve for every open-time
+        // reader, so an initialized database registers its extents first.
+        {
+            let transaction = store
+                .shared
+                .database
+                .begin_read()
+                .map_err(transaction_error)?;
+            // Layout classification itself reads history, so the identity is
+            // read directly; an empty or unreadable one is left to the checks below.
+            if let Ok(database_id) = read_identity_from_read_transaction(&transaction) {
+                store.shared.register_history_resolver(database_id);
+            }
+        }
         if open_mode.is_source() {
             store.ensure_current_storage_format()?;
             store.install_command_locator_tables()?;
@@ -2559,6 +2644,7 @@ impl RedbStore {
         }
         let database_id = read_identity_from_read_transaction(&transaction)?;
         drop(transaction);
+        self.shared.register_history_resolver(database_id);
         let media = self.shared.journal_media.as_ref();
         let checkpoint = crate::journal::checkpoint_journal_path(&self.shared.path);
         if media
@@ -2572,12 +2658,22 @@ impl RedbStore {
                 database_id,
             )
             .map_err(recovery_journal_error)?;
+            // Its frames are materialized and back history stubs (ADR-0263),
+            // so the extent is sealed and retained, never removed. Any earlier
+            // seal a crash interrupted finishes first.
+            crate::journal::seal_extent_with_media(media, &self.shared.path, database_id)
+                .map_err(recovery_journal_error)?;
+            let sealing = crate::journal::sealing_journal_path(&self.shared.path);
             media
-                .remove_file(&checkpoint)
+                .rename(&checkpoint, &sealing)
                 .map_err(|_| storage_error(StorageErrorKind::Unavailable))?;
-            crate::journal::sync_parent_directory_with_media(media, &checkpoint)
+            crate::journal::sync_parent_directory_with_media(media, &sealing)
                 .map_err(journal_io_error)?;
         }
+        // A crash between retiring the active extent and creating its successor
+        // leaves only the sealing name; the successor continues after it.
+        crate::journal::recreate_missing_active_with_media(media, &self.shared.path)
+            .map_err(recovery_journal_error)?;
         crate::journal::recover_journal_with_media(
             media,
             &self.shared.database,
@@ -2585,6 +2681,22 @@ impl RedbStore {
             database_id,
         )
         .map_err(recovery_journal_error)?;
+        // An extent written before ADR-0263 raised the ceilings keeps its legacy
+        // capacity until here, where its recovered suffix is empty.
+        crate::journal::normalize_active_capacity_with_media(media, &self.shared.path, database_id)
+            .map_err(recovery_journal_error)?;
+
+        // An extent whose checkpoint installed before a crash may still wait
+        // at the sealing name; its frames are materialized, so sealing it is
+        // all that remains (ADR-0263). A half-prepared spare is scratch.
+        crate::journal::seal_extent_with_media(media, &self.shared.path, database_id)
+            .map_err(recovery_journal_error)?;
+        let preparing = crate::journal::preparing_spare_journal_path(&self.shared.path);
+        match media.remove_file(&preparing) {
+            Ok(()) => {}
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(_) => return Err(storage_error(StorageErrorKind::Unavailable)),
+        }
 
         // The spare extent is never authoritative: it is only a preallocated
         // destination for the next active generation. Recovery first proves
@@ -5454,7 +5566,7 @@ impl RedbOperationalPorts {
         &self,
         source: riffdb_storage_api::ChangelogAttributionV3,
     ) -> Result<RedbWriteAccess, StorageError> {
-        self.begin_attributed_write_inner(source, false, false)?
+        self.begin_attributed_write_inner(source, false, false, None)?
             .ok_or_else(|| storage_error(StorageErrorKind::InvariantViolation))
     }
 
@@ -5465,12 +5577,16 @@ impl RedbOperationalPorts {
     /// into the engine under the held gate (the source-control barrier), so an
     /// engine snapshot opened afterward sees every acknowledged transition
     /// ordered before this write.
+    ///
+    /// `timing` receives the microseconds spent waiting for the writer gate
+    /// and then publishing, checkpointing, and draining the journal suffix.
     pub(crate) fn begin_attributed_write_unless_checkpointing(
         &self,
         source: riffdb_storage_api::ChangelogAttributionV3,
         checkpoint_first: bool,
+        timing: &mut WriteBeginTiming,
     ) -> Result<Option<RedbWriteAccess>, StorageError> {
-        self.begin_attributed_write_inner(source, checkpoint_first, true)
+        self.begin_attributed_write_inner(source, checkpoint_first, true, Some(timing))
     }
 
     fn begin_attributed_write_inner(
@@ -5478,9 +5594,15 @@ impl RedbOperationalPorts {
         source: riffdb_storage_api::ChangelogAttributionV3,
         checkpoint_first: bool,
         yield_to_checkpoint: bool,
+        mut timing: Option<&mut WriteBeginTiming>,
     ) -> Result<Option<RedbWriteAccess>, StorageError> {
         crate::changelog_v3_write::require_direct_attribution(source)?;
+        let began = std::time::Instant::now();
         let lease = self.shared.mutation_gate.acquire()?;
+        let gate_acquired = std::time::Instant::now();
+        if let Some(timing) = timing.as_deref_mut() {
+            timing.gate_wait_us = elapsed_us(began, gate_acquired);
+        }
         if self.shared.write_fenced.load(Ordering::Acquire) {
             return Err(storage_error(StorageErrorKind::Unavailable));
         }
@@ -5522,6 +5644,9 @@ impl RedbOperationalPorts {
             }
             self.shared.fence_writes();
             return Err(error);
+        }
+        if let Some(timing) = timing {
+            timing.drain_us = elapsed_us(gate_acquired, std::time::Instant::now());
         }
         let transaction = match OperationalWriteTransaction::from_drained(transaction, source) {
             Ok(transaction) => transaction,
@@ -6093,6 +6218,7 @@ impl RedbWriteAccess {
         &self,
         key: Vec<u8>,
         value: riffdb_storage_api::CanonicalStoredEnvelopeV1,
+        summary: crate::history_stub::SegmentSummary,
         command_count: usize,
         raw_envelope_bytes: usize,
     ) -> Result<bool, StorageError> {
@@ -6114,10 +6240,11 @@ impl RedbWriteAccess {
             transaction.apply_journal_mutation(&mutation)?;
         }
         if let Some(stage) = self.composite_stage.as_ref() {
-            stage
+            let mut stage = stage
                 .try_borrow_mut()
-                .map_err(|_| storage_error(StorageErrorKind::InvariantViolation))?
-                .apply_with_proven_current(&mutation, None)?;
+                .map_err(|_| storage_error(StorageErrorKind::InvariantViolation))?;
+            stage.apply_with_proven_current(&mutation, None)?;
+            stage.note_staged_segment(summary);
         }
         if let Some(retained) = self.journal_mutations.as_ref() {
             retained
@@ -6484,6 +6611,15 @@ impl RedbWriteAccess {
                 .map_err(|_| storage_error(StorageErrorKind::LimitExceeded))?;
             let predecessor_sequence = runtime.last_sequence;
             let predecessor_administration_sequence = runtime.last_administration_sequence;
+            // Derive the receipt binding before encoding so the frame records it
+            // (ADR-0263 Amendment 2 B4). The stage holds exactly the mutations
+            // its seal below validates and returns.
+            let changelog_successor = runtime.prepare_changelog_successor(
+                changelog_predecessor,
+                riffdb_storage_api::ChangelogAttributionV3::JournaledServiceAudit,
+                DualFrontier::new(covered_sequence, covered_administration_sequence),
+                composite_stage.staged_mutations(),
+            )?;
             let frame = crate::journal::JournalFrame::encode_buffered_service_audit(
                 runtime.database_id,
                 predecessor_sequence,
@@ -6492,6 +6628,7 @@ impl RedbWriteAccess {
                 audit_count,
                 runtime.last_hash,
                 mutations,
+                frame_changelog_binding(changelog_successor.as_ref()),
             )
             .map_err(journal_storage_error)?;
             let encoded_bytes = frame.as_bytes().len();
@@ -6561,12 +6698,6 @@ impl RedbWriteAccess {
                 )?;
             let checkpoint_mutations: Arc<[riffdb_storage_api::CompositeMutationV1]> =
                 Arc::from(checkpoint_mutations);
-            let changelog_successor = runtime.prepare_changelog_successor(
-                changelog_predecessor,
-                riffdb_storage_api::ChangelogAttributionV3::JournaledServiceAudit,
-                DualFrontier::new(covered_sequence, covered_administration_sequence),
-                &checkpoint_mutations,
-            )?;
             composite_successor.append_changelog_source(
                 changelog_successor,
                 riffdb_storage_api::ChangelogAttributionV3::JournaledServiceAudit,
@@ -6583,7 +6714,15 @@ impl RedbWriteAccess {
             runtime.suffix_audits = next_audits;
             runtime.suffix_bytes = next_bytes;
             runtime.suffix_physical_bytes = next_physical_bytes;
+            let placement = crate::journal::frame_placement_after(
+                next_physical_bytes - physical_bytes,
+                &retained_frame,
+            )
+            .ok_or_else(|| storage_error(StorageErrorKind::LimitExceeded))?;
             runtime.suffix_frames.push(ValidatedCheckpointFrame {
+                segment_summaries: Arc::from(Vec::new()),
+                extent_generation: runtime.lane.generation(),
+                placement,
                 database_id: runtime.database_id,
                 predecessor_sequence,
                 covered_sequence: predecessor_sequence,
@@ -6846,6 +6985,15 @@ impl RedbDurabilityEpoch {
             }
             let command_count = u16::try_from(self.command_count)
                 .map_err(|_| storage_error(StorageErrorKind::LimitExceeded))?;
+            // Derive the receipt binding before encoding so the frame records it
+            // (ADR-0263 Amendment 2 B4). The stage holds exactly the mutations
+            // its seal below validates and returns.
+            let changelog_successor = runtime.prepare_changelog_successor(
+                changelog_predecessor,
+                riffdb_storage_api::ChangelogAttributionV3::JournaledApplicationGroup,
+                DualFrontier::new(Some(last_sequence), last_administration_sequence),
+                composite_stage.staged_mutations(),
+            )?;
             let frame = crate::journal::JournalFrame::encode_buffered_command(
                 runtime.database_id,
                 runtime.last_sequence,
@@ -6855,6 +7003,7 @@ impl RedbDurabilityEpoch {
                 command_count,
                 runtime.last_hash,
                 mutations,
+                frame_changelog_binding(changelog_successor.as_ref()),
             )
             .map_err(journal_storage_error)?;
             let encoded_bytes = frame.as_bytes().len();
@@ -6920,6 +7069,17 @@ impl RedbDurabilityEpoch {
                 let predecessor_sequence = runtime.last_sequence;
                 let predecessor_administration_sequence = runtime.last_administration_sequence;
                 let previous_hash = runtime.last_hash;
+                let placement =
+                    crate::journal::frame_placement_after(runtime.suffix_physical_bytes, &frame)
+                        .ok_or_else(|| storage_error(StorageErrorKind::LimitExceeded))?;
+                // The overlay holds each segment's history stub; the frame and
+                // its checkpoint keep the segment (ADR-0263 Decision 4).
+                let segment_summaries =
+                    composite_stage.represent_segments(crate::history_stub::StubLocator {
+                        database_id: runtime.database_id,
+                        generation: runtime.lane.generation(),
+                        placement,
+                    })?;
                 let (mut composite_successor, checkpoint_mutations) = composite_stage
                     .seal_encoded_frame_with_mutations(
                         riffdb_storage_api::CompositeFrameKindV1::Command,
@@ -6935,12 +7095,24 @@ impl RedbDurabilityEpoch {
                     )?;
                 let checkpoint_mutations: Arc<[riffdb_storage_api::CompositeMutationV1]> =
                     Arc::from(checkpoint_mutations);
-                let changelog_successor = runtime.prepare_changelog_successor(
-                    changelog_predecessor,
-                    riffdb_storage_api::ChangelogAttributionV3::JournaledApplicationGroup,
-                    DualFrontier::new(Some(last_sequence), last_administration_sequence),
+                self.shared.note_pending_frame(
+                    runtime.database_id,
+                    frame_hash,
                     &checkpoint_mutations,
-                )?;
+                );
+                // A stage rebuilt after a checkpoint rebase re-derives its
+                // mutations from the frame; the recorded binding must still match.
+                if checkpoint_rebased
+                    && runtime.prepare_changelog_successor(
+                        changelog_predecessor,
+                        riffdb_storage_api::ChangelogAttributionV3::JournaledApplicationGroup,
+                        DualFrontier::new(Some(last_sequence), last_administration_sequence),
+                        &checkpoint_mutations,
+                    )? != changelog_successor
+                {
+                    self.shared.fence_writes();
+                    return Err(storage_error(StorageErrorKind::InvariantViolation));
+                }
                 composite_successor.append_changelog_source(
                     changelog_successor,
                     riffdb_storage_api::ChangelogAttributionV3::JournaledApplicationGroup,
@@ -6960,6 +7132,9 @@ impl RedbDurabilityEpoch {
                 runtime.suffix_bytes = next_bytes;
                 runtime.suffix_physical_bytes = next_physical_bytes;
                 runtime.suffix_frames.push(ValidatedCheckpointFrame {
+                    segment_summaries: Arc::from(segment_summaries),
+                    extent_generation: runtime.lane.generation(),
+                    placement,
                     database_id: runtime.database_id,
                     predecessor_sequence,
                     covered_sequence: Some(last_sequence),
@@ -7731,6 +7906,105 @@ impl SharedRedb {
         self.finish_async_checkpoint_if_quiescent()
     }
 
+    /// Makes an uncheckpointed frame's segments resolvable in memory before
+    /// its overlay stubs become visible (ADR-0263 Decision 4).
+    pub(super) fn note_pending_frame(
+        &self,
+        database_id: DatabaseId,
+        frame_hash: [u8; 32],
+        mutations: &Arc<[riffdb_storage_api::CompositeMutationV1]>,
+    ) {
+        self.register_history_resolver(database_id);
+        if let Some(resolver) = self.history_resolver.get() {
+            resolver.note_pending_frame(frame_hash, mutations);
+        }
+    }
+
+    /// Makes this store's retained extents resolvable for its history stubs.
+    pub(super) fn register_history_resolver(&self, database_id: DatabaseId) {
+        self.history_resolver.get_or_init(|| {
+            crate::history_stub::HistoryResolver::register(
+                database_id,
+                &self.path,
+                Arc::clone(&self.journal_media),
+            )
+        });
+    }
+
+    /// Waits for the background sealer, if one is running.
+    pub(super) fn join_journal_sealer(&self) {
+        let handle = match self.journal_sealer.lock() {
+            Ok(mut sealer) => sealer.take(),
+            Err(poisoned) => poisoned.into_inner().take(),
+        };
+        if let Some(handle) = handle {
+            let _ = handle.join();
+        }
+    }
+
+    /// Retires the installed checkpoint extent, if any, seals the extent
+    /// waiting at the sealing name, and prepares the next spare, all off the
+    /// writer's path. The thread first waits for the previous one, so at most
+    /// one retires or seals at a time. A failure leaves the extent at its name;
+    /// the next rotation or open resumes it, and a missing spare is created by
+    /// the next checkpoint start instead.
+    pub(super) fn start_journal_sealer(
+        &self,
+        spare_header: crate::journal::JournalFileHeader,
+    ) -> Result<(), StorageError> {
+        let media = Arc::clone(&self.journal_media);
+        let path = self.path.clone();
+        let spare_lock = Arc::clone(&self.journal_spare);
+        let database_id = spare_header.database_id();
+        let mut sealer = self
+            .journal_sealer
+            .lock()
+            .map_err(|_| storage_error(StorageErrorKind::InvariantViolation))?;
+        let previous = sealer.take();
+        let handle = std::thread::Builder::new()
+            .name("riffdb-journal-seal".to_string())
+            .stack_size(crate::PRODUCTION_THREAD_STACK_BYTES)
+            .spawn(move || {
+                if let Some(previous) = previous {
+                    let _ = previous.join();
+                }
+                crate::journal::record_seal_outcome(
+                    crate::journal::retire_checkpoint_extent_with_media(
+                        media.as_ref(),
+                        &path,
+                        database_id,
+                    )
+                    .and_then(|()| {
+                        crate::journal::seal_extent_with_media(media.as_ref(), &path, database_id)
+                    }),
+                );
+                crate::journal::record_spare_outcome(
+                    crate::journal::prepare_spare_extent_with_media(
+                        media.as_ref(),
+                        &path,
+                        &spare_header,
+                        &spare_lock,
+                    ),
+                );
+            })
+            .map_err(|_| storage_error(StorageErrorKind::Unavailable))?;
+        *sealer = Some(handle);
+        Ok(())
+    }
+
+    /// Makes the checkpoint name free for the next rotation: waits for the
+    /// sealer and, if a background retirement failed, retires the installed
+    /// extent here.
+    pub(super) fn free_checkpoint_name(&self, database_id: DatabaseId) -> Result<(), StorageError> {
+        self.join_journal_sealer();
+        crate::journal::retire_checkpoint_extent_with_media(
+            self.journal_media.as_ref(),
+            &self.path,
+            database_id,
+        )
+        .map_err(journal_io_error)
+    }
+
     fn finish_async_checkpoint_if_quiescent(self: &Arc<Self>) -> Result<(), StorageError> {
         let mut checkpoint = match self.journal_checkpoint.lock() {
             Ok(checkpoint) => checkpoint,
@@ -7815,47 +8089,27 @@ impl SharedRedb {
                 .write()
                 .map_err(|_| storage_error(StorageErrorKind::CommitStatusUnknown))? =
                 Some(successor.checkpoint_root_shared());
-            let checkpoint_path = crate::journal::checkpoint_journal_path(&self.path);
-            let spare_path = crate::journal::spare_journal_path(&self.path);
-            let media = self.journal_media.as_ref();
-            if media
-                .try_exists(&spare_path)
-                .map_err(|_| storage_error(StorageErrorKind::Unavailable))?
-            {
-                self.fence_writes();
-                return Err(storage_error(StorageErrorKind::InvariantViolation));
-            }
             #[cfg(feature = "test-fixtures")]
             if let Some(controller) = &self.test_controller {
                 controller
                     .checkpoint_test_pause(crate::hooks::RedbCheckpointTestPoint::BeforeReclaim);
             }
-            media
-                .rename(&checkpoint_path, &spare_path)
-                .map_err(|_| storage_error(StorageErrorKind::Unavailable))?;
-            crate::journal::sync_parent_directory_with_media(media, &spare_path)
-                .map_err(journal_io_error)?;
-            let spare_header = crate::journal::JournalFileHeader::with_frontiers(
+            // The installed extent is retained history now (ADR-0263): it is
+            // sealed, not recycled. The sealer retires and seals it off the
+            // writer's path; the next rotation waits for the checkpoint name.
+            self.start_journal_sealer(crate::journal::JournalFileHeader::with_frontiers(
                 runtime.database_id,
                 runtime.last_sequence,
                 runtime.last_administration_sequence,
                 runtime.last_hash,
-            );
-            if let Err(error) = crate::journal::reset_journal_after_with_media(
-                media,
-                &spare_path,
-                &spare_header,
-                &crate::journal::journal_path(&self.path),
-            ) {
-                self.fence_writes();
-                return Err(journal_io_error(error));
-            }
+            ))?;
             #[cfg(feature = "test-fixtures")]
             if let Some(controller) = &self.test_controller {
                 controller.checkpoint_test_pause(crate::hooks::RedbCheckpointTestPoint::Reclaimed);
             }
             *checkpoint = None;
             crate::checkpoint_census::CHECKPOINTS.installed();
+            self.note_journal_checkpoint_finished();
             Ok(())
         })();
         match rebase_result {
@@ -7875,17 +8129,23 @@ impl SharedRedb {
         runtime: &JournalRuntime,
     ) -> Result<(), StorageError> {
         let v3 = crate::changelog_v3_journal::has_write_recovery_roots(transaction)?;
-        let scanned = crate::journal::scan_journal_with_media(
+        // The drained frames become history stubs, which must resolve.
+        self.register_history_resolver(runtime.database_id);
+        let scanned = crate::journal::scan_located_journal_with_media(
             self.journal_media.as_ref(),
             &crate::journal::journal_path(&self.path),
             runtime.database_id,
-            |frame| {
+            |frame, locator| {
                 if v3 || crate::changelog_v3_journal::has_receipt_source(frame) {
-                    crate::changelog_v3_journal::materialize_recovered_frame(transaction, frame)
-                        .map_err(|_| crate::journal::JournalIoError::Corrupt)?;
+                    crate::changelog_v3_journal::materialize_located_frame(
+                        transaction,
+                        frame,
+                        locator,
+                    )
+                    .map_err(|_| crate::journal::JournalIoError::Corrupt)?;
                 } else {
                     for mutation in frame.mutations() {
-                        crate::journal::apply_mutation(transaction, mutation)?;
+                        crate::journal::apply_located_mutation(transaction, mutation, locator)?;
                     }
                 }
                 Ok(())
@@ -7952,7 +8212,7 @@ impl SharedRedb {
             self.fence_writes();
             return Err(storage_error(StorageErrorKind::InvariantViolation));
         }
-        if let Err(error) = crate::journal::reset_journal_with_media(
+        if let Err(error) = crate::journal::advance_journal_anchor_with_media(
             self.journal_media.as_ref(),
             &crate::journal::journal_path(&self.path),
             &crate::journal::JournalFileHeader::with_frontiers(
@@ -7979,6 +8239,7 @@ impl SharedRedb {
         }
         *frontier = Some(checkpoint);
         self.clear_composite_publication()?;
+        self.note_journal_checkpoint_finished();
         Ok(())
     }
 
@@ -8059,18 +8320,16 @@ pub(crate) fn read_administration_tail(
     let commits = transaction.open_table(COMMITS).map_err(table_error)?;
     let command = match commits.last().map_err(precommit_storage_error)? {
         None => None,
-        Some((_, encoded)) => {
-            match riffdb_storage_api::decode_command_segment_v1(encoded.value()) {
-                Ok(segment) => Some(segment.value().last_administration_sequence()),
-                Err(error)
-                    if error.kind()
-                        == riffdb_storage_api::DurableCodecErrorKind::UnexpectedRecordType =>
-                {
-                    None
-                }
-                Err(error) => return Err(crate::error::codec_error(error)),
+        Some((_, encoded)) => match crate::history_stub::decode_segment_value(encoded.value()) {
+            Ok(segment) => Some(segment.value().last_administration_sequence()),
+            Err(error)
+                if error.kind()
+                    == riffdb_storage_api::DurableCodecErrorKind::UnexpectedRecordType =>
+            {
+                None
             }
-        }
+            Err(error) => return Err(crate::error::codec_error(error)),
+        },
     };
     match (physical, command) {
         (Some(physical), Some(command)) if physical == command => {
@@ -8974,7 +9233,7 @@ fn write_initial_metadata(
     Ok(())
 }
 
-fn read_identity_from_read_transaction(
+pub(crate) fn read_identity_from_read_transaction(
     transaction: &redb::ReadTransaction,
 ) -> Result<DatabaseId, StorageError> {
     let table = transaction.open_table(META).map_err(table_error)?;
@@ -9104,3 +9363,25 @@ mod tests;
 #[cfg(test)]
 #[path = "store_follower_tests.rs"]
 mod follower_tests;
+
+/// The binding a journaled frame records for its receipt (ADR-0263 Amendment 2
+/// B4), from the successor [`JournalRuntime::prepare_changelog_successor`]
+/// derived for that frame.
+fn frame_changelog_binding(
+    successor: Option<&(
+        riffdb_storage_api::AuthoritativeTransactionBindingV3,
+        riffdb_storage_api::ChangelogHistoryStateV3,
+    )>,
+) -> Option<crate::journal::FrameChangelogBinding> {
+    successor.map(|(binding, history)| {
+        crate::journal::FrameChangelogBinding::new(binding, history.lineage().catalog_digest())
+    })
+}
+
+impl Drop for SharedRedb {
+    fn drop(&mut self) {
+        // The sealer holds only the media port and paths, but a store that
+        // outlived its sealing work would leave the next open to finish it.
+        self.join_journal_sealer();
+    }
+}

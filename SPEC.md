@@ -2446,7 +2446,7 @@ contract LegalSpend version 1 {
       }
 
     set budget.allocated_amount = budget.allocated_amount + amount
-    set budget.updated_at = tx.time
+    set budget.updated_at = tx.time checked_by sufficient_budget
 
     emit BudgetAllocated {
       organization_id: organization_id,
@@ -2738,46 +2738,50 @@ source files
 - `CMP-012` Internal panics on user input are defects; compiler entry points MUST return structured diagnostics.
 - `CMP-013` `riffdb contract explain` MUST show derived partition key, conflict keys, reads, writes, invariants, events, outcomes, and estimated execution class.
 
-`CMP-015` A field write MUST declare whether the command constrains the
-record's prior value, and the compiler MUST prove the declaration (ADR-0256).
+`CMP-015` Each field assignment MUST declare and carry its per-write evidence
+(ADR-0262, amending ADR-0256): initialization, state-derived update, explicitly
+associated business check, caller-version fence, or explicit overwrite. Evidence
+MUST NOT imply that the compiler proves arbitrary business relevance or caller
+intent. Reads on one binding or assignment MUST NOT authorize unrelated writes.
 
-A write on a binding with a pre-image -- `mutate`, `init_or_mutate`,
-`observe_or_initialize` -- is **guarded** when something in the command reads a
-stored field of that same binding: a `require`, a decision arm's predicate, or
-the value expression of any write to it. It is also guarded by a proven
-revision fence on the same aggregate root instance. Otherwise it is
-**unguarded**.
+For a binding with a pre-image, `set` requires at least one of:
 
-The property is per binding rather than per field, because commit-time
-revalidation is per record: if the command observed the record at all, a
-concurrent change to it invalidates the whole command and every write to it is
-protected. A command that writes `state.revision = state.revision + 1`
-therefore guards its other writes to `state`.
+- A checked numeric transformation `target + delta`, `delta + target`, or
+  `target - delta` of the exact stored target field; delta has no stored-state
+  dependency. Other algebraic shapes do not qualify.
+- An explicit suffix `checked_by requirement_name` naming a visible, unambiguous,
+  dominating requirement that reads stored state on the target binding. This
+  associates an author-selected business check with the write; relevance and
+  strength remain the author's responsibility, not a caller-freshness proof.
+- The exact unconditional same-root revision fence defined below.
+
+Creation uses `set` without a business association. Initialization-capable
+bindings must satisfy the existing-row rule. An assignment without qualifying
+evidence MUST use `overwrite`; contradictory spellings are rejected with
+`RDB-C048` or `RDB-C049`. Invalid business associations reject even when another
+proof qualifies. Unassociated requirements, decision predicates, sibling arms,
+and invariants do not confer evidence. Deletes retain their existing behavior.
 
 A root revision fence requires an unconditional equality between a stored
-`i64` or `u64` root field and a same-typed command input, plus an unconditional assignment
-of that field to its pre-image plus literal `1` (either operand order for each).
-The root binding MUST be a non-collection-local `mutate`, and the protected
-binding MUST belong to the same aggregate with identical root-key argument
-fingerprints. Overflow refuses through checked arithmetic. A predicate or
-assignment inside a decision arm, a read without advancement, an increment
-without equality, or an unrelated root does not confer this protection.
-Removing either half of the fence MUST reject child `set` writes lacking
-independent local protection. This is a structural rule, not general theorem
-proving; deployed artifacts retain their existing semantics.
+`i64` or `u64` root field and a same-typed command input, plus an unconditional
+assignment of that field to its pre-image plus literal `1` (either operand
+order for each). The root binding MUST be a non-collection-local `mutate`, and
+protected bindings MUST belong to the same aggregate with identical root-key
+argument fingerprints. Checked overflow refuses. Removing either half removes
+fence evidence for root and child replacements. This structural proof checks
+the supplied version; caller freshness also requires relevant writers to
+advance that revision and callers to supply their observed version. No
+schema-wide revision protocol is inferred or enforced.
 
-An invariant does not guard. Invariants constrain the state after the commit,
-and a lost update produces a state that satisfies every invariant, so an
-invariant cannot distinguish one writer from two. A binding with no pre-image
--- a `create`, or a delete -- cannot lose an update at all.
-
-A guarded write is spelled `set` and an unguarded one `overwrite`. A `set` the
-compiler finds unguarded raises `RDB-C048`; an `overwrite` it finds guarded, or
-one on a binding with no prior value, raises `RDB-C049`. The classification is
-carried in the executable plan and is part of the plan hash, so moving a write
-between the two moves the contract's identity. A contract that declares no
-unguarded write keeps the identity it had; one that does selects grammar,
-executable IR, and bundle V24.
+Newly compiled assignment-bearing plans MUST carry complete, validated,
+canonically ordered proof metadata per assignment occurrence, including
+conditional locations and evidence references, in the new grammar/IR/bundle
+format. All applicable proofs participate in plan identity. Explain MUST
+separate proof kinds and identify their evidence and limitations. Historical
+artifacts retain their encodings, hashes, validation, and execution and MUST
+NOT be relabeled as having the new proofs. Recompilation enforces the stricter
+rules and requires normal application-lock renewal; no warning-only opt-out
+exists.
 
 Example:
 
@@ -3438,6 +3442,23 @@ bounded indexed command-read IR requires an accepted static-target/epoch policy
 and any required exclusion must use explicit conflict keys known before
 evaluation. The storage epoch capability and conformance tests do not expose a
 hidden runtime scan.
+
+ADR-0264 admits one explicit `mutate first Entity.index(prefix_arguments)`
+selector in an ordinary command, under compiler-proven input-computable
+partition and complete up-front conflict ownership. It MUST seek one
+partition-constrained equality prefix in canonical ascending complete index-key
+order and retain at most one candidate per evaluation. The entry, selected
+entity, and required roots MUST belong to one authoritative snapshot; their
+exact observations and the conservative partition/index generation MUST be
+validated for every outcome, including empty and other zero-mutation outcomes.
+Changed dependencies require full reevaluation within the existing three-attempt
+and deadline limits. Empty business outcomes are durable and idempotent.
+Selection MUST NOT supply implicit assignment evidence, bypass policies, acquire
+late conflicts, scan past a denied candidate, or derive another explicit binding
+target from selected values. The accepted record defines the closed scope,
+versioned proof format, invariant coverage, and compatibility boundary. Public
+availability is gated by WP-817; historical plans retain their original meaning.
+
 
 ## 9.5 Commit intent
 
@@ -7938,7 +7959,7 @@ contract LegalSpend version 1 {
       }
 
     set budget.allocated_amount = budget.allocated_amount + amount
-    set budget.updated_at = tx.time
+    set budget.updated_at = tx.time checked_by sufficient_budget
 
     emit BudgetAllocated {
       organization_id: organization_id,

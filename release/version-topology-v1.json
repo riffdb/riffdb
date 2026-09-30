@@ -1252,40 +1252,46 @@
         {
           "kind": "literal",
           "path": "crates/riffdb-storage-api/src/durable_format.rs",
-          "literal": "pub const DURABILITY_JOURNAL_EXTENT_VERSION: u16 = 3;"
+          "literal": "pub const DURABILITY_JOURNAL_EXTENT_VERSION: u16 = 4;"
         }
       ],
       "readable_identities": [
-        "3"
+        "3",
+        "4"
       ],
       "writable_identities": [
-        "3"
+        "4"
       ],
       "current_identities": [
-        "3"
+        "4"
       ],
       "writer_policy": "single_current",
       "compatibility_rule": "Extent generation and position framing remain exact and crash validated.",
-      "breaking_when": "Extent bytes, fence recovery, or generation semantics change under version 3.",
-      "supported_release_posture": "Journal extent V3 is current.",
+      "breaking_when": "Extent bytes, fence recovery, generation, revision, or anchor semantics change under version 3 or 4.",
+      "supported_release_posture": "Journal extent V4 is current; V3 extents remain readable and are re-anchored as V4 when recovered.",
       "lifecycle": {
         "active": [
+          "4"
+        ],
+        "read_only": [
           "3"
         ],
-        "read_only": [],
         "retirement_candidate": [],
         "retired": []
       },
       "reserved_identity_policy": "Journal extent versions are never reused.",
       "evidence": [
-        "fixtures/compatibility/physical-formats-v1.json"
+        "fixtures/compatibility/physical-formats-v1.json",
+        "fixtures/compatibility/journal-extent-header-v3.hex",
+        "fixtures/compatibility/journal-extent-header-v4.hex",
+        "fixtures/compatibility/journal-sealed-footer-v1.hex"
       ],
       "checks": [
         "./scripts/check-durable-format-manifest"
       ],
       "last_change": {
-        "classification": "no_format_change",
-        "decision": "ADR-0124 baseline"
+        "classification": "writer_transition",
+        "decision": "ADR-0263/WP-814 extent V4 header revision and checkpoint anchor retain materialized frames"
       },
       "durable_manifest": {
         "readable_key": "readable_journal_extent_versions",
@@ -1301,40 +1307,45 @@
         {
           "kind": "literal",
           "path": "crates/riffdb-storage-api/src/durable_format.rs",
-          "literal": "pub const DURABILITY_JOURNAL_FRAME_VERSION: u16 = 2;"
+          "literal": "pub const DURABILITY_JOURNAL_FRAME_VERSION: u16 = 3;"
         }
       ],
       "readable_identities": [
-        "2"
+        "2",
+        "3"
       ],
       "writable_identities": [
-        "2"
+        "3"
       ],
       "current_identities": [
-        "2"
+        "3"
       ],
       "writer_policy": "single_current",
       "compatibility_rule": "Frames are bounded, checksummed, position-bound, and replayed only after validation.",
-      "breaking_when": "Frame bytes or replay semantics change under version 2.",
-      "supported_release_posture": "Journal frame V2 is current.",
+      "breaking_when": "Frame bytes or replay semantics change under version 2 or 3.",
+      "supported_release_posture": "Journal frame V3 is current; V2 frames remain readable for recovery of older journals.",
       "lifecycle": {
         "active": [
+          "3"
+        ],
+        "read_only": [
           "2"
         ],
-        "read_only": [],
         "retirement_candidate": [],
         "retired": []
       },
       "reserved_identity_policy": "Journal frame versions are never reused.",
       "evidence": [
-        "fixtures/compatibility/physical-formats-v1.json"
+        "fixtures/compatibility/physical-formats-v1.json",
+        "fixtures/compatibility/journal-frame-v2.hex",
+        "fixtures/compatibility/journal-frame-v3.hex"
       ],
       "checks": [
         "./scripts/check-durable-format-manifest"
       ],
       "last_change": {
-        "classification": "no_format_change",
-        "decision": "ADR-0124 baseline"
+        "classification": "writer_transition",
+        "decision": "ADR-0263 Amendment 2 B4/WP-814 frame V3 records its changelog binding"
       },
       "durable_manifest": {
         "readable_key": "readable_journal_frame_versions",
@@ -1744,7 +1755,7 @@
       "writer_policy": "single_current",
       "compatibility_rule": "The closed redb table/key layout is opened only after format preflight.",
       "breaking_when": "Table, key, or singleton layout changes incompatibly under version 1.",
-      "supported_release_posture": "redb layout V1 is current.",
+      "supported_release_posture": "redb layout V1 is current. COMMITS and HISTORY values may be fixed-size history stubs naming a retained journal frame (ADR-0263 Amendment 3); a binary that predates journal extent V4 refuses the database before reading them.",
       "lifecycle": {
         "active": [
           "1"
@@ -1755,14 +1766,15 @@
       },
       "reserved_identity_policy": "Physical layout identities and keys are never reused.",
       "evidence": [
-        "fixtures/compatibility/physical-formats-v1.json"
+        "fixtures/compatibility/physical-formats-v1.json",
+        "fixtures/compatibility/history-stub-v1.hex"
       ],
       "checks": [
         "./scripts/check-durable-format-manifest"
       ],
       "last_change": {
-        "classification": "no_format_change",
-        "decision": "ADR-0124 baseline"
+        "classification": "additive_same_identity",
+        "decision": "ADR-0263 Amendment 3 history stubs keep the table and key layout under version 1"
       },
       "durable_manifest": {
         "readable_key": "readable_redb_layout_versions",
@@ -2590,7 +2602,9 @@
             "21",
             "22",
             "23",
-            "24"
+            "24",
+            "25",
+            "26"
           ]
         }
       ],
@@ -2618,7 +2632,9 @@
         "21",
         "22",
         "23",
-        "24"
+        "24",
+        "25",
+        "26"
       ],
       "writable_identities": [
         "1",
@@ -2644,7 +2660,9 @@
         "21",
         "22",
         "23",
-        "24"
+        "24",
+        "25",
+        "26"
       ],
       "current_identities": [
         "1",
@@ -2670,12 +2688,14 @@
         "21",
         "22",
         "23",
-        "24"
+        "24",
+        "25",
+        "26"
       ],
       "writer_policy": "least_sufficient",
       "compatibility_rule": "The compiler emits the oldest bundle capable of representing the exact contract without loss.",
       "breaking_when": "Canonical bytes or semantics change under an existing bundle version.",
-      "supported_release_posture": "V1 through V23 are active least-sufficient outputs; compiler-sealed command decisions require V18, partition-local cross-aggregate conflict ownership requires V19, tokenized text-index declarations require V20, long-pattern declarations require V21, compiler-proved command inputs above 1 MiB require V22, and collection plans above legacy 256-element or mutation-instance semantics require V23.",
+      "supported_release_posture": "V1 through V26 remain active least-sufficient identities. V24 carries explicit overwrite, V25 per-write evidence, and V26 atomic indexed selection with a bounded descriptor and static ownership proof.",
       "lifecycle": {
         "active": [
           "1",
@@ -2701,7 +2721,9 @@
           "21",
           "22",
           "23",
-          "24"
+          "24",
+          "25",
+          "26"
         ],
         "read_only": [],
         "retirement_candidate": [],
@@ -2714,14 +2736,15 @@
         "fixtures/compiler/cascade/bundle.bin",
         "fixtures/compiler/text-index/bundle.bin",
         "crates/riffdb-contract-compiler/tests/long_pattern_contract.rs",
-        "crates/riffdb-contract-compiler/src/compiler.rs"
+        "crates/riffdb-contract-compiler/src/compiler.rs",
+        "crates/riffdb-contract-compiler/tests/indexed_selection.rs"
       ],
       "checks": [
         "./scripts/check-generated"
       ],
       "last_change": {
         "classification": "new_domain_identity",
-        "decision": "ADR-0177/WP-745 compiler-bounded high-cardinality collection bundle V23"
+        "decision": "ADR-0264/WP-817 atomic indexed selection V26"
       }
     },
     {
@@ -2758,7 +2781,9 @@
             "21",
             "22",
             "23",
-            "24"
+            "24",
+            "25",
+            "26"
           ]
         }
       ],
@@ -2786,7 +2811,9 @@
         "21",
         "22",
         "23",
-        "24"
+        "24",
+        "25",
+        "26"
       ],
       "writable_identities": [
         "1",
@@ -2812,7 +2839,9 @@
         "21",
         "22",
         "23",
-        "24"
+        "24",
+        "25",
+        "26"
       ],
       "current_identities": [
         "1",
@@ -2838,12 +2867,14 @@
         "21",
         "22",
         "23",
-        "24"
+        "24",
+        "25",
+        "26"
       ],
       "writer_policy": "least_sufficient",
       "compatibility_rule": "Grammar identity advances only for source constructs that require a distinct checked representation.",
       "breaking_when": "Existing source parses or resolves differently under its declared grammar identity.",
-      "supported_release_posture": "V1 through V23 are active least-sufficient identities; text_index syntax requires V20, pattern_index syntax requires V21, a compiler-proved command input above 1 MiB requires V22, and high-cardinality collection semantics require V23 without new source syntax.",
+      "supported_release_posture": "V1 through V26 remain active least-sufficient identities. V24 carries explicit overwrite, V25 per-write evidence, and V26 atomic indexed selection with a bounded descriptor and static ownership proof.",
       "lifecycle": {
         "active": [
           "1",
@@ -2869,7 +2900,9 @@
           "21",
           "22",
           "23",
-          "24"
+          "24",
+          "25",
+          "26"
         ],
         "read_only": [],
         "retirement_candidate": [],
@@ -2881,14 +2914,15 @@
         "fixtures/compiler/cascade/contract.riff",
         "fixtures/compiler/text-index/contract.riff",
         "crates/riffdb-contract-syntax/tests/operational_indexes.rs",
-        "crates/riffdb-contract-compiler/tests/long_pattern_contract.rs"
+        "crates/riffdb-contract-compiler/tests/long_pattern_contract.rs",
+        "crates/riffdb-contract-compiler/tests/indexed_selection.rs"
       ],
       "checks": [
         "./scripts/check-generated"
       ],
       "last_change": {
         "classification": "new_domain_identity",
-        "decision": "ADR-0177/WP-745 high-cardinality collection grammar V23"
+        "decision": "ADR-0264/WP-817 atomic indexed selection V26"
       }
     },
     {
@@ -2925,7 +2959,9 @@
             "21",
             "22",
             "23",
-            "24"
+            "24",
+            "25",
+            "26"
           ]
         }
       ],
@@ -2953,7 +2989,9 @@
         "21",
         "22",
         "23",
-        "24"
+        "24",
+        "25",
+        "26"
       ],
       "writable_identities": [
         "1",
@@ -2979,7 +3017,9 @@
         "21",
         "22",
         "23",
-        "24"
+        "24",
+        "25",
+        "26"
       ],
       "current_identities": [
         "1",
@@ -3005,12 +3045,14 @@
         "21",
         "22",
         "23",
-        "24"
+        "24",
+        "25",
+        "26"
       ],
       "writer_policy": "least_sufficient",
       "compatibility_rule": "IR identity is selected with the bundle from visible static dependencies and exact semantics.",
       "breaking_when": "An instruction or schema node changes meaning under an existing IR identity.",
-      "supported_release_posture": "V1 through V23 are active least-sufficient identities; tokenized text-index schema metadata requires V20, long-pattern metadata requires V21, the compiler-proved maximum for a command input above 1 MiB requires V22, and high-cardinality collection validation requires V23.",
+      "supported_release_posture": "V1 through V26 remain active least-sufficient identities. V24 carries explicit overwrite, V25 per-write evidence, and V26 atomic indexed selection with a bounded descriptor and static ownership proof.",
       "lifecycle": {
         "active": [
           "1",
@@ -3036,7 +3078,9 @@
           "21",
           "22",
           "23",
-          "24"
+          "24",
+          "25",
+          "26"
         ],
         "read_only": [],
         "retirement_candidate": [],
@@ -3049,14 +3093,15 @@
         "fixtures/compiler/cascade/command-explain.txt",
         "fixtures/compiler/text-index/bundle.bin",
         "crates/riffdb-contract-compiler/tests/long_pattern_contract.rs",
-        "crates/riffdb-contract-compiler/src/compiler.rs"
+        "crates/riffdb-contract-compiler/src/compiler.rs",
+        "crates/riffdb-contract-compiler/tests/indexed_selection.rs"
       ],
       "checks": [
         "./scripts/check-generated"
       ],
       "last_change": {
         "classification": "new_domain_identity",
-        "decision": "ADR-0177/WP-745 compiler-proved high-cardinality collection executable IR V23"
+        "decision": "ADR-0264/WP-817 atomic indexed selection V26"
       }
     },
     {

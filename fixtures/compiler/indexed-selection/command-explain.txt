@@ -1,0 +1,20 @@
+command:1
+execution:IdempotentMutation
+expression:0 type=ValueType(Uuid) op=input-field:2
+expression:1 type=ValueType(Bool) op=constant(redacted)
+expression:2 type=ValueType(Uuid) op=bound-field:0:3
+expression:3 type=ValueType(Bool) op=bound-field:0:4
+expression:4 type=ValueType(Bool) op=constant(redacted)
+expression:5 type=ValueType(Uuid) op=input-field:1
+expression:6 type=ValueType(Record(Entity(EntityTypeId(1)))) op=complete-binding:0
+partition:expr=0 purpose=Partition(AggregateTypeId(1)) components=1
+conflict:0 purpose=Conflict(AggregateTypeId(1)) expressions=[0]
+binding:0 mode=Mutate entity=1 complete=true reads=[4]
+selection:0 index=1 prefix-expressions=[0,1] order=ascending-complete-index-key candidate-bound=1 dependency=partition-index-generation ownership=input-derived-conflict-union evaluation-attempts=3
+write-proof:Instruction(1) evidence=[BusinessCheck { requirement: 0 }]
+write-proof:Instruction(2) evidence=[BusinessCheck { requirement: 0 }]
+write-proof-limits: business relevance is author-asserted; arithmetic deltas do not prove caller freshness; version fences require a consistently advanced revision protocol
+write:0:1 guard=set
+write:0:4 guard=set
+outcome:1 fields=[1:ValueType(Record(Entity(EntityTypeId(1))))]
+outcome:2 fields=[]

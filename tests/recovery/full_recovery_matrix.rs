@@ -56,7 +56,7 @@ const CHILD_CLI_RPC_MARKER: &str = "RIFFDB_WP190_CLI_RPC_MARKER";
 const AUDIENCE: &str = "riffdb-grpc-loopback";
 const ENVIRONMENT: &str = "wp190-command-recovery";
 const READY_PREFIX: &str = "riffdbd-ready-v1\t";
-const SINGLE_DATABASE_SHUTDOWN_EVIDENCE_PREFIXES: [&str; 13] = [
+const SINGLE_DATABASE_SHUTDOWN_EVIDENCE_PREFIXES: [&str; 14] = [
     "riffdb-write-completion-groups-v1\t",
     "riffdb-dispatch-reasons-v1\t",
     "riffdb-shutdown-stages-v1\t",
@@ -70,6 +70,7 @@ const SINGLE_DATABASE_SHUTDOWN_EVIDENCE_PREFIXES: [&str; 13] = [
     "riffdb-writer-journal-stages-v1\t",
     "riffdb-writer-publication-stages-v2\t",
     "riffdb-writer-checkpoint-census-v1\t",
+    "riffdb-writer-overlay-census-v1\t",
 ];
 const SHUTDOWN_COMMAND: &[u8] = b"shutdown\n";
 const PROCESS_START_TIMEOUT: Duration = Duration::from_secs(30);

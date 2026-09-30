@@ -248,7 +248,7 @@ contract AdapterRowPolicyConformance version 1 {
     mutate Run(organization_id, experiment_id, run_id) as run else RunMissing {}
     require current_revision: run.revision == expected_revision else FinishStale {}
     require running: run.state == RunState.Running else FinishIllegal {}
-    set run.state = RunState.Finished
+    set run.state = RunState.Finished checked_by running
     set run.revision = run.revision + 1
     return RunFinished { run: run }
   }

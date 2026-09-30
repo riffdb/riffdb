@@ -2,7 +2,7 @@
   "commands": [
     {
       "name": "IssueToken",
-      "plan_hash": "dcb17bcfe14d85d58fc46e49c031b1bd3642c8f9beca51101c1e368fb05eba86"
+      "plan_hash": "ca76f7e3dd6e5a607ac5d503cd1e9a705af77293b24c8a5e312e92eb0e190d44"
     },
     {
       "name": "ConsumeToken",
@@ -10,7 +10,7 @@
     }
   ],
   "contract": {
-    "bundle_hash": "2fcc01955fcad80a8b6ac5fc6149e95b96889d29182301eb416b8cd1fa70bb0a",
+    "bundle_hash": "395eec70cddc7d253e5b518241b19e26d44b750885eabc2c11550a34505ffb6f",
     "lineage": "DriverConformance",
     "version": 1
   },
@@ -38,27 +38,27 @@
     {
       "kind": "go",
       "path": "fixtures/driver/conformance-app/generated/go/client.go",
-      "sha256": "9ec740fe98e94928f491a3da5db34624e0fe7e4663220824324a786979703866"
+      "sha256": "bec1e2e1110d6f1327a1fe72759e44d89bca4050251e3b7da42859f53195aa61"
     },
     {
       "kind": "mcp",
       "path": "fixtures/driver/conformance-app/generated/mcp/tools.json",
-      "sha256": "1f4026efdaf99793bc90de41c00937b0dc291ca43be03105e852e6936fa473d4"
+      "sha256": "7d1f18eac6d10d092729446118f94416a6c5b5fa1f263b45ba88dbff3c672e76"
     },
     {
       "kind": "python",
       "path": "fixtures/driver/conformance-app/generated/python/client.py",
-      "sha256": "ecffdd4facb44ac2e772b0bf01d22ecc0c366c00bc09460df43d42da5603eb2f"
+      "sha256": "1179652f588ebf986bc1fe37b5df02784f1b347f28fe40c1bd9cee9fd10f3db4"
     },
     {
       "kind": "rust",
       "path": "fixtures/driver/conformance-app/generated/rust/client.rs",
-      "sha256": "7be47c7243b3720961cfa7104c305d00cc5605662df94a873bd5ce9b68188c7e"
+      "sha256": "13ffa0c8625b8c22ed14446ce2b629f5cd8d4783084519888c7711b15adec128"
     },
     {
       "kind": "typescript",
       "path": "fixtures/driver/conformance-app/generated/typescript/client.ts",
-      "sha256": "a6200aa8154b93258b48dda538bb7d3eecdf8637a05d59d9164623ad44e87515"
+      "sha256": "fcd729f7ea8ea5df149a170b8d0442d42523e391edfe4cd146f63babd3b9efa0"
     }
   ],
   "observation": {
@@ -67,7 +67,7 @@
     "schema": "riffdb.driver-conformance-observation/v1"
   },
   "role": {
-    "definition_hash": "de704065afff98dac8c94ddf699ca7605ac77f65e478b320520304b18867ed89",
+    "definition_hash": "4c5391832c7c6875398b14e5ac812252119f7a4b56b7a6f52560b58a693f9b3c",
     "name": "DriverConformanceApplication",
     "secret_outputs": [
       {
@@ -81,7 +81,7 @@
   "schema": "riffdb.unary-delete-preimage-external-acceptance/v1",
   "source_lock": {
     "path": "fixtures/driver/conformance-app/riffdb.application.lock.json",
-    "sha256": "9e183a73870971ef0393256c5ac7fb12cdd2a40bbd7f5334716e6c3e9916f802"
+    "sha256": "48894025d8c091f50edfb27ca5fc5033c8881746779743cc7d538c72ed338c9c"
   },
   "status": "passed",
   "verified_semantics": {

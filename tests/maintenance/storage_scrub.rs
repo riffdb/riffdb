@@ -15,7 +15,7 @@ use std::{fs, path::Path, time::Duration};
 use support::{Fixture, seed_primary, stop};
 
 const TIMEOUT: Duration = Duration::from_secs(60);
-const SHUTDOWN: [&str; 13] = [
+const SHUTDOWN: [&str; 14] = [
     "riffdb-write-completion-groups-v1\t",
     "riffdb-dispatch-reasons-v1\t",
     "riffdb-shutdown-stages-v1\t",
@@ -29,6 +29,7 @@ const SHUTDOWN: [&str; 13] = [
     "riffdb-writer-journal-stages-v1\t",
     "riffdb-writer-publication-stages-v2\t",
     "riffdb-writer-checkpoint-census-v1\t",
+    "riffdb-writer-overlay-census-v1\t",
 ];
 
 async fn observe(

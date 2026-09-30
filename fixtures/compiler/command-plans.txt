@@ -3,7 +3,7 @@ format=riffdb-command-plan-fixture-v1
 [command 1]
 name=CreateBudget
 contract_version=1
-plan_hash=e128287fe0d5245e6aaf36f3c6045127e24869e52ee40c7e1fdcc76e5a3d74ff
+plan_hash=49f25773dfaa1c3e162f7533a81762047e25750ff7b0ab38c54a8688211696f1
 execution=idempotent-mutation
 retry=bounded-full-reevaluation
 capability=invoke-command:LegalSpend:1
@@ -72,7 +72,7 @@ instruction.4=return outcome:1 payload:owner:command-outcome:1:1 fields:[1:11]
 [command 2]
 name=AllocateBudget
 contract_version=1
-plan_hash=1fa001109c4005be078c1de742f49365b92a4718dd277ecbff8f97d8713b33bb
+plan_hash=1faacac330da29e4f75d2afda93cd73d3f8efc53f2d89c4a0e409eeaa23354f0
 execution=idempotent-mutation
 retry=bounded-full-reevaluation
 capability=invoke-command:LegalSpend:2

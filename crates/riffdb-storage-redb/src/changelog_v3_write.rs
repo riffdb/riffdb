@@ -402,6 +402,24 @@ impl PreparedHistoryAdvance {
     }
 
     pub(crate) fn stage(self, transaction: &WriteTransaction) -> Result<(), StorageError> {
+        self.stage_as(transaction, None)
+    }
+
+    /// Stages the advance with a history stub (ADR-0263 Amendment 3) in place
+    /// of the receipt bytes, for a receipt a retained journal frame re-derives.
+    pub(crate) fn stage_stub(
+        self,
+        transaction: &WriteTransaction,
+        stub: &[u8],
+    ) -> Result<(), StorageError> {
+        self.stage_as(transaction, Some(stub))
+    }
+
+    fn stage_as(
+        self,
+        transaction: &WriteTransaction,
+        stub: Option<&[u8]>,
+    ) -> Result<(), StorageError> {
         transaction
             .open_table(HISTORY)
             .map_err(table_error)?
@@ -412,7 +430,7 @@ impl PreparedHistoryAdvance {
                     .get()
                     .to_be_bytes()
                     .as_slice(),
-                self.encoded.as_slice(),
+                stub.unwrap_or(self.encoded.as_slice()),
             )
             .map_err(precommit_storage_error)?;
         #[cfg(test)]
@@ -512,7 +530,13 @@ pub(crate) fn check_predecessor(
             TableDefinition::new(mutation.namespace().table());
         let table = transaction.open_table(definition).map_err(table_error)?;
         let before = table.get(mutation.key()).map_err(precommit_storage_error)?;
-        check(before.as_ref().map(|row| row.value()))
+        match before.as_ref().map(|row| row.value()) {
+            // A predecessor binds a history stub's resolved segment (ADR-0263 C3).
+            Some(stored) if mutation.namespace() == N::Commits => {
+                check(Some(&crate::history_stub::resolve_commits_value(stored)?))
+            }
+            before => check(before),
+        }
     }
 }
 

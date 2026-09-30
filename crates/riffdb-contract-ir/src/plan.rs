@@ -18,7 +18,11 @@ use crate::{
 };
 
 mod commit_coverage;
+mod indexed_selection;
+mod write_proofs;
 use commit_coverage::{validate_commit_checks, validate_root_validation_reads};
+pub use indexed_selection::IndexedSelectionPlan;
+use indexed_selection::{validate_binding_plans, validate_indexed_selection};
 
 /// Maximum bindings, instructions, fields, or outcomes in one owner.
 pub const MAX_COMMAND_ITEMS: usize = 4_096;
@@ -471,6 +475,7 @@ pub struct BindingPlan {
     failure: Option<OutcomeConstruction>,
     restriction_failure: Option<OutcomeConstruction>,
     cascade_failure: Option<OutcomeConstruction>,
+    indexed_selection: Option<IndexedSelectionPlan>,
 }
 
 impl BindingPlan {
@@ -696,6 +701,7 @@ impl BindingPlan {
             failure,
             restriction_failure,
             cascade_failure,
+            indexed_selection: None,
         })
     }
 
@@ -1072,18 +1078,16 @@ impl RootValidationReadPlan {
     }
 }
 
-/// Whether a command constrains the prior value of a record it writes.
+/// Source spelling retained in historical instruction encodings.
 ///
-/// A write is guarded when a `require`, or the value of any write to the same
-/// binding, reads one of that binding's stored fields: commit-time revalidation
-/// then refuses the command if the record changed under it. A compiler-proven
-/// same-root compare-and-increment revision fence also guards child writes.
-/// A write with neither protection must declare last-writer-wins (ADR-0256).
+/// For V25 and later, inspect `CommandPlan::write_proofs` for per-assignment
+/// evidence. A legacy Guarded value only records the historical classification;
+/// it does not prove protection against stale caller intent.
 #[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
 pub enum WriteGuard {
-    /// Spelled `set`: the command constrains this record's prior value.
+    /// Spelled `set`; consult the versioned evidence for its meaning.
     Guarded,
-    /// Spelled `overwrite`: it does not, and says so.
+    /// Spelled `overwrite`: explicit replacement without qualifying evidence.
     Unguarded,
 }
 
@@ -1746,6 +1750,7 @@ pub struct CommandPlan {
     retry_policy: RetryPolicy,
     required_capability: CapabilityRequirement,
     plan_hash: PlanHash,
+    write_proofs: Option<Vec<crate::WriteProof>>,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -2421,6 +2426,13 @@ impl CommandPlan {
             &instructions,
         )?;
         contract_schema.validate_expression_enum_constants(&expressions)?;
+        validate_indexed_selection(
+            &expressions,
+            &bindings,
+            collection_expansion.as_ref(),
+            &decisions,
+            contract_schema,
+        )?;
         validate_binding_plans(&expressions, &bindings, &locality, contract_schema)?;
         if collection_expansion.is_none() {
             validate_ordinary_delete_aliases(&expressions, &bindings)?;
@@ -2624,6 +2636,7 @@ impl CommandPlan {
                 command_id,
             },
             plan_hash: PlanHash::from_bytes([0; 32]),
+            write_proofs: None,
         };
         plan.plan_hash = crate::bundle::compute_command_plan_hash(&plan, contract_schema)?;
         Ok(plan)
@@ -2740,23 +2753,6 @@ impl CommandPlan {
     #[must_use]
     pub fn requires_ir_v19(&self) -> bool {
         self.locality.spans_aggregates()
-    }
-    /// Whether this command declares an unguarded write (ADR-0256).
-    ///
-    /// A command whose every write is guarded answers `false` and keeps its
-    /// existing least-sufficient identity, so no contract that compiles today
-    /// moves its plan hash.
-    #[must_use]
-    pub fn requires_ir_v24(&self) -> bool {
-        self.instructions.iter().any(|instruction| {
-            matches!(
-                instruction,
-                Instruction::SetField {
-                    guard: WriteGuard::Unguarded,
-                    ..
-                }
-            )
-        })
     }
     /// Whether this command requires the additive large atomic-input envelope.
     #[must_use]
@@ -5297,7 +5293,11 @@ fn validate_worst_case_index_derivation(
             .try_fold(0usize, |count, read| {
                 checked_index_derivation_add(count, multiplicity(read.source_binding()))
             })?;
-        let mut influential_range_count = 0usize;
+        let mut influential_range_count = usize::from(
+            bindings
+                .iter()
+                .any(|binding| binding.indexed_selection().is_some()),
+        );
         add_delete_validation_cost(
             delete_checks,
             None,
@@ -5348,7 +5348,11 @@ fn validate_worst_case_index_derivation(
                     checked_index_derivation_add(count, multiplicity(read.source_binding()))
                 }
             })?;
-    let mut influential_range_count = 0usize;
+    let mut influential_range_count = usize::from(
+        bindings
+            .iter()
+            .any(|binding| binding.indexed_selection().is_some()),
+    );
     add_delete_validation_cost(
         delete_checks,
         Some(&conditional_bindings),
@@ -6358,118 +6362,6 @@ fn validate_collection_expression_uses(
     Ok(())
 }
 
-fn validate_binding_plans(
-    arena: &ExpressionArena,
-    bindings: &[BindingPlan],
-    locality: &LocalityPlan,
-    schema: &SchemaIr,
-) -> Result<(), IrValidationError> {
-    for binding in bindings {
-        let entity =
-            schema
-                .entity(binding.entity_type)
-                .ok_or(IrValidationError::InvalidReference {
-                    kind: "binding entity",
-                })?;
-        let owner = schema.aggregate_for_entity(binding.entity_type).ok_or(
-            IrValidationError::InvalidReference {
-                kind: "binding aggregate owner",
-            },
-        )?;
-        // ADR-0170: a mutable binding may belong to any aggregate the command
-        // takes conflict ownership of, not only the partition owner. The
-        // locality's conflict keys name that set, so membership in it is the
-        // invariant; a binding whose aggregate is absent has no lease and is
-        // still rejected.
-        let owned = locality.conflict_keys.iter().any(
-            |key| matches!(key.schema().purpose(), KeyPurpose::Conflict(id) if id == owner.id()),
-        );
-        if entity.primary_key() != &binding.key_schema
-            || (matches!(
-                binding.mode,
-                BindingMode::Mutate
-                    | BindingMode::Create
-                    | BindingMode::InitOrMutate
-                    | BindingMode::ObserveOrInitialize
-                    | BindingMode::Delete
-            ) && !owned)
-        {
-            return Err(IrValidationError::InvalidDependency {
-                reason: "binding key mismatch or mutable binding has no conflict ownership",
-            });
-        }
-        for (expression, component) in binding
-            .key_expressions
-            .iter()
-            .zip(binding.key_schema.components())
-        {
-            let node = arena
-                .get(*expression)
-                .ok_or(IrValidationError::InvalidReference {
-                    kind: "binding key expression",
-                })?;
-            if node.result_type() != component.value_type()
-                || !arena.dependencies(*expression)?.is_input_computable()
-            {
-                return Err(IrValidationError::InvalidDependency {
-                    reason: "binding key is not input-computable with the declared type",
-                });
-            }
-        }
-        if binding
-            .accessed_fields
-            .iter()
-            .any(|field| entity.record().field(*field).is_none())
-        {
-            return Err(IrValidationError::InvalidReference {
-                kind: "binding accessed field",
-            });
-        }
-        let key_fields = entity
-            .primary_key_fields()
-            .iter()
-            .copied()
-            .collect::<BTreeSet<_>>();
-        for initialized in binding.initializer() {
-            let field = entity.record().field(initialized.field_id()).ok_or(
-                IrValidationError::InvalidReference {
-                    kind: "binding initializer field",
-                },
-            )?;
-            let expression =
-                arena
-                    .get(initialized.expression())
-                    .ok_or(IrValidationError::InvalidReference {
-                        kind: "binding initializer expression",
-                    })?;
-            let dependencies = arena.dependencies(initialized.expression())?;
-            if key_fields.contains(&initialized.field_id())
-                || expression.result_type() != field.value_type()
-                || !dependencies.bindings().is_empty()
-                || !dependencies.schema_fields().is_empty()
-                || !dependencies.root_validation_reads().is_empty()
-                || !dependencies.source_event_fields().is_empty()
-                || dependencies.uses_transaction_date()
-            {
-                return Err(IrValidationError::InvalidDependency {
-                    reason: "binding initializer is not state-independent with the declared type",
-                });
-            }
-        }
-        if let Some(failure) = &binding.failure {
-            for field in &failure.payload.fields {
-                let dependencies = arena.dependencies(field.expression)?;
-                if !dependencies.is_input_computable() || dependencies.uses_transaction_time() {
-                    return Err(IrValidationError::InvalidDependency {
-                        reason: "binding failure outcome is not input/constant-only",
-                    });
-                }
-            }
-        }
-    }
-    Ok(())
-}
-
 fn validate_ordinary_delete_aliases(
     arena: &ExpressionArena,
     bindings: &[BindingPlan],
@@ -6879,7 +6771,7 @@ fn matches_root_invariant_template(
     Ok(true)
 }
 
-fn expression_trees_equal(
+pub(crate) fn expression_trees_equal(
     left_arena: &ExpressionArena,
     left_root: ExprId,
     right_arena: &ExpressionArena,
@@ -7881,6 +7773,9 @@ fn validate_command_expression_reachability(
     let mut roots = Vec::new();
     for binding in bindings {
         roots.extend(binding.key_expressions.iter().copied());
+        if let Some(selection) = binding.indexed_selection() {
+            roots.extend(selection.prefix_expressions().iter().copied());
+        }
         roots.extend(binding.initializer.iter().map(|field| field.expression()));
         if let Some(failure) = &binding.failure {
             roots.extend(failure.payload.fields.iter().map(|field| field.expression));
@@ -8091,6 +7986,11 @@ fn validate_idempotency(
         Ok(())
     };
     for binding in bindings {
+        if let Some(selection) = binding.indexed_selection() {
+            for expression in selection.prefix_expressions() {
+                collect(*expression)?;
+            }
+        }
         for expression in &binding.key_expressions {
             collect(*expression)?;
         }

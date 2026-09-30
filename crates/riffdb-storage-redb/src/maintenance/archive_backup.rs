@@ -6,7 +6,7 @@ use riffdb_storage_api::{
     ArchiveConsumerErrorV1, ArchiveEncryptionPostureV1, ChangelogHistoryStateV3,
     OfflineBackupManifestIdentityV1, OfflineBackupManifestV1, StorageError, StorageErrorKind,
 };
-use std::{ffi::OsStr, fs::File, path::Path};
+use std::{ffi::OsString, fs::File, path::Path};
 
 const NAMES: [&str; 4] = [
     backup::MANIFEST_FILE_NAME,
@@ -20,7 +20,9 @@ const NAMES: [&str; 4] = [
 /// a complete catalog-semantic startup proof or a serving/write capability.
 pub struct RedbVerifiedArchiveBackup {
     directory: PinnedDirectory,
-    files: [File; 4],
+    /// The fixed artifacts, then every sealed extent artifact (ADR-0263), by
+    /// artifact ordinal after the manifest.
+    files: Vec<(OsString, File)>,
     _database: redb::ReadOnlyDatabase,
     manifest: OfflineBackupManifestV1,
     identity: OfflineBackupManifestIdentityV1,
@@ -33,14 +35,24 @@ impl RedbVerifiedArchiveBackup {
     /// or journal-replayed, and no source lifecycle or receipt is originated.
     pub fn open(path: &Path) -> Result<Self, StorageError> {
         let directory = PinnedDirectory::open(path)?;
-        let files = [
-            directory.open_file(OsStr::new(NAMES[0]))?.into_std(),
-            directory.open_file(OsStr::new(NAMES[1]))?.into_std(),
-            directory.open_file(OsStr::new(NAMES[2]))?.into_std(),
-            directory.open_file(OsStr::new(NAMES[3]))?.into_std(),
-        ];
-        let database = read_only_database(&files[1])?;
+        let names = NAMES
+            .iter()
+            .map(OsString::from)
+            .chain(backup::sealed_artifact_names(path)?)
+            .collect::<Vec<_>>();
+        let files = names
+            .into_iter()
+            .map(|name| {
+                let file = directory.open_file(&name)?.into_std();
+                Ok((name, file))
+            })
+            .collect::<Result<Vec<_>, StorageError>>()?;
+        let database = read_only_database(&files[1].1)?;
         let (manifest, identity) = backup::validate_immutable_backup(path)?;
+        // History stubs in the backup resolve from its own verified journal
+        // and sealed extent artifacts (ADR-0263), for as long as it is read.
+        let _history =
+            crate::history_stub::HistoryResolver::register_backup(manifest.database_id(), path);
         if !manifest.is_physically_restorable_by_current_binary() {
             return Err(storage_error(StorageErrorKind::IncompatibleFormat));
         }
@@ -157,19 +169,20 @@ impl RedbVerifiedArchiveBackup {
 
     fn verify(&self) -> Result<(), StorageError> {
         self.directory.verify()?;
-        if self.manifest.checksums().len() != 3 {
+        if self.manifest.checksums().len() + 1 != self.files.len() {
             return Err(corrupt());
         }
-        for (index, file) in self.files.iter().enumerate() {
-            let name = OsStr::new(NAMES[index]);
+        for (index, (name, file)) in self.files.iter().enumerate() {
+            let name = name.as_os_str();
             if !self.directory.regular_file_matches(name, file)? {
                 return Err(corrupt());
             }
-            let expected = if index == 0 {
-                self.identity.manifest_checksum()
-            } else {
-                self.manifest.checksums()[index - 1].checksum()
-            };
+            let expected =
+                match std::num::NonZeroU32::new(u32::try_from(index).map_err(|_| corrupt())?) {
+                    None => self.identity.manifest_checksum().clone(),
+                    Some(ordinal) => backup::manifest_artifact_checksum(&self.manifest, ordinal)?,
+                };
+            let expected = &expected;
             // A fresh capability-opened descriptor has its own offset; cloned
             // descriptors would race concurrent verification reads.
             let input = self.directory.open_file(name)?.into_std();

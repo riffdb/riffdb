@@ -1,0 +1,248 @@
+{
+  "artifacts": {
+    "riffdbd_sha256": "d265d673868aaee059162c60fdc186e117e7e9f65d5ee54c83ace60fbcb6f1ff",
+    "runner_sha256": "9ec71506be9171e761e1eefb38e869fa30351d8aa30e165feb62346f7804fca1"
+  },
+  "cells": [
+    {
+      "aggregate_p95_ns": 7864319,
+      "arm": "idle",
+      "commands_committed": 166809,
+      "lane": {
+        "fence": "none",
+        "sequences": 0,
+        "state": "holding",
+        "steps": 0
+      },
+      "lane_holds": {
+        "awaiting_checkpoint": 0,
+        "checkpoint_in_flight": 0,
+        "fenced": 0,
+        "target": 0
+      },
+      "lane_phases_us": {
+        "commit": 0,
+        "delete": 0,
+        "digest": 0,
+        "drain": 0,
+        "gate_wait": 0,
+        "materialize": 0,
+        "plan": 0,
+        "preplan": 0
+      },
+      "rep": 1,
+      "report_sha256": "df330668e2e6be970e99d542182c7bc0a3a300bae3147ec9c8ab5cb12607c1b6",
+      "throughput_ops_s": 16116
+    },
+    {
+      "aggregate_p95_ns": 8126463,
+      "arm": "active",
+      "commands_committed": 160905,
+      "lane": {
+        "fence": "none",
+        "sequences": 2245,
+        "state": "advancing",
+        "steps": 10
+      },
+      "lane_holds": {
+        "awaiting_checkpoint": 11,
+        "checkpoint_in_flight": 0,
+        "fenced": 0,
+        "target": 0
+      },
+      "lane_phases_us": {
+        "commit": 834408,
+        "delete": 73998,
+        "digest": 163977,
+        "drain": 2264249,
+        "gate_wait": 12166,
+        "materialize": 142361,
+        "plan": 99614,
+        "preplan": 146483
+      },
+      "rep": 1,
+      "report_sha256": "c4a4d987ae4dc3079372f00bdf26077aa86330ea42db1bc6b2ade6fe2b6e26d8",
+      "throughput_ops_s": 15471
+    },
+    {
+      "aggregate_p95_ns": 7864319,
+      "arm": "active",
+      "commands_committed": 162515,
+      "lane": {
+        "fence": "none",
+        "sequences": 2136,
+        "state": "advancing",
+        "steps": 9
+      },
+      "lane_holds": {
+        "awaiting_checkpoint": 11,
+        "checkpoint_in_flight": 0,
+        "fenced": 0,
+        "target": 0
+      },
+      "lane_phases_us": {
+        "commit": 789982,
+        "delete": 71639,
+        "digest": 156711,
+        "drain": 2068921,
+        "gate_wait": 6110,
+        "materialize": 136191,
+        "plan": 87792,
+        "preplan": 122298
+      },
+      "rep": 2,
+      "report_sha256": "3ef7cb8edce6b080ef6b1e196956d8f2ee4977104b99f326a54690f627461c53",
+      "throughput_ops_s": 15609
+    },
+    {
+      "aggregate_p95_ns": 8126463,
+      "arm": "idle",
+      "commands_committed": 165294,
+      "lane": {
+        "fence": "none",
+        "sequences": 0,
+        "state": "holding",
+        "steps": 0
+      },
+      "lane_holds": {
+        "awaiting_checkpoint": 0,
+        "checkpoint_in_flight": 0,
+        "fenced": 0,
+        "target": 0
+      },
+      "lane_phases_us": {
+        "commit": 0,
+        "delete": 0,
+        "digest": 0,
+        "drain": 0,
+        "gate_wait": 0,
+        "materialize": 0,
+        "plan": 0,
+        "preplan": 0
+      },
+      "rep": 2,
+      "report_sha256": "913aec61db7b3f3100bf87e37dd650ac4f8b1a1f76681087f3cb65f30e0b9ea3",
+      "throughput_ops_s": 15959
+    },
+    {
+      "aggregate_p95_ns": 7864319,
+      "arm": "idle",
+      "commands_committed": 165869,
+      "lane": {
+        "fence": "none",
+        "sequences": 0,
+        "state": "holding",
+        "steps": 0
+      },
+      "lane_holds": {
+        "awaiting_checkpoint": 0,
+        "checkpoint_in_flight": 0,
+        "fenced": 0,
+        "target": 0
+      },
+      "lane_phases_us": {
+        "commit": 0,
+        "delete": 0,
+        "digest": 0,
+        "drain": 0,
+        "gate_wait": 0,
+        "materialize": 0,
+        "plan": 0,
+        "preplan": 0
+      },
+      "rep": 3,
+      "report_sha256": "17092784bc7e25420785316e89526bec83edbd3e15024e9a6e350acb8ceae874",
+      "throughput_ops_s": 16075
+    },
+    {
+      "aggregate_p95_ns": 8126463,
+      "arm": "active",
+      "commands_committed": 162289,
+      "lane": {
+        "fence": "none",
+        "sequences": 2132,
+        "state": "advancing",
+        "steps": 9
+      },
+      "lane_holds": {
+        "awaiting_checkpoint": 9,
+        "checkpoint_in_flight": 1,
+        "fenced": 0,
+        "target": 0
+      },
+      "lane_phases_us": {
+        "commit": 764952,
+        "delete": 71116,
+        "digest": 155371,
+        "drain": 1957353,
+        "gate_wait": 13779,
+        "materialize": 134358,
+        "plan": 91018,
+        "preplan": 129678
+      },
+      "rep": 3,
+      "report_sha256": "da5db6ec641636f7a7b46377af02ca39ec629f4533add86ffe4ddea6e022da54",
+      "throughput_ops_s": 15590
+    }
+  ],
+  "comparison": {
+    "active_median_p95_ns": 8126463,
+    "active_median_pruned_per_committed": 0.013143402147494078,
+    "active_median_throughput_ops_s": 15590,
+    "idle_median_p95_ns": 7864319,
+    "idle_median_throughput_ops_s": 16075,
+    "lane_valid": true,
+    "p95_ratio": 1.0333333375718863,
+    "throughput_ratio": 0.9698289269051322
+  },
+  "host": {
+    "hardware_identity": {
+      "cpu_model": "AMD EPYC 9B14",
+      "operating_system": {
+        "id": "ubuntu",
+        "version_id": "26.04"
+      },
+      "system_product": "Google Compute Engine",
+      "system_vendor": "Google"
+    },
+    "logical_cpus": 8,
+    "postflight_sha256": "82e83b4bd2d4da2b4f270d8c383f55e3264bf066ffb27bf845783c0f17ffb09b",
+    "preflight_sha256": "cb4b52af26cc1e856a8d3fd79e4a72a19b54794b54e9b9e081cae18bf852a4c2",
+    "valid": true
+  },
+  "method": {
+    "active_arm": {
+      "retained_sequences": 1024,
+      "sequences_per_epoch": 256
+    },
+    "clients": 32,
+    "duration_secs": 60,
+    "idle_arm": {
+      "retention": "hold"
+    },
+    "lane_observation_scope": "measured_process_generation",
+    "latency_gate_statistic": "median_of_repetition_aggregate_p95",
+    "load": "interactive",
+    "maximum_p95_ratio": 1.05,
+    "order": [
+      "idle",
+      "active",
+      "active",
+      "idle",
+      "idle",
+      "active"
+    ],
+    "outbox": "seeded_events_marked_delivered_on_the_stopped_database_in_both_arms",
+    "percentiles": "fixed_log_linear_histogram_16_sub_buckets_per_octave",
+    "projections": "board_projection_undeclared_in_both_arms",
+    "repetitions": 3,
+    "scale": "full",
+    "warmup_secs": 10
+  },
+  "qualified": true,
+  "schema": "riffdb.wp-761-online-retention-interference/v1",
+  "source": {
+    "clean_tree": true,
+    "commit": "2440c3e765fddc0cc050eef7b10dd80ed84c7ab2"
+  }
+}

@@ -186,7 +186,9 @@ impl StateCursor {
             // Check borrowed engine row lengths before copying into that merge.
             let base = rows.map(|row| {
                 let (key, value) = row.map_err(|_| StorageValueError::InvalidShape)?;
-                let row = AuthoritativeStateRowV3::new(namespace, key.value(), value.value())
+                let value = resolve_state_value(namespace, value.value())
+                    .map_err(|_| StorageValueError::InvalidShape)?;
+                let row = AuthoritativeStateRowV3::new(namespace, key.value(), &value)
                     .map_err(|_| StorageValueError::InvalidShape)?;
                 let (_, key, value) = row.into_parts();
                 Ok((key, value))
@@ -202,16 +204,20 @@ impl StateCursor {
                     MAX_COMPOSITE_OVERLAY_TRANSITIONS + 2,
                 )
                 .map_err(|_| super::corrupt())?;
+            // An overlay row may be a history stub for an uncheckpointed frame.
             return page
                 .rows()
                 .first()
-                .map(|(key, value)| checked_row(namespace, key, value))
+                .map(|(key, value)| {
+                    checked_row(namespace, key, &resolve_state_value(namespace, value)?)
+                })
                 .transpose();
         }
         rows.next()
             .map(|row| {
                 let (key, value) = row.map_err(precommit_storage_error)?;
-                checked_row(namespace, key.value(), value.value())
+                let value = resolve_state_value(namespace, value.value())?;
+                checked_row(namespace, key.value(), &value)
             })
             .transpose()
     }
@@ -260,4 +266,18 @@ fn checked_row(
     value: &[u8],
 ) -> Result<AuthoritativeStateRowV3, StorageError> {
     AuthoritativeStateRowV3::new(namespace, key, value).map_err(super::value_error)
+}
+
+/// Authoritative state is exported by value: a history stub becomes the exact
+/// segment it stands for, so bootstrap, archives, and followers never receive a
+/// locator they cannot resolve (ADR-0263 C3).
+fn resolve_state_value(
+    namespace: N,
+    value: &[u8],
+) -> Result<std::borrow::Cow<'_, [u8]>, riffdb_storage_api::StorageError> {
+    if namespace == N::Commits {
+        crate::history_stub::resolve_commits_value(value)
+    } else {
+        Ok(std::borrow::Cow::Borrowed(value))
+    }
 }

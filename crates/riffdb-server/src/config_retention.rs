@@ -48,15 +48,16 @@ impl RetentionConfig {
         self.target
     }
 
-    /// Sequences one lane step may remove (1..=256, default 64).
+    /// Sequences one lane step may remove (1..=256, default 256).
     pub(crate) const fn sequences_per_epoch(&self) -> NonZeroU64 {
         self.sequences_per_epoch
     }
 }
 
-/// The default per-epoch budget: a quarter of the hard bound, so a default
-/// step holds the ordered writer for a short time.
-const DEFAULT_SEQUENCES_PER_EPOCH: u64 = 64;
+/// The default per-epoch budget: the hard bound, so a step's fixed commit
+/// cost is spread over as many sequences as the ADR allows; gate-held pacing
+/// bounds the lane's share of writer time.
+const DEFAULT_SEQUENCES_PER_EPOCH: u64 = MAX_SEQUENCES_PER_EPOCH;
 
 impl Default for RetentionConfig {
     fn default() -> Self {

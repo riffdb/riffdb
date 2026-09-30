@@ -21,11 +21,11 @@ use sha2::{Digest, Sha256};
 use crate::StorageValueError;
 
 /// Maximum complete published journal suffix represented by one overlay.
-pub const MAX_COMPOSITE_OVERLAY_TRANSITIONS: usize = 8_192;
+pub const MAX_COMPOSITE_OVERLAY_TRANSITIONS: usize = 65_536;
 /// Maximum cumulative encoded journal bytes represented by one overlay.
-pub const MAX_COMPOSITE_SUFFIX_BYTES: usize = 32 * 1024 * 1024;
+pub const MAX_COMPOSITE_SUFFIX_BYTES: usize = 256 * 1024 * 1024;
 /// Independent in-memory charge for one published overlay.
-pub const MAX_COMPOSITE_OVERLAY_BYTES: usize = 128 * 1024 * 1024;
+pub const MAX_COMPOSITE_OVERLAY_BYTES: usize = 256 * 1024 * 1024;
 /// Maximum key or value component accepted from one journal mutation.
 pub const MAX_COMPOSITE_COMPONENT_BYTES: usize = 16 * 1024 * 1024;
 /// Conservative per-entry ordered-map and enum overhead charge.
@@ -607,6 +607,13 @@ impl CompositeMutationStage {
         }
     }
 
+    /// The ordered mutations staged so far: exactly the list a later
+    /// [`Self::seal_encoded_frame_with_mutations`] validates and returns.
+    #[must_use]
+    pub fn staged_mutations(&self) -> &[CompositeMutationV1] {
+        &self.mutations
+    }
+
     /// Applies one exact mutation to private read-your-writes state. A failed
     /// validation leaves the complete stage unchanged.
     pub fn apply(
@@ -654,6 +661,44 @@ impl CompositeMutationStage {
         proven_current: Option<&[u8]>,
     ) -> Result<(), StorageValueError> {
         self.apply_after_current_validation(mutation, proven_current)
+    }
+
+    /// Replaces the private value of the row that staged mutation `index`
+    /// freshly inserted with an equivalent representation of it, and
+    /// recharges the overlay for it. The staged mutation, which the journal
+    /// frame and its checkpoint carry, keeps the value. The storage engine uses
+    /// this for a history stub standing for a command segment the journal
+    /// retains (ADR-0263); readers resolve it.
+    ///
+    /// Returns `false`, changing nothing, unless that mutation inserted a row
+    /// without a prior and the row's current private value is still its value.
+    pub fn represent_staged(
+        &mut self,
+        index: usize,
+        representation: &[u8],
+    ) -> Result<bool, StorageValueError> {
+        let Some(mutation) = self.mutations.get(index) else {
+            return Err(StorageValueError::IdentityMismatch);
+        };
+        let (Some(value), None) = (mutation.value(), mutation.expected_hash()) else {
+            return Ok(false);
+        };
+        let entries = &mut self.tables[mutation.table().index()];
+        let prior = match entries.get(mutation.key()) {
+            Some(prior @ OverlayValue::Value(current)) if current.as_ref() == value => prior,
+            _ => return Ok(false),
+        };
+        let key: Arc<[u8]> = Arc::from(mutation.key());
+        let replacement = OverlayValue::Value(Arc::from(representation));
+        let charge = self
+            .charged_bytes
+            .checked_sub(entry_charge(&key, prior)?)
+            .ok_or(StorageValueError::SizeOverflow)?
+            .checked_add(entry_charge(&key, &replacement)?)
+            .ok_or(StorageValueError::SizeOverflow)?;
+        entries.insert(key, replacement);
+        self.charged_bytes = charge;
+        Ok(true)
     }
 
     fn apply_after_current_validation(
@@ -1984,12 +2029,13 @@ mod tests {
 
     #[test]
     fn composite_bounds_keep_frames_small_and_give_checkpoints_half_full_headroom() {
-        assert_eq!(MAX_COMPOSITE_OVERLAY_TRANSITIONS, 8_192);
-        assert_eq!(MAX_COMPOSITE_SUFFIX_BYTES, 32 * 1024 * 1024);
-        assert_eq!(MAX_COMPOSITE_OVERLAY_BYTES, 128 * 1024 * 1024);
+        // ADR-0263 Decision 7.
+        assert_eq!(MAX_COMPOSITE_OVERLAY_TRANSITIONS, 65_536);
+        assert_eq!(MAX_COMPOSITE_SUFFIX_BYTES, 256 * 1024 * 1024);
+        assert_eq!(MAX_COMPOSITE_OVERLAY_BYTES, 256 * 1024 * 1024);
         assert_eq!(MAX_COMPOSITE_COMPONENT_BYTES, 16 * 1024 * 1024);
-        assert_eq!(MAX_COMPOSITE_OVERLAY_TRANSITIONS / 2, 4_096);
-        assert_eq!(MAX_COMPOSITE_SUFFIX_BYTES / 2, 16 * 1024 * 1024);
+        assert_eq!(MAX_COMPOSITE_OVERLAY_TRANSITIONS / 2, 32_768);
+        assert_eq!(MAX_COMPOSITE_SUFFIX_BYTES / 2, 128 * 1024 * 1024);
     }
 
     #[test]
@@ -2156,6 +2202,56 @@ mod tests {
         assert_eq!(
             successor.resolve_point(&base, CompositeTableV1::Entities, b"ticket"),
             Ok(Some(b"closed".to_vec()))
+        );
+    }
+
+    #[test]
+    fn a_freshly_inserted_row_takes_a_smaller_representation_and_the_frame_keeps_its_value() {
+        let mut base = Base::default();
+        base.insert(CompositeTableV1::Entities, b"ticket", b"open");
+        let predecessor = CompositeOverlayBuilder::new(checkpoint()).freeze();
+        let mut stage = CompositeMutationStage::new(&predecessor);
+        let segment = vec![0x5e; 4096];
+        let insert = CompositeMutationV1::put(
+            CompositeTableV1::Commits,
+            b"segment".as_slice(),
+            segment.clone(),
+        )
+        .expect("put");
+        let replace = CompositeMutationV1::replace(
+            CompositeTableV1::Entities,
+            b"ticket".as_slice(),
+            b"open",
+            b"closed".as_slice(),
+        )
+        .expect("replace");
+        stage.apply(insert, &base).expect("stage insert");
+        stage.apply(replace, &base).expect("stage replace");
+        let charged = stage.charged_bytes;
+
+        assert_eq!(
+            stage.represent_staged(1, b"stub"),
+            Ok(false),
+            "not an insert"
+        );
+        assert_eq!(stage.represent_staged(0, b"stub"), Ok(true));
+        assert_eq!(stage.charged_bytes, charged - segment.len() + b"stub".len());
+        assert_eq!(
+            stage.represent_staged(0, b"again"),
+            Ok(false),
+            "value changed"
+        );
+        assert_eq!(
+            stage.represent_staged(2, b"stub"),
+            Err(StorageValueError::IdentityMismatch)
+        );
+        assert_eq!(
+            stage.staged_mutations()[0].value(),
+            Some(segment.as_slice())
+        );
+        assert_eq!(
+            stage.resolve_point(&base, CompositeTableV1::Commits, b"segment"),
+            Ok(Some(b"stub".to_vec()))
         );
     }
 

@@ -14,7 +14,7 @@ use std::sync::Arc;
 use riffdb_storage_api::StoredCommandSegmentV1;
 
 use super::*;
-use crate::store::RedbOperationalPorts;
+use crate::store::{RedbOperationalPorts, WriteBeginTiming, elapsed_us};
 use crate::transient::TransientIndexDelta;
 
 /// A busy database's lane steps only while at most this many journaled
@@ -46,6 +46,41 @@ pub enum OnlineRetentionHold {
     /// background checkpoint to materialize it rather than drain it under the
     /// writer gate; retry shortly.
     AwaitingCheckpoint,
+}
+
+/// Microsecond phase durations of one online retention step (WP-811
+/// evidence). A phase the step did not reach stays zero.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct OnlineRetentionPhases {
+    /// Planning from an engine snapshot, without the writer gate.
+    pub preplan_us: u64,
+    /// Waiting for the first-come writer gate.
+    pub gate_wait_us: u64,
+    /// Under the gate: publishing, checkpointing, and draining the journal.
+    pub drain_us: u64,
+    /// Under the gate: reading the fences and planning the sub-range.
+    pub plan_us: u64,
+    /// Under the gate: hashing the tombstone preimage.
+    pub digest_us: u64,
+    /// Under the gate: writing retained views and removing locators.
+    pub materialize_us: u64,
+    /// Under the gate: deleting rows and writing the tombstone and watermark.
+    pub delete_us: u64,
+    /// Under the gate: the durable commit.
+    pub commit_us: u64,
+}
+
+impl OnlineRetentionPhases {
+    /// Microseconds this step held the writer gate.
+    #[must_use]
+    pub const fn gate_held_us(&self) -> u64 {
+        self.drain_us
+            .saturating_add(self.plan_us)
+            .saturating_add(self.digest_us)
+            .saturating_add(self.materialize_us)
+            .saturating_add(self.delete_us)
+            .saturating_add(self.commit_us)
+    }
 }
 
 /// The durable result of one online retention step.
@@ -92,20 +127,54 @@ impl RedbOnlineRetentionLane {
         retain_sequences: NonZeroU64,
         max_sequences: NonZeroU64,
     ) -> Result<OnlineRetentionStep, StorageError> {
+        self.step_timed(retain_sequences, max_sequences, false)
+            .map(|(step, _)| step)
+    }
+
+    /// How many journal checkpoints this process has finished.
+    #[must_use]
+    pub fn journal_checkpoints_finished(&self) -> u64 {
+        self.shared.journal_checkpoints_finished()
+    }
+
+    /// Waits up to `timeout` for a journal checkpoint to finish after `seen`
+    /// (see [`Self::journal_checkpoints_finished`]), returning the current
+    /// count. A lane held for `AwaitingCheckpoint` or `CheckpointInFlight`
+    /// steps right after one, while the journal suffix is nearly empty.
+    pub fn wait_for_journal_checkpoint(&self, seen: u64, timeout: std::time::Duration) -> u64 {
+        self.shared.wait_for_journal_checkpoint(seen, timeout)
+    }
+
+    /// [`Self::step`] together with the step's phase durations. A lane woken
+    /// by a finished journal checkpoint passes `after_checkpoint`: that is the
+    /// smallest journal suffix it will see, so the step proceeds whatever the
+    /// suffix size, and the lane's gate-held pacing charges any drain.
+    pub fn step_timed(
+        &self,
+        retain_sequences: NonZeroU64,
+        max_sequences: NonZeroU64,
+        after_checkpoint: bool,
+    ) -> Result<(OnlineRetentionStep, OnlineRetentionPhases), StorageError> {
+        let mut phases = OnlineRetentionPhases::default();
         let (journal_sequence, suffix_transitions) = self.shared.journal_suffix_activity()?;
         let idle = self
             .last_journal_sequence
             .swap(journal_sequence, std::sync::atomic::Ordering::AcqRel)
             == journal_sequence;
-        if !idle && suffix_transitions > ONLINE_RETENTION_SMALL_SUFFIX_TRANSITIONS {
-            return Ok(OnlineRetentionStep::Held(
-                OnlineRetentionHold::AwaitingCheckpoint,
+        if !idle
+            && !after_checkpoint
+            && suffix_transitions > ONLINE_RETENTION_SMALL_SUFFIX_TRANSITIONS
+        {
+            return Ok((
+                OnlineRetentionStep::Held(OnlineRetentionHold::AwaitingCheckpoint),
+                phases,
             ));
         }
-        RedbOperationalPorts {
+        let step = RedbOperationalPorts {
             shared: Arc::clone(&self.shared),
         }
-        .online_retention_step_inner(retain_sequences, max_sequences, idle)
+        .online_retention_step_inner(retain_sequences, max_sequences, idle, &mut phases)?;
+        Ok((step, phases))
     }
 }
 
@@ -144,7 +213,12 @@ impl RedbOperationalPorts {
         retain_sequences: NonZeroU64,
         max_sequences: NonZeroU64,
     ) -> Result<OnlineRetentionStep, StorageError> {
-        self.online_retention_step_inner(retain_sequences, max_sequences, true)
+        self.online_retention_step_inner(
+            retain_sequences,
+            max_sequences,
+            true,
+            &mut OnlineRetentionPhases::default(),
+        )
     }
 
     fn online_retention_step_inner(
@@ -152,8 +226,10 @@ impl RedbOperationalPorts {
         retain_sequences: NonZeroU64,
         max_sequences: NonZeroU64,
         may_materialize_suffix: bool,
+        phases: &mut OnlineRetentionPhases,
     ) -> Result<OnlineRetentionStep, StorageError> {
         let allowance = max_sequences.get().min(ONLINE_RETENTION_STEP_SEQUENCES);
+        let preplan = std::time::Instant::now();
         // Plan first without the writer gate, from an engine snapshot: most
         // checks find nothing to prune, and they must not drain the journal
         // suffix or delay a writer to learn that.
@@ -166,6 +242,7 @@ impl RedbOperationalPorts {
             let derived_read = self.begin_derived_read()?;
             plan_step(&read, &derived_read, retain_sequences, allowance)?.err()
         };
+        phases.preplan_us = elapsed_us(preplan, std::time::Instant::now());
         let materialize_suffix = match hold {
             None => false,
             Some(hold) => {
@@ -189,16 +266,20 @@ impl RedbOperationalPorts {
                 true
             }
         };
-        let Some(access) = self.begin_attributed_write_unless_checkpointing(
+        let mut begin = WriteBeginTiming::default();
+        let opened = self.begin_attributed_write_unless_checkpointing(
             riffdb_storage_api::ChangelogAttributionV3::RetentionPrune,
             materialize_suffix,
-        )?
-        else {
+            &mut begin,
+        );
+        phases.gate_wait_us = begin.gate_wait_us;
+        phases.drain_us = begin.drain_us;
+        let Some(access) = opened? else {
             return Ok(OnlineRetentionStep::Held(
                 OnlineRetentionHold::CheckpointInFlight,
             ));
         };
-        self.online_retention_step_with(access, retain_sequences, allowance)
+        self.online_retention_step_with(access, retain_sequences, allowance, phases)
     }
 
     fn online_retention_step_with(
@@ -206,7 +287,9 @@ impl RedbOperationalPorts {
         access: crate::store::RedbWriteAccess,
         retain_sequences: NonZeroU64,
         allowance: u64,
+        phases: &mut OnlineRetentionPhases,
     ) -> Result<OnlineRetentionStep, StorageError> {
+        let planning = std::time::Instant::now();
         // Opened while the gate is held: every fence row is a direct
         // administration transition that commits under the same gate, so this
         // snapshot is the fence state this step commits against. It excludes
@@ -260,10 +343,15 @@ impl RedbOperationalPorts {
         };
         drop(derived_read);
         drop(read);
+        let digesting = std::time::Instant::now();
+        phases.plan_us = elapsed_us(planning, digesting);
 
         let write = access.transaction()?;
+        let mut materializing = digesting;
+        let mut deleting = digesting;
         let result = (|| {
             let (content_digest, counts) = digest_and_count_range(write, plan.first, plan.last)?;
+            materializing = std::time::Instant::now();
             let range_size = plan
                 .last
                 .checked_sub(plan.first)
@@ -281,6 +369,7 @@ impl RedbOperationalPorts {
                     .map_err(precommit_storage_error)?;
             }
             materialize_retained_command_views(write, plan.first, plan.last)?;
+            deleting = std::time::Instant::now();
             delete_whole_command_rows(write, plan.first, plan.last)?;
             delete_event_keyed_range(write, EVENTS, plan.first, plan.last)?;
             delete_event_keyed_range(write, OUTBOX, plan.first, plan.last)?;
@@ -328,6 +417,10 @@ impl RedbOperationalPorts {
             let _ = access.abort();
             return Err(error);
         }
+        let committing = std::time::Instant::now();
+        phases.digest_us = elapsed_us(digesting, materializing);
+        phases.materialize_us = elapsed_us(materializing, deleting);
+        phases.delete_us = elapsed_us(deleting, committing);
         let through = CommitSequence::new(plan.last)
             .ok_or_else(|| storage_error(StorageErrorKind::InvariantViolation))?;
         // Publish the new watermark to live readers BEFORE the deletion can
@@ -346,6 +439,7 @@ impl RedbOperationalPorts {
             self.shared.restore_retention_watermark(previous);
             return Err(error);
         }
+        phases.commit_us = elapsed_us(committing, std::time::Instant::now());
         Ok(OnlineRetentionStep::Advanced {
             through: plan.last,
             sequences: plan.last - plan.first + 1,
@@ -545,7 +639,7 @@ fn collect_online_fencing_inputs(
 }
 
 fn decode_segment_row(row: &[u8]) -> Result<Option<StoredCommandSegmentV1>, StorageError> {
-    match riffdb_storage_api::decode_command_segment_v1(row) {
+    match crate::history_stub::decode_segment_value(row) {
         Ok(segment) => Ok(Some(segment.into_parts().0)),
         Err(error)
             if error.kind() == riffdb_storage_api::DurableCodecErrorKind::UnexpectedRecordType =>

@@ -155,7 +155,10 @@ pub(super) fn validate_root_validation_reads(
             if arena
                 .get(*expression)
                 .is_none_or(|node| node.result_type() != component.value_type())
-                || !arena.dependencies(*expression)?.is_input_computable()
+                || (!arena.dependencies(*expression)?.is_input_computable()
+                    && !source
+                        .indexed_selection()
+                        .is_some_and(|_| source.key_expressions().contains(expression)))
             {
                 return Err(IrValidationError::InvalidDependency {
                     reason: "root-validation key is not input/constant-computable with the declared type",

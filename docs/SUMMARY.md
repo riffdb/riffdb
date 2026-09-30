@@ -66,6 +66,7 @@
 - [Authoring Reference](contracts/AUTHORING.md)
 - [Language Reference](contracts/LANGUAGE.md)
 - [Bounded Delete Commands](contracts/BOUNDED-COMMANDS.md)
+- [Atomic Indexed Selection](contracts/ATOMIC-INDEXED-SELECTION.md)
 - [Command and Invariant Cookbook](contracts/COMMAND-INVARIANT-COOKBOOK.md)
 - [Unsafe Patterns and Corrections](contracts/examples/NEGATIVE-EXAMPLES.md)
 
@@ -149,6 +150,7 @@
 - [App-baseline Alpha Evidence](performance/app-baseline-alpha.md)
 - [Alpha Endurance Harness](performance/alpha-endurance.md)
 - [WP-449 Writer Evidence](performance/wp-449-writer-evidence.md)
+- [WP-814 Retained Journal Ceilings](performance/wp-814-retained-journal-ceilings.md)
 - [Open Writer-evidence Defects](performance/wp749-writer-census-defects.md)
 - [WP-749 Receipt-wait Repair and Checkpoint Investigation](performance/wp749-receipt-wait-repair-2026-09.md)
 - [WP-749 Correlated Tail Result](performance/wp749-correlated-tail-2026-09.md)

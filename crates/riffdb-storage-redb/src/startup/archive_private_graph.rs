@@ -25,7 +25,7 @@ pub(super) fn validate(
             return Err(storage_error(StorageErrorKind::Unavailable));
         }
         let (key, value) = row.map_err(precommit_storage_error)?;
-        let decoded = match crate::command_prefix::decode_segment(value.value()) {
+        let decoded = match crate::history_stub::decode_retained_segment(value.value()) {
             Ok(decoded) => decoded,
             Err(error) if error.kind() == DurableCodecErrorKind::UnexpectedRecordType => continue,
             Err(error) => return Err(crate::error::codec_error(error)),

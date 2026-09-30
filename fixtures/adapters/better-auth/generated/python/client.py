@@ -22,8 +22,8 @@ def _compact_tag(value: object, tag: str, keys: frozenset[str]) -> dict[str, obj
 
 CONTRACT_LINEAGE: Final[str] = "BetterAuthAcceptance"
 CONTRACT_VERSION: Final[int] = 1
-CONTRACT_BUNDLE_HASH: Final[str] = "c1376f90ceda166ba326ed7e389d3c474224f18d07740b3d5e299cafc94e94d4"
-QUERY_MODULE_HASH: Final[str] = "fdf5340bae520590d297856e698dd6f097d9c120c5e0f265db82f650f948145f"
+CONTRACT_BUNDLE_HASH: Final[str] = "136f8814368e08bae8ecdb09b7b10d7f3d2d92ce5b8b67054e61cebba9d2041e"
+QUERY_MODULE_HASH: Final[str] = "c28a500f2eacc672e7758e5c2e414c7e7f3af382b44c53f22dad676bf1847c5c"
 
 class SessionState(StrEnum):
     ACTIVE = "Active"
@@ -74,7 +74,7 @@ class VerificationToken:
     organization_id: UUID
     verification_token_id: UUID
 
-GET_SESSION_QUERY_PLAN_HASH: Final[str] = "14da730fc589d7ef19c9ed976c7215cf2e35d6005a5fc10f36c0601af3a1189c"
+GET_SESSION_QUERY_PLAN_HASH: Final[str] = "b1f7609e9c9ab7b7c7740375ab261ea4cccb5e0db3101208415bc6e1832ca3af"
 GET_SESSION_SECRET_OUTPUTS: Final[tuple[tuple[str, str, str], ...]] = (
     ("GetSession", "Session", "token_digest"),
 )
@@ -106,7 +106,7 @@ class GetSessionMissing:
 
 GetSessionResult: TypeAlias = GetSessionFound | GetSessionMissing
 
-GET_USER_QUERY_PLAN_HASH: Final[str] = "346ee23a55e1d112448626ae9968816cd0100de7a378fb80e0f4653da35051a8"
+GET_USER_QUERY_PLAN_HASH: Final[str] = "9a69862ff21a6b286ef70498f48fdd96a58a0f9f0055744336b96ab410028730"
 
 @dataclass(frozen=True, slots=True, kw_only=True)
 class GetUserParams:
@@ -137,7 +137,7 @@ class ConsumeVerificationTokenInput:
     organization_id: UUID
     verification_token_id: UUID
 
-CONSUME_VERIFICATION_TOKEN_PLAN_HASH: Final[str] = "d3e6b696c3909e8d19de9441e0c25c410656e0daa40b9e7a6bc8738d62ff17dc"
+CONSUME_VERIFICATION_TOKEN_PLAN_HASH: Final[str] = "d3eb6e22e8c5b85778d5480c8ace53b88807c0c8abf1942c17e1844fdc74ea24"
 @dataclass(frozen=True, slots=True, kw_only=True)
 class ConsumeVerificationTokenVerificationTokenExpired:
     outcome: Literal["VerificationTokenExpired"] = field(default="VerificationTokenExpired", init=False)
@@ -163,7 +163,7 @@ class CreateUserAccountSessionsInput:
     signups: tuple[SignupGraphInput, ...]
     request_id: UUID
 
-CREATE_USER_ACCOUNT_SESSIONS_PLAN_HASH: Final[str] = "e35be7f9877e51a21f27f7371679dfaedb2cbdabad7e13c228ecacbe612c1126"
+CREATE_USER_ACCOUNT_SESSIONS_PLAN_HASH: Final[str] = "17a6684beab818b87785af41090f036b3b18d01dbcdeb2e46b7daec9eb7e04c0"
 @dataclass(frozen=True, slots=True, kw_only=True)
 class CreateUserAccountSessionsSignupUserExists:
     outcome: Literal["SignupUserExists"] = field(default="SignupUserExists", init=False)
@@ -212,7 +212,7 @@ class IssueVerificationTokenInput:
     organization_id: UUID
     verification_token_id: UUID
 
-ISSUE_VERIFICATION_TOKEN_PLAN_HASH: Final[str] = "9d226908f0f69a90f763b7dc7829b5fe9ff717a36f9f607a3162c0f0faed75ba"
+ISSUE_VERIFICATION_TOKEN_PLAN_HASH: Final[str] = "de7410e8a99c62a397b99b7d13c6c46616084f924281e0ab2623921541c37d43"
 @dataclass(frozen=True, slots=True, kw_only=True)
 class IssueVerificationTokenVerificationTokenExists:
     outcome: Literal["VerificationTokenExists"] = field(default="VerificationTokenExists", init=False)
@@ -243,7 +243,7 @@ class RefreshSessionInput:
     expected_revision: Annotated[int, "u64"]
     successor_token_digest: str
 
-REFRESH_SESSION_PLAN_HASH: Final[str] = "bec158663a6511372e7f497f3d0ed5ae9ffa45a0a39b7b54d71a817d9fd31067"
+REFRESH_SESSION_PLAN_HASH: Final[str] = "507c4765d254e284d1ac6bf4ff043a1e4a99363ffac85581984045878f0db613"
 @dataclass(frozen=True, slots=True, kw_only=True, repr=False)
 class RefreshSessionSessionRefreshed:
     session: Session

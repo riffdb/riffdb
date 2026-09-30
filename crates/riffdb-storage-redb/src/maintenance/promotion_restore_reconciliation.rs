@@ -115,11 +115,16 @@ impl RedbMaintenanceStorage {
             return Err(corrupt());
         }
         let (file, marker) = self.open_promotion_files()?;
-        let history = {
+        let (history, _resolver) = {
             let database = redb::Database::builder()
                 .create_file(file.try_clone().map_err(io_unavailable)?)
                 .map_err(database_error)?;
-            restore_history(&database.begin_read().map_err(transaction_error)?)?
+            let read = database.begin_read().map_err(transaction_error)?;
+            // The configured database's history stubs resolve from its own
+            // retained extents (ADR-0263) before any store owns it.
+            let resolver =
+                crate::history_stub::HistoryResolver::register_beside(&self.database_file, &read);
+            (restore_history(&read)?, resolver)
         };
         let restores = self.restore_chain(attempt, history)?;
         self.verify_promotion_files(&file, &marker)?;

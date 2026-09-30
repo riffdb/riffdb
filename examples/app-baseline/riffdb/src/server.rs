@@ -3107,6 +3107,12 @@ pub struct OnlineRetentionObservation {
     pub steps: u64,
     /// Sequences those steps removed.
     pub sequences: u64,
+    /// Summed step phase microseconds: preplan, gate wait, drain, plan,
+    /// digest, materialize, delete, commit.
+    pub phases_us: [u64; 8],
+    /// Holds by reason: target, fenced, checkpoint in flight, awaiting
+    /// checkpoint.
+    pub holds: [u64; 4],
 }
 
 fn parse_startup_evidence(stderr: &str) -> io::Result<RiffDbStartupEvidence> {
@@ -3180,7 +3186,7 @@ fn parse_shutdown_release_evidence(
     }
     let parse_line = |line: &str| {
         let fields = parse_key_values(line, SHUTDOWN_RELEASE_PREFIX)?;
-        const EXPECTED_FIELDS: [&str; 12] = [
+        const EXPECTED_FIELDS: [&str; 14] = [
             "graph_storage_release",
             "post_graph_release",
             "columnar_activations",
@@ -3195,6 +3201,9 @@ fn parse_shutdown_release_evidence(
             "online_retention_fence",
             "online_retention_steps",
             "online_retention_sequences",
+            // WP-811: summed step phases and holds by reason.
+            "online_retention_phases_us",
+            "online_retention_holds",
         ];
         if fields.len() != EXPECTED_FIELDS.len()
             || EXPECTED_FIELDS
@@ -3235,6 +3244,28 @@ fn parse_shutdown_release_evidence(
                 ));
             }
         };
+        let parse_list = |name: &'static str, width: usize| {
+            let values = fields
+                .get(name)
+                .ok_or_else(|| io::Error::other(format!("shutdown release {name} missing")))?
+                .split(',')
+                .map(|value| {
+                    value
+                        .parse::<u64>()
+                        .map_err(|_| io::Error::other(format!("shutdown release {name} invalid")))
+                })
+                .collect::<io::Result<Vec<_>>>()?;
+            if values.len() != width {
+                return Err(io::Error::other(format!("shutdown release {name} width")));
+            }
+            Ok(values)
+        };
+        let phases_us: [u64; 8] = parse_list("online_retention_phases_us", 8)?
+            .try_into()
+            .map_err(|_| io::Error::other("shutdown release online_retention_phases_us"))?;
+        let holds: [u64; 4] = parse_list("online_retention_holds", 4)?
+            .try_into()
+            .map_err(|_| io::Error::other("shutdown release online_retention_holds"))?;
         let retention_fence = match fields.get("online_retention_fence").map(String::as_str) {
             Some("none") => "none",
             Some("durable_application_head") => "durable_application_head",
@@ -3265,6 +3296,8 @@ fn parse_shutdown_release_evidence(
                 fence: retention_fence,
                 steps: parse_count("online_retention_steps")?,
                 sequences: parse_count("online_retention_sequences")?,
+                phases_us,
+                holds,
             },
         ))
     };
@@ -3644,8 +3677,8 @@ mod tests {
         );
         assert_eq!(
             parse_shutdown_release_evidence(
-                "riffdb-shutdown-release-v1\tgraph_storage_release=1\tpost_graph_release=0\tcolumnar_activations=0\tcolumnar_population_passes=0\tbackground_scrub=complete\tbackground_scrub_rows=7\tbackground_scrub_total_us=9\tbackground_scrub_rows_per_second=11\tonline_retention=idle\tonline_retention_fence=none\tonline_retention_steps=3\tonline_retention_sequences=40\n\
-                 riffdb-shutdown-release-v1\tgraph_storage_release=1\tpost_graph_release=2\tcolumnar_activations=0\tcolumnar_population_passes=0\tbackground_scrub=complete\tbackground_scrub_rows=7\tbackground_scrub_total_us=9\tbackground_scrub_rows_per_second=11\tonline_retention=idle\tonline_retention_fence=none\tonline_retention_steps=3\tonline_retention_sequences=40\n"
+                "riffdb-shutdown-release-v1\tgraph_storage_release=1\tpost_graph_release=0\tcolumnar_activations=0\tcolumnar_population_passes=0\tbackground_scrub=complete\tbackground_scrub_rows=7\tbackground_scrub_total_us=9\tbackground_scrub_rows_per_second=11\tonline_retention=idle\tonline_retention_fence=none\tonline_retention_steps=3\tonline_retention_sequences=40\tonline_retention_phases_us=1,2,3,4,5,6,7,8\tonline_retention_holds=9,10,11,12\n\
+                 riffdb-shutdown-release-v1\tgraph_storage_release=1\tpost_graph_release=2\tcolumnar_activations=0\tcolumnar_population_passes=0\tbackground_scrub=complete\tbackground_scrub_rows=7\tbackground_scrub_total_us=9\tbackground_scrub_rows_per_second=11\tonline_retention=idle\tonline_retention_fence=none\tonline_retention_steps=3\tonline_retention_sequences=40\tonline_retention_phases_us=1,2,3,4,5,6,7,8\tonline_retention_holds=9,10,11,12\n"
             )
             .expect("columnar shutdown evidence"),
             (
@@ -3662,6 +3695,8 @@ mod tests {
                     fence: "none",
                     steps: 3,
                     sequences: 40,
+                    phases_us: [1, 2, 3, 4, 5, 6, 7, 8],
+                    holds: [9, 10, 11, 12],
                 }
             )
         );

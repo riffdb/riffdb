@@ -34,12 +34,16 @@ fn install_fixture(path: &Path) -> ChangelogHistoryStateV3 {
     .unwrap()
     .value();
     let receipt = AuthoritativeTransactionV3::decode(
-        read.open_table(HISTORY)
-            .unwrap()
-            .get(history.tail().sequence().get().to_be_bytes().as_slice())
-            .unwrap()
-            .unwrap()
-            .value(),
+        &riffdb_storage_redb::resolve_history_row_fixture(
+            path,
+            read.open_table(HISTORY)
+                .unwrap()
+                .get(history.tail().sequence().get().to_be_bytes().as_slice())
+                .unwrap()
+                .unwrap()
+                .value(),
+        )
+        .unwrap(),
     )
     .unwrap();
     history.validate_terminal_receipt(&receipt).unwrap();
@@ -395,11 +399,15 @@ fn successor_changelog_receipts_survive_checkpoint_and_recovery() {
         let table = read.open_table(HISTORY).unwrap();
         for (sequence, expected) in &exact {
             assert_eq!(
-                table
-                    .get(sequence.to_be_bytes().as_slice())
-                    .unwrap()
-                    .unwrap()
-                    .value(),
+                &riffdb_storage_redb::resolve_history_row_fixture(
+                    &path.0,
+                    table
+                        .get(sequence.to_be_bytes().as_slice())
+                        .unwrap()
+                        .unwrap()
+                        .value(),
+                )
+                .unwrap(),
                 expected
             );
         }
@@ -567,7 +575,16 @@ fn real_v3_command_crashes_keep_whole_groups_and_receipts_through_repeated_recov
                 .unwrap()
                 .iter()
                 .unwrap()
-                .map(|row| AuthoritativeTransactionV3::decode(row.unwrap().1.value()).unwrap())
+                .map(|row| {
+                    AuthoritativeTransactionV3::decode(
+                        &riffdb_storage_redb::resolve_history_row_fixture(
+                            &path.0,
+                            row.unwrap().1.value(),
+                        )
+                        .unwrap(),
+                    )
+                    .unwrap()
+                })
                 .filter(|row| {
                     matches!(
                         row.attribution(),

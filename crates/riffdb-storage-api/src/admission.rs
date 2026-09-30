@@ -448,6 +448,17 @@ pub trait ExecutionFailureAdmissionRechecked: Sized {
 
 /// Consuming decision state after current values are available to the coordinator.
 pub trait ExecutionFailureAwaitingDecision: Sized {
+    /// Reads policy evidence in the same transaction before disclosing a selected-row fault.
+    fn read_transaction_current_policy(
+        &self,
+        _request: &crate::TransactionCurrentPolicyRequestV1,
+    ) -> Result<crate::TransactionCurrentPolicyStateV1, StorageError> {
+        Err(StorageError::new(
+            crate::StorageErrorKind::InvariantViolation,
+            None,
+        ))
+    }
+
     /// Atomically stores the exact request-derived failure after equal validation.
     fn terminalize(self) -> Result<StoredExecutionFailedV1, StorageError>;
 

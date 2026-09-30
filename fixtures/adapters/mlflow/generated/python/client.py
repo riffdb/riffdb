@@ -22,8 +22,8 @@ def _compact_tag(value: object, tag: str, keys: frozenset[str]) -> dict[str, obj
 
 CONTRACT_LINEAGE: Final[str] = "MlflowScheduler"
 CONTRACT_VERSION: Final[int] = 1
-CONTRACT_BUNDLE_HASH: Final[str] = "5ac88d626905880c16ac48674dad8592719409bdca81fb9b4b22968ab06dfdf7"
-QUERY_MODULE_HASH: Final[str] = "74192497df9e7731cada80360b195d497f701aa0d59d8103be533b1fd21e1ba7"
+CONTRACT_BUNDLE_HASH: Final[str] = "d68893a9c5cf2ee88e3c660a2e06b2b7c7d85761e9e5ddbc678e7bbb19b96a72"
+QUERY_MODULE_HASH: Final[str] = "f82464a4d7320b9ce20f43a6e3ed40d90776ecf5b3e2d5e841ab7847fc7d23ab"
 
 class RunState(StrEnum):
     PENDING = "Pending"
@@ -40,7 +40,7 @@ class ScheduledRun:
     organization_id: UUID
     lease_expires_at: Timestamp | None
 
-DUE_RUN_QUERY_PLAN_HASH: Final[str] = "05929bc3ab03b5fe7ab392f8b08f85b203ef381bac39652d1eec6ab27ae8b316"
+DUE_RUN_QUERY_PLAN_HASH: Final[str] = "6c42c7993f37e289d85281bf44f36700e025728a48b0ed8995c0ce6728f92202"
 
 @dataclass(frozen=True, slots=True, kw_only=True)
 class DueRunParams:

@@ -8,8 +8,7 @@ use riffdb_contract_compiler::{
     CompilerBoundResource, CompilerDiagnosticCode, compile_contract_source,
 };
 use riffdb_contract_ir::{
-    BUNDLE_FORMAT_VERSION_V23, ContractBundle, EXECUTABLE_IR_VERSION_V16,
-    EXECUTABLE_IR_VERSION_V23, GRAMMAR_VERSION_V23,
+    BUNDLE_FORMAT_VERSION_V25, ContractBundle, EXECUTABLE_IR_VERSION_V25, GRAMMAR_VERSION_V25,
 };
 
 const METRICS: &str =
@@ -102,9 +101,9 @@ contract ConflictBoundary version 1 {{
 #[test]
 fn thousand_elements_plus_root_selects_v23_and_round_trips() {
     let bundle = compile_contract_source(METRICS).expect("1,000 elements plus root compile");
-    assert_eq!(bundle.format_version(), BUNDLE_FORMAT_VERSION_V23);
-    assert_eq!(bundle.grammar_version(), GRAMMAR_VERSION_V23);
-    assert_eq!(bundle.ir_version(), EXECUTABLE_IR_VERSION_V23);
+    assert_eq!(bundle.format_version(), BUNDLE_FORMAT_VERSION_V25);
+    assert_eq!(bundle.grammar_version(), GRAMMAR_VERSION_V25);
+    assert_eq!(bundle.ir_version(), EXECUTABLE_IR_VERSION_V25);
 
     let plan = &bundle.commands()[0];
     assert_eq!(
@@ -144,7 +143,7 @@ fn legacy_256_element_plan_keeps_its_pre_v23_identity() {
         .replace("set summary.revision = summary.revision + 1", "");
     let bundle = compile_contract_source(&source).expect("legacy cardinality compiles");
     let plan = &bundle.commands()[0];
-    assert_eq!(bundle.ir_version(), 22);
+    assert_eq!(bundle.ir_version(), 25);
     assert_eq!(plan.maximum_mutation_instances(), 256);
     assert!(!plan.requires_ir_v23());
 }
@@ -158,7 +157,7 @@ fn checked_legacy_collection_fixture_remains_byte_exact() {
         include_bytes!("../../../fixtures/compiler/aggregate-collection-budget/bundle.bin");
     let bundle = compile_contract_source(source).expect("legacy collection fixture compiles");
     assert_eq!(bundle.canonical_bytes(), expected);
-    assert_eq!(bundle.ir_version(), EXECUTABLE_IR_VERSION_V16);
+    assert_eq!(bundle.ir_version(), EXECUTABLE_IR_VERSION_V25);
     assert_eq!(
         ContractBundle::decode(expected).expect("legacy collection fixture decodes"),
         bundle
@@ -175,7 +174,7 @@ fn first_successor_element_and_mutation_counts_select_v23_independently() {
         .replace("set summary.revision = summary.revision + 1", "");
     let element_bundle =
         compile_contract_source(&element_source).expect("257 elements compile under V23");
-    assert_eq!(element_bundle.ir_version(), EXECUTABLE_IR_VERSION_V23);
+    assert_eq!(element_bundle.ir_version(), EXECUTABLE_IR_VERSION_V25);
     assert_eq!(
         element_bundle.commands()[0].maximum_mutation_instances(),
         257
@@ -184,7 +183,7 @@ fn first_successor_element_and_mutation_counts_select_v23_independently() {
     let mutation_source = one_mutation_template(256);
     let mutation_bundle =
         compile_contract_source(&mutation_source).expect("257 mutations compile under V23");
-    assert_eq!(mutation_bundle.ir_version(), EXECUTABLE_IR_VERSION_V23);
+    assert_eq!(mutation_bundle.ir_version(), EXECUTABLE_IR_VERSION_V25);
     assert_eq!(
         mutation_bundle.commands()[0].maximum_mutation_instances(),
         257

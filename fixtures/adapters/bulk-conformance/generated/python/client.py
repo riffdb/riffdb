@@ -22,8 +22,8 @@ def _compact_tag(value: object, tag: str, keys: frozenset[str]) -> dict[str, obj
 
 CONTRACT_LINEAGE: Final[str] = "AdapterBulkConformance"
 CONTRACT_VERSION: Final[int] = 1
-CONTRACT_BUNDLE_HASH: Final[str] = "1269c5719677521a90542d72ef51deb48535ec878a5789aa7491ac5917285698"
-QUERY_MODULE_HASH: Final[str] = "54ee2b4f4aafce82698df049391e788ce8669ccba4fdf0fd44d16e3a36678709"
+CONTRACT_BUNDLE_HASH: Final[str] = "9bed2579aabacebfc35aeac1191dfeeea0727c10464000b9ca726d68b135401c"
+QUERY_MODULE_HASH: Final[str] = "ea2506d302a9e7fd150f76ca06514d8954a2e1733bcdf2e5001df19e9e36e3f6"
 
 COLLECTION_COUNT: Final[str] = "collection_count"
 INDIVIDUAL_VALUE_BYTES: Final[str] = "individual_value_bytes"
@@ -118,7 +118,7 @@ class PipelineGraphInput:
     pipeline_id: UUID
     organization_id: UUID
 
-GET_FGA_TUPLE_QUERY_PLAN_HASH: Final[str] = "37ef92b3e173c53ebc637903afb7dcea2752192f63c017046c1d0c6148e0fc8b"
+GET_FGA_TUPLE_QUERY_PLAN_HASH: Final[str] = "f54262ddcf7bc4f3d4b397600e8b376caf3de27878ead0de53ad789870548451"
 
 @dataclass(frozen=True, slots=True, kw_only=True)
 class GetFgaTupleParams:
@@ -149,7 +149,7 @@ class CreateDocumentGraphsInput:
     documents: tuple[DocumentGraphInput, ...]
     request_id: UUID
 
-CREATE_DOCUMENT_GRAPHS_PLAN_HASH: Final[str] = "83776c67a2365b09265b00ab24f469376b967cc44dcc93588f61c86ae89eb335"
+CREATE_DOCUMENT_GRAPHS_PLAN_HASH: Final[str] = "fc646a4f5db5bd9683af3a1aa90e0c1a423a9a1c1d71562cbb5853a194ffe4b9"
 @dataclass(frozen=True, slots=True, kw_only=True)
 class CreateDocumentGraphsDocumentAlreadyExists:
     outcome: Literal["DocumentAlreadyExists"] = field(default="DocumentAlreadyExists", init=False)
@@ -169,7 +169,7 @@ class CreatePipelinesWithStepsInput:
     pipelines: tuple[PipelineGraphInput, ...]
     request_id: UUID
 
-CREATE_PIPELINES_WITH_STEPS_PLAN_HASH: Final[str] = "a2fb6dcc463387ac79b2273b7a84f3d66c2b52213f883d0ccd7183e185924b00"
+CREATE_PIPELINES_WITH_STEPS_PLAN_HASH: Final[str] = "05393691334d1968513e5153f2a47d28ed564f51ae270d91986fe1bc6aa387ae"
 @dataclass(frozen=True, slots=True, kw_only=True)
 class CreatePipelinesWithStepsPipelinesCreated:
     outcome: Literal["PipelinesCreated"] = field(default="PipelinesCreated", init=False)
@@ -247,7 +247,7 @@ class LogMetricsInput:
     request_id: UUID
     experiment_id: UUID
 
-LOG_METRICS_PLAN_HASH: Final[str] = "e247d29ffdcb1ea3c5af4a2707cc69afd0828883a7ddfd63193b137a38e9c827"
+LOG_METRICS_PLAN_HASH: Final[str] = "bcda9b60dca5d73af3e42b5d0c5309406f4ff0165044957c57433930f5b94684"
 @dataclass(frozen=True, slots=True, kw_only=True)
 class LogMetricsMetricsLogged:
     revision: Annotated[int, "u64"]
@@ -264,7 +264,7 @@ class WritePolicyMutationsInput:
     mutations: tuple[PolicyMutation, ...]
     request_id: UUID
 
-WRITE_POLICY_MUTATIONS_PLAN_HASH: Final[str] = "861c3e0769b22e53698cc4e7339ee4315bb5ba9e8e3e401cb6c8fc44e15c5961"
+WRITE_POLICY_MUTATIONS_PLAN_HASH: Final[str] = "b1e8abbd14d897069fdcb322f3ad39c2fcb57c0ac8e1fe7fd182cb3a9eec2cf9"
 @dataclass(frozen=True, slots=True, kw_only=True)
 class WritePolicyMutationsPolicyMutationExists:
     outcome: Literal["PolicyMutationExists"] = field(default="PolicyMutationExists", init=False)
@@ -280,7 +280,7 @@ class WriteTuplesInput:
     tuples: tuple[FgaTuple, ...]
     request_id: UUID
 
-WRITE_TUPLES_PLAN_HASH: Final[str] = "3b9b7645f44d2d3b10ebdd20b2635e0b771df9e2f72b13b715f28d7c47376a03"
+WRITE_TUPLES_PLAN_HASH: Final[str] = "e78d8361f05ae0574e887e38d00efb731569f70fa236a2d57022c1bdc8bb349f"
 @dataclass(frozen=True, slots=True, kw_only=True)
 class WriteTuplesTuplesWritten:
     outcome: Literal["TuplesWritten"] = field(default="TuplesWritten", init=False)

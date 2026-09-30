@@ -83,9 +83,29 @@ impl CheckpointCensus {
 
 pub(crate) static CHECKPOINTS: CheckpointCensus = CheckpointCensus::new();
 
+/// The peak overlay charge any selected checkpoint covered. Overlay memory is
+/// bounded by it (ADR-0263 Decision 7).
+static PEAK_OVERLAY_CHARGE: AtomicU64 = AtomicU64::new(0);
+
+pub(crate) fn overlay_charge(bytes: usize) {
+    PEAK_OVERLAY_CHARGE.fetch_max(u64::try_from(bytes).unwrap_or(u64::MAX), Ordering::Relaxed);
+}
+
+pub(crate) fn peak_overlay_charge() -> u64 {
+    PEAK_OVERLAY_CHARGE.load(Ordering::Relaxed)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // req: REP-007
+    #[test]
+    fn the_overlay_census_keeps_the_peak_charge() {
+        overlay_charge(90_000_000);
+        overlay_charge(60_000_000);
+        assert!(peak_overlay_charge() >= 90_000_000);
+    }
 
     // req: REP-007
     #[test]

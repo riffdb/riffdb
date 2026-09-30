@@ -159,17 +159,19 @@ fn consume_staged_command_evidence(
 /// and payload-free lookup locators before the owning transaction can commit.
 /// The full rows staged earlier are transaction-private validation material;
 /// no reader or recovery boundary can observe them.
+/// A capsulated segment, its terminal audits, and the exact canonical bytes
+/// written to its `COMMITS` row.
+type CapsulatedCommandRows = (
+    StoredCommandSegmentV1,
+    Vec<riffdb_storage_api::StoredServiceAuditRecordV1>,
+    Arc<[u8]>,
+);
+
 fn capsulate_command_rows(
     core: &mut BatchCore,
     command_links: Vec<StagedCommandAuditLinkEvidenceV1>,
     audit_records: Vec<StagedCommandAuditRecordsV1>,
-) -> Result<
-    (
-        StoredCommandSegmentV1,
-        Vec<riffdb_storage_api::StoredServiceAuditRecordV1>,
-    ),
-    StorageError,
-> {
+) -> Result<CapsulatedCommandRows, StorageError> {
     let mut terminals = Vec::with_capacity(command_links.len());
     if audit_records.len() != command_links.len()
         || audit_records.len() != core.capsule_extensions.len()
@@ -233,16 +235,18 @@ fn capsulate_command_rows(
         None => riffdb_storage_api::seal_and_encode_command_segment_with_metrics_v1(segment)
             .map_err(codec_error)?,
     };
+    let canonical: Arc<[u8]> = Arc::from(encoded_segment.as_bytes());
     if !access.put_command_segment_value(
         commit_key.to_vec(),
         encoded_segment,
+        crate::history_stub::SegmentSummary::of(&segment)?,
         segment.commands().len(),
         encoding_metrics.raw_envelope_bytes(),
     )? {
         return Err(storage_error(StorageErrorKind::InvariantViolation));
     }
     write_durable_command_locators(access, &segment)?;
-    Ok((segment, terminals))
+    Ok((segment, terminals, canonical))
 }
 
 /// Writes the ADR-0165 locator rows that make a segment-owned command
@@ -334,7 +338,7 @@ fn last_command_segment_digest(
     let Some((_, value)) = rows.last() else {
         return Ok(None);
     };
-    match riffdb_storage_api::decode_command_segment_v1(&value[..]) {
+    match crate::history_stub::decode_segment_value(&value[..]) {
         Ok(segment) => Ok(Some(segment.value().segment_digest())),
         Err(error)
             if error.kind() == riffdb_storage_api::DurableCodecErrorKind::UnexpectedRecordType =>
@@ -794,15 +798,16 @@ impl NonEmptyCommandBatch for RedbNonEmptyBatch {
             transitions,
             &command_links,
         )?;
-        let (segment, terminal_records) =
+        let (segment, terminal_records, canonical) =
             capsulate_command_rows(&mut self.core, command_links, records)?;
         let audited = AuditedCommittedBatchV1::new(committed, terminal_records.clone())
             .map_err(invariant_value)?;
         // Request and outbox membership are derived from the canonical segment
         // manifest. Publish their transient accelerators only after durability.
-        let delta = Some(TransientIndexDelta::CommandSegmentPublished(Arc::new(
-            segment,
-        )));
+        let delta = Some(TransientIndexDelta::CommandSegmentPublished(
+            Arc::new(segment),
+            Some(canonical),
+        ));
         flush_index_generation_post_images(&mut self.core)?;
         stage_application_allocator(&self.core.access, self.core.allocator)?;
         self.core
@@ -985,12 +990,14 @@ impl DeferredNonEmptyCommandBatch for RedbNonEmptyBatch {
             transitions,
             &command_links,
         )?;
-        let (segment, terminals) = capsulate_command_rows(&mut self.core, command_links, records)?;
+        let (segment, terminals, canonical) =
+            capsulate_command_rows(&mut self.core, command_links, records)?;
         let unpublished =
             UnpublishedAuditedBatchV1::new(outcomes, terminals).map_err(invariant_value)?;
-        let delta = Some(TransientIndexDelta::CommandSegmentPublished(Arc::new(
-            segment,
-        )));
+        let delta = Some(TransientIndexDelta::CommandSegmentPublished(
+            Arc::new(segment),
+            Some(canonical),
+        ));
         flush_index_generation_post_images(&mut self.core)?;
         stage_application_allocator(&self.core.access, self.core.allocator)?;
         self.core
@@ -1027,6 +1034,77 @@ fn read_transaction_local_snapshot(
             }
             ApplicationSequenceAllocator::Exhausted => riffdb_types::CommitSequence::new(u64::MAX),
         });
+    if let Some(selection) = request.indexed_selection() {
+        let target = selection.range();
+        let prefix = target.prefix().as_bytes();
+        let upper = exclusive_prefix_end(prefix)
+            .ok_or_else(|| storage_error(StorageErrorKind::CorruptData))?;
+        let epoch = core
+            .index_generations
+            .get(target.generation_target())
+            .copied()
+            .map_or_else(
+                || epoch_position_from_access(&core.access, target.generation_target()),
+                Ok,
+            )?;
+        let entries =
+            core.access
+                .read_command_range(JournalTable::SecondaryIndexes, prefix, &upper, 1)?;
+        let entry = entries
+            .into_iter()
+            .next()
+            .map(|(physical_key, encoded)| {
+                let key = decode_index_entry_key(&physical_key)
+                    .map_err(|_| storage_error(StorageErrorKind::CorruptData))?;
+                let decoded = decode_index_entry_v2(&encoded)?;
+                if decoded.value().key() != &key
+                    || decoded.value().partition_key() != target.generation_target().partition_key()
+                {
+                    return Err(storage_error(StorageErrorKind::CorruptData));
+                }
+                IndexRangeEntry::new(
+                    key.index_id(),
+                    key,
+                    decoded.value().covered_values().clone(),
+                )
+                .map_err(|_| storage_error(StorageErrorKind::CorruptData))
+            })
+            .transpose()?;
+        let resolved = request
+            .resolve_indexed_selection(entry.as_ref())
+            .map_err(materialization_value)?;
+        let mut snapshot =
+            ReadSnapshotBuilder::new(&resolved, observed_through).map_err(materialization_value)?;
+        for target in resolved.binding_targets() {
+            snapshot
+                .push_binding(entity_observation_from_access(&core.access, target)?.0)
+                .map_err(materialization_value)?;
+        }
+        for target in resolved.root_validation_targets() {
+            snapshot
+                .push_root_validation(entity_observation_from_access(&core.access, target)?.0)
+                .map_err(materialization_value)?;
+        }
+        let mut range = snapshot
+            .begin_range(target.clone(), epoch)
+            .map_err(materialization_value)?;
+        if let Some(entry) = entry {
+            range.push_entry(entry).map_err(materialization_value)?;
+        }
+        range.finish().map_err(materialization_value)?;
+        let snapshot = snapshot.finish().map_err(materialization_value)?;
+        selection
+            .selected_key(&snapshot)
+            .map_err(|_| storage_error(StorageErrorKind::CorruptData))?;
+        core.access.observe_indexed_selection(
+            snapshot
+                .ranges()
+                .iter()
+                .map(|range| range.entries().len())
+                .sum(),
+        );
+        return Ok(snapshot);
+    }
     let mut snapshot =
         ReadSnapshotBuilder::new(&request, observed_through).map_err(materialization_value)?;
 
@@ -1347,6 +1425,13 @@ impl ExecutionFailureAdmissionRechecked for RedbExecutionFailureRechecked {
 }
 
 impl ExecutionFailureAwaitingDecision for RedbExecutionFailureAwaitingDecision {
+    fn read_transaction_current_policy(
+        &self,
+        request: &TransactionCurrentPolicyRequestV1,
+    ) -> Result<TransactionCurrentPolicyStateV1, StorageError> {
+        transaction_current_policy_state_from_access(&self.access, request)
+    }
+
     fn terminalize(self) -> Result<StoredExecutionFailedV1, StorageError> {
         self.terminalize_inner(None).map(|(failure, _)| failure)
     }
@@ -2809,7 +2894,7 @@ fn command_outcome_from_operational_indexes(
     )?;
     let mut found = None;
     for (_, encoded) in rows {
-        let segment = match riffdb_storage_api::decode_command_segment_v1(&encoded) {
+        let segment = match crate::history_stub::decode_segment_value(&encoded) {
             Ok(segment) => segment.into_parts().0,
             Err(error)
                 if error.kind()
@@ -3012,8 +3097,14 @@ fn transaction_current_policy_state(
     core: &BatchCore,
     request: &TransactionCurrentPolicyRequestV1,
 ) -> Result<TransactionCurrentPolicyStateV1, StorageError> {
-    let capability = core
-        .access
+    transaction_current_policy_state_from_access(&core.access, request)
+}
+
+fn transaction_current_policy_state_from_access(
+    access: &RedbWriteAccess,
+    request: &TransactionCurrentPolicyRequestV1,
+) -> Result<TransactionCurrentPolicyStateV1, StorageError> {
+    let capability = access
         .read_command_capability_bytes(request.capability_id())?
         .map(|value| {
             let record = decoded_value(decode_capability_record_v1(&value)?);
@@ -3028,7 +3119,7 @@ fn transaction_current_policy_state(
         let upper = exclusive_prefix_end(lookup.index_prefix())
             .ok_or_else(|| storage_error(StorageErrorKind::InvariantViolation))?;
         let mut exists = false;
-        let rows = core.access.read_command_range(
+        let rows = access.read_command_range(
             JournalTable::SecondaryIndexes,
             lookup.index_prefix(),
             &upper,

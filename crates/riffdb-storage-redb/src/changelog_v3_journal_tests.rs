@@ -413,6 +413,14 @@ fn journal_recovery_refuses_v3_gaps_and_partial_evidence_without_reclaiming_sour
     }
 }
 
+fn register_resolver(path: &Path) -> std::sync::Arc<crate::history_stub::HistoryResolver> {
+    crate::history_stub::HistoryResolver::register(
+        lineage().database_id(),
+        path,
+        std::sync::Arc::new(crate::media::RealJournalMedia),
+    )
+}
+
 #[test]
 fn v3_journal_recovery_process_child() {
     let Some(path) = std::env::var_os("RIFFDB_V3_RECOVERY_DATABASE") else {
@@ -420,6 +428,8 @@ fn v3_journal_recovery_process_child() {
     };
     let database = Database::open(&path).unwrap();
     let journal = crate::journal::journal_path(Path::new(&path));
+    // Recovery writes history stubs; resolve them as an open store would.
+    let _resolver = register_resolver(Path::new(&path));
     crate::journal::recover_journal_path(&database, &journal, lineage().database_id()).unwrap();
     panic!("the requested recovery crash edge was not reached");
 }
@@ -448,6 +458,7 @@ fn v3_journal_recovery_process_crashes_preserve_at_least_one_exact_receipt_sourc
             .env("RIFFDB_V3_RECOVERY_EDGE", edge)
             .status().unwrap();
         assert_eq!(status.code(), Some(93), "{edge}");
+        let _resolver = register_resolver(&path);
         let database = Database::open(&path).unwrap();
         let pin = database.begin_read().unwrap();
         let actual = crate::changelog_v3_roots::validate_retained_history(&pin)
@@ -822,4 +833,62 @@ fn complete_changelog_history_validation_rejects_rechecksummed_broken_interiors(
             Some(history)
         );
     }
+}
+
+fn recorded_binding(
+    history: ChangelogHistoryStateV3,
+    frame: &JournalFrame,
+) -> crate::journal::FrameChangelogBinding {
+    let binding = AuthoritativeTransactionBindingV3 {
+        database_id: history.lineage().database_id(),
+        history_incarnation: history.lineage().history_incarnation(),
+        predecessor: Some(history.tail().sequence()),
+        sequence: history.expected_allocator().allocate_one().unwrap().0,
+        predecessor_frontier: history.tail().frontier(),
+        covered_frontier: DualFrontier::new(
+            frame.covered_sequence(),
+            frame.covered_administration_sequence(),
+        ),
+        prior_history_hash: history.tail().history_hash(),
+    };
+    crate::journal::FrameChangelogBinding::new(&binding, history.lineage().catalog_digest())
+}
+
+// req: REC-005
+#[test]
+fn recovery_refuses_a_version_3_frame_whose_recorded_binding_disagrees_with_the_roots() {
+    let scope = crate::test_path::ScopedDirectory::new("v3-recorded-binding");
+    let database = fixture(&scope.join("db.redb"), PRE_V3_REGISTRY);
+    let history = activate_validated(
+        database.begin_write().unwrap(),
+        lineage(),
+        DualFrontier::INITIAL,
+    )
+    .unwrap();
+    let source = audit_source(history);
+    let good = recorded_binding(history, &source);
+
+    let mut wrong = good.binding(&source);
+    wrong.prior_history_hash[0] ^= 1;
+    let forged = source
+        .clone()
+        .with_changelog(Some(crate::journal::FrameChangelogBinding::new(
+            &wrong,
+            good.catalog_digest(),
+        )));
+    let transaction = database.begin_write().unwrap();
+    assert_eq!(
+        crate::changelog_v3_journal::materialize_recovered_frame(&transaction, &forged)
+            .unwrap_err()
+            .kind(),
+        StorageErrorKind::CorruptData
+    );
+    transaction.abort().unwrap();
+
+    let recorded = source.with_changelog(Some(good));
+    let transaction = database.begin_write().unwrap();
+    let receipt =
+        crate::changelog_v3_journal::materialize_recovered_frame(&transaction, &recorded).unwrap();
+    transaction.commit().unwrap();
+    assert_eq!(receipt.binding(), good.binding(&recorded));
 }

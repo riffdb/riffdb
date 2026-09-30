@@ -213,49 +213,49 @@
   "repository_closure": [
     {
       "artifact_hashes": [
-        "6764a4aef3745c3c7eabaf26060fec25940a7149edce6a530fcaafb465c9ae68",
-        "4d0245689b82f7498d0fc5189cca42dea82c76354b17e6b10fce1eed598c77c5",
-        "ca4a0d3bdef9c76f46c9ef0d2a381767095c128ead5bc89cbeaabea62fcafa76",
-        "5118951200261ccff8cee2cd4426f5c96ea3ea0a201888a53a3e32f4a7151ae8",
-        "4d67f0476fa19a1cbad90dc56ac799d5de0fccb81a4fbdedafa8f871bade1e7c"
+        "21c3f484f5fc630b43da4ca0972dcd84a9abb378d12231c03608a0a49bb3abb3",
+        "3106d1d6db9ff7038111e3b53f700538eaada1dfb8fe5d6ec6657b95318986b3",
+        "7ae3a8182175daa2c655348fc79997fee953ccc62aadd6ba3d54b9b4d1a95823",
+        "265d26fe86c2d033fd51e792373b1dc3789bfa85dac6604af93a84cfb7557839",
+        "b7db8f0e75257ed4a46392f5f02eccb701122bf56fb7713ce871e344bcdba275"
       ],
-      "contract_bundle_hash": "0e7d234414fd9da7ca189b1f96038b7d05c033503fe76a3c96e24a603021c7bf",
-      "lock_hash": "6a3117b4eee87de180066a6a84c2b3f7e1cb03cbb270dd83fac194c859e72114",
-      "manifest_hash": "8eb9e714737e86065d145cab0db1b5c1fc1d8b94c3e7daa3468b45ed1771d874",
+      "contract_bundle_hash": "4194dd3e3f831c9da428fa9ebfaf3d220cad22d924842b2071b034acf99649ea",
+      "lock_hash": "3d9305019da8a72f6851fe513805395b63f51322ab237fef36d83081b147eff6",
+      "manifest_hash": "3c4a609813c30f5ed6859aa4deda600630c8b80d84cb019b62908a3f854ba056",
       "module_hashes": [
-        "f594471a8843b1e30effbb50cb4b75f239482926128ffb59c71675bae6a1c8bb"
+        "72a51e3e45c0f90605574a5cc65b4225affba7e1811ef95f06f4138c83caa406"
       ],
       "path": "examples/agent-alpha/riffdb.application.lock.json",
       "query_module_format": 1,
       "role_hashes": [
-        "cbdc78a88c176f70332861b8e27d97b38a4069d7341ab542591031ca19a33a6f"
+        "20b5e6587b394197178f92d7b7d71c947c555bc6d3326288f2d2f9c7c8dbe2c4"
       ],
       "rotation": "unchanged_ordinary_v1",
       "source_hash": "e34a5f4743847f3695112e8c4dbf382b328825903238d4194658ca71cb9cc032"
     },
     {
       "artifact_hashes": [
-        "e43f18fab63075dc164d8f7ef28ef1914816785f454faba1d7b9ba05ab0756cf",
-        "761a8ed9ae6a02a44e0386b87c4a8774f1bb2912f2d0b7dd3aa0b4bb632513c1",
-        "0e025dbb32316e14661d76b1623f7ef6dd301098b19bea9b37705fafbfac8b4b",
-        "f8b307b38235a62adfe526e62964d928be057e4af3391317f79e18f2b00a810e",
-        "82a78809402275e5e6cfc9e47f64146d1db097e8da79a424866968a5bfc14c55",
-        "2b2f7ff0a34312cac2508b7a17c024750c27120dca7362f7485cc325ee2293c9",
-        "824a98c2d3a16df9eed8f717841186d4ebc35d70e1eb9f58371a95518a11c24b",
-        "bc1048074d2d7f66323f6e0e4ca9a7f0d340ead1797a461f881ad603cce18875"
+        "57412d765748d36279133fd9e1db141f0d2c3cb44e4fdefbe0bde44a23151cba",
+        "3208c8cf1cdf93748d46c8b13d00ae91fc6a8ad95c823ade1a394f3935e3d84a",
+        "7bf9dc51643d7134762d9efd30c748c8855b3b2b950a7a8e86e12a82799682bd",
+        "408673a52f9f157a4ea5420842f5cfb651b32b1d53e5bb28517b99eb29c1f702",
+        "9d1657b3a6e5fca2a3918f918c58e27ac5f6d944484543e5725b7510bb85fd9d",
+        "ab483047f6f1af8c9ad120414843f98c3dc46dd249390b15f664f6a5cb957e40",
+        "877f09398410bd332612512ae8478daee633108c6ccf7fda7b1b42a38403b692",
+        "65dd38e84da37fdd70d84f4c77964c3de411b5e63653e4692765112119b34022"
       ],
-      "contract_bundle_hash": "32df6e2a70abfb420945291da188928dac100fcbfe66560ac3d0f1e438b8b11c",
-      "lock_hash": "e4f68d7014d49583428e49d164f1f961681bdcb1efc7b7480d6004bb6f2a0bf5",
-      "manifest_hash": "eebfab264a937d2c0897ab43cea947a6f19637bf47fef86c515b9bcbfca6c1ad",
+      "contract_bundle_hash": "7a67a72a9afc33e2889e073d88351fe383b3be3d534ef3a2c09c5dc5b45d3941",
+      "lock_hash": "2483d49e1ef277b7e893f4f79f3ed01b5e92b452b144508fdfe75691638c4527",
+      "manifest_hash": "4896572d92b6aa7711a404984b9aa98318e8787973a0fe0da3999f8a5893a69e",
       "module_hashes": [
-        "f4bebec973f66fd7da2f2209e2cbeb5dcf23798b883c5eba3754d89ab80746b4"
+        "20be758e0fc95121550c05505c5380de8c14fb316be8270a454ef0b306380e16"
       ],
       "path": "examples/ticketdesk/riffdb.application.lock.json",
       "query_module_format": 12,
       "role_hashes": [
-        "c2fcef75b9b9b4258e651644dcfb30e960786466fe71b95b15859b4a38195212",
-        "a22fac389aff284025fcedb39c0f79ea31327a69a17ddffdfb3fbbabeefefbb6",
-        "732d5743f6f363023f9d6bf875bc3a642894382ccaddda53f2b72364dbf7dbe7"
+        "978b2547d2e1e66bd78d495bd9d9371f9cfa795145438d436d7b241889115ab3",
+        "f80d3257db0010927c8c9c185671e94c7ede8551b6fad639dc2656d00e7f7c9c",
+        "d74c1e5877c9e14d9cef4e3f7ba5aab72d6c75de3837402809fabec910826011"
       ],
       "rotation": "accepted_successor_current",
       "source_hash": "8e4393fadc99fe856537ce279f02b25f18e7382fb07122ce52c75f0b79877e16"

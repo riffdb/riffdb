@@ -82,7 +82,7 @@ impl SharedRedb {
                     checkpoint_administration_sequence,
                     checkpoint_hash,
                 );
-                crate::journal::reset_journal_with_media(
+                crate::journal::advance_journal_anchor_with_media(
                     self.journal_media.as_ref(),
                     &path,
                     &header,
@@ -125,13 +125,30 @@ impl SharedRedb {
                 )
                 .map_err(journal_io_error)?,
             );
-            crate::journal::reset_journal_after_with_media(
-                self.journal_media.as_ref(),
-                &crate::journal::spare_journal_path(&self.path),
-                &spare_header,
-                &path,
-            )
-            .map_err(journal_io_error)?;
+            // Refresh an existing spare's generation now; a missing one (the
+            // last install consumed it) is zero-filled off the writer's path.
+            let spare_path = crate::journal::spare_journal_path(&self.path);
+            let spare_guard = self
+                .journal_spare
+                .lock()
+                .map_err(|_| storage_error(StorageErrorKind::InvariantViolation))?;
+            if self
+                .journal_media
+                .try_exists(&spare_path)
+                .map_err(|_| storage_error(StorageErrorKind::Unavailable))?
+            {
+                crate::journal::reset_journal_after_with_media(
+                    self.journal_media.as_ref(),
+                    &spare_path,
+                    &spare_header,
+                    &path,
+                )
+                .map_err(journal_io_error)?;
+                drop(spare_guard);
+            } else {
+                drop(spare_guard);
+                self.start_journal_sealer(spare_header)?;
+            }
             *runtime = Some(JournalRuntime {
                 changelog_history,
                 lane,
@@ -146,7 +163,9 @@ impl SharedRedb {
                 suffix_commands: 0,
                 suffix_audits: 0,
                 suffix_bytes: 0,
-                suffix_physical_bytes: 0,
+                // Frames before the anchor stay in the extent (ADR-0263), so
+                // physical capacity starts from the retained prefix.
+                suffix_physical_bytes: crate::journal::extent_used_bytes(tail.complete_bytes),
                 suffix_frames: Vec::new(),
                 unpublished_transitions: 0,
                 unpublished_commands: 0,
@@ -238,6 +257,7 @@ impl SharedRedb {
             return Err(storage_error(StorageErrorKind::CorruptData));
         }
         let covered_overlay = covered_view.overlay();
+        let overlay_charge = covered_overlay.charged_bytes();
         if covered_overlay.transition_count() != runtime.suffix_transitions
             || covered_overlay.encoded_frame_bytes() != runtime.suffix_bytes
         {
@@ -266,7 +286,15 @@ impl SharedRedb {
             runtime.last_administration_sequence,
             runtime.last_hash,
         );
+        // The previous checkpoint extent must have left the checkpoint name.
+        self.free_checkpoint_name(runtime.database_id)?;
         let media = self.journal_media.as_ref();
+        // The spare name moves under the lock the background preparation takes,
+        // so a preparation that finishes now never replaces the spare being used.
+        let spare_guard = self
+            .journal_spare
+            .lock()
+            .map_err(|_| storage_error(StorageErrorKind::InvariantViolation))?;
         crate::journal::reset_journal_after_with_media(
             media,
             &spare_path,
@@ -287,6 +315,7 @@ impl SharedRedb {
             .map_err(|_| storage_error(StorageErrorKind::Unavailable))?;
         crate::journal::sync_parent_directory_with_media(media, &active_path)
             .map_err(journal_io_error)?;
+        drop(spare_guard);
         let lane = Arc::new(
             crate::journal::JournalLane::open_with_media(
                 media,
@@ -331,6 +360,7 @@ impl SharedRedb {
             completion: Some(receiver),
             result: None,
         });
+        crate::checkpoint_census::overlay_charge(overlay_charge);
         crate::checkpoint_census::CHECKPOINTS.started(
             batch.transition_count,
             batch.command_count,

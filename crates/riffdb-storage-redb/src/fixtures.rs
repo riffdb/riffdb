@@ -535,3 +535,214 @@ pub fn initialize_legacy_database_fixture(
 ) -> Result<riffdb_storage_api::DatabaseInitializationResult, StorageError> {
     store.initialize_legacy_fixture(candidate)
 }
+
+/// One sealed, retained journal extent as its verified footer describes it:
+/// generation, frame count, and the first and last covered commit sequences.
+#[doc(hidden)]
+pub type SealedJournalExtentSummaryFixture = (u64, usize, Option<u64>, Option<u64>);
+
+/// Lists the sealed journal extents beside `database_path`, in generation
+/// order, verifying each footer against the frames it indexes (ADR-0263).
+#[doc(hidden)]
+pub fn sealed_journal_extents_fixture(
+    database_path: &Path,
+) -> Result<Vec<SealedJournalExtentSummaryFixture>, StorageError> {
+    let directory = database_path
+        .parent()
+        .ok_or_else(|| storage_error(StorageErrorKind::InvariantViolation))?;
+    let prefix = format!(
+        "{}.riffjournal.sealed.",
+        database_path
+            .file_name()
+            .and_then(|name| name.to_str())
+            .ok_or_else(|| storage_error(StorageErrorKind::InvariantViolation))?
+    );
+    let database_id = {
+        let database = Database::open(database_path).map_err(database_error)?;
+        let transaction = database.begin_read().map_err(transaction_error)?;
+        crate::store::read_identity_from_read_transaction(&transaction)?
+    };
+    let mut paths = std::fs::read_dir(directory)
+        .map_err(|_| storage_error(StorageErrorKind::Unavailable))?
+        .filter_map(Result::ok)
+        .filter(|entry| entry.file_name().to_string_lossy().starts_with(&prefix))
+        .map(|entry| entry.path())
+        .collect::<Vec<_>>();
+    paths.sort();
+    paths
+        .iter()
+        .map(|path| {
+            let footer = crate::journal::read_sealed_extent_with_media(
+                &crate::media::RealJournalMedia,
+                path,
+                database_id,
+            )
+            .map_err(|_| storage_error(StorageErrorKind::CorruptData))?;
+            let first = footer
+                .entries
+                .iter()
+                .find_map(|entry| entry.covered_sequence)
+                .map(riffdb_types::CommitSequence::get);
+            let last = footer
+                .entries
+                .iter()
+                .rev()
+                .find_map(|entry| entry.covered_sequence)
+                .map(riffdb_types::CommitSequence::get);
+            Ok((footer.generation, footer.entries.len(), first, last))
+        })
+        .collect()
+}
+
+/// COMMITS and HISTORY rows by representation: history stubs (ADR-0263
+/// Amendment 3) and full values. Each pair is `(stubs, full values)`.
+#[doc(hidden)]
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct HistoryStubCensusFixture {
+    pub commits: (usize, usize),
+    pub history: (usize, usize),
+    /// Full HISTORY rows attributed to a journaled group: receipts a journal
+    /// frame could have re-derived but whose bytes were written.
+    pub journaled_full_receipts: usize,
+}
+
+/// Counts the COMMITS and HISTORY rows of a closed database by representation,
+/// decoding every stub so a malformed one fails the census.
+#[doc(hidden)]
+pub fn history_stub_census_fixture(
+    database_path: &Path,
+) -> Result<HistoryStubCensusFixture, StorageError> {
+    let database = Database::open(database_path).map_err(database_error)?;
+    let transaction = database.begin_read().map_err(transaction_error)?;
+    let mut census = HistoryStubCensusFixture::default();
+    for (definition, counts) in [
+        (COMMITS, &mut census.commits),
+        (crate::changelog_v3_activation::HISTORY, &mut census.history),
+    ] {
+        let table = match transaction.open_table(definition) {
+            Ok(table) => table,
+            Err(redb::TableError::TableDoesNotExist(_)) => continue,
+            Err(error) => return Err(table_error(error)),
+        };
+        for row in table.iter().map_err(precommit_storage_error)? {
+            let (_, value) = row.map_err(precommit_storage_error)?;
+            if crate::history_stub::HistoryStub::decode(value.value())?.is_some() {
+                counts.0 += 1;
+            } else {
+                counts.1 += 1;
+            }
+        }
+    }
+    if let Ok(table) = transaction.open_table(crate::changelog_v3_activation::HISTORY) {
+        for row in table.iter().map_err(precommit_storage_error)? {
+            let (_, value) = row.map_err(precommit_storage_error)?;
+            if crate::history_stub::HistoryStub::decode(value.value())?.is_some() {
+                continue;
+            }
+            let receipt = riffdb_storage_api::AuthoritativeTransactionV3::decode(value.value())
+                .map_err(|_| storage_error(StorageErrorKind::CorruptData))?;
+            census.journaled_full_receipts += usize::from(matches!(
+                receipt.attribution(),
+                riffdb_storage_api::ChangelogAttributionV3::JournaledApplicationGroup
+                    | riffdb_storage_api::ChangelogAttributionV3::JournaledServiceAudit
+            ));
+        }
+    }
+    Ok(census)
+}
+
+/// Rewrites every history stub of a closed database as its full value, as a
+/// staged maintenance restore does (ADR-0263 Amendment 1).
+#[doc(hidden)]
+pub fn hydrate_history_stubs_fixture(database_path: &Path) -> Result<(), StorageError> {
+    let database = Database::open(database_path).map_err(database_error)?;
+    let database_id = {
+        let transaction = database.begin_read().map_err(transaction_error)?;
+        crate::store::read_identity_from_read_transaction(&transaction)?
+    };
+    let _resolver = crate::history_stub::HistoryResolver::register(
+        database_id,
+        database_path,
+        std::sync::Arc::new(crate::media::RealJournalMedia),
+    );
+    crate::history_stub::hydrate_history_stubs(&database)
+}
+
+/// Resolves one COMMITS or HISTORY value read from a closed database: a
+/// history stub becomes the exact value it names, from the extents beside
+/// `database_path`; any other value is returned unchanged.
+#[doc(hidden)]
+pub fn resolve_history_row_fixture(
+    database_path: &Path,
+    value: &[u8],
+) -> Result<Vec<u8>, StorageError> {
+    let Some(stub) = crate::history_stub::HistoryStub::decode(value)? else {
+        return Ok(value.to_vec());
+    };
+    let _resolver = crate::history_stub::HistoryResolver::register(
+        stub.database_id,
+        database_path,
+        std::sync::Arc::new(crate::media::RealJournalMedia),
+    );
+    match stub.kind {
+        crate::history_stub::StubKind::Segment => {
+            crate::history_stub::resolve_commits_value(value).map(std::borrow::Cow::into_owned)
+        }
+        crate::history_stub::StubKind::Receipt => {
+            crate::history_stub::resolve_history_value(value).map(std::borrow::Cow::into_owned)
+        }
+    }
+}
+
+/// The published overlay's COMMITS rows by representation, `(stubs, full
+/// values)`, and its charged bytes (ADR-0263 Decision 4).
+#[doc(hidden)]
+pub fn overlay_commits_fixture(
+    ports: &crate::store::RedbOperationalPorts,
+) -> Result<((usize, usize), usize), StorageError> {
+    let Some(view) = ports.shared.published_composite_view()? else {
+        return Ok(((0, 0), 0));
+    };
+    let overlay = view.overlay();
+    let page = overlay
+        .merge_bounded(
+            riffdb_storage_api::CompositeTableV1::Commits,
+            std::iter::empty(),
+            &[],
+            None,
+            usize::MAX,
+            usize::MAX,
+        )
+        .map_err(|_| storage_error(StorageErrorKind::CorruptData))?;
+    let mut counts = (0, 0);
+    for (_, value) in page.rows() {
+        if crate::history_stub::HistoryStub::decode(value)?.is_some() {
+            counts.0 += 1;
+        } else {
+            counts.1 += 1;
+        }
+    }
+    Ok((counts, overlay.charged_bytes()))
+}
+
+/// Removes the footer of the sealed extent of `generation` beside a closed
+/// database and moves it to `name`, the journal-suffixed name a crash
+/// window leaves it at (such as `checkpoint` or `sealing`).
+#[doc(hidden)]
+pub fn unseal_journal_extent_fixture(
+    database_path: &Path,
+    generation: u64,
+    name: &str,
+) -> Result<(), StorageError> {
+    let database_id = {
+        let database = Database::open(database_path).map_err(database_error)?;
+        let transaction = database.begin_read().map_err(transaction_error)?;
+        crate::store::read_identity_from_read_transaction(&transaction)?
+    };
+    let sealed = crate::journal::sealed_journal_path(database_path, generation);
+    crate::journal::unseal_extent_with_media(&crate::media::RealJournalMedia, &sealed, database_id)
+        .map_err(|_| storage_error(StorageErrorKind::CorruptData))?;
+    let mut target = database_path.as_os_str().to_os_string();
+    target.push(format!(".riffjournal.{name}"));
+    std::fs::rename(&sealed, target).map_err(|_| storage_error(StorageErrorKind::Unavailable))
+}

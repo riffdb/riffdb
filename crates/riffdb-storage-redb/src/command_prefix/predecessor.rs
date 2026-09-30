@@ -159,7 +159,14 @@ pub(super) fn with_prior(
     let definition: TableDefinition<&[u8], &[u8]> = TableDefinition::new(namespace.table());
     let table = transaction.open_table(definition).map_err(table_error)?;
     let row = table.get(key).map_err(precommit_storage_error)?;
-    let bytes = row.as_ref().map(|row| row.value());
+    let resolved = match row.as_ref().map(|row| row.value()) {
+        // A prior image binds a history stub's resolved segment (ADR-0263 C3).
+        Some(stored) if namespace == N::Commits => {
+            Some(crate::history_stub::resolve_commits_value(stored)?)
+        }
+        stored => stored.map(std::borrow::Cow::Borrowed),
+    };
+    let bytes = resolved.as_deref();
     if bytes.is_some_and(|bytes| bytes.len() > riffdb_storage_api::MAX_CHANGELOG_FRAME_BYTES) {
         return Err(storage_error(StorageErrorKind::LimitExceeded));
     }

@@ -719,6 +719,15 @@ pub enum Binding {
 }
 
 impl Binding {
+    /// Authoritative index selected by a contextual `mutate first` binding.
+    #[must_use]
+    pub const fn selection_index(&self) -> Option<&Spanned<String>> {
+        match self {
+            Self::Mutate(binding) => binding.selection_index.as_ref(),
+            _ => None,
+        }
+    }
+
     /// Unresolved entity name shared by every binding form.
     #[must_use]
     pub const fn entity(&self) -> &Spanned<String> {
@@ -855,6 +864,8 @@ pub enum DecisionAction {
 /// The common syntax of every entity binding.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct EntityBinding {
+    /// Equality-prefix index for an atomic first-row selection.
+    pub selection_index: Option<Spanned<String>>,
     /// The unresolved entity name.
     pub entity: Spanned<String>,
     /// Key expressions in source order.
@@ -1038,6 +1049,8 @@ pub struct SetEffect {
     /// Which spelling the author used, which is a claim about the write's
     /// concurrency semantics rather than a stylistic choice (ADR-0256).
     pub spelling: WriteSpelling,
+    /// Named dominating business requirement explicitly associated with this write.
+    pub checked_by: Option<Spanned<String>>,
     /// The assignment target path.
     pub target: Spanned<Path>,
     /// The assigned value expression.

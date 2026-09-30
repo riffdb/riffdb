@@ -28,6 +28,7 @@ impl SharedRedb {
                 crate::hooks::RedbCheckpointTestPoint::BeforeMaterialization,
             );
         }
+        self.register_history_resolver(batch.database_id);
         let mut transaction = self.database.begin_write().map_err(transaction_error)?;
         transaction.set_two_phase_commit(false);
         transaction
@@ -103,7 +104,7 @@ impl SharedRedb {
                 }
                 None
             };
-            for mutation in frame.mutations.iter() {
+            for (index, mutation) in frame.mutations.iter().enumerate() {
                 if mutation.table() == CompositeTableV1::Meta
                     && Some(mutation.key())
                         == N::NextChangelogTransaction
@@ -117,11 +118,30 @@ impl SharedRedb {
                     // Only the non-recursive history writer may stage it.
                     continue;
                 }
-                crate::journal::apply_validated_composite_mutation(&transaction, mutation)
+                // A command segment is written as a history stub naming the
+                // retained frame (ADR-0263 Amendment 3); every other row as is.
+                if let Some(stub) = segment_stub(frame, index, mutation)? {
+                    crate::journal::apply_byte_mutation_parts(
+                        &transaction,
+                        crate::layout::COMMITS,
+                        mutation.key(),
+                        Some(&stub),
+                        None,
+                    )
                     .map_err(journal_io_error)?;
+                } else {
+                    crate::journal::apply_validated_composite_mutation(&transaction, mutation)
+                        .map_err(journal_io_error)?;
+                }
             }
             if let Some(advance) = advance {
-                advance.stage(&transaction)?;
+                if frame.encoded.records_changelog() {
+                    advance.stage_stub(&transaction, &frame_locator(frame).receipt_stub()?)?;
+                } else {
+                    // Only a frame that records its binding can re-derive its
+                    // receipt, so any other keeps the receipt bytes.
+                    advance.stage(&transaction)?;
+                }
             }
             transition_count = transition_count
                 .checked_add(usize::from(frame.transition_count))
@@ -169,5 +189,48 @@ impl SharedRedb {
         #[cfg(test)]
         crate::changelog_v3_journal::recovery_crash_edge("checkpoint-committed");
         Ok(())
+    }
+}
+
+/// The history stub for a command segment the frame inserts, or `None` for
+/// any other mutation (and for a COMMITS change that is not a fresh insert,
+/// which keeps its exact bytes).
+fn segment_stub(
+    frame: &super::ValidatedCheckpointFrame,
+    index: usize,
+    mutation: &riffdb_storage_api::CompositeMutationV1,
+) -> Result<Option<Vec<u8>>, StorageError> {
+    let (riffdb_storage_api::CompositeTableV1::Commits, Some(value), None) =
+        (mutation.table(), mutation.value(), mutation.expected_hash())
+    else {
+        return Ok(None);
+    };
+    // The writer recorded the summary of each segment it built; any other
+    // fresh COMMITS value is decoded to learn whether it is one.
+    match frame
+        .segment_summaries
+        .iter()
+        .find(|(staged, _)| *staged == index)
+    {
+        Some((_, summary)) => {
+            // A summary names its segment by the COMMITS key it is stored under.
+            if summary
+                .first_commit_sequence
+                .map(crate::keys::encode_application_sequence_key)
+                .is_none_or(|key| key.as_slice() != mutation.key())
+            {
+                return Err(storage_error(StorageErrorKind::CorruptData));
+            }
+            frame_locator(frame).summary_stub(*summary).map(Some)
+        }
+        None => frame_locator(frame).segment_stub(value),
+    }
+}
+
+fn frame_locator(frame: &super::ValidatedCheckpointFrame) -> crate::history_stub::StubLocator {
+    crate::history_stub::StubLocator {
+        database_id: frame.database_id,
+        generation: frame.extent_generation,
+        placement: frame.placement,
     }
 }

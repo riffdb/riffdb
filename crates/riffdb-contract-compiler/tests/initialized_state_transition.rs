@@ -2,8 +2,8 @@
 
 use riffdb_contract_compiler::{CompilerDiagnosticCode, compile_contract_source};
 use riffdb_contract_ir::{
-    BUNDLE_FORMAT_VERSION_V17, BindingMode, ContractBundle, EXECUTABLE_IR_VERSION_V17,
-    GRAMMAR_VERSION_V17,
+    BUNDLE_FORMAT_VERSION_V25, BindingMode, ContractBundle, EXECUTABLE_IR_VERSION_V25,
+    GRAMMAR_VERSION_V25,
 };
 
 const SOURCE: &str = r#"
@@ -32,8 +32,8 @@ contract InitializedState version 1 {
       revision: 0,
     }
     require current_revision: state.revision == 0 else Changed {}
-    set state.active = true
-    set state.payload = payload
+    set state.active = true checked_by current_revision
+    set state.payload = payload checked_by current_revision
     set state.revision = state.revision + 1
     return Written {}
   }
@@ -49,8 +49,8 @@ contract InitializedState version 1 {
           revision: 0,
         }
       require current_revision: state.revision == 0 else Changed {}
-      set state.active = true
-      set state.payload = state_input.payload
+      set state.active = true checked_by current_revision
+      set state.payload = state_input.payload checked_by current_revision
       set state.revision = state.revision + 1
     }
     return Written {}
@@ -62,9 +62,9 @@ contract InitializedState version 1 {
 #[test]
 fn ordinary_and_bulk_initialized_mutation_select_v17_and_round_trip() {
     let bundle = compile_contract_source(SOURCE).expect("initialized mutation compiles");
-    assert_eq!(bundle.format_version(), BUNDLE_FORMAT_VERSION_V17);
-    assert_eq!(bundle.grammar_version(), GRAMMAR_VERSION_V17);
-    assert_eq!(bundle.ir_version(), EXECUTABLE_IR_VERSION_V17);
+    assert_eq!(bundle.format_version(), BUNDLE_FORMAT_VERSION_V25);
+    assert_eq!(bundle.grammar_version(), GRAMMAR_VERSION_V25);
+    assert_eq!(bundle.ir_version(), EXECUTABLE_IR_VERSION_V25);
     assert_eq!(bundle.commands().len(), 2);
     for command in bundle.commands() {
         let binding = &command.bindings()[0];
@@ -201,6 +201,7 @@ fn empty_initializer_is_valid_when_common_effects_complete_the_absent_postimage(
         // must say so (ADR-0256). That is the property, not an inconvenience:
         // this variant really does admit a concurrent writer the original did
         // not.
+        .replace(" checked_by current_revision", "")
         .replace("set state.", "overwrite state.");
     let bundle = compile_contract_source(&source).expect("common effects complete the record");
     assert!(

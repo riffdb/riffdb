@@ -147,9 +147,9 @@ struct Metadata<'fixture> {
 }
 
 fn validate_metadata(document: &str) -> Result<Metadata<'_>, String> {
-    require_value(document, "bundle_format", "1", "bundle metadata")?;
-    require_value(document, "grammar", "1", "bundle metadata")?;
-    require_value(document, "executable_ir", "1", "bundle metadata")?;
+    require_value(document, "bundle_format", "25", "bundle metadata")?;
+    require_value(document, "grammar", "25", "bundle metadata")?;
+    require_value(document, "executable_ir", "25", "bundle metadata")?;
     require_value(document, "compiler", "0.1.0", "bundle metadata")?;
     require_value(document, "parent", "none", "bundle metadata")?;
     require_value(document, "commands", "2", "bundle metadata")?;

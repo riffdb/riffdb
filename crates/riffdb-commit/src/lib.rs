@@ -25,6 +25,7 @@ mod command_execution_failure;
 mod command_index;
 mod command_preparation;
 mod command_records;
+mod command_selection_policy;
 mod command_validation;
 mod control_plane;
 mod coordinator_time;

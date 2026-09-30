@@ -20,6 +20,9 @@ use riffdb_types::{
 #[path = "runtime/cross_binding_fence.rs"]
 mod cross_binding_fence;
 
+#[path = "runtime/write_proof_characterization.rs"]
+mod write_proof_characterization;
+
 const BUDGET_SOURCE: &str = include_str!(concat!(
     env!("CARGO_MANIFEST_DIR"),
     "/../../contracts/examples/budget.riff"
@@ -59,8 +62,8 @@ contract InitializedStateRuntime version 1 {
       active: false,
       revision: 0,
     }
-    set state.active = true
-    set state.payload = payload
+    overwrite state.active = true
+    overwrite state.payload = payload
     set state.revision = state.revision + 1
     return Written { revision: state.revision }
   }
@@ -74,8 +77,8 @@ contract InitializedStateRuntime version 1 {
           active: false,
           revision: 0,
         }
-      set state.active = true
-      set state.payload = state_input.payload
+      overwrite state.active = true
+      overwrite state.payload = state_input.payload
       set state.revision = state.revision + 1
     }
     return Written { revision: 0 }
@@ -107,7 +110,7 @@ contract BulkCommandDecisionRuntime version 1 {
         as state initialize { active: false, revision: 0 }
       decide state {
         when state.active == false => apply {
-          set state.active = true
+          overwrite state.active = true
           set state.revision = state.revision + 1
         }
         when state.active == true => no_effect

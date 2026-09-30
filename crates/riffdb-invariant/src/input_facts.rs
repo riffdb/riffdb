@@ -39,7 +39,19 @@ use crate::{EvaluationError, ExpressionEvaluator, ExpressionValueSource};
 /// }
 /// ```
 #[must_use = "input-derived facts must remain bound to command preparation"]
-pub struct InputDerivedCommandFacts {
+pub struct InputDerivedCommandFacts(CommandTargetFacts);
+
+impl std::ops::Deref for InputDerivedCommandFacts {
+    type Target = CommandTargetFacts;
+    fn deref(&self) -> &Self::Target {
+        &self.0
+    }
+}
+
+/// Checked command locality and concrete target positions. Selection targets are
+/// admitted only by the separate snapshot-key resolution proof.
+#[derive(Clone)]
+pub struct CommandTargetFacts {
     plan_hash: PlanHash,
     normalized_input: CanonicalRecord,
     partition_key: PartitionKey,
@@ -50,9 +62,16 @@ pub struct InputDerivedCommandFacts {
     root_validation_entity_keys: Vec<EntityKey>,
     root_validation_plan_indices: Vec<u32>,
     root_validation_element_ordinals: Vec<Option<u16>>,
+    selection_prefix_values: Option<Vec<CanonicalValue>>,
 }
 
-impl InputDerivedCommandFacts {
+impl CommandTargetFacts {
+    /// Validated equality-prefix values, retained without changing command input.
+    #[must_use]
+    pub fn selection_prefix_values(&self) -> Option<&[CanonicalValue]> {
+        self.selection_prefix_values.as_deref()
+    }
+
     /// Checks the exact plan hash and full normalized input bound to this proof.
     ///
     /// This comparison performs no expression evaluation and exposes neither
@@ -225,6 +244,9 @@ pub fn derive_input_command_facts(
         let mut binding_plan_indices = Vec::new();
         let mut binding_element_ordinals = Vec::new();
         for (index, binding) in plan.bindings().iter().enumerate() {
+            if binding.indexed_selection().is_some() {
+                continue;
+            }
             let repeated = plan.collection_expansion().is_some_and(|expansion| {
                 let first = expansion.first_binding().get() as usize;
                 (first..first + expansion.binding_count()).contains(&index)
@@ -259,6 +281,13 @@ pub fn derive_input_command_facts(
         let mut root_validation_plan_indices = Vec::new();
         let mut root_validation_element_ordinals = Vec::new();
         for (index, read) in plan.root_validation_reads().iter().enumerate() {
+            if read.key_expressions().iter().any(|id| {
+                plan.expressions()
+                    .dependencies(*id)
+                    .is_ok_and(|deps| !deps.bindings().is_empty())
+            }) {
+                continue;
+            }
             let repeated = read
                 .key_expressions()
                 .iter()
@@ -310,7 +339,24 @@ pub fn derive_input_command_facts(
         )
     };
 
-    Ok(InputDerivedCommandFacts {
+    let selection_prefix_values = plan
+        .indexed_selection()
+        .map(|(_, selection)| {
+            let values = NormalizedInputValues {
+                input: &normalized_input,
+                element: None,
+            };
+            let mut evaluator = ExpressionEvaluator::new(plan.expressions());
+            let mut evaluation = evaluator.batch(&values);
+            selection
+                .prefix_expressions()
+                .iter()
+                .map(|id| evaluation.evaluate(*id))
+                .collect::<Result<Vec<_>, _>>()
+        })
+        .transpose()?;
+    Ok(InputDerivedCommandFacts(CommandTargetFacts {
+        selection_prefix_values,
         plan_hash: plan.plan_hash(),
         normalized_input,
         partition_key,
@@ -321,7 +367,7 @@ pub fn derive_input_command_facts(
         root_validation_entity_keys,
         root_validation_plan_indices,
         root_validation_element_ordinals,
-    })
+    }))
 }
 
 fn collection_elements<'a>(
@@ -414,5 +460,105 @@ impl ExpressionValueSource for NormalizedInputValues<'_> {
             .binary_search_by_key(&field, |(candidate, _)| *candidate)
             .ok()
             .map(|index| record.fields()[index].1.clone())
+    }
+}
+
+/// Resolves selected targets from a snapshot's canonical entity key. No input,
+/// partition, or conflict identity can be changed by this operation. The caller
+/// must additionally validate the authoritative index and row observations.
+pub fn resolve_selected_command_targets(
+    plan: &CommandPlan,
+    schema: &riffdb_contract_ir::SchemaIr,
+    input: &InputDerivedCommandFacts,
+    selected: Option<&EntityKey>,
+) -> Result<CommandTargetFacts, EvaluationError> {
+    if !input.matches_command(plan, &input.normalized_input) {
+        return Err(EvaluationError::Integrity);
+    }
+    let (binding, _) = plan.indexed_selection().ok_or(EvaluationError::Integrity)?;
+    let mut resolved = input.0.clone();
+    let Some(key) = selected else {
+        return Ok(resolved);
+    };
+    let entity = schema
+        .entity(binding.entity_type())
+        .ok_or(EvaluationError::Integrity)?;
+    let components = binding
+        .key_schema()
+        .decode_entity(key)
+        .map_err(|_| EvaluationError::Integrity)?;
+    let values = SelectedKeyValues {
+        input: NormalizedInputValues {
+            input: &input.normalized_input,
+            element: None,
+        },
+        binding: binding.id(),
+        fields: entity.primary_key_fields(),
+        components: &components,
+    };
+    let mut evaluator = ExpressionEvaluator::new(plan.expressions());
+    let mut evaluation = evaluator.batch(&values);
+    if derive_entity_key(
+        binding.key_schema(),
+        binding.key_expressions(),
+        &mut evaluation,
+    )? != *key
+    {
+        return Err(EvaluationError::Integrity);
+    }
+    let position = binding.id().get() as usize;
+    if position > resolved.binding_entity_keys.len() {
+        return Err(EvaluationError::Integrity);
+    }
+    resolved.binding_entity_keys.insert(position, key.clone());
+    resolved
+        .binding_plan_indices
+        .insert(position, binding.id().get());
+    resolved.binding_element_ordinals.insert(position, None);
+    for (index, read) in plan.root_validation_reads().iter().enumerate() {
+        if resolved
+            .root_validation_plan_indices
+            .contains(&(index as u32))
+        {
+            continue;
+        }
+        if read.source_binding() != binding.id() {
+            return Err(EvaluationError::Integrity);
+        }
+        let key = derive_entity_key(read.key_schema(), read.key_expressions(), &mut evaluation)?;
+        resolved.root_validation_entity_keys.insert(index, key);
+        resolved
+            .root_validation_plan_indices
+            .insert(index, index as u32);
+        resolved
+            .root_validation_element_ordinals
+            .insert(index, None);
+    }
+    Ok(resolved)
+}
+
+struct SelectedKeyValues<'a> {
+    input: NormalizedInputValues<'a>,
+    binding: riffdb_contract_ir::BindingId,
+    fields: &'a [riffdb_types::FieldId],
+    components: &'a [CanonicalValue],
+}
+impl ExpressionValueSource for SelectedKeyValues<'_> {
+    fn input_field(&self, field: riffdb_types::FieldId) -> Option<CanonicalValue> {
+        self.input.input_field(field)
+    }
+    fn bound_field(
+        &self,
+        binding: riffdb_contract_ir::BindingId,
+        field: riffdb_types::FieldId,
+    ) -> Option<CanonicalValue> {
+        if binding != self.binding {
+            return None;
+        }
+        self.fields
+            .iter()
+            .position(|id| *id == field)
+            .and_then(|position| self.components.get(position))
+            .cloned()
     }
 }

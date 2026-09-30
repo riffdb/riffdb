@@ -10,6 +10,7 @@ mod command_lowering;
 mod compiler;
 mod expression_lowering;
 mod hir;
+mod indexed_selection;
 mod literal;
 mod locality;
 mod mcp_name;

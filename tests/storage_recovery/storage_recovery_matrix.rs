@@ -96,6 +96,9 @@ mod checkpoint_pipeline;
 mod online_retention;
 #[path = "../replication_promotion.rs"]
 mod replication_promotion;
+#[cfg(feature = "test-fixtures")]
+#[path = "retained_extents.rs"]
+mod retained_extents;
 #[path = "v3_command_attribution.rs"]
 mod v3_command_attribution;
 #[path = "v3_command_receipts.rs"]
@@ -6715,7 +6718,10 @@ fn read_claimed_rows(path: &Path) -> ClaimedRows {
             .expect("open claimed table");
         for row in table.iter().expect("iterate claimed table") {
             let (key, value) = row.expect("claimed row");
-            rows.insert((name, key.value().to_vec()), value.value().to_vec());
+            // History stubs (ADR-0263) are compared as the values they name.
+            let value = riffdb_storage_redb::resolve_history_row_fixture(path, value.value())
+                .expect("resolve history row");
+            rows.insert((name, key.value().to_vec()), value);
         }
     }
     rows

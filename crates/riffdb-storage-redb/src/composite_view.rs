@@ -121,15 +121,50 @@ pub(crate) struct RedbCompositeMutationStage {
     changelog: crate::changelog_v3_cursor::ChangelogSuffix,
     root: Arc<CheckpointRoot>,
     stage: CompositeMutationStage,
+    /// Staged command segments by mutation index, with the summary their
+    /// history stub carries (ADR-0263 Decision 4).
+    segments: Vec<(usize, crate::history_stub::SegmentSummary)>,
 }
 
 impl RedbCompositeMutationStage {
+    pub(crate) fn staged_mutations(&self) -> &[riffdb_storage_api::CompositeMutationV1] {
+        self.stage.staged_mutations()
+    }
+
     pub(crate) fn from_published(published: &Arc<RedbCompositeReadView>) -> Self {
         Self {
             changelog: published.changelog.clone(),
             root: Arc::clone(&published.root),
             stage: CompositeMutationStage::new(&published.overlay),
+            segments: Vec::new(),
         }
+    }
+
+    /// Records that the mutation just staged inserted the command segment
+    /// `summary` describes.
+    pub(crate) fn note_staged_segment(&mut self, summary: crate::history_stub::SegmentSummary) {
+        if let Some(index) = self.stage.mutation_count().checked_sub(1) {
+            self.segments.push((index, summary));
+        }
+    }
+
+    /// Replaces each staged command segment in the private overlay with its
+    /// history stub at `locator`, the frame this stage seals into. The
+    /// uncheckpointed overlay then charges a locator, not the segment, and
+    /// readers resolve it from the retained frame (ADR-0263 Decision 4).
+    /// Returns each staged segment's summary by mutation index.
+    pub(crate) fn represent_segments(
+        &mut self,
+        locator: crate::history_stub::StubLocator,
+    ) -> Result<Vec<(usize, crate::history_stub::SegmentSummary)>, StorageError> {
+        let segments = std::mem::take(&mut self.segments);
+        for (index, summary) in &segments {
+            let stub = locator.summary_stub(*summary)?;
+            self.stage
+                .represent_staged(*index, &stub)
+                .map_err(corrupt_value)?;
+        }
+        Ok(segments)
     }
 
     pub(crate) fn apply(

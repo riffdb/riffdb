@@ -25,7 +25,11 @@ conflict:1 purpose=Conflict(AggregateTypeId(1)) expressions=[4,5]
 binding:0 mode=ObserveOrInitialize entity=1 complete=false reads=[1,2]
 initialize:0 fields=[1:2,2:3] state-independent:true
 binding:1 mode=Create entity=2 complete=false reads=[]
-write:0:1 guard=set
+write-proof:Decision { decision: 0, arm: 0, instruction: 0 } evidence=[Overwrite]
+write-proof:Decision { decision: 0, arm: 0, instruction: 1 } evidence=[StateDerived]
+write-proof:Decision { decision: 0, arm: 0, instruction: 2 } evidence=[Initialization]
+write-proof-limits: business relevance is author-asserted; arithmetic deltas do not prove caller freshness; version fences require a consistently advanced revision protocol
+write:0:1 guard=overwrite
 write:0:2 guard=set
 write:1:1 guard=set
 outcome:1 fields=[]

@@ -625,6 +625,12 @@ IdempotencyClause: Spanned<IdempotencyClause> = {
 };
 
 Binding: Spanned<Binding> = {
+    <lo:@L> "mutate" <modifier:Identifier> <entity:Identifier> "." <index:Identifier>
+        "(" <arguments:ExpressionList> ")" "as" <binding:Identifier> "else" <failure:OutcomeExpression> <hi:@R>
+        =>? parser::grammar_result(parser::selected_binding(modifier, EntityBinding {
+            selection_index: Some(index), entity, arguments, binding, failure,
+            restriction_failure: None, cascade_failure: None,
+        }, lo, hi)),
     <lo:@L> "read" <binding:EntityBinding> <hi:@R>
         => parser::spanned(Binding::Read(binding), lo, hi),
     <lo:@L> "mutate" <binding:EntityBinding> <hi:@R>
@@ -652,6 +658,7 @@ EntityBinding: EntityBinding = {
     <entity:Identifier> "(" <arguments:ExpressionList> ")"
         "as" <binding:Identifier> "else" <failure:OutcomeExpression>
         => EntityBinding {
+            selection_index: None,
             entity,
             arguments,
             binding,
@@ -667,6 +674,7 @@ DeleteEntityBinding: EntityBinding = {
         <restriction_failure:("restrict" <OutcomeExpression>)?>
         <cascade_failure:("cascade" <OutcomeExpression>)?>
         => EntityBinding {
+            selection_index: None,
             entity,
             arguments,
             binding,
@@ -687,16 +695,18 @@ Requirement: Spanned<Requirement> = {
 };
 
 Effect: Spanned<Effect> = {
-    <lo:@L> "set" <target:Path> "=" <value:Expression> <reveals:RevealAnnotation*> <hi:@R>
+    <lo:@L> "set" <target:Path> "=" <value:Expression> <checked_by:("checked_by" <Identifier>)?> <reveals:RevealAnnotation*> <hi:@R>
         => parser::spanned(Effect::Set(SetEffect {
             spelling: WriteSpelling::Set,
+            checked_by,
             target,
             value: value.into_syntax(),
             reveals,
         }), lo, hi),
-    <lo:@L> "overwrite" <target:Path> "=" <value:Expression> <reveals:RevealAnnotation*> <hi:@R>
+    <lo:@L> "overwrite" <target:Path> "=" <value:Expression> <checked_by:("checked_by" <Identifier>)?> <reveals:RevealAnnotation*> <hi:@R>
         => parser::spanned(Effect::Set(SetEffect {
             spelling: WriteSpelling::Overwrite,
+            checked_by,
             target,
             value: value.into_syntax(),
             reveals,
@@ -1164,6 +1174,7 @@ extern {
         "require" => Token::Require,
         "set" => Token::Set,
         "overwrite" => Token::Overwrite,
+        "checked_by" => Token::CheckedBy,
         "embed" => Token::Embed,
         "emit" => Token::Emit,
         "return" => Token::Return,

@@ -301,7 +301,7 @@ pub fn mark_all_outbox_events_delivered_v1(
         let commits = read.open_table(COMMITS).map_err(table_error)?;
         for entry in commits.iter().map_err(precommit_storage_error)? {
             let (_, value) = entry.map_err(precommit_storage_error)?;
-            match riffdb_storage_api::decode_command_segment_v1(value.value()) {
+            match crate::history_stub::decode_segment_value(value.value()) {
                 Ok(segment) => {
                     for command in segment.value().commands() {
                         event_ids.extend(command.events().iter().map(|event| event.event_id()));
@@ -1451,6 +1451,7 @@ fn build_overlay_frame(
         command_count,
         previous_hash,
         buffer,
+        None,
     )
     .map_err(|_| EngineBenchmarkError::Engine)?;
     let mut mutations = before_segment;

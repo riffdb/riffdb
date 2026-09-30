@@ -3484,6 +3484,7 @@ async fn supervise_ready_process(
     let writer_journal_stage_census = riffdb_storage_redb::writer_journal_stage_census_v1();
     let writer_publication_stage_census = riffdb_storage_redb::writer_publication_stage_census_v2();
     let writer_checkpoint_census = riffdb_storage_redb::writer_checkpoint_census_v1();
+    let writer_overlay_census = riffdb_storage_redb::writer_overlay_census_v1();
     let query_execute_census = riffdb_storage_redb::query_execute_census_v1();
     let writer_batch_census = riffdb_commit::writer_batch_stage_census_v1();
     let notification_stop_failed = graph.begin_transport_shutdown().is_err();
@@ -3615,6 +3616,10 @@ async fn supervise_ready_process(
         let _ = writeln!(
             stdout,
             "riffdb-writer-checkpoint-census-v1\t{writer_checkpoint_census}"
+        );
+        let _ = writeln!(
+            stdout,
+            "riffdb-writer-overlay-census-v1\tpeak_charged_bytes={writer_overlay_census}"
         );
         // Diagnostic-only, and zero unless RIFFDB_COMMAND_SERVICE_DIAGNOSTICS=1
         // populated it. The writer censuses start where the writer picks a

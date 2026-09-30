@@ -9,10 +9,10 @@ import (
 	riffdb "riffdb.dev/application"
 )
 
-const QueryModuleHash = "d1744fe62d302f90d3ff03feb86b07f975acc8f82b19c3bb61f8b386bc83995a"
+const QueryModuleHash = "c367ef662da8e4268e3ce842d6934435162bf937efd4efafcdaccff28cf1d467"
 const ContractLineage = "WoodpeckerScheduler"
 const ContractVersion uint64 = 1
-const ContractBundleHash = "b04d95a61cbce874231418078b4aae38005bc2621f7f10b0f0bc49c724b08ceb"
+const ContractBundleHash = "89517d218052dc16f153e513b9033ba5ee3f61e04c3871511c10ae350bf1a6a4"
 
 type QueryOptions = riffdb.Options
 type QueryIdentity struct { ContractLineage string; ContractVersion uint64; ContractBundleHash string; ModuleHash string; QueryName string; PlanHash string }
@@ -202,7 +202,7 @@ raw, err = requiredField(fields, "organization_id"); if err != nil { return resu
 raw, err = requiredField(fields, "lease_expires_at"); if err != nil { return result, err }; result.LeaseExpiresAt, err = riffdb.DecodeOptional(raw, func(item riffdb.Value) (riffdb.Instant, error) { return riffdb.TimestampValue(item) }); if err != nil { return result, err }
 return result, nil }
 
-const GetPipelineQueryPlanHash = "ae166d652800e991e25057de49d939fbaa17bd049908ec85bc7579dfbe8955ea"
+const GetPipelineQueryPlanHash = "45f039f582544f0f255e25c4de27ee35e31e200ac372dc8108984c4d46e653fe"
 var GetPipelineOperation = riffdb.Operation{Name: "woodpecker_scheduler_get_pipeline", InputSchemaHash: "530d432fc561c6c5ec7e683df26e43c26a1c4d30066906196c13eaef0356c28c"}
 func decodeGetPipelineResult(value riffdb.Value) (GetPipelineResult, error) { fields, err := riffdb.RecordFields(value); if err != nil { return nil, err }; outcomeValue, err := requiredField(fields, "outcome"); if err != nil { return nil, err }; outcome, err := riffdb.EnumValue(outcomeValue); if err != nil { return nil, err }; var raw riffdb.Value; switch outcome {
 case "Found": result := GetPipelineFound{Outcome: outcome}
@@ -335,7 +335,7 @@ func leaseInput(parameters map[string]riffdb.Value, consumer string, deliveryID,
 func requiredString(fields map[string]riffdb.Value, name string) (string, error) { value, err := requiredField(fields, name); if err != nil { return "", err }; return riffdb.StringValue(value) }
 func requiredU64(fields map[string]riffdb.Value, name string) (uint64, error) { value, err := requiredField(fields, name); if err != nil { return 0, err }; return riffdb.U64Value(value) }
 func requiredU32(fields map[string]riffdb.Value, name string) (uint32, error) { value, err := requiredU64(fields, name); if err != nil || value > uint64(^uint32(0)) { return 0, errors.New("invalid RiffDB driver u32") }; return uint32(value), nil }
-const PipelineActivityReactiveModuleHash = "013fca346ac4129db0957a24267f51d399fce6db69e7a57e010a0a961839b85f"
+const PipelineActivityReactiveModuleHash = "bd6af02c5571fd6b49dfdfc736452b1c42d29a5a7082ef2cb8bc839af75071bb"
 
 type PipelineTransitionsParams struct {
 	OrganizationId string

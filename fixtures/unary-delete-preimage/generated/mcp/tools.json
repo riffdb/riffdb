@@ -1,5 +1,5 @@
 {
-  "application_manifest_hash": "7d8ed75489ce986fda95332c7bbcb6d296c364b77bbd7cbee27be02e37e826f4",
+  "application_manifest_hash": "2d566bbc043cc6b85aed34430793ec9bcaedb92ad89757e5b5b7d1d3e7d0cda7",
   "commands": [
     {
       "annotations": {
@@ -8,7 +8,7 @@
         "openWorldHint": false,
         "readOnlyHint": false
       },
-      "contract_bundle_hash": "aa5c19da0fd5994991e20b68c62e49b251501951b1847d29a2dd1389f3eb1b71",
+      "contract_bundle_hash": "93ce102c5dcbc82e8a26d9c4c8163976f4c868f74ae84e9b0ea3c8cedea2892f",
       "description": "Execute the exact ConsumeToken compiled command from contract OneTimeTokenAcceptance.",
       "input_schema": {
         "$schema": "https://json-schema.org/draft/2020-12/schema",
@@ -430,7 +430,7 @@
         "openWorldHint": false,
         "readOnlyHint": false
       },
-      "contract_bundle_hash": "aa5c19da0fd5994991e20b68c62e49b251501951b1847d29a2dd1389f3eb1b71",
+      "contract_bundle_hash": "93ce102c5dcbc82e8a26d9c4c8163976f4c868f74ae84e9b0ea3c8cedea2892f",
       "description": "Execute the exact IssueToken compiled command from contract OneTimeTokenAcceptance.",
       "input_schema": {
         "$schema": "https://json-schema.org/draft/2020-12/schema",
@@ -770,7 +770,7 @@
       },
       "name": "one_time_tokens_issue_token",
       "operation_name": "IssueToken",
-      "plan_hash": "78176cd7418c41fb346a742bf10856c364829b4a3ae7e6176e0791172b2f03ff",
+      "plan_hash": "9db88ad2da13526f606ca497d31323b02066a625ca6614c5aef06f53ed677d2d",
       "result_schema": {
         "$schema": "https://json-schema.org/draft/2020-12/schema",
         "oneOf": [
@@ -928,7 +928,7 @@
           ]
         }
       },
-      "module_hash": "5f8ff11ab269d01bc46d7fc470247d1b26f273de4cb1bd4a7c8e5aa161003cd6",
+      "module_hash": "4803d7e0f30088627f15e99d9789c1827e6c631f624b6da4c14d39287721bbdb",
       "name": "one_time_tokens_get_token",
       "operation_name": "GetToken",
       "result_schema": {

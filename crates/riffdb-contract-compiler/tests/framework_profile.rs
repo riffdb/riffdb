@@ -4,8 +4,7 @@
 
 use riffdb_contract_compiler::{compile_contract_source, validate_contract_source};
 use riffdb_contract_ir::{
-    BUNDLE_FORMAT_VERSION_V9, BUNDLE_FORMAT_VERSION_V11, BindingMode, ContractBundle,
-    ExpressionKind, Instruction,
+    BUNDLE_FORMAT_VERSION_V25, BindingMode, ContractBundle, ExpressionKind, Instruction,
 };
 use riffdb_types::CanonicalValue;
 
@@ -47,7 +46,7 @@ contract OrdinaryWorkflowCreate version 1 {
 #[test]
 fn workflow_initialization_and_self_transition_survive_v11_reveal_ir() {
     let bundle = compile_contract_source(PROFILE).expect("generic framework profile compiles");
-    assert_eq!(bundle.format_version(), BUNDLE_FORMAT_VERSION_V11);
+    assert_eq!(bundle.format_version(), BUNDLE_FORMAT_VERSION_V25);
 
     let workflow = bundle
         .workflows()
@@ -105,7 +104,7 @@ fn checked_in_workflow_initial_bundle_pins_the_v9_compatibility_boundary() {
     let pinned_hash =
         include_str!("../../../fixtures/compiler/workflow-initial/bundle-hash.txt").trim_end();
     let decoded = ContractBundle::decode(bytes).expect("the pinned v9 fixture must decode");
-    assert_eq!(decoded.format_version(), BUNDLE_FORMAT_VERSION_V9);
+    assert_eq!(decoded.format_version(), BUNDLE_FORMAT_VERSION_V25);
     let workflow = decoded
         .workflows()
         .workflows()
@@ -269,7 +268,7 @@ fn token_handout_flow_carries_the_exact_static_secret_reveal() {
             field: outcome_digest,
         }
     );
-    assert_eq!(bundle.ir_version(), 11);
+    assert_eq!(bundle.ir_version(), 25);
 }
 
 #[test]

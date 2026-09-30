@@ -4,8 +4,8 @@ use std::fmt::Write as _;
 
 use riffdb_contract_compiler::{CompilerDiagnosticCode, compile_contract_source};
 use riffdb_contract_ir::{
-    BUNDLE_FORMAT_VERSION_V18, BindingMode, CommandDecisionActionV1, ContractBundle,
-    EXECUTABLE_IR_VERSION_V18, GRAMMAR_VERSION_V18,
+    BUNDLE_FORMAT_VERSION_V25, BindingMode, CommandDecisionActionV1, ContractBundle,
+    EXECUTABLE_IR_VERSION_V25, GRAMMAR_VERSION_V25,
 };
 
 const SOURCE: &str = r#"
@@ -39,7 +39,7 @@ contract SealedState version 1 {
     decide state {
       when state.active == false => apply {
         create Change(organization_id, state_id, change_id) as change else ChangeExists {}
-        set state.active = true
+        overwrite state.active = true
         set state.revision = state.revision + 1
         set change.recorded = true
         emit StateApplied { state_id: state.state_id, revision: state.revision }
@@ -61,7 +61,7 @@ contract SealedState version 1 {
         }
       decide stored {
         when stored.active == false => apply {
-          set stored.active = true
+          overwrite stored.active = true
           set stored.revision = stored.revision + 1
         }
         else => no_effect
@@ -75,9 +75,9 @@ contract SealedState version 1 {
 #[test]
 fn sealed_decision_selects_v18_and_round_trips_canonically() {
     let bundle = compile_contract_source(SOURCE).expect("sealed decision compiles");
-    assert_eq!(bundle.format_version(), BUNDLE_FORMAT_VERSION_V18);
-    assert_eq!(bundle.grammar_version(), GRAMMAR_VERSION_V18);
-    assert_eq!(bundle.ir_version(), EXECUTABLE_IR_VERSION_V18);
+    assert_eq!(bundle.format_version(), BUNDLE_FORMAT_VERSION_V25);
+    assert_eq!(bundle.grammar_version(), GRAMMAR_VERSION_V25);
+    assert_eq!(bundle.ir_version(), EXECUTABLE_IR_VERSION_V25);
     assert_eq!(bundle.commands().len(), 2);
     let command = bundle
         .commands()
@@ -164,10 +164,12 @@ fn equivalent_later_predicate_is_rejected_at_its_exact_span() {
 fn effects_outside_sealed_arms_reject_at_the_effect_target() {
     let source = SOURCE.replacen(
         "    return Applied {}",
-        "    set state.active = false\n    return Applied {}",
+        "    overwrite state.active = false\n    return Applied {}",
         1,
     );
-    let expected = source.rfind("set state.active").expect("common effect");
+    let expected = source
+        .rfind("overwrite state.active")
+        .expect("common effect");
     let error = compile_contract_source(&source).expect_err("effect outside arms must reject");
     let diagnostics = error.semantic().expect("compiler diagnostics").as_slice();
     let diagnostic = diagnostics
@@ -229,13 +231,13 @@ contract DecisionCost version 1 {{
         when state.active == false => apply {{
           create LeftGraph(submitted.organization_id, submitted.state_id, graph_id)
             as left else LeftExists {{}}
-          set state.active = true
+          overwrite state.active = true
           set state.revision = state.revision + 1
 {left_assignments}        }}
         when state.active == true => apply {{
           create RightGraph(submitted.organization_id, submitted.state_id, graph_id)
             as right else RightExists {{}}
-          set state.active = false
+          overwrite state.active = false
           set state.revision = state.revision + 1
 {right_assignments}        }}
         else => no_effect
@@ -248,12 +250,12 @@ contract DecisionCost version 1 {{
     );
     let bundle = compile_contract_source(&source)
         .expect("each selected arm is below the graph ceiling even though their sum is not");
-    assert_eq!(bundle.format_version(), BUNDLE_FORMAT_VERSION_V18);
+    assert_eq!(bundle.format_version(), BUNDLE_FORMAT_VERSION_V25);
     let aggregate_bounded = source.replace(
         "input states: list<State, 1..1>",
         "input states: list<State, 1..1> aggregate_bytes <= 1024",
     );
     let aggregate_bundle = compile_contract_source(&aggregate_bounded)
         .expect("aggregate-bounded graph proof also charges the maximum selected arm");
-    assert_eq!(aggregate_bundle.format_version(), BUNDLE_FORMAT_VERSION_V18);
+    assert_eq!(aggregate_bundle.format_version(), BUNDLE_FORMAT_VERSION_V25);
 }

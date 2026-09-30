@@ -572,8 +572,8 @@ fn pre_columnar_control_registry_installs_table_before_publication() {
 
 #[test]
 fn async_checkpoint_starts_half_full_and_reserves_one_maximum_physical_frame() {
-    assert_eq!(JOURNAL_CHECKPOINT_START_TRANSITIONS, 4_096);
-    assert_eq!(JOURNAL_CHECKPOINT_START_BYTES, 16 * 1024 * 1024);
+    assert_eq!(JOURNAL_CHECKPOINT_START_TRANSITIONS, 32_768);
+    assert_eq!(JOURNAL_CHECKPOINT_START_BYTES, 128 * 1024 * 1024);
     let maximum_frame = crate::journal::extent_frame_bytes(crate::journal::MAX_JOURNAL_FRAME_BYTES)
         .expect("maximum physical frame");
     let start_physical =
@@ -595,10 +595,10 @@ fn command_fence_drains_for_direct_commits_and_pending_checkpoint_installation()
 #[test]
 fn journal_capacity_turns_checkpoint_headroom_into_backpressure_boundary() {
     let exact = JournalCapacityCharge {
-        checkpoint_transitions: 4_096,
-        checkpoint_bytes: 16 * 1024 * 1024,
-        suffix_transitions: 4_095,
-        suffix_bytes: 16 * 1024 * 1024 - 1,
+        checkpoint_transitions: 32_768,
+        checkpoint_bytes: 128 * 1024 * 1024,
+        suffix_transitions: 32_767,
+        suffix_bytes: 128 * 1024 * 1024 - 1,
         suffix_physical_bytes: crate::journal::EXTENT_DATA_BYTES - 4_096,
         unpublished_transitions: 0,
         unpublished_bytes: 0,

@@ -8,10 +8,10 @@ import (
 	riffdb "riffdb.dev/application"
 )
 
-const QueryModuleHash = "5f8ff11ab269d01bc46d7fc470247d1b26f273de4cb1bd4a7c8e5aa161003cd6"
+const QueryModuleHash = "4803d7e0f30088627f15e99d9789c1827e6c631f624b6da4c14d39287721bbdb"
 const ContractLineage = "OneTimeTokenAcceptance"
 const ContractVersion uint64 = 1
-const ContractBundleHash = "aa5c19da0fd5994991e20b68c62e49b251501951b1847d29a2dd1389f3eb1b71"
+const ContractBundleHash = "93ce102c5dcbc82e8a26d9c4c8163976f4c868f74ae84e9b0ea3c8cedea2892f"
 
 type QueryOptions = riffdb.Options
 type QueryIdentity struct { ContractLineage string; ContractVersion uint64; ContractBundleHash string; ModuleHash string; QueryName string; PlanHash string }
@@ -122,7 +122,7 @@ raw, err = requiredField(fields, "identifier"); if err != nil { return result, e
 raw, err = requiredField(fields, "organization_id"); if err != nil { return result, err }; result.OrganizationId, err = riffdb.UUIDValue(raw); if err != nil { return result, err }
 return result, nil }
 
-const GetTokenQueryPlanHash = "8921af1b5811cae7459574dd4c5b57a17f79cdedb3501a656b83fc054bda0b60"
+const GetTokenQueryPlanHash = "b4920313c300155e5d70a1c5aa6c56ec553794dfae316ea436f496d77c474369"
 var GetTokenOperation = riffdb.Operation{Name: "one_time_tokens_get_token", InputSchemaHash: "d96d7ffb91f0ad68b14d6cd920672dbc0c1a6d735cacaa7f22852ec0de91c9f2"}
 func decodeGetTokenResult(value riffdb.Value) (GetTokenResult, error) { fields, err := riffdb.RecordFields(value); if err != nil { return nil, err }; outcomeValue, err := requiredField(fields, "outcome"); if err != nil { return nil, err }; outcome, err := riffdb.EnumValue(outcomeValue); if err != nil { return nil, err }; var raw riffdb.Value; switch outcome {
 case "TokenFound": result := GetTokenTokenFound{Outcome: outcome}
@@ -159,7 +159,7 @@ default: return nil, errors.New("RiffDB driver returned unknown command outcome"
 func (client *Client) ConsumeToken(ctx context.Context, input ConsumeTokenInput) (CommandResult[ConsumeTokenOutcome], error) { response, err := client.session.Invoke(ctx, ConsumeTokenOperation, encodeConsumeTokenInput(input), riffdb.Options{MaximumAttempts: client.commandAttempts}); if err != nil { return CommandResult[ConsumeTokenOutcome]{}, err }; outcome, err := decodeConsumeTokenOutcome(response.Value); if err != nil { return CommandResult[ConsumeTokenOutcome]{}, err }; return CommandResult[ConsumeTokenOutcome]{Outcome: outcome, CommitSequence: response.ApplicationHead, ContractVersion: ContractVersion, PlanHash: ConsumeTokenPlanHash, Replayed: response.Replayed, OutcomeURI: response.Cursor}, nil }
 func (client *Client) ConsumeTokenBatch(ctx context.Context, inputs []ConsumeTokenInput, concurrency, checkpoint uint32) (BatchResult[ConsumeTokenOutcome], error) { encoded := make([]map[string]riffdb.Value, len(inputs)); for index, input := range inputs { encoded[index] = encodeConsumeTokenInput(input) }; response, err := client.session.Batch(ctx, ConsumeTokenOperation, encoded, concurrency, checkpoint, riffdb.Options{MaximumAttempts: client.commandAttempts}); if err != nil { return BatchResult[ConsumeTokenOutcome]{}, err }; result := BatchResult[ConsumeTokenOutcome]{Checkpoint: response.Checkpoint, Total: response.Total, Items: make([]BatchItem[ConsumeTokenOutcome], 0, len(response.Items))}; for _, item := range response.Items { converted := BatchItem[ConsumeTokenOutcome]{Index: item.Index}; if item.Error != nil { converted.Error = item.Error } else if item.Result != nil { outcome, decodeErr := decodeConsumeTokenOutcome(item.Result.Value); if decodeErr != nil { return BatchResult[ConsumeTokenOutcome]{}, decodeErr }; converted.Result = &CommandResult[ConsumeTokenOutcome]{Outcome: outcome, CommitSequence: item.Result.CommitSequence, ContractVersion: ContractVersion, PlanHash: ConsumeTokenPlanHash, Replayed: item.Result.Replayed, OutcomeURI: item.Result.OutcomeURI} }; result.Items = append(result.Items, converted) }; return result, nil }
 
-const IssueTokenPlanHash = "78176cd7418c41fb346a742bf10856c364829b4a3ae7e6176e0791172b2f03ff"
+const IssueTokenPlanHash = "9db88ad2da13526f606ca497d31323b02066a625ca6614c5aef06f53ed677d2d"
 var IssueTokenOperation = riffdb.Operation{Name: "one_time_tokens_issue_token", InputSchemaHash: "359d4d3ac8acb5d945adc331064c8af5dc2f5b59694ee18c2dcf74ffb5dd7288"}
 func encodeIssueTokenInput(input IssueTokenInput) map[string]riffdb.Value { return map[string]riffdb.Value{
 	"value": riffdb.String(input.Value),

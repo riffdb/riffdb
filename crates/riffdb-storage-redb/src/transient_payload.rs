@@ -6,6 +6,9 @@ use std::sync::Mutex;
 
 const MAX_PAYLOAD_BYTES: usize = 64 * 1024 * 1024;
 const MAX_PAYLOAD_ENTRIES: usize = 64;
+/// One seeded segment in this many is decoded from its canonical bytes and
+/// compared with the writer's segment before it is retained.
+pub(crate) const PAYLOAD_SEED_VERIFY_EVERY: u64 = 64;
 // Normalize through the canonical decoder before retention. Charge non-value
 // DTOs, shared scalar/key/string views and allocation headers conservatively at
 // 64 times their wire footprint, plus the complete fixed command layouts.
@@ -136,8 +139,25 @@ impl SegmentMetadata {
     }
 }
 
+/// Whether stored `bytes` still name a cached segment: its exact canonical
+/// bytes, or a history stub carrying its first sequence and digest.
+fn cached_payload_matches(
+    canonical: &[u8],
+    digest: &[u8; 32],
+    first: CommitSequence,
+    bytes: &[u8],
+    stub: Option<&crate::history_stub::SegmentSummary>,
+) -> bool {
+    match stub {
+        None => canonical == bytes,
+        Some(summary) => {
+            summary.first_commit_sequence == Some(first) && summary.segment_digest == *digest
+        }
+    }
+}
+
 struct CachedPayload {
-    canonical: Box<[u8]>,
+    canonical: Arc<[u8]>,
     decoded: Arc<StoredCommandSegmentV1>,
     charge: usize,
 }
@@ -170,12 +190,23 @@ impl PayloadCache {
         // Capture this caller's authority before consulting the disposable cache.
         // Never hold the cache mutex across storage I/O or canonical decoding.
         let bytes = load(metadata.first)?.ok_or_else(corrupt)?;
+        // The overlay and checkpoint hold a history stub for a journaled
+        // segment (ADR-0263); it names the cached segment by its digest.
+        let stub = crate::history_stub::segment_summary(&bytes)?;
         let cached = {
             let state = self.state.lock().map_err(|_| corrupt())?;
             state
                 .entries
                 .get(&metadata.first)
-                .filter(|cached| cached.canonical.as_ref() == bytes.as_slice())
+                .filter(|cached| {
+                    cached_payload_matches(
+                        &cached.canonical,
+                        cached.decoded.segment_digest().as_bytes(),
+                        metadata.first,
+                        &bytes,
+                        stub.as_ref(),
+                    )
+                })
                 .map(|cached| Arc::clone(&cached.decoded))
         };
         if let Some(cached) = cached {
@@ -183,35 +214,69 @@ impl PayloadCache {
             return Ok(cached);
         }
         let segment = Arc::new(
-            crate::command_prefix::decode_segment(&bytes)
+            crate::history_stub::decode_retained_segment(&bytes)
                 .map_err(|_| corrupt())?
                 .into_parts()
                 .0,
         );
         metadata.validate(&segment)?;
-        let charge = decoded_charge(&segment, bytes.len()).ok_or_else(corrupt)?;
-        if charge <= MAX_PAYLOAD_BYTES {
-            let mut state = self.state.lock().map_err(|_| corrupt())?;
-            if let Some(old) = state.entries.remove(&metadata.first) {
-                state.bytes -= old.charge;
-            }
-            while state.entries.len() >= MAX_PAYLOAD_ENTRIES
-                || state.bytes > MAX_PAYLOAD_BYTES - charge
-            {
-                let (_, old) = state.entries.pop_first().ok_or_else(corrupt)?;
-                state.bytes -= old.charge;
-            }
-            state.entries.insert(
-                metadata.first,
-                CachedPayload {
-                    canonical: bytes.into_boxed_slice(),
-                    decoded: Arc::clone(&segment),
-                    charge,
-                },
-            );
-            state.bytes += charge;
-        }
+        self.retain(metadata.first, Arc::from(bytes), Arc::clone(&segment))?;
         Ok(segment)
+    }
+
+    /// Retains the writer's own segment for its exact canonical bytes.
+    pub(super) fn seed(
+        &self,
+        metadata: &SegmentMetadata,
+        segment: Arc<StoredCommandSegmentV1>,
+        canonical: Arc<[u8]>,
+    ) -> Result<(), StorageError> {
+        metadata.validate(&segment)?;
+        if metadata
+            .first
+            .get()
+            .is_multiple_of(PAYLOAD_SEED_VERIFY_EVERY)
+        {
+            let decoded = crate::command_prefix::decode_segment(&canonical)
+                .map_err(|_| corrupt())?
+                .into_parts()
+                .0;
+            if decoded != *segment {
+                return Err(corrupt());
+            }
+        }
+        self.retain(metadata.first, canonical, segment)
+    }
+
+    fn retain(
+        &self,
+        first: CommitSequence,
+        canonical: Arc<[u8]>,
+        segment: Arc<StoredCommandSegmentV1>,
+    ) -> Result<(), StorageError> {
+        let charge = decoded_charge(&segment, canonical.len()).ok_or_else(corrupt)?;
+        if charge > MAX_PAYLOAD_BYTES {
+            return Ok(());
+        }
+        let mut state = self.state.lock().map_err(|_| corrupt())?;
+        if let Some(old) = state.entries.remove(&first) {
+            state.bytes -= old.charge;
+        }
+        while state.entries.len() >= MAX_PAYLOAD_ENTRIES || state.bytes > MAX_PAYLOAD_BYTES - charge
+        {
+            let (_, old) = state.entries.pop_first().ok_or_else(corrupt)?;
+            state.bytes -= old.charge;
+        }
+        state.entries.insert(
+            first,
+            CachedPayload {
+                canonical,
+                decoded: segment,
+                charge,
+            },
+        );
+        state.bytes += charge;
+        Ok(())
     }
 
     #[cfg(test)]
@@ -241,5 +306,46 @@ mod tests {
         let bytes = CanonicalValue::bytes(vec![42; 8192]).unwrap();
         let nested = CanonicalValue::list(vec![CanonicalValue::Record(record), bytes]).unwrap();
         assert!(value_charge(&nested).unwrap() >= charge + 8192);
+    }
+}
+
+#[cfg(test)]
+mod stub_match_tests {
+    use super::*;
+
+    // req: REC-005
+    #[test]
+    fn a_history_stub_names_the_cached_segment_by_first_sequence_and_digest() {
+        let first = CommitSequence::new(9).expect("sequence");
+        let summary = crate::history_stub::SegmentSummary {
+            first_commit_sequence: Some(first),
+            last_commit_sequence: Some(first),
+            terminal_administration_sequence: None,
+            command_count: 1,
+            segment_digest: [7; 32],
+        };
+        let canonical = b"segment".as_slice();
+        assert!(cached_payload_matches(
+            canonical, &[7; 32], first, canonical, None
+        ));
+        assert!(!cached_payload_matches(
+            canonical, &[7; 32], first, b"other", None
+        ));
+        assert!(cached_payload_matches(
+            canonical,
+            &[7; 32],
+            first,
+            b"stub",
+            Some(&summary)
+        ));
+        assert!(
+            !cached_payload_matches(canonical, &[8; 32], first, b"stub", Some(&summary)),
+            "another segment's digest"
+        );
+        let later = CommitSequence::new(10).expect("sequence");
+        assert!(
+            !cached_payload_matches(canonical, &[7; 32], later, b"stub", Some(&summary)),
+            "another segment's key"
+        );
     }
 }

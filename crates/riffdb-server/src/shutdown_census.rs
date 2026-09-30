@@ -104,16 +104,47 @@ pub(crate) fn format_v1_line() -> String {
     line.push_str(&scrub_total_us().to_string());
     line.push_str("\tbackground_scrub_rows_per_second=");
     line.push_str(&scrub_rows_per_second().to_string());
-    let (retention_state, retention_fence, retention_steps, retention_sequences) =
-        RETENTION_OBSERVATION.get();
+    let lane = RETENTION_OBSERVATION.get();
+    let state = lane.map_or(
+        crate::retention_worker::RetentionLaneState::Holding,
+        |lane| lane.state,
+    );
     line.push_str("\tonline_retention=");
-    line.push_str(retention_state.as_str());
+    line.push_str(state.as_str());
     line.push_str("\tonline_retention_fence=");
-    line.push_str(crate::retention_worker::fence_name(retention_fence));
+    line.push_str(crate::retention_worker::fence_name(
+        lane.and_then(|lane| lane.fence),
+    ));
     line.push_str("\tonline_retention_steps=");
-    line.push_str(&retention_steps.to_string());
+    line.push_str(&lane.map_or(0, |lane| lane.steps).to_string());
     line.push_str("\tonline_retention_sequences=");
-    line.push_str(&retention_sequences.to_string());
+    line.push_str(&lane.map_or(0, |lane| lane.sequences).to_string());
+    // WP-811: summed phase microseconds (preplan, gate wait, drain, plan,
+    // digest, materialize, delete, commit) and holds by reason (target,
+    // fenced, checkpoint in flight, awaiting checkpoint).
+    let phases = lane.map(|lane| lane.phases).unwrap_or_default();
+    line.push_str("\tonline_retention_phases_us=");
+    line.push_str(
+        &[
+            phases.preplan_us,
+            phases.gate_wait_us,
+            phases.drain_us,
+            phases.plan_us,
+            phases.digest_us,
+            phases.materialize_us,
+            phases.delete_us,
+            phases.commit_us,
+        ]
+        .map(|value| value.to_string())
+        .join(","),
+    );
+    line.push_str("\tonline_retention_holds=");
+    line.push_str(
+        &lane
+            .map_or([0; 4], |lane| lane.holds)
+            .map(|value| value.to_string())
+            .join(","),
+    );
     line
 }
 
@@ -169,14 +200,9 @@ pub(crate) fn record_background_scrub(
 }
 
 thread_local! {
-    static RETENTION_OBSERVATION: std::cell::Cell<(
-        crate::retention_worker::RetentionLaneState,
-        Option<riffdb_storage_api::RetentionFenceBinding>,
-        u64,
-        u64,
-    )> = const {
-        std::cell::Cell::new((crate::retention_worker::RetentionLaneState::Holding, None, 0, 0))
-    };
+    static RETENTION_OBSERVATION: std::cell::Cell<
+        Option<crate::retention_worker::RetentionLaneObservation>,
+    > = const { std::cell::Cell::new(None) };
 }
 
 /// Records the online retention lane's closed state and bounded counters for
@@ -184,12 +210,7 @@ thread_local! {
 pub(crate) fn record_online_retention(
     observation: crate::retention_worker::RetentionLaneObservation,
 ) {
-    RETENTION_OBSERVATION.set((
-        observation.state,
-        observation.fence,
-        observation.steps,
-        observation.sequences,
-    ));
+    RETENTION_OBSERVATION.set(Some(observation));
 }
 
 #[cfg(test)]
@@ -211,6 +232,8 @@ mod tests {
         assert!(line.contains("\tcolumnar_population_passes="));
         assert!(line.contains("\tonline_retention=holding"));
         assert!(line.contains("\tonline_retention_fence=none"));
+        assert!(line.contains("\tonline_retention_phases_us=0,0,0,0,0,0,0,0"));
+        assert!(line.contains("\tonline_retention_holds=0,0,0,0"));
         assert!(line.contains("\tonline_retention_sequences="));
     }
 }

@@ -1268,10 +1268,9 @@ where
             && evaluation_pool.is_some();
         let use_deferred_tail = durability == CoordinatorDurability::Group
             && groups.iter().all(|group| {
-                group
-                    .items
-                    .iter()
-                    .all(|(_, state)| state.has_audited_lifecycle())
+                group.items.iter().all(|(_, state)| {
+                    state.has_audited_lifecycle() && !state.has_indexed_selection()
+                })
             });
         let serial_setup_started = crate::writer_census::stage_start();
         let serial = groups
@@ -1615,6 +1614,9 @@ enum CompatibilityFailure {
 
 impl CompatibleCommandGroup {
     fn try_insert(&mut self, state: &PendingCommandAttempts) -> Result<(), CompatibilityFailure> {
+        if state.has_indexed_selection() {
+            return Err(CompatibilityFailure::ExactAccess);
+        }
         let mut reads = std::collections::BTreeSet::new();
         let mut writes = std::collections::BTreeSet::new();
         for (mode, target) in state.binding_accesses() {
@@ -5045,6 +5047,12 @@ where
         }
         ExecutionFailureCurrentDecision::StorageFailure(error) => {
             return proven_storage_failure(error, lifecycle);
+        }
+        ExecutionFailureCurrentDecision::PolicyDenied => {
+            return post_evaluation_authorization_failure(
+                PostEvaluationAuthorizationError::Denied,
+                lifecycle,
+            );
         }
         ExecutionFailureCurrentDecision::Integrity => return internal_defect(lifecycle),
     };

@@ -430,6 +430,13 @@ impl<'a> CommandBindingSource<'a> {
         }
     }
 
+    fn selection_index(self) -> Option<&'a Spanned<String>> {
+        match self {
+            Self::Existing(binding) => binding.selection_index(),
+            Self::Deferred(_) => None,
+        }
+    }
+
     fn initializer(self) -> Option<&'a Spanned<ObjectLiteral>> {
         match self {
             Self::Existing(binding) => binding.initializer(),
@@ -480,6 +487,7 @@ pub(crate) struct HirOutcome {
 
 #[derive(Clone, Debug)]
 pub(crate) struct HirBinding {
+    pub(crate) selection: Option<(IndexId, Vec<HirExpressionRoot>)>,
     pub(crate) id: BindingId,
     pub(crate) mode: BindingMode,
     pub(crate) entity_id: EntityTypeId,
@@ -497,6 +505,8 @@ pub(crate) struct HirBinding {
 
 #[derive(Clone, Debug)]
 pub(crate) struct HirRequirement {
+    pub(crate) name: String,
+    pub(crate) collection_local: bool,
     pub(crate) name_span: Span,
     pub(crate) condition: HirExpressionRoot,
     pub(crate) rejection: HirOutcome,
@@ -538,6 +548,8 @@ pub(crate) enum HirEffect {
         /// Which spelling the author used, checked against the classification
         /// this command actually proves (ADR-0256).
         spelling: riffdb_contract_syntax::ast::WriteSpelling,
+        checked_by: Option<Spanned<String>>,
+        collection_local: bool,
         binding: BindingId,
         field: FieldId,
         value: HirExpressionRoot,
@@ -2938,26 +2950,100 @@ fn lower_commands(
         let mut bindings = Vec::new();
         for (binding, binding_id, mode, entity, collection_local) in binding_descriptors {
             resolver.set_collection_context(collection_local);
-            if binding.arguments().len() != entity.key_fields.len() {
-                diagnostics.push(CompilerDiagnostic::new(
-                    CompilerDiagnosticCode::InvalidBinding,
-                    binding.entity().span,
-                ));
-                continue;
-            }
-            let arguments = binding
-                .arguments()
-                .iter()
-                .zip(&entity.key_fields)
-                .filter_map(|(argument, field_id)| {
-                    let expected = entity
-                        .fields
-                        .iter()
-                        .find(|field| field.id == *field_id)
-                        .map(|field| &field.value_type);
-                    lower_root(&mut resolver, argument, expected, false, diagnostics)
-                })
-                .collect();
+            let (arguments, selection) = if let Some(index_name) = binding.selection_index() {
+                let Some(index) = entity
+                    .indexes
+                    .iter()
+                    .find(|index| index.name == index_name.value)
+                else {
+                    diagnostics.push(CompilerDiagnostic::new(
+                        CompilerDiagnosticCode::InvalidIndexedSelection,
+                        index_name.span,
+                    ));
+                    continue;
+                };
+                if binding.arguments().is_empty() || binding.arguments().len() > index.fields.len()
+                {
+                    diagnostics.push(CompilerDiagnostic::new(
+                        CompilerDiagnosticCode::InvalidIndexedSelection,
+                        index_name.span,
+                    ));
+                    continue;
+                }
+                let prefix: Vec<_> = binding
+                    .arguments()
+                    .iter()
+                    .zip(&index.fields)
+                    .filter_map(|(argument, (field_id, _))| {
+                        let expected = entity
+                            .fields
+                            .iter()
+                            .find(|field| field.id == *field_id)
+                            .map(|field| &field.value_type);
+                        lower_root(&mut resolver, argument, expected, false, diagnostics)
+                    })
+                    .collect();
+                let arguments = entity
+                    .key_fields
+                    .iter()
+                    .filter_map(|field_id| {
+                        if let Some(position) = index
+                            .fields
+                            .iter()
+                            .take(prefix.len())
+                            .position(|(id, _)| id == field_id)
+                        {
+                            return Some(prefix[position].clone());
+                        }
+                        let field = entity.fields.iter().find(|field| field.id == *field_id)?;
+                        let path = Spanned {
+                            value: Path {
+                                segments: vec![
+                                    binding.name().clone(),
+                                    Spanned {
+                                        value: field.name.clone(),
+                                        span: index_name.span,
+                                    },
+                                ],
+                            },
+                            span: index_name.span,
+                        };
+                        lower_root(
+                            &mut resolver,
+                            &Spanned {
+                                value: Expression::Path(path),
+                                span: index_name.span,
+                            },
+                            Some(&field.value_type),
+                            false,
+                            diagnostics,
+                        )
+                    })
+                    .collect();
+                (arguments, Some((index.id, prefix)))
+            } else {
+                if binding.arguments().len() != entity.key_fields.len() {
+                    diagnostics.push(CompilerDiagnostic::new(
+                        CompilerDiagnosticCode::InvalidBinding,
+                        binding.entity().span,
+                    ));
+                    continue;
+                }
+                let arguments = binding
+                    .arguments()
+                    .iter()
+                    .zip(&entity.key_fields)
+                    .filter_map(|(argument, field_id)| {
+                        let expected = entity
+                            .fields
+                            .iter()
+                            .find(|field| field.id == *field_id)
+                            .map(|field| &field.value_type);
+                        lower_root(&mut resolver, argument, expected, false, diagnostics)
+                    })
+                    .collect();
+                (arguments, None)
+            };
             let failure = match binding.failure() {
                 Some(source) => {
                     let Some(outcome) = lower_outcome(
@@ -3041,6 +3127,7 @@ fn lower_commands(
                 None => None,
             };
             bindings.push(HirBinding {
+                selection,
                 id: binding_id,
                 mode,
                 entity_id: entity.id,
@@ -3107,6 +3194,8 @@ fn lower_commands(
                 continue;
             };
             requirements.push(HirRequirement {
+                name: requirement.value.name.value.clone(),
+                collection_local,
                 name_span: requirement.value.name.span,
                 condition,
                 rejection,
@@ -3250,6 +3339,8 @@ fn lower_commands(
                     effects.push(HirEffect::Set {
                         target_span: set.target.span,
                         spelling: set.spelling,
+                        checked_by: set.checked_by.clone(),
+                        collection_local,
                         binding: binding.id,
                         field: field.id,
                         value,
@@ -3744,6 +3835,8 @@ fn lower_commands(
                 // Compiler-owned initialization of a freshly bound workflow
                 // state. There is no prior value for an author to constrain.
                 spelling: riffdb_contract_syntax::ast::WriteSpelling::Set,
+                checked_by: None,
+                collection_local: binding.collection_local,
                 binding: binding.id,
                 field: workflow.state_field,
                 value: HirExpressionRoot {
@@ -4064,6 +4157,7 @@ fn normalize_reimport_command(
         .collect();
     let create_binding = Spanned::new(
         Binding::Create(EntityBinding {
+            selection_index: None,
             entity: clause.value.entity.clone(),
             arguments,
             binding: Spanned::new(binding_name.clone(), binding_span),
@@ -4093,6 +4187,7 @@ fn normalize_reimport_command(
             .collect();
         bindings.push(Spanned::new(
             Binding::Read(EntityBinding {
+                selection_index: None,
                 entity: Spanned::new(target.name.clone(), relationship.target_entity_span),
                 arguments,
                 binding: Spanned::new(
@@ -4125,6 +4220,7 @@ fn normalize_reimport_command(
                     // A create has no pre-image, so this write cannot be a
                     // lost update and the classification does not apply.
                     spelling: riffdb_contract_syntax::ast::WriteSpelling::Set,
+                    checked_by: None,
                     target: Spanned::new(target, target_span),
                     value: path_expression(&record_name, record_span, field),
                     reveals: Vec::new(),

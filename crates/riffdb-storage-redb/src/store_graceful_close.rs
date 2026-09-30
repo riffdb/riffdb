@@ -112,6 +112,9 @@ impl SharedRedb {
             }
         }
         drop(self.journal_runtime()?);
+        // Retirement of an installed extent runs off the writer's path; the
+        // clean boundary waits for it and admits no scratch name.
+        self.join_journal_sealer();
         let spare = crate::journal::spare_journal_path(&self.path);
         match self.journal_media.remove_file(&spare) {
             Ok(()) => crate::journal::sync_parent_directory_with_media(
@@ -271,18 +274,16 @@ fn read_administration_tail_from_write(
     let commits = transaction.open_table(COMMITS).map_err(table_error)?;
     let command = match commits.last().map_err(precommit_storage_error)? {
         None => None,
-        Some((_, encoded)) => {
-            match riffdb_storage_api::decode_command_segment_v1(encoded.value()) {
-                Ok(segment) => Some(segment.value().last_administration_sequence()),
-                Err(error)
-                    if error.kind()
-                        == riffdb_storage_api::DurableCodecErrorKind::UnexpectedRecordType =>
-                {
-                    None
-                }
-                Err(error) => return Err(crate::error::codec_error(error)),
+        Some((_, encoded)) => match crate::history_stub::decode_segment_value(encoded.value()) {
+            Ok(segment) => Some(segment.value().last_administration_sequence()),
+            Err(error)
+                if error.kind()
+                    == riffdb_storage_api::DurableCodecErrorKind::UnexpectedRecordType =>
+            {
+                None
             }
-        }
+            Err(error) => return Err(crate::error::codec_error(error)),
+        },
     };
     match (physical, command) {
         (Some(physical), Some(command)) if physical == command => {

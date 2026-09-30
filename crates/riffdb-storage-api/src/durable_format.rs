@@ -11,9 +11,17 @@ use sha2::{Digest, Sha256};
 use crate::{BackupManifestVersion, StorageFormatVersion};
 
 /// Current logical writer-journal frame format.
-pub const DURABILITY_JOURNAL_FRAME_VERSION: u16 = 2;
-/// Current preallocated writer-journal extent format.
-pub const DURABILITY_JOURNAL_EXTENT_VERSION: u16 = 3;
+/// Version 3 records each frame's changelog binding (ADR-0263 Amendment 2 B4);
+/// version 2 frames remain readable.
+pub const DURABILITY_JOURNAL_FRAME_VERSION: u16 = 3;
+/// Previous logical frame format, still read during recovery.
+pub const DURABILITY_JOURNAL_FRAME_VERSION_V2: u16 = 2;
+/// Current preallocated writer-journal extent format. Version 4 adds a header
+/// revision and a checkpoint anchor, so an extent retains its materialized
+/// frames (ADR-0263); version 3 extents remain readable.
+pub const DURABILITY_JOURNAL_EXTENT_VERSION: u16 = 4;
+/// Previous extent format, still read during recovery.
+pub const DURABILITY_JOURNAL_EXTENT_VERSION_V3: u16 = 3;
 /// Byte-frozen create/restore maintenance receipt format.
 pub const OFFLINE_MAINTENANCE_RECEIPT_VERSION_V1: u32 = 1;
 /// Retire-only maintenance receipt format.
@@ -45,9 +53,15 @@ const READABLE_REDB_LAYOUT_VERSIONS: &[u16] = &[REDB_LAYOUT_VERSION];
 const WRITABLE_REDB_LAYOUT_VERSIONS: &[u16] = &[REDB_LAYOUT_VERSION];
 const READABLE_REGISTRY_VERSIONS: &[u32] = &[DURABLE_RECORD_REGISTRY_VERSION];
 const WRITABLE_REGISTRY_VERSIONS: &[u32] = &[DURABLE_RECORD_REGISTRY_VERSION];
-const READABLE_JOURNAL_FRAME_VERSIONS: &[u16] = &[DURABILITY_JOURNAL_FRAME_VERSION];
+const READABLE_JOURNAL_FRAME_VERSIONS: &[u16] = &[
+    DURABILITY_JOURNAL_FRAME_VERSION_V2,
+    DURABILITY_JOURNAL_FRAME_VERSION,
+];
 const WRITABLE_JOURNAL_FRAME_VERSIONS: &[u16] = &[DURABILITY_JOURNAL_FRAME_VERSION];
-const READABLE_JOURNAL_EXTENT_VERSIONS: &[u16] = &[DURABILITY_JOURNAL_EXTENT_VERSION];
+const READABLE_JOURNAL_EXTENT_VERSIONS: &[u16] = &[
+    DURABILITY_JOURNAL_EXTENT_VERSION_V3,
+    DURABILITY_JOURNAL_EXTENT_VERSION,
+];
 const WRITABLE_JOURNAL_EXTENT_VERSIONS: &[u16] = &[DURABILITY_JOURNAL_EXTENT_VERSION];
 const READABLE_BACKUP_VERSIONS: &[u32] = &[BackupManifestVersion::V1.get()];
 const WRITABLE_BACKUP_VERSIONS: &[u32] = &[BackupManifestVersion::V1.get()];

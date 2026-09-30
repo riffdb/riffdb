@@ -801,7 +801,7 @@ where
             .map_err(precommit_storage_error)?;
         let physical_sequence = super::keys::decode_application_sequence_key(physical_key.value())
             .map_err(|_| storage_error(storage::StorageErrorKind::CorruptData))?;
-        let capsule = match storage::decode_command_segment_v1(row.value()) {
+        let capsule = match super::history_stub::decode_segment_value(row.value()) {
             Ok(segment) => {
                 let segment = segment.into_parts().0;
                 if segment.first_commit_sequence() != physical_sequence

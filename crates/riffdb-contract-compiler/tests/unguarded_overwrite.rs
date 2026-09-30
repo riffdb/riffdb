@@ -81,7 +81,17 @@ const GUARDED: &str = "    require is_free: slot.free else SlotTaken {}\n";
 
 /// The guarded claim: a precondition, and writes that say they have one.
 fn slot_claim(guard: &str) -> String {
-    slot_claim_spelled(guard, "set")
+    let source = slot_claim_spelled(guard, "set");
+    if guard.is_empty() {
+        source
+    } else {
+        source
+            .replace("slot.free = false", "slot.free = false checked_by is_free")
+            .replace(
+                "slot.held_by = holder",
+                "slot.held_by = holder checked_by is_free",
+            )
+    }
 }
 
 /// The same writes with no precondition, spelled as what they are.
@@ -169,7 +179,7 @@ fn an_unguarded_overwrite_must_be_declared_and_is_then_distinguishable() {
 #[test]
 fn the_classification_selects_its_own_version_and_moves_the_plan_hash() {
     use riffdb_contract_ir::{
-        BUNDLE_FORMAT_VERSION_V24, EXECUTABLE_IR_VERSION_V24, GRAMMAR_VERSION_V24,
+        BUNDLE_FORMAT_VERSION_V25, EXECUTABLE_IR_VERSION_V25, GRAMMAR_VERSION_V25,
     };
 
     let guarded = compile_contract_source(&slot_claim(GUARDED)).expect("guarded compiles");
@@ -189,14 +199,14 @@ fn the_classification_selects_its_own_version_and_moves_the_plan_hash() {
         "a write that stops constraining its prior value is a different command"
     );
 
-    assert_eq!(unguarded.format_version(), BUNDLE_FORMAT_VERSION_V24);
-    assert_eq!(unguarded.ir_version(), EXECUTABLE_IR_VERSION_V24);
-    assert_eq!(unguarded.grammar_version(), GRAMMAR_VERSION_V24);
+    assert_eq!(unguarded.format_version(), BUNDLE_FORMAT_VERSION_V25);
+    assert_eq!(unguarded.ir_version(), EXECUTABLE_IR_VERSION_V25);
+    assert_eq!(unguarded.grammar_version(), GRAMMAR_VERSION_V25);
     assert!(
-        guarded.format_version() < BUNDLE_FORMAT_VERSION_V24
-            && guarded.ir_version() < EXECUTABLE_IR_VERSION_V24
-            && guarded.grammar_version() < GRAMMAR_VERSION_V24,
-        "a contract that declares no unguarded write must not be lifted to V24"
+        guarded.format_version() == BUNDLE_FORMAT_VERSION_V25
+            && guarded.ir_version() == EXECUTABLE_IR_VERSION_V25
+            && guarded.grammar_version() == GRAMMAR_VERSION_V25,
+        "all new assignment-bearing contracts carry V25 evidence"
     );
 }
 
@@ -218,7 +228,7 @@ fn deleting_a_require_fails_to_compile_rather_than_changing_semantics() {
         diagnostics
             .as_slice()
             .iter()
-            .any(|diagnostic| diagnostic.code() == CompilerDiagnosticCode::UnguardedSet),
+            .any(|diagnostic| diagnostic.code() == CompilerDiagnosticCode::InvalidWriteAssociation),
         "the diagnostic must name the write that lost its precondition"
     );
 }
@@ -239,6 +249,6 @@ fn an_overwrite_that_is_guarded_is_refused() {
         diagnostics
             .as_slice()
             .iter()
-            .any(|diagnostic| diagnostic.code() == CompilerDiagnosticCode::GuardedOverwrite)
+            .any(|diagnostic| diagnostic.code() == CompilerDiagnosticCode::InvalidWriteAssociation)
     );
 }

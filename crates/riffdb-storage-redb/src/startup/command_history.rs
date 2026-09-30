@@ -342,7 +342,7 @@ where
     C: ReadableTable<&'static [u8], &'static [u8]>,
     E: ReadableTable<&'static [u8], &'static [u8]>,
 {
-    match crate::command_prefix::decode_segment(row) {
+    match crate::history_stub::decode_retained_segment(row) {
         Ok(segment) => {
             let segment = segment.into_parts().0;
             if segment.first_commit_sequence() != physical {

@@ -7,10 +7,7 @@
 //! bindings derive *different* routes is still rejected.
 
 use riffdb_contract_compiler::{CompilerDiagnosticCode, compile_contract_source};
-use riffdb_contract_ir::{
-    BUNDLE_FORMAT_VERSION_V19, EXECUTABLE_IR_VERSION_V19, GRAMMAR_VERSION_V19, KeyPurpose,
-    RootValidationReadPlan,
-};
+use riffdb_contract_ir::{KeyPurpose, RootValidationReadPlan};
 
 /// One tenant route, two aggregates, one atomic checkout.
 const CROSS_AGGREGATE: &str = r"
@@ -135,9 +132,8 @@ fn writing_two_partition_routes_is_still_rejected() {
 }
 
 #[test]
-fn a_single_aggregate_command_keeps_its_older_least_sufficient_identity() {
-    // The compatibility claim: nothing that compiles today changes version, so
-    // no deployed contract's plan hash or application lock moves.
+fn a_single_aggregate_command_retains_locality_with_v25_evidence() {
+    // V25 evidence changes new source identity without broadening locality.
     let single = CROSS_AGGREGATE
         .replace(
             "    create Order(tenant_id, order_id) as order else OrderExists {}\n",
@@ -153,10 +149,10 @@ fn a_single_aggregate_command_keeps_its_older_least_sufficient_identity() {
     assert!(!command.requires_ir_v19());
     assert!(!command.locality().spans_aggregates());
     assert!(
-        bundle.format_version() < BUNDLE_FORMAT_VERSION_V19
-            && bundle.ir_version() < EXECUTABLE_IR_VERSION_V19
-            && bundle.grammar_version() < GRAMMAR_VERSION_V19,
-        "a single-aggregate contract must not be lifted to V19"
+        bundle.format_version() == riffdb_contract_ir::BUNDLE_FORMAT_VERSION_V25
+            && bundle.ir_version() == riffdb_contract_ir::EXECUTABLE_IR_VERSION_V25
+            && bundle.grammar_version() == riffdb_contract_ir::GRAMMAR_VERSION_V25,
+        "new write proofs do not imply cross-aggregate ownership"
     );
 }
 

@@ -22,8 +22,8 @@ def _compact_tag(value: object, tag: str, keys: frozenset[str]) -> dict[str, obj
 
 CONTRACT_LINEAGE: Final[str] = "WoodpeckerScheduler"
 CONTRACT_VERSION: Final[int] = 1
-CONTRACT_BUNDLE_HASH: Final[str] = "b04d95a61cbce874231418078b4aae38005bc2621f7f10b0f0bc49c724b08ceb"
-QUERY_MODULE_HASH: Final[str] = "d1744fe62d302f90d3ff03feb86b07f975acc8f82b19c3bb61f8b386bc83995a"
+CONTRACT_BUNDLE_HASH: Final[str] = "89517d218052dc16f153e513b9033ba5ee3f61e04c3871511c10ae350bf1a6a4"
+QUERY_MODULE_HASH: Final[str] = "c367ef662da8e4268e3ce842d6934435162bf937efd4efafcdaccff28cf1d467"
 
 class PipelineState(StrEnum):
     QUEUED = "Queued"
@@ -40,7 +40,7 @@ class ScheduledPipeline:
     organization_id: UUID
     lease_expires_at: Timestamp | None
 
-GET_PIPELINE_QUERY_PLAN_HASH: Final[str] = "ae166d652800e991e25057de49d939fbaa17bd049908ec85bc7579dfbe8955ea"
+GET_PIPELINE_QUERY_PLAN_HASH: Final[str] = "45f039f582544f0f255e25c4de27ee35e31e200ac372dc8108984c4d46e653fe"
 
 @dataclass(frozen=True, slots=True, kw_only=True)
 class GetPipelineParams:
@@ -389,7 +389,7 @@ from collections.abc import AsyncIterator
 from typing import Any, cast
 from riffdb_application._binding import decode_record, encode_reactive_record
 
-PIPELINE_ACTIVITY_REACTIVE_MODULE_HASH: Final[str] = "013fca346ac4129db0957a24267f51d399fce6db69e7a57e010a0a961839b85f"
+PIPELINE_ACTIVITY_REACTIVE_MODULE_HASH: Final[str] = "bd6af02c5571fd6b49dfdfc736452b1c42d29a5a7082ef2cb8bc839af75071bb"
 
 @dataclass(frozen=True, slots=True, kw_only=True)
 class PipelineTransitionsParams:

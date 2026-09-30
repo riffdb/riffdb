@@ -15,15 +15,17 @@ use riffdb_contract_ir::{
     EXECUTABLE_IR_VERSION_V14, EXECUTABLE_IR_VERSION_V15, EXECUTABLE_IR_VERSION_V16,
     EXECUTABLE_IR_VERSION_V17, EXECUTABLE_IR_VERSION_V18, EXECUTABLE_IR_VERSION_V19,
     EXECUTABLE_IR_VERSION_V20, EXECUTABLE_IR_VERSION_V21, EXECUTABLE_IR_VERSION_V22,
-    EXECUTABLE_IR_VERSION_V23, EXECUTABLE_IR_VERSION_V24, ExecutionClass, GRAMMAR_VERSION_V1,
-    GRAMMAR_VERSION_V2, GRAMMAR_VERSION_V3, GRAMMAR_VERSION_V4, GRAMMAR_VERSION_V5,
-    GRAMMAR_VERSION_V6, GRAMMAR_VERSION_V7, GRAMMAR_VERSION_V8, GRAMMAR_VERSION_V9,
-    GRAMMAR_VERSION_V10, GRAMMAR_VERSION_V11, GRAMMAR_VERSION_V12, GRAMMAR_VERSION_V13,
-    GRAMMAR_VERSION_V14, GRAMMAR_VERSION_V15, GRAMMAR_VERSION_V16, GRAMMAR_VERSION_V17,
-    GRAMMAR_VERSION_V18, GRAMMAR_VERSION_V19, GRAMMAR_VERSION_V20, GRAMMAR_VERSION_V21,
-    GRAMMAR_VERSION_V22, GRAMMAR_VERSION_V23, GRAMMAR_VERSION_V24, IndexSchema, SchemaIr,
+    EXECUTABLE_IR_VERSION_V23, EXECUTABLE_IR_VERSION_V24, EXECUTABLE_IR_VERSION_V25,
+    EXECUTABLE_IR_VERSION_V26, ExecutionClass, GRAMMAR_VERSION_V1, GRAMMAR_VERSION_V2,
+    GRAMMAR_VERSION_V3, GRAMMAR_VERSION_V4, GRAMMAR_VERSION_V5, GRAMMAR_VERSION_V6,
+    GRAMMAR_VERSION_V7, GRAMMAR_VERSION_V8, GRAMMAR_VERSION_V9, GRAMMAR_VERSION_V10,
+    GRAMMAR_VERSION_V11, GRAMMAR_VERSION_V12, GRAMMAR_VERSION_V13, GRAMMAR_VERSION_V14,
+    GRAMMAR_VERSION_V15, GRAMMAR_VERSION_V16, GRAMMAR_VERSION_V17, GRAMMAR_VERSION_V18,
+    GRAMMAR_VERSION_V19, GRAMMAR_VERSION_V20, GRAMMAR_VERSION_V21, GRAMMAR_VERSION_V22,
+    GRAMMAR_VERSION_V23, GRAMMAR_VERSION_V24, GRAMMAR_VERSION_V25, GRAMMAR_VERSION_V26,
+    IndexSchema, SchemaIr,
 };
-use riffdb_invariant::InputDerivedCommandFacts;
+
 #[cfg(test)]
 use riffdb_storage_api::command_write_set_upper_bound_v1;
 use riffdb_storage_api::{
@@ -77,7 +79,7 @@ pub(super) enum CascadeDiscoveryDecision {
 
 pub(super) fn lower_cascade_discovery(
     resolved: &ResolvedExecutablePlan,
-    facts: &InputDerivedCommandFacts,
+    facts: &riffdb_invariant::CommandTargetFacts,
     discovery: &ReadSnapshot,
 ) -> Result<CascadeDiscoveryDecision, CommandIndexError> {
     let bounded_ranges = derive_delete_ranges(resolved, facts)?;
@@ -265,7 +267,7 @@ impl std::fmt::Debug for CommandIndexError {
 /// boundary.
 pub(super) fn derive_delete_ranges(
     resolved: &ResolvedExecutablePlan,
-    facts: &InputDerivedCommandFacts,
+    facts: &riffdb_invariant::CommandTargetFacts,
 ) -> Result<Vec<(IndexRangeTarget, u16)>, CommandIndexError> {
     let plan = resolved.plan();
     if facts.binding_plan_indices().len() != facts.binding_entity_keys().len() {
@@ -1619,12 +1621,14 @@ const fn index_derivation_version_supported(grammar: u32, ir: u32) -> bool {
             | (GRAMMAR_VERSION_V22, EXECUTABLE_IR_VERSION_V22)
             | (GRAMMAR_VERSION_V23, EXECUTABLE_IR_VERSION_V23)
             | (GRAMMAR_VERSION_V24, EXECUTABLE_IR_VERSION_V24)
+            | (GRAMMAR_VERSION_V25, EXECUTABLE_IR_VERSION_V25)
+            | (GRAMMAR_VERSION_V26, EXECUTABLE_IR_VERSION_V26)
     )
 }
 
 fn derive_grammar_v1_indexes(
     resolved: &ResolvedExecutablePlan,
-    facts: &InputDerivedCommandFacts,
+    facts: &riffdb_invariant::CommandTargetFacts,
     evaluated: &EvaluatedCommand,
     current: &TransactionCurrentState,
     mutation_positions: &[Option<usize>],
@@ -2029,10 +2033,10 @@ mod tests {
     // gate.
     #[test]
     fn index_derivation_admits_exactly_the_audited_identity_pairs() {
-        for grammar in 0..=GRAMMAR_VERSION_V24 + 1 {
-            for ir in 0..=EXECUTABLE_IR_VERSION_V24 + 1 {
+        for grammar in 0..=GRAMMAR_VERSION_V26 + 1 {
+            for ir in 0..=EXECUTABLE_IR_VERSION_V26 + 1 {
                 let audited_identity_pair =
-                    grammar == ir && (GRAMMAR_VERSION_V1..=GRAMMAR_VERSION_V24).contains(&grammar);
+                    grammar == ir && (GRAMMAR_VERSION_V1..=GRAMMAR_VERSION_V26).contains(&grammar);
                 assert_eq!(
                     index_derivation_version_supported(grammar, ir),
                     audited_identity_pair,
@@ -2076,9 +2080,9 @@ contract IndexedRows version 1 {
     idempotency_key request_key
     mutate Row(id) as row else Missing {}
     require nonnegative: row.score >= 0 else NegativeScore {}
-    set row.tenant = tenant
-    set row.category = category
-    set row.score = score
+    overwrite row.tenant = tenant
+    overwrite row.category = category
+    overwrite row.score = score
     return Changed { row: row }
   }
 }
@@ -2117,9 +2121,9 @@ contract IndexedRows version 1 {
     idempotency_key request_key
     mutate Row(id) as row else Missing {}
     require nonnegative: row.score >= 0 else NegativeScore {}
-    set row.tenant = tenant
-    set row.category = category
-    set row.score = score
+    overwrite row.tenant = tenant
+    overwrite row.category = category
+    overwrite row.score = score
     return Changed { row: row }
   }
 }
@@ -3066,7 +3070,7 @@ contract ProductionEmbeddingIndexedRows version 1 {
     idempotency_key request_key
     mutate Document(org_id, doc_id) as doc else Missing {}
     require recategorized: doc.category != category else Unchanged {}
-    set doc.category = category
+    set doc.category = category checked_by recategorized
     embed doc.embedding = embedding from (submitted_model, submitted_version)
     return Updated { document: doc }
   }
@@ -3097,11 +3101,11 @@ contract ProductionEmbeddingIndexedRows version 1 {
         );
         assert_eq!(
             fixture.resolved.bundle().bundle().grammar_version(),
-            GRAMMAR_VERSION_V15
+            GRAMMAR_VERSION_V25
         );
         assert_eq!(
             fixture.resolved.bundle().bundle().ir_version(),
-            EXECUTABLE_IR_VERSION_V15
+            EXECUTABLE_IR_VERSION_V25
         );
         assert_eq!(fixture.evaluated.embedding_writes().len(), 1);
         let write = &fixture.evaluated.embedding_writes()[0];
@@ -3184,11 +3188,11 @@ contract ProductionEmbeddingIndexedRows version 1 {
         );
         assert_eq!(
             fixture.resolved.bundle().bundle().grammar_version(),
-            GRAMMAR_VERSION_V4
+            GRAMMAR_VERSION_V25
         );
         assert_eq!(
             fixture.resolved.bundle().bundle().ir_version(),
-            EXECUTABLE_IR_VERSION_V4
+            EXECUTABLE_IR_VERSION_V25
         );
         let derived = derive_grammar_v1_indexes(
             &fixture.resolved,
@@ -3255,11 +3259,11 @@ contract AnchoredEventRows version 1 {
         // Non-empty trigger: this bundle must sit exactly at the V7 era.
         assert_eq!(
             fixture.resolved.bundle().bundle().grammar_version(),
-            GRAMMAR_VERSION_V7
+            GRAMMAR_VERSION_V25
         );
         assert_eq!(
             fixture.resolved.bundle().bundle().ir_version(),
-            EXECUTABLE_IR_VERSION_V7
+            EXECUTABLE_IR_VERSION_V25
         );
         assert!(
             fixture
@@ -3364,11 +3368,11 @@ contract SecretIndexedRows version 1 {
         // removed this assertion fails at 1 != 8.
         assert_eq!(
             secret.resolved.bundle().bundle().grammar_version(),
-            GRAMMAR_VERSION_V8
+            GRAMMAR_VERSION_V25
         );
         assert_eq!(
             secret.resolved.bundle().bundle().ir_version(),
-            EXECUTABLE_IR_VERSION_V8
+            EXECUTABLE_IR_VERSION_V25
         );
         let derived = derive_grammar_v1_indexes(
             &secret.resolved,
@@ -3461,11 +3465,11 @@ contract SecretRevealIndexedRows version 1 {
         );
         assert_eq!(
             fixture.resolved.bundle().bundle().grammar_version(),
-            GRAMMAR_VERSION_V11
+            GRAMMAR_VERSION_V25
         );
         assert_eq!(
             fixture.resolved.bundle().bundle().ir_version(),
-            EXECUTABLE_IR_VERSION_V11
+            EXECUTABLE_IR_VERSION_V25
         );
         assert_eq!(fixture.resolved.plan().secret_reveals().len(), 1);
         let derived = derive_grammar_v1_indexes(
@@ -3507,9 +3511,9 @@ contract VectorAnnIndexedRows version 1 {
     idempotency_key request_key
     mutate Row(id) as row else Missing {}
     require nonnegative: row.score >= 0 else NegativeScore {}
-    set row.tenant = tenant
-    set row.category = category
-    set row.score = score
+    overwrite row.tenant = tenant
+    overwrite row.category = category
+    overwrite row.score = score
     return Updated { row: row }
   }
 }
@@ -3526,11 +3530,11 @@ contract VectorAnnIndexedRows version 1 {
         );
         assert_eq!(
             fixture.resolved.bundle().bundle().grammar_version(),
-            GRAMMAR_VERSION_V12
+            GRAMMAR_VERSION_V25
         );
         assert_eq!(
             fixture.resolved.bundle().bundle().ir_version(),
-            EXECUTABLE_IR_VERSION_V12
+            EXECUTABLE_IR_VERSION_V25
         );
         assert_eq!(
             fixture
@@ -3604,11 +3608,11 @@ contract VectorAnnIndexedRows version 1 {
         );
         assert_eq!(
             fixture.resolved.bundle().bundle().grammar_version(),
-            GRAMMAR_VERSION_V20
+            GRAMMAR_VERSION_V25
         );
         assert_eq!(
             fixture.resolved.bundle().bundle().ir_version(),
-            EXECUTABLE_IR_VERSION_V20
+            EXECUTABLE_IR_VERSION_V25
         );
         assert_provider_era_preserves_indexes(&fixture);
     }
@@ -3621,11 +3625,11 @@ contract VectorAnnIndexedRows version 1 {
         );
         assert_eq!(
             fixture.resolved.bundle().bundle().grammar_version(),
-            GRAMMAR_VERSION_V21
+            GRAMMAR_VERSION_V25
         );
         assert_eq!(
             fixture.resolved.bundle().bundle().ir_version(),
-            EXECUTABLE_IR_VERSION_V21
+            EXECUTABLE_IR_VERSION_V25
         );
         assert_provider_era_preserves_indexes(&fixture);
     }
@@ -3766,11 +3770,11 @@ contract WorkflowInitializedRows version 1 {
         // bundle at the V9 era.
         assert_eq!(
             fixture.resolved.bundle().bundle().grammar_version(),
-            GRAMMAR_VERSION_V9
+            GRAMMAR_VERSION_V25
         );
         assert_eq!(
             fixture.resolved.bundle().bundle().ir_version(),
-            EXECUTABLE_IR_VERSION_V9
+            EXECUTABLE_IR_VERSION_V25
         );
         let derived = derive_grammar_v1_indexes(
             &fixture.resolved,
@@ -3883,11 +3887,11 @@ contract ReimportEraRows version 1 {
         // bundle at the V10 era.
         assert_eq!(
             fixture.resolved.bundle().bundle().grammar_version(),
-            GRAMMAR_VERSION_V10
+            GRAMMAR_VERSION_V25
         );
         assert_eq!(
             fixture.resolved.bundle().bundle().ir_version(),
-            EXECUTABLE_IR_VERSION_V10
+            EXECUTABLE_IR_VERSION_V25
         );
         let derived = derive_grammar_v1_indexes(
             &fixture.resolved,

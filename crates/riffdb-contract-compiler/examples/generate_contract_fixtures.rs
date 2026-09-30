@@ -189,8 +189,8 @@ contract InitializedStateTransitionShape version 1 {
       active: false,
       revision: 0,
     }
-    set state.active = true
-    set state.payload = payload
+    overwrite state.active = true
+    overwrite state.payload = payload
     set state.revision = state.revision + 1
     return Written { revision: state.revision }
   }
@@ -507,6 +507,25 @@ fn main() -> Result<(), Box<dyn Error>> {
                 .ok_or("initialized transition fixture command is absent")?,
         )
         .render_text(),
+    )?;
+
+    let selection_source =
+        include_str!("../../../fixtures/compiler/indexed-selection/contract.riff");
+    let selection_bundle = compile_contract_source(selection_source)?;
+    let selection_root = fixture_root.join("indexed-selection");
+    fs::create_dir_all(&selection_root)?;
+    fs::write(selection_root.join("contract.riff"), selection_source)?;
+    fs::write(
+        selection_root.join("bundle.bin"),
+        selection_bundle.canonical_bytes(),
+    )?;
+    fs::write(
+        selection_root.join("bundle-hash.txt"),
+        format!("{}\n", hex(selection_bundle.bundle_hash().as_bytes())),
+    )?;
+    fs::write(
+        selection_root.join("command-explain.txt"),
+        CommandExplain::from_plan(&selection_bundle.commands()[0]).render_text(),
     )?;
 
     let decision_bundle = compile_contract_source(COMMAND_DECISION_SOURCE)?;
@@ -3258,18 +3277,24 @@ fn diagnostic_snapshots() -> Result<String, Box<dyn Error>> {
             .to_owned(),
         ),
         (
+            "RDB-C051-invalid-indexed-selection",
+            CompilerDiagnosticCode::InvalidIndexedSelection,
+            include_str!("../../../fixtures/compiler/indexed-selection/contract.riff")
+                .replace("conflict_key (pool_id)", "conflict_key (pool_id, slot_id)"),
+        ),
+        (
             "RDB-C049-guarded-overwrite",
             CompilerDiagnosticCode::GuardedOverwrite,
             concat!(
                 "contract GuardedOverwrite version 1 { ",
-                "entity Slot { key (tenant_id: uuid, slot_id: uuid) field free: bool } ",
+                "entity Slot { key (tenant_id: uuid, slot_id: uuid) field free: u64 } ",
                 "aggregate Slots { root Slot partition_by tenant_id ",
                 "conflict_key (tenant_id, slot_id) } ",
                 "command ClaimSlot { input idempotency_key: string<128> input tenant_id: uuid ",
                 "input slot_id: uuid idempotency_key idempotency_key ",
                 "mutate Slot(tenant_id, slot_id) as slot else Missing {} ",
-                "require is_free: slot.free else Taken {} ",
-                "overwrite slot.free = false ",
+                "require is_free: slot.free == 0 else Taken {} ",
+                "overwrite slot.free = slot.free + 1 ",
                 "return Claimed { slot: slot } } }",
             )
             .to_owned(),
@@ -3302,6 +3327,16 @@ fn diagnostic_snapshots() -> Result<String, Box<dyn Error>> {
         cases.push((name, code, error));
     }
 
+    let invalid_association =
+        BUDGET_SOURCE.replace("checked_by sufficient_budget", "checked_by missing");
+    let error = validate_contract_source(&invalid_association).expect_err("missing business check");
+    cases.push((
+        "RDB-C050-invalid-write-association",
+        CompilerDiagnosticCode::InvalidWriteAssociation,
+        error,
+    ));
+
+    cases.sort_by_key(|(_, code, _)| code.as_str());
     let expected = CompilerDiagnosticCode::ALL
         .into_iter()
         .collect::<BTreeSet<_>>();

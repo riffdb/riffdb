@@ -282,9 +282,11 @@ pub(crate) fn validate_retained(
         && let Some(row) = receipts
             .get(retained.anchor().sequence().get().to_be_bytes().as_slice())
             .map_err(precommit_storage_error)?
-        && AuthoritativeTransactionV3::decode(row.value())
-            .map_err(|_| corrupt())?
-            .attribution()
+        && AuthoritativeTransactionV3::decode(&crate::history_stub::resolve_history_value(
+            row.value(),
+        )?)
+        .map_err(|_| corrupt())?
+        .attribution()
             == ChangelogAttributionV3::Promotion
         && !current
     {

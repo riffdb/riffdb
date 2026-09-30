@@ -193,8 +193,10 @@ impl RedbMaintenanceStorage {
             .get(1_u64.to_be_bytes().as_slice())
             .map_err(|_| corrupt())?
             .ok_or_else(corrupt)?;
-        let anchor = riffdb_storage_api::AuthoritativeTransactionV3::decode(anchor.value())
-            .map_err(|_| corrupt())?;
+        let anchor = riffdb_storage_api::AuthoritativeTransactionV3::decode(
+            &crate::history_stub::resolve_history_value(anchor.value())?,
+        )
+        .map_err(|_| corrupt())?;
         if anchor.attribution() != ChangelogAttributionV3::RestoreAnchor {
             return Ok(None);
         }

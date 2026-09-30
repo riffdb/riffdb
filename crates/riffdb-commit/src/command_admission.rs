@@ -967,14 +967,30 @@ fn lower_snapshot(
         .collect::<Result<Vec<_>, _>>()?;
     let bounded_ranges = crate::command_index::derive_delete_ranges(resolved_plan, facts)
         .map_err(|_| CommandAdmissionError::Integrity)?;
-    lower_snapshot_parts(
+    let mut proof = lower_snapshot_parts(
         resolved_plan.reference(),
         &binding_types,
         facts.binding_entity_keys(),
         &root_types,
         facts.root_validation_entity_keys(),
         bounded_ranges,
-    )
+    )?;
+    if plan.indexed_selection().is_some() {
+        let selection = riffdb_storage_api::IndexedSelectionRequest::from_plan(
+            plan,
+            resolved_plan.bundle().bundle().schema(),
+            facts.partition_key().clone(),
+            facts
+                .selection_prefix_values()
+                .ok_or(CommandAdmissionError::Integrity)?,
+        )
+        .map_err(|_| CommandAdmissionError::Integrity)?;
+        proof.request = proof
+            .request
+            .with_indexed_selection(selection)
+            .map_err(|_| CommandAdmissionError::Integrity)?;
+    }
+    Ok(proof)
 }
 
 fn lower_snapshot_parts(

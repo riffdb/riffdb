@@ -220,13 +220,17 @@ fn changelog_history_reclamation_respects_checkpoint_and_fences() {
     let read = ports.shared.database.begin_read().unwrap();
     for (sequence, bytes) in &originals {
         assert_eq!(
-            read.open_table(HISTORY)
-                .unwrap()
-                .get(sequence.to_be_bytes().as_slice())
-                .unwrap()
-                .unwrap()
-                .value(),
-            bytes,
+            crate::history_stub::resolve_history_value(
+                read.open_table(HISTORY)
+                    .unwrap()
+                    .get(sequence.to_be_bytes().as_slice())
+                    .unwrap()
+                    .unwrap()
+                    .value()
+            )
+            .unwrap()
+            .as_ref(),
+            bytes.as_slice(),
             "the draining barrier must materialize each original receipt before releasing its suffix source"
         );
     }

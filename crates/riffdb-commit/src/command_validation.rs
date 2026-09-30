@@ -18,8 +18,8 @@ use riffdb_contract_ir::{
     RecordSchema, RecordTypeRef, RootValidationReadId, SchemaIr, ValueType,
 };
 use riffdb_invariant::{
-    CommitCheckResult, EvaluationError, ExpressionValueSource, InputDerivedCommandFacts,
-    derive_input_command_facts, evaluate_commit_checks, evaluate_expression,
+    CommitCheckResult, EvaluationError, ExpressionValueSource, derive_input_command_facts,
+    evaluate_commit_checks, evaluate_expression,
 };
 use riffdb_policy::AuthorizedCommandRowPolicyContextV1;
 use riffdb_storage_api::{
@@ -528,6 +528,31 @@ fn command_policy_transitions<C>(
             successor,
         });
     }
+    if let Some((binding, _)) = command.resolved().plan().indexed_selection()
+        && let Some(observation) = command
+            .current()
+            .bindings()
+            .iter()
+            .find(|row| row.target().entity_type_id() == binding.entity_type())
+    {
+        let EntityObservation::Present(record) = observation else {
+            return Err(());
+        };
+        if entity_is_policy_protected(command.resolved(), binding.entity_type())
+            && !command
+                .evaluated()
+                .mutations()
+                .iter()
+                .any(|mutation| mutation.target() == record.target())
+        {
+            transitions.push(PolicyTransition {
+                entity_type: binding.entity_type(),
+                operation: riffdb_contract_ir::RowPolicyOperationV1::Update,
+                current: Some(record.fields().clone()),
+                successor: Some(record.fields().clone()),
+            });
+        }
+    }
     append_decision_no_effect_policy_transitions(command, &mut transitions)?;
     if !transitions.is_empty() || !is_cascade_failure(command.resolved(), command.evaluated()) {
         return Ok(transitions);
@@ -596,8 +621,7 @@ fn append_decision_no_effect_policy_transitions<C>(
     if !plan.requires_ir_v18() {
         return Ok(());
     }
-    let facts = derive_input_command_facts(plan, command.attempt.normalized_input().clone())
-        .map_err(|_| ())?;
+    let facts = command.attempt.input_facts();
     let mutated = command
         .evaluated()
         .mutations()
@@ -735,7 +759,7 @@ fn mutation_entity_is_protected(
     entity_is_policy_protected(resolved, mutation.target().entity_type_id())
 }
 
-fn entity_is_policy_protected(
+pub(super) fn entity_is_policy_protected(
     resolved: &ResolvedExecutablePlan,
     entity_type: riffdb_types::EntityTypeId,
 ) -> bool {
@@ -785,7 +809,7 @@ fn mutation_policy_rows(
     }
 }
 
-fn capability_matches_policy_context(
+pub(super) fn capability_matches_policy_context(
     context: &AuthorizedCommandRowPolicyContextV1,
     capability: &StoredCapabilityRecordV1,
 ) -> bool {
@@ -1280,7 +1304,7 @@ where
 pub(super) fn validate_transaction_current_command_parts(
     resolved: &ResolvedExecutablePlan,
     normalized_input: &CanonicalRecord,
-    facts: &InputDerivedCommandFacts,
+    facts: &riffdb_invariant::CommandTargetFacts,
     logical_time: LogicalTime,
     evaluated: &EvaluatedCommand,
     current: &TransactionCurrentState,
@@ -1356,6 +1380,7 @@ pub(super) fn validate_transaction_current_command_parts(
             evaluated,
             current,
             &coverage,
+            facts,
             ordinal,
         )?;
         match evaluate_commit_checks(resolved.plan().expressions(), &selected_checks, &values) {
@@ -1381,18 +1406,30 @@ pub(super) fn validate_transaction_current_command_parts(
 fn validate_identity_positions_and_output(
     resolved: &ResolvedExecutablePlan,
     normalized_input: &CanonicalRecord,
-    facts: &InputDerivedCommandFacts,
+    facts: &riffdb_invariant::CommandTargetFacts,
     evaluated: &EvaluatedCommand,
     current: &TransactionCurrentState,
 ) -> Result<(), CommandValidationError> {
     let reference = resolved.reference();
     let plan = resolved.plan();
     let request = evaluated.validation_request();
-    let expected_ranges = crate::command_index::derive_delete_ranges(resolved, facts)
+    let mut expected_ranges = crate::command_index::derive_delete_ranges(resolved, facts)
         .map_err(|_| CommandValidationError::integrity())?
         .into_iter()
         .map(|(target, _)| target)
         .collect::<Vec<_>>();
+    if plan.indexed_selection().is_some() {
+        let selection = riffdb_storage_api::IndexedSelectionRequest::from_plan(
+            plan,
+            resolved.bundle().bundle().schema(),
+            facts.partition_key().clone(),
+            facts
+                .selection_prefix_values()
+                .ok_or_else(CommandValidationError::integrity)?,
+        )
+        .map_err(|_| CommandValidationError::integrity())?;
+        expected_ranges.push(selection.range().clone());
+    }
     if reference != evaluated.plan()
         || request.plan() != evaluated.plan()
         || plan.execution_class() != ExecutionClass::IdempotentMutation
@@ -1750,7 +1787,7 @@ pub(super) fn dependencies_from_current(
 
 fn prove_mutation_coverage(
     resolved: &ResolvedExecutablePlan,
-    facts: &InputDerivedCommandFacts,
+    facts: &riffdb_invariant::CommandTargetFacts,
     evaluated: &EvaluatedCommand,
     current: &TransactionCurrentState,
 ) -> Result<Box<[Option<usize>]>, CommandValidationError> {
@@ -2106,6 +2143,7 @@ impl ExpressionValueSource for TransactionCurrentValues {
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn assemble_transaction_current_values(
     resolved: &ResolvedExecutablePlan,
     normalized_input: &CanonicalRecord,
@@ -2113,13 +2151,12 @@ fn assemble_transaction_current_values(
     evaluated: &EvaluatedCommand,
     current: &TransactionCurrentState,
     coverage: &[Option<usize>],
+    facts: &riffdb_invariant::CommandTargetFacts,
     element_ordinal: Option<u16>,
 ) -> Result<TransactionCurrentValues, CommandValidationError> {
     let plan = resolved.plan();
     let schema = resolved.bundle().bundle().schema();
     let request = evaluated.validation_request();
-    let facts = derive_input_command_facts(plan, normalized_input.clone())
-        .map_err(|_| CommandValidationError::integrity())?;
     let mut bindings = (0..plan.bindings().len())
         .map(|_| None)
         .collect::<Vec<Option<PositionedBindingRecord>>>();
@@ -3995,6 +4032,11 @@ contract ReadOnlyValidation version 1 {
             &fixture.evaluated,
             &fixture.current,
             &coverage,
+            &derive_input_command_facts(
+                fixture.prepared.resolved.plan(),
+                fixture.prepared.input.clone(),
+            )
+            .expect("input facts"),
             None,
         )
         .expect("owned mixed values");

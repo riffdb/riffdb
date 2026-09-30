@@ -259,6 +259,9 @@ impl CommandExecutionPreparation {
     pub(crate) fn deferred_group_compatibility(&self) -> Option<PreparedCommandCompatibility> {
         self.audited_lifecycle.as_ref()?;
         let plan = self.resolved_plan.plan();
+        if plan.indexed_selection().is_some() {
+            return None;
+        }
         if self.input_facts.binding_plan_indices().len()
             != self.input_facts.binding_entity_keys().len()
             || self.input_facts.root_validation_plan_indices().len()

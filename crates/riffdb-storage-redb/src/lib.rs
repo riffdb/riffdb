@@ -58,6 +58,7 @@ mod follower_lifecycle;
 mod format_preflight;
 mod format_upgrade;
 mod gate;
+mod history_stub;
 mod hooks;
 mod journal;
 mod keys;
@@ -162,6 +163,14 @@ pub fn writer_publication_stage_census_v2() -> [u64; 11] {
 #[must_use]
 pub fn writer_checkpoint_census_v1() -> [u64; 15] {
     checkpoint_census::CHECKPOINTS.snapshot()
+}
+
+/// The peak composite overlay charge, in bytes, that any selected asynchronous
+/// checkpoint covered: the overlay's high-water mark against its ceiling.
+#[doc(hidden)]
+#[must_use]
+pub fn writer_overlay_census_v1() -> u64 {
+    checkpoint_census::peak_overlay_charge()
 }
 
 /// Fixed execute-stage order for the bounded query-growth diagnostic.
@@ -275,13 +284,16 @@ pub use durable_fixtures::{MigrationDurableFixture, migration_durable_fixture_se
 #[cfg(feature = "test-fixtures")]
 #[doc(hidden)]
 pub use fixtures::{
-    MALFORMED_POPULATION_ROW_FIXTURE, append_columnar_worker_commit_fixture,
-    append_columnar_worker_commit_with_crosslinks_fixture, downgrade_all_index_rows_to_v1_fixture,
-    initialize_legacy_database_fixture, plant_malformed_population_row_fixture,
-    plant_unreadable_projection_frontier_fixture, read_malformed_population_row_fixture,
-    read_validated_prefix_checkpoint_bytes_fixture,
+    HistoryStubCensusFixture, MALFORMED_POPULATION_ROW_FIXTURE, SealedJournalExtentSummaryFixture,
+    append_columnar_worker_commit_fixture, append_columnar_worker_commit_with_crosslinks_fixture,
+    downgrade_all_index_rows_to_v1_fixture, history_stub_census_fixture,
+    hydrate_history_stubs_fixture, initialize_legacy_database_fixture, overlay_commits_fixture,
+    plant_malformed_population_row_fixture, plant_unreadable_projection_frontier_fixture,
+    read_malformed_population_row_fixture, read_validated_prefix_checkpoint_bytes_fixture,
     read_validated_prefix_checkpoint_commit_sequence_fixture,
-    replace_audit_row_with_stray_fence_fixture, strip_validated_prefix_checkpoint_fixture,
+    replace_audit_row_with_stray_fence_fixture, resolve_history_row_fixture,
+    sealed_journal_extents_fixture, strip_validated_prefix_checkpoint_fixture,
+    unseal_journal_extent_fixture,
 };
 pub use format_preflight::{
     RedbDurableFormatPreflight, RedbDurableFormatPreflightError, durable_format_marker_path,
@@ -329,8 +341,8 @@ pub use migration_stage::{
     RedbContractMigrationPreflight, RedbContractMigrationStage, RedbMigrationProjectionPorts,
 };
 pub use retention::{
-    ONLINE_RETENTION_STEP_SEQUENCES, OnlineRetentionHold, OnlineRetentionStep,
-    RedbOfflineRetention, RedbOnlineRetentionLane, RetentionStatusV1,
+    ONLINE_RETENTION_STEP_SEQUENCES, OnlineRetentionHold, OnlineRetentionPhases,
+    OnlineRetentionStep, RedbOfflineRetention, RedbOnlineRetentionLane, RetentionStatusV1,
 };
 pub use shared_ports::RedbSharedPorts;
 pub use startup::{

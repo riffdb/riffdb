@@ -16,7 +16,11 @@ fn rejects_child(source: &str, code: CompilerDiagnosticCode) {
     let diagnostic = diagnostics
         .as_slice()
         .iter()
-        .find(|d| d.code() == code)
+        .find(|d| {
+            d.code() == code
+                && &source[d.primary_span().start() as usize..d.primary_span().end() as usize]
+                    == "item.value"
+        })
         .expect("expected spelling diagnostic");
     assert_eq!(
         &source

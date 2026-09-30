@@ -73,6 +73,18 @@ mod codec;
 mod error;
 #[path = "../../crates/riffdb-storage-redb/src/keys.rs"]
 mod keys;
+/// The shared codec resolves ADR-0263 history stubs through this module. The
+/// legacy fixtures here predate stubs, so decoding the stored bytes is exact.
+mod history_stub {
+    pub(crate) fn decode_segment_value(
+        value: &[u8],
+    ) -> Result<
+        riffdb_storage_api::EncodedPageItem<riffdb_storage_api::StoredCommandSegmentV1>,
+        riffdb_storage_api::DurableCodecError,
+    > {
+        riffdb_storage_api::decode_command_segment_v1(value)
+    }
+}
 
 const META_DATABASE_ID: &str =
     match riffdb_storage_api::AuthoritativeNamespaceV1::DatabaseIdentity.metadata_key() {

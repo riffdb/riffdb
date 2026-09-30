@@ -151,7 +151,10 @@ pub(crate) fn validate_point(
         .get(point.sequence().get().to_be_bytes().as_slice())
         .map_err(precommit_storage_error)?
         .ok_or_else(corrupt)?;
-    let receipt = AuthoritativeTransactionV3::decode(row.value()).map_err(|_| corrupt())?;
+    let receipt = AuthoritativeTransactionV3::decode(&crate::history_stub::resolve_history_value(
+        row.value(),
+    )?)
+    .map_err(|_| corrupt())?;
     if Point::from_receipt(&receipt).map_err(|_| corrupt())? != point {
         return Err(corrupt());
     }
@@ -176,7 +179,10 @@ fn validate_physical_record(
         .get(sequence.get().to_be_bytes().as_slice())
         .map_err(precommit_storage_error)?
         .ok_or_else(corrupt)?;
-    let receipt = AuthoritativeTransactionV3::decode(row.value()).map_err(|_| corrupt())?;
+    let receipt = AuthoritativeTransactionV3::decode(&crate::history_stub::resolve_history_value(
+        row.value(),
+    )?)
+    .map_err(|_| corrupt())?;
     let binding = receipt.binding();
     if binding.sequence != sequence
         || binding.database_id != history.lineage().database_id()

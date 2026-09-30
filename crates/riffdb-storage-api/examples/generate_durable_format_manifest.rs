@@ -238,6 +238,12 @@ fn render_fixture_inventory(
         "fixtures/compatibility/offline-maintenance-archive-accepted-receipt-v3.hex",
         "fixtures/compatibility/offline-maintenance-archive-selected-receipt-v3.hex",
         "fixtures/compatibility/offline-maintenance-scrub-receipt-v4.hex",
+        "fixtures/compatibility/journal-frame-v2.hex",
+        "fixtures/compatibility/journal-frame-v3.hex",
+        "fixtures/compatibility/journal-extent-header-v3.hex",
+        "fixtures/compatibility/journal-extent-header-v4.hex",
+        "fixtures/compatibility/journal-sealed-footer-v1.hex",
+        "fixtures/compatibility/history-stub-v1.hex",
     ] {
         entries.push((
             path.to_owned(),

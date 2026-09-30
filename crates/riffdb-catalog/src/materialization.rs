@@ -278,7 +278,7 @@ impl ResolvedExecutablePlan {
         input: &CanonicalRecord,
         raw: ReadSnapshot,
     ) -> Result<CommandSnapshotMaterialization, CommandSnapshotMaterializationError> {
-        let positions = SnapshotPositionMap::from_input(&self, input)?;
+        let positions = SnapshotPositionMap::from_input(&self, input, &raw)?;
         self.materialize_command_snapshot_with_positions(positions, raw)
     }
 
@@ -409,9 +409,36 @@ impl SnapshotPositionMap {
     fn from_input(
         resolved: &ResolvedExecutablePlan,
         input: &CanonicalRecord,
+        snapshot: &ReadSnapshot,
     ) -> Result<Self, CommandSnapshotMaterializationError> {
-        let facts = derive_input_command_facts(resolved.plan(), input.clone())
+        let input_facts = derive_input_command_facts(resolved.plan(), input.clone())
             .map_err(|_| CommandSnapshotMaterializationError::integrity())?;
+        let selected_facts;
+        let facts: &riffdb_invariant::CommandTargetFacts =
+            if resolved.plan().indexed_selection().is_some() {
+                let selection = riffdb_storage_api::IndexedSelectionRequest::from_plan(
+                    resolved.plan(),
+                    resolved.bundle().bundle().schema(),
+                    input_facts.partition_key().clone(),
+                    input_facts
+                        .selection_prefix_values()
+                        .ok_or_else(CommandSnapshotMaterializationError::integrity)?,
+                )
+                .map_err(|_| CommandSnapshotMaterializationError::integrity())?;
+                let selected = selection
+                    .selected_key(snapshot)
+                    .map_err(|_| CommandSnapshotMaterializationError::integrity())?;
+                selected_facts = riffdb_invariant::resolve_selected_command_targets(
+                    resolved.plan(),
+                    resolved.bundle().bundle().schema(),
+                    &input_facts,
+                    selected,
+                )
+                .map_err(|_| CommandSnapshotMaterializationError::integrity())?;
+                &selected_facts
+            } else {
+                &input_facts
+            };
         if facts.binding_plan_indices().len() != facts.binding_entity_keys().len()
             || facts.root_validation_plan_indices().len()
                 != facts.root_validation_entity_keys().len()
@@ -434,7 +461,7 @@ impl SnapshotPositionMap {
                     .map_err(|_| CommandSnapshotMaterializationError::integrity())
             })
             .collect::<Result<Box<[_]>, _>>()?;
-        let mut expected_ranges = 0usize;
+        let mut expected_ranges = usize::from(resolved.plan().indexed_selection().is_some());
         for plan_index in &binding_plan_indices {
             let binding = resolved
                 .plan()
@@ -3076,5 +3103,9 @@ contract EnumMaterialization version {version} {{
                 .kind(),
             CommandSnapshotMaterializationErrorKind::Integrity
         );
+    }
+    mod indexed_selection {
+        use super::*;
+        include!("materialization_selection_tests.rs");
     }
 }

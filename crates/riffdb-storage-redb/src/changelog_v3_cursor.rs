@@ -304,7 +304,10 @@ impl ReceiptCursor {
             .get(sequence.get().to_be_bytes().as_slice())
             .map_err(precommit_storage_error)?
             .ok_or_else(corrupt)?;
-        let receipt = AuthoritativeTransactionV3::decode(value.value()).map_err(value_error)?;
+        let receipt = AuthoritativeTransactionV3::decode(
+            &crate::history_stub::resolve_history_value(value.value())?,
+        )
+        .map_err(value_error)?;
         if receipt.binding().sequence != sequence
             || receipt.binding().database_id != self.history.lineage().database_id()
             || receipt.binding().history_incarnation != self.history.lineage().history_incarnation()

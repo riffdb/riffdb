@@ -27743,9 +27743,422 @@ work_packages:
     WP-761's banked value with p95 still inside the five-percent bound, every WP-761 crash and
     fence test still passes, and the remaining gate-held cost has a measured, maintainer-
     reviewed disposition.
+  closure:
+    status: complete
+    completed_at: '2026-09-28'
+    requirements_satisfied: [STO-030, STO-031, STO-032, REC-001, REC-002]
+    evidence: release/evidence/wp-811/online-retention-interference.json
+    decision: Phase-timed steps on the ADR-0239 host showed the prune body was 4 percent of
+      a step's writer-gate time and the lane was starved of steps. The lane now paces on
+      gate-held time, is woken by every finished journal checkpoint (direct drains and
+      background installs), and steps immediately with a 256-sequence default budget. At
+      32 interactive clients the keep-up fraction rose from WP-761's 0.0029 to 0.0131 with
+      p95 ratio 1.03 and throughput 0.97. The remaining gate cost (drain 63 percent, the
+      step's own commit 24 percent) is inherent to direct transitions; its reviewed
+      disposition is ADR-0261 (journaled prune frames and scrub-installed checkpoint
+      re-earning), accepted 2026-09-28 and implemented by WP-812.
+    decisions_taken:
+    - Measure before building off-gate preparation (maintainer, in session).
+    - Pace on gate-held time, not total step duration (maintainer, in session).
+    - Wake on checkpoint completion and draft the journaled-frame amendment (maintainer, in
+      session).
+    - Default sequences_per_epoch returns to the 256 cap (maintainer, in session).
+    - Off-gate preparation of the prune body was not built; it measured 4 percent of
+      gate-held time and moves into ADR-0261's frame preparation instead.
+    - A lane woken by a finished checkpoint steps whatever the suffix size; gate-held pacing
+      charges the drain.
+    - ADR-0261 accepted as written; its obligations moved to WP-812 (maintainer accepted,
+      2026-09-28).
+    hazards:
+    - Keep-up remains about 1.3 percent under a saturated interactive load until WP-812
+      lands.
+    - Restarts after online pruning still take complete startup validation until WP-812's
+      scrub-installed checkpoint.
+    - The outbox no-destination fence and the cold columnar fence from WP-761 remain open,
+      awaiting a separate maintainer decision.
   standing_design_tests:
     interface_safety: No public surface changes; retention stays configuration-driven and
       fenced exactly as WP-761 left it.
     scale: Moves population-proportional prune work off the single ordered writer's critical
       section instead of spending writer time proportional to history.
   human_review_triggers: *id0182
+- id: WP-812
+  closure:
+    status: superseded
+    evidence: adr/0263-retained-journal-is-the-command-history-store.md
+    decision: ADR-0261 is superseded by ADR-0263 before implementation. With command
+      segments and receipts retained in sealed journal extents instead of redb, online
+      retention retires whole extents and no longer relocates rows under the writer gate;
+      WP-815 carries retention under ADR-0263.
+  name: Journaled online retention prune frames
+  tier: guarantee
+  depends_on: [WP-811]
+  objective: Implement ADR-0261. An online retention prune step becomes one journaled
+    transition sequenced by the sole ordered writer and made durable by its group sync,
+    prepared outside the writer gate from one composite read view with expected-hash
+    preconditions on every delete and overwrite, and revalidated at sequencing against
+    the watermark and the complete fencing set. The background scrub re-earns the
+    validated-prefix checkpoint for the prefix it validated.
+  requirements: [STO-030, STO-031, STO-032, REC-001, REC-002]
+  required_adrs: [ADR-0101, ADR-0103, ADR-0104, ADR-0165, ADR-0182, ADR-0261]
+  allowed_paths: [work_packages.yaml, crates/riffdb-storage-api/**,
+    crates/riffdb-storage-redb/**, crates/riffdb-server/**, crates/riffdb-sim/**, tests/**,
+    fixtures/**, scripts/**, benchmarks/**, examples/app-baseline/**, release/evidence/**,
+    docs/**]
+  deliverables:
+  - The JournaledRetentionPrune attribution and the HistoryTombstones and OutboxStatus
+    journal table tags, with compatibility fixtures and the older-binary refusal
+  - Off-gate frame preparation with a single-pass tombstone digest, and sequencing-time
+    revalidation of expected hashes, the predecessor watermark, and the fencing set;
+    proof a_prune_frame_whose_preconditions_moved_is_refused_at_sequencing
+  - Watermark publication before visibility and restoration on refusal, and replay that
+    re-verifies the tombstone chain; proof
+    journaled_prune_frame_crash_windows_recover_to_a_valid_watermark
+  - Scrub-installed validated-prefix checkpoint, discarded when the watermark or head moved
+  - C3D interference evidence validated by check-online-retention-interference with the
+    keep-up fraction against WP-811's banked 0.0131
+  acceptance_commands:
+  - ./scripts/acceptance --wp WP-812
+  - ./scripts/ci-all
+  exit_gate: Online prune steps are journaled frames with no suffix drain or separate
+    engine commit; a moved precondition refuses the frame and changes nothing; every
+    crash window reopens at the pre- or post-frame watermark with a contiguous tombstone
+    chain; a retention-active database regains the bounded restart after its scrub
+    completes; and 32-client interactive evidence shows p95 inside the five-percent bound
+    with a keep-up fraction above WP-811's 0.0131.
+  standing_design_tests:
+    interface_safety: No public surface changes; a frame whose preconditions moved cannot
+      apply, and retention stays configuration-driven and fenced.
+    scale: Prune work leaves the ordered writer's critical section, whose per-frame cost
+      stays bounded by 256 sequences.
+  human_review_triggers: *id0182
+
+- id: WP-814
+  name: Retained journal extents as the command history store
+  tier: guarantee
+  depends_on: [WP-811]
+  objective: Implement ADR-0263 decisions 1 through 5, 7, 8, and 9's format and refusal.
+    Seal fully checkpointed journal extents instead of recycling them, index them in a
+    redb history index, resolve every reader of command segments and V3 receipts through
+    that index, and scope checkpoints to current-state tables so no COMMITS segment or
+    HISTORY receipt row reaches redb. Raise ADR-0104's suffix ceilings. Acknowledgement
+    stays on the ordered writer's group sync.
+  requirements: [REP-002, REP-003, REC-005]
+  required_adrs: [ADR-0101, ADR-0102, ADR-0103, ADR-0104, ADR-0186, ADR-0263]
+  allowed_paths: [work_packages.yaml, crates/riffdb-storage-api/**,
+    crates/riffdb-storage-redb/**, crates/riffdb-server/**, crates/riffdb-sim/**,
+    crates/riffdb-proto/**, proto/**, tests/**, fixtures/**, scripts/**, benchmarks/**,
+    examples/app-baseline/**, release/evidence/**, release/durable-format-manifest-v1.json,
+    release/version-topology-v1.json, docs/**]
+  deliverables:
+  - Sealed-extent footer and history-index table with versioned encodings,
+    compatibility fixtures, and refusal by a binary that does not know them
+  - Checkpoints that materialize current-state tables only and derive, check, and
+    advance the receipt chain without storing receipts; proof
+    checkpoint_materializes_no_commits_or_history_rows
+  - History-index resolution for every reader of segments and receipts, live and
+    sealed; proof history_readers_resolve_through_the_history_index
+  - Crash coverage across seal and index insertion; proof
+    sealed_extent_crash_windows_recover_to_a_consistent_history_index
+  - Typed refusal of a missing or corrupt sealed extent; proof
+    missing_or_corrupt_sealed_extent_is_a_typed_refusal
+  - ADR-0104 ceilings at 65,536 transitions and 256 MiB, with the measured overlay charge
+    inside its ceiling
+  - Live-server A/B evidence on the ADR-0239 host, write-only and interactive at 32
+    clients, against the pre-change build
+  acceptance_commands:
+  - ./scripts/acceptance --wp WP-814
+  - ./scripts/ci-all
+  exit_gate: No segment or receipt row is written to redb; every history reader
+    resolves through the history index to a live or sealed extent; crash windows reopen
+    with a consistent index; a missing or corrupt sealed extent is a typed refusal; and
+    live-server evidence shows write-only p99 and redb bytes per command improved against
+    the pre-change build without a throughput regression.
+  closure:
+    status: complete
+    completed_at: '2026-09-30'
+    requirements_satisfied: [REP-002, REP-003, REC-005]
+    evidence: release/evidence/wp-814/closure-20260930.json
+    decision: Journaled command segments and V3 receipts are no longer written to redb.
+      Under ADR-0263 Amendment 3 each COMMITS and HISTORY row a journal frame made durable
+      is a fixed-size history stub naming its retained frame; checkpoints, recovery, and
+      the synchronous drain write stubs, the overlay holds them, and every reader resolves
+      them from the uncheckpointed frame in memory or its live or sealed extent. The ADR-0104
+      ceilings are 65,536 transitions and 256 MiB with a 320 MiB extent and a 256 MiB overlay
+      ceiling; the peak overlay charge measured 73 MiB. On the ADR-0239 host against the
+      pre-change build, write-only p99 fell from about 105 ms to 13 ms and p95 from 10 ms to
+      under 9 ms at unchanged throughput, durable bytes per mutation fell 24 to 54 percent,
+      and the mixed-load PERF-008 gate passes at 1.03x throughput and 0.94x p95 same-run
+      PostgreSQL.
+    decisions_taken:
+    - History stubs in COMMITS and HISTORY replace the sidecar index (ADR-0263 Amendment 3,
+      maintainer accepted 2026-09-29).
+    - Copies that leave their extents behind hydrate stubs while staging (maintainer, in
+      session).
+    - Close on the write-tail result, recording the worst-case stall until WP-815 and the
+      doubled memory (maintainer approved, 2026-09-30).
+    - Decision 8's open-time check is read as a typed refusal at open or at every read of the
+      damaged history, plus the background scrub; checking every stub at open would
+      enumerate history before readiness, which REC-005 forbids.
+    - The spare zero-fill is not paced; syncing it every 8 MiB cut the maximum but doubled
+      write-only p95.
+    hazards:
+    - The maximum latency is about 700 ms in both loads, from each checkpoint's 320 MiB
+      zero-fill, until WP-815 recycles retired extents.
+    - Peak resident memory roughly doubles under the new ceilings (about 1.1 GiB write-only).
+    - Write-only throughput remains about 0.74x same-run PostgreSQL, bounded by the ordered
+      writer's CPU per command; this package does not change it.
+    - A new binary refuses a database written before ADR-0263 with IncompatibleFormat until
+      WP-816's offline upgrade exists.
+    - Stub resolution is process-global; an open same-identity copy with the same frame hash
+      can supply exact bytes and delay detection of a missing extent.
+    - Retired extents after a restore or migration stay on disk unreferenced until WP-815.
+  standing_design_tests:
+    interface_safety: No public surface changes; history, idempotency, audit, provenance,
+      and changelog results stay typed and identical, and no principal can address an
+      extent or the history index.
+    scale: Checkpoint work scales with current-state change, and a history read is one
+      index lookup and one frame read.
+  human_review_triggers: &id0263
+  - A command segment or V3 receipt made durable by a standard-profile journal frame
+    would be written into a redb table or a second store.
+  - Acknowledgement would depend on any sync other than the ordered writer's group sync.
+  - A sealed extent at or above the watermark could be missing or corrupt without a typed
+    refusal, or deleted before its retained views are committed.
+  - A reader could resolve history other than through the history index.
+- id: WP-815
+  name: Online retention by sealed-extent retirement
+  tier: guarantee
+  depends_on: [WP-814]
+  objective: Implement ADR-0263 decision 6. Online retention retires whole sealed
+    extents, materializing ADR-0182's retained views for their commands in one bounded
+    administration transition before advancing the watermark and removing the index row,
+    and deletes or recycles the extent only after that transition is durable.
+  requirements: [STO-030, STO-031, STO-032]
+  required_adrs: [ADR-0182, ADR-0263]
+  allowed_paths: [work_packages.yaml, crates/riffdb-storage-api/**,
+    crates/riffdb-storage-redb/**, crates/riffdb-server/**, crates/riffdb-sim/**, tests/**,
+    fixtures/**, scripts/**, benchmarks/**, examples/app-baseline/**, release/evidence/**,
+    docs/**]
+  deliverables:
+  - Extent retirement under every ADR-0182 fence, at most 256 sequences per step
+  - Crash coverage across retained-view materialization, watermark advance, index
+    removal, and file deletion or recycling
+  - Recycling of retired extents as future journal extents
+  - Interference evidence validated by check-online-retention-interference with the
+    keep-up fraction against WP-811's banked 0.0131
+  acceptance_commands:
+  - ./scripts/acceptance --wp WP-815
+  - ./scripts/ci-all
+  exit_gate: Retention retires whole sealed extents under every fence without writer-gate
+    row relocation; every crash window reopens at a consistent watermark and index; and
+    32-client interactive evidence shows p95 inside the five-percent bound with keep-up
+    above 0.0131.
+  standing_design_tests:
+    interface_safety: No public surface changes; retention stays configuration-driven and
+      fenced, and history below the watermark stays HistoryPruned.
+    scale: A retention step is bounded by 256 sequences and one file operation.
+  human_review_triggers: *id0263
+- id: WP-816
+  name: Offline migration to retained journal history
+  tier: guarantee
+  depends_on: [WP-814]
+  objective: Implement ADR-0263 decision 9's offline migration as narrowed by Amendment 1.
+    An existing database's history stays in redb (A1); a maintenance command adds the
+    META checkpoint frontiers and running counts (A4) and the empty history index,
+    verifies them against the existing tables, and advances the format version.
+  requirements: [REC-005]
+  required_adrs: [ADR-0263]
+  allowed_paths: [work_packages.yaml, crates/riffdb-storage-redb/**, crates/riffdb-cli/**,
+    crates/riffdb-server/**, tests/**, fixtures/**, scripts/**, docs/**]
+  deliverables:
+  - The offline upgrade command with verification before the version advances
+  - Crash coverage leaving either the old or the upgraded database, never a mix
+  - Upgrade fixtures from a pre-ADR-0263 database
+  acceptance_commands:
+  - ./scripts/acceptance --wp WP-816
+  - ./scripts/ci-all
+  exit_gate: A pre-ADR-0263 database upgrades offline with its history unchanged in
+    redb, every crash window leaves the old or the upgraded database intact, and the
+    upgraded database opens under WP-814's format.
+  standing_design_tests:
+    interface_safety: Migration is an explicit offline maintenance operation; no binary
+      opens an unmigrated database silently.
+    scale: The upgrade derives its counts and frontiers in bounded passes.
+  human_review_triggers: *id0263
+
+- id: WP-813
+  name: Per-write dependency and precondition proofs
+  tier: guarantee
+  depends_on: [WP-809]
+  objective: Implement ADR-0262 after exact-text human acceptance. Replace binding-wide
+    write authorization with narrow arithmetic evidence, explicit named business-check
+    associations, and the existing same-root caller-version fence; expose the distinct
+    evidence without claiming to infer business relevance or stale caller intent.
+  requirements: [CMP-015, CMP-013]
+  required_adrs: [ADR-0256, ADR-0262]
+  allowed_paths: [SPEC.md, work_packages.yaml,
+    adr/0262-separate-write-dependencies-from-precondition-proofs.md,
+    crates/riffdb-contract-syntax/**, crates/riffdb-contract-compiler/**,
+    crates/riffdb-contract-ir/**, crates/riffdb-runtime/**,
+    crates/riffdb-diagnostics/**, crates/riffdb-cli/**,
+    crates/riffdb-catalog/**, crates/riffdb-commit/**,
+    crates/riffdb-client-rust/**, crates/riffdb-query-module/**,
+    crates/riffdb-query-compiler/**, crates/riffdb-service/fixtures/**,
+    crates/riffdb-proto/examples/**, crates/riffdb-proto/fixtures/**,
+    contracts/**, tests/**, fixtures/**, docs/**]
+  deliverables:
+  - Characterization of serialized payload replacement despite revision increments,
+    followed by a failing stricter compiler regression before semantic implementation
+  - Bounded per-assignment proof classification, checked_by source association, typed
+    diagnostics and semantic source-span snapshots, including decision and bulk scopes
+  - Versioned canonical proof metadata, validator, plan hashes, typed and rendered explain
+    evidence, historical compatibility fixtures, and regenerated version topology
+  - Individually reviewed source migrations, generated references and fixtures, renewed
+    application locks, and downstream adapter verification
+  - Deterministic application-service and coordinator coverage of stale refusal, exclusive
+    claims, accumulated deltas, explicit overwrites, idempotent replay, and provenance
+  - Handbook and verification note describing proof limits and strict recompilation
+  acceptance_commands:
+  - ./scripts/acceptance --wp WP-813
+  - ./scripts/ci-all
+  exit_gate: Revision increments and unrelated reads cannot authorize replacement set
+    writes; every new-format assignment has validated, hash-covered proof evidence;
+    business checks are explicit associations rather than claims of caller freshness;
+    historical artifacts retain behavior; all migrations and acceptance checks pass.
+  closure:
+    status: complete
+    completed_at: '2026-09-28'
+    requirements_satisfied: [CMP-015, CMP-013]
+    evidence: docs/architecture/WP-813-REVIEW.md
+    decision: Per-assignment evidence replaces implicit binding-wide authorization.
+      Named checked_by associations assert business relevance explicitly; only the
+      exact same-root revision protocol receives caller-version-fence evidence.
+      Canonical V25 metadata is hash-covered and revalidated, and historical bundle
+      bytes and execution remain unchanged. Package acceptance passed all 18 steps,
+      including 2815 tests, and every full CI step passed with staged reruns recorded
+      in the review note. Human review remains required before merge to main.
+    hazards:
+    - Business predicate relevance, input-delta freshness, and consistent revision
+      protocols remain application responsibilities documented by ADR-0262.
+    - Recompilation is intentionally strict and changes assignment-bearing identities;
+      historical artifacts are not silently upgraded.
+    - Remove the dedicated worktree after the human-reviewed merge, not before review.
+  standing_design_tests:
+    interface_safety: Implicit binding-wide authorization disappears. Business relevance
+      remains an explicit author claim, and the exact ADR acceptance must acknowledge
+      that limitation without weakening transactions, idempotency, scoping, or durability.
+    scale: Proof analysis and metadata use existing bounded compiler and plan budgets;
+      no population-dependent work or runtime I/O is introduced.
+  human_review_triggers:
+  - Any widening of arithmetic or fence recognition beyond ADR-0262.
+  - Any change to transaction ordering, validation, authorization, or durable execution.
+  - Any incompatible reinterpretation of historical artifacts or paths outside this scope.
+
+- id: WP-817
+  name: Atomic indexed selection within one partition
+  tier: guarantee
+  depends_on: [WP-813]
+  objective: Implement ADR-0264 after acceptance. Compile one indexed first-row
+    mutation under input-computable conflict ownership; materialize and revalidate
+    its selection evidence through the ordinary command boundary, including empty
+    results, bounded retries, authorization, atomic durability, and replay.
+  requirements: [TXN-001, TXN-002, CMP-013, CMP-015, PERF-012]
+  required_adrs: [ADR-0264, ADR-0061, ADR-0170, ADR-0252, ADR-0262]
+  allowed_paths: [SPEC.md, work_packages.yaml,
+    adr/0264-atomic-indexed-selection-within-one-partition.md,
+    crates/riffdb-contract-syntax/**, crates/riffdb-contract-compiler/**,
+    crates/riffdb-contract-ir/**, crates/riffdb-invariant/**,
+    crates/riffdb-catalog/**, crates/riffdb-storage-api/**,
+    crates/riffdb-storage-redb/**, crates/riffdb-runtime/**,
+    crates/riffdb-commit/**, crates/riffdb-policy/**,
+    crates/riffdb-service/**, crates/riffdb-cli/**,
+    crates/riffdb-diagnostics/**, crates/riffdb-client-rust/**,
+    crates/riffdb-query-module/**, crates/riffdb-proto/**,
+    crates/riffdb-api-grpc/**, crates/riffdb-api-mcp/**,
+    crates/riffdb-testkit/**, crates/riffdb-testkit-server/**,
+    crates/riffdb-server/**, crates/riffdb-sim/**,
+    contracts/**, tests/**, fixtures/**, docs/**]
+  deliverables:
+  - A failing indexed-selection compiler test before semantic implementation
+  - Contextual first syntax, bounded selector IR and versioning, complete compiler
+    proofs and source-span diagnostics, canonical codec refusal and old-artifact tests
+  - Proof-bearing one-view index/entity/root selection under pre-acquired ownership,
+    generation and row validation for every outcome, and bounded full reevaluation
+  - Ordinary assignment evidence, per-written-aggregate invariants, current policies,
+    atomic effects/outcomes/provenance, and exact uncertain-commit replay
+  - Generated application surfaces, explain output, a free-slot example, deterministic
+    races, memory/redb parity, and process-crash recovery coverage
+  - Shared/independent pool comparison at 1/8/32 clients and bounded selection-work
+    evidence across populations, with explicit contention and fairness limitations
+  - Handbook, compatibility, risk-register, and review notes with all acceptance results
+  acceptance_commands:
+  - ./scripts/acceptance --wp WP-817
+  - ./scripts/ci-all
+  exit_gate: One named command selects and allocates the first eligible indexed row
+    atomically without application-side selection; empty and successful outcomes are
+    transaction-current and replay exactly; no late conflict acquisition, unbounded
+    scan, policy bypass, or change to historical artifact identity is admitted.
+  closure:
+    status: complete
+    completed_at: '2026-09-28'
+    requirements_satisfied: [TXN-001, TXN-002, CMP-013, CMP-015, PERF-012]
+    evidence: docs/architecture/WP-817-REVIEW.md
+    decision: One indexed candidate is selected and mutated under proved upfront
+      ownership, exact row and generation validation, ordinary policies, and the
+      existing retry and durable replay boundary. Package tests passed all 2711
+      cases; all 17 non-test acceptance checks and every full CI gate passed with
+      staged reruns and final compatibility checks recorded in the review note.
+      Historical nonselector identities remain unchanged. Human review precedes merge.
+    hazards:
+    - Pool design still determines contention; conservative partition/index epochs
+      and ordered execution offer no fairness or parallel-throughput guarantee.
+    - Cross-partition writes, cross-aggregate invariants, and durable multi-command
+      workflows remain unavailable.
+    - Remove the dedicated worktree after the human-reviewed merge to main.
+  standing_design_tests:
+    interface_safety: The compiler proves selection scope and all up-front ownership;
+      no caller may supply a range, skip validation, widen the candidate count, replace
+      the idempotency identity during retry, or turn a denial into an empty result.
+    scale: One candidate per evaluation and the existing three-attempt budget, with
+      existing byte/dependency/deadline limits; selection seeks the exact prefix and
+      never scans unrelated partitions or the population of a pool.
+  human_review_triggers:
+  - Any widening beyond ADR-0264, including selected-value conflict ownership.
+  - A selection, no-effect outcome, or grouped execution omits current validation.
+  - A new guarantee conflicts with an accepted record or requires out-of-scope paths.
+
+- id: WP-818
+  name: Profile and reduce ordered writer CPU after retained journal history
+  tier: internal
+  depends_on: [WP-814]
+  objective: Measure the ordered writer at the retained-journal base, then reduce
+    allocation or repeated computation within accepted journal decisions, one
+    mechanism at a time. Preserve formats, validation, ordering, snapshot isolation,
+    acknowledgement durability, authorization, and all existing bounds.
+  requirements: [PERF-008, REP-002, REP-003]
+  required_adrs: [ADR-0104, ADR-0239, ADR-0263]
+  allowed_paths: [work_packages.yaml, crates/riffdb-storage-redb/**,
+    crates/riffdb-storage-api/src/composite_view.rs, benchmarks/**,
+    examples/app-baseline/**, docs/performance/**, tests/**, scripts/**]
+  deliverables:
+  - Pre-change writer CPU profile against base commit 7eb4b37e1
+  - Instrumented evidence for each retained mechanism and semantic regression coverage
+  - Alternating base/candidate/candidate/base live-server comparisons for write-only
+    and interactive loads with 32 clients, plus same-run safe-application PostgreSQL
+  - Sanitized performance evidence and a review note with compatibility and hazards
+  acceptance_commands:
+  - ./scripts/acceptance --wp WP-818
+  - ./scripts/ci-all
+  exit_gate: A measured write-only throughput improvement against 7eb4b37e1 survives
+    alternating live-server comparisons and same-run PostgreSQL disclosure without
+    weakening guarantees or regressing interactive behavior.
+  standing_design_tests:
+    interface_safety: No public interface, durable encoding, validation, ordering,
+      authorization, or acknowledgement boundary changes.
+    scale: Preserve bounded overlay, suffix, scans, diagnostics, and production stacks.
+  human_review_triggers:
+  - Any durable format, public surface, or accepted ADR decision would change.
+  - Any transaction ordering, conflict ownership, validation, atomicity, or outcome
+    sequencing would change.
+  - Any implementation needs paths outside this scope.

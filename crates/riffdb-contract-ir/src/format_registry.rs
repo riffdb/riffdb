@@ -39,6 +39,17 @@ macro_rules! tag_registry {
     };
 }
 
+tag_registry!(write_location, "Write evidence location", {
+    INSTRUCTION = 0x01 => "instruction",
+    DECISION = 0x02 => "decision arm instruction",
+});
+tag_registry!(write_evidence, "Write evidence", {
+    INITIALIZATION = 0x01 => "initialization",
+    STATE_DERIVED = 0x02 => "state derived",
+    BUSINESS_CHECK = 0x03 => "associated business check",
+    CALLER_VERSION_FENCE = 0x04 => "caller version fence",
+    OVERWRITE = 0x05 => "explicit overwrite",
+});
 tag_registry!(stable_id_namespace, "Stable ID namespace", {
     ENTITY = 0x01 => "entity",
     EVENT = 0x02 => "event",
@@ -256,6 +267,8 @@ tag_registry!(enum_variant_owner, "Enum-variant allocation owner", {
 
 /// Every closed encoded byte registry in canonical documentation order.
 pub(crate) const TAG_REGISTRIES: &[TagRegistry] = &[
+    write_location::REGISTRY,
+    write_evidence::REGISTRY,
     stable_id_namespace::REGISTRY,
     lineage_entry_state::REGISTRY,
     record_reference::REGISTRY,
@@ -1274,6 +1287,7 @@ layout!(COMMAND_SEMANTICS_LAYOUT, "CommandSemantics", {
     "instructions" => "u32 count + Instruction[]",
     "decisions" => "IR v18+: u32 count + CommandDecisionPlanV1[]; omitted in v1-v17",
     "secret_reveals" => "IR v11+: u32 count + SecretRevealSpecV1[]; omitted in v1-v10",
+    "write_proofs" => "IR v25+: u32 count <=4096 in assignment-location order. Location u8 1 + instruction u32, or u8 2 + decision/arm/instruction u32. Each has u32 evidence count (total <=4096), sorted unique: u8 1 initialization, 2 state-derived, 3 business check + requirement u32, 4 caller-version fence + requirement/advancement u32, 5 overwrite. Derived evidence is revalidated; absent in v1-v24",
     "invocation_class" => "IR v10+: Command invocation class tag; application in v1-v9",
     "execution_class" => "Execution class tag",
     "retry_policy" => "Retry policy tag",
@@ -1340,6 +1354,7 @@ layout!(BINDING_LAYOUT, "BindingPlan", {
     "failure" => "OutcomeConstruction",
     "restriction_failure" => "IR v6+: Boolean + optional OutcomeConstruction; omitted in v1-v5",
     "cascade_failure" => "IR v13+: Boolean + optional OutcomeConstruction; omitted in v1-v12",
+    "indexed_selection" => "IR v26+: Boolean + optional (IndexId u32, prefix expression count u32 in 1..=1024, ExprId u32[]). Only one ordinary mutate binding; input-only canonical equality prefix proves partition and complete conflict ownership. Omitted in v1-v25",
 });
 layout!(ROOT_READ_LAYOUT, "RootValidationReadPlan", {
     "id" => "RootValidationReadId",

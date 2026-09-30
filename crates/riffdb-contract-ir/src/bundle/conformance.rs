@@ -459,6 +459,7 @@ fn ordered_layout_registry_has_one_closed_witness_slot_per_layout() {
                 "instructions",
                 "decisions",
                 "secret_reveals",
+                "write_proofs",
                 "invocation_class",
                 "execution_class",
                 "retry_policy",
@@ -513,6 +514,7 @@ fn ordered_layout_registry_has_one_closed_witness_slot_per_layout() {
                 "failure",
                 "restriction_failure",
                 "cascade_failure",
+                "indexed_selection",
             ],
         ),
         (

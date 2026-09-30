@@ -192,7 +192,7 @@ contract BulkRowsRecovery version 1 {
       decide stored {
         when stored.value == row.value => no_effect
         when stored.value >= 0 => apply {
-          set stored.value = row.value
+          overwrite stored.value = row.value
           emit RowWritten { row_id: row.row_id, value: stored.value }
         }
         else => reject NegativeCurrentValue { row_id: row.row_id }
@@ -2188,10 +2188,18 @@ impl BudgetDatabase {
         label: &str,
         setup: impl FnOnce(&mut RedbOperationalPorts, DatabaseId),
     ) -> Self {
+        Self::create_from_source_with_setup(label, BUDGET_SOURCE, setup)
+    }
+
+    fn create_from_source_with_setup(
+        label: &str,
+        source: &str,
+        setup: impl FnOnce(&mut RedbOperationalPorts, DatabaseId),
+    ) -> Self {
         let scratch = ScratchDir::new(&format!("command-semantics-{label}"))
             .expect("create command-semantics scratch directory");
         let path = scratch.join("db.redb");
-        let compiled = compile_contract_source(BUDGET_SOURCE).expect("budget contract compiles");
+        let compiled = compile_contract_source(source).expect("budget contract compiles");
         let checked_bundle = ValidatedContractBundle::from_compiler_bundle(compiled)
             .expect("budget bundle passes catalog validation");
         let budget = checked_bundle
@@ -2999,3 +3007,9 @@ fn uuid_bytes(fill: u8) -> [u8; 16] {
     bytes[8] = 0x80 | (fill & 0x3f);
     bytes
 }
+
+#[path = "write_evidence.rs"]
+mod write_evidence;
+
+#[path = "indexed_selection.rs"]
+mod indexed_selection;

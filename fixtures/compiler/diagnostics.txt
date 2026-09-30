@@ -1,7 +1,7 @@
 format=riffdb-compiler-diagnostic-fixture-v1
 
 [semantic-code-registry]
-count=51
+count=53
 code.0.id=RDB-C001
 code.0.message=contract version must be a supported nonzero integer
 code.0.help=use a base-10 application version in 1..=u64::MAX
@@ -141,20 +141,26 @@ code.45.id=RDB-C047
 code.45.message=the tokenized text-index declaration is invalid
 code.45.help=use distinct bounded string sources, keyword_v1 or standard_v1, boolean_v1, positive weights and ceilings, and max_results no greater than max_candidates
 code.46.id=RDB-C048
-code.46.message=this write has no local pre-image dependency or proven root revision fence
-code.46.help=add a `require` reading this binding, derive a write from its prior value, or compare and increment its aggregate root revision; use `overwrite` only for intended last-writer-wins
+code.46.message=this write has no state-derived update, associated business check, or caller-version fence
+code.46.help=use `checked_by` to associate a dominating requirement, apply a same-field arithmetic delta, or compare and increment the root revision; use `overwrite` only for intended replacement
 code.47.id=RDB-C049
-code.47.message=this write has a local pre-image dependency or proven root revision fence
+code.47.message=this write has per-write evidence or initializes a new record
 code.47.help=write `set`
-code.48.id=RDB-C201
-code.48.message=an identifier cannot form a valid MCP command tool-name segment
-code.48.help=start contract and command identifiers with an ASCII letter
-code.49.id=RDB-C202
-code.49.message=the complete MCP command tool name exceeds 128 bytes
-code.49.help=shorten the source contract or command identifier
-code.50.id=RDB-C203
-code.50.message=two commands normalize to the same MCP command tool name
-code.50.help=rename one command so lowercase identifiers remain distinct
+code.48.id=RDB-C050
+code.48.message=the named business requirement is invalid for this write
+code.48.help=name one visible, dominating requirement reading this binding; business relevance remains the author's responsibility
+code.49.id=RDB-C051
+code.49.message=indexed selection lacks a complete bounded ownership proof
+code.49.help=use one ordinary mutate first binding with a canonical equality prefix fixing the partition and every conflict key; keep other targets input-addressed
+code.50.id=RDB-C201
+code.50.message=an identifier cannot form a valid MCP command tool-name segment
+code.50.help=start contract and command identifiers with an ASCII letter
+code.51.id=RDB-C202
+code.51.message=the complete MCP command tool name exceeds 128 bytes
+code.51.help=shorten the source contract or command identifier
+code.52.id=RDB-C203
+code.52.message=two commands normalize to the same MCP command tool name
+code.52.help=rename one command so lowercase identifiers remain distinct
 
 [RDB-C001-invalid-contract-version]
 expected=RDB-C001
@@ -414,12 +420,17 @@ diagnostic.0.help=a unique key is enforced within one partition, so its fields m
 [RDB-C026-unique-key-not-input-computable]
 expected=RDB-C026
 kind=semantic
-count=1
+count=2
 diagnostic.0.code=RDB-C026
 diagnostic.0.message=a changed unique value must be computable from validated command inputs
 diagnostic.0.primary=182..192
 diagnostic.0.related=none
 diagnostic.0.help=assign every changed unique component from command inputs or input-only expressions
+diagnostic.1.code=RDB-C048
+diagnostic.1.message=this write has no state-derived update, associated business check, or caller-version fence
+diagnostic.1.primary=531..541
+diagnostic.1.related=none
+diagnostic.1.help=use `checked_by` to associate a dominating requirement, apply a same-field arithmetic delta, or compare and increment the root revision; use `overwrite` only for intended replacement
 
 [RDB-C027-invalid-migration-identity]
 expected=RDB-C027
@@ -666,20 +677,40 @@ expected=RDB-C048
 kind=semantic
 count=1
 diagnostic.0.code=RDB-C048
-diagnostic.0.message=this write has no local pre-image dependency or proven root revision fence
+diagnostic.0.message=this write has no state-derived update, associated business check, or caller-version fence
 diagnostic.0.primary=402..414
 diagnostic.0.related=none
-diagnostic.0.help=add a `require` reading this binding, derive a write from its prior value, or compare and increment its aggregate root revision; use `overwrite` only for intended last-writer-wins
+diagnostic.0.help=use `checked_by` to associate a dominating requirement, apply a same-field arithmetic delta, or compare and increment the root revision; use `overwrite` only for intended replacement
 
 [RDB-C049-guarded-overwrite]
 expected=RDB-C049
 kind=semantic
 count=1
 diagnostic.0.code=RDB-C049
-diagnostic.0.message=this write has a local pre-image dependency or proven root revision fence
-diagnostic.0.primary=431..440
+diagnostic.0.message=this write has per-write evidence or initializes a new record
+diagnostic.0.primary=435..444
 diagnostic.0.related=none
 diagnostic.0.help=write `set`
+
+[RDB-C050-invalid-write-association]
+expected=RDB-C050
+kind=semantic
+count=1
+diagnostic.0.code=RDB-C050
+diagnostic.0.message=the named business requirement is invalid for this write
+diagnostic.0.primary=2103..2110
+diagnostic.0.related=none
+diagnostic.0.help=name one visible, dominating requirement reading this binding; business relevance remains the author's responsibility
+
+[RDB-C051-invalid-indexed-selection]
+expected=RDB-C051
+kind=semantic
+count=1
+diagnostic.0.code=RDB-C051
+diagnostic.0.message=indexed selection lacks a complete bounded ownership proof
+diagnostic.0.primary=433..437
+diagnostic.0.related=none
+diagnostic.0.help=use one ordinary mutate first binding with a canonical equality prefix fixing the partition and every conflict key; keep other targets input-addressed
 
 [RDB-C201-invalid-command-tool-name]
 expected=RDB-C201
@@ -715,16 +746,16 @@ diagnostic.0.help=rename one command so lowercase identifiers remain distinct
 kind=semantic
 count=1
 diagnostic.0.code=RDB-C048
-diagnostic.0.message=this write has no local pre-image dependency or proven root revision fence
+diagnostic.0.message=this write has no state-derived update, associated business check, or caller-version fence
 diagnostic.0.primary=834..844
 diagnostic.0.related=none
-diagnostic.0.help=add a `require` reading this binding, derive a write from its prior value, or compare and increment its aggregate root revision; use `overwrite` only for intended last-writer-wins
+diagnostic.0.help=use `checked_by` to associate a dominating requirement, apply a same-field arithmetic delta, or compare and increment the root revision; use `overwrite` only for intended replacement
 
 [cross-binding-fenced-overwrite]
 kind=semantic
 count=1
 diagnostic.0.code=RDB-C049
-diagnostic.0.message=this write has a local pre-image dependency or proven root revision fence
+diagnostic.0.message=this write has per-write evidence or initializes a new record
 diagnostic.0.primary=907..917
 diagnostic.0.related=none
 diagnostic.0.help=write `set`

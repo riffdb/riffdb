@@ -92,6 +92,8 @@ pub(super) enum ExecutionFailureCurrentDecision<A> {
     Retry(Box<PendingCommandAttempts>),
     /// No terminal write was requested and the current read failed.
     StorageFailure(StorageError),
+    /// Current selected-row policy denied disclosure; storage was rolled back.
+    PolicyDenied,
     /// Current evidence was malformed or contradicted the retained attempt.
     Integrity,
 }
@@ -137,6 +139,17 @@ where
             return ExecutionFailureCurrentDecision::Retry(Box::new(
                 attempt.recover_pending_after_proven_rollback(),
             ));
+        }
+        match attempt.recheck_selected_fault_policy(&awaiting, &current) {
+            Ok(true) => {}
+            Ok(false) => {
+                awaiting.abandon();
+                return ExecutionFailureCurrentDecision::PolicyDenied;
+            }
+            Err(error) => {
+                awaiting.abandon();
+                return ExecutionFailureCurrentDecision::StorageFailure(error);
+            }
         }
         match attempt.recheck_equal_transaction_current(current) {
             ExecutionFaultCurrentRecheck::Stable => ExecutionFailureCurrentDecision::Ready(
@@ -354,6 +367,7 @@ impl<A> fmt::Debug for ExecutionFailureCurrentDecision<A> {
             Self::StorageFailure(_) => {
                 "ExecutionFailureCurrentDecision::StorageFailure([REDACTED])"
             }
+            Self::PolicyDenied => "ExecutionFailureCurrentDecision::PolicyDenied",
             Self::Integrity => "ExecutionFailureCurrentDecision::Integrity",
         })
     }

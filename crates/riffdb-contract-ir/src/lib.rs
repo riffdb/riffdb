@@ -24,6 +24,7 @@ mod row_policy;
 mod schema;
 mod value_type;
 mod workflow;
+mod write_evidence;
 
 pub use bundle::*;
 pub use compatibility::*;
@@ -43,3 +44,4 @@ pub use row_policy::*;
 pub use schema::*;
 pub use value_type::*;
 pub use workflow::*;
+pub use write_evidence::*;
