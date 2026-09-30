@@ -173,13 +173,24 @@ this workload, not a writer-only CPU attribution. Diagnostic throughput was
 throughput result. The next batch alternates release base/candidate/candidate/
 base for write-only, interactive, and read-only, with diagnostics disabled.
 
+The completed write-only alternation measured 3,469/3,477 operations/s at base
+and 3,623/3,689 for the candidate: medians 3,473 and 3,656, a 5.27% gain.
+Approximate writer CPU medians were 208.36 and 198.49 microseconds per command.
+Interactive measured 16,083/16,035 at base and 16,216/16,113 at candidate,
+medians 16,059 and 16,164.5. Its 0.66% throughput difference is within variance;
+both candidate p95 and p99 observations were below both base observations.
+Read-only and same-run PostgreSQL qualification remain pending.
+
 ## Review note
 
-Package: WP-818. Tier: internal. Current behavior change: opt-in numeric-only
-instrumentation; production point-read answers and durable bytes are unchanged.
-Checks and experiment results will be recorded as work proceeds. Compatibility:
+Package: WP-818. Tier: guarantee (the primary constructor is a guarantee-tier
+path). The cache trial is an implementation choice under D-003 within the
+existing accepted records; their decisions and ceilings are unchanged.
+Candidate behavior: a fixed 12 MiB primary cache, with the derived cache still
+4 MiB, plus bounded opt-in numeric-only instrumentation. Point-read answers and
+durable bytes are unchanged. Checks and qualification results remain pending. Compatibility:
 no protocol, public interface, durable encoding, stack-size, or acknowledgement
-change. Handbook behavior is unchanged; this document describes internal
-measurement methodology. Hazards: write throughput remains below the reported
+change. The handbook index and lifecycle performance page describe the cache
+budget and measurement evidence. Hazards: write throughput remains below the reported
 same-run PostgreSQL result; no optimization is yet established. WP-815,
 WP-816, and the deferred alternate-machine gate are outside this package.
