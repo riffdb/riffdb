@@ -2,6 +2,91 @@
 
 use super::*;
 
+// req: PERF-008
+#[test]
+fn backend_read_probe_counts_requests_without_changing_bytes_or_errors() {
+    let backend = CheckpointRewriteBackend::with_read_probe(
+        Memory::new(vec![7; 8]),
+        Arc::new(CheckpointRewrite::default()),
+        true,
+    );
+    let mut bytes = [0; 4];
+    backend.read(0, &mut bytes).unwrap();
+    assert_eq!(bytes, [7; 4]);
+    assert_eq!(
+        backend.read(8, &mut bytes).unwrap_err().kind(),
+        io::ErrorKind::UnexpectedEof
+    );
+    assert_eq!(
+        backend
+            .read_calls
+            .load(std::sync::atomic::Ordering::Relaxed),
+        2
+    );
+    assert_eq!(
+        backend
+            .read_bytes
+            .load(std::sync::atomic::Ordering::Relaxed),
+        8
+    );
+}
+
+// req: PERF-008
+#[test]
+fn backend_read_probe_concurrent_requests_and_disabled_mode_are_exact() {
+    let backend = Arc::new(CheckpointRewriteBackend::with_read_probe(
+        Memory::new(vec![9; 8]),
+        Arc::new(CheckpointRewrite::default()),
+        true,
+    ));
+    let barrier = Arc::new(std::sync::Barrier::new(3));
+    std::thread::scope(|scope| {
+        for _ in 0..2 {
+            let backend = Arc::clone(&backend);
+            let barrier = Arc::clone(&barrier);
+            scope.spawn(move || {
+                barrier.wait();
+                let mut bytes = [0; 4];
+                backend.read(0, &mut bytes).unwrap();
+                assert_eq!(bytes, [9; 4]);
+            });
+        }
+        barrier.wait();
+    });
+    assert_eq!(
+        backend
+            .read_calls
+            .load(std::sync::atomic::Ordering::Relaxed),
+        2
+    );
+    assert_eq!(
+        backend
+            .read_bytes
+            .load(std::sync::atomic::Ordering::Relaxed),
+        8
+    );
+    let disabled = CheckpointRewriteBackend::with_read_probe(
+        Memory::new(vec![9; 8]),
+        Arc::new(CheckpointRewrite::default()),
+        false,
+    );
+    let mut bytes = [0; 4];
+    disabled.read(0, &mut bytes).unwrap();
+    assert_eq!(bytes, [9; 4]);
+    assert_eq!(
+        disabled
+            .read_calls
+            .load(std::sync::atomic::Ordering::Relaxed),
+        0
+    );
+    assert_eq!(
+        disabled
+            .read_bytes
+            .load(std::sync::atomic::Ordering::Relaxed),
+        0
+    );
+}
+
 #[derive(Debug)]
 struct Memory {
     bytes: Mutex<Vec<u8>>,

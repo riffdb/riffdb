@@ -5,6 +5,7 @@
 //! comparison is against the current file, never a retained cache or hash.
 
 use std::io;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard};
 
 use redb::StorageBackend;
@@ -46,11 +47,40 @@ impl Drop for CheckpointRewriteScope<'_> {
 pub(crate) struct CheckpointRewriteBackend<T> {
     inner: T,
     state: Arc<CheckpointRewrite>,
+    read_probe: bool,
+    read_calls: AtomicU64,
+    read_bytes: AtomicU64,
 }
 
 impl<T> CheckpointRewriteBackend<T> {
     pub(crate) fn new(inner: T, state: Arc<CheckpointRewrite>) -> Self {
-        Self { inner, state }
+        Self::with_read_probe(
+            inner,
+            state,
+            crate::query_diagnostics::query_execute_diagnostics_enabled(),
+        )
+    }
+
+    fn with_read_probe(inner: T, state: Arc<CheckpointRewrite>, read_probe: bool) -> Self {
+        Self {
+            inner,
+            state,
+            read_probe,
+            read_calls: AtomicU64::new(0),
+            read_bytes: AtomicU64::new(0),
+        }
+    }
+}
+
+impl<T> Drop for CheckpointRewriteBackend<T> {
+    fn drop(&mut self) {
+        if self.read_probe {
+            eprintln!(
+                "riffdb-backend-read-probe-v1\t{}\t{}",
+                self.read_calls.load(Ordering::Relaxed),
+                self.read_bytes.load(Ordering::Relaxed)
+            );
+        }
     }
 }
 
@@ -60,6 +90,11 @@ impl<T: StorageBackend> StorageBackend for CheckpointRewriteBackend<T> {
     }
 
     fn read(&self, offset: u64, out: &mut [u8]) -> io::Result<()> {
+        if self.read_probe {
+            self.read_calls.fetch_add(1, Ordering::Relaxed);
+            self.read_bytes
+                .fetch_add(out.len() as u64, Ordering::Relaxed);
+        }
         self.inner.read(offset, out)
     }
 

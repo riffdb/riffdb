@@ -89,6 +89,45 @@ The next diagnostic uses the repository's profiling build with forced frame
 pointers to attribute allocation and hashing to callers. Comparative evidence
 continues to require the release build.
 
+## Caller-attributed diagnostic and next experiment
+
+A diagnostic binary from `7eb4b37e1` was built with the repository's profiling
+profile and `RUSTFLAGS="-C force-frame-pointers=yes"`. It was sampled for 25
+seconds at 997 Hz, producing 18,187 samples with none lost. The load completed;
+postprocessing inline expansion took several minutes. Disabling inline
+expansion makes caller analysis practical. The later inspection happened after
+sampling and load completion. Profiling-build throughput is not comparative
+evidence.
+
+Selected inclusive writer sample shares (nested shares must not be summed):
+
+| Path | Inclusive samples |
+|---|---:|
+| Checkpoint point reads | 11.82% |
+| Overlay insertion | 5.34% |
+| Changelog successor preparation | 5.56% |
+| Small-object allocator cache refill | 3.73% |
+| Allocator slab-heap removal | 2.12% |
+| Overlay checkpoint rebase | 2.74% |
+
+The next scratch experiment changes the existing pinned allocator's bounded
+small-object cache capacity, with minimum and maximum both set to 1,000
+slots. Both arms use identical release binaries from `7eb4b37e1`; the scratch
+candidate selects these already-supported allocator settings before process
+startup. The normal maximum is 200. The run confirms option acceptance before
+measurement. No production default, new dependency, or public configuration
+interface has been adopted. This tests cache capacity as one mechanism; it
+does not establish that allocation count, hashing, or overlay construction
+has changed. Memory and CPU remain required comparative disclosures.
+
+A separate numeric backend-read probe counts calls and requested bytes below
+redb's page cache. It is selected once when the backend opens under the existing
+diagnostic switch, passes through every original read and error, and emits
+`riffdb-backend-read-probe-v1` at backend drop. Counts include all reader threads
+and exclude reads performed internally by checkpoint write comparison. Seed
+and load process generations must be kept separate. Disabled and concurrent
+probe tests pass; the probe supplies no read answer or retained page cache.
+
 ## Review note
 
 Package: WP-818. Tier: internal. Current behavior change: opt-in numeric-only
