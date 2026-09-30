@@ -281,6 +281,7 @@ enum CommandEvaluationTaskInput {
 enum CommandEvaluationTask {
     Evaluate {
         ordinal: usize,
+        enqueued: Option<Instant>,
         input: CommandEvaluationTaskInput,
         completion: mpsc::Sender<(
             usize,
@@ -289,6 +290,7 @@ enum CommandEvaluationTask {
     },
     PrepareDetached {
         ordinal: usize,
+        enqueued: Option<Instant>,
         preparations: Vec<DetachedRecordPreparation>,
         durability: DurabilityMode,
         completion: mpsc::Sender<(usize, Vec<Result<PreparedDetachedRecordGraph, ()>>)>,
@@ -331,6 +333,7 @@ impl CommandEvaluationPool {
             let worker = thread::Builder::new()
                 .name(format!("riffdb-command-prepare-{index}"))
                 .spawn(move || {
+                    let mut probe = crate::intake_probe::PoolWorkerProbe::new(index);
                     loop {
                         let task = {
                             let Ok(receiver) = receiver.lock() else {
@@ -344,10 +347,13 @@ impl CommandEvaluationPool {
                         match task {
                             CommandEvaluationTask::PrepareDetached {
                                 ordinal,
+                                enqueued,
                                 preparations,
                                 durability,
                                 completion,
                             } => {
+                                let started = probe.task_start(enqueued);
+                                let count = preparations.len();
                                 let results = preparations
                                     .into_iter()
                                     .map(|preparation| {
@@ -355,14 +361,21 @@ impl CommandEvaluationPool {
                                             .map_err(|_| ())
                                     })
                                     .collect();
+                                probe.task_finish(2, count, started);
                                 let _coordinator_may_have_stopped =
                                     completion.send((ordinal, results));
                             }
                             CommandEvaluationTask::Evaluate {
                                 ordinal,
+                                enqueued,
                                 input,
                                 completion,
                             } => {
+                                let started = probe.task_start(enqueued);
+                                let (class, count) = match &input {
+                                    CommandEvaluationTaskInput::Published(attempts) => (0, attempts.len()),
+                                    CommandEvaluationTaskInput::WriterPrivate(attempts) => (1, attempts.len()),
+                                };
                                 let results = match input {
                                     CommandEvaluationTaskInput::Published(attempts) => {
                                         let requests = attempts
@@ -415,6 +428,7 @@ impl CommandEvaluationPool {
                                         })
                                         .collect(),
                                 };
+                                probe.task_finish(class, count, started);
                                 let _coordinator_may_have_stopped =
                                     completion.send((ordinal, results));
                             }
@@ -481,6 +495,7 @@ impl CommandEvaluationPool {
             if sender
                 .send(CommandEvaluationTask::Evaluate {
                     ordinal,
+                    enqueued: crate::writer_census::stage_start(),
                     input: CommandEvaluationTaskInput::Published(attempts),
                     completion: completion.clone(),
                 })
@@ -558,6 +573,7 @@ impl CommandEvaluationPool {
             if sender
                 .send(CommandEvaluationTask::PrepareDetached {
                     ordinal,
+                    enqueued: crate::writer_census::stage_start(),
                     preparations,
                     durability,
                     completion: completion.clone(),
@@ -625,6 +641,7 @@ impl CommandEvaluationPool {
             if sender
                 .send(CommandEvaluationTask::Evaluate {
                     ordinal,
+                    enqueued: crate::writer_census::stage_start(),
                     input: wrap(attempts),
                     completion: completion.clone(),
                 })

@@ -72,6 +72,73 @@ impl Drop for IntakeProbe {
     }
 }
 
+/// Worker-local task counters: tasks, commands, queue wall ns, work wall ns,
+/// maximum task cardinality. Classes: published, writer-private, detached.
+pub(crate) struct PoolWorkerProbe {
+    enabled: bool,
+    index: usize,
+    rows: [[u64; 5]; 3],
+}
+
+impl PoolWorkerProbe {
+    pub(crate) fn new(index: usize) -> Self {
+        Self {
+            enabled: crate::writer_census::writer_batch_diagnostics_enabled(),
+            index,
+            rows: [[0; 5]; 3],
+        }
+    }
+
+    pub(crate) fn task_start(&self, enqueued: Option<Instant>) -> Option<(Instant, u64)> {
+        if !self.enabled {
+            return None;
+        }
+        enqueued.map(|enqueued| {
+            let started = Instant::now();
+            (
+                started,
+                u64::try_from(started.duration_since(enqueued).as_nanos()).unwrap_or(u64::MAX),
+            )
+        })
+    }
+
+    pub(crate) fn task_finish(
+        &mut self,
+        class: usize,
+        count: usize,
+        started: Option<(Instant, u64)>,
+    ) {
+        let Some((started, queued_ns)) = started else {
+            return;
+        };
+        let Some(row) = self.rows.get_mut(class) else {
+            return;
+        };
+        let count = u64::try_from(count).unwrap_or(u64::MAX);
+        row[0] = row[0].saturating_add(1);
+        row[1] = row[1].saturating_add(count);
+        row[2] = row[2].saturating_add(queued_ns);
+        row[3] =
+            row[3].saturating_add(u64::try_from(started.elapsed().as_nanos()).unwrap_or(u64::MAX));
+        row[4] = row[4].max(count);
+    }
+}
+
+impl Drop for PoolWorkerProbe {
+    fn drop(&mut self) {
+        if self.enabled {
+            let mut line = String::with_capacity(360);
+            let _ = write!(line, "riffdb-pool-task-probe-v1\t{}", self.index);
+            for row in self.rows {
+                for value in row {
+                    let _ = write!(line, "\t{value}");
+                }
+            }
+            eprintln!("{line}");
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::IntakeProbe;
@@ -104,5 +171,24 @@ mod tests {
         probe.add(4, 100, 1, 1);
         probe.add(8, 100, 1, 1);
         assert_eq!(probe.rows[4], [u64::MAX, u64::MAX, 3, 2, 4, 3]);
+    }
+
+    // req: PERF-008
+    #[test]
+    fn pool_probe_separates_task_kinds_without_retaining_requests() {
+        let mut probe = super::PoolWorkerProbe {
+            enabled: true,
+            index: 0,
+            rows: [[0; 5]; 3],
+        };
+        let started = probe.task_start(Some(std::time::Instant::now()));
+        probe.task_finish(1, 3, started);
+        assert_eq!(probe.rows[0], [0; 5]);
+        assert_eq!(probe.rows[2], [0; 5]);
+        assert_eq!(probe.rows[1][0], 1);
+        assert_eq!(probe.rows[1][1], 3);
+        assert_eq!(probe.rows[1][4], 3);
+        probe.enabled = false;
+        assert!(probe.task_start(Some(std::time::Instant::now())).is_none());
     }
 }
