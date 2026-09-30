@@ -21,11 +21,11 @@ use sha2::{Digest, Sha256};
 use crate::StorageValueError;
 
 /// Maximum complete published journal suffix represented by one overlay.
-pub const MAX_COMPOSITE_OVERLAY_TRANSITIONS: usize = 8_192;
+pub const MAX_COMPOSITE_OVERLAY_TRANSITIONS: usize = 65_536;
 /// Maximum cumulative encoded journal bytes represented by one overlay.
-pub const MAX_COMPOSITE_SUFFIX_BYTES: usize = 32 * 1024 * 1024;
+pub const MAX_COMPOSITE_SUFFIX_BYTES: usize = 256 * 1024 * 1024;
 /// Independent in-memory charge for one published overlay.
-pub const MAX_COMPOSITE_OVERLAY_BYTES: usize = 128 * 1024 * 1024;
+pub const MAX_COMPOSITE_OVERLAY_BYTES: usize = 256 * 1024 * 1024;
 /// Maximum key or value component accepted from one journal mutation.
 pub const MAX_COMPOSITE_COMPONENT_BYTES: usize = 16 * 1024 * 1024;
 /// Conservative per-entry ordered-map and enum overhead charge.
@@ -2029,12 +2029,13 @@ mod tests {
 
     #[test]
     fn composite_bounds_keep_frames_small_and_give_checkpoints_half_full_headroom() {
-        assert_eq!(MAX_COMPOSITE_OVERLAY_TRANSITIONS, 8_192);
-        assert_eq!(MAX_COMPOSITE_SUFFIX_BYTES, 32 * 1024 * 1024);
-        assert_eq!(MAX_COMPOSITE_OVERLAY_BYTES, 128 * 1024 * 1024);
+        // ADR-0263 Decision 7.
+        assert_eq!(MAX_COMPOSITE_OVERLAY_TRANSITIONS, 65_536);
+        assert_eq!(MAX_COMPOSITE_SUFFIX_BYTES, 256 * 1024 * 1024);
+        assert_eq!(MAX_COMPOSITE_OVERLAY_BYTES, 256 * 1024 * 1024);
         assert_eq!(MAX_COMPOSITE_COMPONENT_BYTES, 16 * 1024 * 1024);
-        assert_eq!(MAX_COMPOSITE_OVERLAY_TRANSITIONS / 2, 4_096);
-        assert_eq!(MAX_COMPOSITE_SUFFIX_BYTES / 2, 16 * 1024 * 1024);
+        assert_eq!(MAX_COMPOSITE_OVERLAY_TRANSITIONS / 2, 32_768);
+        assert_eq!(MAX_COMPOSITE_SUFFIX_BYTES / 2, 128 * 1024 * 1024);
     }
 
     #[test]

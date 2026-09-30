@@ -28,13 +28,19 @@ Before an overlay can freeze, RiffDB verifies:
   tombstones; and
 - ordered application of every mutation in each complete frame.
 
-The compiled standard-profile ceilings are 8,192 transitions, 32 MiB of
-cumulative encoded suffix bytes, and 128 MiB of conservative overlay-memory
-charge. Checkpointing starts at the half-full point (4,096 transitions or
-16 MiB) and earlier if the fixed 40-MiB extent must reserve one maximum padded
-frame. One frame and the complete writer-private unpublished prefix remain
-independently capped at 256 transitions and 16 MiB. These are fail-closed safety
-bounds, not tuning settings.
+The compiled standard-profile ceilings (ADR-0263 Decision 7) are 65,536
+transitions, 256 MiB of cumulative encoded suffix bytes, and 256 MiB of
+conservative overlay-memory charge. Checkpointing starts at the half-full point
+(32,768 transitions or 128 MiB) and earlier if the fixed 320-MiB extent must
+reserve one maximum padded frame. One frame and the complete writer-private
+unpublished prefix remain independently capped at 256 transitions and 16 MiB.
+These are fail-closed safety bounds, not tuning settings.
+
+The overlay holds a command segment as its fixed-size history stub, not the
+segment (ADR-0263 Decision 4). The segment stays in the journal frame; a reader
+resolves the stub from the uncheckpointed frame in memory, or from its extent
+once checkpointed. The overlay's charge therefore scales with current-state
+changes, not with command history.
 
 Every staged frame is charged at its exact encoded and padded sizes before
 submission. If an asynchronous checkpoint has not reclaimed enough logical or

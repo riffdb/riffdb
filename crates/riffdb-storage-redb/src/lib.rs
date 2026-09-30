@@ -165,6 +165,14 @@ pub fn writer_checkpoint_census_v1() -> [u64; 15] {
     checkpoint_census::CHECKPOINTS.snapshot()
 }
 
+/// The peak composite overlay charge, in bytes, that any selected asynchronous
+/// checkpoint covered: the overlay's high-water mark against its ceiling.
+#[doc(hidden)]
+#[must_use]
+pub fn writer_overlay_census_v1() -> u64 {
+    checkpoint_census::peak_overlay_charge()
+}
+
 /// Fixed execute-stage order for the bounded query-growth diagnostic.
 ///
 /// Stages `point_lookup` through `scan_setup` are physically disjoint segments

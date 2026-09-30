@@ -44,7 +44,7 @@ const AUDIENCE: &str = "riffdb-grpc-loopback";
 const ENVIRONMENT: &str = "wp155-maintenance-test";
 const READY_PREFIX: &str = "riffdbd-ready-v1\t";
 const SHUTDOWN_COMMAND: &[u8] = b"shutdown\n";
-const SHUTDOWN_EVIDENCE_PREFIXES: [&str; 14] = [
+const SHUTDOWN_EVIDENCE_PREFIXES: [&str; 15] = [
     "riffdb-write-completion-groups-v1\t",
     "riffdb-dispatch-reasons-v1\t",
     "riffdb-shutdown-stages-v1\t",
@@ -58,6 +58,7 @@ const SHUTDOWN_EVIDENCE_PREFIXES: [&str; 14] = [
     "riffdb-writer-journal-stages-v1\t",
     "riffdb-writer-publication-stages-v2\t",
     "riffdb-writer-checkpoint-census-v1\t",
+    "riffdb-writer-overlay-census-v1\t",
     "riffdb-query-execute-windows-v1\t",
 ];
 const PROCESS_START_TIMEOUT: Duration = Duration::from_secs(30);

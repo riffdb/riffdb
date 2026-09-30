@@ -152,17 +152,19 @@ impl RedbCompositeMutationStage {
     /// history stub at `locator`, the frame this stage seals into. The
     /// uncheckpointed overlay then charges a locator, not the segment, and
     /// readers resolve it from the retained frame (ADR-0263 Decision 4).
+    /// Returns each staged segment's summary by mutation index.
     pub(crate) fn represent_segments(
         &mut self,
         locator: crate::history_stub::StubLocator,
-    ) -> Result<(), StorageError> {
-        for (index, summary) in std::mem::take(&mut self.segments) {
-            let stub = locator.summary_stub(summary)?;
+    ) -> Result<Vec<(usize, crate::history_stub::SegmentSummary)>, StorageError> {
+        let segments = std::mem::take(&mut self.segments);
+        for (index, summary) in &segments {
+            let stub = locator.summary_stub(*summary)?;
             self.stage
-                .represent_staged(index, &stub)
+                .represent_staged(*index, &stub)
                 .map_err(corrupt_value)?;
         }
-        Ok(())
+        Ok(segments)
     }
 
     pub(crate) fn apply(

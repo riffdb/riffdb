@@ -63,13 +63,15 @@ const EXTENT_DATA_OFFSET: usize = EXTENT_HEADER_SLOT_BYTES * EXTENT_HEADER_SLOT_
 /// path replaces a recovered extent of another size with one of the configured
 /// capacity (`normalize_extent_capacity_with_media`).
 pub(crate) const LEGACY_EXTENT_DATA_BYTES: usize = 40 * 1024 * 1024;
-/// ADR-0263 Decision 7's extent capacity. It becomes the configured capacity
-/// together with the raised suffix ceilings, once command history leaves redb:
-/// raising the ceilings alone cost interactive throughput (WP-814 evidence).
-/// Test builds will keep the legacy capacity, since every test database
-/// zero-fills an active and a spare extent.
+/// ADR-0263 Decision 7's extent capacity, configured together with the raised
+/// suffix ceilings now that command history has left redb.
 pub(crate) const PRODUCTION_EXTENT_DATA_BYTES: usize = 320 * 1024 * 1024;
-/// Configured extent data capacity.
+/// Configured extent data capacity. Test builds keep the legacy capacity:
+/// every test database zero-fills an active and a spare extent, and the
+/// physical ceiling then selects checkpoints before the suffix ceilings do.
+#[cfg(not(any(test, feature = "test-fixtures")))]
+pub(crate) const EXTENT_DATA_BYTES: usize = PRODUCTION_EXTENT_DATA_BYTES;
+#[cfg(any(test, feature = "test-fixtures"))]
 pub(crate) const EXTENT_DATA_BYTES: usize = LEGACY_EXTENT_DATA_BYTES;
 const EXTENT_FILE_BYTES: usize = EXTENT_DATA_OFFSET + EXTENT_DATA_BYTES;
 
@@ -126,9 +128,9 @@ pub(crate) const MAX_JOURNAL_COMMANDS: usize = MAX_JOURNAL_TRANSITIONS;
 /// governs one frame flush and all unpublished work; this independent cap
 /// prevents already-published small frames from forcing byte-inefficient redb
 /// checkpoints while keeping restart CPU bounded.
-pub(crate) const MAX_JOURNAL_SUFFIX_TRANSITIONS: usize = 8_192;
+pub(crate) const MAX_JOURNAL_SUFFIX_TRANSITIONS: usize = 65_536;
 pub(crate) const MAX_JOURNAL_FRAME_BYTES: usize = 16 * 1024 * 1024;
-pub(crate) const MAX_JOURNAL_SUFFIX_BYTES: usize = 32 * 1024 * 1024;
+pub(crate) const MAX_JOURNAL_SUFFIX_BYTES: usize = 256 * 1024 * 1024;
 const DELETE_VALUE_LENGTH: u32 = u32::MAX;
 
 static COMMAND_FRAME_COUNT: AtomicU64 = AtomicU64::new(0);
@@ -2827,6 +2829,30 @@ impl SealedExtentFooter {
     }
 }
 
+/// Retires an installed checkpoint extent: finishes any earlier seal so the
+/// sealing name is free, moves the extent to it, and seals it (ADR-0263). An
+/// absent checkpoint extent makes this a no-op, so a caller may repeat it.
+pub(crate) fn retire_checkpoint_extent_with_media(
+    media: &dyn JournalMedia,
+    database_path: &Path,
+    database_id: DatabaseId,
+) -> Result<(), JournalIoError> {
+    let checkpoint = checkpoint_journal_path(database_path);
+    if !media
+        .try_exists(&checkpoint)
+        .map_err(|_| JournalIoError::Io)?
+    {
+        return Ok(());
+    }
+    seal_extent_with_media(media, database_path, database_id)?;
+    let sealing = sealing_journal_path(database_path);
+    media
+        .rename(&checkpoint, &sealing)
+        .map_err(|_| JournalIoError::Io)?;
+    sync_parent_with_media(media, &sealing)?;
+    seal_extent_with_media(media, database_path, database_id).map(drop)
+}
+
 /// Seals the extent waiting at [`sealing_journal_path`], if any, and returns
 /// the retained path it now has.
 ///
@@ -2991,7 +3017,12 @@ pub(crate) fn prepare_spare_extent_with_media(
         Err(error) if error.kind() == io::ErrorKind::NotFound => {}
         Err(_) => return Err(JournalIoError::Io),
     }
-    create_extent_file_with_media(media, &preparing, &ExtentHeader::initial(header.clone()))?;
+    create_extent_file_paced_with_media(
+        media,
+        &preparing,
+        &ExtentHeader::initial(header.clone()),
+        Some(SPARE_FILL_SYNC_BYTES),
+    )?;
     let _guard = spare_lock.lock().map_err(|_| JournalIoError::Io)?;
     if media.try_exists(&spare).map_err(|_| JournalIoError::Io)? {
         media
@@ -3032,11 +3063,26 @@ fn create_extent_file_with_media(
     path: &Path,
     header: &ExtentHeader,
 ) -> Result<(), JournalIoError> {
+    create_extent_file_paced_with_media(media, path, header, None)
+}
+
+/// Zero-filled bytes a background spare preparation writes between syncs.
+/// Syncing each bounded run keeps at most this much zero-fill writeback ahead
+/// of a journal sync on the same device (ADR-0263 Decision 7).
+const SPARE_FILL_SYNC_BYTES: usize = 8 * 1024 * 1024;
+
+fn create_extent_file_paced_with_media(
+    media: &dyn JournalMedia,
+    path: &Path,
+    header: &ExtentHeader,
+    sync_every: Option<usize>,
+) -> Result<(), JournalIoError> {
     let mut file = media
         .create_new_read_write(path)
         .map_err(|_| JournalIoError::Io)?;
     let zeroes = vec![0_u8; 1024 * 1024];
     let mut remaining = extent_file_bytes(header.data_bytes);
+    let mut unsynced = 0_usize;
     while remaining != 0 {
         let count = remaining.min(zeroes.len());
         if let Err(error) = file.write_all(&zeroes[..count]) {
@@ -3045,6 +3091,15 @@ fn create_extent_file_with_media(
             return Err(classify_extent_creation_error(&error));
         }
         remaining -= count;
+        unsynced += count;
+        if sync_every.is_some_and(|bytes| unsynced >= bytes) {
+            if let Err(error) = file.sync_data() {
+                drop(file);
+                let _ = media.remove_file(path);
+                return Err(classify_extent_creation_error(&error));
+            }
+            unsynced = 0;
+        }
     }
     if let Err(error) = file
         .write_all_at(&header.encode(), 0)
@@ -3504,8 +3559,14 @@ fn walk_extent_frames(
         let mut physical = vec![0_u8; padded_len];
         file.read_exact_at(&mut physical, position)
             .map_err(|_| JournalIoError::Io)?;
+        // Recovery re-derives every frame fully. Sealing and retained reads
+        // check each frame's bytes against the hash its header recorded when
+        // it was written and validated, and skip re-decoding its segments.
+        let recorded =
+            read_array::<HASH_BYTES>(&physical_header, 36).map_err(|_| JournalIoError::Corrupt)?;
+        let proven = (walk == ExtentWalk::FromOrigin).then_some(&recorded);
         let Some((frame, frame_hash)) =
-            decode_physical_frame(&physical, extent.generation, position, encoded_len, None)?
+            decode_physical_frame(&physical, extent.generation, position, encoded_len, proven)?
         else {
             incomplete_tail = true;
             break;
@@ -5418,18 +5479,18 @@ mod tests {
     fn journal_bounds_keep_one_frame_and_unpublished_prefix_independent() {
         assert_eq!(MAX_JOURNAL_TRANSITIONS, 256);
         assert_eq!(MAX_JOURNAL_FRAME_BYTES, 16 * 1024 * 1024);
-        assert_eq!(MAX_JOURNAL_SUFFIX_TRANSITIONS, 8_192);
-        assert_eq!(MAX_JOURNAL_SUFFIX_BYTES, 32 * 1024 * 1024);
+        assert_eq!(MAX_JOURNAL_SUFFIX_TRANSITIONS, 65_536);
+        assert_eq!(MAX_JOURNAL_SUFFIX_BYTES, 256 * 1024 * 1024);
         assert_eq!(PRODUCTION_EXTENT_DATA_BYTES, 320 * 1024 * 1024);
         assert_eq!(LEGACY_EXTENT_DATA_BYTES, 40 * 1024 * 1024);
-        assert_eq!(EXTENT_DATA_BYTES, LEGACY_EXTENT_DATA_BYTES);
+        assert_eq!(EXTENT_DATA_BYTES, LEGACY_EXTENT_DATA_BYTES, "test builds");
         let maximum_physical_frame =
             extent_frame_bytes(MAX_JOURNAL_FRAME_BYTES).expect("maximum frame fits extent");
         assert!(maximum_physical_frame > MAX_JOURNAL_FRAME_BYTES);
         assert!(maximum_physical_frame < LEGACY_EXTENT_DATA_BYTES);
         // Decision 7's extent holds its 256 MiB suffix ceiling plus one maximum
         // padded frame, so a full suffix never forces an early checkpoint.
-        assert!(256 * 1024 * 1024 + maximum_physical_frame <= PRODUCTION_EXTENT_DATA_BYTES);
+        assert!(MAX_JOURNAL_SUFFIX_BYTES + maximum_physical_frame <= PRODUCTION_EXTENT_DATA_BYTES);
     }
 
     #[test]

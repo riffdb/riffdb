@@ -257,6 +257,7 @@ impl SharedRedb {
             return Err(storage_error(StorageErrorKind::CorruptData));
         }
         let covered_overlay = covered_view.overlay();
+        let overlay_charge = covered_overlay.charged_bytes();
         if covered_overlay.transition_count() != runtime.suffix_transitions
             || covered_overlay.encoded_frame_bytes() != runtime.suffix_bytes
         {
@@ -285,6 +286,8 @@ impl SharedRedb {
             runtime.last_administration_sequence,
             runtime.last_hash,
         );
+        // The previous checkpoint extent must have left the checkpoint name.
+        self.free_checkpoint_name(runtime.database_id)?;
         let media = self.journal_media.as_ref();
         // The spare name moves under the lock the background preparation takes,
         // so a preparation that finishes now never replaces the spare being used.
@@ -357,6 +360,7 @@ impl SharedRedb {
             completion: Some(receiver),
             result: None,
         });
+        crate::checkpoint_census::overlay_charge(overlay_charge);
         crate::checkpoint_census::CHECKPOINTS.started(
             batch.transition_count,
             batch.command_count,

@@ -140,15 +140,17 @@ fn checkpoint_materialization_allows_pipeline_but_installation_requires_publicat
             .begin_deferred_command_epoch()
             .expect("install exact checkpoint at quiescence"),
     );
-    assert!(
-        !checkpoint_path.exists(),
-        "the covered extent is reclaimed only after installation"
-    );
     for ordinal in 1..=4 {
         assert_visible(&ports, ordinal, true);
     }
     drop(ports);
     drop(schedule);
+    // Installation hands the covered extent to the sealer, which retires it
+    // off the writer's path; closing the store waits for it.
+    assert!(
+        !checkpoint_path.exists(),
+        "the covered extent is reclaimed only after installation"
+    );
     for _ in 0..2 {
         let reopened = open_operational(RedbStore::open(&path.0).expect("idempotent restart"));
         for ordinal in 1..=4 {

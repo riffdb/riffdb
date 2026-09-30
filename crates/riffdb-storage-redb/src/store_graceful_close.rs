@@ -112,6 +112,9 @@ impl SharedRedb {
             }
         }
         drop(self.journal_runtime()?);
+        // Retirement of an installed extent runs off the writer's path; the
+        // clean boundary waits for it and admits no scratch name.
+        self.join_journal_sealer();
         let spare = crate::journal::spare_journal_path(&self.path);
         match self.journal_media.remove_file(&spare) {
             Ok(()) => crate::journal::sync_parent_directory_with_media(

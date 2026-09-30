@@ -139,6 +139,23 @@ impl SegmentMetadata {
     }
 }
 
+/// Whether stored `bytes` still name a cached segment: its exact canonical
+/// bytes, or a history stub carrying its first sequence and digest.
+fn cached_payload_matches(
+    canonical: &[u8],
+    digest: &[u8; 32],
+    first: CommitSequence,
+    bytes: &[u8],
+    stub: Option<&crate::history_stub::SegmentSummary>,
+) -> bool {
+    match stub {
+        None => canonical == bytes,
+        Some(summary) => {
+            summary.first_commit_sequence == Some(first) && summary.segment_digest == *digest
+        }
+    }
+}
+
 struct CachedPayload {
     canonical: Arc<[u8]>,
     decoded: Arc<StoredCommandSegmentV1>,
@@ -173,12 +190,23 @@ impl PayloadCache {
         // Capture this caller's authority before consulting the disposable cache.
         // Never hold the cache mutex across storage I/O or canonical decoding.
         let bytes = load(metadata.first)?.ok_or_else(corrupt)?;
+        // The overlay and checkpoint hold a history stub for a journaled
+        // segment (ADR-0263); it names the cached segment by its digest.
+        let stub = crate::history_stub::segment_summary(&bytes)?;
         let cached = {
             let state = self.state.lock().map_err(|_| corrupt())?;
             state
                 .entries
                 .get(&metadata.first)
-                .filter(|cached| cached.canonical.as_ref() == bytes.as_slice())
+                .filter(|cached| {
+                    cached_payload_matches(
+                        &cached.canonical,
+                        cached.decoded.segment_digest().as_bytes(),
+                        metadata.first,
+                        &bytes,
+                        stub.as_ref(),
+                    )
+                })
                 .map(|cached| Arc::clone(&cached.decoded))
         };
         if let Some(cached) = cached {
@@ -278,5 +306,46 @@ mod tests {
         let bytes = CanonicalValue::bytes(vec![42; 8192]).unwrap();
         let nested = CanonicalValue::list(vec![CanonicalValue::Record(record), bytes]).unwrap();
         assert!(value_charge(&nested).unwrap() >= charge + 8192);
+    }
+}
+
+#[cfg(test)]
+mod stub_match_tests {
+    use super::*;
+
+    // req: REC-005
+    #[test]
+    fn a_history_stub_names_the_cached_segment_by_first_sequence_and_digest() {
+        let first = CommitSequence::new(9).expect("sequence");
+        let summary = crate::history_stub::SegmentSummary {
+            first_commit_sequence: Some(first),
+            last_commit_sequence: Some(first),
+            terminal_administration_sequence: None,
+            command_count: 1,
+            segment_digest: [7; 32],
+        };
+        let canonical = b"segment".as_slice();
+        assert!(cached_payload_matches(
+            canonical, &[7; 32], first, canonical, None
+        ));
+        assert!(!cached_payload_matches(
+            canonical, &[7; 32], first, b"other", None
+        ));
+        assert!(cached_payload_matches(
+            canonical,
+            &[7; 32],
+            first,
+            b"stub",
+            Some(&summary)
+        ));
+        assert!(
+            !cached_payload_matches(canonical, &[8; 32], first, b"stub", Some(&summary)),
+            "another segment's digest"
+        );
+        let later = CommitSequence::new(10).expect("sequence");
+        assert!(
+            !cached_payload_matches(canonical, &[7; 32], later, b"stub", Some(&summary)),
+            "another segment's key"
+        );
     }
 }

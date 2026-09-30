@@ -1373,6 +1373,7 @@ impl SharedRedb {
     }
 
     /// The currently published composite view, if the standard profile has one.
+    #[cfg(feature = "test-fixtures")]
     pub(crate) fn published_composite_view(
         &self,
     ) -> Result<Option<Arc<crate::composite_view::RedbCompositeReadView>>, StorageError> {
@@ -1616,6 +1617,9 @@ struct ValidatedCheckpointFrame {
     /// the checkpoint's history stubs name (ADR-0263 Amendment 3).
     extent_generation: u64,
     placement: crate::journal::FramePlacement,
+    /// Summaries of the command segments the writer staged, by mutation index,
+    /// so materialization writes their stubs without decoding them again.
+    segment_summaries: Arc<[(usize, crate::history_stub::SegmentSummary)]>,
 }
 
 #[derive(Default)]
@@ -6716,6 +6720,7 @@ impl RedbWriteAccess {
             )
             .ok_or_else(|| storage_error(StorageErrorKind::LimitExceeded))?;
             runtime.suffix_frames.push(ValidatedCheckpointFrame {
+                segment_summaries: Arc::from(Vec::new()),
                 extent_generation: runtime.lane.generation(),
                 placement,
                 database_id: runtime.database_id,
@@ -7069,11 +7074,12 @@ impl RedbDurabilityEpoch {
                         .ok_or_else(|| storage_error(StorageErrorKind::LimitExceeded))?;
                 // The overlay holds each segment's history stub; the frame and
                 // its checkpoint keep the segment (ADR-0263 Decision 4).
-                composite_stage.represent_segments(crate::history_stub::StubLocator {
-                    database_id: runtime.database_id,
-                    generation: runtime.lane.generation(),
-                    placement,
-                })?;
+                let segment_summaries =
+                    composite_stage.represent_segments(crate::history_stub::StubLocator {
+                        database_id: runtime.database_id,
+                        generation: runtime.lane.generation(),
+                        placement,
+                    })?;
                 let (mut composite_successor, checkpoint_mutations) = composite_stage
                     .seal_encoded_frame_with_mutations(
                         riffdb_storage_api::CompositeFrameKindV1::Command,
@@ -7126,6 +7132,7 @@ impl RedbDurabilityEpoch {
                 runtime.suffix_bytes = next_bytes;
                 runtime.suffix_physical_bytes = next_physical_bytes;
                 runtime.suffix_frames.push(ValidatedCheckpointFrame {
+                    segment_summaries: Arc::from(segment_summaries),
                     extent_generation: runtime.lane.generation(),
                     placement,
                     database_id: runtime.database_id,
@@ -7899,7 +7906,6 @@ impl SharedRedb {
         self.finish_async_checkpoint_if_quiescent()
     }
 
-    /// Makes this store's retained extents resolvable for its history stubs.
     /// Makes an uncheckpointed frame's segments resolvable in memory before
     /// its overlay stubs become visible (ADR-0263 Decision 4).
     pub(super) fn note_pending_frame(
@@ -7914,6 +7920,7 @@ impl SharedRedb {
         }
     }
 
+    /// Makes this store's retained extents resolvable for its history stubs.
     pub(super) fn register_history_resolver(&self, database_id: DatabaseId) {
         self.history_resolver.get_or_init(|| {
             crate::history_stub::HistoryResolver::register(
@@ -7935,9 +7942,11 @@ impl SharedRedb {
         }
     }
 
-    /// Seals the extent waiting at the sealing name and prepares the next spare
-    /// off the writer's path. A failure leaves the extent at the sealing name,
-    /// and the next install or open resumes it; a missing spare is created by
+    /// Retires the installed checkpoint extent, if any, seals the extent
+    /// waiting at the sealing name, and prepares the next spare, all off the
+    /// writer's path. The thread first waits for the previous one, so at most
+    /// one retires or seals at a time. A failure leaves the extent at its name;
+    /// the next rotation or open resumes it, and a missing spare is created by
     /// the next checkpoint start instead.
     pub(super) fn start_journal_sealer(
         &self,
@@ -7947,15 +7956,28 @@ impl SharedRedb {
         let path = self.path.clone();
         let spare_lock = Arc::clone(&self.journal_spare);
         let database_id = spare_header.database_id();
+        let mut sealer = self
+            .journal_sealer
+            .lock()
+            .map_err(|_| storage_error(StorageErrorKind::InvariantViolation))?;
+        let previous = sealer.take();
         let handle = std::thread::Builder::new()
             .name("riffdb-journal-seal".to_string())
             .stack_size(crate::PRODUCTION_THREAD_STACK_BYTES)
             .spawn(move || {
-                crate::journal::record_seal_outcome(crate::journal::seal_extent_with_media(
-                    media.as_ref(),
-                    &path,
-                    database_id,
-                ));
+                if let Some(previous) = previous {
+                    let _ = previous.join();
+                }
+                crate::journal::record_seal_outcome(
+                    crate::journal::retire_checkpoint_extent_with_media(
+                        media.as_ref(),
+                        &path,
+                        database_id,
+                    )
+                    .and_then(|()| {
+                        crate::journal::seal_extent_with_media(media.as_ref(), &path, database_id)
+                    }),
+                );
                 crate::journal::record_spare_outcome(
                     crate::journal::prepare_spare_extent_with_media(
                         media.as_ref(),
@@ -7966,15 +7988,21 @@ impl SharedRedb {
                 );
             })
             .map_err(|_| storage_error(StorageErrorKind::Unavailable))?;
-        let previous = self
-            .journal_sealer
-            .lock()
-            .map_err(|_| storage_error(StorageErrorKind::InvariantViolation))?
-            .replace(handle);
-        if let Some(previous) = previous {
-            let _ = previous.join();
-        }
+        *sealer = Some(handle);
         Ok(())
+    }
+
+    /// Makes the checkpoint name free for the next rotation: waits for the
+    /// sealer and, if a background retirement failed, retires the installed
+    /// extent here.
+    pub(super) fn free_checkpoint_name(&self, database_id: DatabaseId) -> Result<(), StorageError> {
+        self.join_journal_sealer();
+        crate::journal::retire_checkpoint_extent_with_media(
+            self.journal_media.as_ref(),
+            &self.path,
+            database_id,
+        )
+        .map_err(journal_io_error)
     }
 
     fn finish_async_checkpoint_if_quiescent(self: &Arc<Self>) -> Result<(), StorageError> {
@@ -8061,25 +8089,14 @@ impl SharedRedb {
                 .write()
                 .map_err(|_| storage_error(StorageErrorKind::CommitStatusUnknown))? =
                 Some(successor.checkpoint_root_shared());
-            let checkpoint_path = crate::journal::checkpoint_journal_path(&self.path);
-            let media = self.journal_media.as_ref();
             #[cfg(feature = "test-fixtures")]
             if let Some(controller) = &self.test_controller {
                 controller
                     .checkpoint_test_pause(crate::hooks::RedbCheckpointTestPoint::BeforeReclaim);
             }
             // The installed extent is retained history now (ADR-0263): it is
-            // sealed, not recycled. Finish any earlier seal first, so exactly
-            // one extent ever waits at the sealing name.
-            self.join_journal_sealer();
-            let sealing_path = crate::journal::sealing_journal_path(&self.path);
-            crate::journal::seal_extent_with_media(media, &self.path, runtime.database_id)
-                .map_err(journal_io_error)?;
-            media
-                .rename(&checkpoint_path, &sealing_path)
-                .map_err(|_| storage_error(StorageErrorKind::Unavailable))?;
-            crate::journal::sync_parent_directory_with_media(media, &sealing_path)
-                .map_err(journal_io_error)?;
+            // sealed, not recycled. The sealer retires and seals it off the
+            // writer's path; the next rotation waits for the checkpoint name.
             self.start_journal_sealer(crate::journal::JournalFileHeader::with_frontiers(
                 runtime.database_id,
                 runtime.last_sequence,

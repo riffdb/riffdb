@@ -104,7 +104,7 @@ impl SharedRedb {
                 }
                 None
             };
-            for mutation in frame.mutations.iter() {
+            for (index, mutation) in frame.mutations.iter().enumerate() {
                 if mutation.table() == CompositeTableV1::Meta
                     && Some(mutation.key())
                         == N::NextChangelogTransaction
@@ -120,7 +120,7 @@ impl SharedRedb {
                 }
                 // A command segment is written as a history stub naming the
                 // retained frame (ADR-0263 Amendment 3); every other row as is.
-                if let Some(stub) = segment_stub(frame, mutation)? {
+                if let Some(stub) = segment_stub(frame, index, mutation)? {
                     crate::journal::apply_byte_mutation_parts(
                         &transaction,
                         crate::layout::COMMITS,
@@ -197,6 +197,7 @@ impl SharedRedb {
 /// which keeps its exact bytes).
 fn segment_stub(
     frame: &super::ValidatedCheckpointFrame,
+    index: usize,
     mutation: &riffdb_storage_api::CompositeMutationV1,
 ) -> Result<Option<Vec<u8>>, StorageError> {
     let (riffdb_storage_api::CompositeTableV1::Commits, Some(value), None) =
@@ -204,7 +205,26 @@ fn segment_stub(
     else {
         return Ok(None);
     };
-    frame_locator(frame).segment_stub(value)
+    // The writer recorded the summary of each segment it built; any other
+    // fresh COMMITS value is decoded to learn whether it is one.
+    match frame
+        .segment_summaries
+        .iter()
+        .find(|(staged, _)| *staged == index)
+    {
+        Some((_, summary)) => {
+            // A summary names its segment by the COMMITS key it is stored under.
+            if summary
+                .first_commit_sequence
+                .map(crate::keys::encode_application_sequence_key)
+                .is_none_or(|key| key.as_slice() != mutation.key())
+            {
+                return Err(storage_error(StorageErrorKind::CorruptData));
+            }
+            frame_locator(frame).summary_stub(*summary).map(Some)
+        }
+        None => frame_locator(frame).segment_stub(value),
+    }
 }
 
 fn frame_locator(frame: &super::ValidatedCheckpointFrame) -> crate::history_stub::StubLocator {

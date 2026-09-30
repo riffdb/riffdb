@@ -64,12 +64,14 @@ fn an_installed_checkpoint_extent_is_sealed_with_a_footer_over_its_frames() {
             .expect("install the checkpoint at quiescence"),
     );
     let checkpoint_path = path.0.with_extension("redb.riffjournal.checkpoint");
+    drop(ports);
+    drop(schedule);
+    // The sealer retires the installed extent off the writer's path; closing
+    // the store waits for it.
     assert!(
         !checkpoint_path.exists(),
         "the installed extent left the checkpoint name"
     );
-    drop(ports);
-    drop(schedule);
 
     let sealed = sealed_journal_extents_fixture(&path.0).expect("verified sealed extents");
     assert_eq!(
