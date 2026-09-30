@@ -1080,14 +1080,12 @@ impl FrozenCompositeOverlay {
             return Err(StorageValueError::IdentityMismatch);
         }
 
-        // The lineage is immutable for this entire rebase. Borrow its keys
-        // for deduplication, then share the exact surviving map keys below.
-        let mut touched = BTreeMap::<(CompositeTableV1, &[u8]), ()>::new();
+        let mut touched = BTreeMap::<(CompositeTableV1, Arc<[u8]>), ()>::new();
         let mut lineage = self.lineage.as_ref();
         while !same_lineage(lineage, covered.lineage.as_ref()) {
             let node = lineage.ok_or(StorageValueError::IdentityMismatch)?;
             for (table, key) in node.keys.iter() {
-                touched.insert((*table, key.as_ref()), ());
+                touched.insert((*table, Arc::from(key.as_ref())), ());
             }
             lineage = node.predecessor.as_ref();
         }
@@ -1097,20 +1095,20 @@ impl FrozenCompositeOverlay {
         let mut charged_bytes = 0_usize;
         for ((table, key), ()) in touched {
             let table_index = table.index();
-            let (stored_key, value) = self.tables[table_index]
-                .get_key_value(key)
+            let value = self.tables[table_index]
+                .get(&key)
                 .ok_or(StorageValueError::IdentityMismatch)?;
             if covered.tables[table_index]
-                .get(key)
+                .get(&key)
                 .is_some_and(|covered| overlay_values_equal(covered, value))
             {
                 continue;
             }
             charged_bytes = charged_bytes
-                .checked_add(entry_charge(key, value)?)
+                .checked_add(entry_charge(&key, value)?)
                 .filter(|charge| *charge <= MAX_COMPOSITE_OVERLAY_BYTES)
                 .ok_or(StorageValueError::LimitExceeded)?;
-            pending[table_index].insert(Arc::clone(stored_key), value.clone());
+            pending[table_index].insert(key, value.clone());
         }
         let tables = pending.map(PersistentOverlayMap::from_sorted_entries);
 
@@ -1574,15 +1572,11 @@ struct OverlayNode {
 
 impl PersistentOverlayMap {
     fn get(&self, key: &[u8]) -> Option<&OverlayValue> {
-        self.get_key_value(key).map(|(_, value)| value)
-    }
-
-    fn get_key_value(&self, key: &[u8]) -> Option<(&Arc<[u8]>, &OverlayValue)> {
         let mut current = self.root.as_deref();
         while let Some(node) = current {
             match key.cmp(node.key.as_ref()) {
                 std::cmp::Ordering::Less => current = node.left.as_deref(),
-                std::cmp::Ordering::Equal => return Some((&node.key, &node.value)),
+                std::cmp::Ordering::Equal => return Some(&node.value),
                 std::cmp::Ordering::Greater => current = node.right.as_deref(),
             }
         }
@@ -2150,30 +2144,6 @@ mod tests {
         let rebased = current
             .rebase_after(&covered, new_checkpoint)
             .expect("exact rebase");
-
-        // Retain immutable map key storage through rebase while still
-        // charging the complete logical overlay entry, including its key.
-        let (current_key, _) = current.tables[CompositeTableV1::Entities.index()]
-            .get_key_value(b"ticket")
-            .expect("current ticket");
-        let (rebased_key, _) = rebased.tables[CompositeTableV1::Entities.index()]
-            .get_key_value(b"ticket")
-            .expect("retained ticket");
-        assert!(Arc::ptr_eq(current_key, rebased_key));
-        assert_eq!(
-            rebased.charged_bytes,
-            entry_charge(
-                rebased_key,
-                rebased.tables[CompositeTableV1::Entities.index()]
-                    .get(b"ticket")
-                    .expect("retained value")
-            )
-            .expect("entry charge")
-        );
-        assert_eq!(
-            covered.lookup(CompositeTableV1::Entities, b"ticket"),
-            OverlayLookup::Value(b"assigned")
-        );
 
         let mut new_base = Base::default();
         new_base.insert(CompositeTableV1::Entities, b"ticket", b"assigned");

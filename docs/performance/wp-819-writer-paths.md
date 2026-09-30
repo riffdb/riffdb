@@ -74,7 +74,7 @@ warmup, counted 259,647 write commands including warmup. The busiest writer
 used 18.26 CPU seconds during 25.015 wall seconds. This is CPU occupancy,
 not per-command CPU or a durability-wait attribution.
 
-| Writer site | Count per command | Copied payload bytes per command |
+| Writer site | Count per command | Allocated or copied payload bytes per command |
 |---|---:|---:|
 | Fresh overlay nodes | 13.453 | 753.394 |
 | Cloned shared overlay nodes | 52.052 | 2,914.932 |
@@ -125,13 +125,45 @@ old snapshot, post-checkpoint value, and fallback to the exact new checkpoint.
 Temporary diagnostics are removed before production A/B. Benefit remains
 unproven until alternating comparisons.
 
+## Initial production comparison
+
+Candidate `67b81a23f6` versus base `9fa3bfb28`, diagnostics disabled,
+32 clients, alternating base/candidate/candidate/base, 60 seconds measured
+and 10 seconds warmup. All twelve arms completed successfully.
+
+| Load | Base ops/s | Candidate ops/s | Change | Base / candidate p95 | Base / candidate p99 |
+|---|---:|---:|---:|---:|---:|
+| Write-only | 3,655.5 | 3,626.5 | -0.79% | 8.258 / 8.258 ms | 11.534 / 11.534 ms |
+| Interactive | 16,174 | 16,098 | -0.47% | 7.078 / 7.078 ms | 9.437 / 9.437 ms |
+| Read-only | 24,915.5 | 25,011.5 | +0.39% | 2.359 / 2.359 ms | 3.408 / 3.408 ms |
+
+Write-only sampled writer CPU was 198.72 versus 200.92 microseconds per
+process-generation command including warmup. Interactive was 260.12 versus
+257.89; read-only has no command normalization. Sampling uses the busiest
+command thread's accumulated process-generation ticks and can omit the final
+sampling interval; it is not a sum of overlapping stage wall intervals.
+
+Maximum write latencies were 717 versus 715 ms; interactive 1,039 versus
+1,037 ms; read-only 10.38 versus 9.62 ms. Median peak sampled RSS was 1,177
+versus 1,151 MB write-only, 1,028 versus 1,010 MB interactive, and 88 versus
+87 MB read-only. Median heap envelopes were 1,208 versus 1,207 MB, 1,099
+versus 1,092 MB, and 48 versus 49 MB respectively (decimal MB).
+
+The candidate does not demonstrate a write-throughput improvement and is
+removed. The direct frozen-base implementation is restored; only requirement
+tags identify the existing exact-lineage regression coverage. No cause is
+assigned to the small throughput differences. Longer alternating write runs
+and the existing writer stage census are pending. A same-run PostgreSQL
+comparison will refresh the remaining throughput gap on the unchanged base.
+
 ## Review note
 
-Package: WP-819. Tier: guarantee. Behavior: measurement and candidate immutable
-key reuse during checkpoint rebase. Production comparisons and final checks
-remain pending. Compatibility: no public surface, durable format, bounds, or
-validation change. This page and the handbook index document the measurement
-scope. Hazards: write throughput remains below PostgreSQL, long extent
-allocation stalls remain, and WP-818's lifecycle authority-oracle qualification
-gap is unchanged. TicketDesk does not qualify projections, tokenized text,
-or row-policy performance.
+Package: WP-819. Tier: guarantee. Behavior: bounded measurement and a rejected
+immutable rebase-key sharing experiment; no retained runtime change. Candidate
+full CI and the fourteen-step probe acceptance pass. Final checks, longer
+comparisons, and refreshed PostgreSQL evidence remain pending. Compatibility:
+no public surface, durable format, bounds, or validation change. This page and
+the handbook index document the measurement scope. Hazards: write throughput
+remains below PostgreSQL, long extent allocation stalls remain, and WP-818's
+lifecycle authority-oracle qualification gap is unchanged. TicketDesk does not
+qualify projections, tokenized text, or row-policy performance.
