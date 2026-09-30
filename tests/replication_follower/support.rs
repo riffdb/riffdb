@@ -21,6 +21,9 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 const CAPABILITY_KEYS: &[u8] = b"riffdb-capability-digest-keys-v1\n1:000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f\n";
 const IDEMPOTENCY_KEYS: &[u8] = b"riffdb-idempotency-digest-keys-v1\n1:202122232425262728292a2b2c2d2e2f303132333435363738393a3b3c3d3e3f\n";
 const TIMEOUT: Duration = Duration::from_secs(30);
+// Debug daemon startup and populated recovery have a separate bounded watchdog.
+// This is a fixture budget, not a product latency guarantee.
+pub(super) const STARTUP_TIMEOUT: Duration = Duration::from_secs(60);
 const AUDIENCE: &str = "replication-process-test";
 const ENVIRONMENT: &str = "replication-test";
 
@@ -171,7 +174,7 @@ hold_id = "01010101010101010101010101010101"
         // Debug recovery on hosted runners can exceed 30s after a populated
         // primary is killed. This bounds fixture startup, not a product SLA.
         process
-            .wait_for_readiness("riffdbd-ready-v1\t", Duration::from_secs(60))
+            .wait_for_readiness("riffdbd-ready-v1\t", STARTUP_TIMEOUT)
             .unwrap();
         process
     }

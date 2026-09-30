@@ -78,7 +78,7 @@ async fn bootstrap_to_tail_fence_is_gap_free_across_crash() {
                 .unwrap();
         let (held, release) = proxy.hold_attachment();
         let mut follower = fixture.spawn("follower", Some("follower"));
-        tokio::time::timeout(std::time::Duration::from_secs(30), held)
+        tokio::time::timeout(STARTUP_TIMEOUT, held)
             .await
             .unwrap()
             .unwrap();
@@ -128,7 +128,7 @@ async fn bootstrap_to_tail_fence_is_gap_free_across_crash() {
         let (held, release) = proxy.hold_attachment();
         let resumed = proxy.expect_attachment(snapshot.position());
         follower = fixture.spawn("follower", Some("follower"));
-        tokio::time::timeout(std::time::Duration::from_secs(30), held)
+        tokio::time::timeout(STARTUP_TIMEOUT, held)
             .await
             .unwrap()
             .unwrap();
