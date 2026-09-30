@@ -37,6 +37,202 @@ fn assert_committed(ports: &RedbOperationalPorts, ordinal: u64) {
     );
 }
 
+pub(super) fn prepare_two_sealed_commands(path: &Path) -> PathBuf {
+    prepare_command_database(path);
+    let (controller, schedule) = RedbTestController::checkpoint_schedule();
+    let ports = open_operational(RedbStore::open_with_test_controller(path, controller).unwrap());
+    assert!(command_audit_phases(&ports).is_empty());
+    seal(&ports, 1).wait().unwrap();
+    seal(&ports, 2).wait().unwrap();
+    schedule.arm(Point::Materialized);
+    schedule.request_checkpoint();
+    drop(ports.begin_deferred_command_epoch().unwrap());
+    schedule.wait(Point::Materialized);
+    schedule.release(Point::Materialized);
+    drop(ports.begin_deferred_command_epoch().unwrap());
+    drop(ports);
+    drop(schedule);
+    let extents = sealed_journal_extents_fixture(path).unwrap();
+    assert_eq!(extents.len(), 1);
+    let mut name = path.as_os_str().to_os_string();
+    name.push(format!(".riffjournal.sealed.{:020}", extents[0].0));
+    let extent_path = PathBuf::from(name);
+    {
+        let database = Database::open(path).unwrap();
+        for sequence in 1..=2 {
+            retention_deliver_outbox_status_at(&database, sequence);
+        }
+    }
+    extent_path
+}
+
+// req: STO-030, STO-031, STO-032
+#[test]
+fn sealed_extent_retirement_waits_for_receipts_and_pinned_readers() {
+    use riffdb_storage_api::OwnedSnapshotReader;
+    use riffdb_storage_redb::{OnlineRetentionStep, source_history_reclamation_fixture};
+    use std::num::NonZeroU64;
+
+    let path = TestDatabasePath::new("sealed-retirement-references");
+    let extent_path = prepare_two_sealed_commands(&path.0);
+    let ports = open_operational(RedbStore::open(&path.0).unwrap());
+    commit_command_group(&ports, &[command_fixture_at(3)]);
+    let lane = ports.online_retention_lane();
+    let retain = NonZeroU64::new(1).unwrap();
+    let budget = NonZeroU64::new(256).unwrap();
+    assert_eq!(
+        lane.step(retain, budget).unwrap(),
+        OnlineRetentionStep::Advanced {
+            through: 2,
+            sequences: 2
+        }
+    );
+    assert!(
+        extent_path.exists(),
+        "application pruning cannot delete live receipt bytes"
+    );
+    let reader = ports.open_owned_snapshot().unwrap();
+    let mut source = source_history_reclamation_fixture(&ports);
+    assert!(
+        !source.step().unwrap(),
+        "a first observation is not a later checkpoint"
+    );
+    commit_command_group(&ports, &[command_fixture_at(4)]);
+    assert!(
+        source.step().unwrap(),
+        "only the existing source protocol removes receipts"
+    );
+    for _ in 0..3 {
+        lane.step(retain, budget).unwrap();
+    }
+    assert!(
+        extent_path.exists(),
+        "a pre-reclamation snapshot still owns its receipt view"
+    );
+    drop(reader);
+    for _ in 0..3 {
+        lane.step(retain, budget).unwrap();
+    }
+    assert!(
+        !extent_path.exists(),
+        "durably unreferenced extent leaves its authoritative name"
+    );
+    let mut recycled = path.0.as_os_str().to_os_string();
+    recycled.push(".riffjournal.recycled");
+    assert!(
+        PathBuf::from(recycled).exists(),
+        "retired blocks become a bounded reusable pool"
+    );
+    assert!(matches!(
+        ports
+            .lookup_admission(command_fixture_at(1).candidates)
+            .unwrap(),
+        AdmissionLookupResultV1::Found(_)
+    ));
+    drop(source);
+    drop(lane);
+    drop(ports);
+    let reopened = open_operational(RedbStore::open(&path.0).unwrap());
+    assert_committed(&reopened, 3);
+    assert_committed(&reopened, 4);
+    assert!(matches!(
+        reopened
+            .lookup_admission(command_fixture_at(1).candidates)
+            .unwrap(),
+        AdmissionLookupResultV1::Found(_)
+    ));
+}
+
+// req: STO-030, STO-031, STO-032
+#[test]
+fn logical_pruning_crosses_a_large_sealed_extent_in_bounded_steps() {
+    use riffdb_storage_redb::OnlineRetentionStep;
+    use std::num::NonZeroU64;
+    let path = TestDatabasePath::new("sealed-large-bounded-prune");
+    prepare_command_database(&path.0);
+    let (controller, schedule) = RedbTestController::checkpoint_schedule();
+    let ports =
+        open_operational(RedbStore::open_with_test_controller(&path.0, controller).unwrap());
+    assert!(command_audit_phases(&ports).is_empty());
+    for ordinal in 1..=257 {
+        seal(&ports, ordinal).wait().unwrap();
+    }
+    schedule.arm(Point::Materialized);
+    schedule.request_checkpoint();
+    drop(ports.begin_deferred_command_epoch().unwrap());
+    schedule.wait(Point::Materialized);
+    schedule.release(Point::Materialized);
+    drop(ports.begin_deferred_command_epoch().unwrap());
+    drop(ports);
+    drop(schedule);
+    assert_eq!(
+        sealed_journal_extents_fixture(&path.0).unwrap()[0].3,
+        Some(257)
+    );
+    {
+        let database = Database::open(&path.0).unwrap();
+        for sequence in 1..=257 {
+            retention_deliver_outbox_status_at(&database, sequence);
+        }
+    }
+    let ports = open_operational(RedbStore::open(&path.0).unwrap());
+    commit_command_group(&ports, &[command_fixture_at(258)]);
+    let lane = ports.online_retention_lane();
+    for (through, sequences) in [(127, 127), (254, 127), (257, 3)] {
+        assert_eq!(
+            lane.step(NonZeroU64::new(1).unwrap(), NonZeroU64::new(127).unwrap())
+                .unwrap(),
+            OnlineRetentionStep::Advanced { through, sequences }
+        );
+        assert!(sequences <= 256);
+        assert!(matches!(
+            ports
+                .lookup_admission(command_fixture_at(through).candidates)
+                .unwrap(),
+            AdmissionLookupResultV1::Found(_)
+        ));
+    }
+    assert_committed(&ports, 258);
+    drop(lane);
+    drop(ports);
+    let reopened = open_operational(RedbStore::open(&path.0).unwrap());
+    assert_committed(&reopened, 258);
+    assert_eq!(
+        reopened
+            .read_commit(CommitSequence::new(257).unwrap())
+            .unwrap_err()
+            .kind(),
+        StorageErrorKind::HistoryPruned
+    );
+    assert!(matches!(
+        reopened
+            .lookup_admission(command_fixture_at(1).candidates)
+            .unwrap(),
+        AdmissionLookupResultV1::Found(_)
+    ));
+}
+
+// req: STO-030, STO-031
+#[test]
+fn logical_pruning_waits_for_an_unsealed_command_extent() {
+    use riffdb_storage_redb::{OnlineRetentionHold, OnlineRetentionStep};
+    use std::num::NonZeroU64;
+    let path = TestDatabasePath::new("unsealed-prune-hold");
+    prepare_command_database(&path.0);
+    let ports = open_operational(RedbStore::open(&path.0).unwrap());
+    assert!(command_audit_phases(&ports).is_empty());
+    seal(&ports, 1).wait().unwrap();
+    seal(&ports, 2).wait().unwrap();
+    assert_eq!(
+        ports
+            .online_retention_step(NonZeroU64::new(1).unwrap(), NonZeroU64::new(256).unwrap())
+            .unwrap(),
+        OnlineRetentionStep::Held(OnlineRetentionHold::RowBoundary)
+    );
+    assert_committed(&ports, 1);
+    assert_committed(&ports, 2);
+}
+
 #[test]
 fn an_installed_checkpoint_extent_is_sealed_with_a_footer_over_its_frames() {
     let path = TestDatabasePath::new("retained-extent-seal");

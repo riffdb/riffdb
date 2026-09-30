@@ -284,9 +284,11 @@ pub(crate) fn begin_background_scrub_on_shared(
     let store = RedbStore {
         shared: Arc::clone(shared),
     };
+    let extent_pin = shared.pin_extent_scrub()?;
     let session =
         store.begin_structural_evidence_for(inputs, EvidenceOpenPurpose::BackgroundScrub)?;
     Ok(RedbBackgroundScrubSession {
+        _extent_pin: extent_pin,
         session,
         rows_walked: 0,
         retained_history_validated: false,
@@ -295,6 +297,7 @@ pub(crate) fn begin_background_scrub_on_shared(
 
 /// One page-driven background scrub over a pinned MVCC snapshot.
 pub struct RedbBackgroundScrubSession {
+    _extent_pin: crate::store::extent_reclamation::ScrubPin,
     session: RedbStructuralEvidenceSession,
     rows_walked: u64,
     retained_history_validated: bool,

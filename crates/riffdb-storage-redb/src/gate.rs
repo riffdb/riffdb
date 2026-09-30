@@ -51,6 +51,14 @@ impl ExclusiveGate {
         })
     }
 
+    pub(crate) fn is_busy(&self) -> Result<bool, StorageError> {
+        self.inner
+            .state
+            .lock()
+            .map(|state| state.held)
+            .map_err(|_| poisoned_gate())
+    }
+
     #[cfg(test)]
     pub(crate) fn is_held(&self) -> bool {
         self.inner

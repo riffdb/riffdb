@@ -79,6 +79,23 @@ pub(crate) fn record_post_graph_release() {
     }
 }
 
+/// Physical reclamation is reported independently of logical sequence pruning.
+/// The existing shutdown-release V1 field registry stays unchanged.
+pub(crate) fn format_extent_line() -> String {
+    let phases = RETENTION_OBSERVATION
+        .get()
+        .map(|lane| lane.phases)
+        .unwrap_or_default();
+    format!(
+        "riffdb-retention-extents-v1\tdeleted={}\trecycled={}\theld_references={}\theld_readers={}\treclaim_us={}",
+        phases.deleted_extents,
+        phases.recycled_extents,
+        phases.extent_reference_holds,
+        phases.extent_reader_holds,
+        phases.reclaim_us
+    )
+}
+
 /// Renders the census as one tagged line for the shutdown evidence stream.
 pub(crate) fn format_v1_line() -> String {
     let mut line = String::from("riffdb-shutdown-release-v1");
@@ -216,6 +233,35 @@ pub(crate) fn record_online_retention(
 #[cfg(test)]
 mod tests {
     use super::{ShutdownReleaseStage, format_v1_line};
+
+    // req: STO-031
+    #[test]
+    fn physical_retention_census_has_only_bounded_numeric_fields() {
+        let line = super::format_extent_line();
+        let mut fields = line.split('\t');
+        assert_eq!(fields.next(), Some("riffdb-retention-extents-v1"));
+        let actual = fields
+            .map(|field| {
+                let (name, value) = field.split_once('=').unwrap();
+                assert!(value.parse::<u64>().is_ok());
+                name
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(
+            actual,
+            [
+                "deleted",
+                "recycled",
+                "held_references",
+                "held_readers",
+                "reclaim_us"
+            ]
+        );
+        assert!(
+            line.len() <= 222,
+            "five u64 counters have a fixed maximum size"
+        );
+    }
 
     #[test]
     fn every_stage_appears_in_the_rendered_line() {

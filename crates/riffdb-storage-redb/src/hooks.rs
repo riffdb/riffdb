@@ -79,6 +79,10 @@ pub enum RedbTestOperation {
     /// Online retention (ADR-0182 section 6): one step's delete, tombstone,
     /// watermark, and first-step checkpoint deletion transaction.
     OnlineRetentionStep,
+    /// Whole-file retirement after every durable history reference was released.
+    RetentionExtentRetire,
+    /// Directory durability after whole-file retirement.
+    RetentionExtentDirectory,
 }
 
 /// Closed transaction boundary exposed by redaction-safe test diagnostics.

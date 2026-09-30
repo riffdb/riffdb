@@ -58,6 +58,8 @@ pub(crate) mod changelog_lifecycle;
 #[path = "store_changelog_source_control.rs"]
 mod changelog_source_control;
 pub(crate) use changelog_source_control::ControlWrite;
+#[cfg(feature = "test-fixtures")]
+pub(crate) use changelog_source_control::ReplicationSourceControl;
 
 #[path = "store_v3_layout.rs"]
 pub(crate) mod v3_layout;
@@ -323,7 +325,13 @@ pub(crate) fn command_publication_stage_census() -> [u64; 9] {
     ]
 }
 
+#[path = "extent_reclamation.rs"]
+pub(crate) mod extent_reclamation;
+
 pub(crate) struct SharedRedb {
+    extent_roots: Mutex<Vec<std::sync::Weak<CheckpointRoot>>>,
+    extent_scrubs: std::sync::atomic::AtomicUsize,
+    extent_cursor: Mutex<u64>,
     pub(crate) derived_source_pins: Arc<crate::derived_source_pin::DerivedSourcePins>,
     open_mode: OpenMode,
     follower_namespace: Mutex<Option<crate::maintenance::FollowerNamespace>>,
@@ -1332,12 +1340,23 @@ impl SharedRedb {
         const MAX_CAPTURE_ATTEMPTS: usize = 64;
         let mut version = expected;
         for _ in 0..MAX_CAPTURE_ATTEMPTS {
+            let mut extent_roots = self
+                .extent_roots
+                .lock()
+                .map_err(|_| storage_error(StorageErrorKind::InvariantViolation))?;
+            extent_roots.retain(|root| root.strong_count() != 0);
+            if extent_roots.len() >= extent_reclamation::MAX_EXTENT_READ_ROOTS {
+                return Err(storage_error(StorageErrorKind::LimitExceeded));
+            }
             let transaction = self.database.begin_read().map_err(transaction_error)?;
             let after = self.durable_root_publication.load(Ordering::Acquire);
             if version == after && after.is_multiple_of(2) {
-                return Ok(Arc::new(CheckpointRoot::new(transaction, after)));
+                let root = Arc::new(CheckpointRoot::new(transaction, after));
+                extent_roots.push(Arc::downgrade(&root));
+                return Ok(root);
             }
             drop(transaction);
+            drop(extent_roots);
             version = self.stable_durable_root_version()?;
         }
         Err(storage_error(StorageErrorKind::Unavailable))
@@ -2546,6 +2565,9 @@ impl RedbStore {
             .map_err(|_| storage_error(StorageErrorKind::Unavailable))?;
         let store = Self {
             shared: Arc::new(SharedRedb {
+                extent_roots: Mutex::new(Vec::new()),
+                extent_scrubs: std::sync::atomic::AtomicUsize::new(0),
+                extent_cursor: Mutex::new(1),
                 derived_source_pins: Arc::default(),
                 open_mode: open_mode.clone(),
                 follower_namespace: Mutex::new(None),
@@ -2696,6 +2718,13 @@ impl RedbStore {
         // all that remains (ADR-0263). A half-prepared spare is scratch.
         crate::journal::seal_extent_with_media(media, &self.shared.path, database_id)
             .map_err(recovery_journal_error)?;
+        let recycled = crate::journal::recycled_journal_path(&self.shared.path);
+        match media.remove_file(&recycled) {
+            Ok(()) => crate::journal::sync_parent_directory_with_media(media, &recycled)
+                .map_err(journal_io_error)?,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(_) => return Err(storage_error(StorageErrorKind::Unavailable)),
+        }
         let preparing = crate::journal::preparing_spare_journal_path(&self.shared.path);
         match media.remove_file(&preparing) {
             Ok(()) => {}

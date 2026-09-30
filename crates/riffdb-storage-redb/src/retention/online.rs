@@ -54,6 +54,16 @@ pub enum OnlineRetentionHold {
 pub struct OnlineRetentionPhases {
     /// Planning from an engine snapshot, without the writer gate.
     pub preplan_us: u64,
+    /// Off-gate physical reclamation time, including bounded footer validation.
+    pub reclaim_us: u64,
+    /// Whole unreferenced files deleted in this pass.
+    pub deleted_extents: u64,
+    /// Whole unreferenced files placed in the one-file recycling pool.
+    pub recycled_extents: u64,
+    /// Passes held by durable command or receipt references.
+    pub extent_reference_holds: u64,
+    /// Passes held by older snapshots or a background scrub.
+    pub extent_reader_holds: u64,
     /// Waiting for the first-come writer gate.
     pub gate_wait_us: u64,
     /// Under the gate: publishing, checkpointing, and draining the journal.
@@ -156,6 +166,13 @@ impl RedbOnlineRetentionLane {
         after_checkpoint: bool,
     ) -> Result<(OnlineRetentionStep, OnlineRetentionPhases), StorageError> {
         let mut phases = OnlineRetentionPhases::default();
+        let reclaiming = std::time::Instant::now();
+        let reclamation = self.shared.reclaim_one_extent()?;
+        phases.reclaim_us = elapsed_us(reclaiming, std::time::Instant::now());
+        phases.deleted_extents = reclamation.deleted;
+        phases.recycled_extents = reclamation.recycled;
+        phases.extent_reference_holds = reclamation.held_references;
+        phases.extent_reader_holds = reclamation.held_readers;
         let (journal_sequence, suffix_transitions) = self.shared.journal_suffix_activity()?;
         let idle = self
             .last_journal_sequence
@@ -240,7 +257,14 @@ impl RedbOperationalPorts {
                 .begin_read()
                 .map_err(transaction_error)?;
             let derived_read = self.begin_derived_read()?;
-            plan_step(&read, &derived_read, retain_sequences, allowance)?.err()
+            plan_step(
+                &self.shared,
+                &read,
+                &derived_read,
+                retain_sequences,
+                allowance,
+            )?
+            .err()
         };
         phases.preplan_us = elapsed_us(preplan, std::time::Instant::now());
         let materialize_suffix = match hold {
@@ -310,7 +334,13 @@ impl RedbOperationalPorts {
             }
         };
 
-        let plan = match plan_step(&read, &derived_read, retain_sequences, allowance) {
+        let plan = match plan_step(
+            &self.shared,
+            &read,
+            &derived_read,
+            retain_sequences,
+            allowance,
+        ) {
             Ok(Ok(plan)) => plan,
             Ok(Err(hold)) => {
                 drop(derived_read);
@@ -504,6 +534,7 @@ fn chain_link(read: &redb::ReadTransaction, first: u64) -> Result<ChainLink, Sto
 /// Plans one step: the fenced limit, then the largest whole-row prefix of the
 /// remaining history inside it whose outbox events are all delivered.
 fn plan_step(
+    shared: &crate::store::SharedRedb,
     read: &redb::ReadTransaction,
     derived: &redb::ReadTransaction,
     retain_sequences: NonZeroU64,
@@ -576,7 +607,12 @@ fn plan_step(
             // Every sequence below the head committed: a gap is corruption.
             return Err(storage_error(StorageErrorKind::CorruptData));
         }
-        let segment = decode_segment_row(value.value())?;
+        if !shared.segment_extent_is_sealed(value.value())? {
+            stopped = OnlineRetentionHold::RowBoundary;
+            break;
+        }
+        let resolved = crate::history_stub::resolve_commits_value(value.value())?;
+        let segment = decode_segment_row(&resolved)?;
         let end = match &segment {
             Some(segment) => segment.last_commit_sequence().get(),
             None => physical.get(),
@@ -590,7 +626,7 @@ fn plan_step(
             stopped = OnlineRetentionHold::RowBoundary;
             break;
         }
-        bytes = bytes.saturating_add(value.value().len());
+        bytes = bytes.saturating_add(resolved.len());
         if bytes > ONLINE_RETENTION_STEP_ROW_BYTES && last > current {
             break;
         }

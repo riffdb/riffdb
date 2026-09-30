@@ -595,6 +595,7 @@ fn run_from_process(recovery: MaintenanceRecoveryController) -> Result<(), Daemo
     // remainder filled in: this is the only receipt that can cover it.
     crate::shutdown_census::record_post_graph_release();
     eprintln!("{}", crate::shutdown_census::format_v1_line());
+    eprintln!("{}", crate::shutdown_census::format_extent_line());
     result
 }
 
@@ -3555,6 +3556,7 @@ async fn supervise_ready_process(
         );
         eprintln!("{}", shutdown_stages.format_checkpoint_close_v1_line());
         eprintln!("{}", crate::shutdown_census::format_v1_line());
+        eprintln!("{}", crate::shutdown_census::format_extent_line());
         crate::shutdown_census::mark_graph_receipt();
         let read_stages_line = riffdb_observability::format_read_stages_v1_line(&read_stages);
         let _ = writeln!(stdout, "{read_stages_line}");

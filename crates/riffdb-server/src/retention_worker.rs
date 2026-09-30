@@ -209,6 +209,14 @@ impl RetentionLaneStatus {
         let total = &mut *guard;
         for (sum, add) in [
             (&mut total.preplan_us, phases.preplan_us),
+            (&mut total.reclaim_us, phases.reclaim_us),
+            (&mut total.deleted_extents, phases.deleted_extents),
+            (&mut total.recycled_extents, phases.recycled_extents),
+            (
+                &mut total.extent_reference_holds,
+                phases.extent_reference_holds,
+            ),
+            (&mut total.extent_reader_holds, phases.extent_reader_holds),
             (&mut total.gate_wait_us, phases.gate_wait_us),
             (&mut total.drain_us, phases.drain_us),
             (&mut total.plan_us, phases.plan_us),

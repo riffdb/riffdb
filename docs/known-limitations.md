@@ -323,7 +323,13 @@ within 3 percent and throughput at 0.97 of the held run while pruning about 1.3
 percent as many sequences as the load committed (WP-811). Most of each step's
 writer time is spent materializing journaled history and committing the step
 itself. ADR-0261's journaled prune frames were superseded by ADR-0263, which retires
-whole retained journal extents instead (WP-815). Where writes leave the writer
+whole retained journal extents instead (WP-815). Its accepted correction separates
+logical pruning (steps of at most 256 sequences) from physical file reclamation:
+a sealed file remains allocated while any command, V3 receipt, older snapshot,
+or background scrub needs it. Receipt release uses the existing source-history
+protocol and is independent of the application watermark. The lane does not
+invent acknowledgements or source checkpoints to make files eligible. The
+1.3-percent result is the WP-811 baseline, not evidence for this repair. Where writes leave the writer
 idle capacity, it compacts to its target. That evidence covers one workload on
 one host, is not a general latency guarantee, and marked the seeded events
 delivered on the stopped database first because of the outbox limit above.

@@ -133,6 +133,12 @@ def cell(arm: str, rep: int) -> dict:
     lane = backend.get("server_stage_evidence", {}).get("online_retention")
     if not isinstance(lane, dict):
         raise ValueError(f"online retention observation is absent: {path.name}")
+    extents = backend.get("server_stage_evidence", {}).get("retention_extents")
+    extent_names = {"deleted", "recycled", "held_references", "held_readers", "reclaim_us"}
+    if not isinstance(extents, dict) or set(extents) != extent_names:
+        raise ValueError(f"physical retention observation is absent or malformed: {path.name}")
+    if any(type(value) is not int or not 0 <= value <= 2**64 - 1 for value in extents.values()):
+        raise ValueError(f"physical retention counter is invalid: {path.name}")
     return {
         "arm": arm,
         "rep": rep,
@@ -152,6 +158,8 @@ def cell(arm: str, rep: int) -> dict:
         # reason over the measured process generation.
         "lane_phases_us": {key: int(value) for key, value in lane["phases_us"].items()},
         "lane_holds": {key: int(value) for key, value in lane["holds"].items()},
+        # Physical reclamation is not inferred from logical sequence progress.
+        "retention_extents": extents,
     }
 
 
@@ -197,6 +205,12 @@ dirty = subprocess.run(
     text=True,
 ).stdout.strip() != ""
 
+# Respect the same Cargo target directory used by run-app-baseline.
+metadata = subprocess.run(
+    ["cargo", "metadata", "--no-deps", "--format-version", "1"],
+    cwd=repo, check=True, capture_output=True, text=True,
+)
+target = Path(json.loads(metadata.stdout)["target_directory"])
 summary = {
     "schema": "riffdb.wp-761-online-retention-interference/v1",
     "qualified": host_valid and lane_valid and p95_ratio <= MAXIMUM_P95_RATIO and not dirty,
@@ -219,7 +233,7 @@ summary = {
         "lane_observation_scope": "measured_process_generation",
     },
     "artifacts": {
-        "riffdbd_sha256": digest(repo / "target" / "release" / "riffdbd"),
+        "riffdbd_sha256": digest(target / "release" / "riffdbd"),
         "runner_sha256": digest(runner),
     },
     "host": {

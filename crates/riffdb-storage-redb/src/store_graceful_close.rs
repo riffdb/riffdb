@@ -115,6 +115,16 @@ impl SharedRedb {
         // Retirement of an installed extent runs off the writer's path; the
         // clean boundary waits for it and admits no scratch name.
         self.join_journal_sealer();
+        let recycled = crate::journal::recycled_journal_path(&self.path);
+        match self.journal_media.remove_file(&recycled) {
+            Ok(()) => crate::journal::sync_parent_directory_with_media(
+                self.journal_media.as_ref(),
+                &recycled,
+            )
+            .map_err(journal_io_error)?,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(_) => return Err(storage_error(StorageErrorKind::Unavailable)),
+        }
         let spare = crate::journal::spare_journal_path(&self.path);
         match self.journal_media.remove_file(&spare) {
             Ok(()) => crate::journal::sync_parent_directory_with_media(

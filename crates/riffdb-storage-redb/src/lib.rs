@@ -285,15 +285,16 @@ pub use durable_fixtures::{MigrationDurableFixture, migration_durable_fixture_se
 #[doc(hidden)]
 pub use fixtures::{
     HistoryStubCensusFixture, MALFORMED_POPULATION_ROW_FIXTURE, SealedJournalExtentSummaryFixture,
-    append_columnar_worker_commit_fixture, append_columnar_worker_commit_with_crosslinks_fixture,
-    downgrade_all_index_rows_to_v1_fixture, history_stub_census_fixture,
-    hydrate_history_stubs_fixture, initialize_legacy_database_fixture, overlay_commits_fixture,
-    plant_malformed_population_row_fixture, plant_unreadable_projection_frontier_fixture,
-    read_malformed_population_row_fixture, read_validated_prefix_checkpoint_bytes_fixture,
+    SourceHistoryReclamationFixture, append_columnar_worker_commit_fixture,
+    append_columnar_worker_commit_with_crosslinks_fixture, downgrade_all_index_rows_to_v1_fixture,
+    history_stub_census_fixture, hydrate_history_stubs_fixture, initialize_legacy_database_fixture,
+    overlay_commits_fixture, plant_malformed_population_row_fixture,
+    plant_unreadable_projection_frontier_fixture, read_malformed_population_row_fixture,
+    read_validated_prefix_checkpoint_bytes_fixture,
     read_validated_prefix_checkpoint_commit_sequence_fixture,
     replace_audit_row_with_stray_fence_fixture, resolve_history_row_fixture,
-    sealed_journal_extents_fixture, strip_validated_prefix_checkpoint_fixture,
-    unseal_journal_extent_fixture,
+    sealed_journal_extents_fixture, source_history_reclamation_fixture,
+    strip_validated_prefix_checkpoint_fixture, unseal_journal_extent_fixture,
 };
 pub use format_preflight::{
     RedbDurableFormatPreflight, RedbDurableFormatPreflightError, durable_format_marker_path,

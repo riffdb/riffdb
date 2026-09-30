@@ -116,6 +116,7 @@
   - [WP-748 Public Lifecycle Fixture Review](architecture/WP-748-PUBLIC-LIFECYCLE-REVIEW.md)
   - [WP-748 Promotion Implementation Review](architecture/WP-748-PROMOTION-IMPLEMENTATION-REVIEW.md)
   - [WP-810 Checkpoint Implementation Review](architecture/WP-810-CHECKPOINT-IMPLEMENTATION-REVIEW.md)
+  - [WP-815 Bounded Retention Design Review](architecture/WP-815-DESIGN-REVIEW.md)
   - [WP-746 Scope Review](architecture/WP-746-SCOPE-REVIEW.md)
   - [WP-746 Follower Lifecycle Review](architecture/WP-746-FOLLOWER-LIFECYCLE-REVIEW.md)
   - [WP-746 Follower Audit Proposal](architecture/WP-746-FOLLOWER-AUDIT-REVIEW.md)

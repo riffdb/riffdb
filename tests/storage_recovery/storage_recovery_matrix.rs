@@ -92,6 +92,8 @@ mod bounded_dirty_startup;
 mod changelog_compatibility;
 #[cfg(feature = "test-fixtures")]
 mod checkpoint_pipeline;
+#[cfg(feature = "test-fixtures")]
+mod extent_retirement;
 #[path = "online_retention.rs"]
 mod online_retention;
 #[path = "../replication_promotion.rs"]

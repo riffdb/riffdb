@@ -541,6 +541,26 @@ pub fn initialize_legacy_database_fixture(
 #[doc(hidden)]
 pub type SealedJournalExtentSummaryFixture = (u64, usize, Option<u64>, Option<u64>);
 
+/// Fixture handle driving the existing validated source-reclamation owner.
+/// It keeps its prior checkpoint observation; it edits no receipt or hold.
+#[doc(hidden)]
+pub struct SourceHistoryReclamationFixture(crate::store::ReplicationSourceControl);
+
+impl SourceHistoryReclamationFixture {
+    /// Attempt the existing bounded source-reclamation protocol.
+    pub fn step(&mut self) -> Result<bool, riffdb_storage_api::ChangelogCursorErrorV3> {
+        self.0.reclaim_history()
+    }
+}
+
+/// Construct a fixture-only source-reclamation owner over a live primary.
+#[doc(hidden)]
+pub fn source_history_reclamation_fixture(
+    ports: &crate::RedbOperationalPorts,
+) -> SourceHistoryReclamationFixture {
+    SourceHistoryReclamationFixture(ports.replication_source_control())
+}
+
 /// Lists the sealed journal extents beside `database_path`, in generation
 /// order, verifying each footer against the frames it indexes (ADR-0263).
 #[doc(hidden)]

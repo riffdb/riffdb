@@ -1628,6 +1628,13 @@ fn riffdb_shutdown_evidence_json(evidence: &RiffDbShutdownEvidence) -> serde_jso
                 "awaiting_checkpoint": lane.holds[3],
             },
         })),
+        "retention_extents": evidence.retention_extents.map(|extents| json!({
+            "deleted": extents.deleted,
+            "recycled": extents.recycled,
+            "held_references": extents.held_references,
+            "held_readers": extents.held_readers,
+            "reclaim_us": extents.reclaim_us,
+        })),
         "graph_shutdown_elapsed_us": evidence.graph_shutdown_elapsed_us,
         "shutdown_stages_us": evidence.shutdown_stages_us,
         "harness_shutdown_elapsed_us": evidence.harness_shutdown_elapsed_us,

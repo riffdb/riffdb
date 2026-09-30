@@ -331,6 +331,8 @@ pub struct RiffDbShutdownEvidence {
     /// The ADR-0182 online retention lane's closed state and counters from
     /// this process generation's shutdown census line.
     pub online_retention: Option<OnlineRetentionObservation>,
+    /// Whole-file reclamation counters, independent of logical pruning.
+    pub retention_extents: Option<RetentionExtentObservation>,
     /// First-demand columnar activations observed across the process generation.
     pub columnar_activations: Option<u64>,
     /// Columnar population passes observed across the process generation.
@@ -2394,6 +2396,7 @@ impl ServerProcess {
             evidence.columnar_population_passes = Some(columnar_population_passes);
             evidence.background_scrub = Some(background_scrub);
             evidence.online_retention = Some(online_retention);
+            evidence.retention_extents = Some(parse_retention_extent_evidence(&stderr)?);
             evidence.process_memory_at_spawn = Some(self.initial_process_memory);
             evidence.process_memory_before_shutdown = Some(process_memory_before_shutdown);
             evidence.harness_shutdown_elapsed_us =
@@ -2647,6 +2650,7 @@ fn read_server_stdout(
                                                 harness_shutdown_elapsed_us: 0,
                                                 background_scrub: None,
                                                 online_retention: None,
+                                                retention_extents: None,
                                                 columnar_activations: None,
                                                 columnar_population_passes: None,
                                                 write_completion_groups,
@@ -3115,6 +3119,65 @@ pub struct OnlineRetentionObservation {
     pub holds: [u64; 4],
 }
 
+/// Closed counters for physical reclamation; no application data or paths.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct RetentionExtentObservation {
+    /// Fully unreferenced files removed.
+    pub deleted: u64,
+    /// Fully unreferenced files moved into the bounded spare pool.
+    pub recycled: u64,
+    /// Passes held by authoritative command or receipt references.
+    pub held_references: u64,
+    /// Passes held by an older captured root or a background scrub.
+    pub held_readers: u64,
+    /// Total off-writer reclamation microseconds.
+    pub reclaim_us: u64,
+}
+
+fn parse_retention_extent_evidence(stderr: &str) -> io::Result<RetentionExtentObservation> {
+    const PREFIX: &str = "riffdb-retention-extents-v1\t";
+    const NAMES: [&str; 5] = [
+        "deleted",
+        "recycled",
+        "held_references",
+        "held_readers",
+        "reclaim_us",
+    ];
+    let lines = stderr
+        .lines()
+        .filter(|line| line.starts_with(PREFIX))
+        .collect::<Vec<_>>();
+    if lines.len() != 2 {
+        return Err(io::Error::other("retention extent census count mismatch"));
+    }
+    let parse = |line| {
+        let fields = parse_key_values(line, PREFIX)?;
+        if fields.len() != NAMES.len() || NAMES.iter().any(|name| !fields.contains_key(*name)) {
+            return Err(io::Error::other("retention extent field registry mismatch"));
+        }
+        let count = |name: &str| {
+            fields[name]
+                .parse::<u64>()
+                .map_err(|_| io::Error::other("retention extent counter invalid"))
+        };
+        Ok(RetentionExtentObservation {
+            deleted: count("deleted")?,
+            recycled: count("recycled")?,
+            held_references: count("held_references")?,
+            held_readers: count("held_readers")?,
+            reclaim_us: count("reclaim_us")?,
+        })
+    };
+    let first = parse(lines[0])?;
+    let last = parse(lines[1])?;
+    if first != last {
+        return Err(io::Error::other(
+            "retention extent census changed after worker shutdown",
+        ));
+    }
+    Ok(last)
+}
+
 fn parse_startup_evidence(stderr: &str) -> io::Result<RiffDbStartupEvidence> {
     let lines = stderr
         .lines()
@@ -3413,6 +3476,33 @@ mod tests {
     use super::*;
 
     // req: STO-030
+    // req: STO-031
+    #[test]
+    fn physical_retention_evidence_is_closed_and_separate_from_logical_counts() {
+        let line = "riffdb-retention-extents-v1\tdeleted=1\trecycled=2\theld_references=3\theld_readers=4\treclaim_us=5\n";
+        let evidence = format!("{line}{line}");
+        assert_eq!(
+            parse_retention_extent_evidence(&evidence).unwrap(),
+            RetentionExtentObservation {
+                deleted: 1,
+                recycled: 2,
+                held_references: 3,
+                held_readers: 4,
+                reclaim_us: 5,
+            }
+        );
+        for invalid in [
+            line.to_owned(),
+            evidence.replace("deleted=1", "deleted=-1"),
+            evidence.replace("deleted=1", "deleted=18446744073709551616"),
+            evidence.replace("deleted=1", "deleted=1\tpath=example"),
+            evidence.replace("deleted=1", "deleted=1\tdeleted=2"),
+            format!("{line}{}", line.replace("deleted=1", "deleted=9")),
+        ] {
+            assert!(parse_retention_extent_evidence(&invalid).is_err());
+        }
+    }
+
     #[test]
     fn online_retention_arms_render_the_daemon_retention_section() {
         assert_eq!(

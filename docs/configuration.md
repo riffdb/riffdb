@@ -135,9 +135,18 @@ forms together, or an out-of-range value rejects configuration.
 With a target, one background lane per database advances the retention
 watermark in steps. Each step is one administration transition through the
 database's single ordered writer. It removes whole command segments, appends the
-chained tombstone, and advances the watermark in one atomic commit. It holds no
-exclusive lease and opens no second writer. A writer waits behind at most the one
-step in progress. After each attempt that took the writer gate, the lane rests
+chained tombstone, and advances the watermark in one atomic commit.
+A journal-backed command waits until its extent is sealed. A sealed extent may
+span several logical prune steps; each step still covers at most 256 sequences.
+Logical pruning keeps the extent's bytes intact. The lane reclaims a whole file
+only after every command in it has been pruned and the existing source-history
+protocol has released every receipt reference. The retained source resume anchor,
+older pinned snapshots, and an active background scrub keep the file alive. The
+lane never creates a source acknowledgement or discards a receipt to free space.
+One retired file can supply the next preallocated journal spare; excess eligible
+files are deleted. File work runs outside the ordered writer gate.
+The lane holds no exclusive lease and opens no second writer. A writer waits
+behind at most the one step in progress. After each attempt that took the writer gate, the lane rests
 nineteen times the time it held the gate, so it holds the writer at most about
 five percent of the time and a large backlog compacts gradually rather than at
 full speed. It plans each step without the writer gate and takes the gate only
@@ -158,7 +167,10 @@ source stops the lane with an internal incident until the next restart; it never
 prunes past it. Lane state is internal. No RPC, health member, or MCP tool
 reports or drives it, and application principals have no retention operation.
 The shutdown release census line records its closed state, the name of the
-fence that last held it, and its step and sequence counts.
+fence that last held it, and its step and sequence counts. The separate
+`riffdb-retention-extents-v1` line records files deleted or recycled, passes held
+by references or readers, and off-writer reclamation microseconds. Logical
+sequence progress does not imply physical space reclamation.
 
 Pruned history stays auditable. A pruned command keeps its outcome and
 provenance, so its idempotent retry answers the original result. Reads of its

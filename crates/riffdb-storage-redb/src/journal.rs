@@ -1329,6 +1329,12 @@ impl FrameChangelogBinding {
         }
     }
 
+    pub(crate) const fn assigned_sequence(
+        &self,
+    ) -> riffdb_storage_api::ChangelogTransactionSequence {
+        self.sequence
+    }
+
     /// The complete binding, with identity and frontiers taken from the frame.
     pub(crate) fn binding(
         &self,
@@ -2985,6 +2991,39 @@ pub(crate) fn unseal_extent_with_media(
         .map_err(|_| JournalIoError::Io)
 }
 
+/// Reads the bounded, checksummed sealed index without walking frame payloads.
+/// This is only a preflight: reclamation must verify every frame before reuse.
+pub(crate) fn read_sealed_index_with_media(
+    media: &dyn JournalMedia,
+    path: &Path,
+    database_id: DatabaseId,
+) -> Result<SealedExtentFooter, JournalIoError> {
+    let mut file = media.open_read(path).map_err(|_| JournalIoError::Io)?;
+    let extent = read_selected_extent_header(&mut file, false)?;
+    if extent.logical.database_id() != database_id {
+        return Err(JournalIoError::Corrupt);
+    }
+    let length = usize::try_from(file.len().map_err(|_| JournalIoError::Io)?)
+        .map_err(|_| JournalIoError::Corrupt)?;
+    let bytes = length
+        .checked_sub(extent.anchor_position)
+        .ok_or(JournalIoError::Corrupt)?;
+    let maximum = SealedExtentFooter::encoded_len(MAX_JOURNAL_SUFFIX_TRANSITIONS)
+        .and_then(|bytes| align_up(bytes, EXTENT_FRAME_ALIGNMENT))
+        .ok_or(JournalIoError::Corrupt)?;
+    if bytes < SEALED_FOOTER_HEADER_BYTES + HASH_BYTES || bytes > maximum {
+        return Err(JournalIoError::Corrupt);
+    }
+    let mut encoded = vec![0; bytes];
+    file.read_exact_at(&mut encoded, extent.anchor_position)
+        .map_err(|_| JournalIoError::Corrupt)?;
+    let footer = SealedExtentFooter::decode(&encoded)?;
+    if footer.generation != extent.generation {
+        return Err(JournalIoError::Corrupt);
+    }
+    Ok(footer)
+}
+
 /// Reads a sealed extent's footer, verifying it against the frames it indexes.
 pub(crate) fn read_sealed_extent_with_media(
     media: &dyn JournalMedia,
@@ -3023,9 +3062,53 @@ pub(crate) fn read_sealed_extent_with_media(
     Ok(footer)
 }
 
-/// Zero-fills a spare extent under a scratch name and moves it to the spare
-/// name if no spare exists, off the writer's path. `predecessor` is the
-/// active extent whose generation the spare must exceed.
+/// One reusable, fully unreferenced extent; never an authoritative history name.
+pub(crate) fn recycled_journal_path(database_path: &Path) -> PathBuf {
+    let mut path = database_path.as_os_str().to_os_string();
+    path.push(".riffjournal.recycled");
+    PathBuf::from(path)
+}
+
+fn prepare_recycled_extent_with_media(
+    media: &dyn JournalMedia,
+    path: &Path,
+    header: &JournalFileHeader,
+) -> Result<(), JournalIoError> {
+    let mut file = media
+        .open_read_write(path)
+        .map_err(|_| JournalIoError::Io)?;
+    let current = read_selected_extent_header(&mut file, false)?;
+    if current.logical.database_id() != header.database_id() {
+        return Err(JournalIoError::Corrupt);
+    }
+    let length = usize::try_from(file.len().map_err(|_| JournalIoError::Io)?)
+        .map_err(|_| JournalIoError::Corrupt)?;
+    let full = extent_file_bytes(EXTENT_DATA_BYTES);
+    // Preserve already allocated frame blocks. Only the trimmed tail needs
+    // allocation, on the background preparation thread, never the writer.
+    let zeros = [0_u8; 64 * 1024];
+    let mut offset = length.min(full);
+    while offset < full {
+        let bytes = zeros.len().min(full - offset);
+        file.write_all_at(&zeros[..bytes], offset)
+            .map_err(|_| JournalIoError::Io)?;
+        offset += bytes;
+    }
+    file.set_len(u64::try_from(full).map_err(|_| JournalIoError::Corrupt)?)
+        .map_err(|_| JournalIoError::Io)?;
+    let mut successor = current.successor(header.clone())?;
+    successor.data_bytes = EXTENT_DATA_BYTES;
+    file.write_all_at(
+        &successor.encode(),
+        usize::from(successor.slot) * EXTENT_HEADER_SLOT_BYTES,
+    )
+    .and_then(|()| file.sync_all())
+    .map_err(|_| JournalIoError::Io)
+}
+
+/// Prepares a recycled or zero-filled extent off the writer's path, then
+/// publishes it under the spare name. Rotation fences its generation above
+/// the active predecessor before use.
 pub(crate) fn prepare_spare_extent_with_media(
     media: &dyn JournalMedia,
     database_path: &Path,
@@ -3042,7 +3125,29 @@ pub(crate) fn prepare_spare_extent_with_media(
         Err(error) if error.kind() == io::ErrorKind::NotFound => {}
         Err(_) => return Err(JournalIoError::Io),
     }
-    create_extent_file_with_media(media, &preparing, &ExtentHeader::initial(header.clone()))?;
+    let recycled = recycled_journal_path(database_path);
+    let reuse = {
+        let _guard = spare_lock.lock().map_err(|_| JournalIoError::Io)?;
+        if media
+            .try_exists(&recycled)
+            .map_err(|_| JournalIoError::Io)?
+        {
+            media
+                .rename(&recycled, &preparing)
+                .map_err(|_| JournalIoError::Io)?;
+            true
+        } else {
+            false
+        }
+    };
+    if reuse {
+        // The pool claim is complete. Foreground rotation need not wait for
+        // this scratch-name directory sync while holding its spare lock.
+        sync_parent_with_media(media, &preparing)?;
+        prepare_recycled_extent_with_media(media, &preparing, header)?;
+    } else {
+        create_extent_file_with_media(media, &preparing, &ExtentHeader::initial(header.clone()))?;
+    }
     let _guard = spare_lock.lock().map_err(|_| JournalIoError::Io)?;
     if media.try_exists(&spare).map_err(|_| JournalIoError::Io)? {
         media
@@ -6575,6 +6680,100 @@ mod tests {
         )
         .expect("move to the sealing name");
         (first, second)
+    }
+
+    // req: REC-005
+    #[test]
+    fn a_sealed_extent_can_exceed_the_online_retention_step_bound() {
+        let database_path = TestPath::new("seal-retention-bound");
+        let database_id = database_id(37);
+        let first = recovery_frame(database_id).encode().expect("first frame");
+        write_recovery_journal(&database_path.0, database_id, &first, None);
+        let mut previous_hash = first.frame_hash();
+        let count = crate::retention::ONLINE_RETENTION_STEP_SEQUENCES + 1;
+        for ordinal in 2..=count {
+            let frame = JournalFrame::new(
+                database_id,
+                sequence(ordinal),
+                sequence(ordinal),
+                1,
+                previous_hash,
+                vec![
+                    JournalMutation::put(
+                        JournalTable::Commits,
+                        crate::keys::encode_application_sequence_key(sequence(ordinal)).to_vec(),
+                        vec![0x42],
+                    )
+                    .expect("commit mutation"),
+                ],
+            )
+            .expect("bounded frame")
+            .encode()
+            .expect("encoded frame");
+            write_physical_frame(&journal_path(&database_path.0), &frame, false);
+            previous_hash = frame.frame_hash();
+        }
+        std::fs::rename(
+            journal_path(&database_path.0),
+            sealing_journal_path(&database_path.0),
+        )
+        .expect("installed checkpoint extent");
+        let sealed = seal_extent_with_media(&RealJournalMedia, &database_path.0, database_id)
+            .expect("legal extent seals")
+            .expect("sealed extent");
+        let footer = read_sealed_extent_with_media(&RealJournalMedia, &sealed, database_id)
+            .expect("every frame and footer validates");
+        assert_eq!(footer.entries.len(), usize::try_from(count).expect("count"));
+        assert_eq!(footer.entries[0].predecessor_sequence, None);
+        assert_eq!(
+            footer.entries.last().unwrap().covered_sequence,
+            Some(sequence(count))
+        );
+        assert!(count > crate::retention::ONLINE_RETENTION_STEP_SEQUENCES);
+    }
+
+    // req: STO-032
+    #[test]
+    fn recycled_extent_preserves_allocated_frames_but_fences_every_stale_byte() {
+        let database_path = TestPath::new("reuse-sealed-extent");
+        let database_id = database_id(38);
+        let (first, second) = sealing_extent(&database_path.0, database_id);
+        let sealed = seal_extent_with_media(&RealJournalMedia, &database_path.0, database_id)
+            .unwrap()
+            .unwrap();
+        let prior = read_sealed_extent_with_media(&RealJournalMedia, &sealed, database_id).unwrap();
+        let old = std::fs::read(&sealed).unwrap();
+        let index = read_sealed_index_with_media(&RealJournalMedia, &sealed, database_id).unwrap();
+        assert_eq!(index, prior);
+        std::fs::rename(&sealed, recycled_journal_path(&database_path.0)).unwrap();
+        let header = JournalFileHeader::new(database_id, Some(sequence(2)), second.frame_hash());
+        assert!(
+            prepare_spare_extent_with_media(
+                &RealJournalMedia,
+                &database_path.0,
+                &header,
+                &std::sync::Mutex::new(())
+            )
+            .unwrap()
+        );
+        let spare = spare_journal_path(&database_path.0);
+        let state = inspect_extent(&spare).unwrap();
+        assert!(state.header.generation > prior.generation);
+        assert_eq!(state.header.anchor_position, EXTENT_DATA_OFFSET);
+        let (_, tail) = scan_journal(&spare, database_id, |_| panic!("stale frame replayed"))
+            .unwrap()
+            .unwrap();
+        assert_eq!(tail.transition_count, 0);
+        assert!(!tail.incomplete_tail);
+        let reused = std::fs::read(&spare).unwrap();
+        let first_end = EXTENT_DATA_OFFSET + extent_frame_bytes(first.as_bytes().len()).unwrap();
+        assert_eq!(
+            &reused[EXTENT_DATA_OFFSET..first_end],
+            &old[EXTENT_DATA_OFFSET..first_end]
+        );
+        assert_eq!(reused.len(), extent_file_bytes(EXTENT_DATA_BYTES));
+        assert!(!recycled_journal_path(&database_path.0).exists());
+        assert!(!preparing_spare_journal_path(&database_path.0).exists());
     }
 
     // req: REC-005
