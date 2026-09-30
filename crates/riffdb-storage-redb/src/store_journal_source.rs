@@ -61,6 +61,7 @@ impl JournalRuntime {
         mutations: &[CompositeMutationV1],
     ) -> Result<Option<(AuthoritativeTransactionBindingV3, ChangelogHistoryStateV3)>, StorageError>
     {
+        let mut successor_probe = crate::writer_receipt_probe::Probe::new(1);
         if self.changelog_history != expected {
             return Err(storage_error(StorageErrorKind::CorruptData));
         }
@@ -105,9 +106,18 @@ impl JournalRuntime {
         // Complete canonical coalescing, bounds and attribution are proven BEFORE
         // lane.submit. Retain only constant-size binding/history; original values
         // remain in the existing bounded retained mutation source, not a copy.
-        Ok(Some((
-            binding,
-            history.advance(&receipt).map_err(value_error)?,
-        )))
+        let mut advance_probe = crate::writer_receipt_probe::Probe::new(2);
+        let next = history.advance(&receipt).map_err(value_error)?;
+        advance_probe.complete(
+            true,
+            receipt.mutations().len(),
+            receipt.encoded_len().map_err(value_error)?,
+        );
+        successor_probe.complete(
+            true,
+            receipt.mutations().len(),
+            receipt.encoded_len().map_err(value_error)?,
+        );
+        Ok(Some((binding, next)))
     }
 }

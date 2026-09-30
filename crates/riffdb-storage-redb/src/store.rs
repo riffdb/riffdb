@@ -1827,6 +1827,20 @@ impl RedbReadAccess {
         table: crate::journal::JournalTable,
         key: &[u8],
     ) -> Result<Option<Vec<u8>>, StorageError> {
+        if !crate::writer_read_probe::enabled() {
+            return self.read_value_inner(table, key);
+        }
+        let started = Instant::now();
+        let result = self.read_value_inner(table, key);
+        crate::writer_read_probe::point(table, 0, &result, started);
+        result
+    }
+
+    fn read_value_inner(
+        &self,
+        table: crate::journal::JournalTable,
+        key: &[u8],
+    ) -> Result<Option<Vec<u8>>, StorageError> {
         match self {
             Self::Current(root) | Self::Durable(root) => {
                 root.read_value(table, key).map_err(journal_io_error)
@@ -6118,6 +6132,20 @@ impl RedbWriteAccess {
     }
 
     pub(crate) fn read_command_value(
+        &self,
+        table: crate::journal::JournalTable,
+        key: &[u8],
+    ) -> Result<Option<Vec<u8>>, StorageError> {
+        if !crate::writer_read_probe::enabled() {
+            return self.read_command_value_inner(table, key);
+        }
+        let started = Instant::now();
+        let result = self.read_command_value_inner(table, key);
+        crate::writer_read_probe::point(table, 0, &result, started);
+        result
+    }
+
+    fn read_command_value_inner(
         &self,
         table: crate::journal::JournalTable,
         key: &[u8],

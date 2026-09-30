@@ -623,7 +623,10 @@ impl CompositeMutationStage {
     ) -> Result<(), StorageValueError> {
         base.validate_entry(mutation.table(), mutation.key(), mutation.value())?;
         let current = match self.tables[mutation.table().index()].get(mutation.key()) {
-            Some(OverlayValue::Value(value)) => Some(value.as_ref().to_vec()),
+            Some(OverlayValue::Value(value)) => {
+                allocation_probe::charge(4, value.len());
+                Some(value.as_ref().to_vec())
+            }
             Some(OverlayValue::Tombstone) => None,
             None => base.read_base(mutation.table(), mutation.key())?,
         };
@@ -688,6 +691,7 @@ impl CompositeMutationStage {
             Some(prior @ OverlayValue::Value(current)) if current.as_ref() == value => prior,
             _ => return Ok(false),
         };
+        allocation_probe::charge(2, mutation.key().len());
         let key: Arc<[u8]> = Arc::from(mutation.key());
         let replacement = OverlayValue::Value(Arc::from(representation));
         let charge = self
@@ -708,10 +712,14 @@ impl CompositeMutationStage {
     ) -> Result<(), StorageValueError> {
         validate_before_image(current, mutation.expected_hash())?;
         let table = &mut self.tables[mutation.table().index()];
+        allocation_probe::charge(2, mutation.key().len());
         let key: Arc<[u8]> = Arc::from(mutation.key());
         let replacement = mutation
             .value()
-            .map(|value| OverlayValue::Value(Arc::from(value)))
+            .map(|value| {
+                allocation_probe::charge(3, value.len());
+                OverlayValue::Value(Arc::from(value))
+            })
             .unwrap_or(OverlayValue::Tombstone);
         let next_staged_lineage_bytes = self
             .staged_lineage_bytes
@@ -904,6 +912,7 @@ impl CompositeMutationStage {
         {
             return Err(StorageValueError::LimitExceeded);
         }
+        allocation_probe::frame(frame.kind, frame.transition_count);
         let mutations = frame.mutations;
         Ok((
             FrozenCompositeOverlay {
@@ -1085,6 +1094,7 @@ impl FrozenCompositeOverlay {
         while !same_lineage(lineage, covered.lineage.as_ref()) {
             let node = lineage.ok_or(StorageValueError::IdentityMismatch)?;
             for (table, key) in node.keys.iter() {
+                allocation_probe::charge(6, key.len());
                 touched.insert((*table, Arc::from(key.as_ref())), ());
             }
             lineage = node.predecessor.as_ref();
@@ -1443,6 +1453,7 @@ fn overlay_lineage_successor(
         added_bytes = added_bytes
             .checked_add(lineage_key_charge(mutation.key())?)
             .ok_or(StorageValueError::SizeOverflow)?;
+        allocation_probe::charge(5, mutation.key().len());
         keys.push((mutation.table(), mutation.key().into()));
     }
     let lineage_bytes = predecessor_bytes
@@ -1497,16 +1508,23 @@ fn apply_mutations_atomically(
         let table_index = mutation.table().index();
         let pending = pending_tables[table_index].get(mutation.key());
         let current = match pending.or_else(|| tables[table_index].get(mutation.key())) {
-            Some(OverlayValue::Value(value)) => Some(value.as_ref().to_vec()),
+            Some(OverlayValue::Value(value)) => {
+                allocation_probe::charge(4, value.len());
+                Some(value.as_ref().to_vec())
+            }
             Some(OverlayValue::Tombstone) => None,
             None => base.read_base(mutation.table(), mutation.key())?,
         };
         validate_before_image(current.as_deref(), mutation.expected_hash())?;
 
+        allocation_probe::charge(2, mutation.key().len());
         let key: Arc<[u8]> = Arc::from(mutation.key());
         let replacement = mutation
             .value()
-            .map(|value| OverlayValue::Value(Arc::from(value)))
+            .map(|value| {
+                allocation_probe::charge(3, value.len());
+                OverlayValue::Value(Arc::from(value))
+            })
             .unwrap_or(OverlayValue::Tombstone);
         let prior_overlay = pending_tables[table_index]
             .get(key.as_ref())
@@ -1543,7 +1561,10 @@ fn resolve_overlay_point(
     match tables[table.index()].get(key) {
         None => base.read_base(table, key),
         Some(OverlayValue::Tombstone) => Ok(None),
-        Some(OverlayValue::Value(value)) => Ok(Some(value.to_vec())),
+        Some(OverlayValue::Value(value)) => {
+            allocation_probe::charge(4, value.len());
+            Ok(Some(value.to_vec()))
+        }
     }
 }
 
@@ -1557,7 +1578,6 @@ struct PersistentOverlayMap {
     root: Option<Arc<OverlayNode>>,
 }
 
-#[derive(Clone)]
 struct OverlayNode {
     // Shared, never copied. A successor copies one search path, and a
     // `Box<[u8]>` key here made that copy allocate and memcpy every key on the
@@ -1568,6 +1588,19 @@ struct OverlayNode {
     height: u16,
     left: Option<Arc<Self>>,
     right: Option<Arc<Self>>,
+}
+
+impl Clone for OverlayNode {
+    fn clone(&self) -> Self {
+        allocation_probe::charge(1, std::mem::size_of::<Self>());
+        Self {
+            key: Arc::clone(&self.key),
+            value: self.value.clone(),
+            height: self.height,
+            left: self.left.clone(),
+            right: self.right.clone(),
+        }
+    }
 }
 
 impl PersistentOverlayMap {
@@ -1667,6 +1700,7 @@ fn overlay_node(
     left: Option<Arc<OverlayNode>>,
     right: Option<Arc<OverlayNode>>,
 ) -> Arc<OverlayNode> {
+    allocation_probe::charge(0, std::mem::size_of::<OverlayNode>());
     let height = overlay_height(&left)
         .max(overlay_height(&right))
         .saturating_add(1);
@@ -1926,6 +1960,133 @@ fn sequence_delta(
 
 fn digest(bytes: &[u8]) -> [u8; 32] {
     Sha256::digest(bytes).into()
+}
+
+/// Allocation sites only: bytes exclude allocator/Arc headers, B-tree nodes,
+/// and unrelated allocations. This evidence never discounts overlay charges.
+mod allocation_probe {
+    use std::cell::RefCell;
+    use std::sync::OnceLock;
+
+    #[derive(Default)]
+    struct Meter {
+        frames: u64,
+        commands: u64,
+        counts: [u64; 7],
+        bytes: [u64; 7],
+    }
+
+    impl Drop for Meter {
+        fn drop(&mut self) {
+            if self.counts.iter().any(|count| *count != 0) {
+                for kind in 0..7 {
+                    eprintln!(
+                        "riffdb-overlay-allocation-probe-v1\t{}\t{}\t{kind}\t{}\t{}",
+                        self.frames, self.commands, self.counts[kind], self.bytes[kind]
+                    );
+                }
+            }
+        }
+    }
+
+    thread_local! {
+        static METER: RefCell<Meter> = RefCell::new(Meter::default());
+    }
+
+    fn enabled() -> bool {
+        static ENABLED: OnceLock<bool> = OnceLock::new();
+        *ENABLED.get_or_init(|| {
+            std::env::var_os("RIFFDB_QUERY_EXECUTE_DIAGNOSTICS").is_some_and(|value| value == "1")
+        })
+    }
+
+    pub(super) fn charge(kind: usize, bytes: usize) {
+        if enabled() {
+            METER.with(|meter| {
+                let mut meter = meter.borrow_mut();
+                meter.counts[kind] = meter.counts[kind].saturating_add(1);
+                meter.bytes[kind] = meter.bytes[kind].saturating_add(bytes as u64);
+            });
+        }
+    }
+
+    pub(super) fn frame(kind: super::CompositeFrameKindV1, transitions: u16) {
+        if enabled() {
+            METER.with(|meter| {
+                let mut meter = meter.borrow_mut();
+                meter.frames = meter.frames.saturating_add(1);
+                if kind == super::CompositeFrameKindV1::Command {
+                    meter.commands = meter.commands.saturating_add(u64::from(transitions));
+                }
+            });
+        }
+    }
+    // req: PERF-008, STO-001
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+
+        #[test]
+        fn allocation_probe_preserves_cow_ownership_and_byte_counts() {
+            const CHILD: &str = "RIFFDB_OVERLAY_PROBE_TEST_CHILD";
+            if std::env::var_os(CHILD).is_none() {
+                let output = std::process::Command::new(std::env::current_exe().unwrap())
+                    .args(["--exact", "composite_view::allocation_probe::tests::allocation_probe_preserves_cow_ownership_and_byte_counts", "--test-threads=1"])
+                    .env(CHILD, "1")
+                    .env("RIFFDB_QUERY_EXECUTE_DIAGNOSTICS", "1")
+                    .output().unwrap();
+                assert!(output.status.success(), "isolated allocation probe failed");
+                return;
+            }
+            let start = std::sync::Barrier::new(3);
+            std::thread::scope(|scope| {
+                let workers = (0..2)
+                    .map(|_| {
+                        let start = &start;
+                        scope.spawn(move || {
+                            start.wait();
+                            charge(2, 7);
+                            METER.with(|meter| assert_eq!(meter.borrow().bytes[2], 7));
+                        })
+                    })
+                    .collect::<Vec<_>>();
+                start.wait();
+                for worker in workers {
+                    worker.join().unwrap();
+                }
+            });
+            use crate::composite_view::{OverlayNode, OverlayValue, PersistentOverlayMap};
+            use std::sync::Arc;
+            let mut map = PersistentOverlayMap::default();
+            map.insert(
+                Arc::from(&b"aa"[..]),
+                OverlayValue::Value(Arc::from(&b"before"[..])),
+            );
+            let predecessor = map.clone();
+            map.insert(
+                Arc::from(&b"bb"[..]),
+                OverlayValue::Value(Arc::from(&b"after"[..])),
+            );
+            assert!(predecessor.get(b"bb").is_none());
+            assert!(
+                matches!(map.get(b"bb"), Some(OverlayValue::Value(v)) if v.as_ref() == b"after")
+            );
+            assert!(Arc::ptr_eq(
+                &predecessor.root.as_ref().unwrap().key,
+                &map.root.as_ref().unwrap().key
+            ));
+            METER.with(|meter| {
+                let meter = meter.borrow();
+                assert_eq!(meter.counts[0], 2);
+                assert_eq!(meter.counts[1], 1);
+                assert_eq!(meter.bytes[1], std::mem::size_of::<OverlayNode>() as u64);
+                assert_eq!(
+                    meter.counts[2], 0,
+                    "worker counters do not bleed into the writer"
+                );
+            });
+        }
+    }
 }
 
 #[cfg(test)]

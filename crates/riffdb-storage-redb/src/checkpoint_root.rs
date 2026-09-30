@@ -169,7 +169,10 @@ impl CheckpointRoot {
         if crate::query_diagnostics::query_execute_diagnostics_enabled()
             && crate::journal::byte_table_definition(table).is_some()
         {
-            return self.read_value_profiled(table, key);
+            let started = Instant::now();
+            let result = self.read_value_profiled(table, key);
+            crate::writer_read_probe::point(table, 1, &result, started);
+            return result;
         }
         self.read_value_inner(table, key)
     }
