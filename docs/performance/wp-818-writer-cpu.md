@@ -148,12 +148,30 @@ claiming that writer CPU alone limits throughput.
 A separate numeric backend-read probe counts calls and requested bytes below
 redb's page cache. It is selected once when the backend opens under the existing
 diagnostic switch, passes through every original read and error, and emits
-`riffdb-backend-read-probe-v1` at graceful-close entry. The initial backend-drop
-hook emitted no lines in the live runner, so that attempt supplies no read
-counts. Counts include all reader threads
+`riffdb-backend-read-probe-v1` at backend drop. Counts include all reader threads
 and exclude reads performed internally by checkpoint write comparison. Seed
-and load process generations must be kept separate. Disabled and concurrent
-probe tests pass; the probe supplies no read answer or retained page cache.
+and load generations are separate. Disabled and concurrent probe tests pass.
+An initial report parser missed the runner's stderr prefix; inspecting the
+complete logs recovered both censuses. The unnecessary close-entry hook is
+removed; the original backend-drop hook emitted correctly.
+
+## Primary page-cache capacity experiment
+
+The isolated scratch candidate changes only the primary redb page-cache
+capacity from 4 to 12 MiB. The derived database remains at 4 MiB. This adds no
+configuration knob and changes no format, transaction, validation, publication,
+or acknowledgement rule. The accepted lifecycle ceilings remain requirements.
+
+In two diagnostic c32 write-only runs (60 seconds, 10 seconds warmup), the
+measurement generation at 4 MiB made 3,735,805 backend read requests for
+15,493,042,505 bytes across 249,885 process-scope committed commands. At 12 MiB
+it made 1,791,553 requests for 7,387,173,193 bytes across 253,689 commands.
+That is 14.95 versus 7.06 requests per command, a 52.7% reduction. These include
+all reader threads and warmup, so they establish reduced backend reads for
+this workload, not a writer-only CPU attribution. Diagnostic throughput was
+3,476 versus 3,527 operations/s; single runs do not establish a comparative
+throughput result. The next batch alternates release base/candidate/candidate/
+base for write-only, interactive, and read-only, with diagnostics disabled.
 
 ## Review note
 
