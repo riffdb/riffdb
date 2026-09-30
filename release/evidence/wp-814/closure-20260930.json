@@ -1,0 +1,193 @@
+{
+  "schema": "riffdb.wp-814-closure-evidence/v1",
+  "package": "WP-814",
+  "adr": "ADR-0263",
+  "host": {
+    "profile": "ADR-0239 dev standard",
+    "machine": "c3d-standard-8, 8 vCPU, AMD EPYC 9B14",
+    "storage": "one shared persistent disk for database and journal"
+  },
+  "base_revision": "485a40268",
+  "final_revision": "fb75292b2",
+  "ab_same_binary_runner": {
+    "method": "riffdb-app-baseline --full, 32 clients, 60 s measured after 10 s warm-up, order base, candidate, candidate, base",
+    "write_only": {
+      "base": {
+        "ops_s": [
+          3438,
+          3579
+        ],
+        "p95_ms": [
+          10.0,
+          10.0
+        ],
+        "p99_ms": [
+          109.1,
+          100.7
+        ],
+        "max_ms": [
+          309,
+          178
+        ],
+        "durable_bytes_per_mutation": [
+          19636,
+          18893
+        ],
+        "peak_rss_mib": [
+          519,
+          530
+        ]
+      },
+      "candidate": {
+        "ops_s": [
+          3416,
+          3546
+        ],
+        "p95_ms": [
+          8.9,
+          8.4
+        ],
+        "p99_ms": [
+          13.6,
+          13.1
+        ],
+        "max_ms": [
+          718,
+          742
+        ],
+        "durable_bytes_per_mutation": [
+          14938,
+          14311
+        ],
+        "peak_rss_mib": [
+          1105,
+          1115
+        ]
+      }
+    },
+    "interactive": {
+      "base": {
+        "ops_s": [
+          16455,
+          16583
+        ],
+        "p95_ms": [
+          7.3,
+          7.1
+        ],
+        "p99_ms": [
+          10.0,
+          9.4
+        ],
+        "max_ms": [
+          166,
+          181
+        ],
+        "durable_bytes_per_mutation": [
+          27226,
+          27012
+        ],
+        "peak_rss_mib": [
+          421,
+          426
+        ]
+      },
+      "candidate": {
+        "ops_s": [
+          16023,
+          16056
+        ],
+        "p95_ms": [
+          7.3,
+          7.6
+        ],
+        "p99_ms": [
+          10.0,
+          10.0
+        ],
+        "max_ms": [
+          696,
+          696
+        ],
+        "durable_bytes_per_mutation": [
+          12435,
+          12414
+        ],
+        "peak_rss_mib": [
+          927,
+          936
+        ]
+      }
+    },
+    "peak_overlay_charge_bytes": [
+      72365290,
+      72398564,
+      73116873,
+      73118073
+    ],
+    "overlay_ceiling_bytes": 268435456
+  },
+  "postgres_comparison": {
+    "method": "benchmarks/run-app-baseline --full --load <load> --load-clients 32 --load-duration-secs 90 --load-warmup-secs 15 --postgres-comparator safe-app --reps 3 --require-stable; --load-journeys for interactive",
+    "ratio": "riffdb median / postgres median",
+    "gate": "PERF-008 mixed load: throughput >= 0.90, p95 <= 1.25",
+    "interactive": {
+      "base": {
+        "throughput": 1.085,
+        "p95": 0.871,
+        "p99": 0.818,
+        "eligible": true
+      },
+      "final": {
+        "throughput": 1.033,
+        "p95": 0.937,
+        "p99": 0.909,
+        "eligible": true
+      }
+    },
+    "write_only": {
+      "base": {
+        "throughput": 0.702,
+        "p95": 0.95,
+        "p99": 8.276,
+        "eligible": true
+      },
+      "final": {
+        "throughput": 0.74,
+        "p95": 0.857,
+        "p99": 1.0,
+        "eligible": false,
+        "ineligible_reason": "PostgreSQL p99 repetition spread 2.14 exceeds the harness 2.0 stability bound; RiffDB spreads at most 1.07"
+      }
+    },
+    "rejected_variant": {
+      "description": "spare zero-fill synced every 8 MiB",
+      "interactive": {
+        "throughput": 1.098,
+        "p95": 0.903,
+        "p99": 0.909
+      },
+      "write_only": {
+        "throughput": 0.769,
+        "p95": 1.8,
+        "p99": 2.143
+      }
+    }
+  },
+  "proofs": [
+    "checkpoint_materializes_no_commits_or_history_rows",
+    "history_readers_resolve_through_the_history_index",
+    "sealed_extent_crash_windows_recover_to_a_consistent_history_index",
+    "missing_or_corrupt_sealed_extent_is_a_typed_refusal"
+  ],
+  "fixtures": [
+    "fixtures/compatibility/journal-sealed-footer-v1.hex",
+    "fixtures/compatibility/history-stub-v1.hex",
+    "fixtures/compatibility/journal-frame-v3.hex",
+    "fixtures/compatibility/journal-extent-header-v4.hex"
+  ],
+  "ci_all": {
+    "revision": "a0992333c",
+    "result": "pass"
+  }
+}
