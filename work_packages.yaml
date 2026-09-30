@@ -27856,6 +27856,45 @@ work_packages:
     with a consistent index; a missing or corrupt sealed extent is a typed refusal; and
     live-server evidence shows write-only p99 and redb bytes per command improved against
     the pre-change build without a throughput regression.
+  closure:
+    status: complete
+    completed_at: '2026-09-30'
+    requirements_satisfied: [REP-002, REP-003, REC-005]
+    evidence: release/evidence/wp-814/closure-20260930.json
+    decision: Journaled command segments and V3 receipts are no longer written to redb.
+      Under ADR-0263 Amendment 3 each COMMITS and HISTORY row a journal frame made durable
+      is a fixed-size history stub naming its retained frame; checkpoints, recovery, and
+      the synchronous drain write stubs, the overlay holds them, and every reader resolves
+      them from the uncheckpointed frame in memory or its live or sealed extent. The ADR-0104
+      ceilings are 65,536 transitions and 256 MiB with a 320 MiB extent and a 256 MiB overlay
+      ceiling; the peak overlay charge measured 73 MiB. On the ADR-0239 host against the
+      pre-change build, write-only p99 fell from about 105 ms to 13 ms and p95 from 10 ms to
+      under 9 ms at unchanged throughput, durable bytes per mutation fell 24 to 54 percent,
+      and the mixed-load PERF-008 gate passes at 1.03x throughput and 0.94x p95 same-run
+      PostgreSQL.
+    decisions_taken:
+    - History stubs in COMMITS and HISTORY replace the sidecar index (ADR-0263 Amendment 3,
+      maintainer accepted 2026-09-29).
+    - Copies that leave their extents behind hydrate stubs while staging (maintainer, in
+      session).
+    - Close on the write-tail result, recording the worst-case stall until WP-815 and the
+      doubled memory (maintainer approved, 2026-09-30).
+    - Decision 8's open-time check is read as a typed refusal at open or at every read of the
+      damaged history, plus the background scrub; checking every stub at open would
+      enumerate history before readiness, which REC-005 forbids.
+    - The spare zero-fill is not paced; syncing it every 8 MiB cut the maximum but doubled
+      write-only p95.
+    hazards:
+    - The maximum latency is about 700 ms in both loads, from each checkpoint's 320 MiB
+      zero-fill, until WP-815 recycles retired extents.
+    - Peak resident memory roughly doubles under the new ceilings (about 1.1 GiB write-only).
+    - Write-only throughput remains about 0.74x same-run PostgreSQL, bounded by the ordered
+      writer's CPU per command; this package does not change it.
+    - A new binary refuses a database written before ADR-0263 with IncompatibleFormat until
+      WP-816's offline upgrade exists.
+    - Stub resolution is process-global; an open same-identity copy with the same frame hash
+      can supply exact bytes and delay detection of a missing extent.
+    - Retired extents after a restore or migration stay on disk unreferenced until WP-815.
   standing_design_tests:
     interface_safety: No public surface changes; history, idempotency, audit, provenance,
       and changelog results stay typed and identical, and no principal can address an
