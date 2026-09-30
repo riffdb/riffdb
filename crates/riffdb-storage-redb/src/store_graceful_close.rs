@@ -4,6 +4,7 @@ impl SharedRedb {
     pub(super) fn complete_graceful_close(
         self: &Arc<Self>,
     ) -> crate::GracefulCheckpointCloseReceiptV1 {
+        self.checkpoint_rewrite.emit_read_probe();
         let mut elapsed_us = [0_u64; 3];
         // This is the SOURCE close owner. Follower shutdown belongs to the
         // sole applier and must never enter its journal/checkpoint/CLEAN path.

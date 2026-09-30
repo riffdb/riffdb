@@ -13,9 +13,20 @@ use redb::StorageBackend;
 #[derive(Debug, Default)]
 pub(crate) struct CheckpointRewrite {
     active: Mutex<bool>,
+    read_calls: AtomicU64,
+    read_bytes: AtomicU64,
 }
 
 impl CheckpointRewrite {
+    pub(crate) fn emit_read_probe(&self) {
+        if crate::query_diagnostics::query_execute_diagnostics_enabled() {
+            eprintln!(
+                "riffdb-backend-read-probe-v1\t{}\t{}",
+                self.read_calls.load(Ordering::Relaxed),
+                self.read_bytes.load(Ordering::Relaxed)
+            );
+        }
+    }
     fn lock(&self) -> io::Result<MutexGuard<'_, bool>> {
         self.active
             .lock()
@@ -48,8 +59,6 @@ pub(crate) struct CheckpointRewriteBackend<T> {
     inner: T,
     state: Arc<CheckpointRewrite>,
     read_probe: bool,
-    read_calls: AtomicU64,
-    read_bytes: AtomicU64,
 }
 
 impl<T> CheckpointRewriteBackend<T> {
@@ -66,20 +75,6 @@ impl<T> CheckpointRewriteBackend<T> {
             inner,
             state,
             read_probe,
-            read_calls: AtomicU64::new(0),
-            read_bytes: AtomicU64::new(0),
-        }
-    }
-}
-
-impl<T> Drop for CheckpointRewriteBackend<T> {
-    fn drop(&mut self) {
-        if self.read_probe {
-            eprintln!(
-                "riffdb-backend-read-probe-v1\t{}\t{}",
-                self.read_calls.load(Ordering::Relaxed),
-                self.read_bytes.load(Ordering::Relaxed)
-            );
         }
     }
 }
@@ -91,8 +86,9 @@ impl<T: StorageBackend> StorageBackend for CheckpointRewriteBackend<T> {
 
     fn read(&self, offset: u64, out: &mut [u8]) -> io::Result<()> {
         if self.read_probe {
-            self.read_calls.fetch_add(1, Ordering::Relaxed);
-            self.read_bytes
+            self.state.read_calls.fetch_add(1, Ordering::Relaxed);
+            self.state
+                .read_bytes
                 .fetch_add(out.len() as u64, Ordering::Relaxed);
         }
         self.inner.read(offset, out)

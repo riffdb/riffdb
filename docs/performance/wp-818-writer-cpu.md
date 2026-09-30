@@ -120,10 +120,37 @@ interface has been adopted. This tests cache capacity as one mechanism; it
 does not establish that allocation count, hashing, or overlay construction
 has changed. Memory and CPU remain required comparative disclosures.
 
+The allocator experiment finished all twelve release runs, in
+base/candidate/candidate/base order for each load, at 32 clients, 60 seconds
+measured and 10 seconds warmup. The identical binaries were built from
+`7eb4b37e1`. Median operations/s:
+
+| Load | Base arms | Candidate arms | Candidate/base median |
+|---|---|---|---:|
+| Write-only | 3,496; 3,463 | 3,525; 3,556 | 1.0175 |
+| Interactive | 16,227; 16,074 | 15,942; 15,953 | 0.9874 |
+| Read-only | 25,004; 24,828 | 25,009; 25,105 | 1.0057 |
+
+The small write delta and worse interactive result do not justify adopting
+these settings. Read-only candidate heap-envelope observations were 351 and
+366 MB, versus 28 and 54 MB at base. No same-run PostgreSQL qualification is
+claimed for this rejected experiment.
+
+Sampling the busiest command thread's CPU ticks during the load process and
+normalizing by process-scope committed commands (including warmup) measured
+approximately 206.8/207.7 microseconds per command for write-only base and
+205.3/202.6 for candidate. Interactive measured 272.3/273.7 at base and
+269.3/268.9 for candidate. The sampling interval is 0.5 seconds and tick
+resolution 10 ms, so these are approximate endpoint observations. They do not
+support treating 266 microseconds as a workload-independent writer cost or
+claiming that writer CPU alone limits throughput.
+
 A separate numeric backend-read probe counts calls and requested bytes below
 redb's page cache. It is selected once when the backend opens under the existing
 diagnostic switch, passes through every original read and error, and emits
-`riffdb-backend-read-probe-v1` at backend drop. Counts include all reader threads
+`riffdb-backend-read-probe-v1` at graceful-close entry. The initial backend-drop
+hook emitted no lines in the live runner, so that attempt supplies no read
+counts. Counts include all reader threads
 and exclude reads performed internally by checkpoint write comparison. Seed
 and load process generations must be kept separate. Disabled and concurrent
 probe tests pass; the probe supplies no read answer or retained page cache.
