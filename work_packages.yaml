@@ -28177,3 +28177,47 @@ work_packages:
   - Any transaction ordering, conflict ownership, validation, atomicity, or outcome
     sequencing would change.
   - Any implementation needs paths outside this scope.
+  closure:
+    status: complete
+    completed_at: '2026-09-30'
+    requirements_satisfied: [PERF-008, PERF-019, REP-002, REP-003]
+    evidence: release/evidence/wp-818/closure-20260930.json
+    decision: Raise only the fixed primary redb cache from 4 to 12 MiB; retain
+      the derived cache at 4 MiB. Against 7eb4b37e1, alternating c32 write-only
+      medians improve 5.27 percent at 60 seconds and 4.34 percent at 90 seconds,
+      with lower p95 and p99. Interactive and read-only throughput stay within
+      variance. Same-run PostgreSQL qualification measures write-only at 0.768x
+      throughput and interactive at 1.048x throughput, 0.871x p95, and 0.818x
+      p99. No public interface, format, validation, ordering, or durability
+      boundary changes.
+    decisions_taken:
+    - D-003 implementation choice within ADR-0104, ADR-0195, ADR-0239, ADR-0260,
+      and ADR-0263; no accepted decision or SPEC MUST changes. Keep both cache
+      budgets fixed and preserve all lifecycle ceilings and 384 KiB stacks.
+    - Retain bounded opt-in numeric backend read counters and inventory error
+      classification. The read probe measures all readers through backend drop,
+      not writer-only attribution, and does not alter reads or their errors.
+    - Reject checkpoint absence probes and the enlarged jemalloc thread cache
+      after instrumentation and alternating measurements; neither remains as an
+      optimized production mechanism.
+    - Preserve the read-only lifecycle authority oracle and its original typed
+      refusal. Its additional qualification fails with RepairAborted at base
+      and candidate; do not substitute repair or claim a successful resource run.
+    - Name the exact measured revisions and disclose later unrelated main merges
+      rather than assigning them these isolated performance measurements.
+    hazards:
+    - Write-only throughput remains below PostgreSQL; its same-run p99 is 1.143x
+      PostgreSQL even though the matched 90-second A/B p99 improves versus base.
+    - Maximum write stalls remain about one second. Extent recycling belongs to
+      WP-815, which this package does not start.
+    - The additional 65,536-row lifecycle harness fails closed on a native
+      read-only redb open with RepairAborted at base and candidate. Existing
+      bounded-cache, startup, and semantic coverage passes; no new successful
+      lifecycle or production-size resource qualification is claimed.
+    - Loaded RSS increases with the cache trial and remains about 1.1 GiB for
+      write-only. Process heap and recovery-owned state are distinct under
+      ADR-0260; the accepted lifecycle gates are unchanged.
+    - TicketDesk command performance is qualified; projection, tokenized-text,
+      row-policy, and the alternate-machine gate remain unqualified here.
+    - Pre-ADR-0263 databases still require WP-816's offline upgrade; this package
+      changes no compatibility boundary or export behavior.

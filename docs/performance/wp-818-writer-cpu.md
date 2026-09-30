@@ -1,7 +1,8 @@
 # WP-818: ordered writer CPU investigation
 
-Status: open. Base: `7eb4b37e1` (WP-814 closure). No throughput improvement
-is claimed until alternating comparisons and same-run PostgreSQL checks finish.
+Status: complete (2026-09-30).
+Base: `7eb4b37e1` (WP-814 closure). The 60-second alternating comparison
+measures a 5.27% write-only gain; PostgreSQL write parity remains unmet.
 Measurement machine: 8 vCPU, AMD EPYC 9B14, the ADR-0239 development standard.
 
 ## Pre-change profile
@@ -178,7 +179,7 @@ base at 32 clients, 60 seconds measured and 10 seconds warmup, with diagnostics
 and allocator overrides disabled. Base binaries came from `7eb4b37e1`; the
 scratch candidate came from `c68062e0` with only the primary constructor's
 budget changed to 12 MiB. The corresponding committed candidate is
-`fe6070308`; its clean-checkout PostgreSQL qualification is next.
+`fe6070308`, used for the clean-checkout PostgreSQL qualification below.
 
 | Load | Base ops/s median | Candidate ops/s median | Throughput ratio | p95 ratio | p99 ratio |
 |---|---:|---:|---:|---:|---:|
@@ -198,18 +199,100 @@ write-only; 998,563,840 versus 1,019,129,856 for interactive; and 76,683,264
 versus 86,130,688 for read-only. These are loaded-process observations, not
 lifecycle heap-envelope measurements. Write-only maxima remained approximately
 0.7–1.0 seconds in both arms; this change does not resolve extent allocation
-owned by WP-815. Same-run PostgreSQL qualification remains pending.
+owned by WP-815.
+
+## Same-run PostgreSQL qualification
+
+The clean `fe6070308` candidate ran against PostgreSQL 18.4's `safe-app`
+comparator at 32 clients, three 90-second repetitions with 15-second warmup,
+using the qualified runner and `--require-stable`. Interactive adds
+`--load-journeys`. Both commands exited successfully; the reported metrics
+were stable. Ratios divide the medians in `load_rep_summaries`.
+
+| Load | RiffDB ops/s | PostgreSQL ops/s | Throughput ratio | p95 ratio | p99 ratio |
+|---|---:|---:|---:|---:|---:|
+| Write-only | 3,611 | 4,703 | 0.7678 | 0.7750 | 1.1429 |
+| Interactive | 16,139 | 15,399 | 1.0481 | 0.8710 | 0.8182 |
+
+The interactive PERF-008 throughput and p95 gate passes. Write-only remains
+below PostgreSQL. Its p99 is 16.78 ms versus PostgreSQL's 14.68 ms; the lower
+p99 in the shorter alternating experiment is not evidence of a universal
+write-tail improvement. The matched 90-second alternating write-only check
+below also improves throughput and p99 against base. These PostgreSQL ratios
+are a same-run candidate comparison;
+comparing them to earlier sessions' ratios does not measure the cache gain.
+
+## Matched 90-second write-only comparison
+
+A further production base/candidate/candidate/base sequence used 32 clients,
+90-second measurements, and 15-second warmup. Base remains `7eb4b37e1`;
+candidate is `5c3dfd9f3`, with the same 12 MiB cache and an inactive benchmark
+inventory error probe. Diagnostics and allocator overrides were disabled.
+The candidate daemon digest is identical to the clean `fe6070308`
+PostgreSQL-run daemon. All four arms exited successfully.
+
+| Metric | Base median | Candidate median | Candidate/base |
+|---|---:|---:|---:|
+| Throughput (ops/s) | 3,459.5 | 3,609.5 | 1.0434 |
+| p95 (ms) | 8.913 | 8.258 | 0.9265 |
+| p99 (ms) | 15.991 | 15.204 | 0.9508 |
+| Approximate writer CPU (microseconds/command) | 210.29 | 198.69 | 0.9448 |
+
+Base throughput was 3,422/3,497 operations/s; candidate was 3,601/3,618.
+The gain survives both bracketing base arms. Candidate p99 was 14.68/15.73 ms
+versus 15.73/16.25 ms at base. The PostgreSQL run's higher candidate p99 is
+not reproduced as a base-relative regression here. Maximum latencies were
+719/746 ms at base and 720/1,015 ms at candidate; long stalls remain and no
+maximum-latency improvement is claimed. The binary identities and individual
+numeric observations are recorded in
+`release/evidence/wp-818/closure-20260930.json`.
+
+## Lifecycle qualification gap
+
+An additional qualified lifecycle run used the existing 65,536-row fixture
+(`--production --organizations 4 --tickets-per-project 86
+--labels-per-ticket 8`). It failed closed when the stopped clean twin's
+read-only authority snapshot could not open redb. An opt-in numeric error
+probe identified `RepairAborted`. The unchanged `7eb4b37e1` daemon reproduces
+that failure in the same harness at a stopped snapshot, so it is not specific
+to the cache candidate. No repair, writable oracle, or skipped authority check
+was substituted. No new successful lifecycle or production-size resource
+qualification is claimed.
+
+The current V2 substrate retains ADR-0260's bounded dirty readiness path and
+refuses a bounded clean certificate. Recorded startup diagnostics reported
+`complete_validation`, no population walk, one cold source, no activations or
+population passes, and 149 recovery-owned bytes. This is distinct from the
+loaded process RSS above. Existing semantic and architecture tests preserve
+the lifecycle rules, fixed cache budgets, and 384 KiB production stacks. The
+failed additional qualification remains a handoff hazard, not proof of the
+PERF-019 referee result.
 
 ## Review note
 
 Package: WP-818. Tier: guarantee (the primary constructor is a guarantee-tier
-path). The cache trial is an implementation choice under D-003 within the
+path). The cache budget is an implementation choice under D-003 within the
 existing accepted records; their decisions and ceilings are unchanged.
-Candidate behavior: a fixed 12 MiB primary cache, with the derived cache still
-4 MiB, plus bounded opt-in numeric-only instrumentation. Point-read answers and
-durable bytes are unchanged. Checks and qualification results remain pending. Compatibility:
-no protocol, public interface, durable encoding, stack-size, or acknowledgement
-change. The handbook index and lifecycle performance page describe the cache
-budget and measurement evidence. Hazards: write throughput remains below the reported
-same-run PostgreSQL result; no optimization is yet established. WP-815,
-WP-816, and the deferred alternate-machine gate are outside this package.
+Behavior: a fixed 12 MiB primary cache, with the derived cache still 4 MiB,
+plus bounded opt-in numeric instrumentation. Backend-read measurements support
+reduced page reads; they do not attribute all improvement to writer-only CPU.
+
+Checks: the full `ci-all` battery passed with `RUST_TEST_THREADS=4`, including
+process crash, recovery, replication, idempotency, and provenance coverage.
+The final package-scoped acceptance run passed all 13 steps. Its storage
+suite passed 1,092 tests, with one existing ignored shutdown-scale diagnostic.
+The initial full CI attempt timed out waiting for replication attachment; the unchanged isolated
+test and the complete run with four test threads passed. No assertion or
+deadline was weakened by this package. The standalone benchmark runner's
+existing unused-import and missing-documentation warnings were also present
+at base; no new warning is introduced by the cache change.
+
+Compatibility: no protocol, public interface, durable encoding, stack-size,
+validation, transaction-order, or acknowledgement change. Updated handbook
+pages are this report, `docs/performance/perf-013-014.md`, and the
+`docs/SUMMARY.md` index. Hazards: write throughput remains below PostgreSQL;
+maximum write stalls remain; the additional lifecycle oracle fails at base
+and candidate; projection, tokenized-text, and row-policy performance are not
+qualified here. WP-815, WP-816, and the alternate-machine gate remain outside
+this package. Other work merged into main after the measured candidate; the
+performance figures apply to the named commits, not those unrelated changes.
