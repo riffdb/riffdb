@@ -1077,12 +1077,12 @@ fn read_transaction_local_snapshot(
             ReadSnapshotBuilder::new(&resolved, observed_through).map_err(materialization_value)?;
         for target in resolved.binding_targets() {
             snapshot
-                .push_binding(entity_observation_from_access(&core.access, target)?.0)
+                .push_binding(probe_snapshot_observation(core, target, 0)?)
                 .map_err(materialization_value)?;
         }
         for target in resolved.root_validation_targets() {
             snapshot
-                .push_root_validation(entity_observation_from_access(&core.access, target)?.0)
+                .push_root_validation(probe_snapshot_observation(core, target, 1)?)
                 .map_err(materialization_value)?;
         }
         let mut range = snapshot
@@ -1110,17 +1110,17 @@ fn read_transaction_local_snapshot(
 
     for target in request.binding_targets() {
         snapshot
-            .push_binding(entity_observation_from_access(&core.access, target)?.0)
+            .push_binding(probe_snapshot_observation(core, target, 0)?)
             .map_err(materialization_value)?;
     }
     for target in request.root_validation_targets() {
         snapshot
-            .push_root_validation(entity_observation_from_access(&core.access, target)?.0)
+            .push_root_validation(probe_snapshot_observation(core, target, 1)?)
             .map_err(materialization_value)?;
     }
     for target in request.cascade_targets() {
         snapshot
-            .push_cascade_predecessor(entity_observation_from_access(&core.access, target)?.0)
+            .push_cascade_predecessor(probe_snapshot_observation(core, target, 2)?)
             .map_err(materialization_value)?;
     }
     for (position, target) in request.range_targets().iter().enumerate() {
@@ -1176,6 +1176,30 @@ fn read_transaction_local_snapshot(
         range.finish().map_err(materialization_value)?;
     }
     snapshot.finish().map_err(materialization_value)
+}
+
+fn probe_snapshot_observation(
+    core: &BatchCore,
+    target: &EntityTarget,
+    role: usize,
+) -> Result<EntityObservation, StorageError> {
+    let started = crate::snapshot_cache_probe::start();
+    let cached = core.entity_observations.get(target);
+    let encoded_len = core
+        .entity_observation_bytes
+        .get(target)
+        .and_then(Option::as_ref)
+        .map(Vec::len);
+    let result =
+        entity_observation_from_access(&core.access, target).map(|(observation, _)| observation);
+    crate::snapshot_cache_probe::record(
+        role,
+        matches!(cached, Some(EntityObservation::Present(_))),
+        matches!(cached, Some(EntityObservation::Absent(_))),
+        encoded_len,
+        started,
+    );
+    result
 }
 
 impl AdmissionRepository for RedbOperationalPorts {
