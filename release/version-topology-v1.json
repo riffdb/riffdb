@@ -1283,7 +1283,8 @@
       "evidence": [
         "fixtures/compatibility/physical-formats-v1.json",
         "fixtures/compatibility/journal-extent-header-v3.hex",
-        "fixtures/compatibility/journal-extent-header-v4.hex"
+        "fixtures/compatibility/journal-extent-header-v4.hex",
+        "fixtures/compatibility/journal-sealed-footer-v1.hex"
       ],
       "checks": [
         "./scripts/check-durable-format-manifest"
@@ -1754,7 +1755,7 @@
       "writer_policy": "single_current",
       "compatibility_rule": "The closed redb table/key layout is opened only after format preflight.",
       "breaking_when": "Table, key, or singleton layout changes incompatibly under version 1.",
-      "supported_release_posture": "redb layout V1 is current.",
+      "supported_release_posture": "redb layout V1 is current. COMMITS and HISTORY values may be fixed-size history stubs naming a retained journal frame (ADR-0263 Amendment 3); a binary that predates journal extent V4 refuses the database before reading them.",
       "lifecycle": {
         "active": [
           "1"
@@ -1765,14 +1766,15 @@
       },
       "reserved_identity_policy": "Physical layout identities and keys are never reused.",
       "evidence": [
-        "fixtures/compatibility/physical-formats-v1.json"
+        "fixtures/compatibility/physical-formats-v1.json",
+        "fixtures/compatibility/history-stub-v1.hex"
       ],
       "checks": [
         "./scripts/check-durable-format-manifest"
       ],
       "last_change": {
-        "classification": "no_format_change",
-        "decision": "ADR-0124 baseline"
+        "classification": "additive_same_identity",
+        "decision": "ADR-0263 Amendment 3 history stubs keep the table and key layout under version 1"
       },
       "durable_manifest": {
         "readable_key": "readable_redb_layout_versions",

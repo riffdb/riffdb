@@ -724,3 +724,25 @@ pub fn overlay_commits_fixture(
     }
     Ok((counts, overlay.charged_bytes()))
 }
+
+/// Removes the footer of the sealed extent of `generation` beside a closed
+/// database and moves it to `name`, the journal-suffixed name a crash
+/// window leaves it at (such as `checkpoint` or `sealing`).
+#[doc(hidden)]
+pub fn unseal_journal_extent_fixture(
+    database_path: &Path,
+    generation: u64,
+    name: &str,
+) -> Result<(), StorageError> {
+    let database_id = {
+        let database = Database::open(database_path).map_err(database_error)?;
+        let transaction = database.begin_read().map_err(transaction_error)?;
+        crate::store::read_identity_from_read_transaction(&transaction)?
+    };
+    let sealed = crate::journal::sealed_journal_path(database_path, generation);
+    crate::journal::unseal_extent_with_media(&crate::media::RealJournalMedia, &sealed, database_id)
+        .map_err(|_| storage_error(StorageErrorKind::CorruptData))?;
+    let mut target = database_path.as_os_str().to_os_string();
+    target.push(format!(".riffjournal.{name}"));
+    std::fs::rename(&sealed, target).map_err(|_| storage_error(StorageErrorKind::Unavailable))
+}

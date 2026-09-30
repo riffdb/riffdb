@@ -2960,6 +2960,31 @@ pub(crate) fn seal_extent_with_media(
     Ok(Some(sealed))
 }
 
+/// Test support: removes a sealed extent's footer and restores its full
+/// zero-filled capacity, leaving it exactly as a seal that crashed after
+/// anchoring its tail and before writing the footer would.
+#[cfg(any(test, feature = "test-fixtures"))]
+pub(crate) fn unseal_extent_with_media(
+    media: &dyn JournalMedia,
+    path: &Path,
+    database_id: DatabaseId,
+) -> Result<(), JournalIoError> {
+    read_sealed_extent_with_media(media, path, database_id)?;
+    let mut file = media
+        .open_read_write(path)
+        .map_err(|_| JournalIoError::Io)?;
+    let extent = read_selected_extent_header(&mut file, false)?;
+    let to_u64 = |bytes: usize| u64::try_from(bytes).map_err(|_| JournalIoError::Corrupt);
+    let (tail, full) = (
+        to_u64(extent.anchor_position)?,
+        to_u64(extent_file_bytes(extent.data_bytes))?,
+    );
+    file.set_len(tail)
+        .and_then(|()| file.set_len(full))
+        .and_then(|()| file.sync_all())
+        .map_err(|_| JournalIoError::Io)
+}
+
 /// Reads a sealed extent's footer, verifying it against the frames it indexes.
 pub(crate) fn read_sealed_extent_with_media(
     media: &dyn JournalMedia,
@@ -6038,6 +6063,52 @@ mod tests {
             .anchored(logical, EXTENT_DATA_OFFSET + 3 * EXTENT_FRAME_ALIGNMENT)
             .expect("anchored header")
             .encode()
+    }
+
+    // req: REC-005
+    #[test]
+    fn sealed_footer_encoding_matches_its_compatibility_fixture() {
+        let fixture = include_str!("../../../fixtures/compatibility/journal-sealed-footer-v1.hex");
+        let first =
+            recovery_frame(database_id(40)).with_changelog(Some(sample_changelog_binding()));
+        let second = recovery_frame(database_id(40));
+        let footer = SealedExtentFooter {
+            generation: 7,
+            origin: (None, None, [0; HASH_BYTES]),
+            entries: vec![
+                SealedFrameEntry::from_frame(
+                    &first,
+                    FramePlacement {
+                        position: EXTENT_DATA_OFFSET,
+                        padded_len: EXTENT_FRAME_ALIGNMENT,
+                        frame_hash: [0x31; HASH_BYTES],
+                    },
+                ),
+                SealedFrameEntry::from_frame(
+                    &second,
+                    FramePlacement {
+                        position: EXTENT_DATA_OFFSET + EXTENT_FRAME_ALIGNMENT,
+                        padded_len: 2 * EXTENT_FRAME_ALIGNMENT,
+                        frame_hash: [0x32; HASH_BYTES],
+                    },
+                ),
+            ],
+        };
+        let encoded = footer.encode().expect("encode footer");
+        if std::env::var_os("RIFFDB_REGENERATE_JOURNAL_FRAME_FIXTURES").is_some() {
+            let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../fixtures/compatibility");
+            std::fs::write(
+                root.join("journal-sealed-footer-v1.hex"),
+                lower_hex(&encoded) + "\n",
+            )
+            .expect("write sealed footer fixture");
+            return;
+        }
+        assert_eq!(lower_hex(&encoded), fixture.trim());
+        assert_eq!(
+            SealedExtentFooter::decode(&hex_bytes(fixture)).expect("decode fixture"),
+            footer
+        );
     }
 
     // req: REC-005

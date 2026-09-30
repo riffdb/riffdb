@@ -577,6 +577,63 @@ pub(crate) fn hydrate_history_stubs(database: &redb::Database) -> Result<(), Sto
 mod tests {
     use super::*;
 
+    fn lower_hex(bytes: &[u8]) -> String {
+        bytes.iter().map(|byte| format!("{byte:02x}")).collect()
+    }
+
+    // req: REC-005
+    #[test]
+    fn history_stub_encodings_match_their_compatibility_fixture() {
+        let fixture = include_str!("../../../fixtures/compatibility/history-stub-v1.hex");
+        let locator = StubLocator {
+            database_id: DatabaseId::from_unix_milliseconds_and_random(
+                1_700_000_000_000,
+                [0x52; 10],
+            )
+            .expect("database id"),
+            generation: 5,
+            placement: FramePlacement {
+                position: 8192,
+                padded_len: 12_288,
+                frame_hash: [0x5b; 32],
+            },
+        };
+        let segment = locator
+            .summary_stub(SegmentSummary {
+                first_commit_sequence: CommitSequence::new(3),
+                last_commit_sequence: CommitSequence::new(4),
+                terminal_administration_sequence: AdministrationSequence::new(9),
+                command_count: 2,
+                segment_digest: [0x5c; 32],
+            })
+            .expect("segment stub");
+        let receipt = locator.receipt_stub().expect("receipt stub");
+        let encoded = format!("{}\n{}\n", lower_hex(&segment), lower_hex(&receipt));
+        if std::env::var_os("RIFFDB_REGENERATE_JOURNAL_FRAME_FIXTURES").is_some() {
+            std::fs::write(
+                Path::new(env!("CARGO_MANIFEST_DIR"))
+                    .join("../../fixtures/compatibility/history-stub-v1.hex"),
+                &encoded,
+            )
+            .expect("write history stub fixture");
+            return;
+        }
+        assert_eq!(encoded, fixture);
+        for (stub, kind) in [(&segment, StubKind::Segment), (&receipt, StubKind::Receipt)] {
+            let decoded = HistoryStub::decode(stub).expect("decode").expect("a stub");
+            assert_eq!((decoded.kind, decoded.generation), (kind, 5));
+            assert_eq!(decoded.placement, locator.placement);
+        }
+        // A stub-sized value that claims the magic but fails its checksum is
+        // corruption, never an ordinary value.
+        let mut damaged = segment.clone();
+        damaged[40] ^= 1;
+        assert_eq!(
+            HistoryStub::decode(&damaged).map_err(|error| error.kind()),
+            Err(StorageErrorKind::CorruptData)
+        );
+    }
+
     // req: REC-005
     #[test]
     fn an_uncheckpointed_frame_resolves_from_memory_until_its_suffix_drops_it() {

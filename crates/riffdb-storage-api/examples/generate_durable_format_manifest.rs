@@ -242,6 +242,8 @@ fn render_fixture_inventory(
         "fixtures/compatibility/journal-frame-v3.hex",
         "fixtures/compatibility/journal-extent-header-v3.hex",
         "fixtures/compatibility/journal-extent-header-v4.hex",
+        "fixtures/compatibility/journal-sealed-footer-v1.hex",
+        "fixtures/compatibility/history-stub-v1.hex",
     ] {
         entries.push((
             path.to_owned(),

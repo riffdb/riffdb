@@ -5,12 +5,12 @@
 use super::*;
 use riffdb_storage_api::{
     BackupBuildMetadataV1, OfflineBackupPersistencePort, OfflineRestoreOverwritePolicyV1,
-    OfflineRestorePersistencePort, OfflineRestoreResultV1,
+    OfflineRestorePersistencePort, OfflineRestoreResultV1, StorageErrorKind,
 };
 use riffdb_storage_redb::RedbCheckpointTestPoint as Point;
 use riffdb_storage_redb::{
     HistoryStubCensusFixture, history_stub_census_fixture, hydrate_history_stubs_fixture,
-    overlay_commits_fixture, sealed_journal_extents_fixture,
+    overlay_commits_fixture, sealed_journal_extents_fixture, unseal_journal_extent_fixture,
 };
 
 fn seal(
@@ -431,4 +431,207 @@ fn the_uncheckpointed_overlay_holds_history_stubs_not_segments() {
     let reopened = open_operational(RedbStore::open(&path.0).expect("reopen"));
     assert_committed(&reopened, 1);
     assert_committed(&reopened, 2);
+}
+
+/// Every reader of the command history named by ADR-0263 Decision 4 returns
+/// the exact records of command `ordinal`: commit, provenance, terminal
+/// outcome, admission, and durable events.
+fn assert_history_readers(ports: &RedbOperationalPorts, ordinal: u64) {
+    let fixture = command_fixture_at(ordinal);
+    assert_committed(ports, ordinal);
+    assert_eq!(
+        ports
+            .read_provenance(fixture.records.provenance().provenance_id())
+            .expect("provenance"),
+        Some(fixture.records.provenance().clone())
+    );
+    assert_eq!(
+        ports
+            .read_stored_outcome(fixture.pending.identity())
+            .expect("outcome"),
+        Some(fixture.records.stored_outcome().clone())
+    );
+    let AdmissionLookupResultV1::Found(admission) = ports
+        .lookup_admission(fixture.candidates.clone())
+        .expect("admission")
+    else {
+        panic!("a committed identity is terminal");
+    };
+    assert_eq!(
+        *admission,
+        riffdb_storage_api::StoredAdmissionStateV1::StoredOutcome(
+            fixture.records.stored_outcome().clone()
+        )
+    );
+    for event in fixture.records.events() {
+        assert_eq!(
+            ports.read_durable_event(event.event_id()).expect("event"),
+            Some(event.clone())
+        );
+    }
+}
+
+/// Publishes commands 1 and 2, installs an asynchronous checkpoint over them,
+/// publishes command 3 after it, and closes the store: 1 and 2 are history in
+/// a sealed extent, 3 an uncheckpointed frame in the active extent.
+fn sealed_and_live_history(label: &str) -> TestDatabasePath {
+    let path = TestDatabasePath::new(label);
+    prepare_command_database(&path.0);
+    let (controller, schedule) = RedbTestController::checkpoint_schedule();
+    let ports = open_operational(
+        RedbStore::open_with_test_controller(&path.0, controller).expect("controlled open"),
+    );
+    assert!(command_audit_phases(&ports).is_empty());
+    seal(&ports, 1).wait().expect("publish first group");
+    seal(&ports, 2).wait().expect("publish second group");
+    install_checkpoint(&ports, &schedule);
+    seal(&ports, 3).wait().expect("publish third group");
+    drop(ports);
+    drop(schedule);
+    path
+}
+
+// req: REC-005
+#[test]
+fn checkpoint_materializes_no_commits_or_history_rows() {
+    let path = TestDatabasePath::new("retained-extent-no-history-rows");
+    prepare_command_database(&path.0);
+    let baseline = history_stub_census_fixture(&path.0).expect("baseline census");
+    let (controller, schedule) = RedbTestController::checkpoint_schedule();
+    let ports = open_operational(
+        RedbStore::open_with_test_controller(&path.0, controller).expect("controlled open"),
+    );
+    assert!(command_audit_phases(&ports).is_empty());
+    for ordinal in 1..=3 {
+        seal(&ports, ordinal).wait().expect("publish group");
+    }
+    install_checkpoint(&ports, &schedule);
+    drop(ports);
+    drop(schedule);
+
+    let census = history_stub_census_fixture(&path.0).expect("census");
+    let ((segment_stubs, full_segments), (receipt_stubs, _)) = census_growth(baseline, census);
+    assert_eq!(
+        segment_stubs, 3,
+        "each checkpointed segment is a history stub"
+    );
+    assert_eq!(full_segments, 0, "no segment row reaches redb");
+    assert!(
+        receipt_stubs >= 3,
+        "each journaled receipt is a history stub"
+    );
+    assert_eq!(
+        census.journaled_full_receipts, baseline.journaled_full_receipts,
+        "no journaled receipt row reaches redb"
+    );
+}
+
+// req: REC-005
+#[test]
+fn history_readers_resolve_through_the_history_index() {
+    let path = sealed_and_live_history("retained-extent-readers");
+    assert_eq!(
+        sealed_journal_extents_fixture(&path.0)
+            .expect("sealed")
+            .len(),
+        1
+    );
+    // Reopened, 1 and 2 resolve from the sealed extent, 3 from the live one.
+    for _ in 0..2 {
+        let ports = open_operational(RedbStore::open(&path.0).expect("reopen"));
+        for ordinal in 1..=3 {
+            assert_history_readers(&ports, ordinal);
+        }
+        // A new command's stub resolves from the uncheckpointed frame in memory.
+        drop(ports);
+    }
+    let ports = open_operational(RedbStore::open(&path.0).expect("reopen"));
+    let _ = command_audit_phases(&ports);
+    seal(&ports, 4).wait().expect("publish fourth group");
+    for ordinal in 1..=4 {
+        assert_history_readers(&ports, ordinal);
+    }
+    drop(ports);
+    let findings = collect_structural_findings(RedbStore::open(&path.0).expect("validate"));
+    assert!(
+        findings.is_empty(),
+        "every history row resolves: {findings:?}"
+    );
+}
+
+// req: REC-005
+#[test]
+fn sealed_extent_crash_windows_recover_to_a_consistent_history_index() {
+    // A crash can leave the installed extent at the checkpoint name (before
+    // the sealer retired it) or at the sealing name without its footer
+    // (before the seal wrote it). A crash between rotation's renames is
+    // covered by a_crash_between_rotation_renames_recovers_to_fresh_extent_generations.
+    for window in ["checkpoint", "sealing"] {
+        let path = sealed_and_live_history(&format!("retained-extent-window-{window}"));
+        let sealed = sealed_journal_extents_fixture(&path.0).expect("sealed");
+        assert_eq!(sealed.len(), 1);
+        unseal_journal_extent_fixture(&path.0, sealed[0].0, window).expect("recreate window");
+        assert!(
+            sealed_journal_extents_fixture(&path.0)
+                .expect("unsealed")
+                .is_empty()
+        );
+
+        for _ in 0..2 {
+            let ports = open_operational(
+                RedbStore::open(&path.0)
+                    .unwrap_or_else(|error| panic!("recover {window}: {error:?}")),
+            );
+            for ordinal in 1..=3 {
+                assert_history_readers(&ports, ordinal);
+            }
+            drop(ports);
+            assert_eq!(
+                sealed_journal_extents_fixture(&path.0).expect("resealed"),
+                sealed,
+                "recovery reseals the same extent under the same generation ({window})"
+            );
+        }
+        let findings = collect_structural_findings(RedbStore::open(&path.0).expect("validate"));
+        assert!(findings.is_empty(), "{window}: {findings:?}");
+    }
+}
+
+// req: REC-005
+#[test]
+fn missing_or_corrupt_sealed_extent_is_a_typed_refusal() {
+    for damage in ["missing", "corrupt"] {
+        let path = sealed_and_live_history(&format!("retained-extent-damage-{damage}"));
+        let sealed = sealed_journal_extents_fixture(&path.0).expect("sealed");
+        let file = {
+            let mut name = path.0.as_os_str().to_os_string();
+            name.push(format!(".riffjournal.sealed.{:020}", sealed[0].0));
+            std::path::PathBuf::from(name)
+        };
+        if damage == "missing" {
+            std::fs::remove_file(&file).expect("remove sealed extent");
+        } else {
+            // Flip one byte inside the first frame's payload.
+            let mut bytes = std::fs::read(&file).expect("read sealed extent");
+            bytes[8192 + 256] ^= 0x5a;
+            std::fs::write(&file, bytes).expect("write damaged extent");
+        }
+        // The damaged history is never presented as absent or as other bytes:
+        // the open refuses, or every read of it does, with a typed error.
+        match RedbStore::open(&path.0) {
+            Err(error) => assert_eq!(error.kind(), StorageErrorKind::CorruptData, "{damage}"),
+            Ok(store) => {
+                let ports = open_operational(store);
+                let fixture = command_fixture_at(1);
+                assert_eq!(
+                    ports
+                        .read_commit(fixture.records.commit().commit_sequence())
+                        .map_err(|error| error.kind()),
+                    Err(StorageErrorKind::CorruptData),
+                    "{damage}"
+                );
+                assert_history_readers(&ports, 3);
+            }
+        }
+    }
 }
