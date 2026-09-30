@@ -27943,8 +27943,9 @@ work_packages:
   name: Online retention by sealed-extent retirement
   tier: guarantee
   depends_on: [WP-814]
-  objective: Implement ADR-0263 Amendment 4. Online logical pruning advances in
-    administration transitions of at most 256 sequences, preserving retained views
+  objective: Implement ADR-0263 Amendments 4 and 5. Standard-profile logical pruning
+    advances in journaled administration transitions of at most 256 sequences,
+    preserving retained views
     and every fence. Reclaim or recycle whole sealed extents only after durable
     pruning and the existing source reclamation protocol remove every command and
     receipt reference; keep file operations off the ordered writer gate.
@@ -27955,7 +27956,8 @@ work_packages:
     fixtures/**, scripts/**, benchmarks/**, examples/app-baseline/**, release/evidence/**,
     docs/**]
   deliverables:
-  - Bounded logical pruning under every ADR-0182 fence, at most 256 sequences per step
+  - Bounded journaled logical pruning under every ADR-0182 fence, at most 256 sequences per step
+  - Versioned prune frames, frozen V2/V3 compatibility, and backup-bound offline marker upgrade
   - Whole-file reclamation only after command and receipt references are durably released
   - Crash coverage across retained-view materialization, watermark advance, index
     removal, and file deletion or recycling
