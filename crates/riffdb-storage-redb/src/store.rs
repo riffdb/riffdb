@@ -146,7 +146,7 @@ use crate::transient::{
     TransientIndexDelta, TransientIndexState, TransientIndexes, UnpublishedCommandIndexes,
 };
 
-/// Fixed redb page-cache budget for the production adapter.
+/// Fixed redb page-cache budget for the derived sidecar.
 ///
 /// redb's ambient default is 1 GiB and grows with pages touched. Keeping the
 /// adapter's cache explicit prevents a clean reopen from acquiring
@@ -154,6 +154,11 @@ use crate::transient::{
 /// reads and writes. This is an internal performance bound; it does not alter
 /// the durable format or transaction semantics.
 const REDB_CACHE_SIZE_BYTES: usize = 4 * 1024 * 1024;
+
+/// The authoritative checkpoint needs its own bounded point-read cache while
+/// command history is retained in the journal. Keep the derived sidecar at the
+/// smaller budget above; both remain subject to the existing lifecycle gates.
+const PRIMARY_REDB_CACHE_SIZE_BYTES: usize = 12 * 1024 * 1024;
 
 /// Sibling file that holds rebuildable derived state for a primary redb path.
 pub(crate) fn derived_store_path(path: &Path) -> PathBuf {
@@ -2466,7 +2471,7 @@ impl RedbStore {
         let repair_observed = Arc::new(AtomicBool::new(false));
         let repair_observed_callback = Arc::clone(&repair_observed);
         let mut builder = Builder::new();
-        builder.set_cache_size(REDB_CACHE_SIZE_BYTES);
+        builder.set_cache_size(PRIMARY_REDB_CACHE_SIZE_BYTES);
         builder.set_repair_callback(move |session| {
             repair_observed_callback.store(true, Ordering::Release);
             // Bounded progress telemetry only; do not enable quick_repair
