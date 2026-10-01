@@ -8367,7 +8367,20 @@
     "read_behavior": "All original reads, decode and storage errors remain on their existing path. No probe entry answers a read.",
     "focused_snapshot_tests_passed": 11,
     "focused_all_feature_clippy": "passed",
-    "scoped_acceptance": "in_progress",
-    "full_ci": "required for final runtime"
+    "scoped_acceptance": {
+      "commit": "3863271cada2f734e589ecc783975e3f12cb97c2",
+      "checks_passed": 6,
+      "checks_failed": 0,
+      "tests_passed": 1094,
+      "existing_tests_skipped": 1,
+      "runner_threads": 4
+    },
+    "full_ci": "required for final runtime",
+    "drop_order_correction": {
+      "commit": "df66aead22a518bf7f55a0ea5f293b66d1f3438e",
+      "focused_all_feature_clippy": "passed",
+      "probe_tests_passed": 2,
+      "handbook_check": "passed"
+    }
   }
 }

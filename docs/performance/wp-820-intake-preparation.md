@@ -198,7 +198,9 @@ The existing 15-field checkpoint census remains unchanged.
 
 Two probe tests prove exact-byte classification and entry/payload bounds; all
 eleven focused snapshot tests and affected all-feature clippy pass. Scoped
-acceptance is running. The last full CI was interrupted by the agent server
+acceptance at `3863271c` passes six checks and all 1,094 tests, with one existing
+skipped scale test. The following drop-order correction at `df66aead` passes
+affected all-feature clippy and both probe tests; the handbook check passes. The last full CI was interrupted by the agent server
 restart and is incomplete, despite having no failure in its available log.
 Live measurement is pending clarification of exclusive benchmark availability.
 The package remains open and no throughput improvement is claimed.
