@@ -1,0 +1,1178 @@
+{
+  "schema": "riffdb-wp820-storage-construction-counts-v1",
+  "date": "2026-10-01",
+  "base_commit": "445927ccef2ca9b2e1f8643559972dbbf98e3728",
+  "diagnostic_commit": "02497ca44227faa920453944c2179a7b94112ccb",
+  "machine": {
+    "vcpus": 8,
+    "cpu": "AMD EPYC 9B14"
+  },
+  "load": {
+    "kind": "write_only",
+    "clients": 32,
+    "duration_seconds": 60,
+    "warmup_seconds": 10
+  },
+  "exclusive_monitor_checks": 99,
+  "sharing_detected": false,
+  "returncode": 0,
+  "complete_process_generation_commands": 248918,
+  "generation_validation": {
+    "seed_and_reopen_generations_excluded": true,
+    "exact_ordered_writer_command_applications_match_harness": true,
+    "collected_generation_count": 4,
+    "collected_bounded_counter_lines": 69
+  },
+  "diagnostic_resources": {
+    "throughput": 3472,
+    "latency": {
+      "max_ns": 719253258,
+      "mean_ns": 9211710,
+      "min_ns": 1831020,
+      "p50_ns": 7077887,
+      "p95_ns": 8912895,
+      "p99_ns": 13631487,
+      "sample_count": 208371
+    },
+    "writer_cpu_ticks_sampled": 5200,
+    "ticks_per_second": 100,
+    "writer_cpu_us_per_process_scope_command": 208.90413710539212
+  },
+  "resource_delta": {
+    "cpu_ticks": 15545,
+    "durable_bytes_after": 3430367847,
+    "durable_bytes_before": 379871847,
+    "durable_bytes_growth": 3050496000,
+    "durable_bytes_growth_per_process_scope_committed_command": 12255,
+    "durable_bytes_growth_per_successful_mutation": 14639,
+    "heap_envelope_bytes": 1203470336,
+    "normalization_scope": "complete measured process generation including warmup",
+    "process_identity_stable": true,
+    "process_read_bytes": 0,
+    "process_scope_committed_commands": 248918,
+    "process_write_bytes": 22411837440,
+    "process_write_bytes_per_process_scope_committed_command": 90037,
+    "process_write_bytes_per_successful_mutation": 107557,
+    "rss_bytes_after": 1117327360,
+    "rss_bytes_before": 32772096,
+    "rss_bytes_peak_sampled": 1155772416,
+    "scope": "before_after_point",
+    "successful_mutations": 208371,
+    "vm_data_bytes_after": 1388748800,
+    "vm_data_bytes_before": 185278464
+  },
+  "roles": {
+    "other": {
+      "reads": {
+        "journal_to_composite_calls": {
+          "count": 0,
+          "per_command": 0.0
+        },
+        "journal_to_composite_key_clone_bytes": {
+          "count": 0,
+          "per_command": 0.0
+        },
+        "journal_to_composite_value_clone_bytes": {
+          "count": 0,
+          "per_command": 0.0
+        },
+        "journal_to_composite_nonempty_value_requests": {
+          "count": 0,
+          "per_command": 0.0
+        },
+        "writer_private_snapshot_calls": {
+          "count": 0,
+          "per_command": 0.0
+        },
+        "writer_private_binding_targets": {
+          "count": 0,
+          "per_command": 0.0
+        },
+        "writer_private_root_validation_targets": {
+          "count": 0,
+          "per_command": 0.0
+        },
+        "writer_private_cascade_targets": {
+          "count": 0,
+          "per_command": 0.0
+        },
+        "writer_private_range_targets": {
+          "count": 0,
+          "per_command": 0.0
+        },
+        "transaction_current_idempotency_calls": {
+          "count": 0,
+          "per_command": 0.0
+        },
+        "provenance_exists_calls": {
+          "count": 0,
+          "per_command": 0.0
+        },
+        "preparation_snapshot_calls": {
+          "count": 0,
+          "per_command": 0.0
+        },
+        "changelog_successor_receipts": {
+          "count": 0,
+          "per_command": 0.0
+        },
+        "command_record_applications": {
+          "count": 0,
+          "per_command": 0.0
+        }
+      },
+      "tables": {
+        "meta": {
+          "backend_requests": 0,
+          "checkpoint_requests": 2201,
+          "checkpoint_value_copy_bytes": 60
+        },
+        "entities": {
+          "backend_requests": 0,
+          "checkpoint_requests": 96,
+          "checkpoint_value_copy_bytes": 9760
+        },
+        "secondary_indexes": {
+          "backend_requests": 0,
+          "checkpoint_requests": 0,
+          "checkpoint_value_copy_bytes": 0
+        },
+        "index_epochs": {
+          "backend_requests": 0,
+          "checkpoint_requests": 0,
+          "checkpoint_value_copy_bytes": 0
+        },
+        "idempotency": {
+          "backend_requests": 0,
+          "checkpoint_requests": 248918,
+          "checkpoint_value_copy_bytes": 0
+        },
+        "idempotency_pending": {
+          "backend_requests": 0,
+          "checkpoint_requests": 248918,
+          "checkpoint_value_copy_bytes": 0
+        },
+        "events": {
+          "backend_requests": 0,
+          "checkpoint_requests": 0,
+          "checkpoint_value_copy_bytes": 0
+        },
+        "event_routes": {
+          "backend_requests": 0,
+          "checkpoint_requests": 0,
+          "checkpoint_value_copy_bytes": 0
+        },
+        "outbox": {
+          "backend_requests": 0,
+          "checkpoint_requests": 0,
+          "checkpoint_value_copy_bytes": 0
+        },
+        "provenance": {
+          "backend_requests": 0,
+          "checkpoint_requests": 0,
+          "checkpoint_value_copy_bytes": 0
+        },
+        "commits": {
+          "backend_requests": 0,
+          "checkpoint_requests": 0,
+          "checkpoint_value_copy_bytes": 0
+        },
+        "audit": {
+          "backend_requests": 0,
+          "checkpoint_requests": 0,
+          "checkpoint_value_copy_bytes": 0
+        },
+        "audit_by_request": {
+          "backend_requests": 0,
+          "checkpoint_requests": 0,
+          "checkpoint_value_copy_bytes": 0
+        },
+        "entity_chain_heads": {
+          "backend_requests": 0,
+          "checkpoint_requests": 0,
+          "checkpoint_value_copy_bytes": 0
+        },
+        "vector_evidence": {
+          "backend_requests": 0,
+          "checkpoint_requests": 0,
+          "checkpoint_value_copy_bytes": 0
+        },
+        "vector_observations": {
+          "backend_requests": 0,
+          "checkpoint_requests": 0,
+          "checkpoint_value_copy_bytes": 0
+        },
+        "vector_evidence_index": {
+          "backend_requests": 0,
+          "checkpoint_requests": 0,
+          "checkpoint_value_copy_bytes": 0
+        },
+        "idempotency_locators": {
+          "backend_requests": 0,
+          "checkpoint_requests": 248918,
+          "checkpoint_value_copy_bytes": 0
+        },
+        "provenance_locators": {
+          "backend_requests": 0,
+          "checkpoint_requests": 0,
+          "checkpoint_value_copy_bytes": 0
+        },
+        "audit_by_request_locators": {
+          "backend_requests": 0,
+          "checkpoint_requests": 0,
+          "checkpoint_value_copy_bytes": 0
+        },
+        "history_tombstones": {
+          "backend_requests": 0,
+          "checkpoint_requests": 0,
+          "checkpoint_value_copy_bytes": 0
+        },
+        "outbox_status": {
+          "backend_requests": 0,
+          "checkpoint_requests": 0,
+          "checkpoint_value_copy_bytes": 0
+        }
+      },
+      "construction": {
+        "overlay_new_nodes": {
+          "count": 37219,
+          "per_command": 0.1495231361331844
+        },
+        "overlay_new_node_requested_bytes": {
+          "count": 2679768,
+          "per_command": 10.765665801589279
+        },
+        "overlay_cloned_nodes": {
+          "count": 0,
+          "per_command": 0.0
+        },
+        "overlay_clone_requested_bytes": {
+          "count": 0,
+          "per_command": 0.0
+        },
+        "make_mut_unique_strong_observations": {
+          "count": 0,
+          "per_command": 0.0
+        },
+        "make_mut_shared_strong_observations": {
+          "count": 0,
+          "per_command": 0.0
+        },
+        "make_mut_weak_observations": {
+          "count": 0,
+          "per_command": 0.0
+        },
+        "overlay_key_arc_requests": {
+          "count": 0,
+          "per_command": 0.0
+        },
+        "overlay_key_arc_requested_bytes": {
+          "count": 0,
+          "per_command": 0.0
+        },
+        "overlay_key_copy_bytes": {
+          "count": 0,
+          "per_command": 0.0
+        },
+        "overlay_value_arc_requests": {
+          "count": 0,
+          "per_command": 0.0
+        },
+        "overlay_value_arc_requested_bytes": {
+          "count": 0,
+          "per_command": 0.0
+        },
+        "overlay_value_copy_bytes": {
+          "count": 0,
+          "per_command": 0.0
+        },
+        "owned_point_nonempty_vec_requests": {
+          "count": 14570,
+          "per_command": 0.058533332262030065
+        },
+        "owned_point_copy_bytes": {
+          "count": 291400,
+          "per_command": 1.1706666452406014
+        },
+        "owned_before_image_nonempty_vec_requests": {
+          "count": 0,
+          "per_command": 0.0
+        },
+        "owned_before_image_copy_bytes": {
+          "count": 0,
+          "per_command": 0.0
+        },
+        "lineage_key_box_requests": {
+          "count": 0,
+          "per_command": 0.0
+        },
+        "lineage_key_copy_bytes": {
+          "count": 0,
+          "per_command": 0.0
+        },
+        "lineage_key_vector_requests": {
+          "count": 0,
+          "per_command": 0.0
+        },
+        "lineage_key_vector_requested_bytes": {
+          "count": 0,
+          "per_command": 0.0
+        },
+        "lineage_arc_requests": {
+          "count": 0,
+          "per_command": 0.0
+        },
+        "lineage_arc_requested_bytes": {
+          "count": 0,
+          "per_command": 0.0
+        },
+        "rebase_key_arc_requests": {
+          "count": 40696,
+          "per_command": 0.1634915916084815
+        },
+        "rebase_key_arc_requested_bytes": {
+          "count": 3026240,
+          "per_command": 12.157577997573497
+        },
+        "rebase_key_copy_bytes": {
+          "count": 2375104,
+          "per_command": 9.541712531837794
+        },
+        "staged_mutations": {
+          "count": 0,
+          "per_command": 0.0
+        },
+        "rebases": {
+          "count": 1,
+          "per_command": 4.017387252026772e-06
+        },
+        "receipt_put_key_box_requests": {
+          "count": 16663631,
+          "per_command": 66.94425875187812
+        },
+        "receipt_put_key_copy_bytes": {
+          "count": 981219919,
+          "per_command": 3941.940394025342
+        },
+        "receipt_put_value_box_requests": {
+          "count": 16663631,
+          "per_command": 66.94425875187812
+        },
+        "receipt_put_value_copy_bytes": {
+          "count": 8298228717,
+          "per_command": 33337.19826207827
+        },
+        "receipt_delete_key_box_requests": {
+          "count": 14376,
+          "per_command": 0.057753959135136874
+        },
+        "receipt_delete_key_copy_bytes": {
+          "count": 1437600,
+          "per_command": 5.775395913513687
+        },
+        "coalescer_records": {
+          "count": 9035095,
+          "per_command": 36.297475473850824
+        },
+        "coalescer_repeated_key_records": {
+          "count": 18048,
+          "per_command": 0.07250580512457917
+        }
+      }
+    },
+    "ordered_writer": {
+      "reads": {
+        "journal_to_composite_calls": {
+          "count": 2237723,
+          "per_command": 8.989799853767105
+        },
+        "journal_to_composite_key_clone_bytes": {
+          "count": 130718430,
+          "per_command": 525.1465542869539
+        },
+        "journal_to_composite_value_clone_bytes": {
+          "count": 1142779982,
+          "per_command": 4590.989731558184
+        },
+        "journal_to_composite_nonempty_value_requests": {
+          "count": 2235737,
+          "per_command": 8.98182132268458
+        },
+        "writer_private_snapshot_calls": {
+          "count": 247020,
+          "per_command": 0.9923749989956532
+        },
+        "writer_private_binding_targets": {
+          "count": 914221,
+          "per_command": 3.6727797909351674
+        },
+        "writer_private_root_validation_targets": {
+          "count": 0,
+          "per_command": 0.0
+        },
+        "writer_private_cascade_targets": {
+          "count": 0,
+          "per_command": 0.0
+        },
+        "writer_private_range_targets": {
+          "count": 0,
+          "per_command": 0.0
+        },
+        "transaction_current_idempotency_calls": {
+          "count": 248918,
+          "per_command": 1.0
+        },
+        "provenance_exists_calls": {
+          "count": 248918,
+          "per_command": 1.0
+        },
+        "preparation_snapshot_calls": {
+          "count": 0,
+          "per_command": 0.0
+        },
+        "changelog_successor_receipts": {
+          "count": 15726,
+          "per_command": 0.06317743192537302
+        },
+        "command_record_applications": {
+          "count": 248918,
+          "per_command": 1.0
+        }
+      },
+      "tables": {
+        "meta": {
+          "backend_requests": 110086,
+          "checkpoint_requests": 31467,
+          "checkpoint_value_copy_bytes": 818050
+        },
+        "entities": {
+          "backend_requests": 1456378,
+          "checkpoint_requests": 1010885,
+          "checkpoint_value_copy_bytes": 94640197
+        },
+        "secondary_indexes": {
+          "backend_requests": 402956,
+          "checkpoint_requests": 402956,
+          "checkpoint_value_copy_bytes": 442009
+        },
+        "index_epochs": {
+          "backend_requests": 237387,
+          "checkpoint_requests": 36,
+          "checkpoint_value_copy_bytes": 3420
+        },
+        "idempotency": {
+          "backend_requests": 248918,
+          "checkpoint_requests": 499734,
+          "checkpoint_value_copy_bytes": 0
+        },
+        "idempotency_pending": {
+          "backend_requests": 248918,
+          "checkpoint_requests": 499734,
+          "checkpoint_value_copy_bytes": 0
+        },
+        "events": {
+          "backend_requests": 0,
+          "checkpoint_requests": 0,
+          "checkpoint_value_copy_bytes": 0
+        },
+        "event_routes": {
+          "backend_requests": 0,
+          "checkpoint_requests": 0,
+          "checkpoint_value_copy_bytes": 0
+        },
+        "outbox": {
+          "backend_requests": 0,
+          "checkpoint_requests": 0,
+          "checkpoint_value_copy_bytes": 0
+        },
+        "provenance": {
+          "backend_requests": 248918,
+          "checkpoint_requests": 248918,
+          "checkpoint_value_copy_bytes": 0
+        },
+        "commits": {
+          "backend_requests": 31166,
+          "checkpoint_requests": 15727,
+          "checkpoint_value_copy_bytes": 184
+        },
+        "audit": {
+          "backend_requests": 15726,
+          "checkpoint_requests": 15726,
+          "checkpoint_value_copy_bytes": 0
+        },
+        "audit_by_request": {
+          "backend_requests": 0,
+          "checkpoint_requests": 0,
+          "checkpoint_value_copy_bytes": 0
+        },
+        "entity_chain_heads": {
+          "backend_requests": 348531,
+          "checkpoint_requests": 300463,
+          "checkpoint_value_copy_bytes": 212558
+        },
+        "vector_evidence": {
+          "backend_requests": 0,
+          "checkpoint_requests": 0,
+          "checkpoint_value_copy_bytes": 0
+        },
+        "vector_observations": {
+          "backend_requests": 0,
+          "checkpoint_requests": 0,
+          "checkpoint_value_copy_bytes": 0
+        },
+        "vector_evidence_index": {
+          "backend_requests": 0,
+          "checkpoint_requests": 0,
+          "checkpoint_value_copy_bytes": 0
+        },
+        "idempotency_locators": {
+          "backend_requests": 248918,
+          "checkpoint_requests": 499734,
+          "checkpoint_value_copy_bytes": 0
+        },
+        "provenance_locators": {
+          "backend_requests": 248918,
+          "checkpoint_requests": 248918,
+          "checkpoint_value_copy_bytes": 0
+        },
+        "audit_by_request_locators": {
+          "backend_requests": 0,
+          "checkpoint_requests": 0,
+          "checkpoint_value_copy_bytes": 0
+        },
+        "history_tombstones": {
+          "backend_requests": 0,
+          "checkpoint_requests": 0,
+          "checkpoint_value_copy_bytes": 0
+        },
+        "outbox_status": {
+          "backend_requests": 0,
+          "checkpoint_requests": 0,
+          "checkpoint_value_copy_bytes": 0
+        }
+      },
+      "construction": {
+        "overlay_new_nodes": {
+          "count": 3346165,
+          "per_command": 13.442840614178163
+        },
+        "overlay_new_node_requested_bytes": {
+          "count": 240923880,
+          "per_command": 967.8845242208278
+        },
+        "overlay_cloned_nodes": {
+          "count": 12926835,
+          "per_command": 51.932102138053494
+        },
+        "overlay_clone_requested_bytes": {
+          "count": 930732120,
+          "per_command": 3739.1113539398516
+        },
+        "make_mut_unique_strong_observations": {
+          "count": 29527281,
+          "per_command": 118.62252227641231
+        },
+        "make_mut_shared_strong_observations": {
+          "count": 12926835,
+          "per_command": 51.932102138053494
+        },
+        "make_mut_weak_observations": {
+          "count": 0,
+          "per_command": 0.0
+        },
+        "overlay_key_arc_requests": {
+          "count": 2253449,
+          "per_command": 9.052977285692476
+        },
+        "overlay_key_arc_requested_bytes": {
+          "count": 166899422,
+          "per_command": 670.4996103134365
+        },
+        "overlay_key_copy_bytes": {
+          "count": 130844238,
+          "per_command": 525.651973742357
+        },
+        "overlay_value_arc_requests": {
+          "count": 2251463,
+          "per_command": 9.044998754609951
+        },
+        "overlay_value_arc_requested_bytes": {
+          "count": 1181696974,
+          "per_command": 4747.334359106212
+        },
+        "overlay_value_copy_bytes": {
+          "count": 1145673566,
+          "per_command": 4602.614379032452
+        },
+        "owned_point_nonempty_vec_requests": {
+          "count": 826015,
+          "per_command": 3.318422130982894
+        },
+        "owned_point_copy_bytes": {
+          "count": 170359964,
+          "per_command": 684.4019476293398
+        },
+        "owned_before_image_nonempty_vec_requests": {
+          "count": 15724,
+          "per_command": 0.06316939715086896
+        },
+        "owned_before_image_copy_bytes": {
+          "count": 298756,
+          "per_command": 1.2002185458665102
+        },
+        "lineage_key_box_requests": {
+          "count": 2237723,
+          "per_command": 8.989799853767105
+        },
+        "lineage_key_copy_bytes": {
+          "count": 130718430,
+          "per_command": 525.1465542869539
+        },
+        "lineage_key_vector_requests": {
+          "count": 15726,
+          "per_command": 0.06317743192537302
+        },
+        "lineage_key_vector_requested_bytes": {
+          "count": 53705352,
+          "per_command": 215.7551964904105
+        },
+        "lineage_arc_requests": {
+          "count": 15726,
+          "per_command": 0.06317743192537302
+        },
+        "lineage_arc_requested_bytes": {
+          "count": 629040,
+          "per_command": 2.5270972770149207
+        },
+        "rebase_key_arc_requests": {
+          "count": 1469448,
+          "per_command": 5.903341662716236
+        },
+        "rebase_key_arc_requested_bytes": {
+          "count": 109271376,
+          "per_command": 438.98543295382416
+        },
+        "rebase_key_copy_bytes": {
+          "count": 85760208,
+          "per_command": 344.53196635036437
+        },
+        "staged_mutations": {
+          "count": 2237723,
+          "per_command": 8.989799853767105
+        },
+        "rebases": {
+          "count": 9,
+          "per_command": 3.6156485268240946e-05
+        },
+        "receipt_put_key_box_requests": {
+          "count": 3675483,
+          "per_command": 14.765838549241115
+        },
+        "receipt_put_key_copy_bytes": {
+          "count": 222917664,
+          "per_command": 895.5465816051873
+        },
+        "receipt_put_value_box_requests": {
+          "count": 3675483,
+          "per_command": 14.765838549241115
+        },
+        "receipt_put_value_copy_bytes": {
+          "count": 1415978146,
+          "per_command": 5688.532552888903
+        },
+        "receipt_delete_key_box_requests": {
+          "count": 4071,
+          "per_command": 0.01635478350300099
+        },
+        "receipt_delete_key_copy_bytes": {
+          "count": 407100,
+          "per_command": 1.635478350300099
+        },
+        "coalescer_records": {
+          "count": 3674693,
+          "per_command": 14.762664813312014
+        },
+        "coalescer_repeated_key_records": {
+          "count": 4520,
+          "per_command": 0.01815859037916101
+        }
+      }
+    },
+    "preparation": {
+      "reads": {
+        "journal_to_composite_calls": {
+          "count": 0,
+          "per_command": 0.0
+        },
+        "journal_to_composite_key_clone_bytes": {
+          "count": 0,
+          "per_command": 0.0
+        },
+        "journal_to_composite_value_clone_bytes": {
+          "count": 0,
+          "per_command": 0.0
+        },
+        "journal_to_composite_nonempty_value_requests": {
+          "count": 0,
+          "per_command": 0.0
+        },
+        "writer_private_snapshot_calls": {
+          "count": 0,
+          "per_command": 0.0
+        },
+        "writer_private_binding_targets": {
+          "count": 0,
+          "per_command": 0.0
+        },
+        "writer_private_root_validation_targets": {
+          "count": 0,
+          "per_command": 0.0
+        },
+        "writer_private_cascade_targets": {
+          "count": 0,
+          "per_command": 0.0
+        },
+        "writer_private_range_targets": {
+          "count": 0,
+          "per_command": 0.0
+        },
+        "transaction_current_idempotency_calls": {
+          "count": 0,
+          "per_command": 0.0
+        },
+        "provenance_exists_calls": {
+          "count": 0,
+          "per_command": 0.0
+        },
+        "preparation_snapshot_calls": {
+          "count": 1898,
+          "per_command": 0.007625001004346813
+        },
+        "changelog_successor_receipts": {
+          "count": 0,
+          "per_command": 0.0
+        },
+        "command_record_applications": {
+          "count": 0,
+          "per_command": 0.0
+        }
+      },
+      "tables": {
+        "meta": {
+          "backend_requests": 0,
+          "checkpoint_requests": 0,
+          "checkpoint_value_copy_bytes": 0
+        },
+        "entities": {
+          "backend_requests": 0,
+          "checkpoint_requests": 5240,
+          "checkpoint_value_copy_bytes": 658982
+        },
+        "secondary_indexes": {
+          "backend_requests": 0,
+          "checkpoint_requests": 0,
+          "checkpoint_value_copy_bytes": 0
+        },
+        "index_epochs": {
+          "backend_requests": 0,
+          "checkpoint_requests": 0,
+          "checkpoint_value_copy_bytes": 0
+        },
+        "idempotency": {
+          "backend_requests": 0,
+          "checkpoint_requests": 0,
+          "checkpoint_value_copy_bytes": 0
+        },
+        "idempotency_pending": {
+          "backend_requests": 0,
+          "checkpoint_requests": 0,
+          "checkpoint_value_copy_bytes": 0
+        },
+        "events": {
+          "backend_requests": 0,
+          "checkpoint_requests": 0,
+          "checkpoint_value_copy_bytes": 0
+        },
+        "event_routes": {
+          "backend_requests": 0,
+          "checkpoint_requests": 0,
+          "checkpoint_value_copy_bytes": 0
+        },
+        "outbox": {
+          "backend_requests": 0,
+          "checkpoint_requests": 0,
+          "checkpoint_value_copy_bytes": 0
+        },
+        "provenance": {
+          "backend_requests": 0,
+          "checkpoint_requests": 0,
+          "checkpoint_value_copy_bytes": 0
+        },
+        "commits": {
+          "backend_requests": 0,
+          "checkpoint_requests": 0,
+          "checkpoint_value_copy_bytes": 0
+        },
+        "audit": {
+          "backend_requests": 0,
+          "checkpoint_requests": 0,
+          "checkpoint_value_copy_bytes": 0
+        },
+        "audit_by_request": {
+          "backend_requests": 0,
+          "checkpoint_requests": 0,
+          "checkpoint_value_copy_bytes": 0
+        },
+        "entity_chain_heads": {
+          "backend_requests": 0,
+          "checkpoint_requests": 0,
+          "checkpoint_value_copy_bytes": 0
+        },
+        "vector_evidence": {
+          "backend_requests": 0,
+          "checkpoint_requests": 0,
+          "checkpoint_value_copy_bytes": 0
+        },
+        "vector_observations": {
+          "backend_requests": 0,
+          "checkpoint_requests": 0,
+          "checkpoint_value_copy_bytes": 0
+        },
+        "vector_evidence_index": {
+          "backend_requests": 0,
+          "checkpoint_requests": 0,
+          "checkpoint_value_copy_bytes": 0
+        },
+        "idempotency_locators": {
+          "backend_requests": 0,
+          "checkpoint_requests": 0,
+          "checkpoint_value_copy_bytes": 0
+        },
+        "provenance_locators": {
+          "backend_requests": 0,
+          "checkpoint_requests": 0,
+          "checkpoint_value_copy_bytes": 0
+        },
+        "audit_by_request_locators": {
+          "backend_requests": 0,
+          "checkpoint_requests": 0,
+          "checkpoint_value_copy_bytes": 0
+        },
+        "history_tombstones": {
+          "backend_requests": 0,
+          "checkpoint_requests": 0,
+          "checkpoint_value_copy_bytes": 0
+        },
+        "outbox_status": {
+          "backend_requests": 0,
+          "checkpoint_requests": 0,
+          "checkpoint_value_copy_bytes": 0
+        }
+      },
+      "construction": {
+        "overlay_new_nodes": {
+          "count": 0,
+          "per_command": 0.0
+        },
+        "overlay_new_node_requested_bytes": {
+          "count": 0,
+          "per_command": 0.0
+        },
+        "overlay_cloned_nodes": {
+          "count": 0,
+          "per_command": 0.0
+        },
+        "overlay_clone_requested_bytes": {
+          "count": 0,
+          "per_command": 0.0
+        },
+        "make_mut_unique_strong_observations": {
+          "count": 0,
+          "per_command": 0.0
+        },
+        "make_mut_shared_strong_observations": {
+          "count": 0,
+          "per_command": 0.0
+        },
+        "make_mut_weak_observations": {
+          "count": 0,
+          "per_command": 0.0
+        },
+        "overlay_key_arc_requests": {
+          "count": 0,
+          "per_command": 0.0
+        },
+        "overlay_key_arc_requested_bytes": {
+          "count": 0,
+          "per_command": 0.0
+        },
+        "overlay_key_copy_bytes": {
+          "count": 0,
+          "per_command": 0.0
+        },
+        "overlay_value_arc_requests": {
+          "count": 0,
+          "per_command": 0.0
+        },
+        "overlay_value_arc_requested_bytes": {
+          "count": 0,
+          "per_command": 0.0
+        },
+        "overlay_value_copy_bytes": {
+          "count": 0,
+          "per_command": 0.0
+        },
+        "owned_point_nonempty_vec_requests": {
+          "count": 1939,
+          "per_command": 0.007789713881679911
+        },
+        "owned_point_copy_bytes": {
+          "count": 594086,
+          "per_command": 2.386673523007577
+        },
+        "owned_before_image_nonempty_vec_requests": {
+          "count": 0,
+          "per_command": 0.0
+        },
+        "owned_before_image_copy_bytes": {
+          "count": 0,
+          "per_command": 0.0
+        },
+        "lineage_key_box_requests": {
+          "count": 0,
+          "per_command": 0.0
+        },
+        "lineage_key_copy_bytes": {
+          "count": 0,
+          "per_command": 0.0
+        },
+        "lineage_key_vector_requests": {
+          "count": 0,
+          "per_command": 0.0
+        },
+        "lineage_key_vector_requested_bytes": {
+          "count": 0,
+          "per_command": 0.0
+        },
+        "lineage_arc_requests": {
+          "count": 0,
+          "per_command": 0.0
+        },
+        "lineage_arc_requested_bytes": {
+          "count": 0,
+          "per_command": 0.0
+        },
+        "rebase_key_arc_requests": {
+          "count": 0,
+          "per_command": 0.0
+        },
+        "rebase_key_arc_requested_bytes": {
+          "count": 0,
+          "per_command": 0.0
+        },
+        "rebase_key_copy_bytes": {
+          "count": 0,
+          "per_command": 0.0
+        },
+        "staged_mutations": {
+          "count": 0,
+          "per_command": 0.0
+        },
+        "rebases": {
+          "count": 0,
+          "per_command": 0.0
+        },
+        "receipt_put_key_box_requests": {
+          "count": 0,
+          "per_command": 0.0
+        },
+        "receipt_put_key_copy_bytes": {
+          "count": 0,
+          "per_command": 0.0
+        },
+        "receipt_put_value_box_requests": {
+          "count": 0,
+          "per_command": 0.0
+        },
+        "receipt_put_value_copy_bytes": {
+          "count": 0,
+          "per_command": 0.0
+        },
+        "receipt_delete_key_box_requests": {
+          "count": 0,
+          "per_command": 0.0
+        },
+        "receipt_delete_key_copy_bytes": {
+          "count": 0,
+          "per_command": 0.0
+        },
+        "coalescer_records": {
+          "count": 0,
+          "per_command": 0.0
+        },
+        "coalescer_repeated_key_records": {
+          "count": 0,
+          "per_command": 0.0
+        }
+      }
+    },
+    "completion": {
+      "construction": {
+        "overlay_new_nodes": {
+          "count": 0,
+          "per_command": 0.0
+        },
+        "overlay_new_node_requested_bytes": {
+          "count": 0,
+          "per_command": 0.0
+        },
+        "overlay_cloned_nodes": {
+          "count": 0,
+          "per_command": 0.0
+        },
+        "overlay_clone_requested_bytes": {
+          "count": 0,
+          "per_command": 0.0
+        },
+        "make_mut_unique_strong_observations": {
+          "count": 0,
+          "per_command": 0.0
+        },
+        "make_mut_shared_strong_observations": {
+          "count": 0,
+          "per_command": 0.0
+        },
+        "make_mut_weak_observations": {
+          "count": 0,
+          "per_command": 0.0
+        },
+        "overlay_key_arc_requests": {
+          "count": 0,
+          "per_command": 0.0
+        },
+        "overlay_key_arc_requested_bytes": {
+          "count": 0,
+          "per_command": 0.0
+        },
+        "overlay_key_copy_bytes": {
+          "count": 0,
+          "per_command": 0.0
+        },
+        "overlay_value_arc_requests": {
+          "count": 0,
+          "per_command": 0.0
+        },
+        "overlay_value_arc_requested_bytes": {
+          "count": 0,
+          "per_command": 0.0
+        },
+        "overlay_value_copy_bytes": {
+          "count": 0,
+          "per_command": 0.0
+        },
+        "owned_point_nonempty_vec_requests": {
+          "count": 0,
+          "per_command": 0.0
+        },
+        "owned_point_copy_bytes": {
+          "count": 0,
+          "per_command": 0.0
+        },
+        "owned_before_image_nonempty_vec_requests": {
+          "count": 0,
+          "per_command": 0.0
+        },
+        "owned_before_image_copy_bytes": {
+          "count": 0,
+          "per_command": 0.0
+        },
+        "lineage_key_box_requests": {
+          "count": 0,
+          "per_command": 0.0
+        },
+        "lineage_key_copy_bytes": {
+          "count": 0,
+          "per_command": 0.0
+        },
+        "lineage_key_vector_requests": {
+          "count": 0,
+          "per_command": 0.0
+        },
+        "lineage_key_vector_requested_bytes": {
+          "count": 0,
+          "per_command": 0.0
+        },
+        "lineage_arc_requests": {
+          "count": 0,
+          "per_command": 0.0
+        },
+        "lineage_arc_requested_bytes": {
+          "count": 0,
+          "per_command": 0.0
+        },
+        "rebase_key_arc_requests": {
+          "count": 0,
+          "per_command": 0.0
+        },
+        "rebase_key_arc_requested_bytes": {
+          "count": 0,
+          "per_command": 0.0
+        },
+        "rebase_key_copy_bytes": {
+          "count": 0,
+          "per_command": 0.0
+        },
+        "staged_mutations": {
+          "count": 0,
+          "per_command": 0.0
+        },
+        "rebases": {
+          "count": 0,
+          "per_command": 0.0
+        },
+        "receipt_put_key_box_requests": {
+          "count": 129738,
+          "per_command": 0.5212077873034493
+        },
+        "receipt_put_key_copy_bytes": {
+          "count": 8224634,
+          "per_command": 33.04153978418596
+        },
+        "receipt_put_value_box_requests": {
+          "count": 129738,
+          "per_command": 0.5212077873034493
+        },
+        "receipt_put_value_copy_bytes": {
+          "count": 23591274,
+          "per_command": 94.77528342667063
+        },
+        "receipt_delete_key_box_requests": {
+          "count": 327,
+          "per_command": 0.0013136856314127543
+        },
+        "receipt_delete_key_copy_bytes": {
+          "count": 32700,
+          "per_command": 0.13136856314127543
+        },
+        "coalescer_records": {
+          "count": 830,
+          "per_command": 0.0033344314191822207
+        },
+        "coalescer_repeated_key_records": {
+          "count": 0,
+          "per_command": 0.0
+        }
+      }
+    }
+  },
+  "limitations": [
+    "Profiling build with fixed per-thread counters; not production throughput evidence.",
+    "Explicit constructor/request counts are lower bounds, not complete allocator totals or allocator size-class costs.",
+    "Arc requested sizes include the diagnostic assumption of two usize header words; allocation rounding and fragmentation are excluded.",
+    "Logical copy bytes exclude uninstrumented encoding, decoding, async-state moves and allocator relocation.",
+    "Backend requests, checkpoint requests and owned point copies can be nested; do not add them as disjoint read counts.",
+    "Checkpoint requests are not physical reads; process read bytes were zero.",
+    "Ownership observations describe strong/weak counts before make_mut, while node clone calls count actual clones.",
+    "Whole measured process generation includes warmup and setup; do not divide by timed-load mutations."
+  ]
+}

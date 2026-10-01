@@ -525,7 +525,44 @@ follower-index tests pass, as do the eight scoped non-test acceptance checks.
 The diagnostic bundle is frozen at `02497ca4` and shipped for a profiling-only
 build. The temporary source is removed from main before full CI; the diagnostic
 arm remains pinned to that bundle. A local session interruption loses its live
-SSH handle, so counter collection and generation verification remain pending.
+SSH handle before load startup. Recovery confirms no benchmark or build remains
+active, then restarts the same pinned diagnostic. The completed run has 99
+exclusive-use checks, no sharing, and a zero exit status. Four process
+generations produce 69 bounded counter lines. The measured ordered writer's
+248,918 record applications exactly match the harness's complete-generation
+command count; seed and reopen generations are excluded.
+
+Per complete-generation command, the ordered writer records:
+
+| Operation | Count or logical bytes |
+|---|---:|
+| Actual overlay node clones | 51.93 |
+| New overlay nodes | 13.44 |
+| Overlay value copies | 4,602.61 bytes |
+| Journal-to-composite value clones | 4,590.99 bytes |
+| Temporary receipt put-value copies | 5,688.53 bytes |
+| Owned point-result copies | 684.40 bytes |
+| Owned before-image copies | 1.20 bytes |
+| Checkpoint entity requests | 4.06 |
+| Checkpoint entity value copies | 380.21 bytes |
+| Checkpoint index-epoch requests | 0.000145 |
+
+Writer-private snapshots account for 247,020 calls, while preparation workers
+record 1,898 snapshot calls. The private writer path preserves the transaction's
+current state; preparation-worker grouped reads alone do not remove this work.
+Idempotency and provenance remain separate: one transaction-current idempotency
+call and one provenance-existence call per command. Several nested checkpoint
+requests check absence, including about two requests per command in each of
+idempotency, pending admission, and idempotency locators. These are not physical
+reads, and this process reports zero physical read bytes. Negative lookup caching
+is not selected again.
+
+Temporary receipt coalescing sees only 4,520 repeated-key records among
+3,674,693 records. This establishes construction volume, not its independent CPU
+cost. Likewise, node-clone allocation and byte-copy counts do not establish that
+changing ownership will improve throughput. Published numeric evidence and
+coverage limits are in
+`release/evidence/wp-820/storage-construction-counts-20261001.json`.
 
 ## Review status
 
