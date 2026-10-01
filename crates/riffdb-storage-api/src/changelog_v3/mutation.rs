@@ -6,12 +6,32 @@ use super::ChangelogV3Error;
 
 /// One checked net key transition. Fields are private so a caller cannot
 /// inject control state, an invalid metadata key, or an unbounded payload.
-#[derive(Clone, Eq, PartialEq)]
+#[derive(Eq, PartialEq)]
 pub struct AuthoritativeMutationV3 {
     namespace: AuthoritativeNamespaceV1,
     key: Box<[u8]>,
     expected_hash: Option<[u8; 32]>,
     value: Option<Box<[u8]>>,
+}
+
+impl Clone for AuthoritativeMutationV3 {
+    #[inline]
+    fn clone(&self) -> Self {
+        let started = crate::composite_view::wp820_payload_probe::started();
+        let cloned = Self {
+            namespace: self.namespace,
+            key: self.key.clone(),
+            expected_hash: self.expected_hash,
+            value: self.value.clone(),
+        };
+        crate::composite_view::wp820_payload_probe::cloned(
+            0,
+            self.key.len(),
+            self.value.as_deref().map_or(0, <[u8]>::len),
+            started,
+        );
+        cloned
+    }
 }
 
 impl AuthoritativeMutationV3 {
@@ -49,6 +69,7 @@ impl AuthoritativeMutationV3 {
         value: &[u8],
     ) -> Result<Self, ChangelogV3Error> {
         Self::validate(namespace, key, value.len())?;
+        crate::composite_view::wp820_payload_probe::constructed(0, key.len(), value.len());
         Ok(Self {
             namespace,
             key: key.into(),
@@ -64,6 +85,7 @@ impl AuthoritativeMutationV3 {
         expected_hash: [u8; 32],
     ) -> Result<Self, ChangelogV3Error> {
         Self::validate(namespace, key, 0)?;
+        crate::composite_view::wp820_payload_probe::constructed(0, key.len(), 0);
         Ok(Self {
             namespace,
             key: key.into(),
