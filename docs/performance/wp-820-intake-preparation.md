@@ -564,6 +564,41 @@ changing ownership will improve throughput. Published numeric evidence and
 coverage limits are in
 `release/evidence/wp-820/storage-construction-counts-20261001.json`.
 
+## Streaming checksum candidate rejected (2026-10-01)
+
+Production releases at base `de902b30` and candidate `e6db75fe` run exclusive
+c32 B/C/C/B comparisons with diagnostics disabled. The first bank uses 60-second
+loads and 10-second warmups; interactive includes journeys.
+
+| Load | Base median ops/s | Candidate median ops/s | Change |
+|---|---:|---:|---:|
+| Write-only | 3,634.5 | 3,627 | -0.21% |
+| Interactive | 16,181 | 16,027.5 | -0.95% |
+| Read-only | 24,984 | 24,857.5 | -0.51% |
+
+The longer write-only repeat uses 90-second loads and 15-second warmups. Base
+median throughput is 3,604.5 ops/s versus 3,586 for candidate (-0.51%). Both
+arms' median p95 is 8.389 ms; median p99 is 15.204 ms versus 14.418 ms. Worst
+maximum is 1.021 s versus 0.744 s. Sampled writer CPU per complete-generation
+command is 201.709 us versus 203.790 us. Median heap envelopes are 1,437,581,312
+versus 1,414,606,848 bytes; maximum sampled RSS is 1,346,592,768 versus
+1,349,033,984 bytes. These memory measurements do not establish the temporary
+buffer's independent cost or a retained memory benefit.
+
+The candidate passes all seven scoped acceptance checks, 544 storage-API tests,
+and full `./scripts/ci-all`. It is nevertheless removed because throughput does
+not improve in either bank. The receipt codec is restored byte-for-byte to
+`de902b30`. No PostgreSQL qualification is performed for this rejected candidate.
+Full numeric cells, resource scopes and limitations are in
+`release/evidence/wp-820/streaming-checksum-ab-20261001.json`.
+
+Compiler-only diagnostics show 1,864 bytes for pending attempt state, 2,752 for
+evaluated attempts, and 3,184 for the backend's private batch core. These are
+representation sizes, not dynamic copy counts or measured CPU costs. Native
+call-site assignment remains unverified; do not assign sampled copy sizes from
+a different build. A private ownership change may be investigated separately
+after confirming exact capture identity and charging its allocation cost.
+
 ## Review status
 
 Restored production main passes full `./scripts/ci-all` at `dd2cc540`; the
@@ -574,7 +609,7 @@ receipt buffer. Encoding and hashing share one private emitter. Frozen-byte
 coverage fails to compile before the emitter exists and passes with it; empty,
 put/delete and SHA block-boundary coverage precedes production qualification.
 The candidate does not change receipt coalescing, canonical bytes, public or
-durable interfaces. Its production benefit and retention remain unqualified.
+durable interfaces. Both production banks reject it; the codec is restored.
 
 Package: WP-820. Tier: guarantee. Behavior: bounded diagnostics, rejected
 positive-observation reuse, and an unqualified disposable payload eviction
@@ -587,7 +622,7 @@ clock count (one versus two) and times out one bootstrap publication campaign.
 Candidate acceptance passes separately with bounded runner concurrency; no
 assertions or test limits are weakened. The earlier full CI run was interrupted; post-WP-815 full CI now passes at
 `555a526f848c`. Any subsequent runtime change requires its appropriate checks.
-Candidate production A/B and PostgreSQL qualification, final handbook update,
-and closure remain required
-before completion. This page and its handbook link report the current investigation;
+Rejected candidates have production A/B evidence; same-run PostgreSQL
+qualification remains required for any future retained candidate. Final
+acceptance and closure remain pending. This page and its handbook link report the current investigation;
 they do not announce a new application or operator capability.
