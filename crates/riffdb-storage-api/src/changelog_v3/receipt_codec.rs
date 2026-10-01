@@ -14,95 +14,6 @@ const HEADER_BYTES: usize = 128;
 const CHECKSUM_BYTES: usize = 32;
 const DELETE_VALUE_LENGTH: u32 = u32::MAX;
 
-#[cfg(test)]
-mod streaming_hash_tests {
-    use super::*;
-
-    fn frozen_frame() -> crate::ChangelogFrameV3 {
-        let hex = include_str!("../../../../fixtures/replication/changelog-frame-v3.hex").trim();
-        let bytes: Vec<u8> = hex
-            .as_bytes()
-            .chunks_exact(2)
-            .map(|pair| u8::from_str_radix(std::str::from_utf8(pair).unwrap(), 16).unwrap())
-            .collect();
-        crate::ChangelogFrameV3::decode(&bytes).unwrap()
-    }
-
-    // req: REP-003, REC-001
-    #[test]
-    fn streamed_receipt_body_preserves_frozen_bytes_and_checksum() {
-        let frame = frozen_frame();
-        for receipt in frame.receipts() {
-            let encoded = receipt.encode().unwrap();
-            let mut streamed = Vec::new();
-            receipt
-                .write_body(encoded.len(), &mut |part| streamed.extend_from_slice(part))
-                .unwrap();
-            assert_eq!(streamed, encoded[..encoded.len() - CHECKSUM_BYTES]);
-            let expected: [u8; 32] = Sha256::digest(&streamed).into();
-            assert_eq!(receipt.history_hash().unwrap(), expected);
-            assert_eq!(&expected, &encoded[encoded.len() - CHECKSUM_BYTES..]);
-        }
-    }
-
-    // req: REP-003, REC-001
-    #[test]
-    fn streamed_history_hash_preserves_empty_put_delete_and_sha_block_boundaries() {
-        let frame = frozen_frame();
-        let binding = frame.receipts()[0].binding();
-        let empty = AuthoritativeTransactionV3::new(
-            binding,
-            ChangelogAttributionV3::CatalogAdministration,
-            vec![],
-        )
-        .unwrap();
-        let check = |receipt: &AuthoritativeTransactionV3| {
-            let encoded = receipt.encode().unwrap();
-            let body = &encoded[..encoded.len() - CHECKSUM_BYTES];
-            let expected: [u8; 32] = Sha256::digest(body).into();
-            assert_eq!(receipt.history_hash().unwrap(), expected);
-            assert_eq!(&expected, &encoded[encoded.len() - CHECKSUM_BYTES..]);
-            assert_eq!(
-                AuthoritativeTransactionV3::decode(&encoded).unwrap(),
-                *receipt
-            );
-        };
-        check(&empty);
-        for size in [0, 1, 31, 55, 56, 63, 64, 65, 127, 128, 255, 4096, 65536] {
-            let value = vec![0x31; size];
-            let mutations = vec![
-                AuthoritativeMutationV3::put(
-                    crate::AuthoritativeNamespaceV1::Entities,
-                    b"a",
-                    None,
-                    &value,
-                )
-                .unwrap(),
-                AuthoritativeMutationV3::put(
-                    crate::AuthoritativeNamespaceV1::Entities,
-                    b"b",
-                    Some([0; 32]),
-                    b"",
-                )
-                .unwrap(),
-                AuthoritativeMutationV3::delete(
-                    crate::AuthoritativeNamespaceV1::Entities,
-                    b"c",
-                    [0x71; 32],
-                )
-                .unwrap(),
-            ];
-            let receipt = AuthoritativeTransactionV3::new(
-                binding,
-                ChangelogAttributionV3::CatalogAdministration,
-                mutations,
-            )
-            .unwrap();
-            check(&receipt);
-        }
-    }
-}
-
 impl AuthoritativeTransactionV3 {
     /// Canonical receipt encoding. A single SHA-256 covers the full fixed header
     /// and mutation payload; its exact bytes are shared by journal sourcing and
@@ -325,5 +236,94 @@ impl<'a> ReceiptReader<'a> {
     }
     pub(crate) fn u64(&mut self) -> Result<u64, ChangelogV3Error> {
         Ok(u64::from_be_bytes(self.array()?))
+    }
+}
+
+#[cfg(test)]
+mod streaming_hash_tests {
+    use super::*;
+
+    fn frozen_frame() -> crate::ChangelogFrameV3 {
+        let hex = include_str!("../../../../fixtures/replication/changelog-frame-v3.hex").trim();
+        let bytes: Vec<u8> = hex
+            .as_bytes()
+            .chunks_exact(2)
+            .map(|pair| u8::from_str_radix(std::str::from_utf8(pair).unwrap(), 16).unwrap())
+            .collect();
+        crate::ChangelogFrameV3::decode(&bytes).unwrap()
+    }
+
+    // req: REP-003, REC-001
+    #[test]
+    fn streamed_receipt_body_preserves_frozen_bytes_and_checksum() {
+        let frame = frozen_frame();
+        for receipt in frame.receipts() {
+            let encoded = receipt.encode().unwrap();
+            let mut streamed = Vec::new();
+            receipt
+                .write_body(encoded.len(), &mut |part| streamed.extend_from_slice(part))
+                .unwrap();
+            assert_eq!(streamed, encoded[..encoded.len() - CHECKSUM_BYTES]);
+            let expected: [u8; 32] = Sha256::digest(&streamed).into();
+            assert_eq!(receipt.history_hash().unwrap(), expected);
+            assert_eq!(&expected, &encoded[encoded.len() - CHECKSUM_BYTES..]);
+        }
+    }
+
+    // req: REP-003, REC-001
+    #[test]
+    fn streamed_history_hash_preserves_empty_put_delete_and_sha_block_boundaries() {
+        let frame = frozen_frame();
+        let binding = frame.receipts()[0].binding();
+        let empty = AuthoritativeTransactionV3::new(
+            binding,
+            ChangelogAttributionV3::CatalogAdministration,
+            vec![],
+        )
+        .unwrap();
+        let check = |receipt: &AuthoritativeTransactionV3| {
+            let encoded = receipt.encode().unwrap();
+            let body = &encoded[..encoded.len() - CHECKSUM_BYTES];
+            let expected: [u8; 32] = Sha256::digest(body).into();
+            assert_eq!(receipt.history_hash().unwrap(), expected);
+            assert_eq!(&expected, &encoded[encoded.len() - CHECKSUM_BYTES..]);
+            assert_eq!(
+                AuthoritativeTransactionV3::decode(&encoded).unwrap(),
+                *receipt
+            );
+        };
+        check(&empty);
+        for size in [0, 1, 31, 55, 56, 63, 64, 65, 127, 128, 255, 4096, 65536] {
+            let value = vec![0x31; size];
+            let mutations = vec![
+                AuthoritativeMutationV3::put(
+                    crate::AuthoritativeNamespaceV1::Entities,
+                    b"a",
+                    None,
+                    &value,
+                )
+                .unwrap(),
+                AuthoritativeMutationV3::put(
+                    crate::AuthoritativeNamespaceV1::Entities,
+                    b"b",
+                    Some([0; 32]),
+                    b"",
+                )
+                .unwrap(),
+                AuthoritativeMutationV3::delete(
+                    crate::AuthoritativeNamespaceV1::Entities,
+                    b"c",
+                    [0x71; 32],
+                )
+                .unwrap(),
+            ];
+            let receipt = AuthoritativeTransactionV3::new(
+                binding,
+                ChangelogAttributionV3::CatalogAdministration,
+                mutations,
+            )
+            .unwrap();
+            check(&receipt);
+        }
     }
 }
