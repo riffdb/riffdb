@@ -601,7 +601,7 @@ after confirming exact capture identity and charging its allocation cost.
 
 ## Private batch ownership candidate (2026-10-01)
 
-The next single-mechanism experiment places the private `BatchCore` behind one
+The rejected single-mechanism experiment placed the private `BatchCore` behind one
 unique `Box` in both empty and nonempty redb batches. All consuming candidate
 states transfer that owner. The frozen production base is `4dfaae784`.
 The core requests 3,184 bytes on this diagnostic build; the allocation happens
@@ -629,6 +629,39 @@ transaction on rollback, cancellation or error. Relevant semantic coverage is
 is claimed. All-feature check and clippy pass, as do all 37 command-concurrency
 and lost-response replay tests. Production comparison and full storage
 acceptance remain required.
+
+## Private batch owner rejected
+
+Production candidate `71eac4b0` is compared with base `4dfaae784`, c32, in
+B/C/C/B order with diagnostics disabled. First-bank medians are:
+
+| Load | Base ops/s | Candidate ops/s | Change |
+|---|---:|---:|---:|
+| Write-only | 3,680 | 3,651.5 | -0.77% |
+| Interactive journeys | 16,084.5 | 16,081 | -0.02% |
+| Read-only | 25,008 | 24,918.5 | -0.36% |
+
+Write-only p95 is 8.126 ms in both arms, p99 is 12.845 versus 11.796 ms,
+and worst maxima are 1.012 versus 1.023 s. Sampled writer CPU per complete
+process-generation command is 197.095 versus 197.837 us. Median heap envelopes
+are 1,315,674,112 versus 1,212,575,744 bytes; maximum sampled RSS is
+1,183,395,840 versus 1,170,485,248 bytes. These memory differences do not
+measure the independent effect of the allocation.
+
+The 90-second/15-second-warmup write-only repeat gives 3,562 versus 3,591.5
+ops/s (+0.83%). CPU is 203.628 versus 202.864 us per process-generation
+command. Both throughput and CPU changes reverse direction between banks.
+Median p95 is 8.651 versus 8.389 ms, p99 15.466 versus 13.369 ms, and worst
+maxima 747 versus 718 ms. Heap envelopes are 1,432,068,096 versus
+1,434,554,368 bytes and maximum sampled RSS is 1,364,180,992 versus
+1,347,493,888 bytes. No repeated throughput benefit supports retention.
+
+The candidate passes all six storage acceptance checks (1,110 tests, with one
+existing skipped scale test) and all 37 command-concurrency/replay tests.
+It is removed; `application.rs` is restored byte-for-byte to `4dfaae784`.
+Same-run PostgreSQL qualification is reserved for a retained candidate.
+Full numeric cells and resource scopes are recorded in
+`release/evidence/wp-820/private-batch-owner-ab-20261001.json`.
 
 ## Review status
 
