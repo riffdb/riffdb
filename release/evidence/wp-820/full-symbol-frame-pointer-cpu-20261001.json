@@ -1,0 +1,252 @@
+{
+  "schema": "riffdb-wp820-full-symbol-frame-pointer-cpu-v1",
+  "recorded_at": "2026-10-01",
+  "candidate_commit": "ac21c38cacaa9fa8ddf2de8bdf3609309c39e5fa",
+  "machine": {
+    "vcpus": 8,
+    "cpu": "AMD EPYC 9B14"
+  },
+  "diagnostic_only": true,
+  "build": "profiling; full debug information; forced frame pointers; runtime diagnostics disabled",
+  "capture": {
+    "frequency_hz": 199,
+    "duration_secs": 25,
+    "process_samples": 11011,
+    "writer_samples": 3767,
+    "lost_events": 0,
+    "writer_samples_without_frames": 0,
+    "writer_samples_reaching_thread_root": 3767,
+    "writer_samples_without_named_writer_run": 6,
+    "minimum_stack_frames": 6,
+    "maximum_stack_frames": 54,
+    "exclusive_monitor_checks": 138,
+    "sharing_detected": false,
+    "load_exit_status": 0,
+    "perf_exit_status": 0
+  },
+  "decoder": {
+    "method": "Complete frame-pointer stacks without inline expansion; matched C runtime symbol filesystem",
+    "completed_noinline_decode_seconds": 0.6738431879784912,
+    "noinline_decode_log_bytes": 0,
+    "inline_expansion": "Rejected after 240-second deadline; incomplete output excluded; owned decoder stopped before production measurements",
+    "prior_dwarf_redecode": "Longer private decoder timeout removes warning but still leaves 2456 of 3746 writer samples without frames; callers remain rejected"
+  },
+  "self_samples": {
+    "compare": 404,
+    "copy": 380,
+    "other": 2308,
+    "overlay_arc_make_mut": 133,
+    "redb_page_get": 86,
+    "sha256": 303,
+    "unresolved": 153
+  },
+  "inclusive_samples": {
+    "changelog_successor": 244,
+    "checkpoint_read": 343,
+    "command_value_read": 483,
+    "mutation_application": 281,
+    "overlay_insert": 235,
+    "overlay_point": 411,
+    "overlay_rebase": 107,
+    "receipt_construction": 135
+  },
+  "checkpoint_read_context_samples": {
+    "admission": 2,
+    "entity_observation": 111,
+    "idempotency_outcome": 17,
+    "other": 39,
+    "provenance": 10,
+    "record_application": 164
+  },
+  "exclusive_partition": {
+    "method": "Nearest named boundary from leaf to root, once per sample; parent remainder contains inlined work and is not whole-operation CPU",
+    "boundaries": [
+      {
+        "boundary": "changelog_successor_other",
+        "samples": 19,
+        "primitive_samples": {
+          "copy": 0,
+          "compare": 5,
+          "sha256": 0,
+          "other": 14
+        }
+      },
+      {
+        "boundary": "checkpoint_access",
+        "samples": 344,
+        "primitive_samples": {
+          "copy": 0,
+          "compare": 58,
+          "sha256": 0,
+          "other": 286
+        }
+      },
+      {
+        "boundary": "command_append_other",
+        "samples": 798,
+        "primitive_samples": {
+          "copy": 129,
+          "compare": 62,
+          "sha256": 13,
+          "other": 594
+        }
+      },
+      {
+        "boundary": "entity_decode",
+        "samples": 140,
+        "primitive_samples": {
+          "copy": 14,
+          "compare": 1,
+          "sha256": 0,
+          "other": 125
+        }
+      },
+      {
+        "boundary": "group_driver_other",
+        "samples": 150,
+        "primitive_samples": {
+          "copy": 31,
+          "compare": 26,
+          "sha256": 7,
+          "other": 86
+        }
+      },
+      {
+        "boundary": "idempotency_lookup",
+        "samples": 34,
+        "primitive_samples": {
+          "copy": 0,
+          "compare": 26,
+          "sha256": 0,
+          "other": 8
+        }
+      },
+      {
+        "boundary": "mutation_validation",
+        "samples": 47,
+        "primitive_samples": {
+          "copy": 0,
+          "compare": 1,
+          "sha256": 0,
+          "other": 46
+        }
+      },
+      {
+        "boundary": "overlay_insert",
+        "samples": 235,
+        "primitive_samples": {
+          "copy": 1,
+          "compare": 9,
+          "sha256": 0,
+          "other": 225
+        }
+      },
+      {
+        "boundary": "overlay_point",
+        "samples": 68,
+        "primitive_samples": {
+          "copy": 2,
+          "compare": 0,
+          "sha256": 0,
+          "other": 66
+        }
+      },
+      {
+        "boundary": "overlay_rebase",
+        "samples": 107,
+        "primitive_samples": {
+          "copy": 14,
+          "compare": 28,
+          "sha256": 0,
+          "other": 65
+        }
+      },
+      {
+        "boundary": "provenance_lookup",
+        "samples": 25,
+        "primitive_samples": {
+          "copy": 0,
+          "compare": 14,
+          "sha256": 0,
+          "other": 11
+        }
+      },
+      {
+        "boundary": "receipt_construction",
+        "samples": 135,
+        "primitive_samples": {
+          "copy": 17,
+          "compare": 10,
+          "sha256": 64,
+          "other": 44
+        }
+      },
+      {
+        "boundary": "receipt_encode",
+        "samples": 90,
+        "primitive_samples": {
+          "copy": 5,
+          "compare": 0,
+          "sha256": 74,
+          "other": 11
+        }
+      },
+      {
+        "boundary": "record_application_other",
+        "samples": 244,
+        "primitive_samples": {
+          "copy": 9,
+          "compare": 59,
+          "sha256": 24,
+          "other": 152
+        }
+      },
+      {
+        "boundary": "serial_group_other",
+        "samples": 1280,
+        "primitive_samples": {
+          "copy": 149,
+          "compare": 102,
+          "sha256": 121,
+          "other": 908
+        }
+      },
+      {
+        "boundary": "unclassified",
+        "samples": 48,
+        "primitive_samples": {
+          "copy": 9,
+          "compare": 1,
+          "sha256": 0,
+          "other": 38
+        }
+      },
+      {
+        "boundary": "writer_snapshot_capture",
+        "samples": 3,
+        "primitive_samples": {
+          "copy": 0,
+          "compare": 2,
+          "sha256": 0,
+          "other": 1
+        }
+      }
+    ]
+  },
+  "writer_endpoint_window": {
+    "cpu_seconds": 19.12,
+    "elapsed_seconds": 25.146478584,
+    "runqueue_seconds": 0.317410016,
+    "cpu_per_command": null,
+    "reason": "Command denominator covers a different window"
+  },
+  "limitations": [
+    "Inclusive operation counts overlap self counts and other operations; do not add them.",
+    "Caller attribution does not establish avoidability or physical disk reads.",
+    "Frame pointers and profiling code generation differ from production; diagnostic throughput is excluded.",
+    "Record application contains inlined mutation before-image and index operations; no precise subcategory attribution is claimed.",
+    "Complete stacks retain unresolved leaf symbols; unknown samples stay explicit.",
+    "Endpoint elapsed minus CPU and runqueue does not establish the cause of blocking.",
+    "No production gain, alternative-engine result, or PostgreSQL qualification is established by this capture."
+  ]
+}

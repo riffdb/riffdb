@@ -870,6 +870,66 @@ Before another prototype, repair or replace caller decoding and connect a
 specific repeated operation to a measured service budget. This diagnostic does
 not qualify the admitted-state candidate against PostgreSQL or close WP-820.
 
+## Complete frame-pointer attribution on the current candidate
+
+A fresh full-symbol capture at `ac21c38c`, with forced frame pointers and
+runtime diagnostics disabled, records 11,011 process samples and 3,767 writer
+samples at 199 Hz over 25 seconds. Every writer sample has frames reaching the
+thread root; six do not contain the named writer-run frame. Stack depths range
+from 6 to 54 frames. No lost events or benchmark sharing are reported, and all
+138 exclusive-use checks pass. The complete decode without inline expansion
+is accepted. Inline expansion exceeds its 240-second deadline; that partial
+output is excluded and its remaining decoder is stopped before production
+measurements. Extending the earlier DWARF decoder's private timeout removes
+its warning but leaves 2,456 writer samples without frames, so its caller
+attribution remains rejected.
+
+| Operation | Inclusive writer samples | Fraction |
+|---|---:|---:|
+| Transaction-current command-value reads | 483 | 12.82% |
+| Overlay point resolution, including checkpoint fallback | 411 | 10.91% |
+| Checkpoint-root point reads | 343 | 9.11% |
+| Composite mutation application | 281 | 7.46% |
+| Overlay insertion | 235 | 6.24% |
+| Changelog successor, including receipt construction and hashing | 244 | 6.48% |
+| Temporary receipt construction | 135 | 3.58% |
+| Overlay rebase | 107 | 2.84% |
+
+These rows overlap and cannot be added. Of the 343 checkpoint-read samples,
+111 are under entity observation, 164 under record application, 17 under
+idempotency outcome, 10 under provenance, 2 under admission, and 39 under other
+callers. Record application contains inlined before-image and index work;
+these stacks do not establish a precise split between them. Entity observation
+accounts for 2.95% of writer samples in checkpoint reads. Thus input-entity
+prefetch cannot claim the complete 9.11% checkpoint budget, and would still
+pay for transfer, copying, unused reads, and exact checkpoint ownership.
+Backend calls here are not evidence of physical disk reads.
+
+The exclusive nearest-boundary partition reconciles all samples. Receipt
+construction contains 64 SHA compression samples out of 135; receipt encoding
+contains another 74 out of 90. A borrowed temporary receipt cannot count those
+required canonical hashes as allocation savings. Overlay insertion contains
+133 `Arc::make_mut` self samples, but its full 235-sample budget also contains
+necessary tree work. A proposed ownership change must identify which operations
+and bytes it removes and charge any increase in retained memory.
+
+Byte copying has 380 self samples (10.09%), comparison 404 (10.72%), and SHA
+compression 303 (8.04%). Another 153 leaf samples remain unresolved, explicitly
+retained in the totals. After assigning narrower named boundaries, the serial
+group and command append retain 33.98% and 21.18% respectively. These are
+inlined-operation remainders, not measured costs of copying command fields.
+Source attribution within those remainders is needed before another ownership
+prototype. Complete stacks alone do not establish avoidability.
+
+The writer endpoint advances 19.12 CPU seconds over 25.146 elapsed seconds,
+with 0.317 seconds on a runqueue. The rest is not assigned to a blocking cause,
+and the command denominator has a different window. No CPU-per-command
+estimate or production speed claim is made from this diagnostic. The numeric
+counts and exclusive partition are retained in
+`release/evidence/wp-820/full-symbol-frame-pointer-cpu-20261001.json`.
+A new same-run production safe-app PostgreSQL qualification is in progress;
+its results remain separate from profiling costs.
+
 ## Review status
 
 Restored production main passes full `./scripts/ci-all` at `dd2cc540`; the
