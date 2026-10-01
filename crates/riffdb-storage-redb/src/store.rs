@@ -3,7 +3,6 @@
 mod transient_access;
 
 mod read_census;
-pub(crate) use read_census::wp820_count;
 
 #[path = "store/maintenance_writer.rs"]
 mod maintenance_writer;
@@ -6173,7 +6172,6 @@ impl RedbWriteAccess {
         table: crate::journal::JournalTable,
         key: &[u8],
     ) -> Result<Option<Vec<u8>>, StorageError> {
-        wp820_count(table as usize, 1);
         if let Some(stage) = self.composite_stage.as_ref() {
             return stage
                 .try_borrow()

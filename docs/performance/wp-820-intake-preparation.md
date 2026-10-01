@@ -520,9 +520,12 @@ tags. These explicit constructor counts are not complete allocator totals or
 allocator rounding/fragmentation, and backend requests are not physical reads.
 
 The counter phase uses a profiling build; production comparisons retain the
-frozen binaries without these probes. All 17 overlay semantic tests and eight
+frozen binaries without these probes. All 312 storage-API library tests and eight
 follower-index tests pass, as do the eight scoped non-test acceptance checks.
-The temporary probes are to be removed after collecting evidence.
+The diagnostic bundle is frozen at `02497ca4` and shipped for a profiling-only
+build. The temporary source is removed from main before full CI; the diagnostic
+arm remains pinned to that bundle. A local session interruption loses its live
+SSH handle, so counter collection and generation verification remain pending.
 
 ## Review status
 

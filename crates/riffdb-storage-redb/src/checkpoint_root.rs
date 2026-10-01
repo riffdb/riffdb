@@ -166,18 +166,12 @@ impl CheckpointRoot {
         table: JournalTable,
         key: &[u8],
     ) -> Result<Option<Vec<u8>>, JournalIoError> {
-        crate::store::wp820_count(32 + table as usize, 1);
-        let result = if crate::query_diagnostics::query_execute_diagnostics_enabled()
+        if crate::query_diagnostics::query_execute_diagnostics_enabled()
             && crate::journal::byte_table_definition(table).is_some()
         {
-            self.read_value_profiled(table, key)
-        } else {
-            self.read_value_inner(table, key)
-        };
-        if let Ok(Some(value)) = &result {
-            crate::store::wp820_count(64 + table as usize, value.len());
+            return self.read_value_profiled(table, key);
         }
-        result
+        self.read_value_inner(table, key)
     }
 
     /// Splits one cached point read into the same `open_table`, `get` and
