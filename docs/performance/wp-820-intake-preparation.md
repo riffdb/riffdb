@@ -296,6 +296,22 @@ Moving work must preserve exact canonical validation, complete retained-memory
 bounds, atomic publication, transaction-current idempotency and provenance,
 immutable snapshots, and failure/cancellation behavior.
 
+A temporary private probe now times ten phases: publication transient-lock
+acquisition/hold, segment metadata construction, manifest validation/insertion,
+payload metadata validation, periodic canonical decode verification, decoded
+ownership charging, cache-lock acquisition, payload removal/destruction, and
+cache insertion. Each phase has a count, wall-time sum, and maximum. Three
+additional counters report eviction count, canonical bytes removed, and their
+conservative ownership budget charge. The charge is not an allocator-byte
+measurement. The new shutdown line has exactly 33 numeric fields and records
+no keys, values, identities, or principals; existing census lines stay intact.
+All checks, cache bounds, lock scopes, and publication ordering remain unchanged.
+Nested phase wall times overlap and must not be summed as CPU costs.
+Existing eviction/cold-authority, decoded-ownership, seeded-canonical-byte,
+history-stub identity, and sparse-tree charging tests cover the instrumented
+paths. Diagnostic measurements and final acceptance remain pending.
+
+
 ## Review status
 
 Package: WP-820. Tier: guarantee. Behavior: bounded diagnostics and an unqualified positive-observation reuse

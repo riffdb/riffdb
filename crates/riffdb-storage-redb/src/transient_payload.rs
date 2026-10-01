@@ -231,12 +231,20 @@ impl PayloadCache {
         segment: Arc<StoredCommandSegmentV1>,
         canonical: Arc<[u8]>,
     ) -> Result<(), StorageError> {
-        metadata.validate(&segment)?;
+        {
+            let _probe = crate::publication_probe::start(
+                crate::publication_probe::Phase::PayloadMetadataValidation,
+            );
+            metadata.validate(&segment)?;
+        }
         if metadata
             .first
             .get()
             .is_multiple_of(PAYLOAD_SEED_VERIFY_EVERY)
         {
+            let _probe = crate::publication_probe::start(
+                crate::publication_probe::Phase::PayloadDecodeVerification,
+            );
             let decoded = crate::command_prefix::decode_segment(&canonical)
                 .map_err(|_| corrupt())?
                 .into_parts()
@@ -254,19 +262,40 @@ impl PayloadCache {
         canonical: Arc<[u8]>,
         segment: Arc<StoredCommandSegmentV1>,
     ) -> Result<(), StorageError> {
-        let charge = decoded_charge(&segment, canonical.len()).ok_or_else(corrupt)?;
+        let charge = {
+            let _probe = crate::publication_probe::start(
+                crate::publication_probe::Phase::PayloadDecodedCharge,
+            );
+            decoded_charge(&segment, canonical.len()).ok_or_else(corrupt)?
+        };
         if charge > MAX_PAYLOAD_BYTES {
             return Ok(());
         }
+        let acquire_probe = crate::publication_probe::start(
+            crate::publication_probe::Phase::PayloadCacheLockAcquire,
+        );
         let mut state = self.state.lock().map_err(|_| corrupt())?;
+        drop(acquire_probe);
         if let Some(old) = state.entries.remove(&first) {
+            let _probe = crate::publication_probe::start(
+                crate::publication_probe::Phase::PayloadEvictionDrop,
+            );
+            crate::publication_probe::eviction(old.canonical.len(), old.charge);
             state.bytes -= old.charge;
+            drop(old);
         }
         while state.entries.len() >= MAX_PAYLOAD_ENTRIES || state.bytes > MAX_PAYLOAD_BYTES - charge
         {
+            let _probe = crate::publication_probe::start(
+                crate::publication_probe::Phase::PayloadEvictionDrop,
+            );
             let (_, old) = state.entries.pop_first().ok_or_else(corrupt)?;
+            crate::publication_probe::eviction(old.canonical.len(), old.charge);
             state.bytes -= old.charge;
+            drop(old);
         }
+        let _insertion_probe =
+            crate::publication_probe::start(crate::publication_probe::Phase::PayloadInsertion);
         state.entries.insert(
             first,
             CachedPayload {
