@@ -1,0 +1,53 @@
+{
+  "schema": "riffdb-wp820-full-symbol-self-cpu-v1",
+  "recorded_at": "2026-10-01",
+  "base_commit": "ac21c38cacaa9fa8ddf2de8bdf3609309c39e5fa",
+  "diagnostic_only": true,
+  "machine": {
+    "vcpus": 8,
+    "cpu": "AMD EPYC 9B14"
+  },
+  "build": "profiling with full debug information; no forced frame pointers; diagnostics disabled",
+  "capture": {
+    "event": "cpu-clock",
+    "frequency_hz": 199,
+    "duration_seconds": 25,
+    "dwarf_stack_bytes": 16384,
+    "recorded_process_samples": 10826,
+    "writer_samples": 3746,
+    "lost_samples": 0,
+    "matching_c_runtime_debug_build_identity": true,
+    "self_report_sample_counts_reconciled": true,
+    "exclusive_monitor_checks": 138,
+    "sharing_detected": false,
+    "process_identity_stable": true
+  },
+  "writer_self_sample_counts": {
+    "copy": 370,
+    "compare": 393,
+    "sha256_compression": 266,
+    "overlay_node_make_mut": 121,
+    "redb_page_get": 90,
+    "unresolved": 140,
+    "other": 2366
+  },
+  "writer_endpoint_observation": {
+    "cpu_seconds": 18.61,
+    "elapsed_seconds": 25.139563596,
+    "runqueue_seconds": 0.282480756
+  },
+  "caller_decode": {
+    "accepted": false,
+    "initial_writer_samples_without_frames": 2195,
+    "symbol_filesystem_redecode_writer_samples_without_frames": 2456,
+    "reason": "Caller stacks are incomplete; both caller partitions are rejected. Self report recovers direct instruction attribution independently of unwinding."
+  },
+  "limits": [
+    "Self sample fractions are diagnostic estimates, not production speedup predictions.",
+    "Changed commit and build flags prevent attributing differences from the earlier profile to frame pointers or private ownership alone.",
+    "Samples do not establish dynamic copy sizes, allocation counts, avoidability, or the cost of specific field moves.",
+    "Endpoint CPU observations and complete-generation command counts have different windows; no CPU-per-command estimate is calculated.",
+    "Runqueue delay is measured separately from CPU; the remaining elapsed interval is not assigned to a blocking cause.",
+    "No diagnostic throughput, latency, or resource delta is retained as production qualification."
+  ]
+}

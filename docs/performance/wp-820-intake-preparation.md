@@ -834,6 +834,42 @@ opportunity is material. Preserve required transaction-current reads and
 canonical validation. Do not select new batching delays, negative caching,
 larger allocator caches or a replacement tree from these broad buckets.
 
+## Full-symbol diagnostic: self costs accepted, callers rejected
+
+A fresh c32 write-only diagnostic at `ac21c38c` uses the profiling build with
+full debug information, no forced frame pointers, and diagnostics disabled.
+The 25-second, 199 Hz capture records 10,826 process samples, including 3,746
+writer samples, with no reported loss. The run exits zero and has 138 exclusive
+use checks with no sharing. Matching C runtime build identities are verified
+against the recorded image before resolving its symbols.
+
+The direct self report reconciles all writer samples independently of caller
+unwinding: byte copying accounts for 370 (9.88%), comparison for 393 (10.49%),
+SHA-256 compression for 266 (7.10%), overlay-node `Arc::make_mut` for 121
+(3.23%), and redb page retrieval for 90 (2.40%). Another 140 samples (3.74%)
+remain unresolved. These self categories do not include their complete parent
+operations. The changed commit and build flags prevent assigning differences
+from the earlier profile to frame pointers or private ownership alone.
+
+Copying and comparison together account for 20.37%. In the ideal CPU-bound
+model, halving both gives at most 11.34% throughput; eliminating both gives a
+25.58% ceiling. Neither is a proposed implementation or an established
+avoidable cost. Required key comparison and canonical processing remain.
+
+The caller decode is rejected: 2,195 writer samples have no usable frames, and
+an offline re-decode against an explicit symbol filesystem leaves 2,456 without
+frames. Symbol restoration recovers direct self counts but does not repair
+caller attribution. No partial caller histogram is used to select an
+implementation. The writer endpoint observation advances 18.61 CPU seconds
+over 25.140 seconds with 0.282 seconds on a runqueue; the remaining elapsed time
+is not assigned to a cause. Its window differs from the command denominator,
+so no CPU-per-command estimate is calculated. Numeric evidence is in
+`release/evidence/wp-820/full-symbol-self-cpu-20261001.json`.
+
+Before another prototype, repair or replace caller decoding and connect a
+specific repeated operation to a measured service budget. This diagnostic does
+not qualify the admitted-state candidate against PostgreSQL or close WP-820.
+
 ## Review status
 
 Restored production main passes full `./scripts/ci-all` at `dd2cc540`; the
