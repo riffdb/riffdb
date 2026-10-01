@@ -1,0 +1,190 @@
+{
+  "base_commit": "ded67de55dbabaf55b0600df86f8dacb241eb0dc",
+  "candidate_commit": "aaaa1ac01438aec848a31849d1246eb03cf152f3",
+  "production_release": true,
+  "diagnostics": false,
+  "machine": {
+    "vcpus": 8,
+    "cpu": "AMD EPYC 9B14"
+  },
+  "clients": 32,
+  "order": [
+    "base",
+    "candidate",
+    "candidate",
+    "base"
+  ],
+  "duration_seconds": 90,
+  "warmup_seconds": 15,
+  "runs": [
+    {
+      "load": "write_only",
+      "ordinal": 1,
+      "arm": "base",
+      "returncode": 0,
+      "throughput": 3019,
+      "writer_cpu_ticks_sampled": 7281,
+      "ticks_per_second": 100,
+      "process_scope_commands": 312125,
+      "writer_cpu_us_per_process_scope_command": 233.27192631157388,
+      "latency": {
+        "max_ns": 698519030,
+        "mean_ns": 10594430,
+        "min_ns": 1944680,
+        "p50_ns": 8126463,
+        "p95_ns": 14680063,
+        "p99_ns": 19922943,
+        "sample_count": 271469
+      },
+      "resources": {
+        "cpu_ticks": 21422,
+        "heap_envelope_bytes": 1536819200,
+        "rss_bytes_peak_sampled": 1230168064,
+        "process_read_bytes": 0,
+        "process_write_bytes": 29064310784,
+        "durable_bytes_growth": 3327102976,
+        "process_scope_committed_commands": 312125,
+        "successful_mutations": 271469,
+        "process_identity_stable": true
+      }
+    },
+    {
+      "load": "write_only",
+      "ordinal": 2,
+      "arm": "candidate",
+      "returncode": 0,
+      "throughput": 2641,
+      "writer_cpu_ticks_sampled": 6575,
+      "ticks_per_second": 100,
+      "process_scope_commands": 278165,
+      "writer_cpu_us_per_process_scope_command": 236.37049952366402,
+      "latency": {
+        "max_ns": 696925110,
+        "mean_ns": 12110198,
+        "min_ns": 1777910,
+        "p50_ns": 7864319,
+        "p95_ns": 20971519,
+        "p99_ns": 26214399,
+        "sample_count": 237744
+      },
+      "resources": {
+        "cpu_ticks": 19115,
+        "heap_envelope_bytes": 1413038080,
+        "rss_bytes_peak_sampled": 1197285376,
+        "process_read_bytes": 0,
+        "process_write_bytes": 26305171456,
+        "durable_bytes_growth": 3162423296,
+        "process_scope_committed_commands": 278165,
+        "successful_mutations": 237744,
+        "process_identity_stable": true
+      }
+    },
+    {
+      "load": "write_only",
+      "ordinal": 3,
+      "arm": "candidate",
+      "returncode": 0,
+      "throughput": 2224,
+      "writer_cpu_ticks_sampled": 6032,
+      "ticks_per_second": 100,
+      "process_scope_commands": 242181,
+      "writer_cpu_us_per_process_scope_command": 249.06991052146947,
+      "latency": {
+        "max_ns": 748188269,
+        "mean_ns": 14380332,
+        "min_ns": 1845370,
+        "p50_ns": 11010047,
+        "p95_ns": 18874367,
+        "p99_ns": 83886079,
+        "sample_count": 200240
+      },
+      "resources": {
+        "cpu_ticks": 17562,
+        "heap_envelope_bytes": 1476984832,
+        "rss_bytes_peak_sampled": 1073016832,
+        "process_read_bytes": 0,
+        "process_write_bytes": 23510470656,
+        "durable_bytes_growth": 3082285056,
+        "process_scope_committed_commands": 242181,
+        "successful_mutations": 200240,
+        "process_identity_stable": true
+      }
+    },
+    {
+      "load": "write_only",
+      "ordinal": 4,
+      "arm": "base",
+      "returncode": 0,
+      "throughput": 2409,
+      "writer_cpu_ticks_sampled": 6145,
+      "ticks_per_second": 100,
+      "process_scope_commands": 250094,
+      "writer_cpu_us_per_process_scope_command": 245.70761393715964,
+      "latency": {
+        "max_ns": 1033251248,
+        "mean_ns": 13277532,
+        "min_ns": 1887380,
+        "p50_ns": 8912895,
+        "p95_ns": 17825791,
+        "p99_ns": 100663295,
+        "sample_count": 216869
+      },
+      "resources": {
+        "cpu_ticks": 17793,
+        "heap_envelope_bytes": 1220100096,
+        "rss_bytes_peak_sampled": 1149882368,
+        "process_read_bytes": 0,
+        "process_write_bytes": 24093790208,
+        "durable_bytes_growth": 3032481792,
+        "process_scope_committed_commands": 250094,
+        "successful_mutations": 216869,
+        "process_identity_stable": true
+      }
+    }
+  ],
+  "summary": [
+    {
+      "load": "write_only",
+      "medians": {
+        "base": {
+          "throughput": 2714.0,
+          "p95_ns": 16252927.0,
+          "p99_ns": 60293119.0,
+          "max_ns": 865885139.0,
+          "heap_envelope_bytes": 1378459648.0,
+          "rss_bytes_peak_sampled": 1190025216.0,
+          "cpu_ticks": 19607.5,
+          "writer_cpu_us_per_process_scope_command": 239.48977012436677
+        },
+        "candidate": {
+          "throughput": 2432.5,
+          "p95_ns": 19922943.0,
+          "p99_ns": 55050239.0,
+          "max_ns": 722556689.5,
+          "heap_envelope_bytes": 1445011456.0,
+          "rss_bytes_peak_sampled": 1135151104.0,
+          "cpu_ticks": 18338.5,
+          "writer_cpu_us_per_process_scope_command": 242.72020502256674
+        }
+      },
+      "candidate_over_base": {
+        "throughput": 0.8962785556374355,
+        "p95_ns": 1.2258064655061824,
+        "p99_ns": 0.91304347681864,
+        "max_ns": 0.8344717526096727,
+        "heap_envelope_bytes": 1.0482798376409201,
+        "rss_bytes_peak_sampled": 0.9538882779438516,
+        "cpu_ticks": 0.9352798673976794,
+        "writer_cpu_us_per_process_scope_command": 1.0134888220758758
+      }
+    }
+  ],
+  "limits": [
+    "Writer CPU uses the hot command-thread counter identified by the caller profile, sampled every 500 ms; the final unsampled interval can contribute up to 500 ms CPU.",
+    "CPU and process memory cover the process including warmup; latency and throughput cover the measured load.",
+    "Backend read calls do not establish physical I/O.",
+    "Read-only writer CPU per command may be unavailable; process resource counts include setup.",
+    "An earlier preflight refused a busy machine, and post-run inspection found another active RiffDB runner. This does not prove overlap; exclusive use requires clarification before further evidence runs."
+  ],
+  "qualification": "unresolved_exclusive_use; negative finding only, not a causal regression claim"
+}

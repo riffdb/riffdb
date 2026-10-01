@@ -2100,6 +2100,7 @@ mod tests {
         );
     }
 
+    // req: TXN-041, TXN-042, TXN-043, TXN-044, PERF-008
     #[test]
     fn rebase_retains_only_exact_post_checkpoint_lineage() {
         let mut old_base = Base::default();

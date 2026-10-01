@@ -5664,6 +5664,44 @@ mod tests {
         }
     }
 
+    // req: PERF-008, TXN-041, TXN-043
+    #[test]
+    fn preparation_completion_order_preserves_control_failures_and_missing_slots() {
+        let (sender, receiver) = mpsc::channel();
+        // Force the later task to complete first. Its failure must remain on
+        // its own admitted ordinal, including the incomplete final slot.
+        sender
+            .send((
+                8,
+                (0..7)
+                    .map(|_| Err(CommandAttemptError::DeadlineExceeded))
+                    .collect(),
+            ))
+            .expect("later completion");
+        sender
+            .send((
+                0,
+                (0..8)
+                    .map(|_| Err(CommandAttemptError::Cancelled))
+                    .collect(),
+            ))
+            .expect("earlier completion");
+        drop(sender);
+        let results = collect_ordered_evaluations(receiver, &crate::NoopCommitTelemetry, 16, 2);
+        assert_eq!(results.len(), 16);
+        assert!(
+            results[..8]
+                .iter()
+                .all(|result| matches!(result, Err(CommandAttemptError::Cancelled)))
+        );
+        assert!(
+            results[8..15]
+                .iter()
+                .all(|result| matches!(result, Err(CommandAttemptError::DeadlineExceeded)))
+        );
+        assert!(matches!(results[15], Err(CommandAttemptError::Integrity)));
+    }
+
     struct UnreachableEvaluationPort;
 
     impl AdmissionRepository for UnreachableEvaluationPort {
