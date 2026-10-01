@@ -1,0 +1,91 @@
+{
+  "checks": [
+    {
+      "command": "./scripts/ci-all",
+      "result": "pass"
+    },
+    {
+      "command": "./scripts/acceptance --wp WP-815 --range ad56d86a..HEAD --no-tests",
+      "result": "pass",
+      "test_battery": "Full all-feature workspace battery in ci-all; corrected architecture suite passes all 59 tests."
+    },
+    {
+      "command": "./scripts/check-requirement-coverage",
+      "result": "pass"
+    },
+    {
+      "command": "./scripts/check-adr-obligations",
+      "result": "pass"
+    },
+    {
+      "command": "./scripts/check-acceptance-commits",
+      "result": "pass"
+    }
+  ],
+  "compatibility": {
+    "application_and_administration_frontiers": "unchanged",
+    "durable_writer_identity": 2,
+    "existing_writer_1_upgrade": "stopped exact-backup-bound offline upgrade",
+    "frozen_v2_v3_bytes": "unchanged",
+    "hardened_and_offline_retention": "preserved",
+    "logical_frame_readers": [
+      2,
+      3,
+      4
+    ],
+    "logical_frame_writer": 4
+  },
+  "completed_at": "2026-09-30",
+  "limits": {
+    "active_receipt_reference_holds": [
+      60,
+      60,
+      60
+    ],
+    "all_consumer_steady_state_established": false,
+    "logical_keep_up_is_below_commit_rate": true,
+    "method_limits": [
+      "Seeded outbox events marked delivered on the stopped database in both arms.",
+      "Board projection undeclared in both arms.",
+      "One workload on one valid 8-vCPU AMD EPYC 9B14 reference machine."
+    ],
+    "physical_extents_deleted": 0,
+    "physical_extents_recycled": 0,
+    "production_source_reclamation_scheduler_composed": false,
+    "saturated_logical_backlog_can_grow": true
+  },
+  "package": "WP-815",
+  "qualification": {
+    "comparison": {
+      "active_median_p95_ns": 7602175,
+      "active_median_pruned_per_committed": 0.1260124398718916,
+      "active_median_throughput_ops_s": 15113,
+      "idle_median_p95_ns": 7340031,
+      "idle_median_throughput_ops_s": 16113,
+      "lane_valid": true,
+      "p95_ratio": 1.0357142905799717,
+      "throughput_ratio": 0.9379383106808167
+    },
+    "maximum_p95_ratio": 1.05,
+    "minimum_keep_up": 0.0131,
+    "raw_report_and_inventory_hashes_verified": true,
+    "referee": "scripts/check-online-retention-interference",
+    "result": "qualified",
+    "summary": "release/evidence/wp-815/first-extent-prune-interference-20260930.json",
+    "summary_sha256": "1651cce2a87e73c2a69695bc6114ae9749fa42aeefa84ef7e3a8600262da63eb"
+  },
+  "regressions_repaired": [
+    "First-extent creation publishes only a complete synced replacement; all 160 seeded retention crash windows pass.",
+    "Architecture assertions cover the extracted maintenance writer without permitting native engine commits or mutable receipt cursors.",
+    "Recovery scratch cleanup is separated by PID namespace; CI uses an isolated temporary root."
+  ],
+  "requirements_satisfied": [
+    "STO-030",
+    "STO-031",
+    "STO-032"
+  ],
+  "runtime_commit": "0d662a553ae941e2536905af1f49d69c041ccded",
+  "schema": "riffdb.wp-815-closure/v1",
+  "tier": "guarantee",
+  "validation_commit": "445927ccef2ca9b2e1f8643559972dbbf98e3728"
+}

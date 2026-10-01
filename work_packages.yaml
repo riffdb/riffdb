@@ -27972,6 +27972,48 @@ work_packages:
     every crash window reopens at a consistent watermark and index; and
     32-client interactive evidence shows p95 inside the five-percent bound with keep-up
     above 0.0131.
+  closure:
+    status: complete
+    completed_at: '2026-09-30'
+    requirements_satisfied: [STO-030, STO-031, STO-032]
+    evidence: release/evidence/wp-815/closure-20260930.json
+    decision: Standard-profile logical retention uses bounded V4 journal transitions
+      through the existing ordered writer and sync fence, preserving retained views,
+      exact preconditions, all retention fences, and application and administration
+      frontiers. Whole sealed files are reclaimed or recycled off the writer gate only
+      after legitimate command and source-receipt release and reader quiescence.
+      Full CI and scoped checks pass. The clean six-cell 32-client qualification has
+      p95 ratio 1.035714 and keep-up 0.126012, passing the unchanged 1.05 and 0.0131
+      gates; throughput ratio is 0.937938. This closes the package's improvement gate,
+      without claiming sustainable composed operation or physical storage steady state.
+    decisions_taken:
+    - Implement accepted ADR-0263 Amendments 4 and 5, separating bounded logical pruning
+      from independent receipt-fenced physical reclamation and replacing synchronous
+      suffix drain with the existing journal lane.
+    - Prepare canonical before images and retained views from a pinned composite view;
+      recheck every observation and fresh fence under the sole writer before staging.
+    - Preserve frozen V2/V3 frame bytes, add closed V4 prune frames and writer marker 2,
+      and require the exact backup-bound offline upgrade for existing writer-1 units.
+    - Keep one recycled file, probe at most 64 generations per pass, and track at most
+      4096 captured roots; preserve source anchors and every independent hold.
+    - Charge maintenance setup and stale-attempt validation to actual gate-held pacing.
+    - Publish the first journal extent using the existing synced replacement ceremony;
+      the seeded crash oracle proves all 160 tested windows across two seeds.
+    - Update architecture assertions to cover the extracted shared maintenance writer
+      while preserving the native-commit and receipt-cursor capability boundaries.
+    - Isolate recovery scratch cleanup by PID namespace and run CI with a separate
+      temporary root, preventing cross-session fixture deletion without runtime changes.
+    hazards:
+    - Qualification still prunes only 12.60 percent as many sequences as the saturated
+      workload commits, so logical history backlog can continue growing.
+    - Source-history reclamation has no composed production scheduler. Qualification
+      reclaimed and recycled zero files; each active cell recorded 60 receipt holds.
+    - Long-lived snapshots, scrubs, source anchors, and consumer or follower holds can
+      retain extents. No acknowledgement or receipt release is manufactured.
+    - Seeded events were marked delivered on the stopped database and the board
+      projection was undeclared. All-consumer steady-state qualification remains separate.
+    - Existing writer-1 databases require a stopped, exact backup-bound upgrade; older
+      binaries refuse writer marker 2. Offline retention and rebasing remain available.
   standing_design_tests:
     interface_safety: No public surface changes; retention stays configuration-driven and
       fenced, and history below the watermark stays HistoryPruned.

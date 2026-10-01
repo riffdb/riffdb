@@ -1,7 +1,8 @@
 # WP-815 design review: bounded pruning and whole-file reclamation
 
-Package: WP-815. Tier: guarantee. Status: correction accepted by the maintainer in session on
-2026-09-30 ("approved"); implementation and qualification are in progress. The dependency WP-814 is complete on the worktree base.
+Package: WP-815. Tier: guarantee. Status: implementation complete and qualified on
+2026-09-30; awaiting maintainer review before merge. The correction was accepted
+in session, and WP-814 is complete on the worktree base.
 
 ## Conflict found before implementation
 
@@ -90,11 +91,17 @@ STO-031 and is not proposed.
   application and source-history references have been durably removed. Older
   captured roots and background scrubs retain files. At most one retired file
   supplies the next spare; a fresh generation fences every preserved old frame.
-- Checks run: the initial storage suite passed (783 unit tests, the integration
-  targets, and 212 recovery-matrix tests). The harness's 28 unit tests pass.
-  Scoped acceptance without tests passes all 14 checks. Full CI and fresh
-  counterbalanced performance qualification are still in progress; this package
-  is not closed by those preliminary results.
+- Checks run: full `scripts/ci-all` passes on final implementation and test source
+  `445927ccef2ca9b2e1f8643559972dbbf98e3728`, including workspace formatting,
+  strict clippy, all-feature tests, strict documentation, deny/audit/machete,
+  operator conformance, generated artifacts, Helm, authoring acceptance, and
+  source-install smoke. The storage unit suite passes 789 tests with one existing
+  ignored test, and all 59 architecture tests pass. The twelve selected online
+  recovery tests, physical retirement/recycling crash cuts, and 160 simulated
+  retention crash windows pass. Scoped non-test acceptance checks pass; full CI
+  supplies the complete test battery. The unchanged performance referee passes
+  the final six-cell report. The reference runner retains four pre-existing
+  missing-field-documentation warnings; production clippy is strict.
 - Compatibility: logical journal V4 adds a closed prune kind and two table tags;
   frozen V2/V3 readers remain. Writer marker 2 requires an exact backup-bound,
   stopped-unit upgrade from writer marker 1; older binaries refuse V4 writers.
@@ -103,6 +110,7 @@ STO-031 and is not proposed.
   The existing shutdown-release V1 registry remains unchanged; a separate
   `riffdb-retention-extents-v1` record exposes five bounded numeric counters.
 - Handbook pages updated: [Configuration](../configuration.md#online-retention),
+  [Compatibility](../compatibility.md),
   [Known limitations](../known-limitations.md#retention), and this review page,
   reachable from the handbook summary.
 - Hazards and follow-ups: source-history reclamation has no composed production
@@ -132,8 +140,8 @@ Implementation decisions within the accepted amendment:
   changed registries, duplicate fields, negative/overflowing counters, and counts
   that change after the worker has shut down.
 
-No performance improvement or sustainable physical-storage claim is made before
-qualification.
+The qualification below proves the package's p95 and keep-up gates. It does not
+establish sustainable physical storage or composed steady state.
 
 ## Negative direct-prune qualification and delegated amendment
 
@@ -157,7 +165,7 @@ transition, current fencing and exact-before-image checks at sequencing,
 watermark publication after durability, equivalent recovery, and an explicit
 offline marker upgrade. It preserves the existing writer, frontiers, holds,
 step bounds, pacing, and performance gates. Implementation and fresh
-qualification remain required before WP-815 closes.
+qualification were required before WP-815 could close and are recorded below.
 
 ## Journaled implementation under qualification
 
@@ -177,8 +185,8 @@ process crashes, subsequent commands, retained idempotency/provenance/audits,
 and consumer/follower fences. A deterministic stale-watermark test verifies
 abandonment without writes or fencing the writer. These are correctness checks;
 they do not establish the performance gate or sustainable composed operation.
-The fresh interference qualification below passes. Full CI and final scoped
-acceptance remain required before closure.
+The fresh interference qualification and full CI pass. Closure evidence is
+`release/evidence/wp-815/closure-20260930.json`.
 
 ## Journaled prune qualification
 
@@ -195,6 +203,8 @@ Median p95 was 7.340 ms held and 7.602 ms active: ratio 1.03571, inside 1.05.
 Median pruning was 0.126012 sequences per committed command, above 0.0131.
 Throughput was 16,113 operations/s held and 15,113 active, ratio 0.93794.
 The throughput cost is disclosed even though WP-815's gate tests p95 and keep-up.
+The keep-up rate is still below 100 percent, so this saturated workload can
+accumulate logical history even if independent source receipts are released.
 
 Physical deletion and recycling were zero. Active cells each recorded 60 receipt
 reference holds; reader holds were zero. Existing source-history reclamation

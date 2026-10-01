@@ -464,5 +464,6 @@ with an exact immutable backup created by its matching binary before upgrading.
 The upgrade validates the predecessor's registry and frozen compatibility corpus,
 binds its durable receipt to that backup, and replaces the marker atomically.
 It preserves application and administration frontiers. It has no online or
-backup-free upgrade mode. WP-815 remains open while the journaled pruning path
-and its interference qualification are being completed.
+backup-free upgrade mode. WP-815's journaled pruning path, crash recovery, and
+interference qualification pass; physical and all-consumer steady-state limits
+are recorded in [Known limitations](known-limitations.md#retention).

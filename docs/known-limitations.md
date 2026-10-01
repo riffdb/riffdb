@@ -334,7 +334,9 @@ qualification pruned 12.60 percent as many sequences as the workload committed;
 median p95 rose 3.57 percent and throughput fell 6.21 percent against the held lane.
 The unchanged p95 and keep-up gates pass. No extents were deleted or recycled:
 source receipts still held them, and no production source-reclamation scheduler
-is composed. The intermediate direct-prune implementation failed its keep-up
+is composed. A 12.60-percent keep-up rate is below the workload's commit rate,
+so logical history backlog can still grow under saturation. The intermediate
+direct-prune implementation failed its keep-up
 gate; both results are recorded in the
 [design review](architecture/WP-815-DESIGN-REVIEW.md). Where writes leave the
 writer idle capacity, it compacts to its target. This evidence covers one workload
