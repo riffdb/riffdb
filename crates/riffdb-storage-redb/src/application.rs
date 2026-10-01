@@ -82,8 +82,6 @@ use crate::store::{RedbDurabilityEpoch, RedbOperationalPorts, RedbReadAccess, Re
 use crate::transient::TransientIndexDelta;
 
 struct BatchCore {
-    // Flush local diagnostic counters before access can release SharedRedb.
-    snapshot_repeat_probe: Option<std::cell::RefCell<crate::snapshot_repeat_probe::BatchProbe>>,
     access: RedbWriteAccess,
     allocator: ApplicationSequenceAllocator,
     staged: Vec<StagedCommandEvidenceV1>,
@@ -132,8 +130,6 @@ impl BatchCore {
             metrics: None,
             entity_observations: BTreeMap::new(),
             entity_observation_bytes: BTreeMap::new(),
-            snapshot_repeat_probe: crate::snapshot_repeat_probe::BatchProbe::new()
-                .map(std::cell::RefCell::new),
             index_generations: BTreeMap::new(),
             pending_index_generations: BTreeMap::new(),
             reserved_provenance_ids: BTreeSet::new(),
@@ -1081,12 +1077,12 @@ fn read_transaction_local_snapshot(
             ReadSnapshotBuilder::new(&resolved, observed_through).map_err(materialization_value)?;
         for target in resolved.binding_targets() {
             snapshot
-                .push_binding(probe_snapshot_repeat(core, target, 0)?)
+                .push_binding(entity_observation_from_access(&core.access, target)?.0)
                 .map_err(materialization_value)?;
         }
         for target in resolved.root_validation_targets() {
             snapshot
-                .push_root_validation(probe_snapshot_repeat(core, target, 1)?)
+                .push_root_validation(entity_observation_from_access(&core.access, target)?.0)
                 .map_err(materialization_value)?;
         }
         let mut range = snapshot
@@ -1114,17 +1110,17 @@ fn read_transaction_local_snapshot(
 
     for target in request.binding_targets() {
         snapshot
-            .push_binding(probe_snapshot_repeat(core, target, 0)?)
+            .push_binding(entity_observation_from_access(&core.access, target)?.0)
             .map_err(materialization_value)?;
     }
     for target in request.root_validation_targets() {
         snapshot
-            .push_root_validation(probe_snapshot_repeat(core, target, 1)?)
+            .push_root_validation(entity_observation_from_access(&core.access, target)?.0)
             .map_err(materialization_value)?;
     }
     for target in request.cascade_targets() {
         snapshot
-            .push_cascade_predecessor(probe_snapshot_repeat(core, target, 2)?)
+            .push_cascade_predecessor(entity_observation_from_access(&core.access, target)?.0)
             .map_err(materialization_value)?;
     }
     for (position, target) in request.range_targets().iter().enumerate() {
@@ -1180,39 +1176,6 @@ fn read_transaction_local_snapshot(
         range.finish().map_err(materialization_value)?;
     }
     snapshot.finish().map_err(materialization_value)
-}
-
-fn probe_snapshot_repeat(
-    core: &BatchCore,
-    target: &EntityTarget,
-    role: usize,
-) -> Result<EntityObservation, StorageError> {
-    let started = core
-        .snapshot_repeat_probe
-        .as_ref()
-        .map(|_| std::time::Instant::now());
-    let (observation, bytes) = entity_observation_from_access(&core.access, target)?;
-    let elapsed =
-        started.map(|started| u64::try_from(started.elapsed().as_nanos()).unwrap_or(u64::MAX));
-    if let (Some(probe), Some(elapsed)) = (&core.snapshot_repeat_probe, elapsed) {
-        let Ok(mut probe) = probe.try_borrow_mut() else {
-            crate::snapshot_repeat_probe::skipped_record();
-            return Ok(observation);
-        };
-        let existing = match core.entity_observations.get(target) {
-            Some(EntityObservation::Present(_)) => 1,
-            Some(EntityObservation::Absent(_)) => 2,
-            None => 0,
-        };
-        probe.record(
-            role,
-            existing,
-            encode_entity_key(target.key()),
-            bytes.as_deref(),
-            elapsed,
-        );
-    }
-    Ok(observation)
 }
 
 impl AdmissionRepository for RedbOperationalPorts {

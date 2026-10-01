@@ -7294,10 +7294,15 @@ impl SharedRedb {
         }
         self.after_test_commit(RedbTestOperation::CommandEpochTail)?;
         let published_snapshot = Arc::clone(&publication.composite_successor);
+        let acquire_probe =
+            crate::publication_probe::start(crate::publication_probe::Phase::TransientLockAcquire);
         let mut transient = self
             .transient_indexes
             .write()
             .map_err(|_| storage_error(StorageErrorKind::CommitStatusUnknown))?;
+        drop(acquire_probe);
+        let held_probe =
+            crate::publication_probe::start(crate::publication_probe::Phase::TransientLockHeld);
         let mut unpublished = self
             .unpublished_command_indexes
             .lock()
@@ -7334,6 +7339,7 @@ impl SharedRedb {
         drop(frontier);
         drop(unpublished);
         drop(transient);
+        drop(held_probe);
 
         let predecessor_application;
         {
@@ -9162,6 +9168,6 @@ impl Drop for SharedRedb {
         // The sealer holds only the media port and paths, but a store that
         // outlived its sealing work would leave the next open to finish it.
         self.join_journal_sealer();
-        crate::snapshot_repeat_probe::report();
+        crate::publication_probe::report();
     }
 }

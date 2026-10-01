@@ -77,13 +77,13 @@ pub use migration_stage::{RedbMigrationStageFixture, RedbMigrationStageSnapshot}
 mod derived_source_pin;
 mod owned_snapshot;
 pub use derived_source_pin::RedbDerivedSourcePin;
+mod publication_probe;
 #[cfg(test)]
 mod query;
 mod query_diagnostics;
 mod reads;
 mod retention;
 mod shared_ports;
-mod snapshot_repeat_probe;
 mod startup;
 mod store;
 #[cfg(test)]

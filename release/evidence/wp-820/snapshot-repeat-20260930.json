@@ -1,0 +1,118 @@
+{
+  "base_commit": "ded67de55dbabaf55b0600df86f8dacb241eb0dc",
+  "diagnostic_commit": "df66aead22a518bf7f55a0ea5f293b66d1f3438e",
+  "diagnostic_only": true,
+  "retained_optimization": false,
+  "machine": {
+    "vcpus": 8,
+    "cpu": "AMD EPYC 9B14"
+  },
+  "load": "write_only",
+  "clients": 32,
+  "duration_seconds": 60,
+  "warmup_seconds": 10,
+  "returncode": 0,
+  "exclusive_monitor_checks": 100,
+  "sharing_detected": false,
+  "rows": {
+    "binding": {
+      "successful_reads": 956174,
+      "existing_positive": 313004,
+      "existing_absence": 0,
+      "cold_positive": 332969,
+      "cold_absence": 310201,
+      "exact_repeat": 80627,
+      "changed_value": 0,
+      "budget_skip": 0,
+      "copied_key_bytes": 9588996,
+      "copied_value_bytes": 72081251,
+      "exact_repeat_read_wall_ns": 155223706,
+      "other_read_wall_ns": 3049735475
+    },
+    "root_validation": {
+      "successful_reads": 0,
+      "existing_positive": 0,
+      "existing_absence": 0,
+      "cold_positive": 0,
+      "cold_absence": 0,
+      "exact_repeat": 0,
+      "changed_value": 0,
+      "budget_skip": 0,
+      "copied_key_bytes": 0,
+      "copied_value_bytes": 0,
+      "exact_repeat_read_wall_ns": 0,
+      "other_read_wall_ns": 0
+    },
+    "cascade": {
+      "successful_reads": 0,
+      "existing_positive": 0,
+      "existing_absence": 0,
+      "cold_positive": 0,
+      "cold_absence": 0,
+      "exact_repeat": 0,
+      "changed_value": 0,
+      "budget_skip": 0,
+      "copied_key_bytes": 0,
+      "copied_value_bytes": 0,
+      "exact_repeat_read_wall_ns": 0,
+      "other_read_wall_ns": 0
+    }
+  },
+  "metadata": {
+    "peak_payload_bytes": 9957,
+    "peak_entries": 30,
+    "payload_limit_bytes": 65536,
+    "entry_limit": 64,
+    "fixed_slot_array_bytes": 2048,
+    "batch_probe_option_bytes": 328,
+    "batches": 16404,
+    "skipped_records": 0
+  },
+  "process_scope_commands": 260334,
+  "exact_repeat_read_wall_us_per_process_scope_command": 0.5962483041016541,
+  "diagnostic_throughput_ops_s": 3648,
+  "latency": {
+    "max_ns": 717543189,
+    "mean_ns": 8767511,
+    "min_ns": 1826450,
+    "p50_ns": 6815743,
+    "p95_ns": 8388607,
+    "p99_ns": 11010047,
+    "sample_count": 218092
+  },
+  "resources": {
+    "cpu_ticks": 15998,
+    "heap_envelope_bytes": 1415290880,
+    "rss_bytes_peak_sampled": 1192493056,
+    "process_read_bytes": 0,
+    "process_write_bytes": 23210151936,
+    "durable_bytes_growth": 3033501696,
+    "process_scope_committed_commands": 260334,
+    "successful_mutations": 218092,
+    "process_identity_stable": true
+  },
+  "writer_cpu_window": {
+    "elapsed_seconds": 25.126883368,
+    "cpu_ticks": 1838,
+    "ticks_per_second": 100,
+    "cpu_seconds": 18.38
+  },
+  "writer_scheduler_window": {
+    "scheduler_cpu_ns": 18387362919,
+    "runqueue_wait_ns": 121389054,
+    "timeslices": 16715,
+    "elapsed_minus_cpu_minus_runqueue_ns": 6618131395,
+    "field_reference": "https://www.kernel.org/doc/html/latest/scheduler/sched-stats.html"
+  },
+  "limits": [
+    "Every ordinary entity read and decode runs; the diagnostic never answers a read.",
+    "The fixed entry/payload limits can miss repeats after budget refusal; absences are never retained.",
+    "Read wall time excludes diagnostic comparison/retention and is not CPU time or proof of physical I/O.",
+    "Counters include warmup and process setup; throughput and latency use the measured load window.",
+    "Diagnostic copying and synchronization prevent performance qualification from this run.",
+    "Logical retained payload and fixed headers exclude allocator overhead; process heap and RSS are separate.",
+    "Writer CPU is a direct endpoint delta over a separate window with no aligned command counter.",
+    "Elapsed minus scheduler CPU and runqueue wait is a residual, not caller-attributed blocked time; endpoints are sampled separately.",
+    "The sharing monitor detects listed benchmark processes once per second; it does not identify all possible host interference."
+  ]
+}

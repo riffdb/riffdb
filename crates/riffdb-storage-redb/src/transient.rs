@@ -888,16 +888,21 @@ impl CommandDerivedIndexes {
         &mut self,
         segment: Arc<StoredCommandSegmentV1>,
     ) -> Result<(), StorageError> {
+        let metadata = {
+            let _probe =
+                crate::publication_probe::start(crate::publication_probe::Phase::SegmentMetadata);
+            SegmentMetadata::new(&segment)?
+        };
         if self
             .segments
-            .insert(
-                segment.first_commit_sequence(),
-                SegmentMetadata::new(&segment)?,
-            )
+            .insert(segment.first_commit_sequence(), metadata)
             .is_some()
         {
             return Err(corrupt());
         }
+        let _manifest_probe = crate::publication_probe::start(
+            crate::publication_probe::Phase::ManifestValidationInsertion,
+        );
         for entry in segment.manifest().entries() {
             if entry.segment_first_commit_sequence() != segment.first_commit_sequence()
                 || usize::from(entry.command_ordinal()) >= segment.commands().len()
