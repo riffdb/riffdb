@@ -82,6 +82,8 @@ use crate::store::{RedbDurabilityEpoch, RedbOperationalPorts, RedbReadAccess, Re
 use crate::transient::TransientIndexDelta;
 
 struct BatchCore {
+    // Flush local diagnostic counters before access can release SharedRedb.
+    snapshot_repeat_probe: Option<std::cell::RefCell<crate::snapshot_repeat_probe::BatchProbe>>,
     access: RedbWriteAccess,
     allocator: ApplicationSequenceAllocator,
     staged: Vec<StagedCommandEvidenceV1>,
@@ -92,7 +94,6 @@ struct BatchCore {
     /// read without repeating its B-tree lookup and durable decode.
     entity_observations: BTreeMap<EntityTarget, EntityObservation>,
     entity_observation_bytes: BTreeMap<EntityTarget, Option<Vec<u8>>>,
-    snapshot_repeat_probe: Option<std::cell::RefCell<crate::snapshot_repeat_probe::BatchProbe>>,
     index_generations: BTreeMap<PartitionIndexTarget, IndexEpochPosition>,
     pending_index_generations: BTreeMap<PartitionIndexTarget, PendingIndexGenerationPostImage>,
     reserved_provenance_ids: BTreeSet<ProvenanceId>,

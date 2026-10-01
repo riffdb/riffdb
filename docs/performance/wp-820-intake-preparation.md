@@ -171,11 +171,37 @@ entire throughput gap to this candidate.
 The candidate is removed because a throughput benefit is not demonstrated in
 either comparison. The positive-only reuse helper and its mechanism tests are
 removed together; reordered preparation failure coverage remains. No added
-cache, changed absence path, or diagnostic probe remains in production.
+cache or changed absence path remains. The probes from that experiment are
+removed; the next phase uses a separate temporary diagnostic.
 WP-820 stays open. The next measurement will count exact-byte repeat positive
 snapshot reads inside existing private admitted batches, before selecting any
 new retained-entry implementation. No PostgreSQL benefit is claimed for this
 rejected candidate.
+
+## Next diagnostic phase
+
+A temporary probe counts exact-byte repeated positive reads whose targets are
+not already held by transaction-current validation. Each private batch retains
+at most 64 entries and 64 KiB of copied key/value payload. The report separately
+names fixed slot and counter storage, peak payload/entry counts, copied key and
+value bytes, and skipped diagnostic records. Allocator overhead is separate
+from these logical byte charges and must be measured by process memory.
+
+Every original entity read and decode still runs. Successful reads are split
+by binding, root validation, and cascade role. Existing positive observations,
+existing absence, new positive observations, absence, exact byte repeats,
+changed bytes, and budget refusals are distinct counters. Read wall intervals
+stop before diagnostic retention and comparison work; they are not CPU time.
+Errors stay on their ordinary path and are excluded from successful-read counts.
+No values, keys, identifiers, or principals enter the bounded numeric line.
+The existing 15-field checkpoint census remains unchanged.
+
+Two probe tests prove exact-byte classification and entry/payload bounds; all
+eleven focused snapshot tests and affected all-feature clippy pass. Scoped
+acceptance is running. The last full CI was interrupted by the agent server
+restart and is incomplete, despite having no failure in its available log.
+Live measurement is pending clarification of exclusive benchmark availability.
+The package remains open and no throughput improvement is claimed.
 
 ## Review status
 
@@ -187,7 +213,7 @@ Reordered preparation completion coverage asserts independent cancellation,
 deadline, and missing-slot failures before any optimization. Snapshot probe acceptance passes 1,407 tests but fails the equal-key admission
 clock count (one versus two) and times out one bootstrap publication campaign.
 Candidate acceptance passes separately with bounded runner concurrency; no
-assertions or test limits are weakened. Full CI is running. Full CI for the final retained runtime, any new candidate production A/B and
+assertions or test limits are weakened. The full CI run was interrupted and must be repeated for the final runtime. Full CI for the final retained runtime, any new candidate production A/B and
 PostgreSQL qualification, final handbook update, and closure remain required
 before completion. This page and its handbook link report the current investigation;
 they do not announce a new application or operator capability.
