@@ -20,6 +20,60 @@ use sha2::{Digest, Sha256};
 
 use crate::StorageValueError;
 
+// Temporary fixed-cardinality diagnostic; never records keys or values.
+pub(crate) mod wp820_probe {
+    use std::cell::Cell;
+    struct Probe {
+        values: Cell<[u64; 48]>,
+        role: u8,
+    }
+    impl Drop for Probe {
+        fn drop(&mut self) {
+            eprintln!(
+                "riffdb-wp820-copy-probe-v1\t{}\t{}\t{:?}",
+                std::process::id(),
+                self.role,
+                self.values.get()
+            );
+        }
+    }
+    thread_local! {
+        static PROBE: Option<Probe> = if std::env::var_os("RIFFDB_WP820_COPY_DIAGNOSTICS").is_some_and(|v| v == "1") {
+            Some(Probe { values: Cell::new([0; 48]), role: match std::thread::current().name() { Some("riffdb-command-writer") => 1, Some(n) if n.starts_with("riffdb-command-prepare-") => 2, Some("riffdb-command-coordinator") => 3, Some("riffdb-command-completion") => 4, _ => 0 } })
+        } else { None };
+    }
+    pub(crate) fn add(index: usize, amount: usize) {
+        PROBE.with(|probe| {
+            if let Some(probe) = probe {
+                let mut values = probe.values.get();
+                values[index] = values[index].saturating_add(amount as u64);
+                probe.values.set(values);
+            }
+        });
+    }
+}
+fn wp820_arc_bytes(bytes: &[u8], value: bool) -> Arc<[u8]> {
+    let index = if value { 10 } else { 7 };
+    wp820_probe::add(index, 1);
+    wp820_probe::add(
+        index + 1,
+        bytes.len().saturating_add(2 * std::mem::size_of::<usize>()),
+    );
+    wp820_probe::add(index + 2, bytes.len());
+    Arc::from(bytes)
+}
+fn wp820_make_mut(node: &mut Arc<OverlayNode>) -> &mut OverlayNode {
+    let index = if Arc::strong_count(node) > 1 {
+        5
+    } else if Arc::weak_count(node) > 0 {
+        6
+    } else {
+        4
+    };
+    wp820_probe::add(index, 1);
+    Arc::make_mut(node)
+}
+
 /// Maximum complete published journal suffix represented by one overlay.
 pub const MAX_COMPOSITE_OVERLAY_TRANSITIONS: usize = 65_536;
 /// Maximum cumulative encoded journal bytes represented by one overlay.
@@ -635,7 +689,11 @@ impl CompositeMutationStage {
     ) -> Result<(), StorageValueError> {
         base.validate_entry(mutation.table(), mutation.key(), mutation.value())?;
         let current = match self.tables[mutation.table().index()].get(mutation.key()) {
-            Some(OverlayValue::Value(value)) => Some(value.as_ref().to_vec()),
+            Some(OverlayValue::Value(value)) => {
+                wp820_probe::add(15, usize::from(!value.is_empty()));
+                wp820_probe::add(16, value.len());
+                Some(value.as_ref().to_vec())
+            }
             Some(OverlayValue::Tombstone) => None,
             None => base.read_base(mutation.table(), mutation.key())?,
         };
@@ -700,8 +758,8 @@ impl CompositeMutationStage {
             Some(prior @ OverlayValue::Value(current)) if current.as_ref() == value => prior,
             _ => return Ok(false),
         };
-        let key: Arc<[u8]> = Arc::from(mutation.key());
-        let replacement = OverlayValue::Value(Arc::from(representation));
+        let key: Arc<[u8]> = wp820_arc_bytes(mutation.key(), false);
+        let replacement = OverlayValue::Value(wp820_arc_bytes(representation, true));
         let charge = self
             .charged_bytes
             .checked_sub(entry_charge(&key, prior)?)
@@ -720,10 +778,10 @@ impl CompositeMutationStage {
     ) -> Result<(), StorageValueError> {
         validate_before_image(current, mutation.expected_hash())?;
         let table = &mut self.tables[mutation.table().index()];
-        let key: Arc<[u8]> = Arc::from(mutation.key());
+        let key: Arc<[u8]> = wp820_arc_bytes(mutation.key(), false);
         let replacement = mutation
             .value()
-            .map(|value| OverlayValue::Value(Arc::from(value)))
+            .map(|value| OverlayValue::Value(wp820_arc_bytes(value, true)))
             .unwrap_or(OverlayValue::Tombstone);
         let next_staged_lineage_bytes = self
             .staged_lineage_bytes
@@ -748,6 +806,7 @@ impl CompositeMutationStage {
         table.insert(key, replacement);
         self.charged_bytes = next_charge;
         self.staged_lineage_bytes = next_staged_lineage_bytes;
+        wp820_probe::add(26, 1);
         self.mutations.push(mutation);
         Ok(())
     }
@@ -1092,11 +1151,18 @@ impl FrozenCompositeOverlay {
             return Err(StorageValueError::IdentityMismatch);
         }
 
+        wp820_probe::add(27, 1);
         let mut touched = BTreeMap::<(CompositeTableV1, Arc<[u8]>), ()>::new();
         let mut lineage = self.lineage.as_ref();
         while !same_lineage(lineage, covered.lineage.as_ref()) {
             let node = lineage.ok_or(StorageValueError::IdentityMismatch)?;
             for (table, key) in node.keys.iter() {
+                wp820_probe::add(23, 1);
+                wp820_probe::add(
+                    24,
+                    key.len().saturating_add(2 * std::mem::size_of::<usize>()),
+                );
+                wp820_probe::add(25, key.len());
                 touched.insert((*table, Arc::from(key.as_ref())), ());
             }
             lineage = node.predecessor.as_ref();
@@ -1450,17 +1516,31 @@ fn overlay_lineage_successor(
     mutations: &[CompositeMutationV1],
 ) -> Result<(Option<Arc<OverlayLineageNode>>, usize), StorageValueError> {
     let mut added_bytes = 0_usize;
+    wp820_probe::add(19, usize::from(!mutations.is_empty()));
+    wp820_probe::add(
+        20,
+        mutations
+            .len()
+            .saturating_mul(std::mem::size_of::<(CompositeTableV1, Box<[u8]>)>()),
+    );
     let mut keys = Vec::with_capacity(mutations.len());
     for mutation in mutations {
         added_bytes = added_bytes
             .checked_add(lineage_key_charge(mutation.key())?)
             .ok_or(StorageValueError::SizeOverflow)?;
+        wp820_probe::add(17, usize::from(!mutation.key().is_empty()));
+        wp820_probe::add(18, mutation.key().len());
         keys.push((mutation.table(), mutation.key().into()));
     }
     let lineage_bytes = predecessor_bytes
         .checked_add(added_bytes)
         .ok_or(StorageValueError::SizeOverflow)?;
     let lineage = (!keys.is_empty()).then(|| {
+        wp820_probe::add(21, 1);
+        wp820_probe::add(
+            22,
+            std::mem::size_of::<OverlayLineageNode>() + 2 * std::mem::size_of::<usize>(),
+        );
         Arc::new(OverlayLineageNode {
             predecessor,
             keys: keys.into_boxed_slice(),
@@ -1509,16 +1589,20 @@ fn apply_mutations_atomically(
         let table_index = mutation.table().index();
         let pending = pending_tables[table_index].get(mutation.key());
         let current = match pending.or_else(|| tables[table_index].get(mutation.key())) {
-            Some(OverlayValue::Value(value)) => Some(value.as_ref().to_vec()),
+            Some(OverlayValue::Value(value)) => {
+                wp820_probe::add(15, usize::from(!value.is_empty()));
+                wp820_probe::add(16, value.len());
+                Some(value.as_ref().to_vec())
+            }
             Some(OverlayValue::Tombstone) => None,
             None => base.read_base(mutation.table(), mutation.key())?,
         };
         validate_before_image(current.as_deref(), mutation.expected_hash())?;
 
-        let key: Arc<[u8]> = Arc::from(mutation.key());
+        let key: Arc<[u8]> = wp820_arc_bytes(mutation.key(), false);
         let replacement = mutation
             .value()
-            .map(|value| OverlayValue::Value(Arc::from(value)))
+            .map(|value| OverlayValue::Value(wp820_arc_bytes(value, true)))
             .unwrap_or(OverlayValue::Tombstone);
         let prior_overlay = pending_tables[table_index]
             .get(key.as_ref())
@@ -1555,7 +1639,11 @@ fn resolve_overlay_point(
     match tables[table.index()].get(key) {
         None => base.read_base(table, key),
         Some(OverlayValue::Tombstone) => Ok(None),
-        Some(OverlayValue::Value(value)) => Ok(Some(value.to_vec())),
+        Some(OverlayValue::Value(value)) => {
+            wp820_probe::add(13, usize::from(!value.is_empty()));
+            wp820_probe::add(14, value.len());
+            Ok(Some(value.to_vec()))
+        }
     }
 }
 
@@ -1569,7 +1657,6 @@ struct PersistentOverlayMap {
     root: Option<Arc<OverlayNode>>,
 }
 
-#[derive(Clone)]
 struct OverlayNode {
     // Shared, never copied. A successor copies one search path, and a
     // `Box<[u8]>` key here made that copy allocate and memcpy every key on the
@@ -1580,6 +1667,23 @@ struct OverlayNode {
     height: u16,
     left: Option<Arc<Self>>,
     right: Option<Arc<Self>>,
+}
+
+impl Clone for OverlayNode {
+    fn clone(&self) -> Self {
+        wp820_probe::add(2, 1);
+        wp820_probe::add(
+            3,
+            std::mem::size_of::<Self>() + 2 * std::mem::size_of::<usize>(),
+        );
+        Self {
+            key: self.key.clone(),
+            value: self.value.clone(),
+            height: self.height,
+            left: self.left.clone(),
+            right: self.right.clone(),
+        }
+    }
 }
 
 impl PersistentOverlayMap {
@@ -1650,7 +1754,7 @@ fn insert_overlay_node(
     };
     // Copy only shared paths. Subsequent private-stage mutations reuse the
     // already-owned nodes while predecessor snapshots remain immutable.
-    let owned = Arc::make_mut(&mut node);
+    let owned = wp820_make_mut(&mut node);
     match key.as_ref().cmp(owned.key.as_ref()) {
         std::cmp::Ordering::Less => {
             owned.left = Some(insert_overlay_node(owned.left.take(), key, value));
@@ -1682,6 +1786,11 @@ fn overlay_node(
     let height = overlay_height(&left)
         .max(overlay_height(&right))
         .saturating_add(1);
+    wp820_probe::add(0, 1);
+    wp820_probe::add(
+        1,
+        std::mem::size_of::<OverlayNode>() + 2 * std::mem::size_of::<usize>(),
+    );
     Arc::new(OverlayNode {
         key,
         value,
@@ -1703,7 +1812,7 @@ fn rebalance_overlay_node(mut node: Arc<OverlayNode>) -> Arc<OverlayNode> {
             .as_ref()
             .expect("positive AVL balance has left child");
         if overlay_height(&left.left) < overlay_height(&left.right) {
-            let owned = Arc::make_mut(&mut node);
+            let owned = wp820_make_mut(&mut node);
             let left = owned
                 .left
                 .take()
@@ -1719,7 +1828,7 @@ fn rebalance_overlay_node(mut node: Arc<OverlayNode>) -> Arc<OverlayNode> {
             .as_ref()
             .expect("negative AVL balance has right child");
         if overlay_height(&right.right) < overlay_height(&right.left) {
-            let owned = Arc::make_mut(&mut node);
+            let owned = wp820_make_mut(&mut node);
             let right = owned
                 .right
                 .take()
@@ -1733,30 +1842,30 @@ fn rebalance_overlay_node(mut node: Arc<OverlayNode>) -> Arc<OverlayNode> {
 }
 
 fn rotate_overlay_left(mut node: Arc<OverlayNode>) -> Arc<OverlayNode> {
-    let mut right = Arc::make_mut(&mut node)
+    let mut right = wp820_make_mut(&mut node)
         .right
         .take()
         .expect("AVL left rotation has right child");
-    let middle = Arc::make_mut(&mut right).left.take();
-    let owned = Arc::make_mut(&mut node);
+    let middle = wp820_make_mut(&mut right).left.take();
+    let owned = wp820_make_mut(&mut node);
     owned.right = middle;
     update_overlay_height(owned);
-    let owned = Arc::make_mut(&mut right);
+    let owned = wp820_make_mut(&mut right);
     owned.left = Some(node);
     update_overlay_height(owned);
     right
 }
 
 fn rotate_overlay_right(mut node: Arc<OverlayNode>) -> Arc<OverlayNode> {
-    let mut left = Arc::make_mut(&mut node)
+    let mut left = wp820_make_mut(&mut node)
         .left
         .take()
         .expect("AVL right rotation has left child");
-    let middle = Arc::make_mut(&mut left).right.take();
-    let owned = Arc::make_mut(&mut node);
+    let middle = wp820_make_mut(&mut left).right.take();
+    let owned = wp820_make_mut(&mut node);
     owned.left = middle;
     update_overlay_height(owned);
-    let owned = Arc::make_mut(&mut left);
+    let owned = wp820_make_mut(&mut left);
     owned.right = Some(node);
     update_overlay_height(owned);
     left

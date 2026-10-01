@@ -1019,6 +1019,11 @@ fn read_transaction_local_snapshot(
     core: &BatchCore,
     request: SnapshotRequest,
 ) -> Result<ReadSnapshot, StorageError> {
+    crate::store::wp820_count(100, 1);
+    crate::store::wp820_count(101, request.binding_targets().len());
+    crate::store::wp820_count(102, request.root_validation_targets().len());
+    crate::store::wp820_count(103, request.cascade_targets().len());
+    crate::store::wp820_count(104, request.range_targets().len());
     let observed_through = core
         .staged
         .last()
@@ -1999,6 +2004,7 @@ fn apply_record_set(
     records: &AtomicCommandRecordSet,
     encoded: riffdb_storage_api::EncodedCapsuleCommandRecordSetV1,
 ) -> Result<Vec<CommittedEntityTransitionV1>, StorageError> {
+    crate::store::wp820_count(109, 1);
     core.access.begin_command_prefix_capture(
         records
             .presequence_charge()
@@ -2691,6 +2697,7 @@ fn command_outcome_from_write_indexes(
     access: &RedbWriteAccess,
     identity: &IdempotencyIdentity,
 ) -> Result<Option<StoredOutcomeV1>, StorageError> {
+    crate::store::wp820_count(105, 1);
     let key = identity_key(identity)?;
     let exact_key = encode_idempotency_key(&key);
     if let Some((segment, locator)) =
@@ -3337,6 +3344,7 @@ fn dependencies_from_current(
 }
 
 fn provenance_exists(core: &BatchCore, provenance_id: ProvenanceId) -> Result<bool, StorageError> {
+    crate::store::wp820_count(106, 1);
     if core.reserved_provenance_ids.contains(&provenance_id) {
         return Ok(true);
     }

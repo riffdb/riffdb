@@ -500,6 +500,30 @@ maximum; this is not banked as an ordinary production stall. A bounded caller-
 class byte-size capture follows. Sanitized CPU evidence is
 `release/evidence/wp-820/resolved-copy-cpu-20261001.json`.
 
+## Temporary bounded read/copy counters (2026-10-01)
+
+A temporary storage-only counter phase records explicit overlay allocations,
+node clones and ownership observations, owned point/before-image copies,
+lineage construction and rebase keys, journal-to-overlay conversion, receipt
+construction and coalescing, and table-specific checkpoint requests/copy bytes.
+Writer-private snapshot targets, preparation snapshots, transaction-current
+idempotency/provenance calls, and command record applications are separate.
+Counters never supply values to a read or mutation and never change validation.
+
+Each participating thread keeps two fixed arrays of 48 and 112 saturating u64
+counters, plus tags/padding. Counter updates copy these arrays and add diagnostic
+CPU/stack traffic. One bounded numeric line per array is emitted on graceful
+thread exit. Private process-generation tags separate seed, measured, and reopen
+processes; exact roles distinguish the ordered writer from preparation workers,
+coordinator, completion, and other threads. Published evidence drops process
+tags. These explicit constructor counts are not complete allocator totals or
+allocator rounding/fragmentation, and backend requests are not physical reads.
+
+The counter phase uses a profiling build; production comparisons retain the
+frozen binaries without these probes. All 17 overlay semantic tests and eight
+follower-index tests pass, as do the eight scoped non-test acceptance checks.
+The temporary probes are to be removed after collecting evidence.
+
 ## Review status
 
 Package: WP-820. Tier: guarantee. Behavior: bounded diagnostics, rejected

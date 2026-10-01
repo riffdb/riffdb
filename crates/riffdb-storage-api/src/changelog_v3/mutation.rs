@@ -49,6 +49,10 @@ impl AuthoritativeMutationV3 {
         value: &[u8],
     ) -> Result<Self, ChangelogV3Error> {
         Self::validate(namespace, key, value.len())?;
+        crate::composite_view::wp820_probe::add(29, usize::from(!key.is_empty()));
+        crate::composite_view::wp820_probe::add(30, key.len());
+        crate::composite_view::wp820_probe::add(31, usize::from(!value.is_empty()));
+        crate::composite_view::wp820_probe::add(32, value.len());
         Ok(Self {
             namespace,
             key: key.into(),
@@ -64,6 +68,8 @@ impl AuthoritativeMutationV3 {
         expected_hash: [u8; 32],
     ) -> Result<Self, ChangelogV3Error> {
         Self::validate(namespace, key, 0)?;
+        crate::composite_view::wp820_probe::add(33, usize::from(!key.is_empty()));
+        crate::composite_view::wp820_probe::add(34, key.len());
         Ok(Self {
             namespace,
             key: key.into(),
@@ -191,6 +197,8 @@ impl AuthoritativeMutationAccumulatorV3 {
         } = mutation;
         let target = (namespace, key);
         let previous = self.changes.get(&target);
+        crate::composite_view::wp820_probe::add(35, 1);
+        crate::composite_view::wp820_probe::add(36, usize::from(previous.is_some()));
         let original = if let Some(previous) = previous {
             if expected_hash != previous.current_hash {
                 return Err(ChangelogV3Error::PredecessorMismatch);

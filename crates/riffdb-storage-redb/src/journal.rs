@@ -557,6 +557,10 @@ impl JournalMutation {
         &self,
     ) -> Result<riffdb_storage_api::CompositeMutationV1, riffdb_storage_api::StorageValueError>
     {
+        crate::store::wp820_count(96, 1);
+        crate::store::wp820_count(97, self.key().len());
+        crate::store::wp820_count(98, self.value().map_or(0, <[u8]>::len));
+        crate::store::wp820_count(99, usize::from(self.value().is_some_and(|v| !v.is_empty())));
         match self {
             Self::Put {
                 table,

@@ -102,6 +102,7 @@ impl JournalRuntime {
             history.lineage().catalog_digest(),
         )
         .map_err(value_error)?;
+        crate::store::wp820_count(108, 1);
         // Complete canonical coalescing, bounds and attribution are proven BEFORE
         // lane.submit. Retain only constant-size binding/history; original values
         // remain in the existing bounded retained mutation source, not a copy.
