@@ -14,6 +14,95 @@ const HEADER_BYTES: usize = 128;
 const CHECKSUM_BYTES: usize = 32;
 const DELETE_VALUE_LENGTH: u32 = u32::MAX;
 
+#[cfg(test)]
+mod streaming_hash_tests {
+    use super::*;
+
+    fn frozen_frame() -> crate::ChangelogFrameV3 {
+        let hex = include_str!("../../../../fixtures/replication/changelog-frame-v3.hex").trim();
+        let bytes: Vec<u8> = hex
+            .as_bytes()
+            .chunks_exact(2)
+            .map(|pair| u8::from_str_radix(std::str::from_utf8(pair).unwrap(), 16).unwrap())
+            .collect();
+        crate::ChangelogFrameV3::decode(&bytes).unwrap()
+    }
+
+    // req: REP-003, REC-001
+    #[test]
+    fn streamed_receipt_body_preserves_frozen_bytes_and_checksum() {
+        let frame = frozen_frame();
+        for receipt in frame.receipts() {
+            let encoded = receipt.encode().unwrap();
+            let mut streamed = Vec::new();
+            receipt
+                .write_body(encoded.len(), &mut |part| streamed.extend_from_slice(part))
+                .unwrap();
+            assert_eq!(streamed, encoded[..encoded.len() - CHECKSUM_BYTES]);
+            let expected: [u8; 32] = Sha256::digest(&streamed).into();
+            assert_eq!(receipt.history_hash().unwrap(), expected);
+            assert_eq!(&expected, &encoded[encoded.len() - CHECKSUM_BYTES..]);
+        }
+    }
+
+    // req: REP-003, REC-001
+    #[test]
+    fn streamed_history_hash_preserves_empty_put_delete_and_sha_block_boundaries() {
+        let frame = frozen_frame();
+        let binding = frame.receipts()[0].binding();
+        let empty = AuthoritativeTransactionV3::new(
+            binding,
+            ChangelogAttributionV3::CatalogAdministration,
+            vec![],
+        )
+        .unwrap();
+        let check = |receipt: &AuthoritativeTransactionV3| {
+            let encoded = receipt.encode().unwrap();
+            let body = &encoded[..encoded.len() - CHECKSUM_BYTES];
+            let expected: [u8; 32] = Sha256::digest(body).into();
+            assert_eq!(receipt.history_hash().unwrap(), expected);
+            assert_eq!(&expected, &encoded[encoded.len() - CHECKSUM_BYTES..]);
+            assert_eq!(
+                AuthoritativeTransactionV3::decode(&encoded).unwrap(),
+                *receipt
+            );
+        };
+        check(&empty);
+        for size in [0, 1, 31, 55, 56, 63, 64, 65, 127, 128, 255, 4096, 65536] {
+            let value = vec![0x31; size];
+            let mutations = vec![
+                AuthoritativeMutationV3::put(
+                    crate::AuthoritativeNamespaceV1::Entities,
+                    b"a",
+                    None,
+                    &value,
+                )
+                .unwrap(),
+                AuthoritativeMutationV3::put(
+                    crate::AuthoritativeNamespaceV1::Entities,
+                    b"b",
+                    Some([0; 32]),
+                    b"",
+                )
+                .unwrap(),
+                AuthoritativeMutationV3::delete(
+                    crate::AuthoritativeNamespaceV1::Entities,
+                    b"c",
+                    [0x71; 32],
+                )
+                .unwrap(),
+            ];
+            let receipt = AuthoritativeTransactionV3::new(
+                binding,
+                ChangelogAttributionV3::CatalogAdministration,
+                mutations,
+            )
+            .unwrap();
+            check(&receipt);
+        }
+    }
+}
+
 impl AuthoritativeTransactionV3 {
     /// Canonical receipt encoding. A single SHA-256 covers the full fixed header
     /// and mutation payload; its exact bytes are shared by journal sourcing and
@@ -23,35 +112,49 @@ impl AuthoritativeTransactionV3 {
         if total > MAX_RECEIPT_BYTES {
             return Err(ChangelogV3Error::LimitExceeded);
         }
-        let binding = self.binding();
         let mut bytes = Vec::with_capacity(total);
-        bytes.extend_from_slice(MAGIC);
-        bytes.extend_from_slice(&3_u16.to_be_bytes());
-        bytes.extend_from_slice(binding.database_id.as_bytes());
-        bytes.extend_from_slice(&binding.history_incarnation.to_be_bytes());
-        bytes.extend_from_slice(&binding.predecessor.map_or(0, |v| v.get()).to_be_bytes());
-        bytes.extend_from_slice(&binding.sequence.get().to_be_bytes());
-        bytes.extend_from_slice(&binding.predecessor_frontier.to_canonical_bytes());
-        bytes.extend_from_slice(&binding.covered_frontier.to_canonical_bytes());
-        bytes.extend_from_slice(&(self.attribution() as u16).to_be_bytes());
-        bytes.extend_from_slice(&binding.prior_history_hash);
-        bytes.extend_from_slice(
+        self.write_body(total, &mut |part| bytes.extend_from_slice(part))?;
+        let checksum: [u8; 32] = Sha256::digest(&bytes).into();
+        bytes.extend_from_slice(&checksum);
+        Ok(bytes)
+    }
+
+    // One canonical emitter serves export encoding and checksum-only callers.
+    // Borrowed fragments remain within this synchronous invocation.
+    fn write_body(
+        &self,
+        total: usize,
+        write: &mut impl FnMut(&[u8]),
+    ) -> Result<(), ChangelogV3Error> {
+        if total > MAX_RECEIPT_BYTES {
+            return Err(ChangelogV3Error::LimitExceeded);
+        }
+        let binding = self.binding();
+        write(MAGIC);
+        write(&3_u16.to_be_bytes());
+        write(binding.database_id.as_bytes());
+        write(&binding.history_incarnation.to_be_bytes());
+        write(&binding.predecessor.map_or(0, |v| v.get()).to_be_bytes());
+        write(&binding.sequence.get().to_be_bytes());
+        write(&binding.predecessor_frontier.to_canonical_bytes());
+        write(&binding.covered_frontier.to_canonical_bytes());
+        write(&(self.attribution() as u16).to_be_bytes());
+        write(&binding.prior_history_hash);
+        write(
             &u32::try_from(self.mutations().len())
                 .map_err(|_| ChangelogV3Error::LimitExceeded)?
                 .to_be_bytes(),
         );
         let payload_bytes = total - HEADER_BYTES - CHECKSUM_BYTES;
-        bytes.extend_from_slice(
+        write(
             &u32::try_from(payload_bytes)
                 .map_err(|_| ChangelogV3Error::LimitExceeded)?
                 .to_be_bytes(),
         );
         for mutation in self.mutations() {
-            encode_mutation(&mut bytes, mutation)?;
+            write_mutation(write, mutation)?;
         }
-        let checksum: [u8; 32] = Sha256::digest(&bytes).into();
-        bytes.extend_from_slice(&checksum);
-        Ok(bytes)
+        Ok(())
     }
 
     /// Refuses oversized input before hashing/copying and refuses unknown,
@@ -120,10 +223,9 @@ impl AuthoritativeTransactionV3 {
 
     /// Exact receipt checksum used as the next row's prior-history hash.
     pub fn history_hash(&self) -> Result<[u8; 32], ChangelogV3Error> {
-        let bytes = self.encode()?;
-        bytes[bytes.len() - CHECKSUM_BYTES..]
-            .try_into()
-            .map_err(|_| ChangelogV3Error::InvalidEncoding)
+        let mut digest = Sha256::new();
+        self.write_body(self.encoded_len()?, &mut |part| digest.update(part))?;
+        Ok(digest.finalize().into())
     }
 }
 
@@ -131,10 +233,17 @@ pub(crate) fn encode_mutation(
     bytes: &mut Vec<u8>,
     mutation: &AuthoritativeMutationV3,
 ) -> Result<(), ChangelogV3Error> {
-    bytes.extend_from_slice(&mutation.namespace().tag().to_be_bytes());
-    bytes.push(u8::from(mutation.value().is_none()));
-    bytes.push(u8::from(mutation.expected_hash().is_some()));
-    bytes.extend_from_slice(
+    write_mutation(&mut |part| bytes.extend_from_slice(part), mutation)
+}
+
+fn write_mutation(
+    write: &mut impl FnMut(&[u8]),
+    mutation: &AuthoritativeMutationV3,
+) -> Result<(), ChangelogV3Error> {
+    write(&mutation.namespace().tag().to_be_bytes());
+    write(&[u8::from(mutation.value().is_none())]);
+    write(&[u8::from(mutation.expected_hash().is_some())]);
+    write(
         &u32::try_from(mutation.key().len())
             .map_err(|_| ChangelogV3Error::LimitExceeded)?
             .to_be_bytes(),
@@ -145,11 +254,11 @@ pub(crate) fn encode_mutation(
         .transpose()
         .map_err(|_| ChangelogV3Error::LimitExceeded)?
         .unwrap_or(DELETE_VALUE_LENGTH);
-    bytes.extend_from_slice(&value_len.to_be_bytes());
-    bytes.extend_from_slice(&mutation.expected_hash().unwrap_or([0; 32]));
-    bytes.extend_from_slice(mutation.key());
+    write(&value_len.to_be_bytes());
+    write(&mutation.expected_hash().unwrap_or([0; 32]));
+    write(mutation.key());
     if let Some(value) = mutation.value() {
-        bytes.extend_from_slice(value);
+        write(value);
     }
     Ok(())
 }

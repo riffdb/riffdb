@@ -566,6 +566,16 @@ coverage limits are in
 
 ## Review status
 
+Restored production main passes full `./scripts/ci-all` at `dd2cc540`; the
+storage-count evidence at `de902b30` passes all five scoped acceptance checks.
+The next single-mechanism candidate streams the canonical receipt body into
+SHA-256 when only its history checksum is needed, avoiding a temporary encoded
+receipt buffer. Encoding and hashing share one private emitter. Frozen-byte
+coverage fails to compile before the emitter exists and passes with it; empty,
+put/delete and SHA block-boundary coverage precedes production qualification.
+The candidate does not change receipt coalescing, canonical bytes, public or
+durable interfaces. Its production benefit and retention remain unqualified.
+
 Package: WP-820. Tier: guarantee. Behavior: bounded diagnostics, rejected
 positive-observation reuse, and an unqualified disposable payload eviction
 prototype; package completion remains open.
