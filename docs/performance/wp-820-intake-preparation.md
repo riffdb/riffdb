@@ -812,7 +812,7 @@ outside that writer bucket. It nevertheless rules out treating only those
 writer reads as a sufficient explanation for the historical throughput gap.
 An isolated substrate comparison also omits first-party command execution,
 overlay, canonical history and recovery work. The existing
-[Fjall comparison](../../benchmarks/storage-fjall/README.md) does not implement
+Fjall comparison (`benchmarks/storage-fjall/README.md`) does not implement
 the complete semantic storage ports and cannot establish a server speed claim.
 
 An exclusive repartition of the existing stacks assigns every writer sample
