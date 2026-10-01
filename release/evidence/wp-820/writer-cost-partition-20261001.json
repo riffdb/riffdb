@@ -1,0 +1,198 @@
+{
+  "schema": "riffdb-wp820-writer-cost-partition-v1",
+  "recorded_at": "2026-10-01",
+  "base_commit": "445927ccef2ca9b2e1f8643559972dbbf98e3728",
+  "diagnostic_only": true,
+  "new_capture": false,
+  "source": "Existing post815 CPU capture with matched C runtime symbols",
+  "build": "profiling with forced frame pointers; not production release",
+  "process_samples": 50376,
+  "writer_samples": 17865,
+  "lost_events": 0,
+  "method": "Each writer sample goes to its nearest named boundary from leaf to root. Exactly one boundary and one leaf primitive per sample. Boundary buckets are exclusive, not inclusive costs of whole operations.",
+  "leaf_primitive_counts": {
+    "copy": 2044,
+    "compare": 2024,
+    "sha256": 1296,
+    "other": 12501
+  },
+  "boundaries": [
+    {
+      "boundary": "changelog_successor_other",
+      "samples": 47,
+      "primitive_samples": {
+        "copy": 0,
+        "compare": 9,
+        "sha256": 0,
+        "other": 38
+      }
+    },
+    {
+      "boundary": "checkpoint_access",
+      "samples": 1575,
+      "primitive_samples": {
+        "copy": 0,
+        "compare": 297,
+        "sha256": 0,
+        "other": 1278
+      }
+    },
+    {
+      "boundary": "command_append_other",
+      "samples": 3770,
+      "primitive_samples": {
+        "copy": 610,
+        "compare": 222,
+        "sha256": 84,
+        "other": 2854
+      }
+    },
+    {
+      "boundary": "entity_decode",
+      "samples": 637,
+      "primitive_samples": {
+        "copy": 45,
+        "compare": 9,
+        "sha256": 0,
+        "other": 583
+      }
+    },
+    {
+      "boundary": "group_driver_other",
+      "samples": 843,
+      "primitive_samples": {
+        "copy": 201,
+        "compare": 160,
+        "sha256": 29,
+        "other": 453
+      }
+    },
+    {
+      "boundary": "idempotency_lookup",
+      "samples": 225,
+      "primitive_samples": {
+        "copy": 0,
+        "compare": 161,
+        "sha256": 0,
+        "other": 64
+      }
+    },
+    {
+      "boundary": "mutation_validation",
+      "samples": 160,
+      "primitive_samples": {
+        "copy": 5,
+        "compare": 6,
+        "sha256": 15,
+        "other": 134
+      }
+    },
+    {
+      "boundary": "overlay_insert",
+      "samples": 1041,
+      "primitive_samples": {
+        "copy": 0,
+        "compare": 53,
+        "sha256": 0,
+        "other": 988
+      }
+    },
+    {
+      "boundary": "overlay_point",
+      "samples": 280,
+      "primitive_samples": {
+        "copy": 6,
+        "compare": 0,
+        "sha256": 0,
+        "other": 274
+      }
+    },
+    {
+      "boundary": "overlay_rebase",
+      "samples": 659,
+      "primitive_samples": {
+        "copy": 68,
+        "compare": 236,
+        "sha256": 0,
+        "other": 355
+      }
+    },
+    {
+      "boundary": "provenance_lookup",
+      "samples": 92,
+      "primitive_samples": {
+        "copy": 0,
+        "compare": 55,
+        "sha256": 0,
+        "other": 37
+      }
+    },
+    {
+      "boundary": "receipt_construction",
+      "samples": 598,
+      "primitive_samples": {
+        "copy": 71,
+        "compare": 31,
+        "sha256": 248,
+        "other": 248
+      }
+    },
+    {
+      "boundary": "receipt_encode",
+      "samples": 324,
+      "primitive_samples": {
+        "copy": 29,
+        "compare": 0,
+        "sha256": 252,
+        "other": 43
+      }
+    },
+    {
+      "boundary": "record_application_other",
+      "samples": 1148,
+      "primitive_samples": {
+        "copy": 62,
+        "compare": 292,
+        "sha256": 94,
+        "other": 700
+      }
+    },
+    {
+      "boundary": "serial_group_other",
+      "samples": 6170,
+      "primitive_samples": {
+        "copy": 878,
+        "compare": 468,
+        "sha256": 574,
+        "other": 4250
+      }
+    },
+    {
+      "boundary": "unclassified",
+      "samples": 269,
+      "primitive_samples": {
+        "copy": 67,
+        "compare": 13,
+        "sha256": 0,
+        "other": 189
+      }
+    },
+    {
+      "boundary": "writer_snapshot_capture",
+      "samples": 27,
+      "primitive_samples": {
+        "copy": 2,
+        "compare": 12,
+        "sha256": 0,
+        "other": 13
+      }
+    }
+  ],
+  "limits": [
+    "A boundary can contain inlined work; attribution does not establish avoidability.",
+    "Nested code moved to a nearer boundary is excluded from outer boundary totals.",
+    "Frame-pointer code generation can change copy costs; this partition is not a production CPU estimate.",
+    "Samples and full-generation constructor counts have different windows and must not be divided to obtain per-operation CPU.",
+    "CPU samples do not partition blocked time or overlapping pipeline intervals."
+  ]
+}

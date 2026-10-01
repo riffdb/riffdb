@@ -728,8 +728,111 @@ prove a stable owner through all three real evaluations while preserving exact
 mutations, capability release and refusal of a fourth evaluation without touching
 any port. Existing cancellation, rollback, authorization and transaction-current
 coverage remains required. Production c32 B/C/C/B write-only, interactive and
-read-only comparisons, repeat measurements and safe-application PostgreSQL
-qualification are pending.
+read-only comparisons and repeated write measurements are complete. Scoped
+acceptance passes seven checks, including 314 commit tests, and full
+`./scripts/ci-all` passes at candidate `ac21c38c`. Safe-application PostgreSQL
+qualification remains pending.
+
+## Admitted-state production results (2026-10-01)
+
+Production release binaries compare base `685adbc6` with candidate `ac21c38c`,
+with diagnostics disabled and 32 clients. Every complete bank uses
+base/candidate/candidate/base. The first driver completes its four write cells,
+then ends after one interactive base cell during a session interruption. That
+incomplete interactive bank is excluded. Fresh complete interactive, read-only
+and longer write banks run under a resumed driver. All retained cells exit zero,
+preserve process identity, and detect no competing benchmark use.
+
+| Load and timed duration | Base ops/s | Candidate ops/s | Change | Base/candidate p95 ms | Base/candidate p99 ms | Worst base/candidate max ms |
+|---|---:|---:|---:|---:|---:|---:|
+| Write-only, 60 s | 3,526 | 3,582.5 | +1.60% | 8.913 / 8.389 | 15.729 / 13.369 | 1,021.058 / 736.437 |
+| Interactive journeys, 60 s | 16,156 | 16,158.5 | +0.02% | 7.340 / 7.209 | 9.961 / 9.699 | 1,038.043 / 695.055 |
+| Read-only, 60 s | 24,923 | 24,974 | +0.20% | 2.359 / 2.359 | 3.408 / 3.408 | 9.997 / 11.304 |
+| Write-only, 90 s | 3,527 | 3,616.5 | +2.54% | 8.651 / 8.389 | 16.253 / 15.729 | 1,011.769 / 747.129 |
+
+Entries are two-run arm medians, except maximum latency, which is the worst
+observation. Warmup is 10 seconds for 60-second cells and 15 seconds for
+90-second cells. Both write banks put each candidate cell above each base cell,
+but two runs per arm do not establish a distribution or separate host drift
+from a small effect. The last base cell in the longer bank is slower than its
+first. The candidate remains provisional, without a PostgreSQL or large-gain
+claim.
+
+Sampled writer CPU per complete-generation command is 205.036 / 201.047 us in
+the first write bank and 206.253 / 200.526 us in the longer bank. This covers
+warmup as well as timed load and can omit final shutdown ticks; it is not the
+elapsed time of command execution. Interactive CPU is 268.475 / 262.550 us;
+read-only has no command denominator.
+
+Base/candidate median heap envelopes are 1,145.65 / 1,141.15 MiB for the first
+write bank and 1,361.65 / 1,363.08 MiB for the longer bank. Maximum sampled RSS
+is 1,101.98 / 1,115.91 MiB and 1,284.42 / 1,269.39 MiB respectively. Interactive
+heap envelopes are 1,051.32 / 1,033.89 MiB, with maximum RSS 968.82 / 979.02 MiB.
+Read-only heap envelopes are 43.86 / 50.69 MiB, with maximum RSS 80.82 / 81.42
+MiB. These are different resource scopes and do not isolate the cost of the
+added allocation. Individual maximum-stall causes are not instrumented here.
+Numeric cells and frozen binary hashes are in
+`release/evidence/wp-820/private-admitted-owner-ab-20261001.json`.
+
+## Cost model before another implementation
+
+The historical 0.74x PostgreSQL result does not belong to the new production
+bank. As a conditional sizing exercise, moving from 0.74x to 0.90x requires
+1.216x throughput, or 17.78% less limiting service time. Reaching parity requires
+1.351x throughput, or 26% less service time. A new same-run comparison must
+establish the current gap; these calculations do not update it.
+
+For a CPU-bound serial writer, eliminating fraction `f` of writer CPU has a
+zero-cost throughput ceiling of `1 / (1 - f)`. Halving that work saves only
+`f / 2`. Neither expression predicts the actual change: validation may make
+much of the bucket necessary, and added allocation, copying, synchronization
+and unused work consume the saving. Fixed waits or another bottleneck lower
+the benefit. The separate diagnostic window advances about 18.08 writer CPU
+seconds over 25.14 seconds, so a fully busy writer cannot simply be assumed for
+the development-host run. Work receipt, upstream preparation and required
+durability drains need separate causal attribution.
+
+The existing `445927cc` capture places the following limits on isolated CPU
+opportunities. These are hypothetical removal ceilings in a diagnostic build,
+not expected production gains:
+
+| Bucket | Writer samples | Fraction | Zero-cost CPU-bound ceiling |
+|---|---:|---:|---:|
+| Checkpoint-root access, inclusive | 1,575 | 8.82% | +9.67% |
+| Overlay insertion, inclusive | 1,041 | 5.83% | +6.19% |
+| Temporary receipt construction, inclusive | 598 | 3.35% | +3.46% |
+| SHA-256 compression, self | 1,296 | 7.25% | +7.82% |
+| Byte copying and comparison together, self | 4,068 | 22.77% | +29.49% |
+
+Inclusive buckets overlap each other and the primitive self buckets; they must
+not be summed. Removing all byte copying or comparison is neither proposed nor
+semantically possible. Checkpoint access is not the complete effect of an
+engine change: checkpoint workers, publication, contention and durability are
+outside that writer bucket. It nevertheless rules out treating only those
+writer reads as a sufficient explanation for the historical throughput gap.
+An isolated substrate comparison also omits first-party command execution,
+overlay, canonical history and recovery work. The existing
+[Fjall comparison](../../benchmarks/storage-fjall/README.md) does not implement
+the complete semantic storage ports and cannot establish a server speed claim.
+
+An exclusive repartition of the existing stacks assigns every writer sample
+once to the nearest named boundary, retaining a separate leaf-primitive
+dimension. It reconciles all 17,865 writer samples and the existing copy,
+comparison and SHA counts. After narrower boundaries take their samples,
+34.54% remains in the serial-group driver and 21.10% in command append. These
+are broad attribution buckets containing inlined work, not costs of moving
+command state. That unresolved distinction is the reason to improve attribution
+before another ownership prototype. The numeric partition is in
+`release/evidence/wp-820/writer-cost-partition-20261001.json`.
+
+The next diagnostic build uses full symbols and DWARF stacks without forced
+frame pointers to resolve inlined callers and check the earlier copy-heavy
+profile. Its timings are diagnostic only. Before another implementation, name
+the operation to remove, establish its count and ownership lifetime, estimate
+its avoidable service cost and added resource cost, and explain why the net
+opportunity is material. Preserve required transaction-current reads and
+canonical validation. Do not select new batching delays, negative caching,
+larger allocator caches or a replacement tree from these broad buckets.
 
 ## Review status
 
@@ -743,12 +846,13 @@ put/delete and SHA block-boundary coverage precedes production qualification.
 The candidate does not change receipt coalescing, canonical bytes, public or
 durable interfaces. Both production banks reject it; the codec is restored. Restoration at
 `a138fb89` passes all nine scoped checks, including 542 storage-API tests.
-No throughput candidate is retained. Copy sizes and caller attribution remain
-the next diagnostic step, rather than an established performance gain.
+The admitted-state owner is provisional after two positive write banks;
+same-run PostgreSQL qualification is pending. Improved attribution and a cost
+model precede any further implementation. No large throughput gain is established.
 
 Package: WP-820. Tier: guarantee. Behavior: bounded diagnostics, rejected
-positive-observation reuse, and an unqualified disposable payload eviction
-prototype; package completion remains open.
+storage/cache/encoding and batch-owner trials, and provisional private
+admitted-state ownership; package completion remains open.
 Registration acceptance passes eight checks; intake and preparation probe
 acceptance each pass six checks, including all-feature clippy and commit tests.
 Reordered preparation completion coverage asserts independent cancellation,
