@@ -83,7 +83,6 @@ mod query_diagnostics;
 mod reads;
 mod retention;
 mod shared_ports;
-mod snapshot_repeat_probe;
 mod startup;
 mod store;
 #[cfg(test)]

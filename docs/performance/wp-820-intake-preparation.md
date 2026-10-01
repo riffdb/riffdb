@@ -202,8 +202,99 @@ acceptance at `3863271c` passes six checks and all 1,094 tests, with one existin
 skipped scale test. The following drop-order correction at `df66aead` passes
 affected all-feature clippy and both probe tests; the handbook check passes. The last full CI was interrupted by the agent server
 restart and is incomplete, despite having no failure in its available log.
-Live measurement is pending clarification of exclusive benchmark availability.
-The package remains open and no throughput improvement is claimed.
+The later diagnostic run passes an idle-machine preflight and exclusive lock,
+with 100 once-per-second sharing checks and no detected sharing. This resolves
+availability for that run; it does not retroactively qualify the drifting
+production comparison. The temporary repeat probe is removed afterward. The
+package remains open and no throughput improvement is claimed.
+
+## Additional positive repeats: insufficient opportunity
+
+The diagnostic at `df66aead` completes c32 write-only, 60 seconds plus 10 seconds
+warmup, on the unchanged `ded67de55` runtime. Sanitized evidence is in
+`release/evidence/wp-820/snapshot-repeat-20260930.json`. The measured process
+commits 260,334 commands, including warmup. Binding reads total 956,174:
+313,004 are existing positive observations, 332,969 are additional positive
+reads, and 310,201 are absences. Of the additional positives, 80,627 repeat
+identical bytes within their existing batch. Root-validation and cascade reads
+are zero for this workload; it provides no opportunity estimate for those paths.
+
+Exact-repeat read/decode wall time totals 155,223,706 ns, or 0.596 us per
+process-scope command. There are no changed-value events, budget refusals, or
+skipped diagnostic records in the measured process. A new positive-value cache
+is not selected: this small measured read opportunity does not justify added
+retention, synchronization, validation interactions, and accounting work. This
+finding does not revisit absence caching or allocator thread caches.
+
+The diagnostic copies 9,588,996 key bytes and 72,081,251 value bytes in total.
+Peak retained payload is 9,957 bytes across at most 30 entries, with a 2,048-byte
+fixed slot array and 328-byte optional per-batch probe header. These logical
+charges exclude allocator overhead. Process peak RSS is 1,192,493,056 bytes and
+heap envelope is 1,415,290,880 bytes; there is no matched control for attributing
+these process totals to the probe.
+
+Diagnostic throughput is 3,648 ops/s, p95 8.389 ms, p99 11.010 ms, and maximum
+717.543 ms. These are diagnostic results, not production qualification. The
+writer's direct CPU counter advances 18.38 seconds in a separate 25.127-second
+window without an aligned command counter. Scheduler counters advance
+18.387 seconds on CPU and 0.121 seconds waiting on a runqueue, following the
+[Linux scheduler statistics field definitions](https://www.kernel.org/doc/html/latest/scheduler/sched-stats.html).
+The remaining 6.618 seconds are an elapsed-minus-CPU-minus-runqueue residual,
+not caller-attributed blocked time. Separate endpoint reads limit precision.
+
+The next diagnostic uses filtered scheduler switch/wakeup events and caller
+stacks on the unchanged base's frame-pointer build. It will distinguish blocked
+intervals from runnable waits and retain only bounded aggregate public evidence.
+No drain, batch limit, delay, durable format, public interface, or accepted
+architecture decision changes. Production A/B and same-run PostgreSQL
+qualification still apply to any subsequently retained implementation.
+
+## Writer scheduler attribution
+
+A separate filtered scheduler capture uses the unchanged `ded67de55`
+frame-pointer build, c32 write-only, 90 seconds plus 15 seconds warmup.
+The exclusive lock, idle preflight, and 137 sharing checks report no competing
+benchmark. The trace contains 47,930 events and 16,269 complete switch-out to
+switch-in intervals, with no detected lost records. One initial incoming event
+and one final outgoing interval cross the capture boundaries and are excluded.
+Sanitized evidence is `release/evidence/wp-820/writer-offcpu-20260930.json`.
+
+The following categories are disjoint caller classifications over a roughly
+25-second trace window. Off-CPU time includes both sleep until wakeup and
+runnable time after wakeup; runnable switch-outs have no sleep component.
+
+| Writer wait site | Off-CPU total | Sleep until wakeup | Maximum complete interval |
+|---|---:|---:|---:|
+| Writer work receive | 4.908 s | 4.874 s | 687.977 ms |
+| Required completion drain | 0.734 s | 0.731 s | 326.582 ms |
+| Transaction-current idempotency index read | 0.413 s | 0.394 s | 1.255 ms |
+| Provenance index read | 0.217 s | 0.209 s | 2.324 ms |
+| Publication queue registration | 0.234 s | 0.234 s | 61.761 ms |
+| Writer-private evaluation completion | 0.165 s | 0.143 s | 0.732 ms |
+| Detached preparation completion | 0.127 s | 0.083 s | 0.711 ms |
+| Runnable switch-out | 0.054 s | 0 s | 0.466 ms |
+| Other blocked sites | 0.038 s | 0.032 s | 1.487 ms |
+
+Idempotency and provenance stacks block acquiring the transient-index read
+lock. Publication registration stacks block acquiring the publication queue
+mutex. This identifies writer wait sites, not the particular lock-holder work
+that caused every interval. Work receive accounts for most off-CPU time;
+its 688 ms maximum does not identify why the producer stopped supplying work.
+Required drains and all batching policy remain unchanged. No extent-retirement
+cause or fix is inferred; WP-815 retains that scope.
+
+The diagnostic records 3,611 ops/s, p95 8.389 ms, p99 14.156 ms, maximum
+1,021.993 ms, peak RSS 1,384,099,840 bytes, and heap envelope 1,429,446,656 bytes.
+These are profiling results. Direct writer endpoints advance 18.22 CPU seconds
+in a separate 25.138-second window with no aligned command counter. The trace
+and endpoint windows have different boundaries and must not be added.
+
+The next bounded measurement will attribute transient-index lock-held work,
+including metadata/key construction, canonical payload checks, memory charging,
+and payload eviction/destruction. Only then can a mechanism be selected.
+Moving work must preserve exact canonical validation, complete retained-memory
+bounds, atomic publication, transaction-current idempotency and provenance,
+immutable snapshots, and failure/cancellation behavior.
 
 ## Review status
 

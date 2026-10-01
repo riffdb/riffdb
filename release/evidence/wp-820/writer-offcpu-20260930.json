@@ -1,0 +1,151 @@
+{
+  "base_commit": "ded67de55dbabaf55b0600df86f8dacb241eb0dc",
+  "diagnostic_only": true,
+  "retained_optimization": false,
+  "build": "profiling with frame pointers",
+  "machine": {
+    "vcpus": 8,
+    "cpu": "AMD EPYC 9B14"
+  },
+  "clients": 32,
+  "load": "write_only",
+  "duration_seconds": 90,
+  "warmup_seconds": 15,
+  "returncode": 0,
+  "perf_returncode": 0,
+  "exclusive_monitor_checks": 137,
+  "sharing_detected": false,
+  "trace": {
+    "rows": [
+      {
+        "category": "writer_private_evaluation_completion",
+        "count": 2223,
+        "offcpu_ns": 164925219,
+        "sleep_until_wakeup_ns": 143067791,
+        "runnable_ns": 21857428,
+        "unresolved_ns": 0,
+        "max_offcpu_ns": 731881
+      },
+      {
+        "category": "detached_preparation_completion",
+        "count": 1727,
+        "offcpu_ns": 127316381,
+        "sleep_until_wakeup_ns": 83393099,
+        "runnable_ns": 43923282,
+        "unresolved_ns": 0,
+        "max_offcpu_ns": 711120
+      },
+      {
+        "category": "writer_work_receive",
+        "count": 5803,
+        "offcpu_ns": 4908125617,
+        "sleep_until_wakeup_ns": 4873745361,
+        "runnable_ns": 34380256,
+        "unresolved_ns": 0,
+        "max_offcpu_ns": 687977119
+      },
+      {
+        "category": "other_blocked",
+        "count": 209,
+        "offcpu_ns": 37621189,
+        "sleep_until_wakeup_ns": 32125933,
+        "runnable_ns": 5495256,
+        "unresolved_ns": 0,
+        "max_offcpu_ns": 1487121
+      },
+      {
+        "category": "publication_queue_registration",
+        "count": 9,
+        "offcpu_ns": 234297831,
+        "sleep_until_wakeup_ns": 234229271,
+        "runnable_ns": 68560,
+        "unresolved_ns": 0,
+        "max_offcpu_ns": 61760538
+      },
+      {
+        "category": "runnable_switch_out",
+        "count": 880,
+        "offcpu_ns": 53793141,
+        "sleep_until_wakeup_ns": 0,
+        "runnable_ns": 53793141,
+        "unresolved_ns": 0,
+        "max_offcpu_ns": 465930
+      },
+      {
+        "category": "required_completion_drain",
+        "count": 358,
+        "offcpu_ns": 733769434,
+        "sleep_until_wakeup_ns": 731270102,
+        "runnable_ns": 2499332,
+        "unresolved_ns": 0,
+        "max_offcpu_ns": 326581581
+      },
+      {
+        "category": "provenance_index_read",
+        "count": 1510,
+        "offcpu_ns": 216546041,
+        "sleep_until_wakeup_ns": 208507262,
+        "runnable_ns": 8038779,
+        "unresolved_ns": 0,
+        "max_offcpu_ns": 2323612
+      },
+      {
+        "category": "transaction_current_idempotency_index_read",
+        "count": 3550,
+        "offcpu_ns": 412636729,
+        "sleep_until_wakeup_ns": 393888344,
+        "runnable_ns": 18748385,
+        "unresolved_ns": 0,
+        "max_offcpu_ns": 1255381
+      }
+    ],
+    "events": 47930,
+    "intervals": 16269,
+    "unmatched_in": 1,
+    "orphaned_out": 0,
+    "unfinished_out": true,
+    "wake_without_out": 0,
+    "capture_event_span_ns": 25005967013
+  },
+  "trace_lost_records_detected": 0,
+  "classification": "disjoint switch-out caller categories; only intervals with matching switch-in are counted",
+  "writer_endpoint_window": {
+    "elapsed_ns": 25137559839,
+    "cpu_ticks": 1822,
+    "ticks_per_second": 100,
+    "scheduler_cpu_ns": 18223030444,
+    "runqueue_wait_ns": 116982222,
+    "timeslices": 16207
+  },
+  "diagnostic_throughput_ops_s": 3611,
+  "latency": {
+    "max_ns": 1021993138,
+    "mean_ns": 8858017,
+    "min_ns": 1665630,
+    "p50_ns": 6815743,
+    "p95_ns": 8388607,
+    "p99_ns": 14155775,
+    "sample_count": 325042
+  },
+  "resources": {
+    "cpu_ticks": 23756,
+    "heap_envelope_bytes": 1429446656,
+    "rss_bytes_peak_sampled": 1384099840,
+    "process_read_bytes": 0,
+    "process_write_bytes": 34754834432,
+    "durable_bytes_growth": 3753623552,
+    "process_scope_committed_commands": 386997,
+    "successful_mutations": 325042,
+    "process_identity_stable": true
+  },
+  "limits": [
+    "Trace caller categories identify the writer wait site, not the reason a producer lacks work or the work done by a lock holder.",
+    "Sleep-until-wakeup and wakeup-until-switch-in intervals are separated. Runnable switch-outs have no sleep component.",
+    "One initial switch-in and one final switch-out cross the capture boundaries and are excluded from complete intervals.",
+    "The direct endpoint window and scheduler trace have different boundaries; their totals must not be added.",
+    "Process resource counts include warmup and setup; throughput and latency cover measured load.",
+    "Profiling build and scheduler recording are diagnostic only; this is not production qualification.",
+    "Backend read requests and read-lock waiting do not establish physical disk reads.",
+    "The sharing monitor detects listed benchmark processes once per second, not all possible host interference."
+  ]
+}
