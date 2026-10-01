@@ -309,13 +309,78 @@ All checks, cache bounds, lock scopes, and publication ordering remain unchanged
 Nested phase wall times overlap and must not be summed as CPU costs.
 Existing eviction/cold-authority, decoded-ownership, seeded-canonical-byte,
 history-stub identity, and sparse-tree charging tests cover the instrumented
-paths. Diagnostic measurements and final acceptance remain pending.
+paths. All five pass with diagnostics enabled at `03884ff2`, and affected
+all-feature clippy passes.
 
+A retirement acceptance run is invalidated when the agent rebuilds test
+artifacts while its crash campaigns are still active. One crash restart tries
+to use a replaced/deleted executable; the run is interrupted, cancelling four
+other active tests. Its test step reports 647 passes, one restart failure,
+four cancellations, and 440 unrun tests. The other eight planned checks pass.
+The affected promotion-cutover crash test passes alone with stable artifacts
+and diagnostics enabled. This does not substitute for complete acceptance:
+final acceptance and full CI must run with stable test artifacts. Final acceptance and package completion remain pending.
+
+
+## Publication costs and bounded cache-room candidate
+
+The publication probe at `03884ff2` completes c32 write-only, 60 seconds plus
+10 seconds warmup, with 101 sharing checks and none detected. The measured
+process commits 264,754 commands. Sanitized evidence is
+`release/evidence/wp-820/publication-cost-20260930.json`.
+
+Publication holds the transient-index write lock for 2.111 seconds in total.
+Payload eviction/removal/destruction totals 842 ms (3.182 us per process-scope
+command), manifest validation/insertion 703 ms, periodic canonical decode
+verification 132 ms, decoded ownership charging 58 ms, and metadata construction
+36 ms. These phase wall times are nested; some also execute during startup.
+They are not additive CPU costs or an exact partition of lock-held time.
+Evictions remove 931,419,776 canonical bytes across 16,665 payloads, with
+63,808,870,832 bytes of cumulative conservative ownership charges. These are
+cumulative budget charges, not simultaneously retained memory or allocator bytes.
+Diagnostic throughput is 3,707 ops/s, p95 8.126 ms, p99 15.204 ms, maximum
+718.350 ms, peak RSS 1,201,668,096 bytes, and heap envelope 1,403,027,456 bytes.
+The separate writer window advances 18.32 CPU seconds over 25.126 seconds.
+No production benefit is inferred from these diagnostic figures.
+
+A prototype prepares room in the existing disposable payload cache before
+acquiring the transient-index write lock. It holds a shared index guard and
+keeps the cache mutex across removal and complete destruction. Evicted payloads
+never escape the mutex or its existing 64-entry/64-MiB bound. The original
+publication path still checks metadata, canonical bytes, duplicate entries,
+poison, decoded ownership charges, and cache bounds before advancing the
+published frontier. A concurrent cold read may refill the cache; ordinary seed
+insertion repeats its original eviction loop. No absence is cached.
+
+This candidate copies no extra payload bytes and retains no additional payloads.
+It adds a shared index-lock acquisition, a cache-lock acquisition, and one
+bounded ownership-charge walk per seeded segment. These synchronization and CPU
+costs require production measurement. Published indexes, writer-private state,
+frontiers, durability fences, errors, and checkpoint identity retain their
+existing validation and update paths. No extent recycling or retirement changes.
+
+A deterministic barrier test fails before preparation is implemented: an index
+reader cannot observe the existing absence while eviction holds the write lock.
+It passes with the prototype and also proves the old publication frontier,
+absence-to-present transition, and final cache bounds. Separate tests explore a
+cold read refilling the slot before seed insertion and prove that a poisoned
+cache still fails through the original seed path. Eight focused tests pass;
+affected all-feature clippy passes after removing two redundant test borrows.
+The publication probe is removed before production comparison. Repeated c32
+base/candidate/candidate/base write-only, interactive journeys, and read-only
+comparisons, same-run PostgreSQL qualification if retained, complete acceptance,
+full CI, and package closure remain pending.
+
+The candidate is committed to leave a clean tree for the completed WP-815
+workstream to merge. Production comparisons are held until that merge; the
+named baseline and diagnostics must then be refreshed. No throughput benefit
+is claimed for this prototype.
 
 ## Review status
 
-Package: WP-820. Tier: guarantee. Behavior: bounded diagnostics and an unqualified positive-observation reuse
-candidate, now rejected; package completion remains open.
+Package: WP-820. Tier: guarantee. Behavior: bounded diagnostics, rejected
+positive-observation reuse, and an unqualified disposable payload eviction
+prototype; package completion remains open.
 Registration acceptance passes eight checks; intake and preparation probe
 acceptance each pass six checks, including all-feature clippy and commit tests.
 Reordered preparation completion coverage asserts independent cancellation,

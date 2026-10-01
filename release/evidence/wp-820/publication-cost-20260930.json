@@ -1,0 +1,113 @@
+{
+  "base_commit": "ded67de55dbabaf55b0600df86f8dacb241eb0dc",
+  "diagnostic_commit": "03884ff25ec9b191dc0b84a7aafcc802aebc69c4",
+  "diagnostic_only": true,
+  "retained_optimization": false,
+  "machine": {
+    "vcpus": 8,
+    "cpu": "AMD EPYC 9B14"
+  },
+  "clients": 32,
+  "load": "write_only",
+  "duration_seconds": 60,
+  "warmup_seconds": 10,
+  "returncode": 0,
+  "exclusive_monitor_checks": 101,
+  "sharing_detected": false,
+  "phases": {
+    "transient_lock_acquire": {
+      "count": 16686,
+      "wall_ns": 2636310,
+      "max_wall_ns": 13700
+    },
+    "transient_lock_held": {
+      "count": 16686,
+      "wall_ns": 2110787673,
+      "max_wall_ns": 2474210
+    },
+    "segment_metadata": {
+      "count": 17007,
+      "wall_ns": 35878127,
+      "max_wall_ns": 93040
+    },
+    "manifest_validation_insertion": {
+      "count": 17007,
+      "wall_ns": 703332176,
+      "max_wall_ns": 324990
+    },
+    "payload_metadata_validation": {
+      "count": 16684,
+      "wall_ns": 9334340,
+      "max_wall_ns": 13800
+    },
+    "payload_decode_verification": {
+      "count": 194,
+      "wall_ns": 132426401,
+      "max_wall_ns": 1287950
+    },
+    "payload_decoded_charge": {
+      "count": 16685,
+      "wall_ns": 58207663,
+      "max_wall_ns": 30660
+    },
+    "payload_cache_lock_acquire": {
+      "count": 16685,
+      "wall_ns": 928199,
+      "max_wall_ns": 3860
+    },
+    "payload_eviction_drop": {
+      "count": 16665,
+      "wall_ns": 842467010,
+      "max_wall_ns": 2175790
+    },
+    "payload_insertion": {
+      "count": 16685,
+      "wall_ns": 4986660,
+      "max_wall_ns": 17650
+    }
+  },
+  "evictions": {
+    "count": 16665,
+    "canonical_bytes": 931419776,
+    "conservative_charge_bytes": 63808870832
+  },
+  "process_scope_commands": 264754,
+  "eviction_wall_us_per_process_scope_command": 3.182074718417852,
+  "diagnostic_throughput_ops_s": 3707,
+  "latency": {
+    "max_ns": 718350428,
+    "mean_ns": 8628838,
+    "min_ns": 1823930,
+    "p50_ns": 6553599,
+    "p95_ns": 8126463,
+    "p99_ns": 15204351,
+    "sample_count": 221980
+  },
+  "resources": {
+    "cpu_ticks": 16092,
+    "heap_envelope_bytes": 1403027456,
+    "rss_bytes_peak_sampled": 1201668096,
+    "process_read_bytes": 0,
+    "process_write_bytes": 23561248768,
+    "durable_bytes_growth": 3042148352,
+    "process_scope_committed_commands": 264754,
+    "successful_mutations": 221980,
+    "process_identity_stable": true
+  },
+  "writer_cpu_window": {
+    "elapsed_ns": 25126470312,
+    "cpu_ticks": 1832,
+    "ticks_per_second": 100
+  },
+  "limits": [
+    "Phase wall times are nested, include off-CPU time and instrumentation, and cannot be added as CPU costs.",
+    "Some phases also execute during process startup; publication lock counters cover only command publication.",
+    "Payload eviction wall time includes removal, deallocation, and diagnostic counting; it is not a pure allocator CPU cost.",
+    "Conservative decoded ownership charges are budgets, not actual allocated bytes or RSS.",
+    "No retained values, keys, identifiers, or principals are emitted.",
+    "Process counters include warmup and setup; throughput/latency use measured load.",
+    "This is diagnostic-only release with probes enabled; performance qualification requires probes removed and repeated production comparisons.",
+    "Writer endpoints have a separate window with no aligned command counter.",
+    "The sharing monitor checks listed benchmark processes once per second, not all possible host interference."
+  ]
+}
