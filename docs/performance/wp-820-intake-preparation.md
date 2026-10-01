@@ -371,10 +371,48 @@ base/candidate/candidate/base write-only, interactive journeys, and read-only
 comparisons, same-run PostgreSQL qualification if retained, complete acceptance,
 full CI, and package closure remain pending.
 
-The candidate is committed to leave a clean tree for the completed WP-815
-workstream to merge. Production comparisons are held until that merge; the
-named baseline and diagnostics must then be refreshed. No throughput benefit
-is claimed for this prototype.
+WP-815 lands at `555a526f848c` with this candidate integrated. The production
+base is its validated `445927ccef` revision: code differences from the integrated
+head are the cache-room mechanism and test-only coverage. Both arms include
+WP-815 and writer marker 2. No throughput benefit is claimed for this prototype.
+
+## Post-WP-815 refresh (2026-10-01)
+
+Scoped acceptance over `445927ccef..555a526f848c` passes all 15 checks and
+1,969 tests, with one existing skip. Full `./scripts/ci-all` passes at the
+integrated head. Test artifacts and full-CI recovery scratch are isolated from
+other checkouts. The reduced-feature benchmark harness emits five existing
+unused gRPC-codec warnings and four missing-documentation warnings on retention
+evidence fields; the daemon builds and scoped all-feature clippy are clean.
+
+Fresh diagnostic c32 write-only runs use base `445927ccef`, profiling builds
+with frame pointers, 90 seconds load and 15 seconds warmup. The CPU capture has
+50,376 samples and no loss; 17,865 samples belong to the ordered writer. The
+no-inline symbol view attributes 10.36 percent of writer samples inclusively to
+overlay point resolution, 8.82 percent to checkpoint-root accesses, 6.68 percent
+to mutation-stage validation, 5.83 percent to overlay insertion, and 5.41 percent
+to changelog-successor preparation. These totals overlap. SHA-256 compression
+has 1,296 writer self samples (7.25 percent of writer samples); overlay-node
+`Arc::make_mut` has 619 (3.47 percent). Unresolved leaf symbols account for
+4,269 writer samples (23.90 percent); their cause is not assigned. The endpoint
+window advances 18.08 writer CPU seconds over 25.141 seconds and differs from
+the capture and process command-count windows.
+
+A separate scheduler capture has 45,267 events, 15,360 complete intervals, and
+no detected trace loss. Disjoint writer off-CPU intervals include 330 ms at
+transaction-current idempotency index reads, 175 ms at provenance index reads,
+241 ms at publication registration, 400 ms at required completion drains,
+149 ms at writer-private evaluation completion, 118 ms at detached preparation,
+and 5.241 seconds receiving work. The largest work-receive interval is 686.752
+ms. These are wait sites, not proof of the upstream cause or the lock-holder
+activity responsible for each wait. No required drain changes.
+
+The CPU and scheduler runs have 135 and 136 sharing checks with none detected.
+Sanitized evidence is `release/evidence/wp-820/post815-diagnostics-20261001.json`.
+Production base/candidate/candidate/base comparisons are underway for all three
+loads. Fresh bounded allocation/copy counts, repeated production qualification,
+same-run safe-app PostgreSQL qualification if retained, and closure remain
+pending. Diagnostic throughput is not banked as a production result.
 
 ## Review status
 
@@ -387,7 +425,9 @@ Reordered preparation completion coverage asserts independent cancellation,
 deadline, and missing-slot failures before any optimization. Snapshot probe acceptance passes 1,407 tests but fails the equal-key admission
 clock count (one versus two) and times out one bootstrap publication campaign.
 Candidate acceptance passes separately with bounded runner concurrency; no
-assertions or test limits are weakened. The full CI run was interrupted and must be repeated for the final runtime. Full CI for the final retained runtime, any new candidate production A/B and
-PostgreSQL qualification, final handbook update, and closure remain required
+assertions or test limits are weakened. The earlier full CI run was interrupted; post-WP-815 full CI now passes at
+`555a526f848c`. Any subsequent runtime change requires its appropriate checks.
+Candidate production A/B and PostgreSQL qualification, final handbook update,
+and closure remain required
 before completion. This page and its handbook link report the current investigation;
 they do not announce a new application or operator capability.
