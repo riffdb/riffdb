@@ -599,6 +599,37 @@ call-site assignment remains unverified; do not assign sampled copy sizes from
 a different build. A private ownership change may be investigated separately
 after confirming exact capture identity and charging its allocation cost.
 
+## Private batch ownership candidate (2026-10-01)
+
+The next single-mechanism experiment places the private `BatchCore` behind one
+unique `Box` in both empty and nonempty redb batches. All consuming candidate
+states transfer that owner. The frozen production base is `4dfaae784`.
+The core requests 3,184 bytes on this diagnostic build; the allocation happens
+once per batch rather than once per command. Allocator rounding and metadata
+are additional costs, not included in that requested size. Production heap,
+RSS and CPU measurements must determine whether this cost is worthwhile.
+
+A matched-binary direct-call probe observes 5,968- and 6,064-byte moves on the
+append path and a 5,960-byte move in transaction-current validation. This does
+not measure their independent CPU cost. The complete-copy probe reaches its
+256-key map bound, so its aggregate counts and byte shares are rejected. The
+compiler layout and individually resolved call sites select a cheap ownership
+prototype, not an established throughput benefit. The earlier CPU profile
+continues to identify copy work as material without assigning it all to batches.
+
+The candidate changes no protocol method, durable bytes, ordering, validation,
+or publication boundary. The existing unique owner still drops the uncommitted
+transaction on rollback, cancellation or error. Relevant semantic coverage is
+`sealed_decision_rejection_discards_every_earlier_bulk_effect`,
+`equal_key_commands_commit_once_and_replay_exactly`,
+`create_before_delete_refuses_then_delete_releases_unique_value_for_reinsert`,
+`audited_standard_group_uses_one_unpublished_root_and_one_immediate_tail`,
+`cancellation_before_acquire_or_after_snapshot_releases_all_capabilities`, and
+`rebase_retains_only_exact_post_checkpoint_lineage`. No new semantic behavior
+is claimed. All-feature check and clippy pass, as do all 37 command-concurrency
+and lost-response replay tests. Production comparison and full storage
+acceptance remain required.
+
 ## Review status
 
 Restored production main passes full `./scripts/ci-all` at `dd2cc540`; the

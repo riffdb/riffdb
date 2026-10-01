@@ -492,13 +492,16 @@ pub(crate) fn build_command_segment_manifest(
 }
 
 /// Empty redb command batch. This state has no commit operation.
+/// The private core has one owner throughout the consuming candidate protocol;
+/// moving a protocol state transfers its allocation instead of copying the
+/// complete transaction state. The allocation is created once per batch.
 pub struct RedbEmptyBatch {
-    core: BatchCore,
+    core: Box<BatchCore>,
 }
 
 /// Nonempty redb command batch holding one uncommitted engine transaction.
 pub struct RedbNonEmptyBatch {
-    core: BatchCore,
+    core: Box<BatchCore>,
 }
 
 /// Candidate before exact pending-admission recheck.
@@ -567,7 +570,7 @@ impl ApplicationCommandTransactionPort for RedbOperationalPorts {
 
     fn begin_empty_batch(&self) -> Result<Self::EmptyBatch, StorageError> {
         Ok(RedbEmptyBatch {
-            core: BatchCore::open(self)?,
+            core: Box::new(BatchCore::open(self)?),
         })
     }
 }
@@ -681,7 +684,7 @@ impl DeferredCommandEpoch for RedbDurabilityEpoch {
 
     fn begin_empty_batch(self) -> Result<Self::EmptyBatch, StorageError> {
         Ok(RedbEmptyBatch {
-            core: BatchCore::open_with_access(self.begin_write()?)?,
+            core: Box::new(BatchCore::open_with_access(self.begin_write()?)?),
         })
     }
 
