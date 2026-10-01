@@ -2505,7 +2505,10 @@ fn initialize_or_validate_file_with_media(
             }
         }
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-            create_extent_file_with_media(media, path, &ExtentHeader::initial(expected.clone()))?;
+            // The active name must never expose a partially initialized file.
+            // Reuse the existing synced replacement ceremony for the first
+            // extent too: a crash leaves absence or a complete anchored extent.
+            migrate_empty_legacy_journal_with_media(media, path, expected)?;
         }
         Err(_) => return Err(JournalIoError::Io),
     }
