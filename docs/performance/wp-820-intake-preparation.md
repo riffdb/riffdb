@@ -108,9 +108,10 @@ probe and reuses only those existing positive observations. It retains no new
 entries. Absence and misses use the ordinary access path; missing bytes for an
 existing positive fail closed. Existing immutable fields and canonical bytes
 are shared by the observation clone, with existing conservative memory charges.
-All eleven focused snapshot tests and affected all-feature clippy pass. The
-immutable-field sharing assertion fails before this implementation. Production
-comparisons and complete candidate acceptance remain required.
+All eleven focused snapshot tests and affected all-feature clippy pass.
+Candidate acceptance passes all fifteen checks, including 1,408 tests with
+four runner threads and one existing skipped scale test. The
+immutable-field sharing assertion fails before this implementation. Repeated production comparison and full CI remain required.
 
 A candidate must preserve current private state, immutable retained snapshots,
 exact rollback, absence-to-present transitions, checkpoint identity, epochs,
@@ -119,17 +120,74 @@ must not add a negative lookup cache, enlarge allocator thread caches, or change
 extent recycling. WP-815 continues to own extent retirement and allocation
 stalls. No durable format, public surface, or accepted decision changes here.
 
+## Initial production comparison
+
+Production release candidate `aaaa1ac0` and base `ded67de55` run in alternating
+base/candidate/candidate/base order, c32, 60 seconds with 10 seconds warmup.
+Every temporary probe is removed and diagnostics are disabled.
+Sanitized numbers are in
+`release/evidence/wp-820/positive-ab-60-20260930.json`.
+
+| Load | Base ops/s | Candidate ops/s | Change | p95 ratio | p99 ratio |
+|---|---:|---:|---:|---:|---:|
+| Write-only | 3,679.5 | 3,682.5 | +0.08% | 1.000 | 0.815 |
+| Interactive journeys | 16,105 | 16,092 | -0.08% | 1.000 | 1.000 |
+| Read-only | 17,558.5 | 17,126 | -2.46% | 1.068 | 0.978 |
+
+These are medians of two runs per arm. Read-only individual results range
+from 14,255 to 19,997 ops/s; that noisy median is not a demonstrated causal
+regression. The negligible write-throughput change does not justify retention.
+The longer alternating write-only comparison also fails to support retention.
+
+Write-only sampled writer CPU is 196.29 us per process-scope command at base
+and 196.96 us at candidate. The final unsampled interval can contribute up to
+500 ms CPU; this small difference is within that measurement uncertainty.
+These Linux CPU counters cover the whole measured daemon process, including
+warmup, rather than a particular writer-stage elapsed interval. Candidate
+write-only median RSS is 1,182,304,256 bytes versus 1,190,506,496 at base;
+heap envelope is 1,413,380,096 versus 1,409,110,016 bytes.
+
+Individual write-only maximum latencies remain 715–1,025 ms, and interactive
+maxima are 694–1,041 ms. These runs do not identify each maximum's cause and
+do not solve WP-815's extent allocation stalls. All twelve runs exit normally.
+
+## Candidate rejected
+
+The 90-second, 15-second-warmup write-only comparison records base medians of
+2,714 ops/s and candidate medians of 2,432.5 ops/s (-10.37%). Candidate/base
+ratios are 1.226 for p95 and 0.913 for p99. Sampled writer CPU is 239.49 versus
+242.72 us per process-scope command; median RSS is 1,190,025,216 versus
+1,135,151,104 bytes and heap envelope is 1,378,459,648 versus 1,445,011,456.
+Individual maximum latencies range from 697 to 1,033 ms.
+
+The two base throughputs drift from 3,019 to 2,409 ops/s. A prior exclusivity
+preflight refused a busy machine, and post-run inspection finds another active
+RiffDB runner. This does not prove overlap. Further bench evidence requires
+clarification of exclusive availability. The numeric report is preserved as an
+unqualified negative finding in
+`release/evidence/wp-820/positive-ab-90-20260930.json`; no claim assigns the
+entire throughput gap to this candidate.
+
+The candidate is removed because a throughput benefit is not demonstrated in
+either comparison. The positive-only reuse helper and its mechanism tests are
+removed together; reordered preparation failure coverage remains. No added
+cache, changed absence path, or diagnostic probe remains in production.
+WP-820 stays open. The next measurement will count exact-byte repeat positive
+snapshot reads inside existing private admitted batches, before selecting any
+new retained-entry implementation. No PostgreSQL benefit is claimed for this
+rejected candidate.
+
 ## Review status
 
 Package: WP-820. Tier: guarantee. Behavior: bounded diagnostics and an unqualified positive-observation reuse
-candidate; package acceptance and production qualification remain open.
+candidate, now rejected; package completion remains open.
 Registration acceptance passes eight checks; intake and preparation probe
 acceptance each pass six checks, including all-feature clippy and commit tests.
 Reordered preparation completion coverage asserts independent cancellation,
 deadline, and missing-slot failures before any optimization. Snapshot probe acceptance passes 1,407 tests but fails the equal-key admission
 clock count (one versus two) and times out one bootstrap publication campaign.
-Candidate acceptance runs separately with bounded runner concurrency; no
-assertions or test limits are weakened. Full CI and any production A/B, PostgreSQL
-qualification, final handbook update, and closure remain required before
-completion. This page and its handbook link report the current investigation;
+Candidate acceptance passes separately with bounded runner concurrency; no
+assertions or test limits are weakened. Full CI is running. Full CI for the final retained runtime, any new candidate production A/B and
+PostgreSQL qualification, final handbook update, and closure remain required
+before completion. This page and its handbook link report the current investigation;
 they do not announce a new application or operator capability.

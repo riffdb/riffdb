@@ -1077,12 +1077,12 @@ fn read_transaction_local_snapshot(
             ReadSnapshotBuilder::new(&resolved, observed_through).map_err(materialization_value)?;
         for target in resolved.binding_targets() {
             snapshot
-                .push_binding(transaction_local_entity_observation(core, target)?)
+                .push_binding(entity_observation_from_access(&core.access, target)?.0)
                 .map_err(materialization_value)?;
         }
         for target in resolved.root_validation_targets() {
             snapshot
-                .push_root_validation(transaction_local_entity_observation(core, target)?)
+                .push_root_validation(entity_observation_from_access(&core.access, target)?.0)
                 .map_err(materialization_value)?;
         }
         let mut range = snapshot
@@ -1110,17 +1110,17 @@ fn read_transaction_local_snapshot(
 
     for target in request.binding_targets() {
         snapshot
-            .push_binding(transaction_local_entity_observation(core, target)?)
+            .push_binding(entity_observation_from_access(&core.access, target)?.0)
             .map_err(materialization_value)?;
     }
     for target in request.root_validation_targets() {
         snapshot
-            .push_root_validation(transaction_local_entity_observation(core, target)?)
+            .push_root_validation(entity_observation_from_access(&core.access, target)?.0)
             .map_err(materialization_value)?;
     }
     for target in request.cascade_targets() {
         snapshot
-            .push_cascade_predecessor(transaction_local_entity_observation(core, target)?)
+            .push_cascade_predecessor(entity_observation_from_access(&core.access, target)?.0)
             .map_err(materialization_value)?;
     }
     for (position, target) in request.range_targets().iter().enumerate() {
@@ -1176,29 +1176,6 @@ fn read_transaction_local_snapshot(
         range.finish().map_err(materialization_value)?;
     }
     snapshot.finish().map_err(materialization_value)
-}
-
-/// Reuses only a positive observation already checked in this exact private
-/// batch. `apply_entities` updates it with each staged post-image. Published
-/// checkpoints cannot replace these transaction-current facts. No new entry is
-/// retained here, and absence continues through the ordinary access path.
-fn transaction_local_entity_observation(
-    core: &BatchCore,
-    target: &EntityTarget,
-) -> Result<EntityObservation, StorageError> {
-    if let Some(observation @ EntityObservation::Present(_)) = core.entity_observations.get(target)
-    {
-        if core
-            .entity_observation_bytes
-            .get(target)
-            .and_then(Option::as_ref)
-            .is_none()
-        {
-            return Err(storage_error(StorageErrorKind::InvariantViolation));
-        }
-        return Ok(observation.clone());
-    }
-    entity_observation_from_access(&core.access, target).map(|(observation, _)| observation)
 }
 
 impl AdmissionRepository for RedbOperationalPorts {
@@ -3486,115 +3463,6 @@ mod tests {
     use super::*;
     use crate::layout::{VECTOR_EVIDENCE_INDEX, VECTOR_OBSERVATIONS};
     use crate::store::RedbStore;
-
-    fn positive_snapshot_fixture() -> (
-        crate::test_path::ScopedDirectory,
-        BatchCore,
-        riffdb_storage_api::StoredEntityRecordV1,
-    ) {
-        use riffdb_storage_api::{DurableKeySchemaBindingV1, StoredEntityRecordV1};
-        use riffdb_types::{
-            CanonicalRecord, CanonicalValue, ContractBundleHash, ContractVersion, EntityVersion,
-        };
-        let scope = crate::test_path::ScopedDirectory::new("positive-snapshot-observation");
-        let path = scope.join("db.redb");
-        let mut store = RedbStore::open(&path).expect("store");
-        store
-            .initialize_database(
-                DatabaseId::from_unix_milliseconds_and_random(1, [0x65; 10]).expect("database"),
-            )
-            .expect("initialize");
-        let ports = RedbOperationalPorts {
-            shared: Arc::clone(&store.shared),
-        };
-        let core = BatchCore::open(&ports).expect("private batch");
-        let ty = EntityTypeId::first();
-        let mut key = EntityKeyBuilder::new(ty);
-        key.push_u64(42).expect("key component");
-        let target = EntityTarget::new(ty, key.finish().expect("key")).expect("target");
-        let version = ContractVersion::new(1).expect("contract version");
-        let record = StoredEntityRecordV1::new(
-            target,
-            EntityVersion::first(),
-            version,
-            DurableKeySchemaBindingV1::new(
-                ContractLineage::new("SnapshotReuse").expect("lineage"),
-                version,
-                ContractBundleHash::from_bytes([0x66; 32]),
-            ),
-            CanonicalRecord::new(vec![(
-                FieldId::new(1).expect("field"),
-                CanonicalValue::U64(42),
-            )])
-            .expect("fields"),
-        )
-        .expect("record");
-        core.access
-            .put_command_value(
-                JournalTable::Entities,
-                encode_entity_key(record.target().key()).to_vec(),
-                crate::codec::encode_entity_record_v1(&record)
-                    .expect("encode")
-                    .into_bytes(),
-            )
-            .expect("put current row");
-        (scope, core, record)
-    }
-
-    // req: PERF-008, TXN-041, TXN-043
-    #[test]
-    fn snapshot_positive_reuse_retains_exact_fields_and_requires_current_bytes() {
-        let (_scope, mut core, record) = positive_snapshot_fixture();
-        let cached =
-            cached_entity_observation(&mut core, record.target()).expect("observe current row");
-        let observed =
-            transaction_local_entity_observation(&core, record.target()).expect("snapshot row");
-        assert!(observed == cached);
-        let (EntityObservation::Present(cached), EntityObservation::Present(observed)) =
-            (&cached, &observed)
-        else {
-            panic!("present fixture");
-        };
-        assert!(
-            std::ptr::eq(cached.fields(), observed.fields()),
-            "reuse the already checked immutable fields"
-        );
-        core.entity_observation_bytes.remove(record.target());
-        assert!(
-            matches!(transaction_local_entity_observation(&core, record.target()), Err(error) if error.kind() == StorageErrorKind::InvariantViolation)
-        );
-    }
-
-    // req: PERF-008, TXN-041, TXN-043
-    #[test]
-    fn snapshot_absence_uses_current_access_and_dropped_batch_leaves_no_row() {
-        use riffdb_storage_api::AuthoritativePointReader;
-        let (scope, mut core, record) = positive_snapshot_fixture();
-        // An absence observation never becomes a new negative lookup cache.
-        core.entity_observations.insert(
-            record.target().clone(),
-            EntityObservation::Absent(record.target().clone()),
-        );
-        core.entity_observation_bytes
-            .insert(record.target().clone(), None);
-        let observed = transaction_local_entity_observation(&core, record.target())
-            .expect("read current presence");
-        assert!(matches!(observed, EntityObservation::Present(ref found) if found == &record));
-        drop(core);
-        let store = RedbStore::open(scope.join("db.redb")).expect("reopen rolled-back batch");
-        let ports = RedbOperationalPorts {
-            shared: Arc::clone(&store.shared),
-        };
-        assert!(
-            ports
-                .read_entity(record.target())
-                .expect("rolled-back absence")
-                .is_none()
-        );
-        drop(ports);
-        drop(store);
-        drop(scope);
-    }
 
     fn vector_observation_target(partition: u64) -> VectorObservationTargetV1 {
         let mut key = PartitionKeyBuilder::new(

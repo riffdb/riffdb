@@ -8332,10 +8332,19 @@
     "commit": "aaaa1ac01438aec848a31849d1246eb03cf152f3",
     "mechanism": "Reuse only existing positive private-batch observations and immutable fields; no new retained entries, absence cache, public surface or format.",
     "diagnostics_removed": true,
-    "status": "production_comparison_pending",
+    "status": "rejected_and_removed; no demonstrated repeated throughput benefit",
     "focused_snapshot_tests": 11,
     "focused_clippy": "passed",
-    "baseline_mechanism_test": "snapshot_positive_reuse_retains_exact_fields_and_requires_current_bytes fails before reuse at immutable-field sharing assertion."
+    "baseline_mechanism_test": "snapshot_positive_reuse_retains_exact_fields_and_requires_current_bytes fails before reuse at immutable-field sharing assertion.",
+    "acceptance": {
+      "checks_passed": 15,
+      "checks_failed": 0,
+      "tests_passed": 1408,
+      "tests_skipped_by_existing_plan": 1,
+      "runner_threads": 4,
+      "full_ci": "in_progress"
+    },
+    "full_ci_note": "CI started on candidate. Final retained runtime needs its own complete CI after implementation selection."
   },
   "probe_acceptance": {
     "commit": "81f8c37786",
@@ -8347,5 +8356,6 @@
       "bootstrap_publication_repeated_crashes_keep_a_recoverable_candidate_and_gate_partial_replacements"
     ],
     "status": "failed; candidate acceptance requires a separate passing run"
-  }
+  },
+  "next_measurement": "Measure exact-byte repeat positive snapshot reads within existing admitted private batches before considering new bounded retained entries."
 }
