@@ -330,8 +330,8 @@ or background scrub needs it. Receipt release uses the existing source-history
 protocol and is independent of the application watermark. The lane does not
 invent acknowledgements or source checkpoints to make files eligible. The
 1.3-percent result is the WP-811 baseline. WP-815's fresh six-cell, 32-client
-qualification pruned 12.86 percent as many sequences as the workload committed;
-median p95 rose 3.7 percent and throughput fell 6.1 percent against the held lane.
+qualification pruned 12.60 percent as many sequences as the workload committed;
+median p95 rose 3.57 percent and throughput fell 6.21 percent against the held lane.
 The unchanged p95 and keep-up gates pass. No extents were deleted or recycled:
 source receipts still held them, and no production source-reclamation scheduler
 is composed. The intermediate direct-prune implementation failed its keep-up

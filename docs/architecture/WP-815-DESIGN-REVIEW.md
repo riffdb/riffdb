@@ -182,21 +182,21 @@ acceptance remain required before closure.
 
 ## Journaled prune qualification
 
-Clean runtime source `7ed06904db4e1677e43e9ecab791fdf3cfeffdce` passed the
+Clean runtime source `0d662a553ae941e2536905af1f49d69c041ccded` passed the
 unchanged referee on six counterbalanced cells, 32 interactive clients, full
 scale, 60 measured seconds after 10 seconds warm-up, retained target 1,024,
 and a 256-sequence epoch budget. Both host inventories were valid on an
 8-vCPU AMD EPYC 9B14 machine. The sanitized report is
-`release/evidence/wp-815/journaled-prune-interference-20260930.json`; its six
+`release/evidence/wp-815/first-extent-prune-interference-20260930.json`; its six
 report hashes and two inventory hashes were checked against the retained
 private raw artifacts. Later commits change tests and documentation only.
 
-Median p95 was 7.078 ms held and 7.340 ms active: ratio 1.03704, inside 1.05.
-Median pruning was 0.128606 sequences per committed command, above 0.0131.
-Throughput was 16,213 operations/s held and 15,232 active, ratio 0.93949.
+Median p95 was 7.340 ms held and 7.602 ms active: ratio 1.03571, inside 1.05.
+Median pruning was 0.126012 sequences per committed command, above 0.0131.
+Throughput was 16,113 operations/s held and 15,113 active, ratio 0.93794.
 The throughput cost is disclosed even though WP-815's gate tests p95 and keep-up.
 
-Physical deletion and recycling were zero. Active cells recorded 58–62 receipt
+Physical deletion and recycling were zero. Active cells each recorded 60 receipt
 reference holds; reader holds were zero. Existing source-history reclamation
 has no production scheduler composed here. The qualification marks seeded
 events delivered while stopped and leaves the board projection undeclared.
@@ -204,3 +204,11 @@ It establishes bounded logical-pruning performance on this workload, without
 establishing sustainable physical storage or all-consumer steady state. An
 earlier six-cell run was rejected for a competing compiler in its preflight
 inventory and is not qualification evidence.
+
+Full CI also exposed a first-extent initialization crash: the active name could
+refer to an unfinished file before any prune acknowledgement. The fixed source
+uses the existing synced `.extent-v3` replacement ceremony for an absent journal,
+preserving absence or a complete anchored extent across a crash. The tagged
+simulation oracle passes all 160 swept windows across two seeds. The earlier
+passing journaled report remains banked, but the report above qualifies the
+runtime including this recovery fix.

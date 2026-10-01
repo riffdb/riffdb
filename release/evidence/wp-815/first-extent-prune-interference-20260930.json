@@ -1,0 +1,290 @@
+{
+  "artifacts": {
+    "riffdbd_sha256": "80ddf4bc0b2bb67edfdfd51de92e1e141987fdee1ac95b100af2a7e62508a0d7",
+    "runner_sha256": "ce36deeff50a033fe40d22a90f8c2bf31e86ef92cd0b4a9a43448cdf4985e160"
+  },
+  "cells": [
+    {
+      "aggregate_p95_ns": 7340031,
+      "arm": "idle",
+      "commands_committed": 168772,
+      "lane": {
+        "fence": "none",
+        "sequences": 0,
+        "state": "holding",
+        "steps": 0
+      },
+      "lane_holds": {
+        "awaiting_checkpoint": 0,
+        "checkpoint_in_flight": 0,
+        "fenced": 0,
+        "target": 0
+      },
+      "lane_phases_us": {
+        "commit": 0,
+        "delete": 0,
+        "digest": 0,
+        "drain": 0,
+        "gate_wait": 0,
+        "materialize": 0,
+        "plan": 0,
+        "preplan": 0
+      },
+      "rep": 1,
+      "report_sha256": "c369f600bbe54d9eaa931ccd9ea4090a4320a267c1f5580c271fbec6abf7d3ad",
+      "retention_extents": {
+        "deleted": 0,
+        "held_readers": 0,
+        "held_references": 0,
+        "reclaim_us": 0,
+        "recycled": 0
+      },
+      "throughput_ops_s": 16112
+    },
+    {
+      "aggregate_p95_ns": 7340031,
+      "arm": "active",
+      "commands_committed": 161738,
+      "lane": {
+        "fence": "none",
+        "sequences": 20381,
+        "state": "advancing",
+        "steps": 85
+      },
+      "lane_holds": {
+        "awaiting_checkpoint": 0,
+        "checkpoint_in_flight": 0,
+        "fenced": 0,
+        "target": 17
+      },
+      "lane_phases_us": {
+        "commit": 264058,
+        "delete": 0,
+        "digest": 0,
+        "drain": 81,
+        "gate_wait": 254518,
+        "materialize": 0,
+        "plan": 1972445,
+        "preplan": 5045040
+      },
+      "rep": 1,
+      "report_sha256": "bd5e102e55d19bd2cd670094deea5cd7a0f70f83f7bb69d978818974af5a7ad4",
+      "retention_extents": {
+        "deleted": 0,
+        "held_readers": 0,
+        "held_references": 60,
+        "reclaim_us": 82556,
+        "recycled": 0
+      },
+      "throughput_ops_s": 15236
+    },
+    {
+      "aggregate_p95_ns": 7602175,
+      "arm": "active",
+      "commands_committed": 160121,
+      "lane": {
+        "fence": "none",
+        "sequences": 20266,
+        "state": "advancing",
+        "steps": 84
+      },
+      "lane_holds": {
+        "awaiting_checkpoint": 0,
+        "checkpoint_in_flight": 0,
+        "fenced": 0,
+        "target": 18
+      },
+      "lane_phases_us": {
+        "commit": 261505,
+        "delete": 0,
+        "digest": 0,
+        "drain": 92,
+        "gate_wait": 290798,
+        "materialize": 0,
+        "plan": 1947577,
+        "preplan": 5100228
+      },
+      "rep": 2,
+      "report_sha256": "2e9d8ce0b771098f830b39afaa63be3dfc71c496728b2ff0b7ff48cbc2932abf",
+      "retention_extents": {
+        "deleted": 0,
+        "held_readers": 0,
+        "held_references": 60,
+        "reclaim_us": 121993,
+        "recycled": 0
+      },
+      "throughput_ops_s": 15113
+    },
+    {
+      "aggregate_p95_ns": 7340031,
+      "arm": "idle",
+      "commands_committed": 169460,
+      "lane": {
+        "fence": "none",
+        "sequences": 0,
+        "state": "holding",
+        "steps": 0
+      },
+      "lane_holds": {
+        "awaiting_checkpoint": 0,
+        "checkpoint_in_flight": 0,
+        "fenced": 0,
+        "target": 0
+      },
+      "lane_phases_us": {
+        "commit": 0,
+        "delete": 0,
+        "digest": 0,
+        "drain": 0,
+        "gate_wait": 0,
+        "materialize": 0,
+        "plan": 0,
+        "preplan": 0
+      },
+      "rep": 2,
+      "report_sha256": "a74ac7f5821bc8f669b46f1651f569dfa9bb813bb4fdc7cb6c457acfb3136199",
+      "retention_extents": {
+        "deleted": 0,
+        "held_readers": 0,
+        "held_references": 0,
+        "reclaim_us": 0,
+        "recycled": 0
+      },
+      "throughput_ops_s": 16159
+    },
+    {
+      "aggregate_p95_ns": 7340031,
+      "arm": "idle",
+      "commands_committed": 169787,
+      "lane": {
+        "fence": "none",
+        "sequences": 0,
+        "state": "holding",
+        "steps": 0
+      },
+      "lane_holds": {
+        "awaiting_checkpoint": 0,
+        "checkpoint_in_flight": 0,
+        "fenced": 0,
+        "target": 0
+      },
+      "lane_phases_us": {
+        "commit": 0,
+        "delete": 0,
+        "digest": 0,
+        "drain": 0,
+        "gate_wait": 0,
+        "materialize": 0,
+        "plan": 0,
+        "preplan": 0
+      },
+      "rep": 3,
+      "report_sha256": "ac4f8dee293204e24495cfc58f4379c94be72a59ea1b721f415ead0a8ac39f80",
+      "retention_extents": {
+        "deleted": 0,
+        "held_readers": 0,
+        "held_references": 0,
+        "reclaim_us": 0,
+        "recycled": 0
+      },
+      "throughput_ops_s": 16113
+    },
+    {
+      "aggregate_p95_ns": 7602175,
+      "arm": "active",
+      "commands_committed": 160132,
+      "lane": {
+        "fence": "none",
+        "sequences": 20055,
+        "state": "advancing",
+        "steps": 83
+      },
+      "lane_holds": {
+        "awaiting_checkpoint": 0,
+        "checkpoint_in_flight": 0,
+        "fenced": 0,
+        "target": 18
+      },
+      "lane_phases_us": {
+        "commit": 219644,
+        "delete": 0,
+        "digest": 0,
+        "drain": 110,
+        "gate_wait": 153815,
+        "materialize": 0,
+        "plan": 1945953,
+        "preplan": 5052642
+      },
+      "rep": 3,
+      "report_sha256": "c10e49456c020adf96d1a2c4d8482d5e22f490411221594d42aba832ad50889a",
+      "retention_extents": {
+        "deleted": 0,
+        "held_readers": 0,
+        "held_references": 60,
+        "reclaim_us": 302522,
+        "recycled": 0
+      },
+      "throughput_ops_s": 15112
+    }
+  ],
+  "comparison": {
+    "active_median_p95_ns": 7602175,
+    "active_median_pruned_per_committed": 0.1260124398718916,
+    "active_median_throughput_ops_s": 15113,
+    "idle_median_p95_ns": 7340031,
+    "idle_median_throughput_ops_s": 16113,
+    "lane_valid": true,
+    "p95_ratio": 1.0357142905799717,
+    "throughput_ratio": 0.9379383106808167
+  },
+  "host": {
+    "hardware_identity": {
+      "cpu_model": "AMD EPYC 9B14",
+      "operating_system": {
+        "id": "ubuntu",
+        "version_id": "26.04"
+      },
+      "system_product": "Google Compute Engine",
+      "system_vendor": "Google"
+    },
+    "logical_cpus": 8,
+    "postflight_sha256": "5f37dd5943a7cb86ab08ea12255eae872ec069423b47aae92f38e478efd720b9",
+    "preflight_sha256": "ee35640169b96d436eb66276b95212e31bfb0949c8e3c0ebad8ac072fca237f5",
+    "valid": true
+  },
+  "method": {
+    "active_arm": {
+      "retained_sequences": 1024,
+      "sequences_per_epoch": 256
+    },
+    "clients": 32,
+    "duration_secs": 60,
+    "idle_arm": {
+      "retention": "hold"
+    },
+    "lane_observation_scope": "measured_process_generation",
+    "latency_gate_statistic": "median_of_repetition_aggregate_p95",
+    "load": "interactive",
+    "maximum_p95_ratio": 1.05,
+    "order": [
+      "idle",
+      "active",
+      "active",
+      "idle",
+      "idle",
+      "active"
+    ],
+    "outbox": "seeded_events_marked_delivered_on_the_stopped_database_in_both_arms",
+    "percentiles": "fixed_log_linear_histogram_16_sub_buckets_per_octave",
+    "projections": "board_projection_undeclared_in_both_arms",
+    "repetitions": 3,
+    "scale": "full",
+    "warmup_secs": 10
+  },
+  "qualified": true,
+  "schema": "riffdb.wp-761-online-retention-interference/v1",
+  "source": {
+    "clean_tree": true,
+    "commit": "0d662a553ae941e2536905af1f49d69c041ccded"
+  }
+}

@@ -1090,6 +1090,7 @@ fn startup_session_holds_at_most_one_structural_read_transaction() {
 }
 
 #[test]
+// req: STO-030, REC-001
 fn every_live_database_engine_commit_routes_through_the_epoch_boundary() {
     let source_dir = crate_root().join("src");
     for entry in fs::read_dir(&source_dir).expect("read source directory") {
@@ -1287,15 +1288,15 @@ fn every_live_database_engine_commit_routes_through_the_epoch_boundary() {
         .0;
     assert_eq!(deferred.matches("transaction.commit()").count(), 0);
     assert!(deferred.contains("ifself.transaction.take().is_some()"));
-    let service_audit = store
-        .split_once("fnsubmit_service_audit(")
-        .expect("closed deferred service-audit path")
-        .1
-        .split_once("fninvalidate_transient_indexes(")
-        .expect("deferred service-audit path end")
-        .0;
-    assert_eq!(service_audit.matches("transaction.commit()").count(), 0);
-    assert!(service_audit.contains("ifself.transaction.take().is_some()"));
+    let maintenance = without_whitespace(&production_source(
+        source_dir.join("store/maintenance_writer.rs"),
+    ));
+    assert!(maintenance.contains("fnsubmit_service_audit("));
+    assert!(maintenance.contains("fnsubmit_retention_prune("));
+    assert!(maintenance.contains("fnsubmit_maintenance("));
+    assert_eq!(maintenance.matches(".commit()").count(), 0);
+    assert!(!maintenance.contains("database.begin_write("));
+    assert!(maintenance.contains("ifself.transaction.take().is_some()"));
     assert!(!store.contains("set_durability(Durability::None)"));
 
     let deferred_begin = store
@@ -2135,7 +2136,11 @@ fn v3_receipt_cursor_has_no_writer_or_journal_io_capability() {
     assert!(source.contains("MAX_JOURNAL_SUFFIX_TRANSITIONS"));
     assert!(source.contains("MAX_JOURNAL_SUFFIX_BYTES"));
     assert!(source.contains("Arc::try_unwrap"));
-    let store = production_source(crate_root().join("src/store.rs"));
+    let store = format!(
+        "{}\n{}",
+        production_source(crate_root().join("src/store.rs")),
+        production_source(crate_root().join("src/store/maintenance_writer.rs")),
+    );
     assert_eq!(store.matches("append_changelog_source(").count(), 2);
     assert_eq!(
         store
