@@ -603,13 +603,16 @@ after confirming exact capture identity and charging its allocation cost.
 
 Restored production main passes full `./scripts/ci-all` at `dd2cc540`; the
 storage-count evidence at `de902b30` passes all five scoped acceptance checks.
-The next single-mechanism candidate streams the canonical receipt body into
-SHA-256 when only its history checksum is needed, avoiding a temporary encoded
+The rejected checksum candidate streamed the canonical receipt body into
+SHA-256 when only its history checksum was needed, avoiding a temporary encoded
 receipt buffer. Encoding and hashing share one private emitter. Frozen-byte
 coverage fails to compile before the emitter exists and passes with it; empty,
 put/delete and SHA block-boundary coverage precedes production qualification.
 The candidate does not change receipt coalescing, canonical bytes, public or
-durable interfaces. Both production banks reject it; the codec is restored.
+durable interfaces. Both production banks reject it; the codec is restored. Restoration at
+`a138fb89` passes all nine scoped checks, including 542 storage-API tests.
+No throughput candidate is retained. Copy sizes and caller attribution remain
+the next diagnostic step, rather than an established performance gain.
 
 Package: WP-820. Tier: guarantee. Behavior: bounded diagnostics, rejected
 positive-observation reuse, and an unqualified disposable payload eviction

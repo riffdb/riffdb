@@ -654,7 +654,7 @@
     "candidate_scoped_acceptance": "7 passed, including 544 tests",
     "candidate_ci_all": "passed",
     "restored_runtime_matches_base_byte_for_byte": true,
-    "restoration_acceptance": "pending"
+    "restoration_acceptance": "9 passed, including 542 tests"
   },
   "limitations": [
     "Busiest sampled command-thread CPU approximates writer CPU; nominal half-second sampling can omit final shutdown ticks.",
