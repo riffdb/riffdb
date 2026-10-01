@@ -414,6 +414,34 @@ loads. Fresh bounded allocation/copy counts, repeated production qualification,
 same-run safe-app PostgreSQL qualification if retained, and closure remain
 pending. Diagnostic throughput is not banked as a production result.
 
+## First post-WP-815 production bank (2026-10-01)
+
+Production release binaries with diagnostics disabled compare base `445927ccef`
+with candidate `555a526f848c` at c32, 60 seconds load and 10 seconds warmup,
+in base/candidate/candidate/base order. Interactive uses journeys. All twelve
+cells complete successfully and the sharing monitor detects no competing run.
+These are medians of two cells per arm:
+
+| Load | Base ops/s | Candidate ops/s | Change | Base / candidate p95 | Base / candidate p99 |
+| --- | ---: | ---: | ---: | --- | --- |
+| Write-only | 3,695 | 3,681 | −0.38% | 8.126 / 8.126 ms | 13.631 / 12.059 ms |
+| Interactive | 16,064 | 16,052.5 | −0.07% | 7.078 / 7.078 ms | 9.437 / 9.437 ms |
+| Read-only | 25,013.5 | 24,996 | −0.07% | 2.359 / 2.359 ms | 3.408 / 3.408 ms |
+
+Sampled writer CPU per process-generation command rises from approximately
+195.9 to 200.2 µs for write-only and 258.9 to 264.1 µs for interactive. This
+includes warmup and uses cumulative thread ticks sampled every nominal 500 ms;
+final shutdown ticks may be missed. It is not the writer wall-service measure.
+The worst observed write-only maximum is 1.021 seconds for base and 743 ms for
+candidate; interactive maxima are 718 ms and 1.039 seconds. Neither the tail
+changes nor the maxima establish a cause.
+
+The first bank shows no throughput benefit. A longer write-only repeat is
+prepared but cannot start until local cloud authentication is refreshed. Full
+raw-report collection and memory evidence remain pending. Selected numeric
+results are in `release/evidence/wp-820/post815-first-ab-20261001.json`; no
+PostgreSQL or retention qualification is claimed.
+
 ## Review status
 
 Package: WP-820. Tier: guarantee. Behavior: bounded diagnostics, rejected

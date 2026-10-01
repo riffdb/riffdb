@@ -1,0 +1,148 @@
+{
+  "schema": "riffdb.wp-820-post815-first-ab/v1",
+  "recorded_at": "2026-10-01",
+  "base_commit": "445927ccef2ca9b2e1f8643559972dbbf98e3728",
+  "candidate_commit": "555a526f848c3a980a7da2808934069f5f250fda",
+  "machine": {
+    "vcpus": 8,
+    "cpu": "AMD EPYC 9B14"
+  },
+  "build": "production release; diagnostics disabled",
+  "clients": 32,
+  "duration_seconds": 60,
+  "warmup_seconds": 10,
+  "interactive_journeys": true,
+  "postgres": false,
+  "all_cells_returncode": 0,
+  "sharing_detected": false,
+  "cells": [
+    {
+      "load": "write_only",
+      "ordinal": 1,
+      "arm": "base",
+      "throughput_ops_s": 3696,
+      "p95_ns": 8126463,
+      "p99_ns": 13107199,
+      "max_ns": 1020622339,
+      "writer_cpu_us_per_process_scope_command_approx": 195.5724569
+    },
+    {
+      "load": "write_only",
+      "ordinal": 2,
+      "arm": "candidate",
+      "throughput_ops_s": 3683,
+      "p95_ns": 8126463,
+      "p99_ns": 11534335,
+      "max_ns": 743423490,
+      "writer_cpu_us_per_process_scope_command_approx": 199.7235006
+    },
+    {
+      "load": "write_only",
+      "ordinal": 3,
+      "arm": "candidate",
+      "throughput_ops_s": 3679,
+      "p95_ns": 8126463,
+      "p99_ns": 12582911,
+      "max_ns": 715806970,
+      "writer_cpu_us_per_process_scope_command_approx": 200.6403172
+    },
+    {
+      "load": "write_only",
+      "ordinal": 4,
+      "arm": "base",
+      "throughput_ops_s": 3694,
+      "p95_ns": 8126463,
+      "p99_ns": 14155775,
+      "max_ns": 717659040,
+      "writer_cpu_us_per_process_scope_command_approx": 196.1392063
+    },
+    {
+      "load": "interactive",
+      "ordinal": 1,
+      "arm": "base",
+      "throughput_ops_s": 16069,
+      "p95_ns": 7077887,
+      "p99_ns": 9437183,
+      "max_ns": 717537228,
+      "writer_cpu_us_per_process_scope_command_approx": 258.4245
+    },
+    {
+      "load": "interactive",
+      "ordinal": 2,
+      "arm": "candidate",
+      "throughput_ops_s": 16051,
+      "p95_ns": 7077887,
+      "p99_ns": 9437183,
+      "max_ns": 1038739386,
+      "writer_cpu_us_per_process_scope_command_approx": 264.55026455026456
+    },
+    {
+      "load": "interactive",
+      "ordinal": 3,
+      "arm": "candidate",
+      "throughput_ops_s": 16054,
+      "p95_ns": 7077887,
+      "p99_ns": 9437183,
+      "max_ns": 696247508,
+      "writer_cpu_us_per_process_scope_command_approx": 263.55651581691365
+    },
+    {
+      "load": "interactive",
+      "ordinal": 4,
+      "arm": "base",
+      "throughput_ops_s": 16059,
+      "p95_ns": 7077887,
+      "p99_ns": 9437183,
+      "max_ns": 694631290,
+      "writer_cpu_us_per_process_scope_command_approx": 259.43479024047747
+    },
+    {
+      "load": "read_only",
+      "ordinal": 1,
+      "arm": "base",
+      "throughput_ops_s": 25004,
+      "p95_ns": 2359295,
+      "p99_ns": 3407871,
+      "max_ns": 10319420,
+      "writer_cpu_us_per_process_scope_command_approx": null
+    },
+    {
+      "load": "read_only",
+      "ordinal": 2,
+      "arm": "candidate",
+      "throughput_ops_s": 24975,
+      "p95_ns": 2359295,
+      "p99_ns": 3407871,
+      "max_ns": 10629239,
+      "writer_cpu_us_per_process_scope_command_approx": null
+    },
+    {
+      "load": "read_only",
+      "ordinal": 3,
+      "arm": "candidate",
+      "throughput_ops_s": 25017,
+      "p95_ns": 2359295,
+      "p99_ns": 3407871,
+      "max_ns": 11334140,
+      "writer_cpu_us_per_process_scope_command_approx": null
+    },
+    {
+      "load": "read_only",
+      "ordinal": 4,
+      "arm": "base",
+      "throughput_ops_s": 25023,
+      "p95_ns": 2359295,
+      "p99_ns": 3407871,
+      "max_ns": 10121500,
+      "writer_cpu_us_per_process_scope_command_approx": null
+    }
+  ],
+  "qualification": "First alternating bank only; longer repeat pending; no retained benefit.",
+  "limits": [
+    "Writer CPU estimates use sampled cumulative thread ticks with a nominal 500 ms polling interval and process-generation command counts including warmup; shutdown sampling may omit final ticks.",
+    "CPU estimates are rounded here and are not the original writer wall-service figure.",
+    "Maximum stalls and tail changes do not identify their causes.",
+    "Raw report collection, complete resource evidence, and a longer repeat remain pending because benchmark access requires reauthentication.",
+    "This is not same-run PostgreSQL qualification."
+  ]
+}
