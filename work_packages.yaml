@@ -28424,3 +28424,173 @@ work_packages:
   - Transaction ordering, conflict ownership, validation, atomicity, outcome
     sequencing, authorization, or redaction would change.
   - A guarantee appears impossible or implementation requires out-of-scope paths.
+
+- id: WP-821
+  name: Sustainable TicketDesk architecture gate and evidence contract
+  tier: guarantee
+  depends_on: [WP-814, WP-815, WP-817]
+  objective: Prepare the exact storage-lifecycle, provider-retirement, and ordering decisions
+    selected by the maintainer; register dependency-ordered implementation packages and
+    a fail-closed rehearsal evidence contract. Dependent runtime work waits for exact
+    human acceptance; evidence tests and proposed records may be prepared first.
+  requirements: [LOG-001, REP-001, END-007, END-008, END-009, END-010]
+  required_adrs: [ADR-0265, ADR-0266, ADR-0267]
+  allowed_paths: [adr/**, work_packages.yaml, docs/SUMMARY.md,
+    docs/architecture/SUSTAINABLE-TICKETDESK.md, scripts/check-ticketdesk-lifecycle,
+    scripts/ci-all, tests/ticketdesk_lifecycle/**]
+  deliverables:
+  - Three proposed decision records, exact human acceptance gate, and bounded scope inventory
+  - Executable evidence validator with hostile evidence tests; no fabricated passing campaign
+  - Architecture handoff with five ordering scenarios, current implementation gaps, and approval provenance
+  acceptance_commands:
+  - ./scripts/acceptance --wp WP-821
+  - ./scripts/check-ticketdesk-lifecycle --self-test
+  - ./scripts/ci-all
+  standing_design_tests:
+    interface_safety: Preserve compiled writes, authorization, exact idempotency,
+      durability, retained evidence, typed refusal, and redaction. No bypass controls.
+    scale: Bound all queues, scans, allocations, waits, diagnostics, and retained work;
+      distinguish intentionally retained data from reclaimable or leaked resources.
+  human_review_triggers:
+  - An accepted decision, normative requirement, guarantee, or declared path scope changes.
+  - A new durable identity, public interface, or critical dependency lacks accepted authority.
+  exit_gate: All three exact records are accepted through their separate governance commit; evidence checks pass and every downstream brief has explicit scope and gates.
+
+- id: WP-822
+  name: Durable local outbox archive and production dispatch
+  tier: guarantee
+  depends_on: [WP-821]
+  objective: Implement ADR-0265 decisions 2 through 7 using a protected quota-bounded redb
+    destination and the existing recovered dispatcher. A production sink acknowledges
+    only after durable archive publication, preserves at-least-once replay, and never
+    puts destination I/O on command acknowledgement.
+  requirements: [OUT-001, OUT-002, STO-020, REC-001, REC-002]
+  required_adrs: [ADR-0265]
+  allowed_paths: [crates/riffdb-outbox/**, crates/riffdb-server/**, crates/riffdb-config/**, crates/riffdb-storage-api/**, crates/riffdb-commit/**, crates/riffdb-cli/**, proto/**, tests/outbox/**, fixtures/**, scripts/**, docs/**]
+  deliverables:
+  - Versioned immutable archive records, atomic quota accounting, protected configuration, and operator inspection
+  - Server-owned worker lifecycle using existing coordinator-owned claim and completion transitions
+  - Crash, replay, corruption, quota, outage, permission, and no-destination compatibility evidence
+  acceptance_commands:
+  - ./scripts/acceptance --wp WP-822
+  - ./scripts/ci-all
+  standing_design_tests:
+    interface_safety: Preserve compiled writes, authorization, exact idempotency,
+      durability, retained evidence, typed refusal, and redaction. No bypass controls.
+    scale: Bound all queues, scans, allocations, waits, diagnostics, and retained work;
+      distinguish intentionally retained data from reclaimable or leaked resources.
+  human_review_triggers:
+  - An accepted decision, normative requirement, guarantee, or declared path scope changes.
+  - A new durable identity, public interface, or critical dependency lacks accepted authority.
+  exit_gate: Real emitted events reach the durable archive through production composition; crash/retry preserves exact records and source retention releases only delivered events.
+
+- id: WP-823
+  name: Composed receipt reclamation and retention-aware recovery
+  tier: guarantee
+  depends_on: [WP-821, WP-822, WP-815]
+  objective: Retain the existing source-control owner across production checkpoint observations,
+    schedule bounded receipt reclamation at accepted barriers, and refresh validated-prefix
+    evidence from fully validated state after retention. Prove physical reclamation,
+    complete fencing, and recovery to a successful write rather than readiness alone.
+  requirements: [STO-030, STO-031, STO-032, REC-001, REC-002, REC-005]
+  required_adrs: [ADR-0265, ADR-0263, ADR-0182, ADR-0186]
+  allowed_paths: [crates/riffdb-storage-api/**, crates/riffdb-storage-redb/**, crates/riffdb-commit/**, crates/riffdb-server/**, crates/riffdb-observability/**, tests/storage_recovery/**, tests/replication/**, scripts/**, release/evidence/ticketdesk-lifecycle/**, docs/**]
+  deliverables:
+  - Bounded production scheduling for source receipt release and off-gate extent reclamation
+  - Retention-aware validated-prefix refresh with exact binding and stale-candidate refusal
+  - Independent hold tests, process-kill matrix, physical extent evidence, and recovery observations
+  acceptance_commands:
+  - ./scripts/acceptance --wp WP-823
+  - ./scripts/ci-all
+  standing_design_tests:
+    interface_safety: Preserve compiled writes, authorization, exact idempotency,
+      durability, retained evidence, typed refusal, and redaction. No bypass controls.
+    scale: Bound all queues, scans, allocations, waits, diagnostics, and retained work;
+      distinguish intentionally retained data from reclaimable or leaked resources.
+  human_review_triggers:
+  - An accepted decision, normative requirement, guarantee, or declared path scope changes.
+  - A new durable identity, public interface, or critical dependency lacks accepted authority.
+  exit_gate: Production delivery and legitimate consumer progress permit repeated physical reclamation with all holds preserved; first-write recovery meets the frozen milestone target.
+
+- id: WP-824
+  name: Exact provider registration retirement and aggregate accounting
+  tier: guarantee
+  depends_on: [WP-821]
+  objective: Implement ADR-0266 with existing per-registry caps and one 1-GiB ownership budget.
+    Retire obsolete and eligible least-recently-used owners while protecting current
+    authorization, captured queries, workers, and existing epoch retention obligations.
+  requirements: [PRJ-001, PRJ-004, OQ-040]
+  required_adrs: [ADR-0266, ADR-0130, ADR-0164, ADR-0231]
+  allowed_paths: [crates/riffdb-server/**, crates/riffdb-service/**, crates/riffdb-projection/**, crates/riffdb-query-executor/**, crates/riffdb-types/**, crates/riffdb-observability/**, tests/**, scripts/**, docs/**]
+  deliverables:
+  - Shared bounded owner lifecycle, reservations, pins, and final-reference byte accounting
+  - Deterministic eviction, superseded-identity retirement, safe worker cancellation, and derived-file cleanup
+  - More-than-256 sequential registration tests, protected-saturation refusal, churn/race/restart oracle
+  acceptance_commands:
+  - ./scripts/acceptance --wp WP-824
+  - ./scripts/ci-all
+  standing_design_tests:
+    interface_safety: Preserve compiled writes, authorization, exact idempotency,
+      durability, retained evidence, typed refusal, and redaction. No bypass controls.
+    scale: Bound all queues, scans, allocations, waits, diagnostics, and retained work;
+      distinguish intentionally retained data from reclaimable or leaked resources.
+  human_review_triggers:
+  - An accepted decision, normative requirement, guarantee, or declared path scope changes.
+  - A new durable identity, public interface, or critical dependency lacks accepted authority.
+  exit_gate: Sequential churn recovers slots and bytes; protected saturation refuses without cursor substitution, cross-policy reuse, premature artifact deletion, or uncharged ownership.
+
+- id: WP-825
+  name: TicketDesk sustainable lifecycle workload and campaign runner
+  tier: guarantee
+  depends_on: [WP-822, WP-823, WP-824]
+  objective: Extend the existing public-only TicketDesk workload with stable-population writes,
+    emitted events, consumers, projection use, additive deployment, and lifecycle faults.
+    Produce a separate hash-bound rehearsal protocol with 64 organizations, 65,536 seeded
+    tickets, 100 commands/s, 400 reads/s, and at most 32 requests in flight.
+  requirements: [END-001, END-002, END-003, END-004, END-007, END-008, END-009, END-010]
+  required_adrs: [ADR-0265, ADR-0266, ADR-0267]
+  allowed_paths: [examples/ticketdesk/**, scripts/**, tests/ticketdesk_lifecycle/**, fixtures/**, release/evidence/ticketdesk-lifecycle/**, docs/**]
+  deliverables:
+  - Generated command updates with explicit write evidence and retained TypeScript smoke coverage
+  - Frozen workload/fault/resource manifest, redacted actual observations, and independent result reconciliation
+  - Separate campaign runner and hostile-evidence validation without weakening alpha-endurance
+  acceptance_commands:
+  - ./scripts/acceptance --wp WP-825
+  - ./scripts/ci-all
+  standing_design_tests:
+    interface_safety: Preserve compiled writes, authorization, exact idempotency,
+      durability, retained evidence, typed refusal, and redaction. No bypass controls.
+    scale: Bound all queues, scans, allocations, waits, diagnostics, and retained work;
+      distinguish intentionally retained data from reclaimable or leaked resources.
+  human_review_triggers:
+  - An accepted decision, normative requirement, guarantee, or declared path scope changes.
+  - A new durable identity, public interface, or critical dependency lacks accepted authority.
+  exit_gate: A short real rehearsal covers every lifecycle and failure path through public interfaces and produces evidence that passes the same checks except the explicitly unmet 24-hour duration.
+
+- id: WP-826
+  name: Twenty-four-hour sustainable TicketDesk qualification
+  tier: guarantee
+  depends_on: [WP-825]
+  objective: Run the exact frozen 24-hour TicketDesk rehearsal on an inventoried durable-SSD
+    8-vCPU 32-GiB Linux host after implementation acceptance and full CI. Preserve failed
+    attempts and prove physical reclamation, resource accounting, fault recovery, and
+    normal-load service levels without claiming the 72-hour full alpha gate.
+  requirements: [END-001, END-002, END-003, END-004, END-007, END-008, END-009, END-010]
+  required_adrs: [ADR-0265, ADR-0266, ADR-0267]
+  allowed_paths: [release/evidence/ticketdesk-lifecycle/**, docs/architecture/SUSTAINABLE-TICKETDESK.md, docs/getting-started/TICKETDESK-ACCEPTANCE.md, docs/known-limitations.md, work_packages.yaml]
+  deliverables:
+  - Uninterrupted 24-hour real observations and hash-bound environment/binary/workload identity
+  - Three reclaimed extent generations, six final fault-free stable-backlog hours, and independent restore reconciliation
+  - Sanitized failure and success receipts, handbook disclosure, package closure and handoff
+  acceptance_commands:
+  - ./scripts/acceptance --wp WP-826
+  - ./scripts/ci-all
+  standing_design_tests:
+    interface_safety: Preserve compiled writes, authorization, exact idempotency,
+      durability, retained evidence, typed refusal, and redaction. No bypass controls.
+    scale: Bound all queues, scans, allocations, waits, diagnostics, and retained work;
+      distinguish intentionally retained data from reclaimable or leaked resources.
+  human_review_triggers:
+  - An accepted decision, normative requirement, guarantee, or declared path scope changes.
+  - A new durable identity, public interface, or critical dependency lacks accepted authority.
+  exit_gate: All frozen rehearsal checks pass on real uninterrupted evidence, with no ignored failure or weakened threshold; full alpha qualification remains separate.
