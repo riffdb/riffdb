@@ -7539,15 +7539,11 @@ impl SharedRedb {
         }
         self.after_test_commit(RedbTestOperation::CommandEpochTail)?;
         let published_snapshot = Arc::clone(&publication.composite_successor);
-        let acquire_probe =
-            crate::publication_probe::start(crate::publication_probe::Phase::TransientLockAcquire);
+        prepare_command_payload_evictions(&self.transient_indexes, &publication.transient_deltas)?;
         let mut transient = self
             .transient_indexes
             .write()
             .map_err(|_| storage_error(StorageErrorKind::CommitStatusUnknown))?;
-        drop(acquire_probe);
-        let held_probe =
-            crate::publication_probe::start(crate::publication_probe::Phase::TransientLockHeld);
         let mut unpublished = self
             .unpublished_command_indexes
             .lock()
@@ -7584,7 +7580,6 @@ impl SharedRedb {
         drop(frontier);
         drop(unpublished);
         drop(transient);
-        drop(held_probe);
 
         let predecessor_application;
         {
@@ -8904,6 +8899,22 @@ fn exclusive_byte_prefix_end(prefix: &[u8]) -> Option<Vec<u8>> {
     Some(end)
 }
 
+/// Evict disposable decoded payloads before taking the index write guard. The
+/// cache mutex still bounds all payload ownership, and the original publication
+/// path rechecks every seed, duplicate, byte limit, and failure afterward.
+pub(crate) fn prepare_command_payload_evictions(
+    state: &RwLock<TransientIndexState>,
+    deltas: &[TransientIndexDelta],
+) -> Result<(), StorageError> {
+    let state = state
+        .read()
+        .map_err(|_| storage_error(StorageErrorKind::CommitStatusUnknown))?;
+    if let TransientIndexState::Ready(indexes) = &*state {
+        indexes.prepare_payload_evictions(deltas);
+    }
+    Ok(())
+}
+
 impl TransientIndexState {
     fn apply_delta(&mut self, delta: TransientIndexDelta) {
         if let Self::Ready(indexes) = self {
@@ -9394,6 +9405,5 @@ impl Drop for SharedRedb {
         // The sealer holds only the media port and paths, but a store that
         // outlived its sealing work would leave the next open to finish it.
         self.join_journal_sealer();
-        crate::publication_probe::report();
     }
 }

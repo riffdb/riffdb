@@ -488,6 +488,31 @@ impl TransientIndexes {
         self.command_derived.as_ref().unwrap().payloads.stats()
     }
 
+    /// Make disposable payload room while index readers can still share the
+    /// caller's read guard. The authoritative index/publication update and the
+    /// complete seed validation remain on their original write-guard path.
+    pub(crate) fn prepare_payload_evictions(&self, deltas: &[TransientIndexDelta]) {
+        let Some(indexes) = &self.command_derived else {
+            return;
+        };
+        for delta in deltas {
+            if let TransientIndexDelta::CommandSegmentPublished(segment, Some(canonical)) = delta {
+                indexes
+                    .payloads
+                    .prepare_seed_evictions(segment, canonical.len());
+            }
+        }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn set_payload_eviction_hook(&mut self, hook: Arc<dyn Fn() + Send + Sync>) {
+        self.command_derived
+            .as_mut()
+            .expect("test command indexes")
+            .payloads
+            .set_eviction_hook(hook);
+    }
+
     pub(crate) fn apply(&mut self, delta: TransientIndexDelta) {
         match delta {
             TransientIndexDelta::PendingOutboxInserted(events) => {
@@ -888,21 +913,16 @@ impl CommandDerivedIndexes {
         &mut self,
         segment: Arc<StoredCommandSegmentV1>,
     ) -> Result<(), StorageError> {
-        let metadata = {
-            let _probe =
-                crate::publication_probe::start(crate::publication_probe::Phase::SegmentMetadata);
-            SegmentMetadata::new(&segment)?
-        };
         if self
             .segments
-            .insert(segment.first_commit_sequence(), metadata)
+            .insert(
+                segment.first_commit_sequence(),
+                SegmentMetadata::new(&segment)?,
+            )
             .is_some()
         {
             return Err(corrupt());
         }
-        let _manifest_probe = crate::publication_probe::start(
-            crate::publication_probe::Phase::ManifestValidationInsertion,
-        );
         for entry in segment.manifest().entries() {
             if entry.segment_first_commit_sequence() != segment.first_commit_sequence()
                 || usize::from(entry.command_ordinal()) >= segment.commands().len()
