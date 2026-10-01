@@ -697,6 +697,40 @@ private command-state moves remain distinct opportunities. Sanitized counts
 and coverage limits are in
 `release/evidence/wp-820/payload-ownership-counts-20261001.json`.
 
+## Private admitted-state owner candidate
+
+The next single-mechanism prototype keeps the private `PendingCommandAttempts`
+fields behind one unique owner through evaluation, checked staging and retries.
+The production base is `685adbc6`. It changes no public signature, durable
+encoding, ordering, validation, or publication rule. The overlay tree and receipt
+construction are unchanged.
+
+The existing matched CPU capture at `445927cc` has 228 writer copy samples whose
+direct caller is append, 194 in the serial pending-group driver, and 126 in the
+outer group driver: respectively 1.28%, 1.09%, and 0.71% of writer samples.
+These direct-caller categories are disjoint, but their inlined code can move
+other values. They select a cheap ownership trial; they do not establish that
+admitted-state moves account for those samples. The relevant production paths
+are unchanged between that capture and this base. This is not evidence of a
+large throughput gain.
+
+The core has the same fields as the prior 1,864-byte diagnostic layout.
+The trial adds one allocation per command on the writer, one owning pointer,
+allocator rounding and metadata, and pointer indirection. It removes inline
+core storage from the surrounding vectors and consuming states, so a raw sum
+of allocation sizes does not establish the live memory difference. Command,
+input, retry, stack and admission bounds are unchanged; production heap, RSS
+and CPU measurements must charge the resulting cost. No sharing, synchronization,
+or new capability is introduced.
+
+The retry-limit test first fails to compile without the new owner, then must
+prove a stable owner through all three real evaluations while preserving exact
+mutations, capability release and refusal of a fourth evaluation without touching
+any port. Existing cancellation, rollback, authorization and transaction-current
+coverage remains required. Production c32 B/C/C/B write-only, interactive and
+read-only comparisons, repeat measurements and safe-application PostgreSQL
+qualification are pending.
+
 ## Review status
 
 Restored production main passes full `./scripts/ci-all` at `dd2cc540`; the

@@ -39,6 +39,12 @@ pub(crate) const MAX_COMMAND_EVALUATION_ATTEMPTS_V1: usize = 3;
 
 /// Move-only admitted state between complete command-evaluation attempts.
 pub(crate) struct PendingCommandAttempts {
+    core: Box<PendingCommandCore>,
+}
+
+// The admitted, move-only fields retain one owner through evaluation, checked
+// staging and bounded retries. No new shared ownership or capability is formed.
+pub(crate) struct PendingCommandCore {
     resolved_plan: ResolvedExecutablePlan,
     normalized_input: CanonicalRecord,
     /// Derived once from the plan and input this state retains, both of which
@@ -60,6 +66,20 @@ pub(crate) struct PendingCommandAttempts {
     post_evaluation_authorizer: Option<Box<dyn PostEvaluationCommandAuthorizer>>,
     row_policy: Option<AuthorizedCommandRowPolicyContextV1>,
     completed_attempts: usize,
+}
+
+impl std::ops::Deref for PendingCommandAttempts {
+    type Target = PendingCommandCore;
+
+    fn deref(&self) -> &Self::Target {
+        &self.core
+    }
+}
+
+impl std::ops::DerefMut for PendingCommandAttempts {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.core
+    }
 }
 
 impl PendingCommandAttempts {
@@ -111,30 +131,32 @@ impl PendingCommandAttempts {
             })
             .collect::<Result<Vec<_>, _>>()?;
         Ok(Self {
-            resolved_plan,
-            normalized_input,
-            input_facts,
-            selected_facts: None,
-            commit_context,
-            raw_conflict_keys,
-            snapshot_request,
-            binding_modes,
-            lookup_candidates,
-            invocation_request_id,
-            deadline,
-            cancellation,
-            audited_lifecycle,
-            terminal_admission,
-            post_evaluation_authorizer,
-            row_policy,
-            completed_attempts: 0,
+            core: Box::new(PendingCommandCore {
+                resolved_plan,
+                normalized_input,
+                input_facts,
+                selected_facts: None,
+                commit_context,
+                raw_conflict_keys,
+                snapshot_request,
+                binding_modes,
+                lookup_candidates,
+                invocation_request_id,
+                deadline,
+                cancellation,
+                audited_lifecycle,
+                terminal_admission,
+                post_evaluation_authorizer,
+                row_policy,
+                completed_attempts: 0,
+            }),
         })
     }
 
     /// Returns the number of snapshot-materialization attempt slots consumed.
     #[allow(dead_code)] // Semantic-test inspection of the bounded retry state.
     pub(crate) const fn completed_attempts(&self) -> usize {
-        self.completed_attempts
+        self.core.completed_attempts
     }
 
     pub(crate) fn raw_conflict_keys(&self) -> &[ConflictKey] {
@@ -189,7 +211,7 @@ impl PendingCommandAttempts {
     /// Returns whether the complete public service lifecycle is retained so a
     /// fenced subgroup can atomically stage both audit phases before its tail.
     pub(crate) const fn has_audited_lifecycle(&self) -> bool {
-        self.audited_lifecycle.is_some()
+        self.core.audited_lifecycle.is_some()
     }
 
     pub(crate) fn idempotency_identity(&self) -> &riffdb_storage_api::IdempotencyIdentity {
@@ -268,19 +290,19 @@ impl EvaluatedCommandAttempt {
 
     /// Rechecks advisory request control at the final pre-transaction safe point.
     pub(super) fn recheck_request_control(&self) -> Result<(), CommandAttemptError> {
-        check_request_control(self.state.deadline, &self.state.cancellation)
+        check_request_control(self.state.core.deadline, &self.state.core.cancellation)
     }
 
     pub(super) const fn commit_context(&self) -> &PreEvaluationCommitContext {
-        &self.state.commit_context
+        &self.state.core.commit_context
     }
 
     pub(super) const fn resolved_plan(&self) -> &ResolvedExecutablePlan {
-        &self.state.resolved_plan
+        &self.state.core.resolved_plan
     }
 
     pub(super) const fn normalized_input(&self) -> &CanonicalRecord {
-        &self.state.normalized_input
+        &self.state.core.normalized_input
     }
 
     /// Borrows checked targets, including any target resolved from selection evidence.
@@ -288,7 +310,7 @@ impl EvaluatedCommandAttempt {
         self.state
             .selected_facts
             .as_ref()
-            .unwrap_or(&self.state.input_facts)
+            .unwrap_or(&self.state.core.input_facts)
     }
 
     pub(super) const fn materialized_snapshot(&self) -> &MaterializedCommandSnapshot {
@@ -357,17 +379,17 @@ impl EvaluatedCommandAttempt {
     }
 
     pub(super) fn audited_lifecycle(&self) -> Option<&AuditedCommandLifecycle> {
-        self.state.audited_lifecycle.as_ref()
+        self.state.core.audited_lifecycle.as_ref()
     }
 
     /// Proves all independently checked values still belong to the one admitted
     /// attempt aggregate that produced them.
     pub(super) fn has_exact_semantic_join(&self) -> bool {
-        let pending = self.state.commit_context.pending();
+        let pending = self.state.core.commit_context.pending();
         let resolved = self.snapshot.resolved_plan();
         let snapshot = self.snapshot.snapshot();
-        pending.plan() == self.state.resolved_plan.reference()
-            && self.state.resolved_plan.reference() == resolved.reference()
+        pending.plan() == self.state.core.resolved_plan.reference()
+            && self.state.core.resolved_plan.reference() == resolved.reference()
             && self.state.snapshot_request.plan() == resolved.reference()
             && snapshot.plan() == resolved.reference()
             && snapshot_matches_request(&self.state.snapshot_request, snapshot)
@@ -385,16 +407,16 @@ impl EvaluatedCommandAttempt {
         if !self.has_exact_semantic_join() {
             return Err(CommandAttemptError::Integrity);
         }
-        let intent = if self.state.terminal_admission {
+        let intent = if self.state.core.terminal_admission {
             CommitIntent::new_for_vacant_terminal_admission(
-                self.state.commit_context.clone(),
-                self.state.lookup_candidates.clone(),
+                self.state.core.commit_context.clone(),
+                self.state.core.lookup_candidates.clone(),
                 self.evaluated.clone(),
                 provenance_id,
             )
         } else {
             CommitIntent::new(
-                self.state.commit_context.clone(),
+                self.state.core.commit_context.clone(),
                 self.evaluated.clone(),
                 provenance_id,
             )
@@ -442,7 +464,7 @@ impl PostApplyCommandEvidence {
     }
 
     pub(super) const fn lookup_candidates(&self) -> &IdempotencyLookupCandidatesV1 {
-        &self.state.lookup_candidates
+        &self.state.core.lookup_candidates
     }
 
     pub(super) fn matches_terminal_outcome(&self, outcome: &StoredOutcomeV1) -> bool {
@@ -523,7 +545,7 @@ impl ProvenanceBoundCommandAttempt {
     }
 
     pub(super) const fn lookup_candidates(&self) -> &IdempotencyLookupCandidatesV1 {
-        &self.attempt.state.lookup_candidates
+        &self.attempt.state.core.lookup_candidates
     }
 
     pub(super) fn audited_lifecycle(&self) -> Option<&AuditedCommandLifecycle> {
@@ -531,7 +553,7 @@ impl ProvenanceBoundCommandAttempt {
     }
 
     pub(super) const fn row_policy(&self) -> Option<&AuthorizedCommandRowPolicyContextV1> {
-        self.attempt.state.row_policy.as_ref()
+        self.attempt.state.core.row_policy.as_ref()
     }
 
     pub(super) fn matches_terminal_outcome(&self, outcome: &StoredOutcomeV1) -> bool {
@@ -626,11 +648,11 @@ impl ProvenanceBoundCommandAttempt {
         drop(snapshot);
         drop(lease);
         let evidence = PostApplyCommandEvidence { state, intent };
-        if evidence.exact_intent().pending() != evidence.state.commit_context.pending()
+        if evidence.exact_intent().pending() != evidence.state.core.commit_context.pending()
             || evidence.exact_intent().partition_hash()
-                != evidence.state.commit_context.partition_hash()
+                != evidence.state.core.commit_context.partition_hash()
             || evidence.exact_intent().conflict_hashes()
-                != evidence.state.commit_context.conflict_hashes()
+                != evidence.state.core.commit_context.conflict_hashes()
         {
             return Err(());
         }
@@ -834,7 +856,7 @@ impl ExecutionFaultAttempt {
 
     /// Rechecks advisory request control at the final pre-transition safe point.
     pub(super) fn recheck_request_control(&self) -> Result<(), CommandAttemptError> {
-        check_request_control(self.state().deadline, &self.state().cancellation)
+        check_request_control(self.state().core.deadline, &self.state().core.cancellation)
     }
 
     /// Builds the only storage transition request permitted by this exact attempt.
@@ -872,22 +894,22 @@ impl ExecutionFaultAttempt {
 
     /// Borrows the exact lookup identities retained by the admitted attempt.
     pub(super) const fn lookup_candidates(&self) -> &IdempotencyLookupCandidatesV1 {
-        &self.state().lookup_candidates
+        &self.state().core.lookup_candidates
     }
 
     /// Borrows the exact Pending admission retained by the attempt.
     pub(super) fn pending(&self) -> &riffdb_storage_api::StoredPendingAdmissionV1 {
-        self.state().commit_context.pending()
+        self.state().core.commit_context.pending()
     }
 
     /// Borrows the public service lifecycle retained by this attempt.
     pub(super) fn audited_lifecycle(&self) -> Option<&AuditedCommandLifecycle> {
-        self.state().audited_lifecycle.as_ref()
+        self.state().core.audited_lifecycle.as_ref()
     }
 
     /// Returns whether this failure must fuse its previously non-durable start.
     pub(super) const fn requires_fused_start(&self) -> bool {
-        self.state().terminal_admission
+        self.state().core.terminal_admission
     }
 
     /// Borrows the exact influential dependencies retained by the failed snapshot.
@@ -1137,7 +1159,7 @@ pub(crate) struct TransactionLocalSerialGroupLease {
 
 impl AcquiredCommandAttempt {
     pub(crate) const fn lookup_candidates(&self) -> &IdempotencyLookupCandidatesV1 {
-        &self.state.lookup_candidates
+        &self.state.core.lookup_candidates
     }
 
     pub(crate) fn into_pending_without_evaluation(self) -> PendingCommandAttempts {
@@ -1175,8 +1197,8 @@ impl AcquiredCommandAttempt {
             return Ok(discovery);
         }
         match crate::command_index::lower_cascade_discovery(
-            &self.state.resolved_plan,
-            &self.state.input_facts,
+            &self.state.core.resolved_plan,
+            &self.state.core.input_facts,
             &discovery,
         )
         .map_err(|_| CommandAttemptError::Integrity)?
@@ -2097,23 +2119,25 @@ contract AttemptMaterialization version {version} {{
             .collect();
 
         PendingCommandAttempts {
-            resolved_plan,
-            normalized_input,
-            input_facts: facts,
-            selected_facts: None,
-            commit_context,
-            raw_conflict_keys,
-            snapshot_request,
-            binding_modes,
-            lookup_candidates,
-            invocation_request_id: request_id(2),
-            deadline: future_deadline(),
-            cancellation: CancellationToken::new(),
-            audited_lifecycle: None,
-            terminal_admission: false,
-            post_evaluation_authorizer: None,
-            row_policy: None,
-            completed_attempts: 0,
+            core: Box::new(PendingCommandCore {
+                resolved_plan,
+                normalized_input,
+                input_facts: facts,
+                selected_facts: None,
+                commit_context,
+                raw_conflict_keys,
+                snapshot_request,
+                binding_modes,
+                lookup_candidates,
+                invocation_request_id: request_id(2),
+                deadline: future_deadline(),
+                cancellation: CancellationToken::new(),
+                audited_lifecycle: None,
+                terminal_admission: false,
+                post_evaluation_authorizer: None,
+                row_policy: None,
+                completed_attempts: 0,
+            }),
         }
     }
 
@@ -2234,23 +2258,25 @@ contract AttemptMaterialization version {version} {{
 
         (
             PendingCommandAttempts {
-                resolved_plan,
-                normalized_input,
-                input_facts: facts,
-                selected_facts: None,
-                commit_context,
-                raw_conflict_keys,
-                snapshot_request,
-                binding_modes,
-                lookup_candidates,
-                invocation_request_id: request_id(2),
-                deadline: future_deadline(),
-                cancellation: CancellationToken::new(),
-                audited_lifecycle: None,
-                terminal_admission: false,
-                post_evaluation_authorizer: None,
-                row_policy: None,
-                completed_attempts: 0,
+                core: Box::new(PendingCommandCore {
+                    resolved_plan,
+                    normalized_input,
+                    input_facts: facts,
+                    selected_facts: None,
+                    commit_context,
+                    raw_conflict_keys,
+                    snapshot_request,
+                    binding_modes,
+                    lookup_candidates,
+                    invocation_request_id: request_id(2),
+                    deadline: future_deadline(),
+                    cancellation: CancellationToken::new(),
+                    audited_lifecycle: None,
+                    terminal_admission: false,
+                    post_evaluation_authorizer: None,
+                    row_policy: None,
+                    completed_attempts: 0,
+                }),
             },
             snapshot,
         )
@@ -4297,8 +4323,10 @@ contract AttemptMaterialization version {version} {{
     }
 
     #[test]
+    // req: PERF-008, TXN-043
     fn three_real_evaluations_are_allowed_and_the_fourth_touches_no_port() {
         let (mut state, snapshot) = execution_fixture();
+        let owner = std::ptr::from_ref(state.core.as_ref());
         let order = Rc::new(RefCell::new(Vec::new()));
         let repository = ScriptedRepository::new(
             state.lookup_candidates.clone(),
@@ -4330,6 +4358,7 @@ contract AttemptMaterialization version {version} {{
             assert_eq!(attempt.state.completed_attempts(), expected);
             assert_eq!(attempt.evaluated().mutations().len(), 1);
             state = attempt.into_retry_state_for_test();
+            assert_eq!(std::ptr::from_ref(state.core.as_ref()), owner);
         }
 
         let calls_before_fourth = (repository.calls.get(), snapshots.calls.get());
