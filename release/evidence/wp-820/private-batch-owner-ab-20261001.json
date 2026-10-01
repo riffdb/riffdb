@@ -653,7 +653,7 @@
   "checks": {
     "candidate_scoped_acceptance": "6 passed, including 1110 tests; 1 existing skip",
     "command_concurrency_and_replay": "37 passed",
-    "restoration_acceptance": "pending"
+    "restoration_acceptance": "8 checks passed initially, including 1110 storage tests (1 existing skip); generated check invalidated by concurrent diagnostic edits, then passed separately on an unchanged restored tree (30 generators)"
   },
   "limitations": [
     "Busiest sampled command-thread CPU approximates writer CPU; nominal half-second sampling can omit final shutdown ticks.",

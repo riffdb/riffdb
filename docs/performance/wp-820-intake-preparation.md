@@ -659,6 +659,9 @@ maxima 747 versus 718 ms. Heap envelopes are 1,432,068,096 versus
 The candidate passes all six storage acceptance checks (1,110 tests, with one
 existing skipped scale test) and all 37 command-concurrency/replay tests.
 It is removed; `application.rs` is restored byte-for-byte to `4dfaae784`.
+Restoration passes 1,110 storage tests and seven other scoped checks.
+The generated check initially sees concurrent diagnostic edits and is invalid;
+its unchanged-tree rerun passes all 30 generators.
 Same-run PostgreSQL qualification is reserved for a retained candidate.
 Full numeric cells and resource scopes are recorded in
 `release/evidence/wp-820/private-batch-owner-ab-20261001.json`.
