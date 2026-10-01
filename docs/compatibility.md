@@ -376,8 +376,8 @@ Inspect the format while the server is stopped:
 riffdb storage preflight --database-path "$HOME/.local/share/riffdb/riffdb.redb"
 ```
 
-The sole supported alpha-1 predecessor edge is an offline, backup-required,
-one-way transition from writer 0 to writer 1:
+The supported alpha-1 predecessor edges are offline, backup-required,
+one-way transitions from writer 0 or writer 1 to writer 2:
 
 ```bash
 riffdb storage upgrade \

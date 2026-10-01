@@ -314,11 +314,10 @@ expect:
   checkpoint. A database whose lane keeps advancing takes that path on most
   restarts. See [Startup integrity](operations/STARTUP-INTEGRITY.md).
 
-The lane is bounded to about five percent of the writer's time, so under a
-write-saturated load it compacts far more slowly than the database commits.
-Pruning a command relocates its retained outcome, provenance, and audit out of
-its commit segment, which costs about as much writer time as committing it. On
-the ADR-0239 benchmark host, with 32 interactive clients, the lane kept p95
+The lane is paced to about five percent of the writer's time. Pruning a command
+relocates its retained outcome, provenance, and audit out of its commit segment.
+In WP-811's direct-prune baseline on the ADR-0239 benchmark host, with 32
+interactive clients, the lane kept p95
 within 3 percent and throughput at 0.97 of the held run while pruning about 1.3
 percent as many sequences as the load committed (WP-811). Most of each step's
 writer time in that baseline was spent materializing journaled history and
@@ -330,13 +329,19 @@ a sealed file remains allocated while any command, V3 receipt, older snapshot,
 or background scrub needs it. Receipt release uses the existing source-history
 protocol and is independent of the application watermark. The lane does not
 invent acknowledgements or source checkpoints to make files eligible. The
-1.3-percent result is the WP-811 baseline, not evidence for this repair. A fresh
-32-client qualification is required before WP-815 closes. The intermediate
-direct-prune implementation failed its keep-up gate; the negative evidence is
-recorded in the [design review](architecture/WP-815-DESIGN-REVIEW.md). Where writes
-leave the writer idle capacity, it compacts to its target. That evidence covers one workload on
-one host, is not a general latency guarantee, and marked the seeded events
-delivered on the stopped database first because of the outbox limit above.
+1.3-percent result is the WP-811 baseline. WP-815's fresh six-cell, 32-client
+qualification pruned 12.86 percent as many sequences as the workload committed;
+median p95 rose 3.7 percent and throughput fell 6.1 percent against the held lane.
+The unchanged p95 and keep-up gates pass. No extents were deleted or recycled:
+source receipts still held them, and no production source-reclamation scheduler
+is composed. The intermediate direct-prune implementation failed its keep-up
+gate; both results are recorded in the
+[design review](architecture/WP-815-DESIGN-REVIEW.md). Where writes leave the
+writer idle capacity, it compacts to its target. This evidence covers one workload
+on one host, is not a general latency guarantee, and marked seeded events
+delivered on the stopped database first with the board projection undeclared.
+It does not establish steady state with outbox, projections, followers, and
+archive/export consumers composed.
 
 ## Storage reclamation
 
@@ -348,7 +353,7 @@ the retained working set, and an operator who prunes aggressively to recover
 disk will not recover any.
 
 Journal extents are now retained after their checkpoint rather than recycled
-(ADR-0263, in progress under WP-814). Each installed checkpoint leaves one
+(ADR-0263, WP-814). Each installed checkpoint leaves one
 sealed extent beside the database, named `<database>.riffjournal.sealed.<generation>`
 and trimmed to its frames and footer. For journaled history, whether a
 checkpoint, crash recovery, or a synchronous drain materializes it, the database
@@ -359,9 +364,12 @@ copy the journal and every sealed extent, and a restored copy resolves its histo
 deleting a sealed extent by hand makes that history unreadable. Within one
 process, a read may resolve a history stub from any open copy of the same
 database whose retained frame has the same hash; the bytes are exact, but a
-missing extent is then reported only once no such copy is open. Until WP-815
-retires them, retention does not remove sealed extents, so they accumulate with
-every checkpoint. A backup reads its history from its own journal and sealed
+missing extent is then reported only once no such copy is open. WP-815 retires a
+sealed extent only after logical pruning and legitimate source-history
+reclamation release every command and receipt reference, with no captured reader
+or scrub holding it. Source receipts still prevented physical reclamation in its
+qualification, so sealed files can continue accumulating. A backup reads its
+history from its own journal and sealed
 extent artifacts. A staged maintenance restore (promotion rewind or archive
 replay) and a contract migration stage rewrite the stubs as full rows while
 staging, so the database they publish keeps its earlier history in the database
