@@ -460,7 +460,7 @@ impl JournalFrameKind {
     }
 }
 
-#[derive(Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) enum JournalMutation {
     Put {
         table: JournalTable,
@@ -475,123 +475,6 @@ pub(crate) enum JournalMutation {
     },
 }
 
-pub(crate) mod wp820_payload_probe {
-    use std::cell::Cell;
-    use std::sync::OnceLock;
-    use std::time::Instant;
-    const FIELDS: usize = 16;
-    fn enabled() -> bool {
-        static ENABLED: OnceLock<bool> = OnceLock::new();
-        *ENABLED.get_or_init(|| {
-            std::env::var_os("RIFFDB_WP820_PAYLOAD_DIAGNOSTICS").is_some_and(|v| v == "1")
-        })
-    }
-    struct Probe {
-        values: Cell<[u64; FIELDS]>,
-        role: u8,
-    }
-    impl Drop for Probe {
-        fn drop(&mut self) {
-            use std::io::Write;
-            let _ = writeln!(
-                std::io::stderr().lock(),
-                "riffdb-wp820-payload-journal-v1\t{}\t{}\t{:?}",
-                std::process::id(),
-                self.role,
-                self.values.get()
-            );
-        }
-    }
-    thread_local! {
-        static PROBE: Probe = Probe {
-            values: Cell::new([0; FIELDS]),
-            role: match std::thread::current().name() {
-                Some("riffdb-command-writer") => 1,
-                Some(n) if n.starts_with("riffdb-command-prepare-") => 2,
-                Some("riffdb-command-coordinator") => 3,
-                Some("riffdb-command-completion") => 4,
-                _ => 0,
-            },
-        };
-    }
-    pub(crate) fn staged_command() {
-        if enabled() {
-            PROBE.with(|probe| {
-                let mut counts = probe.values.get();
-                counts[8] = counts[8].saturating_add(1);
-                probe.values.set(counts);
-            });
-        }
-    }
-    pub(crate) fn started() -> Option<Instant> {
-        enabled().then(Instant::now)
-    }
-    pub(crate) fn cloned(kind: usize, key: usize, value: usize, started: Option<Instant>) {
-        if let Some(started) = started {
-            let elapsed = u64::try_from(started.elapsed().as_nanos()).unwrap_or(u64::MAX);
-            PROBE.with(|probe| {
-                let mut counts = probe.values.get();
-                let i = kind * 8;
-                counts[i] = counts[i].saturating_add(1);
-                counts[i + 1] = counts[i + 1].saturating_add(key as u64);
-                counts[i + 2] = counts[i + 2].saturating_add(value as u64);
-                counts[i + 3] = counts[i + 3].saturating_add(elapsed);
-                probe.values.set(counts);
-            });
-        }
-    }
-    pub(crate) fn constructed(kind: usize, key: usize, value: usize) {
-        if enabled() {
-            PROBE.with(|probe| {
-                let mut counts = probe.values.get();
-                let i = kind * 8;
-                counts[i + 4] = counts[i + 4].saturating_add(1);
-                counts[i + 5] = counts[i + 5].saturating_add(key as u64);
-                counts[i + 6] = counts[i + 6].saturating_add(value as u64);
-                counts[i + 7] =
-                    counts[i + 7].saturating_add(u64::from(key != 0) + u64::from(value != 0));
-                probe.values.set(counts);
-            });
-        }
-    }
-}
-
-impl Clone for JournalMutation {
-    #[inline]
-    fn clone(&self) -> Self {
-        let started = wp820_payload_probe::started();
-        let cloned = match self {
-            Self::Put {
-                table,
-                key,
-                expected_hash,
-                value,
-            } => Self::Put {
-                table: *table,
-                key: key.clone(),
-                expected_hash: *expected_hash,
-                value: value.clone(),
-            },
-            Self::Delete {
-                table,
-                key,
-                expected_hash,
-            } => Self::Delete {
-                table: *table,
-                key: key.clone(),
-                expected_hash: *expected_hash,
-            },
-        };
-        wp820_payload_probe::cloned(
-            0,
-            self.key().len(),
-            self.value().map_or(0, <[u8]>::len),
-            started,
-        );
-        cloned
-    }
-}
-
 impl JournalMutation {
     pub(crate) fn put(
         table: JournalTable,
@@ -602,7 +485,6 @@ impl JournalMutation {
         let value = value.into();
         validate_component(&key)?;
         validate_component(&value)?;
-        wp820_payload_probe::constructed(0, key.len(), value.len());
         Ok(Self::Put {
             table,
             key,
@@ -622,7 +504,6 @@ impl JournalMutation {
         validate_component(&key)?;
         validate_component(expected)?;
         validate_component(&value)?;
-        wp820_payload_probe::constructed(0, key.len(), value.len());
         Ok(Self::Put {
             table,
             key,
@@ -639,7 +520,6 @@ impl JournalMutation {
         let key = key.into();
         validate_component(&key)?;
         validate_component(expected)?;
-        wp820_payload_probe::constructed(0, key.len(), 0);
         Ok(Self::Delete {
             table,
             key,

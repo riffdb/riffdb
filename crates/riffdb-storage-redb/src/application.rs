@@ -2061,7 +2061,6 @@ fn apply_record_set(
     }
     let independent = access.finish_command_prefix_capture()?;
     core.capsule_independent_mutations.push(independent);
-    crate::journal::wp820_payload_probe::staged_command();
     Ok(entity_transitions)
 }
 
