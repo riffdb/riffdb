@@ -1012,6 +1012,7 @@ mod tests {
         );
     }
 
+    // req: REC-005
     #[test]
     fn predecessor_format_refuses_before_open_with_one_exact_action() {
         let (_scope, path) = temporary_database_scope();
@@ -1029,7 +1030,7 @@ mod tests {
         };
         assert_eq!(current.epoch().get(), binary.epoch().get());
         assert_eq!(current.writer().get(), 0);
-        assert_eq!(binary.writer().get(), 1);
+        assert_eq!(binary.writer().get(), 2);
         assert!(matches!(
             action,
             DurableFormatAction::OfflineInPlace {
@@ -1049,7 +1050,7 @@ mod tests {
             action,
         })
         .to_string();
-        assert!(rendered.contains("current=alpha-1.0 binary=alpha-1.1"));
+        assert!(rendered.contains("current=alpha-1.0 binary=alpha-1.2"));
         assert!(rendered.contains("backup_required=true"));
         assert!(rendered.contains("next: riffdb storage upgrade"));
         assert!(rendered.ends_with("no data was changed"));
