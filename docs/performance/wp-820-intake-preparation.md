@@ -442,6 +442,64 @@ raw-report collection and memory evidence remain pending. Selected numeric
 results are in `release/evidence/wp-820/post815-first-ab-20261001.json`; no
 PostgreSQL or retention qualification is claimed.
 
+## Cache-room candidate rejected after repeat (2026-10-01)
+
+The longer production write-only bank uses the same named commits and frozen
+release binaries, 90 seconds load plus 15 seconds warmup, again B/C/C/B.
+All four cells succeed with 137–138 sharing checks each and none detected.
+Base median throughput is 3,610 ops/s versus candidate 3,605 (−0.14 percent).
+Base/candidate p95 is 8.389/8.258 ms; p99 is 14.942/15.729 ms (+5.26 percent).
+Maximum stalls are 1.024/1.026 seconds. Sampled writer CPU per process-generation
+command is 200.54/201.17 µs, subject to the polling limitation above.
+
+| Bank/load | Base / candidate median heap envelope | Base / candidate worst sampled RSS |
+| --- | --- | --- |
+| 60 s write-only | 1,405,241,344 / 1,409,097,728 bytes | 1,205,645,312 / 1,194,414,080 bytes |
+| 60 s interactive | 1,094,864,896 / 1,105,866,752 bytes | 1,023,328,256 / 1,030,041,600 bytes |
+| 60 s read-only | 47,108,096 / 45,520,896 bytes | 86,196,224 / 87,035,904 bytes |
+| 90 s write-only | 1,431,130,112 / 1,424,652,288 bytes | 1,371,947,008 / 1,380,032,512 bytes |
+
+The first and repeated banks show no reproducible throughput benefit. Remove
+cache-room preparation, its test hooks, and its three dedicated tests; restore
+the original bounded eviction path from `445927ccef`. WP-815 code remains intact.
+The failed-before barrier test proved the intended overlap but did not establish
+a production benefit. Additional synchronization and charging work are not
+justified by these results. Neither CPU nor tail differences establish a cause.
+Same-run PostgreSQL qualification is not run for this rejected candidate.
+
+The completed raw summaries are collected after the evidence run. Sanitized
+numeric cells and resource results are in
+`release/evidence/wp-820/post815-production-ab-20261001.json`. Removal acceptance
+passes all nine checks, including the storage all-feature test run. Fresh
+read/allocation/copy attribution and package closure remain
+pending; write throughput is not fixed.
+
+## Resolved C runtime CPU (2026-10-01)
+
+Matching C runtime debug symbols resolve the existing `445927ccef` CPU capture,
+without another profile run or an installed-library change. Of 17,865 ordered
+writer samples, 2,044 (11.44 percent) are in the copy implementation and 2,024
+(11.33 percent) are in the byte comparison implementation. The corresponding
+sample-period totals are 2.050 and 2.030 CPU seconds. These self samples were
+previously unresolved; they must not be added to the old unresolved bucket.
+
+Inclusive comparison callers include checkpoint-root reads (297), overlay point
+resolution (297), rebase (236), mutation validation (59), and insertion (53).
+These counts overlap. Copy samples also occur under command preparation and
+staging, receipts, allocator resizing, and rebase. Direct caller frames may
+contain inlined code, so they do not establish which value move or owned copy
+causes the CPU work. Copied sizes and complete allocation counts are still
+needed before selecting another mechanism.
+
+A separate five-second allocation-entrypoint capture records 224,840 allocation
+requests totaling 30,508,696 requested bytes. Requested sizes exclude allocator
+rounding, metadata, fragmentation, and success/failure distinction. The observed
+record-application entrypoint is not yet proven complete, so no allocation-per-
+command estimate is claimed. Probe overhead produces a 5.245-second diagnostic
+maximum; this is not banked as an ordinary production stall. A bounded caller-
+class byte-size capture follows. Sanitized CPU evidence is
+`release/evidence/wp-820/resolved-copy-cpu-20261001.json`.
+
 ## Review status
 
 Package: WP-820. Tier: guarantee. Behavior: bounded diagnostics, rejected

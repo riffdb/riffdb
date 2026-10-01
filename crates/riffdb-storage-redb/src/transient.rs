@@ -488,31 +488,6 @@ impl TransientIndexes {
         self.command_derived.as_ref().unwrap().payloads.stats()
     }
 
-    /// Make disposable payload room while index readers can still share the
-    /// caller's read guard. The authoritative index/publication update and the
-    /// complete seed validation remain on their original write-guard path.
-    pub(crate) fn prepare_payload_evictions(&self, deltas: &[TransientIndexDelta]) {
-        let Some(indexes) = &self.command_derived else {
-            return;
-        };
-        for delta in deltas {
-            if let TransientIndexDelta::CommandSegmentPublished(segment, Some(canonical)) = delta {
-                indexes
-                    .payloads
-                    .prepare_seed_evictions(segment, canonical.len());
-            }
-        }
-    }
-
-    #[cfg(test)]
-    pub(crate) fn set_payload_eviction_hook(&mut self, hook: Arc<dyn Fn() + Send + Sync>) {
-        self.command_derived
-            .as_mut()
-            .expect("test command indexes")
-            .payloads
-            .set_eviction_hook(hook);
-    }
-
     pub(crate) fn apply(&mut self, delta: TransientIndexDelta) {
         match delta {
             TransientIndexDelta::PendingOutboxInserted(events) => {

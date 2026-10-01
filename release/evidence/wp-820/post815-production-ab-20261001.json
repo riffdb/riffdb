@@ -1,0 +1,684 @@
+{
+  "schema": "riffdb.wp-820-post815-production-ab/v1",
+  "recorded_at": "2026-10-01",
+  "base_commit": "445927ccef2ca9b2e1f8643559972dbbf98e3728",
+  "candidate_commit": "555a526f848c3a980a7da2808934069f5f250fda",
+  "machine": {
+    "vcpus": 8,
+    "cpu": "AMD EPYC 9B14"
+  },
+  "build": "production release; diagnostics disabled",
+  "clients": 32,
+  "order": [
+    "base",
+    "candidate",
+    "candidate",
+    "base"
+  ],
+  "retained_candidate": false,
+  "decision": "Remove cache-room preparation: no repeatable throughput benefit; added synchronization and ownership charging not justified.",
+  "postgres_qualification": "Not performed for the rejected candidate.",
+  "banks": [
+    {
+      "duration_seconds": 60,
+      "warmup_seconds": 10,
+      "interactive_journeys": true,
+      "cells": [
+        {
+          "load": "write_only",
+          "ordinal": 1,
+          "arm": "base",
+          "returncode": 0,
+          "throughput": 3696,
+          "latency": {
+            "max_ns": 1020622339,
+            "mean_ns": 8648184,
+            "min_ns": 1687320,
+            "p50_ns": 6815743,
+            "p95_ns": 8126463,
+            "p99_ns": 13107199,
+            "sample_count": 221282
+          },
+          "exclusive_monitor_checks": 101,
+          "sharing_detected": false,
+          "writer_cpu_ticks_sampled": 5184,
+          "ticks_per_second": 100,
+          "process_scope_commands": 265068,
+          "writer_cpu_us_per_process_scope_command": 195.57245687898956,
+          "resources": {
+            "cpu_ticks": 16062,
+            "heap_envelope_bytes": 1395728384,
+            "rss_bytes_peak_sampled": 1205645312,
+            "process_read_bytes": 0,
+            "process_write_bytes": 23583629312,
+            "durable_bytes_growth": 3061207040,
+            "process_scope_committed_commands": 265068,
+            "successful_mutations": 221282,
+            "process_identity_stable": true
+          }
+        },
+        {
+          "load": "write_only",
+          "ordinal": 2,
+          "arm": "candidate",
+          "returncode": 0,
+          "throughput": 3683,
+          "latency": {
+            "max_ns": 743423490,
+            "mean_ns": 8684334,
+            "min_ns": 1608989,
+            "p50_ns": 6815743,
+            "p95_ns": 8126463,
+            "p99_ns": 11534335,
+            "sample_count": 220468
+          },
+          "exclusive_monitor_checks": 101,
+          "sharing_detected": false,
+          "writer_cpu_ticks_sampled": 5273,
+          "ticks_per_second": 100,
+          "process_scope_commands": 264015,
+          "writer_cpu_us_per_process_scope_command": 199.72350055868037,
+          "resources": {
+            "cpu_ticks": 16208,
+            "heap_envelope_bytes": 1407295488,
+            "rss_bytes_peak_sampled": 1194414080,
+            "process_read_bytes": 0,
+            "process_write_bytes": 23553609728,
+            "durable_bytes_growth": 3032690688,
+            "process_scope_committed_commands": 264015,
+            "successful_mutations": 220468,
+            "process_identity_stable": true
+          }
+        },
+        {
+          "load": "write_only",
+          "ordinal": 3,
+          "arm": "candidate",
+          "returncode": 0,
+          "throughput": 3679,
+          "latency": {
+            "max_ns": 715806970,
+            "mean_ns": 8693782,
+            "min_ns": 1780080,
+            "p50_ns": 6815743,
+            "p95_ns": 8126463,
+            "p99_ns": 12582911,
+            "sample_count": 220259
+          },
+          "exclusive_monitor_checks": 101,
+          "sharing_detected": false,
+          "writer_cpu_ticks_sampled": 5283,
+          "ticks_per_second": 100,
+          "process_scope_commands": 263307,
+          "writer_cpu_us_per_process_scope_command": 200.64031719627658,
+          "resources": {
+            "cpu_ticks": 16203,
+            "heap_envelope_bytes": 1410899968,
+            "rss_bytes_peak_sampled": 1174372352,
+            "process_read_bytes": 0,
+            "process_write_bytes": 23438053376,
+            "durable_bytes_growth": 3054948352,
+            "process_scope_committed_commands": 263307,
+            "successful_mutations": 220259,
+            "process_identity_stable": true
+          }
+        },
+        {
+          "load": "write_only",
+          "ordinal": 4,
+          "arm": "base",
+          "returncode": 0,
+          "throughput": 3694,
+          "latency": {
+            "max_ns": 717659040,
+            "mean_ns": 8658071,
+            "min_ns": 1797550,
+            "p50_ns": 6815743,
+            "p95_ns": 8126463,
+            "p99_ns": 14155775,
+            "sample_count": 221289
+          },
+          "exclusive_monitor_checks": 101,
+          "sharing_detected": false,
+          "writer_cpu_ticks_sampled": 5189,
+          "ticks_per_second": 100,
+          "process_scope_commands": 264557,
+          "writer_cpu_us_per_process_scope_command": 196.1392062958077,
+          "resources": {
+            "cpu_ticks": 16133,
+            "heap_envelope_bytes": 1414754304,
+            "rss_bytes_peak_sampled": 1190858752,
+            "process_read_bytes": 0,
+            "process_write_bytes": 23561162752,
+            "durable_bytes_growth": 3031035904,
+            "process_scope_committed_commands": 264557,
+            "successful_mutations": 221289,
+            "process_identity_stable": true
+          }
+        },
+        {
+          "load": "interactive",
+          "ordinal": 1,
+          "arm": "base",
+          "returncode": 0,
+          "throughput": 16069,
+          "latency": {
+            "max_ns": 717537228,
+            "mean_ns": 1982208,
+            "min_ns": 172320,
+            "p50_ns": 884735,
+            "p95_ns": 7077887,
+            "p99_ns": 9437183,
+            "sample_count": 973649
+          },
+          "exclusive_monitor_checks": 100,
+          "sharing_detected": false,
+          "writer_cpu_ticks_sampled": 4418,
+          "ticks_per_second": 100,
+          "process_scope_commands": 170959,
+          "writer_cpu_us_per_process_scope_command": 258.4245345375207,
+          "resources": {
+            "cpu_ticks": 29214,
+            "heap_envelope_bytes": 1083916288,
+            "rss_bytes_peak_sampled": 1022353408,
+            "process_read_bytes": 0,
+            "process_write_bytes": 30393987072,
+            "durable_bytes_growth": 1954492416,
+            "process_scope_committed_commands": 170959,
+            "successful_mutations": 146923,
+            "process_identity_stable": true
+          }
+        },
+        {
+          "load": "interactive",
+          "ordinal": 2,
+          "arm": "candidate",
+          "returncode": 0,
+          "throughput": 16051,
+          "latency": {
+            "max_ns": 1038739386,
+            "mean_ns": 1987965,
+            "min_ns": 179960,
+            "p50_ns": 884735,
+            "p95_ns": 7077887,
+            "p99_ns": 9437183,
+            "sample_count": 971329
+          },
+          "exclusive_monitor_checks": 99,
+          "sharing_detected": false,
+          "writer_cpu_ticks_sampled": 4505,
+          "ticks_per_second": 100,
+          "process_scope_commands": 170289,
+          "writer_cpu_us_per_process_scope_command": 264.55026455026456,
+          "resources": {
+            "cpu_ticks": 29303,
+            "heap_envelope_bytes": 1105944576,
+            "rss_bytes_peak_sampled": 1029566464,
+            "process_read_bytes": 0,
+            "process_write_bytes": 29992247296,
+            "durable_bytes_growth": 1953918976,
+            "process_scope_committed_commands": 170289,
+            "successful_mutations": 146614,
+            "process_identity_stable": true
+          }
+        },
+        {
+          "load": "interactive",
+          "ordinal": 3,
+          "arm": "candidate",
+          "returncode": 0,
+          "throughput": 16054,
+          "latency": {
+            "max_ns": 696247508,
+            "mean_ns": 1987157,
+            "min_ns": 177780,
+            "p50_ns": 884735,
+            "p95_ns": 7077887,
+            "p99_ns": 9437183,
+            "sample_count": 970214
+          },
+          "exclusive_monitor_checks": 99,
+          "sharing_detected": false,
+          "writer_cpu_ticks_sampled": 4489,
+          "ticks_per_second": 100,
+          "process_scope_commands": 170324,
+          "writer_cpu_us_per_process_scope_command": 263.55651581691365,
+          "resources": {
+            "cpu_ticks": 29314,
+            "heap_envelope_bytes": 1105788928,
+            "rss_bytes_peak_sampled": 1030041600,
+            "process_read_bytes": 0,
+            "process_write_bytes": 30113951744,
+            "durable_bytes_growth": 1952129024,
+            "process_scope_committed_commands": 170324,
+            "successful_mutations": 146386,
+            "process_identity_stable": true
+          }
+        },
+        {
+          "load": "interactive",
+          "ordinal": 4,
+          "arm": "base",
+          "returncode": 0,
+          "throughput": 16059,
+          "latency": {
+            "max_ns": 694631290,
+            "mean_ns": 1982149,
+            "min_ns": 167170,
+            "p50_ns": 884735,
+            "p95_ns": 7077887,
+            "p99_ns": 9437183,
+            "sample_count": 972694
+          },
+          "exclusive_monitor_checks": 99,
+          "sharing_detected": false,
+          "writer_cpu_ticks_sampled": 4434,
+          "ticks_per_second": 100,
+          "process_scope_commands": 170910,
+          "writer_cpu_us_per_process_scope_command": 259.43479024047747,
+          "resources": {
+            "cpu_ticks": 29268,
+            "heap_envelope_bytes": 1105813504,
+            "rss_bytes_peak_sampled": 1023328256,
+            "process_read_bytes": 0,
+            "process_write_bytes": 30309462016,
+            "durable_bytes_growth": 1951928320,
+            "process_scope_committed_commands": 170910,
+            "successful_mutations": 146753,
+            "process_identity_stable": true
+          }
+        },
+        {
+          "load": "read_only",
+          "ordinal": 1,
+          "arm": "base",
+          "returncode": 0,
+          "throughput": 25004,
+          "latency": {
+            "max_ns": 10319420,
+            "mean_ns": 1278600,
+            "min_ns": 191250,
+            "p50_ns": 1179647,
+            "p95_ns": 2359295,
+            "p99_ns": 3407871,
+            "sample_count": 1500312
+          },
+          "exclusive_monitor_checks": 93,
+          "sharing_detected": false,
+          "writer_cpu_ticks_sampled": 0,
+          "ticks_per_second": 100,
+          "process_scope_commands": 0,
+          "writer_cpu_us_per_process_scope_command": null,
+          "resources": {
+            "cpu_ticks": 32133,
+            "heap_envelope_bytes": 43696128,
+            "rss_bytes_peak_sampled": 85016576,
+            "process_read_bytes": 0,
+            "process_write_bytes": 8192,
+            "durable_bytes_growth": 0,
+            "process_scope_committed_commands": 0,
+            "successful_mutations": 0,
+            "process_identity_stable": true
+          }
+        },
+        {
+          "load": "read_only",
+          "ordinal": 2,
+          "arm": "candidate",
+          "returncode": 0,
+          "throughput": 24975,
+          "latency": {
+            "max_ns": 10629239,
+            "mean_ns": 1280050,
+            "min_ns": 184250,
+            "p50_ns": 1179647,
+            "p95_ns": 2359295,
+            "p99_ns": 3407871,
+            "sample_count": 1498591
+          },
+          "exclusive_monitor_checks": 93,
+          "sharing_detected": false,
+          "writer_cpu_ticks_sampled": 0,
+          "ticks_per_second": 100,
+          "process_scope_commands": 0,
+          "writer_cpu_us_per_process_scope_command": null,
+          "resources": {
+            "cpu_ticks": 32090,
+            "heap_envelope_bytes": 40001536,
+            "rss_bytes_peak_sampled": 87035904,
+            "process_read_bytes": 0,
+            "process_write_bytes": 8192,
+            "durable_bytes_growth": 0,
+            "process_scope_committed_commands": 0,
+            "successful_mutations": 0,
+            "process_identity_stable": true
+          }
+        },
+        {
+          "load": "read_only",
+          "ordinal": 3,
+          "arm": "candidate",
+          "returncode": 0,
+          "throughput": 25017,
+          "latency": {
+            "max_ns": 11334140,
+            "mean_ns": 1277904,
+            "min_ns": 199520,
+            "p50_ns": 1179647,
+            "p95_ns": 2359295,
+            "p99_ns": 3407871,
+            "sample_count": 1501085
+          },
+          "exclusive_monitor_checks": 93,
+          "sharing_detected": false,
+          "writer_cpu_ticks_sampled": 0,
+          "ticks_per_second": 100,
+          "process_scope_commands": 0,
+          "writer_cpu_us_per_process_scope_command": null,
+          "resources": {
+            "cpu_ticks": 32083,
+            "heap_envelope_bytes": 51040256,
+            "rss_bytes_peak_sampled": 86855680,
+            "process_read_bytes": 0,
+            "process_write_bytes": 8192,
+            "durable_bytes_growth": 0,
+            "process_scope_committed_commands": 0,
+            "successful_mutations": 0,
+            "process_identity_stable": true
+          }
+        },
+        {
+          "load": "read_only",
+          "ordinal": 4,
+          "arm": "base",
+          "returncode": 0,
+          "throughput": 25023,
+          "latency": {
+            "max_ns": 10121500,
+            "mean_ns": 1277599,
+            "min_ns": 192830,
+            "p50_ns": 1179647,
+            "p95_ns": 2359295,
+            "p99_ns": 3407871,
+            "sample_count": 1501452
+          },
+          "exclusive_monitor_checks": 93,
+          "sharing_detected": false,
+          "writer_cpu_ticks_sampled": 0,
+          "ticks_per_second": 100,
+          "process_scope_commands": 0,
+          "writer_cpu_us_per_process_scope_command": null,
+          "resources": {
+            "cpu_ticks": 32130,
+            "heap_envelope_bytes": 50520064,
+            "rss_bytes_peak_sampled": 86196224,
+            "process_read_bytes": 0,
+            "process_write_bytes": 8192,
+            "durable_bytes_growth": 0,
+            "process_scope_committed_commands": 0,
+            "successful_mutations": 0,
+            "process_identity_stable": true
+          }
+        }
+      ],
+      "summaries": [
+        {
+          "load": "interactive",
+          "arms": {
+            "base": {
+              "throughput_ops_s_median": 16064.0,
+              "p95_ns_median": 7077887.0,
+              "p99_ns_median": 9437183.0,
+              "max_ns_worst": 717537228,
+              "heap_envelope_bytes_median": 1094864896.0,
+              "rss_bytes_peak_worst": 1023328256,
+              "writer_cpu_us_per_command_median": 258.9296623889991
+            },
+            "candidate": {
+              "throughput_ops_s_median": 16052.5,
+              "p95_ns_median": 7077887.0,
+              "p99_ns_median": 9437183.0,
+              "max_ns_worst": 1038739386,
+              "heap_envelope_bytes_median": 1105866752.0,
+              "rss_bytes_peak_worst": 1030041600,
+              "writer_cpu_us_per_command_median": 264.0533901835891
+            }
+          },
+          "throughput_ratio": 0.9992841135458167,
+          "p95_ratio": 1.0,
+          "p99_ratio": 1.0
+        },
+        {
+          "load": "read_only",
+          "arms": {
+            "base": {
+              "throughput_ops_s_median": 25013.5,
+              "p95_ns_median": 2359295.0,
+              "p99_ns_median": 3407871.0,
+              "max_ns_worst": 10319420,
+              "heap_envelope_bytes_median": 47108096.0,
+              "rss_bytes_peak_worst": 86196224,
+              "writer_cpu_us_per_command_median": null
+            },
+            "candidate": {
+              "throughput_ops_s_median": 24996.0,
+              "p95_ns_median": 2359295.0,
+              "p99_ns_median": 3407871.0,
+              "max_ns_worst": 11334140,
+              "heap_envelope_bytes_median": 45520896.0,
+              "rss_bytes_peak_worst": 87035904,
+              "writer_cpu_us_per_command_median": null
+            }
+          },
+          "throughput_ratio": 0.9993003777959901,
+          "p95_ratio": 1.0,
+          "p99_ratio": 1.0
+        },
+        {
+          "load": "write_only",
+          "arms": {
+            "base": {
+              "throughput_ops_s_median": 3695.0,
+              "p95_ns_median": 8126463.0,
+              "p99_ns_median": 13631487.0,
+              "max_ns_worst": 1020622339,
+              "heap_envelope_bytes_median": 1405241344.0,
+              "rss_bytes_peak_worst": 1205645312,
+              "writer_cpu_us_per_command_median": 195.85583158739863
+            },
+            "candidate": {
+              "throughput_ops_s_median": 3681.0,
+              "p95_ns_median": 8126463.0,
+              "p99_ns_median": 12058623.0,
+              "max_ns_worst": 743423490,
+              "heap_envelope_bytes_median": 1409097728.0,
+              "rss_bytes_peak_worst": 1194414080,
+              "writer_cpu_us_per_command_median": 200.18190887747846
+            }
+          },
+          "throughput_ratio": 0.9962110960757781,
+          "p95_ratio": 1.0,
+          "p99_ratio": 0.8846153761508191
+        }
+      ]
+    },
+    {
+      "duration_seconds": 90,
+      "warmup_seconds": 15,
+      "interactive_journeys": false,
+      "cells": [
+        {
+          "load": "write_only",
+          "ordinal": 1,
+          "arm": "base",
+          "returncode": 0,
+          "throughput": 3591,
+          "latency": {
+            "max_ns": 1023320479,
+            "mean_ns": 8908154,
+            "min_ns": 1558760,
+            "p50_ns": 6815743,
+            "p95_ns": 8388607,
+            "p99_ns": 15204351,
+            "sample_count": 323574
+          },
+          "exclusive_monitor_checks": 137,
+          "sharing_detected": false,
+          "writer_cpu_ticks_sampled": 7762,
+          "ticks_per_second": 100,
+          "process_scope_commands": 385747,
+          "writer_cpu_us_per_process_scope_command": 201.21997060249333,
+          "resources": {
+            "cpu_ticks": 23760,
+            "heap_envelope_bytes": 1428766720,
+            "rss_bytes_peak_sampled": 1345757184,
+            "process_read_bytes": 0,
+            "process_write_bytes": 34650329088,
+            "durable_bytes_growth": 3741040640,
+            "process_scope_committed_commands": 385747,
+            "successful_mutations": 323574,
+            "process_identity_stable": true
+          }
+        },
+        {
+          "load": "write_only",
+          "ordinal": 2,
+          "arm": "candidate",
+          "returncode": 0,
+          "throughput": 3591,
+          "latency": {
+            "max_ns": 717057558,
+            "mean_ns": 8892387,
+            "min_ns": 1803320,
+            "p50_ns": 6815743,
+            "p95_ns": 8388607,
+            "p99_ns": 16777215,
+            "sample_count": 325004
+          },
+          "exclusive_monitor_checks": 137,
+          "sharing_detected": false,
+          "writer_cpu_ticks_sampled": 7795,
+          "ticks_per_second": 100,
+          "process_scope_commands": 386711,
+          "writer_cpu_us_per_process_scope_command": 201.57171634631547,
+          "resources": {
+            "cpu_ticks": 23804,
+            "heap_envelope_bytes": 1423151104,
+            "rss_bytes_peak_sampled": 1346371584,
+            "process_read_bytes": 0,
+            "process_write_bytes": 35070210048,
+            "durable_bytes_growth": 3865657344,
+            "process_scope_committed_commands": 386711,
+            "successful_mutations": 325004,
+            "process_identity_stable": true
+          }
+        },
+        {
+          "load": "write_only",
+          "ordinal": 3,
+          "arm": "candidate",
+          "returncode": 0,
+          "throughput": 3619,
+          "latency": {
+            "max_ns": 1026351207,
+            "mean_ns": 8838693,
+            "min_ns": 1813970,
+            "p50_ns": 6815743,
+            "p95_ns": 8126463,
+            "p99_ns": 14680063,
+            "sample_count": 326297
+          },
+          "exclusive_monitor_checks": 138,
+          "sharing_detected": false,
+          "writer_cpu_ticks_sampled": 7797,
+          "ticks_per_second": 100,
+          "process_scope_commands": 388350,
+          "writer_cpu_us_per_process_scope_command": 200.7724990343762,
+          "resources": {
+            "cpu_ticks": 23805,
+            "heap_envelope_bytes": 1426153472,
+            "rss_bytes_peak_sampled": 1380032512,
+            "process_read_bytes": 24576,
+            "process_write_bytes": 35188092928,
+            "durable_bytes_growth": 3875246080,
+            "process_scope_committed_commands": 388350,
+            "successful_mutations": 326297,
+            "process_identity_stable": true
+          }
+        },
+        {
+          "load": "write_only",
+          "ordinal": 4,
+          "arm": "base",
+          "returncode": 0,
+          "throughput": 3629,
+          "latency": {
+            "max_ns": 1023785189,
+            "mean_ns": 8813720,
+            "min_ns": 1967830,
+            "p50_ns": 6815743,
+            "p95_ns": 8388607,
+            "p99_ns": 14680063,
+            "sample_count": 326680
+          },
+          "exclusive_monitor_checks": 137,
+          "sharing_detected": false,
+          "writer_cpu_ticks_sampled": 7755,
+          "ticks_per_second": 100,
+          "process_scope_commands": 388029,
+          "writer_cpu_us_per_process_scope_command": 199.85619631522385,
+          "resources": {
+            "cpu_ticks": 23817,
+            "heap_envelope_bytes": 1433493504,
+            "rss_bytes_peak_sampled": 1371947008,
+            "process_read_bytes": 8192,
+            "process_write_bytes": 34813341696,
+            "durable_bytes_growth": 3715993600,
+            "process_scope_committed_commands": 388029,
+            "successful_mutations": 326680,
+            "process_identity_stable": true
+          }
+        }
+      ],
+      "summaries": [
+        {
+          "load": "write_only",
+          "arms": {
+            "base": {
+              "throughput_ops_s_median": 3610.0,
+              "p95_ns_median": 8388607.0,
+              "p99_ns_median": 14942207.0,
+              "max_ns_worst": 1023785189,
+              "heap_envelope_bytes_median": 1431130112.0,
+              "rss_bytes_peak_worst": 1371947008,
+              "writer_cpu_us_per_command_median": 200.53808345885858
+            },
+            "candidate": {
+              "throughput_ops_s_median": 3605.0,
+              "p95_ns_median": 8257535.0,
+              "p99_ns_median": 15728639.0,
+              "max_ns_worst": 1026351207,
+              "heap_envelope_bytes_median": 1424652288.0,
+              "rss_bytes_peak_worst": 1380032512,
+              "writer_cpu_us_per_command_median": 201.17210769034585
+            }
+          },
+          "throughput_ratio": 0.9986149584487535,
+          "p95_ratio": 0.9843749981373546,
+          "p99_ratio": 1.0526315824697114
+        }
+      ]
+    }
+  ],
+  "limits": [
+    "Writer CPU uses sampled cumulative thread ticks, nominal 500 ms polling, and process-generation commands including warmup; final shutdown ticks may be omitted.",
+    "Tail changes, maximum stalls, and heap-envelope changes do not establish a cause.",
+    "Reported heap envelope and sampled RSS are not cumulative allocation bytes.",
+    "Sharing checks cover listed benchmark/build processes, not all possible interference."
+  ],
+  "removal_checks": {
+    "scoped_acceptance": "pass",
+    "checks_passed": 9,
+    "full_ci_after_removal": "pending"
+  }
+}

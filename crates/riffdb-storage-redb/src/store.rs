@@ -7294,7 +7294,6 @@ impl SharedRedb {
         }
         self.after_test_commit(RedbTestOperation::CommandEpochTail)?;
         let published_snapshot = Arc::clone(&publication.composite_successor);
-        prepare_command_payload_evictions(&self.transient_indexes, &publication.transient_deltas)?;
         let mut transient = self
             .transient_indexes
             .write()
@@ -8671,22 +8670,6 @@ fn exclusive_byte_prefix_end(prefix: &[u8]) -> Option<Vec<u8>> {
     end[position] = end[position].checked_add(1)?;
     end.truncate(position + 1);
     Some(end)
-}
-
-/// Evict disposable decoded payloads before taking the index write guard. The
-/// cache mutex still bounds all payload ownership, and the original publication
-/// path rechecks every seed, duplicate, byte limit, and failure afterward.
-pub(crate) fn prepare_command_payload_evictions(
-    state: &RwLock<TransientIndexState>,
-    deltas: &[TransientIndexDelta],
-) -> Result<(), StorageError> {
-    let state = state
-        .read()
-        .map_err(|_| storage_error(StorageErrorKind::CommitStatusUnknown))?;
-    if let TransientIndexState::Ready(indexes) = &*state {
-        indexes.prepare_payload_evictions(deltas);
-    }
-    Ok(())
 }
 
 impl TransientIndexState {

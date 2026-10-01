@@ -171,8 +171,6 @@ struct PayloadEntries {
 #[derive(Default)]
 pub(super) struct PayloadCache {
     state: Mutex<PayloadEntries>,
-    #[cfg(test)]
-    eviction_hook: Option<Arc<dyn Fn() + Send + Sync>>,
 }
 
 impl PayloadCache {
@@ -226,50 +224,6 @@ impl PayloadCache {
         Ok(segment)
     }
 
-    /// Optional room-making only: no payload is inserted, no authority is read,
-    /// and all normal seed checks/errors still run. Concurrent cache refills are
-    /// harmless: `retain` repeats its existing bounds and eviction loop.
-    ///
-    /// Keep the cache mutex through removal AND destruction, just as `retain`
-    /// does. No evicted payload escapes the mutex or its existing memory bound.
-    pub(super) fn prepare_seed_evictions(
-        &self,
-        segment: &StoredCommandSegmentV1,
-        canonical_bytes: usize,
-    ) {
-        let Some(charge) =
-            decoded_charge(segment, canonical_bytes).filter(|charge| *charge <= MAX_PAYLOAD_BYTES)
-        else {
-            return;
-        };
-        let Ok(mut state) = self.state.lock() else {
-            // The ordinary seed path still observes poison and invalidates the
-            // derived indexes. A best-effort hint must not replace that path.
-            return;
-        };
-        while state.entries.len() >= MAX_PAYLOAD_ENTRIES || state.bytes > MAX_PAYLOAD_BYTES - charge
-        {
-            if state
-                .entries
-                .first_key_value()
-                .is_none_or(|(_, old)| old.charge > state.bytes)
-            {
-                // Do not repair inconsistent accounting; leave it for the
-                // unchanged seed path to reject through its existing checks.
-                return;
-            }
-            let Some((_, old)) = state.entries.pop_first() else {
-                return;
-            };
-            state.bytes -= old.charge;
-            #[cfg(test)]
-            if let Some(hook) = &self.eviction_hook {
-                hook();
-            }
-            drop(old);
-        }
-    }
-
     /// Retains the writer's own segment for its exact canonical bytes.
     pub(super) fn seed(
         &self,
@@ -312,10 +266,6 @@ impl PayloadCache {
         {
             let (_, old) = state.entries.pop_first().ok_or_else(corrupt)?;
             state.bytes -= old.charge;
-            #[cfg(test)]
-            if let Some(hook) = &self.eviction_hook {
-                hook();
-            }
         }
         state.entries.insert(
             first,
@@ -327,11 +277,6 @@ impl PayloadCache {
         );
         state.bytes += charge;
         Ok(())
-    }
-
-    #[cfg(test)]
-    pub(super) fn set_eviction_hook(&mut self, hook: Arc<dyn Fn() + Send + Sync>) {
-        self.eviction_hook = Some(hook);
     }
 
     #[cfg(test)]

@@ -1,0 +1,102 @@
+{
+  "schema": "riffdb.wp-820-resolved-copy-cpu/v1",
+  "recorded_at": "2026-10-01",
+  "base_commit": "445927ccef2ca9b2e1f8643559972dbbf98e3728",
+  "diagnostic_only": true,
+  "same_capture_as": "post815-diagnostics-20261001.json",
+  "matching_c_runtime_debug_build_identity": true,
+  "samples": 50376,
+  "writer_samples": 17865,
+  "writer_self_counts": {
+    "copy": 2044,
+    "compare": 2024
+  },
+  "writer_self_sample_period_ns": {
+    "copy": 2050150396,
+    "compare": 2030090216
+  },
+  "inclusive_callers": [
+    {
+      "kind": "compare",
+      "caller": "changelog_successor",
+      "samples": 40
+    },
+    {
+      "kind": "compare",
+      "caller": "checkpoint_root",
+      "samples": 297
+    },
+    {
+      "kind": "compare",
+      "caller": "entity_decode",
+      "samples": 9
+    },
+    {
+      "kind": "compare",
+      "caller": "mutation_validation",
+      "samples": 59
+    },
+    {
+      "kind": "compare",
+      "caller": "overlay_insert",
+      "samples": 53
+    },
+    {
+      "kind": "compare",
+      "caller": "overlay_point",
+      "samples": 297
+    },
+    {
+      "kind": "compare",
+      "caller": "overlay_rebase",
+      "samples": 236
+    },
+    {
+      "kind": "compare",
+      "caller": "protobuf",
+      "samples": 40
+    },
+    {
+      "kind": "copy",
+      "caller": "changelog_successor",
+      "samples": 100
+    },
+    {
+      "kind": "copy",
+      "caller": "entity_decode",
+      "samples": 45
+    },
+    {
+      "kind": "copy",
+      "caller": "journal_encode",
+      "samples": 60
+    },
+    {
+      "kind": "copy",
+      "caller": "mutation_validation",
+      "samples": 5
+    },
+    {
+      "kind": "copy",
+      "caller": "overlay_point",
+      "samples": 6
+    },
+    {
+      "kind": "copy",
+      "caller": "overlay_rebase",
+      "samples": 68
+    },
+    {
+      "kind": "copy",
+      "caller": "protobuf",
+      "samples": 205
+    }
+  ],
+  "limits": [
+    "Matching debug symbols resolve copy/comparison CPU in the existing capture; no production performance result is derived.",
+    "Inclusive caller counts overlap and must not be added.",
+    "Sample counts identify CPU locations, not copied byte sizes, allocation counts, physical reads, or the cause of wait-site intervals.",
+    "Some previously resolved daemon symbols become unresolved under the temporary symbol root; caller totals from this view must not replace the original complete CPU attribution.",
+    "Direct callers can contain inlined code; this does not prove which value representation or move is responsible."
+  ]
+}
