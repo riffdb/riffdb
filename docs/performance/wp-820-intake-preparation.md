@@ -666,6 +666,37 @@ Same-run PostgreSQL qualification is reserved for a retained candidate.
 Full numeric cells and resource scopes are recorded in
 `release/evidence/wp-820/private-batch-owner-ab-20261001.json`.
 
+## Mutation ownership census (2026-10-01)
+
+Frozen diagnostic `e4825074` uses base `bbc4d6d01` and fixed-size, thread-local
+numeric counters. Its measured writer records 253,396 successful applications,
+exactly matching the harness's complete-generation command count. The exclusive
+run completes with 100 sharing checks and no competing workload. Probes are
+removed at `0922ffa0`; production paths are restored byte-for-byte.
+
+| Writer operation | Per complete-generation command |
+|---|---:|
+| Receipt mutation clones | 0 |
+| Composite mutation clones | 0 |
+| Journal mutation clones | 0.0631 |
+| Journal clone key/value bytes | 1.83 / 1.20 |
+| Journal clone elapsed interval | 0.00734 us |
+| Receipt mutation constructors | 14.7726 |
+| Receipt constructor key/value bytes | 896.49 / 5,684.64 |
+| Composite mutation constructors | 8.9889 |
+| Composite constructor key/value bytes | 525.03 / 4,590.01 |
+| Journal mutation constructors | 10.4689 |
+| Journal constructor key/value bytes | 568.28 / 8,250.85 |
+
+The clone intervals are elapsed diagnostic time, not CPU measurements or
+production comparisons. Constructor bytes describe owned content; the census
+alone does not establish a fresh allocation or its independent CPU cost.
+Sharing mutation clone storage is not selected: receipt and composite clones
+are absent, and journal clone volume is negligible. Constructor copying and
+private command-state moves remain distinct opportunities. Sanitized counts
+and coverage limits are in
+`release/evidence/wp-820/payload-ownership-counts-20261001.json`.
+
 ## Review status
 
 Restored production main passes full `./scripts/ci-all` at `dd2cc540`; the

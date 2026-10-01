@@ -1,0 +1,55 @@
+{
+  "schema": "riffdb-wp820-payload-ownership-diagnostic-v1",
+  "base_commit": "bbc4d6d01b1af1e4d394f9343cc8758821b3bdb1",
+  "diagnostic_commit": "e48250741f12d86ba098cca65a00391108ba2804",
+  "commands": 253396,
+  "complete_generation_count_matches": true,
+  "exclusive_monitor_checks": 100,
+  "metrics": {
+    "writer:authoritative_receipt": {
+      "clone_calls_per_command": 0.0,
+      "clone_key_bytes_per_command": 0.0,
+      "clone_value_bytes_per_command": 0.0,
+      "clone_elapsed_us_per_command": 0.0,
+      "constructor_calls_per_command": 14.77257730982336,
+      "constructor_key_bytes_per_command": 896.4876833099181,
+      "constructor_value_bytes_per_command": 5684.637077933353,
+      "constructor_nonempty_buffers_per_command": 29.529266444616333
+    },
+    "writer:composite_mutation": {
+      "clone_calls_per_command": 0.0,
+      "clone_key_bytes_per_command": 0.0,
+      "clone_value_bytes_per_command": 0.0,
+      "clone_elapsed_us_per_command": 0.0,
+      "constructor_calls_per_command": 8.98885933479613,
+      "constructor_key_bytes_per_command": 525.0281930259357,
+      "constructor_value_bytes_per_command": 4590.007387646214,
+      "constructor_nonempty_buffers_per_command": 17.96988113466669
+    },
+    "writer:journal": {
+      "clone_calls_per_command": 0.06313043615526685,
+      "clone_key_bytes_per_command": 1.8307826485027388,
+      "clone_value_bytes_per_command": 1.1994782869500702,
+      "clone_elapsed_us_per_command": 0.007343565012865238,
+      "constructor_calls_per_command": 10.46888664383021,
+      "constructor_key_bytes_per_command": 568.283145748157,
+      "constructor_value_bytes_per_command": 8250.848691376345,
+      "constructor_nonempty_buffers_per_command": 20.92993575273485
+    }
+  },
+  "limitations": [
+    "Clone intervals are elapsed time in an intrusive profiling build, not CPU or production performance.",
+    "Constructor byte and nonempty-buffer counts describe owned content; they do not prove a fresh allocation.",
+    "Probe scope is three mutation representations and does not count all writer allocations or copies.",
+    "Fixed-size thread-local numeric counters include no application content; only the matched process generation is normalized."
+  ],
+  "recorded_at": "2026-10-01",
+  "machine": {
+    "vcpus": 8,
+    "cpu": "AMD EPYC 9B14"
+  },
+  "build": "profiling with frame pointers; opt-in numeric payload counters",
+  "clients": 32,
+  "load": "write_only",
+  "decision": "Do not replace mutation clone storage with shared ownership: receipt and composite mutations have no writer clones; journal clone volume is negligible. Constructor counts do not establish independent CPU cost."
+}
