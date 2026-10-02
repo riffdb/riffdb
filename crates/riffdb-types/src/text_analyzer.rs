@@ -137,6 +137,9 @@ impl Iterator for TextAnalyzerTermsV1<'_> {
     }
 }
 
+// Exhaustive non-durable ownership inventories for exact-provider admission.
+crate::inspect_owned_capacity_copy_v1!(TextAnalyzerV1);
+
 #[cfg(test)]
 mod tests {
     use super::TEXT_ANALYZER_V1_UNICODE_VERSION;

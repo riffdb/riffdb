@@ -2197,3 +2197,6 @@ pub use application_lock::{
     CONTRACT_BUNDLE_ARTIFACT_PATH, EXACT_MANIFEST_ARTIFACT_PATH, GeneratedApplicationArtifact,
     GeneratedApplicationArtifactKind, LockedApplicationMigration, MAX_APPLICATION_LOCK_BYTES,
 };
+
+#[cfg(test)]
+mod owned_capacity_tests;

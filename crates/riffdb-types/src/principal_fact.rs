@@ -51,6 +51,10 @@ pub struct CapabilityPrincipalFactV1 {
     value: CanonicalValue,
     encoded_value: Arc<[u8]>,
 }
+crate::inspect_owned_capacity_struct_v1!(CapabilityPrincipalFactV1 {
+    owned: [name, value, encoded_value],
+    inline: []
+});
 
 impl CapabilityPrincipalFactV1 {
     /// Constructs one scalar fact or one canonical bounded scalar set.
@@ -117,6 +121,10 @@ pub struct CapabilityPrincipalFactsV1 {
     facts: Arc<[CapabilityPrincipalFactV1]>,
     canonical_bytes: Arc<[u8]>,
 }
+crate::inspect_owned_capacity_struct_v1!(CapabilityPrincipalFactsV1 {
+    owned: [facts, canonical_bytes],
+    inline: []
+});
 
 impl CapabilityPrincipalFactsV1 {
     /// Sorts facts by name, rejects duplicates, and enforces the complete byte ceiling.

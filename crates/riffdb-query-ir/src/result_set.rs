@@ -268,3 +268,6 @@ const fn window_parts(window: ResultSetWindowV1) -> (u32, NonZeroU16) {
         ResultSetWindowV1::Ordinal { offset, limit } => (offset, limit),
     }
 }
+
+// Exhaustive non-durable ownership inventories for exact-provider admission.
+riffdb_types::inspect_owned_capacity_copy_v1!(ResultSetOutputShapeV1);

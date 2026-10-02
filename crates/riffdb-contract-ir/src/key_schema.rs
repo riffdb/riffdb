@@ -986,6 +986,21 @@ impl<'a> KeyCursor<'a> {
     }
 }
 
+// Exhaustive non-durable ownership inventories for exact-provider admission.
+riffdb_types::inspect_owned_capacity_struct_v1!(KeySchema {
+    owned: [components, entity_key_schema],
+    inline: [purpose, maximum_encoded_bytes]
+});
+
+riffdb_types::inspect_owned_capacity_copy_v1!(KeyPurpose);
+
+riffdb_types::inspect_owned_capacity_struct_v1!(KeyComponentSchema {
+    owned: [value_type, enum_variants],
+    inline: [codec, maximum_payload_bytes]
+});
+
+riffdb_types::inspect_owned_capacity_copy_v1!(KeyComponentCodecV1);
+
 #[cfg(test)]
 mod tests {
     use super::*;

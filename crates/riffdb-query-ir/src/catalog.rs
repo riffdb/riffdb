@@ -1242,6 +1242,25 @@ fn invariant(summary: &'static str) -> QueryDiagnostics {
     ))
 }
 
+// Exhaustive non-durable ownership inventories for exact-provider admission.
+riffdb_types::inspect_owned_capacity_struct_v1!(OperationalIndexDescriptorV1 {
+    owned: [
+        contract,
+        entity,
+        index,
+        components,
+        partition_key_schema,
+        entity_key_schema,
+        index_key_schema
+    ],
+    inline: [entity_id, index_id]
+});
+
+riffdb_types::inspect_owned_capacity_struct_v1!(OperationalIndexComponentV1 {
+    owned: [field, physical],
+    inline: [field_id, encoding, physical_start]
+});
+
 #[cfg(test)]
 mod operational_descriptor_tests {
     use riffdb_contract_compiler::compile_contract_source;

@@ -537,6 +537,13 @@ pub enum LongPatternErrorV1 {
     InvalidEscape,
 }
 
+// Exhaustive non-durable ownership inventories for exact-provider admission.
+crate::inspect_owned_capacity_copy_v1!(LongPatternOperatorV1);
+
+crate::inspect_owned_capacity_copy_v1!(LongPatternProfileV1);
+
+crate::inspect_owned_capacity_copy_v1!(LongPatternBoundsV1);
+
 #[cfg(test)]
 mod tests {
     use super::*;

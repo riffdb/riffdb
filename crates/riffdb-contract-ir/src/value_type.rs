@@ -543,6 +543,84 @@ impl FieldSchema {
     }
 }
 
+// Exhaustive non-durable ownership inventories for exact-provider admission.
+riffdb_types::inspect_owned_capacity_tuple_v1!(ValueType, ValueTypeKind);
+
+impl riffdb_types::InspectOwnedCapacityV1 for ValueTypeKind {
+    fn inspect_owned_capacity(
+        &self,
+        inspection: &mut riffdb_types::OwnedCapacityInspectionV1,
+    ) -> Result<(), riffdb_types::OwnedCapacityInspectionErrorV1> {
+        match self {
+            Self::Bool => {}
+            Self::I64 => {}
+            Self::U64 => {}
+            Self::Decimal(field_0) => {
+                inspection.inline(field_0)?;
+            }
+            Self::Money(field_0) => {
+                inspection.inline(field_0)?;
+            }
+            Self::String(field_0) => {
+                inspection.inline(field_0)?;
+            }
+            Self::Bytes(field_0) => {
+                inspection.inline(field_0)?;
+            }
+            Self::Timestamp => {}
+            Self::Date => {}
+            Self::Uuid => {}
+            Self::Enum(field_0) => {
+                inspection.inline(field_0)?;
+            }
+            Self::Optional(field_0) => {
+                inspection.visit(field_0)?;
+            }
+            Self::List { element, maximum } => {
+                inspection.visit(element)?;
+                inspection.inline(maximum)?;
+            }
+            Self::Record(field_0) => {
+                inspection.visit(field_0)?;
+            }
+            Self::Vector(field_0) => {
+                inspection.visit(field_0)?;
+            }
+        }
+        Ok(())
+    }
+}
+
+impl riffdb_types::InspectOwnedCapacityV1 for RecordTypeRef {
+    fn inspect_owned_capacity(
+        &self,
+        inspection: &mut riffdb_types::OwnedCapacityInspectionV1,
+    ) -> Result<(), riffdb_types::OwnedCapacityInspectionErrorV1> {
+        match self {
+            Self::Entity(field_0) => {
+                inspection.inline(field_0)?;
+            }
+            Self::Event(field_0) => {
+                inspection.inline(field_0)?;
+            }
+            Self::CommandInput(field_0) => {
+                inspection.inline(field_0)?;
+            }
+            Self::CommandOutcome {
+                command_id,
+                outcome_id,
+            } => {
+                inspection.inline(command_id)?;
+                inspection.inline(outcome_id)?;
+            }
+            Self::ProjectionResult(field_0) => {
+                inspection.inline(field_0)?;
+            }
+        }
+        Ok(())
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -452,3 +452,27 @@ fn binding_identity(
     bytes.extend_from_slice(&plan.to_canonical_bytes());
     hash_query_plan(&bytes)
 }
+
+// Exhaustive non-durable ownership inventories for exact-provider admission.
+riffdb_types::inspect_owned_capacity_struct_v1!(CompiledExactTextResultSetV1 {
+    owned: [
+        binding,
+        metadata,
+        needle_parameter,
+        limit_parameter,
+        offset_parameter,
+        filter,
+        canonical_bytes
+    ],
+    inline: [operator, order, cost, identity]
+});
+
+riffdb_types::inspect_owned_capacity_struct_v1!(ExactTextResultSetBindingV1 {
+    owned: [query_name, family, plan],
+    inline: [identity]
+});
+
+riffdb_types::inspect_owned_capacity_struct_v1!(ExactTextFilterBindingV1 {
+    owned: [parameter],
+    inline: [field]
+});

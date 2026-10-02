@@ -206,3 +206,9 @@ impl fmt::Display for CompiledTokenizedTextResultSetErrorV1 {
 }
 
 impl Error for CompiledTokenizedTextResultSetErrorV1 {}
+
+// Exhaustive non-durable ownership inventories for exact-provider admission.
+riffdb_types::inspect_owned_capacity_struct_v1!(CompiledTokenizedTextResultSetV1 {
+    owned: [operation, plan, metadata, query_parameter, canonical_bytes],
+    inline: [cost, identity]
+});

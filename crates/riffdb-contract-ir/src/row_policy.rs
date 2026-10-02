@@ -1086,6 +1086,96 @@ fn decode_operand(
     Ok(RowPolicyOperandV1::new(source, value_type))
 }
 
+// Exhaustive non-durable ownership inventories for exact-provider admission.
+riffdb_types::inspect_owned_capacity_struct_v1!(RowPolicyPlanV1 {
+    owned: [name, rules],
+    inline: [entity]
+});
+
+riffdb_types::inspect_owned_capacity_struct_v1!(RowPolicyRuleV1 {
+    owned: [nodes],
+    inline: [operation, root]
+});
+
+riffdb_types::inspect_owned_capacity_copy_v1!(RowPolicyOperationV1);
+
+impl riffdb_types::InspectOwnedCapacityV1 for RowPolicyExpressionNodeV1 {
+    fn inspect_owned_capacity(
+        &self,
+        inspection: &mut riffdb_types::OwnedCapacityInspectionV1,
+    ) -> Result<(), riffdb_types::OwnedCapacityInspectionErrorV1> {
+        match self {
+            Self::Operand(field_0) => {
+                inspection.visit(field_0)?;
+            }
+            Self::Equal { left, right } => {
+                inspection.inline(left)?;
+                inspection.inline(right)?;
+            }
+            Self::NotEqual { left, right } => {
+                inspection.inline(left)?;
+                inspection.inline(right)?;
+            }
+            Self::Not { value } => {
+                inspection.inline(value)?;
+            }
+            Self::And { left, right } => {
+                inspection.inline(left)?;
+                inspection.inline(right)?;
+            }
+            Self::Or { left, right } => {
+                inspection.inline(left)?;
+                inspection.inline(right)?;
+            }
+            Self::In { needle, haystack } => {
+                inspection.inline(needle)?;
+                inspection.inline(haystack)?;
+            }
+            Self::IsNull { value, negated } => {
+                inspection.inline(value)?;
+                inspection.inline(negated)?;
+            }
+            Self::IndexedExists {
+                target_entity,
+                index_id,
+                arguments,
+            } => {
+                inspection.inline(target_entity)?;
+                inspection.inline(index_id)?;
+                inspection.visit(arguments)?;
+            }
+        }
+        Ok(())
+    }
+}
+
+riffdb_types::inspect_owned_capacity_struct_v1!(RowPolicyOperandV1 {
+    owned: [source, value_type],
+    inline: []
+});
+
+impl riffdb_types::InspectOwnedCapacityV1 for RowPolicyValueSourceV1 {
+    fn inspect_owned_capacity(
+        &self,
+        inspection: &mut riffdb_types::OwnedCapacityInspectionV1,
+    ) -> Result<(), riffdb_types::OwnedCapacityInspectionErrorV1> {
+        match self {
+            Self::RowField(field_0) => {
+                inspection.inline(field_0)?;
+            }
+            Self::PrincipalId => {}
+            Self::PrincipalKind => {}
+            Self::PrincipalFact(field_0) => {
+                inspection.visit(field_0)?;
+            }
+            Self::Constant(field_0) => {
+                inspection.visit(field_0)?;
+            }
+        }
+        Ok(())
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

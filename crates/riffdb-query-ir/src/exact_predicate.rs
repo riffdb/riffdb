@@ -1723,3 +1723,137 @@ impl<'a> Reader<'a> {
             .ok_or(ExactPredicateProgramErrorV1::InvalidEncoding)
     }
 }
+
+// Exhaustive non-durable ownership inventories for exact-provider admission.
+riffdb_types::inspect_owned_capacity_struct_v1!(ExactPredicateProgramV1 {
+    owned: [predicate, orders, members, canonical_bytes],
+    inline: [
+        presence_parameter_count,
+        exact_count,
+        max_offset,
+        max_limit,
+        provider_requirement,
+        identity
+    ]
+});
+
+impl riffdb_types::InspectOwnedCapacityV1 for ExactPredicateNodeV1 {
+    fn inspect_owned_capacity(
+        &self,
+        inspection: &mut riffdb_types::OwnedCapacityInspectionV1,
+    ) -> Result<(), riffdb_types::OwnedCapacityInspectionErrorV1> {
+        match self {
+            Self::Leaf(field_0) => {
+                inspection.visit(field_0)?;
+            }
+            Self::And(field_0) => {
+                inspection.visit(field_0)?;
+            }
+            Self::Or(field_0) => {
+                inspection.visit(field_0)?;
+            }
+            Self::When {
+                presence_ordinal,
+                child,
+            } => {
+                inspection.inline(presence_ordinal)?;
+                inspection.visit(child)?;
+            }
+        }
+        Ok(())
+    }
+}
+
+riffdb_types::inspect_owned_capacity_struct_v1!(ExactPredicateLeafV1 {
+    owned: [],
+    inline: [field, operator, profile, value]
+});
+
+riffdb_types::inspect_owned_capacity_copy_v1!(ExactPredicateOperatorV1);
+
+riffdb_types::inspect_owned_capacity_copy_v1!(ExactComparisonProfileV1);
+
+riffdb_types::inspect_owned_capacity_copy_v1!(ExactValueSlotV1);
+
+riffdb_types::inspect_owned_capacity_struct_v1!(ExactOrderProgramV1 {
+    owned: [terms],
+    inline: []
+});
+
+riffdb_types::inspect_owned_capacity_copy_v1!(ExactOrderTermV1);
+
+riffdb_types::inspect_owned_capacity_copy_v1!(ExactProviderRequirementV1);
+
+riffdb_types::inspect_owned_capacity_copy_v1!(ExactPredicateFamilyMemberV1);
+
+riffdb_types::inspect_owned_capacity_struct_v1!(ExactPredicateProgramV2 {
+    owned: [base, orders, canonical_bytes],
+    inline: [identity]
+});
+
+riffdb_types::inspect_owned_capacity_struct_v1!(ExactOrderProgramV2 {
+    owned: [terms],
+    inline: []
+});
+
+riffdb_types::inspect_owned_capacity_copy_v1!(ExactOrderTermV2);
+
+#[cfg(test)]
+mod ownership_tests {
+    use super::*;
+    use riffdb_types::OwnedCapacityInspectionV1;
+
+    // req: OQ-040
+    #[test]
+    fn provider_capacity_inspection_counts_program_slack_without_changing_identity() {
+        let mut program = ExactPredicateProgramV1::new(
+            ExactPredicateNodeV1::Leaf(
+                ExactPredicateLeafV1::new(
+                    FieldId::new(1).unwrap(),
+                    ExactPredicateOperatorV1::Equal,
+                    ExactComparisonProfileV1::U64,
+                    Some(ExactValueSlotV1::Scalar(0)),
+                )
+                .unwrap(),
+            ),
+            vec![
+                ExactOrderProgramV1::new(vec![ExactOrderTermV1::new(
+                    FieldId::new(1).unwrap(),
+                    ExactComparisonProfileV1::U64,
+                    ExactOrderDirectionV1::Ascending,
+                    true,
+                )])
+                .unwrap(),
+            ],
+            0,
+            true,
+            100,
+            100,
+            ExactProviderRequirementV1::new(
+                ProjectionProviderPolicyModeV1::PartitionAligned,
+                1000,
+                100000,
+                4096,
+            )
+            .unwrap(),
+        )
+        .unwrap();
+        let before = OwnedCapacityInspectionV1::inspect(&program)
+            .unwrap()
+            .unshared_bytes();
+        let canonical = program.canonical_bytes().to_vec();
+        let identity = program.identity();
+        program.canonical_bytes.reserve_exact(8192);
+        program.orders[0].terms.reserve_exact(4096);
+        let after = OwnedCapacityInspectionV1::inspect(&program)
+            .unwrap()
+            .unshared_bytes();
+        assert!(after >= before + 8192 + 4096 * std::mem::size_of::<ExactOrderTermV1>() as u64);
+        assert_eq!(program.canonical_bytes(), canonical);
+        assert_eq!(program.identity(), identity);
+        assert_eq!(
+            ExactPredicateProgramV1::from_canonical_bytes(&canonical).unwrap(),
+            program
+        );
+    }
+}

@@ -2715,3 +2715,43 @@ fn artifact_limit() -> QueryDiagnostics {
         None,
     ))
 }
+
+// Exhaustive non-durable ownership inventories for exact-provider admission.
+riffdb_types::inspect_owned_capacity_struct_v1!(ExactContractIdentity {
+    owned: [lineage],
+    inline: [version, bundle_hash]
+});
+
+riffdb_types::inspect_owned_capacity_struct_v1!(ResolvedQueryV1 {
+    owned: [
+        identity,
+        name,
+        bindings,
+        candidates,
+        aggregates,
+        secret_outputs,
+        schemas,
+        source_map,
+        canonical_bytes
+    ],
+    inline: [projected, relational_operators]
+});
+
+riffdb_types::inspect_owned_capacity_struct_v1!(BindingSymbol {
+    owned: [name, entity_name],
+    inline: [entity_id, cardinality]
+});
+
+riffdb_types::inspect_owned_capacity_struct_v1!(SecretOutputRequirement {
+    owned: [binding, entity, field, result_path],
+    inline: [entity_id, field_id, declaration_span]
+});
+
+riffdb_types::inspect_owned_capacity_tuple_v1!(QuerySourceMap, Vec<SourceMapEntry>);
+
+riffdb_types::inspect_owned_capacity_struct_v1!(SourceMapEntry {
+    owned: [symbolic_path],
+    inline: [span, kind]
+});
+
+riffdb_types::inspect_owned_capacity_copy_v1!(SourceSymbolKind);

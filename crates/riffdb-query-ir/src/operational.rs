@@ -634,3 +634,48 @@ fn write_strings(output: &mut Vec<u8>, values: &[String]) -> Option<()> {
     }
     Some(())
 }
+
+// Exhaustive non-durable ownership inventories for exact-provider admission.
+riffdb_types::inspect_owned_capacity_struct_v1!(OperationalAggregateV1 {
+    owned: [
+        name,
+        source_binding,
+        source_entity,
+        group_keys,
+        measures,
+        maximum_groups
+    ],
+    inline: [execution_budget]
+});
+
+riffdb_types::inspect_owned_capacity_struct_v1!(OperationalAggregateGroupKeyV1 {
+    owned: [field, value_type],
+    inline: []
+});
+
+riffdb_types::inspect_owned_capacity_struct_v1!(OperationalAggregateMeasureV1 {
+    owned: [alias, input_field, result_type],
+    inline: [function]
+});
+
+riffdb_types::inspect_owned_capacity_copy_v1!(OperationalAggregateFunctionV1);
+
+riffdb_types::inspect_owned_capacity_copy_v1!(AggregateExecutionBudgetV1);
+
+riffdb_types::inspect_owned_capacity_struct_v1!(OperationalQueryFamilyV1 {
+    owned: [
+        surface,
+        presence_parameters,
+        members,
+        authorization_union,
+        canonical_bytes
+    ],
+    inline: [maximum_cost, identity]
+});
+
+riffdb_types::inspect_owned_capacity_struct_v1!(OperationalPlanMemberV1 {
+    owned: [program],
+    inline: [presence_mask]
+});
+
+riffdb_types::inspect_owned_capacity_copy_v1!(OperationalQueryFamilyIdentity);

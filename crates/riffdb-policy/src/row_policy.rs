@@ -2050,6 +2050,22 @@ const fn hex_nibble(value: u8) -> Option<u8> {
     }
 }
 
+// Exhaustive non-durable ownership inventories for exact-provider admission.
+riffdb_types::inspect_owned_capacity_struct_v1!(AuthorizedQueryRowPolicyContextV1 {
+    owned: [bundle, authority, principal, policies],
+    inline: []
+});
+
+riffdb_types::inspect_owned_capacity_struct_v1!(AuthorizedEntityPolicyV1 {
+    owned: [policy, relationships, primary_key_fields, primary_key],
+    inline: []
+});
+
+riffdb_types::inspect_owned_capacity_struct_v1!(AuthorizedRelationshipPlanV1 {
+    owned: [index_schema, partition_schema],
+    inline: [target_entity, index_id, partition_width]
+});
+
 #[cfg(test)]
 mod projected_admission_tests {
     use super::*;

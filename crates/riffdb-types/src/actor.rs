@@ -75,6 +75,8 @@ macro_rules! bounded_text_type {
         #[derive(Clone, Eq, Hash, Ord, PartialEq, PartialOrd)]
         pub struct $name(String);
 
+        crate::inspect_owned_capacity_tuple_v1!($name, String);
+
         impl $name {
             /// Validates and constructs the component without normalizing it.
             pub fn new(value: impl Into<String>) -> Result<Self, BoundedTextError> {
@@ -239,6 +241,9 @@ impl fmt::Debug for AdmittedActorContext {
         formatter.write_str("AdmittedActorContext([REDACTED])")
     }
 }
+
+// Exhaustive non-durable ownership inventories for exact-provider admission.
+crate::inspect_owned_capacity_copy_v1!(ActorKind);
 
 #[cfg(test)]
 mod tests {

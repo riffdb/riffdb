@@ -27,6 +27,7 @@ macro_rules! nonzero_id {
         $(#[$meta])*
         #[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
         pub struct $name($nonzero);
+        crate::inspect_owned_capacity_tuple_v1!($name, $nonzero);
 
         impl $name {
             /// Creates an identifier from its numeric representation.
@@ -300,6 +301,7 @@ macro_rules! hash_id {
         $(#[$meta])*
         #[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
         pub struct $name([u8; 32]);
+        crate::inspect_owned_capacity_tuple_v1!($name, [u8; 32]);
 
         impl $name {
             /// Creates a hash identifier from its 32 digest bytes.
@@ -620,6 +622,7 @@ macro_rules! uuid_v7_id {
         $(#[$meta])*
         #[derive(Clone, Copy, Eq, Hash, Ord, PartialEq, PartialOrd)]
         pub struct $name([u8; 16]);
+        crate::inspect_owned_capacity_tuple_v1!($name, [u8; 16]);
 
         impl $name {
             /// Assembles a UUIDv7 from an explicit 48-bit Unix-millisecond value and random bytes.
@@ -763,6 +766,7 @@ impl fmt::Display for TextIdError {
 /// delegates all four to the same `str`.
 #[derive(Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
 pub struct ContractLineage(Arc<str>);
+crate::inspect_owned_capacity_tuple_v1!(ContractLineage, Arc<str>);
 
 impl ContractLineage {
     /// Validates and creates a contract lineage without normalizing its text.
@@ -788,6 +792,7 @@ impl ContractLineage {
 /// Checked ASCII query-module name.
 #[derive(Clone, Eq, Hash, Ord, PartialEq, PartialOrd)]
 pub struct QueryModuleName(String);
+crate::inspect_owned_capacity_tuple_v1!(QueryModuleName, String);
 
 impl QueryModuleName {
     /// Maximum encoded bytes in one query-module name.
@@ -839,6 +844,7 @@ impl fmt::Display for QueryModuleName {
 /// Checked exact name of one deployed application query.
 #[derive(Clone, Eq, Hash, Ord, PartialEq, PartialOrd)]
 pub struct QueryOperationName(String);
+crate::inspect_owned_capacity_tuple_v1!(QueryOperationName, String);
 
 impl QueryOperationName {
     /// Maximum encoded bytes in one query operation name.
@@ -890,6 +896,7 @@ impl fmt::Display for QueryOperationName {
 /// Checked exact name of one compiler-owned row policy.
 #[derive(Clone, Eq, Hash, Ord, PartialEq, PartialOrd)]
 pub struct RowPolicyName(String);
+crate::inspect_owned_capacity_tuple_v1!(RowPolicyName, String);
 
 impl RowPolicyName {
     /// Maximum encoded bytes in one row-policy name.
@@ -941,6 +948,7 @@ impl fmt::Display for RowPolicyName {
 /// Checked exact name of one reactive application operation.
 #[derive(Clone, Eq, Hash, Ord, PartialEq, PartialOrd)]
 pub struct ReactiveOperationName(String);
+crate::inspect_owned_capacity_tuple_v1!(ReactiveOperationName, String);
 
 impl ReactiveOperationName {
     /// Maximum encoded bytes in one reactive operation name.
@@ -998,6 +1006,7 @@ impl fmt::Display for ContractLineage {
 /// A bounded ASCII environment slug.
 #[derive(Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
 pub struct Environment(Arc<str>);
+crate::inspect_owned_capacity_tuple_v1!(Environment, Arc<str>);
 
 impl Environment {
     /// Validates and creates an environment slug without changing its spelling.
@@ -1037,6 +1046,7 @@ impl fmt::Display for Environment {
 /// A bounded exact tenant identifier.
 #[derive(Clone, Eq, Hash, Ord, PartialEq, PartialOrd)]
 pub struct TenantId(String);
+crate::inspect_owned_capacity_tuple_v1!(TenantId, String);
 
 impl TenantId {
     /// Validates and creates a tenant identifier without normalizing its text.
@@ -1119,6 +1129,7 @@ fn validate_text_id(value: &str, maximum: usize) -> Result<(), TextIdError> {
 /// A bounded stable principal identifier.
 #[derive(Clone, Eq, Hash, Ord, PartialEq, PartialOrd)]
 pub struct ActorId(Arc<str>);
+crate::inspect_owned_capacity_tuple_v1!(ActorId, Arc<str>);
 
 impl ActorId {
     /// Validates and creates an actor identifier.
@@ -1144,6 +1155,7 @@ impl fmt::Debug for ActorId {
 /// A bounded caller-provided key for uncertainty recovery.
 #[derive(Clone, Eq, Hash, Ord, PartialEq, PartialOrd)]
 pub struct IdempotencyKey(String);
+crate::inspect_owned_capacity_tuple_v1!(IdempotencyKey, String);
 
 impl IdempotencyKey {
     /// Validates and creates an idempotency key.
@@ -1248,6 +1260,7 @@ macro_rules! bounded_key {
         $(#[$meta])*
         #[derive(Clone, Eq, Hash, Ord, PartialEq, PartialOrd)]
         pub struct $name(Vec<u8>);
+        crate::inspect_owned_capacity_tuple_v1!($name, Vec<u8>);
 
         impl $name {
             /// Validates a key's purpose/version envelope and hard size bounds.
@@ -1380,6 +1393,22 @@ impl DigestKey {
 impl fmt::Debug for DigestKey {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         formatter.write_str("DigestKey([REDACTED])")
+    }
+}
+
+// Exhaustive non-durable ownership inventories for exact-provider admission.
+impl crate::InspectOwnedCapacityV1 for TenantScope {
+    fn inspect_owned_capacity(
+        &self,
+        inspection: &mut crate::OwnedCapacityInspectionV1,
+    ) -> Result<(), crate::OwnedCapacityInspectionErrorV1> {
+        match self {
+            Self::Global => {}
+            Self::Tenant(field_0) => {
+                inspection.visit(field_0)?;
+            }
+        }
+        Ok(())
     }
 }
 

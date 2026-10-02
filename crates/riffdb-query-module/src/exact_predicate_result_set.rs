@@ -349,3 +349,32 @@ fn write_bytes(output: &mut Vec<u8>, value: &[u8]) -> Result<(), QueryModuleErro
     output.extend_from_slice(value);
     Ok(())
 }
+
+// Exhaustive non-durable ownership inventories for exact-provider admission.
+riffdb_types::inspect_owned_capacity_struct_v1!(CompiledExactPredicateResultSetV1 {
+    owned: [
+        name,
+        program,
+        metadata,
+        value_parameters,
+        presence_parameters,
+        limit_parameter,
+        offset_parameter,
+        canonical_bytes
+    ],
+    inline: [identity]
+});
+
+riffdb_types::inspect_owned_capacity_struct_v1!(CompiledNullableExactPredicateResultSetV1 {
+    owned: [
+        name,
+        program,
+        metadata,
+        value_parameters,
+        presence_parameters,
+        limit_parameter,
+        offset_parameter,
+        canonical_bytes
+    ],
+    inline: [identity]
+});

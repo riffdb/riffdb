@@ -178,6 +178,10 @@ pub struct CanonicalVector {
     /// The f32 components in declaration order, in canonical form.
     components: Vec<f32>,
 }
+crate::inspect_owned_capacity_struct_v1!(CanonicalVector {
+    owned: [components],
+    inline: []
+});
 
 impl CanonicalVector {
     /// Creates a vector from components, enforcing canonical form.
@@ -324,6 +328,9 @@ impl EmbeddingMetadata {
         &self.model_version
     }
 }
+
+// Exhaustive non-durable ownership inventories for exact-provider admission.
+crate::inspect_owned_capacity_copy_v1!(VectorDimension);
 
 #[cfg(test)]
 mod tests {

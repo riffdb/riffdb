@@ -356,3 +356,21 @@ fn check_candidate_bound(
     }
     Ok(())
 }
+
+// Exhaustive non-durable ownership inventories for exact-provider admission.
+riffdb_types::inspect_owned_capacity_struct_v1!(CandidateBindingV1 {
+    owned: [name, root_entity, root_key, sources, refusal_outcome],
+    inline: [operator, positive_source_count, maximum_distinct_keys]
+});
+
+riffdb_types::inspect_owned_capacity_copy_v1!(CandidateSetOperatorV1);
+
+riffdb_types::inspect_owned_capacity_struct_v1!(CandidateSourceV1 {
+    owned: [entity, projected_key, access, long_pattern],
+    inline: []
+});
+
+riffdb_types::inspect_owned_capacity_struct_v1!(LongPatternCandidateV1 {
+    owned: [field, pattern_parameter, descriptor],
+    inline: [operator, profile, bounds]
+});

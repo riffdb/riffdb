@@ -3595,6 +3595,9 @@ impl CommandInputSchema {
     }
 }
 
+// Exhaustive non-durable ownership inventories for exact-provider admission.
+riffdb_types::inspect_owned_capacity_copy_v1!(IndexFieldEncodingV1);
+
 #[cfg(test)]
 mod tests {
     use super::*;

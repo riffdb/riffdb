@@ -1892,6 +1892,12 @@ impl fmt::Debug for Decision {
     }
 }
 
+// Exhaustive non-durable ownership inventories for exact-provider admission.
+riffdb_types::inspect_owned_capacity_struct_v1!(AuthorizedRowPolicyAuthority {
+    owned: [principal, grant],
+    inline: []
+});
+
 #[cfg(test)]
 mod tests {
     use std::num::NonZeroU16;

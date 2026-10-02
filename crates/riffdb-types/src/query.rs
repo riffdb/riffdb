@@ -132,6 +132,9 @@ impl QueryCostVectorV1 {
     }
 }
 
+// Exhaustive non-durable ownership inventories for exact-provider admission.
+crate::inspect_owned_capacity_copy_v1!(QueryCostVectorV1);
+
 #[cfg(test)]
 mod tests {
     use super::*;

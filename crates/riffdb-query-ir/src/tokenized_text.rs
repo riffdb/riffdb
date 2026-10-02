@@ -267,3 +267,26 @@ impl fmt::Display for TokenizedTextPlanErrorV1 {
 }
 
 impl Error for TokenizedTextPlanErrorV1 {}
+
+// Exhaustive non-durable ownership inventories for exact-provider admission.
+riffdb_types::inspect_owned_capacity_struct_v1!(TokenizedTextPlanV1 {
+    owned: [fields, descriptor],
+    inline: [
+        entity,
+        index,
+        index_identity,
+        analyzer,
+        kind,
+        ranking,
+        max_terms,
+        max_candidates,
+        max_results,
+        span
+    ]
+});
+
+riffdb_types::inspect_owned_capacity_copy_v1!(TokenizedTextPlanFieldV1);
+
+riffdb_types::inspect_owned_capacity_copy_v1!(TokenizedMatchKindV1);
+
+riffdb_types::inspect_owned_capacity_copy_v1!(TokenizedRankingV1);

@@ -392,6 +392,15 @@ impl From<DecimalError> for MoneyError {
     }
 }
 
+// Exhaustive non-durable ownership inventories for exact-provider admission.
+crate::inspect_owned_capacity_copy_v1!(DecimalSpec);
+
+crate::inspect_owned_capacity_copy_v1!(CurrencyCode);
+
+crate::inspect_owned_capacity_copy_v1!(Decimal);
+
+crate::inspect_owned_capacity_copy_v1!(Money);
+
 #[cfg(test)]
 mod tests {
     use super::*;

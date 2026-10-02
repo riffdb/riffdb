@@ -1773,6 +1773,19 @@ fn append_bytes(output: &mut Vec<u8>, value: &[u8]) {
     output.extend_from_slice(value);
 }
 
+// Exhaustive non-durable ownership inventories for exact-provider admission.
+crate::inspect_owned_capacity_struct_v1!(CapabilityRowPolicyGrantV1 {
+    owned: [principal_facts, bindings],
+    inline: [application_role_hash]
+});
+
+crate::inspect_owned_capacity_struct_v1!(CapabilityRowPolicyBindingV1 {
+    owned: [lineage, policy_name, operations],
+    inline: [entity_type]
+});
+
+crate::inspect_owned_capacity_copy_v1!(CapabilityRowPolicyOperationV1);
+
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -572,3 +572,34 @@ fn read_u64(bytes: &[u8], offset: usize) -> u64 {
             .expect("fixed descriptor"),
     )
 }
+
+// Exhaustive non-durable ownership inventories for exact-provider admission.
+crate::inspect_owned_capacity_struct_v1!(ProjectionProviderDescriptorV1 {
+    owned: [],
+    inline: [
+        kind,
+        posture,
+        capabilities,
+        policy_mode,
+        freshness,
+        lifecycle,
+        bounds,
+        state
+    ]
+});
+
+crate::inspect_owned_capacity_copy_v1!(ProjectionProviderKindV1);
+
+crate::inspect_owned_capacity_copy_v1!(ProjectionProviderPostureV1);
+
+crate::inspect_owned_capacity_copy_v1!(ProjectionProviderCapabilitiesV1);
+
+crate::inspect_owned_capacity_copy_v1!(ProjectionProviderPolicyModeV1);
+
+crate::inspect_owned_capacity_copy_v1!(ProjectionProviderFreshnessV1);
+
+crate::inspect_owned_capacity_copy_v1!(ProjectionProviderLifecycleModelV1);
+
+crate::inspect_owned_capacity_copy_v1!(ProjectionProviderStaticBoundsV1);
+
+crate::inspect_owned_capacity_copy_v1!(ProjectionProviderStateIdentityV1);

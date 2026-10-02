@@ -2329,3 +2329,282 @@ fn _identity_type_guard(
     _: IndexId,
 ) {
 }
+
+// Exhaustive non-durable ownership inventories for exact-provider admission.
+riffdb_types::inspect_owned_capacity_struct_v1!(QueryAccessProgramV1 {
+    owned: [
+        contract,
+        surface,
+        name,
+        projected_source,
+        partition_route,
+        steps,
+        authorization,
+        canonical_bytes,
+        explain
+    ],
+    inline: [cost, identity]
+});
+
+riffdb_types::inspect_owned_capacity_struct_v1!(ProjectedVectorSourceV1 {
+    owned: [entity, field],
+    inline: [entity_id, field_id, freshness]
+});
+
+riffdb_types::inspect_owned_capacity_copy_v1!(ProjectedVectorFreshnessV1);
+
+impl riffdb_types::InspectOwnedCapacityV1 for QueryPartitionRouteV1 {
+    fn inspect_owned_capacity(
+        &self,
+        inspection: &mut riffdb_types::OwnedCapacityInspectionV1,
+    ) -> Result<(), riffdb_types::OwnedCapacityInspectionErrorV1> {
+        match self {
+            Self::Exact { parameter } => {
+                inspection.visit(parameter)?;
+            }
+            Self::FiniteSet { parameter, maximum } => {
+                inspection.visit(parameter)?;
+                inspection.inline(maximum)?;
+            }
+        }
+        Ok(())
+    }
+}
+
+riffdb_types::inspect_owned_capacity_struct_v1!(QueryAccessStep {
+    owned: [
+        binding,
+        entity,
+        row_limit,
+        access,
+        predicates,
+        predicate_fields,
+        selected_fields,
+        result_names,
+        absence_outcome,
+        cursor_parameter,
+        dependencies,
+        partition_key_schema,
+        entity_key_schema,
+        index_key_schema,
+        operational_index_descriptor,
+        covered_result_layout
+    ],
+    inline: [cardinality, maximum_rows, entity_id, index_id]
+});
+
+impl riffdb_types::InspectOwnedCapacityV1 for QueryRowLimit {
+    fn inspect_owned_capacity(
+        &self,
+        inspection: &mut riffdb_types::OwnedCapacityInspectionV1,
+    ) -> Result<(), riffdb_types::OwnedCapacityInspectionErrorV1> {
+        match self {
+            Self::Literal(field_0) => {
+                inspection.inline(field_0)?;
+            }
+            Self::Parameter { name, default } => {
+                inspection.visit(name)?;
+                inspection.inline(default)?;
+            }
+            Self::BoundedParameter {
+                name,
+                maximum,
+                default,
+            } => {
+                inspection.visit(name)?;
+                inspection.inline(maximum)?;
+                inspection.inline(default)?;
+            }
+            Self::CandidateComplete { maximum } => {
+                inspection.inline(maximum)?;
+            }
+        }
+        Ok(())
+    }
+}
+
+impl riffdb_types::InspectOwnedCapacityV1 for QueryAccessKind {
+    fn inspect_owned_capacity(
+        &self,
+        inspection: &mut riffdb_types::OwnedCapacityInspectionV1,
+    ) -> Result<(), riffdb_types::OwnedCapacityInspectionErrorV1> {
+        match self {
+            Self::Point { key_fields } => {
+                inspection.visit(key_fields)?;
+            }
+            Self::DependentPointBatch {
+                key_fields,
+                source_binding,
+                source_field,
+            } => {
+                inspection.visit(key_fields)?;
+                inspection.visit(source_binding)?;
+                inspection.visit(source_field)?;
+            }
+            Self::Index {
+                index,
+                fields,
+                direction,
+            } => {
+                inspection.visit(index)?;
+                inspection.visit(fields)?;
+                inspection.inline(direction)?;
+            }
+            Self::ExpansionIndex {
+                index,
+                fields,
+                direction,
+                driver_binding,
+                driver_item,
+                per_driver_maximum,
+                product_maximum,
+            } => {
+                inspection.visit(index)?;
+                inspection.visit(fields)?;
+                inspection.inline(direction)?;
+                inspection.visit(driver_binding)?;
+                inspection.visit(driver_item)?;
+                inspection.inline(per_driver_maximum)?;
+                inspection.inline(product_maximum)?;
+            }
+            Self::PartitionSetIndex {
+                index,
+                fields,
+                direction,
+                order,
+                scan_ceiling,
+                key_fields,
+            } => {
+                inspection.visit(index)?;
+                inspection.visit(fields)?;
+                inspection.inline(direction)?;
+                inspection.visit(order)?;
+                inspection.inline(scan_ceiling)?;
+                inspection.visit(key_fields)?;
+            }
+            Self::LongPatternCandidate { provider, pattern } => {
+                inspection.visit(provider)?;
+                inspection.visit(pattern)?;
+            }
+            Self::Nearest {
+                vector_field,
+                vector_parameter,
+                k,
+            } => {
+                inspection.visit(vector_field)?;
+                inspection.visit(vector_parameter)?;
+                inspection.inline(k)?;
+            }
+            Self::CandidateRootHydration {
+                candidate,
+                maximum_candidates,
+                key_fields,
+                order,
+            } => {
+                inspection.visit(candidate)?;
+                inspection.inline(maximum_candidates)?;
+                inspection.visit(key_fields)?;
+                inspection.visit(order)?;
+            }
+        }
+        Ok(())
+    }
+}
+
+riffdb_types::inspect_owned_capacity_copy_v1!(AccessDirection);
+
+riffdb_types::inspect_owned_capacity_struct_v1!(QueryRootOrderTermV1 {
+    owned: [field],
+    inline: [direction, nulls_first]
+});
+
+riffdb_types::inspect_owned_capacity_struct_v1!(QueryPredicate {
+    owned: [field, value],
+    inline: [operator]
+});
+
+riffdb_types::inspect_owned_capacity_copy_v1!(QueryPredicateOperator);
+
+impl riffdb_types::InspectOwnedCapacityV1 for QueryPredicateValue {
+    fn inspect_owned_capacity(
+        &self,
+        inspection: &mut riffdb_types::OwnedCapacityInspectionV1,
+    ) -> Result<(), riffdb_types::OwnedCapacityInspectionErrorV1> {
+        match self {
+            Self::Parameter(field_0) => {
+                inspection.visit(field_0)?;
+            }
+            Self::BindingField { binding, field } => {
+                inspection.visit(binding)?;
+                inspection.visit(field)?;
+            }
+            Self::BindingFieldSet { binding, field } => {
+                inspection.visit(binding)?;
+                inspection.visit(field)?;
+            }
+            Self::CandidateBinding { name } => {
+                inspection.visit(name)?;
+            }
+            Self::EnumVariant {
+                enumeration,
+                variant,
+                type_id,
+                variant_id,
+            } => {
+                inspection.visit(enumeration)?;
+                inspection.visit(variant)?;
+                inspection.inline(type_id)?;
+                inspection.inline(variant_id)?;
+            }
+            Self::Literal(field_0) => {
+                inspection.visit(field_0)?;
+            }
+        }
+        Ok(())
+    }
+}
+
+impl riffdb_types::InspectOwnedCapacityV1 for QueryLiteral {
+    fn inspect_owned_capacity(
+        &self,
+        inspection: &mut riffdb_types::OwnedCapacityInspectionV1,
+    ) -> Result<(), riffdb_types::OwnedCapacityInspectionErrorV1> {
+        match self {
+            Self::Unsigned(field_0) => {
+                inspection.visit(field_0)?;
+            }
+            Self::String(field_0) => {
+                inspection.visit(field_0)?;
+            }
+            Self::Boolean(field_0) => {
+                inspection.inline(field_0)?;
+            }
+            Self::Null => {}
+        }
+        Ok(())
+    }
+}
+
+riffdb_types::inspect_owned_capacity_struct_v1!(CoveredResultLayoutV1 {
+    owned: [entity, index, fields, cover_field_ids],
+    inline: []
+});
+
+riffdb_types::inspect_owned_capacity_struct_v1!(CoveredResultFieldV1 {
+    owned: [name],
+    inline: [field_id, source]
+});
+
+riffdb_types::inspect_owned_capacity_copy_v1!(CoveredResultSourceV1);
+
+riffdb_types::inspect_owned_capacity_struct_v1!(AuthorizationEntityAccess {
+    owned: [entity, fields, indexes, field_ids, index_ids],
+    inline: [maximum_rows, entity_id]
+});
+
+riffdb_types::inspect_owned_capacity_copy_v1!(QueryPlanIdentity);
+
+riffdb_types::inspect_owned_capacity_struct_v1!(QueryPlanExplain {
+    owned: [lines],
+    inline: []
+});

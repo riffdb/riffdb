@@ -113,6 +113,11 @@ impl LogicalTime {
     }
 }
 
+// Exhaustive non-durable ownership inventories for exact-provider admission.
+crate::inspect_owned_capacity_copy_v1!(Timestamp);
+
+crate::inspect_owned_capacity_copy_v1!(Date);
+
 #[cfg(test)]
 mod tests {
     use super::*;

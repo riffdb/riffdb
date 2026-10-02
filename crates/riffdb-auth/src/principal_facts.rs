@@ -232,6 +232,19 @@ fn tenant_scope_narrows(child: &TenantScope, parent: &TenantScope) -> bool {
     }
 }
 
+// Exhaustive non-durable ownership inventories for exact-provider admission.
+riffdb_types::inspect_owned_capacity_struct_v1!(PrincipalFactBindingV1 {
+    owned: [environment, principal_id, audiences, tenant_scope, facts],
+    inline: [
+        capability_id,
+        revision,
+        database_id,
+        actor_kind,
+        issued_at,
+        expires_at
+    ]
+});
+
 #[cfg(test)]
 mod tests {
     use riffdb_types::{CanonicalValue, CapabilityPrincipalFactV1, TenantId};
@@ -285,6 +298,37 @@ mod tests {
             facts(&["authors", "operators"]),
         )
         .expect("parent")
+    }
+
+    // req: OQ-040
+    #[test]
+    fn provider_capacity_inspection_counts_audience_slack_and_shared_facts_once() {
+        use riffdb_types::OwnedCapacityInspectionV1;
+        let mut binding = parent();
+        let before = OwnedCapacityInspectionV1::inspect(&binding).unwrap();
+        binding.audiences.reserve_exact(4096);
+        let after = OwnedCapacityInspectionV1::inspect(&binding).unwrap();
+        assert!(
+            after.unshared_bytes()
+                >= before.unshared_bytes() + 4096 * std::mem::size_of::<Audience>() as u64
+        );
+        let both = OwnedCapacityInspectionV1::inspect(&[binding.clone(), binding.clone()]).unwrap();
+        assert_eq!(
+            both.shared_allocations().len(),
+            after.shared_allocations().len()
+        );
+        assert_eq!(
+            both.shared_allocations()
+                .iter()
+                .map(|owner| owner.bytes())
+                .sum::<u64>(),
+            after
+                .shared_allocations()
+                .iter()
+                .map(|owner| owner.bytes())
+                .sum::<u64>()
+        );
+        assert_eq!(binding, parent());
     }
 
     #[test]

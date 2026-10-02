@@ -26,6 +26,10 @@ mod key;
 mod limits;
 mod long_pattern;
 mod maintenance;
+mod owned_capacity;
+mod owned_capacity_collections;
+#[cfg(test)]
+mod owned_capacity_tests;
 mod principal_fact;
 mod projection;
 mod projection_provider;
@@ -62,6 +66,7 @@ pub use key::*;
 pub use limits::*;
 pub use long_pattern::*;
 pub use maintenance::*;
+pub use owned_capacity::*;
 pub use principal_fact::*;
 pub use projection::*;
 pub use projection_provider::*;

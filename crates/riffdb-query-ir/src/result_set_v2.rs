@@ -259,3 +259,18 @@ const fn window_parts(window: ResultSetWindowBoundsV2) -> (u32, NonZeroU16) {
         } => (max_offset, max_limit),
     }
 }
+
+// Exhaustive non-durable ownership inventories for exact-provider admission.
+riffdb_types::inspect_owned_capacity_struct_v1!(ProjectionResultSetPlanV2 {
+    owned: [provider],
+    inline: [
+        provider_digest,
+        filtering,
+        rank_or_order,
+        whole_set_measures,
+        window,
+        output
+    ]
+});
+
+riffdb_types::inspect_owned_capacity_copy_v1!(ResultSetWindowBoundsV2);

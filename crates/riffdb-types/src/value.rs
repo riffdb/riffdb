@@ -51,6 +51,34 @@ pub enum CanonicalValue {
     Vector(CanonicalVector),
 }
 
+impl crate::InspectOwnedCapacityV1 for CanonicalValue {
+    fn inspect_owned_capacity(
+        &self,
+        inspection: &mut crate::OwnedCapacityInspectionV1,
+    ) -> Result<(), crate::OwnedCapacityInspectionErrorV1> {
+        match self {
+            Self::String(value) => inspection.visit(value),
+            Self::Bytes(value) => inspection.visit(value),
+            Self::List(value) => inspection.visit(value),
+            Self::Record(value) => inspection.visit(value),
+            Self::Vector(value) => inspection.visit(value),
+            Self::Null
+            | Self::Bool(_)
+            | Self::I64(_)
+            | Self::U64(_)
+            | Self::Decimal(_)
+            | Self::Money(_)
+            | Self::Timestamp(_)
+            | Self::Date(_)
+            | Self::Uuid(_)
+            | Self::Enum {
+                type_id: _,
+                variant_id: _,
+            } => Ok(()),
+        }
+    }
+}
+
 impl fmt::Debug for CanonicalValue {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
@@ -133,6 +161,7 @@ impl CanonicalValue {
 /// Exact bounded UTF-8 text for a canonical value.
 #[derive(Clone, Eq, Hash, Ord, PartialEq, PartialOrd)]
 pub struct CanonicalString(String);
+crate::inspect_owned_capacity_tuple_v1!(CanonicalString, String);
 
 impl fmt::Debug for CanonicalString {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -182,6 +211,7 @@ impl CanonicalString {
 /// Exact bounded opaque bytes for a canonical value.
 #[derive(Clone, Eq, Hash, Ord, PartialEq, PartialOrd)]
 pub struct CanonicalBytes(Vec<u8>);
+crate::inspect_owned_capacity_tuple_v1!(CanonicalBytes, Vec<u8>);
 
 impl fmt::Debug for CanonicalBytes {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -231,6 +261,7 @@ impl CanonicalBytes {
 /// A bounded ordered list of canonical values.
 #[derive(Clone, Eq, PartialEq)]
 pub struct CanonicalList(Vec<CanonicalValue>);
+crate::inspect_owned_capacity_tuple_v1!(CanonicalList, Vec<CanonicalValue>);
 
 impl fmt::Debug for CanonicalList {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -281,6 +312,10 @@ impl CanonicalList {
 pub struct CanonicalRecord {
     fields: Vec<(FieldId, CanonicalValue)>,
 }
+crate::inspect_owned_capacity_struct_v1!(CanonicalRecord {
+    owned: [fields],
+    inline: []
+});
 
 impl fmt::Debug for CanonicalRecord {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {

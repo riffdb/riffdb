@@ -198,3 +198,8 @@ impl fmt::Display for ExactTextBindErrorV1 {
 }
 
 impl Error for ExactTextBindErrorV1 {}
+
+// Exhaustive non-durable ownership inventories for exact-provider admission.
+crate::inspect_owned_capacity_copy_v1!(ExactTextOperatorV1);
+
+crate::inspect_owned_capacity_copy_v1!(ExactTextOrderV1);

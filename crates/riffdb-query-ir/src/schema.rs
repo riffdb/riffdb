@@ -166,3 +166,81 @@ impl NamedQuerySchemas {
         &self.results
     }
 }
+
+// Exhaustive non-durable ownership inventories for exact-provider admission.
+impl riffdb_types::InspectOwnedCapacityV1 for NamedTypeSchema {
+    fn inspect_owned_capacity(
+        &self,
+        inspection: &mut riffdb_types::OwnedCapacityInspectionV1,
+    ) -> Result<(), riffdb_types::OwnedCapacityInspectionErrorV1> {
+        match self {
+            Self::Scalar(field_0) => {
+                inspection.visit(field_0)?;
+            }
+            Self::Optional(field_0) => {
+                inspection.visit(field_0)?;
+            }
+            Self::Set(field_0) => {
+                inspection.visit(field_0)?;
+            }
+            Self::BoundedSet { element, maximum } => {
+                inspection.visit(element)?;
+                inspection.inline(maximum)?;
+            }
+            Self::Record(field_0) => {
+                inspection.visit(field_0)?;
+            }
+            Self::List { element, maximum } => {
+                inspection.visit(element)?;
+                inspection.visit(maximum)?;
+            }
+            Self::Cursor => {}
+            Self::Limit => {}
+            Self::BoundedLimit { maximum } => {
+                inspection.inline(maximum)?;
+            }
+        }
+        Ok(())
+    }
+}
+
+riffdb_types::inspect_owned_capacity_struct_v1!(NamedFieldSchema {
+    owned: [name, value_type],
+    inline: []
+});
+
+impl riffdb_types::InspectOwnedCapacityV1 for PageBound {
+    fn inspect_owned_capacity(
+        &self,
+        inspection: &mut riffdb_types::OwnedCapacityInspectionV1,
+    ) -> Result<(), riffdb_types::OwnedCapacityInspectionErrorV1> {
+        match self {
+            Self::Literal(field_0) => {
+                inspection.inline(field_0)?;
+            }
+            Self::Parameter(field_0) => {
+                inspection.visit(field_0)?;
+            }
+            Self::BoundedParameter { name, maximum } => {
+                inspection.visit(name)?;
+                inspection.inline(maximum)?;
+            }
+        }
+        Ok(())
+    }
+}
+
+riffdb_types::inspect_owned_capacity_struct_v1!(NamedQuerySchemas {
+    owned: [parameters, results],
+    inline: []
+});
+
+riffdb_types::inspect_owned_capacity_struct_v1!(NamedParameterSchema {
+    owned: [name, value_type],
+    inline: [has_default]
+});
+
+riffdb_types::inspect_owned_capacity_struct_v1!(NamedResultBranchSchema {
+    owned: [name, fields],
+    inline: []
+});

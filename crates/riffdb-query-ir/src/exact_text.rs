@@ -309,3 +309,24 @@ pub enum ExactTextPlanFamilyErrorV1 {
     /// Framing, version, tags, reserved bytes, or canonical bytes disagree.
     NonCanonicalEncoding,
 }
+
+// Exhaustive non-durable ownership inventories for exact-provider admission.
+riffdb_types::inspect_owned_capacity_struct_v1!(ExactTextPlanFamilyV1 {
+    owned: [descriptor, members],
+    inline: [
+        field,
+        operators,
+        orders,
+        policy_mode,
+        max_value_bytes,
+        max_needle_bytes,
+        max_candidates,
+        source_span
+    ]
+});
+
+riffdb_types::inspect_owned_capacity_copy_v1!(ExactTextOperatorSetV1);
+
+riffdb_types::inspect_owned_capacity_copy_v1!(ExactTextOrderSetV1);
+
+riffdb_types::inspect_owned_capacity_copy_v1!(ExactTextPlanMemberV1);
