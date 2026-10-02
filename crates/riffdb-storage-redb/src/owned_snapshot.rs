@@ -3,6 +3,9 @@
 #[path = "owned_snapshot_metadata.rs"]
 mod metadata;
 
+#[path = "owned_snapshot_provider_catalog.rs"]
+mod provider_catalog;
+
 #[path = "owned_snapshot_provider_index.rs"]
 mod provider_index;
 #[path = "owned_snapshot_provider_read.rs"]

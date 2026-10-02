@@ -5975,4 +5975,160 @@ mod tests {
             .expect_err("a module with no publication record must be refused");
         assert_eq!(refused.kind(), StorageErrorKind::CorruptData);
     }
+
+    // req: OQ-040, PRJ-004
+    #[test]
+    fn provider_catalog_reads_admit_records_and_keep_the_captured_catalog() {
+        use riffdb_storage_api::OwnedSnapshotReader;
+        use riffdb_types::exact_provider_budget_v1::ProviderBudget;
+        let (_path, mut ports) = initialized_ports("provider-catalog-root");
+        let budget = ProviderBudget::new();
+        let empty = ports.open_owned_snapshot().unwrap();
+        assert!(
+            empty
+                .read_provider_active_catalog_v1(&budget)
+                .unwrap()
+                .is_none()
+        );
+        assert_eq!(budget.observation().unwrap().owned_bytes, 0);
+        let first = bundle("example", 1, 7);
+        ports
+            .activate_catalog(&catalog_intent(None, first.clone(), 80))
+            .unwrap();
+        let pinned = ports.open_owned_snapshot().unwrap();
+        let second = bundle("example", 2, 8);
+        ports
+            .activate_catalog(&catalog_intent(
+                Some(first.contract_version()),
+                second.clone(),
+                81,
+            ))
+            .unwrap();
+        let pointer = pinned
+            .read_provider_active_catalog_v1(&budget)
+            .unwrap()
+            .unwrap();
+        assert_eq!(&**pointer, &pinned.read_active_catalog().unwrap().unwrap());
+        assert!(pointer.matches_bundle(&first));
+        let record = pinned
+            .read_provider_contract_bundle_v1(first.lineage(), first.contract_version(), &budget)
+            .unwrap()
+            .unwrap();
+        assert_eq!(&**record, &first);
+        assert!(
+            pinned
+                .read_provider_contract_bundle_v1(
+                    second.lineage(),
+                    second.contract_version(),
+                    &budget
+                )
+                .unwrap()
+                .is_none()
+        );
+        let current = ports.open_owned_snapshot().unwrap();
+        let latest = current
+            .read_provider_active_catalog_v1(&budget)
+            .unwrap()
+            .unwrap();
+        assert!(latest.matches_bundle(&second));
+        drop(latest);
+        drop(pointer);
+        let lineage = record.lineage().clone();
+        drop(record);
+        assert!(budget.observation().unwrap().owned_bytes > 0);
+        drop(lineage);
+        assert_eq!(budget.observation().unwrap().owned_bytes, 0);
+        assert_eq!(budget.observation().unwrap().reserved_bytes, 0);
+    }
+
+    // req: OQ-040, PRJ-004
+    #[test]
+    fn provider_catalog_reads_refuse_pressure_and_preserve_bundle_identity_checks() {
+        use riffdb_storage_api::OwnedSnapshotReader;
+        use riffdb_types::exact_provider_budget_v1::{EXACT_PROVIDER_BUDGET_BYTES, ProviderBudget};
+        let (_path, mut ports) = initialized_ports("provider-catalog-validation");
+        let first = StoredContractBundleV1::new(
+            ContractLineage::new("example").unwrap(),
+            ContractVersion::new(1).unwrap(),
+            ContractBundleHash::from_bytes([7; 32]),
+            vec![7; 1024 * 1024],
+        )
+        .unwrap();
+        ports
+            .activate_catalog(&catalog_intent(None, first.clone(), 82))
+            .unwrap();
+        let pinned = ports.open_owned_snapshot().unwrap();
+        let budget = ProviderBudget::new();
+        let blocker = budget
+            .reserve(
+                EXACT_PROVIDER_BUDGET_BYTES - budget.observation().unwrap().fixed_owner_bytes - 1,
+            )
+            .unwrap();
+        assert!(
+            matches!(pinned.read_provider_active_catalog_v1(&budget), Err(error) if error.kind() == StorageErrorKind::Unavailable)
+        );
+        assert!(
+            matches!(pinned.read_provider_contract_bundle_v1(first.lineage(), first.contract_version(), &budget), Err(error) if error.kind() == StorageErrorKind::Unavailable)
+        );
+        assert_eq!(budget.observation().unwrap().reservations, 1);
+        assert_eq!(budget.observation().unwrap().owned_bytes, 0);
+        drop(blocker);
+        // Pointer reconstruction can fit while its required bundle cannot.
+        // Failure must destroy the provisional pointer and release its lineage.
+        let blocker = budget
+            .reserve(
+                EXACT_PROVIDER_BUDGET_BYTES
+                    - budget.observation().unwrap().fixed_owner_bytes
+                    - riffdb_types::OWNED_CAPACITY_INSPECTION_SCRATCH_BYTES_V1
+                    - 128 * 1024,
+            )
+            .unwrap();
+        assert!(
+            matches!(pinned.read_provider_active_catalog_v1(&budget), Err(error) if error.kind() == StorageErrorKind::Unavailable)
+        );
+        assert_eq!(budget.observation().unwrap().owned_bytes, 0);
+        assert_eq!(budget.observation().unwrap().reservations, 1);
+        drop(blocker);
+        // A checksum-valid row at the right physical key with the wrong identity
+        // must fail the same checks as the ordinary captured reader.
+        let wrong = bundle("different", 1, 9);
+        let encoded = encode_contract_bundle_v1(&wrong).unwrap();
+        let write = ports.begin_write().unwrap();
+        write
+            .transaction()
+            .unwrap()
+            .open_table(CONTRACT_BUNDLES)
+            .unwrap()
+            .insert(
+                encode_contract_bundle_key(first.lineage(), first.contract_version())
+                    .unwrap()
+                    .as_slice(),
+                encoded.as_bytes(),
+            )
+            .unwrap();
+        write
+            .commit_for(RedbTestOperation::CatalogAdministration)
+            .unwrap();
+        let corrupt = ports.open_owned_snapshot().unwrap();
+        let ordinary = corrupt
+            .read_contract_bundle(first.lineage(), first.contract_version())
+            .unwrap_err();
+        assert!(
+            matches!(corrupt.read_provider_contract_bundle_v1(first.lineage(), first.contract_version(), &budget), Err(error) if error.kind() == ordinary.kind())
+        );
+        let ordinary = corrupt.read_active_catalog().unwrap_err();
+        assert!(
+            matches!(corrupt.read_provider_active_catalog_v1(&budget), Err(error) if error.kind() == ordinary.kind())
+        );
+        assert_eq!(budget.observation().unwrap().owned_bytes, 0);
+        assert_eq!(budget.observation().unwrap().reserved_bytes, 0);
+        // The corruption was committed after this pin; its valid root remains valid.
+        let original = pinned
+            .read_provider_active_catalog_v1(&budget)
+            .unwrap()
+            .unwrap();
+        assert!(original.matches_bundle(&first));
+        drop(original);
+        assert_eq!(budget.observation().unwrap().owned_bytes, 0);
+    }
 }

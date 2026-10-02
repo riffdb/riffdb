@@ -1,5 +1,33 @@
 # WP-824 implementation progress
 
+## Admitted catalog records on a captured storage root
+
+Hidden first-party snapshot helpers now reconstruct active pointers and immutable
+opaque bundles directly from borrowed bytes on the same captured metadata root.
+They reserve bounded key/handle work before opening tables and delegate allocation
+and durable verification to the admitted wire decoder. Active reads still require
+a matching stored bundle; bundle reads still require the exact requested lineage
+and version. Absence retains the ordinary meaning. No newer root is reopened.
+
+Tests deploy a successor after taking a pin and compare ordinary and admitted
+reads on both roots. They check escaped lineage ownership, saturated refusal,
+release after a provisional pointer fits but its required bundle does not, and
+checksum-valid wrong-identity corruption. A previously captured valid root remains
+valid after that corruption is committed. All 813 storage library tests passed
+with one existing skip; all six scoped non-test acceptance checks passed,
+including formatting, Clippy with warnings denied, scope and handbook checks.
+
+These are opaque storage-record helpers. Production provider catalog assembly,
+IR decoding, migration evidence, lineage/materialization scratch and ownership of
+source pins still require admission. Retirement and artifact cleanup also remain
+open; this slice does not complete aggregate accounting or qualify the rehearsal.
+
+PR note: Package WP-824 (open); Tier guarantee; Behavior: admitted catalog storage
+reads on the existing snapshot; Compatibility: ordinary key/pointer checks,
+durable records and application interfaces preserved; Handbook: this page;
+Hazards/follow-ups: complete production catalog capture and the remaining lifecycle.
+
+
 ## Admitted catalog wire reconstruction
 
 Existing active-pointer and opaque bundle records now support the closed,
