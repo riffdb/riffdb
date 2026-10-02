@@ -5,6 +5,10 @@
 
 //! Engine-neutral semantic records for one atomic application command.
 
+#[path = "provider_entity_field_capture.rs"]
+mod provider_fields;
+use provider_fields::ProviderEntityFieldCaptureV1;
+
 use std::error::Error;
 use std::fmt;
 use std::sync::Arc;
@@ -93,6 +97,8 @@ pub struct StoredEntityRecordV1 {
     schema_binding: DurableKeySchemaBindingV1,
     fields: Arc<CanonicalRecord>,
     fields_encoded: Arc<[u8]>,
+    // Last: field data is destroyed before its provider ownership capture.
+    provider_fields: ProviderEntityFieldCaptureV1,
 }
 
 impl StoredEntityRecordV1 {
@@ -119,6 +125,7 @@ impl StoredEntityRecordV1 {
             schema_binding,
             fields: Arc::new(fields),
             fields_encoded: Arc::from(fields_encoded),
+            provider_fields: ProviderEntityFieldCaptureV1::default(),
         })
     }
 
@@ -151,6 +158,7 @@ impl StoredEntityRecordV1 {
             schema_binding,
             fields: Arc::new(fields),
             fields_encoded: Arc::from(fields_encoded),
+            provider_fields: ProviderEntityFieldCaptureV1::default(),
         })
     }
 
@@ -178,6 +186,7 @@ impl StoredEntityRecordV1 {
             schema_binding,
             fields,
             fields_encoded,
+            provider_fields: ProviderEntityFieldCaptureV1::default(),
         })
     }
 

@@ -239,6 +239,62 @@ mod tests {
     }
 
     #[test]
+    fn admitted_filtered_rebuild_matches_ordinary_and_keeps_final_capture() {
+        use super::super::ExactTextPartitionIndexV3;
+        for count in [0_u32, 1, 12] {
+            let rows = (0..count)
+                .map(|i| {
+                    (
+                        key(i),
+                        (
+                            "abβ".to_owned(),
+                            if i % 2 == 0 {
+                                CanonicalValue::Null
+                            } else {
+                                CanonicalValue::string(i.to_string()).unwrap()
+                            },
+                            CanonicalRecord::new(vec![]).unwrap(),
+                        ),
+                    )
+                })
+                .collect::<BTreeMap<_, _>>();
+            let (partition, generation, frontier) = parameters();
+            let field = FieldId::new(1).unwrap();
+            let expected = ExactTextPartitionIndexV3::rebuild(
+                partition,
+                generation,
+                frontier,
+                ExactTextProfileV1::BinaryUtf8V1,
+                field,
+                &rows,
+            )
+            .unwrap();
+            let budget = ProviderBudget::new();
+            let actual = ExactTextPartitionIndexV3::rebuild_admitted_v1(
+                partition,
+                generation,
+                frontier,
+                ExactTextProfileV1::BinaryUtf8V1,
+                field,
+                &rows,
+                &budget,
+            )
+            .unwrap();
+            assert!(**actual == expected);
+            assert_eq!(
+                actual.to_checkpoint_bytes().unwrap(),
+                expected.to_checkpoint_bytes().unwrap()
+            );
+            let retained = Arc::clone(&actual);
+            drop(actual);
+            assert!(budget.observation().unwrap().owned_bytes > 0);
+            assert_eq!(budget.observation().unwrap().reserved_bytes, 0);
+            drop(retained);
+            assert_eq!(budget.observation().unwrap().owned_bytes, 0);
+        }
+    }
+
+    #[test]
     fn preflight_bounds_empty_repeated_unicode_and_distinct_term_dictionaries() {
         for text in [
             "",

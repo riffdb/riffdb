@@ -338,3 +338,64 @@ Validation: six scoped acceptance steps passed, including all 61 projection
 tests without skips. Recovery tests cover empty and UTF-8 text, multiple posting
 populations, truncated/trailing bytes, row-capacity hints, final captures and
 pressure after borrowed inspection.
+
+
+## Admitted provider entity decoding and pages
+
+A closed first-party decoder now inspects the existing entity and index framing
+without allocating generated messages. It shares the ordinary decoder's readable
+schema, identity, checksum and wire preflight. Canonical re-encoding uses
+caller-admitted scratch rather than retaining a thread-local buffer. Both V1 and
+V2 remain supported; semantic reconstruction still uses the ordinary entity
+mapper and its canonical checks.
+
+Encoded input, generated messages, semantic reconstruction and page metadata
+have separate admissions. Shared canonical fields retain their actual charged
+original record through semantic record clones, so dropping a page cannot release
+live field ownership. Point reads verify the physical target. Partition reads
+use the original page validator, ordering, continuation and scan ceilings. They
+require the captured root's frontier to have been validated by ordinary source
+capture, and refuse an uninitialized cache before reading a page.
+
+Tests compare ordinary and admitted messages across both framing variants and
+byte mutations, verify explicit scratch release, and exercise semantic rejection,
+physical-key substitution and refusal partway through a decoded page. Exact-text and predicate full rebuilds now use the admitted entity point reader
+on their existing captured snapshot. A production source test proves shared-budget
+refusal and capture stability across a later authoritative commit. Partition-page
+integration remains pending. Index decoding, projection/policy work, physical
+provider successors and retirement still prevent claiming aggregate enforcement
+or package closure.
+
+
+## Filtered exact-text construction and recovery admission
+
+V3 now has hidden admitted rebuild and checkpoint recovery entry points. Their
+prospective maxima include the base posting families, disjoint filtered posting
+families, membership maps, canonical filter keys, row/key copies and ordering
+scratch. Recovery inspects the supported wrapper and embedded V2 framing before
+allocation, then delegates all semantic, membership and canonicality checks to
+the unchanged decoder. It preserves the existing recovery filter ceiling rather
+than applying the narrower rebuild-only ceiling to stored data.
+
+Tests compare ordinary/admitted state and checkpoint bytes, check the complete
+retained capacity inventory across empty, repeated and Unicode text and several
+filter types, and prove refusal after inspection without provider construction.
+Recovery also covers truncated/trailing framing, wider compatible filters and
+final-capture ownership. Server publication and incremental successors remain
+unconnected to these construction entry points.
+
+Validation: all nine storage acceptance steps passed, including 1,869 tests
+with one existing skip. All 552 server tests passed with eight existing skips;
+all 66 projection tests passed without skips. All eight final non-test acceptance
+steps passed for the five affected crates, including formatting, Clippy with
+warnings denied, generated artifacts, scope, topology and handbook checks.
+Earlier checks detected concurrent edits and two test-only unnecessary borrows;
+both were corrected and the affected checks rerun successfully.
+
+PR note: Package WP-824 (open); Tier guarantee; Behavior: admitted provider source
+decoding and point/page captures, production entity point admission, and filtered
+text construction/recovery admission. Compatibility: existing wire/checkpoint
+formats, query ordering, authorization and scan ceilings remain unchanged.
+Handbook: this implementation page is reachable from SUMMARY.md. Hazards and
+follow-ups: complete source/policy/successor accounting, protected epochs, safe
+retirement and artifact cleanup before qualification and package closure.

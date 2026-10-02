@@ -1,5 +1,9 @@
 //! Strict validation for versioned durable Protobuf envelopes.
 
+#[path = "provider_read.rs"]
+mod provider_read;
+pub use provider_read::*;
+
 use std::cell::RefCell;
 use std::time::Instant;
 use std::{error::Error, fmt};
@@ -294,6 +298,22 @@ impl<'a> RecordRegistry<'a> {
             return M::decode(decoded.payload())
                 .map_err(|_| EnvelopeError::InvalidPayload(PayloadValidationError::Malformed));
         }
+        let payload = self.borrowed_current_compact_payload(encoded, expected_schema)?;
+        let message = M::decode(payload)
+            .map_err(|_| EnvelopeError::InvalidPayload(PayloadValidationError::Malformed))?;
+        if !is_canonical_encoding(&message, payload) {
+            return Err(EnvelopeError::InvalidPayload(
+                PayloadValidationError::NonCanonical,
+            ));
+        }
+        Ok(message)
+    }
+
+    fn borrowed_current_compact_payload<'bytes>(
+        &self,
+        encoded: &'bytes [u8],
+        expected_schema: &RecordSchema<'_>,
+    ) -> Result<&'bytes [u8], EnvelopeError> {
         if encoded.len() < COMPACT_RECORD_HEADER_V2_BYTES {
             return Err(EnvelopeError::Malformed);
         }
@@ -332,14 +352,7 @@ impl<'a> RecordRegistry<'a> {
             return Err(EnvelopeError::ChecksumMismatch);
         }
         (schema.preflight_payload)(payload).map_err(EnvelopeError::InvalidPayload)?;
-        let message = M::decode(payload)
-            .map_err(|_| EnvelopeError::InvalidPayload(PayloadValidationError::Malformed))?;
-        if !is_canonical_encoding(&message, payload) {
-            return Err(EnvelopeError::InvalidPayload(
-                PayloadValidationError::NonCanonical,
-            ));
-        }
-        Ok(message)
+        Ok(payload)
     }
 
     /// Identical current-message decode with fixed-cardinality phase timing.
@@ -470,7 +483,12 @@ impl<'a> RecordRegistry<'a> {
         encode_v1_checked_payload(schema, &decoded.payload)
     }
 
-    fn decode_v1(&self, encoded: &[u8]) -> Result<DecodedEnvelope, EnvelopeError> {
+    // Shared borrowed trust preflight: normal and admitted source decoders must
+    // resolve identical schema, framing, checksum and wire-bound decisions.
+    fn borrowed_v1_payload<'bytes>(
+        &self,
+        encoded: &'bytes [u8],
+    ) -> Result<(RecordSchema<'a>, wire::EnvelopePreflight<'bytes>), EnvelopeError> {
         let preflight = match wire::stored_envelope(encoded) {
             Ok(preflight) => preflight,
             Err(EnvelopePreflightError::Malformed) => return Err(EnvelopeError::Malformed),
@@ -527,6 +545,11 @@ impl<'a> RecordRegistry<'a> {
         }
         (schema.preflight_payload)(preflight.payload).map_err(EnvelopeError::InvalidPayload)?;
 
+        Ok((*schema, preflight))
+    }
+
+    fn decode_v1(&self, encoded: &[u8]) -> Result<DecodedEnvelope, EnvelopeError> {
+        let (schema, _) = self.borrowed_v1_payload(encoded)?;
         // All knowable record-specific sizes have been checked against borrowed
         // wire slices before Prost allocates the owned envelope fields.
         let envelope = StoredEnvelope::decode(encoded).map_err(|_| EnvelopeError::Malformed)?;

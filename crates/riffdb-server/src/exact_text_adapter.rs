@@ -47,9 +47,8 @@ use riffdb_service::{
 };
 use riffdb_storage_api::{
     AuthoritativeEntityPartitionScanRequest, AuthoritativeIndexScanPage,
-    AuthoritativeIndexScanRequest, AuthoritativePointReader, AuthoritativeScanReader,
-    CatalogRepository, EntityTarget, IndexRangePrefixBuilder, IndexRangeTarget,
-    SnapshotFenceReader, StorageScanLimit,
+    AuthoritativeIndexScanRequest, AuthoritativeScanReader, CatalogRepository, EntityTarget,
+    IndexRangePrefixBuilder, IndexRangeTarget, SnapshotFenceReader, StorageScanLimit,
 };
 use riffdb_types::{
     CanonicalRecord, CanonicalValue, CapabilityId, CommitSequence,
@@ -3178,9 +3177,12 @@ fn read_complete_predicate_partition<R: ExactPredicateRegistrationView>(
             }
             let target = EntityTarget::new(step.internal_entity_id(), entity_key.clone())
                 .map_err(|_| RebuildFailure::Integrity)?;
-            let record = AuthoritativePointReader::read_entity(&captured.storage, &target)
+            let source = captured
+                .storage
+                .read_provider_entity_v1(&target, &captured.budget)
                 .map_err(|_| RebuildFailure::Transient)?
                 .ok_or(RebuildFailure::Transient)?;
+            let record = (**source).clone();
             let record = captured.materialize(access_program, record)?;
             let values = record
                 .fields()
@@ -3320,9 +3322,12 @@ fn read_complete_partition(
             }
             let target = EntityTarget::new(step.internal_entity_id(), entity_key.clone())
                 .map_err(|_| RebuildFailure::Integrity)?;
-            let record = AuthoritativePointReader::read_entity(&captured.storage, &target)
+            let source = captured
+                .storage
+                .read_provider_entity_v1(&target, &captured.budget)
                 .map_err(|_| RebuildFailure::Transient)?
                 .ok_or(RebuildFailure::Transient)?;
+            let record = (**source).clone();
             let record = captured.materialize(program, record)?;
             let text = match record
                 .fields()

@@ -110,6 +110,12 @@ impl CheckpointRoot {
         self.transaction
     }
 
+    /// Provider copying may use only an already validated frontier on this
+    /// immutable root; it cannot start an unadmitted metadata decode.
+    pub(crate) fn cached_provider_snapshot_head_v1(&self) -> Option<Option<CommitSequence>> {
+        self.snapshot_head.get().copied()
+    }
+
     /// Resolves the snapshot-visible application frontier once per snapshot.
     ///
     /// `derive` is the complete uncached derivation, authority-presence check

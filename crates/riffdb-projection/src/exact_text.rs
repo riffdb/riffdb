@@ -5,6 +5,8 @@ mod admission;
 pub use admission::ExactTextRebuildAdmissionErrorV1;
 #[path = "exact_text_checkpoint_admission.rs"]
 mod checkpoint_admission;
+#[path = "exact_text_filtered_admission.rs"]
+mod filtered_admission;
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::error::Error;

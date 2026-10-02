@@ -579,6 +579,12 @@ impl RedbCompositeReadView {
     ///
     /// A failure is not cached, so a corrupt allocator, or a checkpoint that
     /// disagrees with its overlay, can never be converted into a frontier.
+    /// Provider copying may use only an already validated frontier on this
+    /// immutable root; it cannot start an unadmitted metadata decode.
+    pub(crate) fn cached_provider_snapshot_head_v1(&self) -> Option<Option<CommitSequence>> {
+        self.snapshot_head.get().copied()
+    }
+
     pub(crate) fn snapshot_head<E>(
         &self,
         derive: impl FnOnce() -> Result<Option<CommitSequence>, E>,

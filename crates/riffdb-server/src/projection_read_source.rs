@@ -40,6 +40,16 @@ impl ProjectionReadSource {
         (self.open)()
     }
 
+    /// Provider workers admit source copies and decoding on the same immutable
+    /// snapshot. Ordinary readers retain their existing contracts.
+    pub(crate) fn read_provider_entity_v1(
+        &self,
+        target: &EntityTarget,
+        budget: &riffdb_types::exact_provider_budget_v1::ProviderBudget,
+    ) -> Result<Option<riffdb_storage_api::AdmittedProviderEntityRecordV1>, StorageError> {
+        self.pin()?.read_provider_entity_record_v1(target, budget)
+    }
+
     pub(crate) fn query_executor(&self) -> StorageQueryExecutor<Self> {
         StorageQueryExecutor::new(self.clone())
     }

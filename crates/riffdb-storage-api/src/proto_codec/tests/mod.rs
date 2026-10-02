@@ -1418,3 +1418,88 @@ fn hex(bytes: &[u8]) -> String {
     }
     output
 }
+
+// req: OQ-040
+#[test]
+fn admitted_provider_entity_decode_keeps_shared_fields_charged_after_record_clone() {
+    use riffdb_types::exact_provider_budget_v1::ProviderBudget;
+    use riffdb_types::{
+        CanonicalRecord, CanonicalValue, ContractBundleHash, ContractLineage, ContractVersion,
+        EntityVersion, FieldId,
+    };
+    let version = ContractVersion::new(1).unwrap();
+    let record = crate::StoredEntityRecordV1::new(
+        sample::entity_target(),
+        EntityVersion::new(1).unwrap(),
+        version,
+        crate::DurableKeySchemaBindingV1::new(
+            ContractLineage::new("example").unwrap(),
+            version,
+            ContractBundleHash::from_bytes([1; 32]),
+        ),
+        CanonicalRecord::new(vec![(
+            FieldId::new(1).unwrap(),
+            CanonicalValue::string("bounded source").unwrap(),
+        )])
+        .unwrap(),
+    )
+    .unwrap();
+    let legacy = encode_entity_record_v1(&record).unwrap();
+    let compact = transcode_durable_record_to_v2(legacy.as_bytes()).unwrap();
+    for bytes in [legacy.as_bytes(), compact.as_bytes()] {
+        let budget = ProviderBudget::new();
+        let decoded = decode_provider_entity_record_admitted_v1(bytes, &budget).unwrap();
+        assert_eq!(&**decoded, &record);
+        assert_eq!(decoded.fields_encoded(), record.fields_encoded());
+        let capture = (**decoded).clone();
+        drop(decoded);
+        assert!(budget.observation().unwrap().owned_bytes > 0);
+        assert_eq!(capture.fields_encoded(), record.fields_encoded());
+        drop(capture);
+        assert_eq!(budget.observation().unwrap().owned_bytes, 0);
+        assert_eq!(budget.observation().unwrap().reserved_bytes, 0);
+    }
+}
+
+// req: OQ-040
+#[test]
+fn admitted_provider_semantic_failure_and_pressure_leave_no_record_ownership() {
+    use riffdb_types::exact_provider_budget_v1::{EXACT_PROVIDER_BUDGET_BYTES, ProviderBudget};
+    use riffdb_types::{
+        CanonicalRecord, ContractBundleHash, ContractLineage, ContractVersion, EntityVersion,
+    };
+    let version = ContractVersion::new(1).unwrap();
+    let record = crate::StoredEntityRecordV1::new(
+        sample::entity_target(),
+        EntityVersion::new(1).unwrap(),
+        version,
+        crate::DurableKeySchemaBindingV1::new(
+            ContractLineage::new("example").unwrap(),
+            version,
+            ContractBundleHash::from_bytes([1; 32]),
+        ),
+        CanonicalRecord::new(vec![]).unwrap(),
+    )
+    .unwrap();
+    let valid = encode_entity_record_v1(&record).unwrap();
+    let mut message = super::application::entity_to_proto(&record);
+    message.entity_version = 0;
+    let invalid = encode_message(ENTITY, &message).unwrap();
+    let budget = ProviderBudget::new();
+    assert!(
+        matches!(decode_provider_entity_record_admitted_v1(invalid.as_bytes(), &budget), Err(ProviderRecordDecodeErrorV1::Codec(error)) if error.kind() == DurableCodecErrorKind::CorruptData)
+    );
+    assert_eq!(budget.observation().unwrap().owned_bytes, 0);
+    assert_eq!(budget.observation().unwrap().reserved_bytes, 0);
+    let occupied = budget
+        .reserve(EXACT_PROVIDER_BUDGET_BYTES - budget.observation().unwrap().fixed_owner_bytes)
+        .unwrap();
+    assert!(matches!(
+        decode_provider_entity_record_admitted_v1(valid.as_bytes(), &budget),
+        Err(ProviderRecordDecodeErrorV1::AdmissionUnavailable)
+    ));
+    assert_eq!(budget.observation().unwrap().owned_bytes, 0);
+    assert_eq!(budget.observation().unwrap().reservations, 1);
+    drop(occupied);
+    assert_eq!(budget.observation().unwrap().reserved_bytes, 0);
+}

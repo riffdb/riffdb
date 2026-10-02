@@ -136,7 +136,7 @@ pub(super) fn entity_to_proto(value: &StoredEntityRecordV1) -> wire::StoredEntit
     }
 }
 
-fn entity_from_proto(
+pub(super) fn entity_from_proto(
     value: wire::StoredEntityRecordV1,
 ) -> Result<StoredEntityRecordV1, DurableCodecError> {
     storage_result(StoredEntityRecordV1::from_verified_canonical_fields(

@@ -25,6 +25,7 @@ pub(super) use provider::{prepare_predicate, prepare_text};
 
 pub(super) struct CapturedSource {
     pub(super) storage: ProjectionReadSource,
+    pub(super) budget: riffdb_types::exact_provider_budget_v1::ProviderBudget,
     catalog: ActiveCatalogSnapshot,
     history_incarnation: u64,
     pin: Option<RedbDerivedSourcePin>,
@@ -116,6 +117,7 @@ impl CapturedSource {
             .ok_or(RebuildFailure::Integrity)?;
         Ok(Some(Self {
             storage: ProjectionReadSource::from_snapshot(snapshot),
+            budget: runtime.ownership_graph.budget.clone(),
             catalog,
             history_incarnation: runtime.history_incarnation,
             pin,
@@ -284,6 +286,99 @@ query Ticket($organization_id: Ticket.organization_id, $ticket_id: Ticket.ticket
             bundle.schema(),
         )
         .unwrap()
+    }
+
+    // req: OQ-040, PRJ-004
+    #[test]
+    fn captured_provider_point_uses_shared_budget_and_original_snapshot() {
+        use riffdb_storage_api::EntityTarget;
+        use riffdb_types::{
+            EntityKeyBuilder, exact_provider_budget_v1::EXACT_PROVIDER_BUDGET_BYTES,
+        };
+        let (board, scope) = board_runtime("provider-admitted-captured-point");
+        let module = board_program();
+        let program = module.queries()[0].ordinary_program().unwrap();
+        let entity = program.steps()[0].internal_entity_id();
+        append_board_ticket_for_worker_at(&board, CommitSequence::first(), 0x20);
+        let runtime = ExactTextRuntime::open(
+            board.storage().projection_reads(),
+            scope.path(),
+            1,
+            ProjectionGeneration::first(),
+            Arc::new(crate::cursor::ProductionCursorMonotonicClock::new()),
+        )
+        .unwrap();
+        let captured = CapturedSource::capture(
+            &runtime,
+            CommitSequence::first(),
+            ProjectionGeneration::first(),
+        )
+        .unwrap();
+        let mut key = EntityKeyBuilder::new(entity);
+        key.push_uuid(&uuid(0x41)).unwrap();
+        key.push_uuid(&uuid(0x20)).unwrap();
+        let target = EntityTarget::new(entity, key.finish().unwrap()).unwrap();
+        let expected = captured.storage.read_entity(&target).unwrap().unwrap();
+        append_board_ticket_for_worker_at(&board, CommitSequence::new(2).unwrap(), 0x21);
+        let before = runtime.ownership_graph.budget.observation().unwrap();
+        let occupied = runtime
+            .ownership_graph
+            .budget
+            .reserve(
+                EXACT_PROVIDER_BUDGET_BYTES
+                    - before.fixed_owner_bytes
+                    - before.owned_bytes
+                    - before.reserved_bytes,
+            )
+            .unwrap();
+        assert!(matches!(
+            captured.storage.read_provider_entity_v1(&target, &captured.budget),
+            Err(error) if error.kind() == StorageErrorKind::Unavailable
+        ));
+        assert_eq!(
+            runtime
+                .ownership_graph
+                .budget
+                .observation()
+                .unwrap()
+                .owned_bytes,
+            before.owned_bytes
+        );
+        drop(occupied);
+        let record = captured
+            .storage
+            .read_provider_entity_v1(&target, &captured.budget)
+            .unwrap()
+            .unwrap();
+        assert!(**record == expected);
+        assert!(
+            runtime
+                .ownership_graph
+                .budget
+                .observation()
+                .unwrap()
+                .owned_bytes
+                > before.owned_bytes
+        );
+        drop(record);
+        assert_eq!(
+            runtime
+                .ownership_graph
+                .budget
+                .observation()
+                .unwrap()
+                .owned_bytes,
+            before.owned_bytes
+        );
+        assert_eq!(
+            runtime
+                .ownership_graph
+                .budget
+                .observation()
+                .unwrap()
+                .reserved_bytes,
+            before.reserved_bytes
+        );
     }
 
     // req: PRJ-001, PRJ-002, PRJ-004

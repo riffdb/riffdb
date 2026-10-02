@@ -36,14 +36,14 @@ impl ExactTextPartitionIndexV2 {
 }
 
 #[derive(Clone)]
-struct BorrowedRows<'a> {
+pub(super) struct BorrowedRows<'a> {
     bytes: &'a [u8],
     position: usize,
-    count: usize,
+    pub(super) count: usize,
     remaining: usize,
 }
 impl<'a> BorrowedRows<'a> {
-    fn new(bytes: &'a [u8]) -> Result<Self, ExactTextProviderErrorV1> {
+    pub(super) fn new(bytes: &'a [u8]) -> Result<Self, ExactTextProviderErrorV1> {
         if bytes.len() < 60 || bytes.len() > super::MAX_EXACT_TEXT_CHECKPOINT_BYTES_V2 {
             return Err(ExactTextProviderErrorV1::InvalidCheckpoint);
         }
@@ -113,7 +113,7 @@ impl<'a> BorrowedRows<'a> {
         let output = self.take(output_length)?;
         Ok((key, text, output))
     }
-    fn complete(&self) -> Result<(), OwnedCapacityInspectionErrorV1> {
+    pub(super) fn complete(&self) -> Result<(), OwnedCapacityInspectionErrorV1> {
         if self.remaining == 0 && self.position == self.bytes.len() {
             Ok(())
         } else {
@@ -132,7 +132,9 @@ impl<'a> Iterator for BorrowedRows<'a> {
     }
 }
 
-fn recovery_maximum(mut rows: BorrowedRows<'_>) -> Result<u64, OwnedCapacityInspectionErrorV1> {
+pub(super) fn recovery_maximum(
+    mut rows: BorrowedRows<'_>,
+) -> Result<u64, OwnedCapacityInspectionErrorV1> {
     let postings = rows.clone();
     let report = OwnedCapacityInspectionV1::inspect_with(|inspection| {
         // Decoded source map plus the ordinary builder's temporary and retained
