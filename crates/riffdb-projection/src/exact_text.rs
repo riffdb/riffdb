@@ -1,5 +1,9 @@
 //! Partition-scoped exact binary UTF-8 derived index (ADR-0131).
 
+#[path = "exact_text_admission.rs"]
+mod admission;
+pub use admission::ExactTextRebuildAdmissionErrorV1;
+
 use std::collections::{BTreeMap, BTreeSet};
 use std::error::Error;
 use std::fmt;

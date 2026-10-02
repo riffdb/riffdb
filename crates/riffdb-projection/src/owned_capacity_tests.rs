@@ -119,3 +119,64 @@ fn predicate_cells_account_for_empty_retained_scalar_buffers() {
     drop(scratch);
     assert_eq!(budget.observation().unwrap().reserved_bytes, 0);
 }
+
+#[test]
+fn exact_text_rebuild_admits_derived_postings_and_keeps_the_final_capture_charged() {
+    use riffdb_types::{CanonicalRecord, CommitSequence};
+    use std::collections::BTreeMap;
+    let rows = BTreeMap::from([(
+        key(),
+        (
+            "abcdefghijklmnopqrstuvwx".to_owned(),
+            CanonicalRecord::new(vec![]).unwrap(),
+        ),
+    )]);
+    let budget = ProviderBudget::new();
+    let provider = ExactTextPartitionIndexV2::rebuild_admitted_v1(
+        PartitionKeyHash::from_bytes([1; 32]),
+        ProjectionGeneration::new(1).unwrap(),
+        CommitSequence::new(1).unwrap(),
+        ExactTextProfileV1::BinaryUtf8V1,
+        &rows,
+        &budget,
+    )
+    .unwrap();
+    let ordinary = ExactTextPartitionIndexV2::rebuild(
+        PartitionKeyHash::from_bytes([1; 32]),
+        ProjectionGeneration::new(1).unwrap(),
+        CommitSequence::new(1).unwrap(),
+        ExactTextProfileV1::BinaryUtf8V1,
+        &rows,
+    )
+    .unwrap();
+    assert_eq!(&**provider, &ordinary);
+    assert_eq!(
+        provider.to_checkpoint_bytes().unwrap(),
+        ordinary.to_checkpoint_bytes().unwrap()
+    );
+    let capture = provider.clone();
+    drop(provider);
+    assert_eq!(budget.observation().unwrap().reserved_bytes, 0);
+    assert!(budget.observation().unwrap().owned_bytes > 0);
+    drop(capture);
+    assert_eq!(budget.observation().unwrap().owned_bytes, 0);
+    let occupied = budget
+        .reserve(
+            riffdb_types::exact_provider_budget_v1::EXACT_PROVIDER_BUDGET_BYTES
+                - budget.observation().unwrap().fixed_owner_bytes,
+        )
+        .unwrap();
+    assert!(
+        ExactTextPartitionIndexV2::rebuild_admitted_v1(
+            PartitionKeyHash::from_bytes([1; 32]),
+            ProjectionGeneration::new(1).unwrap(),
+            CommitSequence::new(1).unwrap(),
+            ExactTextProfileV1::BinaryUtf8V1,
+            &rows,
+            &budget,
+        )
+        .is_err()
+    );
+    drop(occupied);
+    assert_eq!(budget.observation().unwrap().reserved_bytes, 0);
+}

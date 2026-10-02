@@ -193,6 +193,15 @@ impl OwnedCapacityInspectionV1 {
         result
     }
 
+    /// Inspect a prospective B-tree using the same conservative node layout as
+    /// the retained-tree inventory, before its entries are allocated.
+    pub fn prospective_btree<K, V>(
+        &mut self,
+        length: usize,
+    ) -> Result<(), OwnedCapacityInspectionErrorV1> {
+        crate::owned_capacity_collections::tree_storage::<K, V>(length, self)
+    }
+
     /// Charges a requested allocation with conservative alignment/allocator slack.
     pub fn allocation(
         &mut self,

@@ -274,3 +274,46 @@ API composite-view tests, seventeen existing storage-read conformance tests,
 seven redb composite-view tests, and three focused provider-input tests passed.
 The merge test also proves tombstones and partial-batch budget refusal release
 all newly admitted rows while retaining the predecessor snapshot.
+
+## Proposed durable decoder scope extension
+
+Provider source decoding needs two changes in `crates/riffdb-proto/src/**`:
+borrowed inspection of the already supported entity/index envelope payloads
+before allocation, and a decode path whose canonical re-encoding scratch is
+caller-admitted and released rather than retained in thread-local storage. The
+source payload must still pass the normal readable schema, version, identity,
+checksum, wire canonicality, generated-message canonicality and semantic checks.
+Both existing V1 and V2 fixtures remain supported. No framing, schema identity,
+record type, dependency or application interface changes are proposed.
+
+Tests must compare the admitted path with the existing decoder on supported
+fixtures and corrupt framing, and prove refusal before buffer construction and
+release after failures. This extension requires human scope review before any
+Protobuf crate source change. Storage-reader integration and physical provider
+construction sizing can proceed within the already approved scope.
+
+## Exact-text V2 rebuild admission
+
+A hidden first-party rebuild entry point now reserves a prospective construction
+maximum before invoking the existing V2 builder. It counts both retained posting
+families, all byte-boundary substring occurrences without relying on deduplication,
+term bytes, allocator slack per buffer, posting growth, ordering arrays and their
+cloned text/key buffers. It also covers deep output copies, temporary term sets,
+hashed source trees, encoding scratch and the final inventory. Prospective trees
+use the same node allowance as retained-tree inspection.
+
+Borrowed canonical length checks reject oversized outputs before encoding. The
+ordinary builder and checkpoint representation are unchanged. Successful builds
+settle into an immutable allocation whose charge lasts through its final capture;
+admission pressure remains distinct from ordinary provider validation errors.
+Tests compare ordinary and admitted states on empty, repeated, distinct and UTF-8
+text and multiple posting populations, and check charge release and early refusal.
+
+This entry point is not yet connected to server publication: checkpoint recovery,
+incremental successor admission, source materialization and the remaining provider
+families must support the same ownership before changing retained state types.
+
+Validation: all seven scoped acceptance steps passed, including 280 tests without
+skips, Clippy with warnings denied, formatting, scope, handbook and size checks.
+The initial rebuild-admission test failed because the entry point did not exist;
+the implemented path passes its state, checkpoint and lifetime assertions.

@@ -163,7 +163,7 @@ impl<A: InspectOwnedCapacityV1, B: InspectOwnedCapacityV1> InspectOwnedCapacityV
     }
 }
 
-fn tree_storage<K, V>(
+pub(crate) fn tree_storage<K, V>(
     length: usize,
     inspection: &mut OwnedCapacityInspectionV1,
 ) -> Result<(), OwnedCapacityInspectionErrorV1> {
