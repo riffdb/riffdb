@@ -177,3 +177,24 @@ used. The actual rebuild/decode admission formulas and call sites remain open.
 Validation: seven scoped acceptance checks passed, including 215 tests without
 skips, formatting, clippy with warnings denied, handbook, scope, file size, and
 panic allowance checks.
+
+## Borrowed decode sizing
+
+A bounded borrowed walk can now estimate canonical decoded heap capacity without
+constructing strings, byte buffers, lists, records, or vectors. It reuses the
+canonical decoder's primitive readers and tag constants, and the ownership
+visitor's allocator allowance. Compact encoded lists therefore admit the much
+larger decoded value slots before materialization. The complete report requires
+one bounded document, canonical field ordering and scalar encodings, and no
+trailing bytes; malformed or excessive input produces only a typed refusal.
+
+The sizing result does not replace normal semantic decoding or account for the
+containing root, transport and verification copies, or derived indexes. Those
+allocations require their own conservative admission. This helper prepares
+checkpoint and source-read preflight without changing canonical bytes, the normal
+decoder, or any application or operator operation.
+
+Validation: all seven scoped acceptance steps passed, including 222 tests without
+skips, formatting, clippy with warnings denied, handbook, scope, file size, and
+panic allowance checks. Differential properties compare borrowed sizing against
+actual decoded capacity and decoder acceptance for generated and arbitrary inputs.

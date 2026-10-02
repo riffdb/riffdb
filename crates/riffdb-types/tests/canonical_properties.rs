@@ -96,6 +96,31 @@ fn canonical_value() -> BoxedStrategy<CanonicalValue> {
 }
 
 proptest! {
+    // req: OQ-040
+    #[test]
+    fn borrowed_decode_admission_covers_real_decoded_ownership(value in canonical_value()) {
+        let bytes = encode_canonical_value(&value).expect("generated value is bounded");
+        let bound = riffdb_types::inspect_canonical_decode_capacity_v1(&bytes).expect("canonical preflight");
+        let decoded = decode_canonical_value(&bytes).expect("canonical decode");
+        let budget = riffdb_types::exact_provider_budget_v1::ProviderBudget::new();
+        let scratch = budget.reserve(riffdb_types::OWNED_CAPACITY_INSPECTION_SCRATCH_BYTES_V1).expect("inspection admission");
+        let report = riffdb_types::OwnedCapacityInspectionV1::inspect(&decoded).expect("bounded inventory");
+        prop_assert!(report.shared_allocations().is_empty());
+        prop_assert!(bound.owned_heap_bytes() >= report.unshared_bytes());
+        prop_assert_eq!(decoded, value);
+        drop(report);
+        drop(scratch);
+        prop_assert_eq!(budget.observation().expect("accounting").reserved_bytes, 0);
+    }
+
+    // req: OQ-040
+    #[test]
+    fn borrowed_decode_preflight_and_decoder_refuse_the_same_bounded_bytes(input in vec(any::<u8>(), 0..2048)) {
+        let decoded = decode_canonical_value(&input);
+        let bound = riffdb_types::inspect_canonical_decode_capacity_v1(&input);
+        prop_assert_eq!(decoded.is_ok(), bound.is_ok());
+    }
+
     #[test]
     fn canonical_encoding_round_trips(value in canonical_value()) {
         let bytes = encode_canonical_value(&value).expect("generated value is bounded");

@@ -12,6 +12,10 @@ use crate::{
     },
 };
 
+#[path = "codec_decode_capacity.rs"]
+mod decode_capacity;
+pub use decode_capacity::*;
+
 /// Canonical value encoding version defined by ADR-0011.
 pub const CANONICAL_VALUE_VERSION: u8 = 0x01;
 

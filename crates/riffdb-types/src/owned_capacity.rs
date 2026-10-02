@@ -205,19 +205,12 @@ impl OwnedCapacityInspectionV1 {
         if bytes == 0 {
             return Ok(());
         }
-        let bound = u64::try_from(bytes)
-            .ok()
-            .and_then(|bytes| bytes.checked_mul(2))
-            .and_then(|bytes| {
-                u64::try_from(alignment)
-                    .ok()
-                    .and_then(|alignment| alignment.checked_mul(2))
-                    .and_then(|alignment| bytes.checked_add(alignment))
-            })
-            .and_then(|bytes| bytes.checked_add(256));
-        let Some(bound) = bound else {
-            self.refused = true;
-            return Err(OwnedCapacityInspectionErrorV1);
+        let bound = match allocation_upper_bound(bytes, alignment) {
+            Ok(bound) => bound,
+            Err(error) => {
+                self.refused = true;
+                return Err(error);
+            }
         };
         self.add(bound)
     }
@@ -438,4 +431,25 @@ macro_rules! inspect_owned_capacity_copy_v1 {
             }
         }
     };
+}
+
+/// One admitted allocator allowance shared by decoded sizing and owned inspection.
+pub(crate) fn allocation_upper_bound(
+    bytes: usize,
+    alignment: usize,
+) -> Result<u64, OwnedCapacityInspectionErrorV1> {
+    if bytes == 0 {
+        return Ok(0);
+    }
+    u64::try_from(bytes)
+        .ok()
+        .and_then(|bytes| bytes.checked_mul(2))
+        .and_then(|bytes| {
+            u64::try_from(alignment)
+                .ok()
+                .and_then(|alignment| alignment.checked_mul(2))
+                .and_then(|alignment| bytes.checked_add(alignment))
+        })
+        .and_then(|bytes| bytes.checked_add(256))
+        .ok_or(OwnedCapacityInspectionErrorV1)
 }
