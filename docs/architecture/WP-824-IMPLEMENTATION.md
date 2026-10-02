@@ -33,9 +33,11 @@ publication sequence; Hazards/follow-ups: finish source ownership and retirement
 before qualification. Existing handbook transient-unavailable behavior applies;
 no application or operator control changes.
 
-## Proposed catalog capacity scope extension
+## Approved catalog capacity scope extension
 
-Requested additional allowed path: `crates/riffdb-catalog/src/**`.
+Additional allowed path: `crates/riffdb-catalog/src/**`.
+Maintainer approval: in session, 2026-10-02, “i approve”, accepting the
+concrete catalog scope proposal below.
 Provider source capture invokes `ActiveCatalogSnapshot::read`, which owns a
 private publication, validated bundles and enum-name tables, a complete lineage
 materialization proof, and a shared command-plan map. Those private catalog
@@ -53,7 +55,7 @@ dependency, application interface, ordering, authorization or freshness change
 is proposed. The implementation must prove shared deduplication and release
 through actual final data references, preserve canonical bytes and catalog
 semantics, and test pressure, malformed evidence, cancellation and concurrent
-captures. No catalog implementation change has been made pending scope review.
+captures. The scope widening is recorded before catalog implementation changes.
 
 ## Predicate recovery and production ownership
 
