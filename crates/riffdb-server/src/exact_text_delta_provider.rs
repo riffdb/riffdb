@@ -6,7 +6,7 @@ use std::sync::Arc;
 use riffdb_projection::{
     ExactPredicateIndexMutationV1, ExactPredicatePartitionIndexV4, ExactPredicatePartitionIndexV5,
     ExactPredicateProviderErrorV1, ExactPredicateProviderRowV1, ExactTextIndexMutationV2,
-    ExactTextIndexMutationV3, ExactTextProviderErrorV1,
+    ExactTextIndexMutationV3, ExactTextProviderErrorV1, ExactTextRebuildAdmissionErrorV1,
 };
 use riffdb_query_ir::QueryAccessProgramV1;
 use riffdb_types::{
@@ -137,22 +137,26 @@ pub(in crate::exact_text_adapter) fn prepare_text(
                 (_, _, Some(_)) => filtered.push(ExactTextIndexMutationV3::Delete(key)),
             }
         }
-        let result = match Arc::make_mut(&mut provider) {
-            ExactTextProviderState::V2(provider) if filter_field.is_none() => {
-                provider.apply(delta.source.head, &unfiltered)
-            }
-            ExactTextProviderState::V3(provider) if filter_field.is_some() => {
-                provider.apply(delta.source.head, &filtered)
-            }
+        let successor = match provider.as_ref() {
+            ExactTextProviderState::V2(previous) if filter_field.is_none() => previous
+                .apply_admitted_v1(delta.source.head, &unfiltered, &captured.budget)
+                .map(ExactTextProviderState::V2),
+            ExactTextProviderState::V3(previous) if filter_field.is_some() => previous
+                .apply_admitted_v1(delta.source.head, &filtered, &captured.budget)
+                .map(ExactTextProviderState::V3),
             _ => return Err(RebuildFailure::Integrity),
-        };
-        result.map_err(|error| match error {
-            ExactTextProviderErrorV1::PartitionRowLimit
-            | ExactTextProviderErrorV1::CheckpointTooLarge
-            | ExactTextProviderErrorV1::ValueTooLong
-            | ExactTextProviderErrorV1::OutputTooLarge => RebuildFailure::Capacity(generation),
-            _ => RebuildFailure::Integrity,
+        }
+        .map_err(|error| match error {
+            ExactTextRebuildAdmissionErrorV1::CapacityUnavailable => RebuildFailure::Transient,
+            ExactTextRebuildAdmissionErrorV1::Provider(
+                ExactTextProviderErrorV1::PartitionRowLimit
+                | ExactTextProviderErrorV1::CheckpointTooLarge
+                | ExactTextProviderErrorV1::ValueTooLong
+                | ExactTextProviderErrorV1::OutputTooLarge,
+            ) => RebuildFailure::Capacity(generation),
+            ExactTextRebuildAdmissionErrorV1::Provider(_) => RebuildFailure::Integrity,
         })?;
+        provider = Arc::new(successor);
     } else if !delta.changes.is_empty() {
         return Err(RebuildFailure::Integrity);
     }

@@ -399,3 +399,43 @@ formats, query ordering, authorization and scan ceilings remain unchanged.
 Handbook: this implementation page is reachable from SUMMARY.md. Hazards and
 follow-ups: complete source/policy/successor accounting, protected epochs, safe
 retirement and artifact cleanup before qualification and package closure.
+
+
+## Production binary-text provider ownership
+
+V2 and V3 successor admission reserves conservative maxima before cloning the
+predecessor or invoking ordinary atomic apply. It counts simultaneous private
+clones, mutation copies, prospective posting and ordering growth, filter keys,
+filter families and canonical checkpoint validation. Original state and borrowed
+mutations remain independently owned. Settlement releases excess reservation
+and keeps the actual immutable provider charged through its final capture.
+
+Production binary-text rebuild, checkpoint recovery/reopen and incremental
+catch-up now use the admitted entry points. Retained provider variants hold the
+charged allocations directly; semantic equality ignores accounting metadata.
+Budget pressure returns the existing transient rebuild refusal, while ordinary
+validation and generation failures preserve their existing typed behavior.
+The hidden successor entry points currently admit binary UTF-8, the profile used
+by these production workers; other normalization profiles refuse this path until
+their construction amplification is proved. Ordinary provider APIs are unchanged.
+
+Tests compare ordinary apply and checkpoint bytes across insertions, replacements,
+Unicode/repeated text, filter moves and deletions. They check unchanged predecessor
+captures, pressure after inspection, invalid mutations, failed epoch advancement
+and final-reference release. All three focused successor tests and all 27 adapter
+tests passed. All 100 selected projection/provider conformance tests passed;
+534 unrelated tests were excluded by the selection expression. All six scoped
+non-test acceptance checks passed, including Clippy with warnings denied,
+formatting, scope, handbook, file size and panic allowance checks. Initial test
+fixture and compile errors were corrected before these passing runs.
+
+WP-824 remains open. Predicate, tokenized and long-pattern construction,
+source/catalog/policy scratch, checkpoint encoding, protected epochs, retirement
+and artifact cleanup still prevent aggregate enforcement and milestone closure.
+
+PR note: Package WP-824 (open); Tier guarantee; Behavior: production binary-text
+provider construction, recovery and successor ownership admission. Compatibility:
+unchanged provider algorithms, checkpoint bytes, generation/frontier validation,
+authorization and application interfaces. Handbook: this implementation page.
+Hazards and follow-ups: complete the remaining ownership and retirement paths
+before qualification; this slice does not claim the 24-hour rehearsal.

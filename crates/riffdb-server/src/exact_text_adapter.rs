@@ -20,8 +20,8 @@ use riffdb_policy::{AuthorizedQueryRowPolicyContextV1, MAX_PROJECTED_POLICY_CAND
 use riffdb_projection::{
     ExactPredicatePartitionIndexV4, ExactPredicatePartitionIndexV5,
     ExactPredicateProviderBindingV1, ExactPredicateProviderBindingV2, ExactPredicateProviderRowV1,
-    ExactTextPartitionIndexV2, ExactTextPartitionIndexV3, LongPatternPartitionV1,
-    LongPatternProviderErrorV1, MAX_EXACT_PREDICATE_CHECKPOINT_BYTES_V4,
+    ExactTextPartitionIndexV2, ExactTextPartitionIndexV3, ExactTextRebuildAdmissionErrorV1,
+    LongPatternPartitionV1, LongPatternProviderErrorV1, MAX_EXACT_PREDICATE_CHECKPOINT_BYTES_V4,
     MAX_LONG_PATTERN_CHECKPOINT_BYTES_V1, ProviderEpochObservationV1, ProviderLifecycleV1,
     ResultSetEpochContextV1, ResultSetEpochRequirementV1, TokenizedTextConfigV1,
     TokenizedTextFieldV1, TokenizedTextMutationV1, TokenizedTextPartitionIndexV1,
@@ -477,28 +477,39 @@ enum ExactTextSlotState {
     IntegrityFailure,
 }
 
-#[derive(Clone, Eq, PartialEq)]
+#[derive(Clone)]
 enum ExactTextProviderState {
-    V2(Box<ExactTextPartitionIndexV2>),
-    V3(Box<ExactTextPartitionIndexV3>),
+    V2(Arc<riffdb_types::exact_provider_budget_v1::ProviderAllocation<ExactTextPartitionIndexV2>>),
+    V3(Arc<riffdb_types::exact_provider_budget_v1::ProviderAllocation<ExactTextPartitionIndexV3>>),
 }
 
+impl PartialEq for ExactTextProviderState {
+    fn eq(&self, other: &Self) -> bool {
+        match (self, other) {
+            (Self::V2(left), Self::V2(right)) => ***left == ***right,
+            (Self::V3(left), Self::V3(right)) => ***left == ***right,
+            _ => false,
+        }
+    }
+}
+impl Eq for ExactTextProviderState {}
+
 impl ExactTextProviderState {
-    const fn partition(&self) -> PartitionKeyHash {
+    fn partition(&self) -> PartitionKeyHash {
         match self {
             Self::V2(provider) => provider.partition(),
             Self::V3(provider) => provider.partition(),
         }
     }
 
-    const fn generation(&self) -> ProjectionGeneration {
+    fn generation(&self) -> ProjectionGeneration {
         match self {
             Self::V2(provider) => provider.generation(),
             Self::V3(provider) => provider.generation(),
         }
     }
 
-    const fn frontier(&self) -> Option<CommitSequence> {
+    fn frontier(&self) -> Option<CommitSequence> {
         match self {
             Self::V2(provider) => provider.frontier(),
             Self::V3(provider) => provider.frontier(),
@@ -2574,7 +2585,11 @@ fn rebuild_slot(
             &slot.registration.key(),
             runtime.history_incarnation,
         )
-        && let Ok(recovered) = recover_provider(&slot.registration, provider_bytes)
+        && let Ok(recovered) = recover_provider(
+            &slot.registration,
+            provider_bytes,
+            &runtime.ownership_graph.budget,
+        )
         && recovered.partition() == hash_partition_key(slot.registration.partition_key.as_bytes())
     {
         prior_generation = Some(recovered.generation());
@@ -2595,16 +2610,17 @@ fn rebuild_slot(
                 .into_iter()
                 .map(|(key, (text, _, output))| (key, (text, output)))
                 .collect::<BTreeMap<_, _>>();
-            ExactTextProviderState::V2(Box::new(
-                ExactTextPartitionIndexV2::rebuild(
+            ExactTextProviderState::V2(
+                ExactTextPartitionIndexV2::rebuild_admitted_v1(
                     hash_partition_key(slot.registration.partition_key.as_bytes()),
                     generation,
                     head,
                     ExactTextProfileV1::BinaryUtf8V1,
                     &rows,
+                    &runtime.ownership_graph.budget,
                 )
-                .map_err(|_| RebuildFailure::Integrity)?,
-            ))
+                .map_err(map_text_admission_failure)?,
+            )
         }
         Some(filter) => {
             let rows = rows
@@ -2613,17 +2629,18 @@ fn rebuild_slot(
                     (key, (text, filter.unwrap_or(CanonicalValue::Null), output))
                 })
                 .collect::<BTreeMap<_, _>>();
-            ExactTextProviderState::V3(Box::new(
-                ExactTextPartitionIndexV3::rebuild(
+            ExactTextProviderState::V3(
+                ExactTextPartitionIndexV3::rebuild_admitted_v1(
                     hash_partition_key(slot.registration.partition_key.as_bytes()),
                     generation,
                     head,
                     ExactTextProfileV1::BinaryUtf8V1,
                     filter.internal_field(),
                     &rows,
+                    &runtime.ownership_graph.budget,
                 )
-                .map_err(|_| RebuildFailure::Integrity)?,
-            ))
+                .map_err(map_text_admission_failure)?,
+            )
         }
     };
     persist_checked_slot(runtime, slot, &provider)?;
@@ -2649,7 +2666,8 @@ fn persist_checked_slot(
         &slot.registration.key(),
         runtime.history_incarnation,
     )?;
-    if recover_provider(&slot.registration, bytes).map_err(|_| RebuildFailure::Integrity)?
+    if recover_provider(&slot.registration, bytes, &runtime.ownership_graph.budget)
+        .map_err(map_text_admission_failure)?
         != *provider
     {
         return Err(RebuildFailure::Integrity);
@@ -3240,20 +3258,30 @@ fn read_complete_predicate_partition<R: ExactPredicateRegistrationView>(
     Ok((rows.into_values().collect(), candidates))
 }
 
+fn map_text_admission_failure(error: ExactTextRebuildAdmissionErrorV1) -> RebuildFailure {
+    match error {
+        ExactTextRebuildAdmissionErrorV1::CapacityUnavailable => RebuildFailure::Transient,
+        ExactTextRebuildAdmissionErrorV1::Provider(_) => RebuildFailure::Integrity,
+    }
+}
+
 fn recover_provider(
     registration: &ExactTextRegistration,
     bytes: &[u8],
-) -> Result<ExactTextProviderState, riffdb_projection::ExactTextProviderErrorV1> {
+    budget: &riffdb_types::exact_provider_budget_v1::ProviderBudget,
+) -> Result<ExactTextProviderState, ExactTextRebuildAdmissionErrorV1> {
     match registration.query.filter() {
-        None => ExactTextPartitionIndexV2::from_checkpoint_bytes(bytes)
-            .map(Box::new)
+        None => ExactTextPartitionIndexV2::from_checkpoint_bytes_admitted_v1(bytes, budget)
             .map(ExactTextProviderState::V2),
         Some(filter) => {
-            let provider = ExactTextPartitionIndexV3::from_checkpoint_bytes(bytes)?;
+            let provider =
+                ExactTextPartitionIndexV3::from_checkpoint_bytes_admitted_v1(bytes, budget)?;
             if provider.filter_field() != filter.internal_field() {
-                return Err(riffdb_projection::ExactTextProviderErrorV1::InvalidCheckpoint);
+                return Err(ExactTextRebuildAdmissionErrorV1::Provider(
+                    riffdb_projection::ExactTextProviderErrorV1::InvalidCheckpoint,
+                ));
             }
-            Ok(ExactTextProviderState::V3(Box::new(provider)))
+            Ok(ExactTextProviderState::V3(provider))
         }
     }
 }
