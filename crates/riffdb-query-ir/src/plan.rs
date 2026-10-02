@@ -1299,6 +1299,8 @@ pub struct QueryAccessProgramV1 {
     canonical_bytes: Vec<u8>,
     identity: QueryPlanIdentity,
     explain: QueryPlanExplain,
+    // Last: attached allocation charges outlive all semantic data fields.
+    ownership_lifecycle: riffdb_types::OwnedCapacityLifecycleV1,
 }
 
 impl std::fmt::Debug for QueryAccessProgramV1 {
@@ -1456,6 +1458,7 @@ impl QueryAccessProgramV1 {
         let identity = QueryPlanIdentity(hash_query_plan(&canonical_bytes));
         let explain = build_explain(&partition_route, &steps, &authorization, cost);
         Some(Self {
+            ownership_lifecycle: Default::default(),
             contract,
             surface,
             name,
@@ -2343,7 +2346,8 @@ riffdb_types::inspect_owned_capacity_struct_v1!(QueryAccessProgramV1 {
         canonical_bytes,
         explain
     ],
-    inline: [cost, identity]
+    inline: [cost, identity],
+    lifecycle: ownership_lifecycle
 });
 
 riffdb_types::inspect_owned_capacity_struct_v1!(ProjectedVectorSourceV1 {

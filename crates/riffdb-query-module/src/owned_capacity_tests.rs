@@ -57,6 +57,11 @@ query SearchUsers(
         let two =
             OwnedCapacityInspectionV1::inspect(&[compiled.clone(), compiled.clone()]).unwrap();
         assert!(!one.shared_allocations().is_empty());
+        assert!(
+            one.shared_allocations()
+                .iter()
+                .all(|allocation| allocation.lifecycle().is_some())
+        );
         assert_eq!(
             two.shared_allocations().len(),
             one.shared_allocations().len()
@@ -119,6 +124,11 @@ query SearchDocuments(
         let two =
             OwnedCapacityInspectionV1::inspect(&[compiled.clone(), compiled.clone()]).unwrap();
         assert!(!one.shared_allocations().is_empty());
+        assert!(
+            one.shared_allocations()
+                .iter()
+                .all(|allocation| allocation.lifecycle().is_some())
+        );
         assert_eq!(
             two.shared_allocations().len(),
             one.shared_allocations().len()

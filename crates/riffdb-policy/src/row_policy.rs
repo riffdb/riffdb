@@ -378,6 +378,7 @@ pub struct AuthorizedQueryRowPolicyContextV1 {
     authority: Option<AuthorizedRowPolicyAuthority>,
     principal: PrincipalFactBindingV1,
     policies: BTreeMap<EntityTypeId, AuthorizedEntityPolicyV1>,
+    ownership_lifecycle: riffdb_types::OwnedCapacityLifecycleV1,
 }
 
 /// One compiler-anchored event candidate supplied only to first-party policy
@@ -542,6 +543,7 @@ impl AuthorizedQueryRowPolicyContextV1 {
             }
         }
         Ok(Self {
+            ownership_lifecycle: Default::default(),
             bundle: None,
             authority: None,
             principal,
@@ -978,6 +980,7 @@ pub fn resolve_authorized_query_row_policy_context(
         );
     }
     Ok(Some(AuthorizedQueryRowPolicyContextV1 {
+        ownership_lifecycle: Default::default(),
         bundle: Some(bundle.bundle_hash()),
         authority: Some(authority.clone()),
         principal: authority.internal_principal().clone(),
@@ -1090,6 +1093,7 @@ pub fn resolve_authorized_vector_inspection_row_policy_context(
         .entity(entity)
         .ok_or(QueryRowPolicyContextErrorV1::InvalidRelationshipPlan)?;
     Ok(Some(AuthorizedQueryRowPolicyContextV1 {
+        ownership_lifecycle: Default::default(),
         bundle: Some(bundle.bundle_hash()),
         authority: Some(authority.clone()),
         principal: authority.internal_principal().clone(),
@@ -1132,6 +1136,7 @@ pub fn resolve_authorized_application_export_row_policy_context(
         bundle.schema().entities().iter().map(|entity| entity.id()),
     )?;
     Ok(Some(AuthorizedQueryRowPolicyContextV1 {
+        ownership_lifecycle: Default::default(),
         bundle: Some(bundle.bundle_hash()),
         authority: Some(authority.clone()),
         principal: authority.internal_principal().clone(),
@@ -1168,6 +1173,7 @@ pub fn resolve_authorized_contextual_row_policy_context(
     };
     let policies = resolve_read_policies(authority, bundle, entities.iter().copied())?;
     Ok(Some(AuthorizedQueryRowPolicyContextV1 {
+        ownership_lifecycle: Default::default(),
         bundle: Some(bundle.bundle_hash()),
         authority: Some(authority.clone()),
         principal: authority.internal_principal().clone(),
@@ -1199,6 +1205,7 @@ pub fn resolve_authorized_event_row_policy_context(
     };
     let policies = resolve_read_policies(authority, bundle, entities.iter().copied())?;
     Ok(Some(AuthorizedQueryRowPolicyContextV1 {
+        ownership_lifecycle: Default::default(),
         bundle: Some(bundle.bundle_hash()),
         authority: Some(authority.clone()),
         principal: authority.internal_principal().clone(),
@@ -1234,6 +1241,7 @@ pub fn resolve_authorized_event_replay_row_policy_context(
     };
     let policies = resolve_read_policies(authority, bundle, entities.iter().copied())?;
     Ok(Some(AuthorizedQueryRowPolicyContextV1 {
+        ownership_lifecycle: Default::default(),
         bundle: Some(bundle.bundle_hash()),
         authority: Some(authority.clone()),
         principal: authority.internal_principal().clone(),
@@ -2053,7 +2061,8 @@ const fn hex_nibble(value: u8) -> Option<u8> {
 // Exhaustive non-durable ownership inventories for exact-provider admission.
 riffdb_types::inspect_owned_capacity_struct_v1!(AuthorizedQueryRowPolicyContextV1 {
     owned: [bundle, authority, principal, policies],
-    inline: []
+    inline: [],
+    lifecycle: ownership_lifecycle
 });
 
 riffdb_types::inspect_owned_capacity_struct_v1!(AuthorizedEntityPolicyV1 {
@@ -2076,6 +2085,7 @@ mod projected_admission_tests {
 
     fn context() -> AuthorizedQueryRowPolicyContextV1 {
         AuthorizedQueryRowPolicyContextV1 {
+            ownership_lifecycle: Default::default(),
             bundle: None,
             authority: None,
             principal: PrincipalFactBindingV1::new(

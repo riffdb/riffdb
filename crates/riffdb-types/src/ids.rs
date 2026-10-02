@@ -764,16 +764,34 @@ impl fmt::Display for TextIdError {
 /// thread; a `String` field made each of those copies a heap allocation.
 /// Validation, ordering, hashing and display are unchanged: `Arc<str>`
 /// delegates all four to the same `str`.
-#[derive(Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
-pub struct ContractLineage(Arc<str>);
-crate::inspect_owned_capacity_tuple_v1!(ContractLineage, Arc<str>);
+#[derive(Clone, Eq, Hash, Ord, PartialEq, PartialOrd)]
+pub struct ContractLineage(Arc<str>, Arc<crate::OwnedCapacityLifecycleV1>);
+impl fmt::Debug for ContractLineage {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_tuple("ContractLineage")
+            .field(&self.0)
+            .finish()
+    }
+}
+
+impl crate::InspectOwnedCapacityV1 for ContractLineage {
+    fn inspect_owned_capacity(
+        &self,
+        inspection: &mut crate::OwnedCapacityInspectionV1,
+    ) -> Result<(), crate::OwnedCapacityInspectionErrorV1> {
+        let Self(value, lifecycle) = self;
+        // Shared destruction sidecar overhead belongs to this shared allocation.
+        inspection.shared_str_with_lifecycle(value, Some(lifecycle.reference()))
+    }
+}
 
 impl ContractLineage {
     /// Validates and creates a contract lineage without normalizing its text.
     pub fn new(value: impl Into<String>) -> Result<Self, TextIdError> {
         let value = value.into();
         validate_text_id(&value, MAX_CONTRACT_LINEAGE_BYTES)?;
-        Ok(Self(Arc::from(value)))
+        Ok(Self(Arc::from(value), Arc::new(Default::default())))
     }
 
     /// Borrows the exact contract lineage name.
@@ -1004,9 +1022,24 @@ impl fmt::Display for ContractLineage {
 }
 
 /// A bounded ASCII environment slug.
-#[derive(Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
-pub struct Environment(Arc<str>);
-crate::inspect_owned_capacity_tuple_v1!(Environment, Arc<str>);
+#[derive(Clone, Eq, Hash, Ord, PartialEq, PartialOrd)]
+pub struct Environment(Arc<str>, Arc<crate::OwnedCapacityLifecycleV1>);
+impl fmt::Debug for Environment {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.debug_tuple("Environment").field(&self.0).finish()
+    }
+}
+
+impl crate::InspectOwnedCapacityV1 for Environment {
+    fn inspect_owned_capacity(
+        &self,
+        inspection: &mut crate::OwnedCapacityInspectionV1,
+    ) -> Result<(), crate::OwnedCapacityInspectionErrorV1> {
+        let Self(value, lifecycle) = self;
+        // Shared destruction sidecar overhead belongs to this shared allocation.
+        inspection.shared_str_with_lifecycle(value, Some(lifecycle.reference()))
+    }
+}
 
 impl Environment {
     /// Validates and creates an environment slug without changing its spelling.
@@ -1021,7 +1054,7 @@ impl Environment {
             return Err(TextIdError::InvalidCharacter { index });
         }
 
-        Ok(Self(Arc::from(value)))
+        Ok(Self(Arc::from(value), Arc::new(Default::default())))
     }
 
     /// Borrows the exact environment slug.
@@ -1128,15 +1161,24 @@ fn validate_text_id(value: &str, maximum: usize) -> Result<(), TextIdError> {
 
 /// A bounded stable principal identifier.
 #[derive(Clone, Eq, Hash, Ord, PartialEq, PartialOrd)]
-pub struct ActorId(Arc<str>);
-crate::inspect_owned_capacity_tuple_v1!(ActorId, Arc<str>);
+pub struct ActorId(Arc<str>, Arc<crate::OwnedCapacityLifecycleV1>);
+impl crate::InspectOwnedCapacityV1 for ActorId {
+    fn inspect_owned_capacity(
+        &self,
+        inspection: &mut crate::OwnedCapacityInspectionV1,
+    ) -> Result<(), crate::OwnedCapacityInspectionErrorV1> {
+        let Self(value, lifecycle) = self;
+        // Shared destruction sidecar overhead belongs to this shared allocation.
+        inspection.shared_str_with_lifecycle(value, Some(lifecycle.reference()))
+    }
+}
 
 impl ActorId {
     /// Validates and creates an actor identifier.
     pub fn new(value: impl Into<String>) -> Result<Self, TextIdError> {
         let value = value.into();
         validate_text_id(&value, MAX_ACTOR_ID_BYTES)?;
-        Ok(Self(Arc::from(value)))
+        Ok(Self(Arc::from(value), Arc::new(Default::default())))
     }
 
     /// Borrows the identifier text.

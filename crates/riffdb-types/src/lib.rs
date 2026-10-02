@@ -16,6 +16,10 @@ mod consumer;
 mod database;
 mod decimal;
 mod dual_frontier;
+/// Trusted compiled exact-provider accounting; applications have no budget selector.
+#[doc(hidden)]
+#[path = "exact_provider_budget.rs"]
+pub mod exact_provider_budget_v1;
 mod exact_text;
 mod execution;
 mod export;
@@ -28,6 +32,7 @@ mod long_pattern;
 mod maintenance;
 mod owned_capacity;
 mod owned_capacity_collections;
+mod owned_capacity_lifecycle;
 #[cfg(test)]
 mod owned_capacity_tests;
 mod principal_fact;
@@ -67,6 +72,7 @@ pub use limits::*;
 pub use long_pattern::*;
 pub use maintenance::*;
 pub use owned_capacity::*;
+pub use owned_capacity_lifecycle::{OwnedCapacityLifecycleReferenceV1, OwnedCapacityLifecycleV1};
 pub use principal_fact::*;
 pub use projection::*;
 pub use projection_provider::*;

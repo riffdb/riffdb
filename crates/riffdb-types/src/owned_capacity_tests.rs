@@ -126,3 +126,59 @@ fn shared_census_refuses_a_successor_instead_of_growing_inspection_scratch() {
         .is_ok()
     );
 }
+
+#[test]
+fn shared_string_inspection_retains_destruction_ownership_through_its_last_capture() {
+    let budget = crate::exact_provider_budget_v1::ProviderBudget::new();
+    let value = ContractLineage::new("captured_lineage").unwrap();
+    let cloned = value.clone();
+    let report = OwnedCapacityInspectionV1::inspect(&value).unwrap();
+    let lifecycle = report.shared_allocations()[0].lifecycle().unwrap();
+    let charge = budget.reserve(128).unwrap().commit().unwrap();
+    drop(lifecycle.attach(charge).unwrap());
+    drop(value);
+    drop(cloned);
+    assert_eq!(budget.observation().unwrap().owned_bytes, 128);
+    drop(report);
+    assert_eq!(budget.observation().unwrap().owned_bytes, 0);
+    assert_eq!(budget.observation().unwrap().released_allocations, 1);
+}
+
+#[test]
+fn destruction_bookkeeping_does_not_change_key_hash_order_or_debug() {
+    use std::collections::hash_map::DefaultHasher;
+    use std::hash::{Hash, Hasher};
+    fn hashed(value: &impl Hash) -> u64 {
+        let mut hash = DefaultHasher::new();
+        value.hash(&mut hash);
+        hash.finish()
+    }
+    let lineage = ContractLineage::new("stable_lineage").unwrap();
+    let separately_constructed = ContractLineage::new("stable_lineage").unwrap();
+    let before = hashed(&lineage);
+    let report = OwnedCapacityInspectionV1::inspect(&lineage).unwrap();
+    let budget = crate::exact_provider_budget_v1::ProviderBudget::new();
+    drop(
+        report.shared_allocations()[0]
+            .lifecycle()
+            .unwrap()
+            .attach(budget.reserve(128).unwrap().commit().unwrap())
+            .unwrap(),
+    );
+    assert_eq!(lineage, separately_constructed);
+    assert_eq!(
+        lineage.cmp(&separately_constructed),
+        std::cmp::Ordering::Equal
+    );
+    assert_eq!(hashed(&lineage), before);
+    assert_eq!(hashed(&lineage), hashed(&"stable_lineage"));
+    assert_eq!(
+        format!("{lineage:?}"),
+        "ContractLineage(\"stable_lineage\")"
+    );
+    let environment = Environment::new("test").unwrap();
+    assert_eq!(format!("{environment:?}"), "Environment(\"test\")");
+    let actor = ActorId::new("reader").unwrap();
+    assert_eq!(format!("{actor:?}"), "ActorId([REDACTED])");
+    assert_eq!(hashed(&actor), hashed(&"reader"));
+}

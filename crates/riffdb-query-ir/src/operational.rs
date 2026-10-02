@@ -393,6 +393,8 @@ pub struct OperationalQueryFamilyV1 {
     maximum_cost: QueryCostVectorV1,
     canonical_bytes: Vec<u8>,
     identity: OperationalQueryFamilyIdentity,
+    // Last: attached allocation charges outlive all semantic data fields.
+    ownership_lifecycle: riffdb_types::OwnedCapacityLifecycleV1,
 }
 
 impl OperationalQueryFamilyV1 {
@@ -440,6 +442,7 @@ impl OperationalQueryFamilyV1 {
         )?;
         let identity = OperationalQueryFamilyIdentity(hash_query_plan(&canonical_bytes));
         Some(Self {
+            ownership_lifecycle: Default::default(),
             surface,
             presence_parameters,
             members,
@@ -670,7 +673,8 @@ riffdb_types::inspect_owned_capacity_struct_v1!(OperationalQueryFamilyV1 {
         authorization_union,
         canonical_bytes
     ],
-    inline: [maximum_cost, identity]
+    inline: [maximum_cost, identity],
+    lifecycle: ownership_lifecycle
 });
 
 riffdb_types::inspect_owned_capacity_struct_v1!(OperationalPlanMemberV1 {

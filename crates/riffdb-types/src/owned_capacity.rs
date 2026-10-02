@@ -20,6 +20,11 @@ pub const OWNED_CAPACITY_INSPECTION_SCRATCH_BYTES_V1: u64 = 4 * 1024 * 1024;
 pub trait InspectOwnedCapacityV1: Any + Send + Sync {
     /// False only for types that cannot retain a heap allocation.
     const HAS_NESTED_ALLOCATIONS: bool = true;
+    /// Present only when final data destruction owns the attached byte charge.
+    fn allocation_lifecycle(&self) -> Option<crate::OwnedCapacityLifecycleReferenceV1> {
+        None
+    }
+
     /// Adds this value's owned heap capacity, excluding its inline representation.
     fn inspect_owned_capacity(
         &self,
@@ -44,6 +49,7 @@ pub struct SharedAllocationObservationV1 {
     identity: SharedAllocationIdentityV1,
     bytes: u64,
     keepalive: Arc<dyn Any + Send + Sync>,
+    lifecycle: Option<crate::OwnedCapacityLifecycleReferenceV1>,
 }
 
 impl SharedAllocationObservationV1 {
@@ -54,6 +60,11 @@ impl SharedAllocationObservationV1 {
     /// Includes capacity, alignment, allocation and ownership overhead.
     pub const fn bytes(&self) -> u64 {
         self.bytes
+    }
+    /// An optional destruction proof. Ownership admission refuses shared data
+    /// without such a proof; the numerical inspector can still observe it.
+    pub fn lifecycle(&self) -> Option<&crate::OwnedCapacityLifecycleReferenceV1> {
+        self.lifecycle.as_ref()
     }
     /// Transfers the original allocation reference to the budget owner.
     pub fn into_parts(self) -> (SharedAllocationIdentityV1, u64, Arc<dyn Any + Send + Sync>) {
@@ -236,6 +247,7 @@ impl OwnedCapacityInspectionV1 {
             size_of::<T>(),
             align_of::<T>(),
             proof,
+            value.as_ref().allocation_lifecycle(),
             |inspection| inspection.visit(value.as_ref()),
         )
     }
@@ -244,16 +256,30 @@ impl OwnedCapacityInspectionV1 {
         &mut self,
         value: &Arc<[T]>,
     ) -> Result<(), OwnedCapacityInspectionErrorV1> {
+        self.shared_slice_with_lifecycle(value, None)
+    }
+
+    pub(crate) fn shared_slice_with_lifecycle<T: InspectOwnedCapacityV1>(
+        &mut self,
+        value: &Arc<[T]>,
+        lifecycle: Option<crate::OwnedCapacityLifecycleReferenceV1>,
+    ) -> Result<(), OwnedCapacityInspectionErrorV1> {
         let identity = SharedAllocationIdentityV1(Arc::as_ptr(value).cast::<()>() as usize);
         if self.shared_seen(identity)? {
             return Ok(());
         }
-        let proof: Arc<dyn Any + Send + Sync> = Arc::new(value.clone());
+        let lifetime_owner = lifecycle
+            .as_ref()
+            .map(|reference| reference.keepalive())
+            .transpose()?;
+        // Original data reference drops before the matching lifecycle reference.
+        let proof: Arc<dyn Any + Send + Sync> = Arc::new((value.clone(), lifetime_owner));
         self.shared_inner(
             identity,
             std::mem::size_of_val(value.as_ref()),
             align_of::<T>(),
             proof,
+            lifecycle,
             |inspection| inspection.visit(value.as_ref()),
         )
     }
@@ -262,16 +288,30 @@ impl OwnedCapacityInspectionV1 {
         &mut self,
         value: &Arc<str>,
     ) -> Result<(), OwnedCapacityInspectionErrorV1> {
+        self.shared_str_with_lifecycle(value, None)
+    }
+
+    pub(crate) fn shared_str_with_lifecycle(
+        &mut self,
+        value: &Arc<str>,
+        lifecycle: Option<crate::OwnedCapacityLifecycleReferenceV1>,
+    ) -> Result<(), OwnedCapacityInspectionErrorV1> {
         let identity = SharedAllocationIdentityV1(Arc::as_ptr(value).cast::<()>() as usize);
         if self.shared_seen(identity)? {
             return Ok(());
         }
-        let proof: Arc<dyn Any + Send + Sync> = Arc::new(value.clone());
+        let lifetime_owner = lifecycle
+            .as_ref()
+            .map(|reference| reference.keepalive())
+            .transpose()?;
+        // Original data reference drops before the matching lifecycle reference.
+        let proof: Arc<dyn Any + Send + Sync> = Arc::new((value.clone(), lifetime_owner));
         self.shared_inner(
             identity,
             value.len(),
             align_of::<usize>(),
             proof,
+            lifecycle,
             |_| Ok(()),
         )
     }
@@ -299,6 +339,7 @@ impl OwnedCapacityInspectionV1 {
         inline: usize,
         alignment: usize,
         proof: Arc<dyn Any + Send + Sync>,
+        lifecycle: Option<crate::OwnedCapacityLifecycleReferenceV1>,
         visit: impl FnOnce(&mut Self) -> Result<(), OwnedCapacityInspectionErrorV1>,
     ) -> Result<(), OwnedCapacityInspectionErrorV1> {
         if self.refused || self.shared.len() >= MAX_SHARED_ALLOCATIONS {
@@ -309,8 +350,9 @@ impl OwnedCapacityInspectionV1 {
         let index = self.shared.len();
         self.shared.push(SharedAllocationObservationV1 {
             identity,
-            bytes: 256,
+            bytes: 1024,
             keepalive: proof,
+            lifecycle,
         });
         self.current = Some(index);
         let result = inline
@@ -330,6 +372,17 @@ impl OwnedCapacityInspectionV1 {
 #[doc(hidden)]
 #[macro_export]
 macro_rules! inspect_owned_capacity_struct_v1 {
+    ($ty:ty { owned: [$($owned:ident),* $(,)?], inline: [$($inline:ident),* $(,)?], lifecycle: $lifecycle:ident }) => {
+        impl $crate::InspectOwnedCapacityV1 for $ty {
+            fn allocation_lifecycle(&self) -> Option<$crate::OwnedCapacityLifecycleReferenceV1> { Some(self.$lifecycle.reference()) }
+            fn inspect_owned_capacity(&self, inspection: &mut $crate::OwnedCapacityInspectionV1) -> Result<(), $crate::OwnedCapacityInspectionErrorV1> {
+                let Self { $($owned,)* $($inline,)* $lifecycle } = self;
+                $(inspection.visit($owned)?;)*
+                $(inspection.inline($inline)?;)*
+                inspection.visit($lifecycle)
+            }
+        }
+    };
     ($ty:ty { owned: [$($owned:ident),* $(,)?], inline: [$($inline:ident),* $(,)?] }) => {
         impl $crate::InspectOwnedCapacityV1 for $ty {
             fn inspect_owned_capacity(&self, inspection: &mut $crate::OwnedCapacityInspectionV1) -> Result<(), $crate::OwnedCapacityInspectionErrorV1> {

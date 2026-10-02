@@ -24,6 +24,8 @@ pub struct CompiledTokenizedTextResultSetV1 {
     cost: QueryCostVectorV1,
     canonical_bytes: Vec<u8>,
     identity: QueryPlanHash,
+    // Last: attached allocation charges outlive all semantic data fields.
+    ownership_lifecycle: riffdb_types::OwnedCapacityLifecycleV1,
 }
 
 impl CompiledTokenizedTextResultSetV1 {
@@ -58,6 +60,7 @@ impl CompiledTokenizedTextResultSetV1 {
         )?;
         let identity = hash_query_plan(&canonical_bytes);
         Ok(Self {
+            ownership_lifecycle: Default::default(),
             operation,
             plan: compiled.plan,
             metadata: Arc::new(compiled.metadata),
@@ -210,5 +213,6 @@ impl Error for CompiledTokenizedTextResultSetErrorV1 {}
 // Exhaustive non-durable ownership inventories for exact-provider admission.
 riffdb_types::inspect_owned_capacity_struct_v1!(CompiledTokenizedTextResultSetV1 {
     owned: [operation, plan, metadata, query_parameter, canonical_bytes],
-    inline: [cost, identity]
+    inline: [cost, identity],
+    lifecycle: ownership_lifecycle
 });

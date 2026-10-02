@@ -42,9 +42,11 @@ The shared budget and owner primitives now have crate-run tests for reservation
 admission, cancellation, overflow, shared final-reference release, allocation
 metadata admission, and rejection of a charge from another budget. Deterministic
 capture/retire/publication schedules prove that retirement closes new admission,
-keeps captured bytes charged, and rejects obsolete publication. These modules
-remain `cfg(test)` until production preflight, snapshot/cursor pins, and cleanup
-are connected. They do not enforce the production aggregate budget yet.
+keeps captured bytes charged, and rejects obsolete publication. The server owner prototype
+remains `cfg(test)` until production preflight, snapshot/cursor pins, and cleanup
+are connected. The shared budget primitive lives in the types crate so its typed
+charge can follow shared data destruction without duplicating accounting. These
+pieces do not enforce the production aggregate budget yet.
 
 ## Retained capacity inspection
 
@@ -74,3 +76,29 @@ formatting, clippy with warnings denied, generated artifacts, handbook,
 downstream adapters, file size, and panic allowance checks passed. Initial
 checks selected system Cargo and omitted the installed TypeScript compiler;
 the final run used the installed pinned tools and required no fixture changes.
+
+## Shared destruction ownership
+
+Shared compiled-plan and policy payloads now carry a private destruction lifecycle
+after their data fields. Shared strings, facts, and grant buffers keep a matching
+sidecar through semantic clones. A numerical inspection capture also retains the
+matching lifecycle after its original data reference, so inspection cannot cause
+premature charge release. Deep value clones receive a fresh root lifecycle.
+
+Attachment accepts only a typed first-party byte charge and retains one immutable
+owner; admission must validate its allocation and budget identity. The control
+implementation is closed, so an application cannot attach a user-defined Rust
+destructor to database values. Dead lifecycles refuse attachment, and
+weak attachment references cannot keep data alive or revive it. These fields do
+not participate in canonical encoding, equality, order, hashing, or authority.
+They prepare final-reference accounting; production provider admission, snapshot
+pins, retirement, and cleanup remain unfinished. No aggregate enforcement is
+claimed by this slice.
+
+Validation: the full scoped acceptance plan passed, including all 1,036 tests
+(eight existing skips), clippy with warnings denied, generated artifacts,
+handbook, scope, file size, and panic allowance checks. Focused key regression
+coverage also checks unchanged hashing, ordering, and debug/redaction behavior.
+The initial prototype's arbitrary destruction attachment was replaced with a
+typed first-party charge before committing; no arbitrary callback interface is
+introduced.

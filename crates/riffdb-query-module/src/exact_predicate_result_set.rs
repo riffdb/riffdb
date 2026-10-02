@@ -26,6 +26,8 @@ pub struct CompiledExactPredicateResultSetV1 {
     offset_parameter: String,
     canonical_bytes: Vec<u8>,
     identity: QueryPlanHash,
+    // Last: attached allocation charges outlive all semantic data fields.
+    ownership_lifecycle: riffdb_types::OwnedCapacityLifecycleV1,
 }
 
 /// Immutable query-module binding for one nullable exact family.
@@ -40,6 +42,8 @@ pub struct CompiledNullableExactPredicateResultSetV1 {
     offset_parameter: String,
     canonical_bytes: Vec<u8>,
     identity: QueryPlanHash,
+    // Last: attached allocation charges outlive all semantic data fields.
+    ownership_lifecycle: riffdb_types::OwnedCapacityLifecycleV1,
 }
 
 impl CompiledNullableExactPredicateResultSetV1 {
@@ -69,6 +73,7 @@ impl CompiledNullableExactPredicateResultSetV1 {
         }
         let identity = hash_query_plan(&canonical_bytes);
         Ok(Self {
+            ownership_lifecycle: Default::default(),
             name,
             program,
             metadata,
@@ -210,6 +215,7 @@ impl CompiledExactPredicateResultSetV1 {
         }
         let identity = hash_query_plan(&canonical_bytes);
         Ok(Self {
+            ownership_lifecycle: Default::default(),
             name,
             program,
             metadata,
@@ -362,7 +368,8 @@ riffdb_types::inspect_owned_capacity_struct_v1!(CompiledExactPredicateResultSetV
         offset_parameter,
         canonical_bytes
     ],
-    inline: [identity]
+    inline: [identity],
+    lifecycle: ownership_lifecycle
 });
 
 riffdb_types::inspect_owned_capacity_struct_v1!(CompiledNullableExactPredicateResultSetV1 {
@@ -376,5 +383,6 @@ riffdb_types::inspect_owned_capacity_struct_v1!(CompiledNullableExactPredicateRe
         offset_parameter,
         canonical_bytes
     ],
-    inline: [identity]
+    inline: [identity],
+    lifecycle: ownership_lifecycle
 });

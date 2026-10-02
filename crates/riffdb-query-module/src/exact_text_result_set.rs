@@ -162,6 +162,8 @@ pub struct CompiledExactTextResultSetV1 {
     cost: QueryCostVectorV1,
     canonical_bytes: Vec<u8>,
     identity: QueryPlanHash,
+    // Last: attached allocation charges outlive all semantic data fields.
+    ownership_lifecycle: riffdb_types::OwnedCapacityLifecycleV1,
 }
 
 /// One compiler-bound optional equality filter; callers supply only its typed value.
@@ -257,6 +259,7 @@ impl CompiledExactTextResultSetV1 {
         )?;
         let identity = hash_query_plan(&canonical_bytes);
         Ok(Self {
+            ownership_lifecycle: Default::default(),
             binding,
             metadata: Arc::new(metadata),
             operator,
@@ -464,7 +467,8 @@ riffdb_types::inspect_owned_capacity_struct_v1!(CompiledExactTextResultSetV1 {
         filter,
         canonical_bytes
     ],
-    inline: [operator, order, cost, identity]
+    inline: [operator, order, cost, identity],
+    lifecycle: ownership_lifecycle
 });
 
 riffdb_types::inspect_owned_capacity_struct_v1!(ExactTextResultSetBindingV1 {

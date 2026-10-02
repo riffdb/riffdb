@@ -643,6 +643,8 @@ pub struct CapabilityRowPolicyBindingV1 {
     policy_name: RowPolicyName,
     entity_type: EntityTypeId,
     operations: Arc<[CapabilityRowPolicyOperationV1]>,
+    // Last: each shared field has one shared destruction sidecar.
+    operations_lifecycle: Arc<crate::OwnedCapacityLifecycleV1>,
 }
 
 impl CapabilityRowPolicyBindingV1 {
@@ -664,6 +666,8 @@ impl CapabilityRowPolicyBindingV1 {
             return Err(CapabilityGrantError::Duplicate);
         }
         Ok(Self {
+            operations_lifecycle: Arc::new(Default::default()),
+
             lineage,
             policy_name,
             entity_type,
@@ -717,6 +721,8 @@ pub struct CapabilityRowPolicyGrantV1 {
     application_role_hash: ApplicationRoleHash,
     principal_facts: CapabilityPrincipalFactsV1,
     bindings: Arc<[CapabilityRowPolicyBindingV1]>,
+    // Last: each shared field has one shared destruction sidecar.
+    bindings_lifecycle: Arc<crate::OwnedCapacityLifecycleV1>,
 }
 
 impl CapabilityRowPolicyGrantV1 {
@@ -740,6 +746,8 @@ impl CapabilityRowPolicyGrantV1 {
             return Err(CapabilityGrantError::Duplicate);
         }
         Ok(Self {
+            bindings_lifecycle: Arc::new(Default::default()),
+
             application_role_hash,
             principal_facts,
             bindings: bindings.into(),
@@ -1774,15 +1782,44 @@ fn append_bytes(output: &mut Vec<u8>, value: &[u8]) {
 }
 
 // Exhaustive non-durable ownership inventories for exact-provider admission.
-crate::inspect_owned_capacity_struct_v1!(CapabilityRowPolicyGrantV1 {
-    owned: [principal_facts, bindings],
-    inline: [application_role_hash]
-});
+impl crate::InspectOwnedCapacityV1 for CapabilityRowPolicyGrantV1 {
+    fn inspect_owned_capacity(
+        &self,
+        inspection: &mut crate::OwnedCapacityInspectionV1,
+    ) -> Result<(), crate::OwnedCapacityInspectionErrorV1> {
+        let Self {
+            principal_facts,
+            bindings,
+            application_role_hash,
+            bindings_lifecycle,
+        } = self;
+        inspection.visit(principal_facts)?;
+        inspection.inline(application_role_hash)?;
+        inspection.shared_slice_with_lifecycle(bindings, Some(bindings_lifecycle.reference()))?;
+        Ok(())
+    }
+}
 
-crate::inspect_owned_capacity_struct_v1!(CapabilityRowPolicyBindingV1 {
-    owned: [lineage, policy_name, operations],
-    inline: [entity_type]
-});
+impl crate::InspectOwnedCapacityV1 for CapabilityRowPolicyBindingV1 {
+    fn inspect_owned_capacity(
+        &self,
+        inspection: &mut crate::OwnedCapacityInspectionV1,
+    ) -> Result<(), crate::OwnedCapacityInspectionErrorV1> {
+        let Self {
+            lineage,
+            policy_name,
+            operations,
+            entity_type,
+            operations_lifecycle,
+        } = self;
+        inspection.visit(lineage)?;
+        inspection.visit(policy_name)?;
+        inspection.inline(entity_type)?;
+        inspection
+            .shared_slice_with_lifecycle(operations, Some(operations_lifecycle.reference()))?;
+        Ok(())
+    }
+}
 
 crate::inspect_owned_capacity_copy_v1!(CapabilityRowPolicyOperationV1);
 
