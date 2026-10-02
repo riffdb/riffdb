@@ -1,5 +1,7 @@
 //! Checked projection grouping and executable incremental plans.
 
+mod capacity;
+
 use riffdb_types::{
     CanonicalValue, ContractLineage, EnumVariantId, EventTypeId, MAX_KEY_BYTES,
     MAX_PROJECTION_GROUP_COMPONENTS, MAX_PROJECTION_STATE_SEMANTIC_BYTES, ProjectionGeneration,

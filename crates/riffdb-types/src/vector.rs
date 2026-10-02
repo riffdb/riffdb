@@ -411,3 +411,10 @@ mod tests {
         assert_ne!(vector.cmp(&other), std::cmp::Ordering::Equal);
     }
 }
+
+crate::inspect_owned_capacity_copy_v1!(DistanceMetric);
+
+crate::inspect_owned_capacity_struct_v1!(EmbeddingMetadata {
+    owned: [model_identity, model_version],
+    inline: []
+});

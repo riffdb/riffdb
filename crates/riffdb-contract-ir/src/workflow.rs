@@ -1,5 +1,7 @@
 //! Checked aggregate-local workflow declarations.
 
+mod capacity;
+
 use std::collections::BTreeSet;
 
 use riffdb_types::{EntityTypeId, EnumTypeId, EnumVariantId, FieldId};

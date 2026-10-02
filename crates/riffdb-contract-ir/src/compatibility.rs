@@ -1,5 +1,7 @@
 //! Deterministic contract compatibility metadata and IR-owned comparison.
 
+mod capacity;
+
 use std::cmp::Ordering;
 use std::collections::{BTreeMap, BTreeSet};
 

@@ -1,5 +1,7 @@
 //! Closed transactional type IR.
 
+mod capacity;
+
 use riffdb_types::{
     CanonicalValue, CommandId, CurrencyCode, DecimalSpec, EntityTypeId, EnumTypeId, EventTypeId,
     FieldId, MAX_BYTES_VALUE_BYTES, MAX_DECIMAL_PRECISION, MAX_LIST_ENTRIES, MAX_NESTING_DEPTH,

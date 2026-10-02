@@ -1,5 +1,7 @@
 //! Checked forward-only executable command plans.
 
+mod capacity;
+
 use std::collections::{BTreeMap, BTreeSet};
 
 use riffdb_types::{
@@ -19,10 +21,12 @@ use crate::{
 
 mod commit_coverage;
 mod indexed_selection;
+mod service_values;
 mod write_proofs;
 use commit_coverage::{validate_commit_checks, validate_root_validation_reads};
 pub use indexed_selection::IndexedSelectionPlan;
 use indexed_selection::{validate_binding_plans, validate_indexed_selection};
+pub use service_values::{ServiceValueKind, ServiceValueSchema};
 
 /// Maximum bindings, instructions, fields, or outcomes in one owner.
 pub const MAX_COMMAND_ITEMS: usize = 4_096;
@@ -40,53 +44,6 @@ pub const MAX_COLLECTION_COMMAND_MUTATION_INSTANCES_V2: usize = 4_096;
 pub const MAX_COLLECTION_COMMAND_GRAPH_BYTES_V1: usize = 16 * 1024 * 1024;
 /// Maximum ordered predicate arms in one compiler-sealed command decision.
 pub const MAX_COMMAND_DECISION_ARMS_V1: usize = 8;
-
-/// Closed service-owned command-value kinds introduced by executable IR v2.
-#[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
-#[repr(u8)]
-pub enum ServiceValueKind {
-    /// UUID version 7 observed and sealed by the application service.
-    UuidV7 = crate::format_registry::service_value_kind::UUID_V7,
-    /// Trusted transaction time observed and sealed before deterministic evaluation.
-    TransactionTime = crate::format_registry::service_value_kind::TRANSACTION_TIME,
-}
-
-/// One compiler-declared value that callers cannot supply or override.
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct ServiceValueSchema {
-    field: FieldSchema,
-    kind: ServiceValueKind,
-}
-
-impl ServiceValueSchema {
-    /// Creates one checked service-value declaration.
-    pub fn new(field: FieldSchema, kind: ServiceValueKind) -> Result<Self, IrValidationError> {
-        let valid_type = match kind {
-            ServiceValueKind::UuidV7 => field.value_type().tag() == ValueTypeTag::Uuid,
-            ServiceValueKind::TransactionTime => {
-                field.value_type().tag() == ValueTypeTag::Timestamp
-            }
-        };
-        if !valid_type {
-            return Err(IrValidationError::TypeMismatch {
-                context: "service-owned command value",
-            });
-        }
-        Ok(Self { field, kind })
-    }
-
-    /// Stable command-scoped field identity.
-    #[must_use]
-    pub const fn field(&self) -> &FieldSchema {
-        &self.field
-    }
-
-    /// Closed observation kind.
-    #[must_use]
-    pub const fn kind(&self) -> ServiceValueKind {
-        self.kind
-    }
-}
 
 /// An entity binding mode and its immutable v1 tag.
 #[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]

@@ -1,5 +1,7 @@
 //! Deterministic JSON Schema draft 2020-12 artifacts.
 
+mod capacity;
+
 use std::collections::BTreeMap;
 
 use riffdb_types::{

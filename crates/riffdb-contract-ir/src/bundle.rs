@@ -1,5 +1,7 @@
 //! Stable lineage ledger, plan hashes, and canonical contract bundle bytes.
 
+mod capacity;
+
 mod binding;
 #[cfg(test)]
 use binding::decode_binding_mode;
@@ -6907,6 +6909,8 @@ fn reject_duplicate_by<T, K: Eq>(
 }
 
 #[cfg(test)]
+mod capacity_tests;
+#[cfg(test)]
 mod conformance;
 
 #[cfg(test)]
@@ -7080,7 +7084,7 @@ mod tests {
         ));
     }
 
-    fn empty_bundle() -> ContractBundle {
+    pub(super) fn empty_bundle() -> ContractBundle {
         let lineage = ContractLineage::new("TestContract").expect("lineage");
         ContractBundle::new(
             "0.1.0",

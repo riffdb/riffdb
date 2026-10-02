@@ -1,5 +1,7 @@
 //! Checked transport-neutral MCP command-name metadata.
 
+mod capacity;
+
 use std::collections::BTreeSet;
 
 use riffdb_types::{CommandId, ContractLineage};

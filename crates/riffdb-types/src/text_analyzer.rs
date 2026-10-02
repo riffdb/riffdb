@@ -158,3 +158,5 @@ mod tests {
         );
     }
 }
+
+crate::inspect_owned_capacity_copy_v1!(TextSearchResultModelV1);

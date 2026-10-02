@@ -1,4 +1,6 @@
 //! Closed, single-candidate indexed selection and its structural proof.
+
+mod capacity;
 use super::*;
 
 /// One ascending, exact equality-prefix selection with a one-entry bound.

@@ -1,5 +1,7 @@
 //! Stable-ID structural contract schema IR.
 
+mod capacity;
+
 use std::collections::{BTreeMap, BTreeSet};
 
 use riffdb_types::{

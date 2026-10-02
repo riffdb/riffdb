@@ -1,5 +1,7 @@
 //! Typed, topologically ordered expression plans.
 
+mod capacity;
+
 use std::collections::BTreeSet;
 
 use riffdb_types::{CanonicalValue, EntityTypeId, FieldId};

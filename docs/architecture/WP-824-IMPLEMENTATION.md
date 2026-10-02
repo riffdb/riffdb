@@ -1,5 +1,35 @@
 # WP-824 implementation progress
 
+## Contract bundle ownership inventories
+
+Complete non-durable inventories now cover the decoded contract bundle and
+106 previously uncovered IR types reachable through schemas, command plans,
+expressions, workflows, policies, projections, compatibility findings, stable
+identity ledgers and generated artifacts. Exhaustive field patterns and enum
+matches make added ownership fail compilation until accounted for. Existing
+bounded traversal, checked capacity arithmetic and shared lineage deduplication
+apply. Embedding metadata includes both owned strings; the closed metric and
+text result model remain inline values.
+
+Tests inspect all thirteen canonical compiler bundle fixtures under admitted
+scratch, preserve their exact content and bytes, and prove that deep clones
+account for their own capacities while shared lineage allocations deduplicate.
+Separate tests increase unused canonical and command-vector capacity without
+changing content and require the inventory to count it. A clone can shrink
+vector capacity, so the ownership oracle measures both actual allocations.
+
+These inventories prepare catalog admission; they do not yet admit catalog
+construction or establish final-reference ownership of its private shared roots.
+WP-824 remains open, including retirement, cursor protection and derived cleanup.
+
+PR note: Package WP-824 (open); Tier guarantee; Behavior: internal complete IR
+ownership inspection; Compatibility: unchanged canonical formats and semantics;
+Checks: all 360 contract-IR and types tests and all seven scoped static
+acceptance checks passed, including clippy with warnings denied, handbook and
+downstream adapters; Hazards/follow-ups: catalog construction
+and shared lifetime accounting remain open. This adds no application or operator
+behavior; existing handbook provider refusal documentation remains applicable.
+
 ## Checkpoint encoding admission
 
 All six physical formats now admit checkpoint encoding before allocating their

@@ -1,5 +1,7 @@
 //! Closed, bounded principal-aware row-policy executable IR.
 
+mod capacity;
+
 use std::collections::BTreeMap;
 
 use riffdb_types::{

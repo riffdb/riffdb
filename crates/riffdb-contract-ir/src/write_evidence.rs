@@ -1,4 +1,6 @@
 //! Per-assignment structural evidence. Business relevance is an author claim.
+
+mod capacity;
 pub(crate) mod codec;
 
 use std::collections::BTreeMap;
