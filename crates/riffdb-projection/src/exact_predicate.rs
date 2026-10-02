@@ -30,6 +30,10 @@ pub const MAX_EXACT_PREDICATE_CHECKPOINT_BYTES_V5: usize = MAX_EXACT_PREDICATE_C
 const CHECKPOINT_MAGIC: &[u8; 4] = b"RXPA";
 const CHECKSUM_BYTES: usize = 32;
 
+#[path = "exact_predicate_admission.rs"]
+mod admission;
+pub use admission::ExactPredicateAdmissionErrorV1;
+
 /// Immutable state binding beyond the provider-independent semantic program.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct ExactPredicateProviderBindingV1 {

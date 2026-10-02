@@ -4,9 +4,9 @@ use std::collections::BTreeMap;
 use std::num::NonZeroU16;
 
 use riffdb_projection::{
-    ExactPredicateIndexMutationV1, ExactPredicatePartitionIndexV4, ExactPredicatePartitionIndexV5,
-    ExactPredicateProviderBindingV1, ExactPredicateProviderBindingV2,
-    ExactPredicateProviderErrorV1, ExactPredicateProviderRowV1,
+    ExactPredicateAdmissionErrorV1, ExactPredicateIndexMutationV1, ExactPredicatePartitionIndexV4,
+    ExactPredicatePartitionIndexV5, ExactPredicateProviderBindingV1,
+    ExactPredicateProviderBindingV2, ExactPredicateProviderErrorV1, ExactPredicateProviderRowV1,
 };
 use riffdb_query_ir::{
     ExactComparisonProfileV1, ExactOrderDirectionV1, ExactOrderProgramV1, ExactOrderProgramV2,
@@ -149,6 +149,133 @@ fn reference_row(row: &ExactPredicateProviderRowV1) -> ExactReferenceRowV1 {
         }],
         fields: row.fields().clone(),
     }
+}
+
+// req: OQ-040, PRJ-001
+#[test]
+fn admitted_predicate_rebuild_preserves_semantics_and_final_capture_charge() {
+    use riffdb_types::exact_provider_budget_v1::ProviderBudget;
+    let budget = ProviderBudget::new();
+    let program = program();
+    let binding = binding(&program, 1);
+    let rows = vec![
+        row(1, "Repeated résumé example".into(), 2, 75),
+        row(2, "Repeated résumé example".into(), 2, 60),
+        row(3, String::new(), 3, 40),
+    ];
+    let ordinary =
+        ExactPredicatePartitionIndexV4::rebuild(binding, program.clone(), rows.clone()).unwrap();
+    let admitted =
+        ExactPredicatePartitionIndexV4::rebuild_admitted_v1(binding, &program, &rows, &budget)
+            .unwrap();
+    assert_eq!(&**admitted, &ordinary);
+    assert_eq!(
+        admitted.to_checkpoint_bytes().unwrap(),
+        ordinary.to_checkpoint_bytes().unwrap()
+    );
+    assert_eq!(
+        budget.observation().unwrap().owned_bytes,
+        admitted.owned_bytes()
+    );
+    assert_eq!(budget.observation().unwrap().reserved_bytes, 0);
+    let mutations = vec![
+        ExactPredicateIndexMutationV1::Delete(key(2)),
+        ExactPredicateIndexMutationV1::Upsert(row(4, "new example".into(), 2, 90)),
+    ];
+    let mut ordinary_next = ordinary.clone();
+    ordinary_next.apply(sequence(2), &mutations).unwrap();
+    let next = admitted
+        .apply_admitted_v1(sequence(2), &mutations, &budget)
+        .unwrap();
+    assert_eq!(&**next, &ordinary_next);
+    assert_eq!(&**admitted, &ordinary);
+    assert!(matches!(
+        admitted.apply_admitted_v1(sequence(1), &mutations, &budget),
+        Err(ExactPredicateAdmissionErrorV1::Provider(
+            ExactPredicateProviderErrorV1::NonAdvancingEpoch
+        ))
+    ));
+    assert!(matches!(
+        admitted.apply_admitted_v1(
+            sequence(2),
+            &[mutations[0].clone(), mutations[0].clone()],
+            &budget
+        ),
+        Err(ExactPredicateAdmissionErrorV1::Provider(
+            ExactPredicateProviderErrorV1::DuplicateRow
+        ))
+    ));
+    drop(next);
+    let capture = admitted.clone();
+    drop(admitted);
+    assert!(budget.observation().unwrap().owned_bytes > 0);
+    drop(capture);
+    assert_eq!(budget.observation().unwrap().owned_bytes, 0);
+    let duplicate = vec![rows[0].clone(), rows[0].clone()];
+    assert!(matches!(
+        ExactPredicatePartitionIndexV4::rebuild_admitted_v1(binding, &program, &duplicate, &budget),
+        Err(ExactPredicateAdmissionErrorV1::Provider(
+            ExactPredicateProviderErrorV1::DuplicateRow
+        ))
+    ));
+    assert_eq!(budget.observation().unwrap().owned_bytes, 0);
+    assert_eq!(budget.observation().unwrap().reserved_bytes, 0);
+}
+
+// req: OQ-040
+#[test]
+fn admitted_nullable_rebuild_and_pressure_preserve_original_inputs() {
+    use riffdb_types::OWNED_CAPACITY_INSPECTION_SCRATCH_BYTES_V1;
+    use riffdb_types::exact_provider_budget_v1::{EXACT_PROVIDER_BUDGET_BYTES, ProviderBudget};
+    let budget = ProviderBudget::new();
+    let program = nullable_program(
+        ExactComparisonProfileV1::BinaryUtf8,
+        ExactOrderDirectionV1::Ascending,
+        ExactStatePlacementV1::PresentOnlyV1,
+    );
+    let binding = nullable_binding(&program, 1);
+    let rows = vec![ExactPredicateProviderRowV1::new(
+        key(1),
+        BTreeMap::from([
+            (field(1), ExactReferenceCellV1::Value(ExactScalarV1::U64(1))),
+            (
+                field(2),
+                ExactReferenceCellV1::Value(ExactScalarV1::String("é repetitive suffixes".into())),
+            ),
+        ]),
+        CanonicalRecord::new(vec![]).unwrap(),
+    )];
+    let ordinary =
+        ExactPredicatePartitionIndexV5::rebuild(binding, program.clone(), rows.clone()).unwrap();
+    let blocker = budget
+        .reserve(EXACT_PROVIDER_BUDGET_BYTES - 128 - OWNED_CAPACITY_INSPECTION_SCRATCH_BYTES_V1)
+        .unwrap();
+    assert!(matches!(
+        ExactPredicatePartitionIndexV5::rebuild_admitted_v1(binding, &program, &rows, &budget),
+        Err(ExactPredicateAdmissionErrorV1::CapacityUnavailable)
+    ));
+    assert_eq!(budget.observation().unwrap().owned_bytes, 0);
+    drop(blocker);
+    let admitted =
+        ExactPredicatePartitionIndexV5::rebuild_admitted_v1(binding, &program, &rows, &budget)
+            .unwrap();
+    assert_eq!(&**admitted, &ordinary);
+    assert_eq!(
+        admitted.to_checkpoint_bytes().unwrap(),
+        ordinary.to_checkpoint_bytes().unwrap()
+    );
+    let mutations = vec![ExactPredicateIndexMutationV1::Delete(key(1))];
+    let mut ordinary_next = ordinary.clone();
+    ordinary_next.apply(sequence(2), &mutations).unwrap();
+    let next = admitted
+        .apply_admitted_v1(sequence(2), &mutations, &budget)
+        .unwrap();
+    assert_eq!(&**next, &ordinary_next);
+    assert_eq!(&**admitted, &ordinary);
+    drop(next);
+    drop(admitted);
+    assert_eq!(budget.observation().unwrap().owned_bytes, 0);
+    assert_eq!(budget.observation().unwrap().reserved_bytes, 0);
 }
 
 fn parameters() -> BTreeMap<u16, ExactParameterValueV1> {

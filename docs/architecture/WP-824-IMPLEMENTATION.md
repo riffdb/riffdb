@@ -1,5 +1,35 @@
 # WP-824 implementation progress
 
+## Predicate construction and successor admission
+
+Borrowed first-party admission now covers V4 and V5 predicate rebuilds and
+private atomic successors. The physical predicate program owns a deep copy;
+the separately shared compiled request keeps its existing registration charge.
+Construction reserves before copying either the owned program or source rows.
+The maximum includes sparse field trees, geometrically grown position vectors,
+independent order arrays, string suffix keys, and canonical verification copies.
+Successors additionally admit the private predecessor clone and temporary row
+and duplicate-key trees before ordinary atomic apply.
+
+The ordinary rebuild and apply implementations still validate bindings, field
+profiles, row uniqueness, amplification limits, and frontier advancement.
+Immutable settlement keeps the physical charge through the final data capture.
+Tests compare both variants with ordinary construction and checkpoint bytes,
+exercise pressure after sizing, verify successor isolation and typed semantic
+refusal, and check final-reference release. Predicate checkpoint decode and
+production publication are the next integration work; this slice does not
+claim aggregate enforcement, retirement, or package completion.
+
+Validation: all 76 projection tests passed without skips. The final seven-step
+scoped acceptance passed, including nextest, formatting, clippy with warnings
+denied, handbook, scope, file-size, and panic-allowance checks.
+
+PR note: Package WP-824 (open); Tier guarantee; Behavior: internal predicate
+construction admission; Compatibility: existing logical semantics and durable
+formats; Hazards/follow-ups: integrate recovery and production ownership before
+qualification. No handbook operation changes because these are hidden
+first-party construction helpers; existing public provider behavior is unchanged.
+
 WP-824 remains open. The production slices establish one discovery lock
 and monotonic access order across exact text, predicates, nullable predicates,
 tokenized text, and long patterns. Primary and follower composition pass the
