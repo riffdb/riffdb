@@ -61,7 +61,7 @@ fn active_query_module_from_proto(
     ))
 }
 
-fn active_from_proto(
+pub(super) fn active_from_proto(
     value: wire::ActiveCatalogPointerV1,
 ) -> Result<ActiveCatalogPointerV1, DurableCodecError> {
     Ok(ActiveCatalogPointerV1::new(
@@ -90,15 +90,18 @@ pub fn encode_contract_bundle_v1(
 pub fn decode_contract_bundle_v1(
     encoded: &[u8],
 ) -> Result<EncodedPageItem<StoredContractBundleV1>, DurableCodecError> {
-    decode_message::<wire::StoredContractBundleV1, _, _>(BUNDLE, encoded, |value| {
-        storage_result(StoredContractBundleV1::new(
-            ContractLineage::new(value.contract_lineage)
-                .map_err(|_| DurableCodecError::corrupt())?,
-            ContractVersion::new(value.contract_version).ok_or_else(DurableCodecError::corrupt)?,
-            ContractBundleHash::from_bytes(fixed(value.contract_bundle_hash)?),
-            value.canonical_bundle,
-        ))
-    })
+    decode_message::<wire::StoredContractBundleV1, _, _>(BUNDLE, encoded, bundle_from_proto)
+}
+
+pub(super) fn bundle_from_proto(
+    value: wire::StoredContractBundleV1,
+) -> Result<StoredContractBundleV1, DurableCodecError> {
+    storage_result(StoredContractBundleV1::new(
+        ContractLineage::new(value.contract_lineage).map_err(|_| DurableCodecError::corrupt())?,
+        ContractVersion::new(value.contract_version).ok_or_else(DurableCodecError::corrupt)?,
+        ContractBundleHash::from_bytes(fixed(value.contract_bundle_hash)?),
+        value.canonical_bundle,
+    ))
 }
 
 /// Encodes the one active-catalog pointer.

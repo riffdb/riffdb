@@ -510,3 +510,8 @@ riffdb_types::inspect_owned_capacity_struct_v1!(ActiveCatalogPointerV1 {
     owned: [lineage],
     inline: [contract_version, bundle_hash]
 });
+
+riffdb_types::inspect_owned_capacity_struct_v1!(StoredContractBundleV1 {
+    owned: [lineage, canonical_bytes],
+    inline: [contract_version, bundle_hash]
+});

@@ -85,6 +85,34 @@ mod sealed {
             }
         }
     }
+    impl ProviderSourceMessage for crate::storage::v1::StoredContractBundleV1 {
+        const CANONICAL_FIELD: Option<u32> = Some(4);
+        fn inspect_transport_shape(&self) {
+            let Self {
+                contract_lineage,
+                contract_version,
+                contract_bundle_hash,
+                canonical_bundle,
+            } = self;
+            string(contract_lineage);
+            inline(contract_version);
+            buffer(contract_bundle_hash);
+            buffer(canonical_bundle);
+        }
+    }
+    impl ProviderSourceMessage for crate::storage::v1::ActiveCatalogPointerV1 {
+        const CANONICAL_FIELD: Option<u32> = None;
+        fn inspect_transport_shape(&self) {
+            let Self {
+                contract_lineage,
+                contract_version,
+                contract_bundle_hash,
+            } = self;
+            string(contract_lineage);
+            inline(contract_version);
+            buffer(contract_bundle_hash);
+        }
+    }
     fn inline<T: Copy>(_: &T) {}
     fn buffer(_: &Vec<u8>) {}
     fn string(_: &String) {}
@@ -117,6 +145,9 @@ impl ProviderSourceMessageV1 for wire::StoredEntityRecordV1 {}
 impl ProviderSourceMessageV1 for wire::StoredIndexEntryV1 {}
 impl ProviderSourceMessageV1 for wire::StoredIndexEntryV2 {}
 impl ProviderSourceMessageV1 for wire::StoredIndexGenerationV2 {}
+
+impl ProviderSourceMessageV1 for wire::StoredContractBundleV1 {}
+impl ProviderSourceMessageV1 for wire::ActiveCatalogPointerV1 {}
 
 /// Safe distinction between decode admission pressure and durable rejection.
 #[doc(hidden)]
@@ -268,7 +299,7 @@ impl ProviderDecodeScratchV1 {
     }
 }
 impl<M: ProviderSourceMessageV1> ProviderSourceDecodeV1<'_, M> {
-    /// Canonical field bytes for borrowed semantic sizing only. Normal storage
+    /// Canonical entity/index or opaque contract-IR bytes for borrowed sizing. Normal storage
     /// reconstruction remains mandatory before using a semantic entity or row.
     pub const fn canonical_payload(&self) -> &[u8] {
         self.canonical

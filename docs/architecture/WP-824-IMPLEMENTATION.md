@@ -1,5 +1,31 @@
 # WP-824 implementation progress
 
+## Admitted catalog wire reconstruction
+
+Existing active-pointer and opaque bundle records now support the closed,
+caller-admitted provider decoder. Borrowed framing inspection precedes generated
+message reconstruction; independent admitted scratch verifies the same V1/V2
+framing, checksum and canonical encoding. Semantic reconstruction uses the
+ordinary lineage, version and fixed-hash validators. Settlement accounts for
+private bundle bytes and the lineage allocation through its actual final reference.
+
+These helpers decode existing wire roles only. They neither decode contract IR
+nor change durable bytes, catalog validation or application interfaces. Production
+snapshot integration, IR construction and lineage/materialization scratch remain
+open, together with provider retirement and artifact cleanup.
+
+Tests compare ordinary and admitted values under both framings, retain an escaped
+lineage after its wrapper is dropped, refuse construction under pressure and
+preserve semantic rejection of malformed versions and hash lengths. All 761 Protobuf and storage API tests and all eight scoped non-test
+acceptance checks passed, including generated artifacts, formatting and Clippy
+with warnings denied.
+
+PR note: Package WP-824 (open); Tier guarantee; Behavior: internal admitted catalog
+wire reconstruction; Compatibility: existing roles, formats and semantic checks;
+Handbook: this implementation page; Hazards/follow-ups: connect captured snapshot
+reads and complete IR admission and retirement before qualification.
+
+
 ## Settlement of mixed catalog ownership
 
 Trusted construction can now settle one previously admitted maximum into an

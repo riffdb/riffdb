@@ -1597,3 +1597,95 @@ fn admitted_provider_index_epoch_decode_preserves_both_frames_and_refusal() {
         assert_eq!(budget.observation().unwrap().reserved_bytes, 0);
     }
 }
+
+// req: OQ-040, PRJ-004
+#[test]
+fn admitted_catalog_wire_records_preserve_both_framings_and_escaped_lineage_ownership() {
+    use riffdb_types::exact_provider_budget_v1::ProviderBudget;
+    let (bundle, pointer, _) = sample::catalog_records();
+    let encoded = encode_contract_bundle_v1(&bundle).unwrap();
+    let compact = transcode_durable_record_to_v2(encoded.as_bytes()).unwrap();
+    for bytes in [encoded.as_bytes(), compact.as_bytes()] {
+        let budget = ProviderBudget::new();
+        let ordinary = decode_contract_bundle_v1(bytes).unwrap();
+        let decoded = decode_provider_catalog_bundle_admitted_v1(bytes, &budget).unwrap();
+        assert_eq!(&**decoded, ordinary.value());
+        let lineage = decoded.lineage().clone();
+        let capture = decoded.clone();
+        drop(decoded);
+        assert!(budget.observation().unwrap().owned_bytes > 0);
+        drop(capture);
+        assert!(budget.observation().unwrap().owned_bytes > 0);
+        drop(lineage);
+        assert_eq!(budget.observation().unwrap().owned_bytes, 0);
+        assert_eq!(budget.observation().unwrap().reserved_bytes, 0);
+    }
+    let encoded = encode_active_catalog_pointer_v1(&pointer).unwrap();
+    let compact = transcode_durable_record_to_v2(encoded.as_bytes()).unwrap();
+    for bytes in [encoded.as_bytes(), compact.as_bytes()] {
+        let budget = ProviderBudget::new();
+        let decoded = decode_provider_active_catalog_pointer_admitted_v1(bytes, &budget).unwrap();
+        assert_eq!(
+            &**decoded,
+            decode_active_catalog_pointer_v1(bytes).unwrap().value()
+        );
+        drop(decoded);
+        assert_eq!(budget.observation().unwrap().owned_bytes, 0);
+        assert_eq!(budget.observation().unwrap().reserved_bytes, 0);
+    }
+}
+// req: OQ-040, PRJ-004
+#[test]
+fn admitted_catalog_wire_refuses_pressure_and_preserves_semantic_rejection() {
+    use prost::Message;
+    use riffdb_proto::storage::v1 as wire;
+    use riffdb_types::exact_provider_budget_v1::{EXACT_PROVIDER_BUDGET_BYTES, ProviderBudget};
+    let (bundle, pointer, _) = sample::catalog_records();
+    let valid = encode_contract_bundle_v1(&bundle).unwrap();
+    let budget = ProviderBudget::new();
+    let blocker = budget
+        .reserve(
+            EXACT_PROVIDER_BUDGET_BYTES
+                - budget.observation().unwrap().fixed_owner_bytes
+                - riffdb_types::OWNED_CAPACITY_INSPECTION_SCRATCH_BYTES_V1
+                - 128,
+        )
+        .unwrap();
+    assert!(matches!(
+        decode_provider_catalog_bundle_admitted_v1(valid.as_bytes(), &budget),
+        Err(ProviderRecordDecodeErrorV1::AdmissionUnavailable)
+    ));
+    assert_eq!(budget.observation().unwrap().owned_bytes, 0);
+    assert_eq!(budget.observation().unwrap().reservations, 1);
+    drop(blocker);
+    let invalid = encode_message(
+        "riffdb.storage.v1.ActiveCatalogPointerV1",
+        &wire::ActiveCatalogPointerV1 {
+            contract_lineage: pointer.lineage().as_str().to_owned(),
+            contract_version: 0,
+            contract_bundle_hash: pointer.bundle_hash().as_bytes().to_vec(),
+        },
+    )
+    .unwrap();
+    let ordinary = decode_active_catalog_pointer_v1(invalid.as_bytes()).unwrap_err();
+    assert!(
+        matches!(decode_provider_active_catalog_pointer_admitted_v1(invalid.as_bytes(), &budget), Err(ProviderRecordDecodeErrorV1::Codec(error)) if error.kind() == ordinary.kind())
+    );
+    assert_eq!(budget.observation().unwrap().owned_bytes, 0);
+    assert_eq!(budget.observation().unwrap().reserved_bytes, 0);
+    let payload = wire::StoredContractBundleV1 {
+        contract_lineage: bundle.lineage().as_str().to_owned(),
+        contract_version: bundle.contract_version().get(),
+        contract_bundle_hash: vec![0],
+        canonical_bundle: bundle.canonical_bytes().to_vec(),
+    }
+    .encode_to_vec();
+    let invalid =
+        malformed_semantic::raw_envelope("riffdb.storage.v1.StoredContractBundleV1", payload);
+    let ordinary = decode_contract_bundle_v1(&invalid).unwrap_err();
+    assert!(
+        matches!(decode_provider_catalog_bundle_admitted_v1(&invalid, &budget), Err(ProviderRecordDecodeErrorV1::Codec(error)) if error.kind() == ordinary.kind())
+    );
+    assert_eq!(budget.observation().unwrap().owned_bytes, 0);
+    assert_eq!(budget.observation().unwrap().reserved_bytes, 0);
+}

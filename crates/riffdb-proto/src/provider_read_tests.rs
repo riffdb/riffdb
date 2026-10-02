@@ -83,6 +83,17 @@ fn all_closed_provider_source_roles_preserve_v1_and_v2_decoding() {
         }
     }
     check(entity());
+    check(wire::StoredContractBundleV1 {
+        contract_lineage: "example".to_owned(),
+        contract_version: 1,
+        contract_bundle_hash: vec![1; 32],
+        canonical_bundle: vec![7; 32768],
+    });
+    check(wire::ActiveCatalogPointerV1 {
+        contract_lineage: "example".to_owned(),
+        contract_version: 1,
+        contract_bundle_hash: vec![1; 32],
+    });
     check(wire::StoredIndexGenerationV2 {
         partition_key: vec![1; 16],
         index_id: 1,

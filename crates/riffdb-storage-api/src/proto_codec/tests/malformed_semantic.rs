@@ -9,7 +9,7 @@ use riffdb_types::{CommitSequence, EventId, EventTypeId, ExecutionFailureCode, R
 use super::super::*;
 use super::sample;
 
-fn raw_envelope(record_type: &'static str, payload: Vec<u8>) -> Vec<u8> {
+pub(super) fn raw_envelope(record_type: &'static str, payload: Vec<u8>) -> Vec<u8> {
     let schema = readable_record_schema(record_type).expect("registered durable record");
     wire::StoredEnvelope {
         storage_format_version: STORAGE_FORMAT_VERSION_V1,
