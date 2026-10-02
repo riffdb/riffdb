@@ -13,11 +13,12 @@ of cloning the selected step; synthetic plan hashing preserves the original
 32- or 64-byte input. Access ordinals rebase under the discovery lock before
 overflow; rebasing preserves order and minimum retention deadlines.
 
-The aggregate allocation budget, query/worker/cursor capture pins, retirement,
-fresh generation admission, and final-reference artifact cleanup are unfinished.
-Registration admission is wired; the owner/pin prototype still needs integration. No churn,
-1-GiB ownership bound, or sustained-workload qualification is claimed by this
-slice. Existing caps and exact freshness/authorization behavior remain in effect.
+Registration admission and explicit query/worker capture are wired into all
+five production families. Physical build/checkpoint admission, cursor and retained
+epoch ownership, retirement, fresh generation admission, and final-reference
+artifact cleanup remain unfinished. Full 1-GiB ownership enforcement, sequential
+churn, and sustained-workload qualification are not yet claimed. Existing slot
+caps and exact freshness/authorization behavior remain in effect.
 
 Validation: all 959 scoped server/service tests passed (eight existing skips),
 including 22 focused provider tests. Formatting and clippy with warnings denied
@@ -36,15 +37,16 @@ query authorization and freshness, and slot caps; Hazards/follow-ups: complete
 ownership admission and retirement before downstream qualification. Handbook:
 `docs/configuration.md` records clock refusal behavior and current limits.
 
-## Ownership foundation (test-only)
+## Ownership foundation
 
 The shared budget and owner primitives now have crate-run tests for reservation
 admission, cancellation, overflow, shared final-reference release, allocation
 metadata admission, and rejection of a charge from another budget. Deterministic
 capture/retire/publication schedules prove that retirement closes new admission,
-keeps captured bytes charged, and rejects obsolete publication. The server owner prototype
-remains `cfg(test)` until production preflight, snapshot/cursor pins, and cleanup
-are connected. The shared budget primitive lives in the types crate so its typed
+keeps captured bytes charged, and rejects obsolete publication. Owner creation,
+query/worker pins, and publication guards are now production code. Retirement
+transitions remain test-only until snapshot/cursor ownership and cleanup are
+connected. The shared budget primitive lives in the types crate so its typed
 charge can follow shared data destruction without duplicating accounting. These
 pieces do not enforce the production aggregate budget yet.
 
@@ -198,3 +200,29 @@ Validation: all seven scoped acceptance steps passed, including 222 tests withou
 skips, formatting, clippy with warnings denied, handbook, scope, file size, and
 panic allowance checks. Differential properties compare borrowed sizing against
 actual decoded capacity and decoder acceptance for generated and arbitrary inputs.
+
+
+## Explicit query and worker capture
+
+Every registered family now creates an owner from its admitted registration
+charge. Query discovery and bounded worker discovery capture the actual slot and
+an explicit charged pin while holding the shared registry lock. Dropping the
+capture destroys its data reference before releasing the pin. Failed capture
+returns the existing typed unavailable result; partially collected worker pins
+release through ordinary destruction.
+
+Worker selection updates acquire the owner publication guard before the slot
+lock. The guard spans the complete selection update, preserving the lock order
+registry, owner, slot and preventing a retirement check from racing publication.
+Existing exact checkpoint validation and expected-selection comparisons remain.
+
+The registry still does not retire or evict owners in this slice. Cursor capture,
+retained epoch ownership, preflight for physical construction, generation naming,
+and artifact reclamation remain required before enabling retirement. Tests keep
+the retirement transitions available to prove capture/publication races.
+
+Validation: the initial seven scoped acceptance steps passed, including 546 server
+tests and eight existing skips. The final ownership follow-up passed six focused tests without skips and six
+non-test acceptance checks. The pin allowance test failed before the guard and
+charge allocations used the inventory allowance; it now passes. Owner admission
+also precedes registration copies, preserving reservation lifetime on refusal.

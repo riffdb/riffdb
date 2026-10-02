@@ -573,8 +573,10 @@ compiled metadata against one compiled 1-GiB process budget. Shared metadata is
 charged once and retains its charge through its final data reference, including
 catalog references. Budget pressure or incomplete ownership evidence returns the
 existing typed `Unavailable` result. Servers sharing a process share this pool;
-there is no budget configuration or application cache control. Rebuild and
-checkpoint accounting, cursor pins, retirement, and cleanup remain in progress,
+there is no budget configuration or application cache control. Queries and
+workers also reserve their explicit capture pins against this pool; capture
+pressure returns the same typed unavailable result. Rebuild and checkpoint
+accounting, cursor pins, retirement, and cleanup remain in progress,
 so this registration admission does not yet establish a complete provider memory
 bound or recycle the 256-slot limits. See the
 [implementation progress](architecture/WP-824-IMPLEMENTATION.md).

@@ -60,7 +60,7 @@ use riffdb_types::{
 };
 
 use crate::exact_provider_graph::ProviderOwnershipGraph;
-use riffdb_types::exact_provider_budget_v1::OwnershipCharge;
+use crate::exact_provider_owner::{CapturedProviderSlot, OwnedProviderSlot, ProviderOwner};
 
 use crate::columnar_adapter::read_application_head;
 use crate::projection_read_source::ProjectionReadSource;
@@ -516,7 +516,7 @@ struct ExactTextSlot {
     registration: ExactTextRegistration,
     checkpoint: PathBuf,
     state: Mutex<ExactTextSlotState>,
-    _registration_charge: Arc<OwnershipCharge>,
+    owner: Arc<ProviderOwner>,
 }
 
 enum TokenizedTextSlotState {
@@ -570,7 +570,7 @@ struct TokenizedTextSlot {
     registration: TokenizedTextRegistration,
     checkpoint: PathBuf,
     state: Mutex<TokenizedTextSlotState>,
-    _registration_charge: Arc<OwnershipCharge>,
+    owner: Arc<ProviderOwner>,
 }
 
 enum ExactPredicateSlotState {
@@ -599,14 +599,14 @@ struct ExactPredicateSlot {
     registration: ExactPredicateRegistration,
     checkpoint: PathBuf,
     state: Mutex<ExactPredicateSlotState>,
-    _registration_charge: Arc<OwnershipCharge>,
+    owner: Arc<ProviderOwner>,
 }
 
 struct NullableExactPredicateSlot {
     registration: NullableExactPredicateRegistration,
     checkpoint: PathBuf,
     state: Mutex<NullableExactPredicateSlotState>,
-    _registration_charge: Arc<OwnershipCharge>,
+    owner: Arc<ProviderOwner>,
 }
 
 struct LongPatternProviderState {
@@ -665,21 +665,33 @@ struct LongPatternSlot {
     registration: LongPatternRegistration,
     checkpoint: PathBuf,
     state: Mutex<LongPatternSlotState>,
-    _registration_charge: Arc<OwnershipCharge>,
+    owner: Arc<ProviderOwner>,
+}
+
+impl OwnedProviderSlot for LongPatternSlot {
+    fn provider_owner(&self) -> &Arc<ProviderOwner> {
+        &self.owner
+    }
 }
 
 impl LongPatternSlot {
     fn new(
         registration: LongPatternRegistration,
         checkpoint: PathBuf,
-        charge: Arc<OwnershipCharge>,
+        owner: Arc<ProviderOwner>,
     ) -> Self {
         Self {
             registration,
-            _registration_charge: charge,
+            owner,
             checkpoint,
             state: Mutex::new(LongPatternSlotState::Building),
         }
+    }
+}
+
+impl OwnedProviderSlot for ExactTextSlot {
+    fn provider_owner(&self) -> &Arc<ProviderOwner> {
+        &self.owner
     }
 }
 
@@ -687,14 +699,20 @@ impl ExactTextSlot {
     fn new(
         registration: ExactTextRegistration,
         checkpoint: PathBuf,
-        charge: Arc<OwnershipCharge>,
+        owner: Arc<ProviderOwner>,
     ) -> Self {
         Self {
             registration,
-            _registration_charge: charge,
+            owner,
             checkpoint,
             state: Mutex::new(ExactTextSlotState::Building),
         }
+    }
+}
+
+impl OwnedProviderSlot for TokenizedTextSlot {
+    fn provider_owner(&self) -> &Arc<ProviderOwner> {
+        &self.owner
     }
 }
 
@@ -702,14 +720,20 @@ impl TokenizedTextSlot {
     fn new(
         registration: TokenizedTextRegistration,
         checkpoint: PathBuf,
-        charge: Arc<OwnershipCharge>,
+        owner: Arc<ProviderOwner>,
     ) -> Self {
         Self {
             registration,
-            _registration_charge: charge,
+            owner,
             checkpoint,
             state: Mutex::new(TokenizedTextSlotState::Building),
         }
+    }
+}
+
+impl OwnedProviderSlot for ExactPredicateSlot {
+    fn provider_owner(&self) -> &Arc<ProviderOwner> {
+        &self.owner
     }
 }
 
@@ -717,14 +741,20 @@ impl ExactPredicateSlot {
     fn new(
         registration: ExactPredicateRegistration,
         checkpoint: PathBuf,
-        charge: Arc<OwnershipCharge>,
+        owner: Arc<ProviderOwner>,
     ) -> Self {
         Self {
             registration,
-            _registration_charge: charge,
+            owner,
             checkpoint,
             state: Mutex::new(ExactPredicateSlotState::Building),
         }
+    }
+}
+
+impl OwnedProviderSlot for NullableExactPredicateSlot {
+    fn provider_owner(&self) -> &Arc<ProviderOwner> {
+        &self.owner
     }
 }
 
@@ -732,11 +762,11 @@ impl NullableExactPredicateSlot {
     fn new(
         registration: NullableExactPredicateRegistration,
         checkpoint: PathBuf,
-        charge: Arc<OwnershipCharge>,
+        owner: Arc<ProviderOwner>,
     ) -> Self {
         Self {
             registration,
-            _registration_charge: charge,
+            owner,
             checkpoint,
             state: Mutex::new(NullableExactPredicateSlotState::Building),
         }
@@ -807,23 +837,28 @@ impl ExactTextRuntime {
         Ok(bytes)
     }
 
-    fn registered_slots(&self) -> Result<Vec<Arc<ExactTextSlot>>, ExactTextProjectionPortError> {
+    fn registered_slots(
+        &self,
+    ) -> Result<Vec<CapturedProviderSlot<ExactTextSlot>>, ExactTextProjectionPortError> {
         self.registries
             .lock()
-            .map(|registries| {
+            .map_err(|_| ExactTextProjectionPortError::Integrity)
+            .and_then(|registries| {
                 registries
                     .slots
                     .values()
-                    .map(|entry| Arc::clone(&entry.slot))
+                    .map(|entry| {
+                        CapturedProviderSlot::capture(&entry.slot)
+                            .map_err(|_| ExactTextProjectionPortError::Unavailable)
+                    })
                     .collect()
             })
-            .map_err(|_| ExactTextProjectionPortError::Integrity)
     }
 
     fn slot_for(
         &self,
         request: &ExactTextProjectionRequest,
-    ) -> Result<Arc<ExactTextSlot>, ExactTextProjectionPortError> {
+    ) -> Result<CapturedProviderSlot<ExactTextSlot>, ExactTextProjectionPortError> {
         let plan_identity = request.query().identity();
         let key = slot_key(
             plan_identity,
@@ -846,7 +881,8 @@ impl ExactTextRuntime {
             // Validate the old obligation before extending it on this access.
             entry.access.retention_expired_at(observed)?;
             entry.access.touch(ordinal, observed)?;
-            return Ok(Arc::clone(&entry.slot));
+            return CapturedProviderSlot::capture(&entry.slot)
+                .map_err(|_| ExactTextProjectionPortError::Unavailable);
         }
         if slots.len() >= MAX_REGISTERED_EXACT_PARTITIONS {
             return Err(ExactTextProjectionPortError::Unavailable);
@@ -861,12 +897,14 @@ impl ExactTextRuntime {
                 inspection.visit(&request.row_policy().cloned())
             })
             .map_err(|_| ExactTextProjectionPortError::Unavailable)?;
-        let registration = ExactTextRegistration::from_request(request);
         let charge = admitted
             .commit()
             .map_err(|_| ExactTextProjectionPortError::Unavailable)?;
+        let owner = ProviderOwner::new(self.ownership_graph.budget.clone(), charge)
+            .map_err(|_| ExactTextProjectionPortError::Unavailable)?;
+        let registration = ExactTextRegistration::from_request(request);
         let checkpoint = self.root.join(format!("{}.rxts", hex(&key)));
-        let slot = Arc::new(ExactTextSlot::new(registration, checkpoint, charge));
+        let slot = Arc::new(ExactTextSlot::new(registration, checkpoint, owner));
         slots.insert(
             key,
             RegistryEntry {
@@ -874,28 +912,31 @@ impl ExactTextRuntime {
                 access: ProviderAccess::new(ordinal, observed)?,
             },
         );
-        Ok(slot)
+        CapturedProviderSlot::capture(&slot).map_err(|_| ExactTextProjectionPortError::Unavailable)
     }
 
     fn registered_predicate_slots(
         &self,
-    ) -> Result<Vec<Arc<ExactPredicateSlot>>, ExactTextProjectionPortError> {
+    ) -> Result<Vec<CapturedProviderSlot<ExactPredicateSlot>>, ExactTextProjectionPortError> {
         self.registries
             .lock()
-            .map(|registries| {
+            .map_err(|_| ExactTextProjectionPortError::Integrity)
+            .and_then(|registries| {
                 registries
                     .predicate_slots
                     .values()
-                    .map(|entry| Arc::clone(&entry.slot))
+                    .map(|entry| {
+                        CapturedProviderSlot::capture(&entry.slot)
+                            .map_err(|_| ExactTextProjectionPortError::Unavailable)
+                    })
                     .collect()
             })
-            .map_err(|_| ExactTextProjectionPortError::Integrity)
     }
 
     fn predicate_slot_for(
         &self,
         request: &ExactPredicateProjectionRequest,
-    ) -> Result<Arc<ExactPredicateSlot>, ExactTextProjectionPortError> {
+    ) -> Result<CapturedProviderSlot<ExactPredicateSlot>, ExactTextProjectionPortError> {
         let plan_identity = request.query().identity();
         let key = slot_key(
             plan_identity,
@@ -918,7 +959,8 @@ impl ExactTextRuntime {
             // Validate the old obligation before extending it on this access.
             entry.access.retention_expired_at(observed)?;
             entry.access.touch(ordinal, observed)?;
-            return Ok(Arc::clone(&entry.slot));
+            return CapturedProviderSlot::capture(&entry.slot)
+                .map_err(|_| ExactTextProjectionPortError::Unavailable);
         }
         if slots.len() >= MAX_REGISTERED_EXACT_PARTITIONS {
             return Err(ExactTextProjectionPortError::Unavailable);
@@ -934,12 +976,14 @@ impl ExactTextRuntime {
                 inspection.visit(&request.row_policy().cloned())
             })
             .map_err(|_| ExactTextProjectionPortError::Unavailable)?;
-        let registration = ExactPredicateRegistration::from_request(request);
         let charge = admitted
             .commit()
             .map_err(|_| ExactTextProjectionPortError::Unavailable)?;
+        let owner = ProviderOwner::new(self.ownership_graph.budget.clone(), charge)
+            .map_err(|_| ExactTextProjectionPortError::Unavailable)?;
+        let registration = ExactPredicateRegistration::from_request(request);
         let checkpoint = self.predicate_root.join(format!("{}.rxps", hex(&key)));
-        let slot = Arc::new(ExactPredicateSlot::new(registration, checkpoint, charge));
+        let slot = Arc::new(ExactPredicateSlot::new(registration, checkpoint, owner));
         slots.insert(
             key,
             RegistryEntry {
@@ -947,28 +991,33 @@ impl ExactTextRuntime {
                 access: ProviderAccess::new(ordinal, observed)?,
             },
         );
-        Ok(slot)
+        CapturedProviderSlot::capture(&slot).map_err(|_| ExactTextProjectionPortError::Unavailable)
     }
 
     fn registered_nullable_predicate_slots(
         &self,
-    ) -> Result<Vec<Arc<NullableExactPredicateSlot>>, ExactTextProjectionPortError> {
+    ) -> Result<Vec<CapturedProviderSlot<NullableExactPredicateSlot>>, ExactTextProjectionPortError>
+    {
         self.registries
             .lock()
-            .map(|registries| {
+            .map_err(|_| ExactTextProjectionPortError::Integrity)
+            .and_then(|registries| {
                 registries
                     .nullable_predicate_slots
                     .values()
-                    .map(|entry| Arc::clone(&entry.slot))
+                    .map(|entry| {
+                        CapturedProviderSlot::capture(&entry.slot)
+                            .map_err(|_| ExactTextProjectionPortError::Unavailable)
+                    })
                     .collect()
             })
-            .map_err(|_| ExactTextProjectionPortError::Integrity)
     }
 
     fn nullable_predicate_slot_for(
         &self,
         request: &NullableExactPredicateProjectionRequest,
-    ) -> Result<Arc<NullableExactPredicateSlot>, ExactTextProjectionPortError> {
+    ) -> Result<CapturedProviderSlot<NullableExactPredicateSlot>, ExactTextProjectionPortError>
+    {
         let plan_identity = request.query().identity();
         let key = slot_key(
             plan_identity,
@@ -991,7 +1040,8 @@ impl ExactTextRuntime {
             // Validate the old obligation before extending it on this access.
             entry.access.retention_expired_at(observed)?;
             entry.access.touch(ordinal, observed)?;
-            return Ok(Arc::clone(&entry.slot));
+            return CapturedProviderSlot::capture(&entry.slot)
+                .map_err(|_| ExactTextProjectionPortError::Unavailable);
         }
         if slots.len() >= MAX_REGISTERED_EXACT_PARTITIONS {
             return Err(ExactTextProjectionPortError::Unavailable);
@@ -1007,15 +1057,17 @@ impl ExactTextRuntime {
                 inspection.visit(&request.row_policy().cloned())
             })
             .map_err(|_| ExactTextProjectionPortError::Unavailable)?;
-        let registration = NullableExactPredicateRegistration::from_request(request);
         let charge = admitted
             .commit()
             .map_err(|_| ExactTextProjectionPortError::Unavailable)?;
+        let owner = ProviderOwner::new(self.ownership_graph.budget.clone(), charge)
+            .map_err(|_| ExactTextProjectionPortError::Unavailable)?;
+        let registration = NullableExactPredicateRegistration::from_request(request);
         let checkpoint = self.predicate_root.join(format!("{}.rxp5", hex(&key)));
         let slot = Arc::new(NullableExactPredicateSlot::new(
             registration,
             checkpoint,
-            charge,
+            owner,
         ));
         slots.insert(
             key,
@@ -1024,43 +1076,49 @@ impl ExactTextRuntime {
                 access: ProviderAccess::new(ordinal, observed)?,
             },
         );
-        Ok(slot)
+        CapturedProviderSlot::capture(&slot).map_err(|_| ExactTextProjectionPortError::Unavailable)
     }
 
     fn registered_tokenized_slots(
         &self,
-    ) -> Result<Vec<Arc<TokenizedTextSlot>>, ExactTextProjectionPortError> {
+    ) -> Result<Vec<CapturedProviderSlot<TokenizedTextSlot>>, ExactTextProjectionPortError> {
         self.registries
             .lock()
-            .map(|registries| {
+            .map_err(|_| ExactTextProjectionPortError::Integrity)
+            .and_then(|registries| {
                 registries
                     .tokenized_slots
                     .values()
-                    .map(|entry| Arc::clone(&entry.slot))
+                    .map(|entry| {
+                        CapturedProviderSlot::capture(&entry.slot)
+                            .map_err(|_| ExactTextProjectionPortError::Unavailable)
+                    })
                     .collect()
             })
-            .map_err(|_| ExactTextProjectionPortError::Integrity)
     }
 
     fn registered_long_pattern_slots(
         &self,
-    ) -> Result<Vec<Arc<LongPatternSlot>>, ExactTextProjectionPortError> {
+    ) -> Result<Vec<CapturedProviderSlot<LongPatternSlot>>, ExactTextProjectionPortError> {
         self.registries
             .lock()
-            .map(|registries| {
+            .map_err(|_| ExactTextProjectionPortError::Integrity)
+            .and_then(|registries| {
                 registries
                     .long_pattern_slots
                     .values()
-                    .map(|entry| Arc::clone(&entry.slot))
+                    .map(|entry| {
+                        CapturedProviderSlot::capture(&entry.slot)
+                            .map_err(|_| ExactTextProjectionPortError::Unavailable)
+                    })
                     .collect()
             })
-            .map_err(|_| ExactTextProjectionPortError::Integrity)
     }
 
     fn long_pattern_slot_for(
         &self,
         request: &LongPatternProjectionRequest,
-    ) -> Result<Arc<LongPatternSlot>, ExactTextProjectionPortError> {
+    ) -> Result<CapturedProviderSlot<LongPatternSlot>, ExactTextProjectionPortError> {
         if !request
             .program()
             .steps()
@@ -1103,7 +1161,8 @@ impl ExactTextRuntime {
             // Validate the old obligation before extending it on this access.
             entry.access.retention_expired_at(observed)?;
             entry.access.touch(ordinal, observed)?;
-            return Ok(Arc::clone(&entry.slot));
+            return CapturedProviderSlot::capture(&entry.slot)
+                .map_err(|_| ExactTextProjectionPortError::Unavailable);
         }
         if slots.len() >= MAX_REGISTERED_EXACT_PARTITIONS {
             return Err(ExactTextProjectionPortError::Unavailable);
@@ -1119,12 +1178,14 @@ impl ExactTextRuntime {
                 inspection.visit(&request.row_policy().cloned())
             })
             .map_err(|_| ExactTextProjectionPortError::Unavailable)?;
-        let registration = LongPatternRegistration::from_request(request)?;
         let charge = admitted
             .commit()
             .map_err(|_| ExactTextProjectionPortError::Unavailable)?;
+        let owner = ProviderOwner::new(self.ownership_graph.budget.clone(), charge)
+            .map_err(|_| ExactTextProjectionPortError::Unavailable)?;
+        let registration = LongPatternRegistration::from_request(request)?;
         let checkpoint = self.long_pattern_root.join(format!("{}.rlpv", hex(&key)));
-        let slot = Arc::new(LongPatternSlot::new(registration, checkpoint, charge));
+        let slot = Arc::new(LongPatternSlot::new(registration, checkpoint, owner));
         slots.insert(
             key,
             RegistryEntry {
@@ -1132,13 +1193,13 @@ impl ExactTextRuntime {
                 access: ProviderAccess::new(ordinal, observed)?,
             },
         );
-        Ok(slot)
+        CapturedProviderSlot::capture(&slot).map_err(|_| ExactTextProjectionPortError::Unavailable)
     }
 
     fn tokenized_slot_for(
         &self,
         request: &TokenizedTextProjectionRequest,
-    ) -> Result<Arc<TokenizedTextSlot>, ExactTextProjectionPortError> {
+    ) -> Result<CapturedProviderSlot<TokenizedTextSlot>, ExactTextProjectionPortError> {
         let plan_identity = request.query().identity();
         let key = slot_key(
             plan_identity,
@@ -1161,7 +1222,8 @@ impl ExactTextRuntime {
             // Validate the old obligation before extending it on this access.
             entry.access.retention_expired_at(observed)?;
             entry.access.touch(ordinal, observed)?;
-            return Ok(Arc::clone(&entry.slot));
+            return CapturedProviderSlot::capture(&entry.slot)
+                .map_err(|_| ExactTextProjectionPortError::Unavailable);
         }
         if slots.len() >= MAX_REGISTERED_EXACT_PARTITIONS {
             return Err(ExactTextProjectionPortError::Unavailable);
@@ -1177,12 +1239,14 @@ impl ExactTextRuntime {
                 inspection.visit(&request.row_policy().cloned())
             })
             .map_err(|_| ExactTextProjectionPortError::Unavailable)?;
-        let registration = TokenizedTextRegistration::from_request(request);
         let charge = admitted
             .commit()
             .map_err(|_| ExactTextProjectionPortError::Unavailable)?;
+        let owner = ProviderOwner::new(self.ownership_graph.budget.clone(), charge)
+            .map_err(|_| ExactTextProjectionPortError::Unavailable)?;
+        let registration = TokenizedTextRegistration::from_request(request);
         let checkpoint = self.tokenized_root.join(format!("{}.rttx", hex(&key)));
-        let slot = Arc::new(TokenizedTextSlot::new(registration, checkpoint, charge));
+        let slot = Arc::new(TokenizedTextSlot::new(registration, checkpoint, owner));
         slots.insert(
             key,
             RegistryEntry {
@@ -1190,7 +1254,7 @@ impl ExactTextRuntime {
                 access: ProviderAccess::new(ordinal, observed)?,
             },
         );
-        Ok(slot)
+        CapturedProviderSlot::capture(&slot).map_err(|_| ExactTextProjectionPortError::Unavailable)
     }
 }
 
@@ -1865,6 +1929,9 @@ fn refresh_registered_slots(runtime: &ExactTextRuntime) -> Result<(), ()> {
             }
         };
         let result = rebuild_slot(runtime, &slot, head, prior_generation);
+        let Ok(_publication) = slot.pin.publication() else {
+            continue;
+        };
         let mut state = slot.state.lock().map_err(|_| ())?;
         // This worker is the sole checkpoint writer. Still compare
         // the exact expected selection after sync/reopen, so retirement
@@ -1976,7 +2043,11 @@ fn refresh_registered_long_pattern_slots(runtime: &ExactTextRuntime) -> Result<(
                 LongPatternSlotState::IntegrityFailure => continue,
             }
         };
-        match rebuild_long_pattern_slot(runtime, &slot, head, prior_generation) {
+        let result = rebuild_long_pattern_slot(runtime, &slot, head, prior_generation);
+        let Ok(_publication) = slot.pin.publication() else {
+            continue;
+        };
+        match result {
             Ok(Some(provider)) => {
                 let QueryAccessKind::LongPatternCandidate { pattern, .. } =
                     slot.registration.step().access()
@@ -2211,7 +2282,11 @@ fn refresh_registered_tokenized_slots(runtime: &ExactTextRuntime) -> Result<(), 
                 TokenizedTextSlotState::IntegrityFailure => continue,
             }
         };
-        match rebuild_tokenized_slot(runtime, &slot, head, prior_generation) {
+        let result = rebuild_tokenized_slot(runtime, &slot, head, prior_generation);
+        let Ok(_publication) = slot.pin.publication() else {
+            continue;
+        };
+        match result {
             Ok(Some(provider)) => {
                 let mut state = slot.state.lock().map_err(|_| ())?;
                 let retained = usize::try_from(
@@ -2295,6 +2370,9 @@ fn refresh_registered_predicate_slots(runtime: &ExactTextRuntime) -> Result<(), 
             }
         };
         let result = rebuild_predicate_slot(runtime, &slot, head, prior_generation);
+        let Ok(_publication) = slot.pin.publication() else {
+            continue;
+        };
         let mut state = slot.state.lock().map_err(|_| ())?;
         // This worker is the sole checkpoint writer. Still compare
         // the exact expected selection after sync/reopen, so retirement
@@ -2396,6 +2474,9 @@ fn refresh_registered_nullable_predicate_slots(runtime: &ExactTextRuntime) -> Re
             }
         };
         let result = rebuild_nullable_predicate_slot(runtime, &slot, head, prior_generation);
+        let Ok(_publication) = slot.pin.publication() else {
+            continue;
+        };
         let mut state = slot.state.lock().map_err(|_| ())?;
         // This worker is the sole checkpoint writer. Still compare
         // the exact expected selection after sync/reopen, so retirement

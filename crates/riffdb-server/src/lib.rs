@@ -28,12 +28,7 @@ mod consumer_adapter;
 mod consumer_token;
 mod cursor;
 mod daemon;
-// Ownership primitives remain test-only until production admission, pins, and
-// allocation preflight are wired together by WP-824.
-#[cfg(test)]
-mod exact_provider_budget;
 mod exact_provider_graph;
-#[cfg(test)]
 mod exact_provider_owner;
 mod exact_text_adapter;
 #[cfg(feature = "test-fixtures")]
