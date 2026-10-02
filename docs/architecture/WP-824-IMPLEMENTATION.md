@@ -425,7 +425,11 @@ retain their existing prohibition on authoritative scans and hydration.
 
 Validation so far: all 981 types, Protobuf and storage API tests passed without
 skips; all 27 adapter tests passed. All eight scoped non-test acceptance checks passed. The broader
-1,670-test storage/server conformance run is still in progress. Remaining
+1,670-test storage/server conformance run finished with 1,669 passes,
+one timeout and nine existing skips. The timed-out bootstrap publication
+crash test passed in isolation in 25.6 seconds under the same 120-second
+limit. The original failure log is preserved; a clean full-package run remains
+required before closure. Remaining
 provider construction, projection/policy work, protected epoch leases, safe
 retirement and artifact cleanup remain incomplete; WP-824 stays open and aggregate enforcement is not claimed.
 
@@ -514,3 +518,22 @@ unchanged analyzers, V1 checkpoint format, semantic decoder, authorization,
 epoch selection and application interfaces. Handbook: this implementation page.
 Hazards and follow-ups: finish the remaining ownership and retirement lifecycle
 before qualification.
+
+
+## Posting-tree root admission follow-up
+
+A long-pattern recovery test identified an omitted allowance for separate
+posting-set roots. The same review added an independent peak-inventory assertion
+to tokenized recovery, including a 64-term distinct vocabulary; that assertion
+failed before the bound was corrected. Tokenized construction and recovery now
+count each possible posting-document tree root alongside member nodes and
+per-root allocation metadata. Ordinary algorithms and checkpoint bytes are
+unchanged. All six scoped non-test acceptance checks passed, and all 102 selected
+projection/provider conformance tests passed; 534 unrelated tests were excluded
+by selection.
+
+The combined source-page/text/tokenized integration passed all eight non-test
+acceptance checks and all 1,085 selected types, Protobuf, storage API, projection
+and provider conformance tests; 534 unrelated tests were excluded by selection.
+WP-824 remains open with the ownership, epoch protection and retirement follow-ups
+listed above. This receipt does not claim a clean full CI or a real rehearsal.

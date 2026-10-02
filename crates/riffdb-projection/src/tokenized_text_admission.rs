@@ -146,7 +146,11 @@ fn recovery_maximum(bytes: &[u8]) -> Result<u64, OwnedCapacityInspectionErrorV1>
                 // Reconstruction builds one posting entry per occurrence in
                 // the worst case, independently of encoded redundant postings.
                 inspection.prospective_btree::<(FieldId, String), BTreeMap<EntityKeyHash, TokenizedPostingV1>>(terms)?;
-                inspection.prospective_btree::<EntityKeyHash, TokenizedPostingV1>(terms)?;
+                // Each term may own a separate posting-document tree: admit
+                // its root as well as its member node and allocator metadata.
+                inspection
+                    .prospective_btree::<EntityKeyHash, TokenizedPostingV1>(mul(2, terms)?)?;
+                inspection.allocation(mul(512, terms)?, align_of::<usize>())?;
                 inspection.allocation(
                     add(mul(6 * size_of::<u32>(), terms)?, mul(512, terms)?)?,
                     align_of::<u32>(),
@@ -274,7 +278,11 @@ fn rebuild_maximum(
                     inspection.allocation(mul(256, term_bytes)?, align_of::<usize>())?;
                 }
                 inspection.prospective_btree::<(FieldId, String), BTreeMap<EntityKeyHash, TokenizedPostingV1>>(terms)?;
-                inspection.prospective_btree::<EntityKeyHash, TokenizedPostingV1>(terms)?;
+                // Each term may own a separate posting-document tree: admit
+                // its root as well as its member node and allocator metadata.
+                inspection
+                    .prospective_btree::<EntityKeyHash, TokenizedPostingV1>(mul(2, terms)?)?;
+                inspection.allocation(mul(512, terms)?, align_of::<usize>())?;
                 inspection.allocation(
                     add(mul(6 * size_of::<u32>(), terms)?, mul(512, terms)?)?,
                     align_of::<u32>(),
@@ -319,10 +327,13 @@ mod tests {
     fn tokenized_rebuild_admission_matches_both_analyzers_and_final_capture() {
         for analyzer in [TextAnalyzerV1::KeywordV1, TextAnalyzerV1::StandardV1] {
             for text in [
-                "",
-                "shared shared shared",
-                "Straße ﬁle İ Σ",
-                "日本語 cafe\u{0301}",
+                "".to_owned(),
+                "shared shared shared".to_owned(),
+                "Straße ﬁle İ Σ".to_owned(),
+                "日本語 cafe\u{0301}".to_owned(),
+                (0..64)
+                    .map(|index| format!("word{index} "))
+                    .collect::<String>(),
             ] {
                 let budget = ProviderBudget::new();
                 let config = TokenizedTextConfigV1::new(
@@ -364,6 +375,19 @@ mod tests {
                     expected.to_checkpoint_bytes().unwrap()
                 );
                 let encoded = provider.to_checkpoint_bytes().unwrap();
+                // Recovery simultaneously retains documents, decoded redundant
+                // postings and independently rebuilt postings. The rebuilt
+                // position capacities also bound the exact encoded vectors.
+                let peak = riffdb_types::OwnedCapacityInspectionV1::inspect_with(|inspection| {
+                    inspection.visit(&expected)?;
+                    inspection.visit(&expected.postings)
+                })
+                .unwrap();
+                assert!(
+                    super::recovery_maximum(&encoded).unwrap()
+                        >= peak.unshared_bytes()
+                            + riffdb_types::OWNED_CAPACITY_INSPECTION_SCRATCH_BYTES_V1
+                );
                 let recovered = TokenizedTextPartitionIndexV1::from_checkpoint_bytes_admitted_v1(
                     &encoded, &budget,
                 )
