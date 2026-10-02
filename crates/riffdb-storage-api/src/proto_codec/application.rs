@@ -168,7 +168,7 @@ fn legacy_index_entry_from_proto(
     ))
 }
 
-fn index_entry_from_proto(
+pub(super) fn index_entry_from_proto(
     value: wire::StoredIndexEntryV2,
 ) -> Result<StoredIndexEntryV2, DurableCodecError> {
     storage_result(StoredIndexEntryV2::from_verified_canonical_covered_values(

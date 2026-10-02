@@ -12,11 +12,11 @@ use std::sync::Arc;
 
 mod sealed {
     pub trait ProviderSourceMessage {
-        const CANONICAL_FIELD: u32;
+        const CANONICAL_FIELD: Option<u32>;
         fn inspect_transport_shape(&self);
     }
     impl ProviderSourceMessage for crate::storage::v1::StoredEntityRecordV1 {
-        const CANONICAL_FIELD: u32 = 5;
+        const CANONICAL_FIELD: Option<u32> = Some(5);
         fn inspect_transport_shape(&self) {
             let Self {
                 target,
@@ -37,7 +37,7 @@ mod sealed {
         }
     }
     impl ProviderSourceMessage for crate::storage::v1::StoredIndexEntryV1 {
-        const CANONICAL_FIELD: u32 = 3;
+        const CANONICAL_FIELD: Option<u32> = Some(3);
         fn inspect_transport_shape(&self) {
             let Self {
                 index_entry_key,
@@ -52,7 +52,7 @@ mod sealed {
         }
     }
     impl ProviderSourceMessage for crate::storage::v1::StoredIndexEntryV2 {
-        const CANONICAL_FIELD: u32 = 3;
+        const CANONICAL_FIELD: Option<u32> = Some(3);
         fn inspect_transport_shape(&self) {
             let Self {
                 index_entry_key,
@@ -63,6 +63,23 @@ mod sealed {
             buffer(index_entry_key);
             buffer(canonical_covered_values);
             buffer(partition_key);
+            if let Some(binding) = schema_binding {
+                schema_binding_shape(binding);
+            }
+        }
+    }
+    impl ProviderSourceMessage for crate::storage::v1::StoredIndexGenerationV2 {
+        const CANONICAL_FIELD: Option<u32> = None;
+        fn inspect_transport_shape(&self) {
+            let Self {
+                partition_key,
+                index_id,
+                schema_binding,
+                generation,
+            } = self;
+            buffer(partition_key);
+            inline(index_id);
+            inline(generation);
             if let Some(binding) = schema_binding {
                 schema_binding_shape(binding);
             }
@@ -99,6 +116,7 @@ pub trait ProviderSourceMessageV1:
 impl ProviderSourceMessageV1 for wire::StoredEntityRecordV1 {}
 impl ProviderSourceMessageV1 for wire::StoredIndexEntryV1 {}
 impl ProviderSourceMessageV1 for wire::StoredIndexEntryV2 {}
+impl ProviderSourceMessageV1 for wire::StoredIndexGenerationV2 {}
 
 /// Safe distinction between decode admission pressure and durable rejection.
 #[doc(hidden)]
@@ -158,7 +176,7 @@ pub fn inspect_provider_source_decode_v1<M: ProviderSourceMessageV1>(
         if schema.record_type() != expected.record_type() {
             return Err(EnvelopeError::UnknownRecordType);
         }
-        // These three source schemas have no alternate readable identity. Keep
+        // These closed source schemas have no alternate readable identity. Keep
         // the closed generated descriptor inseparable from its payload.
         if schema.schema_hash() != expected.schema_hash() {
             return Err(EnvelopeError::UnsupportedSchemaHash);
@@ -170,7 +188,7 @@ pub fn inspect_provider_source_decode_v1<M: ProviderSourceMessageV1>(
     let mut cursor = crate::wire::Cursor::new(payload);
     let mut canonical = None;
     while let Some(field) = cursor.next().map_err(|_| EnvelopeError::Malformed)? {
-        if field.number == M::CANONICAL_FIELD {
+        if Some(field.number) == M::CANONICAL_FIELD {
             if canonical.is_some() {
                 return Err(EnvelopeError::InvalidPayload(
                     PayloadValidationError::NonCanonical,

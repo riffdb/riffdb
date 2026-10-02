@@ -103,3 +103,66 @@ pub fn decode_provider_entity_record_admitted_v1(
     drop(scratch);
     work.commit_value(record).map_err(Into::into)
 }
+
+/// Immutable metadata and deep covered-value ownership for an ordinary index page.
+#[doc(hidden)]
+pub type AdmittedProviderIndexPageV1 = Arc<ProviderAllocation<crate::AuthoritativeIndexScanPage>>;
+
+/// Decode current index source through the ordinary semantic mapper. Generated
+/// payloads, semantic covered values and encoded sharing are admitted separately.
+#[doc(hidden)]
+pub fn decode_provider_index_record_admitted_v1(
+    encoded: &[u8],
+    budget: &ProviderBudget,
+) -> Result<Arc<ProviderAllocation<crate::StoredIndexEntryV2>>, ProviderRecordDecodeErrorV1> {
+    let input = inspect_provider_source_decode_v1::<wire::StoredIndexEntryV2>(encoded)
+        .map_err(DurableCodecError::from_decode_envelope)?;
+    let decoded = inspect_canonical_decode_capacity_v1(input.canonical_payload())
+        .map_err(|_| DurableCodecError::corrupt())?;
+    let encoded_len = u64::try_from(encoded.len()).map_err(|_| BudgetUnavailable)?;
+    let metadata = encoded_len
+        .checked_mul(8)
+        .and_then(|bytes| bytes.checked_add(32 * 1024))
+        .ok_or(BudgetUnavailable)?;
+    let maximum = decoded
+        .owned_heap_bytes()
+        .checked_add(metadata)
+        .ok_or(BudgetUnavailable)?;
+    let mut work = budget.reserve(maximum)?;
+    let bytes_work = work.split(
+        encoded_len
+            .checked_mul(2)
+            .and_then(|bytes| bytes.checked_add(2048))
+            .ok_or(BudgetUnavailable)?,
+    )?;
+    let mut scratch = ProviderDecodeScratchV1::new(encoded.len(), budget)?;
+    let message = input.decode_with_scratch(&mut scratch)?;
+    let record = super::application::index_entry_from_proto((**message).clone())?;
+    let record = crate::StoredIndexEntryV2::from_admitted_provider_encoded_v1(record, bytes_work)?;
+    drop(message);
+    drop(scratch);
+    work.commit_value(record).map_err(Into::into)
+}
+
+/// Decode index-generation source metadata with the ordinary target/binding
+/// mapper and caller-admitted canonical scratch on both framing variants.
+#[doc(hidden)]
+pub fn decode_provider_index_epoch_admitted_v1(
+    encoded: &[u8],
+    budget: &ProviderBudget,
+) -> Result<Arc<ProviderAllocation<crate::StoredIndexEpochV1>>, ProviderRecordDecodeErrorV1> {
+    let input = inspect_provider_source_decode_v1::<wire::StoredIndexGenerationV2>(encoded)
+        .map_err(DurableCodecError::from_decode_envelope)?;
+    let maximum = u64::try_from(encoded.len())
+        .ok()
+        .and_then(|bytes| bytes.checked_mul(8))
+        .and_then(|bytes| bytes.checked_add(32 * 1024))
+        .ok_or(BudgetUnavailable)?;
+    let work = budget.reserve(maximum)?;
+    let mut scratch = ProviderDecodeScratchV1::new(encoded.len(), budget)?;
+    let message = input.decode_with_scratch(&mut scratch)?;
+    let epoch = super::application::index_epoch_from_proto((**message).clone())?;
+    drop(message);
+    drop(scratch);
+    work.commit_value(epoch).map_err(Into::into)
+}

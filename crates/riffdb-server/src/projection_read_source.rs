@@ -50,6 +50,15 @@ impl ProjectionReadSource {
         self.pin()?.read_provider_entity_record_v1(target, budget)
     }
 
+    /// The provider worker's index page shares its captured root and admission.
+    pub(crate) fn read_provider_index_page_v1(
+        &self,
+        request: &AuthoritativeIndexScanRequest,
+        budget: &riffdb_types::exact_provider_budget_v1::ProviderBudget,
+    ) -> Result<riffdb_storage_api::AdmittedProviderIndexPageV1, StorageError> {
+        self.pin()?.read_provider_index_page_v1(request, budget)
+    }
+
     pub(crate) fn query_executor(&self) -> StorageQueryExecutor<Self> {
         StorageQueryExecutor::new(self.clone())
     }

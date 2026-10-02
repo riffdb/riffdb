@@ -130,6 +130,32 @@ impl Reservation {
         })
     }
 
+    /// Combine unpublished capacity from the same graph without changing the
+    /// admitted byte total. Callers combine before constructing the corresponding
+    /// page row, so failed transfer cannot release live row data. No owned charge
+    /// can be converted back to work through this operation.
+    pub fn absorb(&mut self, mut other: Self) -> Result<(), BudgetUnavailable> {
+        if !self.live || !other.live || !Arc::ptr_eq(&self.budget.0, &other.budget.0) {
+            return Err(BudgetUnavailable);
+        }
+        let bytes = self
+            .bytes
+            .checked_add(other.bytes)
+            .ok_or(BudgetUnavailable)?;
+        let mut accounting = self.budget.0.lock().map_err(|_| BudgetUnavailable)?;
+        if accounting.refused {
+            return Err(BudgetUnavailable);
+        }
+        if accounting.counters.reservations < 2 || accounting.counters.reserved_bytes < bytes {
+            accounting.refused = true;
+            return Err(BudgetUnavailable);
+        }
+        accounting.counters.reservations -= 1;
+        self.bytes = bytes;
+        other.live = false;
+        Ok(())
+    }
+
     /// Settle an already admitted, wholly owned candidate after construction.
     /// The original maximum must include inspection scratch before allocation.
     /// Shared payloads require graph admission and are refused by this helper.
@@ -380,6 +406,58 @@ impl Drop for OwnershipCharge {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // req: OQ-040
+    #[test]
+    fn absorbed_reservations_keep_capacity_across_transfer_and_final_capture() {
+        use std::sync::Barrier;
+        let budget = ProviderBudget::with_limit(512);
+        let mut page = budget.reserve(256).unwrap();
+        let ready = Arc::new(Barrier::new(2));
+        let release = Arc::new(Barrier::new(2));
+        let worker = {
+            let budget = budget.clone();
+            let ready = Arc::clone(&ready);
+            let release = Arc::clone(&release);
+            std::thread::spawn(move || {
+                let row = budget.reserve(256).unwrap();
+                ready.wait();
+                release.wait();
+                row
+            })
+        };
+        ready.wait();
+        assert_eq!(budget.observation().unwrap().reservations, 2);
+        assert_eq!(budget.observation().unwrap().reserved_bytes, 512);
+        release.wait();
+        page.absorb(worker.join().unwrap()).unwrap();
+        assert_eq!(budget.observation().unwrap().reservations, 1);
+        assert_eq!(budget.observation().unwrap().reserved_bytes, 512);
+        assert!(budget.reserve(1).is_err());
+        let data = page.commit_value(vec![7_u8; 64]).unwrap();
+        let capture = Arc::clone(&data);
+        drop(data);
+        assert_eq!(budget.observation().unwrap().owned_bytes, 512);
+        assert_eq!(budget.observation().unwrap().reserved_bytes, 0);
+        assert!(budget.reserve(1).is_err());
+        drop(capture);
+        assert_eq!(budget.observation().unwrap().owned_bytes, 0);
+        assert_eq!(budget.observation().unwrap().released_allocations, 1);
+    }
+
+    // req: OQ-040
+    #[test]
+    fn absorbing_foreign_budget_refuses_without_releasing_parent_capacity() {
+        let budget = ProviderBudget::with_limit(512);
+        let foreign = ProviderBudget::with_limit(512);
+        let mut page = budget.reserve(256).unwrap();
+        assert!(page.absorb(foreign.reserve(128).unwrap()).is_err());
+        assert_eq!(foreign.observation().unwrap().reserved_bytes, 0);
+        assert_eq!(budget.observation().unwrap().reserved_bytes, 256);
+        assert_eq!(budget.observation().unwrap().reservations, 1);
+        drop(page);
+        assert_eq!(budget.observation().unwrap().reserved_bytes, 0);
+    }
 
     #[test]
     fn successful_settlement_shrinks_and_retains_charge_through_final_data_drop() {

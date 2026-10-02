@@ -2948,7 +2948,8 @@ fn read_complete_tokenized_partition(
             limit,
         )
         .map_err(|_| RebuildFailure::Integrity)?;
-        let page = AuthoritativeScanReader::scan_entity_partition(&snapshot, request)
+        let page = snapshot
+            .read_provider_entity_partition_records_v1(&request, &runtime.ownership_graph.budget)
             .map_err(|_| RebuildFailure::Transient)?;
         for source in page.records() {
             let record = source.value();
@@ -3185,7 +3186,9 @@ fn read_complete_predicate_partition<R: ExactPredicateRegistrationView>(
     loop {
         let request = AuthoritativeIndexScanRequest::new(target.clone(), after, limit)
             .map_err(|_| RebuildFailure::Integrity)?;
-        let page = AuthoritativeScanReader::scan_index(&captured.storage, request)
+        let page = captured
+            .storage
+            .read_provider_index_page_v1(&request, &captured.budget)
             .map_err(|_| RebuildFailure::Transient)?;
         for item in page.entries() {
             observed_entries = observed_entries
@@ -3243,8 +3246,8 @@ fn read_complete_predicate_partition<R: ExactPredicateRegistrationView>(
                 return Err(RebuildFailure::Integrity);
             }
         }
-        match page {
-            AuthoritativeIndexScanPage::Page { next_after, .. } => after = Some(next_after),
+        match &**page {
+            AuthoritativeIndexScanPage::Page { next_after, .. } => after = Some(next_after.clone()),
             AuthoritativeIndexScanPage::ExactEnd { .. } => break,
         }
     }
@@ -3340,7 +3343,9 @@ fn read_complete_partition(
     loop {
         let request = AuthoritativeIndexScanRequest::new(target.clone(), after, limit)
             .map_err(|_| RebuildFailure::Integrity)?;
-        let page = AuthoritativeScanReader::scan_index(&captured.storage, request)
+        let page = captured
+            .storage
+            .read_provider_index_page_v1(&request, &captured.budget)
             .map_err(|_| RebuildFailure::Transient)?;
         for item in page.entries() {
             observed_entries = observed_entries
@@ -3400,8 +3405,8 @@ fn read_complete_partition(
                 return Err(RebuildFailure::Integrity);
             }
         }
-        match page {
-            AuthoritativeIndexScanPage::Page { next_after, .. } => after = Some(next_after),
+        match &**page {
+            AuthoritativeIndexScanPage::Page { next_after, .. } => after = Some(next_after.clone()),
             AuthoritativeIndexScanPage::ExactEnd { .. } => break,
         }
     }
@@ -4088,7 +4093,14 @@ mod tests {
             .split_once("impl fmt::Debug for ExactTextRuntime")
             .expect("execute boundary")
             .0;
-        for forbidden in ["scan_index", "read_entity", "read_complete_partition"] {
+        for forbidden in [
+            "scan_index",
+            "read_entity",
+            "read_complete_partition",
+            "read_provider_index_page_v1",
+            "read_provider_entity_v1",
+            "read_provider_entity_partition_records_v1",
+        ] {
             assert!(
                 !execute.contains(forbidden),
                 "query execution must not contain {forbidden}"
@@ -4116,6 +4128,7 @@ mod tests {
             "scan_index",
             "read_entity",
             "read_complete_tokenized_partition",
+            "read_provider_entity_partition_records_v1",
         ] {
             assert!(
                 !execute.contains(forbidden),
@@ -4175,7 +4188,7 @@ mod tests {
             .0;
         let compact = rebuild.split_whitespace().collect::<String>();
         assert!(compact.contains("runtime.storage.pin()"));
-        assert!(rebuild.contains("scan_entity_partition(&snapshot"));
+        assert!(rebuild.contains("read_provider_entity_partition_records_v1(&request"));
     }
 
     #[test]
@@ -4188,19 +4201,26 @@ mod tests {
             worker
                 .matches("AuthoritativeScanReader::scan_index")
                 .count(),
-            2
+            0
         );
         assert_eq!(
             production_source()
                 .matches("AuthoritativeScanReader::scan_index")
                 .count(),
-            2
+            0
         );
         assert_eq!(
             production_source()
                 .matches("AuthoritativeScanReader::scan_entity_partition")
                 .count(),
-            2
+            1
+        );
+        assert_eq!(worker.matches("read_provider_index_page_v1").count(), 2);
+        assert_eq!(
+            worker
+                .matches("read_provider_entity_partition_records_v1")
+                .count(),
+            1
         );
     }
 

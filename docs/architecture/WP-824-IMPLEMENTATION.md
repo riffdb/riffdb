@@ -362,7 +362,7 @@ byte mutations, verify explicit scratch release, and exercise semantic rejection
 physical-key substitution and refusal partway through a decoded page. Exact-text and predicate full rebuilds now use the admitted entity point reader
 on their existing captured snapshot. A production source test proves shared-budget
 refusal and capture stability across a later authoritative commit. Partition-page
-integration remains pending. Index decoding, projection/policy work, physical
+integration is recorded in the next slice below. Projection/policy work, physical
 provider successors and retirement still prevent claiming aggregate enforcement
 or package closure.
 
@@ -399,6 +399,43 @@ formats, query ordering, authorization and scan ceilings remain unchanged.
 Handbook: this implementation page is reachable from SUMMARY.md. Hazards and
 follow-ups: complete source/policy/successor accounting, protected epochs, safe
 retirement and artifact cleanup before qualification and package closure.
+
+
+## Admitted provider index pages and worker integration
+
+The closed admitted decoder now also supports the existing index-generation
+metadata used by source pages. Both supported envelope versions still run the
+ordinary semantic mapper. Index records attach their charge to the actual
+encoded buffer, keeping shared bytes charged through the last record clone.
+Deep covered values are independently admitted before copying into a page.
+
+A reservation can absorb another reservation from the same graph before a new
+row allocation. The transfer preserves total reserved bytes and reduces the
+live reservation count; foreign-graph or invalid transfers refuse. Deterministic
+barrier tests cover transfer across threads, saturation and final-reference
+release without introducing another synchronization primitive.
+
+Index pages use the same captured source, physical-key checks, partition filter,
+index epoch, continuation validation and existing inspection and byte ceilings.
+Tests compare ordinary and admitted pages, reject substituted keys even in
+another partition, and prove cleanup when pressure refuses a partially built
+page. Exact-text and predicate workers now use admitted index pages, and the
+tokenized-text rebuild uses admitted entity partition pages. Public execute paths
+retain their existing prohibition on authoritative scans and hydration.
+
+Validation so far: all 981 types, Protobuf and storage API tests passed without
+skips; all 27 adapter tests passed. All eight scoped non-test acceptance checks passed. The broader
+1,670-test storage/server conformance run is still in progress. Remaining
+provider construction, projection/policy work, protected epoch leases, safe
+retirement and artifact cleanup remain incomplete; WP-824 stays open and aggregate enforcement is not claimed.
+
+PR note: Package WP-824 (open); Tier guarantee; Behavior: admitted index records,
+index-generation metadata and source pages, with worker page integration.
+Compatibility: existing envelopes, source snapshots, ordering, authorization,
+continuations and scan ceilings. Handbook: this implementation page records the
+internal progress; no application method or operator control changes. Hazards
+and follow-ups: complete construction and successor ownership, protected epoch
+leases, retirement and cleanup before qualification.
 
 
 ## Production binary-text provider ownership

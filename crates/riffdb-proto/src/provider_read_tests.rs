@@ -83,6 +83,13 @@ fn all_closed_provider_source_roles_preserve_v1_and_v2_decoding() {
         }
     }
     check(entity());
+    check(wire::StoredIndexGenerationV2 {
+        partition_key: vec![1; 16],
+        index_id: 1,
+        schema_binding: entity().schema_binding,
+        generation: 1,
+    });
+
     let canonical = entity().canonical_fields;
     check(wire::StoredIndexEntryV1 {
         index_entry_key: vec![1; 16],

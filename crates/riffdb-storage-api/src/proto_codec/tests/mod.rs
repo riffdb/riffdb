@@ -1503,3 +1503,97 @@ fn admitted_provider_semantic_failure_and_pressure_leave_no_record_ownership() {
     drop(occupied);
     assert_eq!(budget.observation().unwrap().reserved_bytes, 0);
 }
+
+// req: OQ-040
+#[test]
+fn admitted_provider_index_decode_keeps_encoded_values_charged_after_clone() {
+    use riffdb_types::exact_provider_budget_v1::ProviderBudget;
+    let (expected, _) = sample::index_records();
+    let legacy = encode_index_entry_v2(&expected).unwrap();
+    let compact = transcode_durable_record_to_v2(legacy.as_bytes()).unwrap();
+    for bytes in [legacy.as_bytes(), compact.as_bytes()] {
+        let ordinary = decode_index_entry_v2(bytes).unwrap();
+        let budget = ProviderBudget::new();
+        let decoded = decode_provider_index_record_admitted_v1(bytes, &budget).unwrap();
+        assert!(**decoded == *ordinary.value());
+        assert_eq!(
+            decoded.covered_values_encoded(),
+            ordinary.value().covered_values_encoded()
+        );
+        // Deep covered-value copies have caller admission; shared encoded data
+        // must retain its actual original owner independently of that scratch.
+        let clone_work = budget.reserve(64 * 1024).unwrap();
+        let copied = (**decoded).clone();
+        drop(decoded);
+        assert!(budget.observation().unwrap().owned_bytes > 0);
+        assert_eq!(
+            copied.covered_values_encoded(),
+            expected.covered_values_encoded()
+        );
+        drop(copied);
+        assert_eq!(budget.observation().unwrap().owned_bytes, 0);
+        drop(clone_work);
+        assert_eq!(budget.observation().unwrap().reserved_bytes, 0);
+    }
+}
+
+// req: OQ-040
+#[test]
+fn admitted_provider_index_semantic_failure_and_pressure_release_all_work() {
+    use riffdb_types::exact_provider_budget_v1::{EXACT_PROVIDER_BUDGET_BYTES, ProviderBudget};
+    let (record, _) = sample::index_records();
+    let valid = encode_index_entry_v2(&record).unwrap();
+    let mut message = super::application::index_entry_to_proto(&record);
+    message.index_entry_key = vec![0];
+    let invalid = encode_message(INDEX_ENTRY, &message).unwrap();
+    assert!(decode_index_entry_v2(invalid.as_bytes()).is_err());
+    let budget = ProviderBudget::new();
+    assert!(matches!(
+        decode_provider_index_record_admitted_v1(invalid.as_bytes(), &budget),
+        Err(ProviderRecordDecodeErrorV1::Codec(error)) if error.kind() == DurableCodecErrorKind::CorruptData
+    ));
+    assert_eq!(budget.observation().unwrap().owned_bytes, 0);
+    assert_eq!(budget.observation().unwrap().reserved_bytes, 0);
+    let occupied = budget
+        .reserve(EXACT_PROVIDER_BUDGET_BYTES - budget.observation().unwrap().fixed_owner_bytes)
+        .unwrap();
+    assert!(matches!(
+        decode_provider_index_record_admitted_v1(valid.as_bytes(), &budget),
+        Err(ProviderRecordDecodeErrorV1::AdmissionUnavailable)
+    ));
+    assert_eq!(budget.observation().unwrap().owned_bytes, 0);
+    assert_eq!(budget.observation().unwrap().reservations, 1);
+    drop(occupied);
+    assert_eq!(budget.observation().unwrap().reserved_bytes, 0);
+}
+
+// req: OQ-040
+#[test]
+fn admitted_provider_index_epoch_decode_preserves_both_frames_and_refusal() {
+    use riffdb_types::exact_provider_budget_v1::{EXACT_PROVIDER_BUDGET_BYTES, ProviderBudget};
+    let (_, expected) = sample::index_records();
+    let legacy = encode_index_epoch_v1(&expected).unwrap();
+    let compact = transcode_durable_record_to_v2(legacy.as_bytes()).unwrap();
+    for bytes in [legacy.as_bytes(), compact.as_bytes()] {
+        let budget = ProviderBudget::new();
+        let epoch = decode_provider_index_epoch_admitted_v1(bytes, &budget).unwrap();
+        assert!(**epoch == expected);
+        let capture = std::sync::Arc::clone(&epoch);
+        drop(epoch);
+        assert!(budget.observation().unwrap().owned_bytes > 0);
+        drop(capture);
+        assert_eq!(budget.observation().unwrap().owned_bytes, 0);
+        assert_eq!(budget.observation().unwrap().reserved_bytes, 0);
+        let occupied = budget
+            .reserve(EXACT_PROVIDER_BUDGET_BYTES - budget.observation().unwrap().fixed_owner_bytes)
+            .unwrap();
+        assert!(matches!(
+            decode_provider_index_epoch_admitted_v1(bytes, &budget),
+            Err(ProviderRecordDecodeErrorV1::AdmissionUnavailable)
+        ));
+        assert_eq!(budget.observation().unwrap().owned_bytes, 0);
+        assert_eq!(budget.observation().unwrap().reservations, 1);
+        drop(occupied);
+        assert_eq!(budget.observation().unwrap().reserved_bytes, 0);
+    }
+}

@@ -1950,6 +1950,83 @@ mod tests {
         ));
     }
 
+    // req: OQ-040
+    #[test]
+    fn admitted_provider_index_pages_preserve_partition_continuation_and_epoch() {
+        use riffdb_storage_api::OwnedSnapshotReader;
+        use riffdb_types::exact_provider_budget_v1::{EXACT_PROVIDER_BUDGET_BYTES, ProviderBudget};
+        let (_path, ports) = operational("provider-admitted-index-page");
+        let target = filtered_range();
+        let write = ports.shared.database.begin_write().unwrap();
+        {
+            let mut table = write.open_table(SECONDARY_INDEXES).unwrap();
+            for i in 1..=6 {
+                let record = filtered_row(i, if i % 2 == 0 { 1 } else { 2 }, "budget");
+                let encoded = encode_index_entry_v2(&record).unwrap();
+                table
+                    .insert(record.key().as_bytes(), encoded.as_bytes())
+                    .unwrap();
+            }
+            let epoch = StoredIndexEpochV1::new(
+                target.generation_target().clone(),
+                binding(),
+                IndexEpoch::first(),
+            );
+            let encoded = encode_index_epoch_v1(&epoch).unwrap();
+            write
+                .open_table(INDEX_EPOCHS)
+                .unwrap()
+                .insert(
+                    encode_partition_index_key(target.generation_target()).as_slice(),
+                    encoded.as_bytes(),
+                )
+                .unwrap();
+        }
+        write.commit().unwrap();
+        let pinned = ports.open_owned_snapshot().unwrap();
+        let budget = ProviderBudget::new();
+        let mut after = None;
+        loop {
+            let request = AuthoritativeIndexScanRequest::new(
+                target.clone(),
+                after,
+                StorageScanLimit::new(2).unwrap(),
+            )
+            .unwrap();
+            let expected = pinned.scan_index(request.clone()).unwrap();
+            let occupied = budget
+                .reserve(
+                    EXACT_PROVIDER_BUDGET_BYTES - budget.observation().unwrap().fixed_owner_bytes,
+                )
+                .unwrap();
+            assert!(
+                matches!(pinned.read_provider_index_page_v1(&request, &budget),
+                Err(error) if error.kind() == StorageErrorKind::Unavailable)
+            );
+            assert_eq!(budget.observation().unwrap().owned_bytes, 0);
+            assert_eq!(budget.observation().unwrap().reservations, 1);
+            drop(occupied);
+            let page = pinned
+                .read_provider_index_page_v1(&request, &budget)
+                .unwrap();
+            assert!(**page == expected);
+            assert_eq!(page.epoch(), IndexEpochPosition::Value(IndexEpoch::first()));
+            let capture = Arc::clone(&page);
+            drop(page);
+            assert!(budget.observation().unwrap().owned_bytes > 0);
+            drop(capture);
+            assert_eq!(budget.observation().unwrap().owned_bytes, 0);
+            assert_eq!(budget.observation().unwrap().reserved_bytes, 0);
+            match expected {
+                AuthoritativeIndexScanPage::Page { next_after, .. } => after = Some(next_after),
+                AuthoritativeIndexScanPage::ExactEnd { entries, .. } => {
+                    assert_eq!(entries.len(), 1);
+                    break;
+                }
+            }
+        }
+    }
+
     #[test]
     fn index_scan_preserves_exact_envelope_charge() {
         let (_path, ports) = operational("index");
@@ -2034,6 +2111,91 @@ mod tests {
             IndexEpochPosition::Value(IndexEpoch::first())
         );
         assert_eq!(snapshot.ranges()[0].entries()[0].key(), &key);
+    }
+
+    // req: OQ-040
+    #[test]
+    fn admitted_provider_index_page_failure_releases_a_partially_built_batch() {
+        use riffdb_storage_api::OwnedSnapshotReader;
+        use riffdb_types::exact_provider_budget_v1::{EXACT_PROVIDER_BUDGET_BYTES, ProviderBudget};
+        let (_path, ports) = operational("provider-admitted-partial-index-page");
+        seed_filtered_rows(
+            &ports,
+            (1..=6)
+                .map(|i| filtered_row(i, if i % 2 == 0 { 1 } else { 2 }, "application-test"))
+                .collect(),
+        );
+        let pinned = ports.open_owned_snapshot().unwrap();
+        let request = AuthoritativeIndexScanRequest::new(
+            filtered_range(),
+            None,
+            StorageScanLimit::new(2).unwrap(),
+        )
+        .unwrap();
+        let expected = pinned.scan_index(request.clone()).unwrap();
+        let budget = ProviderBudget::new();
+        let occupied = budget
+            .reserve(
+                EXACT_PROVIDER_BUDGET_BYTES
+                    - budget.observation().unwrap().fixed_owner_bytes
+                    - 192 * 1024,
+            )
+            .unwrap();
+        assert!(
+            matches!(pinned.read_provider_index_page_v1(&request, &budget),
+            Err(error) if error.kind() == StorageErrorKind::Unavailable)
+        );
+        assert_eq!(budget.observation().unwrap().owned_bytes, 0);
+        assert_eq!(budget.observation().unwrap().reservations, 1);
+        // Raw page/rows, the decoded epoch and multiple semantic row owners
+        // were constructed and destroyed before the later admission refusal.
+        assert!(budget.observation().unwrap().released_allocations >= 16);
+        drop(occupied);
+        let actual = pinned
+            .read_provider_index_page_v1(&request, &budget)
+            .unwrap();
+        assert!(**actual == expected);
+        drop(actual);
+        assert_eq!(budget.observation().unwrap().owned_bytes, 0);
+        assert_eq!(budget.observation().unwrap().reserved_bytes, 0);
+    }
+
+    // req: OQ-040, DEP-001
+    #[test]
+    fn admitted_provider_index_key_substitution_cannot_hide_in_another_partition() {
+        use riffdb_storage_api::OwnedSnapshotReader;
+        use riffdb_types::exact_provider_budget_v1::ProviderBudget;
+        for partition in [1, 2] {
+            let (_path, ports) = operational("provider-admitted-index-substitution");
+            seed_filtered_rows(&ports, vec![filtered_row(1, 1, "application-test")]);
+            let substituted =
+                encode_index_entry_v2(&filtered_row(2, partition, "application-test")).unwrap();
+            let access = ports.begin_write().unwrap();
+            access
+                .transaction()
+                .unwrap()
+                .open_table(SECONDARY_INDEXES)
+                .unwrap()
+                .insert(filtered_index_key(1).as_bytes(), substituted.as_bytes())
+                .unwrap();
+            access.commit().unwrap();
+            let pinned = ports.open_owned_snapshot().unwrap();
+            let request = AuthoritativeIndexScanRequest::new(
+                filtered_range(),
+                None,
+                StorageScanLimit::new(1).unwrap(),
+            )
+            .unwrap();
+            assert!(
+                matches!(pinned.scan_index(request.clone()), Err(error) if error.kind() == StorageErrorKind::CorruptData)
+            );
+            let budget = ProviderBudget::new();
+            assert!(
+                matches!(pinned.read_provider_index_page_v1(&request, &budget), Err(error) if error.kind() == StorageErrorKind::CorruptData)
+            );
+            assert_eq!(budget.observation().unwrap().owned_bytes, 0);
+            assert_eq!(budget.observation().unwrap().reserved_bytes, 0);
+        }
     }
 
     // req: DEP-001

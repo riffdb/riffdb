@@ -179,7 +179,9 @@ impl RedbOwnedSnapshot {
     }
 }
 
-fn provider_decode_error(error: riffdb_storage_api::ProviderRecordDecodeErrorV1) -> StorageError {
+pub(super) fn provider_decode_error(
+    error: riffdb_storage_api::ProviderRecordDecodeErrorV1,
+) -> StorageError {
     match error {
         riffdb_storage_api::ProviderRecordDecodeErrorV1::AdmissionUnavailable => {
             super::storage_error(riffdb_storage_api::StorageErrorKind::Unavailable)

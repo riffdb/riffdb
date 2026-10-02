@@ -8,6 +8,9 @@
 #[path = "provider_entity_field_capture.rs"]
 mod provider_fields;
 use provider_fields::ProviderEntityFieldCaptureV1;
+#[path = "provider_index_encoded_capture.rs"]
+mod provider_index_bytes;
+use provider_index_bytes::ProviderIndexEncodedCaptureV1;
 
 use std::error::Error;
 use std::fmt;
@@ -296,6 +299,8 @@ pub struct StoredIndexEntryV2 {
     covered_values: CanonicalRecord,
     covered_values_encoded: Arc<[u8]>,
     partition_key: PartitionKey,
+    // Last: shared encoded bytes die before their provider ownership capture.
+    provider_encoded: ProviderIndexEncodedCaptureV1,
 }
 
 impl StoredIndexEntryV2 {
@@ -317,6 +322,7 @@ impl StoredIndexEntryV2 {
             covered_values,
             covered_values_encoded: Arc::from(covered_values_encoded),
             partition_key,
+            provider_encoded: ProviderIndexEncodedCaptureV1::default(),
         };
         let _ = record.semantic_bytes()?;
         Ok(record)
@@ -345,6 +351,7 @@ impl StoredIndexEntryV2 {
             covered_values,
             covered_values_encoded: Arc::from(covered_values_encoded),
             partition_key,
+            provider_encoded: ProviderIndexEncodedCaptureV1::default(),
         };
         let _ = record.semantic_bytes()?;
         Ok(record)
