@@ -288,8 +288,8 @@ record type, dependency or application interface changes are proposed.
 
 Tests must compare the admitted path with the existing decoder on supported
 fixtures and corrupt framing, and prove refusal before buffer construction and
-release after failures. This extension requires human scope review before any
-Protobuf crate source change. Storage-reader integration and physical provider
+release after failures. The human approved this scope extension on 2026-10-02; a standalone
+package-scope commit records it before Protobuf crate source changes. Storage-reader integration and physical provider
 construction sizing can proceed within the already approved scope.
 
 ## Exact-text V2 rebuild admission
@@ -317,3 +317,24 @@ Validation: all seven scoped acceptance steps passed, including 280 tests withou
 skips, Clippy with warnings denied, formatting, scope, handbook and size checks.
 The initial rebuild-admission test failed because the entry point did not exist;
 the implemented path passes its state, checkpoint and lifetime assertions.
+
+## Exact-text V2 decoded checkpoint admission
+
+Checkpoint recovery now has a hidden admitted entry point. Its borrowed walk
+checks existing framing and row ceilings, sizes canonical output without decoding,
+and reserves row copies, derived postings, ordering scratch, final inventory and
+canonical re-encoding before calling the unchanged recovery decoder. The encoding
+allowance covers both the initial row-capacity hint and later buffer growth.
+Borrowed sizing does not authenticate a provider; the ordinary decoder still
+checks keys, hash ordering, duplicates, payload semantics and exact checkpoint
+byte identity before a candidate can be returned.
+
+Successful recovery retains an immutable charged allocation through its final
+capture. Invalid framing fails closed; budget pressure after borrowed inspection
+releases inspection scratch without publishing decoded ownership. Server recovery
+and retained-state integration remain pending the other construction paths.
+
+Validation: six scoped acceptance steps passed, including all 61 projection
+tests without skips. Recovery tests cover empty and UTF-8 text, multiple posting
+populations, truncated/trailing bytes, row-capacity hints, final captures and
+pressure after borrowed inspection.

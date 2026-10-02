@@ -101,83 +101,11 @@ fn rebuild_maximum(
         inspection.prospective_btree::<EntityKeyHash, String>(rows.len())?;
         inspection.prospective_btree::<EntityKeyHash, EntityKey>(rows.len())?;
         inspection.prospective_btree::<EntityKeyHash, CanonicalRecord>(rows.len())?;
-        let mut prefixes = 0usize;
-        let mut substrings = 0usize;
-        let mut terms = 0usize;
-        let mut term_bytes = 0usize;
-        let mut ordered_bytes = 0usize;
-        for (key, (value, _)) in rows {
-            let n = value.len();
-            // All byte boundaries bound the UTF-8 character-boundary subset.
-            // Repeated terms are counted independently, so deduplication can
-            // only reduce dictionary and posting allocation below this maximum.
-            let sub = mul(n, add(n, 1)?)? / 2;
-            let row_terms = add(add(1, mul(2, n)?)?, sub)?;
-            prefixes = add(prefixes, n)?;
-            substrings = add(substrings, sub)?;
-            terms = add(terms, row_terms)?;
-            let prefix_suffix_bytes = mul(n, add(n, 1)?)?;
-            let substring_bytes = mul(mul(n, add(n, 1)?)?, add(n, 2)?)? / 6;
-            term_bytes = add(
-                term_bytes,
-                add(add(n, prefix_suffix_bytes)?, substring_bytes)?,
-            )?;
-            ordered_bytes = add(
-                ordered_bytes,
-                mul(row_terms, add(n, key.as_bytes().len())?)?,
-            )?;
-            // terms() creates borrowed term sets and a boundary vector before
-            // copying dictionary keys. Admit their peak independently.
-            inspection.prospective_btree::<&[u8], ()>(sub)?;
-            inspection.prospective_btree::<&[u8], ()>(n)?;
-            inspection.prospective_btree::<&[u8], ()>(n)?;
-            inspection.allocation(
-                mul(2 * size_of::<usize>(), add(n, 1)?)?,
-                align_of::<usize>(),
-            )?;
-        }
-        // V2 retains both the V1 hash-ordered and V2 key-ordered dictionaries.
-        for _ in 0..2 {
-            inspection.prospective_btree::<Vec<u8>, PostingList>(rows.len())?;
-            inspection.prospective_btree::<Vec<u8>, PostingList>(prefixes)?;
-            inspection.prospective_btree::<Vec<u8>, PostingList>(prefixes)?;
-            inspection.prospective_btree::<Vec<u8>, PostingList>(substrings)?;
-            repeated_allocation(inspection, term_bytes, terms, align_of::<u8>())?;
-            // Vec::push: capacity is bounded by twice the logical length plus
-            // the four-entry initial allocation, charged per posting occurrence.
-            repeated_allocation(
-                inspection,
-                mul(6 * size_of::<EntityKeyHash>(), terms)?,
-                terms,
-                align_of::<EntityKeyHash>(),
-            )?;
-            repeated_allocation(
-                inspection,
-                mul(size_of::<u16>(), terms)?,
-                terms,
-                align_of::<u16>(),
-            )?;
-        }
-        // V2 ordering holds tuple arrays, freshly collected ascending/descending
-        // arrays, and cloned text/key byte buffers while replacing old vectors.
-        repeated_allocation(
+        inspect_postings(
             inspection,
-            mul(4, ordered_bytes)?,
-            mul(4, terms)?,
-            align_of::<u8>(),
-        )?;
-        repeated_allocation(
-            inspection,
-            mul(4 * 128, terms)?,
-            mul(4, terms)?,
-            align_of::<usize>(),
-        )?;
-        // Output verification uses a bounded temporary canonical encoding. Root
-        // and settlement ownership metadata use the same conservative allowance.
-        inspection.allocation(super::MAX_EXACT_TEXT_OUTPUT_ROW_BYTES_V1, align_of::<u8>())?;
-        inspection.allocation(
-            size_of::<ProviderAllocation<ExactTextPartitionIndexV2>>() + 4096,
-            align_of::<ProviderAllocation<ExactTextPartitionIndexV2>>(),
+            rows.iter()
+                .map(|(key, (value, _))| Ok((key.as_bytes().len(), value.as_str()))),
+            rows.len(),
         )
     })?;
     if !report.shared_allocations().is_empty() {
@@ -187,6 +115,89 @@ fn rebuild_maximum(
         .unshared_bytes()
         .checked_add(OWNED_CAPACITY_INSPECTION_SCRATCH_BYTES_V1)
         .ok_or(OwnedCapacityInspectionErrorV1)
+}
+
+pub(super) fn inspect_postings<'a>(
+    inspection: &mut OwnedCapacityInspectionV1,
+    rows: impl Iterator<Item = Result<(usize, &'a str), OwnedCapacityInspectionErrorV1>>,
+    row_count: usize,
+) -> Result<(), OwnedCapacityInspectionErrorV1> {
+    let mut prefixes = 0usize;
+    let mut substrings = 0usize;
+    let mut terms = 0usize;
+    let mut term_bytes = 0usize;
+    let mut ordered_bytes = 0usize;
+    for row in rows {
+        let (key_bytes, value) = row?;
+        let n = value.len();
+        // All byte boundaries bound the UTF-8 character-boundary subset.
+        // Repeated terms are counted independently, so deduplication can
+        // only reduce dictionary and posting allocation below this maximum.
+        let sub = mul(n, add(n, 1)?)? / 2;
+        let row_terms = add(add(1, mul(2, n)?)?, sub)?;
+        prefixes = add(prefixes, n)?;
+        substrings = add(substrings, sub)?;
+        terms = add(terms, row_terms)?;
+        let prefix_suffix_bytes = mul(n, add(n, 1)?)?;
+        let substring_bytes = mul(mul(n, add(n, 1)?)?, add(n, 2)?)? / 6;
+        term_bytes = add(
+            term_bytes,
+            add(add(n, prefix_suffix_bytes)?, substring_bytes)?,
+        )?;
+        ordered_bytes = add(ordered_bytes, mul(row_terms, add(n, key_bytes)?)?)?;
+        // terms() creates borrowed term sets and a boundary vector before
+        // copying dictionary keys. Admit their peak independently.
+        inspection.prospective_btree::<&[u8], ()>(sub)?;
+        inspection.prospective_btree::<&[u8], ()>(n)?;
+        inspection.prospective_btree::<&[u8], ()>(n)?;
+        inspection.allocation(
+            mul(2 * size_of::<usize>(), add(n, 1)?)?,
+            align_of::<usize>(),
+        )?;
+    }
+    // V2 retains both the V1 hash-ordered and V2 key-ordered dictionaries.
+    for _ in 0..2 {
+        inspection.prospective_btree::<Vec<u8>, PostingList>(row_count)?;
+        inspection.prospective_btree::<Vec<u8>, PostingList>(prefixes)?;
+        inspection.prospective_btree::<Vec<u8>, PostingList>(prefixes)?;
+        inspection.prospective_btree::<Vec<u8>, PostingList>(substrings)?;
+        repeated_allocation(inspection, term_bytes, terms, align_of::<u8>())?;
+        // Vec::push: capacity is bounded by twice the logical length plus
+        // the four-entry initial allocation, charged per posting occurrence.
+        repeated_allocation(
+            inspection,
+            mul(6 * size_of::<EntityKeyHash>(), terms)?,
+            terms,
+            align_of::<EntityKeyHash>(),
+        )?;
+        repeated_allocation(
+            inspection,
+            mul(size_of::<u16>(), terms)?,
+            terms,
+            align_of::<u16>(),
+        )?;
+    }
+    // V2 ordering holds tuple arrays, freshly collected ascending/descending
+    // arrays, and cloned text/key byte buffers while replacing old vectors.
+    repeated_allocation(
+        inspection,
+        mul(4, ordered_bytes)?,
+        mul(4, terms)?,
+        align_of::<u8>(),
+    )?;
+    repeated_allocation(
+        inspection,
+        mul(4 * 128, terms)?,
+        mul(4, terms)?,
+        align_of::<usize>(),
+    )?;
+    // Output verification uses a bounded temporary canonical encoding. Root
+    // and settlement ownership metadata use the same conservative allowance.
+    inspection.allocation(super::MAX_EXACT_TEXT_OUTPUT_ROW_BYTES_V1, align_of::<u8>())?;
+    inspection.allocation(
+        size_of::<ProviderAllocation<ExactTextPartitionIndexV2>>() + 4096,
+        align_of::<ProviderAllocation<ExactTextPartitionIndexV2>>(),
+    )
 }
 
 fn repeated_allocation(

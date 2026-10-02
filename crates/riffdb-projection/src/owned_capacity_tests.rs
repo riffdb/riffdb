@@ -180,3 +180,44 @@ fn exact_text_rebuild_admits_derived_postings_and_keeps_the_final_capture_charge
     drop(occupied);
     assert_eq!(budget.observation().unwrap().reserved_bytes, 0);
 }
+
+#[test]
+fn admitted_exact_text_checkpoint_recovery_preserves_bytes_and_final_capture() {
+    let provider = ExactTextPartitionIndexV2::rebuild(
+        PartitionKeyHash::from_bytes([1; 32]),
+        ProjectionGeneration::new(1).unwrap(),
+        riffdb_types::CommitSequence::new(1).unwrap(),
+        ExactTextProfileV1::BinaryUtf8V1,
+        &std::collections::BTreeMap::from([(
+            key(),
+            (
+                "a🌻b".to_owned(),
+                riffdb_types::CanonicalRecord::new(vec![]).unwrap(),
+            ),
+        )]),
+    )
+    .unwrap();
+    let bytes = provider.to_checkpoint_bytes().unwrap();
+    let budget = ProviderBudget::new();
+    let recovered =
+        ExactTextPartitionIndexV2::from_checkpoint_bytes_admitted_v1(&bytes, &budget).unwrap();
+    assert_eq!(&**recovered, &provider);
+    assert_eq!(recovered.to_checkpoint_bytes().unwrap(), bytes);
+    assert_eq!(budget.observation().unwrap().reserved_bytes, 0);
+    let capture = recovered.clone();
+    drop(recovered);
+    assert!(budget.observation().unwrap().owned_bytes > 0);
+    drop(capture);
+    assert_eq!(budget.observation().unwrap().owned_bytes, 0);
+    for damaged in [
+        bytes[..bytes.len() - 1].to_vec(),
+        [bytes.clone(), vec![0]].concat(),
+    ] {
+        assert!(
+            ExactTextPartitionIndexV2::from_checkpoint_bytes_admitted_v1(&damaged, &budget)
+                .is_err()
+        );
+        assert_eq!(budget.observation().unwrap().reserved_bytes, 0);
+        assert_eq!(budget.observation().unwrap().owned_bytes, 0);
+    }
+}
