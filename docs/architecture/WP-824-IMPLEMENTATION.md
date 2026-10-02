@@ -537,3 +537,38 @@ acceptance checks and all 1,085 selected types, Protobuf, storage API, projectio
 and provider conformance tests; 534 unrelated tests were excluded by selection.
 WP-824 remains open with the ownership, epoch protection and retirement follow-ups
 listed above. This receipt does not claim a clean full CI or a real rehearsal.
+
+
+## Production long-pattern provider ownership
+
+A private admitted builder now reserves row transformation, gram vectors,
+release copies, posting member nodes and independent posting-set roots before
+ordinary checked upsert. Partial candidates keep every earlier row's reservation;
+failure and cancellation destroy data before releasing work. Finishing settles
+one immutable charged allocation. Recovery inspects borrowed lengths and impossible
+gram declarations before ordinary digest/gram validation and posting reconstruction.
+
+Production long-pattern rebuild and checkpoint recovery now retain those charged
+allocations in their epoch state. Rebuild reads one captured immutable source root
+at the expected head, uses admitted entity pages, and reserves input metadata and
+release-encoding scratch before copying. Existing policy admission, generation
+checks, profile transformations, checkpoint bytes and epoch selection remain.
+Broader catalog/policy/source ownership and protected cursor leases remain open.
+
+Three focused tests cover both profiles, empty/Unicode/repeated text, replacement,
+final captures, partial pressure, cancellation, row limits, corrupt/truncated/trailing
+checkpoints and hostile gram counts. An initial recovery bound omitted separate
+posting-set roots; the regression identified the shortage and the corrected bound
+passes. Production checks initially detected an Option/frontier type mismatch and
+an outdated structural count; both were corrected. All six scoped non-test acceptance checks passed, all 27 adapter tests passed,
+and all 105 selected projection/provider conformance tests passed. The selection
+excluded 534 unrelated tests; the earlier failures remain in their original logs.
+
+PR note: Package WP-824 (open); Tier guarantee; Behavior: admitted long-pattern
+construction/recovery, retained physical ownership and captured budgeted input pages.
+Compatibility: existing profiles, bounds, ordinary validation, durable format,
+authorization, generation/frontier checks, epoch selection and application interfaces.
+Handbook: this implementation page. Hazards and follow-ups: finish predicate and
+remaining source/policy/checkpoint ownership, protect retained cursors, retire eligible
+owners and clean derived artifacts before qualification. No full aggregate budget,
+package closure or rehearsal is claimed.

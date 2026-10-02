@@ -18,14 +18,15 @@ use std::time::Duration;
 
 use riffdb_policy::{AuthorizedQueryRowPolicyContextV1, MAX_PROJECTED_POLICY_CANDIDATES_V1};
 use riffdb_projection::{
-    ExactPredicatePartitionIndexV4, ExactPredicatePartitionIndexV5,
+    AdmittedLongPatternBuilderV1, ExactPredicatePartitionIndexV4, ExactPredicatePartitionIndexV5,
     ExactPredicateProviderBindingV1, ExactPredicateProviderBindingV2, ExactPredicateProviderRowV1,
     ExactTextPartitionIndexV2, ExactTextPartitionIndexV3, ExactTextRebuildAdmissionErrorV1,
-    LongPatternPartitionV1, LongPatternProviderErrorV1, MAX_EXACT_PREDICATE_CHECKPOINT_BYTES_V4,
-    MAX_LONG_PATTERN_CHECKPOINT_BYTES_V1, ProviderEpochObservationV1, ProviderLifecycleV1,
-    ResultSetEpochContextV1, ResultSetEpochRequirementV1, TokenizedTextAdmissionErrorV1,
-    TokenizedTextConfigV1, TokenizedTextFieldV1, TokenizedTextMutationV1,
-    TokenizedTextPartitionIndexV1, negotiate_result_set_epoch_v1,
+    LongPatternAdmissionErrorV1, LongPatternPartitionV1, LongPatternProviderErrorV1,
+    MAX_EXACT_PREDICATE_CHECKPOINT_BYTES_V4, MAX_LONG_PATTERN_CHECKPOINT_BYTES_V1,
+    ProviderEpochObservationV1, ProviderLifecycleV1, ResultSetEpochContextV1,
+    ResultSetEpochRequirementV1, TokenizedTextAdmissionErrorV1, TokenizedTextConfigV1,
+    TokenizedTextFieldV1, TokenizedTextMutationV1, TokenizedTextPartitionIndexV1,
+    negotiate_result_set_epoch_v1,
 };
 use riffdb_query_executor::{
     ExactTextResultSetV1, LongPatternCandidateBatch, QueryExecutionError, QueryExecutionPort,
@@ -47,8 +48,8 @@ use riffdb_service::{
 };
 use riffdb_storage_api::{
     AuthoritativeEntityPartitionScanRequest, AuthoritativeIndexScanPage,
-    AuthoritativeIndexScanRequest, AuthoritativeScanReader, CatalogRepository, EntityTarget,
-    IndexRangePrefixBuilder, IndexRangeTarget, SnapshotFenceReader, StorageScanLimit,
+    AuthoritativeIndexScanRequest, CatalogRepository, EntityTarget, IndexRangePrefixBuilder,
+    IndexRangeTarget, SnapshotFenceReader, StorageScanLimit,
 };
 use riffdb_types::{
     CanonicalRecord, CanonicalValue, CapabilityId, CommitSequence,
@@ -625,7 +626,8 @@ struct NullableExactPredicateSlot {
 }
 
 struct LongPatternProviderState {
-    provider: LongPatternPartitionV1,
+    provider:
+        Arc<riffdb_types::exact_provider_budget_v1::ProviderAllocation<LongPatternPartitionV1>>,
     generation: ProjectionGeneration,
     frontier: CommitSequence,
 }
@@ -2121,7 +2123,8 @@ fn rebuild_long_pattern_slot(
             &slot.registration.key(),
             runtime.history_incarnation,
         )
-        && let Ok(recovered) = decode_long_pattern_checkpoint(provider_bytes)
+        && let Ok(recovered) =
+            decode_long_pattern_checkpoint(provider_bytes, &runtime.ownership_graph.budget)
     {
         if recovered.frontier == head {
             return Ok(Some(recovered));
@@ -2155,6 +2158,46 @@ fn rebuild_long_pattern_partition(
     let QueryAccessKind::LongPatternCandidate { pattern, .. } = registration.step().access() else {
         return Err(RebuildFailure::Integrity);
     };
+    let access = registration
+        .program
+        .internal_entity_access(registration.step().entity())
+        .ok_or(RebuildFailure::Integrity)?;
+    let field_count = access.internal_fields().count();
+    let maximum_rows = pattern.bounds().rows() as usize;
+    // Admit input tree/key/control metadata before copying page records. Deep
+    // fields retain their independently admitted original decoded records.
+    let _source_work = runtime
+        .ownership_graph
+        .admit(
+            riffdb_types::OWNED_CAPACITY_INSPECTION_SCRATCH_BYTES_V1 + 32 * 1024,
+            |inspection| {
+                inspection
+                    .prospective_btree::<EntityKey, riffdb_storage_api::StoredEntityRecordV1>(
+                        maximum_rows,
+                    )?;
+                inspection.prospective_btree::<EntityKey, ()>(maximum_rows)?;
+                inspection.prospective_btree::<&str, FieldId>(field_count)?;
+                inspection.allocation(
+                    maximum_rows
+                        .checked_mul(16 * 1024)
+                        .ok_or(riffdb_types::OwnedCapacityInspectionErrorV1)?,
+                    std::mem::align_of::<usize>(),
+                )
+            },
+        )
+        .map_err(|_| RebuildFailure::Transient)?;
+    let snapshot = runtime
+        .storage
+        .pin()
+        .map_err(|_| RebuildFailure::Transient)?;
+    if snapshot
+        .application_frontier()
+        .map_err(|_| RebuildFailure::Transient)?
+        != Some(expected_head)
+    {
+        return Err(RebuildFailure::Transient);
+    }
+    let storage = ProjectionReadSource::from_snapshot(snapshot);
     let prefix = registration
         .step()
         .internal_entity_key_schema()
@@ -2171,7 +2214,10 @@ fn rebuild_long_pattern_partition(
             limit,
         )
         .map_err(|_| RebuildFailure::Integrity)?;
-        let page = AuthoritativeScanReader::scan_entity_partition(&runtime.storage, request)
+        let page = storage
+            .pin()
+            .map_err(|_| RebuildFailure::Transient)?
+            .read_provider_entity_partition_records_v1(&request, &runtime.ownership_graph.budget)
             .map_err(|_| RebuildFailure::Transient)?;
         if page.application_head() != FrontierPosition::AppliedThrough(expected_head) {
             return Err(RebuildFailure::Transient);
@@ -2194,7 +2240,7 @@ fn rebuild_long_pattern_partition(
     if let Some(policy) = registration.row_policy.as_deref() {
         let candidates = records.keys().cloned().collect::<Vec<_>>();
         let candidate_set = records.keys().cloned().collect::<BTreeSet<_>>();
-        let query_executor = runtime.storage.query_executor();
+        let query_executor = storage.query_executor();
         let admission = QueryExecutionPort::authorize_projected_candidates(
             &query_executor,
             registration.step().internal_entity_id(),
@@ -2215,7 +2261,12 @@ fn rebuild_long_pattern_partition(
     let text_field = *field_ids
         .get(pattern.field())
         .ok_or(RebuildFailure::Integrity)?;
-    let mut provider = LongPatternPartitionV1::new(pattern.profile(), pattern.bounds());
+    let mut provider = AdmittedLongPatternBuilderV1::new(
+        pattern.profile(),
+        pattern.bounds(),
+        &runtime.ownership_graph.budget,
+    )
+    .map_err(|error| map_long_pattern_admission_failure(error, generation))?;
     for (key, record) in records {
         let source = record
             .fields()
@@ -2227,17 +2278,27 @@ fn rebuild_long_pattern_partition(
                 _ => None,
             })
             .ok_or(RebuildFailure::Integrity)?;
+        let heap = riffdb_types::inspect_canonical_decode_capacity_v1(record.fields_encoded())
+            .map_err(|_| RebuildFailure::Integrity)?
+            .owned_heap_bytes();
+        let release_bytes = heap
+            .checked_mul(4)
+            .and_then(|bytes| bytes.checked_add(4 * record.fields_encoded().len() as u64))
+            .and_then(|bytes| bytes.checked_add(32 * 1024))
+            .ok_or(RebuildFailure::Integrity)?;
+        let _release_work = runtime
+            .ownership_graph
+            .budget
+            .reserve(release_bytes)
+            .map_err(|_| RebuildFailure::Transient)?;
         let release = encode_long_pattern_release(&key, record.fields())?;
         provider
-            .upsert(hash_entity_key(key.as_bytes()), source, release)
-            .map_err(|error| match error {
-                LongPatternProviderErrorV1::RowBound
-                | LongPatternProviderErrorV1::PartitionBound => {
-                    RebuildFailure::Capacity(generation)
-                }
-                _ => RebuildFailure::Integrity,
-            })?;
+            .upsert(hash_entity_key(key.as_bytes()), source, &release)
+            .map_err(|error| map_long_pattern_admission_failure(error, generation))?;
     }
+    let provider = provider
+        .finish()
+        .map_err(|error| map_long_pattern_admission_failure(error, generation))?;
     Ok(LongPatternProviderState {
         provider,
         generation,
@@ -3744,8 +3805,22 @@ fn encode_long_pattern_checkpoint(
     Ok(output)
 }
 
+fn map_long_pattern_admission_failure(
+    error: LongPatternAdmissionErrorV1,
+    generation: ProjectionGeneration,
+) -> RebuildFailure {
+    match error {
+        LongPatternAdmissionErrorV1::CapacityUnavailable => RebuildFailure::Transient,
+        LongPatternAdmissionErrorV1::Provider(
+            LongPatternProviderErrorV1::RowBound | LongPatternProviderErrorV1::PartitionBound,
+        ) => RebuildFailure::Capacity(generation),
+        LongPatternAdmissionErrorV1::Provider(_) => RebuildFailure::Integrity,
+    }
+}
+
 fn decode_long_pattern_checkpoint(
     bytes: &[u8],
+    budget: &riffdb_types::exact_provider_budget_v1::ProviderBudget,
 ) -> Result<LongPatternProviderState, RebuildFailure> {
     if bytes.len() < 28
         || &bytes[..4] != LONG_PATTERN_EPOCH_MAGIC
@@ -3775,8 +3850,8 @@ fn decode_long_pattern_checkpoint(
     if 28_usize.checked_add(state_len) != Some(bytes.len()) {
         return Err(RebuildFailure::Integrity);
     }
-    let provider = LongPatternPartitionV1::from_checkpoint_bytes(&bytes[28..])
-        .map_err(|_| RebuildFailure::Integrity)?;
+    let provider = LongPatternPartitionV1::from_checkpoint_bytes_admitted_v1(&bytes[28..], budget)
+        .map_err(|error| map_long_pattern_admission_failure(error, generation))?;
     Ok(LongPatternProviderState {
         provider,
         generation,
@@ -4213,14 +4288,14 @@ mod tests {
             production_source()
                 .matches("AuthoritativeScanReader::scan_entity_partition")
                 .count(),
-            1
+            0
         );
         assert_eq!(worker.matches("read_provider_index_page_v1").count(), 2);
         assert_eq!(
             worker
                 .matches("read_provider_entity_partition_records_v1")
                 .count(),
-            1
+            2
         );
     }
 

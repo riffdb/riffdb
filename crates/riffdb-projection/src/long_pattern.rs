@@ -1,5 +1,9 @@
 //! Rebuildable bounded `long_pattern_v1` provider state (ADR-0174).
 
+#[path = "long_pattern_admission.rs"]
+mod admission;
+pub use admission::{AdmittedLongPatternBuilderV1, LongPatternAdmissionErrorV1};
+
 use std::collections::{BTreeMap, BTreeSet};
 
 use riffdb_types::{
