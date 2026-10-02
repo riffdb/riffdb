@@ -566,3 +566,15 @@ backward time, or an unrepresentable retention deadline returns the existing
 provider `Unavailable` error. There is no application or operator override.
 The existing 256-registration limit per exact-provider family still applies;
 this clock wiring alone does not enable registration retirement.
+
+
+New exact-provider registrations reserve owned registration data and shared
+compiled metadata against one compiled 1-GiB process budget. Shared metadata is
+charged once and retains its charge through its final data reference, including
+catalog references. Budget pressure or incomplete ownership evidence returns the
+existing typed `Unavailable` result. Servers sharing a process share this pool;
+there is no budget configuration or application cache control. Rebuild and
+checkpoint accounting, cursor pins, retirement, and cleanup remain in progress,
+so this registration admission does not yet establish a complete provider memory
+bound or recycle the 256-slot limits. See the
+[implementation progress](architecture/WP-824-IMPLEMENTATION.md).

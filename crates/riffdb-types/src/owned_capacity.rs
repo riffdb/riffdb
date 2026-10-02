@@ -148,6 +148,14 @@ impl OwnedCapacityInspectionV1 {
     pub fn inspect<T: InspectOwnedCapacityV1 + ?Sized>(
         value: &T,
     ) -> Result<OwnedCapacityReportV1, OwnedCapacityInspectionErrorV1> {
+        Self::inspect_with(|inspection| inspection.visit(value))
+    }
+
+    /// Inspect borrowed registration fields before constructing an owned copy.
+    /// Only a fully completed, bounded traversal can produce the sealed report.
+    pub fn inspect_with(
+        inspect: impl FnOnce(&mut Self) -> Result<(), OwnedCapacityInspectionErrorV1>,
+    ) -> Result<OwnedCapacityReportV1, OwnedCapacityInspectionErrorV1> {
         let mut inspection = Self {
             unshared_bytes: 0,
             shared: Vec::with_capacity(MAX_SHARED_ALLOCATIONS),
@@ -156,7 +164,7 @@ impl OwnedCapacityInspectionV1 {
             visits: 0,
             refused: false,
         };
-        inspection.visit(value)?;
+        inspect(&mut inspection)?;
         if inspection.refused {
             return Err(OwnedCapacityInspectionErrorV1);
         }

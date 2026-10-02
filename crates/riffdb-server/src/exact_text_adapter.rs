@@ -59,6 +59,9 @@ use riffdb_types::{
     hash_entity_key, hash_partition_key,
 };
 
+use crate::exact_provider_graph::ProviderOwnershipGraph;
+use riffdb_types::exact_provider_budget_v1::OwnershipCharge;
+
 use crate::columnar_adapter::read_application_head;
 use crate::projection_read_source::ProjectionReadSource;
 
@@ -70,6 +73,18 @@ use catch_up::{CapturedSource, Selected};
 
 const POLL_INTERVAL: Duration = Duration::from_millis(10);
 const MAX_REGISTERED_EXACT_PARTITIONS: usize = 256;
+// Full internal-node capacity per entry is conservative even at minimum
+// occupancy. The fixed allowance includes all five complete bounded maps.
+const _: () = assert!(
+    5 * (MAX_REGISTERED_EXACT_PARTITIONS + 1)
+        * (2 * (11
+            * (std::mem::size_of::<SlotKey>()
+                + std::mem::size_of::<RegistryEntry<ExactTextSlot>>())
+            + 12 * std::mem::size_of::<usize>()
+            + 128)
+            + 256)
+        < 8 * 1024 * 1024
+);
 const REBUILD_PAGE_ROWS: u16 = 500;
 const CHECKPOINT_MAGIC: &[u8; 4] = b"RXAC";
 const CHECKPOINT_FORMAT_V1: u16 = 1;
@@ -501,6 +516,7 @@ struct ExactTextSlot {
     registration: ExactTextRegistration,
     checkpoint: PathBuf,
     state: Mutex<ExactTextSlotState>,
+    _registration_charge: Arc<OwnershipCharge>,
 }
 
 enum TokenizedTextSlotState {
@@ -554,6 +570,7 @@ struct TokenizedTextSlot {
     registration: TokenizedTextRegistration,
     checkpoint: PathBuf,
     state: Mutex<TokenizedTextSlotState>,
+    _registration_charge: Arc<OwnershipCharge>,
 }
 
 enum ExactPredicateSlotState {
@@ -582,12 +599,14 @@ struct ExactPredicateSlot {
     registration: ExactPredicateRegistration,
     checkpoint: PathBuf,
     state: Mutex<ExactPredicateSlotState>,
+    _registration_charge: Arc<OwnershipCharge>,
 }
 
 struct NullableExactPredicateSlot {
     registration: NullableExactPredicateRegistration,
     checkpoint: PathBuf,
     state: Mutex<NullableExactPredicateSlotState>,
+    _registration_charge: Arc<OwnershipCharge>,
 }
 
 struct LongPatternProviderState {
@@ -646,12 +665,18 @@ struct LongPatternSlot {
     registration: LongPatternRegistration,
     checkpoint: PathBuf,
     state: Mutex<LongPatternSlotState>,
+    _registration_charge: Arc<OwnershipCharge>,
 }
 
 impl LongPatternSlot {
-    fn new(registration: LongPatternRegistration, checkpoint: PathBuf) -> Self {
+    fn new(
+        registration: LongPatternRegistration,
+        checkpoint: PathBuf,
+        charge: Arc<OwnershipCharge>,
+    ) -> Self {
         Self {
             registration,
+            _registration_charge: charge,
             checkpoint,
             state: Mutex::new(LongPatternSlotState::Building),
         }
@@ -659,9 +684,14 @@ impl LongPatternSlot {
 }
 
 impl ExactTextSlot {
-    fn new(registration: ExactTextRegistration, checkpoint: PathBuf) -> Self {
+    fn new(
+        registration: ExactTextRegistration,
+        checkpoint: PathBuf,
+        charge: Arc<OwnershipCharge>,
+    ) -> Self {
         Self {
             registration,
+            _registration_charge: charge,
             checkpoint,
             state: Mutex::new(ExactTextSlotState::Building),
         }
@@ -669,9 +699,14 @@ impl ExactTextSlot {
 }
 
 impl TokenizedTextSlot {
-    fn new(registration: TokenizedTextRegistration, checkpoint: PathBuf) -> Self {
+    fn new(
+        registration: TokenizedTextRegistration,
+        checkpoint: PathBuf,
+        charge: Arc<OwnershipCharge>,
+    ) -> Self {
         Self {
             registration,
+            _registration_charge: charge,
             checkpoint,
             state: Mutex::new(TokenizedTextSlotState::Building),
         }
@@ -679,9 +714,14 @@ impl TokenizedTextSlot {
 }
 
 impl ExactPredicateSlot {
-    fn new(registration: ExactPredicateRegistration, checkpoint: PathBuf) -> Self {
+    fn new(
+        registration: ExactPredicateRegistration,
+        checkpoint: PathBuf,
+        charge: Arc<OwnershipCharge>,
+    ) -> Self {
         Self {
             registration,
+            _registration_charge: charge,
             checkpoint,
             state: Mutex::new(ExactPredicateSlotState::Building),
         }
@@ -689,9 +729,14 @@ impl ExactPredicateSlot {
 }
 
 impl NullableExactPredicateSlot {
-    fn new(registration: NullableExactPredicateRegistration, checkpoint: PathBuf) -> Self {
+    fn new(
+        registration: NullableExactPredicateRegistration,
+        checkpoint: PathBuf,
+        charge: Arc<OwnershipCharge>,
+    ) -> Self {
         Self {
             registration,
+            _registration_charge: charge,
             checkpoint,
             state: Mutex::new(NullableExactPredicateSlotState::Building),
         }
@@ -709,6 +754,7 @@ pub(crate) struct ExactTextRuntime {
     cursor_clock: Arc<dyn CursorMonotonicClock>,
     tokenized_root: PathBuf,
     long_pattern_root: PathBuf,
+    ownership_graph: ProviderOwnershipGraph,
 }
 
 impl ExactTextRuntime {
@@ -719,6 +765,8 @@ impl ExactTextRuntime {
         initial_generation: ProjectionGeneration,
         cursor_clock: Arc<dyn CursorMonotonicClock>,
     ) -> Result<Arc<Self>, ExactTextRuntimeOpenError> {
+        let ownership_graph =
+            ProviderOwnershipGraph::new().map_err(|_| ExactTextRuntimeOpenError)?;
         let root = projections_root.join("exact-text-v2");
         fs::create_dir_all(&root).map_err(|_| ExactTextRuntimeOpenError)?;
         let predicate_root = projections_root.join("exact-predicate-v4");
@@ -737,7 +785,26 @@ impl ExactTextRuntime {
             cursor_clock,
             tokenized_root,
             long_pattern_root,
+            ownership_graph,
         }))
+    }
+
+    fn registration_root_allowance<T>(
+        &self,
+        root: &Path,
+    ) -> Result<u64, ExactTextProjectionPortError> {
+        // Inline slot, Arc headers, mutex/owner metadata, formatting scratch,
+        // and two full path buffers; no unbounded diagnostic string is created.
+        let bytes = root
+            .as_os_str()
+            .len()
+            .checked_add(256)
+            .and_then(|bytes| bytes.checked_mul(4))
+            .and_then(|bytes| bytes.checked_add(16 * 1024))
+            .and_then(|bytes| bytes.checked_add(std::mem::size_of::<T>() * 2))
+            .and_then(|bytes| u64::try_from(bytes).ok())
+            .ok_or(ExactTextProjectionPortError::Unavailable)?;
+        Ok(bytes)
     }
 
     fn registered_slots(&self) -> Result<Vec<Arc<ExactTextSlot>>, ExactTextProjectionPortError> {
@@ -757,8 +824,15 @@ impl ExactTextRuntime {
         &self,
         request: &ExactTextProjectionRequest,
     ) -> Result<Arc<ExactTextSlot>, ExactTextProjectionPortError> {
-        let registration = ExactTextRegistration::from_request(request);
-        let key = registration.key();
+        let plan_identity = request.query().identity();
+        let key = slot_key(
+            plan_identity,
+            hash_partition_key(request.partition_key().as_bytes()),
+            request.policy_shape(),
+            request
+                .row_policy()
+                .and_then(|policy| policy.internal_capability_identity()),
+        );
         let mut registries = self
             .registries
             .lock()
@@ -777,8 +851,22 @@ impl ExactTextRuntime {
         if slots.len() >= MAX_REGISTERED_EXACT_PARTITIONS {
             return Err(ExactTextProjectionPortError::Unavailable);
         }
+        let root_bytes = self.registration_root_allowance::<ExactTextSlot>(&self.root)?;
+        let admitted = self
+            .ownership_graph
+            .admit(root_bytes, |inspection| {
+                inspection.visit(request.query())?;
+                inspection.visit(request.partition_key())?;
+                inspection.visit(request.partition_value())?;
+                inspection.visit(&request.row_policy().cloned())
+            })
+            .map_err(|_| ExactTextProjectionPortError::Unavailable)?;
+        let registration = ExactTextRegistration::from_request(request);
+        let charge = admitted
+            .commit()
+            .map_err(|_| ExactTextProjectionPortError::Unavailable)?;
         let checkpoint = self.root.join(format!("{}.rxts", hex(&key)));
-        let slot = Arc::new(ExactTextSlot::new(registration, checkpoint));
+        let slot = Arc::new(ExactTextSlot::new(registration, checkpoint, charge));
         slots.insert(
             key,
             RegistryEntry {
@@ -808,8 +896,15 @@ impl ExactTextRuntime {
         &self,
         request: &ExactPredicateProjectionRequest,
     ) -> Result<Arc<ExactPredicateSlot>, ExactTextProjectionPortError> {
-        let registration = ExactPredicateRegistration::from_request(request);
-        let key = registration.key();
+        let plan_identity = request.query().identity();
+        let key = slot_key(
+            plan_identity,
+            hash_partition_key(request.partition_key().as_bytes()),
+            request.policy_shape(),
+            request
+                .row_policy()
+                .and_then(|policy| policy.internal_capability_identity()),
+        );
         let mut registries = self
             .registries
             .lock()
@@ -828,8 +923,23 @@ impl ExactTextRuntime {
         if slots.len() >= MAX_REGISTERED_EXACT_PARTITIONS {
             return Err(ExactTextProjectionPortError::Unavailable);
         }
+        let root_bytes =
+            self.registration_root_allowance::<ExactPredicateSlot>(&self.predicate_root)?;
+        let admitted = self
+            .ownership_graph
+            .admit(root_bytes, |inspection| {
+                inspection.visit(request.query())?;
+                inspection.visit(request.partition_key())?;
+                inspection.visit(request.partition_value())?;
+                inspection.visit(&request.row_policy().cloned())
+            })
+            .map_err(|_| ExactTextProjectionPortError::Unavailable)?;
+        let registration = ExactPredicateRegistration::from_request(request);
+        let charge = admitted
+            .commit()
+            .map_err(|_| ExactTextProjectionPortError::Unavailable)?;
         let checkpoint = self.predicate_root.join(format!("{}.rxps", hex(&key)));
-        let slot = Arc::new(ExactPredicateSlot::new(registration, checkpoint));
+        let slot = Arc::new(ExactPredicateSlot::new(registration, checkpoint, charge));
         slots.insert(
             key,
             RegistryEntry {
@@ -859,8 +969,15 @@ impl ExactTextRuntime {
         &self,
         request: &NullableExactPredicateProjectionRequest,
     ) -> Result<Arc<NullableExactPredicateSlot>, ExactTextProjectionPortError> {
-        let registration = NullableExactPredicateRegistration::from_request(request);
-        let key = registration.key();
+        let plan_identity = request.query().identity();
+        let key = slot_key(
+            plan_identity,
+            hash_partition_key(request.partition_key().as_bytes()),
+            request.policy_shape(),
+            request
+                .row_policy()
+                .and_then(|policy| policy.internal_capability_identity()),
+        );
         let mut registries = self
             .registries
             .lock()
@@ -879,8 +996,27 @@ impl ExactTextRuntime {
         if slots.len() >= MAX_REGISTERED_EXACT_PARTITIONS {
             return Err(ExactTextProjectionPortError::Unavailable);
         }
+        let root_bytes =
+            self.registration_root_allowance::<NullableExactPredicateSlot>(&self.predicate_root)?;
+        let admitted = self
+            .ownership_graph
+            .admit(root_bytes, |inspection| {
+                inspection.visit(request.query())?;
+                inspection.visit(request.partition_key())?;
+                inspection.visit(request.partition_value())?;
+                inspection.visit(&request.row_policy().cloned())
+            })
+            .map_err(|_| ExactTextProjectionPortError::Unavailable)?;
+        let registration = NullableExactPredicateRegistration::from_request(request);
+        let charge = admitted
+            .commit()
+            .map_err(|_| ExactTextProjectionPortError::Unavailable)?;
         let checkpoint = self.predicate_root.join(format!("{}.rxp5", hex(&key)));
-        let slot = Arc::new(NullableExactPredicateSlot::new(registration, checkpoint));
+        let slot = Arc::new(NullableExactPredicateSlot::new(
+            registration,
+            checkpoint,
+            charge,
+        ));
         slots.insert(
             key,
             RegistryEntry {
@@ -925,8 +1061,35 @@ impl ExactTextRuntime {
         &self,
         request: &LongPatternProjectionRequest,
     ) -> Result<Arc<LongPatternSlot>, ExactTextProjectionPortError> {
-        let registration = LongPatternRegistration::from_request(request)?;
-        let key = registration.key();
+        if !request
+            .program()
+            .steps()
+            .iter()
+            .any(|step| step == request.step())
+        {
+            return Err(ExactTextProjectionPortError::Integrity);
+        }
+        let mut plan_bytes = [0; 64];
+        plan_bytes[..32].copy_from_slice(request.program().identity().hash().as_bytes());
+        let plan_length = if let QueryAccessKind::LongPatternCandidate { pattern, .. } =
+            request.step().access()
+        {
+            plan_bytes[32..].copy_from_slice(pattern.descriptor().digest().as_bytes());
+            64
+        } else {
+            32
+        };
+        let plan_identity = riffdb_types::QueryPlanHash::from_bytes(
+            *hash(HashDomain::QueryPlan, &plan_bytes[..plan_length]).as_bytes(),
+        );
+        let key = slot_key(
+            plan_identity,
+            hash_partition_key(request.partition_key().as_bytes()),
+            request.policy_shape(),
+            request
+                .row_policy()
+                .and_then(|policy| policy.internal_capability_identity()),
+        );
         let mut registries = self
             .registries
             .lock()
@@ -945,8 +1108,23 @@ impl ExactTextRuntime {
         if slots.len() >= MAX_REGISTERED_EXACT_PARTITIONS {
             return Err(ExactTextProjectionPortError::Unavailable);
         }
+        let root_bytes =
+            self.registration_root_allowance::<LongPatternSlot>(&self.long_pattern_root)?;
+        let admitted = self
+            .ownership_graph
+            .admit(root_bytes, |inspection| {
+                inspection.visit(request.program())?;
+                inspection.visit(request.partition_key())?;
+                inspection.visit(request.partition_value())?;
+                inspection.visit(&request.row_policy().cloned())
+            })
+            .map_err(|_| ExactTextProjectionPortError::Unavailable)?;
+        let registration = LongPatternRegistration::from_request(request)?;
+        let charge = admitted
+            .commit()
+            .map_err(|_| ExactTextProjectionPortError::Unavailable)?;
         let checkpoint = self.long_pattern_root.join(format!("{}.rlpv", hex(&key)));
-        let slot = Arc::new(LongPatternSlot::new(registration, checkpoint));
+        let slot = Arc::new(LongPatternSlot::new(registration, checkpoint, charge));
         slots.insert(
             key,
             RegistryEntry {
@@ -961,8 +1139,15 @@ impl ExactTextRuntime {
         &self,
         request: &TokenizedTextProjectionRequest,
     ) -> Result<Arc<TokenizedTextSlot>, ExactTextProjectionPortError> {
-        let registration = TokenizedTextRegistration::from_request(request);
-        let key = registration.key();
+        let plan_identity = request.query().identity();
+        let key = slot_key(
+            plan_identity,
+            hash_partition_key(request.partition_key().as_bytes()),
+            request.policy_shape(),
+            request
+                .row_policy()
+                .and_then(|policy| policy.internal_capability_identity()),
+        );
         let mut registries = self
             .registries
             .lock()
@@ -981,8 +1166,23 @@ impl ExactTextRuntime {
         if slots.len() >= MAX_REGISTERED_EXACT_PARTITIONS {
             return Err(ExactTextProjectionPortError::Unavailable);
         }
+        let root_bytes =
+            self.registration_root_allowance::<TokenizedTextSlot>(&self.tokenized_root)?;
+        let admitted = self
+            .ownership_graph
+            .admit(root_bytes, |inspection| {
+                inspection.visit(request.query())?;
+                inspection.visit(request.partition_key())?;
+                inspection.visit(request.partition_value())?;
+                inspection.visit(&request.row_policy().cloned())
+            })
+            .map_err(|_| ExactTextProjectionPortError::Unavailable)?;
+        let registration = TokenizedTextRegistration::from_request(request);
+        let charge = admitted
+            .commit()
+            .map_err(|_| ExactTextProjectionPortError::Unavailable)?;
         let checkpoint = self.tokenized_root.join(format!("{}.rttx", hex(&key)));
-        let slot = Arc::new(TokenizedTextSlot::new(registration, checkpoint));
+        let slot = Arc::new(TokenizedTextSlot::new(registration, checkpoint, charge));
         slots.insert(
             key,
             RegistryEntry {

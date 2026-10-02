@@ -1,6 +1,6 @@
 # WP-824 implementation progress
 
-WP-824 remains open. This first production slice establishes one discovery lock
+WP-824 remains open. The production slices establish one discovery lock
 and monotonic access order across exact text, predicates, nullable predicates,
 tokenized text, and long patterns. Primary and follower composition pass the
 service cursor clock owner to the provider runtime. Failed/backward samples and
@@ -15,7 +15,7 @@ overflow; rebasing preserves order and minimum retention deadlines.
 
 The aggregate allocation budget, query/worker/cursor capture pins, retirement,
 fresh generation admission, and final-reference artifact cleanup are unfinished.
-The budget/owner prototypes are not production registration accounting. No churn,
+Registration admission is wired; the owner/pin prototype still needs integration. No churn,
 1-GiB ownership bound, or sustained-workload qualification is claimed by this
 slice. Existing caps and exact freshness/authorization behavior remain in effect.
 
@@ -102,3 +102,39 @@ coverage also checks unchanged hashing, ordering, and debug/redaction behavior.
 The initial prototype's arbitrary destruction attachment was replaced with a
 typed first-party charge before committing; no arbitrary callback interface is
 introduced.
+
+
+## Registration admission
+
+New registrations now inspect borrowed request fields before copying partition
+values, constructing checkpoint paths, or allocating slots. All five families
+use one process graph budget. A fixed allowance admits the bounded registry
+metadata, with a compile-time check against the full tree-node layout bound.
+Inspection scratch is reserved before traversal, and the completed allocation
+census must provide a destruction lifecycle for every shared allocation.
+
+Shared charges must match both the original allocation identity and this graph's
+budget. A shared compilation is charged once across registrations; its charge
+persists through the last compiled-data reference, including catalog references.
+Concurrent attachment retains one immutable owner and releases the losing
+reservation. Missing lifecycle evidence, foreign ownership, overflow, or budget
+pressure refuses registration with the existing typed unavailable result.
+Existing exact matches are touched without copying a new registration.
+
+Reservation splitting transfers already admitted bytes without increasing the
+aggregate admission. Cancelled and refused registration drops its unpublished
+allowance; charges already attached to still-live compiled metadata remain until
+that metadata is destroyed. This deliberately preserves the actual ownership
+bound after partial admission.
+
+This is registration accounting only. Provider rebuilds, checkpoint scratch,
+captured snapshots, cursor pins, supersession, pressure retirement, and derived
+cleanup still require integration before WP-824 can claim full aggregate budget
+enforcement or the greater-than-256 registration churn exit gate.
+
+
+Validation: all seven scoped acceptance steps passed, including 757 tests with
+eight existing skips. Coverage includes deduplication through actual data
+lifetime, foreign and undersized ownership refusal, pre-attachment saturation,
+simultaneous admission, independent reservation splitting, and the existing
+query, authorization, source-capture, archive, and replication recovery tests.

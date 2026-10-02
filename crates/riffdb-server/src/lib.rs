@@ -32,6 +32,7 @@ mod daemon;
 // allocation preflight are wired together by WP-824.
 #[cfg(test)]
 mod exact_provider_budget;
+mod exact_provider_graph;
 #[cfg(test)]
 mod exact_provider_owner;
 mod exact_text_adapter;

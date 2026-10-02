@@ -106,6 +106,30 @@ pub struct Reservation {
 }
 
 impl Reservation {
+    /// Divide already admitted capacity without admitting or allocating new data.
+    /// The caller retains a nonzero parent allowance for its root allocation.
+    pub fn split(&mut self, bytes: u64) -> Result<Self, BudgetUnavailable> {
+        if !self.live || bytes == 0 || bytes >= self.bytes {
+            return Err(BudgetUnavailable);
+        }
+        let mut accounting = self.budget.0.lock().map_err(|_| BudgetUnavailable)?;
+        if accounting.refused {
+            return Err(BudgetUnavailable);
+        }
+        let reservations = accounting
+            .counters
+            .reservations
+            .checked_add(1)
+            .ok_or(BudgetUnavailable)?;
+        accounting.counters.reservations = reservations;
+        self.bytes -= bytes;
+        Ok(Self {
+            budget: self.budget.clone(),
+            bytes,
+            live: true,
+        })
+    }
+
     /// The shared allocation keeps its charge after every discovery reference
     /// has gone. Its data drops before the accounting owner.
     pub fn commit_value<T>(
@@ -294,6 +318,42 @@ impl Drop for OwnershipCharge {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn split_preserves_total_admission_and_releases_each_child_independently() {
+        let budget = ProviderBudget::with_limit(256);
+        let mut root = budget.reserve(256).unwrap();
+        let child = root.split(128).unwrap();
+        let observed = budget.observation().unwrap();
+        assert_eq!((observed.reserved_bytes, observed.reservations), (256, 2));
+        assert!(budget.reserve(1).is_err());
+        let retained = child.commit().unwrap();
+        drop(root);
+        let observed = budget.observation().unwrap();
+        assert_eq!(
+            (
+                observed.reserved_bytes,
+                observed.owned_bytes,
+                observed.reservations
+            ),
+            (0, 128, 0)
+        );
+        drop(retained);
+        assert_eq!(budget.observation().unwrap().owned_bytes, 0);
+    }
+
+    #[test]
+    fn invalid_split_cannot_change_parent_admission() {
+        let budget = ProviderBudget::with_limit(128);
+        let mut root = budget.reserve(128).unwrap();
+        for bytes in [0, 128, 129, u64::MAX] {
+            assert!(root.split(bytes).is_err());
+            let observed = budget.observation().unwrap();
+            assert_eq!((observed.reserved_bytes, observed.reservations), (128, 1));
+        }
+        drop(root);
+        assert_eq!(budget.observation().unwrap().reserved_bytes, 0);
+    }
 
     #[test]
     fn charge_metadata_cannot_be_allocated_from_an_undersized_reservation() {
