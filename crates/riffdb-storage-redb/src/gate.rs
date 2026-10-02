@@ -32,6 +32,21 @@ pub(crate) struct ExclusiveLease {
 }
 
 impl ExclusiveGate {
+    /// Bounded maintenance admission. Existing queued tickets always win;
+    /// refusal creates no waiter and does not consume a ticket.
+    pub(crate) fn try_acquire(&self) -> Result<Option<ExclusiveLease>, StorageError> {
+        let mut state = self.inner.state.lock().map_err(|_| poisoned_gate())?;
+        if state.held || state.serving != state.next_ticket {
+            return Ok(None);
+        }
+        state.next_ticket = state.next_ticket.checked_add(1).ok_or_else(poisoned_gate)?;
+        state.held = true;
+        drop(state);
+        Ok(Some(ExclusiveLease {
+            inner: Arc::clone(&self.inner),
+        }))
+    }
+
     pub(crate) fn acquire(&self) -> Result<ExclusiveLease, StorageError> {
         let mut state = self.inner.state.lock().map_err(|_| poisoned_gate())?;
         let ticket = state.next_ticket;
@@ -133,6 +148,38 @@ mod tests {
     use std::sync::mpsc;
 
     use super::*;
+
+    #[test]
+    fn bounded_admission_cannot_barge_a_queued_writer_or_issue_refused_tickets() {
+        let gate = Arc::new(ExclusiveGate::default());
+        let initial = gate.acquire().unwrap();
+        let issued = gate.tickets_issued();
+        assert!(gate.try_acquire().unwrap().is_none());
+        assert_eq!(gate.tickets_issued(), issued);
+        let (ready_tx, ready_rx) = mpsc::channel();
+        let (release_tx, release_rx) = mpsc::channel();
+        let queued = gate.clone();
+        let writer = std::thread::spawn(move || {
+            let lease = queued.acquire().unwrap();
+            ready_tx.send(()).unwrap();
+            release_rx.recv().unwrap();
+            drop(lease);
+        });
+        gate.wait_for_queued(1);
+        drop(initial);
+        // Whether the queued writer has woken or still owns the lease, the
+        // queued ticket wins. Refusal does not insert another maintenance waiter.
+        assert!(gate.try_acquire().unwrap().is_none());
+        ready_rx.recv().unwrap();
+        assert!(gate.try_acquire().unwrap().is_none());
+        release_tx.send(()).unwrap();
+        writer.join().unwrap();
+        let admitted = gate.try_acquire().unwrap().unwrap();
+        assert!(gate.is_held());
+        assert_eq!(gate.tickets_issued(), issued + 2);
+        drop(admitted);
+        assert!(!gate.is_held());
+    }
 
     #[test]
     fn owned_lease_releases_the_gate_on_drop() {

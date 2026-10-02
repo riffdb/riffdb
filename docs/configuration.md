@@ -184,6 +184,19 @@ fence that last held it, and its step and sequence counts. The separate
 by references or readers, and off-writer reclamation microseconds. Logical
 sequence progress does not imply physical space reclamation.
 
+The retention lane also owns source-receipt reclamation across observations.
+It validates immutable history in pages of at most 256 rows, then yields if a
+writer is queued, a checkpoint is in flight, or the journal is not drained.
+It also yields until off-gate extent sealing finishes, before capturing a
+validation pin. A changed publication discards the candidate. At a later independently durable
+checkpoint it rechecks consumer and derived-reader holds and removes at most
+256 receipts. Source holds retain their separate 4,096-registration bound.
+Its own reclamation and prefix-refresh receipts cannot create an
+idle reclamation loop. The separate `riffdb-retention-receipts-v1` shutdown line
+records `removed` receipts and `gate_us`; that time participates in the lane's
+existing writer-occupancy pacing. Receipt removal does not prove that an extent
+was deleted or reused.
+
 Pruned history stays auditable. A pruned command keeps its outcome and
 provenance, so its idempotent retry answers the original result. Reads of its
 events or commit, and commit scans that start at or below the watermark,

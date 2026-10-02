@@ -546,6 +546,12 @@ pub type SealedJournalExtentSummaryFixture = (u64, usize, Option<u64>, Option<u6
 #[doc(hidden)]
 pub struct SourceHistoryReclamationFixture(crate::store::ReplicationSourceControl);
 
+/// Wait for the real extent sealer to finish; fixture synchronization only.
+#[doc(hidden)]
+pub fn join_extent_sealing_fixture(ports: &crate::RedbOperationalPorts) {
+    ports.shared.join_journal_sealer();
+}
+
 impl SourceHistoryReclamationFixture {
     /// Attempt the existing bounded source-reclamation protocol.
     pub fn step(&mut self) -> Result<bool, riffdb_storage_api::ChangelogCursorErrorV3> {

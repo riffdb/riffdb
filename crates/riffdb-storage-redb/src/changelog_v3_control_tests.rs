@@ -83,6 +83,37 @@ fn hold(kind: Kind, state: ChangelogHistoryStateV3) -> Hold {
     )
 }
 
+// req: STO-030, STO-031, STO-032, REC-001
+#[test]
+fn online_receipt_reclamation_yields_to_writers_preserves_holds_and_cannot_stimulate_itself() {
+    let (_scope, ports, states) = fixture();
+    let mut control = ports.replication_source_control();
+    assert_eq!(control.reclaim_history_online().unwrap().0, 0);
+    assert_eq!(control.reclaim_history_online().unwrap().0, 0);
+    let bootstrap = hold(Kind::Bootstrap, states[3]);
+    control.register(bootstrap).unwrap();
+    let lease = ports.acquire_indexed_read_lease().unwrap();
+    for _ in 0..3 {
+        assert_eq!(control.reclaim_history_online().unwrap().0, 0);
+    }
+    assert_eq!(history(&ports).minimum_resume(), states[0].tail());
+    drop(lease);
+    let mut removed = 0;
+    for _ in 0..3 {
+        removed += control.reclaim_history_online().unwrap().0;
+    }
+    assert_eq!(
+        removed,
+        bootstrap.fence().sequence().get() - states[0].tail().sequence().get()
+    );
+    assert_eq!(history(&ports).minimum_resume(), bootstrap.fence());
+    let exact = history(&ports);
+    for _ in 0..6 {
+        assert_eq!(control.reclaim_history_online().unwrap().0, 0);
+    }
+    assert_eq!(history(&ports), exact);
+}
+
 #[test]
 fn v3_materialized_reclamation_waits_for_later_checkpoint_and_every_kind_of_hold() {
     let (_scope, ports, states) = fixture();
@@ -329,6 +360,14 @@ fn v3_source_control_crash_child() {
     let edge = std::env::var("RIFFDB_V3_SOURCE_CONTROL_EDGE").unwrap();
     if edge.starts_with("hold-") {
         control.register(hold(Kind::Bootstrap, initial)).unwrap();
+    } else if std::env::var("RIFFDB_V3_SOURCE_CONTROL_ONLINE").as_deref() == Ok("true") {
+        for _ in 0..2 {
+            assert_eq!(control.reclaim_history_online().unwrap().0, 0);
+        }
+        append(&ports, b"known-later-checkpoint");
+        for _ in 0..2 {
+            control.reclaim_history_online().unwrap();
+        }
     } else {
         assert!(!control.reclaim_history().unwrap());
         append(&ports, b"known-later-checkpoint");
@@ -339,6 +378,16 @@ fn v3_source_control_crash_child() {
 
 #[test]
 pub(crate) fn v3_source_control_crashes_leave_whole_holds_or_whole_reclamation() {
+    source_control_crash_cases(false);
+}
+
+// req: STO-030, STO-031, STO-032, REC-001, REC-002
+#[test]
+fn online_receipt_reclamation_crashes_preserve_whole_history_and_resume_anchor() {
+    source_control_crash_cases(true);
+}
+
+fn source_control_crash_cases(online: bool) {
     use crate::changelog_v3_activation::{HISTORY, SOURCE_HOLDS};
     use riffdb_storage_api::{
         AuthoritativeTransactionV3, proto_codec::decode_replication_source_hold_v1,
@@ -353,6 +402,9 @@ pub(crate) fn v3_source_control_crashes_leave_whole_holds_or_whole_reclamation()
         "reclamation-staged",
         "reclamation-committed",
     ] {
+        if online && !edge.starts_with("reclamation-") {
+            continue;
+        }
         let scope = crate::test_path::ScopedDirectory::new("v3-control-crash");
         let path = scope.join("db.redb");
         let (ports, states) = initialize(&path);
@@ -379,6 +431,7 @@ pub(crate) fn v3_source_control_crashes_leave_whole_holds_or_whole_reclamation()
             ])
             .env("RIFFDB_V3_SOURCE_CONTROL_PATH", &path)
             .env("RIFFDB_V3_SOURCE_CONTROL_EDGE", edge)
+            .env("RIFFDB_V3_SOURCE_CONTROL_ONLINE", online.to_string())
             .stdin(Stdio::null())
             .stdout(Stdio::null())
             .stderr(Stdio::null())

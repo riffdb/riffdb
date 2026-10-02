@@ -53,6 +53,8 @@ struct Observation {
 pub(crate) struct ReplicationSourceControl {
     shared: Arc<SharedRedb>,
     observed: Option<Observation>,
+    online_validation: Option<crate::changelog_v3_retained_validation::RetainedHistoryValidation>,
+    online_independent_sequence: u64,
 }
 
 impl RedbOperationalPorts {
@@ -159,6 +161,8 @@ impl RedbOperationalPorts {
         ReplicationSourceControl {
             shared: Arc::clone(&self.shared),
             observed: None,
+            online_validation: None,
+            online_independent_sequence: 0,
         }
     }
 }
@@ -280,6 +284,83 @@ impl ReplicationSourceControl {
     /// A first/same-root observation or a no-op creates no control transaction.
     pub(crate) fn reclaim_history(&mut self) -> Result<bool, Refusal> {
         let barrier = Barrier::acquire(Arc::clone(&self.shared))?;
+        self.reclaim_at_barrier(barrier)
+    }
+
+    /// One bounded validation page, followed only at exact end by a
+    /// nonwaiting, drained-root admission. Returns actual removed receipts
+    /// and gate-held time; the caller applies the existing maintenance pacing.
+    pub(crate) fn reclaim_history_online(&mut self) -> Result<(u64, u64), StorageError> {
+        use crate::changelog_v3_retained_validation::RetainedHistoryValidation;
+        let mut capture_us = 0;
+        if self.online_validation.is_none() {
+            let start = std::time::Instant::now();
+            let root = Barrier::try_validation_root(&self.shared)?;
+            capture_us = elapsed_us(start, std::time::Instant::now());
+            let Some(root) = root else {
+                return Ok((0, capture_us));
+            };
+            self.online_validation = RetainedHistoryValidation::new(root)?;
+        }
+        let Some(walk) = self.online_validation.as_mut() else {
+            return Ok((0, capture_us));
+        };
+        if !walk.advance(
+            riffdb_storage_api::EvidencePageLimit::new(256)
+                .ok_or_else(|| storage_error(StorageErrorKind::InvariantViolation))?,
+        )? {
+            return Ok((0, capture_us));
+        }
+        let proof = self
+            .online_validation
+            .take()
+            .ok_or_else(|| storage_error(StorageErrorKind::InvariantViolation))?
+            .complete()?;
+        let independent = proof.independent_sequence();
+        if independent <= self.online_independent_sequence {
+            return Ok((0, capture_us));
+        }
+        let start = std::time::Instant::now();
+        let Some(barrier) = Barrier::try_from_validated(Arc::clone(&self.shared), proof)? else {
+            // Charge even a stale or undrained admission conservatively; the
+            // nonwaiting try also includes its short refusal overhead.
+            return Ok((
+                0,
+                capture_us.saturating_add(elapsed_us(start, std::time::Instant::now())),
+            ));
+        };
+        let before = barrier
+            .observation()
+            .history
+            .minimum_resume()
+            .sequence()
+            .get();
+        let advanced = self
+            .reclaim_at_barrier(barrier)
+            .map_err(|error| match error {
+                Refusal::Storage(error) => error,
+                _ => storage_error(StorageErrorKind::CorruptData),
+            })?;
+        self.online_independent_sequence = independent;
+        let removed = if advanced {
+            self.observed
+                .ok_or_else(|| storage_error(StorageErrorKind::InvariantViolation))?
+                .history
+                .minimum_resume()
+                .sequence()
+                .get()
+                .checked_sub(before)
+                .ok_or_else(|| storage_error(StorageErrorKind::InvariantViolation))?
+        } else {
+            0
+        };
+        Ok((
+            removed,
+            capture_us.saturating_add(elapsed_us(start, std::time::Instant::now())),
+        ))
+    }
+
+    fn reclaim_at_barrier(&mut self, barrier: Barrier) -> Result<bool, Refusal> {
         let current = barrier.observation();
         let Some(previous) = self.observed else {
             self.observed = Some(current);

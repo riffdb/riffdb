@@ -143,6 +143,84 @@ fn sealed_extent_retirement_waits_for_receipts_and_pinned_readers() {
     ));
 }
 
+// req: STO-030, STO-031, STO-032, REC-001, REC-002, REC-005
+#[test]
+fn production_retention_lane_releases_receipts_then_retires_extent_after_reader_release() {
+    use riffdb_storage_api::OwnedSnapshotReader;
+    use std::num::NonZeroU64;
+
+    let path = TestDatabasePath::new("composed-receipt-retirement");
+    let extent = prepare_two_sealed_commands(&path.0);
+    let (controller, schedule) = RedbTestController::checkpoint_schedule();
+    let ports =
+        open_operational(RedbStore::open_with_test_controller(&path.0, controller).unwrap());
+    seal(&ports, 3).wait().unwrap();
+    complete_checkpoint(&ports, &schedule);
+    let lane = ports.online_retention_lane();
+    let retain = NonZeroU64::new(1).unwrap();
+    let budget = NonZeroU64::new(256).unwrap();
+    let reader = ports.open_owned_snapshot().unwrap();
+    for _ in 0..4 {
+        lane.step(retain, budget).unwrap();
+    }
+    seal(&ports, 4).wait().unwrap();
+    complete_checkpoint(&ports, &schedule);
+    for _ in 0..4 {
+        lane.step(retain, budget).unwrap();
+    }
+    seal(&ports, 5).wait().unwrap();
+    complete_checkpoint(&ports, &schedule);
+    let mut removed = 0;
+    let mut reader_holds = 0;
+    for _ in 0..8 {
+        let (_, phases) = lane.step_timed(retain, budget, false).unwrap();
+        removed += phases.reclaimed_receipts;
+        reader_holds += phases.extent_reader_holds;
+        assert!(phases.reclaimed_receipts <= 256);
+    }
+    assert!(removed > 0, "the production owner releases source receipts");
+    assert!(
+        reader_holds > 0,
+        "the captured reader still prevents file retirement"
+    );
+    assert!(extent.exists());
+    drop(reader);
+    let mut retired = 0;
+    let mut remaining_reader_holds = 0;
+    let mut remaining_reference_holds = 0;
+    for _ in 0..8 {
+        let (_, phases) = lane.step_timed(retain, budget, false).unwrap();
+        retired += phases.deleted_extents + phases.recycled_extents;
+        remaining_reader_holds += phases.extent_reader_holds;
+        remaining_reference_holds += phases.extent_reference_holds;
+    }
+    assert_eq!(
+        retired, 1,
+        "remaining reader holds={remaining_reader_holds}, reference holds={remaining_reference_holds}"
+    );
+    assert!(!extent.exists());
+    assert!(matches!(
+        ports
+            .lookup_admission(command_fixture_at(1).candidates)
+            .unwrap(),
+        AdmissionLookupResultV1::Found(_)
+    ));
+    assert_committed(&ports, 5);
+}
+
+fn complete_checkpoint(
+    ports: &RedbOperationalPorts,
+    schedule: &riffdb_storage_redb::RedbCheckpointTestSchedule,
+) {
+    schedule.arm(Point::Materialized);
+    schedule.request_checkpoint();
+    drop(ports.begin_deferred_command_epoch().unwrap());
+    schedule.wait(Point::Materialized);
+    schedule.release(Point::Materialized);
+    drop(ports.begin_deferred_command_epoch().unwrap());
+    riffdb_storage_redb::join_extent_sealing_fixture(ports);
+}
+
 // req: STO-030, STO-031, STO-032
 #[test]
 fn logical_pruning_crosses_a_large_sealed_extent_in_bounded_steps() {

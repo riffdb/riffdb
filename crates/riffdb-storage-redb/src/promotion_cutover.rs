@@ -257,40 +257,77 @@ pub(crate) fn validate_retained(
     indexes: &impl ReadableTable<&'static [u8], &'static [u8]>,
     receipts: &impl ReadableTable<&'static [u8], &'static [u8]>,
 ) -> Result<(), StorageError> {
-    let mut current = false;
+    let mut validation = PromotionValidation::default();
     for row in audit.iter().map_err(precommit_storage_error)? {
-        let (key, value) = row.map_err(precommit_storage_error)?;
-        let decoded = match decode_promotion_administration_v1(value.value()) {
+        let (key, encoded) = row.map_err(precommit_storage_error)?;
+        validation.observe(
+            (key.value(), encoded.value()),
+            retained,
+            audit,
+            indexes,
+            receipts,
+        )?;
+    }
+    validation.finish(retained, receipts)
+}
+
+/// Does not certify a partial census; finish requires the exact audit end.
+#[derive(Default)]
+pub(crate) struct PromotionValidation {
+    current: bool,
+}
+
+impl PromotionValidation {
+    pub(crate) fn observe(
+        &mut self,
+        row: (&[u8], &[u8]),
+        retained: ChangelogHistoryStateV3,
+        audit: &impl ReadableTable<&'static [u8], &'static [u8]>,
+        indexes: &impl ReadableTable<&'static [u8], &'static [u8]>,
+        receipts: &impl ReadableTable<&'static [u8], &'static [u8]>,
+    ) -> Result<(), StorageError> {
+        let (key, encoded) = row;
+        let decoded = match decode_promotion_administration_v1(encoded) {
             Ok(decoded) => decoded,
-            Err(error) if error.kind() == DurableCodecErrorKind::UnexpectedRecordType => continue,
+            Err(error) if error.kind() == DurableCodecErrorKind::UnexpectedRecordType => {
+                return Ok(());
+            }
             Err(error) => return Err(codec_error(error)),
         };
         let record = decoded.value();
-        if key.value() != crate::keys::encode_audit_key(record.administration_sequence()) {
+        if key != crate::keys::encode_audit_key(record.administration_sequence()) {
             return Err(corrupt());
         }
         validate_record(record, retained, audit, indexes, receipts)?;
         if history(record)?.lineage() == retained.lineage() {
-            if current {
+            if self.current {
                 return Err(corrupt());
             }
-            current = true;
+            self.current = true;
         }
+        Ok(())
     }
-    // An orphan Promotion anchor is corruption, including erasure of its control row.
-    if retained.minimum_resume() == retained.anchor()
-        && let Some(row) = receipts
-            .get(retained.anchor().sequence().get().to_be_bytes().as_slice())
-            .map_err(precommit_storage_error)?
-        && AuthoritativeTransactionV3::decode(&crate::history_stub::resolve_history_value(
-            row.value(),
-        )?)
-        .map_err(|_| corrupt())?
-        .attribution()
-            == ChangelogAttributionV3::Promotion
-        && !current
-    {
-        return Err(corrupt());
+
+    pub(crate) fn finish(
+        &self,
+        retained: ChangelogHistoryStateV3,
+        receipts: &impl ReadableTable<&'static [u8], &'static [u8]>,
+    ) -> Result<(), StorageError> {
+        // An orphan Promotion anchor is corruption, including erasure of its control row.
+        if retained.minimum_resume() == retained.anchor()
+            && let Some(row) = receipts
+                .get(retained.anchor().sequence().get().to_be_bytes().as_slice())
+                .map_err(precommit_storage_error)?
+            && AuthoritativeTransactionV3::decode(&crate::history_stub::resolve_history_value(
+                row.value(),
+            )?)
+            .map_err(|_| corrupt())?
+            .attribution()
+                == ChangelogAttributionV3::Promotion
+            && !self.current
+        {
+            return Err(corrupt());
+        }
+        Ok(())
     }
-    Ok(())
 }

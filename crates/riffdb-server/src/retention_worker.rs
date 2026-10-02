@@ -217,6 +217,8 @@ impl RetentionLaneStatus {
                 phases.extent_reference_holds,
             ),
             (&mut total.extent_reader_holds, phases.extent_reader_holds),
+            (&mut total.reclaimed_receipts, phases.reclaimed_receipts),
+            (&mut total.receipt_gate_us, phases.receipt_gate_us),
             (&mut total.gate_wait_us, phases.gate_wait_us),
             (&mut total.drain_us, phases.drain_us),
             (&mut total.plan_us, phases.plan_us),

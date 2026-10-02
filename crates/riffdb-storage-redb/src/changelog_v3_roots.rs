@@ -195,7 +195,7 @@ pub(crate) fn validate_retained_rows(
 /// Full-validation-only, bounded source population from the SAME read pin as
 /// the validated retained chain. Never upgrades a decoded value into permission
 /// to prune or silently discards an unrecognized fence.
-fn validate_source_holds(
+pub(crate) fn validate_source_holds(
     holds: &impl ReadableTable<&'static [u8], &'static [u8]>,
     history: ChangelogHistoryStateV3,
     receipts: &impl ReadableTable<&'static [u8], &'static [u8]>,

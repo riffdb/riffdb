@@ -64,6 +64,10 @@ pub struct OnlineRetentionPhases {
     pub extent_reference_holds: u64,
     /// Passes held by older snapshots or a background scrub.
     pub extent_reader_holds: u64,
+    /// Retained source receipts actually removed in this pass (at most 256).
+    pub reclaimed_receipts: u64,
+    /// Under the gate: drained-root source-receipt reclamation.
+    pub receipt_gate_us: u64,
     /// Waiting for the first-come writer gate.
     pub gate_wait_us: u64,
     /// Under the gate: maintenance setup and any direct-path journal drain.
@@ -85,6 +89,7 @@ impl OnlineRetentionPhases {
     #[must_use]
     pub const fn gate_held_us(&self) -> u64 {
         self.drain_us
+            .saturating_add(self.receipt_gate_us)
             .saturating_add(self.plan_us)
             .saturating_add(self.digest_us)
             .saturating_add(self.materialize_us)
@@ -125,6 +130,7 @@ pub struct RedbOnlineRetentionLane {
     /// The journal's last application sequence at the previous step, so the
     /// lane materializes the journal suffix only once the database is idle.
     last_journal_sequence: Arc<std::sync::atomic::AtomicU64>,
+    source_control: Arc<std::sync::Mutex<crate::store::ReplicationSourceControl>>,
 }
 
 impl RedbOnlineRetentionLane {
@@ -173,6 +179,13 @@ impl RedbOnlineRetentionLane {
         phases.recycled_extents = reclamation.recycled;
         phases.extent_reference_holds = reclamation.held_references;
         phases.extent_reader_holds = reclamation.held_readers;
+        let (removed, held_us) = self
+            .source_control
+            .lock()
+            .map_err(|_| storage_error(StorageErrorKind::InvariantViolation))?
+            .reclaim_history_online()?;
+        phases.reclaimed_receipts = removed;
+        phases.receipt_gate_us = held_us;
         let (journal_sequence, suffix_transitions) = self.shared.journal_suffix_activity()?;
         let idle = self
             .last_journal_sequence
@@ -209,6 +222,7 @@ impl RedbOperationalPorts {
         RedbOnlineRetentionLane {
             shared: Arc::clone(&self.shared),
             last_journal_sequence: Arc::new(std::sync::atomic::AtomicU64::new(u64::MAX)),
+            source_control: Arc::new(std::sync::Mutex::new(self.replication_source_control())),
         }
     }
 

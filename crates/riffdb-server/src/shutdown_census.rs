@@ -96,6 +96,19 @@ pub(crate) fn format_extent_line() -> String {
     )
 }
 
+/// Source receipt deletion and its writer occupancy are separate from logical
+/// command pruning and physical extent reclamation. No identities or payloads.
+pub(crate) fn format_receipt_line() -> String {
+    let phases = RETENTION_OBSERVATION
+        .get()
+        .map(|lane| lane.phases)
+        .unwrap_or_default();
+    format!(
+        "riffdb-retention-receipts-v1\tremoved={}\tgate_us={}",
+        phases.reclaimed_receipts, phases.receipt_gate_us
+    )
+}
+
 /// Renders the census as one tagged line for the shutdown evidence stream.
 pub(crate) fn format_v1_line() -> String {
     let mut line = String::from("riffdb-shutdown-release-v1");
@@ -233,6 +246,21 @@ pub(crate) fn record_online_retention(
 #[cfg(test)]
 mod tests {
     use super::{ShutdownReleaseStage, format_v1_line};
+
+    // req: STO-030, STO-031, STO-032
+    #[test]
+    fn receipt_reclamation_census_has_only_bounded_numeric_fields() {
+        let line = super::format_receipt_line();
+        let fields = line.split('\t').collect::<Vec<_>>();
+        assert_eq!(fields[0], "riffdb-retention-receipts-v1");
+        assert_eq!(fields.len(), 3);
+        for (field, expected) in fields[1..].iter().zip(["removed", "gate_us"]) {
+            let (name, value) = field.split_once('=').unwrap();
+            assert_eq!(name, expected);
+            assert!(value.parse::<u64>().is_ok());
+        }
+        assert!(line.len() <= 96);
+    }
 
     // req: STO-031
     #[test]

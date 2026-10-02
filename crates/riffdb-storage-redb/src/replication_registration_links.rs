@@ -31,49 +31,79 @@ pub(crate) fn validate(
     history: History,
     receipts: &impl ReadableTable<&'static [u8], &'static [u8]>,
 ) -> Result<(), StorageError> {
-    if holds.len().map_err(precommit_storage_error)? > MAX_REPLICATION_SOURCE_HOLDS_V1 {
-        return Err(storage_error(StorageErrorKind::LimitExceeded));
-    }
-    let mut evidence = BTreeMap::new();
-    for row in holds.iter().map_err(precommit_storage_error)? {
-        let (key, value) = row.map_err(precommit_storage_error)?;
-        let decoded = decode_replication_source_hold(value.value()).map_err(codec_error)?;
-        let (hold, registered) = match *decoded.value() {
-            State::Legacy(hold) => (hold, None),
-            State::Registered(policy) => (policy.hold(), Some(policy)),
-        };
-        if key.value() != hold.storage_key() || hold.lineage() != history.lineage() {
-            return Err(corrupt());
-        }
-        if let Some(current) = registered {
-            if !current.registered_at().precedes_or_equals(history.tail())
-                || current.generation() > history.tail().sequence()
-                || !hold.fence().precedes_or_equals(history.tail())
-                || current
-                    .degraded_at()
-                    .is_some_and(|p| !p.precedes_or_equals(history.tail()))
-            {
-                return Err(corrupt());
-            }
-            evidence.insert(
-                hold.storage_key(),
-                Evidence {
-                    current,
-                    registered: false,
-                    released: false,
-                },
-            );
-        }
-    }
+    let mut validation = RegistrationLinksValidation::new(holds, history)?;
     for row in audit.iter().map_err(precommit_storage_error)? {
         let (key, value) = row.map_err(precommit_storage_error)?;
-        let decoded = match decode_replication_administration_v1(value.value()) {
+        validation.observe(key.value(), value.value(), receipts)?;
+    }
+    validation.finish()
+}
+
+/// Incremental form of the same exhaustive, bounded-hold validation.
+/// Only finish at the caller's exact audit end; partial pages prove nothing.
+pub(crate) struct RegistrationLinksValidation {
+    history: History,
+    evidence: BTreeMap<[u8; 17], Evidence>,
+}
+
+impl RegistrationLinksValidation {
+    pub(crate) fn new(
+        holds: &impl ReadableTable<&'static [u8], &'static [u8]>,
+        history: History,
+    ) -> Result<Self, StorageError> {
+        if holds.len().map_err(precommit_storage_error)? > MAX_REPLICATION_SOURCE_HOLDS_V1 {
+            return Err(storage_error(StorageErrorKind::LimitExceeded));
+        }
+        let mut evidence = BTreeMap::new();
+        for row in holds.iter().map_err(precommit_storage_error)? {
+            let (key, value) = row.map_err(precommit_storage_error)?;
+            let decoded = decode_replication_source_hold(value.value()).map_err(codec_error)?;
+            let (hold, registered) = match *decoded.value() {
+                State::Legacy(hold) => (hold, None),
+                State::Registered(policy) => (policy.hold(), Some(policy)),
+            };
+            if key.value() != hold.storage_key() || hold.lineage() != history.lineage() {
+                return Err(corrupt());
+            }
+            if let Some(current) = registered {
+                if !current.registered_at().precedes_or_equals(history.tail())
+                    || current.generation() > history.tail().sequence()
+                    || !hold.fence().precedes_or_equals(history.tail())
+                    || current
+                        .degraded_at()
+                        .is_some_and(|p| !p.precedes_or_equals(history.tail()))
+                {
+                    return Err(corrupt());
+                }
+                evidence.insert(
+                    hold.storage_key(),
+                    Evidence {
+                        current,
+                        registered: false,
+                        released: false,
+                    },
+                );
+            }
+        }
+        Ok(Self { history, evidence })
+    }
+
+    pub(crate) fn observe(
+        &mut self,
+        key: &[u8],
+        encoded: &[u8],
+        receipts: &impl ReadableTable<&'static [u8], &'static [u8]>,
+    ) -> Result<(), StorageError> {
+        let history = self.history;
+        let decoded = match decode_replication_administration_v1(encoded) {
             Ok(decoded) => decoded,
-            Err(error) if error.kind() == DurableCodecErrorKind::UnexpectedRecordType => continue,
+            Err(error) if error.kind() == DurableCodecErrorKind::UnexpectedRecordType => {
+                return Ok(());
+            }
             Err(error) => return Err(codec_error(error)),
         };
         let record = decoded.value();
-        if key.value() != crate::keys::encode_audit_key(record.administration_sequence()) {
+        if key != crate::keys::encode_audit_key(record.administration_sequence()) {
             return Err(corrupt());
         }
         let source = record.after().hold().lineage();
@@ -89,7 +119,7 @@ pub(crate) fn validate(
             if source.history_incarnation() >= history.lineage().history_incarnation() {
                 return Err(corrupt());
             }
-            continue;
+            return Ok(());
         }
         if !record.observed().precedes_or_equals(history.tail())
             || record.generation() > history.tail().sequence()
@@ -97,8 +127,9 @@ pub(crate) fn validate(
             return Err(corrupt());
         }
         validate_point(record.observed(), history, receipts)?;
-        validate_physical_record(record, value.value(), history, receipts)?;
-        let entry = evidence
+        validate_physical_record(record, encoded, history, receipts)?;
+        let entry = self
+            .evidence
             .get_mut(&record.after().hold().storage_key())
             .ok_or_else(corrupt)?;
         match record.action() {
@@ -121,13 +152,17 @@ pub(crate) fn validate(
                 entry.released = true;
             }
         }
+        Ok(())
     }
-    if evidence.values().any(|entry| {
-        !entry.registered || entry.released != (entry.current.phase() == Phase::Retired)
-    }) {
-        return Err(corrupt());
+
+    pub(crate) fn finish(&self) -> Result<(), StorageError> {
+        if self.evidence.values().any(|entry| {
+            !entry.registered || entry.released != (entry.current.phase() == Phase::Retired)
+        }) {
+            return Err(corrupt());
+        }
+        Ok(())
     }
-    Ok(())
 }
 
 /// A pruned point remains bound by its retained administration record. A point

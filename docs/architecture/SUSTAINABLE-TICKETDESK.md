@@ -173,3 +173,48 @@ deletion; quota excludes separately measured engine allocation and cache memory.
 Dead letters continue to fence source history. WP-823 owns repeated receipt and
 physical extent reclamation plus retention-aware recovery. WP-824 owns provider
 retirement, and WP-825/WP-826 own the real workload and uninterrupted rehearsal.
+
+## WP-823 source-reclamation implementation and PR note
+
+Package: WP-823, still open. Tier: guarantee, implementing accepted ADR-0265
+decisions 8–9 and the receipt portion of decision 11.
+
+Behavior added: the production retention lane retains one source-control owner
+across checkpoint observations. Complete immutable history and source evidence
+are validated in bounded pages outside the writer gate. Only exact-end proof
+can request nonwaiting admission; queued writers retain precedence, and an
+in-flight checkpoint, journal suffix, or changed publication makes it yield.
+Pin capture also waits for extent sealing by yielding; it never joins that
+worker while holding the writer gate.
+All existing source and derived-reader holds remain binding. A later independent
+durable checkpoint permits removal of at most 256 receipts. Reclamation and
+prefix-refresh receipts cannot manufacture independent progress.
+
+At an already drained boundary, admission retires the empty internal composite
+publication cache using the existing operation. Captured readers retain their
+pins. No journal flush is added. Receipt removal, logical command pruning, and
+physical file retirement remain separate transitions, with receipt gate time
+included in the existing maintenance pacing. The closed shutdown diagnostic
+reports only removed receipts and gate microseconds.
+
+Checks run so far: the 24-test source-control suite, page/exact-end proof test,
+stale-hold proof refusal, four process-crash cuts with repeated reopen, numeric
+diagnostic test, and production-lane extent integration test pass. The latter
+drives actual checkpoints, proves captured readers prevent physical retirement,
+and proves retirement after release while retaining idempotent outcomes and the
+latest command. The first scoped run exposed an extent-sealing race in that
+integration test. Admission now yields while sealing is unfinished, and the
+fixture explicitly joins the actual sealer. The eight-test online regression
+subset and corrected integration test pass; scoped acceptance is being rerun.
+This is not a closure receipt.
+
+Compatibility: durable record formats, command sequencing, authorization,
+idempotency, resume anchors, and existing extent retirement machinery are
+unchanged. Updated handbook pages: [configuration](../configuration.md) and
+this milestone page, both already reachable from `SUMMARY.md`.
+
+Hazards and follow-ups: validated-prefix refresh and recovery to a successful
+write remain unimplemented in this package. Busy-workload progress, repeated
+physical generations, and the campaign gates remain unqualified. A stale
+candidate is discarded rather than allowed to authorize deletion. No measured
+rehearsal or alpha qualification is claimed.

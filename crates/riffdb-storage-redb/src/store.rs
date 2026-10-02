@@ -61,7 +61,6 @@ pub(crate) mod changelog_lifecycle;
 #[path = "store_changelog_source_control.rs"]
 mod changelog_source_control;
 pub(crate) use changelog_source_control::ControlWrite;
-#[cfg(feature = "test-fixtures")]
 pub(crate) use changelog_source_control::ReplicationSourceControl;
 
 #[path = "store_v3_layout.rs"]

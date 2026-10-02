@@ -140,18 +140,50 @@ pub(crate) fn validate_fences(
     audit: &impl ReadableTable<&'static [u8], &'static [u8]>,
     receipts: &impl ReadableTable<&'static [u8], &'static [u8]>,
 ) -> Result<(), StorageError> {
-    let mut retained = None;
-    // Stream to exact end: no early success can conceal a contradictory fence.
+    let mut validation = FenceValidation::new(history, admission.clone());
     for row in audit.iter().map_err(precommit_storage_error)? {
-        let (key, bytes) = row.map_err(precommit_storage_error)?;
-        let decoded = match decode_primary_fence_administration_v1(bytes.value()) {
+        let (key, encoded) = row.map_err(precommit_storage_error)?;
+        validation.observe(key.value(), encoded.value(), receipts)?;
+    }
+    validation.finish()
+}
+
+/// Same exhaustive fence census, advanced by bounded external audit pages.
+pub(crate) struct FenceValidation {
+    history: ChangelogHistoryStateV3,
+    admission: ReplicationPrimaryAdmissionV1,
+    retained: Option<StoredPrimaryFenceAdministrationV1>,
+}
+
+impl FenceValidation {
+    pub(crate) fn new(
+        history: ChangelogHistoryStateV3,
+        admission: ReplicationPrimaryAdmissionV1,
+    ) -> Self {
+        Self {
+            history,
+            admission,
+            retained: None,
+        }
+    }
+
+    pub(crate) fn observe(
+        &mut self,
+        key: &[u8],
+        encoded: &[u8],
+        receipts: &impl ReadableTable<&'static [u8], &'static [u8]>,
+    ) -> Result<(), StorageError> {
+        let history = self.history;
+        let decoded = match decode_primary_fence_administration_v1(encoded) {
             Ok(decoded) => decoded,
-            Err(error) if error.kind() == DurableCodecErrorKind::UnexpectedRecordType => continue,
+            Err(error) if error.kind() == DurableCodecErrorKind::UnexpectedRecordType => {
+                return Ok(());
+            }
             Err(error) => return Err(codec_error(error)),
         };
         let record = decoded.value();
         let lineage = history.lineage();
-        if key.value() != crate::keys::encode_audit_key(record.administration_sequence())
+        if key != crate::keys::encode_audit_key(record.administration_sequence())
             || record.lineage().database_id() != lineage.database_id()
             || Some(record.administration_sequence()) > history.tail().frontier().administration()
         {
@@ -161,21 +193,25 @@ pub(crate) fn validate_fences(
             if record.lineage().history_incarnation() >= lineage.history_incarnation() {
                 return Err(corrupt());
             }
-            continue;
+            return Ok(());
         }
-        if retained.is_some() {
+        if self.retained.is_some() {
             return Err(corrupt());
         }
         validate_fence_receipt(history, record, receipts)?;
-        retained = Some(record.clone());
+        self.retained = Some(record.clone());
+        Ok(())
     }
-    admission
-        .validate_source_evidence(
-            history.lineage(),
-            history.tail().frontier().application(),
-            retained.as_ref(),
-        )
-        .map_err(|_| corrupt())
+
+    pub(crate) fn finish(&self) -> Result<(), StorageError> {
+        self.admission
+            .validate_source_evidence(
+                self.history.lineage(),
+                self.history.tail().frontier().application(),
+                self.retained.as_ref(),
+            )
+            .map_err(|_| corrupt())
+    }
 }
 
 pub(crate) fn validate_fence_receipt(
