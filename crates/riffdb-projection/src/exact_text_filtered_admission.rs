@@ -337,6 +337,9 @@ mod tests {
             .unwrap();
             let encoded = provider.to_checkpoint_bytes().unwrap();
             let budget = ProviderBudget::new();
+            let admitted_encoded = provider.to_checkpoint_bytes_admitted_v1(&budget).unwrap();
+            assert_eq!(&**admitted_encoded, &encoded);
+            drop(admitted_encoded);
             let recovered =
                 ExactTextPartitionIndexV3::from_checkpoint_bytes_admitted_v1(&encoded, &budget)
                     .unwrap();

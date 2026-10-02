@@ -178,6 +178,13 @@ fn admitted_predicate_rebuild_preserves_semantics_and_final_capture_charge() {
         admitted.owned_bytes()
     );
     assert_eq!(budget.observation().unwrap().reserved_bytes, 0);
+    let encoded = admitted.to_checkpoint_bytes_admitted_v1(&budget).unwrap();
+    assert_eq!(&**encoded, &ordinary.to_checkpoint_bytes().unwrap());
+    drop(encoded);
+    assert_eq!(
+        budget.observation().unwrap().owned_bytes,
+        admitted.owned_bytes()
+    );
     let mutations = vec![
         ExactPredicateIndexMutationV1::Delete(key(2)),
         ExactPredicateIndexMutationV1::Upsert(row(4, "new example".into(), 2, 90)),
@@ -264,6 +271,9 @@ fn admitted_nullable_rebuild_and_pressure_preserve_original_inputs() {
         admitted.to_checkpoint_bytes().unwrap(),
         ordinary.to_checkpoint_bytes().unwrap()
     );
+    let encoded = admitted.to_checkpoint_bytes_admitted_v1(&budget).unwrap();
+    assert_eq!(&**encoded, &ordinary.to_checkpoint_bytes().unwrap());
+    drop(encoded);
     let mutations = vec![ExactPredicateIndexMutationV1::Delete(key(1))];
     let mut ordinary_next = ordinary.clone();
     ordinary_next.apply(sequence(2), &mutations).unwrap();

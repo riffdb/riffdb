@@ -15,6 +15,7 @@ mod hooks;
 mod long_pattern;
 mod migration;
 mod notification;
+mod provider_checkpoint_encoding;
 mod query;
 mod recovery;
 mod registry;

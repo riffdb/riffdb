@@ -375,6 +375,9 @@ mod tests {
                     expected.to_checkpoint_bytes().unwrap()
                 );
                 let encoded = provider.to_checkpoint_bytes().unwrap();
+                let admitted_encoded = provider.to_checkpoint_bytes_admitted_v1(&budget).unwrap();
+                assert_eq!(&**admitted_encoded, &encoded);
+                drop(admitted_encoded);
                 // Recovery simultaneously retains documents, decoded redundant
                 // postings and independently rebuilt postings. The rebuilt
                 // position capacities also bound the exact encoded vectors.

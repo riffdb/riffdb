@@ -517,10 +517,16 @@ impl ExactTextProviderState {
         }
     }
 
-    fn checkpoint_bytes(&self) -> Result<Vec<u8>, riffdb_projection::ExactTextProviderErrorV1> {
+    fn checkpoint_bytes(
+        &self,
+        budget: &riffdb_types::exact_provider_budget_v1::ProviderBudget,
+    ) -> Result<
+        checkpoint_buffers::CheckpointBytes,
+        riffdb_projection::ExactTextRebuildAdmissionErrorV1,
+    > {
         match self {
-            Self::V2(provider) => provider.to_checkpoint_bytes(),
-            Self::V3(provider) => provider.to_checkpoint_bytes(),
+            Self::V2(provider) => provider.to_checkpoint_bytes_admitted_v1(budget),
+            Self::V3(provider) => provider.to_checkpoint_bytes_admitted_v1(budget),
         }
     }
 }
@@ -2143,12 +2149,14 @@ fn rebuild_long_pattern_slot(
         )
         .ok_or(RebuildFailure::Integrity)?;
     let provider = rebuild_long_pattern_partition(runtime, &slot.registration, head, generation)?;
-    let provider_bytes = encode_long_pattern_checkpoint(&provider)?;
+    let provider_bytes =
+        encode_long_pattern_checkpoint(&provider, &runtime.ownership_graph.budget)?;
     persist_predicate_checkpoint_bytes(
         &slot.checkpoint,
         &slot.registration.key(),
         runtime.history_incarnation,
         &provider_bytes,
+        &runtime.ownership_graph.budget,
     )
     .map_err(|_| RebuildFailure::Transient)?;
     Ok(Some(provider))
@@ -2726,6 +2734,7 @@ fn persist_checked_slot(
         &slot.registration.key(),
         runtime.history_incarnation,
         provider,
+        &runtime.ownership_graph.budget,
     )
     .map_err(|_| RebuildFailure::Transient)?;
     let reopened = read_checkpoint(&slot.checkpoint, &runtime.ownership_graph.budget)?
@@ -2859,6 +2868,7 @@ fn persist_checked_predicate_slot(
         &slot.registration.key(),
         runtime.history_incarnation,
         provider,
+        &runtime.ownership_graph.budget,
     )
     .map_err(|_| RebuildFailure::Transient)?;
     let reopened = read_checkpoint(&slot.checkpoint, &runtime.ownership_graph.budget)?
@@ -2947,6 +2957,7 @@ fn rebuild_tokenized_slot(
         &slot.registration.key(),
         runtime.history_incarnation,
         &provider,
+        &runtime.ownership_graph.budget,
     )
     .map_err(|_| RebuildFailure::Transient)?;
     Ok(Some(provider))
@@ -3204,8 +3215,11 @@ fn persist_checked_nullable_predicate_slot(
         &slot.registration.key(),
         runtime.history_incarnation,
         &provider
-            .to_checkpoint_bytes()
-            .map_err(|_| RebuildFailure::Integrity)?,
+            .to_checkpoint_bytes_admitted_v1(&runtime.ownership_graph.budget)
+            .map_err(|error| {
+                map_predicate_admission_failure(error, provider.binding().generation())
+            })?,
+        &runtime.ownership_graph.budget,
     )
     .map_err(|_| RebuildFailure::Transient)?;
     let reopened = read_checkpoint(&slot.checkpoint, &runtime.ownership_graph.budget)?
@@ -3699,30 +3713,12 @@ fn persist_checkpoint(
     slot_key: &[u8],
     history_incarnation: u64,
     provider: &ExactTextProviderState,
+    budget: &riffdb_types::exact_provider_budget_v1::ProviderBudget,
 ) -> Result<(), std::io::Error> {
-    let pending = path.with_extension("pending");
     let provider_bytes = provider
-        .checkpoint_bytes()
+        .checkpoint_bytes(budget)
         .map_err(|_| std::io::Error::other("exact checkpoint integrity"))?;
-    let bytes = encode_activation_checkpoint(slot_key, history_incarnation, &provider_bytes)
-        .map_err(|_| std::io::Error::other("exact checkpoint integrity"))?;
-    let mut file = OpenOptions::new()
-        .create(true)
-        .truncate(true)
-        .write(true)
-        .open(&pending)?;
-    file.write_all(&bytes)?;
-    #[cfg(feature = "test-fixtures")]
-    observe_test_point(TestPoint::BeforeFileSync, path, None);
-    file.sync_all()?;
-    #[cfg(feature = "test-fixtures")]
-    observe_test_point(TestPoint::AfterFileSync, path, None);
-    fs::rename(&pending, path)?;
-    File::open(
-        path.parent()
-            .ok_or_else(|| std::io::Error::other("checkpoint parent"))?,
-    )?
-    .sync_all()
+    persist_predicate_checkpoint_bytes(path, slot_key, history_incarnation, &provider_bytes, budget)
 }
 
 fn encode_long_pattern_release(
@@ -3812,12 +3808,21 @@ const LONG_PATTERN_EPOCH_MAGIC: &[u8; 4] = b"RLPE";
 
 fn encode_long_pattern_checkpoint(
     provider: &LongPatternProviderState,
-) -> Result<Vec<u8>, RebuildFailure> {
+    budget: &riffdb_types::exact_provider_budget_v1::ProviderBudget,
+) -> Result<checkpoint_buffers::CheckpointBytes, RebuildFailure> {
     let state = provider
         .provider
-        .checkpoint_bytes()
-        .map_err(|_| RebuildFailure::Integrity)?;
+        .to_checkpoint_bytes_admitted_v1(budget)
+        .map_err(|error| map_long_pattern_admission_failure(error, provider.generation))?;
     let state_len = u32::try_from(state.len()).map_err(|_| RebuildFailure::Integrity)?;
+    let maximum = u64::try_from(state.len())
+        .ok()
+        .and_then(|bytes| bytes.checked_mul(2))
+        .and_then(|bytes| bytes.checked_add(4096))
+        .ok_or(RebuildFailure::Integrity)?;
+    let work = budget
+        .reserve(maximum)
+        .map_err(|_| RebuildFailure::Transient)?;
     let mut output = Vec::with_capacity(24 + state.len());
     output.extend_from_slice(LONG_PATTERN_EPOCH_MAGIC);
     output.extend_from_slice(&1_u16.to_be_bytes());
@@ -3826,7 +3831,8 @@ fn encode_long_pattern_checkpoint(
     output.extend_from_slice(&provider.frontier.to_be_bytes());
     output.extend_from_slice(&state_len.to_be_bytes());
     output.extend_from_slice(&state);
-    Ok(output)
+    work.commit_value(output)
+        .map_err(|_| RebuildFailure::Transient)
 }
 
 fn map_long_pattern_admission_failure(
@@ -3888,11 +3894,12 @@ fn persist_predicate_checkpoint(
     slot_key: &[u8],
     history_incarnation: u64,
     provider: &ExactPredicatePartitionIndexV4,
+    budget: &riffdb_types::exact_provider_budget_v1::ProviderBudget,
 ) -> Result<(), std::io::Error> {
     let provider_bytes = provider
-        .to_checkpoint_bytes()
+        .to_checkpoint_bytes_admitted_v1(budget)
         .map_err(|_| std::io::Error::other("exact predicate checkpoint integrity"))?;
-    persist_predicate_checkpoint_bytes(path, slot_key, history_incarnation, &provider_bytes)
+    persist_predicate_checkpoint_bytes(path, slot_key, history_incarnation, &provider_bytes, budget)
 }
 
 fn persist_predicate_checkpoint_bytes(
@@ -3900,13 +3907,27 @@ fn persist_predicate_checkpoint_bytes(
     slot_key: &[u8],
     history_incarnation: u64,
     provider_bytes: &[u8],
+    budget: &riffdb_types::exact_provider_budget_v1::ProviderBudget,
 ) -> Result<(), std::io::Error> {
-    let pending = path.with_extension("pending");
     if provider_bytes.len() > MAX_PROVIDER_CHECKPOINT_BYTES {
         return Err(std::io::Error::other("exact predicate checkpoint capacity"));
     }
-    let bytes = encode_activation_checkpoint(slot_key, history_incarnation, provider_bytes)
-        .map_err(|_| std::io::Error::other("exact predicate checkpoint integrity"))?;
+    let path_bytes = u64::try_from(path.as_os_str().as_encoded_bytes().len())
+        .ok()
+        .and_then(|bytes| bytes.checked_mul(4))
+        .and_then(|bytes| bytes.checked_add(4096))
+        .ok_or_else(|| std::io::Error::other("exact checkpoint capacity"))?;
+    let _path_work = budget
+        .reserve(path_bytes)
+        .map_err(|_| std::io::Error::other("exact checkpoint capacity"))?;
+    let bytes = checkpoint_buffers::admit_activation_checkpoint_bytes(
+        slot_key,
+        history_incarnation,
+        provider_bytes,
+        budget,
+    )
+    .map_err(|_| std::io::Error::other("exact predicate checkpoint integrity"))?;
+    let pending = path.with_extension("pending");
     let mut file = OpenOptions::new()
         .create(true)
         .truncate(true)
@@ -3931,11 +3952,12 @@ fn persist_tokenized_checkpoint(
     slot_key: &[u8],
     history_incarnation: u64,
     provider: &TokenizedTextPartitionIndexV1,
+    budget: &riffdb_types::exact_provider_budget_v1::ProviderBudget,
 ) -> Result<(), std::io::Error> {
     let provider_bytes = provider
-        .to_checkpoint_bytes()
+        .to_checkpoint_bytes_admitted_v1(budget)
         .map_err(|_| std::io::Error::other("tokenized checkpoint integrity"))?;
-    persist_predicate_checkpoint_bytes(path, slot_key, history_incarnation, &provider_bytes)
+    persist_predicate_checkpoint_bytes(path, slot_key, history_incarnation, &provider_bytes, budget)
 }
 
 fn read_checkpoint(

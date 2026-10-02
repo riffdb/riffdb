@@ -7,6 +7,30 @@ use std::sync::Arc;
 
 pub(super) type CheckpointBytes = Arc<ProviderAllocation<Vec<u8>>>;
 
+/// The encoded provider buffer is separately admitted. Reserve the complete
+/// outer allocation before copying it into the compatible activation frame.
+pub(super) fn admit_activation_checkpoint_bytes(
+    key: &[u8],
+    history_incarnation: u64,
+    provider: &[u8],
+    budget: &ProviderBudget,
+) -> Result<CheckpointBytes, RebuildFailure> {
+    if key.len() != super::SLOT_KEY_BYTES || provider.len() > super::MAX_PROVIDER_CHECKPOINT_BYTES {
+        return Err(RebuildFailure::Integrity);
+    }
+    let allowance = u64::try_from(provider.len())
+        .ok()
+        .and_then(|bytes| bytes.checked_mul(2))
+        .and_then(|bytes| bytes.checked_add(4096))
+        .ok_or(RebuildFailure::Integrity)?;
+    let work = budget
+        .reserve(allowance)
+        .map_err(|_| RebuildFailure::Transient)?;
+    let bytes = super::encode_activation_checkpoint(key, history_incarnation, provider)?;
+    work.commit_value(bytes)
+        .map_err(|_| RebuildFailure::Transient)
+}
+
 /// Length comes from the already opened file. The allocation never grows; a
 /// changed length refuses rather than permitting an unadmitted resize.
 pub(super) fn admit_checkpoint_bytes(
@@ -60,6 +84,39 @@ mod tests {
         bytes: Cursor<&'a [u8]>,
         reads: &'a Cell<u32>,
         fail: bool,
+    }
+
+    #[test]
+    fn activation_frame_admission_preserves_bytes_and_final_capture() {
+        let budget = ProviderBudget::new();
+        let key = [7_u8; super::super::SLOT_KEY_BYTES];
+        let provider = vec![3_u8; 16384];
+        let expected = super::super::encode_activation_checkpoint(&key, 9, &provider).unwrap();
+        let blocker = budget.reserve(EXACT_PROVIDER_BUDGET_BYTES - 128).unwrap();
+        assert!(matches!(
+            admit_activation_checkpoint_bytes(&key, 9, &provider, &budget),
+            Err(RebuildFailure::Transient)
+        ));
+        assert_eq!(budget.observation().unwrap().owned_bytes, 0);
+        drop(blocker);
+        let bytes = admit_activation_checkpoint_bytes(&key, 9, &provider, &budget).unwrap();
+        assert_eq!(&**bytes, &expected);
+        assert_eq!(
+            super::super::decode_activation_checkpoint(&bytes, &key, 9).unwrap(),
+            &provider
+        );
+        let capture = bytes.clone();
+        drop(bytes);
+        assert!(budget.observation().unwrap().owned_bytes >= expected.len() as u64);
+        drop(capture);
+        assert_eq!(budget.observation().unwrap().owned_bytes, 0);
+        assert_eq!(budget.observation().unwrap().reserved_bytes, 0);
+        assert!(matches!(
+            admit_activation_checkpoint_bytes(&key[..key.len() - 1], 9, &provider, &budget),
+            Err(RebuildFailure::Integrity)
+        ));
+        assert_eq!(budget.observation().unwrap().owned_bytes, 0);
+        assert_eq!(budget.observation().unwrap().reserved_bytes, 0);
     }
     impl Read for Reader<'_> {
         fn read(&mut self, output: &mut [u8]) -> IoResult<usize> {

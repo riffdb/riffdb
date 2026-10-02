@@ -1,5 +1,60 @@
 # WP-824 implementation progress
 
+## Checkpoint encoding admission
+
+All six physical formats now admit checkpoint encoding before allocating their
+temporary scalar, gram, canonical-output and wire buffers. Capacity inspection
+runs under admitted scratch, and a conservative construction allowance precedes
+the unchanged encoder. The returned immutable byte allocation retains its charge
+through the final capture. Semantic tests compare every format's exact ordinary
+bytes, and a pressure test proves refusal after sizing leaves the provider intact.
+
+Production persistence uses the same graph budget for encoded state, the
+long-pattern epoch envelope, the activation frame, and temporary filesystem path
+buffers. Each outer buffer is admitted before copying an already charged inner
+buffer. Data and path values are destroyed before their corresponding allowances;
+file write, sync, rename, directory sync, and test hooks preserve the existing
+publication sequence. Activation tests verify byte compatibility, strict decode,
+pressure refusal, invalid-key refusal, and final-reference release.
+
+Source and catalog assembly, policy and mutation scratch, query results, cursor
+and epoch protection, retirement and derived artifact cleanup remain open. This
+completes checkpoint encoding integration, not aggregate enforcement or WP-824.
+
+Validation: all 120 selected projection/provider conformance tests passed
+(524 excluded by selection), including exact-byte encoding assertions for all
+six physical formats. All 28 adapter tests and six scoped static acceptance
+checks passed, including formatting, clippy with warnings denied, handbook,
+scope, file-size, and panic allowances.
+
+PR note: Package WP-824 (open); Tier guarantee; Behavior: admit internal checkpoint
+encoding and persistence buffers; Compatibility: existing checkpoint bytes and
+publication sequence; Hazards/follow-ups: finish source ownership and retirement
+before qualification. Existing handbook transient-unavailable behavior applies;
+no application or operator control changes.
+
+## Proposed catalog capacity scope extension
+
+Requested additional allowed path: `crates/riffdb-catalog/src/**`.
+Provider source capture invokes `ActiveCatalogSnapshot::read`, which owns a
+private publication, validated bundles and enum-name tables, a complete lineage
+materialization proof, and a shared command-plan map. Those private catalog
+roots currently provide neither an exhaustive capacity inventory nor typed
+final-destruction ownership, so server-side inspection cannot complete their
+accounting through the public borrowed accessors.
+
+The concrete scope is exhaustive private catalog inventories, typed shared
+ownership bookkeeping, admitted provider catalog capture, and their tests.
+Use the existing types budget and approved contract-IR capacity helpers; retain
+all activation, lineage, migration and materialization checks, catalog cache and
+lineage ceilings, and existing ordinary read behavior. Admission pressure must
+refuse a provider capture before unadmitted allocation. No durable encoding,
+dependency, application interface, ordering, authorization or freshness change
+is proposed. The implementation must prove shared deduplication and release
+through actual final data references, preserve canonical bytes and catalog
+semantics, and test pressure, malformed evidence, cancellation and concurrent
+captures. No catalog implementation change has been made pending scope review.
+
 ## Predicate recovery and production ownership
 
 V4 and V5 production workers now retain immutable charged physical providers.
@@ -25,7 +80,7 @@ pressure follows the existing transient worker refusal; ordinary semantic
 failures keep their previous integrity or per-generation capacity mapping.
 
 Source assembly, catalog and policy scratch, delta mutation construction,
-checkpoint encoding, query results, protected cursors and retained epochs,
+query results, protected cursors and retained epochs,
 retirement, and derived artifact cleanup still require integration. All physical
 families now have admitted build/recovery paths, but this does not establish the
 complete aggregate budget or close WP-824.

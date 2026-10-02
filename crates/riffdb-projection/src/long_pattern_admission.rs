@@ -308,6 +308,9 @@ mod tests {
                 expected.checkpoint_bytes().unwrap()
             );
             let encoded = provider.checkpoint_bytes().unwrap();
+            let admitted_encoded = provider.to_checkpoint_bytes_admitted_v1(&budget).unwrap();
+            assert_eq!(&**admitted_encoded, &encoded);
+            drop(admitted_encoded);
             let recovered =
                 LongPatternPartitionV1::from_checkpoint_bytes_admitted_v1(&encoded, &budget)
                     .unwrap();
