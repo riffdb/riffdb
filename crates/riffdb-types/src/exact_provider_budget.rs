@@ -190,6 +190,72 @@ impl Reservation {
         candidate.work.commit_value(candidate.value)
     }
 
+    /// Settle trusted construction containing shared catalog/compiled data.
+    /// The caller admits its complete construction maximum, including census
+    /// scratch, before allocating. Shared roots require their actual destruction
+    /// proof and a matching graph budget; a wrapper cannot invent ownership.
+    pub fn settle_shared_value<T: crate::InspectOwnedCapacityV1>(
+        self,
+        value: T,
+    ) -> Result<Arc<ProviderAllocation<T>>, BudgetUnavailable> {
+        let mut candidate = ReservedCandidate { value, work: self };
+        let scratch = candidate
+            .work
+            .split(crate::OWNED_CAPACITY_INSPECTION_SCRATCH_BYTES_V1)?;
+        let report = crate::OwnedCapacityInspectionV1::inspect(&candidate.value)
+            .map_err(|_| BudgetUnavailable)?;
+        let inline = std::mem::size_of::<ProviderAllocation<T>>()
+            .checked_mul(2)
+            .and_then(|bytes| bytes.checked_add(2 * std::mem::align_of::<ProviderAllocation<T>>()))
+            .and_then(|bytes| bytes.checked_add(1024))
+            .and_then(|bytes| u64::try_from(bytes).ok())
+            .ok_or(BudgetUnavailable)?;
+        let root_bytes = report
+            .unshared_bytes()
+            .checked_add(inline)
+            .ok_or(BudgetUnavailable)?;
+        // Inspection bounds this array to 4096 entries; its capacity belongs to
+        // the already admitted census scratch, not to the retained candidate.
+        let mut needed = Vec::with_capacity(report.shared_allocations().len());
+        let mut total = root_bytes;
+        for allocation in report.shared_allocations() {
+            let lifecycle = allocation.lifecycle().ok_or(BudgetUnavailable)?;
+            match lifecycle.attached_owner().map_err(|_| BudgetUnavailable)? {
+                Some(owner) => validate_shared_owner(
+                    &owner,
+                    &candidate.work.budget,
+                    allocation.identity(),
+                    allocation.bytes(),
+                )?,
+                None => {
+                    total = total
+                        .checked_add(allocation.bytes())
+                        .ok_or(BudgetUnavailable)?;
+                    needed.push((allocation.identity(), allocation.bytes(), lifecycle.clone()));
+                }
+            }
+        }
+        // Refuse before any attachment if the prior construction allowance did
+        // not cover every root. Settlement never admits additional capacity.
+        if total > candidate.work.bytes {
+            return Err(BudgetUnavailable);
+        }
+        for (identity, bytes, lifecycle) in needed {
+            let proposed = candidate
+                .work
+                .split(bytes)?
+                .commit_for_allocation(identity)?;
+            let owner = lifecycle.attach(proposed).map_err(|_| BudgetUnavailable)?;
+            // Another capture may have attached first after the census. Its
+            // owner must still cover this exact allocation in this exact pool.
+            validate_shared_owner(&owner, &candidate.work.budget, identity, bytes)?;
+        }
+        drop(report);
+        drop(scratch);
+        candidate.work.retain_in_place(root_bytes)?;
+        candidate.work.commit_value(candidate.value)
+    }
+
     /// The shared allocation keeps its charge after every discovery reference
     /// has gone. Its data drops before the accounting owner.
     pub fn commit_value<T>(
@@ -380,6 +446,20 @@ impl OwnershipCharge {
     }
 }
 
+fn validate_shared_owner(
+    owner: &OwnershipCharge,
+    budget: &ProviderBudget,
+    identity: crate::SharedAllocationIdentityV1,
+    minimum: u64,
+) -> Result<(), BudgetUnavailable> {
+    if owner.belongs_to(budget) && owner.allocation() == Some(identity) && owner.bytes() >= minimum
+    {
+        Ok(())
+    } else {
+        Err(BudgetUnavailable)
+    }
+}
+
 impl Drop for OwnershipCharge {
     fn drop(&mut self) {
         let mut accounting = self
@@ -514,6 +594,197 @@ mod tests {
         );
         drop(captured);
         assert!(destroyed.load(Ordering::Acquire));
+        assert_eq!(budget.observation().unwrap().owned_bytes, 0);
+    }
+
+    struct SharedCatalogData {
+        bytes: Vec<u8>,
+        lifecycle: crate::OwnedCapacityLifecycleV1,
+    }
+    crate::inspect_owned_capacity_struct_v1!(SharedCatalogData {
+        owned: [bytes],
+        inline: [],
+        lifecycle: lifecycle
+    });
+    struct MixedCatalogCapture {
+        scratch: Vec<u8>,
+        shared: Arc<SharedCatalogData>,
+    }
+    crate::inspect_owned_capacity_struct_v1!(MixedCatalogCapture {
+        owned: [scratch, shared],
+        inline: []
+    });
+
+    #[test]
+    fn shared_settlement_retains_distinct_root_and_final_shared_data_charges() {
+        let budget = ProviderBudget::new();
+        let maximum = crate::OWNED_CAPACITY_INSPECTION_SCRATCH_BYTES_V1 + 65536;
+        let work = budget.reserve(maximum).unwrap();
+        let shared = Arc::new(SharedCatalogData {
+            bytes: Vec::with_capacity(4096),
+            lifecycle: Default::default(),
+        });
+        let first = work
+            .settle_shared_value(MixedCatalogCapture {
+                scratch: Vec::with_capacity(2048),
+                shared: shared.clone(),
+            })
+            .unwrap();
+        let shared_bytes = shared
+            .lifecycle
+            .reference()
+            .attached_owner()
+            .unwrap()
+            .unwrap()
+            .bytes();
+        assert_eq!(
+            budget.observation().unwrap().owned_bytes,
+            first.owned_bytes() + shared_bytes
+        );
+        let second = budget
+            .reserve(maximum)
+            .unwrap()
+            .settle_shared_value(MixedCatalogCapture {
+                scratch: Vec::with_capacity(2048),
+                shared: shared.clone(),
+            })
+            .unwrap();
+        assert_eq!(
+            budget.observation().unwrap().owned_bytes,
+            first.owned_bytes() + second.owned_bytes() + shared_bytes
+        );
+        let capture = first.clone();
+        drop(first);
+        drop(second);
+        assert_eq!(
+            budget.observation().unwrap().owned_bytes,
+            capture.owned_bytes() + shared_bytes
+        );
+        drop(capture);
+        assert_eq!(budget.observation().unwrap().owned_bytes, shared_bytes);
+        drop(shared);
+        let counters = budget.observation().unwrap();
+        assert_eq!(
+            (
+                counters.owned_bytes,
+                counters.reserved_bytes,
+                counters.allocations,
+                counters.reservations
+            ),
+            (0, 0, 0, 0)
+        );
+    }
+
+    #[test]
+    fn shared_settlement_checks_complete_allowance_before_attaching_and_rejects_foreign_owners() {
+        let budget = ProviderBudget::new();
+        let shared = Arc::new(SharedCatalogData {
+            bytes: Vec::with_capacity(4096),
+            lifecycle: Default::default(),
+        });
+        let small = budget
+            .reserve(crate::OWNED_CAPACITY_INSPECTION_SCRATCH_BYTES_V1 + 2048)
+            .unwrap();
+        assert!(small.settle_shared_value(shared.clone()).is_err());
+        assert!(
+            shared
+                .lifecycle
+                .reference()
+                .attached_owner()
+                .unwrap()
+                .is_none()
+        );
+        assert_eq!(budget.observation().unwrap().owned_bytes, 0);
+        assert_eq!(budget.observation().unwrap().reserved_bytes, 0);
+        let admitted = budget
+            .reserve(crate::OWNED_CAPACITY_INSPECTION_SCRATCH_BYTES_V1 + 65536)
+            .unwrap()
+            .settle_shared_value(shared.clone())
+            .unwrap();
+        let foreign = ProviderBudget::new();
+        assert!(
+            foreign
+                .reserve(crate::OWNED_CAPACITY_INSPECTION_SCRATCH_BYTES_V1 + 65536)
+                .unwrap()
+                .settle_shared_value(shared.clone())
+                .is_err()
+        );
+        assert_eq!(foreign.observation().unwrap().owned_bytes, 0);
+        assert_eq!(foreign.observation().unwrap().reserved_bytes, 0);
+        drop(admitted);
+        drop(shared);
+        assert_eq!(budget.observation().unwrap().owned_bytes, 0);
+    }
+
+    #[test]
+    fn shared_settlement_refuses_missing_destruction_proof() {
+        let budget = ProviderBudget::new();
+        let maximum = crate::OWNED_CAPACITY_INSPECTION_SCRATCH_BYTES_V1 + 65536;
+        assert!(
+            budget
+                .reserve(maximum)
+                .unwrap()
+                .settle_shared_value(Arc::new(String::with_capacity(4096)))
+                .is_err()
+        );
+        assert_eq!(budget.observation().unwrap().owned_bytes, 0);
+        assert_eq!(budget.observation().unwrap().reserved_bytes, 0);
+    }
+
+    #[test]
+    fn refused_shared_settlement_destroys_candidate_before_releasing_construction_work() {
+        use std::sync::atomic::{AtomicBool, Ordering};
+        struct ObservedCapture {
+            shared: Arc<SharedCatalogData>,
+            budget: ProviderBudget,
+            destroyed: Arc<AtomicBool>,
+        }
+        impl crate::InspectOwnedCapacityV1 for ObservedCapture {
+            fn inspect_owned_capacity(
+                &self,
+                inspection: &mut crate::OwnedCapacityInspectionV1,
+            ) -> Result<(), crate::OwnedCapacityInspectionErrorV1> {
+                let Self {
+                    shared,
+                    budget: _,
+                    destroyed: _,
+                } = self;
+                inspection.visit(shared)
+            }
+        }
+        impl Drop for ObservedCapture {
+            fn drop(&mut self) {
+                assert!(self.budget.observation().unwrap().reserved_bytes > 0);
+                self.destroyed.store(true, Ordering::Release);
+            }
+        }
+        let budget = ProviderBudget::new();
+        let shared = Arc::new(SharedCatalogData {
+            bytes: Vec::with_capacity(4096),
+            lifecycle: Default::default(),
+        });
+        let destroyed = Arc::new(AtomicBool::new(false));
+        let work = budget
+            .reserve(crate::OWNED_CAPACITY_INSPECTION_SCRATCH_BYTES_V1 + 2048)
+            .unwrap();
+        assert!(
+            work.settle_shared_value(ObservedCapture {
+                shared: shared.clone(),
+                budget: budget.clone(),
+                destroyed: destroyed.clone()
+            })
+            .is_err()
+        );
+        assert!(destroyed.load(Ordering::Acquire));
+        assert!(
+            shared
+                .lifecycle
+                .reference()
+                .attached_owner()
+                .unwrap()
+                .is_none()
+        );
+        assert_eq!(budget.observation().unwrap().reserved_bytes, 0);
         assert_eq!(budget.observation().unwrap().owned_bytes, 0);
     }
 

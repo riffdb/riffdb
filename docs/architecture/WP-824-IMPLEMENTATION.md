@@ -1,5 +1,36 @@
 # WP-824 implementation progress
 
+## Settlement of mixed catalog ownership
+
+Trusted construction can now settle one previously admitted maximum into an
+immutable value with private and shared ownership. The bounded census and
+attachment plan use scratch split from that allowance. Settlement checks all
+existing owners and the complete remaining charge before attaching anything;
+it never grows the allowance. Shared owners must identify the exact allocation
+and graph budget, including a concurrent attachment winner.
+
+The returned capture keeps its private root charge until final destruction.
+Each shared data allocation independently keeps its charge through its actual
+last reference. Cancellation and failed settlement destroy the candidate before
+releasing the remaining construction work. A catalog fixture proves publication
+identity is preserved and an escaped enum table stays charged after both wrapper
+and ordinary catalog captures are gone. Further tests prove shared deduplication,
+refusal without destruction proof, refusal of foreign owners, and allowance
+refusal before partial attachment.
+
+This settles admitted construction; it does not establish the maximum for the
+existing ordinary catalog decoder. Borrowed catalog framing, decoder and lineage
+scratch admission, source assembly and retirement remain open.
+
+PR note: Package WP-824 (open); Tier guarantee; Behavior: internal mixed ownership
+settlement; Compatibility: existing wholly owned settlement still refuses shared
+payloads, and catalog and wire semantics remain unchanged; Checks: final scoped
+validation: all 353 catalog and types tests and all six scoped static checks
+passed, including formatting, clippy with warnings denied and handbook;
+Hazards/follow-ups: complete production catalog capture
+admission. Existing handbook provider refusal documentation applies; no application
+or operator controls are added.
+
 ## Catalog shared ownership foundation
 
 The publication, validated bundle, lineage proof, active command-plan map,

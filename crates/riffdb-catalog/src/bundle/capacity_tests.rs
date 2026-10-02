@@ -193,3 +193,40 @@ fn catalog_shared_attachment_pressure_refuses_before_attaching_any_shared_root()
     assert_eq!(budget.observation().unwrap().owned_bytes, 0);
     assert_eq!(budget.observation().unwrap().reserved_bytes, 0);
 }
+
+#[test]
+fn admitted_catalog_settlement_preserves_publication_and_separate_final_capture() {
+    let budget = ProviderBudget::new();
+    let work = budget
+        .reserve(OWNED_CAPACITY_INSPECTION_SCRATCH_BYTES_V1 + 32 * 1024 * 1024)
+        .unwrap();
+    let snapshot = snapshot();
+    let capture = snapshot.clone();
+    let names = Arc::clone(snapshot.bundle().enum_variant_names());
+    let selected = work.settle_shared_value(snapshot).unwrap();
+    assert!(selected.same_publication_as(&capture));
+    let before = budget.observation().unwrap().owned_bytes;
+    let root_bytes = selected.owned_bytes();
+    assert!(before > root_bytes);
+    assert_eq!(budget.observation().unwrap().reserved_bytes, 0);
+    drop(selected);
+    assert_eq!(
+        budget.observation().unwrap().owned_bytes,
+        before - root_bytes
+    );
+    drop(capture);
+    let scratch = budget
+        .reserve(OWNED_CAPACITY_INSPECTION_SCRATCH_BYTES_V1)
+        .unwrap();
+    let report = OwnedCapacityInspectionV1::inspect(&names).unwrap();
+    let retained = report
+        .shared_allocations()
+        .iter()
+        .map(|allocation| allocation.bytes())
+        .sum::<u64>();
+    drop(report);
+    drop(scratch);
+    assert_eq!(budget.observation().unwrap().owned_bytes, retained);
+    drop(names);
+    assert_eq!(budget.observation().unwrap().owned_bytes, 0);
+}
