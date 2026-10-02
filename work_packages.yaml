@@ -28482,7 +28482,7 @@ work_packages:
     puts destination I/O on command acknowledgement.
   requirements: [OUT-001, OUT-002, STO-020, REC-001, REC-002]
   required_adrs: [ADR-0265]
-  allowed_paths: [crates/riffdb-outbox/**, crates/riffdb-server/**, crates/riffdb-config/**, crates/riffdb-storage-api/**, crates/riffdb-commit/**, crates/riffdb-cli/**, crates/riffdb-proto/**, proto/**, tests/outbox/**, fixtures/**, scripts/**, docs/**]
+  allowed_paths: [crates/riffdb-outbox/**, crates/riffdb-server/**, crates/riffdb-config/**, crates/riffdb-storage-api/**, crates/riffdb-commit/**, crates/riffdb-cli/**, crates/riffdb-proto/**, proto/**, tests/outbox/**, fixtures/**, scripts/**, docs/**, release/durable-format-manifest-v1.json]
   deliverables:
   - Versioned immutable archive records, atomic quota accounting, protected configuration, and operator inspection
   - Server-owned worker lifecycle using existing coordinator-owned claim and completion transitions
