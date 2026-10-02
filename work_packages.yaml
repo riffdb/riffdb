@@ -28560,7 +28560,7 @@ work_packages:
     authorization, captured queries, workers, and existing epoch retention obligations.
   requirements: [PRJ-001, PRJ-004, OQ-040]
   required_adrs: [ADR-0266, ADR-0130, ADR-0164, ADR-0231]
-  allowed_paths: [crates/riffdb-server/**, crates/riffdb-service/**, crates/riffdb-projection/**, crates/riffdb-query-executor/**, crates/riffdb-types/**, crates/riffdb-observability/**, tests/**, scripts/**, docs/**]
+  allowed_paths: [crates/riffdb-server/**, crates/riffdb-service/**, crates/riffdb-projection/**, crates/riffdb-query-executor/**, crates/riffdb-query-ir/src/**, crates/riffdb-query-module/src/**, crates/riffdb-policy/src/**, crates/riffdb-auth/src/**, crates/riffdb-contract-ir/src/**, crates/riffdb-types/**, crates/riffdb-observability/**, tests/**, scripts/**, docs/**]
   deliverables:
   - Shared bounded owner lifecycle, reservations, pins, and final-reference byte accounting
   - Deterministic eviction, superseded-identity retirement, safe worker cancellation, and derived-file cleanup
