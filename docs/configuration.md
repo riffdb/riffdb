@@ -575,8 +575,11 @@ catalog references. Budget pressure or incomplete ownership evidence returns the
 existing typed `Unavailable` result. Servers sharing a process share this pool;
 there is no budget configuration or application cache control. Queries and
 workers also reserve their explicit capture pins against this pool; capture
-pressure returns the same typed unavailable result. Rebuild and checkpoint
-accounting, cursor pins, retirement, and cleanup remain in progress,
+pressure returns the same typed unavailable result. Encoded checkpoint read
+buffers reserve capacity before reading and retain their charge through the last
+buffer reference. Budget pressure leaves rebuild work eligible for a later retry.
+Decoded provider and rebuild/write scratch accounting, cursor pins, retirement,
+and cleanup remain in progress,
 so this registration admission does not yet establish a complete provider memory
 bound or recycle the 256-slot limits. See the
 [implementation progress](architecture/WP-824-IMPLEMENTATION.md).

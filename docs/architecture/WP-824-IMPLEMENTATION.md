@@ -226,3 +226,24 @@ tests and eight existing skips. The final ownership follow-up passed six focused
 non-test acceptance checks. The pin allowance test failed before the guard and
 charge allocations used the inventory allowance; it now passes. Owner admission
 also precedes registration copies, preserving reservation lifetime on refusal.
+
+
+## Encoded checkpoint read admission
+
+Every provider recovery and checkpoint-reopen read now reserves a conservative
+encoded buffer allowance before allocating or reading its payload. The length
+comes from the already opened file and must fit the unchanged checkpoint ceiling.
+The read fills one fixed-capacity buffer and refuses a changed length instead of
+extending the allocation. Allocation or budget pressure remains a transient
+rebuild refusal, allowing a later retry at the same application head.
+
+The immutable buffer owns its charge through its final reference. Short, growing,
+oversized, and failed reads release only their own admission. This covers encoded
+read buffers; decoded providers, derived index reconstruction, checkpoint encoding
+scratch, and source materialization remain separate unfinished admission work.
+
+Validation: six non-test scoped acceptance checks passed. Thirty focused tests
+passed, including all adapter tests, primary/follower provider conformance across
+tail and restart, policy-dependent delta rebuilds, and checkpoint crash recovery.
+The explicit filter excluded 529 unrelated or already-disabled tests; it did not
+change the repository test configuration.

@@ -9,7 +9,7 @@ use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::error::Error;
 use std::fmt;
 use std::fs::{self, File, OpenOptions};
-use std::io::{Read, Write};
+use std::io::Write;
 use std::num::NonZeroU64;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Condvar, Mutex};
@@ -67,6 +67,8 @@ use crate::projection_read_source::ProjectionReadSource;
 
 #[path = "exact_text_catch_up.rs"]
 mod catch_up;
+#[path = "exact_provider_checkpoint_bytes.rs"]
+mod checkpoint_buffers;
 #[cfg(feature = "test-fixtures")]
 use crate::exact_text_probe::{ExactProviderTestPoint as TestPoint, observe as observe_test_point};
 use catch_up::{CapturedSource, Selected};
@@ -2100,7 +2102,7 @@ fn rebuild_long_pattern_slot(
     prior_generation: Option<ProjectionGeneration>,
 ) -> Result<Option<LongPatternProviderState>, RebuildFailure> {
     if prior_generation.is_none()
-        && let Some(bytes) = read_checkpoint(&slot.checkpoint)?
+        && let Some(bytes) = read_checkpoint(&slot.checkpoint, &runtime.ownership_graph.budget)?
         && let Ok(provider_bytes) = decode_activation_checkpoint(
             &bytes,
             &slot.registration.key(),
@@ -2567,7 +2569,7 @@ fn rebuild_slot(
     }
     let mut prior_generation = prior_generation;
     if prior_generation.is_none()
-        && let Some(bytes) = read_checkpoint(&slot.checkpoint)?
+        && let Some(bytes) = read_checkpoint(&slot.checkpoint, &runtime.ownership_graph.budget)?
         && let Ok(provider_bytes) = decode_activation_checkpoint(
             &bytes,
             &slot.registration.key(),
@@ -2641,7 +2643,8 @@ fn persist_checked_slot(
         provider,
     )
     .map_err(|_| RebuildFailure::Transient)?;
-    let reopened = read_checkpoint(&slot.checkpoint)?.ok_or(RebuildFailure::Integrity)?;
+    let reopened = read_checkpoint(&slot.checkpoint, &runtime.ownership_graph.budget)?
+        .ok_or(RebuildFailure::Integrity)?;
     let bytes = decode_activation_checkpoint(
         &reopened,
         &slot.registration.key(),
@@ -2692,7 +2695,7 @@ fn rebuild_predicate_slot(
     }
     let mut prior_generation = prior_generation;
     if prior_generation.is_none()
-        && let Some(bytes) = read_checkpoint(&slot.checkpoint)?
+        && let Some(bytes) = read_checkpoint(&slot.checkpoint, &runtime.ownership_graph.budget)?
         && let Ok(provider_bytes) = decode_activation_checkpoint(
             &bytes,
             &slot.registration.key(),
@@ -2756,7 +2759,8 @@ fn persist_checked_predicate_slot(
         provider,
     )
     .map_err(|_| RebuildFailure::Transient)?;
-    let reopened = read_checkpoint(&slot.checkpoint)?.ok_or(RebuildFailure::Integrity)?;
+    let reopened = read_checkpoint(&slot.checkpoint, &runtime.ownership_graph.budget)?
+        .ok_or(RebuildFailure::Integrity)?;
     let bytes = decode_activation_checkpoint(
         &reopened,
         &slot.registration.key(),
@@ -2778,7 +2782,7 @@ fn rebuild_tokenized_slot(
     prior_generation: Option<ProjectionGeneration>,
 ) -> Result<Option<TokenizedTextPartitionIndexV1>, RebuildFailure> {
     if prior_generation.is_none()
-        && let Some(bytes) = read_checkpoint(&slot.checkpoint)?
+        && let Some(bytes) = read_checkpoint(&slot.checkpoint, &runtime.ownership_graph.budget)?
         && let Ok(provider_bytes) = decode_activation_checkpoint(
             &bytes,
             &slot.registration.key(),
@@ -3030,7 +3034,7 @@ fn rebuild_nullable_predicate_slot(
     }
     let mut prior_generation = prior_generation;
     if prior_generation.is_none()
-        && let Some(bytes) = read_checkpoint(&slot.checkpoint)?
+        && let Some(bytes) = read_checkpoint(&slot.checkpoint, &runtime.ownership_graph.budget)?
         && let Ok(provider_bytes) = decode_activation_checkpoint(
             &bytes,
             &slot.registration.key(),
@@ -3096,7 +3100,8 @@ fn persist_checked_nullable_predicate_slot(
             .map_err(|_| RebuildFailure::Integrity)?,
     )
     .map_err(|_| RebuildFailure::Transient)?;
-    let reopened = read_checkpoint(&slot.checkpoint)?.ok_or(RebuildFailure::Integrity)?;
+    let reopened = read_checkpoint(&slot.checkpoint, &runtime.ownership_graph.budget)?
+        .ok_or(RebuildFailure::Integrity)?;
     let bytes = decode_activation_checkpoint(
         &reopened,
         &slot.registration.key(),
@@ -3788,23 +3793,26 @@ fn persist_tokenized_checkpoint(
     persist_predicate_checkpoint_bytes(path, slot_key, history_incarnation, &provider_bytes)
 }
 
-fn read_checkpoint(path: &Path) -> Result<Option<Vec<u8>>, RebuildFailure> {
+fn read_checkpoint(
+    path: &Path,
+    budget: &riffdb_types::exact_provider_budget_v1::ProviderBudget,
+) -> Result<Option<checkpoint_buffers::CheckpointBytes>, RebuildFailure> {
     let mut file = match File::open(path) {
         Ok(file) => file,
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
         Err(_) => return Err(RebuildFailure::Transient),
     };
-    let maximum =
-        u64::try_from(MAX_ACTIVATION_CHECKPOINT_BYTES).map_err(|_| RebuildFailure::Integrity)?;
-    let mut bytes = Vec::new();
-    Read::by_ref(&mut file)
-        .take(maximum.saturating_add(1))
-        .read_to_end(&mut bytes)
-        .map_err(|_| RebuildFailure::Transient)?;
-    if bytes.len() > MAX_ACTIVATION_CHECKPOINT_BYTES {
-        return Err(RebuildFailure::Integrity);
-    }
-    Ok(Some(bytes))
+    let length = file
+        .metadata()
+        .map_err(|_| RebuildFailure::Transient)?
+        .len();
+    checkpoint_buffers::admit_checkpoint_bytes(
+        &mut file,
+        length,
+        MAX_ACTIVATION_CHECKPOINT_BYTES,
+        budget,
+    )
+    .map(Some)
 }
 
 fn encode_activation_checkpoint(
