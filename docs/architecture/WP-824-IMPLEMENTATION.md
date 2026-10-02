@@ -35,3 +35,13 @@ the implementing commit; Compatibility: existing canonical keys/checkpoint bytes
 query authorization and freshness, and slot caps; Hazards/follow-ups: complete
 ownership admission and retirement before downstream qualification. Handbook:
 `docs/configuration.md` records clock refusal behavior and current limits.
+
+## Ownership foundation (test-only)
+
+The shared budget and owner primitives now have crate-run tests for reservation
+admission, cancellation, overflow, shared final-reference release, allocation
+metadata admission, and rejection of a charge from another budget. Deterministic
+capture/retire/publication schedules prove that retirement closes new admission,
+keeps captured bytes charged, and rejects obsolete publication. These modules
+remain `cfg(test)` until production preflight, snapshot/cursor pins, and cleanup
+are connected. They do not enforce the production aggregate budget yet.
