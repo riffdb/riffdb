@@ -557,3 +557,12 @@ semantics using the applied local head. Replication source-head observations onl
 report lag. Foreign database/history tokens refuse before waiting, and opaque
 cursors are local to one live process. See
 [sequence-lag health and statistics](operations/REMOTE-INGRESS.md) for both-node reporting.
+
+## Exact-provider retention clock
+
+Primary and follower servers use the same process-local monotonic clock for
+cursor expiry and exact-provider minimum retention. A failed clock sample,
+backward time, or an unrepresentable retention deadline returns the existing
+provider `Unavailable` error. There is no application or operator override.
+The existing 256-registration limit per exact-provider family still applies;
+this clock wiring alone does not enable registration retirement.

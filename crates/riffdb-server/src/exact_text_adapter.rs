@@ -38,11 +38,12 @@ use riffdb_query_ir::{
     QueryAccessKind, QueryAccessStep,
 };
 use riffdb_service::{
-    ExactPredicateProjectionPort, ExactPredicateProjectionRequest, ExactPredicateProjectionResult,
-    ExactTextProjectionPort, ExactTextProjectionPortError, ExactTextProjectionRequest,
-    ExactTextProjectionResult, ExactTextProjectionRow, LongPatternProjectionPort,
-    LongPatternProjectionRequest, NullableExactPredicateProjectionRequest,
-    TokenizedTextProjectionPort, TokenizedTextProjectionRequest,
+    CURSOR_LIFETIME, CursorMonotonicClock, CursorTick, ExactPredicateProjectionPort,
+    ExactPredicateProjectionRequest, ExactPredicateProjectionResult, ExactTextProjectionPort,
+    ExactTextProjectionPortError, ExactTextProjectionRequest, ExactTextProjectionResult,
+    ExactTextProjectionRow, LongPatternProjectionPort, LongPatternProjectionRequest,
+    NullableExactPredicateProjectionRequest, TokenizedTextProjectionPort,
+    TokenizedTextProjectionRequest,
 };
 use riffdb_storage_api::{
     AuthoritativeEntityPartitionScanRequest, AuthoritativeIndexScanPage,
@@ -86,7 +87,15 @@ const MAX_PROVIDER_CHECKPOINT_BYTES: usize =
         MAX_LONG_PATTERN_CHECKPOINT_BYTES_V1
     };
 
-type SlotKey = Vec<u8>;
+#[path = "exact_provider_key.rs"]
+mod provider_key;
+use provider_key::SlotKey;
+#[path = "exact_provider_access.rs"]
+mod provider_access;
+#[path = "exact_provider_registry.rs"]
+mod provider_registry;
+use provider_access::ProviderAccess;
+use provider_registry::{ExactProviderRegistries, RegistryEntry};
 type ExactTextSourceRow = (String, Option<CanonicalValue>, CanonicalRecord);
 type ExactTextSourceRows = BTreeMap<riffdb_types::EntityKey, ExactTextSourceRow>;
 type ExactPredicateSourceRows = Vec<ExactPredicateProviderRowV1>;
@@ -125,7 +134,7 @@ struct NullableExactPredicateRegistration {
 
 struct LongPatternRegistration {
     program: Arc<riffdb_query_ir::QueryAccessProgramV1>,
-    step: QueryAccessStep,
+    step_index: usize,
     partition_key: PartitionKey,
     partition_value: CanonicalValue,
     policy_shape: riffdb_types::ApplicationRoleHash,
@@ -133,15 +142,34 @@ struct LongPatternRegistration {
 }
 
 impl LongPatternRegistration {
-    fn from_request(request: &LongPatternProjectionRequest) -> Self {
-        Self {
+    fn from_request(
+        request: &LongPatternProjectionRequest,
+    ) -> Result<Self, ExactTextProjectionPortError> {
+        let step_index = request
+            .program()
+            .steps()
+            .iter()
+            .position(|step| step == request.step())
+            .ok_or(ExactTextProjectionPortError::Integrity)?;
+        Ok(Self {
             program: Arc::clone(request.program()),
-            step: request.step().clone(),
+            step_index,
             partition_key: request.partition_key().clone(),
             partition_value: request.partition_value().clone(),
             policy_shape: request.policy_shape(),
             row_policy: request.row_policy().cloned(),
-        }
+        })
+    }
+
+    #[expect(
+        clippy::expect_used,
+        reason = "the checked index selects one immutable compiled program step"
+    )]
+    fn step(&self) -> &QueryAccessStep {
+        self.program
+            .steps()
+            .get(self.step_index)
+            .expect("checked immutable step")
     }
 
     fn row_policy_identity(&self) -> Option<(CapabilityId, NonZeroU64)> {
@@ -151,12 +179,18 @@ impl LongPatternRegistration {
     }
 
     fn synthetic_plan_identity(&self) -> riffdb_types::QueryPlanHash {
-        let mut bytes = Vec::with_capacity(64);
-        bytes.extend_from_slice(self.program.identity().hash().as_bytes());
-        if let QueryAccessKind::LongPatternCandidate { pattern, .. } = self.step.access() {
-            bytes.extend_from_slice(pattern.descriptor().digest().as_bytes());
-        }
-        riffdb_types::QueryPlanHash::from_bytes(*hash(HashDomain::QueryPlan, &bytes).as_bytes())
+        let mut bytes = [0; 64];
+        bytes[..32].copy_from_slice(self.program.identity().hash().as_bytes());
+        let length =
+            if let QueryAccessKind::LongPatternCandidate { pattern, .. } = self.step().access() {
+                bytes[32..].copy_from_slice(pattern.descriptor().digest().as_bytes());
+                64
+            } else {
+                32
+            };
+        riffdb_types::QueryPlanHash::from_bytes(
+            *hash(HashDomain::QueryPlan, &bytes[..length]).as_bytes(),
+        )
     }
 
     fn key(&self) -> SlotKey {
@@ -170,7 +204,7 @@ impl LongPatternRegistration {
 
     fn matches(&self, request: &LongPatternProjectionRequest) -> bool {
         self.program.identity() == request.program().identity()
-            && self.step == *request.step()
+            && self.step() == request.step()
             && self.partition_key == *request.partition_key()
             && self.partition_value == *request.partition_value()
             && self.policy_shape == request.policy_shape()
@@ -671,13 +705,10 @@ pub(crate) struct ExactTextRuntime {
     predicate_root: PathBuf,
     history_incarnation: u64,
     initial_generation: ProjectionGeneration,
-    slots: Mutex<BTreeMap<SlotKey, Arc<ExactTextSlot>>>,
-    predicate_slots: Mutex<BTreeMap<SlotKey, Arc<ExactPredicateSlot>>>,
-    nullable_predicate_slots: Mutex<BTreeMap<SlotKey, Arc<NullableExactPredicateSlot>>>,
+    registries: Mutex<ExactProviderRegistries>,
+    cursor_clock: Arc<dyn CursorMonotonicClock>,
     tokenized_root: PathBuf,
-    tokenized_slots: Mutex<BTreeMap<SlotKey, Arc<TokenizedTextSlot>>>,
     long_pattern_root: PathBuf,
-    long_pattern_slots: Mutex<BTreeMap<SlotKey, Arc<LongPatternSlot>>>,
 }
 
 impl ExactTextRuntime {
@@ -686,6 +717,7 @@ impl ExactTextRuntime {
         projections_root: &Path,
         history_incarnation: u64,
         initial_generation: ProjectionGeneration,
+        cursor_clock: Arc<dyn CursorMonotonicClock>,
     ) -> Result<Arc<Self>, ExactTextRuntimeOpenError> {
         let root = projections_root.join("exact-text-v2");
         fs::create_dir_all(&root).map_err(|_| ExactTextRuntimeOpenError)?;
@@ -701,20 +733,23 @@ impl ExactTextRuntime {
             predicate_root,
             history_incarnation,
             initial_generation,
-            slots: Mutex::new(BTreeMap::new()),
-            predicate_slots: Mutex::new(BTreeMap::new()),
-            nullable_predicate_slots: Mutex::new(BTreeMap::new()),
+            registries: Mutex::new(ExactProviderRegistries::default()),
+            cursor_clock,
             tokenized_root,
-            tokenized_slots: Mutex::new(BTreeMap::new()),
             long_pattern_root,
-            long_pattern_slots: Mutex::new(BTreeMap::new()),
         }))
     }
 
     fn registered_slots(&self) -> Result<Vec<Arc<ExactTextSlot>>, ExactTextProjectionPortError> {
-        self.slots
+        self.registries
             .lock()
-            .map(|slots| slots.values().cloned().collect())
+            .map(|registries| {
+                registries
+                    .slots
+                    .values()
+                    .map(|entry| Arc::clone(&entry.slot))
+                    .collect()
+            })
             .map_err(|_| ExactTextProjectionPortError::Integrity)
     }
 
@@ -724,31 +759,48 @@ impl ExactTextRuntime {
     ) -> Result<Arc<ExactTextSlot>, ExactTextProjectionPortError> {
         let registration = ExactTextRegistration::from_request(request);
         let key = registration.key();
-        let mut slots = self
-            .slots
+        let mut registries = self
+            .registries
             .lock()
             .map_err(|_| ExactTextProjectionPortError::Integrity)?;
-        if let Some(slot) = slots.get(&key) {
-            if !slot.registration.matches(request) {
+        let (ordinal, observed) = registries.next_access(self.cursor_clock.as_ref())?;
+        let slots = &mut registries.slots;
+        if let Some(entry) = slots.get_mut(&key) {
+            if !entry.slot.registration.matches(request) {
                 return Err(ExactTextProjectionPortError::Integrity);
             }
-            return Ok(Arc::clone(slot));
+            // Validate the old obligation before extending it on this access.
+            entry.access.retention_expired_at(observed)?;
+            entry.access.touch(ordinal, observed)?;
+            return Ok(Arc::clone(&entry.slot));
         }
         if slots.len() >= MAX_REGISTERED_EXACT_PARTITIONS {
             return Err(ExactTextProjectionPortError::Unavailable);
         }
         let checkpoint = self.root.join(format!("{}.rxts", hex(&key)));
         let slot = Arc::new(ExactTextSlot::new(registration, checkpoint));
-        slots.insert(key, Arc::clone(&slot));
+        slots.insert(
+            key,
+            RegistryEntry {
+                slot: Arc::clone(&slot),
+                access: ProviderAccess::new(ordinal, observed)?,
+            },
+        );
         Ok(slot)
     }
 
     fn registered_predicate_slots(
         &self,
     ) -> Result<Vec<Arc<ExactPredicateSlot>>, ExactTextProjectionPortError> {
-        self.predicate_slots
+        self.registries
             .lock()
-            .map(|slots| slots.values().cloned().collect())
+            .map(|registries| {
+                registries
+                    .predicate_slots
+                    .values()
+                    .map(|entry| Arc::clone(&entry.slot))
+                    .collect()
+            })
             .map_err(|_| ExactTextProjectionPortError::Integrity)
     }
 
@@ -758,31 +810,48 @@ impl ExactTextRuntime {
     ) -> Result<Arc<ExactPredicateSlot>, ExactTextProjectionPortError> {
         let registration = ExactPredicateRegistration::from_request(request);
         let key = registration.key();
-        let mut slots = self
-            .predicate_slots
+        let mut registries = self
+            .registries
             .lock()
             .map_err(|_| ExactTextProjectionPortError::Integrity)?;
-        if let Some(slot) = slots.get(&key) {
-            if !slot.registration.matches(request) {
+        let (ordinal, observed) = registries.next_access(self.cursor_clock.as_ref())?;
+        let slots = &mut registries.predicate_slots;
+        if let Some(entry) = slots.get_mut(&key) {
+            if !entry.slot.registration.matches(request) {
                 return Err(ExactTextProjectionPortError::Integrity);
             }
-            return Ok(Arc::clone(slot));
+            // Validate the old obligation before extending it on this access.
+            entry.access.retention_expired_at(observed)?;
+            entry.access.touch(ordinal, observed)?;
+            return Ok(Arc::clone(&entry.slot));
         }
         if slots.len() >= MAX_REGISTERED_EXACT_PARTITIONS {
             return Err(ExactTextProjectionPortError::Unavailable);
         }
         let checkpoint = self.predicate_root.join(format!("{}.rxps", hex(&key)));
         let slot = Arc::new(ExactPredicateSlot::new(registration, checkpoint));
-        slots.insert(key, Arc::clone(&slot));
+        slots.insert(
+            key,
+            RegistryEntry {
+                slot: Arc::clone(&slot),
+                access: ProviderAccess::new(ordinal, observed)?,
+            },
+        );
         Ok(slot)
     }
 
     fn registered_nullable_predicate_slots(
         &self,
     ) -> Result<Vec<Arc<NullableExactPredicateSlot>>, ExactTextProjectionPortError> {
-        self.nullable_predicate_slots
+        self.registries
             .lock()
-            .map(|slots| slots.values().cloned().collect())
+            .map(|registries| {
+                registries
+                    .nullable_predicate_slots
+                    .values()
+                    .map(|entry| Arc::clone(&entry.slot))
+                    .collect()
+            })
             .map_err(|_| ExactTextProjectionPortError::Integrity)
     }
 
@@ -792,40 +861,63 @@ impl ExactTextRuntime {
     ) -> Result<Arc<NullableExactPredicateSlot>, ExactTextProjectionPortError> {
         let registration = NullableExactPredicateRegistration::from_request(request);
         let key = registration.key();
-        let mut slots = self
-            .nullable_predicate_slots
+        let mut registries = self
+            .registries
             .lock()
             .map_err(|_| ExactTextProjectionPortError::Integrity)?;
-        if let Some(slot) = slots.get(&key) {
-            if !slot.registration.matches(request) {
+        let (ordinal, observed) = registries.next_access(self.cursor_clock.as_ref())?;
+        let slots = &mut registries.nullable_predicate_slots;
+        if let Some(entry) = slots.get_mut(&key) {
+            if !entry.slot.registration.matches(request) {
                 return Err(ExactTextProjectionPortError::Integrity);
             }
-            return Ok(Arc::clone(slot));
+            // Validate the old obligation before extending it on this access.
+            entry.access.retention_expired_at(observed)?;
+            entry.access.touch(ordinal, observed)?;
+            return Ok(Arc::clone(&entry.slot));
         }
         if slots.len() >= MAX_REGISTERED_EXACT_PARTITIONS {
             return Err(ExactTextProjectionPortError::Unavailable);
         }
         let checkpoint = self.predicate_root.join(format!("{}.rxp5", hex(&key)));
         let slot = Arc::new(NullableExactPredicateSlot::new(registration, checkpoint));
-        slots.insert(key, Arc::clone(&slot));
+        slots.insert(
+            key,
+            RegistryEntry {
+                slot: Arc::clone(&slot),
+                access: ProviderAccess::new(ordinal, observed)?,
+            },
+        );
         Ok(slot)
     }
 
     fn registered_tokenized_slots(
         &self,
     ) -> Result<Vec<Arc<TokenizedTextSlot>>, ExactTextProjectionPortError> {
-        self.tokenized_slots
+        self.registries
             .lock()
-            .map(|slots| slots.values().cloned().collect())
+            .map(|registries| {
+                registries
+                    .tokenized_slots
+                    .values()
+                    .map(|entry| Arc::clone(&entry.slot))
+                    .collect()
+            })
             .map_err(|_| ExactTextProjectionPortError::Integrity)
     }
 
     fn registered_long_pattern_slots(
         &self,
     ) -> Result<Vec<Arc<LongPatternSlot>>, ExactTextProjectionPortError> {
-        self.long_pattern_slots
+        self.registries
             .lock()
-            .map(|slots| slots.values().cloned().collect())
+            .map(|registries| {
+                registries
+                    .long_pattern_slots
+                    .values()
+                    .map(|entry| Arc::clone(&entry.slot))
+                    .collect()
+            })
             .map_err(|_| ExactTextProjectionPortError::Integrity)
     }
 
@@ -833,24 +925,35 @@ impl ExactTextRuntime {
         &self,
         request: &LongPatternProjectionRequest,
     ) -> Result<Arc<LongPatternSlot>, ExactTextProjectionPortError> {
-        let registration = LongPatternRegistration::from_request(request);
+        let registration = LongPatternRegistration::from_request(request)?;
         let key = registration.key();
-        let mut slots = self
-            .long_pattern_slots
+        let mut registries = self
+            .registries
             .lock()
             .map_err(|_| ExactTextProjectionPortError::Integrity)?;
-        if let Some(slot) = slots.get(&key) {
-            if !slot.registration.matches(request) {
+        let (ordinal, observed) = registries.next_access(self.cursor_clock.as_ref())?;
+        let slots = &mut registries.long_pattern_slots;
+        if let Some(entry) = slots.get_mut(&key) {
+            if !entry.slot.registration.matches(request) {
                 return Err(ExactTextProjectionPortError::Integrity);
             }
-            return Ok(Arc::clone(slot));
+            // Validate the old obligation before extending it on this access.
+            entry.access.retention_expired_at(observed)?;
+            entry.access.touch(ordinal, observed)?;
+            return Ok(Arc::clone(&entry.slot));
         }
         if slots.len() >= MAX_REGISTERED_EXACT_PARTITIONS {
             return Err(ExactTextProjectionPortError::Unavailable);
         }
         let checkpoint = self.long_pattern_root.join(format!("{}.rlpv", hex(&key)));
         let slot = Arc::new(LongPatternSlot::new(registration, checkpoint));
-        slots.insert(key, Arc::clone(&slot));
+        slots.insert(
+            key,
+            RegistryEntry {
+                slot: Arc::clone(&slot),
+                access: ProviderAccess::new(ordinal, observed)?,
+            },
+        );
         Ok(slot)
     }
 
@@ -860,22 +963,33 @@ impl ExactTextRuntime {
     ) -> Result<Arc<TokenizedTextSlot>, ExactTextProjectionPortError> {
         let registration = TokenizedTextRegistration::from_request(request);
         let key = registration.key();
-        let mut slots = self
-            .tokenized_slots
+        let mut registries = self
+            .registries
             .lock()
             .map_err(|_| ExactTextProjectionPortError::Integrity)?;
-        if let Some(slot) = slots.get(&key) {
-            if !slot.registration.matches(request) {
+        let (ordinal, observed) = registries.next_access(self.cursor_clock.as_ref())?;
+        let slots = &mut registries.tokenized_slots;
+        if let Some(entry) = slots.get_mut(&key) {
+            if !entry.slot.registration.matches(request) {
                 return Err(ExactTextProjectionPortError::Integrity);
             }
-            return Ok(Arc::clone(slot));
+            // Validate the old obligation before extending it on this access.
+            entry.access.retention_expired_at(observed)?;
+            entry.access.touch(ordinal, observed)?;
+            return Ok(Arc::clone(&entry.slot));
         }
         if slots.len() >= MAX_REGISTERED_EXACT_PARTITIONS {
             return Err(ExactTextProjectionPortError::Unavailable);
         }
         let checkpoint = self.tokenized_root.join(format!("{}.rttx", hex(&key)));
         let slot = Arc::new(TokenizedTextSlot::new(registration, checkpoint));
-        slots.insert(key, Arc::clone(&slot));
+        slots.insert(
+            key,
+            RegistryEntry {
+                slot: Arc::clone(&slot),
+                access: ProviderAccess::new(ordinal, observed)?,
+            },
+        );
         Ok(slot)
     }
 }
@@ -1665,7 +1779,7 @@ fn refresh_registered_long_pattern_slots(runtime: &ExactTextRuntime) -> Result<(
         match rebuild_long_pattern_slot(runtime, &slot, head, prior_generation) {
             Ok(Some(provider)) => {
                 let QueryAccessKind::LongPatternCandidate { pattern, .. } =
-                    slot.registration.step.access()
+                    slot.registration.step().access()
                 else {
                     return Err(());
                 };
@@ -1752,11 +1866,11 @@ fn rebuild_long_pattern_partition(
     expected_head: CommitSequence,
     generation: ProjectionGeneration,
 ) -> Result<LongPatternProviderState, RebuildFailure> {
-    let QueryAccessKind::LongPatternCandidate { pattern, .. } = registration.step.access() else {
+    let QueryAccessKind::LongPatternCandidate { pattern, .. } = registration.step().access() else {
         return Err(RebuildFailure::Integrity);
     };
     let prefix = registration
-        .step
+        .step()
         .internal_entity_key_schema()
         .encode_entity_prefix(std::slice::from_ref(&registration.partition_value))
         .map_err(|_| RebuildFailure::Integrity)?;
@@ -1765,7 +1879,7 @@ fn rebuild_long_pattern_partition(
     let mut after = None;
     loop {
         let request = AuthoritativeEntityPartitionScanRequest::new(
-            registration.step.internal_entity_id(),
+            registration.step().internal_entity_id(),
             prefix.clone(),
             after,
             limit,
@@ -1797,19 +1911,19 @@ fn rebuild_long_pattern_partition(
         let query_executor = runtime.storage.query_executor();
         let admission = QueryExecutionPort::authorize_projected_candidates(
             &query_executor,
-            registration.step.internal_entity_id(),
+            registration.step().internal_entity_id(),
             &candidates,
             policy,
         )
         .map_err(|error| map_policy_admission_error(error, generation))?;
-        if !admission.covers(registration.step.internal_entity_id(), &candidate_set) {
+        if !admission.covers(registration.step().internal_entity_id(), &candidate_set) {
             return Err(RebuildFailure::Integrity);
         }
         records.retain(|key, _| admission.admits(key));
     }
     let access = registration
         .program
-        .internal_entity_access(registration.step.entity())
+        .internal_entity_access(registration.step().entity())
         .ok_or(RebuildFailure::Integrity)?;
     let field_ids = access.internal_fields().collect::<BTreeMap<_, _>>();
     let text_field = *field_ids
@@ -3231,7 +3345,7 @@ fn decode_long_pattern_release(
             .to_vec(),
     )
     .map_err(|_| ExactTextProjectionPortError::Integrity)?;
-    if key.entity_type_id() != registration.step.internal_entity_id()
+    if key.entity_type_id() != registration.step().internal_entity_id()
         || hash_entity_key(key.as_bytes()) != expected_hash
     {
         return Err(ExactTextProjectionPortError::Integrity);
@@ -3262,7 +3376,7 @@ fn decode_long_pattern_release(
     };
     let access = registration
         .program
-        .internal_entity_access(registration.step.entity())
+        .internal_entity_access(registration.step().entity())
         .ok_or(ExactTextProjectionPortError::Integrity)?;
     let mut fields = BTreeMap::new();
     for (name, field) in access.internal_fields() {
@@ -3273,7 +3387,7 @@ fn decode_long_pattern_release(
             fields.insert(name.to_owned(), record.fields()[index].1.clone());
         }
     }
-    QueryRow::checked(registration.step.entity().to_owned(), fields)
+    QueryRow::checked(registration.step().entity().to_owned(), fields)
         .ok_or(ExactTextProjectionPortError::Integrity)
 }
 
@@ -3483,24 +3597,7 @@ fn slot_key(
     policy: riffdb_types::ApplicationRoleHash,
     row_policy: Option<(CapabilityId, NonZeroU64)>,
 ) -> SlotKey {
-    let mut key = Vec::with_capacity(SLOT_KEY_BYTES);
-    key.extend_from_slice(plan.as_bytes());
-    key.extend_from_slice(partition.as_bytes());
-    key.extend_from_slice(policy.as_bytes());
-    match row_policy {
-        Some((capability, revision)) => {
-            key.push(1);
-            key.extend_from_slice(capability.as_bytes());
-            key.extend_from_slice(&revision.get().to_be_bytes());
-        }
-        None => {
-            key.push(0);
-            key.extend_from_slice(&[0; 16]);
-            key.extend_from_slice(&[0; 8]);
-        }
-    }
-    debug_assert_eq!(key.len(), SLOT_KEY_BYTES);
-    key
+    SlotKey::new(plan, partition, policy, row_policy)
 }
 
 fn hex(bytes: &[u8]) -> String {
@@ -3901,3 +3998,7 @@ mod tests {
         );
     }
 }
+
+#[cfg(test)]
+#[path = "exact_provider_clock_tests.rs"]
+mod provider_clock_tests;

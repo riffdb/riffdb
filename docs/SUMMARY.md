@@ -106,6 +106,7 @@
 
 - [System Overview](architecture/OVERVIEW.md)
 - [Sustainable TicketDesk Milestone](architecture/SUSTAINABLE-TICKETDESK.md)
+  - [Exact-provider lifecycle implementation](architecture/WP-824-IMPLEMENTATION.md)
 - [Command Execution Path](architecture/COMMAND-PATH.md)
 - [Composite Read Views](architecture/COMPOSITE-READ-VIEWS.md)
 - [Authoritative Changelog V3 Substrate](architecture/CHANGELOG-V3.md)

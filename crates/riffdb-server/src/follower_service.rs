@@ -72,11 +72,14 @@ impl RunningFollowerService {
             source,
             cleanup: None,
         })?;
+        let cursor_clock: Arc<dyn CursorMonotonicClock> =
+            Arc::new(ProductionCursorMonotonicClock::new());
         let exact_runtime = ExactTextRuntime::open(
             crate::projection_read_source::ProjectionReadSource::new(reads.clone()),
             projections_root,
             retained_metadata.history_incarnation(),
             exact_generation_from_process(&generation),
+            Arc::clone(&cursor_clock),
         )
         .map_err(|source| ProductionGraphBuildError::ExactTextRuntime {
             source,
@@ -182,7 +185,7 @@ impl RunningFollowerService {
             Arc::new(spawner.clone()),
             Arc::new(TokioRequestDeadlineScheduler),
             Arc::new(ProductionCursorTokenGenerator::new()),
-            Arc::new(ProductionCursorMonotonicClock::new()),
+            cursor_clock,
         )
         .with_query_executor(Arc::new(riffdb_query_executor::StorageQueryExecutor::new(
             reads.clone(),

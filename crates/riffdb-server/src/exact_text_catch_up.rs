@@ -302,6 +302,7 @@ query Ticket($organization_id: Ticket.organization_id, $ticket_id: Ticket.ticket
             scope.path(),
             1,
             generation,
+            Arc::new(crate::cursor::ProductionCursorMonotonicClock::new()),
         )
         .unwrap();
         let initial =
@@ -414,6 +415,7 @@ query Ticket($organization_id: Ticket.organization_id, $ticket_id: Ticket.ticket
             scope.path(),
             1,
             ProjectionGeneration::first(),
+            Arc::new(crate::cursor::ProductionCursorMonotonicClock::new()),
         )
         .unwrap();
         let captured =

@@ -725,12 +725,15 @@ impl ProductionGraphBuilder {
         let columnar_admission: Arc<dyn riffdb_service::ColumnarAdmissionPort> =
             columnar_adapter.clone();
         let vector_projection: Arc<dyn riffdb_service::VectorProjectionPort> = columnar_adapter;
+        let cursor_clock: Arc<dyn CursorMonotonicClock> =
+            Arc::new(ProductionCursorMonotonicClock::new());
         let initial_exact_generation = exact_generation_from_process(&server_generation);
         let exact_runtime = match ExactTextRuntime::open(
             storage.projection_reads(),
             &projections_root,
             retained_metadata.history_incarnation(),
             initial_exact_generation,
+            Arc::clone(&cursor_clock),
         ) {
             Ok(runtime) => runtime,
             Err(source) => {
@@ -816,8 +819,6 @@ impl ProductionGraphBuilder {
             Arc::new(TokioRequestDeadlineScheduler);
         let cursor_tokens: Arc<dyn CursorTokenGenerator> =
             Arc::new(ProductionCursorTokenGenerator::new());
-        let cursor_clock: Arc<dyn CursorMonotonicClock> =
-            Arc::new(ProductionCursorMonotonicClock::new());
         let migration = maintenance.migration_coordinator(&blocking, storage.clone());
         let offline_maintenance = maintenance.coordinator(&blocking);
         let installation = Arc::new(ServerApplicationInstallationCoordinator::new(

@@ -171,7 +171,9 @@ impl CursorTick {
         Ok(Self(nanos))
     }
 
-    fn checked_add(self, duration: Duration) -> Option<Self> {
+    /// Checked lease deadline using this same process-local clock origin.
+    #[doc(hidden)]
+    pub fn checked_add(self, duration: Duration) -> Option<Self> {
         let nanos = u64::try_from(duration.as_nanos()).ok()?;
         self.0.checked_add(nanos).map(Self)
     }
@@ -211,7 +213,7 @@ impl fmt::Display for CursorClockError {
 
 impl Error for CursorClockError {}
 
-/// Injected synchronous monotonic clock used only for cursor expiry.
+/// Injected synchronous monotonic clock for cursor expiry and provider retention.
 pub trait CursorMonotonicClock: Send + Sync {
     /// Returns a tick relative to this process's private origin.
     fn now(&self) -> Result<CursorTick, CursorClockError>;
