@@ -2,6 +2,8 @@
 
 mod archive_private;
 mod archive_private_graph;
+mod background_history;
+pub(crate) use background_history::ValidatedPrefixRefreshState;
 mod command_history;
 mod promotion;
 pub(crate) use archive_private::validate_private_archive;
@@ -292,6 +294,7 @@ pub(crate) fn begin_background_scrub_on_shared(
         session,
         rows_walked: 0,
         retained_history_validated: false,
+        catalog_history_validated: false,
     })
 }
 
@@ -301,6 +304,7 @@ pub struct RedbBackgroundScrubSession {
     session: RedbStructuralEvidenceSession,
     rows_walked: u64,
     retained_history_validated: bool,
+    catalog_history_validated: bool,
 }
 
 impl RedbBackgroundScrubSession {
@@ -320,24 +324,6 @@ impl RedbBackgroundScrubSession {
     #[must_use]
     pub const fn source_catalog_v2(&self) -> bool {
         self.session.v2_source
-    }
-
-    /// Validates the complete retained V3 history over the pinned snapshot,
-    /// including the exhaustive retained-fence scan. It must succeed before
-    /// the scrub can finish; a failure is the one scrub outcome that puts a V2
-    /// source's authority in doubt (ADR-0260 Decision 4).
-    pub fn validate_retained_history(&mut self) -> Result<(), StorageError> {
-        let transaction = self
-            .session
-            .validation_read
-            .as_ref()
-            .ok_or_else(invariant)?;
-        if crate::changelog_v3_roots::read_checkpoint_roots(transaction)?.is_some() {
-            crate::changelog_v3_roots::validate_retained_history(transaction)?
-                .ok_or_else(corrupt)?;
-        }
-        self.retained_history_validated = true;
-        Ok(())
     }
 
     /// Reads the next bounded structural page. Empty findings advance the
@@ -389,6 +375,7 @@ impl RedbBackgroundScrubSession {
         rows_per_step: EvidencePageLimit,
         proceed: impl FnMut() -> bool,
     ) -> Result<RedbHistoricalEvidenceEnd, StorageError> {
+        self.catalog_history_validated = false;
         let mut view = ScrubCatalogView {
             session: &mut self.session,
             rows_per_step,
@@ -405,6 +392,7 @@ impl RedbBackgroundScrubSession {
         if !matches!(catalog, CatalogHistoryOutcome::Ready(_)) {
             return Err(storage_error(StorageErrorKind::IncompatibleFormat));
         }
+        self.catalog_history_validated = true;
         Ok(historical_end)
     }
 
@@ -1905,6 +1893,17 @@ impl RedbStructuralEvidenceSession {
         structural_end: RedbStructuralEvidenceEnd,
         historical_end: RedbHistoricalEvidenceEnd,
     ) -> Result<(), StorageError> {
+        self.verify_background_completion(&structural_end, &historical_end)?;
+        self.historical_tables = None;
+        self.validation_read = None;
+        Ok(())
+    }
+
+    fn verify_background_completion(
+        &self,
+        structural_end: &RedbStructuralEvidenceEnd,
+        historical_end: &RedbHistoricalEvidenceEnd,
+    ) -> Result<(), StorageError> {
         self.check_cancellation()?;
         if self.purpose != EvidenceOpenPurpose::BackgroundScrub
             || self.lease.is_some()
@@ -1921,8 +1920,6 @@ impl RedbStructuralEvidenceSession {
         {
             return Err(storage_error(StorageErrorKind::CorruptData));
         }
-        self.historical_tables = None;
-        self.validation_read = None;
         Ok(())
     }
 

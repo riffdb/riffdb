@@ -206,6 +206,54 @@ fn production_retention_lane_releases_receipts_then_retires_extent_after_reader_
         AdmissionLookupResultV1::Found(_)
     ));
     assert_committed(&ports, 5);
+    lane.refresh_validated_prefix(
+        startup_inputs(),
+        std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
+    )
+    .unwrap();
+    drop(lane);
+    drop(ports);
+    drop(schedule);
+
+    // No clean-close ceremony: after pruning, the rebuilt optional evidence
+    // must support bounded dirty readiness and an actual next durable write.
+    let store = RedbStore::open(&path.0).unwrap();
+    let mut session = store.begin_structural_evidence(startup_inputs()).unwrap();
+    assert!(
+        session.bounded_dirty_startup_path(),
+        "refresh must avoid population validation before readiness"
+    );
+    let mut cursor =
+        StructuralEvidenceCursor::start(session.database_id(), session.open_session_id());
+    let structural = loop {
+        match session
+            .read_structural_evidence(cursor, EvidencePageLimit::new(64).unwrap())
+            .unwrap()
+        {
+            StructuralEvidencePage::Page { findings, next, .. } => {
+                assert!(findings.is_empty());
+                cursor = next;
+            }
+            StructuralEvidencePage::ExactEnd(end) => break end,
+        }
+    };
+    let (_, historical) = riffdb_catalog::validate_catalog_history(&mut session)
+        .unwrap()
+        .into_parts();
+    let StructuralOpenOutcome::Clean(opened) = session.finish(structural, historical).unwrap()
+    else {
+        panic!("refreshed source must open cleanly");
+    };
+    let (_, _, _, dormant) = opened.into_parts();
+    let ports = dormant.into_operational_after_catalog_validation().unwrap();
+    commit_command_group(&ports, &[command_fixture_at(6)]);
+    assert_committed(&ports, 6);
+    assert!(matches!(
+        ports
+            .lookup_admission(command_fixture_at(1).candidates)
+            .unwrap(),
+        AdmissionLookupResultV1::Found(_)
+    ));
 }
 
 fn complete_checkpoint(

@@ -27,6 +27,9 @@ use riffdb_storage_api::{
 mod transaction;
 use transaction::Barrier;
 pub(crate) use transaction::ControlWrite;
+#[path = "changelog_source_prefix_refresh.rs"]
+mod prefix_refresh;
+pub(crate) use prefix_refresh::{PendingPrefixRefresh, PrefixRefreshPublication};
 #[path = "replication_administration_write.rs"]
 mod administration;
 #[path = "changelog_bootstrap_attachment.rs"]
@@ -358,6 +361,10 @@ impl ReplicationSourceControl {
             removed,
             capture_us.saturating_add(elapsed_us(start, std::time::Instant::now())),
         ))
+    }
+
+    pub(crate) fn receipt_validation_pending(&self) -> bool {
+        self.online_validation.is_some()
     }
 
     fn reclaim_at_barrier(&mut self, barrier: Barrier) -> Result<bool, Refusal> {

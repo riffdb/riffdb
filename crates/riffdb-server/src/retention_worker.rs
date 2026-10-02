@@ -219,6 +219,7 @@ impl RetentionLaneStatus {
             (&mut total.extent_reader_holds, phases.extent_reader_holds),
             (&mut total.reclaimed_receipts, phases.reclaimed_receipts),
             (&mut total.receipt_gate_us, phases.receipt_gate_us),
+            (&mut total.prefix_gate_us, phases.prefix_gate_us),
             (&mut total.gate_wait_us, phases.gate_wait_us),
             (&mut total.drain_us, phases.drain_us),
             (&mut total.plan_us, phases.plan_us),
@@ -271,10 +272,12 @@ struct LaneSignals {
 struct LaneControl {
     signals: Mutex<LaneSignals>,
     changed: Condvar,
+    cancellation: Arc<std::sync::atomic::AtomicBool>,
 }
 
 impl LaneControl {
     fn stop(&self) {
+        self.cancellation.store(true, Ordering::Release);
         let mut signals = self
             .signals
             .lock()
@@ -347,6 +350,7 @@ impl RunningRetentionLane {
         config: RetentionConfig,
         lane: RedbOnlineRetentionLane,
         failure: RetentionLaneFailureSinks,
+        validation_inputs: riffdb_storage_api::StartupValidationInputs,
     ) -> Result<Self, std::io::Error> {
         let control = Arc::new(LaneControl::default());
         let RetentionTarget::RetainSequences(retain) = config.target() else {
@@ -362,6 +366,7 @@ impl RunningRetentionLane {
         let budget = config.sequences_per_epoch();
         let thread = thread::Builder::new()
             .name("riffdb-retention".to_owned())
+            .stack_size(384 * 1024)
             .spawn(move || {
                 run_lane(
                     &lane,
@@ -370,6 +375,7 @@ impl RunningRetentionLane {
                     &worker_control,
                     &worker_status,
                     &failure,
+                    &validation_inputs,
                 );
             })?;
         Ok(Self {
@@ -420,9 +426,11 @@ fn run_lane(
     control: &LaneControl,
     status: &RetentionLaneStatus,
     sinks: &RetentionLaneFailureSinks,
+    validation_inputs: &riffdb_storage_api::StartupValidationInputs,
 ) {
     let mut after_checkpoint = false;
     loop {
+        std::thread::yield_now();
         if control.stop_requested() {
             status.set(RetentionLaneState::Cancelled);
             return;
@@ -432,8 +440,10 @@ fn run_lane(
         let checkpoints_seen = lane.journal_checkpoints_finished();
         let woke_on_checkpoint = std::mem::take(&mut after_checkpoint);
         let mut await_checkpoint = false;
-        let (pause, gate_held) = match lane.step_timed(retain, budget, woke_on_checkpoint) {
+        let receipt_validation_pending;
+        let (pause, mut gate_held) = match lane.step_timed(retain, budget, woke_on_checkpoint) {
             Ok((step, phases)) => {
+                receipt_validation_pending = phases.receipt_validation_pending;
                 status.note_phases(&phases);
                 let pause = match step {
                     OnlineRetentionStep::Advanced { sequences, .. } => {
@@ -458,13 +468,21 @@ fn run_lane(
                         status.note_hold(0);
                         status.note_fence(None);
                         status.set(RetentionLaneState::Idle);
-                        RETENTION_LANE_RECHECK
+                        if receipt_validation_pending {
+                            Duration::ZERO
+                        } else {
+                            RETENTION_LANE_RECHECK
+                        }
                     }
                     OnlineRetentionStep::Held(OnlineRetentionHold::Fenced(binding)) => {
                         status.note_hold(1);
                         status.note_fence(Some(binding));
                         status.set(RetentionLaneState::Fenced);
-                        RETENTION_LANE_RECHECK
+                        if receipt_validation_pending {
+                            Duration::ZERO
+                        } else {
+                            RETENTION_LANE_RECHECK
+                        }
                     }
                 };
                 (pause, Duration::from_micros(phases.gate_held_us()))
@@ -485,6 +503,40 @@ fn run_lane(
                 return;
             }
         };
+        if !receipt_validation_pending
+            && matches!(
+                status.state(),
+                RetentionLaneState::Idle | RetentionLaneState::Fenced
+            )
+        {
+            match lane.refresh_validated_prefix(
+                validation_inputs.clone(),
+                Arc::clone(&control.cancellation),
+            ) {
+                Ok(held_us) => {
+                    gate_held = gate_held.saturating_add(Duration::from_micros(held_us));
+                    status.note_phases(&OnlineRetentionPhases {
+                        prefix_gate_us: held_us,
+                        ..OnlineRetentionPhases::default()
+                    });
+                }
+                Err(_) if control.stop_requested() => {
+                    status.set(RetentionLaneState::Cancelled);
+                    return;
+                }
+                Err(_) => {
+                    if let Ok(incident) = sinks.incident_ids.next_incident_id() {
+                        sinks.diagnostics.record_internal(InternalError::new(
+                            incident,
+                            DefectScope::Process,
+                            RetentionLaneRefused,
+                        ));
+                    }
+                    status.set(RetentionLaneState::Refused);
+                    return;
+                }
+            }
+        }
         // Rest in proportion to the time the attempt held the writer gate,
         // never less than the outcome's own recheck interval.
         let rest = gate_held

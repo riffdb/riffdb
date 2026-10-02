@@ -54,11 +54,21 @@ readiness are unaffected, and later writes run at normal speed.
 
 Complete startup validation is still used when those bounded-recovery
 preconditions do not hold: a database with no loadable validated-prefix
-checkpoint (such as its first start, or the first start after an online
-retention step deleted it) or without an active, current
+checkpoint (such as its first start, or a restart after online retention
+deleted it and before a complete background refresh published its replacement)
+or without an active, current
 durable-format registry, and a follower start without a valid clean-close
 certificate. A mismatch in a bound root fails closed. None of these cases asks
 the operator to classify the preceding shutdown.
+
+With sequence retention enabled, maintenance can rebuild the deleted optional
+checkpoint from a complete pinned structural, catalog, and retained-history
+validation. Publication refuses a changed history binding and yields to busy
+writers or unfinished checkpoints. It does not reuse the invalidated proof or
+force a journal drain. A published replacement permits bounded dirty recovery;
+an absent replacement retains complete validation. See [retention configuration](../configuration.md)
+for the maintenance bounds. The sustainable TicketDesk milestone separately
+measures the first successful write after restart.
 
 ## Assurance boundary
 

@@ -177,7 +177,7 @@ retirement, and WP-825/WP-826 own the real workload and uninterrupted rehearsal.
 ## WP-823 source-reclamation implementation and PR note
 
 Package: WP-823, still open. Tier: guarantee, implementing accepted ADR-0265
-decisions 8–9 and the receipt portion of decision 11.
+decisions 8–10 and the receipt portion of decision 11.
 
 Behavior added: the production retention lane retains one source-control owner
 across checkpoint observations. Complete immutable history and source evidence
@@ -205,16 +205,52 @@ and proves retirement after release while retaining idempotent outcomes and the
 latest command. The first scoped run exposed an extent-sealing race in that
 integration test. Admission now yields while sealing is unfinished, and the
 fixture explicitly joins the actual sealer. The eight-test online regression
-subset and corrected integration test pass; scoped acceptance is being rerun.
+subset and corrected integration test pass. The full rerun passed 1,644 of
+1,647 tests. The remaining failures exposed an outdated gate-time assertion,
+a catalog/storage architecture-boundary violation in the next implementation
+slice, and a vector-health test's assumption about background worker readiness.
+The assertion now separates receipt time; storage retains only private completion
+flags rather than catalog proof objects; the vector test explicitly observes
+projection readiness before asserting aggregate vector health. Individual
+regressions pass. The next scoped run passes all 1,655 storage/server tests and
+all seven acceptance steps, including Clippy, handbook checks, file-size guards,
+and panic allowances. Full repository CI is being run for this slice.
 This is not a closure receipt.
+
+The next slice rebuilds optional validated-prefix evidence through the production
+maintenance lane. A sealed private candidate requires all three complete passes
+on the scrub's original immutable pin. Planning runs off gate. Publication uses
+the existing Immediate receipt owner, refuses changed history, unfinished sealing,
+a journal suffix, queued writers, or cancellation, and never overwrites newer
+evidence from a stale snapshot. Shutdown cancels at page boundaries and joins
+the bounded-stack maintenance thread before writer close. The maintenance lane
+yields between receipt-validation pages instead of imposing its idle recheck
+interval on every page; writer occupancy still determines maintenance rest.
+Seven private completion/publication tests cover exact ends, original-pin
+preservation, cancellation, writer admission, stale-candidate refusal, and
+one-time maintenance publication. Four process-kill edges preserve either the
+original state or one complete receipted checkpoint across repeated reopen.
+The composed extent test now also rebuilds the checkpoint after pruning,
+restarts without a clean-close ceremony through bounded dirty validation,
+and verifies the next durable command and retained original outcome.
+
+Implementation choices: use 64-row scrub pages, a 384-KiB maintenance stack,
+the existing sampled startup inventories, private completion flags at the
+catalog/storage boundary, and the existing checkpoint encoding and Immediate
+publication owner. Require unchanged complete history for this initial
+candidate admission. Account pin capture and publication in maintenance pacing;
+continue receipt pages between explicit yields when a pass remains incomplete.
 
 Compatibility: durable record formats, command sequencing, authorization,
 idempotency, resume anchors, and existing extent retirement machinery are
 unchanged. Updated handbook pages: [configuration](../configuration.md) and
 this milestone page, both already reachable from `SUMMARY.md`.
+The [startup integrity](../operations/STARTUP-INTEGRITY.md) handbook page also
+distinguishes a missing checkpoint from a completely validated replacement.
 
-Hazards and follow-ups: validated-prefix refresh and recovery to a successful
-write remain unimplemented in this package. Busy-workload progress, repeated
+Hazards and follow-ups: validated-prefix refresh has initial production wiring;
+recovery to a successful write after pruning remains to be proved. Busy-workload
+progress, repeated
 physical generations, and the campaign gates remain unqualified. A stale
 candidate is discarded rather than allowed to authorize deletion. No measured
 rehearsal or alpha qualification is claimed.

@@ -17,6 +17,9 @@ use super::*;
 use crate::store::{RedbOperationalPorts, WriteBeginTiming, elapsed_us};
 use crate::transient::TransientIndexDelta;
 
+#[path = "online/prefix_refresh.rs"]
+mod prefix_refresh;
+
 /// A busy database's lane steps only while at most this many journaled
 /// transitions await materialization, which is shortly after each background
 /// checkpoint, so a step never drains a large suffix under the writer gate.
@@ -68,6 +71,10 @@ pub struct OnlineRetentionPhases {
     pub reclaimed_receipts: u64,
     /// Under the gate: drained-root source-receipt reclamation.
     pub receipt_gate_us: u64,
+    /// Another bounded off-gate receipt page remains before exact end.
+    pub receipt_validation_pending: bool,
+    /// Under the gate: validated-prefix pin capture and publication.
+    pub prefix_gate_us: u64,
     /// Waiting for the first-come writer gate.
     pub gate_wait_us: u64,
     /// Under the gate: maintenance setup and any direct-path journal drain.
@@ -90,6 +97,7 @@ impl OnlineRetentionPhases {
     pub const fn gate_held_us(&self) -> u64 {
         self.drain_us
             .saturating_add(self.receipt_gate_us)
+            .saturating_add(self.prefix_gate_us)
             .saturating_add(self.plan_us)
             .saturating_add(self.digest_us)
             .saturating_add(self.materialize_us)
@@ -179,11 +187,13 @@ impl RedbOnlineRetentionLane {
         phases.recycled_extents = reclamation.recycled;
         phases.extent_reference_holds = reclamation.held_references;
         phases.extent_reader_holds = reclamation.held_readers;
-        let (removed, held_us) = self
+        let mut source_control = self
             .source_control
             .lock()
-            .map_err(|_| storage_error(StorageErrorKind::InvariantViolation))?
-            .reclaim_history_online()?;
+            .map_err(|_| storage_error(StorageErrorKind::InvariantViolation))?;
+        let (removed, held_us) = source_control.reclaim_history_online()?;
+        phases.receipt_validation_pending = source_control.receipt_validation_pending();
+        drop(source_control);
         phases.reclaimed_receipts = removed;
         phases.receipt_gate_us = held_us;
         let (journal_sequence, suffix_transitions) = self.shared.journal_suffix_activity()?;

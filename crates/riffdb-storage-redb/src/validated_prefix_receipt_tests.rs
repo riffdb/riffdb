@@ -5,6 +5,7 @@ use riffdb_storage_api::{
     AuthoritativeNamespaceV1 as N, AuthoritativeTransactionV3, ChangelogAttributionV3,
     ChangelogLineageV3, LeadershipEpochV1,
 };
+use std::sync::Arc;
 
 fn initialized(path: &std::path::Path) -> crate::store::RedbStore {
     initialized_with_controller(path, None)
@@ -337,6 +338,23 @@ fn prefix_checkpoint_receipt_process_child() {
         return;
     };
     let store = initialized(std::path::Path::new(&path));
+    if std::env::var("RIFFDB_V3_PREFIX_ONLINE").as_deref() == Ok("true") {
+        let ports = crate::RedbOperationalPorts {
+            shared: Arc::clone(&store.shared),
+        };
+        let key =
+            riffdb_storage_api::ReadableDigestKey::v1(riffdb_types::DigestKeyId::new(1).unwrap());
+        let inputs = riffdb_storage_api::StartupValidationInputs::new(
+            riffdb_types::Timestamp::new(1_700_000_000, 0).unwrap(),
+            riffdb_storage_api::ReadableCapabilityDigestInventory::new(vec![key]).unwrap(),
+            riffdb_storage_api::ReadableIdempotencyDigestInventory::new(vec![key]).unwrap(),
+        );
+        ports
+            .online_retention_lane()
+            .refresh_validated_prefix(inputs, Arc::new(std::sync::atomic::AtomicBool::new(false)))
+            .unwrap();
+        panic!("the requested online checkpoint crash edge was not reached");
+    }
     if std::env::var("RIFFDB_V3_PREFIX_INVALID").as_deref() == Ok("true") {
         let write = store.shared.database.begin_write().unwrap();
         write
@@ -363,15 +381,21 @@ fn prefix_checkpoint_receipt_process_child() {
 
 #[test]
 fn actual_prefix_checkpoint_crashes_preserve_original_or_complete_receipted_proof() {
-    checkpoint_crashes(false);
+    checkpoint_crashes(false, false);
 }
 
 #[test]
 fn invalid_optional_checkpoint_crashes_preserve_exact_preimage_or_atomic_replacement() {
-    checkpoint_crashes(true);
+    checkpoint_crashes(true, false);
 }
 
-fn checkpoint_crashes(invalid: bool) {
+// req: STO-032, REC-001, REC-002, REC-005
+#[test]
+fn online_prefix_refresh_crashes_preserve_original_or_complete_validated_receipt() {
+    checkpoint_crashes(false, true);
+}
+
+fn checkpoint_crashes(invalid: bool, online: bool) {
     for edge in ["mutations", "receipt", "roots", "committed"] {
         let scope = crate::test_path::ScopedDirectory::new("v3-prefix-crash");
         let path = scope.join("db.redb");
@@ -383,6 +407,7 @@ fn checkpoint_crashes(invalid: bool) {
             ])
             .env("RIFFDB_V3_PREFIX_PATH", &path)
             .env("RIFFDB_V3_PREFIX_INVALID", invalid.to_string())
+            .env("RIFFDB_V3_PREFIX_ONLINE", online.to_string())
             .env("RIFFDB_V3_DIRECT_EDGE", edge)
             .status()
             .unwrap();

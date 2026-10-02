@@ -800,15 +800,33 @@ async fn remote_generated_vector_client_writes_inspects_and_queries_exact_projec
         ));
     }
 
-    let health = bounded_rpc(
-        "vector health after generated write",
-        administration.health(
-            v1::HealthRequest {
-                request_id: Some(fresh_request_id_bytes()?),
-            },
-            &metadata,
-        ),
-    )
+    // Exact query freshness fences its provider, whereas aggregate vector
+    // health also depends on both background projection workers. Observe
+    // their readiness explicitly rather than assuming a scheduling order.
+    let health = bounded_rpc("projection workers after generated write", async {
+        loop {
+            let health = administration
+                .health(
+                    v1::HealthRequest {
+                        request_id: Some(fresh_request_id_bytes()?),
+                    },
+                    &metadata,
+                )
+                .await?;
+            let Some(v1::health_response::Result::Authenticated(report)) = health.result.as_ref()
+            else {
+                return Err(test_failure(
+                    "projection readiness omitted authenticated Health",
+                ));
+            };
+            if component_status(report, v1::HealthComponentKind::Projection)?
+                == v1::HealthComponentStatus::Healthy
+            {
+                return Ok::<_, Box<dyn std::error::Error + Send + Sync>>(health);
+            }
+            tokio::task::yield_now().await;
+        }
+    })
     .await?;
     let Some(v1::health_response::Result::Authenticated(report)) = health.result.as_ref() else {
         return Err(test_failure(

@@ -164,7 +164,7 @@ impl Barrier {
     }
 }
 
-fn drained_for_validation(shared: &SharedRedb) -> Result<bool, StorageError> {
+pub(super) fn drained_for_validation(shared: &SharedRedb) -> Result<bool, StorageError> {
     if shared.async_checkpoint_in_flight()? || shared.journal_suffix_activity()?.1 != 0 {
         return Ok(false);
     }

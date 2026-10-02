@@ -60,8 +60,10 @@ pub(crate) mod changelog_lifecycle;
 
 #[path = "store_changelog_source_control.rs"]
 mod changelog_source_control;
-pub(crate) use changelog_source_control::ControlWrite;
 pub(crate) use changelog_source_control::ReplicationSourceControl;
+pub(crate) use changelog_source_control::{
+    ControlWrite, PendingPrefixRefresh, PrefixRefreshPublication,
+};
 
 #[path = "store_v3_layout.rs"]
 pub(crate) mod v3_layout;

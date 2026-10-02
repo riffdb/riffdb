@@ -104,6 +104,12 @@ impl CheckpointRoot {
         self.identity
     }
 
+    /// Returns an exclusively owned immutable pin after its bounded walk.
+    /// Cached handles are dropped; no newer transaction is substituted.
+    pub(crate) fn into_transaction(self) -> ReadTransaction {
+        self.transaction
+    }
+
     /// Resolves the snapshot-visible application frontier once per snapshot.
     ///
     /// `derive` is the complete uncached derivation, authority-presence check

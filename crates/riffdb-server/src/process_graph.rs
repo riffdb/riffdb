@@ -1003,7 +1003,7 @@ impl ProductionGraphBuilder {
         // background scrub driving the complete exact-end validation over a
         // least-authority MVCC reader. It holds no mutation lease, advances
         // under its rows-per-step bound, and is cancelled by shutdown.
-        let scrub_worker = {
+        let (scrub_worker, retention_validation_inputs) = {
             let capability_inventory = riffdb_storage_api::ReadableCapabilityDigestInventory::new(
                 capability_keys
                     .readable_key_ids()
@@ -1016,13 +1016,14 @@ impl ProductionGraphBuilder {
                 capability_inventory,
                 scrub_idempotency_digests,
             );
-            crate::scrub_worker::RunningScrubWorker::start(
+            let worker = crate::scrub_worker::RunningScrubWorker::start(
                 storage.shared_read_ports(),
-                scrub_inputs,
+                scrub_inputs.clone(),
                 scrub_status,
                 scrub_failure,
             )
-            .map_err(|_| ProductionGraphBuildError::CurrentView)?
+            .map_err(|_| ProductionGraphBuildError::CurrentView)?;
+            (worker, scrub_inputs)
         };
         // ADR-0182 sections 6 and 7: the online retention lane, driven only
         // by this database's configuration. Its handle runs retention steps
@@ -1033,6 +1034,7 @@ impl ProductionGraphBuilder {
                 .online_retention_lane()
                 .map_err(|_| ProductionGraphBuildError::CurrentView)?,
             retention_failure,
+            retention_validation_inputs,
         )
         .map_err(|_| ProductionGraphBuildError::CurrentView)?;
         let outbox_worker = outbox_destination.map(|config| {

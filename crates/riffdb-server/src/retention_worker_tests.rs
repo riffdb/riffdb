@@ -143,6 +143,7 @@ fn retention_lane_states_are_closed_and_shutdown_cancels_the_lane() {
         RetentionConfig::default(),
         ports.online_retention_lane(),
         sinks(&diagnostics),
+        inputs(),
     )
     .expect("start held lane");
     assert!(lane.thread.is_none(), "a hold starts no lane thread");
@@ -158,6 +159,7 @@ fn retention_lane_states_are_closed_and_shutdown_cancels_the_lane() {
         retaining(1),
         ports.online_retention_lane(),
         sinks(&diagnostics),
+        inputs(),
     )
     .expect("start idle lane");
     await_state(&lane, RetentionLaneState::Idle);
@@ -173,11 +175,16 @@ fn retention_lane_states_are_closed_and_shutdown_cancels_the_lane() {
         );
         thread::yield_now();
     }
+    let phases = lane.observation().phases;
     assert_eq!(
-        lane.observation().phases.gate_held_us(),
+        phases
+            .gate_held_us()
+            .saturating_sub(phases.receipt_gate_us)
+            .saturating_sub(phases.prefix_gate_us),
         0,
-        "planning at the target never takes the writer gate"
+        "logical planning at the target never takes the writer gate; receipt pin capture is counted separately"
     );
+    assert_eq!(phases.reclaimed_receipts, 0);
     assert_eq!(lane.shutdown(), RetentionLaneState::Cancelled);
     assert_eq!(
         lane.observation(),
@@ -203,6 +210,7 @@ fn retention_lane_states_are_closed_and_shutdown_cancels_the_lane() {
         retaining(1),
         ports.online_retention_lane(),
         sinks(&diagnostics),
+        inputs(),
     )
     .expect("start refused lane");
     await_state(&lane, RetentionLaneState::Refused);

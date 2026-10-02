@@ -197,6 +197,17 @@ records `removed` receipts and `gate_us`; that time participates in the lane's
 existing writer-occupancy pacing. Receipt removal does not prove that an extent
 was deleted or reused.
 
+After retention invalidates optional validated-prefix startup evidence, the
+maintenance lane can rebuild it from a complete structural, catalog-semantic,
+and retained-history scrub on one pinned snapshot. Each validation page contains
+at most 64 rows and observes shutdown cancellation. Population validation and
+checkpoint planning run outside the writer gate. Publication requires the exact
+unchanged history binding and a drained, sealed checkpoint; otherwise the
+candidate is discarded. The lane never reuses deleted evidence or forces a
+journal drain to publish it. Pin capture and publication participate in the
+existing maintenance pacing. Sustained-load recovery remains subject to the
+milestone's first-successful-write rehearsal gate.
+
 Pruned history stays auditable. A pruned command keeps its outcome and
 provenance, so its idempotent retry answers the original result. Reads of its
 events or commit, and commit scans that start at or below the watermark,
