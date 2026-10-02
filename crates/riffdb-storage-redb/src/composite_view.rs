@@ -10,6 +10,9 @@
 
 use std::sync::{Arc, OnceLock, RwLock};
 
+#[path = "composite_provider_read.rs"]
+mod provider_read;
+
 use redb::TableDefinition;
 use riffdb_storage_api::{
     BoundedCompositePage, CompositeCheckpointV1, CompositeFrameV1, CompositeMutationStage,
@@ -1443,6 +1446,7 @@ mod tests {
         assert_eq!(builder.overlay.freeze().transition_count(), 0);
     }
 
+    // req: OQ-040
     #[test]
     fn bounded_redb_range_merges_overlay_rows_in_physical_order() {
         let (_path, store, ports) = operational("range");
@@ -1503,6 +1507,66 @@ mod tests {
         let page = view
             .merge_bounded(CompositeTableV1::AuditByRequest, &[0], Some(&[0xff]), 3, 3)
             .expect("merge");
+        let budget = riffdb_types::exact_provider_budget_v1::ProviderBudget::new();
+        let admitted = view
+            .resolve_provider_range_v1(
+                CompositeTableV1::AuditByRequest,
+                (&[0], &[0xff]),
+                3,
+                &budget,
+            )
+            .unwrap();
+        assert_eq!(admitted.len(), page.rows().len());
+        for (actual, expected) in admitted.iter().zip(page.rows()) {
+            assert_eq!(actual.0.as_ref(), expected.0.as_ref());
+            assert_eq!(actual.1.as_ref(), expected.1.as_ref());
+        }
+        let captured = Arc::clone(&admitted[1]);
+        drop(admitted);
+        assert_eq!(captured.1.as_ref(), middle_value.as_bytes());
+        assert!(budget.observation().unwrap().owned_bytes > 0);
+        drop(captured);
+        assert_eq!(budget.observation().unwrap().owned_bytes, 0);
+        let copied_point = view
+            .resolve_provider_value_v1(CompositeTableV1::AuditByRequest, &middle_key, &budget)
+            .unwrap()
+            .unwrap();
+        assert_eq!(copied_point.as_slice(), middle_value.as_bytes());
+        drop(copied_point);
+        let one = view
+            .resolve_provider_range_v1(
+                CompositeTableV1::AuditByRequest,
+                (&[0], &[0xff]),
+                1,
+                &budget,
+            )
+            .unwrap();
+        let one_charge = budget.observation().unwrap().owned_bytes;
+        drop(one);
+        let fixed = budget.observation().unwrap().fixed_owner_bytes;
+        let occupied = budget
+            .reserve(
+                riffdb_types::exact_provider_budget_v1::EXACT_PROVIDER_BUDGET_BYTES
+                    - fixed
+                    - one_charge,
+            )
+            .unwrap();
+        assert_eq!(
+            view.resolve_provider_range_v1(
+                CompositeTableV1::AuditByRequest,
+                (&[0], &[0xff]),
+                3,
+                &budget
+            )
+            .err()
+            .unwrap()
+            .kind(),
+            StorageErrorKind::Unavailable
+        );
+        assert_eq!(budget.observation().unwrap().owned_bytes, 0);
+        assert_eq!(budget.observation().unwrap().reservations, 1);
+        drop(occupied);
+        assert_eq!(budget.observation().unwrap().reserved_bytes, 0);
         let keys: Vec<&[u8]> = page.rows().iter().map(|(key, _)| key.as_ref()).collect();
         let first_key = encode_audit_by_request_key(first, first_sequence);
         let last_key = encode_audit_by_request_key(last, last_sequence);
@@ -1514,6 +1578,65 @@ mod tests {
                 last_key.as_slice(),
             ]
         );
+        let first_value = encode_service_audit_request_index_v1(
+            StoredServiceAuditRequestIndexV1::new(first, first_sequence),
+        )
+        .unwrap();
+        let frame = CompositeFrameV1::new(
+            CompositeFrameKindV1::ServiceAudit,
+            database_id(),
+            None,
+            None,
+            Some(AdministrationSequence::first()),
+            Some(AdministrationSequence::new(2).unwrap()),
+            1,
+            256,
+            [1; 32],
+            [2; 32],
+            vec![
+                CompositeMutationV1::delete_matching(
+                    CompositeTableV1::AuditByRequest,
+                    first_key.as_slice(),
+                    first_value.as_bytes(),
+                )
+                .unwrap(),
+            ],
+        )
+        .unwrap();
+        let view = Arc::new(view);
+        let mut successor = RedbCompositeViewBuilder::from_published(&view);
+        successor.apply_composite_frame(&frame).unwrap();
+        let successor = successor.freeze();
+        let surviving = successor
+            .resolve_provider_range_v1(
+                CompositeTableV1::AuditByRequest,
+                (&[0], &[0xff]),
+                3,
+                &budget,
+            )
+            .unwrap();
+        assert_eq!(surviving.len(), 2);
+        assert_eq!(surviving[0].0.as_ref(), middle_key.as_slice());
+        assert_eq!(surviving[1].0.as_ref(), last_key.as_slice());
+        assert!(
+            successor
+                .resolve_provider_value_v1(CompositeTableV1::AuditByRequest, &first_key, &budget)
+                .unwrap()
+                .is_none()
+        );
+        let predecessor = view
+            .resolve_provider_range_v1(
+                CompositeTableV1::AuditByRequest,
+                (&[0], &[0xff]),
+                3,
+                &budget,
+            )
+            .unwrap();
+        assert_eq!(predecessor.len(), 3);
+        assert_eq!(predecessor[0].0.as_ref(), first_key.as_slice());
+        drop(predecessor);
+        drop(surviving);
+        assert_eq!(budget.observation().unwrap().owned_bytes, 0);
     }
 
     #[test]

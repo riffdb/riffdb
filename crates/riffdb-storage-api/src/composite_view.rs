@@ -20,6 +20,10 @@ use sha2::{Digest, Sha256};
 
 use crate::StorageValueError;
 
+#[path = "composite_provider_read.rs"]
+mod provider_read;
+pub use provider_read::BorrowedOverlayPointV1;
+
 /// Maximum complete published journal suffix represented by one overlay.
 pub const MAX_COMPOSITE_OVERLAY_TRANSITIONS: usize = 65_536;
 /// Maximum cumulative encoded journal bytes represented by one overlay.
@@ -2424,6 +2428,7 @@ mod tests {
         ));
     }
 
+    // req: OQ-040
     #[test]
     fn point_reads_distinguish_value_tombstone_and_checkpoint_fallback() {
         let mut base = Base::default();
@@ -2455,6 +2460,22 @@ mod tests {
             .apply_frame(&frame(mutations), &base)
             .expect("apply");
         let view = builder.freeze();
+        assert_eq!(
+            view.borrowed_provider_point_v1(CompositeTableV1::Entities, b"kept"),
+            BorrowedOverlayPointV1::Value(b"new-kept")
+        );
+        assert_eq!(
+            view.borrowed_provider_point_v1(CompositeTableV1::Entities, b"deleted"),
+            BorrowedOverlayPointV1::Tombstone
+        );
+        assert_eq!(
+            view.borrowed_provider_point_v1(CompositeTableV1::Entities, b"missing"),
+            BorrowedOverlayPointV1::Checkpoint
+        );
+        assert_eq!(
+            view.borrowed_provider_next_v1(CompositeTableV1::Entities, b"created", None, b"z"),
+            Some((b"created".as_slice(), Some(b"new-created".as_slice())))
+        );
 
         assert_eq!(
             view.resolve_point(&base, CompositeTableV1::Entities, b"kept"),

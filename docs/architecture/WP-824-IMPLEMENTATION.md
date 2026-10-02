@@ -247,3 +247,30 @@ passed, including all adapter tests, primary/follower provider conformance acros
 tail and restart, policy-dependent delta rebuilds, and checkpoint crash recovery.
 The explicit filter excluded 529 unrelated or already-disabled tests; it did not
 change the repository test configuration.
+
+
+## Admitted encoded source reads
+
+Storage helpers can now inspect the exact captured overlay before copying entity
+points and partition/index byte rows. A borrowed point distinguishes checkpoint
+fallback, replacement bytes, and tombstones. Forward overlay seeking uses
+borrowed AVL nodes without allocating a payload or iterator stack. The merge
+preserves the original physical ordering and suppresses deleted checkpoint rows.
+
+The reader admits array and iterator metadata before allocation, then admits each
+key/value copy while still borrowing its stored bytes. Immutable row captures
+keep their charges independently of page discovery. Partial batch refusal drops
+all copied rows before releasing array scratch, and iterator scratch is destroyed
+before the array's ownership transfer. Prefix scratch is separately admitted.
+Existing row and inspected-entry ceilings are unchanged.
+
+These helpers do not decode or authorize records, switch snapshots, or grant
+writer authority. Provider source materialization still uses its existing readers
+until decoded-record, projection/policy scratch and retained source-row admission
+are connected. Full aggregate enforcement and retirement remain unfinished.
+
+Validation: all seven scoped non-test acceptance checks passed. Eighteen storage
+API composite-view tests, seventeen existing storage-read conformance tests,
+seven redb composite-view tests, and three focused provider-input tests passed.
+The merge test also proves tombstones and partial-batch budget refusal release
+all newly admitted rows while retaining the predecessor snapshot.

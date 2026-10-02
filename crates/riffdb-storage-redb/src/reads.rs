@@ -1100,6 +1100,93 @@ mod tests {
         (path, ports)
     }
 
+    // req: OQ-040
+    #[test]
+    fn provider_encoded_entity_reads_admit_the_copy_and_keep_the_captured_root() {
+        use riffdb_storage_api::OwnedSnapshotReader;
+        use riffdb_types::exact_provider_budget_v1::{EXACT_PROVIDER_BUDGET_BYTES, ProviderBudget};
+        let (_path, ports) = operational("provider-admitted-point");
+        let target = entity_target(19);
+        let first = StoredEntityRecordV1::new(
+            target.clone(),
+            EntityVersion::new(1).unwrap(),
+            ContractVersion::new(1).unwrap(),
+            binding(),
+            CanonicalRecord::new(Vec::new()).unwrap(),
+        )
+        .unwrap();
+        let first_bytes = encode_entity_record_v1(&first).unwrap();
+        let write = ports.shared.database.begin_write().unwrap();
+        write
+            .open_table(ENTITIES)
+            .unwrap()
+            .insert(target.key().as_bytes(), first_bytes.as_bytes())
+            .unwrap();
+        write.commit().unwrap();
+        let pinned = ports.open_owned_snapshot().unwrap();
+        let request = riffdb_storage_api::AuthoritativeEntityPartitionScanRequest::new(
+            target.entity_type_id(),
+            target.key().as_bytes()[..7].to_vec(),
+            None,
+            StorageScanLimit::new(1).unwrap(),
+        )
+        .unwrap();
+        let range_budget = ProviderBudget::new();
+        let page = pinned
+            .read_provider_entity_partition_bytes_v1(&request, &range_budget)
+            .unwrap();
+        assert_eq!(page.len(), 1);
+        assert_eq!(page[0].0.as_ref(), target.key().as_bytes());
+        assert_eq!(page[0].1.as_ref(), first_bytes.as_bytes());
+        drop(page);
+        assert_eq!(range_budget.observation().unwrap().owned_bytes, 0);
+        let second = StoredEntityRecordV1::new(
+            target.clone(),
+            EntityVersion::new(2).unwrap(),
+            ContractVersion::new(1).unwrap(),
+            binding(),
+            CanonicalRecord::new(Vec::new()).unwrap(),
+        )
+        .unwrap();
+        let second_bytes = encode_entity_record_v1(&second).unwrap();
+        let write = ports.shared.database.begin_write().unwrap();
+        write
+            .open_table(ENTITIES)
+            .unwrap()
+            .insert(target.key().as_bytes(), second_bytes.as_bytes())
+            .unwrap();
+        write.commit().unwrap();
+        let budget = ProviderBudget::new();
+        let bytes = pinned
+            .read_provider_entity_bytes_v1(&target, &budget)
+            .unwrap()
+            .unwrap();
+        assert_eq!(bytes.as_slice(), first_bytes.as_bytes());
+        let held = bytes.clone();
+        drop(bytes);
+        assert!(budget.observation().unwrap().owned_bytes > 0);
+        drop(held);
+        assert_eq!(budget.observation().unwrap().owned_bytes, 0);
+        let used = budget.observation().unwrap().fixed_owner_bytes;
+        let occupied = budget.reserve(EXACT_PROVIDER_BUDGET_BYTES - used).unwrap();
+        assert_eq!(
+            pinned
+                .read_provider_entity_bytes_v1(&target, &budget)
+                .err()
+                .unwrap()
+                .kind(),
+            StorageErrorKind::Unavailable
+        );
+        assert!(
+            pinned
+                .read_provider_entity_bytes_v1(&entity_target(99), &budget)
+                .unwrap()
+                .is_none()
+        );
+        drop(occupied);
+        assert_eq!(budget.observation().unwrap().reserved_bytes, 0);
+    }
+
     fn plan() -> ExecutablePlanRef {
         ExecutablePlanRef::new(
             ContractLineage::new("budget").expect("lineage"),

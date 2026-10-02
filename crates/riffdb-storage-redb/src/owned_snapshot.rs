@@ -3,6 +3,9 @@
 #[path = "owned_snapshot_metadata.rs"]
 mod metadata;
 
+#[path = "owned_snapshot_provider_read.rs"]
+mod provider_read;
+
 use riffdb_storage_api::{
     AuthoritativeEntityPartitionScanPage, AuthoritativeEntityPartitionScanRequest,
     AuthoritativeIndexScanPage, AuthoritativeIndexScanRequest, AuthoritativePointReader,

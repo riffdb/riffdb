@@ -4,6 +4,11 @@ mod transient_access;
 
 mod read_census;
 
+mod provider_read_access;
+mod provider_read_range;
+pub(crate) use provider_read_access::{ProviderSourceBytesV1, copy_provider_bytes_v1};
+pub(crate) use provider_read_range::{ProviderSourcePageBytesV1, copy_provider_range_v1};
+
 #[path = "store/maintenance_writer.rs"]
 mod maintenance_writer;
 
