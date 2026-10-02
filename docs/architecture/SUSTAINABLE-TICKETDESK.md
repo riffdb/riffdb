@@ -214,7 +214,10 @@ flags rather than catalog proof objects; the vector test explicitly observes
 projection readiness before asserting aggregate vector health. Individual
 regressions pass. The next scoped run passes all 1,655 storage/server tests and
 all seven acceptance steps, including Clippy, handbook checks, file-size guards,
-and panic allowances. Full repository CI is being run for this slice.
+and panic allowances. Full repository CI also passes for the committed slice,
+including workspace tests, Clippy, dependency checks, handbook and generated
+references, four-language operator conformance, existing recovery gates, and
+release source installation. The implementation commit is `dbe974bd`.
 This is not a closure receipt.
 
 The next slice rebuilds optional validated-prefix evidence through the production
