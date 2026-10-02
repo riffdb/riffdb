@@ -1,5 +1,9 @@
 //! Durable partition-scoped tokenized-text provider (ADR-0173).
 
+#[path = "tokenized_text_admission.rs"]
+mod admission;
+pub use admission::TokenizedTextAdmissionErrorV1;
+
 use std::collections::{BTreeMap, BTreeSet};
 use std::error::Error;
 use std::fmt;

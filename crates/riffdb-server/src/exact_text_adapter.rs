@@ -23,9 +23,9 @@ use riffdb_projection::{
     ExactTextPartitionIndexV2, ExactTextPartitionIndexV3, ExactTextRebuildAdmissionErrorV1,
     LongPatternPartitionV1, LongPatternProviderErrorV1, MAX_EXACT_PREDICATE_CHECKPOINT_BYTES_V4,
     MAX_LONG_PATTERN_CHECKPOINT_BYTES_V1, ProviderEpochObservationV1, ProviderLifecycleV1,
-    ResultSetEpochContextV1, ResultSetEpochRequirementV1, TokenizedTextConfigV1,
-    TokenizedTextFieldV1, TokenizedTextMutationV1, TokenizedTextPartitionIndexV1,
-    negotiate_result_set_epoch_v1,
+    ResultSetEpochContextV1, ResultSetEpochRequirementV1, TokenizedTextAdmissionErrorV1,
+    TokenizedTextConfigV1, TokenizedTextFieldV1, TokenizedTextMutationV1,
+    TokenizedTextPartitionIndexV1, negotiate_result_set_epoch_v1,
 };
 use riffdb_query_executor::{
     ExactTextResultSetV1, LongPatternCandidateBatch, QueryExecutionError, QueryExecutionPort,
@@ -542,19 +542,22 @@ enum TokenizedTextSlotState {
     IntegrityFailure,
 }
 
+type AdmittedTokenizedProvider =
+    Arc<riffdb_types::exact_provider_budget_v1::ProviderAllocation<TokenizedTextPartitionIndexV1>>;
+
 struct TokenizedTextEpochs {
-    providers: VecDeque<Box<TokenizedTextPartitionIndexV1>>,
+    providers: VecDeque<AdmittedTokenizedProvider>,
 }
 
 impl TokenizedTextEpochs {
-    fn one(provider: TokenizedTextPartitionIndexV1) -> Self {
+    fn one(provider: AdmittedTokenizedProvider) -> Self {
         Self {
-            providers: VecDeque::from([Box::new(provider)]),
+            providers: VecDeque::from([provider]),
         }
     }
 
     fn current(&self) -> Option<&TokenizedTextPartitionIndexV1> {
-        self.providers.back().map(Box::as_ref)
+        self.providers.back().map(|provider| &***provider)
     }
 
     fn select(
@@ -565,13 +568,13 @@ impl TokenizedTextEpochs {
             None => self.current(),
             Some((epoch, generation)) => self.providers.iter().find_map(|provider| {
                 (provider.frontier() == Some(epoch) && provider.generation() == generation)
-                    .then_some(provider.as_ref())
+                    .then_some(&***provider)
             }),
         }
     }
 
-    fn push(&mut self, provider: TokenizedTextPartitionIndexV1, retained: usize) {
-        self.providers.push_back(Box::new(provider));
+    fn push(&mut self, provider: AdmittedTokenizedProvider, retained: usize) {
+        self.providers.push_back(provider);
         while self.providers.len() > retained.max(1) {
             self.providers.pop_front();
         }
@@ -2797,7 +2800,7 @@ fn rebuild_tokenized_slot(
     slot: &TokenizedTextSlot,
     head: CommitSequence,
     prior_generation: Option<ProjectionGeneration>,
-) -> Result<Option<TokenizedTextPartitionIndexV1>, RebuildFailure> {
+) -> Result<Option<AdmittedTokenizedProvider>, RebuildFailure> {
     if prior_generation.is_none()
         && let Some(bytes) = read_checkpoint(&slot.checkpoint, &runtime.ownership_graph.budget)?
         && let Ok(provider_bytes) = decode_activation_checkpoint(
@@ -2805,7 +2808,10 @@ fn rebuild_tokenized_slot(
             &slot.registration.key(),
             runtime.history_incarnation,
         )
-        && let Ok(recovered) = TokenizedTextPartitionIndexV1::from_checkpoint_bytes(provider_bytes)
+        && let Ok(recovered) = TokenizedTextPartitionIndexV1::from_checkpoint_bytes_admitted_v1(
+            provider_bytes,
+            &runtime.ownership_graph.budget,
+        )
         && recovered.config().index_identity()
             == slot.registration.query.tokenized_plan().index_identity()
         && recovered.partition() == hash_partition_key(slot.registration.partition_key.as_bytes())
@@ -2833,20 +2839,22 @@ fn rebuild_tokenized_slot(
     )
     .map_err(|_| RebuildFailure::Integrity)?;
     let rows = read_complete_tokenized_partition(runtime, &slot.registration, head, generation)?;
-    let provider = TokenizedTextPartitionIndexV1::rebuild(
-        config,
+    let provider = TokenizedTextPartitionIndexV1::rebuild_admitted_v1(
+        &config,
         hash_partition_key(slot.registration.partition_key.as_bytes()),
         generation,
         head,
         &rows,
+        &runtime.ownership_graph.budget,
     )
     .map_err(|error| match error {
-        riffdb_projection::TokenizedTextErrorV1::PartitionLimit
-        | riffdb_projection::TokenizedTextErrorV1::DocumentLimit
-        | riffdb_projection::TokenizedTextErrorV1::OutputLimit
-        | riffdb_projection::TokenizedTextErrorV1::CheckpointLimit => {
-            RebuildFailure::Capacity(generation)
-        }
+        TokenizedTextAdmissionErrorV1::CapacityUnavailable => RebuildFailure::Transient,
+        TokenizedTextAdmissionErrorV1::Provider(
+            riffdb_projection::TokenizedTextErrorV1::PartitionLimit
+            | riffdb_projection::TokenizedTextErrorV1::DocumentLimit
+            | riffdb_projection::TokenizedTextErrorV1::OutputLimit
+            | riffdb_projection::TokenizedTextErrorV1::CheckpointLimit,
+        ) => RebuildFailure::Capacity(generation),
         _ => RebuildFailure::Integrity,
     })?;
     persist_tokenized_checkpoint(

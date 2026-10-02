@@ -439,3 +439,41 @@ unchanged provider algorithms, checkpoint bytes, generation/frontier validation,
 authorization and application interfaces. Handbook: this implementation page.
 Hazards and follow-ups: complete the remaining ownership and retirement paths
 before qualification; this slice does not claim the 24-hour rehearsal.
+
+
+## Production tokenized provider ownership
+
+Tokenized rebuild admission now reserves configuration copies, analyzed terms,
+positions, posting trees, normalization workspace and checkpoint-validation
+buffers before invoking the existing builder. Keyword and standard analyzers
+retain their frozen meanings. The existing exhaustive Unicode scalar test also
+checks NFKD and NFKC intermediate expansion against the frozen bound used for
+normalization workspace admission; no normalization or tokenization changes.
+
+Recovery walks borrowed existing checkpoint lengths before allocating documents,
+canonical outputs or redundant postings. The ordinary decoder still validates
+field identities, positions, hash/key identity, duplicate entries and agreement
+with rebuilt postings. Retained tokenized epochs now hold immutable charged
+allocations, preserving ownership through the final epoch reference. Pressure
+uses the existing transient rebuild refusal; ordinary provider limits retain their
+existing typed capacity behavior. Retention counts and epoch selection are unchanged.
+
+Focused tests compare both analyzers and checkpoint bytes on empty, repeated and
+Unicode text, multiple documents, partial admission pressure and invalid
+populations. Recovery tests cover truncated/trailing data, invalid fields, changed
+redundant postings and pressure after inspection. Both focused tests, the expanded
+Unicode scalar proof and all 27 adapter tests pass. All 324 selected types, projection and provider conformance tests passed;
+534 unrelated tests were excluded by the selection expression. All six scoped
+non-test acceptance checks passed, including formatting, Clippy with warnings
+denied, scope, handbook, file size and panic allowances.
+
+WP-824 remains open. Predicate and long-pattern construction, source/catalog/policy
+scratch, checkpoint encoding, protected cursor leases, retirement and final-reference
+artifact cleanup remain unfinished. No aggregate-enforcement or rehearsal claim.
+
+PR note: Package WP-824 (open); Tier guarantee; Behavior: production tokenized
+construction/recovery and retained epoch ownership admission. Compatibility:
+unchanged analyzers, V1 checkpoint format, semantic decoder, authorization,
+epoch selection and application interfaces. Handbook: this implementation page.
+Hazards and follow-ups: finish the remaining ownership and retirement lifecycle
+before qualification.

@@ -146,12 +146,19 @@ mod tests {
     /// Exhaustive over every scalar value, which is the only honest way to
     /// claim a maximum.
     #[test]
+    // req: OQ-040
     fn the_expansion_bound_holds_for_every_scalar_value() {
+        use unicode_normalization::UnicodeNormalization;
         let mut worst_ratio = 0.0_f64;
         let mut worst_point = '\u{0}';
         for point in (0..=0x10_FFFF_u32).filter_map(char::from_u32) {
             let mut buffer = [0_u8; 4];
             let source = point.encode_utf8(&mut buffer);
+            // Provider admission also covers the transient decomposed and
+            // normalized buffers, before the final case-folded term exists.
+            let bound = source.len() * UNICODE_FOLD_V1_MAXIMUM_EXPANSION;
+            assert!(source.nfkd().map(char::len_utf8).sum::<usize>() <= bound);
+            assert!(source.nfkc().map(char::len_utf8).sum::<usize>() <= bound);
             let folded = unicode_fold_v1(source);
             #[allow(clippy::cast_precision_loss)]
             let ratio = folded.len() as f64 / source.len() as f64;
