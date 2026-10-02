@@ -1195,3 +1195,6 @@ mod tests {
         }
     }
 }
+
+// Exhaustive non-durable ownership inventories for retained provider data.
+crate::inspect_owned_capacity_copy_v1!(ProjectionGeneration);

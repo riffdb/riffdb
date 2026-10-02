@@ -795,3 +795,14 @@ mod tests {
         );
     }
 }
+
+// Exhaustive non-durable ownership inventories for retained provider data.
+riffdb_types::inspect_owned_capacity_struct_v1!(LongPatternPartitionV1 {
+    owned: [rows, postings],
+    inline: [profile, bounds, total_matched_bytes, posting_count]
+});
+
+riffdb_types::inspect_owned_capacity_struct_v1!(LongPatternRowV1 {
+    owned: [matched, grams, release],
+    inline: [digest]
+});

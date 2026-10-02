@@ -36,3 +36,6 @@ pub use recovery::*;
 pub use registry::*;
 pub use result_set_epoch::*;
 pub use tokenized_text::*;
+
+#[cfg(test)]
+mod owned_capacity_tests;

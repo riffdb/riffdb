@@ -856,3 +856,54 @@ impl fmt::Display for TokenizedTextErrorV1 {
 }
 
 impl Error for TokenizedTextErrorV1 {}
+
+// Exhaustive non-durable ownership inventories for retained provider data.
+riffdb_types::inspect_owned_capacity_struct_v1!(TokenizedTextPartitionIndexV1 {
+    owned: [config, documents, postings],
+    inline: [partition, generation, frontier]
+});
+
+riffdb_types::inspect_owned_capacity_struct_v1!(TokenizedTextConfigV1 {
+    owned: [fields],
+    inline: [index_identity, analyzer]
+});
+
+riffdb_types::inspect_owned_capacity_copy_v1!(TokenizedTextFieldV1);
+
+riffdb_types::inspect_owned_capacity_struct_v1!(DocumentV1 {
+    owned: [key, output, fields],
+    inline: []
+});
+
+riffdb_types::inspect_owned_capacity_struct_v1!(AnalyzedFieldV1 {
+    owned: [terms],
+    inline: [length]
+});
+
+riffdb_types::inspect_owned_capacity_struct_v1!(TokenizedPostingV1 {
+    owned: [positions],
+    inline: [frequency]
+});
+
+#[cfg(test)]
+mod physical_capacity_tests {
+    use super::*;
+    // req: OQ-040
+    #[test]
+    fn token_positions_charge_capacity_beyond_the_semantic_position_count() {
+        let mut positions = Vec::with_capacity(1024);
+        positions.push(0);
+        let posting = TokenizedPostingV1 {
+            frequency: 1,
+            positions,
+        };
+        let report = riffdb_types::OwnedCapacityInspectionV1::inspect(&posting).unwrap();
+        assert!(
+            report.unshared_bytes()
+                >= u64::try_from(posting.positions.capacity() * std::mem::size_of::<u32>())
+                    .unwrap()
+        );
+        assert_eq!(posting.positions(), &[0]);
+        assert_eq!(posting.frequency(), 1);
+    }
+}

@@ -1963,3 +1963,41 @@ impl fmt::Display for ExactPredicateProviderErrorV1 {
 }
 
 impl Error for ExactPredicateProviderErrorV1 {}
+
+// Exhaustive non-durable ownership inventories for retained provider data.
+riffdb_types::inspect_owned_capacity_struct_v1!(ExactPredicatePartitionIndexV4 {
+    owned: [program, rows, orders],
+    inline: [binding]
+});
+
+riffdb_types::inspect_owned_capacity_copy_v1!(ExactPredicateProviderBindingV1);
+
+riffdb_types::inspect_owned_capacity_struct_v1!(ExactPredicateProviderRowV1 {
+    owned: [key, fields, output],
+    inline: []
+});
+
+riffdb_types::inspect_owned_capacity_struct_v1!(ExactOrderIndexV1 {
+    owned: [rows, fields],
+    inline: []
+});
+
+riffdb_types::inspect_owned_capacity_struct_v1!(SparseFieldIndexV1 {
+    owned: [
+        missing,
+        null,
+        present,
+        values,
+        text,
+        reversed_text,
+        suffixes
+    ],
+    inline: [profile]
+});
+
+riffdb_types::inspect_owned_capacity_struct_v1!(ExactPredicatePartitionIndexV5 {
+    owned: [program, rows, orders],
+    inline: [binding]
+});
+
+riffdb_types::inspect_owned_capacity_copy_v1!(ExactPredicateProviderBindingV2);

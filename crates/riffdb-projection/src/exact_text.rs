@@ -1686,3 +1686,48 @@ fn read_array<const N: usize>(
         .and_then(|slice| slice.try_into().ok())
         .ok_or(ExactTextProviderErrorV1::InvalidCheckpoint)
 }
+
+// Exhaustive non-durable ownership inventories for retained provider data.
+riffdb_types::inspect_owned_capacity_struct_v1!(ExactTextPartitionIndexV2 {
+    owned: [index, keys, outputs, equals, prefixes, suffixes, contains],
+    inline: []
+});
+
+riffdb_types::inspect_owned_capacity_struct_v1!(ExactTextPartitionIndexV1 {
+    owned: [rows, equals, prefixes, suffixes, contains],
+    inline: [partition, generation, frontier, profile]
+});
+
+riffdb_types::inspect_owned_capacity_struct_v1!(ExactTextPartitionIndexV3 {
+    owned: [base, filter_field, filters, filtered],
+    inline: []
+});
+
+riffdb_types::inspect_owned_capacity_struct_v1!(ExactTextFilterPostingsV3 {
+    owned: [equals, prefixes, suffixes, contains],
+    inline: []
+});
+
+riffdb_types::inspect_owned_capacity_struct_v1!(PostingList {
+    owned: [ascending, descending],
+    inline: []
+});
+
+#[cfg(test)]
+mod physical_capacity_tests {
+    use super::*;
+    // req: OQ-040
+    #[test]
+    fn empty_posting_lists_charge_both_retained_order_buffers() {
+        let posting = PostingList {
+            ascending: Vec::with_capacity(128),
+            descending: Vec::with_capacity(256),
+        };
+        let report = riffdb_types::OwnedCapacityInspectionV1::inspect(&posting).unwrap();
+        let retained = posting.ascending.capacity() * std::mem::size_of::<EntityKeyHash>()
+            + posting.descending.capacity() * std::mem::size_of::<u16>();
+        assert!(report.unshared_bytes() >= u64::try_from(retained).unwrap());
+        assert!(posting.ascending.is_empty());
+        assert!(posting.descending.is_empty());
+    }
+}

@@ -203,3 +203,6 @@ impl Error for ExactTextBindErrorV1 {}
 crate::inspect_owned_capacity_copy_v1!(ExactTextOperatorV1);
 
 crate::inspect_owned_capacity_copy_v1!(ExactTextOrderV1);
+
+// Exhaustive non-durable ownership inventories for retained provider data.
+crate::inspect_owned_capacity_copy_v1!(ExactTextProfileV1);

@@ -138,3 +138,23 @@ eight existing skips. Coverage includes deduplication through actual data
 lifetime, foreign and undersized ownership refusal, pre-attachment saturation,
 simultaneous admission, independent reservation splitting, and the existing
 query, authorization, source-capture, archive, and replication recovery tests.
+
+## Physical provider capacity
+
+Exhaustive capacity inventories now cover the six physical provider states used
+by the five registry families, including substring postings, token positions,
+canonical outputs, sparse predicate fields, order arrays, and long-pattern gram
+postings. Predicate scalar strings and byte buffers count retained capacity even
+when their semantic value is empty. Inspection preserves checkpoint bytes and
+provider identity; it does not replace the existing physical query algorithms.
+
+A short checkpoint can rebuild much larger derived posting structures. Tests
+therefore assert that decoded provider ownership includes those structures and
+retained buffers, rather than accepting encoded length as a sufficient charge.
+These inventories prepare provider preflight and settlement; they do not yet
+reserve rebuild or decode allocations, or change any handbook operation.
+
+Validation: all seven scoped acceptance steps passed, including 302 tests with
+no skips, formatting, clippy with warnings denied, handbook, scope, file size,
+and panic allowance checks. The initial test-declaration placement was corrected
+before the passing run; no warning was suppressed.

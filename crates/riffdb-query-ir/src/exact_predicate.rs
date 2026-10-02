@@ -1798,6 +1798,78 @@ riffdb_types::inspect_owned_capacity_struct_v1!(ExactOrderProgramV2 {
 
 riffdb_types::inspect_owned_capacity_copy_v1!(ExactOrderTermV2);
 
+// Exhaustive non-durable ownership inventories for retained provider data.
+impl riffdb_types::InspectOwnedCapacityV1 for ExactReferenceCellV1 {
+    fn inspect_owned_capacity(
+        &self,
+        inspection: &mut riffdb_types::OwnedCapacityInspectionV1,
+    ) -> Result<(), riffdb_types::OwnedCapacityInspectionErrorV1> {
+        match self {
+            Self::Missing => {}
+            Self::Null => {}
+            Self::Value(field_0) => {
+                inspection.visit(field_0)?;
+            }
+        }
+        Ok(())
+    }
+}
+
+impl riffdb_types::InspectOwnedCapacityV1 for ExactScalarV1 {
+    fn inspect_owned_capacity(
+        &self,
+        inspection: &mut riffdb_types::OwnedCapacityInspectionV1,
+    ) -> Result<(), riffdb_types::OwnedCapacityInspectionErrorV1> {
+        match self {
+            Self::Bool(field_0) => {
+                inspection.inline(field_0)?;
+            }
+            Self::I64(field_0) => {
+                inspection.inline(field_0)?;
+            }
+            Self::U64(field_0) => {
+                inspection.inline(field_0)?;
+            }
+            Self::Decimal { coefficient, scale } => {
+                inspection.inline(coefficient)?;
+                inspection.inline(scale)?;
+            }
+            Self::Money {
+                currency,
+                coefficient,
+                scale,
+            } => {
+                inspection.inline(currency)?;
+                inspection.inline(coefficient)?;
+                inspection.inline(scale)?;
+            }
+            Self::String(field_0) => {
+                inspection.visit(field_0)?;
+            }
+            Self::Bytes(field_0) => {
+                inspection.visit(field_0)?;
+            }
+            Self::Timestamp(field_0) => {
+                inspection.inline(field_0)?;
+            }
+            Self::Date(field_0) => {
+                inspection.inline(field_0)?;
+            }
+            Self::Uuid(field_0) => {
+                inspection.inline(field_0)?;
+            }
+            Self::Enum {
+                type_id,
+                variant_id,
+            } => {
+                inspection.inline(type_id)?;
+                inspection.inline(variant_id)?;
+            }
+        }
+        Ok(())
+    }
+}
+
 #[cfg(test)]
 mod ownership_tests {
     use super::*;
