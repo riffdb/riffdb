@@ -158,3 +158,22 @@ Validation: all seven scoped acceptance steps passed, including 302 tests with
 no skips, formatting, clippy with warnings denied, handbook, scope, file size,
 and panic allowance checks. The initial test-declaration placement was corrected
 before the passing run; no warning was suppressed.
+
+## Candidate settlement
+
+Wholly owned provider candidates can now settle an admitted maximum against a
+completed capacity report. Inspection scratch is carved from the original work
+allowance before traversal. Settlement only shrinks an allowance; incomplete
+reports, shared payloads without graph admission, or an insufficient allowance
+refuse publication.
+
+The candidate guard destroys its data before releasing its reservation on every
+refusal path. Successful settlement transfers ownership to an immutable data
+allocation whose charge drops after its final data reference. In-place ledger
+transitions keep the reservation intact if transfer fails. Tests observe the
+budget during destruction, retained captures, and refusal; no timing sleep is
+used. The actual rebuild/decode admission formulas and call sites remain open.
+
+Validation: seven scoped acceptance checks passed, including 215 tests without
+skips, formatting, clippy with warnings denied, handbook, scope, file size, and
+panic allowance checks.

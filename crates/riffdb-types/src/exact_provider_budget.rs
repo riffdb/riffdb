@@ -130,10 +130,44 @@ impl Reservation {
         })
     }
 
+    /// Settle an already admitted, wholly owned candidate after construction.
+    /// The original maximum must include inspection scratch before allocation.
+    /// Shared payloads require graph admission and are refused by this helper.
+    pub fn settle_owned_value<T: crate::InspectOwnedCapacityV1>(
+        self,
+        value: T,
+    ) -> Result<Arc<ProviderAllocation<T>>, BudgetUnavailable> {
+        // Field order also preserves admission on every early-return path.
+        let mut candidate = ReservedCandidate { value, work: self };
+        let scratch = candidate
+            .work
+            .split(crate::OWNED_CAPACITY_INSPECTION_SCRATCH_BYTES_V1)?;
+        let report = crate::OwnedCapacityInspectionV1::inspect(&candidate.value)
+            .map_err(|_| BudgetUnavailable)?;
+        if !report.shared_allocations().is_empty() {
+            return Err(BudgetUnavailable);
+        }
+        let inline = std::mem::size_of::<ProviderAllocation<T>>()
+            .checked_mul(2)
+            .and_then(|bytes| bytes.checked_add(2 * std::mem::align_of::<ProviderAllocation<T>>()))
+            .and_then(|bytes| bytes.checked_add(1024))
+            .and_then(|bytes| u64::try_from(bytes).ok())
+            .ok_or(BudgetUnavailable)?;
+        let bytes = report
+            .unshared_bytes()
+            .checked_add(inline)
+            .ok_or(BudgetUnavailable)?;
+        drop(report);
+        drop(scratch);
+        // A refused adjustment keeps the work alive through candidate Drop.
+        candidate.work.retain_in_place(bytes)?;
+        candidate.work.commit_value(candidate.value)
+    }
+
     /// The shared allocation keeps its charge after every discovery reference
     /// has gone. Its data drops before the accounting owner.
     pub fn commit_value<T>(
-        self,
+        mut self,
         value: T,
     ) -> Result<Arc<ProviderAllocation<T>>, BudgetUnavailable> {
         let minimum = std::mem::size_of::<ProviderAllocation<T>>()
@@ -145,7 +179,7 @@ impl Reservation {
         if self.bytes < minimum {
             return Err(BudgetUnavailable);
         }
-        let charge = self.commit()?;
+        let charge = self.commit_in_place(None)?;
         Ok(Arc::new(ProviderAllocation {
             value,
             _charge: charge,
@@ -154,7 +188,12 @@ impl Reservation {
     /// After the work has completed, retain its conservative capacity charge.
     /// Growing here is refused: extra allocation requires prior admission.
     pub fn retain(mut self, bytes: u64) -> Result<Self, BudgetUnavailable> {
-        if bytes == 0 || bytes > self.bytes {
+        self.retain_in_place(bytes)?;
+        Ok(self)
+    }
+
+    fn retain_in_place(&mut self, bytes: u64) -> Result<(), BudgetUnavailable> {
+        if !self.live || bytes == 0 || bytes > self.bytes {
             return Err(BudgetUnavailable);
         }
         let mut accounting = self.budget.0.lock().map_err(|_| BudgetUnavailable)?;
@@ -169,7 +208,7 @@ impl Reservation {
         accounting.counters.reserved_bytes = remaining;
         self.bytes = bytes;
         drop(accounting);
-        Ok(self)
+        Ok(())
     }
 
     /// Transfer the charge to shared ownership. Attach it to the allocation's
@@ -190,6 +229,16 @@ impl Reservation {
         mut self,
         allocation: Option<crate::SharedAllocationIdentityV1>,
     ) -> Result<Arc<OwnershipCharge>, BudgetUnavailable> {
+        self.commit_in_place(allocation)
+    }
+
+    fn commit_in_place(
+        &mut self,
+        allocation: Option<crate::SharedAllocationIdentityV1>,
+    ) -> Result<Arc<OwnershipCharge>, BudgetUnavailable> {
+        if !self.live {
+            return Err(BudgetUnavailable);
+        }
         let minimum = std::mem::size_of::<OwnershipCharge>()
             .checked_add(2 * std::mem::size_of::<usize>())
             .and_then(|bytes| bytes.checked_add(std::mem::align_of::<OwnershipCharge>()))
@@ -233,10 +282,23 @@ impl Reservation {
     }
 }
 
+struct ReservedCandidate<T> {
+    value: T,
+    // Last: refused inspection/settlement destroys data before releasing work.
+    work: Reservation,
+}
+
 pub struct ProviderAllocation<T> {
     value: T,
     // Last: data destruction still owns its byte charge.
     _charge: Arc<OwnershipCharge>,
+}
+
+impl<T> ProviderAllocation<T> {
+    /// Read-only settled ownership bound for admitting a private successor.
+    pub fn owned_bytes(&self) -> u64 {
+        self._charge.bytes()
+    }
 }
 
 impl<T> Deref for ProviderAllocation<T> {
@@ -318,6 +380,123 @@ impl Drop for OwnershipCharge {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn successful_settlement_shrinks_and_retains_charge_through_final_data_drop() {
+        use std::sync::atomic::{AtomicBool, Ordering};
+        struct Payload {
+            bytes: Vec<u8>,
+            budget: ProviderBudget,
+            destroyed: Arc<AtomicBool>,
+        }
+        impl crate::InspectOwnedCapacityV1 for Payload {
+            fn inspect_owned_capacity(
+                &self,
+                inspection: &mut crate::OwnedCapacityInspectionV1,
+            ) -> Result<(), crate::OwnedCapacityInspectionErrorV1> {
+                inspection.visit(&self.bytes)
+            }
+        }
+        impl Drop for Payload {
+            fn drop(&mut self) {
+                let observed = self.budget.observation().unwrap();
+                assert!(observed.owned_bytes >= u64::try_from(self.bytes.capacity()).unwrap());
+                assert_eq!(observed.reserved_bytes, 0);
+                self.destroyed.store(true, Ordering::Release);
+            }
+        }
+        let budget = ProviderBudget::new();
+        let destroyed = Arc::new(AtomicBool::new(false));
+        let work = budget
+            .reserve(crate::OWNED_CAPACITY_INSPECTION_SCRATCH_BYTES_V1 + 32768)
+            .unwrap();
+        let payload = Payload {
+            bytes: Vec::with_capacity(7000),
+            budget: budget.clone(),
+            destroyed: destroyed.clone(),
+        };
+        let selected = work.settle_owned_value(payload).unwrap();
+        let observed = budget.observation().unwrap();
+        assert_eq!(
+            (
+                observed.reserved_bytes,
+                observed.reservations,
+                observed.allocations
+            ),
+            (0, 0, 1)
+        );
+        assert!(observed.owned_bytes < 32768);
+        assert_eq!(selected.owned_bytes(), observed.owned_bytes);
+        let captured = selected.clone();
+        drop(selected);
+        assert!(!destroyed.load(Ordering::Acquire));
+        assert_eq!(
+            budget.observation().unwrap().owned_bytes,
+            observed.owned_bytes
+        );
+        drop(captured);
+        assert!(destroyed.load(Ordering::Acquire));
+        assert_eq!(budget.observation().unwrap().owned_bytes, 0);
+    }
+
+    #[test]
+    fn wholly_owned_settlement_refuses_shared_payloads_without_publishing() {
+        let budget = ProviderBudget::new();
+        let work = budget
+            .reserve(crate::OWNED_CAPACITY_INSPECTION_SCRATCH_BYTES_V1 + 8192)
+            .unwrap();
+        assert!(
+            work.settle_owned_value(Arc::new(String::with_capacity(1024)))
+                .is_err()
+        );
+        let observed = budget.observation().unwrap();
+        assert_eq!(
+            (
+                observed.reserved_bytes,
+                observed.owned_bytes,
+                observed.allocations
+            ),
+            (0, 0, 0)
+        );
+    }
+
+    #[test]
+    fn refused_settlement_destroys_candidate_before_releasing_work_allowance() {
+        use std::sync::atomic::{AtomicBool, Ordering};
+        struct Payload {
+            bytes: Vec<u8>,
+            budget: ProviderBudget,
+            destroyed: Arc<AtomicBool>,
+        }
+        impl crate::InspectOwnedCapacityV1 for Payload {
+            fn inspect_owned_capacity(
+                &self,
+                inspection: &mut crate::OwnedCapacityInspectionV1,
+            ) -> Result<(), crate::OwnedCapacityInspectionErrorV1> {
+                inspection.visit(&self.bytes)
+            }
+        }
+        impl Drop for Payload {
+            fn drop(&mut self) {
+                assert!(self.budget.observation().unwrap().reserved_bytes >= 8192);
+                self.destroyed.store(true, Ordering::Release);
+            }
+        }
+        let budget = ProviderBudget::new();
+        let destroyed = Arc::new(AtomicBool::new(false));
+        let work = budget
+            .reserve(crate::OWNED_CAPACITY_INSPECTION_SCRATCH_BYTES_V1 + 8192)
+            .unwrap();
+        let payload = Payload {
+            bytes: Vec::with_capacity(7000),
+            budget: budget.clone(),
+            destroyed: destroyed.clone(),
+        };
+        assert!(work.settle_owned_value(payload).is_err());
+        assert!(destroyed.load(Ordering::Acquire));
+        let observed = budget.observation().unwrap();
+        assert_eq!((observed.reserved_bytes, observed.owned_bytes), (0, 0));
+    }
 
     #[test]
     fn split_preserves_total_admission_and_releases_each_child_independently() {
