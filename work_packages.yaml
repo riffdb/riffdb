@@ -28499,6 +28499,29 @@ work_packages:
   - An accepted decision, normative requirement, guarantee, or declared path scope changes.
   - A new durable identity, public interface, or critical dependency lacks accepted authority.
   exit_gate: Real emitted events reach the durable archive through production composition; crash/retry preserves exact records and source retention releases only delivered events.
+  closure:
+    status: complete
+    completed_at: '2026-10-01'
+    requirements_satisfied: [OUT-001, OUT-002, STO-020, REC-001, REC-002]
+    evidence: docs/architecture/SUSTAINABLE-TICKETDESK.md
+    decision: Real-process production composition delivers command-emitted events,
+      pauses unsafe custody without blocking commands, and preserves exact archive
+      accounting through restart and original-command replay. Deterministic process
+      kills cover initial publication and record acceptance. Scoped acceptance and
+      full CI pass; no physical-reclamation or rehearsal result is claimed.
+    decisions_taken:
+    - Keep the destination schema in a sealed separate registry and source file,
+      preserving every primary durable-record schema hash and registry identity.
+    - Bound archive validation to 256 rows and 4 MiB per step; use a 3-MiB outer
+      payload bound for the complete nested source envelope and an 8-MiB engine cache.
+    - Use pinned Linux directory and file identities, effective-user ownership,
+      symlink refusal, private permissions, and one hard link; recheck before acceptance.
+    - Compose one cancellable owned dispatcher thread outside command acknowledgement,
+      including cancellation admission between recovery pages and joined shutdown.
+    - Keep operator inspection offline and bounded to 1 through 256 pages; report
+      incomplete until exact scan completion. Count allocated engine blocks separately.
+    - Regenerate package assets, compatibility inventory, release digest, CLI reference,
+      and adapter freeze from their authoritative generators.
 
 - id: WP-823
   name: Composed receipt reclamation and retention-aware recovery

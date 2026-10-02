@@ -39,6 +39,60 @@ const FISCAL_YEAR: i64 = 2026;
 
 type TestResult<T> = Result<T, Box<dyn Error + Send + Sync>>;
 
+// req: STO-020, REC-001
+#[test]
+fn local_archive_inspection_is_offline_bounded_and_payload_free() -> TestResult<()> {
+    let root = tempfile::Builder::new()
+        .permissions(fs::Permissions::from_mode(0o700))
+        .tempdir()?;
+    let binding = riffdb_types::DatabaseId::from_unix_milliseconds_and_random(42, [1; 10])?;
+    let mut archive =
+        riffdb_outbox::DurableLocalArchive::open(root.path(), binding, std::num::NonZeroU64::MAX)?;
+    assert!(archive.validate_next_page()?);
+    drop(archive);
+    let id = binding
+        .as_bytes()
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect::<String>();
+    let invoke = |max_pages: &str| {
+        Command::new(env!("CARGO_BIN_EXE_riffdb"))
+            .args([
+                "--output",
+                "json",
+                "outbox",
+                "archive",
+                "inspect",
+                "--directory",
+            ])
+            .arg(root.path())
+            .args(["--database-id", &id, "--max-pages", max_pages])
+            .env_remove("RIFFDB_ENDPOINT")
+            .env_remove("RIFFDB_CONFIG")
+            .output()
+    };
+    let output = invoke("1")?;
+    assert!(output.status.success());
+    assert!(output.stdout.len() < 4096);
+    let text = std::str::from_utf8(&output.stdout)?;
+    let json: Value = serde_json::from_str(text)?;
+    assert_eq!(json["result"]["format"], "LocalOutboxArchiveRecordV1");
+    assert_eq!(json["result"]["integrity"], "verified");
+    assert_eq!(json["result"]["records"], 0);
+    assert!(!text.contains("payload"));
+    assert!(!text.contains(&root.path().display().to_string()));
+    for pages in ["0", "257"] {
+        assert!(!invoke(pages)?.status.success());
+    }
+    fs::set_permissions(root.path(), fs::Permissions::from_mode(0o755))?;
+    let refused = invoke("1")?;
+    assert!(!refused.status.success());
+    assert!(refused.stdout.len() + refused.stderr.len() < 4096);
+    assert!(!String::from_utf8_lossy(&refused.stdout).contains(&root.path().display().to_string()));
+    fs::set_permissions(root.path(), fs::Permissions::from_mode(0o700))?;
+    Ok(())
+}
+
 #[test]
 #[ignore = "requires separately built riffdbd and riffdb-budget-public"]
 fn public_process_all_acceptance_operations() -> TestResult<()> {

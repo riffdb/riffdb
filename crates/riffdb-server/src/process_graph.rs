@@ -286,6 +286,7 @@ pub(crate) struct ProductionGraphBuilder {
     coordinator_durability: CoordinatorDurability,
     backup_root: std::path::PathBuf,
     retention: crate::config::RetentionConfig,
+    outbox_destination: Option<crate::config::ConfiguredOutbox>,
 }
 
 impl ProductionGraphBuilder {
@@ -334,6 +335,7 @@ impl ProductionGraphBuilder {
             },
             backup_root: database.backup_root().to_path_buf(),
             retention: database.retention(),
+            outbox_destination: database.outbox().cloned(),
         }
     }
 
@@ -369,6 +371,7 @@ impl ProductionGraphBuilder {
             coordinator_durability,
             backup_root,
             retention,
+            outbox_destination,
         } = self;
 
         let server_generation = server_generation
@@ -482,11 +485,12 @@ impl ProductionGraphBuilder {
         let outbox_normalization_proven_unnecessary =
             bounded_clean_startup && storage.outbox_delivering_proven_absent();
         let outbox_recovery_started = std::time::Instant::now();
-        let outbox_recovery = if outbox_normalization_proven_unnecessary {
-            OutboxRecoveryReadiness::Degraded
-        } else {
-            recover_outbox(storage.clone(), clocks.outbox())
-        };
+        let outbox_recovery =
+            if outbox_destination.is_some() || outbox_normalization_proven_unnecessary {
+                OutboxRecoveryReadiness::Degraded
+            } else {
+                recover_outbox(storage.clone(), clocks.outbox())
+            };
         crate::startup_census::record(
             crate::startup_census::StartupStage::OutboxRecovery,
             outbox_recovery_started,
@@ -506,7 +510,10 @@ impl ProductionGraphBuilder {
         } else {
             outbox_recovery
         });
-        if !bounded_clean_startup {
+        if outbox_destination.is_some() {
+            outbox_health.destination_ready(false);
+        }
+        if !bounded_clean_startup && outbox_destination.is_none() {
             outbox_health.refresh(&storage);
         }
         // No writer, projection worker, or pruning authority exists yet. The
@@ -781,7 +788,7 @@ impl ProductionGraphBuilder {
                 allocator_capacity,
                 runtime.clone(),
                 notifications.clone(),
-                outbox_health,
+                outbox_health.clone(),
                 projection_status,
                 columnar_status,
                 storage.clone(),
@@ -1028,6 +1035,17 @@ impl ProductionGraphBuilder {
             retention_failure,
         )
         .map_err(|_| ProductionGraphBuildError::CurrentView)?;
+        let outbox_worker = outbox_destination.map(|config| {
+            crate::outbox_worker::RunningLocalOutbox::start(
+                config,
+                storage.clone(),
+                clocks.outbox(),
+                database_id,
+                std::num::NonZeroU64::new(retained_metadata.history_incarnation())
+                    .expect("validated nonzero history incarnation"),
+                outbox_health,
+            )
+        });
         Ok(RunningProductionGraph {
             registration_worker,
             archive_workers,
@@ -1043,6 +1061,7 @@ impl ProductionGraphBuilder {
             storage: shutdown_storage,
             scrub_worker,
             retention_lane,
+            outbox_worker,
             exact_worker: Some(exact_worker),
             columnar_worker: Some(columnar_worker),
             projection_worker: Some(projection_worker),
@@ -1124,6 +1143,7 @@ pub(crate) struct RunningProductionGraph {
     storage: SharedRedbOperationalPorts,
     scrub_worker: crate::scrub_worker::RunningScrubWorker,
     retention_lane: crate::retention_worker::RunningRetentionLane,
+    outbox_worker: Option<crate::outbox_worker::RunningLocalOutbox>,
     exact_worker: Option<RunningExactTextWorker>,
     columnar_worker: Option<RunningColumnarWorker>,
     projection_worker: Option<RunningProjectionWorker>,
@@ -1265,6 +1285,9 @@ impl RunningProductionGraph {
         let graph_started = Instant::now();
         let mut elapsed_us = [0_u64; PRODUCTION_SHUTDOWN_STAGE_COUNT];
         self.lifecycle.stop();
+        if let Some(worker) = &mut self.outbox_worker {
+            worker.shutdown();
+        }
         // The online retention lane is a writer: it stops before any drain
         // so no step overlaps the coordinator drain or the graceful close. A
         // step in progress completes as one atomic transition first.

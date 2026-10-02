@@ -200,6 +200,10 @@ where
             OutboxDispatchReport::increment(&mut report.deferred)?;
             return Ok(());
         }
+        if !self.connector.ready_to_deliver(item.event()) {
+            OutboxDispatchReport::increment(&mut report.deferred)?;
+            return Ok(());
+        }
         if !self.policy.permits_attempt_after(item.status().attempts()) {
             return self.dead_letter_pending(item, started_at, report);
         }

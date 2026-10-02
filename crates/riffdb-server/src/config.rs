@@ -6,6 +6,10 @@
 mod archive;
 pub(crate) use archive::ConfiguredArchive;
 use archive::{ArchiveDocument, parse_archives};
+#[path = "config_outbox.rs"]
+mod outbox;
+pub(crate) use outbox::ConfiguredOutbox;
+use outbox::{OutboxDocument, parse_outbox};
 #[path = "config_retention.rs"]
 mod retention;
 pub(crate) use retention::{RetentionConfig, RetentionTarget};
@@ -81,6 +85,7 @@ pub(crate) struct ServerConfig {
 
 /// One independently hosted database's non-secret process configuration.
 pub(crate) struct DatabaseConfig {
+    outbox: Option<ConfiguredOutbox>,
     archives: Vec<ConfiguredArchive>,
     retention: RetentionConfig,
     follower: Option<FollowerSourceConfig>,
@@ -140,6 +145,9 @@ impl ConfiguredProjection {
 }
 
 impl DatabaseConfig {
+    pub(crate) fn outbox(&self) -> Option<&ConfiguredOutbox> {
+        self.outbox.as_ref()
+    }
     pub(crate) fn archives(&self) -> &[ConfiguredArchive] {
         &self.archives
     }
@@ -277,12 +285,14 @@ impl ServerConfig {
             || maintenance.projections_root.is_some()
             || !maintenance.archives.is_empty()
             || maintenance.retention.is_some()
+            || maintenance.outbox.is_some()
             || !top_level_projections.is_empty();
         if !named_databases.is_empty() && uses_legacy_database_configuration {
             return Err(ServerConfigError::MixedDatabaseConfiguration);
         }
         let databases = if named_databases.is_empty() {
             vec![DatabaseConfig {
+                outbox: parse_outbox(maintenance.outbox)?,
                 archives: parse_archives(maintenance.archives)?,
                 retention: parse_retention(maintenance.retention)?,
                 follower: server
@@ -324,6 +334,11 @@ impl ServerConfig {
             .any(|database| database.follower.is_some() != (mode == ServerMode::Follower))
         {
             return Err(ServerConfigError::InvalidFollowerConfiguration);
+        }
+        if mode == ServerMode::Follower
+            && databases.iter().any(|database| database.outbox.is_some())
+        {
+            return Err(ServerConfigError::InvalidOutboxConfiguration);
         }
         let listen_environment = environment.value(LISTEN_ENVIRONMENT);
         let uses_legacy_listener_configuration = arguments.listen.is_some()
@@ -409,8 +424,14 @@ impl ServerConfig {
     }
 
     fn validate_disjoint_paths(&self, current_directory: &Path) -> Result<(), ServerConfigError> {
-        let mut paths = Vec::with_capacity(self.databases.len() * 5 + 2);
+        let mut paths = Vec::with_capacity(self.databases.len() * 6 + 2);
         for database in &self.databases {
+            if let Some(outbox) = database.outbox() {
+                paths.push((
+                    ConfiguredPathRole::OutboxRoot(database.alias.clone()),
+                    outbox.directory().to_path_buf(),
+                ));
+            }
             for archive in database.archives() {
                 paths.push((
                     ConfiguredPathRole::ArchiveRoot(database.alias.clone(), archive.name().clone()),
@@ -731,6 +752,7 @@ struct ListenerBoundsDocument {
 #[derive(Debug, Default, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct MaintenanceDocument {
+    outbox: Option<OutboxDocument>,
     #[serde(default)]
     archives: Vec<ArchiveDocument>,
     backup_root: Option<String>,
@@ -741,6 +763,7 @@ struct MaintenanceDocument {
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct DatabaseDocument {
+    outbox: Option<OutboxDocument>,
     #[serde(default)]
     archives: Vec<ArchiveDocument>,
     replication_source: Option<FollowerSourceDocument>,
@@ -828,6 +851,7 @@ fn parse_named_databases(
                 }
             };
             Ok(DatabaseConfig {
+                outbox: parse_outbox(document.outbox)?,
                 archives: parse_archives(document.archives)?,
                 retention: parse_retention(document.retention)?,
                 follower: document
@@ -1130,6 +1154,7 @@ fn parse_redb_commit_profile(value: OsString) -> Result<RedbCommitProfile, Serve
 /// Closed process-configuration failures that never echo a supplied value.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) enum ConfiguredPathRole {
+    OutboxRoot(DatabaseAlias),
     ArchiveRoot(DatabaseAlias, riffdb_types::ArchiveNameV1),
     Database(DatabaseAlias),
     BackupRoot(DatabaseAlias),
@@ -1143,6 +1168,7 @@ pub(crate) enum ConfiguredPathRole {
 impl fmt::Display for ConfiguredPathRole {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
+            Self::OutboxRoot(alias) => write!(formatter, "outbox root for '{alias}'"),
             Self::ArchiveRoot(alias, name) => write!(formatter, "archive '{name}' for '{alias}'"),
             Self::Database(alias) => write!(formatter, "database path for '{alias}'"),
             Self::BackupRoot(alias) => write!(formatter, "backup_root for '{alias}'"),
@@ -1161,6 +1187,7 @@ impl fmt::Display for ConfiguredPathRole {
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) enum ServerConfigError {
+    InvalidOutboxConfiguration,
     InvalidArchiveConfiguration,
     InvalidRetentionConfiguration,
     InvalidFollowerConfiguration,
@@ -1190,6 +1217,7 @@ pub(crate) enum ServerConfigError {
 impl fmt::Display for ServerConfigError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         formatter.write_str(match self {
+            Self::InvalidOutboxConfiguration => "outbox destination configuration is invalid",
             Self::InvalidArchiveConfiguration => "archive configuration is invalid or incomplete",
             Self::InvalidRetentionConfiguration => {
                 "retention configuration must name retained_sequences or hold, with sequences_per_epoch in 1..=256"

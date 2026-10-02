@@ -1518,7 +1518,27 @@ impl ServerProcess {
         idempotency_keys_path: &Path,
         mcp_address: SocketAddr,
     ) -> io::Result<Self> {
-        let mut child = Command::new(env!("CARGO_BIN_EXE_riffdbd"))
+        Self::spawn_with_configuration(
+            database_path,
+            capability_keys_path,
+            idempotency_keys_path,
+            mcp_address,
+            None,
+        )
+    }
+
+    fn spawn_with_configuration(
+        database_path: &Path,
+        capability_keys_path: &Path,
+        idempotency_keys_path: &Path,
+        mcp_address: SocketAddr,
+        configuration: Option<&Path>,
+    ) -> io::Result<Self> {
+        let mut command = Command::new(env!("CARGO_BIN_EXE_riffdbd"));
+        if let Some(path) = configuration {
+            command.arg("--config").arg(path);
+        }
+        let mut child = command
             .arg("--database")
             .arg(database_path)
             .arg("--listen")
@@ -2002,4 +2022,199 @@ fn find_bytes(haystack: &[u8], needle: &[u8]) -> Option<usize> {
     haystack
         .windows(needle.len())
         .position(|window| window == needle)
+}
+
+// req: EFF-002, EFF-003, OUT-001, OUT-002, STO-020, REC-001, REC-002
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn production_durable_local_archive_delivers_real_commands_and_restarts_without_duplicates()
+-> TestResult<()> {
+    use riffdb_storage_api::{DatabaseIdentityProbe, DatabaseIdentityProbePort};
+    use std::os::unix::fs::PermissionsExt;
+    let temporary = TemporaryDirectory::new()?;
+    let database_path = temporary.path().join("riffdb.redb");
+    let capability_keys = temporary.path().join("capability.keys");
+    let idempotency_keys = temporary.path().join("idempotency.keys");
+    let bootstrap_path = temporary.path().join("bootstrap.credential");
+    write_protected_file(&capability_keys, CAPABILITY_KEY_DOCUMENT)?;
+    write_protected_file(&idempotency_keys, IDEMPOTENCY_KEY_DOCUMENT)?;
+    let generated = generate_bootstrap_credential(BOOTSTRAP_UNIX_MILLISECONDS, &SystemEntropy)?;
+    write_protected_file(&bootstrap_path, generated.render_document().expose_secret())?;
+    drop(generated);
+    let bootstrap = load_bootstrap_credential_file(&bootstrap_path)?;
+    let destination = temporary.path().join("destination");
+    std::fs::create_dir(&destination)?;
+    std::fs::set_permissions(&destination, std::fs::Permissions::from_mode(0o755))?;
+    let configuration = temporary.path().join("server.toml");
+    std::fs::write(
+        &configuration,
+        format!(
+            "[maintenance.outbox]\nkind = 'durable_local'\ndirectory = '{}'\nquota_encoded_bytes = 1048576\n",
+            destination.display()
+        ),
+    )?;
+    let reservation = TcpListener::bind("127.0.0.1:0")?;
+    let mcp_address = reservation.local_addr()?;
+    drop(reservation);
+    let mcp_audience = format!("http://{mcp_address}{MCP_ROUTE}");
+    let mut process = ServerProcess::spawn_with_configuration(
+        &database_path,
+        &capability_keys,
+        &idempotency_keys,
+        mcp_address,
+        Some(&configuration),
+    )?;
+    let mut client = connect(process.wait_for_ready_address()?).await?;
+    let created = bounded_rpc(
+        "archive bootstrap",
+        client.create_bootstrap_capability(
+            bootstrap_request(&bootstrap, &mcp_audience)?,
+            &bootstrap_metadata(&bootstrap)?,
+        ),
+    )
+    .await?;
+    assert_created_bootstrap(created)?;
+    let metadata = CallMetadata::authenticated(bearer_credential(&bootstrap)?);
+    let deployment = bounded_rpc(
+        "archive contract",
+        client.deploy_contract(
+            v1::DeployContractRequest {
+                request_id: fresh_request_id_bytes()?,
+                source: BUDGET_CONTRACT.to_owned(),
+                expected_active_version: None,
+                expected_active_bundle_hash: Vec::new(),
+                expected_candidate_bundle_hash: Vec::new(),
+            },
+            &metadata,
+        ),
+    )
+    .await?;
+    assert_activated_budget_contract(deployment)?;
+    // Known unsafe destination custody must not block durable commands or
+    // consume attempts. Repair in place lets the sole worker resume.
+    execute_projection_fixture(&mut client, &metadata).await?;
+    let paused = bounded_rpc(
+        "archive outage health",
+        client.health(
+            v1::HealthRequest {
+                request_id: Some(fresh_request_id_bytes()?),
+            },
+            &metadata,
+        ),
+    )
+    .await?;
+    let Some(v1::health_response::Result::Authenticated(report)) = paused.result else {
+        return Err(test_failure("archive outage health missing"));
+    };
+    assert_eq!(
+        component_status(&report, v1::HealthComponentKind::Outbox)?,
+        v1::HealthComponentStatus::Degraded
+    );
+    assert_eq!(
+        component_status(&report, v1::HealthComponentKind::AuthoritativeStorage)?,
+        v1::HealthComponentStatus::Healthy
+    );
+    assert_eq!(report.last_commit_sequence, Some(2));
+    assert!(!destination.join("archive.redb").exists());
+    std::fs::set_permissions(&destination, std::fs::Permissions::from_mode(0o700))?;
+    let deadline = tokio::time::Instant::now() + RPC_TIMEOUT;
+    loop {
+        let health = bounded_rpc(
+            "archive completion",
+            client.health(
+                v1::HealthRequest {
+                    request_id: Some(fresh_request_id_bytes()?),
+                },
+                &metadata,
+            ),
+        )
+        .await?;
+        let Some(v1::health_response::Result::Authenticated(report)) = health.result else {
+            return Err(test_failure("authenticated archive health missing"));
+        };
+        if component_status(&report, v1::HealthComponentKind::Outbox)?
+            == v1::HealthComponentStatus::Healthy
+        {
+            break;
+        }
+        if tokio::time::Instant::now() >= deadline {
+            return Err(test_failure("durable delivery did not complete"));
+        }
+        tokio::task::yield_now().await;
+    }
+    drop(client);
+    process.signal_sigterm()?;
+    process.wait_for_successful_exit(PROCESS_STOP_TIMEOUT)?;
+    let store = riffdb_storage_redb::RedbStore::open(&database_path)?;
+    let DatabaseIdentityProbe::Existing(binding) = store.probe_database_identity()? else {
+        return Err(test_failure("primary identity missing"));
+    };
+    drop(store);
+    let mut archive = riffdb_outbox::DurableLocalArchive::open_existing(&destination, binding)?;
+    assert!(archive.validate_next_page()?);
+    let before = archive.observation()?;
+    assert!(before.records() > 0);
+    drop(archive);
+    process = ServerProcess::spawn_with_configuration(
+        &database_path,
+        &capability_keys,
+        &idempotency_keys,
+        mcp_address,
+        Some(&configuration),
+    )?;
+    client = connect(process.wait_for_ready_address()?).await?;
+    // The original identities replay their persisted outcomes; no events are emitted.
+    let replay = bounded_rpc(
+        "archive command replay",
+        client.execute_generated(
+            &CreateBudget {
+                idempotency_key: "p2-create-budget".to_owned(),
+                organization_id: ORGANIZATION_ID,
+                fiscal_year: FISCAL_YEAR,
+                approved_amount: amount(APPROVED_MINOR_UNITS)?,
+            },
+            one_attempt(),
+            &metadata,
+        ),
+    )
+    .await?;
+    assert_eq!(replay.response().commit_sequence, 1);
+    assert_eq!(
+        replay.response().status,
+        v1::execute_command_response::CompletionStatus::Replayed as i32
+    );
+    let reused = timeout(
+        RPC_TIMEOUT,
+        client.execute_generated(
+            &CreateBudget {
+                idempotency_key: "p2-create-budget".to_owned(),
+                organization_id: ORGANIZATION_ID,
+                fiscal_year: FISCAL_YEAR,
+                approved_amount: amount(APPROVED_MINOR_UNITS + 1)?,
+            },
+            one_attempt(),
+            &metadata,
+        ),
+    )
+    .await?;
+    let Err(error) = reused else {
+        return Err(test_failure("conflicting identity must refuse execution"));
+    };
+    let riffdb_client_rust::GeneratedExecutionError::Client(error) = error else {
+        return Err(test_failure("expected checked idempotency error"));
+    };
+    assert_eq!(
+        error
+            .application_error()
+            .ok_or_else(|| test_failure("checked error missing"))?
+            .code()
+            .as_str(),
+        "RDB-COMMAND-0101"
+    );
+    drop(client);
+    process.signal_sigterm()?;
+    process.wait_for_successful_exit(PROCESS_STOP_TIMEOUT)?;
+    let mut archive = riffdb_outbox::DurableLocalArchive::open_existing(&destination, binding)?;
+    assert!(archive.validate_next_page()?);
+    assert_eq!(archive.observation()?, before);
+    Ok(())
 }

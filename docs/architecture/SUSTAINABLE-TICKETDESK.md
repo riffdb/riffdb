@@ -1,9 +1,11 @@
 # Sustainable TicketDesk milestone
 
 This is the implementation handoff for the milestone selected on October 1,
-2026. Its architecture records were **accepted** in session that day, and no local archive,
-source-reclamation scheduler, provider retirement, or successful rehearsal is
-claimed by this page. The evidence checker is preparatory acceptance code.
+2026. Its architecture records were **accepted** in session that day. WP-822
+adds the optional [durable local archive](../operations/LOCAL-OUTBOX-ARCHIVE.md)
+and production dispatch worker; scoped acceptance and full CI pass. Source
+receipt reclamation, provider retirement, and the real rehearsal remain open.
+The evidence checker is preparatory acceptance code.
 
 The target is 65,536 seeded tickets across 64 organizations, 100 commands/s
 plus 400 named reads/s, at most 32 in flight, and recovery to the first
@@ -41,8 +43,9 @@ acceptance alone does not establish implementation or campaign results.
 ## Findings carried into implementation
 
 - `FileTestConnector` only calls its injected writer's `flush`; it cannot
-  establish durable destination acceptance. The proposal reuses the existing
-  redb engine for a separate archive instead of designing another append log.
+  establish durable destination acceptance. WP-822 adds a separate redb archive
+  with Immediate two-phase publication and exact event deduplication. The
+  fixture connector remains test infrastructure.
 - The source-control reclamation method is currently private, with retained
   observations exercised by fixtures. Production needs a closed owner that
   survives independent checkpoint observations without creating command-path
@@ -118,6 +121,55 @@ checks, including formatting, handbook build/links, requirement coverage,
 ADR obligations, index, acceptance-commit discipline, and allowed paths.
 Every downstream package brief resolves. `bash -n scripts/ci-all`,
 `git diff --check`, and the full `./scripts/ci-all` battery also pass. WP-821
-is complete; WP-822 through WP-826 remain open. No real rehearsal has run.
+is complete. WP-822 is also complete as recorded below; WP-823 through WP-826
+remain open. No real rehearsal has run.
 Full alpha qualification, broad epoch reset, driver replacement, remote webhooks,
 distribution, and additional micro-optimization remain outside this milestone.
+
+## WP-822 implementation and PR note
+
+Package: WP-822. Tier: guarantee, implementing accepted ADR-0265 decisions 2–7.
+
+Behavior added: an optional primary-only durable local archive, protected
+restart-applied configuration, and a server-owned recovered dispatcher. Real
+compiled commands emit events that the worker archives with atomic encoded-byte
+accounting. Equal uncertain retries preserve the original record; unequal bytes
+are corruption. Known custody or quota refusal pauses before a claim, while
+post-claim failure preserves existing bounded retry/dead-letter semantics.
+Command acknowledgement does not wait for destination I/O. Shutdown cancels
+between bounded recovery pages and joins the worker before writer close.
+
+Compatibility: the new record has a sealed destination registry, a separate
+Protobuf source, and a stable compatibility vector. Primary registry membership
+and record schema hashes are unchanged. No-destination behavior, compiled writes,
+authorization, idempotency, provenance, and database-wide ordering are preserved.
+Followers reject destination configuration. Local inspection requires Linux and
+exclusive engine custody; it exposes no payloads or application RPC/MCP method.
+
+Checks run: `./scripts/ci-all` passes, including workspace tests, clippy,
+documentation, dependency checks, four-language operational conformance,
+generated fixtures, release source installation, and existing recovery gates.
+`./scripts/acceptance --wp WP-822 --range HEAD..HEAD --no-tests` passes all 19
+selected non-test checks; tests ran in full CI. The corrected exact schema
+inventory test also passes independently. Process tests cover four destination
+commit/publication cuts with repeated restart, source-completion uncertainty,
+quota, permission recovery, corruption, real production delivery, original
+command replay, and conflicting idempotency input. `git diff --check` passes.
+
+Implementation choices: recover 256 rows/4 MiB per archive step; reserve a
+3-MiB outer record payload bound and 8-MiB engine cache. Linux custody pins
+directory/file identities and verifies effective-user ownership, private modes,
+symlink refusal, and one hard link. Inspection reports incomplete until exact
+end and caps each invocation at 256 pages. Generators own all package assets,
+format/fixture digests, adapter templates, and CLI reference changes.
+
+Updated handbook pages: [local archive operations](../operations/LOCAL-OUTBOX-ARCHIVE.md),
+[configuration](../configuration.md), [domain events](../contracts/DOMAIN-EVENTS.md),
+[CLI reference](../reference/CLI.md), and this milestone handoff; `SUMMARY.md`
+links the new operations page.
+
+Hazards and follow-ups: archive rows are intentionally retained, with no automatic
+deletion; quota excludes separately measured engine allocation and cache memory.
+Dead letters continue to fence source history. WP-823 owns repeated receipt and
+physical extent reclamation plus retention-aware recovery. WP-824 owns provider
+retirement, and WP-825/WP-826 own the real workload and uninterrupted rehearsal.

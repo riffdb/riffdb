@@ -1249,6 +1249,17 @@ pub(crate) fn payload(record_index: usize, input: &[u8]) -> Result<(), DurablePr
     preflight(input, shape, 0, &mut budget)
 }
 
+// Destination-only shape. It does not enter ROOTS or the primary registry.
+shape!(LOCAL_OUTBOX_ARCHIVE_V1 [fixed_bytes(1, 16), nonempty_bytes(3, 3 * 1024 * 1024)]);
+
+pub(crate) fn local_outbox_archive(input: &[u8]) -> Result<(), DurablePreflightError> {
+    let mut budget = Budget {
+        visited_fields: 0,
+        packed_items: 0,
+    };
+    preflight(input, &LOCAL_OUTBOX_ARCHIVE_V1, 0, &mut budget)
+}
+
 struct Budget {
     visited_fields: usize,
     packed_items: usize,

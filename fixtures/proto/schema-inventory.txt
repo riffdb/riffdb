@@ -115,6 +115,7 @@ files
     import riffdb/storage/v1/application.proto
   riffdb/storage/v1/installation_v1.proto
   riffdb/storage/v1/leadership_epoch_v1.proto
+  riffdb/storage/v1/local_outbox_archive_v1.proto
   riffdb/storage/v1/metadata.proto
     import riffdb/storage/v1/common.proto
   riffdb/storage/v1/migration_v1.proto
@@ -829,6 +830,10 @@ messages
     1 attempt optional uint32
     2 token optional bytes
     3 expires_at optional .riffdb.storage.v1.TimestampV1
+  riffdb.storage.v1.LocalOutboxArchiveRecordV1 fields=3
+    1 database_id optional bytes
+    2 history_incarnation optional uint64
+    3 event_envelope optional bytes
   riffdb.storage.v1.OutboxDeadLetterV1 fields=4
     1 attempts optional uint32
     2 destination_id optional string

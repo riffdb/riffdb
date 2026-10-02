@@ -10,6 +10,7 @@ mod config;
 mod contract_explain;
 mod credential;
 mod input;
+mod local_outbox;
 mod lsp;
 mod output;
 mod project;

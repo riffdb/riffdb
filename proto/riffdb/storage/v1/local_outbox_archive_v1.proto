@@ -1,0 +1,12 @@
+syntax = "proto3";
+
+package riffdb.storage.v1;
+
+// ADR-0265 external destination record. This standalone descriptor does not
+// rotate any authoritative database schema or enter its record registry.
+message LocalOutboxArchiveRecordV1 {
+  bytes database_id = 1;
+  uint64 history_incarnation = 2;
+  // Exact checked StoredDurableEventV1/V2 envelope, including its canonical hash.
+  bytes event_envelope = 3;
+}

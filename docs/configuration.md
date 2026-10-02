@@ -113,6 +113,15 @@ collectors before closing storage. The POC supports local filesystem sinks;
 `operator_managed` encryption must be supplied outside RiffDB.
 See [Backup and Restore](backup-restore.md).
 
+### Durable local outbox destination
+
+An optional `[maintenance.outbox]` section, or `[databases.<alias>.outbox]`
+for named databases, configures one `durable_local` destination with an absolute
+protected `directory` and positive `quota_encoded_bytes`. Configuration is
+restart-applied and refused on followers. See [Durable Local Outbox
+Archive](operations/LOCAL-OUTBOX-ARCHIVE.md) for custody, delivery, accounting,
+and offline inspection.
+
 ### Online retention
 
 `riffdbd` can compact commit history while it serves. The legacy

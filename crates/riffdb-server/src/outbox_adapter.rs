@@ -32,12 +32,14 @@ pub(crate) enum OutboxDerivedReadiness {
 #[derive(Clone)]
 pub(crate) struct NoDestinationOutboxHealth {
     state: Arc<AtomicU8>,
+    destination_unready: Arc<AtomicU8>,
 }
 
 impl NoDestinationOutboxHealth {
     /// Seeds recovery readiness before the first complete undelivered scan.
     pub(crate) fn new(recovery: OutboxRecoveryReadiness) -> Self {
         Self {
+            destination_unready: Arc::new(AtomicU8::new(0)),
             state: Arc::new(AtomicU8::new(match recovery {
                 OutboxRecoveryReadiness::Ready => 0,
                 OutboxRecoveryReadiness::Degraded => 1,
@@ -51,9 +53,17 @@ impl NoDestinationOutboxHealth {
         self.state.store(u8::from(degraded), Ordering::Release);
     }
 
+    /// Configured destination recovery/refusal independently fences readiness.
+    pub(crate) fn destination_ready(&self, ready: bool) {
+        self.destination_unready
+            .store(u8::from(!ready), Ordering::Release);
+    }
+
     /// Returns the current payload-free aggregate classification.
     pub(crate) fn readiness(&self) -> OutboxDerivedReadiness {
-        if self.state.load(Ordering::Acquire) == 0 {
+        if self.state.load(Ordering::Acquire) == 0
+            && self.destination_unready.load(Ordering::Acquire) == 0
+        {
             OutboxDerivedReadiness::Ready
         } else {
             OutboxDerivedReadiness::Degraded
@@ -235,5 +245,26 @@ mod tests {
             std::any::type_name::<ServerOutboxStatusPort>(),
             "riffdb_server::outbox_adapter::ServerOutboxStatusPort"
         );
+    }
+
+    // req: EFF-002
+    #[test]
+    fn commit_health_updates_cannot_clear_a_destination_refusal_in_either_order() {
+        for destination_first in [false, true] {
+            let health = NoDestinationOutboxHealth::new(OutboxRecoveryReadiness::Ready);
+            if destination_first {
+                health.destination_ready(false);
+            }
+            health.state.store(0, Ordering::Release);
+            if !destination_first {
+                health.destination_ready(false);
+            }
+            assert_eq!(health.readiness(), OutboxDerivedReadiness::Degraded);
+            health.destination_ready(true);
+            assert_eq!(health.readiness(), OutboxDerivedReadiness::Ready);
+            health.state.store(1, Ordering::Release);
+            health.destination_ready(true);
+            assert_eq!(health.readiness(), OutboxDerivedReadiness::Degraded);
+        }
     }
 }

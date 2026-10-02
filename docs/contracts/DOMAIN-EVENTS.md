@@ -59,7 +59,9 @@ Outbox delivery remains retryable after commit. If a delivery attempt fails or
 its completion races with a status change, the dispatcher retains its position
 before the interrupted item. Remaining items in that page are available on the
 next scan; delivery is still at least once and consumers must deduplicate by
-the stable event ID.
+the stable event ID. Operators can configure the POC's [Durable Local Outbox
+Archive](../operations/LOCAL-OUTBOX-ARCHIVE.md); applications retain the same
+compiled event emission and consumption interfaces.
 
 ## Evolution
 

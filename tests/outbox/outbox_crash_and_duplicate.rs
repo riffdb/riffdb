@@ -1133,3 +1133,126 @@ fn review_completion_state_change_keeps_remaining_page_reachable() {
     ));
     assert_eq!(repository.status(event_id(2)), None);
 }
+
+// req: EFF-002, EFF-003, REC-001, REC-002, STO-020
+#[cfg(target_os = "linux")]
+#[test]
+fn durable_local_quota_pauses_before_claim_and_uncertain_completion_replays_exact_archive() {
+    use riffdb_outbox::{DurableLocalArchive, DurableLocalConnector};
+    use riffdb_types::DatabaseId;
+    use std::num::NonZeroU64;
+    use std::os::unix::fs::PermissionsExt;
+    let root = tempfile::Builder::new()
+        .permissions(std::fs::Permissions::from_mode(0o700))
+        .tempdir()
+        .unwrap();
+    let binding = DatabaseId::from_unix_milliseconds_and_random(42, [1; 10]).unwrap();
+    let open = |quota| {
+        let mut archive = DurableLocalArchive::open(root.path(), binding, quota).unwrap();
+        assert!(archive.validate_next_page().unwrap());
+        DurableLocalConnector::new(archive, NonZeroU64::MIN)
+    };
+    let repository = FakeRepository::with_events(1);
+    let clock = SharedClock::new(10);
+    let delivery = policy(3);
+    let mut paused = OutboxDispatcher::new(
+        recovered(repository.clone(), &delivery, &clock),
+        open(NonZeroU64::MIN),
+        clock.clone(),
+        NoOutboxFailpoints,
+        NoOutboxTelemetry,
+        delivery.clone(),
+    );
+    for _ in 0..40 {
+        let report = paused.dispatch_once().unwrap();
+        assert_eq!(report.claims(), 0);
+        assert_eq!(report.deferred(), 1);
+        assert!(repository.status(event_id(0)).is_none());
+    }
+    drop(paused);
+    let mut uncertain = OutboxDispatcher::new(
+        recovered(repository.clone(), &delivery, &clock),
+        open(NonZeroU64::MAX),
+        clock.clone(),
+        OneShotFailpoint::new(OutboxFailpoint::DeliveryAfterConnectorAcceptedBeforeSuccess),
+        NoOutboxTelemetry,
+        delivery.clone(),
+    );
+    assert!(matches!(
+        uncertain.dispatch_once(),
+        Err(OutboxWorkerError::Interrupted { .. })
+    ));
+    assert_delivering(&repository, 1);
+    let counts = uncertain.connector().archive().observation().unwrap();
+    assert_eq!(counts.records(), 1);
+    let key = riffdb_storage_api::LocalOutboxArchiveRecordV1::new(
+        binding,
+        NonZeroU64::MIN,
+        make_event(0),
+    )
+    .key();
+    let first = uncertain.connector().archive().read(&key).unwrap().unwrap();
+    drop(uncertain);
+    clock.set(20);
+    let recovered = recovered(repository.clone(), &delivery, &clock);
+    clock.set(21);
+    // Equal replay is allowed even when the current quota is exactly full.
+    let mut restarted = OutboxDispatcher::new(
+        recovered,
+        open(NonZeroU64::new(counts.encoded_bytes()).unwrap()),
+        clock,
+        NoOutboxFailpoints,
+        NoOutboxTelemetry,
+        delivery,
+    );
+    assert_eq!(restarted.dispatch_once().unwrap().delivered(), 1);
+    assert_delivered(&repository, 2);
+    assert_eq!(
+        restarted.connector().archive().observation().unwrap(),
+        counts
+    );
+    assert_eq!(
+        restarted.connector().archive().read(&key).unwrap(),
+        Some(first)
+    );
+    assert_eq!(repository.authoritative_counts(), (1, 1));
+}
+
+// req: REC-001
+#[test]
+fn recovery_page_admission_withdrawal_cannot_publish_dispatcher_readiness() {
+    let repository = FakeRepository::with_events(3);
+    let clock = SharedClock::new(10);
+    let delivery = policy_with_limit(3, 1);
+    let mut pages = 0;
+    let result = RecoveringOutbox::after_authoritative_readiness(repository.clone())
+        .recover_with_page_admission(
+            &delivery,
+            &mut clock.clone(),
+            &mut NoOutboxFailpoints,
+            &mut NoOutboxTelemetry,
+            || {
+                pages += 1;
+                pages == 1
+            },
+        );
+    assert_eq!(pages, 2);
+    let OutboxRecoveryResult::Degraded {
+        recovering, report, ..
+    } = result
+    else {
+        panic!("withdrawal cannot grant readiness");
+    };
+    assert_eq!(report.scanned(), 1);
+    assert_eq!(report.normalized(), 0);
+    assert!(matches!(
+        recovering.recover(
+            &delivery,
+            &mut clock.clone(),
+            &mut NoOutboxFailpoints,
+            &mut NoOutboxTelemetry
+        ),
+        OutboxRecoveryResult::Ready { .. }
+    ));
+    assert_eq!(repository.authoritative_counts(), (3, 3));
+}

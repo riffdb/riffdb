@@ -1796,6 +1796,7 @@ dependencies = [
  "riffdb-contract-ir",
  "riffdb-contract-syntax",
  "riffdb-diagnostics",
+ "riffdb-outbox",
  "riffdb-query-module",
  "riffdb-riffql-syntax",
  "riffdb-storage-redb",
@@ -2016,8 +2017,11 @@ dependencies = [
 name = "riffdb-outbox"
 version = "0.1.0"
 dependencies = [
+ "cap-std",
+ "redb",
  "riffdb-storage-api",
  "riffdb-types",
+ "tempfile",
 ]
 
 [[package]]

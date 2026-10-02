@@ -25,6 +25,11 @@ pub(crate) struct Cli {
 pub(crate) enum TopLevel {
     /// Starts the bounded compiler-backed Language Server Protocol service on stdio.
     Lsp,
+    /// Inspects the stopped server's protected local outbox destination.
+    Outbox {
+        #[command(subcommand)]
+        command: OutboxCommand,
+    },
     /// Initializes RiffDB schema files in a new or existing project.
     Init {
         #[arg(value_name = "APPLICATION")]
@@ -2768,4 +2773,24 @@ mod tests {
             .is_err()
         );
     }
+}
+
+#[derive(Debug, Subcommand)]
+pub(crate) enum OutboxCommand {
+    Archive {
+        #[command(subcommand)]
+        command: LocalArchiveCommand,
+    },
+}
+#[derive(Debug, Subcommand)]
+pub(crate) enum LocalArchiveCommand {
+    /// Validates bounded pages without exposing event payloads. Requires exclusive archive custody.
+    Inspect {
+        #[arg(long, value_name = "ABSOLUTE_DIRECTORY")]
+        directory: OsString,
+        #[arg(long, value_name = "32_HEX_DATABASE_ID")]
+        database_id: String,
+        #[arg(long, default_value = "1", value_parser = clap::value_parser!(u16).range(1..=256), value_name = "1..256")]
+        max_pages: u16,
+    },
 }

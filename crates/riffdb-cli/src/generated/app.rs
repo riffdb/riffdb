@@ -457,6 +457,12 @@ async fn submit_normal_create_retry(
 /// Parses one process invocation and runs exactly one public CLI operation.
 pub async fn run() -> ExitCode {
     let mut cli = Cli::parse();
+    if let TopLevel::Outbox { command } = &cli.command {
+        return crate::local_outbox::inspect(command).emit(
+            cli.output.unwrap_or(OutputMode::Human),
+            &mut io::stdout().lock(), &mut io::stderr().lock(),
+        );
+    }
     if matches!(cli.command, TopLevel::Lsp) {
         return crate::lsp::run_stdio();
     }
@@ -1539,6 +1545,10 @@ async fn dispatch(
     stdin: &mut dyn Read,
 ) -> Terminal {
     match command {
+        TopLevel::Outbox { .. } => local_error(
+            CommandIdentity::LocalArchiveInspect, "local_dispatch_invalid",
+            "local archive inspection reached network dispatch",
+        ),
         TopLevel::Lsp => local_error(
             CommandIdentity::ServerHealth,
             "lsp_dispatch_invalid",
@@ -11692,6 +11702,7 @@ const fn restore_confirmation(confirmed: bool) -> OfflineMaintenanceReplacementC
 
 const fn command_identity(command: &TopLevel) -> CommandIdentity {
     match command {
+        TopLevel::Outbox { .. } => CommandIdentity::LocalArchiveInspect,
         TopLevel::Lsp => CommandIdentity::ServerHealth,
         TopLevel::Init { .. } => CommandIdentity::ProjectInit,
         TopLevel::Push { .. } => CommandIdentity::ProjectPush,

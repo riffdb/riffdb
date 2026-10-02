@@ -26,6 +26,7 @@ const OUTPUT_RENDER_FAILED: &[u8] =
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum CommandIdentity {
+    LocalArchiveInspect,
     ProjectInit,
     ProjectPush,
     ProjectGenerate,
@@ -117,6 +118,7 @@ pub(crate) enum CommandIdentity {
 impl CommandIdentity {
     pub(crate) const fn as_str(self) -> &'static str {
         match self {
+            Self::LocalArchiveInspect => "outbox.archive.inspect",
             Self::ProjectInit => "project.init",
             Self::ProjectPush => "project.push",
             Self::ProjectGenerate => "project.generate",

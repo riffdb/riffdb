@@ -26,6 +26,8 @@ pub enum ConnectorDestinationKind {
     Deterministic,
     /// Injected writer suitable for a bounded file or stdout demonstration.
     FileTest,
+    /// Protected, quota-bounded local destination with Immediate durable acceptance.
+    DurableLocal,
     /// Optional HTTP webhook connector requiring explicit feature and composition.
     HttpWebhook,
 }
@@ -197,6 +199,13 @@ impl fmt::Debug for ConnectorDisposition {
 pub trait OutboxConnector {
     /// Declares destination and downstream idempotency behavior.
     fn declaration(&self) -> ConnectorDeclaration;
+
+    /// Preflight known destination availability before creating a durable claim.
+    /// A pause changes neither attempts nor delivery state. Delivery can still
+    /// fail after a claim and follows the existing bounded retry policy.
+    fn ready_to_deliver(&mut self, _event: &StoredDurableEventV1) -> bool {
+        true
+    }
 
     /// Attempts one delivery and returns an already classified, scrubbed result.
     ///

@@ -9,14 +9,24 @@ publish.workspace = true
 [features]
 default = []
 http-webhook = []
+test-fixtures = []
 
 [dependencies]
+cap-std = { version = "=4.0.2", default-features = false }
+redb = { version = "=4.2.0", default-features = false }
 riffdb-storage-api = { version = "0.1.0", path = "../riffdb-storage-api", default-features = false }
 riffdb-types = { version = "0.1.0", path = "../riffdb-types", default-features = false }
 
 [[test]]
 name = "outbox_crash_and_duplicate"
 path = "../../tests/outbox/outbox_crash_and_duplicate.rs"
+
+[[test]]
+name = "local_archive"
+path = "../../tests/outbox/local_archive.rs"
+
+[dev-dependencies]
+tempfile.workspace = true
 
 [lints]
 workspace = true

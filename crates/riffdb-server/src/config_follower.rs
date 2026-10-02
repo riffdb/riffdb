@@ -169,6 +169,16 @@ hold_id = "71717171717171717171717171717171"
         let config = ServerConfig::parse(arguments.clone()).unwrap();
         assert_eq!(config.mode(), ServerMode::Follower);
         assert!(config.databases()[0].follower().is_some());
+        let outbox = format!(
+            "{document}\n[maintenance.outbox]\nkind = 'durable_local'\ndirectory = '{}/destination'\nquota_encoded_bytes = 4096\n",
+            scope.path().display()
+        );
+        std::fs::write(&path, outbox).unwrap();
+        assert!(matches!(
+            ServerConfig::parse(arguments.clone()),
+            Err(ServerConfigError::InvalidOutboxConfiguration)
+        ));
+        std::fs::write(&path, &document).unwrap();
         let mut primary = arguments.clone();
         primary.extend([OsString::from("--mode"), OsString::from("primary")]);
         assert!(

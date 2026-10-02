@@ -44,6 +44,7 @@ mod maintenance_recovery_controller;
 mod notifications;
 mod operational_status;
 mod outbox_adapter;
+mod outbox_worker;
 mod port_driver;
 mod process_graph;
 mod projection_adapter;

@@ -84,6 +84,7 @@
 # Operate RiffDB
 
 - [Configuration](configuration.md)
+- [Durable Local Outbox Archive](operations/LOCAL-OUTBOX-ARCHIVE.md)
 - [Helm Operations](operations/HELM-OPERATIONS.md)
 - [Remote and Local Application Ingress](operations/REMOTE-INGRESS.md)
 - [Follower Registration and Retirement](operations/FOLLOWER-ADMINISTRATION.md)

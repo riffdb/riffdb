@@ -195,7 +195,7 @@ where
     /// Callers must enforce one recovery owner and keep the dispatcher stopped
     /// for this repository until `Ready` is returned.
     pub fn recover<C, F, T>(
-        mut self,
+        self,
         policy: &DeliveryPolicy,
         clock: &mut C,
         failpoints: &mut F,
@@ -206,11 +206,42 @@ where
         F: OutboxFailpoints,
         T: OutboxTelemetry,
     {
+        self.recover_with_page_admission(policy, clock, failpoints, telemetry, || true)
+    }
+
+    /// Normalizes with explicit bounded-page admission. Withdrawing admission
+    /// returns the retained repository degraded/unavailable, never a readiness
+    /// proof; previously durable normalizations remain idempotent on retry.
+    pub fn recover_with_page_admission<C, F, T, A>(
+        mut self,
+        policy: &DeliveryPolicy,
+        clock: &mut C,
+        failpoints: &mut F,
+        telemetry: &mut T,
+        mut admit_page: A,
+    ) -> OutboxRecoveryResult<R>
+    where
+        C: OutboxClock,
+        F: OutboxFailpoints,
+        T: OutboxTelemetry,
+        A: FnMut() -> bool,
+    {
         telemetry.record(OutboxTelemetryEvent::RecoveryStarted);
         let mut report = OutboxRecoveryReport::default();
         let mut request = UndeliveredOutboxStatusScanRequestV1::initial(None, policy.scan_limit());
 
         loop {
+            if !admit_page() {
+                return degraded(
+                    self,
+                    report,
+                    riffdb_storage_api::StorageError::new(
+                        riffdb_storage_api::StorageErrorKind::Unavailable,
+                        None,
+                    )
+                    .into(),
+                );
+            }
             let scan = match self.repository.scan_undelivered_outbox_statuses(request) {
                 Ok(scan) => scan,
                 Err(error) => {

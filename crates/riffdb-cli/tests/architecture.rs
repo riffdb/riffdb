@@ -7,7 +7,7 @@ use std::fs;
 use std::path::PathBuf;
 use std::process::Command;
 
-const DIRECT_DEPENDENCIES: [&str; 21] = [
+const DIRECT_DEPENDENCIES: [&str; 22] = [
     "base64",
     "clap",
     // ADR-0211 authorizes one trusted MCP descriptor projection reused by CLI
@@ -24,6 +24,8 @@ const DIRECT_DEPENDENCIES: [&str; 21] = [
     // ADR-0120 confines editor navigation to the authoritative local parsers.
     "riffdb-contract-syntax",
     "riffdb-diagnostics",
+    // ADR-0265 confines this edge to protected offline destination inspection.
+    "riffdb-outbox",
     "riffdb-query-module",
     "riffdb-riffql-syntax",
     // Offline exclusive retention verbs (ADR-0085 A2) bind a closed database file.
@@ -37,6 +39,7 @@ const DIRECT_DEPENDENCIES: [&str; 21] = [
     "zeroize",
 ];
 const EXACT_DEPENDENCY_ROWS: &str = concat!(
+    "riffdb-outbox = { version = \"0.1.0\", path = \"../riffdb-outbox\", default-features = false }\n",
     "base64 = { version = \"=0.22.1\", default-features = false, features = [\"alloc\"] }\n",
     "clap = { version = \"=4.6.3\", default-features = false, features = [\"derive\", \"std\", \"help\", \"usage\", \"error-context\"] }\n",
     "riffdb-auth = { version = \"0.1.0\", path = \"../riffdb-auth\", default-features = false }\n",

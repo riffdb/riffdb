@@ -75,6 +75,7 @@ const STORAGE_SOURCES: &[&str] = &[
     "riffdb/storage/v1/metadata.proto",
     "riffdb/storage/v1/migration_v1.proto",
     "riffdb/storage/v1/outbox.proto",
+    "riffdb/storage/v1/local_outbox_archive_v1.proto",
     "riffdb/storage/v1/projection.proto",
     "riffdb/storage/v1/reactive_module_v1.proto",
     "riffdb/storage/v1/registry_v2.proto",
@@ -139,6 +140,7 @@ const PRODUCTION_SOURCES: &[&str] = &[
     "riffdb/storage/v1/metadata.proto",
     "riffdb/storage/v1/migration_v1.proto",
     "riffdb/storage/v1/outbox.proto",
+    "riffdb/storage/v1/local_outbox_archive_v1.proto",
     "riffdb/storage/v1/projection.proto",
     "riffdb/storage/v1/reactive_module_v1.proto",
     "riffdb/storage/v1/registry_v2.proto",
@@ -1179,6 +1181,34 @@ fn main() -> Result<(), Box<dyn Error>> {
         "fixtures/proto/operation-schema-composition-allocate-budget-v1.schema.json",
         &operation_schema_checkpoint.representative_composition,
     )?;
+    // Destination-only schema: never add it to the primary durable registry.
+    let archive_type = "riffdb.storage.v1.LocalOutboxArchiveRecordV1";
+    let archive_descriptor =
+        descriptor_closure(&storage, "riffdb/storage/v1/local_outbox_archive_v1.proto")?
+            .encode_to_vec();
+    let mut archive_frame = Vec::new();
+    archive_frame.extend_from_slice(&u16::try_from(archive_type.len())?.to_be_bytes());
+    archive_frame.extend_from_slice(archive_type.as_bytes());
+    archive_frame.extend_from_slice(&u64::try_from(archive_descriptor.len())?.to_be_bytes());
+    archive_frame.extend_from_slice(&archive_descriptor);
+    // The nested event supports a 2-MiB payload plus its own envelope.
+    let archive_bound = 3 * 1024 * 1024;
+    let archive_envelope_bound = maximum_encoded_envelope_bytes_for(archive_type, archive_bound)?;
+    let mut archive_bounds = Vec::new();
+    archive_bounds.extend_from_slice(&u32::try_from(archive_bound)?.to_be_bytes());
+    archive_bounds.extend_from_slice(&u32::try_from(archive_envelope_bound)?.to_be_bytes());
+    for prefix in ["fixtures/proto", "crates/riffdb-proto/fixtures"] {
+        write_artifact(
+            &output_root,
+            &format!("{prefix}/durable-local-outbox-archive-v1-schema-hash.bin"),
+            hash_schema(&archive_frame).as_bytes(),
+        )?;
+        write_artifact(
+            &output_root,
+            &format!("{prefix}/durable-local-outbox-archive-v1-record-bound.bin"),
+            &archive_bounds,
+        )?;
+    }
     let legacy_registry = durable_registry
         .get(..LEGACY_DURABLE_RECORD_COUNT)
         .ok_or_else(|| io::Error::other("durable registry lost its legacy prefix"))?;
@@ -2180,9 +2210,9 @@ fn build_durable_registry(
         .iter()
         .map(|file| file.enum_type.len())
         .sum::<usize>();
-    if message_count != 209 || enum_count != 30 {
+    if message_count != 210 || enum_count != 30 {
         return Err(io::Error::other(format!(
-            "storage schema must contain exactly 209 messages and 30 enums; found {message_count} messages and {enum_count} enums"
+            "storage schema must contain exactly 210 messages and 30 enums; found {message_count} messages and {enum_count} enums"
         ))
         .into());
     }

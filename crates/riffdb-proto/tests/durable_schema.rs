@@ -232,6 +232,10 @@ fn storage_source_import_and_type_inventory_is_exact() {
         imports,
         BTreeMap::from([
             (
+                "riffdb/storage/v1/local_outbox_archive_v1.proto".to_owned(),
+                vec![],
+            ),
+            (
                 "riffdb/storage/v1/promotion_administration_v1.proto".to_owned(),
                 vec![
                     "riffdb/storage/v1/common.proto",
@@ -590,7 +594,7 @@ fn storage_source_import_and_type_inventory_is_exact() {
             .iter()
             .map(|file| file.message_type.len())
             .sum::<usize>(),
-        209,
+        210,
         "exact top-level semantic messages, StoredEnvelope and registry support"
     );
     assert_eq!(

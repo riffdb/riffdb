@@ -3184,6 +3184,15 @@ pub struct StoredLeadershipEpochV1 {
     #[prost(uint64, tag = "1")]
     pub epoch: u64,
 }
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct LocalOutboxArchiveRecordV1 {
+    #[prost(bytes = "vec", tag = "1")]
+    pub database_id: ::prost::alloc::vec::Vec<u8>,
+    #[prost(uint64, tag = "2")]
+    pub history_incarnation: u64,
+    #[prost(bytes = "vec", tag = "3")]
+    pub event_envelope: ::prost::alloc::vec::Vec<u8>,
+}
 #[derive(Clone, Copy, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct StoredStorageFormatVersionV1 {
     #[prost(uint32, tag = "1")]

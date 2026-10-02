@@ -13,6 +13,7 @@ Usage: riffdb [OPTIONS] <COMMAND>
 
 Commands:
   lsp          Starts the bounded compiler-backed Language Server Protocol service on stdio
+  outbox       Inspects the stopped server's protected local outbox destination
   init         Initializes RiffDB schema files in a new or existing project
   push         Checks, locks, and installs the configured schema
   generate     Regenerates configured SDK targets from the exact project lock
@@ -59,6 +60,26 @@ Options:
 Starts the bounded compiler-backed Language Server Protocol service on stdio
 
 Usage: riffdb lsp [OPTIONS]
+
+Options:
+      --config <PATH>
+      --endpoint <HTTP_OR_HTTPS_ENDPOINT>
+      --database <DATABASE>
+      --output <human|json>                [possible values: human, json]
+      --max-attempts <1..10>
+      --credential-file <PATH>
+  -h, --help                               Print help
+```
+
+### `riffdb outbox`
+
+```text
+Inspects the stopped server's protected local outbox destination
+
+Usage: riffdb outbox [OPTIONS] <COMMAND>
+
+Commands:
+  archive
 
 Options:
       --config <PATH>
@@ -720,6 +741,24 @@ Usage: riffdb demo [OPTIONS] <COMMAND>
 
 Commands:
   budget
+
+Options:
+      --config <PATH>
+      --endpoint <HTTP_OR_HTTPS_ENDPOINT>
+      --database <DATABASE>
+      --output <human|json>                [possible values: human, json]
+      --max-attempts <1..10>
+      --credential-file <PATH>
+  -h, --help                               Print help
+```
+
+#### `riffdb outbox archive`
+
+```text
+Usage: riffdb outbox archive [OPTIONS] <COMMAND>
+
+Commands:
+  inspect  Validates bounded pages without exposing event payloads. Requires exclusive archive custody
 
 Options:
       --config <PATH>
@@ -2821,6 +2860,26 @@ Options:
 
   -h, --help
           Print help
+```
+
+##### `riffdb outbox archive inspect`
+
+```text
+Validates bounded pages without exposing event payloads. Requires exclusive archive custody
+
+Usage: riffdb outbox archive inspect [OPTIONS] --directory <ABSOLUTE_DIRECTORY> --database-id <32_HEX_DATABASE_ID>
+
+Options:
+      --config <PATH>
+      --directory <ABSOLUTE_DIRECTORY>
+      --database-id <32_HEX_DATABASE_ID>
+      --endpoint <HTTP_OR_HTTPS_ENDPOINT>
+      --database <DATABASE>
+      --max-pages <1..256>                 [default: 1]
+      --output <human|json>                [possible values: human, json]
+      --max-attempts <1..10>
+      --credential-file <PATH>
+  -h, --help                               Print help
 ```
 
 ##### `riffdb retention hold add`

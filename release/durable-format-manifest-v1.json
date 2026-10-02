@@ -239,7 +239,7 @@
     {"record_type":"riffdb.storage.v1.StoredPrimaryFenceAdministrationV1","tag":77,"revision":1,"schema_hash":"65512bfab94d054534f7cadedd5b2dc8fabd4152125f565483eaf1f5348a92af"},
     {"record_type":"riffdb.storage.v1.StoredPromotionAdministrationV1","tag":78,"revision":1,"schema_hash":"a94f474fa98024e74b298541dac061cf50c829604dd2876fc4a38db0d5ef3fa8"}
   ],
-  "compatibility_fixture_digest": "0fb770d46022a8e80fd928746ea695b59831bd8fe7008e7728c594c28fa3313f",
+  "compatibility_fixture_digest": "09b389c827da34e5527385ff743bde7a8a8bd6101fc620191c9b6842b77fadc0",
   "upgrade_table": "compatibility/release-pairs-v1.json",
   "physical_format_inventory": "compatibility/physical-formats-v1.json",
   "backup_required_before_upgrade": true,

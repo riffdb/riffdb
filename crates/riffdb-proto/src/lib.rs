@@ -12,6 +12,7 @@ mod command;
 pub mod durable;
 mod durable_wire;
 pub mod envelope;
+mod local_outbox_archive;
 mod public_error;
 mod public_message;
 mod value;
@@ -43,6 +44,7 @@ pub mod storage {
 
 pub use application_error::*;
 pub use command::*;
+pub use local_outbox_archive::*;
 pub use public_error::*;
 pub use public_message::*;
 pub use value::*;
