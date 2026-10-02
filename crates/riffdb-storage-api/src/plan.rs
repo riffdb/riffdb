@@ -68,3 +68,13 @@ impl ExecutablePlanRef {
             .checked_add(4 + 8 + 32 + 4 + 32)
     }
 }
+
+riffdb_types::inspect_owned_capacity_struct_v1!(ExecutablePlanRef {
+    owned: [contract_lineage],
+    inline: [
+        contract_version,
+        contract_bundle_hash,
+        command_id,
+        command_plan_hash
+    ]
+});

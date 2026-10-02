@@ -7916,7 +7916,7 @@ mod tests {
             QueryPlanHash::from_bytes([0xcd; 32]),
         );
         let enum_names: SharedEnumVariantNames =
-            Arc::new(BTreeMap::from([((4, 1), "Open".to_owned())]));
+            Arc::new(BTreeMap::from([((4, 1), "Open".to_owned())]).into());
 
         let mut row_fields = BTreeMap::new();
         row_fields.insert(Arc::<str>::from("active"), CanonicalValue::Bool(true));
@@ -8024,7 +8024,7 @@ mod tests {
             )]),
             BTreeMap::from([(Arc::<str>::from("total"), (i128::MAX, 2_u8))]),
         );
-        let wire = symbolic_record_into_proto(&Arc::new(BTreeMap::new()), record)
+        let wire = symbolic_record_into_proto(&Arc::new(BTreeMap::new().into()), record)
             .expect("aggregate record conversion");
         assert_eq!(
             wire.fields
@@ -8064,7 +8064,7 @@ mod tests {
             )]),
             BTreeMap::from([(Arc::<str>::from("comments"), vec![child])]),
         );
-        let wire = symbolic_record_into_proto(&Arc::new(BTreeMap::new()), driver)
+        let wire = symbolic_record_into_proto(&Arc::new(BTreeMap::new().into()), driver)
             .expect("nested expansion conversion");
         assert_eq!(
             wire.fields
@@ -8095,7 +8095,7 @@ mod tests {
             3,
             17,
         );
-        let wire = symbolic_record_into_proto(&Arc::new(BTreeMap::new()), record)
+        let wire = symbolic_record_into_proto(&Arc::new(BTreeMap::new().into()), record)
             .expect("exact mean record conversion");
         let mean = wire.fields[0]
             .value

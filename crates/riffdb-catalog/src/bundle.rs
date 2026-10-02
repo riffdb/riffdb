@@ -1,5 +1,11 @@
 //! Checked immutable bundles and exact executable-plan resolution.
 
+mod capacity;
+mod enum_names;
+pub use enum_names::ContractEnumVariantNameTable;
+#[cfg(test)]
+mod capacity_tests;
+
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
 use std::sync::Arc;
@@ -43,11 +49,12 @@ use crate::{CatalogError, CatalogErrorKind};
 ///
 /// Built once when the validated bundle is decoded and shared for the lifetime
 /// of that catalog publication (bounded by the catalog's existing caches).
-pub type ContractEnumVariantNames = Arc<BTreeMap<(u32, u32), String>>;
+pub type ContractEnumVariantNames = Arc<ContractEnumVariantNameTable>;
 
 struct ValidatedContractBundleInner {
     bundle: ContractBundle,
     enum_variant_names: ContractEnumVariantNames,
+    lifecycle: riffdb_types::OwnedCapacityLifecycleV1,
 }
 
 /// A canonical bundle that has passed catalog-owned activation revalidation.
@@ -66,10 +73,11 @@ impl ValidatedContractBundle {
             ContractBundle::decode(bytes).map_err(|error| CatalogError::from_ir(&error))?;
         validate_supported_versions(&bundle)?;
         validate_command_registry(&bundle)?;
-        let enum_variant_names = Arc::new(build_enum_variant_names(&bundle));
+        let enum_variant_names = Arc::new(build_enum_variant_names(&bundle).into());
         Ok(Self(Arc::new(ValidatedContractBundleInner {
             bundle,
             enum_variant_names,
+            lifecycle: riffdb_types::OwnedCapacityLifecycleV1::default(),
         })))
     }
 
@@ -249,7 +257,13 @@ struct ActiveCatalogPublished {
     pointer: ActiveCatalogPointerV1,
     bundle: ValidatedContractBundle,
     lineage_proof: Arc<LineageMaterializationProof>,
-    active_plans: Arc<BTreeMap<CommandId, Arc<CommandPlan>>>,
+    active_plans: Arc<ActiveCommandPlanMap>,
+    lifecycle: riffdb_types::OwnedCapacityLifecycleV1,
+}
+
+struct ActiveCommandPlanMap {
+    plans: BTreeMap<CommandId, Arc<CommandPlan>>,
+    lifecycle: riffdb_types::OwnedCapacityLifecycleV1,
 }
 
 /// Current active pointer paired with its exact checked immutable bundle.
@@ -289,8 +303,11 @@ impl ActiveCatalogSnapshot {
                 pointer,
                 bundle,
                 lineage_proof,
-                // Architecture/source checks keep this field shape visible.
-                active_plans: Arc::new(active_plans),
+                active_plans: Arc::new(ActiveCommandPlanMap {
+                    plans: active_plans,
+                    lifecycle: riffdb_types::OwnedCapacityLifecycleV1::default(),
+                }),
+                lifecycle: riffdb_types::OwnedCapacityLifecycleV1::default(),
             }),
         }))
     }
@@ -332,7 +349,11 @@ impl ActiveCatalogSnapshot {
             )
             .ok_or_else(|| CatalogError::new(CatalogErrorKind::UnknownExecutablePlan))?;
         if usize::from(ordinal) + 1 == self.published.lineage_proof.bundle_count()
-            && let Some(plan) = self.published.active_plans.get(&reference.command_id())
+            && let Some(plan) = self
+                .published
+                .active_plans
+                .plans
+                .get(&reference.command_id())
             && plan.plan_hash() == reference.command_plan_hash()
         {
             return Ok(ResolvedExecutablePlan {

@@ -182,3 +182,22 @@ fn destruction_bookkeeping_does_not_change_key_hash_order_or_debug() {
     assert_eq!(format!("{actor:?}"), "ActorId([REDACTED])");
     assert_eq!(hashed(&actor), hashed(&"reader"));
 }
+
+#[test]
+fn boxed_slice_counts_element_storage_and_nested_capacity_and_shared_aliases() {
+    let budget = crate::exact_provider_budget_v1::ProviderBudget::new();
+    let _scratch = budget
+        .reserve(OWNED_CAPACITY_INSPECTION_SCRATCH_BYTES_V1)
+        .unwrap();
+    let values = vec![String::with_capacity(8192), String::with_capacity(4096)].into_boxed_slice();
+    let report = OwnedCapacityInspectionV1::inspect(&values).unwrap();
+    assert!(
+        report.unshared_bytes() >= 2 * (8192 + 4096 + 2 * std::mem::size_of::<String>()) as u64
+    );
+    let shared = Arc::new(String::with_capacity(8192));
+    let aliases = vec![shared.clone(), shared].into_boxed_slice();
+    let report = OwnedCapacityInspectionV1::inspect(&aliases).unwrap();
+    assert!(report.unshared_bytes() >= 2 * (2 * std::mem::size_of::<Arc<String>>()) as u64);
+    assert_eq!(report.shared_allocations().len(), 1);
+    assert!(report.shared_allocations()[0].bytes() >= 2 * 8192);
+}

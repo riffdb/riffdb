@@ -128,6 +128,19 @@ impl<T: InspectOwnedCapacityV1> InspectOwnedCapacityV1 for Box<T> {
         inspection.visit(self.as_ref())
     }
 }
+impl<T: InspectOwnedCapacityV1> InspectOwnedCapacityV1 for Box<[T]> {
+    fn inspect_owned_capacity(
+        &self,
+        inspection: &mut OwnedCapacityInspectionV1,
+    ) -> Result<(), OwnedCapacityInspectionErrorV1> {
+        let bytes = self
+            .len()
+            .checked_mul(size_of::<T>())
+            .ok_or(OwnedCapacityInspectionErrorV1)?;
+        inspection.allocation(bytes, align_of::<T>())?;
+        inspection.visit(self.as_ref())
+    }
+}
 impl<T: InspectOwnedCapacityV1> InspectOwnedCapacityV1 for Arc<T> {
     fn inspect_owned_capacity(
         &self,

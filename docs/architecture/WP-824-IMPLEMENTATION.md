@@ -1,5 +1,44 @@
 # WP-824 implementation progress
 
+## Catalog shared ownership foundation
+
+The publication, validated bundle, lineage proof, active command-plan map,
+individual command plan and enum-name table now expose exhaustive capacity
+inventories and typed final-destruction ownership. Data fields precede their
+ownership markers. Deep value clones create fresh markers; shared captures keep
+the original marker. Boxed lineage arrays account for both element storage and
+nested allocations. Active pointer and executable-reference inspection preserves
+their existing structural identities.
+
+The enum-name carrier remains an immutable shared table with the existing alias,
+lookup operations and pointer identity. Its first-party backing value now owns
+its marker; service constructors and four generated adapter test constructors
+convert ordinary maps into that value. The frozen adapter source and its digest
+were regenerated with the existing generator. SDK methods, transport schemas,
+enum wire values and durable encodings are unchanged; first-party Rust code
+constructing the table from a map uses `.into()`.
+
+Tests retain a resolved plan and enum table after dropping both catalog captures,
+then compare the exact remaining charges with the original live allocations.
+Dropping the last data reference releases those charges. Barrier-controlled
+competing attachments charge each actual allocation once. Pressure after scratch
+admission refuses the complete attachment allowance before any marker is attached,
+and retry succeeds after the competing reservation is dropped. These tests cover
+shared attachment and lifetime, not pre-admitted catalog decoding.
+
+Catalog read construction, lineage validation scratch, materialization scratch
+and production provider capture admission remain open. Ordinary catalog reads
+retain their existing validation and refusal behavior. WP-824 is still open.
+
+PR note: Package WP-824 (open); Tier guarantee; Behavior: internal catalog ownership
+inventories and lifetime markers; Compatibility: unchanged canonical and wire
+semantics, with the internal Rust enum-table construction adjustment above;
+Checks: all 1,600 tests across the six affected crates passed; all nine scoped
+static checks passed, including clippy with warnings denied, generated artifacts,
+version topology, handbook and downstream adapters; Hazards/follow-ups: complete
+pre-allocation catalog capture admission and provider retirement. Existing handbook
+provider refusal documentation applies; no application or operator control changes.
+
 ## Contract bundle ownership inventories
 
 Complete non-durable inventories now cover the decoded contract bundle and

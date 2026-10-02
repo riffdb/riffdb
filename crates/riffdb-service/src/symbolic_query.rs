@@ -1644,7 +1644,7 @@ impl ExecuteSymbolicQueryResult {
             fields: BTreeMap::new(),
             compact_result: None,
             packed_result: false,
-            enum_variant_names: Arc::new(BTreeMap::new()),
+            enum_variant_names: Arc::new(BTreeMap::new().into()),
             next_cursor: None,
         }
     }
@@ -7508,7 +7508,7 @@ query SearchUsers(
             query.shared_document().as_ref(),
             module.identity(),
             observed,
-            Arc::new(BTreeMap::new()),
+            Arc::new(BTreeMap::new().into()),
         )
         .expect("response");
 
@@ -7645,7 +7645,7 @@ query SearchUsers(
             query.shared_document().as_ref(),
             module.identity(),
             observed,
-            Arc::new(BTreeMap::new()),
+            Arc::new(BTreeMap::new().into()),
         )
         .expect("response");
         assert_eq!(result.application_head(), 29);
@@ -7833,7 +7833,7 @@ mod reimport_observation_tests {
             fields: BTreeMap::from([("ticket".to_owned(), SymbolicResultField::One(record))]),
             compact_result: None,
             packed_result: false,
-            enum_variant_names: Arc::new(BTreeMap::new()),
+            enum_variant_names: Arc::new(BTreeMap::new().into()),
             next_cursor: None,
         }
     }

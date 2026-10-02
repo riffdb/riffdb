@@ -1924,7 +1924,7 @@ mod tests {
             outcome.to_owned(),
             1,
             BTreeMap::from([("items".to_owned(), SymbolicResultField::Many(rows))]),
-            Arc::new(BTreeMap::new()),
+            Arc::new(BTreeMap::new().into()),
         )
     }
 

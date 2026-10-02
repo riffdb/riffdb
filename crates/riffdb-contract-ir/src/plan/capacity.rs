@@ -124,7 +124,8 @@ riffdb_types::inspect_owned_capacity_struct_v1!(CommandPlan {
         plan_hash,
         write_proofs
     ],
-    inline: []
+    inline: [],
+    lifecycle: lifecycle
 });
 
 riffdb_types::inspect_owned_capacity_struct_v1!(CommitCheckPlan {

@@ -1708,6 +1708,7 @@ pub struct CommandPlan {
     required_capability: CapabilityRequirement,
     plan_hash: PlanHash,
     write_proofs: Option<Vec<crate::WriteProof>>,
+    lifecycle: riffdb_types::OwnedCapacityLifecycleV1,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -2594,6 +2595,7 @@ impl CommandPlan {
             },
             plan_hash: PlanHash::from_bytes([0; 32]),
             write_proofs: None,
+            lifecycle: riffdb_types::OwnedCapacityLifecycleV1::default(),
         };
         plan.plan_hash = crate::bundle::compute_command_plan_hash(&plan, contract_schema)?;
         Ok(plan)

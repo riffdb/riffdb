@@ -1,5 +1,7 @@
 //! Bounded process-local active-lineage validation and materialization metadata.
 
+mod capacity;
+
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
 use std::sync::Arc;
@@ -137,6 +139,7 @@ pub(crate) struct LineageMaterializationProof {
     field_introductions: BTreeMap<RecordOwnerV1, OwnerFieldIntroductions>,
     canonical_bundle_bytes: usize,
     semantic_proof_bytes: usize,
+    lifecycle: riffdb_types::OwnedCapacityLifecycleV1,
 }
 
 impl LineageMaterializationProof {
@@ -212,6 +215,7 @@ impl LineageMaterializationProof {
             field_introductions,
             canonical_bundle_bytes: budget.canonical_bytes,
             semantic_proof_bytes,
+            lifecycle: riffdb_types::OwnedCapacityLifecycleV1::default(),
         }))
     }
 

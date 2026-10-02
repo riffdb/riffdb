@@ -505,3 +505,8 @@ mod tests {
         );
     }
 }
+
+riffdb_types::inspect_owned_capacity_struct_v1!(ActiveCatalogPointerV1 {
+    owned: [lineage],
+    inline: [contract_version, bundle_hash]
+});
