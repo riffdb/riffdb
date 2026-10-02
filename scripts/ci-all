@@ -62,6 +62,7 @@ trap - EXIT INT TERM
 ./scripts/check-adr-obligations
 ./scripts/check-adr-obligations --self-test
 ./scripts/check-wp674-unary-baseline --self-test
+./scripts/check-ticketdesk-lifecycle --self-test
 ./scripts/check-adr-form
 ./scripts/check-adr-form --self-test
 ./scripts/adr-new --self-test

@@ -1,0 +1,284 @@
+#!/usr/bin/env python3
+"""Validate the proposed TicketDesk rehearsal contract; never qualify alpha.
+
+This checks receipt structure, observations, and frozen artifact identities.
+WP-825 supplies the measured runner and independent conformance observations.
+Self-tests are synthetic checker tests, not milestone qualification evidence.
+"""
+
+from __future__ import annotations
+
+import argparse
+import hashlib
+import json
+import os
+from pathlib import Path
+import re
+import stat
+import subprocess
+import sys
+
+
+MANIFEST_SCHEMA = "riffdb.ticketdesk-lifecycle-manifest/v1"
+RECEIPT_SCHEMA = "riffdb.ticketdesk-lifecycle-receipt/v1"
+MAX_JSON_BYTES = 4 * 1024 * 1024
+MAX_ARTIFACT_BYTES = 1024**3
+TARGET = {
+    "organizations": 64, "seeded_tickets": 65536,
+    "commands_per_second": 100, "reads_per_second": 400,
+    "max_in_flight": 32, "vcpus": 8, "ram_bytes": 32 * 1024**3,
+    "durable_ssd": True, "duration_s": 86400, "window_s": 300,
+    "p95_us_exclusive": 100000, "p99_us_exclusive": 250000,
+    "restart_limit_s": 60, "outage_recovery_limit_s": 600,
+}
+ARTIFACTS = frozenset({
+    "server", "cli", "rust_worker", "typescript_client", "format_manifest",
+    "workload", "fault_schedule", "resource_model", "environment",
+    "conformance", "ci",
+})
+OUTAGES = frozenset({"sink_outage", "consumer_outage"})
+ACTIONS = OUTAGES | {
+    "capability_rotation", "additive_deploy", "graceful_restart",
+    "process_kill", "backup_restore",
+}
+CHECKS = frozenset({
+    "source_clean", "host_valid", "durability_verified", "rust_workload",
+    "typescript_smoke", "four_language_conformance", "full_ci",
+    "events_active", "consumer_active", "projection_active", "live_query_active",
+    "state_reconciled", "restore_reconciled", "idempotency_reconciled",
+    "provenance_reconciled", "tenant_isolation", "revocation_enforced",
+    "archive_reconciled", "resource_model_verified",
+})
+RESOURCES = frozenset({
+    "rss_bytes", "allocator_bytes", "database_bytes", "journal_bytes",
+    "sink_archive_bytes", "backup_bytes", "derived_bytes",
+})
+WINDOW_FIELDS = frozenset({
+    "start_s", "end_s", "offered_commands", "offered_reads",
+    "completed_commands", "completed_reads", "transport_attempts", "retries",
+    "unresolved_commands", "unexpected_errors", "p95_us", "p99_us",
+    "max_in_flight", "eligible_history_bytes", "consumer_backlog",
+    "outbox_backlog", "projection_backlog", "interference", "resources",
+})
+
+
+class EvidenceError(ValueError):
+    """Closed safe code, containing no input text or filesystem path."""
+
+
+def require(condition, code):
+    if not condition:
+        raise EvidenceError(code)
+
+
+def shape(value, fields):
+    require(type(value) is dict and value.keys() == set(fields), "shape")
+
+
+def integer(value):
+    require(type(value) is int and 0 <= value <= 2**64 - 1, "integer")
+    return value
+
+
+def digest(value):
+    require(type(value) is str and re.fullmatch(r"[0-9a-f]{64}", value), "digest")
+    return value
+
+
+def unique_object(pairs):
+    result = {}
+    for key, value in pairs:
+        require(key not in result, "duplicate_key")
+        result[key] = value
+    return result
+
+
+def reject_constant(_value):
+    raise EvidenceError("json")
+
+
+def parse_integer(encoded):
+    require(len(encoded) <= 20, "integer")
+    return integer(int(encoded))
+
+
+def read_object(path):
+    try:
+        descriptor = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+        with os.fdopen(descriptor, "rb") as source:
+            info = os.fstat(source.fileno())
+            require(stat.S_ISREG(info.st_mode) and 0 < info.st_size <= MAX_JSON_BYTES, "file_size")
+            encoded = source.read(MAX_JSON_BYTES + 1)
+        require(0 < len(encoded) <= MAX_JSON_BYTES, "file_size")
+        value = json.loads(encoded, object_pairs_hook=unique_object,
+                           parse_constant=reject_constant, parse_int=parse_integer)
+        require(type(value) is dict, "shape")
+        return value, hashlib.sha256(encoded).hexdigest()
+    except EvidenceError:
+        raise
+    except (OSError, UnicodeError, RecursionError, ValueError) as error:
+        raise EvidenceError("unreadable_json") from error
+
+
+def verify_artifact(root, relative, expected):
+    digest(expected)
+    require(type(relative) is str and 0 < len(relative) <= 256, "artifact_path")
+    parts = relative.split("/")
+    require(len(parts) <= 8 and all(
+        part not in {"", ".", ".."} and re.fullmatch(r"[A-Za-z0-9_.-]+", part)
+        for part in parts
+    ), "artifact_path")
+    directory = None
+    try:
+        directory = os.open(root, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+        for part in parts[:-1]:
+            child = os.open(part, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=directory)
+            os.close(directory)
+            directory = child
+        descriptor = os.open(parts[-1], os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK, dir_fd=directory)
+        with os.fdopen(descriptor, "rb") as source:
+            before = os.fstat(source.fileno())
+            require(stat.S_ISREG(before.st_mode) and before.st_size <= MAX_ARTIFACT_BYTES, "artifact_size")
+            observed = hashlib.sha256()
+            total = 0
+            while block := source.read(1024 * 1024):
+                total += len(block)
+                require(total <= MAX_ARTIFACT_BYTES, "artifact_size")
+                observed.update(block)
+            after = os.fstat(source.fileno())
+        require((before.st_size, before.st_mtime_ns, before.st_ctime_ns) ==
+                (after.st_size, after.st_mtime_ns, after.st_ctime_ns), "artifact_changed")
+        require(total == before.st_size and observed.hexdigest() == expected, "artifact_hash")
+    except OSError as error:
+        raise EvidenceError("artifact_unreadable") from error
+    finally:
+        if directory is not None:
+            os.close(directory)
+
+
+def validate(manifest, receipt):
+    shape(manifest, {"schema", "target", "artifacts", "faults", "resource_limits"})
+    require(manifest["schema"] == MANIFEST_SCHEMA, "schema")
+    shape(manifest["target"], TARGET)
+    for key, expected in TARGET.items():
+        actual = manifest["target"][key]
+        require(type(actual) is type(expected) and actual == expected, "target")
+    shape(manifest["artifacts"], ARTIFACTS)
+    for value in manifest["artifacts"].values():
+        digest(value)
+    shape(manifest["resource_limits"], RESOURCES)
+    for value in manifest["resource_limits"].values():
+        require(integer(value) > 0, "resource_limit")
+
+    shape(receipt, {"schema", "classification", "evidence_kind", "manifest_sha256",
+                    "source_revision", "artifacts", "checks", "actions",
+                    "reclaimed_generations", "windows"})
+    require(receipt["schema"] == RECEIPT_SCHEMA, "schema")
+    require(receipt["classification"] == "rehearsal" and receipt["evidence_kind"] == "measured", "classification")
+    digest(receipt["manifest_sha256"])
+    require(type(receipt["source_revision"]) is str and
+            re.fullmatch(r"[0-9a-f]{40}", receipt["source_revision"]), "source_revision")
+    shape(receipt["artifacts"], ARTIFACTS)
+    for name, artifact in receipt["artifacts"].items():
+        shape(artifact, {"path", "sha256"})
+        require(digest(artifact["sha256"]) == manifest["artifacts"][name], "artifact_identity")
+    shape(receipt["checks"], CHECKS)
+    require(all(value is True for value in receipt["checks"].values()), "checks")
+
+    faults = manifest["faults"]
+    actions = receipt["actions"]
+    require(type(faults) is list and len(faults) == len(ACTIONS), "actions")
+    require(type(actions) is list and len(actions) == len(ACTIONS), "actions")
+    seen = set()
+    fault_intervals = []
+    for planned, actual in zip(faults, actions):
+        shape(planned, {"kind", "start_s", "duration_s"})
+        shape(actual, {"kind", "start_s", "duration_s", "recovery_s", "reconciled"})
+        kind = planned["kind"]
+        require(type(kind) is str and kind in ACTIONS and kind not in seen, "actions")
+        seen.add(kind)
+        start = integer(planned["start_s"])
+        duration = integer(planned["duration_s"])
+        require(duration == 300 if kind in OUTAGES else 1 <= duration <= 60, "actions")
+        require(all(actual[key] == planned[key] and type(actual[key]) is type(planned[key])
+                    for key in planned), "actions")
+        recovery = integer(actual["recovery_s"])
+        require(recovery <= 600 if kind in OUTAGES else duration + recovery <= 60, "recovery")
+        require(actual["reconciled"] is True, "checks")
+        end = start + duration + recovery
+        require(0 < start < end <= 64800, "actions")
+        require(all(end <= low or start >= high for low, high in fault_intervals), "actions")
+        fault_intervals.append((start, end))
+
+    generations = receipt["reclaimed_generations"]
+    require(type(generations) is list and 3 <= len(generations) <= 65536, "reclamation")
+    require(all(integer(value) > 0 for value in generations), "reclamation")
+    require(len(set(generations)) == len(generations), "reclamation")
+    windows = receipt["windows"]
+    require(type(windows) is list and len(windows) == 288, "duration")
+    final = []
+    for index, window in enumerate(windows):
+        shape(window, WINDOW_FIELDS)
+        for name in WINDOW_FIELDS - {"interference", "resources"}:
+            integer(window[name])
+        start, end = window["start_s"], window["end_s"]
+        require(start == index * 300 and end == start + 300, "window")
+        require(window["interference"] is False, "interference")
+        require(window["max_in_flight"] <= 32, "service_level")
+        require(window["unexpected_errors"] == 0, "service_level")
+        require(window["offered_commands"] == 30000 and window["offered_reads"] == 120000, "offered_load")
+        completed = window["completed_commands"] + window["completed_reads"]
+        require(window["transport_attempts"] == completed + window["retries"], "attempt_accounting")
+        fault = any(start < high and end > low for low, high in fault_intervals)
+        if not fault:
+            require(window["completed_commands"] >= 30000 and window["completed_reads"] >= 120000
+                    and window["unresolved_commands"] == 0
+                    and window["p95_us"] < 100000 and window["p99_us"] < 250000, "service_level")
+        require(window["p95_us"] <= window["p99_us"], "service_level")
+        shape(window["resources"], RESOURCES)
+        for name, value in window["resources"].items():
+            require(integer(value) <= manifest["resource_limits"][name], "resource_limit")
+        if start >= 64800:
+            final.append(window)
+    require(final[-1]["eligible_history_bytes"] <= final[0]["eligible_history_bytes"], "backlog_growth")
+    # Integer numerator of the least-squares slope; a final cleanup cannot hide
+    # growth across the observation period. Normal reclamation sawteeth may fall.
+    count = len(final)
+    trend = sum((2 * index - count + 1) * window["eligible_history_bytes"]
+                for index, window in enumerate(final))
+    require(trend <= 0, "backlog_growth")
+    require(all(final[-1][name] == 0 for name in
+                ("consumer_backlog", "outbox_backlog", "projection_backlog", "unresolved_commands")), "backlog_growth")
+
+
+def main():
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--self-test", action="store_true")
+    parser.add_argument("--manifest", type=Path)
+    parser.add_argument("--receipt", type=Path)
+    parser.add_argument("--manifest-sha256")
+    args = parser.parse_args()
+    if args.self_test:
+        require(not any((args.manifest, args.receipt, args.manifest_sha256)), "arguments")
+        root = Path(__file__).resolve().parent.parent
+        return subprocess.run([sys.executable, "-m", "unittest", "discover", "-s",
+                               str(root / "tests/ticketdesk_lifecycle"), "-p", "test_*.py"],
+                              cwd=root, check=False).returncode
+    require(all((args.manifest, args.receipt, args.manifest_sha256)), "arguments")
+    manifest, observed = read_object(args.manifest)
+    require(observed == digest(args.manifest_sha256), "manifest_identity")
+    receipt, _ = read_object(args.receipt)
+    require(receipt.get("manifest_sha256") == observed, "manifest_identity")
+    validate(manifest, receipt)
+    for artifact in receipt["artifacts"].values():
+        verify_artifact(args.receipt.parent, artifact["path"], artifact["sha256"])
+    print("TicketDesk rehearsal evidence-contract checks passed; campaign review remains required.")
+    return 0
+
+
+if __name__ == "__main__":
+    try:
+        sys.exit(main())
+    except EvidenceError as error:
+        print("ticketdesk-lifecycle: " + str(error), file=sys.stderr)
+        sys.exit(1)

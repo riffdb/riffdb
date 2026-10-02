@@ -2529,6 +2529,7 @@ fn deferred_command_root_is_invisible_until_the_tail_fence_publishes_it() {
     assert_postcommit_command_state(&ports, &fixture);
 }
 
+// req: LOG-001
 #[test]
 fn multiple_deferred_subgroups_publish_together_in_sequence_order() {
     let path = TestDatabasePath::new("deferred-multiple-subgroups");

@@ -28455,6 +28455,22 @@ work_packages:
   - An accepted decision, normative requirement, guarantee, or declared path scope changes.
   - A new durable identity, public interface, or critical dependency lacks accepted authority.
   exit_gate: All three exact records are accepted through their separate governance commit; evidence checks pass and every downstream brief has explicit scope and gates.
+  closure:
+    status: complete
+    completed_at: '2026-10-01'
+    requirements_satisfied: [LOG-001, REP-001, END-007, END-008, END-009, END-010]
+    evidence: docs/architecture/SUSTAINABLE-TICKETDESK.md
+    decision: The maintainer accepted ADR-0265, ADR-0266, and ADR-0267 as written
+      in session. The separate acceptance commit is d6d5dd5b. All 20 hostile
+      evidence tests, all 11 scoped acceptance checks, and full CI pass.
+      Downstream packages remain open; no runtime or measured campaign is claimed.
+    decisions_taken:
+    - Preserve database-wide sequencing and existing alpha qualification gates.
+    - Freeze artifact identities and resource limits before qualification; reject
+      missing observations, hidden retries, false physical reclamation, and growth
+      hidden by a final cleanup. Include action duration in restart recovery.
+    - Bound and redact evidence I/O, refuse duplicate JSON keys and symlinks, and
+      keep synthetic checker inputs out of qualification receipts.
 
 - id: WP-822
   name: Durable local outbox archive and production dispatch

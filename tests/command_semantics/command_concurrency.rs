@@ -312,6 +312,7 @@ fn initialized_transition_revalidates_absent_and_present_races_without_stale_con
     );
 }
 
+// req: LOG-001
 #[test]
 fn sealed_decision_apply_then_no_effect_persists_two_outcomes_and_one_entity_version() {
     let database = BulkRowsDatabase::create("sealed-decision-apply-no-effect");
