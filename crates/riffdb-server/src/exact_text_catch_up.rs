@@ -146,7 +146,6 @@ impl CapturedSource {
 
 /// Provider and its exact source proof are installed and retired together under
 /// the slot mutex. The source pin outlives private successor construction.
-#[derive(Clone)]
 pub(super) struct Selected<T> {
     pub(super) provider: Arc<T>,
     source: SelectedSource,
@@ -167,8 +166,16 @@ impl<T> Selected<T> {
         captured: CapturedSource,
         candidates: BTreeSet<EntityKey>,
     ) -> Self {
+        Self::from_shared(Arc::new(provider), captured, candidates)
+    }
+
+    pub(super) fn from_shared(
+        provider: Arc<T>,
+        captured: CapturedSource,
+        candidates: BTreeSet<EntityKey>,
+    ) -> Self {
         Self {
-            provider: Arc::new(provider),
+            provider,
             source: SelectedSource {
                 pin: captured.pin,
                 head: captured.head,

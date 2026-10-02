@@ -4,8 +4,8 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 
 use riffdb_projection::{
-    ExactPredicateIndexMutationV1, ExactPredicatePartitionIndexV4, ExactPredicatePartitionIndexV5,
-    ExactPredicateProviderErrorV1, ExactPredicateProviderRowV1, ExactTextIndexMutationV2,
+    ExactPredicateAdmissionErrorV1, ExactPredicateIndexMutationV1, ExactPredicatePartitionIndexV4,
+    ExactPredicatePartitionIndexV5, ExactPredicateProviderRowV1, ExactTextIndexMutationV2,
     ExactTextIndexMutationV3, ExactTextProviderErrorV1, ExactTextRebuildAdmissionErrorV1,
 };
 use riffdb_query_ir::QueryAccessProgramV1;
@@ -15,7 +15,7 @@ use riffdb_types::{
 
 use super::super::{
     ExactPredicateRegistrationView, ExactTextProviderState, ExactTextRegistration, RebuildFailure,
-    exact_reference_cell,
+    exact_reference_cell, map_predicate_admission_failure,
 };
 use super::{CapturedSource, Delta, DeltaPlan, Selected};
 
@@ -166,9 +166,7 @@ pub(in crate::exact_text_adapter) fn prepare_text(
     }))
 }
 
-pub(in crate::exact_text_adapter) trait PredicateProvider:
-    Clone
-{
+pub(in crate::exact_text_adapter) trait PredicateProvider {
     fn binding_matches(
         &self,
         expected: (
@@ -180,16 +178,19 @@ pub(in crate::exact_text_adapter) trait PredicateProvider:
     ) -> bool;
     fn generation(&self) -> ProjectionGeneration;
     fn frontier(&self) -> CommitSequence;
-    fn apply(
-        &mut self,
+    fn apply_admitted(
+        &self,
         head: CommitSequence,
         changes: &[ExactPredicateIndexMutationV1],
-    ) -> Result<(), ExactPredicateProviderErrorV1>;
+        budget: &riffdb_types::exact_provider_budget_v1::ProviderBudget,
+    ) -> Result<Arc<Self>, ExactPredicateAdmissionErrorV1>
+    where
+        Self: Sized;
 }
 
 macro_rules! predicate_provider {
     ($ty:ty) => {
-        impl PredicateProvider for $ty {
+        impl PredicateProvider for riffdb_types::exact_provider_budget_v1::ProviderAllocation<$ty> {
             fn binding_matches(
                 &self,
                 expected: (
@@ -213,12 +214,13 @@ macro_rules! predicate_provider {
             fn frontier(&self) -> CommitSequence {
                 self.binding().frontier()
             }
-            fn apply(
-                &mut self,
+            fn apply_admitted(
+                &self,
                 head: CommitSequence,
                 changes: &[ExactPredicateIndexMutationV1],
-            ) -> Result<(), ExactPredicateProviderErrorV1> {
-                Self::apply(self, head, changes)
+                budget: &riffdb_types::exact_provider_budget_v1::ProviderBudget,
+            ) -> Result<Arc<Self>, ExactPredicateAdmissionErrorV1> {
+                self.apply_admitted_v1(head, changes, budget)
             }
         }
     };
@@ -293,16 +295,9 @@ pub(in crate::exact_text_adapter) fn prepare_predicate<
                 ))
             })
             .collect::<Result<Vec<_>, RebuildFailure>>()?;
-        Arc::make_mut(&mut provider)
-            .apply(delta.source.head, &changes)
-            .map_err(|error| match error {
-                ExactPredicateProviderErrorV1::BoundExceeded
-                | ExactPredicateProviderErrorV1::StateAmplification
-                | ExactPredicateProviderErrorV1::FuelExhausted => {
-                    RebuildFailure::Capacity(generation)
-                }
-                _ => RebuildFailure::Integrity,
-            })?;
+        provider = provider
+            .apply_admitted(delta.source.head, &changes, &captured.budget)
+            .map_err(|error| map_predicate_admission_failure(error, generation))?;
     } else if !delta.changes.is_empty() {
         return Err(RebuildFailure::Integrity);
     }

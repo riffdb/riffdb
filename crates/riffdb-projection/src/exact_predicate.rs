@@ -34,6 +34,9 @@ const CHECKSUM_BYTES: usize = 32;
 mod admission;
 pub use admission::ExactPredicateAdmissionErrorV1;
 
+#[path = "exact_predicate_checkpoint_admission.rs"]
+mod checkpoint_admission;
+
 /// Immutable state binding beyond the provider-independent semantic program.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct ExactPredicateProviderBindingV1 {

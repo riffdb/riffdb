@@ -278,6 +278,108 @@ fn admitted_nullable_rebuild_and_pressure_preserve_original_inputs() {
     assert_eq!(budget.observation().unwrap().reserved_bytes, 0);
 }
 
+// req: OQ-040, PRJ-004
+#[test]
+fn admitted_predicate_checkpoint_recovery_preserves_strict_validation_and_charges() {
+    use riffdb_types::OWNED_CAPACITY_INSPECTION_SCRATCH_BYTES_V1;
+    use riffdb_types::exact_provider_budget_v1::{EXACT_PROVIDER_BUDGET_BYTES, ProviderBudget};
+    macro_rules! prove {
+        ($provider:ty, $ordinary:expr, $hashes:expr) => {{
+            let budget = ProviderBudget::new();
+            let ordinary = $ordinary;
+            let bytes = ordinary.to_checkpoint_bytes().unwrap();
+            let blocker = budget
+                .reserve(
+                    EXACT_PROVIDER_BUDGET_BYTES
+                        - 128
+                        - 32 * 1024 * 1024
+                        - OWNED_CAPACITY_INSPECTION_SCRATCH_BYTES_V1,
+                )
+                .unwrap();
+            assert!(matches!(
+                <$provider>::from_checkpoint_bytes_admitted_v1(&bytes, &budget),
+                Err(ExactPredicateAdmissionErrorV1::CapacityUnavailable)
+            ));
+            assert_eq!(budget.observation().unwrap().owned_bytes, 0);
+            drop(blocker);
+            let recovered =
+                <$provider>::from_checkpoint_bytes_admitted_v1(&bytes, &budget).unwrap();
+            assert_eq!(&**recovered, &ordinary);
+            assert_eq!(recovered.to_checkpoint_bytes().unwrap(), bytes);
+            let capture = recovered.clone();
+            drop(recovered);
+            assert!(budget.observation().unwrap().owned_bytes > 0);
+            drop(capture);
+            assert_eq!(budget.observation().unwrap().owned_bytes, 0);
+            let mut bad_digest = bytes.clone();
+            *bad_digest.last_mut().unwrap() ^= 1;
+            let mut trailing = bytes.clone();
+            trailing.push(0);
+            for malformed in [&bad_digest[..], &bytes[..bytes.len() - 1], &trailing[..]] {
+                assert!(matches!(
+                    <$provider>::from_checkpoint_bytes_admitted_v1(malformed, &budget),
+                    Err(ExactPredicateAdmissionErrorV1::Provider(_))
+                ));
+                assert!(<$provider>::from_checkpoint_bytes(malformed).is_err());
+                assert_eq!(budget.observation().unwrap().owned_bytes, 0);
+                assert_eq!(budget.observation().unwrap().reserved_bytes, 0);
+            }
+            let program_length = usize::try_from(u32::from_be_bytes(bytes[8..12].try_into().unwrap())).unwrap();
+            let count_offset = 12 + program_length + $hashes * 32 + 24;
+            let key_length = usize::try_from(u32::from_be_bytes(bytes[count_offset+4..count_offset+8].try_into().unwrap())).unwrap();
+            let field_offset = count_offset + 8 + key_length + 2;
+            for (offset, replacement, expected) in [
+                (count_offset, u32::MAX, ExactPredicateProviderErrorV1::BoundExceeded),
+                (field_offset, 0, ExactPredicateProviderErrorV1::Integrity),
+            ] {
+                let mut malformed = bytes.clone();
+                malformed[offset..offset+4].copy_from_slice(&replacement.to_be_bytes());
+                let end = malformed.len()-32;
+                let checksum = riffdb_types::hash(riffdb_types::HashDomain::ExactResultCheckpoint, &malformed[..end]);
+                malformed[end..].copy_from_slice(checksum.as_bytes());
+                assert_eq!(<$provider>::from_checkpoint_bytes(&malformed), Err(expected));
+                assert!(matches!(<$provider>::from_checkpoint_bytes_admitted_v1(&malformed, &budget),
+                    Err(ExactPredicateAdmissionErrorV1::Provider(error)) if error == expected));
+                assert_eq!(budget.observation().unwrap().owned_bytes, 0);
+                assert_eq!(budget.observation().unwrap().reserved_bytes, 0);
+            }
+        }};
+    }
+    let program = program();
+    prove!(
+        ExactPredicatePartitionIndexV4,
+        ExactPredicatePartitionIndexV4::rebuild(
+            binding(&program, 1),
+            program.clone(),
+            vec![row(1, "Repeated résumé example".into(), 2, 75)]
+        )
+        .unwrap(),
+        4
+    );
+    let program = nullable_program(
+        ExactComparisonProfileV1::BinaryUtf8,
+        ExactOrderDirectionV1::Ascending,
+        ExactStatePlacementV1::NullsFirstV1,
+    );
+    prove!(
+        ExactPredicatePartitionIndexV5,
+        ExactPredicatePartitionIndexV5::rebuild(
+            nullable_binding(&program, 1),
+            program.clone(),
+            vec![ExactPredicateProviderRowV1::new(
+                key(1),
+                BTreeMap::from([
+                    (field(1), ExactReferenceCellV1::Value(ExactScalarV1::U64(1))),
+                    (field(2), ExactReferenceCellV1::Null),
+                ]),
+                CanonicalRecord::new(vec![]).unwrap()
+            )]
+        )
+        .unwrap(),
+        5
+    );
+}
+
 fn parameters() -> BTreeMap<u16, ExactParameterValueV1> {
     BTreeMap::from([
         (

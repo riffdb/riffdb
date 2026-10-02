@@ -1,5 +1,48 @@
 # WP-824 implementation progress
 
+## Predicate recovery and production ownership
+
+V4 and V5 production workers now retain immutable charged physical providers.
+Full builds, startup checkpoint inspection, checkpoint reopen validation, and
+private successors use admitted construction. A selected source accepts the
+already charged shared allocation directly; successor preparation no longer
+deep-clones a published provider through `Arc::make_mut`. Existing source proofs,
+bindings, generations, authorization, and frontier checks remain in effect.
+
+Recovery verifies the outer frame and checksum before allocating a temporary
+program. A fixed 32-MiB allowance admits the existing byte-counted program decoder,
+including malformed counts and canonical reproduction; compile-time guards bind
+that maximum to the existing program widths, recursion, and input ceiling.
+Borrowed row inspection then admits key and field storage, canonical outputs,
+independent order indexes, position vectors, scalar copies, suffix keys, and
+checkpoint reproduction before invoking the unchanged strict decoder.
+
+Tests compare both checkpoint variants with ordinary recovery, preserve their
+exact bytes, exercise pressure after sizing, reject checksum corruption and
+truncated or trailing input, and reject checksum-valid invalid field identifiers
+and excessive row counts. The final data capture retains the charge. Capacity
+pressure follows the existing transient worker refusal; ordinary semantic
+failures keep their previous integrity or per-generation capacity mapping.
+
+Source assembly, catalog and policy scratch, delta mutation construction,
+checkpoint encoding, query results, protected cursors and retained epochs,
+retirement, and derived artifact cleanup still require integration. All physical
+families now have admitted build/recovery paths, but this does not establish the
+complete aggregate budget or close WP-824.
+
+Validation: all 171 selected projection/provider conformance and adjacent
+recovery tests passed (471 excluded by selection); all ten adapter boundary tests
+passed. Six scoped static acceptance checks passed, including formatting, clippy
+with warnings denied, scope, handbook, file-size, and panic allowances.
+The final production declaration check also passed all 118 selected tests
+(524 excluded by selection).
+
+PR note: Package WP-824 (open); Tier guarantee; Behavior: predicate recovery and
+production ownership admission; Compatibility: unchanged V4/V5 bytes and query
+semantics; Hazards/follow-ups: finish the remaining ownership and retirement
+work before qualification. Existing handbook refusal behavior already covers
+transient provider unavailability; this adds no application or operator control.
+
 ## Predicate construction and successor admission
 
 Borrowed first-party admission now covers V4 and V5 predicate rebuilds and
@@ -16,8 +59,8 @@ profiles, row uniqueness, amplification limits, and frontier advancement.
 Immutable settlement keeps the physical charge through the final data capture.
 Tests compare both variants with ordinary construction and checkpoint bytes,
 exercise pressure after sizing, verify successor isolation and typed semantic
-refusal, and check final-reference release. Predicate checkpoint decode and
-production publication are the next integration work; this slice does not
+refusal, and check final-reference release. Predicate recovery and production
+ownership are described above; construction admission alone does not
 claim aggregate enforcement, retirement, or package completion.
 
 Validation: all 76 projection tests passed without skips. The final seven-step

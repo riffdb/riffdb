@@ -589,10 +589,15 @@ struct TokenizedTextSlot {
     owner: Arc<ProviderOwner>,
 }
 
+type AdmittedPredicateProviderV4 =
+    riffdb_types::exact_provider_budget_v1::ProviderAllocation<ExactPredicatePartitionIndexV4>;
+type AdmittedPredicateProviderV5 =
+    riffdb_types::exact_provider_budget_v1::ProviderAllocation<ExactPredicatePartitionIndexV5>;
+
 enum ExactPredicateSlotState {
     Building,
     Rebuilding(ProjectionGeneration),
-    Ready(Arc<Selected<ExactPredicatePartitionIndexV4>>),
+    Ready(Arc<Selected<AdmittedPredicateProviderV4>>),
     Unavailable {
         observed_head: CommitSequence,
         prior_generation: ProjectionGeneration,
@@ -603,7 +608,7 @@ enum ExactPredicateSlotState {
 enum NullableExactPredicateSlotState {
     Building,
     Rebuilding(ProjectionGeneration),
-    Ready(Arc<Selected<ExactPredicatePartitionIndexV5>>),
+    Ready(Arc<Selected<AdmittedPredicateProviderV5>>),
     Unavailable {
         observed_head: CommitSequence,
         prior_generation: ProjectionGeneration,
@@ -2739,12 +2744,31 @@ fn persist_checked_slot(
     Ok(())
 }
 
+fn map_predicate_admission_failure(
+    error: riffdb_projection::ExactPredicateAdmissionErrorV1,
+    generation: ProjectionGeneration,
+) -> RebuildFailure {
+    match error {
+        riffdb_projection::ExactPredicateAdmissionErrorV1::CapacityUnavailable => {
+            RebuildFailure::Transient
+        }
+        riffdb_projection::ExactPredicateAdmissionErrorV1::Provider(error) => match error {
+            riffdb_projection::ExactPredicateProviderErrorV1::BoundExceeded
+            | riffdb_projection::ExactPredicateProviderErrorV1::StateAmplification
+            | riffdb_projection::ExactPredicateProviderErrorV1::FuelExhausted => {
+                RebuildFailure::Capacity(generation)
+            }
+            _ => RebuildFailure::Integrity,
+        },
+    }
+}
+
 fn rebuild_predicate_slot(
     runtime: &ExactTextRuntime,
     slot: &ExactPredicateSlot,
     head: CommitSequence,
     prior_generation: Option<ProjectionGeneration>,
-) -> Result<Option<Selected<ExactPredicatePartitionIndexV4>>, RebuildFailure> {
+) -> Result<Option<Selected<AdmittedPredicateProviderV4>>, RebuildFailure> {
     #[cfg(feature = "test-fixtures")]
     observe_test_point(TestPoint::Preparing, &slot.checkpoint, Some(head));
     let previous = {
@@ -2782,7 +2806,10 @@ fn rebuild_predicate_slot(
             &slot.registration.key(),
             runtime.history_incarnation,
         )
-        && let Ok(recovered) = ExactPredicatePartitionIndexV4::from_checkpoint_bytes(provider_bytes)
+        && let Ok(recovered) = ExactPredicatePartitionIndexV4::from_checkpoint_bytes_admitted_v1(
+            provider_bytes,
+            &runtime.ownership_graph.budget,
+        )
         && recovered.binding().plan() == slot.registration.query.identity()
         && recovered.binding().policy_shape() == slot.registration.policy_shape
         && recovered.binding().partition()
@@ -2811,21 +2838,15 @@ fn rebuild_predicate_slot(
         head,
     )
     .map_err(|_| RebuildFailure::Integrity)?;
-    let provider = ExactPredicatePartitionIndexV4::rebuild(
+    let provider = ExactPredicatePartitionIndexV4::rebuild_admitted_v1(
         binding,
-        slot.registration.query.program().clone(),
-        rows,
+        slot.registration.query.program(),
+        &rows,
+        &runtime.ownership_graph.budget,
     )
-    .map_err(|error| match error {
-        riffdb_projection::ExactPredicateProviderErrorV1::BoundExceeded
-        | riffdb_projection::ExactPredicateProviderErrorV1::StateAmplification
-        | riffdb_projection::ExactPredicateProviderErrorV1::FuelExhausted => {
-            RebuildFailure::Capacity(generation)
-        }
-        _ => RebuildFailure::Integrity,
-    })?;
+    .map_err(|error| map_predicate_admission_failure(error, generation))?;
     persist_checked_predicate_slot(runtime, slot, &provider)?;
-    Ok(Some(Selected::new(provider, captured, candidates)))
+    Ok(Some(Selected::from_shared(provider, captured, candidates)))
 }
 
 fn persist_checked_predicate_slot(
@@ -2847,8 +2868,11 @@ fn persist_checked_predicate_slot(
         &slot.registration.key(),
         runtime.history_incarnation,
     )?;
-    if ExactPredicatePartitionIndexV4::from_checkpoint_bytes(bytes)
-        .map_err(|_| RebuildFailure::Integrity)?
+    if **ExactPredicatePartitionIndexV4::from_checkpoint_bytes_admitted_v1(
+        bytes,
+        &runtime.ownership_graph.budget,
+    )
+    .map_err(|error| map_predicate_admission_failure(error, provider.binding().generation()))?
         != *provider
     {
         return Err(RebuildFailure::Integrity);
@@ -3089,7 +3113,7 @@ fn rebuild_nullable_predicate_slot(
     slot: &NullableExactPredicateSlot,
     head: CommitSequence,
     prior_generation: Option<ProjectionGeneration>,
-) -> Result<Option<Selected<ExactPredicatePartitionIndexV5>>, RebuildFailure> {
+) -> Result<Option<Selected<AdmittedPredicateProviderV5>>, RebuildFailure> {
     #[cfg(feature = "test-fixtures")]
     observe_test_point(TestPoint::Preparing, &slot.checkpoint, Some(head));
     let previous = {
@@ -3127,7 +3151,10 @@ fn rebuild_nullable_predicate_slot(
             &slot.registration.key(),
             runtime.history_incarnation,
         )
-        && let Ok(recovered) = ExactPredicatePartitionIndexV5::from_checkpoint_bytes(provider_bytes)
+        && let Ok(recovered) = ExactPredicatePartitionIndexV5::from_checkpoint_bytes_admitted_v1(
+            provider_bytes,
+            &runtime.ownership_graph.budget,
+        )
         && recovered.binding().plan() == slot.registration.query.identity()
         && recovered.binding().policy_shape() == slot.registration.policy_shape
         && recovered.binding().partition()
@@ -3156,21 +3183,15 @@ fn rebuild_nullable_predicate_slot(
         head,
     )
     .map_err(|_| RebuildFailure::Integrity)?;
-    let provider = ExactPredicatePartitionIndexV5::rebuild(
+    let provider = ExactPredicatePartitionIndexV5::rebuild_admitted_v1(
         binding,
-        slot.registration.query.program().clone(),
-        rows,
+        slot.registration.query.program(),
+        &rows,
+        &runtime.ownership_graph.budget,
     )
-    .map_err(|error| match error {
-        riffdb_projection::ExactPredicateProviderErrorV1::BoundExceeded
-        | riffdb_projection::ExactPredicateProviderErrorV1::StateAmplification
-        | riffdb_projection::ExactPredicateProviderErrorV1::FuelExhausted => {
-            RebuildFailure::Capacity(generation)
-        }
-        _ => RebuildFailure::Integrity,
-    })?;
+    .map_err(|error| map_predicate_admission_failure(error, generation))?;
     persist_checked_nullable_predicate_slot(runtime, slot, &provider)?;
-    Ok(Some(Selected::new(provider, captured, candidates)))
+    Ok(Some(Selected::from_shared(provider, captured, candidates)))
 }
 
 fn persist_checked_nullable_predicate_slot(
@@ -3194,8 +3215,11 @@ fn persist_checked_nullable_predicate_slot(
         &slot.registration.key(),
         runtime.history_incarnation,
     )?;
-    if ExactPredicatePartitionIndexV5::from_checkpoint_bytes(bytes)
-        .map_err(|_| RebuildFailure::Integrity)?
+    if **ExactPredicatePartitionIndexV5::from_checkpoint_bytes_admitted_v1(
+        bytes,
+        &runtime.ownership_graph.budget,
+    )
+    .map_err(|error| map_predicate_admission_failure(error, provider.binding().generation()))?
         != *provider
     {
         return Err(RebuildFailure::Integrity);
