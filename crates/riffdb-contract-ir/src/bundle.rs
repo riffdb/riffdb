@@ -1,6 +1,10 @@
 //! Stable lineage ledger, plan hashes, and canonical contract bundle bytes.
 
 mod capacity;
+mod encoding_admission;
+pub use encoding_admission::ProviderBundleEncodingErrorV1;
+#[cfg(test)]
+mod encoding_admission_tests;
 
 mod binding;
 #[cfg(test)]
@@ -14,9 +18,11 @@ use riffdb_types::{
     ContractVersion, CurrencyCode, DecimalSpec, EntityTypeId, EnumTypeId, EnumVariantId,
     EventTypeId, FieldId, IndexId, InvariantId, MAX_COMMAND_CONFLICT_KEYS_V1, OutcomeId, PlanHash,
     ProjectionId, ProjectionPlanHash, SchemaHash, SourceHash, decode_canonical_value,
-    encode_canonical_value, hash_contract_bundle, hash_contract_plan_root, hash_plan,
-    hash_projection_plan, hash_schema,
+    hash_contract_bundle, hash_contract_plan_root, hash_plan, hash_projection_plan, hash_schema,
 };
+
+#[cfg(test)]
+use riffdb_types::encode_canonical_value;
 
 use crate::codec::{Reader, Writer};
 use crate::format_registry::{
@@ -2503,25 +2509,15 @@ fn compute_plan_root_hash_versioned(
     let structural_hash: SchemaHash = hash_schema(&schema_preimage.finish());
 
     let mut writer = Writer::new(MAX_BUNDLE_BYTES);
-    writer.raw(ROOT_PLAN_MAGIC)?;
-    writer.u32(ir_version)?;
-    writer.raw(structural_hash.as_bytes())?;
-    if ir_version >= EXECUTABLE_IR_VERSION_V2 {
-        encode_workflows(&mut writer, workflows, ir_version)?;
-    }
-    if ir_version >= EXECUTABLE_IR_VERSION_V4 {
-        writer.bytes(&row_policies.canonical_bytes()?)?;
-    }
-    writer.u32(commands.len() as u32)?;
-    for command in commands {
-        writer.u32(command.command_id().get())?;
-        writer.raw(command.plan_hash().as_bytes())?;
-    }
-    writer.u32(projections.len() as u32)?;
-    for projection in projections {
-        writer.u32(projection.projection_id().get())?;
-        writer.raw(projection.plan_hash().as_bytes())?;
-    }
+    encoding_admission::encode_root_to(
+        &mut writer,
+        structural_hash,
+        workflows,
+        row_policies,
+        commands,
+        projections,
+        ir_version,
+    )?;
     Ok(hash_contract_plan_root(&writer.finish()))
 }
 
@@ -2658,6 +2654,11 @@ fn visit_expected_schema_artifacts(
 
 fn encode_bundle(bundle: &ContractBundle) -> Result<Vec<u8>, IrValidationError> {
     let mut writer = Writer::new(MAX_BUNDLE_BYTES);
+    encode_bundle_to(&mut writer, bundle)?;
+    Ok(writer.finish())
+}
+
+fn encode_bundle_to(writer: &mut Writer, bundle: &ContractBundle) -> Result<(), IrValidationError> {
     writer.raw(BUNDLE_MAGIC)?;
     writer.u32(bundle.format_version)?;
     writer.u32(bundle.grammar_version)?;
@@ -2672,26 +2673,21 @@ fn encode_bundle(bundle: &ContractBundle) -> Result<Vec<u8>, IrValidationError> 
     }
     writer.raw(bundle.source_hash.as_bytes())?;
     writer.raw(bundle.plan_root_hash.as_bytes())?;
-    encode_ledger(&mut writer, &bundle.ledger)?;
-    encode_schema(&mut writer, &bundle.schema)?;
+    encode_ledger(writer, &bundle.ledger)?;
+    encode_schema(writer, &bundle.schema)?;
     if bundle.ir_version >= EXECUTABLE_IR_VERSION_V2 {
-        encode_workflows(&mut writer, &bundle.workflows, bundle.ir_version)?;
+        encode_workflows(writer, &bundle.workflows, bundle.ir_version)?;
     }
     if bundle.ir_version >= EXECUTABLE_IR_VERSION_V4 {
-        encode_row_policy_catalog(&mut writer, &bundle.row_policies)?;
+        encode_row_policy_catalog(writer, &bundle.row_policies)?;
     }
     writer.u32(bundle.commands.len() as u32)?;
     for command in &bundle.commands {
-        encode_command_bundle_entry_versioned(
-            &mut writer,
-            command,
-            &bundle.schema,
-            bundle.ir_version,
-        )?;
+        encode_command_bundle_entry_versioned(writer, command, &bundle.schema, bundle.ir_version)?;
     }
     writer.u32(bundle.projections.len() as u32)?;
     for projection in &bundle.projections {
-        encode_projection_bundle_entry(&mut writer, projection)?;
+        encode_projection_bundle_entry(writer, projection)?;
     }
     writer.u32(bundle.schema_artifacts.len() as u32)?;
     for artifact in &bundle.schema_artifacts {
@@ -2699,17 +2695,10 @@ fn encode_bundle(bundle: &ContractBundle) -> Result<Vec<u8>, IrValidationError> 
         writer.bytes(artifact.canonical_json().as_bytes())?;
         writer.raw(artifact.hash().as_bytes())?;
     }
-    encode_mcp_registry(&mut writer, &bundle.mcp_command_names)?;
-    encode_compatibility(&mut writer, &bundle.compatibility)?;
-    writer.finish().pipe(Ok)
+    encode_mcp_registry(writer, &bundle.mcp_command_names)?;
+    encode_compatibility(writer, &bundle.compatibility)?;
+    Ok(())
 }
-
-trait Pipe: Sized {
-    fn pipe<T>(self, operation: impl FnOnce(Self) -> T) -> T {
-        operation(self)
-    }
-}
-impl<T> Pipe for T {}
 
 fn encode_ledger(writer: &mut Writer, ledger: &LineageLedgerV1) -> Result<(), IrValidationError> {
     writer.u32(ledger.version)?;
@@ -3269,13 +3258,12 @@ pub(crate) fn encode_expression_arena(
         writer.u8(node.kind().tag())?;
         encode_value_type(writer, node.result_type())?;
         match node.kind() {
-            ExpressionKind::Constant(value) => {
-                writer.bytes(&encode_canonical_value(value).map_err(|_| {
-                    IrValidationError::TypeMismatch {
-                        context: "expression constant encoding",
-                    }
-                })?)?
-            }
+            ExpressionKind::Constant(value) => writer.canonical_value(
+                value,
+                IrValidationError::TypeMismatch {
+                    context: "expression constant encoding",
+                },
+            )?,
             ExpressionKind::InputField(field)
             | ExpressionKind::ServiceValue(field)
             | ExpressionKind::CollectionElementField(field)

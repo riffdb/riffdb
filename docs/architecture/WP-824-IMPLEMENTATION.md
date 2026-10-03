@@ -1,5 +1,43 @@
 # WP-824 implementation progress
 
+## Admitted canonical bundle and root-hash encoding
+
+A borrowed counting writer now uses the ordinary canonical encoding traversal
+without building an output buffer. Existing canonical constants append directly
+into the enclosing writer; the same borrowed length validator preserves their
+bounds and ordinary IR error mappings. Admitted bundle encoding reserves one exact
+output allocation and settlement scratch before construction. Its immutable output
+keeps the private byte charge through the final capture.
+
+Plan-root hashing sizes the structural schema, structural hash preimage and root
+preimage before allocating any encoding buffers. Its reservation covers the
+structural bytes plus the larger overlapping preimage phase, using actual native
+buffer lengths and ownership overhead. The structural preimage is destroyed before
+the root buffer is allocated. Row-policy framing uses the same checked standalone
+encoding traversal without another row-policy byte buffer. Ordinary and admitted
+root hashing share that framing; ordering and hash domains are unchanged.
+
+All 13 frozen compiler bundles preserve canonical bytes and root hashes. Checks
+cover final output captures, refusal before sizing and after sizing fits, constant
+encoding and error equivalence, integer overflow, observed simultaneous native
+buffer capacities, and an independent reconstruction of the original root
+preimage. Removing a projection changes the root identically in ordinary and
+admitted hashing. All 417 contract IR and compiler tests passed with no skips.
+All seven scoped non-test acceptance checks passed, including formatting, Clippy
+with warnings denied, handbook, downstream adapters, scope and source guards.
+
+This covers encoding workspace for already constructed first-party IR. IR parsing,
+command/projection validation scratch and production catalog capture remain
+unadmitted. Source pins, provider retirement, artifact cleanup and qualification
+also remain open. WP-824 is not closed; no aggregate-enforcement or full CI claim.
+
+PR note: Package WP-824 (open); Tier guarantee; Behavior: internal admitted bundle
+output and plan-root encoding workspace; Compatibility: existing bytes, hashes,
+ordering, validation errors and application interfaces; Checks: tests above and
+scoped acceptance; Handbook: this page; Hazards/follow-ups: finish whole-bundle
+construction and the remaining lifecycle before qualification.
+
+
 ## Admitted generated-schema workspace
 
 A closed borrowed first-party source covers existing entity, event, command-input,

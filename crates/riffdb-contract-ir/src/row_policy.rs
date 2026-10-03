@@ -4,9 +4,7 @@ mod capacity;
 
 use std::collections::BTreeMap;
 
-use riffdb_types::{
-    CanonicalValue, EntityTypeId, FieldId, IndexId, decode_canonical_value, encode_canonical_value,
-};
+use riffdb_types::{CanonicalValue, EntityTypeId, FieldId, IndexId, decode_canonical_value};
 
 use crate::bundle::{decode_value_type, encode_value_type};
 use crate::codec::{Reader, Writer};
@@ -914,11 +912,12 @@ fn encode_operand(
         }
         RowPolicyValueSourceV1::Constant(value) => {
             writer.u8(5)?;
-            writer.bytes(&encode_canonical_value(value).map_err(|_| {
+            writer.canonical_value(
+                value,
                 IrValidationError::InvalidText {
                     kind: "row policy constant",
-                }
-            })?)?;
+                },
+            )?;
         }
     }
     encode_value_type(writer, &operand.value_type)
