@@ -612,8 +612,20 @@ workers also reserve their explicit capture pins against this pool; capture
 pressure returns the same typed unavailable result. Encoded checkpoint read
 buffers reserve capacity before reading and retain their charge through the last
 buffer reference. Budget pressure leaves rebuild work eligible for a later retry.
-The complete catalog/source and policy assembly, supersession integration and
-operator lifecycle diagnostics remain in progress. This implementation recycles
+The exact-provider worker emits bounded operator diagnostics on stderr at startup,
+at most once per 60 seconds while its service clock is healthy, and at worker stop.
+Lines use `trigger=exact_provider_lifecycle` and fixed numeric fields: the process
+limit, fixed owner bytes, owned/reserved bytes, outstanding reservations
+(`reserved_work`), live/released accounting allocations, active/retiring owners,
+unique pinned owners, distinct pin guards, and finally released owners.
+Cloned references to one pin guard count once. Retiring or pinned state retains
+its bytes; removing discovery entries cannot report an owner as released.
+Clock or accounting failure emits `available=false` without fabricated counters.
+These lines contain no keys, tenants, capabilities, paths or payloads. Multiple
+runtimes in a process report the same aggregate pool.
+
+The complete catalog/source and policy assembly and supersession integration
+remain in progress. This implementation recycles
 eligible registrations but does not yet establish the complete provider memory
 bound or qualification readiness. See the
 [implementation progress](architecture/WP-824-IMPLEMENTATION.md).

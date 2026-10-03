@@ -35,6 +35,8 @@ struct State {
     phase: Phase,
     pins: u32,
     artifact: Option<Box<ArtifactState>>,
+    // Last: artifact data drops before final lifecycle release.
+    accounting: riffdb_types::exact_provider_budget_v1::ProviderOwnerAccounting,
 }
 
 pub(super) struct ProviderOwner {
@@ -58,6 +60,7 @@ impl ProviderOwner {
                 phase: Phase::Active,
                 pins: 0,
                 artifact: None,
+                accounting: budget.register_provider_owner()?,
             }),
             budget,
             _charge: charge,
@@ -87,6 +90,7 @@ impl ProviderOwner {
         }
         let binding = state.artifact.as_deref_mut().ok_or(BudgetUnavailable)?;
         if !binding.manifest.same_binding(&manifest) {
+            let _ = state.accounting.retire();
             state.phase = Phase::Refused;
             return Err(BudgetUnavailable);
         }
@@ -143,6 +147,7 @@ impl ProviderOwner {
         let pins = state.pins.checked_add(1).ok_or(BudgetUnavailable)?;
         // Admit both the Arc guard and its immutable accounting owner first.
         let charge = self.budget.reserve(PIN_ALLOCATION_BYTES)?.commit()?;
+        state.accounting.pin_admitted()?;
         state.pins = pins;
         Ok(ProviderPin(Arc::new(PinGuard {
             owner: self.clone(),
@@ -177,6 +182,7 @@ impl ProviderOwner {
         if state.phase != Phase::Active || state.pins != 0 {
             return Ok(false);
         }
+        state.accounting.retire()?;
         state.phase = Phase::Retiring;
         Ok(true)
     }
@@ -189,6 +195,7 @@ impl ProviderOwner {
         if state.phase == Phase::Refused {
             return Err(BudgetUnavailable);
         }
+        state.accounting.retire()?;
         state.phase = Phase::Retiring;
         Ok(())
     }
@@ -260,6 +267,9 @@ impl Drop for PinGuard {
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         if let Some(pins) = state.pins.checked_sub(1) {
+            if state.accounting.release_pin().is_err() {
+                state.phase = Phase::Refused;
+            }
             state.pins = pins;
         } else {
             state.phase = Phase::Refused;
@@ -270,6 +280,62 @@ impl Drop for PinGuard {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn lifecycle_counts_track_unique_pin_guards_and_final_owner_destruction() {
+        let budget = ProviderBudget::new();
+        let owner = ProviderOwner::new(
+            budget.clone(),
+            budget.reserve(8192).unwrap().commit().unwrap(),
+        )
+        .unwrap();
+        let first = owner.pin().unwrap();
+        let alias = first.clone();
+        let second = owner.pin().unwrap();
+        let counts = budget.observation().unwrap();
+        assert_eq!(
+            (
+                counts.active_owners,
+                counts.retiring_owners,
+                counts.pinned_owners,
+                counts.pins,
+                counts.released_owners
+            ),
+            (1, 0, 1, 2, 0)
+        );
+        owner.retire_superseded().unwrap();
+        assert!(owner.pin().is_err());
+        drop(first);
+        assert_eq!(budget.observation().unwrap().pins, 2);
+        drop(alias);
+        assert_eq!(budget.observation().unwrap().pins, 1);
+        drop(owner);
+        let retained = budget.observation().unwrap();
+        assert_eq!(
+            (
+                retained.active_owners,
+                retained.retiring_owners,
+                retained.pinned_owners,
+                retained.pins,
+                retained.released_owners
+            ),
+            (0, 1, 1, 1, 0)
+        );
+        assert!(retained.owned_bytes > 0);
+        drop(second);
+        let released = budget.observation().unwrap();
+        assert_eq!(
+            (
+                released.active_owners,
+                released.retiring_owners,
+                released.pinned_owners,
+                released.pins,
+                released.released_owners,
+                released.owned_bytes
+            ),
+            (0, 0, 0, 0, 1, 0)
+        );
+    }
 
     #[test]
     fn captured_slot_keeps_data_alive_and_prevents_pressure_retirement() {

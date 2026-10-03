@@ -255,7 +255,11 @@ fn admitted_nullable_rebuild_and_pressure_preserve_original_inputs() {
     let ordinary =
         ExactPredicatePartitionIndexV5::rebuild(binding, program.clone(), rows.clone()).unwrap();
     let blocker = budget
-        .reserve(EXACT_PROVIDER_BUDGET_BYTES - 128 - OWNED_CAPACITY_INSPECTION_SCRATCH_BYTES_V1)
+        .reserve(
+            EXACT_PROVIDER_BUDGET_BYTES
+                - budget.observation().unwrap().fixed_owner_bytes
+                - OWNED_CAPACITY_INSPECTION_SCRATCH_BYTES_V1,
+        )
         .unwrap();
     assert!(matches!(
         ExactPredicatePartitionIndexV5::rebuild_admitted_v1(binding, &program, &rows, &budget),

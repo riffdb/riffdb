@@ -2325,12 +2325,24 @@ impl RunningExactTextWorker {
             .name("riffdb-exact-text".to_owned())
             .stack_size(crate::PRODUCTION_THREAD_STACK_BYTES)
             .spawn(move || {
+                let mut diagnostics =
+                    crate::exact_provider_diagnostics::ProviderDiagnosticTicker::default();
                 while !stop_requested(&worker_stop) {
+                    if let Some(sample) = diagnostics.poll(
+                        runtime.cursor_clock.as_ref(),
+                        &runtime.ownership_graph.budget,
+                    ) {
+                        eprintln!("[riffdbd-diag] trigger=exact_provider_lifecycle {sample}");
+                    }
                     let _ = refresh_registered_slots(&runtime);
                     if wait_for_stop(&worker_stop, POLL_INTERVAL) {
                         break;
                     }
                 }
+                let sample = crate::exact_provider_diagnostics::ProviderDiagnosticSample::capture(
+                    &runtime.ownership_graph.budget,
+                );
+                eprintln!("[riffdbd-diag] trigger=exact_provider_lifecycle {sample}");
             })
             .map_err(|_| ExactTextWorkerStartError)?;
         Ok(Self {

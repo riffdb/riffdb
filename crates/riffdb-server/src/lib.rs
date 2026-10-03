@@ -29,6 +29,7 @@ mod consumer_token;
 mod cursor;
 mod daemon;
 mod exact_provider_checkpoint_custody;
+mod exact_provider_diagnostics;
 mod exact_provider_generation;
 mod exact_provider_graph;
 mod exact_provider_owner;

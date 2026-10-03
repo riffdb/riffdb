@@ -747,6 +747,18 @@ fn replaced_checkpoint_preserves_foreign_object_and_retiring_owner_charge() {
                     .is_err()
             );
             assert_eq!(std::fs::read(&path).unwrap(), b"foreign evidence");
+            let mut expected = before;
+            assert_eq!(
+                (
+                    expected.active_owners,
+                    expected.retiring_owners,
+                    expected.pinned_owners,
+                    expected.pins
+                ),
+                (1, 0, 0, 0)
+            );
+            expected.active_owners = 0;
+            expected.retiring_owners = 1;
             assert_eq!(
                 fixture
                     .runtime
@@ -754,7 +766,7 @@ fn replaced_checkpoint_preserves_foreign_object_and_retiring_owner_charge() {
                     .budget
                     .observation()
                     .unwrap(),
-                before
+                expected
             );
             assert!(owner.upgrade().is_some());
             assert!(fixture.runtime.slot_for(&request).is_err());

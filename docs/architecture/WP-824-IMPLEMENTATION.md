@@ -1,5 +1,40 @@
 # WP-824 implementation progress
 
+## Operator lifecycle accounting
+
+The same process-graph accounting mutex now holds active/retiring owner counts,
+unique pinned-owner count, distinct pin-guard count and cumulative released-owner
+count, alongside reserved/owned bytes and accounting allocation counts. One
+non-cloneable accounting token follows each native owner. A guard alias does not
+create another pin; retirement preserves existing pins; the token releases only
+after the owner's artifact state drops. Every update uses checked arithmetic and
+publishes a complete counter snapshot. Underflow/overflow makes observations and
+new budget admission fail closed rather than emitting misleading partial counts.
+The finite accounting root now reserves 512 bytes, with a compile-time native
+layout bound; the aggregate limit remains exactly 1 GiB.
+
+The native worker reports fixed numeric `exact_provider_lifecycle` stderr samples
+at startup, every due 60-second service-clock interval and shutdown. Invalid clock
+or accounting observations report only `available=false`; repeated failures do
+not generate a poll-frequency log stream. Values never include runtime identities,
+paths or payloads. No metric label cardinality or SDK interface changes.
+
+Tests prove actual unique native pin guards and aliases, retired-reference
+retention, final owner/byte release, atomic overflow refusal, clock rollback/failure
+and recovery, and the diagnostic line bound even at counter maxima. The existing
+foreign-artifact test now asserts the active-to-retiring count change while
+preserving every byte/reservation/allocation counter. The broader 715-test run
+passed 713 tests; its two failures were fixtures hard-coding the prior 128-byte
+accounting root. Updating those fixtures to use the reported fixed charge passed
+all 12 focused server/projection regression tests and both failed tests on rerun.
+All six final scoped static checks passed. Catalog/source/policy admission and
+exact supersession remain open; WP-824 is not closed.
+
+PR note: Package WP-824; Tier guarantee; Behavior: bounded operator lifecycle
+samples; Compatibility: application interfaces, durable formats, authority and
+retention unchanged; Handbook: Configuration; Hazards/follow-ups: finish remaining
+admission/supersession integration, full CI and downstream qualification.
+
 ## Pressure retirement and claimed artifact cleanup
 
 All five native registries preserve their 256-slot ceilings and exact keys.

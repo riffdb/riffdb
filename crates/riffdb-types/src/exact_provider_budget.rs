@@ -19,13 +19,30 @@ pub struct BudgetObservation {
     pub reservations: u64,
     pub allocations: u64,
     pub released_allocations: u64,
+    pub active_owners: u64,
+    pub retiring_owners: u64,
+    pub pinned_owners: u64,
+    pub pins: u64,
+    pub released_owners: u64,
 }
+
+#[path = "exact_provider_lifecycle.rs"]
+mod lifecycle;
+#[doc(hidden)]
+pub use lifecycle::ProviderOwnerAccounting;
 
 struct Accounting {
     limit: u64,
     counters: BudgetObservation,
     refused: bool,
 }
+
+const _: () = assert!(
+    2 * (std::mem::size_of::<Mutex<Accounting>>() + 2 * std::mem::size_of::<usize>())
+        + 2 * std::mem::align_of::<Accounting>()
+        + 128
+        <= 512
+);
 
 #[derive(Clone)]
 pub struct ProviderBudget(Arc<Mutex<Accounting>>);
@@ -38,7 +55,7 @@ impl Default for ProviderBudget {
 
 impl ProviderBudget {
     pub fn new() -> Self {
-        Self::with_limit_and_owner(EXACT_PROVIDER_BUDGET_BYTES, 128)
+        Self::with_limit_and_owner(EXACT_PROVIDER_BUDGET_BYTES, 512)
     }
 
     #[cfg(test)]
@@ -1034,3 +1051,7 @@ mod tests {
         assert_eq!(budget.observation().unwrap().reserved_bytes, 0);
     }
 }
+
+#[cfg(test)]
+#[path = "exact_provider_lifecycle_tests.rs"]
+mod lifecycle_tests;

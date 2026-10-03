@@ -92,7 +92,9 @@ mod tests {
         let key = [7_u8; super::super::SLOT_KEY_BYTES];
         let provider = vec![3_u8; 16384];
         let expected = super::super::encode_activation_checkpoint(&key, 9, &provider).unwrap();
-        let blocker = budget.reserve(EXACT_PROVIDER_BUDGET_BYTES - 128).unwrap();
+        let blocker = budget
+            .reserve(EXACT_PROVIDER_BUDGET_BYTES - budget.observation().unwrap().fixed_owner_bytes)
+            .unwrap();
         assert!(matches!(
             admit_activation_checkpoint_bytes(&key, 9, &provider, &budget),
             Err(RebuildFailure::Transient)
@@ -131,7 +133,9 @@ mod tests {
     #[test]
     fn refused_admission_does_not_read_or_materialize_checkpoint_bytes() {
         let budget = ProviderBudget::new();
-        let occupied = budget.reserve(EXACT_PROVIDER_BUDGET_BYTES - 128).unwrap();
+        let occupied = budget
+            .reserve(EXACT_PROVIDER_BUDGET_BYTES - budget.observation().unwrap().fixed_owner_bytes)
+            .unwrap();
         let reads = Cell::new(0);
         let mut reader = Reader {
             bytes: Cursor::new(b"checkpoint"),

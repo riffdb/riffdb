@@ -120,7 +120,11 @@ mod tests {
         let ordinary = provider.to_checkpoint_bytes().unwrap();
         let budget = ProviderBudget::new();
         let blocker = budget
-            .reserve(EXACT_PROVIDER_BUDGET_BYTES - 128 - OWNED_CAPACITY_INSPECTION_SCRATCH_BYTES_V1)
+            .reserve(
+                EXACT_PROVIDER_BUDGET_BYTES
+                    - budget.observation().unwrap().fixed_owner_bytes
+                    - OWNED_CAPACITY_INSPECTION_SCRATCH_BYTES_V1,
+            )
             .unwrap();
         assert!(matches!(
             provider.to_checkpoint_bytes_admitted_v1(&budget),
