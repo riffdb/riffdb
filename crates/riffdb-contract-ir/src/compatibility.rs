@@ -336,6 +336,15 @@ struct StablePathSegment {
     stable_id: Option<u32>,
 }
 
+/// Native layout allowance for a stable-path vector, including the previous
+/// allocation during growth from one segment to capacity four. Valid paths
+/// retain at most three segments; malformed paths stop before further pushes.
+pub(crate) fn provider_stable_path_vector_bound_v1() -> u64 {
+    (16 * std::mem::size_of::<StablePathSegment>()
+        + 2 * std::mem::align_of::<StablePathSegment>()
+        + 256) as u64
+}
+
 impl StablePathSegment {
     const fn literal(kind: &'static str) -> Self {
         Self {

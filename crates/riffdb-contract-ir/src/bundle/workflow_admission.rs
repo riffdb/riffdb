@@ -10,7 +10,7 @@ use std::{
     sync::Arc,
 };
 
-fn allocation<T>(count: usize) -> Result<u64, BudgetUnavailable> {
+pub(super) fn allocation<T>(count: usize) -> Result<u64, BudgetUnavailable> {
     if count == 0 {
         return Ok(0);
     }

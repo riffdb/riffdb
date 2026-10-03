@@ -1,5 +1,39 @@
 # WP-824 implementation progress
 
+## Admitted compatibility-report parsing
+
+A hidden first-party reader admits the existing compatibility-report section
+before entry construction. Borrowed inspection accounts for the entry vector,
+path strings, retained stable-path vectors and the parser's temporary borrowed
+path-part vector, including malformed slash-dense paths. Sorting remains in place.
+The empty-successor synthesis and its vector growth are also admitted before the
+ordinary constructor runs. Checked arithmetic refuses overflow.
+
+The reader preserves the ordinary finding-code, path, duplicate, overall-class
+and genesis/successor checks. A pre-admitted exact output buffer verifies canonical
+section bytes before settling one immutable charged report. Complete bundle
+identity, encoded input ownership and parent compatibility comparison remain
+separate; this does not introduce an encoding, application interface or migration
+policy.
+
+Tests cover frozen reports, all stable-path shapes, 4,096-entry reports, native
+capacity witnesses, maximum malformed paths, truncation, trailing bytes, hostile
+counts, overall-class mismatch, reordered entries, noncanonical empty successors,
+pressure before sizing and construction, arithmetic overflow and final captures.
+All 432 contract IR and compiler tests passed with no skips. All seven scoped
+non-test acceptance checks passed, including formatting, Clippy with warnings
+denied, handbook, downstream adapters, scope and source guards.
+
+WP-824 remains open. Whole-bundle admission, catalog assembly, production capture,
+source pins, retirement, cleanup and qualification still require implementation.
+No aggregate-enforcement or full CI receipt is claimed.
+
+PR note: Package WP-824 (open); Tier guarantee; Behavior: internal admitted
+compatibility-section parsing and output ownership; Compatibility: existing
+encoding, semantic checks, canonicality and application interfaces; Checks:
+contract IR/compiler tests and scoped acceptance; Handbook: this page;
+Hazards/follow-ups: complete the remaining provider construction and lifecycle.
+
 ## Admitted workflow parsing and constructor workspace
 
 A hidden first-party reader covers the existing workflow section of supported

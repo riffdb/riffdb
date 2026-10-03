@@ -1,12 +1,16 @@
 //! Stable lineage ledger, plan hashes, and canonical contract bundle bytes.
 
 mod capacity;
+mod compatibility_admission;
 mod encoding_admission;
 mod plan_hash_admission;
 #[cfg(test)]
 mod plan_hash_admission_tests;
 mod schema_registry_admission;
 mod workflow_admission;
+pub use compatibility_admission::decode_provider_compatibility_section_admitted_v1;
+#[cfg(test)]
+mod compatibility_admission_tests;
 pub use workflow_admission::decode_provider_workflow_section_admitted_v1;
 #[cfg(test)]
 mod schema_registry_admission_tests;
