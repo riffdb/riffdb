@@ -31,6 +31,9 @@ pub enum ProviderSchemaArtifactSourceV1<'a> {
         id: CommandId,
         outcomes: &'a [OutcomeSchema],
     },
+    ProjectionResultFromPlan {
+        plan: &'a crate::ProjectionPlan,
+    },
     ProjectionResult {
         id: ProjectionId,
         group_types: &'a [ValueType],
@@ -152,24 +155,30 @@ impl ProviderSchemaArtifactSourceV1<'_> {
                 require_shape(JsonSchemaShapeConstruction::CommandOutcomeUnion)?;
                 command_outcomes_size(id, outcomes, schema)
             }
+            Self::ProjectionResultFromPlan { plan } => {
+                let group = plan.group_schema();
+                validate_projection_result_artifact(plan.projection_id(), group.measures())?;
+                projection_result_size(
+                    group
+                        .group_components()
+                        .iter()
+                        .map(crate::ProjectionGroupComponentSchema::value_type),
+                    group.measures(),
+                    schema,
+                )
+            }
             Self::ProjectionResult {
                 id,
                 group_types,
                 measures,
             } => {
-                require_shape(JsonSchemaShapeConstruction::ProjectionTupleKey)?;
-                require_shape(JsonSchemaShapeConstruction::ProjectionResultRow)?;
-                if measures.owner() != &RecordTypeRef::ProjectionResult(id) {
-                    return Err(IrValidationError::InvalidReference {
-                        kind: "projection result owner",
-                    });
-                }
-                projection_result_size(group_types, measures, schema)
+                validate_projection_result_artifact(id, measures)?;
+                projection_result_size(group_types.iter(), measures, schema)
             }
         }
     }
 
-    fn generate_ordinary(
+    pub(crate) fn generate_ordinary(
         self,
         schema: &SchemaIr,
     ) -> Result<GeneratedSchemaArtifact, IrValidationError> {
@@ -196,13 +205,28 @@ impl ProviderSchemaArtifactSourceV1<'_> {
             Self::CommandOutcomes { id, outcomes } => {
                 GeneratedSchemaArtifact::command_outcomes_parts(id, outcomes, schema)
             }
+            Self::ProjectionResultFromPlan { plan } => {
+                let group = plan.group_schema();
+                GeneratedSchemaArtifact::projection_result_parts(
+                    plan.projection_id(),
+                    group
+                        .group_components()
+                        .iter()
+                        .map(crate::ProjectionGroupComponentSchema::value_type),
+                    group.measures(),
+                    schema,
+                )
+            }
             Self::ProjectionResult {
                 id,
                 group_types,
                 measures,
-            } => {
-                GeneratedSchemaArtifact::projection_result_parts(id, group_types, measures, schema)
-            }
+            } => GeneratedSchemaArtifact::projection_result_parts(
+                id,
+                group_types.iter(),
+                measures,
+                schema,
+            ),
         }
     }
 }

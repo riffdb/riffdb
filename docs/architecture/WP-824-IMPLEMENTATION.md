@@ -1,5 +1,40 @@
 # WP-824 implementation progress
 
+## Admitted schema registry validation
+
+A common borrowed source visitor preserves the existing entity, event,
+command-input, command-outcome and projection artifact order. Provider registry
+validation now admits generation of each expected artifact before comparing its
+key, canonical JSON and hash, and destroys that temporary artifact before moving
+to the next. Count/order/mismatch checks retain their ordinary meanings.
+
+Projection artifacts borrow group value types directly from the checked plan.
+The ordinary slice factory and the internal plan source share the same borrowed
+sizing and JSON tree builders, owner validation, rendering and hashing. This
+removes the registry visitor's temporary vector and deep value-type clones without
+changing its artifacts or exposing an application budget selector.
+
+All 13 frozen compiler bundles retain their bytes and validate unchanged. Native
+JSON capacity witnesses also cover the borrowed projection source. Tests cover
+refusal before sizing and after sizing fits, final temporary release, a late
+registry mismatch after earlier artifacts have been generated, and an invalid
+count rejected before generation. All 423 contract IR and compiler tests passed
+with no skips. All seven scoped non-test acceptance checks passed, including
+formatting, Clippy with warnings denied, handbook, downstream adapters, scope
+and source guards.
+
+This is registry validation of already constructed IR. Parsing, constructor and
+write-evidence workspace, retained catalog assembly and production capture remain
+unadmitted. Source pins, retirement, cleanup and qualification remain open;
+WP-824 is not closed and this is not an aggregate-enforcement or full CI receipt.
+
+PR note: Package WP-824 (open); Tier guarantee; Behavior: internal admitted schema
+registry validation and borrowed projection inputs; Compatibility: existing
+canonical artifacts, registry order, semantic checks and application interfaces;
+Checks: tests above and scoped acceptance; Handbook: this page;
+Hazards/follow-ups: finish whole-bundle construction and the remaining lifecycle.
+
+
 ## Admitted command and projection hash validation
 
 Existing enum-dependency traversal now has an exhaustive private inventory for

@@ -118,6 +118,10 @@ fn admitted_schema_generation_preserves_every_artifact_in_the_frozen_bundles() {
                 },
                 &bundle,
             );
+            check(
+                ProviderSchemaArtifactSourceV1::ProjectionResultFromPlan { plan: projection },
+                &bundle,
+            );
             count += 1;
         }
         assert_eq!(count, bundle.schema_artifacts().len());

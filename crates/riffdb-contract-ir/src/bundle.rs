@@ -5,6 +5,9 @@ mod encoding_admission;
 mod plan_hash_admission;
 #[cfg(test)]
 mod plan_hash_admission_tests;
+mod schema_registry_admission;
+#[cfg(test)]
+mod schema_registry_admission_tests;
 pub use encoding_admission::ProviderBundleEncodingErrorV1;
 #[cfg(test)]
 mod encoding_admission_tests;
@@ -2664,48 +2667,45 @@ fn visit_expected_schema_artifacts(
     projections: &[ProjectionPlan],
     mut visit: impl FnMut(GeneratedSchemaArtifact) -> Result<(), IrValidationError>,
 ) -> Result<(), IrValidationError> {
+    visit_schema_artifact_sources(schema, commands, projections, |source| {
+        visit(source.generate_ordinary(schema)?)
+    })
+}
+
+fn visit_schema_artifact_sources<'a, E>(
+    schema: &'a SchemaIr,
+    commands: &'a [CommandPlan],
+    projections: &'a [ProjectionPlan],
+    mut visit: impl FnMut(crate::ProviderSchemaArtifactSourceV1<'a>) -> Result<(), E>,
+) -> Result<(), E> {
+    use crate::ProviderSchemaArtifactSourceV1 as Source;
     for entity in schema.entities() {
-        visit(GeneratedSchemaArtifact::entity(
-            entity.id(),
-            entity.record(),
-            schema,
-        )?)?;
+        visit(Source::Entity {
+            id: entity.id(),
+            record: entity.record(),
+        })?;
     }
     for event in schema.events() {
-        visit(GeneratedSchemaArtifact::event(
-            event.id(),
-            event.payload(),
-            schema,
-        )?)?;
+        visit(Source::Event {
+            id: event.id(),
+            record: event.payload(),
+        })?;
     }
     for command in commands {
-        visit(GeneratedSchemaArtifact::command_input(
-            command.command_id(),
-            command.input().record(),
-            schema,
-            command.idempotency_input(),
-        )?)?;
+        visit(Source::CommandInput {
+            id: command.command_id(),
+            record: command.input().record(),
+            idempotency_input: command.idempotency_input(),
+        })?;
     }
     for command in commands {
-        visit(GeneratedSchemaArtifact::command_outcomes(
-            command.command_id(),
-            command.outcomes(),
-            schema,
-        )?)?;
+        visit(Source::CommandOutcomes {
+            id: command.command_id(),
+            outcomes: command.outcomes(),
+        })?;
     }
-    for projection in projections {
-        let types = projection
-            .group_schema()
-            .group_components()
-            .iter()
-            .map(|component| component.value_type().clone())
-            .collect::<Vec<_>>();
-        visit(GeneratedSchemaArtifact::projection_result(
-            projection.projection_id(),
-            &types,
-            projection.group_schema().measures(),
-            schema,
-        )?)?;
+    for plan in projections {
+        visit(Source::ProjectionResultFromPlan { plan })?;
     }
     Ok(())
 }

@@ -257,24 +257,18 @@ impl GeneratedSchemaArtifact {
         schema: &SchemaIr,
     ) -> Result<Self, IrValidationError> {
         let (key, node, expected_size) =
-            Self::projection_result_parts(projection_id, group_types, measures, schema)?;
+            Self::projection_result_parts(projection_id, group_types.iter(), measures, schema)?;
         Self::from_node(key, node, expected_size)
     }
 
-    fn projection_result_parts(
+    fn projection_result_parts<'a>(
         projection_id: ProjectionId,
-        group_types: &[ValueType],
+        group_types: impl ExactSizeIterator<Item = &'a ValueType> + Clone,
         measures: &RecordSchema,
         schema: &SchemaIr,
     ) -> Result<(SchemaArtifactKey, Json, usize), IrValidationError> {
-        require_shape(JsonSchemaShapeConstruction::ProjectionTupleKey)?;
-        require_shape(JsonSchemaShapeConstruction::ProjectionResultRow)?;
-        if measures.owner() != &RecordTypeRef::ProjectionResult(projection_id) {
-            return Err(IrValidationError::InvalidReference {
-                kind: "projection result owner",
-            });
-        }
-        let expected_size = projection_result_size(group_types, measures, schema)?;
+        validate_projection_result_artifact(projection_id, measures)?;
+        let expected_size = projection_result_size(group_types.clone(), measures, schema)?;
         let key = projection_tuple_node(group_types, schema)?;
         let measures = record_node(measures, schema, RecordShape::Output, false)?;
         let node = Json::object([
@@ -639,8 +633,22 @@ fn command_outcomes_size(
     .bytes)
 }
 
-fn projection_result_size(
-    group_types: &[ValueType],
+fn validate_projection_result_artifact(
+    projection_id: ProjectionId,
+    measures: &RecordSchema,
+) -> Result<(), IrValidationError> {
+    require_shape(JsonSchemaShapeConstruction::ProjectionTupleKey)?;
+    require_shape(JsonSchemaShapeConstruction::ProjectionResultRow)?;
+    if measures.owner() != &RecordTypeRef::ProjectionResult(projection_id) {
+        return Err(IrValidationError::InvalidReference {
+            kind: "projection result owner",
+        });
+    }
+    Ok(())
+}
+
+fn projection_result_size<'a>(
+    group_types: impl ExactSizeIterator<Item = &'a ValueType>,
     measures: &RecordSchema,
     schema: &SchemaIr,
 ) -> Result<usize, IrValidationError> {
@@ -658,35 +666,36 @@ fn projection_result_size(
     .bytes)
 }
 
-fn projection_tuple_size(
-    group_types: &[ValueType],
+fn projection_tuple_size<'a>(
+    group_types: impl ExactSizeIterator<Item = &'a ValueType>,
     schema: &SchemaIr,
 ) -> Result<SchemaNodeSize, IrValidationError> {
+    let count = group_types.len();
     let mut prefix_items = ArraySizer::new();
     for value_type in group_types {
         prefix_items.push(type_node_size(value_type, schema)?.bytes)?;
     }
     object_size([
         ("items", 5),
-        ("maxItems", number_size(group_types.len())),
-        ("minItems", number_size(group_types.len())),
+        ("maxItems", number_size(count)),
+        ("minItems", number_size(count)),
         ("prefixItems", prefix_items.finish()),
         ("type", string_value_size("array")?),
     ])
 }
 
-fn projection_tuple_node(
-    group_types: &[ValueType],
+fn projection_tuple_node<'a>(
+    group_types: impl ExactSizeIterator<Item = &'a ValueType>,
     schema: &SchemaIr,
 ) -> Result<Json, IrValidationError> {
+    let count = group_types.len();
     let prefix_items = group_types
-        .iter()
         .map(|value_type| type_node(value_type, schema))
         .collect::<Result<Vec<_>, _>>()?;
     Ok(Json::object([
         ("items", Json::Bool(false)),
-        ("maxItems", Json::Number(group_types.len().to_string())),
-        ("minItems", Json::Number(group_types.len().to_string())),
+        ("maxItems", Json::Number(count.to_string())),
+        ("minItems", Json::Number(count.to_string())),
         ("prefixItems", Json::Array(prefix_items)),
         ("type", Json::String("array".to_owned())),
     ]))
@@ -1362,7 +1371,7 @@ mod tests {
                 .expect("outcomes");
 
         let mut tuple = String::new();
-        projection_tuple_node(&[ValueType::bool()], &empty)
+        projection_tuple_node([ValueType::bool()].iter(), &empty)
             .expect("tuple")
             .write(&mut tuple);
         let measures = RecordSchema::new(
