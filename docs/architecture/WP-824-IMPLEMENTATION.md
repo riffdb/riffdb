@@ -1,5 +1,30 @@
 # WP-824 implementation progress
 
+## Admitted key and expression fragments
+
+Hidden first-party fragment readers reserve before decoding existing V1/V2 key
+schemas and expression arenas in supported IR versions. Borrowed inspection
+accounts for component and enum vectors, embedded key boxes, nested type boxes,
+canonical constant buffers and the simultaneous expression input, checked-node
+and depth vectors. Constructors move private values into the result; canonical
+verification follows destruction of their temporary vectors. Final settlement
+retains one charged immutable fragment through the last capture.
+
+Tests preserve keys and command arenas from all 13 frozen bundles, cover nested
+enum and ordered-byte keys, every expression tag, nested constants, legacy version
+gates and the maximum 131,072-node arena. Native witnesses cover retained data,
+constructor overlap and exact canonical output. Truncation, semantic failures,
+noncanonical enum order, trailing bytes, pressure, overflow and final-reference
+release fail closed. All 461 contract IR/compiler tests and all seven scoped
+non-test acceptance checks passed. Whole-bundle construction, catalog assembly, production
+retirement and cleanup remain open; this does not establish run readiness.
+
+PR note: Package WP-824 (open); Tier guarantee; Behavior: internal admitted key
+and expression parsing; Compatibility: existing encodings, constructors, hashes
+and application interfaces; Checks: contract IR/compiler tests and scoped
+acceptance; Handbook: this page; Hazards/follow-ups: compose complete catalog
+admission and finish the production lifecycle before qualification.
+
 ## Admitted row-policy parsing and constructor overlap
 
 A hidden first-party reader covers the existing V1 row-policy section. Borrowed

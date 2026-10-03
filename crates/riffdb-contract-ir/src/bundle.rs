@@ -1,8 +1,14 @@
 //! Stable lineage ledger, plan hashes, and canonical contract bundle bytes.
 
 mod capacity;
+mod term_admission;
+pub use term_admission::{
+    decode_provider_expression_arena_admitted_v1, decode_provider_key_schema_admitted_v1,
+};
 mod compatibility_admission;
 mod mcp_admission;
+#[cfg(test)]
+mod term_admission_tests;
 pub use mcp_admission::decode_provider_mcp_registry_section_admitted_v1;
 mod encoding_admission;
 mod ledger_admission;
