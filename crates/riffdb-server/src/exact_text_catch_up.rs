@@ -298,6 +298,33 @@ query Ticket($organization_id: Ticket.organization_id, $ticket_id: Ticket.ticket
     // req: OQ-040, PRJ-004
     #[test]
     fn captured_provider_point_uses_shared_budget_and_original_snapshot() {
+        // Saturate the actual process graph in a dedicated process, preserving
+        // production accounting without refusing unrelated parallel unit tests.
+        const CHILD_MARKER: &str = "RIFFDB_PROVIDER_ADMISSION_TEST_CHILD";
+        if std::env::var_os(CHILD_MARKER).is_none() {
+            use riffdb_testkit_server::process::{ChildProcessController, ChildProcessSpec};
+            let item_name = std::any::type_name_of_val(
+                &captured_provider_point_uses_shared_budget_and_original_snapshot,
+            );
+            let test_name = item_name.split_once("::").unwrap().1;
+            let specification = ChildProcessSpec::new(std::env::current_exe().unwrap())
+                .unwrap()
+                .arg(test_name)
+                .unwrap()
+                .arg("--exact")
+                .unwrap()
+                .env(CHILD_MARKER, "1")
+                .unwrap();
+            let mut child = ChildProcessController::spawn(&specification).unwrap();
+            let exit = child
+                .wait_for_exit(std::time::Duration::from_secs(60))
+                .unwrap();
+            assert!(
+                exit.status.success(),
+                "isolated production-budget assertions failed"
+            );
+            return;
+        }
         use riffdb_storage_api::EntityTarget;
         use riffdb_types::{
             EntityKeyBuilder, exact_provider_budget_v1::EXACT_PROVIDER_BUDGET_BYTES,

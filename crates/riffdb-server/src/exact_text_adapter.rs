@@ -85,6 +85,9 @@ const _: () = assert!(
             + 12 * std::mem::size_of::<usize>()
             + 128)
             + 256)
+        + 2 * std::mem::size_of::<crate::exact_provider_generation::ProviderGenerationIssuer>()
+        + 2 * std::mem::align_of::<crate::exact_provider_generation::ProviderGenerationIssuer>()
+        + 256
         < 8 * 1024 * 1024
 );
 const REBUILD_PAGE_ROWS: u16 = 500;
@@ -807,7 +810,7 @@ pub(crate) struct ExactTextRuntime {
     root: PathBuf,
     predicate_root: PathBuf,
     history_incarnation: u64,
-    initial_generation: ProjectionGeneration,
+    generations: crate::exact_provider_generation::ProviderGenerationIssuer,
     registries: Mutex<ExactProviderRegistries>,
     cursor_clock: Arc<dyn CursorMonotonicClock>,
     tokenized_root: PathBuf,
@@ -838,7 +841,9 @@ impl ExactTextRuntime {
             root,
             predicate_root,
             history_incarnation,
-            initial_generation,
+            generations: crate::exact_provider_generation::ProviderGenerationIssuer::new(
+                initial_generation,
+            ),
             registries: Mutex::new(ExactProviderRegistries::default()),
             cursor_clock,
             tokenized_root,
@@ -2137,17 +2142,16 @@ fn rebuild_long_pattern_slot(
         && let Ok(recovered) =
             decode_long_pattern_checkpoint(provider_bytes, &runtime.ownership_graph.budget)
     {
+        runtime.generations.observe(recovered.generation);
         if recovered.frontier == head {
             return Ok(Some(recovered));
         }
         return rebuild_long_pattern_slot(runtime, slot, head, Some(recovered.generation));
     }
-    let generation = prior_generation
-        .map_or(
-            Some(runtime.initial_generation),
-            ProjectionGeneration::checked_next,
-        )
-        .ok_or(RebuildFailure::Integrity)?;
+    let generation = runtime
+        .generations
+        .next(prior_generation)
+        .map_err(|_| RebuildFailure::Integrity)?;
     let provider = rebuild_long_pattern_partition(runtime, &slot.registration, head, generation)?;
     let provider_bytes =
         encode_long_pattern_checkpoint(&provider, &runtime.ownership_graph.budget)?;
@@ -2669,14 +2673,13 @@ fn rebuild_slot(
         )
         && recovered.partition() == hash_partition_key(slot.registration.partition_key.as_bytes())
     {
+        runtime.generations.observe(recovered.generation());
         prior_generation = Some(recovered.generation());
     }
-    let generation = prior_generation
-        .map_or(
-            Some(runtime.initial_generation),
-            ProjectionGeneration::checked_next,
-        )
-        .ok_or(RebuildFailure::Integrity)?;
+    let generation = runtime
+        .generations
+        .next(prior_generation)
+        .map_err(|_| RebuildFailure::Integrity)?;
     let captured = CapturedSource::capture(runtime, head, generation)?;
     #[cfg(feature = "test-fixtures")]
     observe_test_point(TestPoint::FullPartitionRead, &slot.checkpoint, Some(head));
@@ -2824,14 +2827,15 @@ fn rebuild_predicate_slot(
         && recovered.binding().partition()
             == hash_partition_key(slot.registration.partition_key.as_bytes())
     {
+        runtime
+            .generations
+            .observe(recovered.binding().generation());
         prior_generation = Some(recovered.binding().generation());
     }
-    let generation = prior_generation
-        .map_or(
-            Some(runtime.initial_generation),
-            ProjectionGeneration::checked_next,
-        )
-        .ok_or(RebuildFailure::Integrity)?;
+    let generation = runtime
+        .generations
+        .next(prior_generation)
+        .map_err(|_| RebuildFailure::Integrity)?;
     let captured = CapturedSource::capture(runtime, head, generation)?;
     #[cfg(feature = "test-fixtures")]
     observe_test_point(TestPoint::FullPartitionRead, &slot.checkpoint, Some(head));
@@ -2911,17 +2915,16 @@ fn rebuild_tokenized_slot(
             == slot.registration.query.tokenized_plan().index_identity()
         && recovered.partition() == hash_partition_key(slot.registration.partition_key.as_bytes())
     {
+        runtime.generations.observe(recovered.generation());
         if recovered.frontier() == Some(head) {
             return Ok(Some(recovered));
         }
         return rebuild_tokenized_slot(runtime, slot, head, Some(recovered.generation()));
     }
-    let generation = prior_generation
-        .map_or(
-            Some(runtime.initial_generation),
-            ProjectionGeneration::checked_next,
-        )
-        .ok_or(RebuildFailure::Integrity)?;
+    let generation = runtime
+        .generations
+        .next(prior_generation)
+        .map_err(|_| RebuildFailure::Integrity)?;
     let plan = slot.registration.query.tokenized_plan();
     let config = TokenizedTextConfigV1::new(
         plan.index_identity(),
@@ -3171,14 +3174,15 @@ fn rebuild_nullable_predicate_slot(
         && recovered.binding().partition()
             == hash_partition_key(slot.registration.partition_key.as_bytes())
     {
+        runtime
+            .generations
+            .observe(recovered.binding().generation());
         prior_generation = Some(recovered.binding().generation());
     }
-    let generation = prior_generation
-        .map_or(
-            Some(runtime.initial_generation),
-            ProjectionGeneration::checked_next,
-        )
-        .ok_or(RebuildFailure::Integrity)?;
+    let generation = runtime
+        .generations
+        .next(prior_generation)
+        .map_err(|_| RebuildFailure::Integrity)?;
     let captured = CapturedSource::capture(runtime, head, generation)?;
     #[cfg(feature = "test-fixtures")]
     observe_test_point(TestPoint::FullPartitionRead, &slot.checkpoint, Some(head));

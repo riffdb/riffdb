@@ -1,5 +1,36 @@
 # WP-824 implementation progress
 
+## Fresh provider rebuild generations
+
+All five production rebuild paths now share one runtime generation issuer,
+independent of rebased access ordinals and discovery entries. Every admitted
+rebuild consumes a fresh generation, including abandoned candidates. Checked
+issuance advances beyond both its own floor and the prior selected generation;
+validated checkpoint recovery raises the floor before reuse or rebuilding.
+Ordinary checkpoint identity, history, plan/policy/partition, source and
+publication checks remain in place. The existing registry metadata allowance
+explicitly includes the issuer's closed inline layout.
+
+Tests cover restore floors, abandoned work, concurrent issuance, an explicit
+two-thread observation/issuance schedule, lower observations and exhaustion.
+The server unit suite passed 497 tests with one existing skip. Before the final
+run, parallel unit tests exposed cross-test saturation by a production-budget
+negative test. That test now runs its unchanged assertions in a bounded child
+process, preserving production accounting and preventing interference. The
+preceding process-isolated Nextest run also passed 497 tests with one existing
+skip. All six scoped non-test acceptance checks passed.
+
+This is a prerequisite for retirement. Discovery eviction, protected-cursor
+eligibility, fresh artifact custody, final-reference cleanup and complete catalog
+admission remain unfinished. Existing per-family slot refusal remains enabled.
+No aggregate-enforcement, full CI or rehearsal-readiness receipt is claimed.
+
+PR note: Package WP-824 (open); Tier guarantee; Behavior: internal fresh rebuild
+issuance and isolated production-budget regression assertions; Compatibility:
+existing generation type, checkpoint format, authority, ordering and public query
+semantics; Checks: server unit/Nextest tests and scoped acceptance; Handbook: this
+page; Hazards/follow-ups: complete catalog and production retirement lifecycle.
+
 ## Admitted structural schema construction
 
 A hidden first-party fragment reader now reserves before ordinary structural
