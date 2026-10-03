@@ -7,6 +7,15 @@ use std::ops::Deref;
 pub(super) struct SlotKey([u8; SLOT_KEY_BYTES]);
 
 impl SlotKey {
+    /// A fresh authorized request can supersede only lower revisions of its
+    /// exact capability. Plan/partition/role bytes remain independent identities;
+    /// this comparison grants no reuse or authority to any other registration.
+    pub(super) fn supersedes_capability(&self, prior: &Self) -> bool {
+        self.0[96] == 1
+            && prior.0[96] == 1
+            && self.0[97..113] == prior.0[97..113]
+            && self.0[113..121] > prior.0[113..121]
+    }
     pub(super) fn new(
         plan: riffdb_types::QueryPlanHash,
         partition: PartitionKeyHash,
@@ -36,5 +45,31 @@ impl Deref for SlotKey {
 impl std::fmt::Debug for SlotKey {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         formatter.write_str("SlotKey([REDACTED])")
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    // req: OQ-040
+    use super::*;
+    #[test]
+    fn capability_supersession_requires_same_authority_and_strictly_newer_revision() {
+        let capability = CapabilityId::from_unix_milliseconds_and_random(7, [0x44; 10]).unwrap();
+        let other = CapabilityId::from_unix_milliseconds_and_random(7, [0x45; 10]).unwrap();
+        let key = |seed: u8, capability: Option<CapabilityId>, revision: u64| {
+            SlotKey::new(
+                riffdb_types::QueryPlanHash::from_bytes([seed; 32]),
+                PartitionKeyHash::from_bytes([seed; 32]),
+                riffdb_types::ApplicationRoleHash::from_bytes([seed; 32]),
+                capability.map(|id| (id, NonZeroU64::new(revision).unwrap())),
+            )
+        };
+        let original = key(1, Some(capability), 2);
+        assert!(key(2, Some(capability), 3).supersedes_capability(&original));
+        assert!(!key(2, Some(capability), 2).supersedes_capability(&original));
+        assert!(!key(2, Some(capability), 1).supersedes_capability(&original));
+        assert!(!key(2, Some(other), 3).supersedes_capability(&original));
+        assert!(!key(2, None, 3).supersedes_capability(&original));
+        assert!(!key(2, Some(capability), 3).supersedes_capability(&key(1, None, 2)));
     }
 }

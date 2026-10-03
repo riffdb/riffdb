@@ -68,6 +68,51 @@ pub(super) struct ExactProviderRegistries {
 }
 
 impl ExactProviderRegistries {
+    /// Called only for an incoming key built from a currently authorized policy
+    /// context. Close obsolete admission across this database's five families;
+    /// captured operations retain pins and still require normal reauthorization.
+    pub(super) fn retire_superseded_capability(
+        &self,
+        incoming: &SlotKey,
+    ) -> Result<(), ExactTextProjectionPortError> {
+        // A delayed older request cannot reopen a lower revision while this
+        // registry still contains a newer observation of the same authority.
+        macro_rules! reject_older {
+            ($map:ident) => {
+                if self
+                    .$map
+                    .keys()
+                    .any(|key| key.supersedes_capability(incoming))
+                {
+                    return Err(ExactTextProjectionPortError::Unavailable);
+                }
+            };
+        }
+        reject_older!(slots);
+        reject_older!(predicate_slots);
+        reject_older!(nullable_predicate_slots);
+        reject_older!(tokenized_slots);
+        reject_older!(long_pattern_slots);
+        macro_rules! retire {
+            ($map:ident) => {
+                for (key, entry) in &self.$map {
+                    if incoming.supersedes_capability(key) {
+                        entry
+                            .slot
+                            .owner
+                            .retire_superseded()
+                            .map_err(|_| ExactTextProjectionPortError::Unavailable)?;
+                    }
+                }
+            };
+        }
+        retire!(slots);
+        retire!(predicate_slots);
+        retire!(nullable_predicate_slots);
+        retire!(tokenized_slots);
+        retire!(long_pattern_slots);
+        Ok(())
+    }
     /// Admitted fixed-capacity inventory holds no pins. Each worker captures one live
     /// owner immediately before its work, leaving unrelated owners eligible.
     pub(super) fn registered_keys(
@@ -116,6 +161,22 @@ impl ExactProviderRegistries {
         required_family: Option<ProviderFamily>,
         observed: CursorTick,
     ) -> Result<Option<RetirementCandidate>, ExactTextProjectionPortError> {
+        self.begin_cleanup(required_family, observed, false)
+    }
+
+    pub(super) fn begin_retired_cleanup(
+        &mut self,
+        observed: CursorTick,
+    ) -> Result<Option<RetirementCandidate>, ExactTextProjectionPortError> {
+        self.begin_cleanup(None, observed, true)
+    }
+
+    fn begin_cleanup(
+        &mut self,
+        required_family: Option<ProviderFamily>,
+        observed: CursorTick,
+        retiring_only: bool,
+    ) -> Result<Option<RetirementCandidate>, ExactTextProjectionPortError> {
         let mut selected: Option<(u64, ProviderFamily, SlotKey)> = None;
         macro_rules! consider {
             ($family:ident, $map:ident) => {
@@ -132,7 +193,10 @@ impl ExactProviderRegistries {
                         else {
                             continue;
                         };
-                        if !retiring && !entry.access.retention_expired_at(observed)? {
+                        if retiring_only && !retiring {
+                            continue;
+                        }
+                        if !entry.access.retention_expired_at(observed)? {
                             continue;
                         }
                         let candidate = (entry.access.ordinal(), ProviderFamily::$family, *key);

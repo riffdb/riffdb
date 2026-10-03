@@ -14,6 +14,7 @@ use riffdb_types::{CommitSequence, EntityKey, FrontierPosition, ProjectionGenera
 
 use super::{ExactTextRuntime, MAX_PROJECTED_POLICY_CANDIDATES_V1, RebuildFailure};
 use crate::columnar_adapter::read_application_head;
+use crate::exact_provider_owner::ProviderPin;
 use crate::projection_read_source::ProjectionReadSource;
 
 #[path = "exact_text_delta.rs"]
@@ -30,6 +31,8 @@ pub(super) struct CapturedSource {
     history_incarnation: u64,
     pin: Option<RedbDerivedSourcePin>,
     head: CommitSequence,
+    // Last: all private source data drops before releasing the existing work pin.
+    work: ProviderPin,
 }
 
 impl CapturedSource {
@@ -37,8 +40,10 @@ impl CapturedSource {
         runtime: &ExactTextRuntime,
         head: CommitSequence,
         generation: ProjectionGeneration,
+        work: &ProviderPin,
     ) -> Result<Self, RebuildFailure> {
-        Self::capture_changed(runtime, head, generation, None)?.ok_or(RebuildFailure::Integrity)
+        Self::capture_changed(runtime, head, generation, None, work)?
+            .ok_or(RebuildFailure::Integrity)
     }
 
     pub(super) fn capture_successor<T>(
@@ -46,8 +51,9 @@ impl CapturedSource {
         head: CommitSequence,
         generation: ProjectionGeneration,
         previous: &Selected<T>,
+        work: &ProviderPin,
     ) -> Result<Option<Self>, RebuildFailure> {
-        Self::capture_changed(runtime, head, generation, Some(&previous.source))
+        Self::capture_changed(runtime, head, generation, Some(&previous.source), work)
     }
 
     fn capture_changed(
@@ -55,7 +61,10 @@ impl CapturedSource {
         head: CommitSequence,
         generation: ProjectionGeneration,
         previous: Option<&SelectedSource>,
+        work: &ProviderPin,
     ) -> Result<Option<Self>, RebuildFailure> {
+        work.ensure_active()
+            .map_err(|_| RebuildFailure::Transient)?;
         let snapshot = runtime
             .storage
             .pin()
@@ -122,7 +131,14 @@ impl CapturedSource {
             history_incarnation: runtime.history_incarnation,
             pin,
             head,
+            work: work.clone(),
         }))
+    }
+
+    pub(super) fn ensure_active(&self) -> Result<(), RebuildFailure> {
+        self.work
+            .ensure_active()
+            .map_err(|_| RebuildFailure::Transient)
     }
 
     pub(super) fn materialize(
@@ -130,6 +146,7 @@ impl CapturedSource {
         program: &QueryAccessProgramV1,
         record: StoredEntityRecordV1,
     ) -> Result<StoredEntityRecordV1, RebuildFailure> {
+        self.ensure_active()?;
         let contract = program.contract();
         self.catalog
             .materialize_derived_entity(
@@ -218,6 +235,16 @@ mod tests {
     use super::*;
     use crate::columnar_adapter::tests::{append_board_ticket_for_worker_at, board_runtime};
 
+    fn test_work(runtime: &ExactTextRuntime) -> ProviderPin {
+        let budget = runtime.ownership_graph.budget.clone();
+        let owner = crate::exact_provider_owner::ProviderOwner::new(
+            budget.clone(),
+            budget.reserve(8192).unwrap().commit().unwrap(),
+        )
+        .unwrap();
+        owner.pin().unwrap()
+    }
+
     fn board_program() -> riffdb_query_module::QueryModule {
         use riffdb_query_module::{NamedQuerySource, QueryModule, QueryModuleCandidate};
         use riffdb_types::{QueryModuleName, QueryModuleVersion};
@@ -297,6 +324,94 @@ query Ticket($organization_id: Ticket.organization_id, $ticket_id: Ticket.ticket
 
     // req: OQ-040, PRJ-004
     #[test]
+    fn source_delta_and_materialization_stop_after_owner_retirement_without_dropping_captures() {
+        use riffdb_types::{CanonicalValue, EntityKeyBuilder};
+        let (board, scope) = board_runtime("retired-exact-source");
+        let module = board_program();
+        let program = module.queries()[0].ordinary_program().unwrap();
+        let entity = program.steps()[0].internal_entity_id();
+        append_board_ticket_for_worker_at(&board, CommitSequence::first(), 0x20);
+        let runtime = ExactTextRuntime::open(
+            board.storage().projection_reads(),
+            scope.path(),
+            1,
+            ProjectionGeneration::first(),
+            Arc::new(crate::cursor::ProductionCursorMonotonicClock::new()),
+        )
+        .unwrap();
+        let budget = runtime.ownership_graph.budget.clone();
+        let owner = crate::exact_provider_owner::ProviderOwner::new(
+            budget.clone(),
+            budget.reserve(8192).unwrap().commit().unwrap(),
+        )
+        .unwrap();
+        let work = owner.pin().unwrap();
+        let initial = CapturedSource::capture(
+            &runtime,
+            CommitSequence::first(),
+            ProjectionGeneration::first(),
+            &work,
+        )
+        .unwrap();
+        let previous = Selected::new((), initial, BTreeSet::new());
+        let head = CommitSequence::new(2).unwrap();
+        append_board_ticket_for_worker_at(&board, head, 0x21);
+        let captured =
+            CapturedSource::capture(&runtime, head, ProjectionGeneration::first(), &work).unwrap();
+        let mut key = EntityKeyBuilder::new(entity);
+        key.push_uuid(&uuid(0x41)).unwrap();
+        key.push_uuid(&uuid(0x21)).unwrap();
+        let target = riffdb_storage_api::EntityTarget::new(entity, key.finish().unwrap()).unwrap();
+        let record = captured.storage.read_entity(&target).unwrap().unwrap();
+        let before = budget.observation().unwrap();
+        owner.retire_superseded().unwrap();
+        let partition = CanonicalValue::Uuid(uuid(0x41));
+        assert!(matches!(
+            Delta::read(
+                &captured,
+                &previous.source,
+                DeltaPlan {
+                    program,
+                    partition_value: &partition,
+                    max_candidates: 500,
+                    policy: None,
+                    generation: ProjectionGeneration::first()
+                }
+            ),
+            Err(RebuildFailure::Transient)
+        ));
+        assert!(matches!(
+            captured.materialize(program, record),
+            Err(RebuildFailure::Transient)
+        ));
+        assert_eq!(
+            captured
+                .pin
+                .as_ref()
+                .unwrap()
+                .position()
+                .frontier()
+                .application(),
+            Some(head)
+        );
+        assert_eq!(owner.retirement_candidate().unwrap(), None);
+        assert_eq!(
+            budget.observation().unwrap().owned_bytes,
+            before.owned_bytes
+        );
+        drop(work);
+        assert_eq!(owner.retirement_candidate().unwrap(), None);
+        drop(captured);
+        assert_eq!(owner.retirement_candidate().unwrap(), Some(true));
+        drop(owner);
+        assert_eq!(
+            budget.observation().unwrap().released_owners,
+            before.released_owners + 1
+        );
+    }
+
+    // req: OQ-040, PRJ-004
+    #[test]
     fn captured_provider_point_uses_shared_budget_and_original_snapshot() {
         // Saturate the actual process graph in a dedicated process, preserving
         // production accounting without refusing unrelated parallel unit tests.
@@ -346,6 +461,7 @@ query Ticket($organization_id: Ticket.organization_id, $ticket_id: Ticket.ticket
             &runtime,
             CommitSequence::first(),
             ProjectionGeneration::first(),
+            &test_work(&runtime),
         )
         .unwrap();
         let mut key = EntityKeyBuilder::new(entity);
@@ -434,8 +550,13 @@ query Ticket($organization_id: Ticket.organization_id, $ticket_id: Ticket.ticket
             Arc::new(crate::cursor::ProductionCursorMonotonicClock::new()),
         )
         .unwrap();
-        let initial =
-            CapturedSource::capture(&runtime, CommitSequence::first(), generation).unwrap();
+        let initial = CapturedSource::capture(
+            &runtime,
+            CommitSequence::first(),
+            generation,
+            &test_work(&runtime),
+        )
+        .unwrap();
         let mut key = EntityKeyBuilder::new(entity);
         key.push_uuid(&uuid(0x41)).unwrap();
         key.push_uuid(&uuid(0x20)).unwrap();
@@ -448,7 +569,8 @@ query Ticket($organization_id: Ticket.organization_id, $ticket_id: Ticket.ticket
             );
         }
         let head = CommitSequence::new(66).unwrap();
-        let captured = CapturedSource::capture(&runtime, head, generation).unwrap();
+        let captured =
+            CapturedSource::capture(&runtime, head, generation, &test_work(&runtime)).unwrap();
         let partition = CanonicalValue::Uuid(uuid(0x41));
         let plan = || DeltaPlan {
             program,
@@ -481,9 +603,15 @@ query Ticket($organization_id: Ticket.organization_id, $ticket_id: Ticket.ticket
             source: second.source.clone(),
         };
         assert!(
-            CapturedSource::capture_successor(&runtime, head, generation, &selected)
-                .unwrap()
-                .is_none()
+            CapturedSource::capture_successor(
+                &runtime,
+                head,
+                generation,
+                &selected,
+                &test_work(&runtime)
+            )
+            .unwrap()
+            .is_none()
         );
         #[cfg(feature = "test-fixtures")]
         {
@@ -547,8 +675,13 @@ query Ticket($organization_id: Ticket.organization_id, $ticket_id: Ticket.ticket
             Arc::new(crate::cursor::ProductionCursorMonotonicClock::new()),
         )
         .unwrap();
-        let captured =
-            CapturedSource::capture(&runtime, first, ProjectionGeneration::first()).unwrap();
+        let captured = CapturedSource::capture(
+            &runtime,
+            first,
+            ProjectionGeneration::first(),
+            &test_work(&runtime),
+        )
+        .unwrap();
         assert!(captured.pin.is_some());
         append_board_ticket_for_worker_at(&board, second, 0x43);
 
@@ -568,8 +701,13 @@ query Ticket($organization_id: Ticket.organization_id, $ticket_id: Ticket.ticket
         let selected = Selected::new((), captured, BTreeSet::new());
         assert!(selected.validates_frontier(first));
         assert!(!selected.validates_frontier(second));
-        let next =
-            CapturedSource::capture(&runtime, second, ProjectionGeneration::first()).unwrap();
+        let next = CapturedSource::capture(
+            &runtime,
+            second,
+            ProjectionGeneration::first(),
+            &test_work(&runtime),
+        )
+        .unwrap();
         let mut receipts = next
             .pin
             .as_ref()

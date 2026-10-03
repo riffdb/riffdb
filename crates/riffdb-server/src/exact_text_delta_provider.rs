@@ -101,6 +101,7 @@ pub(in crate::exact_text_adapter) fn prepare_text(
         let mut unfiltered = Vec::new();
         let mut filtered = Vec::new();
         for (key, record) in delta.changes {
+            captured.ensure_active()?;
             let row = record.as_ref().map(|record| record.fields());
             let text = row.and_then(|row| {
                 row.fields()
@@ -137,6 +138,7 @@ pub(in crate::exact_text_adapter) fn prepare_text(
                 (_, _, Some(_)) => filtered.push(ExactTextIndexMutationV3::Delete(key)),
             }
         }
+        captured.ensure_active()?;
         let successor = match provider.as_ref() {
             ExactTextProviderState::V2(previous) if filter_field.is_none() => previous
                 .apply_admitted_v1(delta.source.head, &unfiltered, &captured.budget)
@@ -271,6 +273,7 @@ pub(in crate::exact_text_adapter) fn prepare_predicate<
             .changes
             .into_iter()
             .map(|(key, record)| {
+                captured.ensure_active()?;
                 let Some(record) = record else {
                     return Ok(ExactPredicateIndexMutationV1::Delete(key));
                 };
@@ -295,6 +298,7 @@ pub(in crate::exact_text_adapter) fn prepare_predicate<
                 ))
             })
             .collect::<Result<Vec<_>, RebuildFailure>>()?;
+        captured.ensure_active()?;
         provider = provider
             .apply_admitted(delta.source.head, &changes, &captured.budget)
             .map_err(|error| map_predicate_admission_failure(error, generation))?;

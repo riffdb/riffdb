@@ -189,7 +189,6 @@ impl ProviderOwner {
 
     /// Exact supersession removes discovery even while captured work lives.
     /// Existing pins retain ownership; they cannot publish into retired state.
-    #[cfg(test)]
     pub(super) fn retire_superseded(&self) -> Result<(), BudgetUnavailable> {
         let mut state = self.state.lock().map_err(|_| BudgetUnavailable)?;
         if state.phase == Phase::Refused {
@@ -205,6 +204,13 @@ impl ProviderOwner {
 pub(super) struct ProviderPin(Arc<PinGuard>);
 
 impl ProviderPin {
+    pub(super) fn ensure_active(&self) -> Result<(), BudgetUnavailable> {
+        if self.0.owner.is_active()? {
+            Ok(())
+        } else {
+            Err(BudgetUnavailable)
+        }
+    }
     /// Lock order is registry -> owner -> slot. Keep this guard alive through
     /// the selection change; no registry lock may be acquired while it lives.
     pub(super) fn publication(&self) -> Result<ProviderPublication<'_>, BudgetUnavailable> {

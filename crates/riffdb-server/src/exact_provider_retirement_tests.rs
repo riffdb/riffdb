@@ -838,3 +838,307 @@ fn captured_directory_custody_retains_graph_charge_after_runtime_destruction() {
         },
     );
 }
+
+#[test]
+fn exact_capability_revision_retirement_keeps_all_family_pins_and_minimum_retention() {
+    isolated(
+        "exact_text_adapter::retirement_tests::exact_capability_revision_retirement_keeps_all_family_pins_and_minimum_retention",
+        || {
+            let fixture = Fixture::new();
+            let families = [
+                ProviderFamily::Text,
+                ProviderFamily::Predicate,
+                ProviderFamily::NullablePredicate,
+                ProviderFamily::LongPattern,
+                ProviderFamily::Tokenized,
+            ];
+            for (seed, family) in families.into_iter().enumerate() {
+                fixture.register(family, seed as u16);
+            }
+            let capability =
+                CapabilityId::from_unix_milliseconds_and_random(7, [0x44; 10]).unwrap();
+            let mut pins = Vec::new();
+            let mut owners = Vec::new();
+            {
+                let mut registries = fixture.runtime.registries.lock().unwrap();
+                // Inject only canonical identity keys to exercise private retirement
+                // selection. These fixture slots grant no real capability authority;
+                // no query or storage observation is executed by this test.
+                macro_rules! bind_identity {
+                    ($map:ident) => {
+                        let (prior, entry) = registries.$map.pop_first().unwrap();
+                        let key = slot_key(
+                            riffdb_types::QueryPlanHash::from_bytes(
+                                prior[..32].try_into().unwrap(),
+                            ),
+                            PartitionKeyHash::from_bytes(prior[32..64].try_into().unwrap()),
+                            riffdb_types::ApplicationRoleHash::from_bytes(
+                                prior[64..96].try_into().unwrap(),
+                            ),
+                            Some((capability, NonZeroU64::MIN)),
+                        );
+                        pins.push(entry.slot.owner.pin().unwrap());
+                        owners.push(entry.slot.owner.clone());
+                        registries.$map.insert(key, entry);
+                    };
+                }
+                bind_identity!(slots);
+                bind_identity!(predicate_slots);
+                bind_identity!(nullable_predicate_slots);
+                bind_identity!(long_pattern_slots);
+                bind_identity!(tokenized_slots);
+                let incoming = slot_key(
+                    riffdb_types::QueryPlanHash::from_bytes([9; 32]),
+                    PartitionKeyHash::from_bytes([9; 32]),
+                    riffdb_types::ApplicationRoleHash::from_bytes([9; 32]),
+                    Some((capability, NonZeroU64::new(2).unwrap())),
+                );
+                registries.retire_superseded_capability(&incoming).unwrap();
+            }
+            for owner in &owners {
+                assert!(!owner.is_active().unwrap());
+                assert!(owner.pin().is_err());
+                assert_eq!(owner.retirement_candidate().unwrap(), None);
+            }
+            for pin in &pins {
+                assert!(pin.publication().is_err());
+            }
+            let retained = fixture
+                .runtime
+                .ownership_graph
+                .budget
+                .observation()
+                .unwrap();
+            assert_eq!(
+                (
+                    retained.active_owners,
+                    retained.retiring_owners,
+                    retained.pinned_owners,
+                    retained.pins,
+                    retained.released_owners
+                ),
+                (0, 5, 5, 5, 0)
+            );
+            fixture.clock.0.store(299, Ordering::SeqCst);
+            assert!(!fixture.runtime.retire_one(None).unwrap());
+            drop(pins);
+            // Supersession cannot shorten any family's original minimum deadline.
+            assert!(!fixture.runtime.retire_one(None).unwrap());
+            fixture.clock.0.store(300, Ordering::SeqCst);
+            for _ in 0..5 {
+                assert!(fixture.runtime.retire_one(None).unwrap());
+            }
+            let removed = fixture
+                .runtime
+                .ownership_graph
+                .budget
+                .observation()
+                .unwrap();
+            assert_eq!(
+                (
+                    removed.retiring_owners,
+                    removed.pinned_owners,
+                    removed.released_owners
+                ),
+                (5, 0, 0)
+            );
+            drop(owners);
+            let released = fixture
+                .runtime
+                .ownership_graph
+                .budget
+                .observation()
+                .unwrap();
+            assert_eq!(
+                (
+                    released.active_owners,
+                    released.retiring_owners,
+                    released.pinned_owners,
+                    released.pins,
+                    released.released_owners
+                ),
+                (0, 0, 0, 0, 5)
+            );
+        },
+    );
+}
+
+#[test]
+fn delayed_lower_capability_revision_refuses_before_retiring_any_registered_owner() {
+    isolated(
+        "exact_text_adapter::retirement_tests::delayed_lower_capability_revision_refuses_before_retiring_any_registered_owner",
+        || {
+            let fixture = Fixture::new();
+            for seed in 0..3 {
+                drop(fixture.runtime.slot_for(&fixture.request(seed)).unwrap());
+            }
+            let capability =
+                CapabilityId::from_unix_milliseconds_and_random(7, [0x44; 10]).unwrap();
+            let other = CapabilityId::from_unix_milliseconds_and_random(7, [0x45; 10]).unwrap();
+            let unrelated = CapabilityId::from_unix_milliseconds_and_random(7, [0x46; 10]).unwrap();
+            let key = |seed: u8, capability: CapabilityId, revision: u64| {
+                slot_key(
+                    riffdb_types::QueryPlanHash::from_bytes([seed; 32]),
+                    PartitionKeyHash::from_bytes([seed; 32]),
+                    riffdb_types::ApplicationRoleHash::from_bytes([seed; 32]),
+                    Some((capability, NonZeroU64::new(revision).unwrap())),
+                )
+            };
+            let mut registries = fixture.runtime.registries.lock().unwrap();
+            let original = std::mem::take(&mut registries.slots);
+            let mut entries = original.into_values();
+            // Private selection fixture only: no fabricated policy grants or data reads.
+            registries
+                .slots
+                .insert(key(0, capability, 3), entries.next().unwrap());
+            registries
+                .slots
+                .insert(key(1, capability, 2), entries.next().unwrap());
+            registries
+                .slots
+                .insert(key(2, other, 1), entries.next().unwrap());
+            let before = fixture
+                .runtime
+                .ownership_graph
+                .budget
+                .observation()
+                .unwrap();
+            assert!(
+                registries
+                    .retire_superseded_capability(&key(9, capability, 1))
+                    .is_err()
+            );
+            assert_eq!(
+                fixture
+                    .runtime
+                    .ownership_graph
+                    .budget
+                    .observation()
+                    .unwrap(),
+                before
+            );
+            registries
+                .retire_superseded_capability(&key(9, unrelated, 5))
+                .unwrap();
+            assert_eq!(
+                fixture
+                    .runtime
+                    .ownership_graph
+                    .budget
+                    .observation()
+                    .unwrap(),
+                before
+            );
+            for entry in registries.slots.values() {
+                assert!(entry.slot.owner.is_active().unwrap());
+            }
+            registries
+                .retire_superseded_capability(&key(9, capability, 4))
+                .unwrap();
+            let after = fixture
+                .runtime
+                .ownership_graph
+                .budget
+                .observation()
+                .unwrap();
+            assert_eq!(
+                (
+                    after.active_owners,
+                    after.retiring_owners,
+                    after.released_owners
+                ),
+                (1, 2, 0)
+            );
+            assert!(
+                registries
+                    .slots
+                    .get(&key(2, other, 1))
+                    .unwrap()
+                    .slot
+                    .owner
+                    .is_active()
+                    .unwrap()
+            );
+        },
+    );
+}
+
+#[test]
+fn obsolete_captured_worker_refuses_before_authoritative_source_observation() {
+    isolated(
+        "exact_text_adapter::retirement_tests::obsolete_captured_worker_refuses_before_authoritative_source_observation",
+        || {
+            let fixture = Fixture::new();
+            let slot = fixture.runtime.slot_for(&fixture.request(0)).unwrap();
+            slot.owner.retire_superseded().unwrap();
+            assert!(matches!(
+                CapturedSource::capture(
+                    &fixture.runtime,
+                    CommitSequence::first(),
+                    ProjectionGeneration::first(),
+                    &slot.pin
+                ),
+                Err(RebuildFailure::Transient)
+            ));
+            assert!(matches!(
+                rebuild_slot(&fixture.runtime, &slot, CommitSequence::first(), None),
+                Err(RebuildFailure::Transient)
+            ));
+            assert!(slot.owner.retirement_candidate().unwrap().is_none());
+        },
+    );
+}
+
+#[test]
+fn background_cleanup_releases_retired_artifacts_without_evicting_idle_active_owners() {
+    isolated(
+        "exact_text_adapter::retirement_tests::background_cleanup_releases_retired_artifacts_without_evicting_idle_active_owners",
+        || {
+            let fixture = Fixture::new();
+            let obsolete = fixture.runtime.slot_for(&fixture.request(0)).unwrap();
+            persist_predicate_checkpoint_bytes(
+                &obsolete.checkpoint,
+                &obsolete.registration.key(),
+                1,
+                b"derived",
+                &fixture.runtime.ownership_graph.budget,
+                &obsolete.owner,
+            )
+            .unwrap();
+            let path = obsolete.checkpoint.clone();
+            let weak = Arc::downgrade(&obsolete.owner);
+            obsolete.owner.retire_superseded().unwrap();
+            drop(obsolete);
+            for seed in 1..3 {
+                drop(fixture.runtime.slot_for(&fixture.request(seed)).unwrap());
+            }
+            fixture.clock.0.store(299, Ordering::SeqCst);
+            assert!(!fixture.runtime.cleanup_retired_one().unwrap());
+            assert!(path.exists());
+            fixture.clock.0.store(300, Ordering::SeqCst);
+            assert!(fixture.runtime.cleanup_retired_one().unwrap());
+            assert!(!path.exists());
+            assert!(weak.upgrade().is_none());
+            assert!(!fixture.runtime.cleanup_retired_one().unwrap());
+            let registries = fixture.runtime.registries.lock().unwrap();
+            assert_eq!(registries.slots.len(), 2);
+            for entry in registries.slots.values() {
+                assert!(entry.slot.owner.is_active().unwrap());
+            }
+            let sample = fixture
+                .runtime
+                .ownership_graph
+                .budget
+                .observation()
+                .unwrap();
+            assert_eq!(
+                (
+                    sample.active_owners,
+                    sample.retiring_owners,
+                    sample.released_owners
+                ),
+                (2, 0, 1)
+            );
+        },
+    );
+}

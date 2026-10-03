@@ -968,6 +968,18 @@ impl ExactTextRuntime {
         &self,
         family: Option<ProviderFamily>,
     ) -> Result<bool, ExactTextProjectionPortError> {
+        self.cleanup_one(family, false)
+    }
+
+    fn cleanup_retired_one(&self) -> Result<bool, ExactTextProjectionPortError> {
+        self.cleanup_one(None, true)
+    }
+
+    fn cleanup_one(
+        &self,
+        family: Option<ProviderFamily>,
+        retiring_only: bool,
+    ) -> Result<bool, ExactTextProjectionPortError> {
         // This permanently admitted single cleanup lane remains available even
         // at aggregate saturation. It never holds discovery during filesystem IO.
         let _work = self
@@ -980,7 +992,11 @@ impl ExactTextRuntime {
                 .lock()
                 .map_err(|_| ExactTextProjectionPortError::Integrity)?;
             let observed = registries.observe_access(self.cursor_clock.as_ref())?;
-            registries.begin_retirement(family, observed)?
+            if retiring_only {
+                registries.begin_retired_cleanup(observed)?
+            } else {
+                registries.begin_retirement(family, observed)?
+            }
         };
         let Some(candidate) = candidate else {
             return Ok(false);
@@ -1073,6 +1089,7 @@ impl ExactTextRuntime {
                 .lock()
                 .map_err(|_| ExactTextProjectionPortError::Integrity)?;
             let (ordinal, observed) = registries.next_access(self.cursor_clock.as_ref())?;
+            registries.retire_superseded_capability(&key)?;
             let slots = &mut registries.slots;
             if let Some(entry) = slots.get_mut(&key) {
                 if !entry.slot.registration.matches(request) {
@@ -1191,6 +1208,7 @@ impl ExactTextRuntime {
                 .lock()
                 .map_err(|_| ExactTextProjectionPortError::Integrity)?;
             let (ordinal, observed) = registries.next_access(self.cursor_clock.as_ref())?;
+            registries.retire_superseded_capability(&key)?;
             let slots = &mut registries.predicate_slots;
             if let Some(entry) = slots.get_mut(&key) {
                 if !entry.slot.registration.matches(request) {
@@ -1313,6 +1331,7 @@ impl ExactTextRuntime {
                 .lock()
                 .map_err(|_| ExactTextProjectionPortError::Integrity)?;
             let (ordinal, observed) = registries.next_access(self.cursor_clock.as_ref())?;
+            registries.retire_superseded_capability(&key)?;
             let slots = &mut registries.nullable_predicate_slots;
             if let Some(entry) = slots.get_mut(&key) {
                 if !entry.slot.registration.matches(request) {
@@ -1479,6 +1498,7 @@ impl ExactTextRuntime {
                 .lock()
                 .map_err(|_| ExactTextProjectionPortError::Integrity)?;
             let (ordinal, observed) = registries.next_access(self.cursor_clock.as_ref())?;
+            registries.retire_superseded_capability(&key)?;
             let slots = &mut registries.long_pattern_slots;
             if let Some(entry) = slots.get_mut(&key) {
                 if !entry.slot.registration.matches(request) {
@@ -1573,6 +1593,7 @@ impl ExactTextRuntime {
                 .lock()
                 .map_err(|_| ExactTextProjectionPortError::Integrity)?;
             let (ordinal, observed) = registries.next_access(self.cursor_clock.as_ref())?;
+            registries.retire_superseded_capability(&key)?;
             let slots = &mut registries.tokenized_slots;
             if let Some(entry) = slots.get_mut(&key) {
                 if !entry.slot.registration.matches(request) {
@@ -2334,6 +2355,13 @@ impl RunningExactTextWorker {
                     ) {
                         eprintln!("[riffdbd-diag] trigger=exact_provider_lifecycle {sample}");
                     }
+                    // Release obsolete artifacts/source holds even when new
+                    // admission has not filled a registry. Keep each pass finite.
+                    for _ in 0..4 {
+                        if !matches!(runtime.cleanup_retired_one(), Ok(true)) {
+                            break;
+                        }
+                    }
                     let _ = refresh_registered_slots(&runtime);
                     if wait_for_stop(&worker_stop, POLL_INTERVAL) {
                         break;
@@ -2582,10 +2610,13 @@ fn refresh_registered_long_pattern_slots(runtime: &ExactTextRuntime) -> Result<(
 
 fn rebuild_long_pattern_slot(
     runtime: &ExactTextRuntime,
-    slot: &LongPatternSlot,
+    slot: &CapturedProviderSlot<LongPatternSlot>,
     head: CommitSequence,
     prior_generation: Option<ProjectionGeneration>,
 ) -> Result<Option<LongPatternProviderState>, RebuildFailure> {
+    slot.pin
+        .ensure_active()
+        .map_err(|_| RebuildFailure::Transient)?;
     if prior_generation.is_none()
         && let Some(bytes) = read_checkpoint(
             &slot.checkpoint,
@@ -2610,9 +2641,16 @@ fn rebuild_long_pattern_slot(
         .generations
         .next(prior_generation)
         .map_err(|_| RebuildFailure::Integrity)?;
-    let provider = rebuild_long_pattern_partition(runtime, &slot.registration, head, generation)?;
+    let provider =
+        rebuild_long_pattern_partition(runtime, &slot.registration, head, generation, &slot.pin)?;
+    slot.pin
+        .ensure_active()
+        .map_err(|_| RebuildFailure::Transient)?;
     let provider_bytes =
         encode_long_pattern_checkpoint(&provider, &runtime.ownership_graph.budget)?;
+    slot.pin
+        .ensure_active()
+        .map_err(|_| RebuildFailure::Transient)?;
     persist_predicate_checkpoint_bytes(
         &slot.checkpoint,
         &slot.registration.key(),
@@ -2630,7 +2668,10 @@ fn rebuild_long_pattern_partition(
     registration: &LongPatternRegistration,
     expected_head: CommitSequence,
     generation: ProjectionGeneration,
+    work: &crate::exact_provider_owner::ProviderPin,
 ) -> Result<LongPatternProviderState, RebuildFailure> {
+    work.ensure_active()
+        .map_err(|_| RebuildFailure::Transient)?;
     let QueryAccessKind::LongPatternCandidate { pattern, .. } = registration.step().access() else {
         return Err(RebuildFailure::Integrity);
     };
@@ -2683,6 +2724,8 @@ fn rebuild_long_pattern_partition(
     let mut records = BTreeMap::<EntityKey, riffdb_storage_api::StoredEntityRecordV1>::new();
     let mut after = None;
     loop {
+        work.ensure_active()
+            .map_err(|_| RebuildFailure::Transient)?;
         let request = AuthoritativeEntityPartitionScanRequest::new(
             registration.step().internal_entity_id(),
             prefix.clone(),
@@ -3104,10 +3147,13 @@ fn refresh_registered_nullable_predicate_slots(runtime: &ExactTextRuntime) -> Re
 
 fn rebuild_slot(
     runtime: &ExactTextRuntime,
-    slot: &ExactTextSlot,
+    slot: &CapturedProviderSlot<ExactTextSlot>,
     head: CommitSequence,
     prior_generation: Option<ProjectionGeneration>,
 ) -> Result<Option<Selected<ExactTextProviderState>>, RebuildFailure> {
+    slot.pin
+        .ensure_active()
+        .map_err(|_| RebuildFailure::Transient)?;
     #[cfg(feature = "test-fixtures")]
     observe_test_point(TestPoint::Preparing, &slot.checkpoint, Some(head));
     let previous = {
@@ -3121,8 +3167,13 @@ fn rebuild_slot(
         if Some(previous.generation()) != prior_generation {
             return Err(RebuildFailure::Transient);
         }
-        let Some(captured) =
-            CapturedSource::capture_successor(runtime, head, previous.generation(), &previous)?
+        let Some(captured) = CapturedSource::capture_successor(
+            runtime,
+            head,
+            previous.generation(),
+            &previous,
+            &slot.pin,
+        )?
         else {
             return Ok(None);
         };
@@ -3159,7 +3210,7 @@ fn rebuild_slot(
         .generations
         .next(prior_generation)
         .map_err(|_| RebuildFailure::Integrity)?;
-    let captured = CapturedSource::capture(runtime, head, generation)?;
+    let captured = CapturedSource::capture(runtime, head, generation, &slot.pin)?;
     #[cfg(feature = "test-fixtures")]
     observe_test_point(TestPoint::FullPartitionRead, &slot.checkpoint, Some(head));
     let (rows, candidates) = read_complete_partition(&captured, &slot.registration, generation)?;
@@ -3211,6 +3262,13 @@ fn persist_checked_slot(
     slot: &ExactTextSlot,
     provider: &ExactTextProviderState,
 ) -> Result<(), RebuildFailure> {
+    if !slot
+        .owner
+        .is_active()
+        .map_err(|_| RebuildFailure::Transient)?
+    {
+        return Err(RebuildFailure::Transient);
+    }
     persist_checkpoint(
         &slot.checkpoint,
         &slot.registration.key(),
@@ -3261,10 +3319,13 @@ fn map_predicate_admission_failure(
 
 fn rebuild_predicate_slot(
     runtime: &ExactTextRuntime,
-    slot: &ExactPredicateSlot,
+    slot: &CapturedProviderSlot<ExactPredicateSlot>,
     head: CommitSequence,
     prior_generation: Option<ProjectionGeneration>,
 ) -> Result<Option<Selected<AdmittedPredicateProviderV4>>, RebuildFailure> {
+    slot.pin
+        .ensure_active()
+        .map_err(|_| RebuildFailure::Transient)?;
     #[cfg(feature = "test-fixtures")]
     observe_test_point(TestPoint::Preparing, &slot.checkpoint, Some(head));
     let previous = {
@@ -3283,6 +3344,7 @@ fn rebuild_predicate_slot(
             head,
             previous.binding().generation(),
             &previous,
+            &slot.pin,
         )?
         else {
             return Ok(None);
@@ -3324,7 +3386,7 @@ fn rebuild_predicate_slot(
         .generations
         .next(prior_generation)
         .map_err(|_| RebuildFailure::Integrity)?;
-    let captured = CapturedSource::capture(runtime, head, generation)?;
+    let captured = CapturedSource::capture(runtime, head, generation, &slot.pin)?;
     #[cfg(feature = "test-fixtures")]
     observe_test_point(TestPoint::FullPartitionRead, &slot.checkpoint, Some(head));
     let (rows, candidates) =
@@ -3355,6 +3417,13 @@ fn persist_checked_predicate_slot(
     slot: &ExactPredicateSlot,
     provider: &ExactPredicatePartitionIndexV4,
 ) -> Result<(), RebuildFailure> {
+    if !slot
+        .owner
+        .is_active()
+        .map_err(|_| RebuildFailure::Transient)?
+    {
+        return Err(RebuildFailure::Transient);
+    }
     persist_predicate_checkpoint(
         &slot.checkpoint,
         &slot.registration.key(),
@@ -3389,10 +3458,13 @@ fn persist_checked_predicate_slot(
 
 fn rebuild_tokenized_slot(
     runtime: &ExactTextRuntime,
-    slot: &TokenizedTextSlot,
+    slot: &CapturedProviderSlot<TokenizedTextSlot>,
     head: CommitSequence,
     prior_generation: Option<ProjectionGeneration>,
 ) -> Result<Option<AdmittedTokenizedProvider>, RebuildFailure> {
+    slot.pin
+        .ensure_active()
+        .map_err(|_| RebuildFailure::Transient)?;
     if prior_generation.is_none()
         && let Some(bytes) = read_checkpoint(
             &slot.checkpoint,
@@ -3433,7 +3505,16 @@ fn rebuild_tokenized_slot(
             .map_err(|_| RebuildFailure::Integrity)?,
     )
     .map_err(|_| RebuildFailure::Integrity)?;
-    let rows = read_complete_tokenized_partition(runtime, &slot.registration, head, generation)?;
+    let rows = read_complete_tokenized_partition(
+        runtime,
+        &slot.registration,
+        head,
+        generation,
+        &slot.pin,
+    )?;
+    slot.pin
+        .ensure_active()
+        .map_err(|_| RebuildFailure::Transient)?;
     let provider = TokenizedTextPartitionIndexV1::rebuild_admitted_v1(
         &config,
         hash_partition_key(slot.registration.partition_key.as_bytes()),
@@ -3452,6 +3533,9 @@ fn rebuild_tokenized_slot(
         ) => RebuildFailure::Capacity(generation),
         _ => RebuildFailure::Integrity,
     })?;
+    slot.pin
+        .ensure_active()
+        .map_err(|_| RebuildFailure::Transient)?;
     persist_tokenized_checkpoint(
         &slot.checkpoint,
         &slot.registration.key(),
@@ -3469,7 +3553,10 @@ fn read_complete_tokenized_partition(
     registration: &TokenizedTextRegistration,
     expected_head: CommitSequence,
     generation: ProjectionGeneration,
+    work: &crate::exact_provider_owner::ProviderPin,
 ) -> Result<Vec<TokenizedTextMutationV1>, RebuildFailure> {
+    work.ensure_active()
+        .map_err(|_| RebuildFailure::Transient)?;
     let program = registration.query.representative_program();
     let step = program.steps().first().ok_or(RebuildFailure::Integrity)?;
     if program.steps().len() != 1 {
@@ -3538,6 +3625,8 @@ fn read_complete_tokenized_partition(
     let mut rows =
         BTreeMap::<riffdb_types::EntityKey, (Vec<(FieldId, String)>, CanonicalRecord)>::new();
     loop {
+        work.ensure_active()
+            .map_err(|_| RebuildFailure::Transient)?;
         let request = AuthoritativeEntityPartitionScanRequest::new(
             step.internal_entity_id(),
             prefix.clone(),
@@ -3622,10 +3711,13 @@ fn read_complete_tokenized_partition(
 
 fn rebuild_nullable_predicate_slot(
     runtime: &ExactTextRuntime,
-    slot: &NullableExactPredicateSlot,
+    slot: &CapturedProviderSlot<NullableExactPredicateSlot>,
     head: CommitSequence,
     prior_generation: Option<ProjectionGeneration>,
 ) -> Result<Option<Selected<AdmittedPredicateProviderV5>>, RebuildFailure> {
+    slot.pin
+        .ensure_active()
+        .map_err(|_| RebuildFailure::Transient)?;
     #[cfg(feature = "test-fixtures")]
     observe_test_point(TestPoint::Preparing, &slot.checkpoint, Some(head));
     let previous = {
@@ -3644,6 +3736,7 @@ fn rebuild_nullable_predicate_slot(
             head,
             previous.binding().generation(),
             &previous,
+            &slot.pin,
         )?
         else {
             return Ok(None);
@@ -3685,7 +3778,7 @@ fn rebuild_nullable_predicate_slot(
         .generations
         .next(prior_generation)
         .map_err(|_| RebuildFailure::Integrity)?;
-    let captured = CapturedSource::capture(runtime, head, generation)?;
+    let captured = CapturedSource::capture(runtime, head, generation, &slot.pin)?;
     #[cfg(feature = "test-fixtures")]
     observe_test_point(TestPoint::FullPartitionRead, &slot.checkpoint, Some(head));
     let (rows, candidates) =
@@ -3716,6 +3809,13 @@ fn persist_checked_nullable_predicate_slot(
     slot: &NullableExactPredicateSlot,
     provider: &ExactPredicatePartitionIndexV5,
 ) -> Result<(), RebuildFailure> {
+    if !slot
+        .owner
+        .is_active()
+        .map_err(|_| RebuildFailure::Transient)?
+    {
+        return Err(RebuildFailure::Transient);
+    }
     persist_predicate_checkpoint_bytes(
         &slot.checkpoint,
         &slot.registration.key(),
@@ -3794,6 +3894,7 @@ fn read_complete_predicate_partition<R: ExactPredicateRegistrationView>(
     let mut observed_entries = 0_usize;
     let mut after = None;
     loop {
+        captured.ensure_active()?;
         let request = AuthoritativeIndexScanRequest::new(target.clone(), after, limit)
             .map_err(|_| RebuildFailure::Integrity)?;
         let page = captured
@@ -3951,6 +4052,7 @@ fn read_complete_partition(
     let mut observed_entries = 0_usize;
     let mut after = None;
     loop {
+        captured.ensure_active()?;
         let request = AuthoritativeIndexScanRequest::new(target.clone(), after, limit)
             .map_err(|_| RebuildFailure::Integrity)?;
         let page = captured

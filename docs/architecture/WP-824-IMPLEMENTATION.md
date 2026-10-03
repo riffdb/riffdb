@@ -1,5 +1,32 @@
 # WP-824 implementation progress
 
+## Capability supersession and obsolete work
+
+Registration compares canonical capability identity and revision across all five
+families under discovery. A freshly authorized higher revision retires older
+owners. A delayed lower revision refuses before changing any owner when a newer
+registration remains known. Different plans, roles and partitions retain exact
+data identities; this comparison grants no cross-policy reuse or authority.
+
+Worker rebuilds require the actual captured slot. Private source captures retain
+its existing pin through source destruction. Obsolete work refuses before source
+observation and at bounded scan/replay, materialization and publication points.
+Retirement preserves outstanding charges and pins. Background passes attempt at
+most four retired-owner cleanups; all pins and the original 300-second retention
+must expire first. Idle active registrations are not evicted by this cleanup.
+
+Semantic tests cover all-family capability retirement, delayed lower revisions,
+source observation and mid-replay cancellation, pin retention, minimum retention
+and background owned-artifact cleanup. All 544 selected server tests passed,
+including the real-daemon crash oracle; 72 tests were outside the selection or
+already ignored. All six scoped static checks passed. Full catalog/source/policy admission and
+exact plan supersession remain open; this is not qualification readiness.
+
+PR note: Package WP-824; Tier guarantee; Behavior: exact capability supersession,
+bounded obsolete work and background cleanup; Compatibility: unchanged authority,
+ordering, formats and application interfaces; Handbook: Configuration;
+Hazards/follow-ups: finish admission and plan supersession, full CI, qualification.
+
 ## Operator lifecycle accounting
 
 The same process-graph accounting mutex now holds active/retiring owner counts,

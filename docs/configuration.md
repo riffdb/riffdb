@@ -601,6 +601,14 @@ allowing cleanup at budget saturation. Cleanup runs outside the discovery lock;
 contention refuses new admission without changing an owner's phase. Bounded,
 admitted worker inventories hold keys only and capture one live owner at a time.
 
+A freshly authorized higher revision of the same capability retires its older
+registrations across all five families. Existing captures remain charged until
+released; retirement cannot shorten the 300-second retention obligation.
+Obsolete workers stop before source observation and at bounded replay, scan,
+materialization and publication points. Each worker pass attempts at most four
+eligible retired-owner cleanups, including when no capacity pressure exists;
+this cleanup does not evict idle active registrations.
+
 
 New exact-provider registrations reserve owned registration data and shared
 compiled metadata against one compiled 1-GiB process budget. Shared metadata is

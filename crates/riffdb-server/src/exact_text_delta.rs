@@ -44,6 +44,7 @@ impl Delta {
         previous: &SelectedSource,
         plan: DeltaPlan<'_>,
     ) -> Result<Option<Self>, RebuildFailure> {
+        captured.ensure_active()?;
         let (Some(next), Some(prior)) = (&captured.pin, &previous.pin) else {
             return Ok(None);
         };
@@ -90,6 +91,7 @@ impl Delta {
         let mut commits = 0_u64;
         let mut normalized_bytes = 0_usize;
         for _ in 0..MAX_RECEIPTS {
+            captured.ensure_active()?;
             let Some(receipt) = cursor
                 .next_receipt()
                 .map_err(|error| cursor_failure(error, plan.generation))?
