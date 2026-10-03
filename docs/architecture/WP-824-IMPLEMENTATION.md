@@ -1,5 +1,41 @@
 # WP-824 implementation progress
 
+## Admitted generated-schema registry decoding
+
+A hidden first-party reader covers the existing generated-schema registry section
+against already constructed IR. Borrowed inspection checks bounded framing and
+counts without copying stored JSON. The existing source visitor and schema sizer
+then bound the exact artifact vector, every retained canonical string, and the
+largest JSON construction/render workspace. One reservation covers all prior
+artifacts simultaneously with the next generation and final ownership inspection;
+it precedes ordinary decoding and generation.
+
+The existing decoder remains the authority for registry order, keys, canonical
+JSON bytes and schema hashes. It never accepts stored JSON without regeneration.
+Final settlement retains one immutable charged vector. No artifact format, hash,
+ordinary decoding behavior or application interface changes. Input ownership,
+structural/executable IR construction and complete bundle identity are separate.
+
+Tests preserve every artifact in all 13 frozen bundles and prove exact retained
+vector capacity plus its composition with the established native JSON-tree/render
+bound. Rejections cover each truncation point, count/ceiling, key/JSON/hash and
+order mismatches, a late mismatch after earlier output was retained, trailing
+bytes, pressure before sizing and generation, overflow and final capture release.
+All 450 contract IR and compiler tests passed with no skips. All seven scoped
+non-test acceptance checks passed, including formatting, Clippy with warnings
+denied, handbook, downstream adapters, scope and source guards.
+
+WP-824 remains open. Whole-bundle composition, remaining constructors, retained
+catalog assembly, parent lineage proofs, production capture, source pins,
+retirement, cleanup and qualification are unfinished. No aggregate-enforcement or
+full CI receipt is claimed.
+
+PR note: Package WP-824 (open); Tier guarantee; Behavior: internal admitted registry
+decoding with retained output and generation accounting; Compatibility: existing
+artifact formats, hashes, canonical bytes and application interfaces; Checks:
+contract IR/compiler tests and scoped acceptance; Handbook: this page;
+Hazards/follow-ups: complete whole-bundle construction and provider lifecycle.
+
 ## Admitted complete ledger validation of constructed IR
 
 Complete ledger validation now has a hidden first-party admission path. Borrowed

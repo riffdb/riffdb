@@ -84,7 +84,7 @@ const PER_RENDERED_BYTE: usize =
     4 * TREE_NODE_BYTES + 16 * size_of::<Json>() + 4 * align_of::<Json>() + 1024;
 const SIZING_WORK: u64 = 32 * 1024;
 
-pub(super) fn json_workspace_bound(bytes: usize) -> Result<u64, BudgetUnavailable> {
+pub(crate) fn json_workspace_bound(bytes: usize) -> Result<u64, BudgetUnavailable> {
     bytes
         .checked_mul(PER_RENDERED_BYTE)
         .and_then(|value| value.checked_add(64 * 1024))
@@ -118,7 +118,7 @@ impl ProviderSchemaArtifactSourceV1<'_> {
         work.settle_owned_value(artifact).map_err(Into::into)
     }
 
-    pub(super) fn expected_size(self, schema: &SchemaIr) -> Result<usize, IrValidationError> {
+    pub(crate) fn expected_size(self, schema: &SchemaIr) -> Result<usize, IrValidationError> {
         match self {
             Self::Entity { id, record } => {
                 require_shape(JsonSchemaShapeConstruction::OutputRecord)?;

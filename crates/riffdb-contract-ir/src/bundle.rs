@@ -18,6 +18,10 @@ mod plan_hash_admission;
 #[cfg(test)]
 mod plan_hash_admission_tests;
 mod schema_registry_admission;
+mod schema_registry_decode_admission;
+pub use schema_registry_decode_admission::decode_provider_schema_registry_section_admitted_v1;
+#[cfg(test)]
+mod schema_registry_decode_admission_tests;
 mod workflow_admission;
 pub use compatibility_admission::decode_provider_compatibility_section_admitted_v1;
 #[cfg(test)]

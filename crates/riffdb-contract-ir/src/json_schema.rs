@@ -2,6 +2,7 @@
 
 mod admission;
 mod capacity;
+pub(crate) use admission::json_workspace_bound;
 pub use admission::{ProviderSchemaArtifactErrorV1, ProviderSchemaArtifactSourceV1};
 #[cfg(test)]
 mod admission_tests;
