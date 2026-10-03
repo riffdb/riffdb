@@ -1,5 +1,45 @@
 # WP-824 implementation progress
 
+## Admitted lineage-ledger section parsing
+
+A hidden first-party reader covers the existing V1/V2 ledger section. Borrowed
+inspection bounds allocation states, contiguous entry vectors, alias vectors,
+owner-path vectors and source names before ordinary decoding. It includes the
+single temporary owner-vector clone used to compare an identity's allocation
+namespace. Construction scratch is destroyed before canonical verification, so
+those temporary phases share a peak allowance. Checked arithmetic refuses
+overflow. Final settlement retains one immutable charged ledger.
+
+The reader preserves ordinary section checks for versions, namespace and state
+tags, valid owner paths, contiguous IDs, allocation-state order, complete-history
+maxima, and aggregate entry and alias ceilings. Canonical verification uses a
+pre-admitted exact output buffer. Schema/command/projection validation, required
+allocation states, active identities, aliases against their targets, parent
+lineage history and complete bundle identity remain separate; this reader is
+not a validated catalog or a new durable format. Encoded input ownership also
+remains separate.
+
+Tests cover frozen sections, scoped owners, active entries and tombstones, V2
+aliases, native decoded/temporary/canonical capacity witnesses, the 262,144-entry
+ceiling, aggregate history overflow, alias ceilings, duplicate allocation states,
+malformed 255-component owner paths, every truncation point, trailing bytes,
+invalid IDs, mismatched namespaces and maxima, unsupported versions and tags,
+reserved names, pressure, overflow and final capture release. All 442 contract IR
+and compiler tests passed with no skips. All seven scoped non-test acceptance
+checks passed, including formatting, Clippy with warnings denied, handbook,
+downstream adapters, scope and source guards.
+
+WP-824 remains open. Whole-bundle construction, complete ledger validation,
+retained catalog assembly, production capture, source pins, retirement, cleanup
+and qualification still require implementation. No aggregate-enforcement or
+full CI receipt is claimed.
+
+PR note: Package WP-824 (open); Tier guarantee; Behavior: internal admitted ledger
+section parsing and immutable output ownership; Compatibility: existing ledger
+encoding, ordinary section checks, limits and application interfaces; Checks:
+contract IR/compiler tests and scoped acceptance; Handbook: this page;
+Hazards/follow-ups: complete bundle and catalog construction and provider lifecycle.
+
 ## Admitted MCP registry parsing and shared lineage ownership
 
 A hidden first-party reader admits the existing MCP registry section before

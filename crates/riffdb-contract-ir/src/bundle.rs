@@ -5,6 +5,10 @@ mod compatibility_admission;
 mod mcp_admission;
 pub use mcp_admission::decode_provider_mcp_registry_section_admitted_v1;
 mod encoding_admission;
+mod ledger_admission;
+pub use ledger_admission::decode_provider_ledger_section_admitted_v1;
+#[cfg(test)]
+mod ledger_admission_tests;
 #[cfg(test)]
 mod mcp_admission_tests;
 mod plan_hash_admission;
