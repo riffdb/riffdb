@@ -558,6 +558,25 @@ report lag. Foreign database/history tokens refuse before waiting, and opaque
 cursors are local to one live process. See
 [sequence-lag health and statistics](operations/REMOTE-INGRESS.md) for both-node reporting.
 
+## Exact-provider checkpoint custody
+
+On Linux, exact-text, predicate, nullable-predicate, tokenized-text and
+long-pattern checkpoint directories are created privately (`0700`), with private
+regular checkpoint files (`0600`) owned by the daemon user. Checkpoint access
+rejects symlinked path components, foreign ownership, broadened permissions,
+extra hard links and replaced directory or file identities. Paths are bounded
+by 4096 encoded bytes and 32 components; relative configured paths remain
+supported. Unsupported platforms refuse this checkpoint custody.
+
+Publication synchronizes complete pending bytes, publishes without replacing
+an occupied name, and synchronizes the pinned directory. Restart completes only
+a verified two-name publication or rebuilds absent derived state. Partial work
+cannot become authoritative state. Checkpoint envelope formats remain unchanged.
+An installation with older permissive derived directories or files must stop the
+daemon and make these owned directories and files private before restarting;
+RiffDB refuses unsafe custody instead of changing permissions on existing objects.
+These checks do not yet enable registration eviction or artifact reclamation.
+
 ## Exact-provider retention clock
 
 Primary and follower servers use the same process-local monotonic clock for

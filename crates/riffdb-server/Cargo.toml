@@ -37,6 +37,8 @@ path = "tests/fixtures/exact_provider_daemon.rs"
 required-features = ["test-fixtures"]
 
 [dependencies]
+# Reuse the directory-custody dependency admitted by ADR-0265/0266.
+cap-std = { version = "=4.0.2", default-features = false }
 axum = { version = "=0.8.9", default-features = false, features = ["http1", "tokio"] }
 futures-util = { version = "=0.3.33", default-features = false, features = ["async-await", "std"] }
 getrandom = { version = "=0.3.4", default-features = false }

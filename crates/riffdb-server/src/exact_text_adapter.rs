@@ -8,8 +8,6 @@
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::error::Error;
 use std::fmt;
-use std::fs::{self, File, OpenOptions};
-use std::io::Write;
 use std::num::NonZeroU64;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Condvar, Mutex};
@@ -898,16 +896,27 @@ impl ExactTextRuntime {
         initial_generation: ProjectionGeneration,
         cursor_clock: Arc<dyn CursorMonotonicClock>,
     ) -> Result<Arc<Self>, ExactTextRuntimeOpenError> {
+        if projections_root.as_os_str().as_encoded_bytes().len() > 4096 - 64 {
+            return Err(ExactTextRuntimeOpenError);
+        }
         let ownership_graph =
             ProviderOwnershipGraph::new().map_err(|_| ExactTextRuntimeOpenError)?;
+        let _custody_work = ownership_graph
+            .budget
+            .reserve(crate::exact_provider_checkpoint_custody::CUSTODY_WORK_BYTES)
+            .map_err(|_| ExactTextRuntimeOpenError)?;
         let root = projections_root.join("exact-text-v2");
-        fs::create_dir_all(&root).map_err(|_| ExactTextRuntimeOpenError)?;
+        crate::exact_provider_checkpoint_custody::create_private_directory(&root)
+            .map_err(|_| ExactTextRuntimeOpenError)?;
         let predicate_root = projections_root.join("exact-predicate-v4");
-        fs::create_dir_all(&predicate_root).map_err(|_| ExactTextRuntimeOpenError)?;
+        crate::exact_provider_checkpoint_custody::create_private_directory(&predicate_root)
+            .map_err(|_| ExactTextRuntimeOpenError)?;
         let tokenized_root = projections_root.join("tokenized-text-v1");
-        fs::create_dir_all(&tokenized_root).map_err(|_| ExactTextRuntimeOpenError)?;
+        crate::exact_provider_checkpoint_custody::create_private_directory(&tokenized_root)
+            .map_err(|_| ExactTextRuntimeOpenError)?;
         let long_pattern_root = projections_root.join("long-pattern-v1");
-        fs::create_dir_all(&long_pattern_root).map_err(|_| ExactTextRuntimeOpenError)?;
+        crate::exact_provider_checkpoint_custody::create_private_directory(&long_pattern_root)
+            .map_err(|_| ExactTextRuntimeOpenError)?;
         Ok(Arc::new(Self {
             storage,
             root,
@@ -4067,7 +4076,9 @@ fn persist_predicate_checkpoint_bytes(
     let path_bytes = u64::try_from(path.as_os_str().as_encoded_bytes().len())
         .ok()
         .and_then(|bytes| bytes.checked_mul(4))
-        .and_then(|bytes| bytes.checked_add(4096))
+        .and_then(|bytes| {
+            bytes.checked_add(crate::exact_provider_checkpoint_custody::CUSTODY_WORK_BYTES)
+        })
         .ok_or_else(|| std::io::Error::other("exact checkpoint capacity"))?;
     let _path_work = budget
         .reserve(path_bytes)
@@ -4079,24 +4090,18 @@ fn persist_predicate_checkpoint_bytes(
         budget,
     )
     .map_err(|_| std::io::Error::other("exact predicate checkpoint integrity"))?;
-    let pending = path.with_extension("pending");
-    let mut file = OpenOptions::new()
-        .create(true)
-        .truncate(true)
-        .write(true)
-        .open(&pending)?;
-    file.write_all(&bytes)?;
-    #[cfg(feature = "test-fixtures")]
-    observe_test_point(TestPoint::BeforeFileSync, path, None);
-    file.sync_all()?;
-    #[cfg(feature = "test-fixtures")]
-    observe_test_point(TestPoint::AfterFileSync, path, None);
-    fs::rename(&pending, path)?;
-    File::open(
-        path.parent()
-            .ok_or_else(|| std::io::Error::other("checkpoint parent"))?,
-    )?
-    .sync_all()
+    let custody = crate::exact_provider_checkpoint_custody::CheckpointCustody::open(path)?;
+    custody.publish(
+        &bytes,
+        || {
+            #[cfg(feature = "test-fixtures")]
+            observe_test_point(TestPoint::BeforeFileSync, path, None);
+        },
+        || {
+            #[cfg(feature = "test-fixtures")]
+            observe_test_point(TestPoint::AfterFileSync, path, None);
+        },
+    )
 }
 
 fn persist_tokenized_checkpoint(
@@ -4116,22 +4121,26 @@ fn read_checkpoint(
     path: &Path,
     budget: &riffdb_types::exact_provider_budget_v1::ProviderBudget,
 ) -> Result<Option<checkpoint_buffers::CheckpointBytes>, RebuildFailure> {
-    let mut file = match File::open(path) {
-        Ok(file) => file,
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
-        Err(_) => return Err(RebuildFailure::Transient),
+    let _custody_work = budget
+        .reserve(crate::exact_provider_checkpoint_custody::CUSTODY_WORK_BYTES)
+        .map_err(|_| RebuildFailure::Transient)?;
+    let custody = crate::exact_provider_checkpoint_custody::CheckpointCustody::open(path)
+        .map_err(|_| RebuildFailure::Transient)?;
+    let Some(mut file) = custody.read().map_err(|_| RebuildFailure::Transient)? else {
+        return Ok(None);
     };
     let length = file
         .metadata()
         .map_err(|_| RebuildFailure::Transient)?
         .len();
-    checkpoint_buffers::admit_checkpoint_bytes(
+    let bytes = checkpoint_buffers::admit_checkpoint_bytes(
         &mut file,
         length,
         MAX_ACTIVATION_CHECKPOINT_BYTES,
         budget,
-    )
-    .map(Some)
+    )?;
+    custody.verify().map_err(|_| RebuildFailure::Transient)?;
+    Ok(Some(bytes))
 }
 
 fn encode_activation_checkpoint(
@@ -4278,6 +4287,51 @@ impl Error for ExactTextWorkerShutdownError {}
 mod tests {
     use super::provider_policy_binding_is_exact;
     use riffdb_types::ProjectionProviderPolicyModeV1;
+
+    // req: OQ-040, PRJ-004
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn checkpoint_publication_rejects_symlink_without_modifying_foreign_file() {
+        use std::os::unix::fs::{PermissionsExt, symlink};
+        let root = tempfile::tempdir().unwrap();
+        std::fs::set_permissions(root.path(), std::fs::Permissions::from_mode(0o700)).unwrap();
+        let foreign = root.path().join("foreign");
+        let path = root.path().join("provider.rxts");
+        std::fs::write(&foreign, b"foreign evidence").unwrap();
+        symlink(&foreign, path.with_extension("pending")).unwrap();
+        let budget = riffdb_types::exact_provider_budget_v1::ProviderBudget::new();
+        assert!(
+            super::persist_predicate_checkpoint_bytes(&path, &[1; 121], 1, b"derived", &budget)
+                .is_err()
+        );
+        assert_eq!(std::fs::read(&foreign).unwrap(), b"foreign evidence");
+        assert!(!path.exists());
+    }
+
+    // req: OQ-040, PRJ-004
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn checkpoint_custody_refuses_before_io_when_work_is_not_admitted() {
+        use riffdb_types::exact_provider_budget_v1::{EXACT_PROVIDER_BUDGET_BYTES, ProviderBudget};
+        use std::os::unix::fs::PermissionsExt;
+        let root = tempfile::tempdir().unwrap();
+        std::fs::set_permissions(root.path(), std::fs::Permissions::from_mode(0o700)).unwrap();
+        let path = root.path().join("provider.rxts");
+        let budget = ProviderBudget::new();
+        let available =
+            EXACT_PROVIDER_BUDGET_BYTES - budget.observation().unwrap().fixed_owner_bytes;
+        let protected = budget.reserve(available).unwrap();
+        assert!(
+            super::persist_predicate_checkpoint_bytes(&path, &[1; 121], 1, b"derived", &budget)
+                .is_err()
+        );
+        assert!(super::read_checkpoint(&path, &budget).is_err());
+        assert!(!path.exists());
+        assert!(!path.with_extension("pending").exists());
+        assert_eq!(budget.observation().unwrap().reserved_bytes, available);
+        drop(protected);
+        assert_eq!(budget.observation().unwrap().reserved_bytes, 0);
+    }
 
     #[test]
     fn provider_policy_binding_requires_the_compiled_mode() {

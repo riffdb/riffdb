@@ -1,5 +1,34 @@
 # WP-824 implementation progress
 
+## Checkpoint custody before retirement
+
+A failing semantic test demonstrated that pending-path symlinks were followed
+and foreign bytes overwritten. Checkpoint operations now pin and recheck the
+private directory and opened regular files, rejecting symlinks, unequal inode
+identities, foreign ownership, permissive modes and unrelated hard links.
+Root creation traverses bounded components through directory capabilities and
+never follows symlinked ancestors. All temporary custody work is reserved before
+path/capability construction; payload admission remains independent.
+
+Publication creates a new private pending object, syncs it, removes only the
+verified prior derived selection, links to an unoccupied name and syncs the
+pinned directory. Restart recognizes only the exact two-name/same-inode
+publication and completes its pending-name removal; an absent selection rebuilds
+normally. Existing envelopes and slot/history checks remain intact. The existing
+cap-std 4.0.2 dependency and feature set admitted by ADR-0265/0266 are reused.
+Linux private custody fails closed elsewhere. Older permissive derived objects
+need the documented stopped-daemon permission migration; no automatic chmod.
+
+Tests cover foreign paths/links, replaced files/directories, relative paths,
+private root creation, pre-I/O budget refusal and five abrupt-process exits.
+All 517 selected server tests passed, including the existing daemon crash oracle
+with complete row, idempotency and provenance assertions. All nine scoped static
+checks passed, and the corrected relative-path fixture and final Clippy checks
+passed. This is preparation for retirement: no artifact deletion
+or slot-recycling readiness claim. PR note: Package WP-824 (open); Tier guarantee;
+Compatibility: unchanged envelope/application interfaces; Handbook: Configuration;
+Hazards/follow-ups: retirement, final-reference cleanup, full composition and CI.
+
 ## Long-pattern continuation ownership
 
 Production long-pattern responses retain the actual charged immutable index,

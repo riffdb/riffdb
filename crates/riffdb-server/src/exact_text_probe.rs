@@ -12,7 +12,7 @@ pub enum ExactProviderTestPoint {
     FullPartitionRead,
     /// Complete candidate bytes have been written to the pending file.
     BeforeFileSync,
-    /// The pending file has been synchronized, before its atomic rename.
+    /// The pending file has been synchronized, before no-replace publication.
     AfterFileSync,
     /// The reopened complete candidate is about to replace the checked prior selection.
     BeforeSelection,
