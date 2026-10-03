@@ -4250,6 +4250,11 @@ async fn execute_tokenized_named_query(
         prior
             .as_deref()
             .map(|prior| (prior.epoch(), prior.generation())),
+    )
+    .with_provider_lease(
+        prior
+            .as_deref()
+            .and_then(|state| state.provider_lease().cloned()),
     );
     let Some(provider) = service.providers.tokenized_text.as_ref() else {
         let failure = PublicError::storage_unavailable().into();
@@ -4316,7 +4321,8 @@ async fn execute_tokenized_named_query(
                 observed.history_incarnation(),
                 statistics_identity,
                 tokenized.tokenized_plan().max_results(),
-            ),
+            )
+            .with_provider_lease(observed.provider_lease().cloned()),
         ) {
             Ok(guard) => {
                 if guard.capacity_evicted() {
@@ -4706,12 +4712,20 @@ async fn execute_exact_provider_with_readiness<T>(
     service: &RiffDbServiceInner,
     context: &RequestContext,
     begun: &crate::orchestration::BegunInvocation,
-    execute: impl FnMut() -> Result<T, ExactTextProjectionPortError>,
+    mut execute: impl FnMut() -> Result<T, ExactTextProjectionPortError>,
 ) -> ServiceResult<Result<T, ExactTextProjectionPortError>> {
     execute_provider_with_readiness(
         context.control(),
         service.providers.deadline_scheduler.as_ref(),
-        execute,
+        || {
+            // Expired cursor leases must not block a new provider admission.
+            // Resolved requests independently retain their exact native epoch.
+            service
+                .cursors
+                .active_count()
+                .map_err(|_| ExactTextProjectionPortError::Unavailable)?;
+            execute()
+        },
         |error| Some(*error),
         || async {
             begun.reauthorize_read(service, context).await?;

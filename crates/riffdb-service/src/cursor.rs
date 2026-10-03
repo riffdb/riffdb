@@ -1619,6 +1619,7 @@ pub(crate) struct TokenizedTextCursorState {
     history_incarnation: u64,
     statistics_identity: [u8; 32],
     result_ceiling: u32,
+    provider_lease: Option<crate::ProviderEpochLeaseV1>,
 }
 
 impl TokenizedTextCursorState {
@@ -1641,7 +1642,22 @@ impl TokenizedTextCursorState {
             history_incarnation,
             statistics_identity,
             result_ceiling,
+            provider_lease: None,
         }
+    }
+
+    #[must_use]
+    pub(crate) fn with_provider_lease(
+        mut self,
+        lease: Option<crate::ProviderEpochLeaseV1>,
+    ) -> Self {
+        self.provider_lease = lease;
+        self
+    }
+
+    #[must_use]
+    pub(crate) const fn provider_lease(&self) -> Option<&crate::ProviderEpochLeaseV1> {
+        self.provider_lease.as_ref()
     }
 
     #[must_use]
@@ -3049,6 +3065,102 @@ mod tests {
             ),
             Err(CursorAccessError::InvalidCursor)
         ));
+    }
+
+    // req: OQ-040
+    #[test]
+    fn ranked_cursor_retains_provider_until_expiry_and_last_resolved_release() {
+        let clock = Arc::new(FixedClock::at(0));
+        let registry = CursorRegistry::new(SequentialGenerator::new(), Arc::clone(&clock));
+        let physical = Arc::new(String::from("immutable epoch"));
+        let weak = Arc::downgrade(&physical);
+        let state = TokenizedTextCursorState::new(
+            20,
+            CommitSequence::new(41).expect("epoch"),
+            ProjectionGeneration::first(),
+            37,
+            3,
+            [0x5a; 32],
+            1_000,
+        )
+        .with_provider_lease(Some(crate::ProviderEpochLeaseV1::from_shared(physical)));
+        let registration = registry.register(binding(1, 1), state).expect("register");
+        let token = registration.token();
+        drop(registration);
+        let captured = registry.resolve(token, &binding(1, 1)).expect("resolve");
+        assert!(weak.upgrade().is_some());
+        clock.set(300);
+        assert!(registry.resolve(token, &binding(1, 1)).is_err());
+        assert!(
+            weak.upgrade().is_some(),
+            "captured requests retain the epoch"
+        );
+        drop(captured);
+        assert!(
+            weak.upgrade().is_none(),
+            "last reference releases the epoch"
+        );
+    }
+
+    // req: OQ-040
+    #[test]
+    fn ranked_cursor_refresh_replacement_and_cancellation_preserve_native_leases() {
+        let clock = Arc::new(FixedClock::at(0));
+        let registry = CursorRegistry::new(SequentialGenerator::new(), Arc::clone(&clock));
+        let make_state = || {
+            let physical = Arc::new(String::from("immutable epoch"));
+            let weak = Arc::downgrade(&physical);
+            (
+                TokenizedTextCursorState::new(
+                    20,
+                    CommitSequence::new(41).expect("epoch"),
+                    ProjectionGeneration::first(),
+                    37,
+                    3,
+                    [0x5a; 32],
+                    1_000,
+                )
+                .with_provider_lease(Some(crate::ProviderEpochLeaseV1::from_shared(physical))),
+                weak,
+            )
+        };
+        let (state, first_epoch) = make_state();
+        let first = registry
+            .register_replacing(binding(1, 1), state)
+            .expect("register");
+        let first_token = first.token();
+        clock.set(299);
+        registry.publish_exclusive(first_token, first.binding.clone(), Arc::clone(&first.state));
+        drop(first);
+        clock.set(300);
+        assert!(
+            registry.resolve(first_token, &binding(1, 1)).is_ok(),
+            "publish refreshes expiry"
+        );
+        let (state, canceled_epoch) = make_state();
+        let canceled = registry
+            .register_replacing(binding(1, 1), state)
+            .expect("replacement");
+        registry.remove(canceled.token());
+        assert!(
+            first_epoch.upgrade().is_some(),
+            "cancellation retains published cursor"
+        );
+        drop(canceled);
+        assert!(canceled_epoch.upgrade().is_none());
+        let (state, replacement_epoch) = make_state();
+        let next = registry
+            .register_replacing(binding(1, 1), state)
+            .expect("replacement");
+        registry.publish_exclusive(next.token(), next.binding.clone(), Arc::clone(&next.state));
+        assert!(
+            first_epoch.upgrade().is_none(),
+            "replacement releases superseded epoch"
+        );
+        drop(next);
+        clock.set(600);
+        assert_eq!(registry.active_count().expect("purge"), 0);
+        assert!(replacement_epoch.upgrade().is_none());
     }
 
     #[test]

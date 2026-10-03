@@ -1775,6 +1775,42 @@ impl ExactTextProjectionRow {
     }
 }
 
+/// Native lifetime ownership of an immutable provider epoch.
+///
+/// This metadata never enters application values, cursor tokens or durable
+/// encodings. The provider validates the concrete retained identity on resume.
+#[doc(hidden)]
+#[derive(Clone)]
+pub struct ProviderEpochLeaseV1(Arc<dyn std::any::Any + Send + Sync>);
+
+impl ProviderEpochLeaseV1 {
+    /// Transfers an already admitted shared native owner without allocating.
+    #[must_use]
+    pub fn from_shared<T: std::any::Any + Send + Sync>(owner: Arc<T>) -> Self {
+        Self(owner)
+    }
+
+    /// Inspects the private concrete owner; an unexpected owner fails closed.
+    #[must_use]
+    pub fn downcast_ref<T: std::any::Any>(&self) -> Option<&T> {
+        self.0.downcast_ref()
+    }
+}
+
+impl fmt::Debug for ProviderEpochLeaseV1 {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("ProviderEpochLeaseV1([REDACTED])")
+    }
+}
+
+// Physical retention is metadata, not semantic result/cursor identity.
+impl PartialEq for ProviderEpochLeaseV1 {
+    fn eq(&self, _other: &Self) -> bool {
+        true
+    }
+}
+impl Eq for ProviderEpochLeaseV1 {}
+
 /// One exact page/count observation from a single provider epoch proof.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ExactTextProjectionResult {
@@ -1785,6 +1821,7 @@ pub struct ExactTextProjectionResult {
     provider: ProjectionProviderDescriptorHash,
     history_incarnation: u64,
     statistics_identity: Option<[u8; 32]>,
+    provider_lease: Option<ProviderEpochLeaseV1>,
 }
 
 impl ExactTextProjectionResult {
@@ -1808,6 +1845,7 @@ impl ExactTextProjectionResult {
             provider,
             history_incarnation,
             statistics_identity: None,
+            provider_lease: None,
         }
     }
 
@@ -1832,8 +1870,24 @@ impl ExactTextProjectionResult {
             provider,
             history_incarnation,
             statistics_identity: Some(statistics_identity),
+            provider_lease: None,
         }
     }
+    /// Attaches an already admitted immutable native epoch owner.
+    #[doc(hidden)]
+    #[must_use]
+    pub fn with_provider_lease(mut self, lease: ProviderEpochLeaseV1) -> Self {
+        self.provider_lease = Some(lease);
+        self
+    }
+
+    /// Retained native epoch ownership for service continuation state.
+    #[doc(hidden)]
+    #[must_use]
+    pub const fn provider_lease(&self) -> Option<&ProviderEpochLeaseV1> {
+        self.provider_lease.as_ref()
+    }
+
     /// Bounded ordered output rows.
     #[must_use]
     pub fn rows(&self) -> &[ExactTextProjectionRow] {
@@ -2051,6 +2105,7 @@ pub struct TokenizedTextProjectionRequest {
     minimum_epoch: Option<CommitSequence>,
     pinned_epoch: Option<CommitSequence>,
     pinned_generation: Option<ProjectionGeneration>,
+    provider_lease: Option<ProviderEpochLeaseV1>,
 }
 
 impl TokenizedTextProjectionRequest {
@@ -2082,7 +2137,23 @@ impl TokenizedTextProjectionRequest {
             minimum_epoch,
             pinned_epoch: pinned_snapshot.map(|snapshot| snapshot.0),
             pinned_generation: pinned_snapshot.map(|snapshot| snapshot.1),
+            provider_lease: None,
         }
+    }
+
+    /// Carries the registry-owned native epoch through fresh authorization.
+    #[doc(hidden)]
+    #[must_use]
+    pub fn with_provider_lease(mut self, lease: Option<ProviderEpochLeaseV1>) -> Self {
+        self.provider_lease = lease;
+        self
+    }
+
+    /// Exact native epoch lease, when resuming an opaque continuation.
+    #[doc(hidden)]
+    #[must_use]
+    pub const fn provider_lease(&self) -> Option<&ProviderEpochLeaseV1> {
+        self.provider_lease.as_ref()
     }
 
     /// Immutable tokenized plan and provider descriptor.

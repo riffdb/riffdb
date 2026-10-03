@@ -570,16 +570,19 @@ impl TokenizedTextEpochs {
         self.providers.back().map(|provider| &***provider)
     }
 
-    fn select(
+    fn select_shared(
         &self,
         pinned: Option<(CommitSequence, ProjectionGeneration)>,
-    ) -> Option<&TokenizedTextPartitionIndexV1> {
+    ) -> Option<AdmittedTokenizedProvider> {
         match pinned {
-            None => self.current(),
-            Some((epoch, generation)) => self.providers.iter().find_map(|provider| {
-                (provider.frontier() == Some(epoch) && provider.generation() == generation)
-                    .then_some(&***provider)
-            }),
+            None => self.providers.back().cloned(),
+            Some((epoch, generation)) => self
+                .providers
+                .iter()
+                .find(|provider| {
+                    provider.frontier() == Some(epoch) && provider.generation() == generation
+                })
+                .cloned(),
         }
     }
 
@@ -589,6 +592,38 @@ impl TokenizedTextEpochs {
             self.providers.pop_front();
         }
     }
+}
+
+// Retains the actual immutable epoch even after the bounded discovery ring
+// advances. All referenced allocations already own charges; only this closed
+// metadata allocation and its accounting Arc need an additional admission.
+struct RetainedTokenizedEpoch {
+    provider: AdmittedTokenizedProvider,
+    slot: CapturedProviderSlot<TokenizedTextSlot>,
+    // Last: retained data and explicit capture pin drop before accounting.
+    _charge: Arc<riffdb_types::exact_provider_budget_v1::OwnershipCharge>,
+}
+
+impl RetainedTokenizedEpoch {
+    fn matches(&self, slot: &TokenizedTextSlot, request: &TokenizedTextProjectionRequest) -> bool {
+        Arc::ptr_eq(&self.slot.owner, &slot.owner)
+            && self.slot.registration.matches(request)
+            && request.pinned_snapshot()
+                == self
+                    .provider
+                    .frontier()
+                    .map(|epoch| (epoch, self.provider.generation()))
+    }
+}
+
+const fn retained_tokenized_metadata_bytes() -> u64 {
+    const fn arc<T>() -> usize {
+        2 * (std::mem::size_of::<T>() + 2 * std::mem::size_of::<usize>())
+            + 2 * std::mem::align_of::<T>()
+            + 256
+    }
+    (arc::<RetainedTokenizedEpoch>()
+        + arc::<riffdb_types::exact_provider_budget_v1::OwnershipCharge>()) as u64
 }
 
 struct TokenizedTextSlot {
@@ -1559,13 +1594,23 @@ impl TokenizedTextProjectionPort for ExactTextRuntime {
             .state
             .lock()
             .map_err(|_| ExactTextProjectionPortError::Integrity)?;
+        let retained = request
+            .provider_lease()
+            .map(|lease| {
+                lease
+                    .downcast_ref::<RetainedTokenizedEpoch>()
+                    .filter(|retained| retained.matches(&slot, &request))
+                    .ok_or(ExactTextProjectionPortError::Integrity)
+            })
+            .transpose()?;
         let provider = match &*state {
             TokenizedTextSlotState::Building => {
                 return Err(ExactTextProjectionPortError::Building);
             }
             TokenizedTextSlotState::Rebuilding(epochs) => match request.pinned_snapshot() {
-                Some(pinned) => epochs
-                    .select(Some(pinned))
+                Some(pinned) => retained
+                    .map(|lease| Arc::clone(&lease.provider))
+                    .or_else(|| epochs.select_shared(Some(pinned)))
                     .ok_or(ExactTextProjectionPortError::SnapshotRetired)?,
                 None => return Err(ExactTextProjectionPortError::Rebuilding),
             },
@@ -1575,8 +1620,9 @@ impl TokenizedTextProjectionPort for ExactTextRuntime {
             TokenizedTextSlotState::IntegrityFailure => {
                 return Err(ExactTextProjectionPortError::Integrity);
             }
-            TokenizedTextSlotState::Ready(epochs) => epochs
-                .select(request.pinned_snapshot())
+            TokenizedTextSlotState::Ready(epochs) => retained
+                .map(|lease| Arc::clone(&lease.provider))
+                .or_else(|| epochs.select_shared(request.pinned_snapshot()))
                 .ok_or(ExactTextProjectionPortError::SnapshotRetired)?,
         };
         if request.pinned_snapshot().is_none() && provider.frontier() != Some(head) {
@@ -1612,7 +1658,7 @@ impl TokenizedTextProjectionPort for ExactTextRuntime {
         .map_err(map_epoch_error)?;
         let page = execute_tokenized_text_v1(
             plan,
-            provider,
+            &provider,
             provider.generation(),
             provider_epoch,
             request.query_text(),
@@ -1641,6 +1687,27 @@ impl TokenizedTextProjectionPort for ExactTextRuntime {
             .iter()
             .map(|row| ExactTextProjectionRow::new(row.key().clone(), row.output().clone()))
             .collect();
+        // The epoch must be retained before returning to cursor registration.
+        // A continuation shares its existing charge and capture pin.
+        drop(state);
+        let lease = match request.provider_lease() {
+            Some(lease) => lease.clone(),
+            None => {
+                let charge = self
+                    .ownership_graph
+                    .budget
+                    .reserve(retained_tokenized_metadata_bytes())
+                    .and_then(|work| work.commit())
+                    .map_err(|_| ExactTextProjectionPortError::Unavailable)?;
+                riffdb_service::ProviderEpochLeaseV1::from_shared(Arc::new(
+                    RetainedTokenizedEpoch {
+                        provider,
+                        slot,
+                        _charge: charge,
+                    },
+                ))
+            }
+        };
         Ok(ExactTextProjectionResult::new_tokenized(
             rows,
             u64::from(page.exact_total()),
@@ -1649,7 +1716,8 @@ impl TokenizedTextProjectionPort for ExactTextRuntime {
             descriptor.digest(),
             self.history_incarnation,
             page.statistics_identity(),
-        ))
+        )
+        .with_provider_lease(lease))
     }
 }
 
@@ -4236,6 +4304,192 @@ mod tests {
         assert!(execute.contains("execute_nullable_exact_predicate_result_set_v1"));
         assert!(execute.contains("policy_binding_is_exact"));
         assert!(execute.contains("request.row_policy().is_some()"));
+    }
+
+    // req: OQ-040
+    #[test]
+    fn tokenized_native_lease_binds_owner_request_epoch_and_accounting() {
+        use riffdb_query_module::{NamedQuerySource, QueryModule, QueryModuleCandidate};
+        use riffdb_types::{QueryModuleName, QueryModuleVersion};
+        let bundle = riffdb_contract_compiler::compile_contract_source(include_str!(
+            "../../../fixtures/compiler/text-index/contract.riff"
+        ))
+        .unwrap();
+        let module = QueryModule::compile(
+            QueryModuleCandidate::new(
+                QueryModuleName::new("retained_epoch").unwrap(),
+                QueryModuleVersion::new(1).unwrap(),
+                vec![
+                    NamedQuerySource::new(
+                        "SearchDocuments",
+                        r#"
+query SearchDocuments($org_id: Document.org_id, $query: Document.title,
+  $limit: Limit<499> = 50, $offset: u64 = 0) {
+  many documents from Document where org_id == $org_id
+    matching(search, conjunction, $query) order by doc_id asc take $limit offset $offset
+  return Found { documents: documents { doc_id title } } outcomes Found
+}"#,
+                    )
+                    .unwrap(),
+                ],
+            )
+            .unwrap(),
+            &bundle,
+        )
+        .unwrap();
+        let query = module.queries()[0].shared_tokenized_text_result().unwrap();
+        let mut partition = PartitionKeyBuilder::new(riffdb_types::AggregateTypeId::first());
+        partition.push_uuid(&[0x11; 16]).unwrap();
+        let partition = partition.finish().unwrap();
+        let request = |policy, epoch| {
+            TokenizedTextProjectionRequest::new(
+                Arc::clone(&query),
+                partition.clone(),
+                CanonicalValue::Uuid([0x11; 16]),
+                policy,
+                None,
+                "immutable".to_owned(),
+                0,
+                std::num::NonZeroU16::MIN,
+                None,
+                Some((
+                    CommitSequence::new(epoch).unwrap(),
+                    ProjectionGeneration::first(),
+                )),
+            )
+        };
+        let policy = ApplicationRoleHash::from_bytes([0x33; 32]);
+        let exact = request(policy, 1);
+        let budget = riffdb_types::exact_provider_budget_v1::ProviderBudget::new();
+        let owner = ProviderOwner::new(
+            budget.clone(),
+            budget.reserve(65536).unwrap().commit().unwrap(),
+        )
+        .unwrap();
+        let slot = Arc::new(TokenizedTextSlot {
+            registration: TokenizedTextRegistration::from_request(&exact),
+            checkpoint: PathBuf::new(),
+            state: Mutex::new(TokenizedTextSlotState::Building),
+            owner: Arc::clone(&owner),
+        });
+        let config = TokenizedTextConfigV1::new(
+            [1; 32],
+            riffdb_types::TextAnalyzerV1::StandardV1,
+            vec![TokenizedTextFieldV1::new(FieldId::new(1).unwrap(), 1).unwrap()],
+        )
+        .unwrap();
+        let provider = TokenizedTextPartitionIndexV1::rebuild_admitted_v1(
+            &config,
+            hash_partition_key(partition.as_bytes()),
+            ProjectionGeneration::first(),
+            CommitSequence::new(1).unwrap(),
+            &[],
+            &budget,
+        )
+        .unwrap();
+        let retained = RetainedTokenizedEpoch {
+            provider,
+            slot: CapturedProviderSlot::capture(&slot).unwrap(),
+            _charge: budget
+                .reserve(retained_tokenized_metadata_bytes())
+                .unwrap()
+                .commit()
+                .unwrap(),
+        };
+        assert!(retained.matches(&slot, &exact));
+        assert!(!retained.matches(&slot, &request(policy, 2)));
+        assert!(!retained.matches(
+            &slot,
+            &request(ApplicationRoleHash::from_bytes([0x44; 32]), 1)
+        ));
+        let other_owner = ProviderOwner::new(
+            budget.clone(),
+            budget.reserve(65536).unwrap().commit().unwrap(),
+        )
+        .unwrap();
+        let other_slot = TokenizedTextSlot {
+            registration: TokenizedTextRegistration::from_request(&exact),
+            checkpoint: PathBuf::new(),
+            state: Mutex::new(TokenizedTextSlotState::Building),
+            owner: other_owner,
+        };
+        assert!(
+            !retained.matches(&other_slot, &exact),
+            "same scalar identity cannot substitute another owner"
+        );
+        drop(other_slot);
+        let lease = riffdb_service::ProviderEpochLeaseV1::from_shared(Arc::new(retained));
+        assert!(lease.downcast_ref::<String>().is_none());
+        assert!(
+            !owner.retire_if_unpinned().unwrap(),
+            "cursor capture prevents pressure retirement"
+        );
+        let captured = lease.clone();
+        drop(lease);
+        assert!(!owner.retire_if_unpinned().unwrap());
+        drop(captured);
+        assert!(owner.retire_if_unpinned().unwrap());
+        drop(slot);
+        drop(owner);
+        assert_eq!(budget.observation().unwrap().owned_bytes, 0);
+        assert_eq!(budget.observation().unwrap().reserved_bytes, 0);
+    }
+
+    // req: OQ-040
+    #[test]
+    fn tokenized_cursor_lease_retains_charged_epoch_after_discovery_ring_advances() {
+        let budget = riffdb_types::exact_provider_budget_v1::ProviderBudget::new();
+        let config = TokenizedTextConfigV1::new(
+            [1; 32],
+            riffdb_types::TextAnalyzerV1::StandardV1,
+            vec![TokenizedTextFieldV1::new(FieldId::new(1).unwrap(), 1).unwrap()],
+        )
+        .unwrap();
+        let build = |sequence| {
+            TokenizedTextPartitionIndexV1::rebuild_admitted_v1(
+                &config,
+                PartitionKeyHash::from_bytes([2; 32]),
+                ProjectionGeneration::new(sequence).unwrap(),
+                CommitSequence::new(sequence).unwrap(),
+                &[],
+                &budget,
+            )
+            .unwrap()
+        };
+        let original = build(1);
+        let weak = Arc::downgrade(&original);
+        let original_bytes = original.owned_bytes();
+        let mut epochs = TokenizedTextEpochs::one(Arc::clone(&original));
+        let lease = riffdb_service::ProviderEpochLeaseV1::from_shared(original);
+        for sequence in 2..=10 {
+            epochs.push(build(sequence), 8);
+        }
+        assert_eq!(epochs.providers.len(), 8);
+        assert!(
+            epochs
+                .select_shared(Some((
+                    CommitSequence::new(1).unwrap(),
+                    ProjectionGeneration::first()
+                )))
+                .is_none()
+        );
+        let retained = lease
+            .downcast_ref::<riffdb_types::exact_provider_budget_v1::ProviderAllocation<
+                TokenizedTextPartitionIndexV1,
+            >>()
+            .unwrap();
+        assert_eq!(retained.frontier(), CommitSequence::new(1));
+        assert!(budget.observation().unwrap().owned_bytes >= original_bytes);
+        drop(epochs);
+        assert_eq!(budget.observation().unwrap().owned_bytes, original_bytes);
+        assert!(weak.upgrade().is_some());
+        let captured = lease.clone();
+        drop(lease);
+        assert!(weak.upgrade().is_some());
+        drop(captured);
+        assert!(weak.upgrade().is_none());
+        assert_eq!(budget.observation().unwrap().owned_bytes, 0);
+        assert_eq!(budget.observation().unwrap().reserved_bytes, 0);
     }
 
     #[test]

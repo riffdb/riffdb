@@ -31,6 +31,7 @@ pub struct ProviderEpochObservationV1 {
     state_schema_hash: [u8; 32],
     history_incarnation: u64,
     generation: ProjectionGeneration,
+    partition_generations: Option<riffdb_types::PartitionSetObservationHash>,
     floor: CommitSequence,
     ceiling: CommitSequence,
     lifecycle: ProviderLifecycleV1,
@@ -56,10 +57,30 @@ impl ProviderEpochObservationV1 {
             state_schema_hash,
             history_incarnation,
             generation,
+            partition_generations: None,
             floor,
             ceiling,
             lifecycle,
         })
+    }
+
+    /// Binds all native partition generations of a merged provider observation.
+    /// This process-local witness has no serialization or authority-token API.
+    #[doc(hidden)]
+    #[must_use]
+    pub const fn with_partition_generations(
+        mut self,
+        generations: Option<riffdb_types::PartitionSetObservationHash>,
+    ) -> Self {
+        self.partition_generations = generations;
+        self
+    }
+
+    /// Exact ordered generation commitment for a native partition-set provider.
+    #[doc(hidden)]
+    #[must_use]
+    pub const fn partition_generations(&self) -> Option<riffdb_types::PartitionSetObservationHash> {
+        self.partition_generations
     }
 
     /// Exact descriptor digest.
@@ -77,7 +98,8 @@ impl ProviderEpochObservationV1 {
     pub const fn history_incarnation(&self) -> u64 {
         self.history_incarnation
     }
-    /// Never-reused provider generation.
+    /// Atomic provider generation; merged partition sets additionally bind every
+    /// constituent generation through `partition_generations()`.
     #[must_use]
     pub const fn generation(&self) -> ProjectionGeneration {
         self.generation

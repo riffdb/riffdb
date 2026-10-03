@@ -1292,6 +1292,7 @@ pub struct LongPatternCandidateBatch {
     state_schema_hash: [u8; 32],
     history_incarnation: u64,
     generation: ProjectionGeneration,
+    partition_generations: Option<riffdb_types::PartitionSetObservationHash>,
     floor: CommitSequence,
     ceiling: CommitSequence,
     scanned_rows: u64,
@@ -1322,6 +1323,7 @@ impl LongPatternCandidateBatch {
                 state_schema_hash,
                 history_incarnation,
                 generation,
+                partition_generations: None,
                 floor,
                 ceiling,
                 scanned_rows,
@@ -1350,6 +1352,7 @@ impl LongPatternCandidateBatch {
             self.ceiling,
             riffdb_projection::ProviderLifecycleV1::Ready,
         )
+        .map(|observation| observation.with_partition_generations(self.partition_generations))
     }
 
     /// Combines one provider invocation per selected partition into one bounded source batch.
@@ -1360,13 +1363,49 @@ impl LongPatternCandidateBatch {
         maximum_scanned_rows: u64,
         maximum_verification_bytes: u64,
     ) -> Option<Self> {
+        // Commit every actual generation before merging populations. Independent
+        // partition rebuilds need not share a generation number; their exact
+        // epoch intersection and immutable identity are still mandatory.
+        let partition_generations = if batches.len() > 1 {
+            const PREFIX: &[u8] = b"native-provider-partition-generations-v1";
+            let count = u16::try_from(batches.len()).ok()?;
+            let payload_length = u64::try_from(PREFIX.len())
+                .ok()?
+                .checked_add(2)?
+                .checked_add(u64::from(count).checked_mul(41)?)?;
+            let mut hasher = riffdb_types::ContentHasher::new(
+                riffdb_types::HashDomain::PartitionSetObservation,
+                payload_length,
+            );
+            hasher.update(PREFIX).ok()?;
+            hasher.update(&count.to_be_bytes()).ok()?;
+            for batch in &batches {
+                hasher.update(&batch.generation.get().to_be_bytes()).ok()?;
+                hasher
+                    .update(&[u8::from(batch.partition_generations.is_some())])
+                    .ok()?;
+                hasher
+                    .update(
+                        batch
+                            .partition_generations
+                            .as_ref()
+                            .map_or(&[0; 32], |digest| digest.as_bytes().as_slice()),
+                    )
+                    .ok()?;
+            }
+            Some(riffdb_types::PartitionSetObservationHash::from_bytes(
+                *hasher.finish().ok()?.as_bytes(),
+            ))
+        } else {
+            batches.first()?.partition_generations
+        };
         let mut merged = batches.pop()?;
+        merged.partition_generations = partition_generations;
         for batch in batches {
             if batch.binding != merged.binding
                 || batch.descriptor != merged.descriptor
                 || batch.state_schema_hash != merged.state_schema_hash
                 || batch.history_incarnation != merged.history_incarnation
-                || batch.generation != merged.generation
             {
                 return None;
             }

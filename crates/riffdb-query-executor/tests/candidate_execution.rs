@@ -450,6 +450,7 @@ fn provider_candidates_share_one_exact_head_before_root_order_and_page() {
     assert_eq!(stale_result, Err(QueryExecutionError::BackendUnavailable));
 }
 
+// req: OQ-040, PRJ-004
 #[test]
 fn partition_provider_batches_merge_before_scoped_candidate_hydration() {
     let contract =
@@ -492,33 +493,41 @@ fn partition_provider_batches_merge_before_scoped_candidate_hydration() {
     };
     let epoch = CommitSequence::new(7).expect("epoch");
     let generation = ProjectionGeneration::first();
-    let batches = ["org-a", "org-b"]
-        .into_iter()
-        .map(|scope| {
-            LongPatternCandidateBatch::checked(
-                provider_step.binding().to_owned(),
-                vec![row(
-                    "Experiment",
-                    [
-                        ("scope", text(scope)),
-                        ("experiment_id", CanonicalValue::U64(1)),
-                        ("name", text("Alpha")),
-                    ],
-                )],
-                pattern.descriptor().digest(),
-                pattern.descriptor().state_identity().schema_hash(),
-                1,
-                generation,
-                epoch,
-                epoch,
-                1,
-                9,
-            )
-            .expect("partition batch")
-        })
-        .collect::<Vec<_>>();
-    let merged = LongPatternCandidateBatch::merge_partition_batches(batches, 2, 2, 18)
-        .expect("merged provider batch");
+    let batches_for = |first_generation| {
+        ["org-a", "org-b"]
+            .into_iter()
+            .enumerate()
+            .map(|(ordinal, scope)| {
+                LongPatternCandidateBatch::checked(
+                    provider_step.binding().to_owned(),
+                    vec![row(
+                        "Experiment",
+                        [
+                            ("scope", text(scope)),
+                            ("experiment_id", CanonicalValue::U64(1)),
+                            ("name", text("Alpha")),
+                        ],
+                    )],
+                    pattern.descriptor().digest(),
+                    pattern.descriptor().state_identity().schema_hash(),
+                    1,
+                    if ordinal == 0 {
+                        first_generation
+                    } else {
+                        generation.checked_next().unwrap()
+                    },
+                    epoch,
+                    epoch,
+                    1,
+                    9,
+                )
+                .expect("partition batch")
+            })
+            .collect::<Vec<_>>()
+    };
+    let merged =
+        LongPatternCandidateBatch::merge_partition_batches(batches_for(generation), 2, 2, 18)
+            .expect("merged provider batch");
     let policy_shape = ApplicationRoleHash::from_bytes([4; 32]);
     let proof = riffdb_projection::negotiate_result_set_epoch_v1(
         riffdb_projection::ResultSetEpochContextV1::new(program.identity().hash(), policy_shape),
@@ -526,6 +535,39 @@ fn partition_provider_batches_merge_before_scoped_candidate_hydration() {
         riffdb_projection::ResultSetEpochRequirementV1::Exact(epoch),
     )
     .expect("proof");
+    let substituted = LongPatternCandidateBatch::merge_partition_batches(
+        batches_for(ProjectionGeneration::new(3).expect("different generation")),
+        2,
+        2,
+        18,
+    )
+    .expect("same rows and epoch, different constituent generation");
+    assert_eq!(
+        merged.observation().unwrap().generation(),
+        substituted.observation().unwrap().generation()
+    );
+    assert_ne!(
+        merged.observation().unwrap(),
+        substituted.observation().unwrap()
+    );
+    assert!(
+        matches!(
+            execute_provider_page_in_snapshot(
+                &program,
+                &parameters,
+                None,
+                &mut CandidateView {
+                    one_per_partition: true,
+                    ..CandidateView::default()
+                },
+                policy_shape,
+                &proof,
+                &[substituted],
+            ),
+            Err(riffdb_query_executor::QueryExecutionError::BackendIntegrity)
+        ),
+        "an equal representative generation cannot substitute another partition state"
+    );
     let page = execute_provider_page_in_snapshot(
         &program,
         &parameters,

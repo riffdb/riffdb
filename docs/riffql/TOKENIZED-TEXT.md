@@ -109,10 +109,14 @@ A ranked first page captures admission-head consistency and binds its causal
 floor, provider epoch and generation, authorized statistics identity, immutable
 plan, invariant parameters, current capability identity and revision, history
 incarnation, total order, and result ceiling to the opaque cursor. Continuations
-reuse that snapshot and never recapture statistics. The production POC retains
-eight epochs per registered query shape. If the bound epoch is retired—or the
-cursor expires, authority changes, or history is restored—the continuation
-fails typed rather than rescoring against newer data.
+reuse that snapshot and never recapture statistics. The production POC keeps
+eight epochs in each registered query shape's discovery ring. A live ranked
+cursor additionally retains its actual immutable epoch, even after that epoch
+leaves the ring. Its native state stays charged until the cursor and any
+captured requests release their references. Cursor expiry, replacement, and
+cancellation release only their own references. If the bound epoch becomes
+unavailable—or the cursor expires, authority changes, or history is restored—
+the continuation fails typed rather than rescoring against newer data.
 
 Boolean results do not expose a tokenized continuation. They use the compiled
 bounded numeric offset and canonical entity-key order; separate requests do not

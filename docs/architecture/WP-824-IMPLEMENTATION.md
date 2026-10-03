@@ -1,5 +1,67 @@
 # WP-824 implementation progress
 
+## Native partition generation composition
+
+A regression test exposed that finite-partition long-pattern batches assumed
+all partitions rebuilt under one scalar generation. Independent rebuilds now
+retain an ordered commitment to every constituent generation, including nested
+merged observations, in the existing process-local epoch witness. The commitment
+uses the existing partition-observation hash domain and streaming hasher; it
+adds no allocation, hash domain, durable identity or serialized field. The
+existing finite-route count bounds, schema/descriptor/history matching, complete
+epoch intersection and work ceilings remain mandatory. Executor validation
+compares the complete witness, so an equal representative generation cannot
+substitute another constituent state. This is separate from cursor ownership.
+
+Tests cover distinct generations at one valid epoch, substituted and nested
+generations, a single unchanged observation and nonintersecting epochs. All 146
+projection/executor tests and 746 service/server unit tests passed (one existing
+unit skip). All six scoped non-test acceptance checks passed. The broader
+cursor-retention run passed all 990 service/server tests with eight existing
+skips before this additional proof repair. Neither provider retirement nor run
+readiness is claimed.
+
+PR note: Package WP-824 (open); Tier guarantee; Behavior: complete native
+partition generation composition; Compatibility: existing query IR, module,
+wire and durable bytes, scope, authorization, ordering and epoch intersection;
+Checks: scoped acceptance and affected suites above; Handbook: Partition-Set
+Queries, Long Pattern, Tokenized Text Search and this page; Hazards/follow-ups:
+complete catalog admission, remaining cursor ownership, retirement and cleanup.
+
+## Ranked cursor ownership
+
+The native tokenized provider response now carries an admitted immutable epoch
+owner through service cursor registration and continuation requests. That owner
+retains the actual charged provider allocation and an explicit registration
+capture pin, independently of the eight-entry discovery ring. Resumption checks
+the private owner type, exact registration owner, current request identity,
+epoch and generation before ordinary epoch negotiation and execution. Service
+authorization and statistics/history checks continue at their existing points.
+
+The native lease's two closed Arc allocations are admitted before construction;
+its references retain their existing physical charges. Final destruction drops
+provider data and the capture before the metadata charge. Continuations share
+their existing owner without duplicating its physical allocation. Before each
+exact-provider attempt, the existing checked service clock purges expired cursor
+entries; captured requests independently retain their snapshots. Publication
+still refreshes the ordinary 300-second expiry, and failed replacement retains
+the prior published token. No token or durable encoding changes.
+
+Tests cover expiry with a resolved capture, refreshed expiry, replacement and
+cancellation, owner/epoch/policy mismatch, pressure retirement protection,
+advancing the eight-epoch ring and final charged byte release. This completes
+ranked tokenized cursor retention plumbing; complete catalog admission,
+production retirement, derived artifact custody and other provider lifecycle
+work remain open. No full aggregate-budget or rehearsal-readiness claim.
+
+PR note: Package WP-824 (open); Tier guarantee; Behavior: actual native ranked
+cursor retention; Compatibility: existing wire/durable formats, authorization,
+ordering and public cursor options; Handbook: Tokenized Text Search and this
+page; Checks: all 990 server/service Nextest tests passed (eight existing skips),
+three tokenized provider tests, two cursor lifetime tests, and all six scoped
+non-test acceptance checks; Hazards/follow-ups: remaining catalog,
+retirement, cleanup and qualification gates.
+
 ## Fresh provider rebuild generations
 
 All five production rebuild paths now share one runtime generation issuer,

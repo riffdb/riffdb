@@ -48,7 +48,9 @@ Execution opens one storage read view for the complete operation. Uniform
 index orders use a bounded k-way heap: one initial row is observed from each
 selected partition, then only the winning stream is advanced. Mixed-direction
 orders use the compiler-bounded complete-group path. Candidate indexes and
-long-pattern providers complete independently in every selected partition;
+long-pattern providers complete independently in every selected partition.
+Partition providers may rebuild independently. The merged result binds every
+selected generation and requires one common servable commit epoch. Its
 candidate identity is the pair `(partition, key)` before root hydration and
 global ordering. Row policy is applied below each stream and no denial releases
 partition counts or partial output.

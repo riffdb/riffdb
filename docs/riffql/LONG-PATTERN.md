@@ -126,8 +126,10 @@ reports provider activation as generic storage unavailability and never serves
 a lower frontier or partial candidate population.
 
 The provider and ordinary candidate sources share one admission-head-fenced
-participant proof. A cursor binds that participant set and the complete root
-order. If its authoritative snapshot or provider generation can no longer be
+participant proof. For a finite partition set, that proof binds every
+constituent generation even when partitions rebuild independently. A cursor
+binds that participant set and the complete root order. If its authoritative
+snapshot or provider generation can no longer be
 served, continuation fails typed instead of switching to current state.
 
 Candidate, verification, result, replay, checkpoint, retention, root hydration,
