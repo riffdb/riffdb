@@ -4,7 +4,7 @@ use super::*;
 use riffdb_types::exact_provider_budget_v1::{BudgetUnavailable, ProviderBudget};
 use std::mem::{align_of, size_of};
 
-fn tree_bound<K>(count: usize) -> Result<u64, BudgetUnavailable> {
+pub(super) fn tree_bound<K>(count: usize) -> Result<u64, BudgetUnavailable> {
     // Match the existing ownership inspector's full eleven-slot internal node
     // per entry plus an empty root, including edges, alignment and allocation
     // overhead. All keys in these four closed forests own inline IDs only.

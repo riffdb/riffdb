@@ -1,5 +1,45 @@
 # WP-824 implementation progress
 
+## Admitted workflow parsing and constructor workspace
+
+A hidden first-party reader covers the existing workflow section of supported
+V2 through V26 IR. Borrowed inspection bounds workflow/transition/state vectors
+and string buffers before decoding. Constructor admission covers transition-edge
+sets, the catalog's entity set, one enum-variant set at a time, lease-field vector
+growth and ownership overhead. The bound accounts for phase overlap: per-workflow
+edge sets are destroyed before catalog validation, and constructor scratch is
+destroyed before canonical verification. Overflow refuses admission.
+
+The reader uses the ordinary workflow, transition, lease and catalog constructors.
+Whole-bundle parsing now moves its parsed workflow vector into bundle validation
+instead of deep-copying that intermediate catalog; the validation remains.
+The admitted section reader then verifies exact canonical section bytes with a pre-admitted output buffer
+and settles one immutable charged catalog. No section format, whole-bundle format,
+language construct, schema semantics or application interface changes. Encoded
+input ownership, structural schema and complete bundle identity remain separate.
+
+Tests cover current frozen sections, populated and empty catalogs, fenced leases,
+legacy V2/V3 sections before initial-state metadata, every truncation point,
+trailing bytes, hostile counts, invalid lease duration, reordered transitions,
+unsupported IR, saturated/partial pressure, arithmetic overflow and final captures.
+Independent native capacity inspections cover decoded data, constructor sets and
+canonical verification. All 428 contract IR and compiler tests passed with no
+skips. All seven scoped non-test acceptance checks passed, including formatting,
+Clippy with warnings denied, handbook, downstream adapters, scope and source
+guards.
+
+This admits one parser/constructor domain. The complete bundle reader, remaining
+constructor and write-evidence workspace, retained catalog assembly, production
+capture, source pins, retirement, cleanup and qualification remain unfinished.
+WP-824 is open; no aggregate-enforcement or full CI receipt is claimed.
+
+PR note: Package WP-824 (open); Tier guarantee; Behavior: internal admitted workflow
+section parsing/validation and immutable output ownership; Compatibility: existing
+encodings, ordinary constructors, limits and canonicality; Checks: tests above
+and scoped acceptance; Handbook: this page; Hazards/follow-ups: complete the
+remaining bundle construction and provider lifecycle before qualification.
+
+
 ## Admitted schema registry validation
 
 A common borrowed source visitor preserves the existing entity, event,

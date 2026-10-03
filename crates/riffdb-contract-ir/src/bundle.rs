@@ -6,8 +6,12 @@ mod plan_hash_admission;
 #[cfg(test)]
 mod plan_hash_admission_tests;
 mod schema_registry_admission;
+mod workflow_admission;
+pub use workflow_admission::decode_provider_workflow_section_admitted_v1;
 #[cfg(test)]
 mod schema_registry_admission_tests;
+#[cfg(test)]
+mod workflow_admission_tests;
 pub use encoding_admission::ProviderBundleEncodingErrorV1;
 #[cfg(test)]
 mod encoding_admission_tests;
@@ -4278,7 +4282,7 @@ fn decode_bundle(bytes: &[u8]) -> Result<ContractBundle, IrValidationError> {
         source_hash,
         ledger,
         schema,
-        workflows.workflows().to_vec(),
+        workflows.into_workflows(),
         row_policies,
         commands,
         projections,

@@ -304,6 +304,11 @@ impl WorkflowCatalog {
         Ok(Self { workflows })
     }
 
+    /// Move parsed workflow storage into bundle construction without a deep copy.
+    pub(crate) fn into_workflows(self) -> Vec<WorkflowSchema> {
+        self.workflows
+    }
+
     /// Workflows in canonical source-symbol order.
     #[must_use]
     pub fn workflows(&self) -> &[WorkflowSchema] {
