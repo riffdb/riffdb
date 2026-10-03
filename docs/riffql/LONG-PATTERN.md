@@ -132,6 +132,13 @@ binds that participant set and the complete root order. If its authoritative
 snapshot or provider generation can no longer be
 served, continuation fails typed instead of switching to current state.
 
+A live continuation retains the actual immutable provider values for each
+compiled step and selected partition, independently of the discovery ring.
+Resolved requests retain their own references. Expiry, successful replacement,
+and cancellation release only their respective ownership; they preserve an
+already captured request or the prior cursor when replacement fails. This does
+not relax authoritative-snapshot availability or freshness checks.
+
 Candidate, verification, result, replay, checkpoint, retention, root hydration,
 policy, sort, and output work are independent. The structural page maximum is
 65,534 rows with one reserved continuation probe, but the compiled query's own

@@ -55,9 +55,31 @@ impl AdmittedLongPatternBuilderV1 {
         bounds: LongPatternBoundsV1,
         budget: &ProviderBudget,
     ) -> Result<Self, LongPatternAdmissionErrorV1> {
-        let work = budget.reserve(OWNED_CAPACITY_INSPECTION_SCRATCH_BYTES_V1 + 4096)?;
+        let mut work = budget.reserve(OWNED_CAPACITY_INSPECTION_SCRATCH_BYTES_V1)?;
+        // The empty maps own no allocation. Census scratch is already admitted;
+        // reserve the exact conservative empty-tree and settlement allowance
+        // before any mutation or immutable ownership allocation can occur.
+        let provider = LongPatternPartitionV1::new(profile, bounds);
+        let report =
+            OwnedCapacityInspectionV1::inspect(&provider).map_err(|_| BudgetUnavailable)?;
+        let inline = std::mem::size_of::<ProviderAllocation<LongPatternPartitionV1>>()
+            .checked_mul(2)
+            .and_then(|bytes| {
+                bytes.checked_add(
+                    2 * std::mem::align_of::<ProviderAllocation<LongPatternPartitionV1>>(),
+                )
+            })
+            .and_then(|bytes| bytes.checked_add(1024))
+            .and_then(|bytes| u64::try_from(bytes).ok())
+            .ok_or(BudgetUnavailable)?;
+        let maximum = report
+            .unshared_bytes()
+            .checked_add(inline)
+            .ok_or(BudgetUnavailable)?;
+        drop(report);
+        work.absorb(budget.reserve(maximum)?)?;
         Ok(Self {
-            provider: LongPatternPartitionV1::new(profile, bounds),
+            provider,
             budget: budget.clone(),
             work,
         })
@@ -281,6 +303,33 @@ mod tests {
         )
         .unwrap()
     }
+    #[test]
+    fn empty_long_pattern_provider_admits_conservative_tree_and_settlement_layout() {
+        let budget = ProviderBudget::new();
+        let empty = LongPatternPartitionV1::new(LongPatternProfileV1::UnicodeFoldV1, bounds());
+        let admitted = AdmittedLongPatternBuilderV1::new(
+            LongPatternProfileV1::UnicodeFoldV1,
+            bounds(),
+            &budget,
+        )
+        .unwrap()
+        .finish()
+        .unwrap();
+        assert_eq!(&**admitted, &empty);
+        assert_eq!(admitted.row_count(), 0);
+        assert_eq!(
+            admitted.checkpoint_bytes().unwrap(),
+            empty.checkpoint_bytes().unwrap()
+        );
+        assert!(budget.observation().unwrap().owned_bytes > 4096);
+        let captured = admitted.clone();
+        drop(admitted);
+        assert!(budget.observation().unwrap().owned_bytes > 0);
+        drop(captured);
+        assert_eq!(budget.observation().unwrap().owned_bytes, 0);
+        assert_eq!(budget.observation().unwrap().reserved_bytes, 0);
+    }
+
     #[test]
     fn admitted_long_pattern_builder_matches_rows_and_final_captures() {
         for profile in [

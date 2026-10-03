@@ -1601,12 +1601,109 @@ impl QueryCursorLookup {
     }
 }
 
+/// One native participant retained by an authorized opaque continuation.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct ProviderEpochLeaseEntry {
+    pub(crate) step_index: usize,
+    pub(crate) partition: riffdb_types::PartitionKeyHash,
+    pub(crate) lease: crate::ProviderEpochLeaseV1,
+}
+
+type AdmittedEpochLeaseCollection =
+    riffdb_types::exact_provider_budget_v1::ProviderAllocation<Vec<ProviderEpochLeaseEntry>>;
+
+/// Immutable participant collection; its charge drops after the complete vector.
+#[derive(Clone, Default)]
+pub(crate) struct QueryProviderEpochLeases(Option<Arc<AdmittedEpochLeaseCollection>>);
+
+impl PartialEq for QueryProviderEpochLeases {
+    fn eq(&self, other: &Self) -> bool {
+        self.0.as_ref().map(|entries| &***entries) == other.0.as_ref().map(|entries| &***entries)
+    }
+}
+impl Eq for QueryProviderEpochLeases {}
+
+impl QueryProviderEpochLeases {
+    pub(crate) fn get(
+        &self,
+        step_index: usize,
+        partition: riffdb_types::PartitionKeyHash,
+    ) -> Option<&crate::ProviderEpochLeaseV1> {
+        self.0
+            .as_ref()?
+            .iter()
+            .find(|entry| entry.step_index == step_index && entry.partition == partition)
+            .map(|entry| &entry.lease)
+    }
+}
+
+/// Construction retains admitted collection work through every partial Drop.
+#[derive(Default)]
+pub(crate) struct QueryProviderEpochLeaseBuilder {
+    entries: Vec<ProviderEpochLeaseEntry>,
+    // Last: cancellation destroys the entire vector before releasing work.
+    work: Option<riffdb_types::exact_provider_budget_v1::Reservation>,
+}
+impl QueryProviderEpochLeaseBuilder {
+    pub(crate) fn push(
+        &mut self,
+        entry: ProviderEpochLeaseEntry,
+        work: riffdb_types::exact_provider_budget_v1::Reservation,
+    ) -> Result<(), riffdb_types::exact_provider_budget_v1::BudgetUnavailable> {
+        match self.work.as_mut() {
+            Some(existing) => existing.absorb(work)?,
+            None => self.work = Some(work),
+        }
+        self.entries.push(entry);
+        Ok(())
+    }
+
+    pub(crate) fn finish(
+        self,
+    ) -> Result<QueryProviderEpochLeases, riffdb_types::exact_provider_budget_v1::BudgetUnavailable>
+    {
+        let Self { entries, work } = self;
+        match work {
+            Some(work) => work
+                .commit_value(entries)
+                .map(|entries| QueryProviderEpochLeases(Some(entries))),
+            None if entries.is_empty() => Ok(QueryProviderEpochLeases::default()),
+            None => Err(riffdb_types::exact_provider_budget_v1::BudgetUnavailable),
+        }
+    }
+}
+
+impl fmt::Debug for QueryProviderEpochLeases {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("QueryProviderEpochLeases([REDACTED])")
+    }
+}
+
+// Each native provider response admits one element's conservative contribution
+// before service collection growth. At most four slots per element cover both
+// small-vector minimum rounding and geometric growth. Include the capacity
+// inspector's doubled allocation allowance and both allocation/charge Arc headers. Cursor
+// clones share the vector; a replacement receives newly admitted responses.
+pub(crate) const fn provider_epoch_cursor_collection_allowance() -> u64 {
+    const fn arc<T>() -> usize {
+        2 * (std::mem::size_of::<T>() + 2 * std::mem::size_of::<usize>())
+            + 2 * std::mem::align_of::<T>()
+            + 256
+    }
+    (8 * std::mem::size_of::<ProviderEpochLeaseEntry>()
+        + 2 * std::mem::align_of::<ProviderEpochLeaseEntry>()
+        + 256
+        + arc::<AdmittedEpochLeaseCollection>()
+        + arc::<riffdb_types::exact_provider_budget_v1::OwnershipCharge>()) as u64
+}
+
 /// Registry-only engine continuation; never serialized into the public token.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) struct QueryCursorState {
     continuation: QueryContinuation,
     minimum_application_head: Option<u64>,
     admission_head_fenced: bool,
+    provider_leases: QueryProviderEpochLeases,
 }
 
 /// Registry-only ranked tokenized continuation bound to one retained provider snapshot.
@@ -1763,7 +1860,19 @@ impl QueryCursorState {
             continuation,
             minimum_application_head,
             admission_head_fenced,
+            provider_leases: QueryProviderEpochLeases(None),
         }
+    }
+
+    #[must_use]
+    pub(crate) fn with_provider_leases(mut self, leases: QueryProviderEpochLeases) -> Self {
+        self.provider_leases = leases;
+        self
+    }
+
+    #[must_use]
+    pub(crate) const fn provider_leases(&self) -> &QueryProviderEpochLeases {
+        &self.provider_leases
     }
 
     #[must_use]
@@ -3065,6 +3174,252 @@ mod tests {
             ),
             Err(CursorAccessError::InvalidCursor)
         ));
+    }
+
+    fn test_epoch_leases(entries: Vec<ProviderEpochLeaseEntry>) -> QueryProviderEpochLeases {
+        let budget = riffdb_types::exact_provider_budget_v1::ProviderBudget::new();
+        let mut builder = QueryProviderEpochLeaseBuilder::default();
+        for entry in entries {
+            builder
+                .push(
+                    entry,
+                    budget
+                        .reserve(provider_epoch_cursor_collection_allowance())
+                        .unwrap(),
+                )
+                .unwrap();
+        }
+        builder.finish().unwrap()
+    }
+
+    // req: OQ-040
+    #[test]
+    fn query_cursor_expiry_preserves_resolved_native_participants() {
+        let clock = Arc::new(FixedClock::at(0));
+        let registry = CursorRegistry::new(SequentialGenerator::new(), Arc::clone(&clock));
+        let physical = Arc::new(String::from("immutable long-pattern epoch"));
+        let weak = Arc::downgrade(&physical);
+        let leases = test_epoch_leases(vec![ProviderEpochLeaseEntry {
+            step_index: 2,
+            partition: riffdb_types::PartitionKeyHash::from_bytes([1; 32]),
+            lease: crate::ProviderEpochLeaseV1::from_shared(physical),
+        }]);
+        let continuation = QueryContinuation::checked(
+            "source".to_owned(),
+            vec![1],
+            BTreeMap::from([("source".to_owned(), 1)]),
+        )
+        .unwrap();
+        let registered = registry
+            .register(
+                binding(1, 1),
+                QueryCursorState::new(continuation, None, false).with_provider_leases(leases),
+            )
+            .unwrap();
+        let token = registered.token();
+        drop(registered);
+        let captured = registry.resolve(token, &binding(1, 1)).unwrap();
+        clock.set(300);
+        assert!(registry.resolve(token, &binding(1, 1)).is_err());
+        assert!(weak.upgrade().is_some());
+        drop(captured);
+        assert!(weak.upgrade().is_none());
+    }
+
+    // req: OQ-040
+    #[test]
+    fn query_cursor_lease_collection_admission_covers_native_growth_and_arc() {
+        use riffdb_types::{OWNED_CAPACITY_INSPECTION_SCRATCH_BYTES_V1, OwnedCapacityInspectionV1};
+        let budget = riffdb_types::exact_provider_budget_v1::ProviderBudget::new();
+        let scratch = budget
+            .reserve(OWNED_CAPACITY_INSPECTION_SCRATCH_BYTES_V1)
+            .unwrap();
+        for count in [1, 2, 3, 4, 5, 8, 16, 256] {
+            let mut entries = Vec::new();
+            for step_index in 0..count {
+                entries.push(ProviderEpochLeaseEntry {
+                    step_index,
+                    partition: riffdb_types::PartitionKeyHash::from_bytes([1; 32]),
+                    lease: crate::ProviderEpochLeaseV1::from_shared(Arc::new(())),
+                });
+            }
+            let collection = test_epoch_leases(entries);
+            let shared = collection.0.as_ref().unwrap();
+            let report = OwnedCapacityInspectionV1::inspect_with(|inspection| {
+                // Existing native owner allocations are independently charged;
+                // this proof measures only the newly allocated collection.
+                inspection.allocation(
+                    shared.capacity() * std::mem::size_of::<ProviderEpochLeaseEntry>(),
+                    std::mem::align_of::<ProviderEpochLeaseEntry>(),
+                )?;
+                inspection.allocation(
+                    std::mem::size_of::<AdmittedEpochLeaseCollection>()
+                        + 2 * std::mem::size_of::<usize>(),
+                    std::mem::align_of::<AdmittedEpochLeaseCollection>(),
+                )?;
+                inspection.allocation(
+                    std::mem::size_of::<riffdb_types::exact_provider_budget_v1::OwnershipCharge>()
+                        + 2 * std::mem::size_of::<usize>(),
+                    std::mem::align_of::<riffdb_types::exact_provider_budget_v1::OwnershipCharge>(),
+                )
+            })
+            .unwrap();
+            assert!(
+                provider_epoch_cursor_collection_allowance() * count as u64
+                    >= report.unshared_bytes()
+            );
+            let captured = collection.clone();
+            assert!(Arc::ptr_eq(shared, captured.0.as_ref().unwrap()));
+        }
+        drop(scratch);
+        assert_eq!(budget.observation().unwrap().reserved_bytes, 0);
+        assert!(test_epoch_leases(Vec::new()).0.is_none());
+    }
+
+    // req: OQ-040
+    #[test]
+    fn query_cursor_collection_charge_survives_every_participant_destructor() {
+        use riffdb_types::exact_provider_budget_v1::{BudgetObservation, ProviderBudget};
+        struct ObserveDrop {
+            budget: ProviderBudget,
+            observations: Arc<std::sync::Mutex<Vec<BudgetObservation>>>,
+        }
+        impl Drop for ObserveDrop {
+            fn drop(&mut self) {
+                self.observations
+                    .lock()
+                    .unwrap()
+                    .push(self.budget.observation().unwrap());
+            }
+        }
+        for publish in [false, true] {
+            let budget = ProviderBudget::new();
+            let observations = Arc::new(std::sync::Mutex::new(Vec::new()));
+            let mut builder = QueryProviderEpochLeaseBuilder::default();
+            for step_index in 0..5 {
+                let work = budget
+                    .reserve(provider_epoch_cursor_collection_allowance())
+                    .unwrap();
+                let entry = ProviderEpochLeaseEntry {
+                    step_index,
+                    partition: riffdb_types::PartitionKeyHash::from_bytes([1; 32]),
+                    lease: crate::ProviderEpochLeaseV1::from_shared(Arc::new(ObserveDrop {
+                        budget: budget.clone(),
+                        observations: Arc::clone(&observations),
+                    })),
+                };
+                builder.push(entry, work).unwrap();
+            }
+            let admitted = 5 * provider_epoch_cursor_collection_allowance();
+            if publish {
+                let collection = builder.finish().unwrap();
+                let captured = collection.clone();
+                drop(collection);
+                assert!(observations.lock().unwrap().is_empty());
+                drop(captured);
+            } else {
+                drop(builder);
+            }
+            let seen = observations.lock().unwrap();
+            assert_eq!(seen.len(), 5);
+            for observation in seen.iter() {
+                assert_eq!(observation.owned_bytes, if publish { admitted } else { 0 });
+                assert_eq!(
+                    observation.reserved_bytes,
+                    if publish { 0 } else { admitted }
+                );
+            }
+            let final_observation = budget.observation().unwrap();
+            assert_eq!(final_observation.owned_bytes, 0);
+            assert_eq!(final_observation.reserved_bytes, 0);
+        }
+    }
+
+    // req: OQ-040
+    #[test]
+    fn query_cursor_collection_rejects_foreign_budget_without_losing_prior_owner() {
+        use riffdb_types::exact_provider_budget_v1::ProviderBudget;
+        let budget = ProviderBudget::new();
+        let foreign = ProviderBudget::new();
+        let first = Arc::new(());
+        let weak = Arc::downgrade(&first);
+        let mut builder = QueryProviderEpochLeaseBuilder::default();
+        let entry = |step_index, physical| ProviderEpochLeaseEntry {
+            step_index,
+            partition: riffdb_types::PartitionKeyHash::from_bytes([1; 32]),
+            lease: crate::ProviderEpochLeaseV1::from_shared(physical),
+        };
+        builder
+            .push(
+                entry(0, first),
+                budget
+                    .reserve(provider_epoch_cursor_collection_allowance())
+                    .unwrap(),
+            )
+            .unwrap();
+        assert!(
+            builder
+                .push(
+                    entry(1, Arc::new(())),
+                    foreign
+                        .reserve(provider_epoch_cursor_collection_allowance())
+                        .unwrap()
+                )
+                .is_err()
+        );
+        assert_eq!(foreign.observation().unwrap().reserved_bytes, 0);
+        assert!(weak.upgrade().is_some());
+        assert_eq!(
+            budget.observation().unwrap().reserved_bytes,
+            provider_epoch_cursor_collection_allowance()
+        );
+        let collection = builder.finish().unwrap();
+        assert!(
+            collection
+                .get(0, riffdb_types::PartitionKeyHash::from_bytes([1; 32]))
+                .is_some()
+        );
+        assert!(
+            collection
+                .get(1, riffdb_types::PartitionKeyHash::from_bytes([1; 32]))
+                .is_none()
+        );
+        drop(collection);
+        assert!(weak.upgrade().is_none());
+        assert_eq!(budget.observation().unwrap().owned_bytes, 0);
+    }
+
+    // req: OQ-040
+    #[test]
+    fn query_cursor_epoch_set_retains_exact_step_partition_owners() {
+        let physical = Arc::new(String::from("immutable long-pattern epoch"));
+        let weak = Arc::downgrade(&physical);
+        let partition = riffdb_types::PartitionKeyHash::from_bytes([0x11; 32]);
+        let leases = test_epoch_leases(vec![ProviderEpochLeaseEntry {
+            step_index: 2,
+            partition,
+            lease: crate::ProviderEpochLeaseV1::from_shared(physical),
+        }]);
+        assert!(leases.get(2, partition).is_some());
+        assert!(leases.get(1, partition).is_none());
+        assert!(
+            leases
+                .get(2, riffdb_types::PartitionKeyHash::from_bytes([0x22; 32]))
+                .is_none()
+        );
+        let continuation = QueryContinuation::checked(
+            "source".to_owned(),
+            vec![1],
+            BTreeMap::from([("source".to_owned(), 1)]),
+        )
+        .expect("continuation");
+        let state = QueryCursorState::new(continuation, None, false).with_provider_leases(leases);
+        let captured = state.clone();
+        assert!(state.provider_leases().get(2, partition).is_some());
+        drop(state);
+        assert!(weak.upgrade().is_some());
+        drop(captured);
+        assert!(weak.upgrade().is_none());
     }
 
     // req: OQ-040

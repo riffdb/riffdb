@@ -1992,6 +1992,7 @@ pub struct LongPatternProjectionRequest {
     pattern: CompiledLongPatternV1,
     minimum_epoch: Option<CommitSequence>,
     pinned_epoch: Option<CommitSequence>,
+    provider_lease: Option<ProviderEpochLeaseV1>,
 }
 
 impl LongPatternProjectionRequest {
@@ -2020,7 +2021,23 @@ impl LongPatternProjectionRequest {
             pattern,
             minimum_epoch,
             pinned_epoch,
+            provider_lease: None,
         }
+    }
+
+    /// Carries the exact native participant retained by this opaque cursor.
+    #[doc(hidden)]
+    #[must_use]
+    pub fn with_provider_lease(mut self, lease: Option<ProviderEpochLeaseV1>) -> Self {
+        self.provider_lease = lease;
+        self
+    }
+
+    /// Native epoch ownership subject to ordinary exact identity checks.
+    #[doc(hidden)]
+    #[must_use]
+    pub const fn provider_lease(&self) -> Option<&ProviderEpochLeaseV1> {
+        self.provider_lease.as_ref()
     }
 
     /// Exact executable plan identity.
@@ -2082,6 +2099,51 @@ impl fmt::Debug for LongPatternProjectionRequest {
     }
 }
 
+/// Native complete candidate response with immutable participant ownership.
+#[doc(hidden)]
+pub struct LongPatternProjectionResultV1 {
+    batch: riffdb_query_executor::LongPatternCandidateBatch,
+    // Last: output data is destroyed before releasing the retained epoch.
+    lease: Option<ProviderEpochLeaseV1>,
+    // Last: unpublished collection work survives the response's owned data.
+    collection_work: Option<riffdb_types::exact_provider_budget_v1::Reservation>,
+}
+
+impl LongPatternProjectionResultV1 {
+    /// Transfers an already checked batch and admitted native owner.
+    #[must_use]
+    pub const fn new(
+        batch: riffdb_query_executor::LongPatternCandidateBatch,
+        lease: Option<ProviderEpochLeaseV1>,
+        collection_work: Option<riffdb_types::exact_provider_budget_v1::Reservation>,
+    ) -> Self {
+        Self {
+            batch,
+            lease,
+            collection_work,
+        }
+    }
+
+    /// Moves output and ownership to the authorized service operation.
+    #[must_use]
+    pub fn into_parts(
+        self,
+    ) -> (
+        riffdb_query_executor::LongPatternCandidateBatch,
+        Option<ProviderEpochLeaseV1>,
+        Option<riffdb_types::exact_provider_budget_v1::Reservation>,
+    ) {
+        (self.batch, self.lease, self.collection_work)
+    }
+}
+
+/// Closed per-participant admission for the shared service cursor lease collection.
+#[doc(hidden)]
+#[must_use]
+pub const fn provider_epoch_cursor_collection_allowance_v1() -> u64 {
+    crate::cursor::provider_epoch_cursor_collection_allowance()
+}
+
 /// Least-authority boundary for complete, policy-filtered pattern candidates.
 pub trait LongPatternProjectionPort: Send + Sync {
     /// Returns one complete candidate population and exact provider observation.
@@ -2089,6 +2151,16 @@ pub trait LongPatternProjectionPort: Send + Sync {
         &self,
         request: LongPatternProjectionRequest,
     ) -> Result<riffdb_query_executor::LongPatternCandidateBatch, ExactTextProjectionPortError>;
+    /// Retains the exact native epoch through service execution and continuation.
+    /// Legacy native test providers own no production registration to retain.
+    #[doc(hidden)]
+    fn execute_retained(
+        &self,
+        request: LongPatternProjectionRequest,
+    ) -> Result<LongPatternProjectionResultV1, ExactTextProjectionPortError> {
+        self.execute(request)
+            .map(|batch| LongPatternProjectionResultV1::new(batch, None, None))
+    }
 }
 
 /// One compiler-owned tokenized request constructed only after current authorization.

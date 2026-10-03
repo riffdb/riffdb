@@ -681,6 +681,41 @@ struct LongPatternProviderState {
     frontier: CommitSequence,
 }
 
+struct RetainedLongPatternEpoch {
+    state: LongPatternProviderState,
+    slot: CapturedProviderSlot<LongPatternSlot>,
+    // Last: provider data and its capture drop before metadata accounting.
+    _charge: Arc<riffdb_types::exact_provider_budget_v1::OwnershipCharge>,
+}
+
+impl RetainedLongPatternEpoch {
+    fn matches(&self, slot: &LongPatternSlot, request: &LongPatternProjectionRequest) -> bool {
+        Arc::ptr_eq(&self.slot.owner, &slot.owner)
+            && self.slot.registration.matches(request)
+            && request.pinned_epoch() == Some(self.state.frontier)
+    }
+}
+
+const fn retained_long_pattern_metadata_bytes() -> u64 {
+    const fn arc<T>() -> usize {
+        2 * (std::mem::size_of::<T>() + 2 * std::mem::size_of::<usize>())
+            + 2 * std::mem::align_of::<T>()
+            + 256
+    }
+    (arc::<RetainedLongPatternEpoch>()
+        + arc::<riffdb_types::exact_provider_budget_v1::OwnershipCharge>()) as u64
+}
+
+impl LongPatternProviderState {
+    fn capture(&self) -> Self {
+        Self {
+            provider: Arc::clone(&self.provider),
+            generation: self.generation,
+            frontier: self.frontier,
+        }
+    }
+}
+
 struct LongPatternEpochs {
     providers: VecDeque<Box<LongPatternProviderState>>,
 }
@@ -696,16 +731,18 @@ impl LongPatternEpochs {
         self.providers.back().map(Box::as_ref)
     }
 
-    fn select(&self, pinned: Option<CommitSequence>) -> Option<&LongPatternProviderState> {
-        pinned.map_or_else(
-            || self.current(),
-            |epoch| {
-                self.providers
-                    .iter()
-                    .find(|provider| provider.frontier == epoch)
-                    .map(Box::as_ref)
-            },
-        )
+    fn select_shared(&self, pinned: Option<CommitSequence>) -> Option<LongPatternProviderState> {
+        pinned
+            .map_or_else(
+                || self.current(),
+                |epoch| {
+                    self.providers
+                        .iter()
+                        .find(|provider| provider.frontier == epoch)
+                        .map(Box::as_ref)
+                },
+            )
+            .map(LongPatternProviderState::capture)
     }
 
     fn push(&mut self, provider: LongPatternProviderState, retained: usize) {
@@ -1478,6 +1515,14 @@ impl LongPatternProjectionPort for ExactTextRuntime {
         &self,
         request: LongPatternProjectionRequest,
     ) -> Result<LongPatternCandidateBatch, ExactTextProjectionPortError> {
+        self.execute_retained(request)
+            .map(|observed| observed.into_parts().0)
+    }
+
+    fn execute_retained(
+        &self,
+        request: LongPatternProjectionRequest,
+    ) -> Result<riffdb_service::LongPatternProjectionResultV1, ExactTextProjectionPortError> {
         let QueryAccessKind::LongPatternCandidate { pattern, .. } = request.step().access() else {
             return Err(ExactTextProjectionPortError::Integrity);
         };
@@ -1516,8 +1561,18 @@ impl LongPatternProjectionPort for ExactTextRuntime {
                 return Err(ExactTextProjectionPortError::Integrity);
             }
         };
-        let provider = epochs
-            .select(request.pinned_epoch())
+        let retained = request
+            .provider_lease()
+            .map(|lease| {
+                lease
+                    .downcast_ref::<RetainedLongPatternEpoch>()
+                    .filter(|retained| retained.matches(&slot, &request))
+                    .ok_or(ExactTextProjectionPortError::Integrity)
+            })
+            .transpose()?;
+        let provider = retained
+            .map(|retained| retained.state.capture())
+            .or_else(|| epochs.select_shared(request.pinned_epoch()))
             .ok_or(ExactTextProjectionPortError::SnapshotRetired)?;
         if provider.frontier != head
             || request
@@ -1537,7 +1592,7 @@ impl LongPatternProjectionPort for ExactTextRuntime {
                 decode_long_pattern_release(&slot.registration, result.key(), result.release())
             })
             .collect::<Result<Vec<_>, _>>()?;
-        LongPatternCandidateBatch::checked(
+        let batch = LongPatternCandidateBatch::checked(
             request.step().binding().to_owned(),
             rows,
             pattern.descriptor().digest(),
@@ -1549,7 +1604,32 @@ impl LongPatternProjectionPort for ExactTextRuntime {
             observed.scanned_rows(),
             observed.verification_bytes(),
         )
-        .ok_or(ExactTextProjectionPortError::Integrity)
+        .ok_or(ExactTextProjectionPortError::Integrity)?;
+        drop(state);
+        // Every service attempt receives a fresh metadata admission, including
+        // its contribution to a new immutable cursor participant collection.
+        let collection_work = self
+            .ownership_graph
+            .budget
+            .reserve(riffdb_service::provider_epoch_cursor_collection_allowance_v1())
+            .map_err(|_| ExactTextProjectionPortError::Unavailable)?;
+        let charge = self
+            .ownership_graph
+            .budget
+            .reserve(retained_long_pattern_metadata_bytes())
+            .and_then(|work| work.commit())
+            .map_err(|_| ExactTextProjectionPortError::Unavailable)?;
+        let lease =
+            riffdb_service::ProviderEpochLeaseV1::from_shared(Arc::new(RetainedLongPatternEpoch {
+                state: provider,
+                slot,
+                _charge: charge,
+            }));
+        Ok(riffdb_service::LongPatternProjectionResultV1::new(
+            batch,
+            Some(lease),
+            Some(collection_work),
+        ))
     }
 }
 
@@ -4518,6 +4598,157 @@ query SearchDocuments($org_id: Document.org_id, $query: Document.title,
         assert!(execute.contains("request.pinned_snapshot()"));
         assert!(execute.contains("SnapshotRetired"));
         assert!(execute.contains("policy_binding_is_exact"));
+    }
+
+    // req: OQ-040
+    #[test]
+    fn long_pattern_native_lease_binds_owner_request_frontier_and_pin() {
+        let bundle = riffdb_contract_compiler::compile_contract_source(include_str!(
+            "../../../fixtures/riffql/bounded-filtered-result-v1/contract.riff"
+        ))
+        .unwrap();
+        let module = riffdb_query_module::QueryModule::compile(
+            riffdb_query_module::QueryModuleCandidate::new(
+                riffdb_types::QueryModuleName::new("retained_long_epoch").unwrap(),
+                riffdb_types::QueryModuleVersion::new(1).unwrap(),
+                vec![riffdb_query_module::NamedQuerySource::new("ExperimentsWithTagAndName", include_str!(
+                    "../../../fixtures/riffql/bounded-filtered-result-v1/queries/combined_tag_pattern.riffq"
+                ).replace("Limit<50000>", "Limit<10>").replace("= 1000", "= 10")).unwrap()],
+            ).unwrap(), &bundle,
+        ).unwrap();
+        let program = module.queries()[0].shared_ordinary_program().unwrap();
+        let step = program
+            .steps()
+            .iter()
+            .find(|step| matches!(step.access(), QueryAccessKind::LongPatternCandidate { .. }))
+            .unwrap()
+            .clone();
+        let QueryAccessKind::LongPatternCandidate { pattern, .. } = step.access() else {
+            panic!("pattern");
+        };
+        let compiled_pattern = riffdb_types::CompiledLongPatternV1::compile_bounded(
+            pattern.operator(),
+            pattern.profile(),
+            "%immutable%",
+            pattern.bounds(),
+        )
+        .unwrap();
+        let mut partition = PartitionKeyBuilder::new(riffdb_types::AggregateTypeId::first());
+        partition.push_str("scope-a").unwrap();
+        let partition = partition.finish().unwrap();
+        let request = |policy, epoch| {
+            LongPatternProjectionRequest::new(
+                Arc::clone(&program),
+                step.clone(),
+                partition.clone(),
+                CanonicalValue::string("scope-a").unwrap(),
+                policy,
+                None,
+                compiled_pattern.clone(),
+                None,
+                CommitSequence::new(epoch),
+            )
+        };
+        let policy = ApplicationRoleHash::from_bytes([3; 32]);
+        let exact = request(policy, 1);
+        let budget = riffdb_types::exact_provider_budget_v1::ProviderBudget::new();
+        let owner = ProviderOwner::new(
+            budget.clone(),
+            budget.reserve(65536).unwrap().commit().unwrap(),
+        )
+        .unwrap();
+        let slot = Arc::new(LongPatternSlot {
+            registration: LongPatternRegistration::from_request(&exact).unwrap(),
+            checkpoint: PathBuf::new(),
+            state: Mutex::new(LongPatternSlotState::Building),
+            owner: Arc::clone(&owner),
+        });
+        let provider =
+            AdmittedLongPatternBuilderV1::new(pattern.profile(), pattern.bounds(), &budget)
+                .unwrap()
+                .finish()
+                .unwrap();
+        let retained = RetainedLongPatternEpoch {
+            state: LongPatternProviderState {
+                provider,
+                generation: ProjectionGeneration::first(),
+                frontier: CommitSequence::new(1).unwrap(),
+            },
+            slot: CapturedProviderSlot::capture(&slot).unwrap(),
+            _charge: budget
+                .reserve(retained_long_pattern_metadata_bytes())
+                .unwrap()
+                .commit()
+                .unwrap(),
+        };
+        assert!(retained.matches(&slot, &exact));
+        assert!(!retained.matches(&slot, &request(policy, 2)));
+        assert!(!retained.matches(&slot, &request(ApplicationRoleHash::from_bytes([4; 32]), 1)));
+        let foreign_owner = ProviderOwner::new(
+            budget.clone(),
+            budget.reserve(65536).unwrap().commit().unwrap(),
+        )
+        .unwrap();
+        let foreign_slot = LongPatternSlot {
+            registration: LongPatternRegistration::from_request(&exact).unwrap(),
+            checkpoint: PathBuf::new(),
+            state: Mutex::new(LongPatternSlotState::Building),
+            owner: foreign_owner,
+        };
+        assert!(!retained.matches(&foreign_slot, &exact));
+        drop(foreign_slot);
+        let lease = riffdb_service::ProviderEpochLeaseV1::from_shared(Arc::new(retained));
+        assert!(!owner.retire_if_unpinned().unwrap());
+        let captured = lease.clone();
+        drop(lease);
+        assert!(!owner.retire_if_unpinned().unwrap());
+        drop(captured);
+        assert!(owner.retire_if_unpinned().unwrap());
+        drop(slot);
+        drop(owner);
+        assert_eq!(budget.observation().unwrap().owned_bytes, 0);
+        assert_eq!(budget.observation().unwrap().reserved_bytes, 0);
+    }
+
+    // req: OQ-040
+    #[test]
+    fn long_pattern_cursor_capture_retains_charged_epoch_beyond_discovery() {
+        let budget = riffdb_types::exact_provider_budget_v1::ProviderBudget::new();
+        let bounds = riffdb_types::LongPatternBoundsV1::new(
+            8000, 144000, 8, 1000000, 10000, 50000, 2000000, 10000, 8000, 144000, 8000, 8, 1000000,
+            8,
+        )
+        .unwrap();
+        let build = |sequence| LongPatternProviderState {
+            provider: AdmittedLongPatternBuilderV1::new(
+                riffdb_types::LongPatternProfileV1::UnicodeFoldV1,
+                bounds,
+                &budget,
+            )
+            .unwrap()
+            .finish()
+            .unwrap(),
+            generation: ProjectionGeneration::new(sequence).unwrap(),
+            frontier: CommitSequence::new(sequence).unwrap(),
+        };
+        let first = build(1);
+        let weak = Arc::downgrade(&first.provider);
+        let first_bytes = first.provider.owned_bytes();
+        let mut epochs = LongPatternEpochs::one(first);
+        let captured = epochs.select_shared(CommitSequence::new(1)).unwrap();
+        for sequence in 2..=10 {
+            epochs.push(build(sequence), 8);
+        }
+        assert_eq!(epochs.providers.len(), 8);
+        assert!(epochs.select_shared(CommitSequence::new(1)).is_none());
+        assert_eq!(captured.generation, ProjectionGeneration::first());
+        assert_eq!(captured.frontier, CommitSequence::new(1).unwrap());
+        drop(epochs);
+        assert_eq!(budget.observation().unwrap().owned_bytes, first_bytes);
+        assert!(weak.upgrade().is_some());
+        drop(captured);
+        assert!(weak.upgrade().is_none());
+        assert_eq!(budget.observation().unwrap().owned_bytes, 0);
     }
 
     #[test]

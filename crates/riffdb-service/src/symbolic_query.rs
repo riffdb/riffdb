@@ -5558,7 +5558,7 @@ fn prepare_long_pattern_participants(
     provider: &dyn crate::LongPatternProjectionPort,
     program: &QueryAccessProgramV1,
     parameters: &QueryParameters,
-    prior: Option<&QueryContinuation>,
+    prior: Option<&QueryCursorState>,
     row_policy: Option<&Arc<AuthorizedQueryRowPolicyContextV1>>,
     minimum_application_head: Option<u64>,
 ) -> Result<
@@ -5566,6 +5566,7 @@ fn prepare_long_pattern_participants(
         riffdb_projection::ResultSetEpochProofV1,
         Vec<LongPatternCandidateBatch>,
         riffdb_types::ApplicationRoleHash,
+        crate::cursor::QueryProviderEpochLeases,
     ),
     LongPatternPreparationError,
 > {
@@ -5605,11 +5606,13 @@ fn prepare_long_pattern_participants(
         Some(value) => Some(CommitSequence::new(value).ok_or(QueryExecutionError::InvalidProgram)?),
         None => None,
     };
-    let pinned_epoch = continuation_provider_epoch(prior)?;
+    let prior_leases = prior.map(QueryCursorState::provider_leases);
+    let pinned_epoch = continuation_provider_epoch(prior.map(QueryCursorState::continuation))?;
     let mut batches = Vec::new();
+    let mut leases = crate::cursor::QueryProviderEpochLeaseBuilder::default();
     let mut participants = Vec::<ProviderEpochObservationV1>::new();
     let mut pending_provider = None;
-    for step in program.steps() {
+    for (step_index, step) in program.steps().iter().enumerate() {
         let QueryAccessKind::LongPatternCandidate { pattern, .. } = step.access() else {
             continue;
         };
@@ -5646,9 +5649,19 @@ fn prepare_long_pattern_participants(
                 compiled.clone(),
                 minimum_epoch,
                 pinned_epoch,
+            )
+            .with_provider_lease(
+                prior_leases
+                    .and_then(|leases| {
+                        leases.get(
+                            step_index,
+                            riffdb_types::hash_partition_key(partition.partition_key().as_bytes()),
+                        )
+                    })
+                    .cloned(),
             );
-            let batch = match provider.execute(request) {
-                Ok(batch) => batch,
+            let (batch, lease, collection_work) = match provider.execute_retained(request) {
+                Ok(observed) => observed.into_parts(),
                 Err(error) if exact_provider_readiness_pending(error) => {
                     pending_provider.get_or_insert(error);
                     step_pending = true;
@@ -5658,6 +5671,30 @@ fn prepare_long_pattern_participants(
             };
             if batch.binding() != step.binding() {
                 return Err(QueryExecutionError::BackendIntegrity.into());
+            }
+            if let Some(lease) = lease {
+                // The native response admitted its contribution before this
+                // vector can allocate or grow; each replacement gets new owners.
+                let collection_work =
+                    collection_work.ok_or(LongPatternPreparationError::Provider(
+                        ExactTextProjectionPortError::Unavailable,
+                    ))?;
+                leases
+                    .push(
+                        crate::cursor::ProviderEpochLeaseEntry {
+                            step_index,
+                            partition: riffdb_types::hash_partition_key(
+                                partition.partition_key().as_bytes(),
+                            ),
+                            lease,
+                        },
+                        collection_work,
+                    )
+                    .map_err(|_| {
+                        LongPatternPreparationError::Provider(
+                            ExactTextProjectionPortError::Unavailable,
+                        )
+                    })?;
             }
             partition_batches.push(batch);
         }
@@ -5727,7 +5764,14 @@ fn prepare_long_pattern_participants(
             QueryExecutionError::BackendUnavailable
         }
     })?;
-    Ok((proof, batches, policy_shape))
+    Ok((
+        proof,
+        batches,
+        policy_shape,
+        leases.finish().map_err(|_| {
+            LongPatternPreparationError::Provider(ExactTextProjectionPortError::Unavailable)
+        })?,
+    ))
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -5920,7 +5964,8 @@ async fn execute_compiled_query(
             let program = &program;
             let aggregates = &aggregates;
             let parameters = &parameters;
-            let prior_cont = prior.as_deref().map(QueryCursorState::continuation);
+            let prior_state = prior.as_deref();
+            let prior_cont = prior_state.map(QueryCursorState::continuation);
             let cursor_lookup = cursor_lookup.clone();
             let principal = context.principal().principal_id().clone();
             let executor = executor.as_ref();
@@ -5933,17 +5978,23 @@ async fn execute_compiled_query(
             let long_pattern_provider = long_pattern_provider.as_deref();
             async move {
                 let execute_started = Instant::now();
+                let mut provider_leases = crate::cursor::QueryProviderEpochLeases::default();
                 let executed = if let Some(provider) = long_pattern_provider {
                     let prepared = execute_provider_with_readiness(
                         context.control(),
                         service.providers.deadline_scheduler.as_ref(),
                         || {
+                            service.cursors.active_count().map_err(|_| {
+                                LongPatternPreparationError::Provider(
+                                    ExactTextProjectionPortError::Unavailable,
+                                )
+                            })?;
                             prepare_long_pattern_participants(
                                 execution_authorization,
                                 provider,
                                 program,
                                 parameters,
-                                prior_cont,
+                                prior_state,
                                 row_policy.as_ref(),
                                 captured_minimum_application_head,
                             )
@@ -5960,7 +6011,8 @@ async fn execute_compiled_query(
                         Err(failure) => return Err(Err(failure)),
                     };
                     match prepared {
-                        Ok((proof, batches, policy_shape)) => {
+                        Ok((proof, batches, policy_shape, leases)) => {
+                            provider_leases = leases;
                             execute_authorized_provider_query_page(
                                 execution_authorization,
                                 executor,
@@ -6045,7 +6097,8 @@ async fn execute_compiled_query(
                                 continuation,
                                 captured_minimum_application_head,
                                 admission_head_fenced,
-                            ),
+                            )
+                            .with_provider_leases(provider_leases),
                         ) {
                             Ok(guard) => {
                                 if guard.capacity_evicted() {

@@ -1,5 +1,45 @@
 # WP-824 implementation progress
 
+## Long-pattern continuation ownership
+
+Production long-pattern responses retain the actual charged immutable index,
+generation/frontier and explicit registration pin. The service collects these
+owners by compiled step ordinal and canonical partition hash, shares the frozen
+collection across cursor clones, and returns each exact owner on resumption.
+The private native owner must match the current registration owner, exact
+request and pinned frontier. Current-head, minimum-epoch, history, policy,
+authorization and complete participant-proof checks remain unchanged.
+
+Each production response reserves its closed owner/charge allocations and its
+contribution to collection growth before those allocations. Native layout bounds
+cover small-vector rounding, geometric growth and the shared allocation and charge
+roots. The builder combines same-pool reservations before vector growth, then
+freezes the collection under one charge that outlives every participant destructor
+and the vector allocation. Cancellation retains unpublished work through complete
+vector destruction;
+replacements receive newly admitted responses while prior published ownership
+survives failure. Empty participant collections allocate no root. Expired cursor
+purging precedes long-pattern preparation, and resolved requests retain their
+independent references. No wire, query IR/module or durable format changes.
+
+The new empty-index tests exposed an insufficient fixed builder allowance.
+Long-pattern initialization now admits census scratch, inspects allocation-free
+empty maps, and reserves their conservative tree and settlement layout before
+mutation or immutable ownership allocation. Ordinary validation, settlement and
+checkpoint bytes remain intact. Tests cover empty publication, charged captures,
+ring advancement, exact owner/policy/frontier binding, expiry and immutable
+collection growth, cancellation, shared final destruction and foreign-pool refusal.
+All 795 affected projection/service/server unit tests passed (one existing skip),
+and all six scoped non-test acceptance checks passed. Catalog admission, production
+retirement and derived-file cleanup remain open; no run-readiness claim.
+
+PR note: Package WP-824 (open); Tier guarantee; Behavior: retained native
+long-pattern cursor participants and correctly admitted empty indexes;
+Compatibility: existing formats, authority, ordering and freshness; Handbook:
+Long Pattern and this page; Checks: 795 unit tests and six scoped static checks;
+Hazards/follow-ups:
+complete aggregate composition, retirement, cleanup and qualification.
+
 ## Native partition generation composition
 
 A regression test exposed that finite-partition long-pattern batches assumed
