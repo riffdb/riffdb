@@ -6,6 +6,9 @@ mod mcp_admission;
 pub use mcp_admission::decode_provider_mcp_registry_section_admitted_v1;
 mod encoding_admission;
 mod ledger_admission;
+mod ledger_validation_admission;
+#[cfg(test)]
+mod ledger_validation_admission_tests;
 pub use ledger_admission::decode_provider_ledger_section_admitted_v1;
 #[cfg(test)]
 mod ledger_admission_tests;
@@ -1003,21 +1006,23 @@ impl LineageLedgerV1 {
     }
 }
 
+const GLOBAL_LINEAGE_ALLOCATION_TAGS: [StableIdNamespaceTag; 8] = [
+    StableIdNamespaceTag::Entity,
+    StableIdNamespaceTag::Event,
+    StableIdNamespaceTag::Enum,
+    StableIdNamespaceTag::Aggregate,
+    StableIdNamespaceTag::Command,
+    StableIdNamespaceTag::Projection,
+    StableIdNamespaceTag::Index,
+    StableIdNamespaceTag::Invariant,
+];
+
 fn required_global_allocation_namespaces()
 -> Result<Vec<StableIdAllocationNamespace>, IrValidationError> {
-    [
-        StableIdNamespaceTag::Entity,
-        StableIdNamespaceTag::Event,
-        StableIdNamespaceTag::Enum,
-        StableIdNamespaceTag::Aggregate,
-        StableIdNamespaceTag::Command,
-        StableIdNamespaceTag::Projection,
-        StableIdNamespaceTag::Index,
-        StableIdNamespaceTag::Invariant,
-    ]
-    .into_iter()
-    .map(StableIdAllocationNamespace::global)
-    .collect()
+    GLOBAL_LINEAGE_ALLOCATION_TAGS
+        .into_iter()
+        .map(StableIdAllocationNamespace::global)
+        .collect()
 }
 
 fn inferred_allocation_namespaces(
@@ -1808,187 +1813,17 @@ fn validate_ledger(
         });
     }
     let mut expected = Vec::<(StableIdentity, u32)>::new();
-    let mut push = |tag, owner_kind, owner_ids, name: &str, id| {
-        let namespace = StableIdNamespace::new(tag, owner_kind, owner_ids)?;
-        expected.push((StableIdentity::new(namespace, name)?, id));
-        Ok::<_, IrValidationError>(())
-    };
-    for entity in schema.entities() {
-        push(
-            StableIdNamespaceTag::Entity,
-            0,
-            vec![],
-            entity.name(),
-            entity.id().get(),
-        )?;
-        for field in entity.record().fields() {
-            push(
-                StableIdNamespaceTag::Field,
-                record_owner_tag::ENTITY,
-                vec![entity.id().get()],
-                field.name(),
-                field.id().get(),
-            )?;
-        }
-        for invariant in entity.invariants() {
-            push(
-                StableIdNamespaceTag::Invariant,
-                invariant_owner_tag::ENTITY,
-                vec![entity.id().get()],
-                invariant.name(),
-                invariant.id().get(),
-            )?;
-        }
-        for index in entity.indexes() {
-            push(
-                StableIdNamespaceTag::Index,
-                index_owner_tag::ENTITY,
-                vec![entity.id().get()],
-                index.name(),
-                index.id().get(),
-            )?;
-        }
-    }
-    for spec in schema.text_index_specs() {
-        let name = ledger
-            .allocations
-            .iter()
-            .flat_map(|allocation| &allocation.entries)
-            .find(|entry| {
-                entry.state == LineageEntryState::Active
-                    && entry.id == spec.index().get()
-                    && entry.identity.namespace.tag() == StableIdNamespaceTag::Index
-                    && entry.identity.namespace.owner_ids() == [spec.entity().get()]
-            })
-            .map(|entry| entry.identity.name().to_owned())
-            .ok_or(IrValidationError::InvalidLineageLedger {
-                reason: "text index has no active stable identity",
-            })?;
-        push(
-            StableIdNamespaceTag::Index,
-            index_owner_tag::ENTITY,
-            vec![spec.entity().get()],
-            &name,
-            spec.index().get(),
-        )?;
-    }
-    for spec in schema.long_pattern_specs() {
-        push(
-            StableIdNamespaceTag::Index,
-            index_owner_tag::ENTITY,
-            vec![spec.entity().get()],
-            spec.name(),
-            spec.index().get(),
-        )?;
-    }
-    for event in schema.events() {
-        push(
-            StableIdNamespaceTag::Event,
-            0,
-            vec![],
-            event.name(),
-            event.id().get(),
-        )?;
-        for field in event.payload().fields() {
-            push(
-                StableIdNamespaceTag::Field,
-                record_owner_tag::EVENT,
-                vec![event.id().get()],
-                field.name(),
-                field.id().get(),
-            )?;
-        }
-    }
-    for enumeration in schema.enums() {
-        push(
-            StableIdNamespaceTag::Enum,
-            0,
-            vec![],
-            enumeration.name(),
-            enumeration.id().get(),
-        )?;
-        for variant in enumeration.variants() {
-            push(
-                StableIdNamespaceTag::EnumVariant,
-                variant_owner_tag::ENUM,
-                vec![enumeration.id().get()],
-                variant.name(),
-                variant.id().get(),
-            )?;
-        }
-    }
-    for aggregate in schema.aggregates() {
-        push(
-            StableIdNamespaceTag::Aggregate,
-            0,
-            vec![],
-            aggregate.name(),
-            aggregate.id().get(),
-        )?;
-        for invariant in aggregate.invariants() {
-            push(
-                StableIdNamespaceTag::Invariant,
-                invariant_owner_tag::AGGREGATE,
-                vec![aggregate.id().get()],
-                invariant.name(),
-                invariant.id().get(),
-            )?;
-        }
-    }
-    for command in commands {
-        push(
-            StableIdNamespaceTag::Command,
-            0,
-            vec![],
-            command.name(),
-            command.command_id().get(),
-        )?;
-        for field in command.input().record().fields() {
-            push(
-                StableIdNamespaceTag::Field,
-                record_owner_tag::COMMAND_INPUT,
-                vec![command.command_id().get()],
-                field.name(),
-                field.id().get(),
-            )?;
-        }
-        for outcome in command.outcomes() {
-            push(
-                StableIdNamespaceTag::Outcome,
-                outcome_owner_tag::COMMAND,
-                vec![command.command_id().get()],
-                outcome.name(),
-                outcome.id().get(),
-            )?;
-            for field in outcome.payload().fields() {
-                push(
-                    StableIdNamespaceTag::Field,
-                    record_owner_tag::COMMAND_OUTCOME,
-                    vec![command.command_id().get(), outcome.id().get()],
-                    field.name(),
-                    field.id().get(),
-                )?;
-            }
-        }
-    }
-    for projection in projections {
-        push(
-            StableIdNamespaceTag::Projection,
-            0,
-            vec![],
-            projection.name(),
-            projection.projection_id().get(),
-        )?;
-        for field in projection.group_schema().measures().fields() {
-            push(
-                StableIdNamespaceTag::Field,
-                record_owner_tag::PROJECTION_RESULT,
-                vec![projection.projection_id().get()],
-                field.name(),
-                field.id().get(),
-            )?;
-        }
-    }
+    visit_expected_lineage_identities(
+        ledger,
+        schema,
+        commands,
+        projections,
+        |tag, owner_kind, owner_ids, name, id| {
+            let namespace = StableIdNamespace::new(tag, owner_kind, owner_ids.to_vec())?;
+            expected.push((StableIdentity::new(namespace, name)?, id));
+            Ok::<_, IrValidationError>(())
+        },
+    )?;
     let active_count = ledger
         .allocations
         .iter()
@@ -2057,6 +1892,193 @@ fn validate_ledger(
             return Err(IrValidationError::InvalidLineageLedger {
                 reason: "lineage alias duplicates its current identity",
             });
+        }
+    }
+    Ok(())
+}
+
+/// Borrow expected executable identities without allocating names or owner paths.
+fn visit_expected_lineage_identities<E: From<IrValidationError>>(
+    ledger: &LineageLedgerV1,
+    schema: &SchemaIr,
+    commands: &[CommandPlan],
+    projections: &[ProjectionPlan],
+    mut push: impl FnMut(StableIdNamespaceTag, u8, &[u32], &str, u32) -> Result<(), E>,
+) -> Result<(), E> {
+    for entity in schema.entities() {
+        push(
+            StableIdNamespaceTag::Entity,
+            0,
+            &[],
+            entity.name(),
+            entity.id().get(),
+        )?;
+        for field in entity.record().fields() {
+            push(
+                StableIdNamespaceTag::Field,
+                record_owner_tag::ENTITY,
+                &[entity.id().get()],
+                field.name(),
+                field.id().get(),
+            )?;
+        }
+        for invariant in entity.invariants() {
+            push(
+                StableIdNamespaceTag::Invariant,
+                invariant_owner_tag::ENTITY,
+                &[entity.id().get()],
+                invariant.name(),
+                invariant.id().get(),
+            )?;
+        }
+        for index in entity.indexes() {
+            push(
+                StableIdNamespaceTag::Index,
+                index_owner_tag::ENTITY,
+                &[entity.id().get()],
+                index.name(),
+                index.id().get(),
+            )?;
+        }
+    }
+    for spec in schema.text_index_specs() {
+        let name = ledger
+            .allocations
+            .iter()
+            .flat_map(|allocation| &allocation.entries)
+            .find(|entry| {
+                entry.state == LineageEntryState::Active
+                    && entry.id == spec.index().get()
+                    && entry.identity.namespace.tag() == StableIdNamespaceTag::Index
+                    && entry.identity.namespace.owner_ids() == [spec.entity().get()]
+            })
+            .map(|entry| entry.identity.name())
+            .ok_or(IrValidationError::InvalidLineageLedger {
+                reason: "text index has no active stable identity",
+            })?;
+        push(
+            StableIdNamespaceTag::Index,
+            index_owner_tag::ENTITY,
+            &[spec.entity().get()],
+            name,
+            spec.index().get(),
+        )?;
+    }
+    for spec in schema.long_pattern_specs() {
+        push(
+            StableIdNamespaceTag::Index,
+            index_owner_tag::ENTITY,
+            &[spec.entity().get()],
+            spec.name(),
+            spec.index().get(),
+        )?;
+    }
+    for event in schema.events() {
+        push(
+            StableIdNamespaceTag::Event,
+            0,
+            &[],
+            event.name(),
+            event.id().get(),
+        )?;
+        for field in event.payload().fields() {
+            push(
+                StableIdNamespaceTag::Field,
+                record_owner_tag::EVENT,
+                &[event.id().get()],
+                field.name(),
+                field.id().get(),
+            )?;
+        }
+    }
+    for enumeration in schema.enums() {
+        push(
+            StableIdNamespaceTag::Enum,
+            0,
+            &[],
+            enumeration.name(),
+            enumeration.id().get(),
+        )?;
+        for variant in enumeration.variants() {
+            push(
+                StableIdNamespaceTag::EnumVariant,
+                variant_owner_tag::ENUM,
+                &[enumeration.id().get()],
+                variant.name(),
+                variant.id().get(),
+            )?;
+        }
+    }
+    for aggregate in schema.aggregates() {
+        push(
+            StableIdNamespaceTag::Aggregate,
+            0,
+            &[],
+            aggregate.name(),
+            aggregate.id().get(),
+        )?;
+        for invariant in aggregate.invariants() {
+            push(
+                StableIdNamespaceTag::Invariant,
+                invariant_owner_tag::AGGREGATE,
+                &[aggregate.id().get()],
+                invariant.name(),
+                invariant.id().get(),
+            )?;
+        }
+    }
+    for command in commands {
+        push(
+            StableIdNamespaceTag::Command,
+            0,
+            &[],
+            command.name(),
+            command.command_id().get(),
+        )?;
+        for field in command.input().record().fields() {
+            push(
+                StableIdNamespaceTag::Field,
+                record_owner_tag::COMMAND_INPUT,
+                &[command.command_id().get()],
+                field.name(),
+                field.id().get(),
+            )?;
+        }
+        for outcome in command.outcomes() {
+            push(
+                StableIdNamespaceTag::Outcome,
+                outcome_owner_tag::COMMAND,
+                &[command.command_id().get()],
+                outcome.name(),
+                outcome.id().get(),
+            )?;
+            for field in outcome.payload().fields() {
+                push(
+                    StableIdNamespaceTag::Field,
+                    record_owner_tag::COMMAND_OUTCOME,
+                    &[command.command_id().get(), outcome.id().get()],
+                    field.name(),
+                    field.id().get(),
+                )?;
+            }
+        }
+    }
+    for projection in projections {
+        push(
+            StableIdNamespaceTag::Projection,
+            0,
+            &[],
+            projection.name(),
+            projection.projection_id().get(),
+        )?;
+        for field in projection.group_schema().measures().fields() {
+            push(
+                StableIdNamespaceTag::Field,
+                record_owner_tag::PROJECTION_RESULT,
+                &[projection.projection_id().get()],
+                field.name(),
+                field.id().get(),
+            )?;
         }
     }
     Ok(())

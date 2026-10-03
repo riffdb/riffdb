@@ -1,5 +1,44 @@
 # WP-824 implementation progress
 
+## Admitted complete ledger validation of constructed IR
+
+Complete ledger validation now has a hidden first-party admission path. Borrowed
+inspection accounts for required namespace vector growth and owner paths, the
+expected executable identity vector and private name/path copies, and the
+history/alias identity tree with its private copies. It reserves for their
+simultaneous lifetime and one temporary namespace owner-vector clone before
+ordinary validation constructs them. Checked arithmetic refuses overflow.
+
+A common borrowed visitor supplies the existing expected-identity order to both
+sizing and ordinary validation, covering entities, fields, invariants, indexes,
+text and long-pattern indexes, events, enums, aggregates, commands, outcomes and
+projections. The ordinary text-index walk now borrows its checked historical name
+instead of cloning an intermediate string. The closed global namespace list is
+shared with sizing. No canonical bytes, lookup semantics, durable format or
+application interface changes.
+
+All 13 frozen bundles revalidate unchanged. Native witnesses cover required,
+expected and history/alias forests while simultaneously retained, with a separate
+preadmitted ownership-inspection allowance. Semantic tests cover missing required
+states, ordering, active-identity mismatch, invalid complete history, missing alias
+targets, collisions, pressure before sizing and construction, overflow and full
+workspace release. All 446 contract IR and compiler tests passed with no skips.
+All seven scoped non-test acceptance checks passed, including formatting, Clippy
+with warnings denied, handbook, downstream adapters, scope and source guards.
+
+This admits validation of already constructed IR. The section reader above admits
+parsing separately; a future whole-bundle reader must hold every input and
+construction reservation across the full composition. Remaining constructors,
+retained catalog assembly, parent lineage proofs, production capture, source pins,
+retirement, cleanup and qualification remain open. WP-824 is not complete and no
+aggregate-enforcement or full CI receipt is claimed.
+
+PR note: Package WP-824 (open); Tier guarantee; Behavior: internal admitted complete
+ledger validation workspace and shared borrowed traversal; Compatibility: existing
+ledger semantics, canonical bytes and application interfaces; Checks: contract
+IR/compiler tests and scoped acceptance; Handbook: this page;
+Hazards/follow-ups: finish the whole-bundle composition and provider lifecycle.
+
 ## Admitted lineage-ledger section parsing
 
 A hidden first-party reader covers the existing V1/V2 ledger section. Borrowed
