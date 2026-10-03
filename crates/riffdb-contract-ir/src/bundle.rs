@@ -2,7 +2,11 @@
 
 mod capacity;
 mod compatibility_admission;
+mod mcp_admission;
+pub use mcp_admission::decode_provider_mcp_registry_section_admitted_v1;
 mod encoding_admission;
+#[cfg(test)]
+mod mcp_admission_tests;
 mod plan_hash_admission;
 #[cfg(test)]
 mod plan_hash_admission_tests;
@@ -2595,11 +2599,10 @@ pub(crate) fn validate_mcp_registry(
     commands: &[CommandPlan],
     registry: &McpCommandNameRegistryV2,
 ) -> Result<(), IrValidationError> {
-    let application_commands = commands
-        .iter()
-        .filter(|command| !command.is_reimport())
-        .collect::<Vec<_>>();
-    if registry.lineage() != lineage || registry.entries().len() != application_commands.len() {
+    let application_commands = commands.iter().filter(|command| !command.is_reimport());
+    if registry.lineage() != lineage
+        || registry.entries().len() != application_commands.clone().count()
+    {
         return Err(IrValidationError::InvalidMcpName {
             reason: "MCP registry lineage or completeness mismatch",
         });

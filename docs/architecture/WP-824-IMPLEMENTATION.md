@@ -1,5 +1,44 @@
 # WP-824 implementation progress
 
+## Admitted MCP registry parsing and shared lineage ownership
+
+A hidden first-party reader admits the existing MCP registry section before
+ordinary entry and registry construction. Borrowed inspection bounds entry and
+name buffers, lineage conversion and shared destruction bookkeeping, the borrowed
+collision-name tree, and the largest normalization workspace. The latter covers
+two normalized segments, the formatted complete name and the temporary tool-name
+clone during registry validation. Canonical verification uses an admitted exact
+buffer after constructor scratch has been destroyed. Settlement attaches lineage
+ownership to its actual final destruction; an escaped lineage remains charged
+when the enclosing registry is dropped.
+
+Registry completeness validation now counts and traverses borrowed application
+commands, preserving reimport exclusion, lineage, count and exact command/name
+binding checks. It no longer builds a temporary command-reference vector. The
+ordinary constructors, derivation, collisions, limits, versions and canonical
+bytes remain authoritative; MCP visibility and application interfaces are
+unchanged. Encoded input ownership, complete bundle identity and catalog assembly
+remain separate from this section reader.
+
+Tests cover frozen registries, empty registries, 4,096-entry capacity witnesses,
+maximum normalization inputs, lineage final destruction, saturated/partial
+pressure, every truncation point, trailing bytes, hostile counts, unsupported
+versions, zero IDs, collisions, duplicate IDs, wrong derivation, reordered entries,
+arithmetic overflow and exact completeness/binding errors. All 437 contract IR
+and compiler tests passed with no skips. All seven scoped non-test acceptance
+checks passed, including formatting, Clippy with warnings denied, handbook,
+downstream adapters, scope and source guards.
+
+WP-824 remains open. Remaining bundle construction, retained catalog assembly,
+production capture, source pins, retirement, cleanup and qualification are not
+covered by this receipt. No aggregate-enforcement or full CI claim is made.
+
+PR note: Package WP-824 (open); Tier guarantee; Behavior: internal admitted MCP
+registry construction and final shared lineage ownership; Compatibility: existing
+registry encoding, names, visibility, semantic checks and application interfaces;
+Checks: contract IR/compiler tests and scoped acceptance; Handbook: this page;
+Hazards/follow-ups: finish the remaining construction and provider lifecycle.
+
 ## Admitted compatibility-report parsing
 
 A hidden first-party reader admits the existing compatibility-report section
