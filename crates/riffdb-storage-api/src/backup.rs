@@ -2629,3 +2629,5 @@ mod tests {
         );
     }
 }
+
+riffdb_types::inspect_owned_capacity_tuple_v1!(BackupIntegrityChecksumV1, Vec<u8>);

@@ -6,10 +6,83 @@ use riffdb_storage_api::{
     ActiveCatalogPointerV1, StorageError, StorageErrorKind, StoredContractBundleV1,
 };
 use riffdb_types::exact_provider_budget_v1::{ProviderAllocation, ProviderBudget};
-use riffdb_types::{ContractLineage, ContractVersion};
+use riffdb_types::{ContractBundleHash, ContractLineage, ContractVersion};
 use std::sync::Arc;
 
+// Join cloning owns only these three private bounded buffers. The root allowance
+// includes the allocation wrapper, ownership bookkeeping and alignment slack.
+const JOIN_PRIVATE_BOUND: usize =
+    2 * std::mem::size_of::<riffdb_storage_api::StoredContractMigrationEdgeV1>()
+        + 2 * std::mem::align_of::<riffdb_storage_api::StoredContractMigrationEdgeV1>()
+        + 2 * (riffdb_types::MAX_BACKUP_NAME_V1_BYTES
+            + riffdb_types::MAX_APPROVAL_ID_BYTES
+            + riffdb_storage_api::MAX_BACKUP_INTEGRITY_CHECKSUM_BYTES)
+        + 4096;
+const _: () = assert!(JOIN_PRIVATE_BOUND <= 32 * 1024);
+
 impl RedbOwnedSnapshot {
+    /// Join exact permanent migration evidence on this same captured root.
+    /// Admission never substitutes absent evidence or bypasses the ordinary join.
+    #[doc(hidden)]
+    pub fn read_provider_contract_migration_edge_v1(
+        &self,
+        predecessor: ContractBundleHash,
+        budget: &ProviderBudget,
+    ) -> Result<
+        Option<Arc<ProviderAllocation<riffdb_storage_api::StoredContractMigrationEdgeV1>>>,
+        StorageError,
+    > {
+        // The record's copied private strings/checksum are each bounded by 256
+        // bytes; the actor is shared. Admit join copies and settlement census
+        // before any metadata key or record reconstruction.
+        let work = budget
+            .reserve(riffdb_types::OWNED_CAPACITY_INSPECTION_SCRATCH_BYTES_V1 + 32 * 1024)
+            .map_err(|_| storage_error(StorageErrorKind::Unavailable))?;
+        let retirements = self
+            .access
+            .open_table(crate::layout::CONTRACT_WRITE_RETIREMENTS)
+            .map_err(table_error)?;
+        let key = crate::keys::encode_contract_write_retirement_key(predecessor);
+        let Some(value) = retirements
+            .get(key.as_slice())
+            .map_err(precommit_storage_error)?
+        else {
+            return Ok(None);
+        };
+        let retirement = riffdb_storage_api::decode_provider_contract_write_retirement_admitted_v1(
+            value.value(),
+            budget,
+        )
+        .map_err(migration_decode_error)?;
+        if retirement.artifacts().parent() != predecessor {
+            return Err(corrupt());
+        }
+        let migrations = self
+            .access
+            .open_table(crate::layout::CONTRACT_MIGRATIONS)
+            .map_err(table_error)?;
+        let key = crate::keys::encode_contract_migration_operation_key(retirement.operation_id());
+        let value = migrations
+            .get(key.as_slice())
+            .map_err(precommit_storage_error)?
+            .ok_or_else(corrupt)?;
+        let migration = riffdb_storage_api::decode_provider_contract_migration_record_admitted_v1(
+            value.value(),
+            budget,
+        )
+        .map_err(migration_decode_error)?;
+        let edge = riffdb_storage_api::StoredContractMigrationEdgeV1::new(
+            **retirement,
+            (**migration).clone(),
+        )
+        .map_err(|_| corrupt())?;
+        drop(migration);
+        drop(retirement);
+        work.settle_shared_value(edge)
+            .map(Some)
+            .map_err(|_| storage_error(StorageErrorKind::Unavailable))
+    }
+
     /// Reconstruct the active identity and validate its bundle on this exact pin.
     /// Opaque bundle reconstruction does not replace later ordinary IR validation.
     #[doc(hidden)]
@@ -77,5 +150,16 @@ impl RedbOwnedSnapshot {
             return Err(corrupt());
         }
         Ok(Some(bundle))
+    }
+}
+
+fn migration_decode_error(error: riffdb_storage_api::ProviderRecordDecodeErrorV1) -> StorageError {
+    match error {
+        riffdb_storage_api::ProviderRecordDecodeErrorV1::AdmissionUnavailable => {
+            storage_error(StorageErrorKind::Unavailable)
+        }
+        // The ordinary migration-edge reader collapses every codec failure to
+        // corrupt evidence; retain that same safe storage-level distinction.
+        riffdb_storage_api::ProviderRecordDecodeErrorV1::Codec(_) => corrupt(),
     }
 }

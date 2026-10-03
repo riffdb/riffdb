@@ -1707,3 +1707,8 @@ mod tests {
         );
     }
 }
+
+riffdb_types::inspect_owned_capacity_struct_v1!(AuditPrincipalV1 {
+    owned: [principal_id],
+    inline: [actor_kind, capability_id, capability_revision]
+});

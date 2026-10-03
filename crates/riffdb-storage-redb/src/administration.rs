@@ -6131,4 +6131,190 @@ mod tests {
         drop(original);
         assert_eq!(budget.observation().unwrap().owned_bytes, 0);
     }
+
+    // req: OQ-040, PRJ-004
+    #[test]
+    fn provider_catalog_migration_joins_keep_the_pin_and_refuse_substitution() {
+        use riffdb_storage_api::OwnedSnapshotReader;
+        use riffdb_types::exact_provider_budget_v1::{EXACT_PROVIDER_BUDGET_BYTES, ProviderBudget};
+        let record =
+            include_bytes!("../../../fixtures/migrations/durable/v1/migration-record-v1.bin");
+        let fence =
+            include_bytes!("../../../fixtures/migrations/durable/v1/write-retirement-v1.bin");
+        let migration = riffdb_storage_api::decode_contract_migration_record_v1(record)
+            .unwrap()
+            .into_parts()
+            .0;
+        let retirement = riffdb_storage_api::decode_contract_write_retirement_v1(fence)
+            .unwrap()
+            .into_parts()
+            .0;
+        let parent = retirement.artifacts().parent();
+        let expected =
+            riffdb_storage_api::StoredContractMigrationEdgeV1::new(retirement, migration).unwrap();
+        for compact in [false, true] {
+            let (_path, ports) = initialized_ports("provider-catalog-migration-pin");
+            let budget = ProviderBudget::new();
+            let empty = ports.open_owned_snapshot().unwrap();
+            assert!(
+                empty
+                    .read_provider_contract_migration_edge_v1(parent, &budget)
+                    .unwrap()
+                    .is_none()
+            );
+            let record = if compact {
+                riffdb_storage_api::transcode_durable_record_to_v2(record)
+                    .unwrap()
+                    .into_bytes()
+            } else {
+                record.to_vec()
+            };
+            let fence = if compact {
+                riffdb_storage_api::transcode_durable_record_to_v2(fence)
+                    .unwrap()
+                    .into_bytes()
+            } else {
+                fence.to_vec()
+            };
+            let write = ports.begin_write().unwrap();
+            let transaction = write.transaction().unwrap();
+            transaction
+                .open_table(CONTRACT_WRITE_RETIREMENTS)
+                .unwrap()
+                .insert(
+                    encode_contract_write_retirement_key(parent).as_slice(),
+                    fence.as_slice(),
+                )
+                .unwrap();
+            transaction
+                .open_table(CONTRACT_MIGRATIONS)
+                .unwrap()
+                .insert(
+                    encode_contract_migration_operation_key(retirement.operation_id()).as_slice(),
+                    record.as_slice(),
+                )
+                .unwrap();
+            write
+                .commit_for(RedbTestOperation::CatalogAdministration)
+                .unwrap();
+            let pinned = ports.open_owned_snapshot().unwrap();
+            let admitted = pinned
+                .read_provider_contract_migration_edge_v1(parent, &budget)
+                .unwrap()
+                .unwrap();
+            assert_eq!(&**admitted, &expected);
+            assert_eq!(
+                &**admitted,
+                &pinned
+                    .read_contract_migration_edge(parent)
+                    .unwrap()
+                    .unwrap()
+            );
+            assert!(
+                empty
+                    .read_provider_contract_migration_edge_v1(parent, &budget)
+                    .unwrap()
+                    .is_none()
+            );
+            let actor = admitted.migration().principal().principal_id().clone();
+            drop(admitted);
+            assert!(budget.observation().unwrap().owned_bytes > 0);
+            drop(actor);
+            assert_eq!(budget.observation().unwrap().owned_bytes, 0);
+            let blocker = budget
+                .reserve(
+                    EXACT_PROVIDER_BUDGET_BYTES
+                        - budget.observation().unwrap().fixed_owner_bytes
+                        - 1,
+                )
+                .unwrap();
+            assert!(
+                matches!(pinned.read_provider_contract_migration_edge_v1(parent, &budget), Err(error) if error.kind() == StorageErrorKind::Unavailable)
+            );
+            assert_eq!(budget.observation().unwrap().reservations, 1);
+            drop(blocker);
+            let artifacts = retirement.artifacts();
+            let wrong_parent = riffdb_storage_api::ContractMigrationArtifactsV1::new(
+                ContractBundleHash::from_bytes([0xee; 32]),
+                artifacts.candidate(),
+                artifacts.migration(),
+            );
+            let wrong_candidate = riffdb_storage_api::ContractMigrationArtifactsV1::new(
+                parent,
+                ContractBundleHash::from_bytes([0xee; 32]),
+                artifacts.migration(),
+            );
+            let absent_operation =
+                riffdb_types::ContractMigrationOperationId::from_unix_milliseconds_and_random(
+                    9, [0xee; 10],
+                )
+                .unwrap();
+            let wrongs = [
+                riffdb_storage_api::StoredContractWriteRetirementV1::new(
+                    artifacts,
+                    retirement.operation_id(),
+                    AdministrationSequence::new(2).unwrap(),
+                ),
+                riffdb_storage_api::StoredContractWriteRetirementV1::new(
+                    wrong_parent,
+                    retirement.operation_id(),
+                    retirement.administration_sequence(),
+                ),
+                riffdb_storage_api::StoredContractWriteRetirementV1::new(
+                    wrong_candidate,
+                    retirement.operation_id(),
+                    retirement.administration_sequence(),
+                ),
+                riffdb_storage_api::StoredContractWriteRetirementV1::new(
+                    artifacts,
+                    absent_operation,
+                    retirement.administration_sequence(),
+                ),
+            ];
+            let mut corrupt_encodings = wrongs
+                .into_iter()
+                .map(|wrong| {
+                    riffdb_storage_api::encode_contract_write_retirement_v1(wrong)
+                        .unwrap()
+                        .into_bytes()
+                })
+                .collect::<Vec<_>>();
+            let mut incompatible =
+                riffdb_storage_api::encode_contract_write_retirement_v1(retirement)
+                    .unwrap()
+                    .into_bytes();
+            incompatible[4] = u8::MAX;
+            corrupt_encodings.push(incompatible);
+            for bytes in corrupt_encodings {
+                let write = ports.begin_write().unwrap();
+                write
+                    .transaction()
+                    .unwrap()
+                    .open_table(CONTRACT_WRITE_RETIREMENTS)
+                    .unwrap()
+                    .insert(
+                        encode_contract_write_retirement_key(parent).as_slice(),
+                        bytes.as_slice(),
+                    )
+                    .unwrap();
+                write
+                    .commit_for(RedbTestOperation::CatalogAdministration)
+                    .unwrap();
+                let corrupt = ports.open_owned_snapshot().unwrap();
+                let ordinary = corrupt.read_contract_migration_edge(parent).unwrap_err();
+                assert!(
+                    matches!(corrupt.read_provider_contract_migration_edge_v1(parent, &budget), Err(error) if error.kind() == ordinary.kind())
+                );
+                assert_eq!(budget.observation().unwrap().owned_bytes, 0);
+                assert_eq!(budget.observation().unwrap().reserved_bytes, 0);
+            }
+            let original = pinned
+                .read_provider_contract_migration_edge_v1(parent, &budget)
+                .unwrap()
+                .unwrap();
+            assert_eq!(&**original, &expected);
+            drop(original);
+            assert_eq!(budget.observation().unwrap().owned_bytes, 0);
+        }
+    }
 }

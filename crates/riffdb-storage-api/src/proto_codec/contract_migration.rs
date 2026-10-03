@@ -225,42 +225,50 @@ pub fn encode_contract_migration_record_v1(
 pub fn decode_contract_migration_record_v1(
     encoded: &[u8],
 ) -> Result<EncodedPageItem<StoredContractMigrationRecordV1>, DurableCodecError> {
-    decode_message::<wire::StoredContractMigrationRecordV1, _, _>(RECORD, encoded, |value| {
-        StoredContractMigrationRecordV1::new(
-            DatabaseId::from_bytes(fixed(value.database_id)?)
-                .map_err(|_| DurableCodecError::corrupt())?,
-            ContractMigrationOperationId::from_bytes(fixed(value.operation_id)?)
-                .map_err(|_| DurableCodecError::corrupt())?,
-            ContractMigrationInputHash::from_bytes(fixed(value.semantic_input_hash)?),
-            artifacts_from_proto(require(value.artifacts)?)?,
-            operation_artifacts_from_proto(require(value.operation_artifacts)?)?,
-            riffdb_types::BackupNameV1::new(value.source_backup_name)
-                .map_err(|_| DurableCodecError::corrupt())?,
-            BackupIntegrityChecksumV1::new(value.source_backup_manifest_checksum)
-                .map_err(DurableCodecError::from_storage_value)?,
-            audit_principal_from_proto(require(value.principal)?)?,
-            value
-                .approval_id
-                .map(ApprovalId::new)
-                .transpose()
-                .map_err(|_| DurableCodecError::corrupt())?,
-            value
-                .predecessor_application_frontier
-                .map(|v| CommitSequence::new(v).ok_or_else(DurableCodecError::corrupt))
-                .transpose()?,
-            value
-                .successor_application_frontier
-                .map(|v| CommitSequence::new(v).ok_or_else(DurableCodecError::corrupt))
-                .transpose()?,
-            value.checked_rows,
-            value.changed_rows,
-            value.batch_count,
-            ContractMigrationValidationDigest::from_bytes(fixed(value.terminal_validation_digest)?),
-            AdministrationSequence::new(value.administration_sequence)
-                .ok_or_else(DurableCodecError::corrupt)?,
-        )
-        .map_err(DurableCodecError::from_storage_value)
-    })
+    decode_message::<wire::StoredContractMigrationRecordV1, _, _>(
+        RECORD,
+        encoded,
+        migration_record_from_proto,
+    )
+}
+
+pub(super) fn migration_record_from_proto(
+    value: wire::StoredContractMigrationRecordV1,
+) -> Result<StoredContractMigrationRecordV1, DurableCodecError> {
+    StoredContractMigrationRecordV1::new(
+        DatabaseId::from_bytes(fixed(value.database_id)?)
+            .map_err(|_| DurableCodecError::corrupt())?,
+        ContractMigrationOperationId::from_bytes(fixed(value.operation_id)?)
+            .map_err(|_| DurableCodecError::corrupt())?,
+        ContractMigrationInputHash::from_bytes(fixed(value.semantic_input_hash)?),
+        artifacts_from_proto(require(value.artifacts)?)?,
+        operation_artifacts_from_proto(require(value.operation_artifacts)?)?,
+        riffdb_types::BackupNameV1::new(value.source_backup_name)
+            .map_err(|_| DurableCodecError::corrupt())?,
+        BackupIntegrityChecksumV1::new(value.source_backup_manifest_checksum)
+            .map_err(DurableCodecError::from_storage_value)?,
+        audit_principal_from_proto(require(value.principal)?)?,
+        value
+            .approval_id
+            .map(ApprovalId::new)
+            .transpose()
+            .map_err(|_| DurableCodecError::corrupt())?,
+        value
+            .predecessor_application_frontier
+            .map(|v| CommitSequence::new(v).ok_or_else(DurableCodecError::corrupt))
+            .transpose()?,
+        value
+            .successor_application_frontier
+            .map(|v| CommitSequence::new(v).ok_or_else(DurableCodecError::corrupt))
+            .transpose()?,
+        value.checked_rows,
+        value.changed_rows,
+        value.batch_count,
+        ContractMigrationValidationDigest::from_bytes(fixed(value.terminal_validation_digest)?),
+        AdministrationSequence::new(value.administration_sequence)
+            .ok_or_else(DurableCodecError::corrupt)?,
+    )
+    .map_err(DurableCodecError::from_storage_value)
 }
 
 /// Encodes one predecessor-write retirement envelope.
@@ -284,19 +292,27 @@ pub fn encode_contract_write_retirement_v1(
 pub fn decode_contract_write_retirement_v1(
     encoded: &[u8],
 ) -> Result<EncodedPageItem<StoredContractWriteRetirementV1>, DurableCodecError> {
-    decode_message::<wire::StoredContractWriteRetirementV1, _, _>(RETIREMENT, encoded, |value| {
-        Ok(StoredContractWriteRetirementV1::new(
-            ContractMigrationArtifactsV1::new(
-                ContractBundleHash::from_bytes(fixed(value.parent_bundle_hash)?),
-                ContractBundleHash::from_bytes(fixed(value.candidate_bundle_hash)?),
-                MigrationBundleHash::from_bytes(fixed(value.migration_bundle_hash)?),
-            ),
-            ContractMigrationOperationId::from_bytes(fixed(value.operation_id)?)
-                .map_err(|_| DurableCodecError::corrupt())?,
-            AdministrationSequence::new(value.administration_sequence)
-                .ok_or_else(DurableCodecError::corrupt)?,
-        ))
-    })
+    decode_message::<wire::StoredContractWriteRetirementV1, _, _>(
+        RETIREMENT,
+        encoded,
+        write_retirement_from_proto,
+    )
+}
+
+pub(super) fn write_retirement_from_proto(
+    value: wire::StoredContractWriteRetirementV1,
+) -> Result<StoredContractWriteRetirementV1, DurableCodecError> {
+    Ok(StoredContractWriteRetirementV1::new(
+        ContractMigrationArtifactsV1::new(
+            ContractBundleHash::from_bytes(fixed(value.parent_bundle_hash)?),
+            ContractBundleHash::from_bytes(fixed(value.candidate_bundle_hash)?),
+            MigrationBundleHash::from_bytes(fixed(value.migration_bundle_hash)?),
+        ),
+        ContractMigrationOperationId::from_bytes(fixed(value.operation_id)?)
+            .map_err(|_| DurableCodecError::corrupt())?,
+        AdministrationSequence::new(value.administration_sequence)
+            .ok_or_else(DurableCodecError::corrupt)?,
+    ))
 }
 
 /// Encodes one retained predecessor entity envelope.

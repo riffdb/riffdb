@@ -3,8 +3,12 @@
 use super::{
     DurableCodecError, ProviderRecordDecodeErrorV1,
     catalog::{active_from_proto, bundle_from_proto},
+    contract_migration::{migration_record_from_proto, write_retirement_from_proto},
 };
-use crate::{ActiveCatalogPointerV1, StoredContractBundleV1};
+use crate::{
+    ActiveCatalogPointerV1, StoredContractBundleV1, StoredContractMigrationRecordV1,
+    StoredContractWriteRetirementV1,
+};
 use riffdb_proto::envelope::{
     ProviderDecodeScratchV1, ProviderSourceMessageV1, inspect_provider_source_decode_v1,
 };
@@ -31,6 +35,22 @@ pub fn decode_provider_active_catalog_pointer_admitted_v1(
 ) -> Result<Arc<ProviderAllocation<ActiveCatalogPointerV1>>, ProviderRecordDecodeErrorV1> {
     decode::<wire::ActiveCatalogPointerV1, _>(encoded, budget, active_from_proto)
 }
+/// Permanent migration evidence reconstructed with ordinary semantic checks.
+#[doc(hidden)]
+pub fn decode_provider_contract_migration_record_admitted_v1(
+    encoded: &[u8],
+    budget: &ProviderBudget,
+) -> Result<Arc<ProviderAllocation<StoredContractMigrationRecordV1>>, ProviderRecordDecodeErrorV1> {
+    decode::<wire::StoredContractMigrationRecordV1, _>(encoded, budget, migration_record_from_proto)
+}
+/// Exact predecessor write fence reconstructed under the same closed admission.
+#[doc(hidden)]
+pub fn decode_provider_contract_write_retirement_admitted_v1(
+    encoded: &[u8],
+    budget: &ProviderBudget,
+) -> Result<Arc<ProviderAllocation<StoredContractWriteRetirementV1>>, ProviderRecordDecodeErrorV1> {
+    decode::<wire::StoredContractWriteRetirementV1, _>(encoded, budget, write_retirement_from_proto)
+}
 fn decode<M: ProviderSourceMessageV1 + Clone, T: InspectOwnedCapacityV1>(
     encoded: &[u8],
     budget: &ProviderBudget,
@@ -38,8 +58,8 @@ fn decode<M: ProviderSourceMessageV1 + Clone, T: InspectOwnedCapacityV1>(
 ) -> Result<Arc<ProviderAllocation<T>>, ProviderRecordDecodeErrorV1> {
     let input = inspect_provider_source_decode_v1::<M>(encoded)
         .map_err(DurableCodecError::from_decode_envelope)?;
-    // These closed semantic records own one opaque Vec and one shared lineage.
-    // Admit generated cloning, lineage construction, mapper buffers and owners
+    // These closed records have bounded buffers and shared lineage/principal data.
+    // Admit generated cloning, shared identities, mapper buffers and owners
     // before reconstruction; protobuf verification has independent admitted work.
     let maximum = u64::try_from(encoded.len())
         .ok()

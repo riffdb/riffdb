@@ -1689,3 +1689,85 @@ fn admitted_catalog_wire_refuses_pressure_and_preserves_semantic_rejection() {
     assert_eq!(budget.observation().unwrap().owned_bytes, 0);
     assert_eq!(budget.observation().unwrap().reserved_bytes, 0);
 }
+
+// req: OQ-040, PRJ-004
+#[test]
+fn admitted_catalog_migration_evidence_preserves_frames_and_final_principal_capture() {
+    use riffdb_types::exact_provider_budget_v1::ProviderBudget;
+    let record =
+        include_bytes!("../../../../../fixtures/migrations/durable/v1/migration-record-v1.bin");
+    let compact = transcode_durable_record_to_v2(record).unwrap();
+    for bytes in [record.as_slice(), compact.as_bytes()] {
+        let budget = ProviderBudget::new();
+        let ordinary = decode_contract_migration_record_v1(bytes).unwrap();
+        let admitted =
+            decode_provider_contract_migration_record_admitted_v1(bytes, &budget).unwrap();
+        assert_eq!(&**admitted, ordinary.value());
+        let principal = admitted.principal().principal_id().clone();
+        drop(admitted);
+        assert!(budget.observation().unwrap().owned_bytes > 0);
+        drop(principal);
+        assert_eq!(budget.observation().unwrap().owned_bytes, 0);
+        assert_eq!(budget.observation().unwrap().reserved_bytes, 0);
+    }
+    let fence =
+        include_bytes!("../../../../../fixtures/migrations/durable/v1/write-retirement-v1.bin");
+    let compact = transcode_durable_record_to_v2(fence).unwrap();
+    for bytes in [fence.as_slice(), compact.as_bytes()] {
+        let budget = ProviderBudget::new();
+        let admitted =
+            decode_provider_contract_write_retirement_admitted_v1(bytes, &budget).unwrap();
+        assert_eq!(
+            &**admitted,
+            decode_contract_write_retirement_v1(bytes).unwrap().value()
+        );
+        drop(admitted);
+        assert_eq!(budget.observation().unwrap().owned_bytes, 0);
+        assert_eq!(budget.observation().unwrap().reserved_bytes, 0);
+    }
+}
+
+// req: OQ-040, PRJ-004
+#[test]
+fn admitted_catalog_migration_evidence_refuses_pressure_and_invalid_terminal_counts() {
+    use prost::Message;
+    use riffdb_proto::storage::v1 as wire;
+    use riffdb_types::exact_provider_budget_v1::{EXACT_PROVIDER_BUDGET_BYTES, ProviderBudget};
+    let bytes =
+        include_bytes!("../../../../../fixtures/migrations/durable/v1/migration-record-v1.bin");
+    let budget = ProviderBudget::new();
+    let blocker = budget
+        .reserve(
+            EXACT_PROVIDER_BUDGET_BYTES - budget.observation().unwrap().fixed_owner_bytes - 128,
+        )
+        .unwrap();
+    assert!(matches!(
+        decode_provider_contract_migration_record_admitted_v1(bytes, &budget),
+        Err(ProviderRecordDecodeErrorV1::AdmissionUnavailable)
+    ));
+    assert_eq!(budget.observation().unwrap().owned_bytes, 0);
+    assert_eq!(budget.observation().unwrap().reservations, 1);
+    drop(blocker);
+    let mut scratch =
+        riffdb_proto::envelope::ProviderDecodeScratchV1::new(bytes.len(), &budget).unwrap();
+    let decoded = riffdb_proto::envelope::inspect_provider_source_decode_v1::<
+        wire::StoredContractMigrationRecordV1,
+    >(bytes)
+    .unwrap()
+    .decode_with_scratch(&mut scratch)
+    .unwrap();
+    let mut invalid = (**decoded).clone();
+    drop(decoded);
+    drop(scratch);
+    invalid.batch_count = 0;
+    let invalid = malformed_semantic::raw_envelope(
+        "riffdb.storage.v1.StoredContractMigrationRecordV1",
+        invalid.encode_to_vec(),
+    );
+    let ordinary = decode_contract_migration_record_v1(&invalid).unwrap_err();
+    assert!(
+        matches!(decode_provider_contract_migration_record_admitted_v1(&invalid, &budget), Err(ProviderRecordDecodeErrorV1::Codec(error)) if error.kind() == ordinary.kind())
+    );
+    assert_eq!(budget.observation().unwrap().owned_bytes, 0);
+    assert_eq!(budget.observation().unwrap().reserved_bytes, 0);
+}

@@ -113,6 +113,95 @@ mod sealed {
             buffer(contract_bundle_hash);
         }
     }
+    impl ProviderSourceMessage for crate::storage::v1::StoredContractWriteRetirementV1 {
+        const CANONICAL_FIELD: Option<u32> = None;
+        fn inspect_transport_shape(&self) {
+            let Self {
+                parent_bundle_hash,
+                candidate_bundle_hash,
+                migration_bundle_hash,
+                operation_id,
+                administration_sequence,
+            } = self;
+            buffer(parent_bundle_hash);
+            buffer(candidate_bundle_hash);
+            buffer(migration_bundle_hash);
+            buffer(operation_id);
+            inline(administration_sequence);
+        }
+    }
+    impl ProviderSourceMessage for crate::storage::v1::StoredContractMigrationRecordV1 {
+        const CANONICAL_FIELD: Option<u32> = None;
+        fn inspect_transport_shape(&self) {
+            let Self {
+                database_id,
+                operation_id,
+                semantic_input_hash,
+                artifacts,
+                operation_artifacts,
+                source_backup_name,
+                source_backup_manifest_checksum,
+                principal,
+                approval_id,
+                predecessor_application_frontier,
+                successor_application_frontier,
+                checked_rows,
+                changed_rows,
+                batch_count,
+                terminal_validation_digest,
+                administration_sequence,
+            } = self;
+            buffer(database_id);
+            buffer(operation_id);
+            buffer(semantic_input_hash);
+            string(source_backup_name);
+            buffer(source_backup_manifest_checksum);
+            if let Some(value) = approval_id {
+                string(value);
+            }
+            inline(predecessor_application_frontier);
+            inline(successor_application_frontier);
+            inline(checked_rows);
+            inline(changed_rows);
+            inline(batch_count);
+            buffer(terminal_validation_digest);
+            inline(administration_sequence);
+            if let Some(value) = artifacts {
+                let crate::storage::v1::ContractMigrationArtifactIdentityV1 {
+                    parent_bundle_hash,
+                    candidate_bundle_hash,
+                    migration_bundle_hash,
+                } = value;
+                buffer(parent_bundle_hash);
+                buffer(candidate_bundle_hash);
+                buffer(migration_bundle_hash);
+            }
+            if let Some(value) = operation_artifacts {
+                let crate::storage::v1::ContractMigrationOperationArtifactsV1 {
+                    candidate_bundle_length,
+                    candidate_bundle_sha256,
+                    migration_bundle_length,
+                    migration_bundle_sha256,
+                } = value;
+                inline(candidate_bundle_length);
+                buffer(candidate_bundle_sha256);
+                inline(migration_bundle_length);
+                buffer(migration_bundle_sha256);
+            }
+            if let Some(value) = principal {
+                let crate::storage::v1::AuditPrincipalV1 {
+                    principal_id,
+                    actor_kind,
+                    capability_id,
+                    capability_revision,
+                } = value;
+                string(principal_id);
+                inline(actor_kind);
+                buffer(capability_id);
+                inline(capability_revision);
+            }
+        }
+    }
     fn inline<T: Copy>(_: &T) {}
     fn buffer(_: &Vec<u8>) {}
     fn string(_: &String) {}
@@ -148,6 +237,8 @@ impl ProviderSourceMessageV1 for wire::StoredIndexGenerationV2 {}
 
 impl ProviderSourceMessageV1 for wire::StoredContractBundleV1 {}
 impl ProviderSourceMessageV1 for wire::ActiveCatalogPointerV1 {}
+impl ProviderSourceMessageV1 for wire::StoredContractWriteRetirementV1 {}
+impl ProviderSourceMessageV1 for wire::StoredContractMigrationRecordV1 {}
 
 /// Safe distinction between decode admission pressure and durable rejection.
 #[doc(hidden)]
@@ -313,10 +404,11 @@ impl<M: ProviderSourceMessageV1> ProviderSourceDecodeV1<'_, M> {
         if self.original.len() > scratch.maximum {
             return Err(EnvelopeError::EnvelopeTooLarge.into());
         }
-        // These schemas contain at most five byte/string buffers and no repeated
-        // messages. Legacy envelope verification adds three buffers, all bounded
-        // by the original encoding. Eight copies plus per-buffer/root overhead
-        // cover both verification and generated decode before allocation.
+        // These closed schemas have no repeated messages. Their buffer lengths
+        // sum to at most the input size; the deepest shape has three optional
+        // children and at most seventeen buffers. Envelope buffers die before payload
+        // decode. Eight times input bytes covers capacities and reconstruction;
+        // 32 KiB covers all closed buffer headers and inline child storage.
         let maximum = u64::try_from(self.original.len())
             .ok()
             .and_then(|bytes| bytes.checked_mul(8))

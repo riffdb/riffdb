@@ -1,5 +1,36 @@
 # WP-824 implementation progress
 
+## Admitted permanent catalog migration evidence
+
+Existing migration-record and predecessor-retirement wire roles now support the
+closed caller-admitted decoder. Semantic reconstruction reuses their ordinary
+mappers. Exhaustive inventories cover the retained record, opaque checksum,
+backup name, principal and complete joined edge; the actor's existing shared
+lifetime proof keeps its charge through an escaped principal capture.
+
+Snapshot migration reads admit bounded join copies before construction and join
+both records on the same captured root. They preserve predecessor-key identity,
+operation/artifact/sequence cross-links and ordinary corruption classification.
+Missing retirement evidence remains absent; required missing migration evidence
+remains corruption. The private join allowance has a compile-time bound using
+actual root size and the three copied buffers' existing limits.
+
+Tests preserve both framings and reject invalid terminal counts. Snapshot tests
+cover budget saturation, final principal captures, a historical pin, substituted
+parent/candidate/sequence, an absent operation and incompatible framing. All 613
+selected types, Protobuf, storage API and catalog storage library tests passed;
+793 tests were outside the selection or already ignored. All eight scoped
+non-test acceptance checks passed, including generated artifacts and Clippy with
+warnings denied.
+
+PR note: Package WP-824 (open); Tier guarantee; Behavior: internal admitted
+permanent migration evidence and captured joins; Compatibility: existing durable
+roles, bytes, ordinary constructors, cross-links and application interfaces;
+Handbook: this page; Hazards/follow-ups: contract IR construction, production
+catalog/lineage/materialization capture, source pins, retirement and cleanup remain
+open. No aggregate-enforcement, full CI or rehearsal claim.
+
+
 ## Admitted catalog records on a captured storage root
 
 Hidden first-party snapshot helpers now reconstruct active pointers and immutable

@@ -1169,3 +1169,34 @@ mod receipt_tests {
         assert!(!valid_receipt_successor(Apply, P::Preflight, P::Succeeded));
     }
 }
+
+riffdb_types::inspect_owned_capacity_struct_v1!(StoredContractMigrationRecordV1 {
+    owned: [
+        source_backup_name,
+        source_backup_manifest,
+        principal,
+        approval_id
+    ],
+    inline: [
+        database_id,
+        operation_id,
+        input_hash,
+        artifacts,
+        operation_artifacts,
+        predecessor_frontier,
+        successor_frontier,
+        checked_rows,
+        changed_rows,
+        batch_count,
+        validation_digest,
+        administration_sequence
+    ]
+});
+riffdb_types::inspect_owned_capacity_struct_v1!(StoredContractWriteRetirementV1 {
+    owned: [],
+    inline: [artifacts, operation_id, administration_sequence]
+});
+riffdb_types::inspect_owned_capacity_struct_v1!(StoredContractMigrationEdgeV1 {
+    owned: [migration],
+    inline: [retirement]
+});

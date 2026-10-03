@@ -579,3 +579,5 @@ mod tests {
         );
     }
 }
+
+crate::inspect_owned_capacity_tuple_v1!(BackupNameV1, String);
