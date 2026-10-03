@@ -1,5 +1,30 @@
 # WP-824 implementation progress
 
+## Projection section admission
+
+Borrowed projection framing now computes checked native bounds before complete
+plan parsing. Admission covers plan/vector/name/type/constant ownership, record
+name sets, arena construction and reachability, declared enum-registry copies,
+hash dependency forests and the existing format-bounded hash writer. Unknown
+result-type enum references are bounded independently of the declared registry;
+invalid input cannot make hash traversal exceed a valid-only estimate.
+Canonical re-encoding and all ordinary schema, arena, maximum and hash checks
+remain intact. The final wholly owned value retains its settled capacity charge
+through its last reference.
+
+Tests compare frozen plans and native heap inventories, retain a final capture,
+exercise budget refusal, every truncation, trailing bytes and ordinary hash-error
+equivalence, and decode 64 plans with more than 1,024 measure fields each.
+All 199 contract-IR tests and all seven scoped static checks passed.
+This first-party section reader is composition groundwork. It does not admit
+whole-bundle parsing or close the catalog/source/policy integration gap.
+Public application behavior is unchanged, so the handbook needs no new interface
+description for this internal decoder.
+
+PR note: Package WP-824; Tier guarantee; Behavior: projection section admission;
+Compatibility: unchanged bytes, hashes, checks and application interfaces;
+Hazards/follow-ups: command/root assembly and complete production composition.
+
 ## Capability supersession and obsolete work
 
 Registration compares canonical capability identity and revision across all five
