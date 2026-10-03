@@ -1,6 +1,10 @@
 //! Deterministic JSON Schema draft 2020-12 artifacts.
 
+mod admission;
 mod capacity;
+pub use admission::{ProviderSchemaArtifactErrorV1, ProviderSchemaArtifactSourceV1};
+#[cfg(test)]
+mod admission_tests;
 
 use std::collections::BTreeMap;
 
@@ -98,6 +102,15 @@ impl GeneratedSchemaArtifact {
         record: &RecordSchema,
         schema: &SchemaIr,
     ) -> Result<Self, IrValidationError> {
+        let (key, node, expected_size) = Self::entity_parts(entity_id, record, schema)?;
+        Self::from_node(key, node, expected_size)
+    }
+
+    fn entity_parts(
+        entity_id: EntityTypeId,
+        record: &RecordSchema,
+        schema: &SchemaIr,
+    ) -> Result<(SchemaArtifactKey, Json, usize), IrValidationError> {
         require_shape(JsonSchemaShapeConstruction::OutputRecord)?;
         let key = SchemaArtifactKey::Entity(entity_id);
         if record.owner() != &RecordTypeRef::Entity(entity_id) {
@@ -107,7 +120,7 @@ impl GeneratedSchemaArtifact {
         }
         let expected_size = record_node_size(record, schema, RecordShape::Output, true)?;
         let node = record_node(record, schema, RecordShape::Output, true)?;
-        Self::from_node(key, node, expected_size)
+        Ok((key, node, expected_size))
     }
 
     /// Generates one closed durable-event payload artifact.
@@ -116,6 +129,15 @@ impl GeneratedSchemaArtifact {
         record: &RecordSchema,
         schema: &SchemaIr,
     ) -> Result<Self, IrValidationError> {
+        let (key, node, expected_size) = Self::event_parts(event_id, record, schema)?;
+        Self::from_node(key, node, expected_size)
+    }
+
+    fn event_parts(
+        event_id: EventTypeId,
+        record: &RecordSchema,
+        schema: &SchemaIr,
+    ) -> Result<(SchemaArtifactKey, Json, usize), IrValidationError> {
         require_shape(JsonSchemaShapeConstruction::OutputRecord)?;
         let key = SchemaArtifactKey::Event(event_id);
         if record.owner() != &RecordTypeRef::Event(event_id) {
@@ -125,7 +147,7 @@ impl GeneratedSchemaArtifact {
         }
         let expected_size = record_node_size(record, schema, RecordShape::Output, true)?;
         let node = record_node(record, schema, RecordShape::Output, true)?;
-        Self::from_node(key, node, expected_size)
+        Ok((key, node, expected_size))
     }
 
     /// Generates one command-input artifact with its exact idempotency bound.
@@ -135,37 +157,23 @@ impl GeneratedSchemaArtifact {
         schema: &SchemaIr,
         idempotency_input: Option<FieldId>,
     ) -> Result<Self, IrValidationError> {
-        require_shape(JsonSchemaShapeConstruction::CommandInput)?;
+        let (key, node, expected_size) =
+            Self::command_input_parts(command_id, record, schema, idempotency_input)?;
+        Self::from_node(key, node, expected_size)
+    }
+
+    fn command_input_parts(
+        command_id: CommandId,
+        record: &RecordSchema,
+        schema: &SchemaIr,
+        idempotency_input: Option<FieldId>,
+    ) -> Result<(SchemaArtifactKey, Json, usize), IrValidationError> {
+        validate_command_input_artifact(command_id, record, idempotency_input)?;
         let key = SchemaArtifactKey::CommandInput(command_id);
-        if record.owner() != &RecordTypeRef::CommandInput(command_id) {
-            return Err(IrValidationError::InvalidReference {
-                kind: "record schema artifact owner",
-            });
-        }
-        if let Some(field_id) = idempotency_input {
-            let field = record
-                .field(field_id)
-                .ok_or(IrValidationError::InvalidReference {
-                    kind: "idempotency input schema field",
-                })?;
-            let supported = match field.value_type().tag() {
-                ValueTypeTag::Uuid => true,
-                ValueTypeTag::String => field
-                    .value_type()
-                    .byte_bound()
-                    .is_some_and(|bound| bound != 0 && bound <= 128),
-                _ => false,
-            };
-            if !supported || field.value_type().is_optional() {
-                return Err(IrValidationError::TypeMismatch {
-                    context: "idempotency input schema field",
-                });
-            }
-        }
         let shape = RecordShape::CommandInput { idempotency_input };
         let expected_size = record_node_size(record, schema, shape, true)?;
         let node = record_node(record, schema, shape, true)?;
-        Self::from_node(key, node, expected_size)
+        Ok((key, node, expected_size))
     }
 
     /// Generates one flat closed command outcome union artifact.
@@ -174,6 +182,16 @@ impl GeneratedSchemaArtifact {
         outcomes: &[OutcomeSchema],
         schema: &SchemaIr,
     ) -> Result<Self, IrValidationError> {
+        let (key, node, expected_size) =
+            Self::command_outcomes_parts(command_id, outcomes, schema)?;
+        Self::from_node(key, node, expected_size)
+    }
+
+    fn command_outcomes_parts(
+        command_id: CommandId,
+        outcomes: &[OutcomeSchema],
+        schema: &SchemaIr,
+    ) -> Result<(SchemaArtifactKey, Json, usize), IrValidationError> {
         require_shape(JsonSchemaShapeConstruction::CommandOutcomeUnion)?;
         if outcomes.is_empty() {
             return Err(IrValidationError::Empty {
@@ -224,11 +242,11 @@ impl GeneratedSchemaArtifact {
             ("$schema", Json::String(JSON_SCHEMA_DIALECT.to_owned())),
             ("oneOf", Json::Array(variants)),
         ]);
-        Self::from_node(
+        Ok((
             SchemaArtifactKey::CommandOutcomeUnion(command_id),
             node,
             expected_size,
-        )
+        ))
     }
 
     /// Generates one projection-result row artifact.
@@ -238,6 +256,17 @@ impl GeneratedSchemaArtifact {
         measures: &RecordSchema,
         schema: &SchemaIr,
     ) -> Result<Self, IrValidationError> {
+        let (key, node, expected_size) =
+            Self::projection_result_parts(projection_id, group_types, measures, schema)?;
+        Self::from_node(key, node, expected_size)
+    }
+
+    fn projection_result_parts(
+        projection_id: ProjectionId,
+        group_types: &[ValueType],
+        measures: &RecordSchema,
+        schema: &SchemaIr,
+    ) -> Result<(SchemaArtifactKey, Json, usize), IrValidationError> {
         require_shape(JsonSchemaShapeConstruction::ProjectionTupleKey)?;
         require_shape(JsonSchemaShapeConstruction::ProjectionResultRow)?;
         if measures.owner() != &RecordTypeRef::ProjectionResult(projection_id) {
@@ -264,11 +293,11 @@ impl GeneratedSchemaArtifact {
             ),
             ("type", Json::String("object".to_owned())),
         ]);
-        Self::from_node(
+        Ok((
             SchemaArtifactKey::ProjectionResult(projection_id),
             node,
             expected_size,
-        )
+        ))
     }
 
     fn from_node(
@@ -311,6 +340,40 @@ impl GeneratedSchemaArtifact {
     pub const fn hash(&self) -> SchemaHash {
         self.hash
     }
+}
+
+fn validate_command_input_artifact(
+    command_id: CommandId,
+    record: &RecordSchema,
+    idempotency_input: Option<FieldId>,
+) -> Result<(), IrValidationError> {
+    require_shape(JsonSchemaShapeConstruction::CommandInput)?;
+    if record.owner() != &RecordTypeRef::CommandInput(command_id) {
+        return Err(IrValidationError::InvalidReference {
+            kind: "record schema artifact owner",
+        });
+    }
+    if let Some(field_id) = idempotency_input {
+        let field = record
+            .field(field_id)
+            .ok_or(IrValidationError::InvalidReference {
+                kind: "idempotency input schema field",
+            })?;
+        let supported = match field.value_type().tag() {
+            ValueTypeTag::Uuid => true,
+            ValueTypeTag::String => field
+                .value_type()
+                .byte_bound()
+                .is_some_and(|bound| bound != 0 && bound <= 128),
+            _ => false,
+        };
+        if !supported || field.value_type().is_optional() {
+            return Err(IrValidationError::TypeMismatch {
+                context: "idempotency input schema field",
+            });
+        }
+    }
+    Ok(())
 }
 
 fn require_shape(construction: JsonSchemaShapeConstruction) -> Result<(), IrValidationError> {

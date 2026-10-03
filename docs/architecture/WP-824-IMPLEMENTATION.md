@@ -1,5 +1,37 @@
 # WP-824 implementation progress
 
+## Admitted generated-schema workspace
+
+A closed borrowed first-party source covers existing entity, event, command-input,
+command-outcome and projection-result artifacts. It reserves bounded numeric and
+pattern sizing work before the existing size preflight, then reserves JSON-tree,
+container-growth, rendering and settlement work before ordinary generation. The
+workspace bound uses actual JSON/String layouts and the ownership inspector's
+existing B-tree layout allowance; it includes sparse roots, concurrent old/new
+vector buffers, growing strings and output encoding. It is checked for overflow.
+
+Ordinary and admitted generation share the same tree builders, input validation,
+canonical renderer and hash. The returned immutable artifact retains its private
+string charge through the final capture. All artifacts in the 13 frozen compiler
+bundles match exactly, and an independent capacity inspection compares their trees
+and rendered buffers against the prospective workspace bound. Further checks cover
+sparse objects, vector growth, nested arrays, saturated refusal, refusal after
+sizing fits, arithmetic overflow and unchanged wrong-owner rejection. All 139
+contract IR tests, all 271 compiler tests and all seven scoped non-test acceptance
+checks passed, including formatting, Clippy with warnings denied, handbook and
+downstream adapter checks.
+
+This prepares catalog validation scratch. Contract IR parsing and production
+catalog/lineage/materialization capture remain unadmitted; the new helper does not
+claim that an entire bundle decode is admitted. Source pins, provider retirement,
+cleanup and qualification also remain open.
+
+PR note: Package WP-824 (open); Tier guarantee; Behavior: internal admitted schema
+artifact construction; Compatibility: existing artifact bytes, hashes, semantic
+checks and application interfaces; Handbook: this page; Hazards/follow-ups: finish
+whole-bundle construction and the remaining provider lifecycle before qualification.
+
+
 ## Admitted permanent catalog migration evidence
 
 Existing migration-record and predecessor-retirement wire roles now support the
