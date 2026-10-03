@@ -2,6 +2,9 @@
 
 mod capacity;
 mod encoding_admission;
+mod plan_hash_admission;
+#[cfg(test)]
+mod plan_hash_admission_tests;
 pub use encoding_admission::ProviderBundleEncodingErrorV1;
 #[cfg(test)]
 mod encoding_admission_tests;
@@ -2122,6 +2125,20 @@ pub(crate) fn compute_command_plan_hash(
     schema: &SchemaIr,
 ) -> Result<PlanHash, IrValidationError> {
     let mut writer = Writer::new(MAX_BUNDLE_BYTES);
+    encode_command_plan_prefix(&mut writer, plan, schema)?;
+    encode_enum_closure(
+        &mut writer,
+        &collect_command_enum_closure(plan, schema)?,
+        schema,
+    )?;
+    Ok(hash_plan(&writer.finish()))
+}
+
+fn encode_command_plan_prefix(
+    writer: &mut Writer,
+    plan: &CommandPlan,
+    schema: &SchemaIr,
+) -> Result<(), IrValidationError> {
     writer.raw(COMMAND_PLAN_MAGIC)?;
     let ir_version = if plan.requires_ir_v26() {
         EXECUTABLE_IR_VERSION_V26
@@ -2156,13 +2173,8 @@ pub(crate) fn compute_command_plan_hash(
     };
     writer.u32(ir_version)?;
     writer.u32(plan.command_id().get())?;
-    encode_command_semantics_versioned(&mut writer, plan, schema, false, ir_version)?;
-    encode_enum_closure(
-        &mut writer,
-        &collect_command_enum_closure(plan, schema)?,
-        schema,
-    )?;
-    Ok(hash_plan(&writer.finish()))
+    encode_command_semantics_versioned(writer, plan, schema, false, ir_version)?;
+    Ok(())
 }
 
 pub(crate) fn compute_projection_plan_hash(
@@ -2170,22 +2182,31 @@ pub(crate) fn compute_projection_plan_hash(
     schema: &SchemaIr,
 ) -> Result<ProjectionPlanHash, IrValidationError> {
     let mut writer = Writer::new(MAX_BUNDLE_BYTES);
-    writer.raw(PROJECTION_PLAN_MAGIC)?;
-    writer.u32(EXECUTABLE_IR_VERSION_V1)?;
-    writer.u32(plan.projection_id().get())?;
     let source = schema
         .event(plan.source_event())
         .ok_or(IrValidationError::InvalidReference {
             kind: "projection source event",
         })?;
-    encode_event_schema(&mut writer, source, false)?;
-    encode_projection_semantics(&mut writer, plan)?;
+    encode_projection_plan_prefix(&mut writer, plan, source)?;
     encode_enum_closure(
         &mut writer,
         &collect_projection_enum_closure(plan, source, schema)?,
         schema,
     )?;
     Ok(hash_projection_plan(&writer.finish()))
+}
+
+fn encode_projection_plan_prefix(
+    writer: &mut Writer,
+    plan: &ProjectionPlan,
+    source: &EventSchema,
+) -> Result<(), IrValidationError> {
+    writer.raw(PROJECTION_PLAN_MAGIC)?;
+    writer.u32(EXECUTABLE_IR_VERSION_V1)?;
+    writer.u32(plan.projection_id().get())?;
+    encode_event_schema(writer, source, false)?;
+    encode_projection_semantics(writer, plan)?;
+    Ok(())
 }
 
 fn encode_enum_closure(
@@ -2210,10 +2231,29 @@ fn encode_enum_closure(
     Ok(())
 }
 
+struct EnumDependencyForest {
+    enums: BTreeSet<EnumTypeId>,
+    records: BTreeSet<RecordTypeRef>,
+    entities: BTreeSet<EntityTypeId>,
+    events: BTreeSet<EventTypeId>,
+}
+
+riffdb_types::inspect_owned_capacity_struct_v1!(EnumDependencyForest {
+    owned: [enums, records, entities, events],
+    inline: []
+});
+
 fn collect_command_enum_closure(
     plan: &CommandPlan,
     schema: &SchemaIr,
 ) -> Result<BTreeSet<EnumTypeId>, IrValidationError> {
+    Ok(collect_command_enum_forest(plan, schema)?.enums)
+}
+
+fn collect_command_enum_forest(
+    plan: &CommandPlan,
+    schema: &SchemaIr,
+) -> Result<EnumDependencyForest, IrValidationError> {
     let mut enum_ids = BTreeSet::new();
     let mut visited_records = BTreeSet::new();
     collect_record_enum_ids(
@@ -2318,23 +2358,28 @@ fn collect_command_enum_closure(
         )?;
     }
 
-    for event_id in plan
+    let event_ids = plan
         .instructions()
         .iter()
         .filter_map(|instruction| match instruction {
             Instruction::EmitEvent(event) => Some(event.event_type()),
             _ => None,
         })
-        .collect::<BTreeSet<_>>()
-    {
+        .collect::<BTreeSet<_>>();
+    for event_id in &event_ids {
         let event = schema
-            .event(event_id)
+            .event(*event_id)
             .ok_or(IrValidationError::InvalidReference {
                 kind: "command event enum closure",
             })?;
         collect_record_enum_ids(event.payload(), schema, &mut enum_ids, &mut visited_records)?;
     }
-    Ok(enum_ids)
+    Ok(EnumDependencyForest {
+        enums: enum_ids,
+        records: visited_records,
+        entities: entity_ids,
+        events: event_ids,
+    })
 }
 
 fn collect_projection_enum_closure(
@@ -2342,6 +2387,14 @@ fn collect_projection_enum_closure(
     source: &EventSchema,
     schema: &SchemaIr,
 ) -> Result<BTreeSet<EnumTypeId>, IrValidationError> {
+    Ok(collect_projection_enum_forest(plan, source, schema)?.enums)
+}
+
+fn collect_projection_enum_forest(
+    plan: &ProjectionPlan,
+    source: &EventSchema,
+    schema: &SchemaIr,
+) -> Result<EnumDependencyForest, IrValidationError> {
     let mut enum_ids = BTreeSet::new();
     let mut visited_records = BTreeSet::new();
     collect_record_enum_ids(
@@ -2378,7 +2431,12 @@ fn collect_projection_enum_closure(
         &mut enum_ids,
         &mut visited_records,
     )?;
-    Ok(enum_ids)
+    Ok(EnumDependencyForest {
+        enums: enum_ids,
+        records: visited_records,
+        entities: BTreeSet::new(),
+        events: BTreeSet::new(),
+    })
 }
 
 fn collect_entity_enum_ids(

@@ -1,5 +1,39 @@
 # WP-824 implementation progress
 
+## Admitted command and projection hash validation
+
+Existing enum-dependency traversal now has an exhaustive private inventory for
+its enum, visited-record, entity and event sets. Provider hash validation admits
+all four sets before traversal. Its bound uses the existing conservative native
+B-tree layout, schema registry sizes, command outcome roots and possible
+binding/read/instruction members. The helper borrows an already validated bundle;
+it does not claim to admit arbitrary undecoded plans.
+
+After dependency traversal, a borrowed counting pass sizes the exact command or
+projection preimage. The helper reserves that output before allocating it and
+retains dependency work until both the preimage and dependency sets are destroyed.
+Ordinary and admitted paths use the same version selection, semantic encoding,
+enum closure order and hash domains. Existing hash mismatch classifications remain.
+
+All individual hashes in the 13 frozen compiler bundles validate unchanged.
+Independent complete-forest capacity inspections fit the prospective reservation.
+Tests cover saturated refusal before traversal, refusal after either family's
+forest fits but its output cannot, complete release, and checked size overflow.
+All 421 contract IR and compiler tests passed with no skips. All seven scoped
+non-test acceptance checks passed, including formatting, Clippy with warnings
+denied, handbook, downstream adapters, scope and source guards.
+
+IR parsing, constructor/write-evidence checks, schema registry validation and
+production catalog capture remain unadmitted. Source pins, retirement, cleanup
+and qualification remain open. WP-824 is not closed.
+
+PR note: Package WP-824 (open); Tier guarantee; Behavior: admitted internal plan
+hash traversal and encoding workspace; Compatibility: existing bytes, hashes,
+validation and application interfaces; Checks: scoped tests and acceptance;
+Handbook: this page; Hazards/follow-ups: finish complete bundle construction and
+provider lifecycle before qualification. No aggregate-enforcement or full CI claim.
+
+
 ## Admitted canonical bundle and root-hash encoding
 
 A borrowed counting writer now uses the ordinary canonical encoding traversal
