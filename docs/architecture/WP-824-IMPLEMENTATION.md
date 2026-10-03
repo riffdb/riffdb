@@ -1,5 +1,48 @@
 # WP-824 implementation progress
 
+## Admitted row-policy parsing and constructor overlap
+
+A hidden first-party reader covers the existing V1 row-policy section. Borrowed
+inspection bounds fact/policy/rule/node vectors, names, indexed-probe arguments,
+canonical constants and nested value-type boxes before ordinary decoding. It
+admits both retained fact maps, private map key/type copies and map-builder input
+pair vectors. Reconstruction can retain original and replacement policy vectors
+and one pair of rule vectors while validating one rule; the reservation covers
+that overlap and the largest type/disjunction scratch vectors with deep type
+copies. Construction scratch is destroyed before exact canonical verification.
+
+The existing row-policy decoder and constructors retain their operation, type,
+principal-fact, node, rule, dependency and schema checks. Constant decode sizing
+reuses the established borrowed canonical-capacity inspector; ordinary semantic
+decoding remains required. The common B-tree layout allowance now accepts key and
+value types so map layout matches the existing ownership inspector; prior set
+bounds are unchanged. Final settlement owns one immutable charged policy catalog.
+No policy encoding, authorization semantics, query guarantees or application
+interfaces change. Structural schema, encoded input ownership and complete bundle
+identity remain separate.
+
+Tests cover frozen catalogs and a populated catalog with list facts, principal
+fact references, list/string constants and membership. Independent native
+witnesses cover both maps, the pair-input vector, replacement vectors, cloned
+rule types, retained data and canonical output. Every value-type tag and record
+owner is covered, including 31 owned boxes and the rejected depth boundary.
+Rejections cover every truncation point, unsupported versions, fact ceilings,
+invalid constants/types, reordered facts, trailing bytes, pressure, overflow and
+final capture release. All 455 contract IR and compiler tests passed with no skips.
+All seven scoped non-test acceptance checks passed, including formatting, Clippy
+with warnings denied, handbook, downstream adapters, scope and source guards.
+
+WP-824 remains open. Whole-bundle construction and composition, retained catalog
+assembly, parent lineage proofs, production capture, source pins, retirement,
+cleanup and qualification remain unfinished. No aggregate-enforcement or full
+CI receipt is claimed.
+
+PR note: Package WP-824 (open); Tier guarantee; Behavior: internal admitted
+row-policy construction and immutable ownership; Compatibility: existing policy
+encoding, ordinary authorization/dependency checks and application interfaces;
+Checks: contract IR/compiler tests and scoped acceptance; Handbook: this page;
+Hazards/follow-ups: complete the remaining construction and provider lifecycle.
+
 ## Admitted generated-schema registry decoding
 
 A hidden first-party reader covers the existing generated-schema registry section

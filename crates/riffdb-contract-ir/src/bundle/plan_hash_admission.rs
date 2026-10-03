@@ -5,19 +5,30 @@ use riffdb_types::exact_provider_budget_v1::{BudgetUnavailable, ProviderBudget};
 use std::mem::{align_of, size_of};
 
 pub(super) fn tree_bound<K>(count: usize) -> Result<u64, BudgetUnavailable> {
+    tree_layout_bound::<K, ()>(count)
+}
+
+pub(super) fn tree_layout_bound<K, V>(count: usize) -> Result<u64, BudgetUnavailable> {
     // Match the existing ownership inspector's full eleven-slot internal node
     // per entry plus an empty root, including edges, alignment and allocation
-    // overhead. All keys in these four closed forests own inline IDs only.
+    // overhead. Any heap owned by keys and values needs separate admission.
     let node = size_of::<K>()
-        .checked_add(size_of::<()>())
+        .checked_add(size_of::<V>())
         .and_then(|bytes| bytes.checked_mul(11))
-        .and_then(|bytes| bytes.checked_add(256 + align_of::<K>() + align_of::<()>()))
+        .and_then(|bytes| bytes.checked_add(256 + align_of::<K>() + align_of::<V>()))
         .ok_or(BudgetUnavailable)?;
     count
         .checked_add(1)
         .and_then(|count| count.checked_mul(node))
         .and_then(|bytes| bytes.checked_mul(2))
-        .and_then(|bytes| bytes.checked_add(2 * align_of::<K>().max(align_of::<usize>()) + 256))
+        .and_then(|bytes| {
+            bytes.checked_add(
+                2 * align_of::<K>()
+                    .max(align_of::<V>())
+                    .max(align_of::<usize>())
+                    + 256,
+            )
+        })
         .and_then(|bytes| u64::try_from(bytes).ok())
         .ok_or(BudgetUnavailable)
 }

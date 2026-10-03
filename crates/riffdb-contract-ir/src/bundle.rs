@@ -17,8 +17,12 @@ mod mcp_admission_tests;
 mod plan_hash_admission;
 #[cfg(test)]
 mod plan_hash_admission_tests;
+mod row_policy_admission;
 mod schema_registry_admission;
 mod schema_registry_decode_admission;
+pub use row_policy_admission::decode_provider_row_policy_section_admitted_v1;
+#[cfg(test)]
+mod row_policy_admission_tests;
 pub use schema_registry_decode_admission::decode_provider_schema_registry_section_admitted_v1;
 #[cfg(test)]
 mod schema_registry_decode_admission_tests;
