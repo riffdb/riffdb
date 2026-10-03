@@ -1,5 +1,39 @@
 # WP-824 implementation progress
 
+## Admitted structural schema construction
+
+A hidden first-party fragment reader now reserves before ordinary structural
+schema decoding. Borrowed inspection covers records, value-type boxes, keys,
+expression arenas, invariants, indexes, events and their partitions/policy
+anchors, enums, aggregates, relationships, unique keys, deletion policies and all
+existing vector, secret, text and long-pattern extensions. Native layout bounds
+include small-vector reserve rounding, constructor name/field trees, expression
+reachability, simultaneous global index/invariant/entity/ownership forests and
+map-builder input pairs. Relationship traversal accounts for the capped product
+of two DAGs, including the rejecting insertion, and growing pending vectors.
+
+Constructor work is conservatively summed by its actual allocation domains;
+canonical output is a later phase. Ordinary constructors retain every schema,
+reference, key, partition, enum, integrity and format check. Canonical comparison
+rejects reordered input even when ordinary constructors sort it. Final settlement
+retains one immutable charged schema; encoded input and complete executable
+catalog identity remain separate.
+
+Tests cover all 13 frozen schemas, native retained and simultaneous validation
+capacity, 4,096 entities/fields/variants, relationship traversal, all long-pattern
+operators, truncation, invalid names/operators, noncanonical fields, trailing
+bytes, ceilings, pressure, overflow and final captures. All 467 contract IR and
+contract compiler tests passed with no skips. All seven scoped non-test acceptance checks passed. The preceding fragment receipt was corrected from an expected
+461-test count: its actual contract compiler run passed 460 tests, and the
+separate query compiler run passed 291 tests.
+
+PR note: Package WP-824 (open); Tier guarantee; Behavior: internal admitted
+structural decoding; Compatibility: existing formats, constructors, identity,
+authorization and application interfaces; Checks: contract IR/compiler tests and
+scoped acceptance; Handbook: this page; Hazards/follow-ups: executable and whole
+bundle composition, retained catalogs, production retirement and cleanup remain
+unfinished. No aggregate-enforcement or rehearsal-readiness claim.
+
 ## Admitted key and expression fragments
 
 Hidden first-party fragment readers reserve before decoding existing V1/V2 key
@@ -15,7 +49,7 @@ enum and ordered-byte keys, every expression tag, nested constants, legacy versi
 gates and the maximum 131,072-node arena. Native witnesses cover retained data,
 constructor overlap and exact canonical output. Truncation, semantic failures,
 noncanonical enum order, trailing bytes, pressure, overflow and final-reference
-release fail closed. All 461 contract IR/compiler tests and all seven scoped
+release fail closed. All 460 contract IR/contract compiler tests and all seven scoped
 non-test acceptance checks passed. Whole-bundle construction, catalog assembly, production
 retirement and cleanup remain open; this does not establish run readiness.
 

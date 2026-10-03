@@ -1,7 +1,11 @@
 //! Stable lineage ledger, plan hashes, and canonical contract bundle bytes.
 
 mod capacity;
+mod schema_decode_admission;
 mod term_admission;
+pub use schema_decode_admission::decode_provider_structural_schema_admitted_v1;
+#[cfg(test)]
+mod schema_decode_admission_tests;
 pub use term_admission::{
     decode_provider_expression_arena_admitted_v1, decode_provider_key_schema_admitted_v1,
 };
