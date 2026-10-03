@@ -13,6 +13,12 @@ use std::sync::{Arc, OnceLock};
 static PROCESS_GRAPH_BUDGET: OnceLock<ProviderBudget> = OnceLock::new();
 const REGISTRY_METADATA_BYTES: u64 = 8 * 1024 * 1024;
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(super) enum ProviderAdmissionError {
+    Capacity,
+    Integrity,
+}
+
 pub(super) struct ProviderOwnershipGraph {
     pub(super) budget: ProviderBudget,
     // Last: registry data is destroyed before its fixed metadata allowance.
@@ -34,33 +40,44 @@ impl ProviderOwnershipGraph {
             _registry_metadata: metadata,
         })
     }
+    pub(super) fn metadata_owner(&self) -> Arc<OwnershipCharge> {
+        self._registry_metadata.clone()
+    }
     pub(super) fn admit(
         &self,
         additional_inline_bytes: u64,
         inspect: impl FnOnce(
             &mut OwnedCapacityInspectionV1,
         ) -> Result<(), OwnedCapacityInspectionErrorV1>,
-    ) -> Result<Reservation, BudgetUnavailable> {
+    ) -> Result<Reservation, ProviderAdmissionError> {
         // Before both the observation census and its bounded admission plan.
         let scratch = self
             .budget
-            .reserve(OWNED_CAPACITY_INSPECTION_SCRATCH_BYTES_V1)?;
-        let report =
-            OwnedCapacityInspectionV1::inspect_with(inspect).map_err(|_| BudgetUnavailable)?;
+            .reserve(OWNED_CAPACITY_INSPECTION_SCRATCH_BYTES_V1)
+            .map_err(|_| self.reservation_failure())?;
+        let report = OwnedCapacityInspectionV1::inspect_with(inspect)
+            .map_err(|_| ProviderAdmissionError::Integrity)?;
         let root_bytes = report
             .unshared_bytes()
             .checked_add(additional_inline_bytes)
-            .ok_or(BudgetUnavailable)?;
+            .ok_or(ProviderAdmissionError::Integrity)?;
         let mut needed = Vec::with_capacity(report.shared_allocations().len());
         let mut total = root_bytes;
         for allocation in report.shared_allocations() {
-            let lifecycle = allocation.lifecycle().ok_or(BudgetUnavailable)?;
-            match lifecycle.attached_owner().map_err(|_| BudgetUnavailable)? {
-                Some(owner) => self.validate(&owner, allocation.identity(), allocation.bytes())?,
+            let lifecycle = allocation
+                .lifecycle()
+                .ok_or(ProviderAdmissionError::Integrity)?;
+            match lifecycle
+                .attached_owner()
+                .map_err(|_| ProviderAdmissionError::Integrity)?
+            {
+                Some(owner) => self
+                    .validate(&owner, allocation.identity(), allocation.bytes())
+                    .map_err(|_| ProviderAdmissionError::Integrity)?,
                 None => {
                     total = total
                         .checked_add(allocation.bytes())
-                        .ok_or(BudgetUnavailable)?;
+                        .ok_or(ProviderAdmissionError::Integrity)?;
                     needed.push(NeededCharge {
                         identity: allocation.identity(),
                         bytes: allocation.bytes(),
@@ -69,22 +86,35 @@ impl ProviderOwnershipGraph {
                 }
             }
         }
-        let mut admitted = self.budget.reserve(total)?;
+        let mut admitted = self
+            .budget
+            .reserve(total)
+            .map_err(|_| self.reservation_failure())?;
         for allocation in needed {
             let candidate = admitted
-                .split(allocation.bytes)?
-                .commit_for_allocation(allocation.identity)?;
+                .split(allocation.bytes)
+                .map_err(|_| ProviderAdmissionError::Integrity)?
+                .commit_for_allocation(allocation.identity)
+                .map_err(|_| ProviderAdmissionError::Integrity)?;
             let owner = allocation
                 .lifecycle
                 .attach(candidate)
-                .map_err(|_| BudgetUnavailable)?;
+                .map_err(|_| ProviderAdmissionError::Integrity)?;
             // A concurrent winner or foreign attachment cannot skip validation.
-            self.validate(&owner, allocation.identity, allocation.bytes)?;
+            self.validate(&owner, allocation.identity, allocation.bytes)
+                .map_err(|_| ProviderAdmissionError::Integrity)?;
         }
         // Original data references and matching sidecars drop before scratch.
         drop(report);
         drop(scratch);
         Ok(admitted)
+    }
+    fn reservation_failure(&self) -> ProviderAdmissionError {
+        if self.budget.observation().is_ok() {
+            ProviderAdmissionError::Capacity
+        } else {
+            ProviderAdmissionError::Integrity
+        }
     }
     fn validate(
         &self,

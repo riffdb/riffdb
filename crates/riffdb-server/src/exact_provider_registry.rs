@@ -5,6 +5,53 @@ use super::*;
 pub(super) struct RegistryEntry<T> {
     pub(super) slot: Arc<T>,
     pub(super) access: ProviderAccess,
+    pub(super) cleanup_in_progress: bool,
+}
+
+/// Canonical family namespace order, also used by ordinal rebasing.
+#[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
+pub(super) enum ProviderFamily {
+    Predicate,
+    Text,
+    LongPattern,
+    NullablePredicate,
+    Tokenized,
+}
+
+pub(super) enum RetiringProviderSlot {
+    Predicate(Arc<ExactPredicateSlot>),
+    Text(Arc<ExactTextSlot>),
+    LongPattern(Arc<LongPatternSlot>),
+    NullablePredicate(Arc<NullableExactPredicateSlot>),
+    Tokenized(Arc<TokenizedTextSlot>),
+}
+impl RetiringProviderSlot {
+    pub(super) fn owner_and_checkpoint(&self) -> (&ProviderOwner, &Path) {
+        match self {
+            Self::Predicate(slot) => (&slot.owner, &slot.checkpoint),
+            Self::Text(slot) => (&slot.owner, &slot.checkpoint),
+            Self::LongPattern(slot) => (&slot.owner, &slot.checkpoint),
+            Self::NullablePredicate(slot) => (&slot.owner, &slot.checkpoint),
+            Self::Tokenized(slot) => (&slot.owner, &slot.checkpoint),
+        }
+    }
+}
+pub(super) struct RetirementCandidate {
+    family: ProviderFamily,
+    key: SlotKey,
+    pub(super) slot: RetiringProviderSlot,
+}
+
+pub(super) struct RegisteredSlotKeys(
+    Arc<riffdb_types::exact_provider_budget_v1::ProviderAllocation<Vec<SlotKey>>>,
+);
+impl RegisteredSlotKeys {
+    pub(super) fn iter(&self) -> std::slice::Iter<'_, SlotKey> {
+        self.0.iter()
+    }
+    // Closed vector/root/header capacity; no census or extra scratch allocation.
+    pub(super) const WORK_BYTES: u64 =
+        (4 * MAX_REGISTERED_EXACT_PARTITIONS * std::mem::size_of::<SlotKey>() + 4096) as u64;
 }
 
 /// One discovery lock establishes a total access order across all families.
@@ -21,6 +68,189 @@ pub(super) struct ExactProviderRegistries {
 }
 
 impl ExactProviderRegistries {
+    /// Admitted fixed-capacity inventory holds no pins. Each worker captures one live
+    /// owner immediately before its work, leaving unrelated owners eligible.
+    pub(super) fn registered_keys(
+        &self,
+        family: ProviderFamily,
+        budget: &riffdb_types::exact_provider_budget_v1::ProviderBudget,
+    ) -> Result<RegisteredSlotKeys, ExactTextProjectionPortError> {
+        let work = budget
+            .reserve(RegisteredSlotKeys::WORK_BYTES)
+            .map_err(|_| ExactTextProjectionPortError::Unavailable)?;
+        let mut keys = Vec::with_capacity(MAX_REGISTERED_EXACT_PARTITIONS);
+        macro_rules! capture {
+            ($map:ident) => {
+                for (key, entry) in &self.$map {
+                    if !entry
+                        .slot
+                        .owner
+                        .is_active()
+                        .map_err(|_| ExactTextProjectionPortError::Unavailable)?
+                    {
+                        continue;
+                    }
+                    if keys.len() == MAX_REGISTERED_EXACT_PARTITIONS {
+                        return Err(ExactTextProjectionPortError::Integrity);
+                    }
+                    keys.push(*key);
+                }
+            };
+        }
+        match family {
+            ProviderFamily::Predicate => capture!(predicate_slots),
+            ProviderFamily::Text => capture!(slots),
+            ProviderFamily::LongPattern => capture!(long_pattern_slots),
+            ProviderFamily::NullablePredicate => capture!(nullable_predicate_slots),
+            ProviderFamily::Tokenized => capture!(tokenized_slots),
+        }
+        work.commit_value(keys)
+            .map(RegisteredSlotKeys)
+            .map_err(|_| ExactTextProjectionPortError::Unavailable)
+    }
+
+    /// Selection and admission closure happen under discovery; the returned
+    /// references retain all data while cleanup executes outside this lock.
+    pub(super) fn begin_retirement(
+        &mut self,
+        required_family: Option<ProviderFamily>,
+        observed: CursorTick,
+    ) -> Result<Option<RetirementCandidate>, ExactTextProjectionPortError> {
+        let mut selected: Option<(u64, ProviderFamily, SlotKey)> = None;
+        macro_rules! consider {
+            ($family:ident, $map:ident) => {
+                if required_family.is_none_or(|family| family == ProviderFamily::$family) {
+                    for (key, entry) in &self.$map {
+                        if entry.cleanup_in_progress {
+                            continue;
+                        }
+                        let Some(retiring) = entry
+                            .slot
+                            .owner
+                            .retirement_candidate()
+                            .map_err(|_| ExactTextProjectionPortError::Unavailable)?
+                        else {
+                            continue;
+                        };
+                        if !retiring && !entry.access.retention_expired_at(observed)? {
+                            continue;
+                        }
+                        let candidate = (entry.access.ordinal(), ProviderFamily::$family, *key);
+                        if selected.is_none_or(|prior| candidate < prior) {
+                            selected = Some(candidate);
+                        }
+                    }
+                }
+            };
+        }
+        consider!(Predicate, predicate_slots);
+        consider!(Text, slots);
+        consider!(LongPattern, long_pattern_slots);
+        consider!(NullablePredicate, nullable_predicate_slots);
+        consider!(Tokenized, tokenized_slots);
+        let Some((_, family, key)) = selected else {
+            return Ok(None);
+        };
+        macro_rules! claim {
+            ($variant:ident, $map:ident) => {{
+                let entry = self
+                    .$map
+                    .get_mut(&key)
+                    .ok_or(ExactTextProjectionPortError::Integrity)?;
+                let already_retiring = entry
+                    .slot
+                    .owner
+                    .retirement_candidate()
+                    .map_err(|_| ExactTextProjectionPortError::Unavailable)?;
+                if already_retiring.is_none() {
+                    return Ok(None);
+                }
+                if already_retiring == Some(false)
+                    && !entry
+                        .slot
+                        .owner
+                        .retire_if_unpinned()
+                        .map_err(|_| ExactTextProjectionPortError::Unavailable)?
+                {
+                    return Ok(None);
+                }
+                entry.cleanup_in_progress = true;
+                RetiringProviderSlot::$variant(Arc::clone(&entry.slot))
+            }};
+        }
+        let slot = match family {
+            ProviderFamily::Predicate => claim!(Predicate, predicate_slots),
+            ProviderFamily::Text => claim!(Text, slots),
+            ProviderFamily::LongPattern => claim!(LongPattern, long_pattern_slots),
+            ProviderFamily::NullablePredicate => {
+                claim!(NullablePredicate, nullable_predicate_slots)
+            }
+            ProviderFamily::Tokenized => claim!(Tokenized, tokenized_slots),
+        };
+        Ok(Some(RetirementCandidate { family, key, slot }))
+    }
+
+    /// The removed Arc is returned so final data/charge destruction happens
+    /// after discovery unlocks. Failure retains the tombstone for a safe retry.
+    pub(super) fn finish_retirement(
+        &mut self,
+        candidate: &RetirementCandidate,
+        cleaned: bool,
+    ) -> Result<Option<RetiringProviderSlot>, ExactTextProjectionPortError> {
+        macro_rules! finish {
+            ($variant:ident, $map:ident, $slot:ident) => {{
+                let entry = self
+                    .$map
+                    .get_mut(&candidate.key)
+                    .ok_or(ExactTextProjectionPortError::Integrity)?;
+                if !entry.cleanup_in_progress || !Arc::ptr_eq(&entry.slot, $slot) {
+                    return Err(ExactTextProjectionPortError::Integrity);
+                }
+                if cleaned {
+                    self.$map
+                        .remove(&candidate.key)
+                        .map(|entry| RetiringProviderSlot::$variant(entry.slot))
+                } else {
+                    entry.cleanup_in_progress = false;
+                    None
+                }
+            }};
+        }
+        let matches_family = matches!(
+            (&candidate.slot, candidate.family),
+            (
+                RetiringProviderSlot::Predicate(_),
+                ProviderFamily::Predicate
+            ) | (RetiringProviderSlot::Text(_), ProviderFamily::Text)
+                | (
+                    RetiringProviderSlot::LongPattern(_),
+                    ProviderFamily::LongPattern
+                )
+                | (
+                    RetiringProviderSlot::NullablePredicate(_),
+                    ProviderFamily::NullablePredicate
+                )
+                | (
+                    RetiringProviderSlot::Tokenized(_),
+                    ProviderFamily::Tokenized
+                )
+        );
+        if !matches_family {
+            return Err(ExactTextProjectionPortError::Integrity);
+        }
+        Ok(match &candidate.slot {
+            RetiringProviderSlot::Predicate(slot) => finish!(Predicate, predicate_slots, slot),
+            RetiringProviderSlot::Text(slot) => finish!(Text, slots, slot),
+            RetiringProviderSlot::LongPattern(slot) => {
+                finish!(LongPattern, long_pattern_slots, slot)
+            }
+            RetiringProviderSlot::NullablePredicate(slot) => {
+                finish!(NullablePredicate, nullable_predicate_slots, slot)
+            }
+            RetiringProviderSlot::Tokenized(slot) => finish!(Tokenized, tokenized_slots, slot),
+        })
+    }
+
     pub(super) fn next_access(
         &mut self,
         clock: &dyn CursorMonotonicClock,

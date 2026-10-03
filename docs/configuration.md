@@ -575,7 +575,11 @@ cannot become authoritative state. Checkpoint envelope formats remain unchanged.
 An installation with older permissive derived directories or files must stop the
 daemon and make these owned directories and files private before restarting;
 RiffDB refuses unsafe custody instead of changing permissions on existing objects.
-These checks do not yet enable registration eviction or artifact reclamation.
+Ownership records retain live directory and file descriptors through cleanup,
+so a deleted object's inode cannot be reused while its ownership claim remains.
+Retirement removes only the recorded selected and pending derived objects after
+all captures release. A foreign replacement is preserved; the retiring registration
+continues to consume capacity until its custody can be proved.
 
 ## Exact-provider retention clock
 
@@ -583,8 +587,19 @@ Primary and follower servers use the same process-local monotonic clock for
 cursor expiry and exact-provider minimum retention. A failed clock sample,
 backward time, or an unrepresentable retention deadline returns the existing
 provider `Unavailable` error. There is no application or operator override.
-The existing 256-registration limit per exact-provider family still applies;
-this clock wiring alone does not enable registration retirement.
+Each exact-provider family retains its 256-registration limit. Under registration
+or aggregate admission pressure, the server retires the least-recently-used eligible
+owner, with canonical family/key tie breaking. Eligibility requires the existing
+300-second minimum retention to expire and all query, cursor, worker and
+publication pins to release. Successful access extends retention; failed capture
+does not. When every owner is protected, new demand returns typed unavailable.
+Later access to an evicted registration starts ordinary Building/rebuild admission
+with a fresh generation. It cannot resume a cursor using a substitute epoch.
+
+One pre-admitted 512-KiB cleanup lane remains reserved for the runtime's lifetime,
+allowing cleanup at budget saturation. Cleanup runs outside the discovery lock;
+contention refuses new admission without changing an owner's phase. Bounded,
+admitted worker inventories hold keys only and capture one live owner at a time.
 
 
 New exact-provider registrations reserve owned registration data and shared
@@ -597,8 +612,8 @@ workers also reserve their explicit capture pins against this pool; capture
 pressure returns the same typed unavailable result. Encoded checkpoint read
 buffers reserve capacity before reading and retain their charge through the last
 buffer reference. Budget pressure leaves rebuild work eligible for a later retry.
-Decoded provider and rebuild/write scratch accounting, cursor pins, retirement,
-and cleanup remain in progress,
-so this registration admission does not yet establish a complete provider memory
-bound or recycle the 256-slot limits. See the
+The complete catalog/source and policy assembly, supersession integration and
+operator lifecycle diagnostics remain in progress. This implementation recycles
+eligible registrations but does not yet establish the complete provider memory
+bound or qualification readiness. See the
 [implementation progress](architecture/WP-824-IMPLEMENTATION.md).

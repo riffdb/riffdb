@@ -4,11 +4,107 @@
 
 pub(crate) const CUSTODY_WORK_BYTES: u64 = 512 * 1024;
 
+#[derive(Clone)]
+pub(crate) struct CheckpointDirectoryIdentity {
+    device: u64,
+    inode: u64,
+    owner: u32,
+    custody: std::sync::Arc<DirectoryCustody>,
+}
+
+struct DirectoryCustody {
+    _directory: std::fs::File,
+    // The original graph metadata charge follows the final directory reference.
+    _charge: Option<std::sync::Arc<riffdb_types::exact_provider_budget_v1::OwnershipCharge>>,
+}
+impl CheckpointDirectoryIdentity {
+    pub(crate) fn retain_charge(
+        mut self,
+        charge: std::sync::Arc<riffdb_types::exact_provider_budget_v1::OwnershipCharge>,
+    ) -> std::io::Result<Self> {
+        std::sync::Arc::get_mut(&mut self.custody)
+            .ok_or_else(|| std::io::Error::other("derived checkpoint custody unavailable"))?
+            ._charge = Some(charge);
+        Ok(self)
+    }
+}
+impl PartialEq for CheckpointDirectoryIdentity {
+    fn eq(&self, other: &Self) -> bool {
+        (self.device, self.inode, self.owner) == (other.device, other.inode, other.owner)
+    }
+}
+impl Eq for CheckpointDirectoryIdentity {}
+#[derive(Clone)]
+struct CheckpointFileIdentity {
+    device: u64,
+    inode: u64,
+    // A live descriptor keeps this inode allocated until every ownership claim drops.
+    _custody: std::sync::Arc<std::fs::File>,
+}
+impl PartialEq for CheckpointFileIdentity {
+    fn eq(&self, other: &Self) -> bool {
+        (self.device, self.inode) == (other.device, other.inode)
+    }
+}
+impl Eq for CheckpointFileIdentity {}
+
+/// Process-local custody evidence, never a durable format or public identity.
+#[derive(Clone, Eq, PartialEq)]
+pub(crate) struct CheckpointManifest {
+    directory: CheckpointDirectoryIdentity,
+    name: [u8; 255],
+    name_length: u16,
+    selected: Option<CheckpointFileIdentity>,
+    pending: Option<CheckpointFileIdentity>,
+}
+
+impl CheckpointManifest {
+    pub(crate) fn empty(
+        directory: CheckpointDirectoryIdentity,
+        name: &std::ffi::OsStr,
+    ) -> std::io::Result<Self> {
+        let source = name.as_encoded_bytes();
+        if source.is_empty() || source.len() > 255 {
+            return Err(std::io::Error::other(
+                "derived checkpoint custody unavailable",
+            ));
+        }
+        let mut bytes = [0; 255];
+        bytes[..source.len()].copy_from_slice(source);
+        Ok(Self {
+            directory,
+            name: bytes,
+            name_length: source.len() as u16,
+            selected: None,
+            pending: None,
+        })
+    }
+    pub(crate) fn same_binding(&self, other: &Self) -> bool {
+        self.directory == other.directory
+            && self.name == other.name
+            && self.name_length == other.name_length
+    }
+    #[cfg(target_os = "linux")]
+    fn contains_inode(&self, device: u64, inode: u64) -> bool {
+        self.selected
+            .as_ref()
+            .into_iter()
+            .chain(self.pending.as_ref())
+            .any(|file| (file.device, file.inode) == (device, inode))
+    }
+}
+impl std::fmt::Debug for CheckpointManifest {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str("CheckpointManifest([REDACTED])")
+    }
+}
+
 #[cfg(target_os = "linux")]
 pub(crate) use linux::{CheckpointCustody, create_private_directory};
 
 #[cfg(target_os = "linux")]
 mod linux {
+    use super::{CheckpointDirectoryIdentity, CheckpointFileIdentity, CheckpointManifest};
     use std::fs::File;
     use std::io::{self, Read, Write};
     use std::path::{Component, Path};
@@ -28,12 +124,34 @@ mod linux {
         pending: std::ffi::OsString,
         owner: u32,
         identity: Identity,
+        binding: CheckpointDirectoryIdentity,
         selected_file: Option<File>,
         pending_file: Option<File>,
     }
 
     impl<'a> CheckpointCustody<'a> {
+        #[cfg(test)]
         pub(crate) fn open(path: &'a Path) -> io::Result<Self> {
+            Self::open_checked(path, None, false)
+        }
+        pub(crate) fn open_bound(
+            path: &'a Path,
+            binding: &CheckpointManifest,
+            allow_initial: bool,
+        ) -> io::Result<Self> {
+            Self::open_checked(path, Some(binding), !allow_initial)
+        }
+        pub(crate) fn open_for_cleanup(
+            path: &'a Path,
+            manifest: &CheckpointManifest,
+        ) -> io::Result<CheckpointCleanup<'a>> {
+            Self::open_checked(path, Some(manifest), true).map(CheckpointCleanup)
+        }
+        fn open_checked(
+            path: &'a Path,
+            expected: Option<&CheckpointManifest>,
+            cleanup: bool,
+        ) -> io::Result<Self> {
             let owner = effective_uid()?;
             let supplied_parent = path.parent().ok_or_else(refused)?;
             let parent = if supplied_parent.is_absolute() {
@@ -55,6 +173,48 @@ mod linux {
             let directory = open_directory(&parent, owner, false)?;
             let metadata = directory.dir_metadata()?;
             let identity = (metadata.dev(), metadata.ino());
+            let binding = CheckpointManifest::empty(
+                if let Some(expected) = expected {
+                    if (
+                        expected.directory.device,
+                        expected.directory.inode,
+                        expected.directory.owner,
+                    ) != (identity.0, identity.1, owner)
+                    {
+                        return Err(refused());
+                    }
+                    expected.directory.clone()
+                } else {
+                    CheckpointDirectoryIdentity {
+                        device: identity.0,
+                        inode: identity.1,
+                        owner,
+                        custody: std::sync::Arc::new(super::DirectoryCustody {
+                            _directory: directory.try_clone()?.into_std_file(),
+                            _charge: None,
+                        }),
+                    }
+                },
+                selected,
+            )?;
+            if let Some(expected) = expected {
+                if !expected.same_binding(&binding) {
+                    return Err(refused());
+                }
+                if cleanup {
+                    for name in [selected, pending.as_os_str()] {
+                        match directory.symlink_metadata(name) {
+                            Ok(metadata) => {
+                                if !expected.contains_inode(metadata.dev(), metadata.ino()) {
+                                    return Err(refused());
+                                }
+                            }
+                            Err(error) if error.kind() == io::ErrorKind::NotFound => (),
+                            Err(error) => return Err(error),
+                        }
+                    }
+                }
+            }
             // A crash between no-replace linking and removal can leave precisely
             // the two owned names linked to the same synced regular file. Refuse
             // any third link or unequal object; complete only this known publication.
@@ -85,11 +245,20 @@ mod linux {
                 pending,
                 owner,
                 identity,
+                binding: binding.directory,
                 selected_file,
                 pending_file,
             };
             value.verify()?;
             Ok(value)
+        }
+
+        pub(crate) fn owned_manifest(&self) -> io::Result<CheckpointManifest> {
+            self.verify()?;
+            let mut manifest = CheckpointManifest::empty(self.binding.clone(), self.selected)?;
+            manifest.selected = self.selected_file.as_ref().map(file_identity).transpose()?;
+            manifest.pending = self.pending_file.as_ref().map(file_identity).transpose()?;
+            Ok(manifest)
         }
 
         fn verify_anchor(&self) -> io::Result<()> {
@@ -125,16 +294,30 @@ mod linux {
             self.selected_file.as_ref().map(File::try_clone).transpose()
         }
 
+        #[cfg(test)]
         pub(crate) fn publish(
-            mut self,
+            self,
             bytes: &[u8],
             before_sync: impl FnOnce(),
             after_sync: impl FnOnce(),
         ) -> io::Result<()> {
+            self.publish_tracked(bytes, before_sync, after_sync, |_| Ok(()))
+        }
+        pub(crate) fn publish_tracked(
+            mut self,
+            bytes: &[u8],
+            before_sync: impl FnOnce(),
+            after_sync: impl FnOnce(),
+            mut track: impl FnMut(CheckpointManifest) -> io::Result<()>,
+        ) -> io::Result<()> {
             self.verify()?;
+            let mut manifest = self.owned_manifest()?;
+            track(manifest.clone())?;
             if self.pending_file.take().is_some() {
                 // Only the opened and verified private partial object is removed.
                 self.directory.remove_file(&self.pending)?;
+                manifest.pending = None;
+                track(manifest.clone())?;
             }
             let mut options = OpenOptions::new();
             options
@@ -147,6 +330,9 @@ mod linux {
                 .open_with(&self.pending, &options)?
                 .into_std();
             check_named(&self.directory, &self.pending, &file, self.owner, 1)?;
+            let next_identity = file_identity(&file)?;
+            manifest.pending = Some(next_identity.clone());
+            track(manifest.clone())?;
             file.write_all(bytes)?;
             before_sync();
             #[cfg(test)]
@@ -168,23 +354,54 @@ mod linux {
                     }
                 }
             }
+            manifest.selected = None;
+            track(manifest.clone())?;
             // Linking refuses an occupied destination. The data has already synced;
             // neither publication nor cleanup follows a replacement path or symlink.
             #[cfg(test)]
             crash_checkpoint("after-prior-removal");
             self.directory
                 .hard_link(&self.pending, &self.directory, self.selected)?;
+            manifest.selected = Some(next_identity);
+            track(manifest.clone())?;
             #[cfg(test)]
             crash_checkpoint("after-no-replace-link");
             check_named(&self.directory, self.selected, &file, self.owner, 2)?;
             check_named(&self.directory, &self.pending, &file, self.owner, 2)?;
             self.directory.remove_file(&self.pending)?;
+            manifest.pending = None;
+            track(manifest.clone())?;
             self.directory.open(".")?.into_std().sync_all()?;
             #[cfg(test)]
             crash_checkpoint("after-directory-sync");
             self.verify_anchor()?;
             check_named(&self.directory, self.selected, &file, self.owner, 1)
         }
+    }
+
+    /// Constructible only after comparing the complete retained custody record.
+    pub(crate) struct CheckpointCleanup<'a>(CheckpointCustody<'a>);
+    impl CheckpointCleanup<'_> {
+        pub(crate) fn remove_owned(mut self) -> io::Result<()> {
+            self.0.verify()?;
+            if self.0.selected_file.take().is_some() {
+                self.0.directory.remove_file(self.0.selected)?;
+            }
+            if self.0.pending_file.take().is_some() {
+                self.0.directory.remove_file(&self.0.pending)?;
+            }
+            self.0.directory.open(".")?.into_std().sync_all()?;
+            self.0.verify()
+        }
+    }
+    fn file_identity(file: &File) -> io::Result<CheckpointFileIdentity> {
+        use std::os::unix::fs::MetadataExt;
+        let metadata = file.metadata()?;
+        Ok(CheckpointFileIdentity {
+            device: metadata.dev(),
+            inode: metadata.ino(),
+            _custody: std::sync::Arc::new(file.try_clone()?),
+        })
     }
 
     fn existing_file(
@@ -303,19 +520,28 @@ mod linux {
         Ok(directory)
     }
 
-    pub(crate) fn create_private_directory(path: &Path) -> io::Result<()> {
+    pub(crate) fn create_private_directory(path: &Path) -> io::Result<CheckpointDirectoryIdentity> {
         let owned_path = if path.is_absolute() {
             path.to_path_buf()
         } else {
             std::env::current_dir()?.join(path)
         };
         let owner = effective_uid()?;
-        let created = open_directory(&owned_path, owner, true)?.dir_metadata()?;
+        let directory = open_directory(&owned_path, owner, true)?;
+        let created = directory.dir_metadata()?;
         let current = open_directory(&owned_path, owner, false)?.dir_metadata()?;
         if (created.dev(), created.ino()) != (current.dev(), current.ino()) {
             return Err(refused());
         }
-        Ok(())
+        Ok(CheckpointDirectoryIdentity {
+            device: created.dev(),
+            inode: created.ino(),
+            owner,
+            custody: std::sync::Arc::new(super::DirectoryCustody {
+                _directory: directory.into_std_file(),
+                _charge: None,
+            }),
+        })
     }
 
     fn effective_uid() -> io::Result<u32> {
@@ -379,7 +605,41 @@ pub(crate) struct CheckpointCustody<'a>(std::marker::PhantomData<&'a std::path::
 
 #[cfg(not(target_os = "linux"))]
 impl<'a> CheckpointCustody<'a> {
+    #[cfg(test)]
     pub(crate) fn open(_: &'a std::path::Path) -> std::io::Result<Self> {
+        Err(std::io::Error::other(
+            "derived checkpoint custody unavailable",
+        ))
+    }
+    pub(crate) fn open_bound(
+        _: &'a std::path::Path,
+        _: &CheckpointManifest,
+        _: bool,
+    ) -> std::io::Result<Self> {
+        Err(std::io::Error::other(
+            "derived checkpoint custody unavailable",
+        ))
+    }
+    pub(crate) fn open_for_cleanup(
+        _: &'a std::path::Path,
+        _: &CheckpointManifest,
+    ) -> std::io::Result<CheckpointCleanup> {
+        Err(std::io::Error::other(
+            "derived checkpoint custody unavailable",
+        ))
+    }
+    pub(crate) fn owned_manifest(&self) -> std::io::Result<CheckpointManifest> {
+        Err(std::io::Error::other(
+            "derived checkpoint custody unavailable",
+        ))
+    }
+    pub(crate) fn publish_tracked(
+        self,
+        _: &[u8],
+        _: impl FnOnce(),
+        _: impl FnOnce(),
+        _: impl FnMut(CheckpointManifest) -> std::io::Result<()>,
+    ) -> std::io::Result<()> {
         Err(std::io::Error::other(
             "derived checkpoint custody unavailable",
         ))
@@ -394,6 +654,7 @@ impl<'a> CheckpointCustody<'a> {
             "derived checkpoint custody unavailable",
         ))
     }
+    #[cfg(test)]
     pub(crate) fn publish(
         self,
         _: &[u8],
@@ -406,228 +667,20 @@ impl<'a> CheckpointCustody<'a> {
     }
 }
 
-#[cfg(all(test, target_os = "linux"))]
-mod tests {
-    use super::CheckpointCustody;
-    use std::fs;
-    use std::io::Read;
-    use std::os::unix::fs::{MetadataExt, PermissionsExt, symlink};
-    use std::path::Path;
-
-    fn private_root() -> tempfile::TempDir {
-        let root = tempfile::tempdir().unwrap();
-        fs::set_permissions(root.path(), fs::Permissions::from_mode(0o700)).unwrap();
-        root
-    }
-    fn private_file(path: &Path, bytes: &[u8]) {
-        fs::write(path, bytes).unwrap();
-        fs::set_permissions(path, fs::Permissions::from_mode(0o600)).unwrap();
-    }
-    fn read(path: &Path) -> Vec<u8> {
-        let mut bytes = Vec::new();
-        CheckpointCustody::open(path)
-            .unwrap()
-            .read()
-            .unwrap()
-            .unwrap()
-            .read_to_end(&mut bytes)
-            .unwrap();
-        bytes
-    }
-
-    #[test]
-    fn custody_creates_private_roots_without_following_symlinked_components() {
-        let root = private_root();
-        let path = root.path().join("derived").join("exact");
-        super::create_private_directory(&path).unwrap();
-        assert_eq!(fs::metadata(&path).unwrap().mode() & 0o777, 0o700);
-        let foreign = root.path().join("foreign");
-        fs::create_dir(&foreign).unwrap();
-        let alias = root.path().join("alias");
-        symlink(&foreign, &alias).unwrap();
-        assert!(super::create_private_directory(&alias.join("unexpected")).is_err());
-        assert!(!foreign.join("unexpected").exists());
-    }
-
-    #[test]
-    fn custody_supports_relative_paths_without_changing_process_directory() {
-        let root = tempfile::Builder::new().tempdir_in(".").unwrap();
-        fs::set_permissions(root.path(), fs::Permissions::from_mode(0o700)).unwrap();
-        let current = std::env::current_dir().unwrap();
-        let path = root
-            .path()
-            .strip_prefix(&current)
-            .unwrap()
-            .join("epoch.rxts");
-        assert!(!path.is_absolute());
-        CheckpointCustody::open(&path)
-            .unwrap()
-            .publish(b"relative derived bytes", || {}, || {})
-            .unwrap();
-        assert_eq!(read(&path), b"relative derived bytes");
-    }
-
-    #[test]
-    fn custody_publishes_replaces_and_reopens_one_private_link() {
-        let root = private_root();
-        let path = root.path().join("epoch.rxts");
-        assert!(
-            CheckpointCustody::open(&path)
-                .unwrap()
-                .read()
-                .unwrap()
-                .is_none()
-        );
-        for bytes in [b"generation one".as_slice(), b"generation two".as_slice()] {
-            CheckpointCustody::open(&path)
-                .unwrap()
-                .publish(bytes, || {}, || {})
-                .unwrap();
-            assert_eq!(read(&path), bytes);
-            let metadata = fs::metadata(&path).unwrap();
-            assert_eq!(metadata.mode() & 0o777, 0o600);
-            assert_eq!(metadata.nlink(), 1);
-            assert!(!path.with_extension("pending").exists());
-        }
-    }
-
-    #[test]
-    fn custody_discards_only_verified_private_partial_work() {
-        let root = private_root();
-        let path = root.path().join("epoch.rxts");
-        private_file(&path.with_extension("pending"), b"incomplete derived bytes");
-        CheckpointCustody::open(&path)
-            .unwrap()
-            .publish(b"complete bytes", || {}, || {})
-            .unwrap();
-        assert_eq!(read(&path), b"complete bytes");
-    }
-
-    #[test]
-    fn custody_rejects_selected_symlinks_and_foreign_hardlinks() {
-        let root = private_root();
-        let foreign = root.path().join("foreign");
-        private_file(&foreign, b"foreign evidence");
-        let path = root.path().join("epoch.rxts");
-        symlink(&foreign, &path).unwrap();
-        assert!(CheckpointCustody::open(&path).is_err());
-        fs::remove_file(&path).unwrap();
-        fs::hard_link(&foreign, &path).unwrap();
-        assert!(CheckpointCustody::open(&path).is_err());
-        assert_eq!(fs::read(&foreign).unwrap(), b"foreign evidence");
-        assert_eq!(fs::metadata(&foreign).unwrap().nlink(), 2);
-    }
-
-    #[test]
-    fn custody_rejects_replaced_selection_after_sync_without_deleting_foreign_object() {
-        let root = private_root();
-        let path = root.path().join("epoch.rxts");
-        let retained = root.path().join("retained");
-        private_file(&path, b"previous derived bytes");
-        let custody = CheckpointCustody::open(&path).unwrap();
-        let result = custody.publish(
-            b"replacement derived bytes",
-            || {},
-            || {
-                fs::rename(&path, &retained).unwrap();
-                private_file(&path, b"foreign evidence");
-            },
-        );
-        assert!(result.is_err());
-        assert_eq!(fs::read(&path).unwrap(), b"foreign evidence");
-        assert_eq!(fs::read(&retained).unwrap(), b"previous derived bytes");
-    }
-
-    #[test]
-    fn custody_rejects_replaced_pending_object_after_sync() {
-        let root = private_root();
-        let path = root.path().join("epoch.rxts");
-        let pending = path.with_extension("pending");
-        let retained = root.path().join("retained");
-        let result = CheckpointCustody::open(&path).unwrap().publish(
-            b"derived bytes",
-            || {},
-            || {
-                fs::rename(&pending, &retained).unwrap();
-                private_file(&pending, b"foreign evidence");
-            },
-        );
-        assert!(result.is_err());
-        assert!(!path.exists());
-        assert_eq!(fs::read(&pending).unwrap(), b"foreign evidence");
-        assert_eq!(fs::read(&retained).unwrap(), b"derived bytes");
-    }
-
-    #[test]
-    fn custody_rejects_directory_replacement_after_sync() {
-        let parent = tempfile::tempdir().unwrap();
-        let root = parent.path().join("private");
-        fs::create_dir(&root).unwrap();
-        fs::set_permissions(&root, fs::Permissions::from_mode(0o700)).unwrap();
-        let path = root.join("epoch.rxts");
-        let retained = parent.path().join("retained");
-        let result = CheckpointCustody::open(&path).unwrap().publish(
-            b"derived bytes",
-            || {},
-            || {
-                fs::rename(&root, &retained).unwrap();
-                fs::create_dir(&root).unwrap();
-                fs::set_permissions(&root, fs::Permissions::from_mode(0o700)).unwrap();
-                private_file(&path, b"foreign evidence");
-            },
-        );
-        assert!(result.is_err());
-        assert_eq!(fs::read(&path).unwrap(), b"foreign evidence");
-        assert_eq!(
-            fs::read(retained.join("epoch.pending")).unwrap(),
-            b"derived bytes"
-        );
-    }
-
-    #[test]
-    fn custody_recovers_exact_two_name_publication_without_exposing_partial_bytes() {
-        let root = private_root();
-        let path = root.path().join("epoch.rxts");
-        let pending = path.with_extension("pending");
-        private_file(&pending, b"complete synced derived bytes");
-        fs::hard_link(&pending, &path).unwrap();
-        assert_eq!(read(&path), b"complete synced derived bytes");
-        assert!(!pending.exists());
-        assert_eq!(fs::metadata(&path).unwrap().nlink(), 1);
-    }
-
-    #[test]
-    fn custody_rejects_a_third_link_without_deleting_any_name() {
-        let root = private_root();
-        let path = root.path().join("epoch.rxts");
-        let pending = path.with_extension("pending");
-        let foreign = root.path().join("foreign");
-        private_file(&pending, b"foreign evidence");
-        fs::hard_link(&pending, &path).unwrap();
-        fs::hard_link(&pending, &foreign).unwrap();
-        assert!(CheckpointCustody::open(&path).is_err());
-        for name in [&path, &pending, &foreign] {
-            assert_eq!(fs::read(name).unwrap(), b"foreign evidence");
-            assert_eq!(fs::metadata(name).unwrap().nlink(), 3);
-        }
-    }
-
-    #[test]
-    fn custody_rejects_broadened_permissions_and_symlinked_ancestors() {
-        let root = private_root();
-        let path = root.path().join("epoch.rxts");
-        private_file(&path, b"derived bytes");
-        fs::set_permissions(&path, fs::Permissions::from_mode(0o644)).unwrap();
-        assert!(CheckpointCustody::open(&path).is_err());
-        fs::set_permissions(&path, fs::Permissions::from_mode(0o600)).unwrap();
-        let alias = root.path().join("alias");
-        symlink(root.path(), &alias).unwrap();
-        assert!(CheckpointCustody::open(&alias.join("epoch.rxts")).is_err());
-        fs::set_permissions(root.path(), fs::Permissions::from_mode(0o755)).unwrap();
-        assert!(CheckpointCustody::open(&path).is_err());
-        assert_eq!(fs::read(&path).unwrap(), b"derived bytes");
+#[cfg(not(target_os = "linux"))]
+pub(crate) struct CheckpointCleanup;
+#[cfg(not(target_os = "linux"))]
+impl CheckpointCleanup {
+    pub(crate) fn remove_owned(self) -> std::io::Result<()> {
+        Err(std::io::Error::other(
+            "derived checkpoint custody unavailable",
+        ))
     }
 }
+
+#[cfg(all(test, target_os = "linux"))]
+#[path = "exact_provider_checkpoint_custody_tests.rs"]
+mod tests;
 
 #[cfg(all(test, target_os = "linux"))]
 mod recovery_tests {
@@ -699,7 +752,9 @@ mod recovery_tests {
 }
 
 #[cfg(not(target_os = "linux"))]
-pub(crate) fn create_private_directory(_: &std::path::Path) -> std::io::Result<()> {
+pub(crate) fn create_private_directory(
+    _: &std::path::Path,
+) -> std::io::Result<CheckpointDirectoryIdentity> {
     Err(std::io::Error::other(
         "derived checkpoint custody unavailable",
     ))

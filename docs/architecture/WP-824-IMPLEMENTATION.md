@@ -1,5 +1,60 @@
 # WP-824 implementation progress
 
+## Pressure retirement and claimed artifact cleanup
+
+All five native registries preserve their 256-slot ceilings and exact keys.
+Admission distinguishes capacity pressure from incomplete ownership evidence;
+only capacity pressure may retire an eligible owner. Global pressure selects
+by monotonic access ordinal, canonical family and canonical key. Family capacity
+pressure selects inside that family. Checked 300-second minimum retention and
+explicit query/cursor/worker/publication pins protect the existing obligations.
+Capture succeeds before an access can extend its lease. Admission retries at
+most the complete five-family inventory and otherwise returns existing typed
+unavailable. No scan fallback or larger ceiling is introduced.
+
+Selection closes new pins under discovery. A claimed retiring entry remains in
+the map while its files are checked and removed outside the discovery lock;
+this prevents reuse of the same checkpoint name before cleanup completes.
+Failed custody keeps the tombstone and its charge. Successful cleanup detaches
+the slot and destroys its final data references after unlocking discovery.
+A permanently admitted 512-KiB single cleanup lane permits reclamation even
+when the aggregate pool is full. Contention leaves phases untouched.
+
+Each registration binds its private directory/name before capture. Initial
+recovery records checked local cache objects once; later access refuses changed
+objects rather than adopting them. Publication records ownership immediately
+after creation and each no-replace publication step, including cancelled partial
+work. Cleanup checks the complete recorded directory/name/file binding and
+removes only owned selected/pending objects. Live descriptors pin claimed file
+and directory inodes until the final claim drops. Directory custody retains the
+original graph metadata charge after runtime destruction. Unknown/replaced
+objects remain untouched. No authoritative storage, holds, envelopes or
+application interfaces change.
+
+Workers use admitted fixed-capacity key inventories and capture one active slot
+immediately before work. Inventories hold no owner pins. A stack inventory was
+rejected by the broader follower authorization test: it exceeded the existing
+worker stack in a debug build. Its replacement reserves vector/wrapper capacity
+before allocation and retains the charge through data destruction; stack limits
+are unchanged.
+
+Tests cover 1,024 text registrations, 512 registrations in each of five families,
+protected saturation, retention/LRU ties, cleanup contention, full-budget census
+recovery, removed-key worker capture, foreign-file tombstones, cancelled tracked
+publication, final-directory charge retention and pinned unlinked inodes. The
+checkpoint eviction/rebuild test uses an independent row/order/count oracle,
+checks selected/pending deletion, ordinary Building state and fresh generations.
+All 535 selected server tests passed, including the existing real-daemon crash
+oracle; 72 tests were outside the selection or already ignored. All six scoped
+static checks passed. Full CI remains required before package closure.
+
+WP-824 stays open: full catalog/source/policy admission, exact supersession,
+bounded obsolete-worker cancellation and operator diagnostics remain unfinished.
+PR note: Package WP-824; Tier guarantee; Behavior: eligible pressure retirement
+and owned derived-file cleanup; Compatibility: unchanged formats/SDKs and protected
+continuation semantics; Handbook: Configuration; Hazards/follow-ups: complete
+remaining composition and qualification before closing the package.
+
 ## Checkpoint custody before retirement
 
 A failing semantic test demonstrated that pending-path symlinks were followed

@@ -5,12 +5,12 @@
 use std::ops::Deref;
 use std::sync::{Arc, Mutex, MutexGuard};
 
+use crate::exact_provider_checkpoint_custody::CheckpointManifest;
 use riffdb_types::exact_provider_budget_v1::{BudgetUnavailable, OwnershipCharge, ProviderBudget};
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum Phase {
     Active,
-    #[cfg(test)]
     Retiring,
     Refused,
 }
@@ -26,9 +26,15 @@ const PIN_ALLOCATION_BYTES: u64 =
     arc_capacity_bound::<PinGuard>() + arc_capacity_bound::<OwnershipCharge>();
 const _: () = assert!(PIN_ALLOCATION_BYTES <= 1024);
 
+struct ArtifactState {
+    manifest: CheckpointManifest,
+    observed: bool,
+}
+
 struct State {
     phase: Phase,
     pins: u32,
+    artifact: Option<Box<ArtifactState>>,
 }
 
 pub(super) struct ProviderOwner {
@@ -51,10 +57,81 @@ impl ProviderOwner {
             state: Mutex::new(State {
                 phase: Phase::Active,
                 pins: 0,
+                artifact: None,
             }),
             budget,
             _charge: charge,
         }))
+    }
+
+    pub(super) fn artifact_binding(&self) -> Result<(CheckpointManifest, bool), BudgetUnavailable> {
+        let state = self.state.lock().map_err(|_| BudgetUnavailable)?;
+        if state.phase == Phase::Refused || state.pins == 0 {
+            return Err(BudgetUnavailable);
+        }
+        state
+            .artifact
+            .as_deref()
+            .map(|artifact| (artifact.manifest.clone(), !artifact.observed))
+            .ok_or(BudgetUnavailable)
+    }
+    /// Existing work may record its own partial resources after supersession;
+    /// these claims grant no publication or new pin and preserve cleanup custody.
+    pub(super) fn record_artifact(
+        &self,
+        manifest: CheckpointManifest,
+    ) -> Result<(), BudgetUnavailable> {
+        let mut state = self.state.lock().map_err(|_| BudgetUnavailable)?;
+        if state.phase == Phase::Refused || state.pins == 0 {
+            return Err(BudgetUnavailable);
+        }
+        let binding = state.artifact.as_deref_mut().ok_or(BudgetUnavailable)?;
+        if !binding.manifest.same_binding(&manifest) {
+            state.phase = Phase::Refused;
+            return Err(BudgetUnavailable);
+        }
+        binding.manifest = manifest;
+        binding.observed = true;
+        Ok(())
+    }
+
+    /// Binding is fixed before the first capture, under already admitted root
+    /// metadata. Later writes may claim objects only in this exact namespace.
+    pub(super) fn bind_artifact(
+        &self,
+        binding: CheckpointManifest,
+    ) -> Result<(), BudgetUnavailable> {
+        let mut state = self.state.lock().map_err(|_| BudgetUnavailable)?;
+        let minimum = arc_capacity_bound::<Self>()
+            + arc_capacity_bound::<OwnershipCharge>()
+            + (2 * std::mem::size_of::<ArtifactState>()
+                + 2 * std::mem::align_of::<ArtifactState>()
+                + 256) as u64;
+        if state.phase != Phase::Active
+            || state.pins != 0
+            || state.artifact.is_some()
+            || self._charge.bytes() < minimum
+        {
+            return Err(BudgetUnavailable);
+        }
+        state.artifact = Some(Box::new(ArtifactState {
+            manifest: binding,
+            observed: false,
+        }));
+        Ok(())
+    }
+
+    /// Cleanup evidence is available only after discovery admission is closed
+    /// and every capture/publication has released its pin.
+    pub(super) fn cleanup_manifest(&self) -> Result<Option<CheckpointManifest>, BudgetUnavailable> {
+        let state = self.state.lock().map_err(|_| BudgetUnavailable)?;
+        if state.phase != Phase::Retiring || state.pins != 0 {
+            return Err(BudgetUnavailable);
+        }
+        Ok(state
+            .artifact
+            .as_deref()
+            .map(|artifact| artifact.manifest.clone()))
     }
 
     /// Must precede query/worker capture. Retirement closes new admission.
@@ -73,9 +150,28 @@ impl ProviderOwner {
         })))
     }
 
+    pub(super) fn is_active(&self) -> Result<bool, BudgetUnavailable> {
+        self.state
+            .lock()
+            .map(|state| state.phase == Phase::Active)
+            .map_err(|_| BudgetUnavailable)
+    }
+
+    /// None protects a capture; Some(true) is already retiring, Some(false)
+    /// still needs the registry's minimum-retention proof before transition.
+    pub(super) fn retirement_candidate(&self) -> Result<Option<bool>, BudgetUnavailable> {
+        let state = self.state.lock().map_err(|_| BudgetUnavailable)?;
+        if state.phase == Phase::Refused {
+            return Err(BudgetUnavailable);
+        }
+        if state.pins != 0 {
+            return Ok(None);
+        }
+        Ok(Some(state.phase == Phase::Retiring))
+    }
+
     /// Pressure eviction additionally proves retention/cursor obligations at
     /// the registry boundary. This closes admission atomically with pin census.
-    #[cfg(test)]
     pub(super) fn retire_if_unpinned(&self) -> Result<bool, BudgetUnavailable> {
         let mut state = self.state.lock().map_err(|_| BudgetUnavailable)?;
         if state.phase != Phase::Active || state.pins != 0 {
@@ -330,5 +426,115 @@ mod tests {
         assert!(owner.pin().is_err());
         drop(owner);
         assert_eq!(budget.observation().unwrap().owned_bytes, 0);
+    }
+}
+
+#[cfg(all(test, target_os = "linux"))]
+mod artifact_tests {
+    use super::*;
+    use crate::exact_provider_checkpoint_custody::{
+        CheckpointCustody, CheckpointManifest, create_private_directory,
+    };
+    use std::os::unix::fs::PermissionsExt;
+
+    #[test]
+    fn retiring_worker_records_resources_but_cannot_publish_or_clean_while_pinned() {
+        let root = tempfile::tempdir().unwrap();
+        std::fs::set_permissions(root.path(), std::fs::Permissions::from_mode(0o700)).unwrap();
+        let path = root.path().join("epoch.rxts");
+        let directory = create_private_directory(root.path()).unwrap();
+        let budget = ProviderBudget::new();
+        let owner = ProviderOwner::new(
+            budget.clone(),
+            budget.reserve(8192).unwrap().commit().unwrap(),
+        )
+        .unwrap();
+        owner
+            .bind_artifact(CheckpointManifest::empty(directory, path.file_name().unwrap()).unwrap())
+            .unwrap();
+        let pin = owner.pin().unwrap();
+        let alias = pin.clone();
+        let (binding, initial) = owner.artifact_binding().unwrap();
+        assert!(initial);
+        CheckpointCustody::open_bound(&path, &binding, initial)
+            .unwrap()
+            .publish_tracked(
+                b"complete derived bytes",
+                || owner.retire_superseded().unwrap(),
+                || {},
+                |manifest| {
+                    owner
+                        .record_artifact(manifest)
+                        .map_err(|_| std::io::Error::other("fixture custody"))
+                },
+            )
+            .unwrap();
+        assert!(!owner.artifact_binding().unwrap().1);
+        assert!(pin.publication().is_err());
+        assert!(owner.pin().is_err());
+        assert!(owner.cleanup_manifest().is_err());
+        drop(pin);
+        assert!(owner.cleanup_manifest().is_err());
+        assert_eq!(std::fs::read(&path).unwrap(), b"complete derived bytes");
+        drop(alias);
+        let manifest = owner.cleanup_manifest().unwrap().unwrap();
+        CheckpointCustody::open_for_cleanup(&path, &manifest)
+            .unwrap()
+            .remove_owned()
+            .unwrap();
+        assert!(!path.exists());
+        drop(owner);
+        assert_eq!(budget.observation().unwrap().owned_bytes, 0);
+        assert_eq!(budget.observation().unwrap().reserved_bytes, 0);
+    }
+
+    #[test]
+    fn cancelled_publication_keeps_its_claimed_partial_object_for_safe_retirement() {
+        let root = tempfile::tempdir().unwrap();
+        std::fs::set_permissions(root.path(), std::fs::Permissions::from_mode(0o700)).unwrap();
+        let path = root.path().join("epoch.rxts");
+        let directory = create_private_directory(root.path()).unwrap();
+        let budget = ProviderBudget::new();
+        let owner = ProviderOwner::new(
+            budget.clone(),
+            budget.reserve(8192).unwrap().commit().unwrap(),
+        )
+        .unwrap();
+        owner
+            .bind_artifact(CheckpointManifest::empty(directory, path.file_name().unwrap()).unwrap())
+            .unwrap();
+        let pin = owner.pin().unwrap();
+        let (binding, initial) = owner.artifact_binding().unwrap();
+        let mut records = 0;
+        let result = CheckpointCustody::open_bound(&path, &binding, initial)
+            .unwrap()
+            .publish_tracked(
+                b"never written bytes",
+                || {},
+                || {},
+                |manifest| {
+                    owner.record_artifact(manifest).unwrap();
+                    records += 1;
+                    if records == 2 {
+                        Err(std::io::Error::other("fixture cancellation"))
+                    } else {
+                        Ok(())
+                    }
+                },
+            );
+        assert!(result.is_err());
+        assert!(path.with_extension("pending").exists());
+        assert!(!path.exists());
+        drop(pin);
+        assert!(owner.retire_if_unpinned().unwrap());
+        let manifest = owner.cleanup_manifest().unwrap().unwrap();
+        CheckpointCustody::open_for_cleanup(&path, &manifest)
+            .unwrap()
+            .remove_owned()
+            .unwrap();
+        assert!(!path.with_extension("pending").exists());
+        drop(owner);
+        assert_eq!(budget.observation().unwrap().owned_bytes, 0);
+        assert_eq!(budget.observation().unwrap().reserved_bytes, 0);
     }
 }
