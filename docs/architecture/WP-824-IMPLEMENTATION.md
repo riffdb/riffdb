@@ -1,5 +1,33 @@
 # WP-824 implementation progress
 
+## Source candidate population ownership
+
+Text, predicate and nullable-predicate full builds now reserve private candidate
+populations before constructing their trees. Each distinct key reserves its
+buffer and a conservative full B-tree node before cloning or insertion. Repeated
+keys admit no new allocation. Deletions keep conservative private work until
+settlement; failure destroys keys before releasing construction capacity.
+
+Selected source proofs retain one admitted immutable population. Clones share
+its final-reference charge. Delta preparation copies keys through the same
+admission path, preserving private successor isolation and the existing
+delete-before-insert population and capacity semantics. Final population charges
+drop only after their last data reference. The existing 100,000-candidate ceiling
+is unchanged.
+
+Tests cover pressure refusal before mutation/copy, duplicate stability, independent
+successor replacement, final capture retention and a native capacity census at
+the complete existing population ceiling. All 547 selected server tests passed,
+including the real-daemon crash oracle; 72 tests were outside the selection or
+already ignored. All six scoped static checks passed. Source rows, receipts, materialization
+workspace and catalog/policy assembly still require complete composition; this
+change alone does not establish qualification readiness.
+
+PR note: Package WP-824; Tier guarantee; Behavior: admitted source candidate
+history; Compatibility: unchanged source proofs, row semantics, formats and
+application interfaces; Handbook: no application/operational behavior changes;
+Hazards/follow-ups: finish remaining source/catalog/policy ownership and full CI.
+
 ## Projection section admission
 
 Borrowed projection framing now computes checked native bounds before complete

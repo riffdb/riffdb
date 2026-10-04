@@ -16,7 +16,7 @@ use riffdb_types::{CanonicalValue, EntityKey, ProjectionGeneration};
 use super::super::{
     MAX_PROJECTED_POLICY_CANDIDATES_V1, RebuildFailure, map_policy_admission_error,
 };
-use super::{CapturedSource, SelectedSource};
+use super::{CandidatePopulation, CapturedSource, SelectedSource};
 
 const MAX_APPLICATION_COMMITS: u64 = 64;
 // Administrative-only traffic must also have a fixed per-pass ceiling.
@@ -84,7 +84,8 @@ impl Delta {
         if previous.candidates.len() > maximum {
             return Err(RebuildFailure::Integrity);
         }
-        let mut population = previous.candidates.clone();
+        let mut population =
+            CandidatePopulation::copy_from(&captured.budget, &previous.candidates)?;
         let mut changes = BTreeMap::new();
         let mut point = prior.position();
         let mut bytes = 0_usize;
@@ -180,7 +181,12 @@ impl Delta {
                     }
                 }
             }
-            population.extend(inserted);
+            for key in inserted {
+                if !population.contains(&key) && population.len() >= maximum {
+                    return Err(RebuildFailure::Capacity(plan.generation));
+                }
+                population.insert(&key)?;
+            }
             if population.len() > maximum {
                 return Err(RebuildFailure::Capacity(plan.generation));
             }
@@ -250,7 +256,7 @@ impl Delta {
             source: SelectedSource {
                 pin: Some(pin),
                 head,
-                candidates: population,
+                candidates: population.finish()?,
             },
         }))
     }

@@ -69,7 +69,7 @@ mod catch_up;
 mod checkpoint_buffers;
 #[cfg(feature = "test-fixtures")]
 use crate::exact_text_probe::{ExactProviderTestPoint as TestPoint, observe as observe_test_point};
-use catch_up::{CapturedSource, Selected};
+use catch_up::{CandidatePopulation, CapturedSource, Selected};
 
 const POLL_INTERVAL: Duration = Duration::from_millis(10);
 const MAX_REGISTERED_EXACT_PARTITIONS: usize = 256;
@@ -3254,7 +3254,7 @@ fn rebuild_slot(
         }
     };
     persist_checked_slot(runtime, slot, &provider)?;
-    Ok(Some(Selected::new(provider, captured, candidates)))
+    Ok(Some(Selected::new(provider, captured, candidates)?))
 }
 
 fn persist_checked_slot(
@@ -3409,7 +3409,7 @@ fn rebuild_predicate_slot(
     )
     .map_err(|error| map_predicate_admission_failure(error, generation))?;
     persist_checked_predicate_slot(runtime, slot, &provider)?;
-    Ok(Some(Selected::from_shared(provider, captured, candidates)))
+    Ok(Some(Selected::from_shared(provider, captured, candidates)?))
 }
 
 fn persist_checked_predicate_slot(
@@ -3801,7 +3801,7 @@ fn rebuild_nullable_predicate_slot(
     )
     .map_err(|error| map_predicate_admission_failure(error, generation))?;
     persist_checked_nullable_predicate_slot(runtime, slot, &provider)?;
-    Ok(Some(Selected::from_shared(provider, captured, candidates)))
+    Ok(Some(Selected::from_shared(provider, captured, candidates)?))
 }
 
 fn persist_checked_nullable_predicate_slot(
@@ -3856,7 +3856,7 @@ fn read_complete_predicate_partition<R: ExactPredicateRegistrationView>(
     captured: &CapturedSource,
     registration: &R,
     generation: ProjectionGeneration,
-) -> Result<(ExactPredicateSourceRows, BTreeSet<EntityKey>), RebuildFailure> {
+) -> Result<(ExactPredicateSourceRows, CandidatePopulation), RebuildFailure> {
     let access_program = registration.access_program();
     let step = access_program
         .steps()
@@ -3890,7 +3890,7 @@ fn read_complete_predicate_partition<R: ExactPredicateRegistrationView>(
         .map_err(|_| RebuildFailure::Integrity)?
         .min(MAX_PROJECTED_POLICY_CANDIDATES_V1);
     let mut rows = BTreeMap::new();
-    let mut candidates = BTreeSet::new();
+    let mut candidates = CandidatePopulation::new(&captured.budget)?;
     let mut observed_entries = 0_usize;
     let mut after = None;
     loop {
@@ -3912,7 +3912,7 @@ fn read_complete_predicate_partition<R: ExactPredicateRegistrationView>(
                 .decode_index(item.value().key())
                 .map_err(|_| RebuildFailure::Integrity)?;
             let entity_key = decoded.entity_key().clone();
-            if !candidates.insert(entity_key.clone()) {
+            if !candidates.insert(&entity_key)? {
                 return Err(RebuildFailure::Integrity);
             }
             let target = EntityTarget::new(step.internal_entity_id(), entity_key.clone())
@@ -4012,7 +4012,7 @@ fn read_complete_partition(
     captured: &CapturedSource,
     registration: &ExactTextRegistration,
     generation: ProjectionGeneration,
-) -> Result<(ExactTextSourceRows, BTreeSet<EntityKey>), RebuildFailure> {
+) -> Result<(ExactTextSourceRows, CandidatePopulation), RebuildFailure> {
     let program = registration.query.representative_program();
     let step = program.steps().first().ok_or(RebuildFailure::Integrity)?;
     if program.steps().len() != 1 {
@@ -4048,7 +4048,7 @@ fn read_complete_partition(
             .map_err(|_| RebuildFailure::Integrity)?
             .min(MAX_PROJECTED_POLICY_CANDIDATES_V1);
     let mut rows = BTreeMap::new();
-    let mut candidates = BTreeSet::new();
+    let mut candidates = CandidatePopulation::new(&captured.budget)?;
     let mut observed_entries = 0_usize;
     let mut after = None;
     loop {
@@ -4070,7 +4070,7 @@ fn read_complete_partition(
                 .decode_index(item.value().key())
                 .map_err(|_| RebuildFailure::Integrity)?;
             let entity_key = decoded.entity_key().clone();
-            if !candidates.insert(entity_key.clone()) {
+            if !candidates.insert(&entity_key)? {
                 return Err(RebuildFailure::Integrity);
             }
             let target = EntityTarget::new(step.internal_entity_id(), entity_key.clone())

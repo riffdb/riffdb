@@ -1,5 +1,6 @@
 //! Private source custody for binary-text and exact-predicate workers.
 
+#[cfg(test)]
 use std::collections::BTreeSet;
 use std::ops::Deref;
 use std::sync::Arc;
@@ -10,7 +11,7 @@ use riffdb_storage_api::{
     ChangelogCursorErrorV3, DurableKeySchemaBindingV1, StorageErrorKind, StoredEntityRecordV1,
 };
 use riffdb_storage_redb::RedbDerivedSourcePin;
-use riffdb_types::{CommitSequence, EntityKey, FrontierPosition, ProjectionGeneration};
+use riffdb_types::{CommitSequence, FrontierPosition, ProjectionGeneration};
 
 use super::{ExactTextRuntime, MAX_PROJECTED_POLICY_CANDIDATES_V1, RebuildFailure};
 use crate::columnar_adapter::read_application_head;
@@ -19,6 +20,12 @@ use crate::projection_read_source::ProjectionReadSource;
 
 #[path = "exact_text_delta.rs"]
 mod delta;
+#[path = "exact_source_population.rs"]
+mod population;
+pub(super) use population::{AdmittedCandidatePopulation, CandidatePopulation};
+#[cfg(test)]
+#[path = "exact_source_population_tests.rs"]
+mod population_tests;
 use delta::{Delta, DeltaPlan};
 #[path = "exact_text_delta_provider.rs"]
 mod provider;
@@ -174,31 +181,32 @@ struct SelectedSource {
     head: CommitSequence,
     // Includes policy-denied and null-text rows: admission does not reduce the
     // population against which a future insert must check the existing bound.
-    candidates: BTreeSet<EntityKey>,
+    candidates: AdmittedCandidatePopulation,
 }
 
 impl<T> Selected<T> {
     pub(super) fn new(
         provider: T,
         captured: CapturedSource,
-        candidates: BTreeSet<EntityKey>,
-    ) -> Self {
+        candidates: CandidatePopulation,
+    ) -> Result<Self, RebuildFailure> {
         Self::from_shared(Arc::new(provider), captured, candidates)
     }
 
     pub(super) fn from_shared(
         provider: Arc<T>,
         captured: CapturedSource,
-        candidates: BTreeSet<EntityKey>,
-    ) -> Self {
-        Self {
+        candidates: CandidatePopulation,
+    ) -> Result<Self, RebuildFailure> {
+        let candidates = candidates.finish()?;
+        Ok(Self {
             provider,
             source: SelectedSource {
                 pin: captured.pin,
                 head: captured.head,
                 candidates,
             },
-        }
+        })
     }
 
     pub(super) fn has_source_pin(&self) -> bool {
@@ -231,6 +239,16 @@ impl<T> Deref for Selected<T> {
 #[cfg(test)]
 mod tests {
     use riffdb_storage_api::AuthoritativePointReader;
+    use riffdb_types::EntityKey;
+
+    fn selected_for_test<T>(
+        provider: T,
+        captured: CapturedSource,
+        keys: BTreeSet<EntityKey>,
+    ) -> Selected<T> {
+        let population = CandidatePopulation::copy_from(&captured.budget, &keys).unwrap();
+        Selected::new(provider, captured, population).unwrap()
+    }
 
     use super::*;
     use crate::columnar_adapter::tests::{append_board_ticket_for_worker_at, board_runtime};
@@ -353,7 +371,7 @@ query Ticket($organization_id: Ticket.organization_id, $ticket_id: Ticket.ticket
             &work,
         )
         .unwrap();
-        let previous = Selected::new((), initial, BTreeSet::new());
+        let previous = selected_for_test((), initial, BTreeSet::new());
         let head = CommitSequence::new(2).unwrap();
         append_board_ticket_for_worker_at(&board, head, 0x21);
         let captured =
@@ -560,7 +578,7 @@ query Ticket($organization_id: Ticket.organization_id, $ticket_id: Ticket.ticket
         let mut key = EntityKeyBuilder::new(entity);
         key.push_uuid(&uuid(0x41)).unwrap();
         key.push_uuid(&uuid(0x20)).unwrap();
-        let previous = Selected::new((), initial, BTreeSet::from([key.finish().unwrap()]));
+        let previous = selected_for_test((), initial, BTreeSet::from([key.finish().unwrap()]));
         for sequence in 2..=66 {
             append_board_ticket_for_worker_at(
                 &board,
@@ -698,7 +716,7 @@ query Ticket($organization_id: Ticket.organization_id, $ticket_id: Ticket.ticket
             FrontierPosition::AppliedThrough(second)
         );
 
-        let selected = Selected::new((), captured, BTreeSet::new());
+        let selected = selected_for_test((), captured, BTreeSet::new());
         assert!(selected.validates_frontier(first));
         assert!(!selected.validates_frontier(second));
         let next = CapturedSource::capture(
