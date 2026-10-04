@@ -48,10 +48,10 @@ impl Drop for Active {
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
-struct Release {
-    generation: u64,
-    version: u64,
-    credential: PathBuf,
+pub(super) struct Release {
+    pub(super) generation: u64,
+    pub(super) version: u64,
+    pub(super) credential: PathBuf,
 }
 
 struct AdmissionState {
@@ -141,21 +141,44 @@ impl Admission {
         }
         if self.quiesced()? && !root.join("load.quiesced").exists() {
             let totals = metrics.lock().map_err(|_| "observation_state")?;
-            let mut receipt = std::fs::OpenOptions::new()
-                .write(true)
-                .create_new(true)
-                .open(root.join("load.quiesced"))
-                .map_err(|_| "quiescence_output")?;
-            writeln!(receipt, "{{\"schema\":\"riffdb.ticketdesk-lifecycle-quiesced/v1\",\"generation\":{},\"completed_commands\":{},\"completed_reads\":{}}}",
-                self.release()?.generation, totals.total_commands, totals.total_reads)
-                .map_err(|_| "quiescence_output")?;
-            receipt.sync_all().map_err(|_| "quiescence_output")?;
+            publish_quiescence(
+                root,
+                "load.quiesced",
+                &format!(
+                    "{{\"schema\":\"riffdb.ticketdesk-lifecycle-quiesced/v1\",\"generation\":{},\"completed_commands\":{},\"completed_reads\":{}}}\n",
+                    self.release()?.generation,
+                    totals.total_commands,
+                    totals.total_reads
+                ),
+            )?;
         }
         Ok(())
     }
 }
 
-fn read_release(root: &Path, path: &Path) -> Result<Release> {
+pub(super) fn publish_quiescence(root: &Path, name: &str, encoded: &str) -> Result<()> {
+    if !matches!(name, "load.quiesced" | "observer.quiesced") || encoded.len() > 4096 {
+        return Err("quiescence_output");
+    }
+    let pending = root.join(format!(".{name}.pending"));
+    let mut output = std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(&pending)
+        .map_err(|_| "quiescence_output")?;
+    let result = (|| {
+        output
+            .write_all(encoded.as_bytes())
+            .map_err(|_| "quiescence_output")?;
+        output.sync_all().map_err(|_| "quiescence_output")?;
+        std::fs::hard_link(&pending, root.join(name)).map_err(|_| "quiescence_output")
+    })();
+    drop(output);
+    std::fs::remove_file(pending).map_err(|_| "quiescence_output")?;
+    result
+}
+
+pub(super) fn read_release(root: &Path, path: &Path) -> Result<Release> {
     if path.is_symlink() || !path.is_file() {
         return Err("release_input");
     }

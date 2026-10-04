@@ -436,7 +436,10 @@ tls_server_name = "127.0.0.1"
                       {"type": "query_projection", "contract_lineage": "TicketDeskLifecycle",
                        "stable_id": descriptor["projection_id"]}] + [
                       {"type": permission} for permission in ("read_health", "create_capability",
-                                                               "revoke_capability", "administer_capabilities")],
+                                                               "revoke_capability", "administer_capabilities")] + [
+                      {"type": "seek_event_stream_consumer", "contract_lineage": "TicketDeskLifecycle",
+                       "reactive_module_hash": module, "operation_name": "TicketEvents"}
+                      for module in sorted((descriptor["reactive_v1"], descriptor["reactive_v2"]))],
                   "field_visibility": [], "max_scan_rows": 50, "approval_required": []},
     }))
     ready = queue.Queue(maxsize=1)
@@ -585,12 +588,29 @@ tls_server_name = "127.0.0.1"
                         break
             if args.additive_deploy:
                 require(not args.population_probe_seconds, "successor_preparation_mode")
+                handover = None
                 if observer:
-                    write(root, "observer.stop", "stop\n")
-                    observer.wait(timeout=15)
-                    observer_pump.join(timeout=5)
-                    require(observer.returncode == 0 and not observer_pump.is_alive(), "observer_shutdown")
-                    observer = None
+                    write(root, "observer.quiesce", "quiesce\n")
+                    deadline = time.monotonic() + 15
+                    while not (root / "observer.quiesced").is_file():
+                        require(time.monotonic() < deadline and observer.poll() is None,
+                                "observer_quiescence")
+                        threading.Event().wait(0.05)
+                    handover = read_json(root / "observer.quiesced", 4096)
+                    require(handover["schema"] == "riffdb.ticketdesk-lifecycle-observer-quiesced/v1"
+                            and handover["generation"] == handover["contract_version"] == 1
+                            and handover["events_checked"] == 2 and handover["duplicates"] == 0,
+                            "observer_handover")
+                    consumer_args = ["--operation", "TicketEvents", "--consumer-name",
+                        "ticketdesk-lifecycle-campaign", "--parameter",
+                        'organization_id={"type":"uuid","value":"01900000-0000-7000-8001-000000000000"}']
+                    invoke(root, "retire-parent-consumer", base + ["event", "retire",
+                        "--module-hash", descriptor["reactive_v1"], *consumer_args])
+                    retired = read_json(root / "retire-parent-consumer.stdout")
+                    require(retired.get("schema") == "riffdb.cli.output/v1"
+                            and retired.get("command") == "event.retire" and retired["ok"] is True
+                            and retired["result"] == {"result": "applied"},
+                            "consumer_retirement")
                 successor = root / "successor"
                 shutil.copytree(repository / "examples/ticketdesk/lifecycle-v2", successor)
                 source_v2 = successor / "riffdb.application.json"
@@ -606,11 +626,66 @@ tls_server_name = "127.0.0.1"
                        "--lifetime-seconds", "3600", "--credential-output", str(root / "application-v2.credential")])
                 environment["RIFFDB_LIFECYCLE_CONTRACT_VERSION"] = "2"
                 environment["RIFFDB_LIFECYCLE_APPLICATION_CREDENTIAL"] = str(root / "application-v2.credential")
+                if observer:
+                    app2base = [cli, "--config", str(client), "--credential-file",
+                                str(root / "application-v2.credential")]
+                    invoke(root, "register-successor-consumer", app2base + ["event", "consume",
+                        "--module-hash", descriptor["reactive_v2"], *consumer_args,
+                        "--batch-limit", "1", "--in-flight-limit", "1", "--lease-seconds", "60",
+                        "--wait-nanos", "0"])
+                    registered = read_json(root / "register-successor-consumer.stdout")
+                    require(registered.get("schema") == "riffdb.cli.output/v1"
+                            and registered.get("command") == "event.consume" and registered["ok"] is True
+                            and isinstance(registered["result"]["events"], list)
+                            and len(registered["result"]["events"]) <= 1, "consumer_handover_registration")
+                    for delivery in registered["result"]["events"]:
+                        require(delivery["history_incarnation"] == str(handover["history_incarnation"])
+                                and int(delivery["event_id"].split(":")[0]) <= handover["consumer_checkpoint"],
+                                "consumer_handover_registered_prefix")
+                        invoke(root, "release-successor-lease", app2base + ["event", "nack",
+                            "--module-hash", descriptor["reactive_v2"], *consumer_args,
+                            "--event-id", delivery["event_id"], "--lease-token", delivery["lease_token"],
+                            "--history-incarnation", delivery["history_incarnation"],
+                            "--retry-delay-nanos", "0"])
+                        released = read_json(root / "release-successor-lease.stdout")
+                        require(released.get("schema") == "riffdb.cli.output/v1"
+                                and released.get("command") == "event.nack" and released["ok"] is True
+                                and released["result"] == {"result": "applied"},
+                                "consumer_handover_lease_release")
+                    invoke(root, "seek-successor-consumer", base + ["event", "seek",
+                        "--module-hash", descriptor["reactive_v2"], *consumer_args,
+                        "--checkpoint", str(handover["consumer_checkpoint"]) + ":0"])
+                    sought = read_json(root / "seek-successor-consumer.stdout")
+                    require(sought.get("schema") == "riffdb.cli.output/v1"
+                            and sought.get("command") == "event.seek" and sought["ok"] is True
+                            and sought["result"] == {"result": "applied"}, "consumer_handover_seek")
+                    write(root, "load.phase", "2 2 application-v2.credential\n")
+                    (root / "observer.quiesce").unlink()
+                    deadline = time.monotonic() + 15
+                    while True:
+                        remaining = deadline - time.monotonic()
+                        require(remaining > 0 and observer.poll() is None, "observer_handover")
+                        resumed = latest.get(timeout=remaining)
+                        if resumed["release_generation"] == 2 and not resumed["observer_quiesced"]:
+                            require(resumed["events_checked"] == 2
+                                    and resumed["history_incarnation"] == handover["history_incarnation"],
+                                    "observer_handover_continuity")
+                            break
                 invoke(root, "successor-worker", [worker, "successor-smoke"], environment=environment)
                 require(read_json(root / "successor-worker.stdout", 4096) == {
                     "schema": "riffdb.ticketdesk-lifecycle-successor-smoke/v1", "contract_version": 2,
                     "caller_fence": True, "idempotency": True, "state_reconciled": True,
                     "partition_isolation": True}, "successor_observation")
+                if observer:
+                    deadline = time.monotonic() + 15
+                    while True:
+                        remaining = deadline - time.monotonic()
+                        require(remaining > 0 and observer.poll() is None, "successor_events")
+                        observed = latest.get(timeout=remaining)
+                        require(observed["events_checked"] <= 3 and observed["duplicates"] == 0,
+                                "successor_events")
+                        if observed["events_checked"] == 3:
+                            break
                 if driver_binary:
                     successor_smoke = root / "successor-smoke"
                     successor_smoke.mkdir(mode=0o700)

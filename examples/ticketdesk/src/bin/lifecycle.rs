@@ -36,6 +36,8 @@ use application::{
 
 #[path = "../lifecycle_workload/current.rs"]
 mod current;
+#[path = "../lifecycle_workload/current_reactive.rs"]
+mod current_reactive;
 #[path = "../lifecycle_workload/deployment.rs"]
 mod deployment;
 #[path = "../lifecycle_workload/model.rs"]
@@ -406,11 +408,19 @@ fn descriptor() -> Result<()> {
         .find(|projection| projection.name() == "TicketUpdates")
         .ok_or("projection_descriptor")?;
     println!(
-        "{{\"schema\":\"riffdb.ticketdesk-lifecycle-descriptor/v1\",\"projection_id\":{},\"projection_plan_hash\":\"{}\"}}",
+        "{{\"schema\":\"riffdb.ticketdesk-lifecycle-descriptor/v1\",\"projection_id\":{},\"projection_plan_hash\":\"{}\",\"reactive_v1\":\"{}\",\"reactive_v2\":\"{}\"}}",
         projection.projection_id().get(),
         projection
             .plan_hash()
             .as_bytes()
+            .iter()
+            .map(|byte| format!("{byte:02x}"))
+            .collect::<String>(),
+        application::TICKET_ACTIVITY_REACTIVE_MODULE_HASH
+            .iter()
+            .map(|byte| format!("{byte:02x}"))
+            .collect::<String>(),
+        application_v2::TICKET_ACTIVITY_REACTIVE_MODULE_HASH
             .iter()
             .map(|byte| format!("{byte:02x}"))
             .collect::<String>()

@@ -627,3 +627,35 @@ preserved; Updated handbook pages: this handoff; Hazards/follow-ups: repeat the
 corrected observed host preparation, integrate actual deployment/observer
 handover and remaining faults, then pass a frozen short campaign. No 24-hour
 run has started.
+
+## WP-825 measured consumer recovery and observer handover
+
+The corrected fifteen-minute preparation passed on the inventoried 8-vCPU,
+32-GiB durable-SSD host. It completed 90,000 commands and 360,000 reads with no
+retries or post-deadline completions, reconciled all 65,536 tickets, and checked
+3,072 consumer events without duplicates. The confirmed consumer pause lasted
+300.050 seconds; its missing-event backlog drained in 13.089 seconds. The final
+normal window measured p95 85.436 ms and p99 138.481 ms. This is preparation
+with one fault and retained history, not a campaign or physical-reclamation gate.
+
+The same observer now survives exact-parent V2 activation. It finishes and
+acknowledges its current batch, cancels the watch, and publishes an atomic
+quiescence receipt. Before activation the operator retires the V1 consumer.
+After activation the V2 application credential registers the successor consumer
+and negatively acknowledges its exact initial lease. The operator then seeks
+that consumer to the recorded acknowledged checkpoint. Fresh status must match
+the checkpoint and incarnation, with no leases, retries or dead letters. The
+observer preserves its event oracle and resumes the generated V2 watch; the
+integrated TLS preparation verifies the subsequent V2 event without duplicates.
+Seek authority is confined to the operator credential. No application role,
+native runtime boundary, durable format, request bound or ordering changes.
+
+PR note: Package WP-825 (open); Tier guarantee; Behavior: quiescent consumer and
+watch handover through exact generated releases and existing public maintenance
+operations; Checks: seventeen Rust semantic/schedule cases, Clippy, real
+two-version Rust/TypeScript TLS preparation and scoped acceptance;
+Compatibility: existing authority, history, lease and checkpoint checks remain
+binding; Updated handbook pages: this handoff; Hazards/follow-ups: exercise
+handover under online retention, finish original-identity fault recovery and all
+campaign actions, then freeze and pass the short rehearsal. The 24-hour run
+remains unstarted.
