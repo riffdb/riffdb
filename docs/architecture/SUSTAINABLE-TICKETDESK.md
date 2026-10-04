@@ -439,3 +439,30 @@ Updated handbook pages: this milestone handoff; Checks: six semantic/schedule
 cases, Clippy and the real TLS preparation; Hazards/follow-ups: run the host
 population probe, then complete active observations, faults and the qualifying
 short rehearsal. The 24-hour run remains unstarted.
+
+## WP-825 retained TypeScript smoke and host load preparation
+
+The inventoried durable-SSD host completed the fresh five-minute population
+probe at source revision `50ade9e2`: all 30,000 updates and 120,000 named reads
+completed within the window, with zero retries, p95 73.830 ms and p99 84.490 ms.
+The peak load concurrency was 28, and no completions were added after the
+window. All 65,536 ticket rows reconciled afterward. Latency overflow remained
+visible (392 samples above 250 ms); it was included in the quantiles. This
+result covers offered load and state reconciliation, without lifecycle faults,
+active campaign observers or physical reclamation qualification.
+
+The preparation gate now also exercises retained generated TypeScript bindings
+through the native Rust driver over verified TLS. It checks a named read,
+wrong-partition refusal, a stale expected-revision command and its exact replay,
+unchanged state, and a live-query snapshot. This smoke creates no durable
+consumer that could hold later campaign history. Its build uses the existing
+pinned runtime dependencies and stages compiled output only in the private
+preparation root. The integrated real preparation gate passes.
+
+PR note: Package WP-825 (open); Tier guarantee; Behavior: retained TypeScript
+semantic smoke and observed full-population load preparation; Checks: real
+Rust/TypeScript TLS preparation and host population reconciliation; Compatibility:
+no database or public-interface changes; Updated handbook pages: this handoff;
+Hazards/follow-ups: active observers, all seven faults, resource accounting,
+archive/restore reconciliation, a frozen campaign and its short rehearsal remain
+required. These observations do not qualify WP-825. No 24-hour run has started.

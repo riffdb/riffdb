@@ -5,7 +5,7 @@ set -euo pipefail
 repo_root="$(git rev-parse --show-toplevel)"
 cd "$repo_root"
 cargo build --locked -p riffdb-server --bin riffdbd -p riffdb-cli --bin riffdb \
-    -p riffdb-ticketdesk --bin lifecycle
+    -p riffdb-ticketdesk --bin lifecycle -p riffdb-driver-host --bin riffdb-driverd
 task_target_dir="$(cargo metadata --no-deps --format-version 1 | python3 -c \
     'import json,sys; print(json.load(sys.stdin)["target_directory"])')"
 preparation_root="$(mktemp -d "${TMPDIR:-/tmp}/riffdb-lifecycle-preparation.XXXXXX")"
@@ -13,5 +13,6 @@ preparation_root="$(mktemp -d "${TMPDIR:-/tmp}/riffdb-lifecycle-preparation.XXXX
 # smoke removes its credentials and scratch artifacts.
 ./scripts/ticketdesk-lifecycle-smoke --root "$preparation_root/attempt" \
     --server "$task_target_dir/debug/riffdbd" \
-    --cli "$task_target_dir/debug/riffdb" --worker "$task_target_dir/debug/lifecycle"
+    --cli "$task_target_dir/debug/riffdb" --worker "$task_target_dir/debug/lifecycle" \
+    --driver "$task_target_dir/debug/riffdb-driverd"
 rm -rf -- "$preparation_root"

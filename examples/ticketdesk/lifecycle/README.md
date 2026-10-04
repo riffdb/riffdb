@@ -22,11 +22,11 @@ Build and run the real public TLS preparation smoke in a fresh private root:
 
 ```bash
 cargo build -p riffdb-server --bin riffdbd -p riffdb-cli --bin riffdb \
-  -p riffdb-ticketdesk --bin lifecycle
+  -p riffdb-ticketdesk --bin lifecycle -p riffdb-driver-host --bin riffdb-driverd
 ./scripts/ticketdesk-lifecycle-smoke \
   --root /tmp/riffdb-lifecycle-preparation \
   --server target/debug/riffdbd --cli target/debug/riffdb \
-  --worker target/debug/lifecycle
+  --worker target/debug/lifecycle --driver target/debug/riffdb-driverd
 ```
 
 The script creates one owned preparation database, bootstraps an operator,
@@ -43,7 +43,7 @@ through 16 clients and generated compiled commands. It requires the protected
 are deterministic so an operator can repeat the same preparation safely.
 
 These are preparation tools. The sustained workload, fault controller,
-TypeScript smoke, independent campaign reconciliation, and real rehearsal
+independent campaign reconciliation, and real rehearsal
 remain WP-825 work. No preparation output is a qualifying campaign receipt.
 See the [milestone handoff](../../../docs/architecture/SUSTAINABLE-TICKETDESK.md).
 
@@ -64,3 +64,15 @@ reserving four slots for later campaign observations/control. Queues and
 latency histograms are bounded. Windows exclude post-duration drain completions;
 slow tail overflow is disclosed and cannot become a fast latency sample.
 This preparation has no lifecycle faults and cannot qualify the milestone.
+
+The optional `--driver` smoke compiles retained TypeScript bindings against the
+native runtime, then checks named reads, partition isolation, a refused stale
+update and its exact replay, unchanged state, and a live-query snapshot. It
+creates no durable event consumer that could hold future campaign history.
+Use the already installed pinned TypeScript runtime dependencies.
+
+The initial durable-SSD host preparation completed all 30,000 updates and
+120,000 reads in its five-minute window, with p95 73.830 ms and p99 84.490 ms,
+zero retries, and no post-window completions. All 65,536 ticket states were
+reconciled. This is a load preparation result, with no lifecycle fault coverage;
+it does not qualify WP-825 or the 24-hour campaign.

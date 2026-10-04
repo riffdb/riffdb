@@ -7,6 +7,7 @@ Artifacts, credentials and diagnostic logs remain in the private supplied root.
 """
 
 import argparse
+import hashlib
 import json
 import os
 from pathlib import Path
@@ -16,6 +17,7 @@ import socket
 import subprocess
 import sys
 import threading
+import time
 
 
 class SmokeError(ValueError):
@@ -60,12 +62,86 @@ def pump_ready(server, root, ready):
             ready.put_nowait(False)
 
 
+def typescript_smoke(root, repository, driver_binary, port):
+    runtime = repository / "clients/typescript/runtime"
+    compiler = runtime / "node_modules/.bin/tsc"
+    require(compiler.is_file() and (runtime / "dist/index.js").is_file(), "typescript_runtime")
+    stage = root / "typescript"
+    stage.mkdir(mode=0o700)
+    shutil.copyfile(repository / "examples/ticketdesk/lifecycle/typescript/smoke.ts", stage / "smoke.ts")
+    shutil.copyfile(root / "application/generated/typescript/client.ts", stage / "client.ts")
+    write(stage, "package.json", '{"type":"module"}\n')
+    modules = stage / "node_modules"
+    (modules / "@riffdb").mkdir(parents=True, mode=0o700)
+    (modules / "@riffdb/application").symlink_to(runtime, target_is_directory=True)
+    (modules / "@types").symlink_to(runtime / "node_modules/@types", target_is_directory=True)
+    invoke(root, "typescript-build", [str(compiler), str(stage / "smoke.ts"),
+           "--target", "ES2022", "--module", "NodeNext", "--moduleResolution", "NodeNext",
+           "--strict", "--noUncheckedIndexedAccess", "--exactOptionalPropertyTypes",
+           "--types", "node", "--typeRoots", str(runtime / "node_modules/@types"),
+           "--outDir", str(stage / "dist")])
+    lock = json.loads((root / "application/riffdb.application.lock.json").read_bytes())
+    role = next(role for role in lock["roles"] if role["definition"]["name"] == "TicketDeskLifecycleApplication")
+    catalog = next(artifact for artifact in lock["artifacts"] if artifact["kind"] == "mcp")
+    endpoint = f"https://127.0.0.1:{port}"
+    identity = {"applicationManifestHash": lock["exact_manifest_hash"],
+                "operationCatalogHash": catalog["content_hash"],
+                "contractLineage": "TicketDeskLifecycle", "contractVersion": 1,
+                "contractBundleHash": lock["contract"]["bundle_hash"], "database": "default",
+                "role": "TicketDeskLifecycleApplication", "roleDefinitionHash": role["definition_hash"],
+                "remoteIdentityHash": hashlib.sha256((endpoint + "|127.0.0.1").encode()).hexdigest()}
+    write(root, "application.identity.json", json.dumps(identity))
+    quote = lambda name: json.dumps(str(root / name))
+    config = write(root, "application-driver.toml", f'''[driver]
+socket = {quote("application.sock")}
+[application]
+lock_file = {quote("application/riffdb.application.lock.json")}
+manifest_file = {quote("application/generated/riffdb.application.exact.json")}
+operation_catalog_file = {quote("application/generated/mcp/tools.json")}
+database = "default"
+role = "TicketDeskLifecycleApplication"
+[remote]
+endpoint = "{endpoint}"
+tls_trust_root = {quote("ca.pem")}
+tls_server_name = "127.0.0.1"
+credential_file = {quote("application.credential")}
+pool_connections = 1
+streams_per_connection = 4
+''')
+    with (root / "driver.stdout").open("xb") as output, (root / "driver.stderr").open("xb") as errors:
+        driver = subprocess.Popen([str(driver_binary), str(config)], stdout=output, stderr=errors)
+        try:
+            deadline = time.monotonic() + 30
+            while not (root / "application.sock").is_socket() and driver.poll() is None:
+                require(time.monotonic() < deadline, "driver_startup")
+                threading.Event().wait(0.05)
+            require(driver.poll() is None and (root / "application.sock").is_socket(), "driver_startup")
+            invoke(root, "typescript-smoke", ["node", str(stage / "dist/smoke.js"), str(root)])
+            result = root / "typescript-smoke.stdout"
+            require(result.stat().st_size <= 4096, "typescript_observation")
+            require(json.loads(result.read_bytes()) == {
+                "schema": "riffdb.ticketdesk-lifecycle-typescript-smoke/v1", "named_read": True,
+                "partition_isolation": True, "caller_fence": True, "idempotency": True,
+                "state_unchanged": True, "live_query_snapshot": True}, "typescript_observation")
+        finally:
+            if driver.poll() is None:
+                driver.terminate()
+            try:
+                driver.wait(timeout=15)
+            except subprocess.TimeoutExpired:
+                driver.kill()
+                driver.wait(timeout=5)
+                raise SmokeError("driver_shutdown")
+            require(driver.returncode == 0, "driver_shutdown")
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--root", required=True, type=Path)
     parser.add_argument("--server", required=True, type=Path)
     parser.add_argument("--cli", required=True, type=Path)
     parser.add_argument("--worker", required=True, type=Path)
+    parser.add_argument("--driver", type=Path, help="also exercise retained TypeScript bindings through native Rust driver")
     parser.add_argument("--population-probe-seconds", type=int, default=0,
                         help="fresh 65536-ticket load preparation; never a campaign receipt")
     args = parser.parse_args()
@@ -76,6 +152,9 @@ def main():
     executables = [path.resolve(strict=True) for path in (args.server, args.cli, args.worker)]
     require(all(path.is_file() and os.access(path, os.X_OK) for path in executables), "binary")
     server_binary, cli, worker = map(str, executables)
+    driver_binary = args.driver.resolve(strict=True) if args.driver else None
+    if driver_binary:
+        require(driver_binary.is_file() and os.access(driver_binary, os.X_OK), "driver_binary")
     os.umask(0o077)
     root.mkdir(mode=0o700)
     for directory in ("data", "backups", "projections", "archive"):
@@ -197,6 +276,8 @@ tls_server_name = "127.0.0.1"
                     "idempotency": True, "state_reconciled": True, "partition_isolation": True,
                     "events_reconciled": True, "live_query_snapshot": True,
                 }, "worker_observation")
+            if driver_binary:
+                typescript_smoke(root, repository, driver_binary, port)
         finally:
             if server.poll() is None:
                 server.terminate()
