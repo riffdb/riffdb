@@ -302,6 +302,7 @@ record with no front matter.
 | [0265](0265-sustainable-ticketdesk-storage-lifecycle.md) | Sustainable TicketDesk Storage Lifecycle | Accepted | guarantee |
 | [0266](0266-bounded-exact-provider-registration-retirement.md) | Bounded Exact Provider Registration Retirement | Accepted | guarantee |
 | [0267](0267-ordering-boundary-for-the-sustainable-application-milestone.md) | Ordering Boundary For The Sustainable Application Milestone | Accepted | guarantee |
+| [0268](0268-bounded-native-continuation-of-source-reclamation-proofs.md) | Bounded Native Continuation Of Source Reclamation Proofs | Proposed | guarantee |
 <!-- adr-index:end -->
 
 The human architecture review on 2026-07-12 approved the direction represented
