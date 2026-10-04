@@ -46,6 +46,9 @@ These limits are part of the POC release posture, not hidden roadmap promises.
   preparation also ended with live-query notification buffer pressure. The
   native revoked-command error carriage has been repaired and verified through
   an actual TLS rotation preparation; the complete campaign remains unqualified.
+  A later required-host preparation completed all offered requests and live
+  progress, but its final normal window exceeded the p99 latency gate and again
+  reclaimed no source receipts or extents.
   Reclamation and notification behavior require further native diagnosis and
   verification; maintenance pauses, automatic
   watch reconnects or relaxed client validation cannot qualify the rehearsal.

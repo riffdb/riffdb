@@ -878,3 +878,24 @@ public interface, error class, durable
 format, authority or capacity change; Updated handbook pages: native findings
 and this handoff; Hazards/follow-ups: actual required-host load verification,
 native reclamation repair, full CI and complete short rehearsal remain required.
+
+The focused required-host preparation at `a69d664c` completed 90,000 commands
+and 360,000 reads, the actual 300.049-second consumer pause and its 10.027-second
+drain, with live progress through 45 renewals. It still **failed**: the final
+fault-free five-minute window had 1,676 requests above 250 ms, so p99 missed
+the gate despite p95 of 83.413 ms. The bounded profiling samples ended before
+that window. Source receipts and physical extents again showed zero reclamation.
+No final archive reconciliation or qualification follows a failed latency gate.
+The complete findings also identify a separate full-population prefix-refresh
+scheduling concern. The pending source-proof amendment does not waive that
+boundary or any requirement. No 24-hour run has started.
+
+PR note: Package WP-825 (open); Tier guarantee; Behavior: record actual required-
+host preparation failure and the additional native scheduling concern; Checks:
+all 450,000 offered requests completed, exact consumer outage/drain recorded,
+live progression observed, unchanged normal-window latency gate refuses the
+run, production shutdown reports zero reclamation; Compatibility: unchanged
+workload, concurrency, latency, source authority and recovery requirements;
+Updated handbook pages: this handoff and native findings; Hazards/follow-ups:
+accept ADR-0268 exactly, repair reclamation, diagnose latency and prefix refresh,
+explain the intermittent recovery failure, then complete all rehearsal gates.

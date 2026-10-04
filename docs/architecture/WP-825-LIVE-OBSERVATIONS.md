@@ -123,6 +123,25 @@ and scoped server Clippy pass. The complete server unit suite also passes:
 does not establish the cause or resolution of the host buffer-pressure failure.
 A new continuing-load host probe and the complete rehearsal are still required.
 
+The next C3D preparation used committed source `a69d664c`, fresh release
+artifacts and a fresh database on the required 8-vCPU, nominal 32-GiB SSD host.
+It completed 90,000 commands and 360,000 reads in three five-minute windows,
+with zero retries and at most 28 workload requests plus four auxiliary slots.
+The actual consumer pause lasted 300.049 seconds and recovered 2,048 missing
+events in 10.027 seconds. Live progress continued through 45 cursor renewals
+without buffer pressure during the offered load. This does not establish the
+earlier failure's cause or a performance improvement against the older artifacts.
+
+The preparation **failed** its normal-window latency gate. In the final
+600–900-second window, p95 was 83,413 microseconds, but 1,676 of 150,000
+completed requests exceeded the histogram's 250,000-microsecond ceiling.
+Thus p99 could not satisfy the required strictly lower 250-ms bound. The two
+bounded CPU profiling samples ended before 300 seconds after worker spawn;
+neither overlapped this final window. The failed preparation remains failed.
+Shutdown again reported zero source receipts removed and zero extents deleted
+or recycled. Final archive reconciliation did not run after the latency refusal.
+No complete rehearsal, full CI receipt or 24-hour qualification is established.
+
 ### Source-receipt reclamation: deterministic starvation reproduction
 
 The failed preparation logically pruned 115,460 application sequences across
@@ -157,6 +176,19 @@ independently durable checkpoint evidence, every hold, 256-receipt steps and
 maintenance pacing. If bounded progress requires changing ADR-0265's validation
 or scheduling decision, propose that exact change for separate human acceptance;
 do not implement weaker evidence or a harness maintenance pause.
+
+### Validated-prefix refresh: additional scheduling concern
+
+Inspection found that `refresh_validated_prefix` performs the complete retained-
+history, structural and catalog passes, then prepares the candidate, in one lane
+call. Each individual page is bounded and cancellation is checked, but the lane
+does not regain control between those pages. Publication can yield or go stale
+after all population work. Repeated attempts can therefore delay source work
+and repeat population validation. Actual pass counts, cancellation, changed-
+binding schedules and recovery consequences still need a regression and diagnosis.
+ADR-0268 deliberately preserves this separate proof boundary; its source-only
+continuation must not be treated as permission to reuse a partial structural or
+catalog proof. Complete validation and exact current publication remain required.
 
 ### Promoted backup recovery: unresolved intermittent failure
 
