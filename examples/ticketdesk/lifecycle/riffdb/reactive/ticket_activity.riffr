@@ -1,0 +1,12 @@
+reactive TicketActivity version 1 {
+  stream TicketEvents($organization_id: Ticket.organization_id) {
+    partition (organization_id = $organization_id);
+    event TicketCreated select (organization_id, ticket_id, project_id, reporter_id, assignee_id, title, status);
+    event TicketUpdated select (organization_id, ticket_id, revision, status, increment);
+  }
+
+  watch TicketQueueWatch(
+    $organization_id: Ticket.organization_id,
+    $project_id: Ticket.project_id
+  ) query TicketQueue updates patch;
+}

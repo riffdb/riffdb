@@ -156,7 +156,7 @@ def verify_artifact(root, relative, expected):
             os.close(directory)
 
 
-def validate(manifest, receipt):
+def validate(manifest, receipt, *, short_rehearsal=False):
     shape(manifest, {"schema", "target", "artifacts", "faults", "resource_limits"})
     require(manifest["schema"] == MANIFEST_SCHEMA, "schema")
     shape(manifest["target"], TARGET)
@@ -185,6 +185,14 @@ def validate(manifest, receipt):
     shape(receipt["checks"], CHECKS)
     require(all(value is True for value in receipt["checks"].values()), "checks")
 
+    windows = receipt["windows"]
+    require(type(windows) is list, "duration")
+    # WP-825 permits only the duration exception. Keep all other qualification
+    # checks, including six final fault-free hours, even in the shorter run.
+    require(73 <= len(windows) < 288 if short_rehearsal else len(windows) == 288,
+            "duration")
+    final_start = len(windows) * TARGET["window_s"] - 6 * 3600
+
     faults = manifest["faults"]
     actions = receipt["actions"]
     require(type(faults) is list and len(faults) == len(ACTIONS), "actions")
@@ -206,7 +214,7 @@ def validate(manifest, receipt):
         require(recovery <= 600 if kind in OUTAGES else duration + recovery <= 60, "recovery")
         require(actual["reconciled"] is True, "checks")
         end = start + duration + recovery
-        require(0 < start < end <= 64800, "actions")
+        require(0 < start < end <= final_start, "actions")
         require(all(end <= low or start >= high for low, high in fault_intervals), "actions")
         fault_intervals.append((start, end))
 
@@ -214,8 +222,6 @@ def validate(manifest, receipt):
     require(type(generations) is list and 3 <= len(generations) <= 65536, "reclamation")
     require(all(integer(value) > 0 for value in generations), "reclamation")
     require(len(set(generations)) == len(generations), "reclamation")
-    windows = receipt["windows"]
-    require(type(windows) is list and len(windows) == 288, "duration")
     final = []
     for index, window in enumerate(windows):
         shape(window, WINDOW_FIELDS)
@@ -238,7 +244,7 @@ def validate(manifest, receipt):
         shape(window["resources"], RESOURCES)
         for name, value in window["resources"].items():
             require(integer(value) <= manifest["resource_limits"][name], "resource_limit")
-        if start >= 64800:
+        if start >= final_start:
             final.append(window)
     require(final[-1]["eligible_history_bytes"] <= final[0]["eligible_history_bytes"], "backlog_growth")
     # Integer numerator of the least-squares slope; a final cleanup cannot hide
@@ -254,12 +260,15 @@ def validate(manifest, receipt):
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--self-test", action="store_true")
+    parser.add_argument("--short-rehearsal", action="store_true",
+                        help="WP-825 duration exception; never qualifies the 24-hour run")
     parser.add_argument("--manifest", type=Path)
     parser.add_argument("--receipt", type=Path)
     parser.add_argument("--manifest-sha256")
     args = parser.parse_args()
     if args.self_test:
-        require(not any((args.manifest, args.receipt, args.manifest_sha256)), "arguments")
+        require(not any((args.manifest, args.receipt, args.manifest_sha256,
+                         args.short_rehearsal)), "arguments")
         root = Path(__file__).resolve().parent.parent
         return subprocess.run([sys.executable, "-m", "unittest", "discover", "-s",
                                str(root / "tests/ticketdesk_lifecycle"), "-p", "test_*.py"],
@@ -269,10 +278,13 @@ def main():
     require(observed == digest(args.manifest_sha256), "manifest_identity")
     receipt, _ = read_object(args.receipt)
     require(receipt.get("manifest_sha256") == observed, "manifest_identity")
-    validate(manifest, receipt)
+    validate(manifest, receipt, short_rehearsal=args.short_rehearsal)
     for artifact in receipt["artifacts"].values():
         verify_artifact(args.receipt.parent, artifact["path"], artifact["sha256"])
-    print("TicketDesk rehearsal evidence-contract checks passed; campaign review remains required.")
+    if args.short_rehearsal:
+        print("Short rehearsal checks passed; 24-hour duration remains unmet; campaign review required.")
+    else:
+        print("TicketDesk rehearsal evidence-contract checks passed; campaign review remains required.")
     return 0
 
 

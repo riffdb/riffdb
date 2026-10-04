@@ -1,0 +1,195 @@
+#!/usr/bin/env python3
+# req: END-001, END-002, END-003, END-004, END-007, END-008
+"""Run the generated lifecycle client in an owned TLS preparation database.
+
+This is a semantic smoke test, not a campaign receipt or host qualification.
+Artifacts, credentials and diagnostic logs remain in the private supplied root.
+"""
+
+import argparse
+import json
+import os
+from pathlib import Path
+import queue
+import shutil
+import socket
+import subprocess
+import sys
+import threading
+
+
+class SmokeError(ValueError):
+    """Closed diagnostic; input paths and child output stay in private files."""
+
+
+def require(condition, code):
+    if not condition:
+        raise SmokeError(code)
+
+
+def write(root, name, value):
+    path = root / name
+    with path.open("x") as output:
+        os.chmod(path, 0o600)
+        output.write(value)
+    return path
+
+
+def invoke(root, name, arguments, *, environment=None):
+    with (root / (name + ".stdout")).open("xb") as output, \
+            (root / (name + ".stderr")).open("xb") as errors:
+        result = subprocess.run(arguments, stdout=output, stderr=errors,
+                                env=environment, timeout=60, check=False)
+    require(result.returncode == 0, name)
+
+
+def pump_ready(server, root, ready):
+    sent = False
+    with (root / "server.stdout").open("xb") as output:
+        while line := server.stdout.readline(4097):
+            output.write(line)
+            output.flush()
+            if not sent and line.startswith(b"riffdbd-ready-v1"):
+                ready.put_nowait(True)
+                sent = True
+            if len(line) > 4096:
+                if not sent:
+                    ready.put_nowait(False)
+                return
+        if not sent:
+            ready.put_nowait(False)
+
+
+def main():
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--root", required=True, type=Path)
+    parser.add_argument("--server", required=True, type=Path)
+    parser.add_argument("--cli", required=True, type=Path)
+    parser.add_argument("--worker", required=True, type=Path)
+    args = parser.parse_args()
+    root = args.root
+    require(root.is_absolute() and root.resolve() == root and not root.exists(), "root")
+    require(root.parent.is_dir(), "root")
+    executables = [path.resolve(strict=True) for path in (args.server, args.cli, args.worker)]
+    require(all(path.is_file() and os.access(path, os.X_OK) for path in executables), "binary")
+    server_binary, cli, worker = map(str, executables)
+    os.umask(0o077)
+    root.mkdir(mode=0o700)
+    for directory in ("data", "backups", "projections", "archive"):
+        (root / directory).mkdir(mode=0o700)
+    repository = Path(__file__).resolve().parent.parent
+    shutil.copytree(repository / "examples/ticketdesk/lifecycle", root / "application")
+    with socket.socket() as listener:
+        listener.bind(("127.0.0.1", 0))
+        port = listener.getsockname()[1]
+    invoke(root, "ca", ["openssl", "req", "-x509", "-newkey", "rsa:2048", "-nodes",
+                        "-days", "2", "-subj", "/CN=RiffDB lifecycle smoke CA",
+                        "-keyout", str(root / "ca.key"), "-out", str(root / "ca.pem")])
+    invoke(root, "leaf", ["openssl", "req", "-newkey", "rsa:2048", "-nodes",
+                          "-subj", "/CN=localhost", "-keyout", str(root / "server.key"),
+                          "-out", str(root / "server.csr")])
+    write(root, "server.ext", "subjectAltName=DNS:localhost,IP:127.0.0.1\nextendedKeyUsage=serverAuth\n")
+    invoke(root, "certificate", ["openssl", "x509", "-req", "-days", "2", "-sha256",
+                                 "-in", str(root / "server.csr"), "-CA", str(root / "ca.pem"),
+                                 "-CAkey", str(root / "ca.key"), "-CAcreateserial",
+                                 "-extfile", str(root / "server.ext"), "-out", str(root / "server.pem")])
+    write(root, "capability.keys", "riffdb-capability-digest-keys-v1\n1:" + os.urandom(32).hex() + "\n")
+    write(root, "idempotency.keys", "riffdb-idempotency-digest-keys-v1\n1:" + os.urandom(32).hex() + "\n")
+    quote = lambda name: json.dumps(str(root / name))
+    config = write(root, "server.toml", f'''[server]
+audience = "riffdb-ticketdesk-lifecycle"
+capability_keys = {quote("capability.keys")}
+idempotency_keys = {quote("idempotency.keys")}
+[server.application_listener]
+mode = "direct_tls"
+listen = "127.0.0.1:{port}"
+public_endpoint = "https://127.0.0.1:{port}"
+certificate_chain = {quote("server.pem")}
+private_key = {quote("server.key")}
+[databases.default]
+path = {quote("data/ticketdesk.redb")}
+backup_root = {quote("backups")}
+projections_root = {quote("projections")}
+environment = "development"
+[databases.default.outbox]
+kind = "durable_local"
+directory = {quote("archive")}
+quota_encoded_bytes = 67108864
+''')
+    client = write(root, "client.toml", f'''[client]
+endpoint = "https://127.0.0.1:{port}"
+database = "default"
+output = "json"
+max_attempts = 1
+tls_trust_root = {quote("ca.pem")}
+tls_server_name = "127.0.0.1"
+''')
+    bootstrap = write(root, "bootstrap.json", json.dumps({
+        "principal_id": "lifecycle-smoke-operator", "actor_kind": "human",
+        "requested_lifetime_seconds": 3600, "audiences": ["riffdb-ticketdesk-lifecycle"],
+        "grant": {"tenant_scope": {"type": "global"}, "partition_scope": {"type": "all"},
+                  "permissions": [{"type": permission} for permission in (
+                      "validate_contract", "read_contract", "deploy_contract", "read_health",
+                      "create_capability", "revoke_capability", "administer_capabilities")],
+                  "field_visibility": [], "max_scan_rows": 50, "approval_required": []},
+    }))
+    ready = queue.Queue(maxsize=1)
+    with (root / "server.stderr").open("xb") as errors:
+        server = subprocess.Popen([server_binary, "--config", str(config)],
+                                  stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=errors)
+        pump = threading.Thread(target=pump_ready, args=(server, root, ready), daemon=True)
+        pump.start()
+        try:
+            require(ready.get(timeout=30) is True, "startup")
+            base = [cli, "--config", str(client)]
+            invoke(root, "bootstrap", base + ["capability", "bootstrap", "--request", str(bootstrap),
+                   "--generate", str(root / "bootstrap.credential"),
+                   "--bearer-output", str(root / "operator.credential")])
+            base += ["--credential-file", str(root / "operator.credential")]
+            source = root / "application/riffdb.application.json"
+            invoke(root, "deploy", base + ["application", "deploy", str(source),
+                   "--lock", "riffdb.application.lock.json"])
+            for role, name in (("TicketDeskLifecycleSeeder", "seed"),
+                               ("TicketDeskLifecycleApplication", "application")):
+                invoke(root, "bind-" + name, base + ["role", "bind", str(source), "--role", role,
+                       "--principal", "lifecycle-smoke-" + name, "--actor-kind", "service",
+                       "--audience", "riffdb-ticketdesk-lifecycle", "--lifetime-seconds", "3600",
+                       "--credential-output", str(root / (name + ".credential"))])
+            environment = dict(os.environ,
+                RIFFDB_LIFECYCLE_ENDPOINT=f"https://127.0.0.1:{port}",
+                RIFFDB_LIFECYCLE_CA=str(root / "ca.pem"),
+                RIFFDB_LIFECYCLE_SEED_CREDENTIAL=str(root / "seed.credential"),
+                RIFFDB_LIFECYCLE_APPLICATION_CREDENTIAL=str(root / "application.credential"))
+            invoke(root, "worker", [worker, "smoke"], environment=environment)
+            require((root / "worker.stdout").stat().st_size <= 4096, "worker_observation")
+            observation = json.loads((root / "worker.stdout").read_bytes())
+            require(observation == {
+                "schema": "riffdb.ticketdesk-lifecycle-smoke/v1", "caller_fence": True,
+                "idempotency": True, "state_reconciled": True, "partition_isolation": True,
+                "events_reconciled": True, "live_query_snapshot": True,
+            }, "worker_observation")
+        finally:
+            if server.poll() is None:
+                server.terminate()
+            server.stdin.close()
+            try:
+                server.wait(timeout=30)
+            except subprocess.TimeoutExpired:
+                server.kill()
+                server.wait(timeout=5)
+                raise SmokeError("shutdown")
+            pump.join(timeout=5)
+            require(not pump.is_alive() and server.returncode == 0, "shutdown")
+    print("Generated TicketDesk lifecycle public TLS smoke passed; no campaign qualification claimed.")
+    return 0
+
+
+if __name__ == "__main__":
+    try:
+        sys.exit(main())
+    except SmokeError as error:
+        print("ticketdesk-lifecycle-smoke: " + str(error), file=sys.stderr)
+        sys.exit(1)
+    except (OSError, ValueError, queue.Empty, subprocess.SubprocessError):
+        print("ticketdesk-lifecycle-smoke: failed; inspect private preparation logs", file=sys.stderr)
+        sys.exit(1)

@@ -350,3 +350,53 @@ historical module remains callable through ordinary fresh-owner admission.
 The aggregate budget refuses protected saturation before allocating uncharged
 workspace. WP-825 can now implement the actual campaign against completed
 runtime prerequisites.
+
+## WP-825 preparation progress
+
+WP-825 is open. The separate `TicketDeskLifecycle` example lineage preserves
+existing TicketDesk generated identities and the alpha endurance workload.
+It adds an expected-revision update without creating tickets or comments,
+emits `TicketUpdated`, declares a counting projection, and generates all four
+language bindings plus MCP artifacts. The compiler rejects removal of the
+caller fence at both replacement-write spans. Generation checks exercise the
+real compiler and exact lock, rather than inspecting command names alone.
+
+Build the preparation client and run its public TLS smoke:
+
+```bash
+cargo build -p riffdb-server --bin riffdbd -p riffdb-cli --bin riffdb \
+  -p riffdb-ticketdesk --bin lifecycle
+./scripts/ticketdesk-lifecycle-smoke \
+  --root /tmp/riffdb-lifecycle-preparation \
+  --server target/debug/riffdbd --cli target/debug/riffdb \
+  --worker target/debug/lifecycle
+```
+
+The smoke uses generated commands, named reads, event acknowledgements and a
+live-query snapshot. The real local run passes replay, stale-fence refusal,
+returned-state, partition and event checks, followed by production signal
+shutdown. The first harness attempt incorrectly combined a legacy projection
+flag with named configuration and was refused. A second attempt passed client
+checks but failed shutdown because closing stdin does not stop the TLS daemon.
+The corrected harness selects a named owned root and sends the production
+termination signal. `scripts/check-ticketdesk-lifecycle-preparation` builds the
+three binaries and runs this real smoke in full CI. Failed attempts remain failed; no runtime check is relaxed.
+
+The evidence checker has an explicit `--short-rehearsal` mode for WP-825. The
+frozen target remains 24 hours and ordinary validation still requires all 288
+windows. Short mode accepts fewer windows but preserves every other check,
+including six final fault-free hours, all seven faults, three physically
+reclaimed generations, service levels, resource ceilings and artifact binding.
+Its success message explicitly says the 24-hour duration remains unmet. All 24
+hostile-evidence tests pass; their synthetic fixtures are not measurements.
+
+PR note: Package WP-825 (open); Tier guarantee; Behavior: generated lifecycle
+application, bounded public preparation, and the accepted short-rehearsal
+exception; Checks: all five scoped acceptance steps, Clippy, all 32 generators,
+24 hostile-evidence tests, two compiler semantic tests, and the real CI smoke
+entrypoint pass; requirement coverage and ADR obligations pass. Compatibility: existing application closure, alpha gate and normal
+24-hour verifier remain intact. Updated handbook pages: this milestone handoff
+and TicketDesk acceptance. Hazards/follow-ups: sustained offered-load scheduling,
+queried projection observations, TypeScript smoke, lifecycle faults and
+independent campaign reconciliation still require implementation and a real
+host run before WP-825 closes. No 24-hour run has started.

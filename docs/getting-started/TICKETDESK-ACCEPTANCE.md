@@ -84,3 +84,13 @@ add a second protocol without addressing the original structural cause.
 The acceptance application contains four named pages and all eight TicketDesk
 mutations. The live seed creates exactly 276 rows through commands and then
 executes both a representative list and composite detail query.
+
+## Sustainable lifecycle preparation
+
+The separate `examples/ticketdesk/lifecycle` application adds a revision-fenced
+update, emitted update events and a counting projection for the accepted
+[sustainable milestone](../architecture/SUSTAINABLE-TICKETDESK.md). The
+`scripts/ticketdesk-lifecycle-smoke` preparation uses generated Rust commands,
+named reads, event acknowledgements and a live-query snapshot against an owned
+TLS daemon. It proves neither sustained service levels nor 24-hour duration.
+The original example and alpha endurance gate retain their existing identities.

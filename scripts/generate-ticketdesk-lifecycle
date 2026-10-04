@@ -1,0 +1,21 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+repo_root="$(git rev-parse --show-toplevel)"
+cd "$repo_root"
+mode=--write
+if [[ "${1:-}" == --check && $# == 1 ]]; then
+    mode=--check
+elif [[ $# != 0 ]]; then
+    echo 'usage: generate-ticketdesk-lifecycle [--check]' >&2
+    exit 2
+fi
+cargo run --quiet -p riffdb-cli --bin riffdb -- application lock "$mode" \
+    examples/ticketdesk/lifecycle/riffdb.application.json \
+    --lock riffdb.application.lock.json --output json
+if [[ "$mode" == --check ]]; then
+    task_target_dir="$(cargo metadata --no-deps --format-version 1 | python3 -c \
+        'import json,sys; print(json.load(sys.stdin)["target_directory"])')"
+    python3 tests/ticketdesk_lifecycle/application_semantics.py \
+        "$task_target_dir/debug/riffdb"
+fi

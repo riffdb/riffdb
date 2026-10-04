@@ -69,6 +69,37 @@ class EvidenceTests(unittest.TestCase):
     def test_complete_synthetic_input_exercises_checker_only(self):
         CHECK.validate(*fixture())
 
+    def test_short_rehearsal_preserves_six_final_fault_free_hours(self):
+        manifest, receipt = fixture()
+        receipt["windows"] = receipt["windows"][:144]
+        CHECK.validate(manifest, receipt, short_rehearsal=True)
+        with self.assertRaisesRegex(CHECK.EvidenceError, "^duration$"):
+            CHECK.validate(manifest, receipt)
+
+    def test_short_rehearsal_refuses_faults_in_final_six_hours(self):
+        manifest, receipt = fixture()
+        receipt["windows"] = receipt["windows"][:120]
+        with self.assertRaisesRegex(CHECK.EvidenceError, "^actions$"):
+            CHECK.validate(manifest, receipt, short_rehearsal=True)
+
+    def test_short_rehearsal_still_requires_reclamation_and_service_levels(self):
+        manifest, receipt = fixture()
+        receipt["windows"] = receipt["windows"][:144]
+        receipt["reclaimed_generations"] = [2, 3]
+        with self.assertRaisesRegex(CHECK.EvidenceError, "^reclamation$"):
+            CHECK.validate(manifest, receipt, short_rehearsal=True)
+        receipt["reclaimed_generations"] = [2, 3, 4]
+        receipt["windows"][-1]["p99_us"] = 250000
+        with self.assertRaisesRegex(CHECK.EvidenceError, "^service_level$"):
+            CHECK.validate(manifest, receipt, short_rehearsal=True)
+
+    def test_short_rehearsal_cannot_hide_history_growth_before_hour_eighteen(self):
+        manifest, receipt = fixture()
+        receipt["windows"] = receipt["windows"][:144]
+        receipt["windows"][-1]["eligible_history_bytes"] = 2048
+        with self.assertRaisesRegex(CHECK.EvidenceError, "^backlog_growth$"):
+            CHECK.validate(manifest, receipt, short_rehearsal=True)
+
     def test_twenty_four_hours_never_qualifies_alpha(self):
         self.rejected(lambda m, r: r.update(classification="alpha"), "classification")
 

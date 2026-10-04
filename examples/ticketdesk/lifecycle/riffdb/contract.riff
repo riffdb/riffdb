@@ -1,0 +1,408 @@
+contract TicketDeskLifecycle version 1 {
+  enum TicketStatus { Open, InProgress, Closed }
+
+  entity Organization {
+    key (organization_id: uuid)
+    field name: string<64>
+    field created_at: timestamp
+  }
+
+  entity AppUser {
+    key (organization_id: uuid, user_id: uuid)
+    field email: string<128>
+    field display_name: string<64>
+    field created_at: timestamp
+    index by_organization (organization_id, user_id)
+    unique user_email (organization_id, email)
+    reference organization (organization_id) -> Organization(organization_id)
+  }
+
+  entity Project {
+    key (organization_id: uuid, project_id: uuid)
+    field name: string<64>
+    field created_at: timestamp
+    index by_organization (organization_id, project_id)
+    unique project_name (organization_id, name)
+    reference organization (organization_id) -> Organization(organization_id)
+  }
+
+  entity ProjectMember {
+    key (organization_id: uuid, project_id: uuid, user_id: uuid)
+    field role: string<32>
+    field created_at: timestamp
+    index by_user (organization_id, user_id, project_id)
+    index by_project (organization_id, project_id, user_id)
+    reference project (organization_id, project_id) -> Project(organization_id, project_id)
+    reference member (organization_id, user_id) -> AppUser(organization_id, user_id)
+  }
+
+  entity Ticket {
+    key (organization_id: uuid, ticket_id: uuid)
+    field project_id: uuid
+    field reporter_id: uuid
+    field assignee_id: uuid
+    field status: TicketStatus
+    field title: string<128>
+    field created_at: timestamp
+    field updated_at: timestamp
+    field revision: u64
+    index by_project_status (organization_id, project_id, status, ticket_id)
+    index by_board_project_status (organization_id, project_id, status, ticket_id) cover (title, reporter_id, assignee_id)
+    index by_assignee_status (organization_id, assignee_id, status, ticket_id)
+    reference project (organization_id, project_id) -> Project(organization_id, project_id)
+    reference reporter (organization_id, reporter_id) -> AppUser(organization_id, user_id)
+    reference assignee (organization_id, assignee_id) -> AppUser(organization_id, user_id)
+  }
+
+  entity Comment {
+    key (organization_id: uuid, ticket_id: uuid, comment_id: uuid)
+    field author_id: uuid
+    field body: string<256>
+    field created_at: timestamp
+    index by_ticket (organization_id, ticket_id, created_at, comment_id)
+    reference ticket (organization_id, ticket_id) -> Ticket(organization_id, ticket_id)
+    reference author (organization_id, author_id) -> AppUser(organization_id, user_id)
+  }
+
+  entity Label {
+    key (organization_id: uuid, label_id: uuid)
+    field name: string<32>
+    field created_at: timestamp
+    unique label_name (organization_id, name)
+    reference organization (organization_id) -> Organization(organization_id)
+  }
+
+  entity TicketLabel {
+    key (organization_id: uuid, ticket_id: uuid, label_id: uuid)
+    field created_at: timestamp
+    index by_label (organization_id, label_id, ticket_id)
+    index by_ticket (organization_id, ticket_id, label_id)
+    reference ticket (organization_id, ticket_id) -> Ticket(organization_id, ticket_id)
+    reference label (organization_id, label_id) -> Label(organization_id, label_id)
+  }
+
+  event TicketCreated {
+    partition_by (organization_id)
+    organization_id: uuid
+    ticket_id: uuid
+    project_id: uuid
+    reporter_id: uuid
+    assignee_id: uuid
+    title: string<128>
+    status: TicketStatus
+  }
+
+  aggregate Organizations {
+    root Organization
+    partition_by organization_id
+    conflict_key (organization_id)
+  }
+
+  aggregate Users {
+    root AppUser
+    partition_by organization_id
+    conflict_key (organization_id, user_id)
+  }
+
+  aggregate Projects {
+    root Project
+    child ProjectMember
+    partition_by organization_id
+    conflict_key (organization_id, project_id)
+  }
+
+  aggregate Tickets {
+    root Ticket
+    child Comment
+    child TicketLabel
+    partition_by organization_id
+    conflict_key (organization_id, ticket_id)
+  }
+
+  aggregate Labels {
+    root Label
+    partition_by organization_id
+    conflict_key (organization_id, label_id)
+  }
+
+  command CreateOrganization {
+    input idempotency_key: string<128>
+    input organization_id: uuid
+    input name: string<64>
+    idempotency_key idempotency_key
+    create Organization(organization_id) as organization
+      else OrganizationExists { organization_id: organization_id }
+    set organization.name = name
+    set organization.created_at = tx.time
+    return Created { organization: organization }
+  }
+
+  command CreateUser {
+    input idempotency_key: string<128>
+    input organization_id: uuid
+    input user_id: uuid
+    input email: string<128>
+    input display_name: string<64>
+    idempotency_key idempotency_key
+    read Organization(organization_id) as organization
+      else OrganizationMissing { organization_id: organization_id }
+    create AppUser(organization_id, user_id) as user
+      else UserExists { user_id: user_id }
+    set user.email = email
+    set user.display_name = display_name
+    set user.created_at = tx.time
+    return Created { user: user }
+  }
+
+  command CreateProject {
+    input idempotency_key: string<128>
+    input organization_id: uuid
+    input project_id: uuid
+    input name: string<64>
+    idempotency_key idempotency_key
+    read Organization(organization_id) as organization
+      else OrganizationMissing { organization_id: organization_id }
+    create Project(organization_id, project_id) as project
+      else ProjectExists { project_id: project_id }
+    set project.name = name
+    set project.created_at = tx.time
+    return Created { project: project }
+  }
+
+  command AddProjectMember {
+    input idempotency_key: string<128>
+    input organization_id: uuid
+    input project_id: uuid
+    input user_id: uuid
+    input role: string<32>
+    idempotency_key idempotency_key
+    read Project(organization_id, project_id) as project
+      else ProjectMissing { project_id: project_id }
+    read AppUser(organization_id, user_id) as user
+      else UserMissing { user_id: user_id }
+    create ProjectMember(organization_id, project_id, user_id) as member
+      else MemberExists { project_id: project_id, user_id: user_id }
+    set member.role = role
+    set member.created_at = tx.time
+    return Created { member: member }
+  }
+
+  command CreateTicket {
+    input idempotency_key: string<128>
+    input organization_id: uuid
+    input ticket_id: uuid
+    input project_id: uuid
+    input reporter_id: uuid
+    input assignee_id: uuid
+    input title: string<128>
+    input status: TicketStatus
+    idempotency_key idempotency_key
+    read Project(organization_id, project_id) as project
+      else ProjectMissing { project_id: project_id }
+    read AppUser(organization_id, reporter_id) as reporter
+      else ReporterMissing { user_id: reporter_id }
+    read AppUser(organization_id, assignee_id) as assignee
+      else AssigneeMissing { user_id: assignee_id }
+    create Ticket(organization_id, ticket_id) as ticket
+      else TicketExists { ticket_id: ticket_id }
+    set ticket.project_id = project_id
+    set ticket.reporter_id = reporter_id
+    set ticket.assignee_id = assignee_id
+    set ticket.status = status
+    set ticket.title = title
+    set ticket.created_at = tx.time
+    set ticket.updated_at = tx.time
+    set ticket.revision = 0
+    emit TicketCreated {
+      organization_id: organization_id,
+      ticket_id: ticket_id,
+      project_id: project_id,
+      reporter_id: reporter_id,
+      assignee_id: assignee_id,
+      title: title,
+      status: status
+    }
+    return Created { ticket: ticket }
+  }
+
+  command CreateComment {
+    input idempotency_key: string<128>
+    input organization_id: uuid
+    input comment_id: uuid
+    input ticket_id: uuid
+    input author_id: uuid
+    input body: string<256>
+    idempotency_key idempotency_key
+    read Ticket(organization_id, ticket_id) as ticket
+      else TicketMissing { ticket_id: ticket_id }
+    read AppUser(organization_id, author_id) as author
+      else AuthorMissing { user_id: author_id }
+    create Comment(organization_id, ticket_id, comment_id) as comment
+      else CommentExists { comment_id: comment_id }
+    set comment.author_id = author_id
+    set comment.body = body
+    set comment.created_at = tx.time
+    return Created { comment: comment }
+  }
+
+  command CreateLabel {
+    input idempotency_key: string<128>
+    input organization_id: uuid
+    input label_id: uuid
+    input name: string<32>
+    idempotency_key idempotency_key
+    read Organization(organization_id) as organization
+      else OrganizationMissing { organization_id: organization_id }
+    create Label(organization_id, label_id) as label
+      else LabelExists { label_id: label_id }
+    set label.name = name
+    set label.created_at = tx.time
+    return Created { label: label }
+  }
+
+  command AttachLabel {
+    input idempotency_key: string<128>
+    input organization_id: uuid
+    input ticket_id: uuid
+    input label_id: uuid
+    idempotency_key idempotency_key
+    read Ticket(organization_id, ticket_id) as ticket
+      else TicketMissing { ticket_id: ticket_id }
+    read Label(organization_id, label_id) as label
+      else LabelMissing { label_id: label_id }
+    create TicketLabel(organization_id, ticket_id, label_id) as link
+      else LinkExists { ticket_id: ticket_id, label_id: label_id }
+    set link.created_at = tx.time
+    return Created { link: link }
+  }
+
+  // Multi-entity application transaction: close a ticket and leave an audit note
+  // in one atomic command (validated reads + mutate + create).
+  command CloseTicketWithComment {
+    input idempotency_key: string<128>
+    input organization_id: uuid
+    input ticket_id: uuid
+    input author_id: uuid
+    input comment_id: uuid
+    input body: string<256>
+    idempotency_key idempotency_key
+    read Ticket(organization_id, ticket_id) as ticket_view
+      else TicketMissing { ticket_id: ticket_id }
+    mutate Ticket(organization_id, ticket_id) as ticket
+      else TicketGone { ticket_id: ticket_id }
+    read AppUser(organization_id, author_id) as author
+      else AuthorMissing { user_id: author_id }
+    create Comment(organization_id, ticket_id, comment_id) as comment
+      else CommentExists { comment_id: comment_id }
+    overwrite ticket.status = TicketStatus.Closed
+    overwrite ticket.updated_at = tx.time
+    set comment.author_id = author_id
+    set comment.body = body
+    set comment.created_at = tx.time
+    return Closed { ticket: ticket, comment: comment }
+  }
+
+  // Multi-entity application transaction: update two membership rows together.
+  command SwapMemberRoles {
+    input idempotency_key: string<128>
+    input organization_id: uuid
+    input project_id: uuid
+    input user_a: uuid
+    input user_b: uuid
+    input role_a: string<32>
+    input role_b: string<32>
+    idempotency_key idempotency_key
+    mutate ProjectMember(organization_id, project_id, user_a) as member_a
+      else MemberAMissing { user_id: user_a }
+    mutate ProjectMember(organization_id, project_id, user_b) as member_b
+      else MemberBMissing { user_id: user_b }
+    overwrite member_a.role = role_a
+    overwrite member_b.role = role_b
+    return Swapped { member_a: member_a, member_b: member_b }
+  }
+
+  // One aggregate command for the page-level operation measured against one
+  // PostgreSQL transaction. External project/user/label rows are exact
+  // same-partition observations; Ticket and both links share one ticket
+  // mutation aggregate.
+  command OpenTicketWithLabels {
+    input idempotency_key: string<128>
+    input organization_id: uuid
+    input ticket_id: uuid
+    input project_id: uuid
+    input reporter_id: uuid
+    input assignee_id: uuid
+    input title: string<128>
+    input label_a: uuid
+    input label_b: uuid
+    idempotency_key idempotency_key
+    read Project(organization_id, project_id) as project
+      else ProjectMissing { project_id: project_id }
+    read AppUser(organization_id, reporter_id) as reporter
+      else ReporterMissing { user_id: reporter_id }
+    read AppUser(organization_id, assignee_id) as assignee
+      else AssigneeMissing { user_id: assignee_id }
+    read Label(organization_id, label_a) as first_label
+      else LabelMissing { label_id: label_a }
+    read Label(organization_id, label_b) as second_label
+      else LabelMissing { label_id: label_b }
+    create Ticket(organization_id, ticket_id) as ticket
+      else TicketExists { ticket_id: ticket_id }
+    create TicketLabel(organization_id, ticket_id, label_a) as first_link
+      else LinkExists { ticket_id: ticket_id, label_id: label_a }
+    create TicketLabel(organization_id, ticket_id, label_b) as second_link
+      else LinkExists { ticket_id: ticket_id, label_id: label_b }
+    set ticket.project_id = project_id
+    set ticket.reporter_id = reporter_id
+    set ticket.assignee_id = assignee_id
+    set ticket.status = TicketStatus.Open
+    set ticket.title = title
+    set ticket.created_at = tx.time
+    set ticket.updated_at = tx.time
+    set ticket.revision = 0
+    set first_link.created_at = tx.time
+    set second_link.created_at = tx.time
+    return Created { ticket: ticket, first_link: first_link, second_link: second_link }
+  }
+
+  // Stable-population update. The caller fence proves the observed revision;
+  // its original idempotency identity resolves an interrupted response.
+  command UpdateTicket {
+    input idempotency_key: string<128>
+    input organization_id: uuid
+    input ticket_id: uuid
+    input expected_revision: u64
+    input status: TicketStatus
+    idempotency_key idempotency_key
+    mutate Ticket(organization_id, ticket_id) as ticket
+      else TicketMissing { ticket_id: ticket_id }
+    require current: ticket.revision == expected_revision else Stale {}
+    set ticket.revision = ticket.revision + 1
+    set ticket.status = status
+    set ticket.updated_at = tx.time
+    emit TicketUpdated {
+      organization_id: organization_id,
+      ticket_id: ticket_id,
+      revision: ticket.revision,
+      status: status,
+      increment: 1
+    }
+    return Updated { revision: ticket.revision, status: ticket.status }
+  }
+
+  event TicketUpdated {
+    partition_by (organization_id)
+    organization_id: uuid
+    ticket_id: uuid
+    revision: u64
+    status: TicketStatus
+    increment: i64
+  }
+
+  projection TicketUpdates {
+    source event TicketUpdated
+    key (organization_id)
+    measure total = sum(increment)
+    frontier transactionally_ordered
+  }
+}

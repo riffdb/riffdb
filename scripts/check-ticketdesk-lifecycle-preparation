@@ -1,0 +1,17 @@
+#!/usr/bin/env bash
+# req: END-001, END-002, END-003, END-004, END-007, END-008
+set -euo pipefail
+
+repo_root="$(git rev-parse --show-toplevel)"
+cd "$repo_root"
+cargo build --locked -p riffdb-server --bin riffdbd -p riffdb-cli --bin riffdb \
+    -p riffdb-ticketdesk --bin lifecycle
+task_target_dir="$(cargo metadata --no-deps --format-version 1 | python3 -c \
+    'import json,sys; print(json.load(sys.stdin)["target_directory"])')"
+preparation_root="$(mktemp -d "${TMPDIR:-/tmp}/riffdb-lifecycle-preparation.XXXXXX")"
+# Failed attempts retain their private logs. Only an entirely successful owned
+# smoke removes its credentials and scratch artifacts.
+./scripts/ticketdesk-lifecycle-smoke --root "$preparation_root/attempt" \
+    --server "$task_target_dir/debug/riffdbd" \
+    --cli "$task_target_dir/debug/riffdb" --worker "$task_target_dir/debug/lifecycle"
+rm -rf -- "$preparation_root"
