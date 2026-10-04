@@ -623,6 +623,8 @@ buffer reference. Budget pressure leaves rebuild work eligible for a later retry
 Provider source decoding and derived-row normalization reserve construction
 capacity before allocation. Unchanged rows share their admitted original;
 materialized fields retain their charge through the final semantic row clone.
+Private provider row and delta conversion buffers also reserve native capacities
+before copying, and retain their reservations through destruction.
 The exact-provider worker emits bounded operator diagnostics on stderr at startup,
 at most once per 60 seconds while its service clock is healthy, and at worker stop.
 Lines use `trigger=exact_provider_lifecycle` and fixed numeric fields: the process

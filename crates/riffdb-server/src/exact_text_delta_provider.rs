@@ -19,13 +19,17 @@ use super::super::{
 };
 use super::{CapturedSource, Delta, DeltaPlan, Selected};
 
-fn output_fields(program: &QueryAccessProgramV1) -> Result<BTreeSet<FieldId>, RebuildFailure> {
+fn output_fields(
+    program: &QueryAccessProgramV1,
+    work: &mut super::super::SourceRowsWork,
+) -> Result<BTreeSet<FieldId>, RebuildFailure> {
     let [step] = program.steps() else {
         return Err(RebuildFailure::Integrity);
     };
     let access = program
         .internal_entity_access(step.entity())
         .ok_or(RebuildFailure::Integrity)?;
+    work.reserve_tree::<FieldId, ()>(step.selected_fields().len())?;
     step.selected_fields()
         .iter()
         .map(|name| {
@@ -76,7 +80,7 @@ pub(in crate::exact_text_adapter) fn prepare_text(
         return Err(RebuildFailure::Integrity);
     }
     let program = registration.query.representative_program();
-    let Some(delta) = Delta::read(
+    let Some(mut delta) = Delta::read(
         captured,
         &previous.source,
         DeltaPlan {
@@ -92,7 +96,7 @@ pub(in crate::exact_text_adapter) fn prepare_text(
     };
     let mut provider = previous.provider.clone();
     if delta.source.head > previous.source.head {
-        let fields = output_fields(program)?;
+        let fields = output_fields(program, &mut delta.work)?;
         let text_field = registration.query.binding().family().field();
         let filter_field = registration
             .query
@@ -251,7 +255,7 @@ pub(in crate::exact_text_adapter) fn prepare_predicate<
         return Err(RebuildFailure::Integrity);
     }
     let program = registration.access_program();
-    let Some(delta) = Delta::read(
+    let Some(mut delta) = Delta::read(
         captured,
         &previous.source,
         DeltaPlan {
@@ -267,8 +271,8 @@ pub(in crate::exact_text_adapter) fn prepare_predicate<
     };
     let mut provider = previous.provider.clone();
     if delta.source.head > previous.source.head {
-        let output_fields = output_fields(program)?;
-        let profiles = registration.referenced_profiles()?;
+        let output_fields = output_fields(program, &mut delta.work)?;
+        let profiles = registration.referenced_profiles(&mut delta.work)?;
         let changes = delta
             .changes
             .into_iter()
@@ -277,6 +281,12 @@ pub(in crate::exact_text_adapter) fn prepare_predicate<
                 let Some(record) = record else {
                     return Ok(ExactPredicateIndexMutationV1::Delete(key));
                 };
+                delta.work.reserve_row(
+                    record.fields(),
+                    profiles.len(),
+                    output_fields.len(),
+                    key.as_bytes().len(),
+                )?;
                 let values = record
                     .fields()
                     .fields()

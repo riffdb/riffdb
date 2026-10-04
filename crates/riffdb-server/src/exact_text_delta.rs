@@ -33,6 +33,8 @@ pub(super) struct DeltaPlan<'a> {
 pub(super) struct Delta {
     pub(super) changes: BTreeMap<EntityKey, Option<AdmittedProviderEntityRecordV1>>,
     pub(super) source: SelectedSource,
+    // Last: delta conversion forests are destroyed before admission releases.
+    pub(super) work: super::super::SourceRowsWork,
 }
 
 impl Delta {
@@ -69,10 +71,16 @@ impl Delta {
         let [step] = plan.program.steps() else {
             return Err(RebuildFailure::Integrity);
         };
+        let mut work = super::super::SourceRowsWork::new(&captured.budget)?;
         let prefix = step
             .internal_entity_key_schema()
             .encode_entity_prefix(std::slice::from_ref(plan.partition_value))
             .map_err(|_| RebuildFailure::Integrity)?;
+        work.reserve_tree::<riffdb_types::EntityTypeId, ()>(plan.policy.map_or(0, |policy| {
+            policy
+                .internal_relationship_entities(step.internal_entity_id())
+                .count()
+        }))?;
         let dependencies = plan
             .policy
             .into_iter()
@@ -132,6 +140,8 @@ impl Delta {
                 if mutation.namespace() != AuthoritativeNamespaceV1::Entities {
                     continue;
                 }
+                work.reserve_key(mutation.key().len())?;
+                let _key_work = work.key_decode(mutation.key().len(), mutation.key().len())?;
                 let key = EntityKey::from_bytes(mutation.key().to_vec())
                     .map_err(|_| RebuildFailure::Integrity)?;
                 if dependencies.contains(&key.entity_type_id()) {
@@ -161,6 +171,7 @@ impl Delta {
                         return Err(RebuildFailure::Integrity);
                     }
                     let record = captured.materialize(plan.program, &record)?;
+                    work.reserve_row(record.fields(), 0, 0, key.as_bytes().len())?;
                     let charge = riffdb_types::canonical_record_encoded_len(record.fields())
                         .map_err(|_| RebuildFailure::Integrity)?;
                     normalized_bytes = normalized_bytes
@@ -203,6 +214,7 @@ impl Delta {
             return Err(RebuildFailure::Integrity);
         }
         if let Some(policy) = plan.policy {
+            work.reserve_keys(changes.keys())?;
             let keys = changes
                 .iter()
                 .filter(|(_, record)| record.is_some())
@@ -255,6 +267,7 @@ impl Delta {
             .map_err(|error| cursor_failure(error, plan.generation))?;
         Ok(Some(Self {
             changes,
+            work,
             source: SelectedSource {
                 pin: Some(pin),
                 head,

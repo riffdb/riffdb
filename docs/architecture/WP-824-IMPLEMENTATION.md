@@ -1,5 +1,28 @@
 # WP-824 implementation progress
 
+## Private source row conversion workspace
+
+Full text, predicate, nullable-predicate and tokenized rebuilds now reserve native
+conversion forests before copying source values, keys, output records or
+reference-cell maps. Borrowed predicate/order traversal admits profile metadata
+before map construction. Tokenized candidate populations use the same admitted
+immutable-key builder. Private row guards destroy their rows before releasing
+workspace; text conversion retains that workspace through index preparation.
+Delta changes retain reservations through mutation-vector conversion, including
+deletes, key decoding, projected output and policy observation copies.
+
+Tests cover pressure refusal before growth, a native census of large-value and
+reference-cell conversion forests, and data-before-reservation destruction.
+All 549 selected server tests passed, including the real-daemon checkpoint crash
+oracle; 72 tests were skipped or excluded. All six scoped static checks passed.
+Complete catalog capture, receipt cursor and policy execution workspace remain
+open; this change does not establish qualification readiness.
+
+PR note: Package WP-824; Tier guarantee; Behavior: admitted private source rows
+and delta conversion; Compatibility: unchanged bounds, checks, row meanings,
+formats and application interfaces; Handbook: Configuration; Hazards/follow-ups:
+remaining catalog/receipt/policy ownership and full CI.
+
 ## Derived record materialization admission
 
 Worker materialization now accepts an already admitted entity record from the

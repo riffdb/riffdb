@@ -70,6 +70,12 @@ mod checkpoint_buffers;
 #[cfg(feature = "test-fixtures")]
 use crate::exact_text_probe::{ExactProviderTestPoint as TestPoint, observe as observe_test_point};
 use catch_up::{CandidatePopulation, CapturedSource, Selected};
+#[path = "exact_source_rows.rs"]
+mod source_rows;
+use source_rows::{GuardedSourceRows, SourceRowsWork};
+#[cfg(test)]
+#[path = "exact_source_rows_tests.rs"]
+mod source_rows_tests;
 
 const POLL_INTERVAL: Duration = Duration::from_millis(10);
 const MAX_REGISTERED_EXACT_PARTITIONS: usize = 256;
@@ -282,6 +288,7 @@ trait ExactPredicateRegistrationView {
     fn row_policy(&self) -> Option<&AuthorizedQueryRowPolicyContextV1>;
     fn referenced_profiles(
         &self,
+        work: &mut SourceRowsWork,
     ) -> Result<BTreeMap<FieldId, ExactComparisonProfileV1>, RebuildFailure>;
     fn max_candidates(&self) -> u32;
 }
@@ -312,8 +319,9 @@ impl ExactPredicateRegistrationView for ExactPredicateRegistration {
 
     fn referenced_profiles(
         &self,
+        work: &mut SourceRowsWork,
     ) -> Result<BTreeMap<FieldId, ExactComparisonProfileV1>, RebuildFailure> {
-        predicate_referenced_profiles(self.query.program())
+        predicate_referenced_profiles(self.query.program(), work)
     }
 
     fn max_candidates(&self) -> u32 {
@@ -347,8 +355,9 @@ impl ExactPredicateRegistrationView for NullableExactPredicateRegistration {
 
     fn referenced_profiles(
         &self,
+        work: &mut SourceRowsWork,
     ) -> Result<BTreeMap<FieldId, ExactComparisonProfileV1>, RebuildFailure> {
-        nullable_predicate_referenced_profiles(self.query.program())
+        nullable_predicate_referenced_profiles(self.query.program(), work)
     }
 
     fn max_candidates(&self) -> u32 {
@@ -3214,6 +3223,7 @@ fn rebuild_slot(
     #[cfg(feature = "test-fixtures")]
     observe_test_point(TestPoint::FullPartitionRead, &slot.checkpoint, Some(head));
     let (rows, candidates) = read_complete_partition(&captured, &slot.registration, generation)?;
+    let (rows, _row_work) = rows.into_parts();
     let provider = match slot.registration.query.filter() {
         None => {
             let rows = rows
@@ -3554,9 +3564,10 @@ fn read_complete_tokenized_partition(
     expected_head: CommitSequence,
     generation: ProjectionGeneration,
     work: &crate::exact_provider_owner::ProviderPin,
-) -> Result<Vec<TokenizedTextMutationV1>, RebuildFailure> {
+) -> Result<GuardedSourceRows<Vec<TokenizedTextMutationV1>>, RebuildFailure> {
     work.ensure_active()
         .map_err(|_| RebuildFailure::Transient)?;
+    let mut row_work = SourceRowsWork::new(&runtime.ownership_graph.budget)?;
     let program = registration.query.representative_program();
     let step = program.steps().first().ok_or(RebuildFailure::Integrity)?;
     if program.steps().len() != 1 {
@@ -3581,6 +3592,7 @@ fn read_complete_tokenized_partition(
     let partition_field = access
         .internal_field_id(partition_field_name)
         .ok_or(RebuildFailure::Integrity)?;
+    row_work.reserve_tree::<FieldId, ()>(step.selected_fields().len())?;
     let output_fields = step
         .selected_fields()
         .iter()
@@ -3590,6 +3602,7 @@ fn read_complete_tokenized_partition(
                 .ok_or(RebuildFailure::Integrity)
         })
         .collect::<Result<BTreeSet<FieldId>, _>>()?;
+    row_work.reserve_tree::<FieldId, ()>(registration.query.tokenized_plan().fields().len())?;
     let text_fields = registration
         .query
         .tokenized_plan()
@@ -3621,7 +3634,7 @@ fn read_complete_tokenized_partition(
         .map_err(|_| RebuildFailure::Integrity)?;
     let limit = StorageScanLimit::new(REBUILD_PAGE_ROWS).ok_or(RebuildFailure::Integrity)?;
     let mut after = None;
-    let mut candidates = BTreeSet::new();
+    let mut candidates = CandidatePopulation::new(&runtime.ownership_graph.budget)?;
     let mut rows =
         BTreeMap::<riffdb_types::EntityKey, (Vec<(FieldId, String)>, CanonicalRecord)>::new();
     loop {
@@ -3648,8 +3661,14 @@ fn read_complete_tokenized_partition(
             {
                 return Err(RebuildFailure::Integrity);
             }
+            row_work.reserve_row(
+                record.fields(),
+                text_fields.len(),
+                output_fields.len(),
+                record.target().key().as_bytes().len(),
+            )?;
             let key = record.target().key().clone();
-            if !candidates.insert(key.clone()) {
+            if !candidates.insert(&key)? {
                 return Err(RebuildFailure::Integrity);
             }
             if candidates.len() > MAX_PROJECTED_POLICY_CANDIDATES_V1 {
@@ -3682,6 +3701,7 @@ fn read_complete_tokenized_partition(
         after = Some(next);
     }
     if let Some(policy) = registration.row_policy.as_deref() {
+        row_work.reserve_keys(candidates.iter())?;
         let ordered_candidates = candidates.iter().cloned().collect::<Vec<_>>();
         let query_executor = runtime.storage.query_executor();
         let admission = QueryExecutionPort::authorize_projected_candidates(
@@ -3696,7 +3716,8 @@ fn read_complete_tokenized_partition(
         }
         rows.retain(|key, _| admission.admits(key));
     }
-    rows.into_iter()
+    let mutations = rows
+        .into_iter()
         .map(|(key, (fields, output))| {
             TokenizedTextMutationV1::upsert(key, fields, output).map_err(|error| match error {
                 riffdb_projection::TokenizedTextErrorV1::DocumentLimit
@@ -3706,7 +3727,8 @@ fn read_complete_tokenized_partition(
                 _ => RebuildFailure::Integrity,
             })
         })
-        .collect()
+        .collect::<Result<Vec<_>, RebuildFailure>>()?;
+    Ok(row_work.guard(mutations))
 }
 
 fn rebuild_nullable_predicate_slot(
@@ -3856,7 +3878,13 @@ fn read_complete_predicate_partition<R: ExactPredicateRegistrationView>(
     captured: &CapturedSource,
     registration: &R,
     generation: ProjectionGeneration,
-) -> Result<(ExactPredicateSourceRows, CandidatePopulation), RebuildFailure> {
+) -> Result<
+    (
+        GuardedSourceRows<ExactPredicateSourceRows>,
+        CandidatePopulation,
+    ),
+    RebuildFailure,
+> {
     let access_program = registration.access_program();
     let step = access_program
         .steps()
@@ -3869,6 +3897,7 @@ fn read_complete_predicate_partition<R: ExactPredicateRegistrationView>(
     let key_schema = step
         .internal_index_key_schema()
         .ok_or(RebuildFailure::Integrity)?;
+    let mut row_work = SourceRowsWork::new(&captured.budget)?;
     let mut prefix = IndexRangePrefixBuilder::new(index_id);
     push_index_component(&mut prefix, registration.partition_value())?;
     let target = IndexRangeTarget::new(registration.partition_key().clone(), prefix.finish());
@@ -3876,6 +3905,7 @@ fn read_complete_predicate_partition<R: ExactPredicateRegistrationView>(
     let access = access_program
         .internal_entity_access(step.entity())
         .ok_or(RebuildFailure::Integrity)?;
+    row_work.reserve_tree::<FieldId, ()>(step.selected_fields().len())?;
     let output_fields = step
         .selected_fields()
         .iter()
@@ -3885,7 +3915,7 @@ fn read_complete_predicate_partition<R: ExactPredicateRegistrationView>(
                 .ok_or(RebuildFailure::Integrity)
         })
         .collect::<Result<BTreeSet<FieldId>, _>>()?;
-    let referenced_profiles = registration.referenced_profiles()?;
+    let referenced_profiles = registration.referenced_profiles(&mut row_work)?;
     let maximum_candidates = usize::try_from(registration.max_candidates())
         .map_err(|_| RebuildFailure::Integrity)?
         .min(MAX_PROJECTED_POLICY_CANDIDATES_V1);
@@ -3908,6 +3938,10 @@ fn read_complete_predicate_partition<R: ExactPredicateRegistrationView>(
             if observed_entries > maximum_candidates {
                 return Err(RebuildFailure::Capacity(generation));
             }
+            let _key_work = row_work.key_decode(
+                item.value().key().as_bytes().len(),
+                item.value().key().as_bytes().len(),
+            )?;
             let decoded = key_schema
                 .decode_index(item.value().key())
                 .map_err(|_| RebuildFailure::Integrity)?;
@@ -3923,6 +3957,12 @@ fn read_complete_predicate_partition<R: ExactPredicateRegistrationView>(
                 .map_err(|_| RebuildFailure::Transient)?
                 .ok_or(RebuildFailure::Transient)?;
             let record = captured.materialize(access_program, &source)?;
+            row_work.reserve_row(
+                record.fields(),
+                referenced_profiles.len(),
+                output_fields.len(),
+                entity_key.as_bytes().len(),
+            )?;
             let values = record
                 .fields()
                 .fields()
@@ -3962,6 +4002,7 @@ fn read_complete_predicate_partition<R: ExactPredicateRegistrationView>(
         }
     }
     if let Some(policy) = registration.row_policy() {
+        row_work.reserve_keys(candidates.iter())?;
         let ordered_candidates = candidates.iter().cloned().collect::<Vec<_>>();
         let query_executor = captured.storage.query_executor();
         let admission = QueryExecutionPort::authorize_projected_candidates(
@@ -3976,7 +4017,7 @@ fn read_complete_predicate_partition<R: ExactPredicateRegistrationView>(
         }
         rows.retain(|key, _| admission.admits(key));
     }
-    Ok((rows.into_values().collect(), candidates))
+    Ok((row_work.guard(rows.into_values().collect()), candidates))
 }
 
 fn map_text_admission_failure(error: ExactTextRebuildAdmissionErrorV1) -> RebuildFailure {
@@ -4011,7 +4052,7 @@ fn read_complete_partition(
     captured: &CapturedSource,
     registration: &ExactTextRegistration,
     generation: ProjectionGeneration,
-) -> Result<(ExactTextSourceRows, CandidatePopulation), RebuildFailure> {
+) -> Result<(GuardedSourceRows<ExactTextSourceRows>, CandidatePopulation), RebuildFailure> {
     let program = registration.query.representative_program();
     let step = program.steps().first().ok_or(RebuildFailure::Integrity)?;
     if program.steps().len() != 1 {
@@ -4021,6 +4062,7 @@ fn read_complete_partition(
     let key_schema = step
         .internal_index_key_schema()
         .ok_or(RebuildFailure::Integrity)?;
+    let mut row_work = SourceRowsWork::new(&captured.budget)?;
     let mut prefix = IndexRangePrefixBuilder::new(index_id);
     push_index_component(&mut prefix, &registration.partition_value)?;
     let target = IndexRangeTarget::new(registration.partition_key.clone(), prefix.finish());
@@ -4028,6 +4070,7 @@ fn read_complete_partition(
     let access = program
         .internal_entity_access(step.entity())
         .ok_or(RebuildFailure::Integrity)?;
+    row_work.reserve_tree::<FieldId, ()>(step.selected_fields().len())?;
     let output_fields = step
         .selected_fields()
         .iter()
@@ -4065,6 +4108,10 @@ fn read_complete_partition(
             if observed_entries > maximum_candidates {
                 return Err(RebuildFailure::Capacity(generation));
             }
+            let _key_work = row_work.key_decode(
+                item.value().key().as_bytes().len(),
+                item.value().key().as_bytes().len(),
+            )?;
             let decoded = key_schema
                 .decode_index(item.value().key())
                 .map_err(|_| RebuildFailure::Integrity)?;
@@ -4080,6 +4127,12 @@ fn read_complete_partition(
                 .map_err(|_| RebuildFailure::Transient)?
                 .ok_or(RebuildFailure::Transient)?;
             let record = captured.materialize(program, &source)?;
+            row_work.reserve_row(
+                record.fields(),
+                0,
+                output_fields.len(),
+                entity_key.as_bytes().len(),
+            )?;
             let text = match record
                 .fields()
                 .fields()
@@ -4121,6 +4174,7 @@ fn read_complete_partition(
         }
     }
     if let Some(policy) = registration.row_policy.as_deref() {
+        row_work.reserve_keys(candidates.iter())?;
         let ordered_candidates = candidates.iter().cloned().collect::<Vec<_>>();
         let query_executor = captured.storage.query_executor();
         let admission = QueryExecutionPort::authorize_projected_candidates(
@@ -4135,7 +4189,7 @@ fn read_complete_partition(
         }
         rows.retain(|key, _| admission.admits(key));
     }
-    Ok((rows, candidates))
+    Ok((row_work.guard(rows), candidates))
 }
 
 fn map_policy_admission_error(
@@ -4161,8 +4215,23 @@ fn map_policy_admission_error(
     }
 }
 
+fn predicate_leaf_count(node: &ExactPredicateNodeV1) -> Result<usize, RebuildFailure> {
+    match node {
+        ExactPredicateNodeV1::Leaf(_) => Ok(1),
+        ExactPredicateNodeV1::When { child, .. } => predicate_leaf_count(child),
+        ExactPredicateNodeV1::And(children) | ExactPredicateNodeV1::Or(children) => {
+            children.iter().try_fold(0_usize, |count, child| {
+                count
+                    .checked_add(predicate_leaf_count(child)?)
+                    .ok_or(RebuildFailure::Transient)
+            })
+        }
+    }
+}
+
 fn predicate_referenced_profiles(
     program: &riffdb_query_ir::ExactPredicateProgramV1,
+    work: &mut SourceRowsWork,
 ) -> Result<BTreeMap<FieldId, ExactComparisonProfileV1>, RebuildFailure> {
     fn insert(
         profiles: &mut BTreeMap<FieldId, ExactComparisonProfileV1>,
@@ -4192,6 +4261,16 @@ fn predicate_referenced_profiles(
             }
         }
     }
+    let count = predicate_leaf_count(program.predicate())?
+        .checked_add(
+            program
+                .orders()
+                .iter()
+                .map(|order| order.terms().len())
+                .sum::<usize>(),
+        )
+        .ok_or(RebuildFailure::Transient)?;
+    work.reserve_tree::<FieldId, ExactComparisonProfileV1>(count)?;
     let mut profiles = BTreeMap::new();
     visit(program.predicate(), &mut profiles)?;
     for order in program.orders() {
@@ -4204,6 +4283,7 @@ fn predicate_referenced_profiles(
 
 fn nullable_predicate_referenced_profiles(
     program: &riffdb_query_ir::ExactPredicateProgramV2,
+    work: &mut SourceRowsWork,
 ) -> Result<BTreeMap<FieldId, ExactComparisonProfileV1>, RebuildFailure> {
     fn insert(
         profiles: &mut BTreeMap<FieldId, ExactComparisonProfileV1>,
@@ -4233,6 +4313,16 @@ fn nullable_predicate_referenced_profiles(
             }
         }
     }
+    let count = predicate_leaf_count(program.predicate())?
+        .checked_add(
+            program
+                .orders()
+                .iter()
+                .map(|order| order.terms().len())
+                .sum::<usize>(),
+        )
+        .ok_or(RebuildFailure::Transient)?;
+    work.reserve_tree::<FieldId, ExactComparisonProfileV1>(count)?;
     let mut profiles = BTreeMap::new();
     visit(program.predicate(), &mut profiles)?;
     for order in program.orders() {
