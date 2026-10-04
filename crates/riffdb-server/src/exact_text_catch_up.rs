@@ -5,7 +5,7 @@ use std::collections::BTreeSet;
 use std::ops::Deref;
 use std::sync::Arc;
 
-use riffdb_catalog::{ActiveCatalogSnapshot, CatalogErrorKind};
+use riffdb_catalog::ActiveCatalogSnapshot;
 use riffdb_query_ir::QueryAccessProgramV1;
 use riffdb_storage_api::{
     AdmittedProviderEntityRecordV1, ChangelogCursorErrorV3, DurableKeySchemaBindingV1,
@@ -41,6 +41,7 @@ pub(super) struct CapturedSource {
     head: CommitSequence,
     // Last: all private source data drops before releasing the existing work pin.
     work: ProviderPin,
+    _metadata: Arc<riffdb_types::exact_provider_budget_v1::OwnershipCharge>,
 }
 
 impl CapturedSource {
@@ -72,6 +73,12 @@ impl CapturedSource {
         work: &ProviderPin,
     ) -> Result<Option<Self>, RebuildFailure> {
         work.ensure_active()
+            .map_err(|_| RebuildFailure::Transient)?;
+        let metadata = runtime
+            .ownership_graph
+            .budget
+            .reserve(32 * 1024)
+            .and_then(|work| work.commit())
             .map_err(|_| RebuildFailure::Transient)?;
         let snapshot = runtime
             .storage
@@ -126,12 +133,9 @@ impl CapturedSource {
                 return Ok(None);
             }
         }
-        let catalog = ActiveCatalogSnapshot::read(&snapshot)
-            .map_err(|error| match error.kind() {
-                CatalogErrorKind::Storage => RebuildFailure::Transient,
-                _ => RebuildFailure::Integrity,
-            })?
-            .ok_or(RebuildFailure::Integrity)?;
+        let catalog = runtime
+            .storage
+            .catalog(&snapshot, &runtime.ownership_graph)?;
         Ok(Some(Self {
             storage: ProjectionReadSource::from_snapshot(snapshot),
             budget: runtime.ownership_graph.budget.clone(),
@@ -140,6 +144,7 @@ impl CapturedSource {
             pin,
             head,
             work: work.clone(),
+            _metadata: metadata,
         }))
     }
 
@@ -192,6 +197,8 @@ struct SelectedSource {
     // Includes policy-denied and null-text rows: admission does not reduce the
     // population against which a future insert must check the existing bound.
     candidates: AdmittedCandidatePopulation,
+    // Last: the retained physical source descriptor outlives its allocation charge.
+    _metadata: Arc<riffdb_types::exact_provider_budget_v1::OwnershipCharge>,
 }
 
 impl<T> Selected<T> {
@@ -215,6 +222,7 @@ impl<T> Selected<T> {
                 pin: captured.pin,
                 head: captured.head,
                 candidates,
+                _metadata: captured._metadata,
             },
         })
     }

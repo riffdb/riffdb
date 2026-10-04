@@ -74,8 +74,40 @@ impl RunningFollowerService {
         })?;
         let cursor_clock: Arc<dyn CursorMonotonicClock> =
             Arc::new(ProductionCursorMonotonicClock::new());
+        let catalog_reads = reads.clone();
+        let provider_source =
+            crate::projection_read_source::ProjectionReadSource::new(reads.clone())
+                .with_catalog_probe(move |snapshot, graph| {
+                    use crate::exact_text_adapter::RebuildFailure;
+                    use riffdb_storage_api::CatalogRepository;
+                    let _work = graph
+                        .budget
+                        .reserve(32 * 1024)
+                        .map_err(|_| RebuildFailure::Transient)?;
+                    let pointer = snapshot
+                        .read_active_catalog()
+                        .map_err(|_| RebuildFailure::Transient)?;
+                    let view = catalog_reads
+                        .latest()
+                        .map_err(|_| RebuildFailure::Transient)?;
+                    let catalog = view
+                        .catalog()
+                        .filter(|catalog| Some(catalog.pointer()) == pointer.as_ref())
+                        .ok_or(RebuildFailure::Transient)?;
+                    let _admitted = graph
+                        .admit(1024, |inspection| inspection.visit(catalog))
+                        .map_err(|error| match error {
+                            crate::exact_provider_graph::ProviderAdmissionError::Capacity => {
+                                RebuildFailure::Transient
+                            }
+                            crate::exact_provider_graph::ProviderAdmissionError::Integrity => {
+                                RebuildFailure::Integrity
+                            }
+                        })?;
+                    Ok(catalog.clone())
+                });
         let exact_runtime = ExactTextRuntime::open(
-            crate::projection_read_source::ProjectionReadSource::new(reads.clone()),
+            provider_source,
             projections_root,
             retained_metadata.history_incarnation(),
             exact_generation_from_process(&generation),

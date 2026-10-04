@@ -4836,7 +4836,7 @@ fn wait_for_stop(stop: &StopState, timeout: Duration) -> bool {
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-enum RebuildFailure {
+pub(crate) enum RebuildFailure {
     Transient,
     Capacity(ProjectionGeneration),
     Integrity,

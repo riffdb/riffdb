@@ -179,6 +179,40 @@ fn read_active_catalog_cached<R: CatalogRepository>(
     Ok(snapshot)
 }
 
+/// A provider can capture a published ordinary-service snapshot, never cold-load it.
+fn probe_provider_catalog<R: CatalogRepository>(
+    repository: &R,
+    cache: &RwLock<ActiveCatalogView>,
+    graph: &crate::exact_provider_graph::ProviderOwnershipGraph,
+) -> Result<ActiveCatalogSnapshot, crate::exact_text_adapter::RebuildFailure> {
+    use crate::exact_text_adapter::RebuildFailure;
+    // Pointer copies and temporary lock/inspection bookkeeping are bounded.
+    let _work = graph
+        .budget
+        .reserve(32 * 1024)
+        .map_err(|_| RebuildFailure::Transient)?;
+    let pointer = repository
+        .read_active_catalog()
+        .map_err(|_| RebuildFailure::Transient)?;
+    let cache = cache.try_read().map_err(|_| RebuildFailure::Transient)?;
+    let value = cache
+        .snapshot
+        .as_deref()
+        .filter(|value| Some(value.pointer()) == pointer.as_ref())
+        .ok_or(RebuildFailure::Transient)?;
+    let _admitted = graph
+        .admit(1024, |inspection| inspection.visit(value))
+        .map_err(|error| match error {
+            crate::exact_provider_graph::ProviderAdmissionError::Capacity => {
+                RebuildFailure::Transient
+            }
+            crate::exact_provider_graph::ProviderAdmissionError::Integrity => {
+                RebuildFailure::Integrity
+            }
+        })?;
+    Ok(value.clone())
+}
+
 #[derive(Default)]
 struct ExecutablePlanView {
     plans: BTreeMap<ExecutablePlanRef, (ActiveCatalogPointerV1, ResolvedExecutablePlan)>,
@@ -415,7 +449,11 @@ impl<S: CatalogReadSource> ServerCatalogReadPort<S> {
         let historical = Arc::new(RwLock::new(HistoricalContractView::default()));
         let version_storage = storage.clone();
         let version_historical = Arc::clone(&historical);
+        let version_active_cache = Arc::clone(&active_cache);
         let contract_version = driver.executor(move |(lineage, version)| {
+            // The ordinary catalog adapter owns cold metadata production. Its
+            // provider readers only borrow a matching already-published root.
+            let _ = read_active_catalog_cached(&version_storage, &version_active_cache);
             if let Some(bundle) = version_historical
                 .read()
                 .map_err(|_| CatalogError::new(CatalogErrorKind::InvalidHistoricalEvidence))?
@@ -514,6 +552,38 @@ impl<S: CatalogReadSource> ServerCatalogReadPort<S> {
     }
 }
 
+impl<S: CatalogReadSource> ServerCatalogReadPort<S> {
+    pub(crate) fn provider_source(
+        &self,
+        source: crate::projection_read_source::ProjectionReadSource,
+    ) -> crate::projection_read_source::ProjectionReadSource {
+        let cache = Arc::clone(&self.active_cache);
+        source.with_catalog_probe(move |snapshot, graph| {
+            probe_provider_catalog(snapshot, &cache, graph)
+        })
+    }
+    fn active_metadata_is_current(&self) -> bool {
+        let Ok(pointer) = self.active_storage.read_active_catalog() else {
+            return false;
+        };
+        self.active_cache
+            .try_read()
+            .ok()
+            .is_some_and(|cache| cache.get(pointer.as_ref()).is_some())
+    }
+}
+#[cfg(test)]
+pub(crate) fn fixture_provider_source<R: CatalogRepository>(
+    repository: &R,
+    source: crate::projection_read_source::ProjectionReadSource,
+) -> crate::projection_read_source::ProjectionReadSource {
+    let cache = RwLock::new(ActiveCatalogView::default());
+    // Explicit ordinary fixture preparation, before exact runtime construction.
+    let _ = read_active_catalog_cached(repository, &cache);
+    source
+        .with_catalog_probe(move |snapshot, graph| probe_provider_catalog(snapshot, &cache, graph))
+}
+
 impl<S: CatalogReadSource> CatalogReadPort for ServerCatalogReadPort<S> {
     fn prepare_active_catalog(
         &self,
@@ -534,6 +604,7 @@ impl<S: CatalogReadSource> CatalogReadPort for ServerCatalogReadPort<S> {
         // serialized blocking-port turn. A miss, contended publication, or
         // poisoned cache retains the complete durable lookup and error path.
         if self.contract_version.precheck(control).is_ok()
+            && self.active_metadata_is_current()
             && let Ok(cache) = self.exact_contract_cache.try_read()
             && let Some(bundle) = cache.get(&lineage, version)
         {
@@ -593,6 +664,9 @@ impl<S: CatalogReadSource> QueryModuleReadPort for ServerCatalogReadPort<S> {
     ) -> Result<Option<ResolvedNamedQuery>, QueryModuleReadError> {
         if self.query_module.precheck(control).is_err() {
             return Err(QueryModuleReadError::Unavailable);
+        }
+        if !self.active_metadata_is_current() {
+            return Ok(None);
         }
         Ok(self
             .exact_named_queries
@@ -3208,3 +3282,7 @@ mod tests {
         driver.shutdown_and_drain().expect("driver drains cleanly");
     }
 }
+
+#[cfg(test)]
+#[path = "read_adapters_provider_catalog_tests.rs"]
+mod provider_catalog_tests;

@@ -606,7 +606,7 @@ impl ProductionGraphBuilder {
         let catalog_adapter = Arc::new(ServerCatalogReadPort::new(storage.clone(), &blocking));
         let catalog: Arc<dyn CatalogReadPort> = catalog_adapter.clone();
         let query_modules: Arc<dyn QueryModuleReadPort> = catalog_adapter.clone();
-        let reactive_modules: Arc<dyn ReactiveModuleReadPort> = catalog_adapter;
+        let reactive_modules: Arc<dyn ReactiveModuleReadPort> = catalog_adapter.clone();
         let authoritative: Arc<dyn AuthoritativeReadPort> =
             Arc::new(ServerAuthoritativeReadPort::new(
                 storage.clone(),
@@ -729,7 +729,7 @@ impl ProductionGraphBuilder {
             Arc::new(ProductionCursorMonotonicClock::new());
         let initial_exact_generation = exact_generation_from_process(&server_generation);
         let exact_runtime = match ExactTextRuntime::open(
-            storage.projection_reads(),
+            catalog_adapter.provider_source(storage.projection_reads()),
             &projections_root,
             retained_metadata.history_incarnation(),
             initial_exact_generation,

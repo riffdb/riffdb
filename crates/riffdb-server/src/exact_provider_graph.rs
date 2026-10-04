@@ -40,6 +40,19 @@ impl ProviderOwnershipGraph {
             _registry_metadata: metadata,
         })
     }
+    #[cfg(test)]
+    pub(crate) fn isolated_for_test() -> Self {
+        let budget = ProviderBudget::new();
+        let metadata = budget
+            .reserve(REGISTRY_METADATA_BYTES)
+            .unwrap()
+            .commit()
+            .unwrap();
+        Self {
+            budget,
+            _registry_metadata: metadata,
+        }
+    }
     pub(super) fn metadata_owner(&self) -> Arc<OwnershipCharge> {
         self._registry_metadata.clone()
     }

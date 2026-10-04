@@ -13,9 +13,18 @@ use riffdb_storage_api::{
 use riffdb_storage_redb::RedbOwnedSnapshot;
 use riffdb_types::{CommitSequence, EventId, ProvenanceId};
 
+type CatalogProbe = dyn Fn(
+        &RedbOwnedSnapshot,
+        &crate::exact_provider_graph::ProviderOwnershipGraph,
+    )
+        -> Result<riffdb_catalog::ActiveCatalogSnapshot, crate::exact_text_adapter::RebuildFailure>
+    + Send
+    + Sync;
+
 #[derive(Clone)]
 pub(crate) struct ProjectionReadSource {
     open: Arc<dyn Fn() -> Result<RedbOwnedSnapshot, StorageError> + Send + Sync>,
+    catalog: Option<Arc<CatalogProbe>>,
 }
 impl ProjectionReadSource {
     pub(crate) fn new<R>(reader: R) -> Self
@@ -25,6 +34,7 @@ impl ProjectionReadSource {
     {
         Self {
             open: Arc::new(move || reader.open_owned_snapshot()),
+            catalog: None,
         }
     }
 
@@ -32,9 +42,37 @@ impl ProjectionReadSource {
     pub(crate) fn from_snapshot(snapshot: RedbOwnedSnapshot) -> Self {
         Self {
             open: Arc::new(move || Ok(snapshot.clone())),
+            catalog: None,
         }
     }
 
+    pub(crate) fn with_catalog_probe(
+        mut self,
+        probe: impl Fn(
+            &RedbOwnedSnapshot,
+            &crate::exact_provider_graph::ProviderOwnershipGraph,
+        ) -> Result<
+            riffdb_catalog::ActiveCatalogSnapshot,
+            crate::exact_text_adapter::RebuildFailure,
+        > + Send
+        + Sync
+        + 'static,
+    ) -> Self {
+        self.catalog = Some(Arc::new(probe));
+        self
+    }
+    pub(crate) fn catalog(
+        &self,
+        snapshot: &RedbOwnedSnapshot,
+        graph: &crate::exact_provider_graph::ProviderOwnershipGraph,
+    ) -> Result<riffdb_catalog::ActiveCatalogSnapshot, crate::exact_text_adapter::RebuildFailure>
+    {
+        let probe = self
+            .catalog
+            .as_ref()
+            .ok_or(crate::exact_text_adapter::RebuildFailure::Transient)?;
+        probe(snapshot, graph)
+    }
     /// A follower rechecks live publication on every pin, including withdrawal.
     pub(crate) fn pin(&self) -> Result<RedbOwnedSnapshot, StorageError> {
         (self.open)()

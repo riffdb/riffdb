@@ -200,7 +200,10 @@ impl SharedRedbOperationalPorts {
 
     /// Narrows primary storage to immutable pins before entering derived workers.
     pub(crate) fn projection_reads(&self) -> crate::projection_read_source::ProjectionReadSource {
-        crate::projection_read_source::ProjectionReadSource::new(self.shared.clone())
+        let source = crate::projection_read_source::ProjectionReadSource::new(self.shared.clone());
+        #[cfg(test)]
+        let source = crate::read_adapters::fixture_provider_source(self, source);
+        source
     }
 
     /// True only when bounded startup proved no in-flight `Delivering` outbox

@@ -637,7 +637,13 @@ Clock or accounting failure emits `available=false` without fabricated counters.
 These lines contain no keys, tenants, capabilities, paths or payloads. Multiple
 runtimes in a process report the same aggregate pool.
 
-The complete catalog/source and policy assembly and supersession integration
+Provider catalog capture borrows an exactly matching catalog already published
+by the ordinary catalog adapter or completed follower prefix. It reserves shared
+ownership before capture and refuses when that publication is absent, stale or
+contended; providers cannot cold-decode a private catalog. Retained physical
+source descriptors retain their metadata charge through their final capture.
+
+Receipt and policy execution accounting and qualified plan supersession
 remain in progress. This implementation recycles
 eligible registrations but does not yet establish the complete provider memory
 bound or qualification readiness. See the

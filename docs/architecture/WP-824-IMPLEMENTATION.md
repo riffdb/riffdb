@@ -1,5 +1,40 @@
 # WP-824 implementation progress
 
+## Exact catalog capture from ordinary metadata publication
+
+Primary providers now probe the catalog adapter's existing ordinary-service
+publication. Exact contract preparation warms that publication on its ordinary
+blocking path; inline exact contract and named-query hits require current active
+metadata, with misses returning to ordinary preparation. Warming remains
+best-effort for ordinary historical reads, preserving their existing behavior.
+Provider capture checks the immutable source's exact durable pointer and admits
+the complete borrowed shared graph before cloning. It cannot cold-read or decode
+a catalog. Missing/stale/contended publications and budget pressure refuse typed.
+
+Follower providers similarly borrow the already validated completed-prefix
+catalog publication after matching the captured source pointer. No provider
+metadata worker or uncharged cold fallback is introduced. Unit storage fixtures
+prepare their ordinary catalog publication before constructing an exact runtime.
+The retained physical source descriptor now carries its own conservative metadata
+charge through selected-source clones and successor publication. Shared catalog
+charges follow actual final data references, including ordinary publishers and
+retained stored lineage names.
+
+Focused tests cover cold/stale refusal without bundle decoding, exact publication
+identity, lock contention, saturation before cloning, duplicate capture and final
+shared-reference destruction. An initial probe admitted no parent allowance for
+charge splitting; the tests caught it and the probe now retains its bookkeeping
+allowance. Final-release assertions also explicitly drop the stored fixture
+repository's shared lineage reference. All 551 selected server tests passed,
+including the real-daemon crash oracle; 72 tests were skipped or excluded. All six scoped
+static checks passed. Receipt and policy execution admission remain open.
+
+PR note: Package WP-824; Tier guarantee; Behavior: admitted exact catalog capture
+from existing ordinary/follower publication and retained source metadata;
+Compatibility: unchanged catalog bytes, validation, historical query meanings,
+authorization and application interfaces; Handbook: Configuration;
+Hazards/follow-ups: receipt/policy ownership, qualified supersession and full CI.
+
 ## Private source row conversion workspace
 
 Full text, predicate, nullable-predicate and tokenized rebuilds now reserve native

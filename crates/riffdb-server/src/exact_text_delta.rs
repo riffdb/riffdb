@@ -272,6 +272,7 @@ impl Delta {
                 pin: Some(pin),
                 head,
                 candidates: population.finish()?,
+                _metadata: captured._metadata.clone(),
             },
         }))
     }
