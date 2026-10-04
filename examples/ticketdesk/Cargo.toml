@@ -11,6 +11,11 @@ riffdb-contract-compiler = { version = "0.1.0", path = "../../crates/riffdb-cont
 riffdb-client-rust = { version = "0.1.0", path = "../../crates/riffdb-client-rust", default-features = false }
 riffdb-config = { version = "0.1.0", path = "../../crates/riffdb-config", default-features = false }
 riffdb-errors = { version = "0.1.0", path = "../../crates/riffdb-errors", default-features = false }
+riffdb-contract-ir = { version = "0.1.0", path = "../../crates/riffdb-contract-ir", default-features = false }
+riffdb-outbox = { version = "0.1.0", path = "../../crates/riffdb-outbox", default-features = false }
+riffdb-storage-api = { version = "0.1.0", path = "../../crates/riffdb-storage-api", default-features = false }
+riffdb-storage-redb = { version = "0.1.0", path = "../../crates/riffdb-storage-redb", default-features = false }
+riffdb-types = { version = "0.1.0", path = "../../crates/riffdb-types", default-features = false }
 tokio = { version = "=1.52.0", default-features = false, features = ["macros", "rt-multi-thread", "sync", "time"] }
 tonic = { version = "=0.14.6", default-features = false, features = ["channel"] }
 

@@ -437,7 +437,10 @@ pub(super) async fn run() -> Result<()> {
                         if changed.commit_sequence.is_none() {
                             return Err("missing_commit");
                         }
-                        if changed.replayed && !recovering {
+                        if changed.replayed
+                            && !recovering
+                            && !super::recovery::planned_fault(control.as_deref())?
+                        {
                             return Err("probe_requires_fresh_updates");
                         }
                         if changed.contract_version != release.version {

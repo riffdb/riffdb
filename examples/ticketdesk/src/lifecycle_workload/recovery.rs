@@ -65,7 +65,7 @@ fn recoverable(error: &ApplicationClientError) -> bool {
     }
 }
 
-fn planned_fault(root: Option<&Path>) -> Result<bool> {
+pub(super) fn planned_fault(root: Option<&Path>) -> Result<bool> {
     let Some(root) = root else {
         return Ok(false);
     };
@@ -156,7 +156,7 @@ where
     F: std::future::Future<Output = ()> + Send,
 {
     let started = Instant::now();
-    let mut admitted = planned()?;
+    let mut admitted = false;
     let mut budget = Budget {
         submissions: 1,
         recovering: false,

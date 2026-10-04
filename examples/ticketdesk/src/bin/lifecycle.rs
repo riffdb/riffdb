@@ -34,6 +34,8 @@ use application::{
     UpdateTicketInput, UpdateTicketOutcome,
 };
 
+#[path = "../lifecycle_workload/archive.rs"]
+mod archive;
 #[path = "../lifecycle_workload/current.rs"]
 mod current;
 #[path = "../lifecycle_workload/current_reactive.rs"]
@@ -67,6 +69,7 @@ async fn main() {
         Some("observe") => observe::run().await,
         Some("successor-smoke") => current::smoke().await,
         Some("recovery-smoke") => recovery::smoke().await,
+        Some("archive-reconcile") => archive::run(),
         _ => Err("arguments"),
     };
     if let Err(code) = result {
@@ -221,7 +224,11 @@ async fn smoke() -> Result<()> {
     // Run in an owned preparation database, before creating campaign evidence.
     let mut seeder = connect("RIFFDB_LIFECYCLE_SEED_CREDENTIAL").await?;
     foundation(&mut seeder, 0).await?;
-    ticket(&mut seeder, 0).await?;
+    let seeded = ticket(&mut seeder, 0).await?;
+    if let Some(witness) = witness::Witness::configured("seed.witness", 1)? {
+        witness.record(0, seeded, 1, 1)?;
+        witness.finish()?;
+    }
     let mut client = connect("RIFFDB_LIFECYCLE_APPLICATION_CREDENTIAL").await?;
     let input = model::update(0)?;
     let changed = client
@@ -238,6 +245,10 @@ async fn smoke() -> Result<()> {
     }
     model::validate_update(0, &changed.outcome)?;
     let committed = changed.commit_sequence.ok_or("missing_commit")?;
+    if let Some(witness) = witness::Witness::configured("updates.witness", 1)? {
+        witness.record(0, committed, changed.contract_version, 1)?;
+        witness.finish()?;
+    }
     let replay = client
         .update_ticket(input.clone())
         .await

@@ -723,3 +723,39 @@ application interfaces unchanged; Updated handbook pages: this handoff;
 Hazards/follow-ups: validate archive payloads against these witnesses, complete
 campaign actions and actual physical-retention measurements, then pass the
 frozen short rehearsal. The 24-hour run remains unstarted.
+
+## WP-825 independent offline archive reconciliation
+
+The private Rust operator checker now opens the stopped database only for its
+dormant identity probe, then uses the existing exclusive durable-archive owner.
+It validates every archive page through the native envelope/hash checker,
+matches each witnessed database/incarnation/event identity, and independently
+reconstructs complete TicketCreated and TicketUpdated payloads from the ordinal
+and exact compiler-owned schema. Declared policy anchors must match exactly;
+these workload declarations use the accepted unanchored event shape, whose
+absence is also checked. Writer-version evidence comes from command replies in
+the witness; unanchored archive records do not independently encode that version.
+All records must be accounted for, with bounded steps and no payload diagnostics.
+
+The integrated preparation checks two real archived events after production
+shutdown. Hostile witness substitutions prove that valid native archive hashes
+and counters cannot excuse a different event or history incarnation. Population
+preparation also performs this offline reconciliation after stopping its daemon.
+The new dependencies are existing first-party compiler, semantic storage, archive
+and type owners; the operator checker adds no engine decoder or runtime mutation.
+
+The first witness-enabled five-minute host preparation completed all 30,000
+commands and 120,000 reads and reconciled all 65,536 tickets. Its p95 100.550 ms
+missed the normal-window limit; p99 was 139.531 ms. It remains failed. Recovery
+controls are now consulted only after a native failure or returned replay,
+rather than by every successful operation. A repeat measurement is still needed;
+no latency target or workload rate has changed.
+
+PR note: Package WP-825 (open); Tier guarantee; Behavior: offline native archive
+validation against independent acknowledgements and actual semantic substitution
+tests; Checks: twenty-three Rust cases, Clippy, four real TLS preparations,
+archive substitution cases and scoped acceptance; Compatibility: native archive
+formats, authority and qualification gates preserved; Updated handbook pages:
+this handoff; Hazards/follow-ups: repeat the host preparation, measure online
+retention and pruning recovery, finish all campaign actions and conformance,
+then pass the frozen short rehearsal. No 24-hour run has started.

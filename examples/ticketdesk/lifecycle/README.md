@@ -54,6 +54,13 @@ and key to settle, replay exactly, and reconcile state within sixty seconds.
 These modes run separately from population and observer preparation. Their
 private observations are not campaign receipts or pruning-recovery evidence.
 
+The `--archive-witness` preparation checks two actual archived events against
+independent acknowledgement evidence after production shutdown. Population
+preparation writes bounded seed/update witnesses and performs the same offline
+archive reconciliation for every event. The checker uses native exclusive
+custody and envelope validation and never emits event payloads. Its witness
+files are private test evidence, not authoritative storage or campaign receipts.
+
 A fresh full-population preparation can also run a short offered-load probe:
 
 ```bash

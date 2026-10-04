@@ -2356,7 +2356,12 @@ dependencies = [
  "riffdb-client-rust",
  "riffdb-config",
  "riffdb-contract-compiler",
+ "riffdb-contract-ir",
  "riffdb-errors",
+ "riffdb-outbox",
+ "riffdb-storage-api",
+ "riffdb-storage-redb",
+ "riffdb-types",
  "tokio",
  "tonic",
 ]
