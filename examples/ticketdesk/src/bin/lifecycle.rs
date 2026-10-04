@@ -71,11 +71,16 @@ async fn main() {
 async fn connect_base(
     credential_variable: &str,
 ) -> Result<(StableApplicationClient, CallMetadata)> {
+    let credential_path = env::var_os(credential_variable).ok_or("configuration")?;
+    connect_base_path(Path::new(&credential_path)).await
+}
+
+async fn connect_base_path(
+    credential_path: &Path,
+) -> Result<(StableApplicationClient, CallMetadata)> {
     let endpoint = env::var("RIFFDB_LIFECYCLE_ENDPOINT").map_err(|_| "configuration")?;
     let ca = env::var_os("RIFFDB_LIFECYCLE_CA").ok_or("configuration")?;
-    let credential_path = env::var_os(credential_variable).ok_or("configuration")?;
-    let credential =
-        load_protected_bearer_credential(Path::new(&credential_path)).map_err(|_| "credential")?;
+    let credential = load_protected_bearer_credential(credential_path).map_err(|_| "credential")?;
     let tls = TlsClientConfig::new(
         CanonicalHttpsEndpoint::parse(&endpoint).map_err(|_| "configuration")?,
         ProtectedFilePath::new(PathBuf::from(ca)).map_err(|_| "configuration")?,

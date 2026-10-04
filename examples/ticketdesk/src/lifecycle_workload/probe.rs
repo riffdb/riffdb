@@ -1,7 +1,9 @@
 //! Bounded offered-load probe; lifecycle orchestration remains controller-owned.
 
 use std::env;
+use std::io::Read;
 use std::io::{self, Write};
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
@@ -43,6 +45,158 @@ impl Drop for Active {
     fn drop(&mut self) {
         self.current.fetch_sub(1, Ordering::AcqRel);
     }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct Release {
+    generation: u64,
+    version: u64,
+    credential: PathBuf,
+}
+
+struct AdmissionState {
+    paused: bool,
+    release: Arc<Release>,
+}
+
+struct Admission {
+    state: Mutex<AdmissionState>,
+    current: Arc<AtomicU32>,
+    changed: tokio::sync::Notify,
+}
+
+impl Admission {
+    fn new(release: Release, current: Arc<AtomicU32>) -> Self {
+        Self {
+            state: Mutex::new(AdmissionState {
+                paused: false,
+                release: Arc::new(release),
+            }),
+            current,
+            changed: tokio::sync::Notify::new(),
+        }
+    }
+
+    fn admit(&self, peak: &AtomicU32) -> Result<Option<(Active, Arc<Release>)>> {
+        let state = self.state.lock().map_err(|_| "admission_state")?;
+        if state.paused {
+            return Ok(None);
+        }
+        Ok(Some((
+            Active::reserve(&self.current, peak)?,
+            Arc::clone(&state.release),
+        )))
+    }
+
+    fn pause(&self) -> Result<()> {
+        self.state.lock().map_err(|_| "admission_state")?.paused = true;
+        Ok(())
+    }
+
+    fn quiesced(&self) -> Result<bool> {
+        let state = self.state.lock().map_err(|_| "admission_state")?;
+        Ok(state.paused && self.current.load(Ordering::Acquire) == 0)
+    }
+
+    fn replace(&self, release: Release) -> Result<()> {
+        let mut state = self.state.lock().map_err(|_| "admission_state")?;
+        if !state.paused
+            || self.current.load(Ordering::Acquire) != 0
+            || release.generation <= state.release.generation
+            || !(1..=2).contains(&release.version)
+            || release.version < state.release.version
+        {
+            return Err("release_change_requires_quiescence");
+        }
+        state.release = Arc::new(release);
+        Ok(())
+    }
+
+    fn release(&self) -> Result<Arc<Release>> {
+        Ok(Arc::clone(
+            &self.state.lock().map_err(|_| "admission_state")?.release,
+        ))
+    }
+
+    fn resume(&self) -> Result<()> {
+        self.state.lock().map_err(|_| "admission_state")?.paused = false;
+        self.changed.notify_waiters();
+        Ok(())
+    }
+
+    fn poll(&self, root: &Path, metrics: &Mutex<Metrics>) -> Result<()> {
+        let paused = root.join("load.quiesce").exists();
+        if paused {
+            self.pause()?;
+        }
+        let phase = root.join("load.phase");
+        if phase.exists() {
+            let release = read_release(root, &phase)?;
+            if release != *self.release()? {
+                self.replace(release)?;
+            }
+        }
+        if !paused {
+            return self.resume();
+        }
+        if self.quiesced()? && !root.join("load.quiesced").exists() {
+            let totals = metrics.lock().map_err(|_| "observation_state")?;
+            let mut receipt = std::fs::OpenOptions::new()
+                .write(true)
+                .create_new(true)
+                .open(root.join("load.quiesced"))
+                .map_err(|_| "quiescence_output")?;
+            writeln!(receipt, "{{\"schema\":\"riffdb.ticketdesk-lifecycle-quiesced/v1\",\"generation\":{},\"completed_commands\":{},\"completed_reads\":{}}}",
+                self.release()?.generation, totals.total_commands, totals.total_reads)
+                .map_err(|_| "quiescence_output")?;
+            receipt.sync_all().map_err(|_| "quiescence_output")?;
+        }
+        Ok(())
+    }
+}
+
+fn read_release(root: &Path, path: &Path) -> Result<Release> {
+    if path.is_symlink() || !path.is_file() {
+        return Err("release_input");
+    }
+    let file = std::fs::File::open(path).map_err(|_| "release_input")?;
+    let mut encoded = Vec::with_capacity(1025);
+    file.take(1025)
+        .read_to_end(&mut encoded)
+        .map_err(|_| "release_input")?;
+    if encoded.len() > 1024 {
+        return Err("release_input_bound");
+    }
+    let text = std::str::from_utf8(&encoded).map_err(|_| "release_input")?;
+    let fields = text
+        .strip_suffix('\n')
+        .ok_or("release_input")?
+        .split(' ')
+        .collect::<Vec<_>>();
+    if fields.len() != 3
+        || fields[2].is_empty()
+        || fields[2].len() > 128
+        || !fields[2]
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_' | b'.'))
+        || matches!(fields[2], "." | "..")
+    {
+        return Err("release_input");
+    }
+    let generation = fields[0].parse::<u64>().map_err(|_| "release_input")?;
+    let version = fields[1].parse::<u64>().map_err(|_| "release_input")?;
+    if generation == 0
+        || !(1..=2).contains(&version)
+        || generation.to_string() != fields[0]
+        || version.to_string() != fields[1]
+    {
+        return Err("release_input");
+    }
+    Ok(Release {
+        generation,
+        version,
+        credential: root.join(fields[2]),
+    })
 }
 
 #[derive(Clone, Copy)]
@@ -166,17 +320,39 @@ pub(super) async fn run() -> Result<()> {
     let metrics = Arc::new(Mutex::new(Metrics::new()));
     let current = Arc::new(AtomicU32::new(0));
     let peak = Arc::new(AtomicU32::new(0));
+    let version = match env::var("RIFFDB_LIFECYCLE_CONTRACT_VERSION") {
+        Ok(value) if value == "1" => 1,
+        Ok(value) if value == "2" => 2,
+        Err(env::VarError::NotPresent) => 1,
+        _ => return Err("contract_version"),
+    };
+    let initial = Release {
+        generation: 1,
+        version,
+        credential: PathBuf::from(
+            env::var_os("RIFFDB_LIFECYCLE_APPLICATION_CREDENTIAL").ok_or("configuration")?,
+        ),
+    };
+    let admission = Arc::new(Admission::new(initial, Arc::clone(&current)));
+    let control = env::var_os("RIFFDB_LIFECYCLE_LOAD_CONTROL").map(PathBuf::from);
+    if let Some(root) = &control {
+        if !root.is_absolute() || root.is_symlink() || !root.is_dir() {
+            return Err("load_control_root");
+        }
+        admission.poll(root, &metrics)?;
+    }
     let offered_commands = Arc::new(AtomicU64::new(0));
     let mut workers = JoinSet::new();
     for worker in 0..u64::from(WORKERS) {
         let receiver = Arc::clone(&receiver);
         let ready = Arc::clone(&ready);
         let metrics = Arc::clone(&metrics);
-        let current = Arc::clone(&current);
+        let admission = Arc::clone(&admission);
         let peak = Arc::clone(&peak);
         let offered_commands = Arc::clone(&offered_commands);
         workers.spawn(async move {
-            let mut client = current::connect().await?;
+            let mut release = admission.release()?;
+            let mut client = current::connect_release(release.version, &release.credential).await?;
             // Warm named-query carriage before the offered-load clock begins.
             let warm = client
                 .get_ticket(GetTicketParams {
@@ -194,7 +370,21 @@ pub(super) async fn run() -> Result<()> {
                 let Some(job) = job else {
                     return Ok::<_, &'static str>(());
                 };
-                let active = Active::reserve(&current, &peak)?;
+                let (active, next_release) = loop {
+                    let notified = admission.changed.notified();
+                    tokio::pin!(notified);
+                    notified.as_mut().enable();
+                    if let Some(admitted) = admission.admit(&peak)? {
+                        break admitted;
+                    }
+                    notified.await;
+                };
+                if next_release.generation != release.generation {
+                    client =
+                        current::connect_release(next_release.version, &next_release.credential)
+                            .await?;
+                    release = next_release;
+                }
                 match job.operation {
                     Operation::Update(ordinal) => {
                         let changed = client
@@ -228,11 +418,11 @@ pub(super) async fn run() -> Result<()> {
                         )?;
                     }
                 }
-                drop(active);
                 metrics
                     .lock()
                     .map_err(|_| "observation_state")?
                     .record(job.operation, job.offered.elapsed())?;
+                drop(active);
             }
         });
     }
@@ -249,12 +439,19 @@ pub(super) async fn run() -> Result<()> {
     let started = Instant::now();
     let mut ticker = tokio::time::interval(Duration::from_secs(1));
     ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Burst);
+    let mut control_tick = tokio::time::interval(Duration::from_millis(100));
+    control_tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
     let mut window_start = 0;
     for second in 0..duration {
-        tokio::select! {
-            _ = ticker.tick() => {},
-            result = workers.join_next() => {
-                return result.ok_or("worker")?.map_err(|_| "worker")?.and(Err("worker_ended"));
+        loop {
+            tokio::select! {
+                _ = ticker.tick() => break,
+                _ = control_tick.tick(), if control.is_some() => {
+                    admission.poll(control.as_ref().ok_or("load_control_root")?, &metrics)?;
+                }
+                result = workers.join_next() => {
+                    return result.ok_or("worker")?.map_err(|_| "worker")?.and(Err("worker_ended"));
+                }
             }
         }
         if started.elapsed().as_millis() > u128::from(second) * 1000 + 500 {
@@ -323,6 +520,114 @@ pub(super) async fn run() -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // req: END-002, END-003, END-007, END-008
+    #[test]
+    fn quiescence_requires_every_original_admission_to_settle_before_release_change() {
+        let current = Arc::new(AtomicU32::new(0));
+        let peak = AtomicU32::new(0);
+        let admission = Admission::new(
+            Release {
+                generation: 1,
+                version: 1,
+                credential: "application.credential".into(),
+            },
+            Arc::clone(&current),
+        );
+        let (pin, release) = admission.admit(&peak).unwrap().unwrap();
+        assert_eq!(release.version, 1);
+        admission.pause().unwrap();
+        assert!(admission.admit(&peak).unwrap().is_none());
+        assert!(!admission.quiesced().unwrap());
+        let successor = Release {
+            generation: 2,
+            version: 2,
+            credential: "application-v2.credential".into(),
+        };
+        assert!(admission.replace(successor.clone()).is_err());
+        drop(pin);
+        assert!(admission.quiesced().unwrap());
+        admission.replace(successor).unwrap();
+        admission.resume().unwrap();
+        let (pin, release) = admission.admit(&peak).unwrap().unwrap();
+        assert_eq!(release.generation, 2);
+        assert_eq!(release.version, 2);
+        drop(pin);
+        assert_eq!(current.load(Ordering::Acquire), 0);
+    }
+
+    // req: END-002, END-007, END-008
+    #[tokio::test]
+    async fn resumption_between_registration_and_wait_does_not_lose_an_admission_wakeup() {
+        let admission = Arc::new(Admission::new(
+            Release {
+                generation: 1,
+                version: 1,
+                credential: "application.credential".into(),
+            },
+            Arc::new(AtomicU32::new(0)),
+        ));
+        admission.pause().unwrap();
+        let (registered, ready) = tokio::sync::oneshot::channel();
+        let (continue_wait, wait) = tokio::sync::oneshot::channel();
+        let owned = Arc::clone(&admission);
+        let worker = tokio::spawn(async move {
+            let notified = owned.changed.notified();
+            tokio::pin!(notified);
+            notified.as_mut().enable();
+            assert!(owned.admit(&AtomicU32::new(0)).unwrap().is_none());
+            registered.send(()).unwrap();
+            wait.await.unwrap();
+            notified.await;
+            let (pin, _) = owned.admit(&AtomicU32::new(0)).unwrap().unwrap();
+            drop(pin);
+        });
+        ready.await.unwrap();
+        admission.resume().unwrap();
+        continue_wait.send(()).unwrap();
+        worker.await.unwrap();
+        assert_eq!(admission.current.load(Ordering::Acquire), 0);
+    }
+
+    // req: END-002, END-003, END-008
+    #[test]
+    fn an_unpaused_or_repeated_or_older_release_cannot_replace_current_carriage() {
+        let admission = Admission::new(
+            Release {
+                generation: 1,
+                version: 2,
+                credential: "application-v2.credential".into(),
+            },
+            Arc::new(AtomicU32::new(0)),
+        );
+        let next = Release {
+            generation: 2,
+            version: 2,
+            credential: "rotated.credential".into(),
+        };
+        assert!(admission.replace(next.clone()).is_err());
+        admission.pause().unwrap();
+        assert!(
+            admission
+                .replace(Release {
+                    version: 1,
+                    ..next.clone()
+                })
+                .is_err()
+        );
+        assert!(
+            admission
+                .replace(Release {
+                    generation: 1,
+                    ..next.clone()
+                })
+                .is_err()
+        );
+        admission.replace(next.clone()).unwrap();
+        assert!(admission.replace(next).is_err());
+        assert_eq!(admission.release().unwrap().version, 2);
+        assert_eq!(admission.release().unwrap().generation, 2);
+    }
 
     // req: END-004, END-007, END-010
     #[tokio::test]

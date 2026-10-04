@@ -96,6 +96,21 @@ class ConsumerOutageReconciliation(unittest.TestCase):
         with self.assertRaises(preparation.SmokeError):
             oracle.recovered(self.sample(paused=False, events=2049), 2048)
 
+    def test_only_windows_overlapping_the_measured_outage_and_drain_are_exempt(self):
+        outage = {"start_elapsed_ns": 6000000000, "pause_elapsed_ns": 300000000000,
+                  "recovery_elapsed_ns": 14000000000}
+        self.assertTrue(preparation.outage_window(0, 300, outage))
+        self.assertTrue(preparation.outage_window(300, 600, outage))
+        self.assertFalse(preparation.outage_window(600, 900, outage))
+        outage["start_elapsed_ns"] = 300000000000
+        self.assertFalse(preparation.outage_window(0, 300, outage))
+        self.assertTrue(preparation.outage_window(300, 600, outage))
+        for field in ("pause_elapsed_ns", "recovery_elapsed_ns"):
+            invalid = dict(outage)
+            invalid[field] = 1000000000000
+            with self.assertRaises(preparation.SmokeError):
+                preparation.outage_window(0, 300, invalid)
+
 
 class ChildOwnership(unittest.TestCase):
     def test_invalid_or_oversized_load_output_stops_the_owned_child(self):

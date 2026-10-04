@@ -14,13 +14,27 @@ pub(super) async fn connect() -> Result<CurrentClient> {
         Err(std::env::VarError::NotPresent) => "1".to_owned(),
         Err(std::env::VarError::NotUnicode(_)) => return Err("contract_version"),
     };
-    let (client, metadata) = super::connect_base("RIFFDB_LIFECYCLE_APPLICATION_CREDENTIAL").await?;
+    let credential =
+        std::env::var_os("RIFFDB_LIFECYCLE_APPLICATION_CREDENTIAL").ok_or("configuration")?;
+    let version = match version.as_str() {
+        "1" => 1,
+        "2" => 2,
+        _ => return Err("contract_version"),
+    };
+    connect_release(version, std::path::Path::new(&credential)).await
+}
+
+pub(super) async fn connect_release(
+    version: u64,
+    credential: &std::path::Path,
+) -> Result<CurrentClient> {
+    let (client, metadata) = super::connect_base_path(credential).await?;
     let attempts = AttemptBudget::new(1).ok_or("configuration")?;
-    match version.as_str() {
-        "1" => Ok(CurrentClient::V1(v1::TicketDeskLifecycleClient::new(
+    match version {
+        1 => Ok(CurrentClient::V1(v1::TicketDeskLifecycleClient::new(
             client, metadata, attempts,
         ))),
-        "2" => Ok(CurrentClient::V2(v2::TicketDeskLifecycleClient::new(
+        2 => Ok(CurrentClient::V2(v2::TicketDeskLifecycleClient::new(
             client, metadata, attempts,
         ))),
         _ => Err("contract_version"),

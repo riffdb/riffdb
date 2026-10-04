@@ -118,9 +118,22 @@ observations. Unexpected terminal refusal or cursor reset fails preparation.
 The one-ticket check waits for a real renewal before succeeding.
 
 `--population-probe-seconds 900 --observe --consumer-outage` runs a separate
-fifteen-minute preparation with a five-minute consumer pause beginning five
-seconds after offered load starts. Consumer event count and checkpoint must
+fifteen-minute preparation with a five-minute consumer pause requested five
+seconds after offered load starts. Its full duration begins when the observer
+confirms quiescence. Consumer event count and checkpoint must
 freeze while live progress continues, and the missing events must drain within
 ten minutes after resumption. All three load windows and every final ticket are
 checked. Timings and logs stay in the private preparation root. This covers one
 fault only and cannot produce a campaign qualification receipt.
+
+Latency limits apply to normal preparation windows. Only windows overlapping
+the measured pause and backlog drain receive the campaign checker's fault
+exception; all offered/completed counts, errors, concurrency and final state
+checks remain binding. At least one complete normal window is required.
+
+The Rust load driver supports private quiescence and release controls for the
+fault controller. Admission stops while the offered clock keeps filling the
+bounded queue. A release can change only after every admitted original
+operation settles; each worker then constructs the exact generated V1 or V2
+facade with the selected protected credential. The controller must supervise
+the public deployment and observer handover separately.

@@ -140,6 +140,15 @@ class ConsumerOutageOracle:
         return value["events_checked"] == expected
 
 
+def outage_window(start, end, outage):
+    low, pause, recovery = (outage[key] for key in
+                           ("start_elapsed_ns", "pause_elapsed_ns", "recovery_elapsed_ns"))
+    require(all(type(value) is int for value in (low, pause, recovery))
+            and 0 < low < 900000000000 and 300000000000 <= pause <= 302000000000
+            and 0 <= recovery <= 600000000000, "consumer_outage_timing")
+    return start * 1000000000 < low + pause + recovery and end * 1000000000 > low
+
+
 def pump_load(process, output, messages):
     total = 0
     try:
@@ -161,6 +170,7 @@ def observed_load(root, worker, environment, duration, observer, latest, consume
     messages = queue.Queue(maxsize=256)
     oracle = ConsumerOutageOracle()
     started = None
+    requested_at = None
     paused_at = None
     resumed_at = None
     recovered_at = None
@@ -190,9 +200,9 @@ def observed_load(root, worker, environment, duration, observer, latest, consume
                 now = time.monotonic()
                 if not consumer_outage or started is None:
                     continue
-                if paused_at is None and now - started >= 5:
+                if requested_at is None and now - started >= 5:
                     write(root, "consumer.pause", "pause\n")
-                    paused_at = time.monotonic()
+                    requested_at = time.monotonic()
                 if paused_at is not None and resumed_at is None and now - paused_at >= 300:
                     oracle.finish_pause()
                     pause_finished = True
@@ -202,8 +212,10 @@ def observed_load(root, worker, environment, duration, observer, latest, consume
                     value = latest.get_nowait()
                 except queue.Empty:
                     continue
-                if paused_at is not None and resumed_at is None and value["consumer_paused"]:
+                if requested_at is not None and resumed_at is None and value["consumer_paused"]:
                     oracle.observe(value, paused=True)
+                    if paused_at is None:
+                        paused_at = time.monotonic()
                 elif resumed_at is not None and not value["consumer_paused"] and recovered_at is None:
                     if oracle.recovered(value, 2048):
                         recovered_at = time.monotonic()
@@ -220,6 +232,7 @@ def observed_load(root, worker, environment, duration, observer, latest, consume
                 write(root, "consumer-outage.json", json.dumps({
                     "schema": "riffdb.ticketdesk-lifecycle-consumer-outage-preparation/v1",
                     "pause_elapsed_ns": pause_ns, "recovery_elapsed_ns": recovery_ns,
+                    "start_elapsed_ns": int((paused_at - started) * 1000000000),
                     "paused_events": oracle.first["events_checked"], "drained_events": 2048,
                     "observed_samples": oracle.samples, "live_progress_during_pause": True}))
         finally:
@@ -498,6 +511,7 @@ tls_server_name = "127.0.0.1"
                         if observed["live_updates"] > 0 and observed["events_checked"] == 1024:
                             break
                 environment["RIFFDB_LIFECYCLE_DURATION_SECONDS"] = str(args.population_probe_seconds)
+                environment["RIFFDB_LIFECYCLE_LOAD_CONTROL"] = str(root)
                 observed_load(root, worker, environment, args.population_probe_seconds,
                               observer, latest, args.consumer_outage)
                 environment["RIFFDB_LIFECYCLE_COMPLETED_COMMANDS"] = str(args.population_probe_seconds * 100)
@@ -507,15 +521,23 @@ tls_server_name = "127.0.0.1"
                 require(samples[0]["schema"] == "riffdb.ticketdesk-lifecycle-load-ready/v1", "probe_observation")
                 windows = samples[1:-1]
                 require(len(windows) == (3 if args.consumer_outage else 1), "probe_observation")
+                normal_windows = 0
                 for index, window in enumerate(windows):
                     start, end = index * 300, min((index + 1) * 300, args.population_probe_seconds)
                     require(window["start_s"] == start and window["end_s"] == end, "probe_observation")
                     require(window["completed_commands"] == window["offered_commands"] == (end - start) * 100
                             and window["completed_reads"] == window["offered_reads"] == (end - start) * 400,
                             "probe_rate")
-                    require(window["p95_us"] < 100000 and window["p99_us"] < 250000, "probe_latency")
+                    fault = False
+                    if args.consumer_outage:
+                        outage = read_json(root / "consumer-outage.json", 4096)
+                        fault = outage_window(start, end, outage)
+                    if not fault:
+                        normal_windows += 1
+                        require(window["p95_us"] < 100000 and window["p99_us"] < 250000, "probe_latency")
                     require(window["load_peak_in_flight"] <= 28 and window["reserved_auxiliary_slots"] == 4,
                             "probe_concurrency")
+                require(normal_windows > 0, "probe_normal_window")
                 final = samples[-1]
                 require(final["schema"] == "riffdb.ticketdesk-lifecycle-load-stopped/v1"
                         and final["post_duration_updates"] == 0 and final["post_duration_reads"] == 0,

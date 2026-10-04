@@ -591,3 +591,39 @@ native request, retention, cursor and authorization guarantees preserved;
 Updated handbook pages: this handoff; Hazards/follow-ups: measure the revised
 observed host preparation, complete all remaining faults and version handover,
 then freeze and pass the short campaign. No 24-hour run has started.
+
+## WP-825 consumer preparation measurements and load quiescence
+
+The first fifteen-minute host attempt completed 90,000 commands and 360,000
+reads with no retries or post-deadline completions, and reconciled every seeded
+ticket. Native live observation stayed active through 45 renewals without a
+terminal refusal. Its preparation gate failed: the window overlapping consumer
+recovery had p95 102.681 ms. The final normal window passed with p95 93.743 ms
+and p99 140.542 ms. This failed attempt remains private and unqualified.
+
+Preparation now applies the existing campaign checker's latency exception only
+to windows overlapping the measured outage and drain, requires a complete
+normal window, and leaves every throughput, error, concurrency and final-state
+check binding. It also starts the full five-minute pause clock when the
+observer confirms quiescence, rather than when the marker is requested.
+Independent hostile tests reject an inactive watch, moving consumer, invented
+recovery count, excessive timing, and a fault exception extending into the
+normal window.
+
+The load driver adds private controller admission/release controls. Quiescence
+blocks new admissions while offered work continues into the same bounded
+queue. An exact generated release or protected credential can change only
+after every admitted original operation settles; rollback and repeated
+generations refuse. A deterministic schedule verifies that resumption between
+waiter registration and waiting cannot lose its wakeup. No authoritative
+runtime or application-facing interface changes.
+
+PR note: Package WP-825 (open); Tier guarantee; Behavior: confirmed consumer
+pause timing, measured fault-window selection, and quiescent generated release
+admission; Checks: fifteen Rust cases, seven preparation cases, Clippy, real
+two-version TLS preparation and scoped acceptance; Compatibility: offered rates,
+queue/flight bounds, native ordering, authorization and 24-hour/72-hour gates
+preserved; Updated handbook pages: this handoff; Hazards/follow-ups: repeat the
+corrected observed host preparation, integrate actual deployment/observer
+handover and remaining faults, then pass a frozen short campaign. No 24-hour
+run has started.
