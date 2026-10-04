@@ -400,3 +400,42 @@ and TicketDesk acceptance. Hazards/follow-ups: sustained offered-load scheduling
 queried projection observations, TypeScript smoke, lifecycle faults and
 independent campaign reconciliation still require implementation and a real
 host run before WP-825 closes. No 24-hour run has started.
+
+## WP-825 population probe and independent oracle
+
+The release preparation smoke also passes on the inventoried eight-vCPU host.
+This establishes the real generated command/read/event/live-query carriage
+there; it is not a campaign or a physical-reclamation result.
+
+The Rust client now has a separate offered-load `probe` and full-population
+`reconcile` mode. It assigns deterministic original update identities across
+all 65,536 tickets, with explicit expected revisions. The independent oracle
+rejects stale, missing, substituted, unoffered and wrong-partition results;
+final reconciliation reads every ticket through named queries. Its baseline
+without validation failed both rejection tests before implementation.
+
+The load lane offers 100 commands and 400 named reads in each one-second batch,
+with at most 28 admitted requests and four reserved auxiliary/control slots.
+Its queue has 32,768 fixed slots; latency histograms are bounded. No production
+concurrency, writer, durability or retention setting is changed. Latency includes
+queueing from the offered time. Measurements close at the observation deadline;
+later completions are separately disclosed. Submission counts cover settled
+load command/named-read submissions; SDK same-key outcome lookups are auxiliary
+reconciliation, rather than another command submission. This preparation uses
+one submission attempt per SDK call and fails on transport errors or unexpected
+replay; fault-aware original-identity recovery remains campaign work.
+
+Six tests cover oracle substitutions, the final partial population round,
+protected saturation, cancellation release and latency overflow. They and
+Clippy pass. The updated real TLS smoke also passes. A new preparation option,
+`--population-probe-seconds 300`, seeds the full population, runs a five-minute
+load probe and reconciles every row. It must pass on real observations before
+any rates are claimed. No population load result is claimed by this change.
+
+PR note: Package WP-825 (open); Tier guarantee; Behavior: bounded load
+preparation and independent generated-query reconciliation; Compatibility:
+unchanged existing application identities, interfaces and qualification gates;
+Updated handbook pages: this milestone handoff; Checks: six semantic/schedule
+cases, Clippy and the real TLS preparation; Hazards/follow-ups: run the host
+population probe, then complete active observations, faults and the qualifying
+short rehearsal. The 24-hour run remains unstarted.

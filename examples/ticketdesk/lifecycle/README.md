@@ -46,3 +46,21 @@ These are preparation tools. The sustained workload, fault controller,
 TypeScript smoke, independent campaign reconciliation, and real rehearsal
 remain WP-825 work. No preparation output is a qualifying campaign receipt.
 See the [milestone handoff](../../../docs/architecture/SUSTAINABLE-TICKETDESK.md).
+
+A fresh full-population preparation can also run a short offered-load probe:
+
+```bash
+./scripts/ticketdesk-lifecycle-smoke \
+  --root /tmp/riffdb-lifecycle-population-preparation \
+  --server target/release/riffdbd --cli target/release/riffdb \
+  --worker target/release/lifecycle --population-probe-seconds 300
+```
+
+Build those binaries with `cargo build --release` first. This mode seeds the
+whole population, offers 100 updates and 400 named reads each second, checks
+the measured rates and latency thresholds, and independently reads every
+seeded ticket afterward. The load lane admits at most 28 concurrent requests,
+reserving four slots for later campaign observations/control. Queues and
+latency histograms are bounded. Windows exclude post-duration drain completions;
+slow tail overflow is disclosed and cannot become a fast latency sample.
+This preparation has no lifecycle faults and cannot qualify the milestone.

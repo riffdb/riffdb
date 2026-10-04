@@ -29,6 +29,11 @@ use application::{
     UpdateTicketInput, UpdateTicketOutcome,
 };
 
+#[path = "../lifecycle_workload/model.rs"]
+mod model;
+#[path = "../lifecycle_workload/probe.rs"]
+mod probe;
+
 type Result<T> = std::result::Result<T, &'static str>;
 const ORGANIZATIONS: u64 = 64;
 const TICKETS_PER_ORGANIZATION: u64 = 1024;
@@ -39,6 +44,8 @@ async fn main() {
     let result = match env::args().nth(1).as_deref() {
         Some("seed") => seed().await,
         Some("smoke") => smoke().await,
+        Some("reconcile") => reconcile().await,
+        Some("probe") => probe::run().await,
         _ => Err("arguments"),
     };
     if let Err(code) = result {
@@ -174,13 +181,7 @@ async fn smoke() -> Result<()> {
     foundation(&mut seeder, 0).await?;
     ticket(&mut seeder, 0).await?;
     let mut client = connect("RIFFDB_LIFECYCLE_APPLICATION_CREDENTIAL").await?;
-    let input = UpdateTicketInput {
-        organization_id: uuid(0x8001, 0),
-        ticket_id: uuid(0x8004, 0),
-        expected_revision: 0,
-        status: "InProgress".to_owned(),
-        idempotency_key: "ticketdesk-lifecycle-smoke-update".to_owned(),
-    };
+    let input = model::update(0)?;
     let changed = client
         .update_ticket(input.clone())
         .await
@@ -193,6 +194,7 @@ async fn smoke() -> Result<()> {
     {
         return Err("update_outcome");
     }
+    model::validate_update(0, &changed.outcome)?;
     let committed = changed.commit_sequence.ok_or("missing_commit")?;
     let replay = client
         .update_ticket(input.clone())
@@ -324,6 +326,42 @@ async fn smoke() -> Result<()> {
     }
     println!(
         "{{\"schema\":\"riffdb.ticketdesk-lifecycle-smoke/v1\",\"caller_fence\":true,\"idempotency\":true,\"state_reconciled\":true,\"partition_isolation\":true,\"events_reconciled\":true,\"live_query_snapshot\":true}}"
+    );
+    Ok(())
+}
+
+async fn reconcile() -> Result<()> {
+    let completed = env::var("RIFFDB_LIFECYCLE_COMPLETED_COMMANDS")
+        .map_err(|_| "configuration")?
+        .parse::<u64>()
+        .map_err(|_| "configuration")?;
+    if completed > model::MAX_COMMANDS {
+        return Err("operation_bound");
+    }
+    let mut workers = JoinSet::new();
+    for worker in 0..SEED_WORKERS {
+        workers.spawn(async move {
+            let mut client = connect("RIFFDB_LIFECYCLE_APPLICATION_CREDENTIAL").await?;
+            for ticket in (worker..model::POPULATION).step_by(SEED_WORKERS as usize) {
+                let query = GetTicketParams {
+                    organization_id: uuid(0x8001, ticket / TICKETS_PER_ORGANIZATION),
+                    ticket_id: uuid(0x8004, ticket),
+                };
+                let GetTicketResult::Found(found) =
+                    client.get_ticket(query).await.map_err(|_| "read")?
+                else {
+                    return Err("state_reconciliation");
+                };
+                model::validate_final(completed, ticket, &found.ticket)?;
+            }
+            Ok::<_, &'static str>(())
+        });
+    }
+    while let Some(result) = workers.join_next().await {
+        result.map_err(|_| "worker")??;
+    }
+    println!(
+        "{{\"schema\":\"riffdb.ticketdesk-lifecycle-state-reconciliation/v1\",\"tickets_checked\":65536,\"updates\":{completed},\"max_in_flight\":16}}"
     );
     Ok(())
 }

@@ -35,11 +35,11 @@ def write(root, name, value):
     return path
 
 
-def invoke(root, name, arguments, *, environment=None):
+def invoke(root, name, arguments, *, environment=None, timeout=60):
     with (root / (name + ".stdout")).open("xb") as output, \
             (root / (name + ".stderr")).open("xb") as errors:
         result = subprocess.run(arguments, stdout=output, stderr=errors,
-                                env=environment, timeout=60, check=False)
+                                env=environment, timeout=timeout, check=False)
     require(result.returncode == 0, name)
 
 
@@ -66,7 +66,10 @@ def main():
     parser.add_argument("--server", required=True, type=Path)
     parser.add_argument("--cli", required=True, type=Path)
     parser.add_argument("--worker", required=True, type=Path)
+    parser.add_argument("--population-probe-seconds", type=int, default=0,
+                        help="fresh 65536-ticket load preparation; never a campaign receipt")
     args = parser.parse_args()
+    require(0 <= args.population_probe_seconds <= 300, "probe_duration")
     root = args.root
     require(root.is_absolute() and root.resolve() == root and not root.exists(), "root")
     require(root.parent.is_dir(), "root")
@@ -114,7 +117,7 @@ environment = "development"
 [databases.default.outbox]
 kind = "durable_local"
 directory = {quote("archive")}
-quota_encoded_bytes = 67108864
+quota_encoded_bytes = 1073741824
 ''')
     client = write(root, "client.toml", f'''[client]
 endpoint = "https://127.0.0.1:{port}"
@@ -160,14 +163,40 @@ tls_server_name = "127.0.0.1"
                 RIFFDB_LIFECYCLE_CA=str(root / "ca.pem"),
                 RIFFDB_LIFECYCLE_SEED_CREDENTIAL=str(root / "seed.credential"),
                 RIFFDB_LIFECYCLE_APPLICATION_CREDENTIAL=str(root / "application.credential"))
-            invoke(root, "worker", [worker, "smoke"], environment=environment)
-            require((root / "worker.stdout").stat().st_size <= 4096, "worker_observation")
-            observation = json.loads((root / "worker.stdout").read_bytes())
-            require(observation == {
-                "schema": "riffdb.ticketdesk-lifecycle-smoke/v1", "caller_fence": True,
-                "idempotency": True, "state_reconciled": True, "partition_isolation": True,
-                "events_reconciled": True, "live_query_snapshot": True,
-            }, "worker_observation")
+            if args.population_probe_seconds:
+                invoke(root, "seed", [worker, "seed"], environment=environment, timeout=1200)
+                environment["RIFFDB_LIFECYCLE_DURATION_SECONDS"] = str(args.population_probe_seconds)
+                invoke(root, "load", [worker, "probe"], environment=environment,
+                       timeout=args.population_probe_seconds + 120)
+                environment["RIFFDB_LIFECYCLE_COMPLETED_COMMANDS"] = str(args.population_probe_seconds * 100)
+                invoke(root, "reconciliation", [worker, "reconcile"], environment=environment, timeout=900)
+                require((root / "load.stdout").stat().st_size <= 65536, "probe_observation")
+                samples = [json.loads(line) for line in (root / "load.stdout").read_bytes().splitlines()]
+                require(samples[0]["schema"] == "riffdb.ticketdesk-lifecycle-load-ready/v1", "probe_observation")
+                windows = samples[1:-1]
+                require(len(windows) == 1, "probe_observation")
+                window = windows[0]
+                require(window["start_s"] == 0 and window["end_s"] == args.population_probe_seconds,
+                        "probe_observation")
+                require(window["completed_commands"] == window["offered_commands"] == args.population_probe_seconds * 100
+                        and window["completed_reads"] == window["offered_reads"] == args.population_probe_seconds * 400,
+                        "probe_rate")
+                require(window["p95_us"] < 100000 and window["p99_us"] < 250000, "probe_latency")
+                require(window["load_peak_in_flight"] <= 28 and window["reserved_auxiliary_slots"] == 4,
+                        "probe_concurrency")
+                final = samples[-1]
+                require(final["schema"] == "riffdb.ticketdesk-lifecycle-load-stopped/v1"
+                        and final["post_duration_updates"] == 0 and final["post_duration_reads"] == 0,
+                        "probe_drain")
+            else:
+                invoke(root, "worker", [worker, "smoke"], environment=environment)
+                require((root / "worker.stdout").stat().st_size <= 4096, "worker_observation")
+                observation = json.loads((root / "worker.stdout").read_bytes())
+                require(observation == {
+                    "schema": "riffdb.ticketdesk-lifecycle-smoke/v1", "caller_fence": True,
+                    "idempotency": True, "state_reconciled": True, "partition_isolation": True,
+                    "events_reconciled": True, "live_query_snapshot": True,
+                }, "worker_observation")
         finally:
             if server.poll() is None:
                 server.terminate()
@@ -180,7 +209,10 @@ tls_server_name = "127.0.0.1"
                 raise SmokeError("shutdown")
             pump.join(timeout=5)
             require(not pump.is_alive() and server.returncode == 0, "shutdown")
-    print("Generated TicketDesk lifecycle public TLS smoke passed; no campaign qualification claimed.")
+    if args.population_probe_seconds:
+        print("Population load preparation and full state reconciliation passed; no campaign qualification claimed.")
+    else:
+        print("Generated TicketDesk lifecycle public TLS smoke passed; no campaign qualification claimed.")
     return 0
 
 
@@ -190,6 +222,6 @@ if __name__ == "__main__":
     except SmokeError as error:
         print("ticketdesk-lifecycle-smoke: " + str(error), file=sys.stderr)
         sys.exit(1)
-    except (OSError, ValueError, queue.Empty, subprocess.SubprocessError):
+    except (OSError, ValueError, TypeError, KeyError, queue.Empty, subprocess.SubprocessError):
         print("ticketdesk-lifecycle-smoke: failed; inspect private preparation logs", file=sys.stderr)
         sys.exit(1)
