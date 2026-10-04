@@ -19,6 +19,8 @@ import sys
 import threading
 import time
 
+from lib.ticketdesk_lifecycle_inventory import InventoryError, InventoryMonitor
+
 
 class SmokeError(ValueError):
     """Closed diagnostic; input paths and child output stay in private files."""
@@ -44,6 +46,40 @@ def read_json(path, maximum=1048576):
         encoded = source.read(maximum + 1)
     require(len(encoded) <= maximum, "observation_bound")
     return json.loads(encoded)
+
+
+def outbox_drained(health):
+    require(type(health) is dict and health.get("schema") == "riffdb.cli.output/v1"
+            and health.get("command") == "server.health" and health.get("ok") is True,
+            "archive_health")
+    require(type(health.get("result")) is dict, "archive_health")
+    components = health["result"]["components"]
+    require(type(components) is list and 0 < len(components) <= 16
+            and all(type(value) is dict for value in components), "archive_health")
+    outbox = [value for value in components if value.get("component") == "outbox"]
+    require(len(outbox) == 1 and outbox[0].get("status") in {"healthy", "degraded", "unavailable"},
+            "archive_health")
+    return outbox[0]["status"] == "healthy"
+
+
+def drain_archive(root, stage, base, server, observer=None, maximum=900):
+    """Preparation only: observe public delivery readiness with writes stopped."""
+    started = time.monotonic()
+    for index in range(maximum + 1):
+        require(server.poll() is None and (observer is None or observer.poll() is None),
+                "archive_drain_liveness")
+        require(time.monotonic() - started < maximum, "archive_drain_bound")
+        name = stage + "-archive-health-" + str(index)
+        invoke(root, name, base + ["server", "health"], timeout=10)
+        require(time.monotonic() - started < maximum, "archive_drain_bound")
+        if outbox_drained(read_json(root / (name + ".stdout"))):
+            elapsed_ns = int((time.monotonic() - started) * 1000000000)
+            write(root, stage + "-archive-drain.json", json.dumps({
+                "schema": "riffdb.ticketdesk-lifecycle-archive-drain-preparation/v1",
+                "elapsed_ns": elapsed_ns, "observed_ready": True}) + "\n")
+            return
+        threading.Event().wait(1)
+    raise SmokeError("archive_drain_bound")
 
 
 def invoke(root, name, arguments, *, environment=None, timeout=60):
@@ -432,6 +468,8 @@ def main():
     parser.add_argument("--observe", action="store_true", help="register consumer and live query before seeding")
     parser.add_argument("--archive-witness", action="store_true",
                         help="reconcile two actual archive events against independent command witnesses")
+    parser.add_argument("--online-retention", action="store_true",
+                        help="measure bounded online retention during an observed population preparation")
     parser.add_argument("--restart-recovery", choices=("graceful_restart", "process_kill"),
                         help="interrupt and resolve one original generated update; preparation only")
     parser.add_argument("--consumer-outage", action="store_true",
@@ -448,6 +486,8 @@ def main():
                                              or args.prepare_successor or args.driver), "restart_recovery_mode")
     require(not args.archive_witness or not (args.additive_deploy or args.restart_recovery or args.prepare_successor),
             "archive_witness_mode")
+    require(not args.online_retention or args.population_probe_seconds and args.observe or args.archive_witness,
+            "retention_mode")
     root = args.root
     require(root.is_absolute() and root.resolve() == root and not root.exists(), "root")
     require(root.parent.is_dir(), "root")
@@ -479,6 +519,8 @@ def main():
                                  "-extfile", str(root / "server.ext"), "-out", str(root / "server.pem")])
     write(root, "capability.keys", "riffdb-capability-digest-keys-v1\n1:" + os.urandom(32).hex() + "\n")
     write(root, "idempotency.keys", "riffdb-idempotency-digest-keys-v1\n1:" + os.urandom(32).hex() + "\n")
+    retention_document = ("[databases.default.retention]\nretained_sequences = 32768\n"
+                          "sequences_per_epoch = 256\n") if args.online_retention else ""
     quote = lambda name: json.dumps(str(root / name))
     config = write(root, "server.toml", f'''[server]
 audience = "riffdb-ticketdesk-lifecycle"
@@ -499,6 +541,7 @@ environment = "development"
 kind = "durable_local"
 directory = {quote("archive")}
 quota_encoded_bytes = 1073741824
+{retention_document}
 ''')
     client = write(root, "client.toml", f'''[client]
 endpoint = "https://127.0.0.1:{port}"
@@ -532,6 +575,7 @@ tls_server_name = "127.0.0.1"
     observer = None
     observer_pump = None
     latest = queue.Queue(maxsize=1)
+    inventory = InventoryMonitor(root / "data") if args.online_retention else None
     with (root / "server.stderr").open("xb") as errors:
         server = subprocess.Popen([server_binary, "--config", str(config)],
                                   stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=errors)
@@ -539,6 +583,8 @@ tls_server_name = "127.0.0.1"
         pump.start()
         try:
             require(ready.get(timeout=30) is True, "startup")
+            if inventory:
+                inventory.start()
             base = [cli, "--config", str(client)]
             invoke(root, "bootstrap", base + ["capability", "bootstrap", "--request", str(bootstrap),
                    "--generate", str(root / "bootstrap.credential"),
@@ -592,6 +638,7 @@ tls_server_name = "127.0.0.1"
             if args.population_probe_seconds:
                 environment["RIFFDB_LIFECYCLE_WITNESS_ROOT"] = str(root)
                 invoke(root, "seed", [worker, "seed"], environment=environment, timeout=1200)
+                drain_archive(root, "seed", base, server, observer)
                 if observer:
                     write(root, "live.start", "start\n")
                     deadline = time.monotonic() + 120
@@ -609,6 +656,7 @@ tls_server_name = "127.0.0.1"
                 environment["RIFFDB_LIFECYCLE_COMPLETED_COMMANDS"] = str(args.population_probe_seconds * 100)
                 environment["RIFFDB_LIFECYCLE_RECONCILIATION_WITNESS"] = str(root / "updates.witness")
                 invoke(root, "reconciliation", [worker, "reconcile"], environment=environment, timeout=900)
+                drain_archive(root, "load", base, server, observer, maximum=600)
                 require((root / "load.stdout").stat().st_size <= 65536, "probe_observation")
                 samples = [json.loads(line) for line in (root / "load.stdout").read_bytes().splitlines()]
                 require(samples[0]["schema"] == "riffdb.ticketdesk-lifecycle-load-ready/v1", "probe_observation")
@@ -787,6 +835,12 @@ tls_server_name = "127.0.0.1"
                     shutil.copyfile(root / "application-v2.credential", successor_smoke / "application.credential")
                     typescript_smoke(successor_smoke, repository, driver_binary, port)
         finally:
+            inventory_failed = False
+            if inventory:
+                try:
+                    inventory.close()
+                except (InventoryError, OSError):
+                    inventory_failed = True
             observer_failed = False
             if observer:
                 write(root, "observer.stop", "stop\n")
@@ -810,6 +864,9 @@ tls_server_name = "127.0.0.1"
             pump.join(timeout=5)
             require(not pump.is_alive() and server.returncode == 0, "shutdown")
             require(not observer_failed, "observer_shutdown")
+            require(not inventory_failed, "inventory_failed")
+    if inventory:
+        inventory.finish(root)
     if args.archive_witness or args.population_probe_seconds:
         invoke(root, "archive-reconciliation", [worker, "archive-reconcile"],
                environment=environment, timeout=900)
@@ -828,7 +885,7 @@ tls_server_name = "127.0.0.1"
 if __name__ == "__main__":
     try:
         sys.exit(main())
-    except SmokeError as error:
+    except (SmokeError, InventoryError) as error:
         print("ticketdesk-lifecycle-smoke: " + str(error), file=sys.stderr)
         sys.exit(1)
     except (OSError, ValueError, TypeError, KeyError, queue.Empty, subprocess.SubprocessError):

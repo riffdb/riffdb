@@ -61,6 +61,14 @@ archive reconciliation for every event. The checker uses native exclusive
 custody and envelope validation and never emits event payloads. Its witness
 files are private test evidence, not authoritative storage or campaign receipts.
 
+Population preparation observes explicit public outbox readiness before offered
+load and before shutdown, recording both drain times separately. These waits
+stop offered writes and cannot satisfy the campaign's continuing-load outage
+gate. Add `--online-retention --observe` to a population preparation to select
+the existing bounded retention lane and record actual sealed-file removals
+alongside production deletion/reuse and hold counters. Counts are measurements;
+this preparation does not qualify the full rehearsal.
+
 A fresh full-population preparation can also run a short offered-load probe:
 
 ```bash

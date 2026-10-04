@@ -23,7 +23,7 @@ for preparation_fault in graceful_restart process_kill; do
 done
 ./scripts/ticketdesk-lifecycle-smoke --root "$preparation_root/archive" \
     --server "$task_target_dir/debug/riffdbd" --cli "$task_target_dir/debug/riffdb" \
-    --worker "$task_target_dir/debug/lifecycle" --archive-witness
+    --worker "$task_target_dir/debug/lifecycle" --archive-witness --online-retention
 python3 tests/ticketdesk_lifecycle/archive_preparation.py \
     "$task_target_dir/debug/lifecycle" "$preparation_root/archive"
 rm -rf -- "$preparation_root"

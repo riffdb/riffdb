@@ -759,3 +759,33 @@ formats, authority and qualification gates preserved; Updated handbook pages:
 this handoff; Hazards/follow-ups: repeat the host preparation, measure online
 retention and pruning recovery, finish all campaign actions and conformance,
 then pass the frozen short rehearsal. No 24-hour run has started.
+
+## WP-825 delivery admission and physical-retention observation
+
+Offline inspection of the failed host population database found a missing
+archived event. That additional failure is preserved; the database is not
+qualified by its completed commands or reconciled entity state. Population
+preparation now observes the public outbox component's explicit healthy status
+before starting load and before stopping the daemon. The initial seed drain and
+post-load drain have separate bounded timing records. These waits occur with
+offered writes stopped and cannot prove the campaign's outage-drain requirement
+at continuing offered load. The revised host measurement remains pending.
+
+The optional `--online-retention` population preparation selects the existing
+32,768-sequence retention target and 256-sequence maintenance budget. A private
+read-only observer inventories actual sealed file identities once a second and
+records their disappearance. Reappearing generations, changed identities,
+links, excess entries, or disappearance exceeding the production deletion/reuse
+counters refuse evidence. Shutdown counters also retain reference and reader
+holds. The observer's tests use explicitly synthetic files, not reclamation
+claims. A short preparation reports actual counts without claiming the three
+physically reclaimed generations required by the complete rehearsal.
+
+PR note: Package WP-825 (open); Tier guarantee; Behavior: explicit public archive
+drain observation and physical file/counter inventory under existing online
+retention; Checks: eleven preparation cases, thirty-four evidence/checker cases,
+integrated TLS preparation and scoped acceptance; Compatibility: no runtime,
+retention, archive or qualification guarantee changes; Updated handbook pages:
+this handoff; Hazards/follow-ups: measure the revised host run and online
+retention, finish campaign faults and current-language conformance, then pass
+the frozen short rehearsal. The 24-hour run remains unstarted.

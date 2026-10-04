@@ -4,11 +4,13 @@ import copy
 import importlib.machinery
 import importlib.util
 import os
+import sys
 from pathlib import Path
 import tempfile
 import unittest
 
 SOURCE = Path(__file__).resolve().parents[2] / "scripts/ticketdesk-lifecycle-smoke"
+sys.path.insert(0, str(SOURCE.parent))
 loader = importlib.machinery.SourceFileLoader("preparation", str(SOURCE))
 spec = importlib.util.spec_from_loader(loader.name, loader)
 preparation = importlib.util.module_from_spec(spec)
@@ -129,6 +131,88 @@ class ChildOwnership(unittest.TestCase):
                 pid = int((root / "pid").read_text())
                 with self.assertRaises(ProcessLookupError):
                     os.kill(pid, 0)
+
+
+class ArchiveReadiness(unittest.TestCase):
+    def test_only_one_explicit_healthy_outbox_component_proves_delivery_drain(self):
+        good = {"schema": "riffdb.cli.output/v1", "command": "server.health", "ok": True,
+                "result": {"components": [{"component": "outbox", "status": "healthy"}]}}
+        self.assertTrue(preparation.outbox_drained(good))
+        for status in ("degraded", "unavailable"):
+            value = copy.deepcopy(good)
+            value["result"]["components"][0]["status"] = status
+            self.assertFalse(preparation.outbox_drained(value))
+        for components in ([], [{"component": "projection", "status": "healthy"}],
+                           [None],
+                           good["result"]["components"] * 2,
+                           [{"component": "outbox", "status": "ready"}]):
+            value = copy.deepcopy(good)
+            value["result"]["components"] = components
+            with self.assertRaises(preparation.SmokeError):
+                preparation.outbox_drained(value)
+        with self.assertRaises(preparation.SmokeError):
+            preparation.outbox_drained(None)
+
+
+class PhysicalInventory(unittest.TestCase):
+    def census(self, deleted=0, recycled=0):
+        return dict(deleted=deleted, recycled=recycled, held_references=0, held_readers=0, reclaim_us=0)
+
+    def test_shutdown_boundaries_repeat_one_census_without_double_counting(self):
+        from lib.ticketdesk_lifecycle_inventory import InventoryError, InventoryMonitor
+        line = (b"riffdb-retention-extents-v1\tdeleted=1\trecycled=0\t"
+                b"held_references=0\theld_readers=0\treclaim_us=3\n")
+        for lines, accepted in ((line, True), (line * 2, True),
+                                (line * 3, False),
+                                (line + line.replace(b"deleted=1", b"deleted=2"), False)):
+            with self.subTest(accepted=accepted), tempfile.TemporaryDirectory() as directory:
+                root = Path(directory)
+                (root / "server.stderr").write_bytes(lines)
+                monitor = InventoryMonitor(root)
+                if accepted:
+                    observed = monitor.finish(root)
+                    self.assertEqual(observed["census"]["deleted"], 1)
+                    self.assertEqual(observed["physically_removed_generations"], [])
+                else:
+                    with self.assertRaises(InventoryError):
+                        monitor.finish(root)
+
+    def test_only_observed_disappearance_backed_by_production_counts_is_reclamation(self):
+        from lib.ticketdesk_lifecycle_inventory import ExtentInventory, InventoryError
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            file = root / "ticketdesk.redb.riffjournal.sealed.00000000000000000001"
+            file.write_bytes(b"synthetic observer test")
+            inventory = ExtentInventory(root)
+            inventory.sample()
+            self.assertEqual(inventory.observation(self.census())["physically_removed_generations"], [])
+            file.unlink()
+            inventory.sample()
+            with self.assertRaises(InventoryError):
+                inventory.observation(self.census())
+            self.assertEqual(inventory.observation(self.census(recycled=1))["physically_removed_generations"], [1])
+            file.write_bytes(b"reappeared generation")
+            with self.assertRaises(InventoryError):
+                inventory.sample()
+
+    def test_changed_identity_or_a_link_cannot_be_published_as_a_sealed_file(self):
+        from lib.ticketdesk_lifecycle_inventory import ExtentInventory, InventoryError, InventoryMonitor
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            monitor = InventoryMonitor(root)
+            monitor.close()  # Startup failure must still permit daemon cleanup.
+            file = root / "ticketdesk.redb.riffjournal.sealed.00000000000000000001"
+            file.write_bytes(b"synthetic observer test")
+            inventory = ExtentInventory(root)
+            inventory.sample()
+            file.write_bytes(b"changed length")
+            with self.assertRaises(InventoryError):
+                inventory.sample()
+            self.assertEqual(inventory.samples, 1)
+            file.unlink()
+            file.symlink_to(root / "absent")
+            with self.assertRaises(InventoryError):
+                ExtentInventory(root).sample()
 
 
 if __name__ == "__main__":
