@@ -7,6 +7,7 @@ license.workspace = true
 publish.workspace = true
 
 [dependencies]
+riffdb-contract-compiler = { version = "0.1.0", path = "../../crates/riffdb-contract-compiler", default-features = false }
 riffdb-client-rust = { version = "0.1.0", path = "../../crates/riffdb-client-rust", default-features = false }
 riffdb-config = { version = "0.1.0", path = "../../crates/riffdb-config", default-features = false }
 tokio = { version = "=1.52.0", default-features = false, features = ["macros", "rt-multi-thread", "sync", "time"] }

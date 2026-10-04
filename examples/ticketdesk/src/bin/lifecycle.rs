@@ -31,6 +31,8 @@ use application::{
 
 #[path = "../lifecycle_workload/model.rs"]
 mod model;
+#[path = "../lifecycle_workload/observe.rs"]
+mod observe;
 #[path = "../lifecycle_workload/probe.rs"]
 mod probe;
 
@@ -46,6 +48,8 @@ async fn main() {
         Some("smoke") => smoke().await,
         Some("reconcile") => reconcile().await,
         Some("probe") => probe::run().await,
+        Some("descriptor") => descriptor(),
+        Some("observe") => observe::run().await,
         _ => Err("arguments"),
     };
     if let Err(code) = result {
@@ -362,6 +366,32 @@ async fn reconcile() -> Result<()> {
     }
     println!(
         "{{\"schema\":\"riffdb.ticketdesk-lifecycle-state-reconciliation/v1\",\"tickets_checked\":65536,\"updates\":{completed},\"max_in_flight\":16}}"
+    );
+    Ok(())
+}
+
+fn descriptor() -> Result<()> {
+    let bundle = riffdb_contract_compiler::compile_contract_source(include_str!(
+        "../../lifecycle/riffdb/contract.riff"
+    ))
+    .map_err(|_| "contract_descriptor")?;
+    if bundle.bundle_hash().as_bytes() != &application::CONTRACT_BUNDLE_HASH {
+        return Err("contract_descriptor_hash");
+    }
+    let projection = bundle
+        .projections()
+        .iter()
+        .find(|projection| projection.name() == "TicketUpdates")
+        .ok_or("projection_descriptor")?;
+    println!(
+        "{{\"schema\":\"riffdb.ticketdesk-lifecycle-descriptor/v1\",\"projection_id\":{},\"projection_plan_hash\":\"{}\"}}",
+        projection.projection_id().get(),
+        projection
+            .plan_hash()
+            .as_bytes()
+            .iter()
+            .map(|byte| format!("{byte:02x}"))
+            .collect::<String>()
     );
     Ok(())
 }

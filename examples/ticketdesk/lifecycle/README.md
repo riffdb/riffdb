@@ -76,3 +76,15 @@ The initial durable-SSD host preparation completed all 30,000 updates and
 zero retries, and no post-window completions. All 65,536 ticket states were
 reconciled. This is a load preparation result, with no lifecycle fault coverage;
 it does not qualify WP-825 or the 24-hour campaign.
+
+The optional `--observe` registers a separate campaign consumer and live query
+before seeding, and waits for their explicit ready message. The observer uses
+two reserved slots, keeps a bounded 1,024-ticket event oracle for organization
+zero, checks every observed creation/update and exact redelivery, acknowledges
+through generated methods, and checks monotonic consumer/live frontiers. It
+refuses gaps, substituted events, unexpected incarnations and unplanned resets.
+The preparation also queries `TicketUpdates` through the public CLI with its
+compiler-bound identity and a freshness fence, then checks the exact count.
+This observer currently refuses lifecycle interruptions; fault-aware restart,
+restore and rotation handling remain campaign work. Its positive smoke and
+hostile event/projection oracle tests are preparation evidence only.

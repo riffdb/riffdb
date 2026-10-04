@@ -380,7 +380,7 @@ flag with named configuration and was refused. A second attempt passed client
 checks but failed shutdown because closing stdin does not stop the TLS daemon.
 The corrected harness selects a named owned root and sends the production
 termination signal. `scripts/check-ticketdesk-lifecycle-preparation` builds the
-three binaries and runs this real smoke in full CI. Failed attempts remain failed; no runtime check is relaxed.
+four binaries and runs this real smoke in full CI. Failed attempts remain failed; no runtime check is relaxed.
 
 The evidence checker has an explicit `--short-rehearsal` mode for WP-825. The
 frozen target remains 24 hours and ordinary validation still requires all 288
@@ -466,3 +466,39 @@ no database or public-interface changes; Updated handbook pages: this handoff;
 Hazards/follow-ups: active observers, all seven faults, resource accounting,
 archive/restore reconciliation, a frozen campaign and its short rehearsal remain
 required. These observations do not qualify WP-825. No 24-hour run has started.
+
+
+## WP-825 active observation preparation
+
+The public TLS preparation gate now registers a generated event consumer and
+live query before any seed command, waiting for an explicit ready message.
+Two auxiliary slots cover the serial consumer calls and live stream. Its
+bounded organization-zero oracle stores at most 1,024 latest ticket events,
+checks creation/update fields and contiguous revisions, distinguishes equal
+redelivery from substitution, and rejects gaps and partition mistakes. It
+acknowledges through generated methods and checks native provenance metadata,
+consumer leases/retries, incarnation and monotonic consumer/live frontiers.
+Unplanned resets and lifecycle interruptions currently fail this preparation;
+reconnect, rotation and restore handling remain campaign work.
+
+The preparation queries `TicketUpdates` through the public operator CLI. A
+first-party compiler descriptor checks the exact generated contract bundle hash
+and supplies the projection ID and plan hash. Reconciliation requires that
+identity, the organization-zero group, expected independent count and a frontier
+at least as new as the sampled committed head. Native canonical capability
+permission ordering is preserved. No runtime or application interface changes.
+
+The real Rust/TypeScript TLS preparation with both observers and the queried
+projection passes. Eight Rust semantic/schedule tests, two hostile projection
+oracle tests and Clippy pass. The no-validation event and projection baselines
+failed their rejection assertions before implementation. They are intentionally
+failing tests, not database daemon panics. Raw failed-attempt logs remain private.
+
+PR note: Package WP-825 (open); Tier guarantee; Behavior: bounded public event,
+live-query and projection preparation observations; Checks: eight Rust tests,
+two projection oracle tests, Clippy, integrated real TLS preparation and scoped
+acceptance; Compatibility: unchanged native semantics and qualification gates;
+Updated handbook pages: this handoff; Hazards/follow-ups: repeat full-population
+load with observers on the durable-SSD host, complete actual faults, freeze the
+campaign, reconcile archives/restores and run the required short rehearsal.
+The 24-hour run remains unstarted.
