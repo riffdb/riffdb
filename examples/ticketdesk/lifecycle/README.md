@@ -108,5 +108,19 @@ then admits the live query after an explicit seed-completion gate. It verifies
 that initial view before starting offered load. Seeding runs faster than the
 campaign rate and can exceed the native bounded notification buffer; seeding
 is outside the measured load windows. The observer's private `consumer.pause`
-marker omits consumer calls while leaving live draining active. The actual
-five-minute outage and recovery drill still requires the campaign controller.
+marker omits consumer calls while leaving live draining active. The measured
+outage preparation described below checks that effect and times recovery.
+
+Live observation renews its bounded request every twenty seconds using the
+opaque native cursor. Each renewed snapshot must preserve partition, canonical
+ticket identities, ordering and a monotonic frontier; renewals are counted in
+observations. Unexpected terminal refusal or cursor reset fails preparation.
+The one-ticket check waits for a real renewal before succeeding.
+
+`--population-probe-seconds 900 --observe --consumer-outage` runs a separate
+fifteen-minute preparation with a five-minute consumer pause beginning five
+seconds after offered load starts. Consumer event count and checkpoint must
+freeze while live progress continues, and the missing events must drain within
+ten minutes after resumption. All three load windows and every final ticket are
+checked. Timings and logs stay in the private preparation root. This covers one
+fault only and cannot produce a campaign qualification receipt.

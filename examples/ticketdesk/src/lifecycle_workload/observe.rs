@@ -94,6 +94,71 @@ impl EventOracle {
 struct LiveProgress {
     head: AtomicU64,
     updates: AtomicU64,
+    renewals: AtomicU64,
+}
+
+/// The daemon bounds a stream request to thirty seconds. Renew with its opaque
+/// cursor before that deadline; native terminal refusals are still failures.
+struct RenewingLiveInput {
+    stream: Option<
+        riffdb_client_rust::TypedLiveQueryStream<super::application::TicketQueueWatchParams>,
+    >,
+    client: super::application::TicketDeskLifecycleClient,
+    checkpoint: riffdb_client_rust::LiveQueryCheckpoint,
+    renew_at: tokio::time::Instant,
+    progress: Arc<LiveProgress>,
+    populated: bool,
+}
+
+impl LiveInput for RenewingLiveInput {
+    async fn message(&mut self) -> Result<Option<riffdb_client_rust::LiveQueryCheckpoint>> {
+        let update = tokio::select! {
+            update = LiveInput::message(self.stream.as_mut().ok_or("observer_live_ended")?) => Some(update?),
+            _ = tokio::time::sleep_until(self.renew_at) => None,
+        };
+        if let Some(update) = update {
+            if let Some(checkpoint) = &update {
+                self.checkpoint = checkpoint.clone();
+            }
+            return Ok(update);
+        }
+        // Cancel the old request before admitting its replacement.
+        drop(self.stream.take());
+        let mut stream = self
+            .client
+            .watch_ticket_queue_watch(
+                super::application::TicketQueueWatchParams {
+                    organization_id: super::uuid(0x8001, 0),
+                    project_id: super::uuid(0x8003, 0),
+                },
+                Some(self.checkpoint.cursor.clone()),
+            )
+            .await
+            .map_err(|_| "observer_live_renewal")?;
+        let first = tokio::time::timeout(std::time::Duration::from_secs(5), stream.message())
+            .await
+            .map_err(|_| "observer_live_renewal_timeout")?
+            .map_err(|_| "observer_live_renewal")?
+            .ok_or("observer_live_ended")?;
+        let super::application::TicketQueueWatchUpdate::Snapshot(snapshot) = first else {
+            return Err("observer_live_renewal_snapshot");
+        };
+        let super::application::TicketQueueResult::Found(queue) = snapshot.result;
+        if self.populated && queue.tickets.len() != 50 {
+            return Err("observer_live_renewal_snapshot");
+        }
+        validate_resumed_queue(&queue)?;
+        if snapshot.checkpoint.history_incarnation != self.checkpoint.history_incarnation
+            || snapshot.checkpoint.application_head < self.checkpoint.application_head
+        {
+            return Err("observer_live_frontier");
+        }
+        self.checkpoint = snapshot.checkpoint;
+        self.stream = Some(stream);
+        self.renew_at = tokio::time::Instant::now() + std::time::Duration::from_secs(20);
+        self.progress.renewals.fetch_add(1, Ordering::AcqRel);
+        Ok(Some(self.checkpoint.clone()))
+    }
 }
 
 trait LiveInput: Send {
@@ -176,12 +241,45 @@ fn validate_seeded_queue(queue: &super::application::TicketQueueFound) -> Result
     Ok(())
 }
 
+fn validate_resumed_queue(queue: &super::application::TicketQueueFound) -> Result<()> {
+    if queue.tickets.is_empty() || queue.tickets.len() > 50 {
+        return Err("observer_live_renewal_snapshot");
+    }
+    let mut previous = None;
+    for row in &queue.tickets {
+        let suffix = row
+            .ticket_id
+            .strip_prefix("01900000-0000-7000-8004-")
+            .ok_or("observer_live_renewal_snapshot")?;
+        let ticket =
+            u64::from_str_radix(suffix, 16).map_err(|_| "observer_live_renewal_snapshot")?;
+        let rank = match row.status.as_str() {
+            "Open" => 0,
+            "InProgress" => 1,
+            _ => return Err("observer_live_renewal_snapshot"),
+        };
+        if ticket >= 1024
+            || row.ticket_id != super::uuid(0x8004, ticket)
+            || row.organization_id != super::uuid(0x8001, 0)
+            || row.project_id != super::uuid(0x8003, 0)
+            || row.reporter_id != super::uuid(0x8002, 0)
+            || row.assignee_id != super::uuid(0x8002, 0)
+            || row.title != format!("Lifecycle ticket {ticket}")
+            || previous.is_some_and(|prior| prior <= (rank, ticket))
+        {
+            return Err("observer_live_renewal_snapshot");
+        }
+        previous = Some((rank, ticket));
+    }
+    Ok(())
+}
+
 async fn start_live(
-    client: &mut super::application::TicketDeskLifecycleClient,
+    mut client: super::application::TicketDeskLifecycleClient,
     progress: &Arc<LiveProgress>,
     incarnation: u64,
     populated: bool,
-) -> Result<riffdb_client_rust::TypedLiveQueryStream<super::application::TicketQueueWatchParams>> {
+) -> Result<RenewingLiveInput> {
     use super::application::{TicketQueueResult, TicketQueueWatchParams, TicketQueueWatchUpdate};
     let mut stream = client
         .watch_ticket_queue_watch(
@@ -214,7 +312,14 @@ async fn start_live(
         .head
         .store(snapshot.checkpoint.application_head, Ordering::Release);
     progress.updates.store(1, Ordering::Release);
-    Ok(stream)
+    Ok(RenewingLiveInput {
+        stream: Some(stream),
+        client,
+        checkpoint: snapshot.checkpoint,
+        renew_at: tokio::time::Instant::now() + std::time::Duration::from_secs(20),
+        progress: Arc::clone(progress),
+        populated,
+    })
 }
 
 pub(super) async fn run() -> Result<()> {
@@ -236,7 +341,7 @@ pub(super) async fn run() -> Result<()> {
         .ok_or("observer_stop_path")?
         .join("consumer.pause");
     let mut client = super::connect("RIFFDB_LIFECYCLE_APPLICATION_CREDENTIAL").await?;
-    let mut live_client = super::connect("RIFFDB_LIFECYCLE_APPLICATION_CREDENTIAL").await?;
+    let mut live_client = Some(super::connect("RIFFDB_LIFECYCLE_APPLICATION_CREDENTIAL").await?);
     let consumer = TicketEventsConsumer {
         parameters: TicketEventsParams {
             organization_id: super::uuid(0x8001, 0),
@@ -267,6 +372,7 @@ pub(super) async fn run() -> Result<()> {
     let progress = Arc::new(LiveProgress {
         head: AtomicU64::new(0),
         updates: AtomicU64::new(0),
+        renewals: AtomicU64::new(0),
     });
     let deferred = match std::env::var("RIFFDB_LIFECYCLE_DEFER_LIVE") {
         Ok(value) if value == "1" => true,
@@ -285,7 +391,13 @@ pub(super) async fn run() -> Result<()> {
     let mut live_workers = tokio::task::JoinSet::new();
     let mut live_stopped = Some(live_stopped);
     if !deferred {
-        let stream = start_live(&mut live_client, &progress, incarnation, false).await?;
+        let stream = start_live(
+            live_client.take().ok_or("observer_live_worker")?,
+            &progress,
+            incarnation,
+            false,
+        )
+        .await?;
         live_workers.spawn(drain_live(
             stream,
             Arc::clone(&progress),
@@ -315,7 +427,7 @@ pub(super) async fn run() -> Result<()> {
                     return Err("observer_duration_bound");
                 }
                 if live_stopped.is_some() && live_start.exists() {
-                    let stream = start_live(&mut live_client, &progress, incarnation, true).await?;
+                    let stream = start_live(live_client.take().ok_or("observer_live_worker")?, &progress, incarnation, true).await?;
                     live_workers.spawn(drain_live(stream, Arc::clone(&progress), incarnation,
                         live_stopped.take().ok_or("observer_live_worker")?));
                 }
@@ -365,9 +477,10 @@ pub(super) async fn run() -> Result<()> {
                     println!(concat!("{{\"schema\":\"riffdb.ticketdesk-lifecycle-observation/v1\",",
                         "\"elapsed_s\":{},\"events_checked\":{},\"duplicates\":{},",
                         "\"consumer_checkpoint\":{},\"live_head\":{},\"live_updates\":{},",
-                        "\"history_incarnation\":{},\"consumer_paused\":{},\"auxiliary_slots\":2}}"),
+                        "\"history_incarnation\":{},\"consumer_paused\":{},\"live_renewals\":{},\"auxiliary_slots\":2}}"),
                         elapsed, events, duplicates, checkpoint, progress.head.load(Ordering::Acquire),
-                        progress.updates.load(Ordering::Acquire), incarnation, pause.exists());
+                        progress.updates.load(Ordering::Acquire), incarnation, pause.exists(),
+                        progress.renewals.load(Ordering::Acquire));
                     io::stdout().flush().map_err(|_| "observation_output")?;
                     published = elapsed;
                 }
@@ -512,6 +625,7 @@ mod tests {
         let progress = Arc::new(LiveProgress {
             head: AtomicU64::new(0),
             updates: AtomicU64::new(0),
+            renewals: AtomicU64::new(0),
         });
         let reader = tokio::spawn(drain_live(
             FixtureLiveInput {
@@ -550,6 +664,7 @@ mod tests {
             let progress = Arc::new(LiveProgress {
                 head: AtomicU64::new(10),
                 updates: AtomicU64::new(1),
+                renewals: AtomicU64::new(0),
             });
             let reader = tokio::spawn(drain_live(
                 FixtureLiveInput {
@@ -597,13 +712,23 @@ mod tests {
                 .collect(),
         };
         assert_eq!(validate_seeded_queue(&queue), Ok(()));
+        assert_eq!(validate_resumed_queue(&queue), Ok(()));
         queue.tickets[0].organization_id = crate::uuid(0x8001, 1);
         assert!(validate_seeded_queue(&queue).is_err());
+        assert!(validate_resumed_queue(&queue).is_err());
         queue.tickets[0].organization_id = crate::uuid(0x8001, 0);
         queue.tickets.swap(0, 1);
         assert!(validate_seeded_queue(&queue).is_err());
+        assert!(validate_resumed_queue(&queue).is_err());
         queue.tickets.swap(0, 1);
         queue.tickets.pop();
         assert!(validate_seeded_queue(&queue).is_err());
+        queue.tickets[0].status = "InProgress".to_owned();
+        assert_eq!(validate_resumed_queue(&queue), Ok(()));
+        queue.tickets[0].status = "Closed".to_owned();
+        assert!(validate_resumed_queue(&queue).is_err());
+        queue.tickets[0].status = "Open".to_owned();
+        queue.tickets[1].status = "InProgress".to_owned();
+        assert!(validate_resumed_queue(&queue).is_err());
     }
 }

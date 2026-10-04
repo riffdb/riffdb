@@ -562,3 +562,32 @@ acceptance; Compatibility: native bounded refusal preserved; Updated handbook
 pages: this handoff; Hazards/follow-ups: verify the host population probe with
 this gate, implement and measure actual faults and observer handover, then
 complete the frozen short rehearsal. The 24-hour run remains unstarted.
+
+## WP-825 bounded watch renewal and consumer-outage preparation
+
+The third observed host preparation failed with native live-query
+`SERVICE_UNAVAILABLE` about thirty seconds after watch admission. That timing
+matches the daemon's existing thirty-second request deadline. The observer now renews every
+twenty seconds through the generated public watch method and opaque cursor,
+cancelling the old request before admitting its replacement. A renewed snapshot
+must retain exact partition and ticket identities, canonical ordering, and a
+monotonic frontier. Renewal counts are actual observations. Native terminal
+refusals and unexpected cursor resets still fail; no service bound changes.
+The integrated one-ticket preparation now requires a real successful renewal.
+
+Population load is monitored while it runs; observer exit, invalid or oversized
+output, and deadline failure stop the owned load child. Before load, the seed's
+1,024 organization-zero creation events must be consumed and checked. A new
+optional fifteen-minute preparation schedules one real five-minute consumer
+pause, requires frozen consumer progress and advancing live observation, times
+the subsequent backlog drain, and reconciles all 65,536 final tickets. Private
+nanosecond timings remain measurements, not a synthetic campaign receipt.
+
+PR note: Package WP-825 (open); Tier guarantee; Behavior: counted public cursor
+renewal, supervised population load, and consumer-outage preparation; Checks:
+twelve Rust cases, six preparation oracle/child-ownership cases, Clippy,
+integrated two-version TLS preparation and scoped acceptance; Compatibility:
+native request, retention, cursor and authorization guarantees preserved;
+Updated handbook pages: this handoff; Hazards/follow-ups: measure the revised
+observed host preparation, complete all remaining faults and version handover,
+then freeze and pass the short campaign. No 24-hour run has started.

@@ -3,7 +3,9 @@
 import copy
 import importlib.machinery
 import importlib.util
+import os
 from pathlib import Path
+import tempfile
 import unittest
 
 SOURCE = Path(__file__).resolve().parents[2] / "scripts/ticketdesk-lifecycle-smoke"
@@ -54,6 +56,64 @@ class ProjectionReconciliation(unittest.TestCase):
         preparation.validate_projection(value, 1, 7, 65537, plan_hash)
         with self.assertRaises(preparation.SmokeError):
             preparation.validate_projection(value, 1, 7, 65536, plan_hash)
+
+
+class ConsumerOutageReconciliation(unittest.TestCase):
+    def sample(self, *, paused=True, events=1000, checkpoint=2000, head=3000, updates=20):
+        return {"consumer_paused": paused, "events_checked": events,
+                "consumer_checkpoint": checkpoint, "live_head": head,
+                "live_updates": updates, "duplicates": 0, "history_incarnation": 1,
+                "auxiliary_slots": 2}
+
+    def test_pause_requires_frozen_consumer_and_independent_live_progress(self):
+        oracle = preparation.ConsumerOutageOracle()
+        oracle.observe(self.sample(), paused=True)
+        oracle.observe(self.sample(head=4000, updates=30), paused=True)
+        oracle.finish_pause()
+        for changed in (self.sample(events=1001), self.sample(checkpoint=2001),
+                        self.sample(paused=False)):
+            with self.subTest(changed=changed):
+                with self.assertRaises(preparation.SmokeError):
+                    oracle.observe(changed, paused=True)
+
+    def test_a_missing_or_inactive_watch_cannot_prove_an_outage(self):
+        oracle = preparation.ConsumerOutageOracle()
+        with self.assertRaises(preparation.SmokeError):
+            oracle.finish_pause()
+        oracle.observe(self.sample(), paused=True)
+        oracle.observe(self.sample(), paused=True)
+        with self.assertRaises(preparation.SmokeError):
+            oracle.finish_pause()
+
+    def test_recovery_must_drain_real_missing_events_with_live_frontier_preserved(self):
+        oracle = preparation.ConsumerOutageOracle()
+        oracle.observe(self.sample(), paused=True)
+        oracle.observe(self.sample(head=4000, updates=30), paused=True)
+        oracle.finish_pause()
+        self.assertFalse(oracle.recovered(self.sample(paused=False, head=4000, updates=30), 2048))
+        self.assertTrue(oracle.recovered(self.sample(paused=False, events=2048,
+                        checkpoint=5000, head=6000, updates=40), 2048))
+        with self.assertRaises(preparation.SmokeError):
+            oracle.recovered(self.sample(paused=False, events=2049), 2048)
+
+
+class ChildOwnership(unittest.TestCase):
+    def test_invalid_or_oversized_load_output_stops_the_owned_child(self):
+        for output in ('{"schema":"unknown"}', 'x' * 8192):
+            with self.subTest(bytes=len(output)), tempfile.TemporaryDirectory() as directory:
+                root = Path(directory)
+                worker = root / "fixture-worker"
+                worker.write_text("#!/usr/bin/env python3\nimport os, signal\n"
+                    "from pathlib import Path\n"
+                    "Path(__file__).with_name('pid').write_text(str(os.getpid()))\n"
+                    f"print({output!r}, flush=True)\nsignal.pause()\n")
+                worker.chmod(0o700)
+                with self.assertRaises(preparation.SmokeError):
+                    preparation.observed_load(root, str(worker), dict(os.environ), 1,
+                                              None, preparation.queue.Queue(maxsize=1), False)
+                pid = int((root / "pid").read_text())
+                with self.assertRaises(ProcessLookupError):
+                    os.kill(pid, 0)
 
 
 if __name__ == "__main__":
