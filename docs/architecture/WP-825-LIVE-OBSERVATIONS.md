@@ -1,0 +1,142 @@
+# WP-825 native blockers and bounded live observation proposal
+
+WP-825 is open. The maintainer approved expanding scope to cover necessary
+native fixes in session on 2026-10-04: "okay, i approve expanding the scope to
+cover any necessary fixes". The separate widening commit records the identified
+runtime paths before implementation. This is scope approval; an accepted
+architecture decision or normative guarantee still requires separate review
+before it changes.
+
+The campaign needs periodic retention eligibility, watermark, physical extent
+and hold observations while offered load continues. The current public
+`retention status` command requires a closed database. Shutdown counters prove
+only the final accumulated state. Neither can supply independent observations
+for the final six fault-free hours without stopping the daemon.
+
+Approved additional observation scope:
+
+- `crates/riffdb-server/src/**`
+- `crates/riffdb-storage-redb/src/**`
+- Consequence tests for those crates.
+
+Implementation decisions within ADR-0265:
+
+1. Add bounded internal, payload-free observations to the existing owned
+   retention lane and daemon diagnostic stream. No new application RPC,
+   operator mutation, configuration control or storage format.
+2. Report real logical watermarks and retention eligibility, deletion/reuse
+   counters and reference/reader holds. Clearly separate modeled upper bounds
+   from exact byte counts; unavailable accounting refuses campaign evidence.
+3. Use existing native ownership and fencing logic. Do not reproduce journal
+   formats in the Python controller or infer eligibility from file age.
+4. Bound collection work, diagnostic size and emission rate. Do not acquire
+   authoritative write authority, hold a gate across diagnostic I/O, pin old
+   snapshots or repeatedly scan retained history.
+5. Report only counts, closed states and durations. No tenant, capability,
+   payload, machine address, path or secret in emitted observations.
+6. Preserve current ordering, authorization, pruning eligibility, source
+   receipts and native reclamation. Observations cannot authorize deletion.
+
+Validation must include deterministic collection/retirement schedules,
+malformed or unavailable observation refusal, existing retention and recovery
+tests, scoped acceptance and full CI. The complete short rehearsal still needs
+all seven actual faults, three physically reclaimed generations and the final
+six fault-free hours. No qualification is established by this proposal.
+
+AGENTS.md requires human review when a work package needs paths outside its
+declared scope. Approval extends the package paths only; a discovered conflict
+with a specification or accepted decision still stops for separate review.
+
+## Native defects and repair scope
+
+The real preparation now blocks on database behavior. Harness expansion is
+paused until these issues are resolved. Failed preparations stay failed, and
+no 24-hour run has started.
+
+Approved additional repair scope:
+
+- `crates/riffdb-api-grpc/src/**`
+- `crates/riffdb-service/src/**`
+- The server and storage paths listed above, including consequence tests.
+
+This supersedes the earlier proposed SDK status-message exception. The Rust
+SDK's strict validation must remain intact. Scope approval permits diagnosis,
+regression tests and repairs within accepted decisions; it does not accept a
+new storage, ordering, authorization or interface guarantee.
+
+### Revocation interoperability: reproduced
+
+The real capability-rotation preparation refuses both old-bearer reads and
+same-key command submissions, but its command check fails. Named queries
+return native `CapabilityRevoked`. Native Execute returns the server's existing
+fixed, details-free revoked-token `PermissionDenied` status. The Rust SDK treats
+that canonical status as `MissingPublicErrorDetails`, so applications receive a
+protocol failure instead of an authorization refusal. This cannot qualify as
+successful typed revocation handling.
+
+The proposed correction is at the server boundary: encode the existing kernel
+`PublicError::authorization_denied()` for an exactly matched revoked credential.
+Symbolic application boundaries continue to return existing `CapabilityRevoked`.
+The current kernel encoding deliberately omits application-only hints; generated
+kernel-backed command facades consequently retain `AuthorizationDenied`.
+No client may guess a semantic refusal from unvalidated peer prose. Unknown or
+malformed details remain protocol failures. The regression gate is real old-
+credential refusal and same-principal replacement replay through the native SDK.
+
+### Live-query notification overflow: reproduced; cause unresolved
+
+The required 100-command/s, 400-read/s preparation with online retention and a
+consumer outage ended with `BufferPressure`. The server notification owner
+queues at most 256 first-commit notifications per subscriber and terminates when
+that bound is exceeded. The independent client drains continuously and records
+the terminal refusal as a failure. This is not a qualification success.
+
+Trace server acknowledgement progress, port admission and checkpoint/prune
+interference before choosing a fix. Preserve the queue ceiling, exact commit
+validation, current authorization and terminal semantics. Automatic reconnect,
+discarded checkpoints, larger buffers or slower offered load cannot repair the
+observed availability failure.
+
+### Source-receipt reclamation: deterministic starvation reproduction
+
+The failed preparation logically pruned 115,460 application sequences across
+582 steps, but removed zero source receipts and zero physical extents. It had
+five sealed extents of roughly 320 MiB each. The final reference-hold counter
+was 1,145 repeated blocked attempts, not a count of distinct retained objects.
+Offline native status reported watermark 115,460 and consumer fence 132,287.
+
+`reclaim_history_online` validates at most 256 receipts per step against one
+immutable root. At completion, `Barrier::try_from_validated` requires a drained
+database and the identical current root; a changed root discards the proof.
+The same lane performs logical pruning between validation pages, and ordinary
+writes also advance the root. This creates a starvation candidate under ongoing
+load. Existing small tests primarily establish safe refusal and idle progress.
+
+The new failing regression
+`production_receipt_reclamation_progresses_with_interleaved_durable_writes`
+uses 600 complete command fixtures and explicit checkpoint hooks. It removed
+zero receipts across 24 interleaved independently durable writer turns. Its
+positive control uses the same owner and data: an idle validation pass, a later
+durable checkpoint and another idle pass removed 256 receipts. Application
+history remains retained throughout, isolating receipt admission from logical
+pruning and legitimate application history retention. No correctness sleeps
+or directly injected history rows are used.
+
+The full retained receipt/audit walk is also restarted for each admission.
+Measure this repeated work against END-008 rather than counting only the
+256-row deletion budget. An actual ongoing-load proof is still required.
+Separate legitimate source/provider holds from stale-proof and admission
+refusals. Any solution must preserve complete validation, current binding,
+independently durable checkpoint evidence, every hold, 256-receipt steps and
+maintenance pacing. If bounded progress requires changing ADR-0265's validation
+or scheduling decision, propose that exact change for separate human acceptance;
+do not implement weaker evidence or a harness maintenance pause.
+
+### Promoted backup recovery: unresolved intermittent failure
+
+Full CI timed out waiting for promoted maintenance to regain source readiness.
+An isolated rerun passed, then the complete replication group passed all 25
+tests in 148.51 seconds. Passing repeats do not erase the original failure or
+explain it. Preserve the 30-second operation deadline and investigate native
+recovery progress and test
+interference before deciding whether a production repair is needed.
