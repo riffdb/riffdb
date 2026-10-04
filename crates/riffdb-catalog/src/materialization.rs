@@ -1,5 +1,11 @@
 //! Catalog-proved, process-local command record materialization.
 
+#[path = "materialization_provider_admission.rs"]
+mod provider_admission;
+pub use provider_admission::ProviderDerivedEntityMaterializationErrorV1;
+#[cfg(test)]
+use provider_admission::materialize_derived_record_admitted_v1;
+
 use std::collections::BTreeMap;
 use std::error::Error;
 use std::fmt;
@@ -1623,6 +1629,168 @@ contract SnapshotMaterialization version {version} {{
         )
         .unwrap();
         assert!(materialize_derived_record(&proof, &executing, substituted).is_err());
+    }
+
+    // req: OQ-040, PRJ-004
+    #[test]
+    fn admitted_derived_materialization_preserves_null_fill_and_final_field_capture() {
+        use riffdb_types::exact_provider_budget_v1::ProviderBudget;
+        let bundles = lineage(1);
+        let entity = entity_type(&bundles[0]);
+        let proof = LineageMaterializationProof::from_forward_bundles(bundles.clone()).unwrap();
+        let executing = binding(&bundles[1]);
+        let old = record(&bundles[0], entity, 1, 1, false, 7, None);
+        let expected = materialize_derived_record(&proof, &executing, old.clone()).unwrap();
+        let budget = ProviderBudget::new();
+        let encoded = riffdb_storage_api::encode_entity_record_v1(&old).unwrap();
+        let original = riffdb_storage_api::decode_provider_entity_record_admitted_v1(
+            encoded.as_bytes(),
+            &budget,
+        )
+        .unwrap();
+        let output =
+            materialize_derived_record_admitted_v1(&proof, &executing, &original, &budget).unwrap();
+        assert_eq!(**output, expected);
+        assert_eq!(budget.observation().unwrap().reserved_bytes, 0);
+        let captured_fields = (**output).clone();
+        drop(output);
+        drop(original);
+        assert!(budget.observation().unwrap().owned_bytes > 0);
+        assert_eq!(captured_fields, expected);
+        drop(captured_fields);
+        assert_eq!(budget.observation().unwrap().owned_bytes, 0);
+    }
+
+    // req: OQ-040, PRJ-004
+    #[test]
+    fn admitted_derived_materialization_preserves_shared_noop_and_refuses_foreign_or_saturated_budget()
+     {
+        use riffdb_types::exact_provider_budget_v1::{EXACT_PROVIDER_BUDGET_BYTES, ProviderBudget};
+        let bundles = lineage(1);
+        let entity = entity_type(&bundles[1]);
+        let proof = LineageMaterializationProof::from_forward_bundles(bundles.clone()).unwrap();
+        let executing = binding(&bundles[1]);
+        let complete = record(&bundles[1], entity, 1, 2, true, 8, None);
+        let budget = ProviderBudget::new();
+        let encoded = riffdb_storage_api::encode_entity_record_v1(&complete).unwrap();
+        let original = riffdb_storage_api::decode_provider_entity_record_admitted_v1(
+            encoded.as_bytes(),
+            &budget,
+        )
+        .unwrap();
+        let before = budget.observation().unwrap();
+        let output =
+            materialize_derived_record_admitted_v1(&proof, &executing, &original, &budget).unwrap();
+        assert!(Arc::ptr_eq(&original, &output));
+        assert_eq!(
+            budget.observation().unwrap().owned_bytes,
+            before.owned_bytes
+        );
+        let foreign = ProviderBudget::new();
+        assert!(
+            materialize_derived_record_admitted_v1(&proof, &executing, &original, &foreign)
+                .is_err()
+        );
+        assert_eq!(foreign.observation().unwrap().owned_bytes, 0);
+        assert_eq!(foreign.observation().unwrap().reserved_bytes, 0);
+        let now = budget.observation().unwrap();
+        let pressure = budget
+            .reserve(EXACT_PROVIDER_BUDGET_BYTES - now.fixed_owner_bytes - now.owned_bytes)
+            .unwrap();
+        let before = budget.observation().unwrap();
+        assert!(matches!(
+            materialize_derived_record_admitted_v1(&proof, &executing, &original, &budget),
+            Err(ProviderDerivedEntityMaterializationErrorV1::Unavailable)
+        ));
+        assert_eq!(budget.observation().unwrap(), before);
+        drop(pressure);
+        drop(original);
+        drop(output);
+        assert_eq!(budget.observation().unwrap().owned_bytes, 0);
+    }
+
+    // req: OQ-040, PRJ-004
+    #[test]
+    fn admitted_derived_materialization_bounds_large_values_and_preserves_integrity_errors() {
+        use riffdb_types::exact_provider_budget_v1::{BudgetUnavailable, ProviderBudget};
+        let first = compile_contract_source(
+            &source(1, false, 1).replace("field value: i64", "field value: string<262144>"),
+        )
+        .unwrap();
+        let second = compile_contract_successor(
+            &source(2, true, 1).replace("field value: i64", "field value: string<262144>"),
+            &first,
+        )
+        .unwrap();
+        let bundles = [first, second]
+            .into_iter()
+            .map(|bundle| ValidatedContractBundle::from_compiler_bundle(bundle).unwrap())
+            .collect::<Vec<_>>();
+        let proof = LineageMaterializationProof::from_forward_bundles(bundles.clone()).unwrap();
+        let entity = entity_type(&bundles[0]);
+        let fields = bundles[0].bundle().schema().entities()[0]
+            .record()
+            .fields()
+            .iter()
+            .map(|field| {
+                let value = match field.name() {
+                    "tenant" => CanonicalValue::Uuid(uuid(0xaa)),
+                    "id" => CanonicalValue::Uuid(uuid(1)),
+                    "value" => CanonicalValue::string("x".repeat(262144)).unwrap(),
+                    _ => panic!("unexpected synthetic field"),
+                };
+                (field.id(), value)
+            })
+            .collect();
+        let old = StoredEntityRecordV1::new(
+            target(entity, 1),
+            EntityVersion::first(),
+            bundles[0].contract_version(),
+            binding(&bundles[0]),
+            CanonicalRecord::new(fields).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(
+            provider_admission::maximum_work(&old, usize::MAX, 0),
+            Err(BudgetUnavailable)
+        );
+        assert_eq!(
+            provider_admission::maximum_work(&old, 1, u64::MAX),
+            Err(BudgetUnavailable)
+        );
+        let budget = ProviderBudget::new();
+        let encoded = riffdb_storage_api::encode_entity_record_v1(&old).unwrap();
+        let original = riffdb_storage_api::decode_provider_entity_record_admitted_v1(
+            encoded.as_bytes(),
+            &budget,
+        )
+        .unwrap();
+        let expected = materialize_derived_record(&proof, &binding(&bundles[1]), old).unwrap();
+        let output = materialize_derived_record_admitted_v1(
+            &proof,
+            &binding(&bundles[1]),
+            &original,
+            &budget,
+        )
+        .unwrap();
+        assert_eq!(**output, expected);
+        let invalid_binding = DurableKeySchemaBindingV1::new(
+            bundles[1].lineage().clone(),
+            bundles[1].contract_version(),
+            riffdb_types::ContractBundleHash::from_bytes([0xff; 32]),
+        );
+        assert!(matches!(
+            materialize_derived_record_admitted_v1(&proof, &invalid_binding, &original, &budget),
+            Err(ProviderDerivedEntityMaterializationErrorV1::Integrity)
+        ));
+        let fields = (**output).clone();
+        drop(original);
+        drop(output);
+        assert!(budget.observation().unwrap().owned_bytes > 262144);
+        assert_eq!(fields, expected);
+        drop(fields);
+        assert_eq!(budget.observation().unwrap().owned_bytes, 0);
+        assert_eq!(budget.observation().unwrap().reserved_bytes, 0);
     }
 
     fn snapshot(

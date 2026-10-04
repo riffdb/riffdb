@@ -167,7 +167,11 @@ fn catalog_shared_attachment_pressure_refuses_before_attaching_any_shared_root()
     let budget = ProviderBudget::new();
     let snapshot = snapshot();
     let blocker = budget
-        .reserve(EXACT_PROVIDER_BUDGET_BYTES - OWNED_CAPACITY_INSPECTION_SCRATCH_BYTES_V1 - 128)
+        .reserve(
+            EXACT_PROVIDER_BUDGET_BYTES
+                - OWNED_CAPACITY_INSPECTION_SCRATCH_BYTES_V1
+                - budget.observation().unwrap().fixed_owner_bytes,
+        )
         .unwrap();
     assert!(attach(&budget, &snapshot).is_err());
     assert_eq!(budget.observation().unwrap().owned_bytes, 0);

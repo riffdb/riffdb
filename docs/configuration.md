@@ -620,6 +620,9 @@ workers also reserve their explicit capture pins against this pool; capture
 pressure returns the same typed unavailable result. Encoded checkpoint read
 buffers reserve capacity before reading and retain their charge through the last
 buffer reference. Budget pressure leaves rebuild work eligible for a later retry.
+Provider source decoding and derived-row normalization reserve construction
+capacity before allocation. Unchanged rows share their admitted original;
+materialized fields retain their charge through the final semantic row clone.
 The exact-provider worker emits bounded operator diagnostics on stderr at startup,
 at most once per 60 seconds while its service clock is healthy, and at worker stop.
 Lines use `trigger=exact_provider_lifecycle` and fixed numeric fields: the process

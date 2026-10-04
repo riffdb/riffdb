@@ -1,5 +1,37 @@
 # WP-824 implementation progress
 
+## Derived record materialization admission
+
+Worker materialization now accepts an already admitted entity record from the
+same accounting graph. It reserves census scratch before inspecting borrowed
+canonical value capacities, then reserves native field-vector growth, existing
+nested-value copies, missing-position/null masks, encoding buffers and fixed
+metadata before cloning or normalizing. Exact writer, lineage, key, schema and
+null-fill validation still runs through the existing materializer.
+
+An unchanged result shares the complete original admitted record. Null insertion
+creates fresh private fields and encoding; their actual native capacity is sealed
+in an original owner before a semantic clone can escape. Those clones retain the
+original charge through final field-data destruction. The worker separately
+admits the temporary executing-binding clone. Delta post-images use the existing
+admitted entity decoder and retain admitted materialized records while private
+changes survive. No newer point read substitutes for a receipt post-image.
+
+Focused tests cover existing null-fill behavior, unchanged owner identity,
+foreign/saturated accounting refusal, final semantic-field captures, 256-KiB
+values, arithmetic overflow and invalid exact bindings.
+The broader 1,175-test selection passed 1,174 tests; its one failure was a catalog
+fixture hard-coding the old 128-byte accounting root. The fixture now uses the
+reported fixed charge, and all 127 catalog tests passed on rerun. All seven scoped
+static checks passed. Remaining source row
+collections, receipt cursor work and full catalog/policy assembly still require
+admission composition. WP-824 remains open.
+
+PR note: Package WP-824; Tier guarantee; Behavior: admitted derived-record
+materialization and delta entity decoding; Compatibility: unchanged schema/key/
+writer checks, bytes, ordering and application interfaces; Handbook: Configuration;
+Hazards/follow-ups: remaining collection/catalog/receipt/policy ownership, full CI.
+
 ## Source candidate population ownership
 
 Text, predicate and nullable-predicate full builds now reserve private candidate

@@ -3922,8 +3922,7 @@ fn read_complete_predicate_partition<R: ExactPredicateRegistrationView>(
                 .read_provider_entity_v1(&target, &captured.budget)
                 .map_err(|_| RebuildFailure::Transient)?
                 .ok_or(RebuildFailure::Transient)?;
-            let record = (**source).clone();
-            let record = captured.materialize(access_program, record)?;
+            let record = captured.materialize(access_program, &source)?;
             let values = record
                 .fields()
                 .fields()
@@ -4080,8 +4079,7 @@ fn read_complete_partition(
                 .read_provider_entity_v1(&target, &captured.budget)
                 .map_err(|_| RebuildFailure::Transient)?
                 .ok_or(RebuildFailure::Transient)?;
-            let record = (**source).clone();
-            let record = captured.materialize(program, record)?;
+            let record = captured.materialize(program, &source)?;
             let text = match record
                 .fields()
                 .fields()

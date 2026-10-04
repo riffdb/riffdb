@@ -404,6 +404,11 @@ pub struct ProviderAllocation<T> {
 }
 
 impl<T> ProviderAllocation<T> {
+    /// Accounting membership only; conveys no data or storage authority.
+    pub fn belongs_to(&self, budget: &ProviderBudget) -> bool {
+        self._charge.belongs_to(budget)
+    }
+
     /// Read-only settled ownership bound for admitting a private successor.
     pub fn owned_bytes(&self) -> u64 {
         self._charge.bytes()

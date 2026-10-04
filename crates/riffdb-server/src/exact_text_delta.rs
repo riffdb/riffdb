@@ -7,9 +7,9 @@ use riffdb_policy::{AuthorizedQueryRowPolicyContextV1, ProjectedPolicyCandidateO
 use riffdb_query_executor::QueryExecutionPort;
 use riffdb_query_ir::QueryAccessProgramV1;
 use riffdb_storage_api::{
-    AuthoritativeNamespaceV1, ChangelogCursorErrorV3, ChangelogHistoryPointV3,
-    MAX_CHANGELOG_FRAME_BYTES, StorageErrorKind, StoredEntityRecordV1,
-    proto_codec::decode_entity_record_v1,
+    AdmittedProviderEntityRecordV1, AuthoritativeNamespaceV1, ChangelogCursorErrorV3,
+    ChangelogHistoryPointV3, MAX_CHANGELOG_FRAME_BYTES, StorageErrorKind,
+    proto_codec::decode_provider_entity_record_admitted_v1,
 };
 use riffdb_types::{CanonicalValue, EntityKey, ProjectionGeneration};
 
@@ -31,7 +31,7 @@ pub(super) struct DeltaPlan<'a> {
 }
 
 pub(super) struct Delta {
-    pub(super) changes: BTreeMap<EntityKey, Option<StoredEntityRecordV1>>,
+    pub(super) changes: BTreeMap<EntityKey, Option<AdmittedProviderEntityRecordV1>>,
     pub(super) source: SelectedSource,
 }
 
@@ -152,13 +152,15 @@ impl Delta {
                     if mutation.expected_hash().is_some() != population.contains(&key) {
                         return Err(RebuildFailure::Integrity);
                     }
-                    let (record, _) = decode_entity_record_v1(value)
-                        .map_err(|_| RebuildFailure::Integrity)?
-                        .into_parts();
+                    let record = decode_provider_entity_record_admitted_v1(value, &captured.budget)
+                        .map_err(|error| match error {
+                            riffdb_storage_api::ProviderRecordDecodeErrorV1::AdmissionUnavailable => RebuildFailure::Transient,
+                            riffdb_storage_api::ProviderRecordDecodeErrorV1::Codec(_) => RebuildFailure::Integrity,
+                        })?;
                     if record.target().key() != &key {
                         return Err(RebuildFailure::Integrity);
                     }
-                    let record = captured.materialize(plan.program, record)?;
+                    let record = captured.materialize(plan.program, &record)?;
                     let charge = riffdb_types::canonical_record_encoded_len(record.fields())
                         .map_err(|_| RebuildFailure::Integrity)?;
                     normalized_bytes = normalized_bytes

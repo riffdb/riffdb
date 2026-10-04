@@ -8,7 +8,8 @@ use std::sync::Arc;
 use riffdb_catalog::{ActiveCatalogSnapshot, CatalogErrorKind};
 use riffdb_query_ir::QueryAccessProgramV1;
 use riffdb_storage_api::{
-    ChangelogCursorErrorV3, DurableKeySchemaBindingV1, StorageErrorKind, StoredEntityRecordV1,
+    AdmittedProviderEntityRecordV1, ChangelogCursorErrorV3, DurableKeySchemaBindingV1,
+    StorageErrorKind,
 };
 use riffdb_storage_redb::RedbDerivedSourcePin;
 use riffdb_types::{CommitSequence, FrontierPosition, ProjectionGeneration};
@@ -151,20 +152,29 @@ impl CapturedSource {
     pub(super) fn materialize(
         &self,
         program: &QueryAccessProgramV1,
-        record: StoredEntityRecordV1,
-    ) -> Result<StoredEntityRecordV1, RebuildFailure> {
+        record: &AdmittedProviderEntityRecordV1,
+    ) -> Result<AdmittedProviderEntityRecordV1, RebuildFailure> {
         self.ensure_active()?;
         let contract = program.contract();
+        let _binding_work = self
+            .budget
+            .reserve(4096)
+            .map_err(|_| RebuildFailure::Transient)?;
+        let binding = DurableKeySchemaBindingV1::new(
+            contract.lineage().clone(),
+            contract.version(),
+            contract.bundle_hash(),
+        );
         self.catalog
-            .materialize_derived_entity(
-                &DurableKeySchemaBindingV1::new(
-                    contract.lineage().clone(),
-                    contract.version(),
-                    contract.bundle_hash(),
-                ),
-                record,
-            )
-            .map_err(|_| RebuildFailure::Integrity)
+            .materialize_derived_entity_admitted_v1(&binding, record, &self.budget)
+            .map_err(|error| match error {
+                riffdb_catalog::ProviderDerivedEntityMaterializationErrorV1::Unavailable => {
+                    RebuildFailure::Transient
+                }
+                riffdb_catalog::ProviderDerivedEntityMaterializationErrorV1::Integrity => {
+                    RebuildFailure::Integrity
+                }
+            })
     }
 }
 
@@ -380,7 +390,11 @@ query Ticket($organization_id: Ticket.organization_id, $ticket_id: Ticket.ticket
         key.push_uuid(&uuid(0x41)).unwrap();
         key.push_uuid(&uuid(0x21)).unwrap();
         let target = riffdb_storage_api::EntityTarget::new(entity, key.finish().unwrap()).unwrap();
-        let record = captured.storage.read_entity(&target).unwrap().unwrap();
+        let record = captured
+            .storage
+            .read_provider_entity_v1(&target, &budget)
+            .unwrap()
+            .unwrap();
         let before = budget.observation().unwrap();
         owner.retire_superseded().unwrap();
         let partition = CanonicalValue::Uuid(uuid(0x41));
@@ -399,7 +413,7 @@ query Ticket($organization_id: Ticket.organization_id, $ticket_id: Ticket.ticket
             Err(RebuildFailure::Transient)
         ));
         assert!(matches!(
-            captured.materialize(program, record),
+            captured.materialize(program, &record),
             Err(RebuildFailure::Transient)
         ));
         assert_eq!(
@@ -608,7 +622,7 @@ query Ticket($organization_id: Ticket.organization_id, $ticket_id: Ticket.ticket
                 .storage
                 .read_entity(&EntityTarget::new(entity, key.clone()).unwrap())
                 .unwrap();
-            assert_eq!(&current, record);
+            assert_eq!(current.as_ref(), record.as_ref().map(|record| &***record));
         }
         let second = Delta::read(&captured, &first.source, plan())
             .unwrap()

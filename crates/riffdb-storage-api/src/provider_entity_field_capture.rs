@@ -20,9 +20,8 @@ impl Eq for ProviderEntityFieldCaptureV1 {}
 impl StoredEntityRecordV1 {
     /// Only a freshly reconstructed, admitted provider original may enter here.
     /// Its metadata clone requires the caller's separate construction allowance.
-    pub(crate) fn from_admitted_provider_original_v1(
-        original: Arc<ProviderAllocation<Self>>,
-    ) -> Self {
+    #[doc(hidden)]
+    pub fn from_admitted_provider_original_v1(original: Arc<ProviderAllocation<Self>>) -> Self {
         let mut record = (*original).clone();
         record.provider_fields = ProviderEntityFieldCaptureV1 {
             _data: Some(original),
