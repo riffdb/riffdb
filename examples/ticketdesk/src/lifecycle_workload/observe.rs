@@ -156,11 +156,69 @@ async fn drain_live<S: LiveInput>(
     }
 }
 
-pub(super) async fn run() -> Result<()> {
-    use super::application::{
-        TicketEventsConsumer, TicketEventsParams, TicketQueueResult, TicketQueueWatchParams,
-        TicketQueueWatchUpdate,
+fn validate_seeded_queue(queue: &super::application::TicketQueueFound) -> Result<()> {
+    if queue.tickets.len() != 50 {
+        return Err("observer_seeded_snapshot");
+    }
+    for (index, row) in queue.tickets.iter().enumerate() {
+        let ticket = 1023 - index as u64;
+        if row.organization_id != super::uuid(0x8001, 0)
+            || row.project_id != super::uuid(0x8003, 0)
+            || row.ticket_id != super::uuid(0x8004, ticket)
+            || row.reporter_id != super::uuid(0x8002, 0)
+            || row.assignee_id != super::uuid(0x8002, 0)
+            || row.title != format!("Lifecycle ticket {ticket}")
+            || row.status != "Open"
+        {
+            return Err("observer_seeded_snapshot");
+        }
+    }
+    Ok(())
+}
+
+async fn start_live(
+    client: &mut super::application::TicketDeskLifecycleClient,
+    progress: &Arc<LiveProgress>,
+    incarnation: u64,
+    populated: bool,
+) -> Result<riffdb_client_rust::TypedLiveQueryStream<super::application::TicketQueueWatchParams>> {
+    use super::application::{TicketQueueResult, TicketQueueWatchParams, TicketQueueWatchUpdate};
+    let mut stream = client
+        .watch_ticket_queue_watch(
+            TicketQueueWatchParams {
+                organization_id: super::uuid(0x8001, 0),
+                project_id: super::uuid(0x8003, 0),
+            },
+            None,
+        )
+        .await
+        .map_err(|_| "observer_live_query")?;
+    let first = tokio::time::timeout(std::time::Duration::from_secs(10), stream.message())
+        .await
+        .map_err(|_| "observer_live_timeout")?
+        .map_err(|_| "observer_live_query")?
+        .ok_or("observer_live_ended")?;
+    let TicketQueueWatchUpdate::Snapshot(snapshot) = first else {
+        return Err("observer_live_snapshot");
     };
+    let TicketQueueResult::Found(queue) = snapshot.result;
+    if snapshot.checkpoint.history_incarnation != incarnation
+        || queue.tickets.len() != if populated { 50 } else { 0 }
+    {
+        return Err("observer_live_snapshot");
+    }
+    if populated {
+        validate_seeded_queue(&queue)?;
+    }
+    progress
+        .head
+        .store(snapshot.checkpoint.application_head, Ordering::Release);
+    progress.updates.store(1, Ordering::Release);
+    Ok(stream)
+}
+
+pub(super) async fn run() -> Result<()> {
+    use super::application::{TicketEventsConsumer, TicketEventsParams};
     use riffdb_client_rust::{
         ApplicationEventCheckpoint, ApplicationEventConsumerPublicStatus,
         ApplicationEventMutationResult, EventConsumerOptions,
@@ -173,6 +231,10 @@ pub(super) async fn run() -> Result<()> {
     if !stop.is_absolute() || stop.exists() || !stop.parent().is_some_and(std::path::Path::is_dir) {
         return Err("observer_stop_path");
     }
+    let pause = stop
+        .parent()
+        .ok_or("observer_stop_path")?
+        .join("consumer.pause");
     let mut client = super::connect("RIFFDB_LIFECYCLE_APPLICATION_CREDENTIAL").await?;
     let mut live_client = super::connect("RIFFDB_LIFECYCLE_APPLICATION_CREDENTIAL").await?;
     let consumer = TicketEventsConsumer {
@@ -195,48 +257,42 @@ pub(super) async fn run() -> Result<()> {
     if !initial.events.is_empty() {
         return Err("observer_requires_fresh_consumer");
     }
-    let mut stream = live_client
-        .watch_ticket_queue_watch(
-            TicketQueueWatchParams {
-                organization_id: super::uuid(0x8001, 0),
-                project_id: super::uuid(0x8003, 0),
-            },
-            None,
-        )
-        .await
-        .map_err(|_| "observer_live_query")?;
-    let first = tokio::time::timeout(Duration::from_secs(10), stream.message())
-        .await
-        .map_err(|_| "observer_live_timeout")?
-        .map_err(|_| "observer_live_query")?
-        .ok_or("observer_live_ended")?;
-    let TicketQueueWatchUpdate::Snapshot(snapshot) = first else {
-        return Err("observer_live_snapshot");
+    let ApplicationEventConsumerPublicStatus::Exact(initial_status) = initial.status else {
+        return Err("observer_status");
     };
-    let TicketQueueResult::Found(queue) = snapshot.result;
-    if !queue.tickets.is_empty() {
-        return Err("observer_requires_fresh_population");
-    }
-    let progress = Arc::new(LiveProgress {
-        head: AtomicU64::new(snapshot.checkpoint.application_head),
-        updates: AtomicU64::new(1),
-    });
-    let incarnation = snapshot.checkpoint.history_incarnation;
+    let incarnation = initial_status.history_incarnation;
     if incarnation == 0 {
         return Err("observer_incarnation");
     }
+    let progress = Arc::new(LiveProgress {
+        head: AtomicU64::new(0),
+        updates: AtomicU64::new(0),
+    });
+    let deferred = match std::env::var("RIFFDB_LIFECYCLE_DEFER_LIVE") {
+        Ok(value) if value == "1" => true,
+        Err(std::env::VarError::NotPresent) => false,
+        _ => return Err("configuration"),
+    };
+    let live_start = stop
+        .parent()
+        .ok_or("observer_stop_path")?
+        .join("live.start");
     let mut oracle = EventOracle::new();
     let mut events = 0_u64;
     let mut duplicates = 0_u64;
     let mut checkpoint = 0_u64;
     let (stop_live, live_stopped) = tokio::sync::watch::channel(false);
     let mut live_workers = tokio::task::JoinSet::new();
-    live_workers.spawn(drain_live(
-        stream,
-        Arc::clone(&progress),
-        incarnation,
-        live_stopped,
-    ));
+    let mut live_stopped = Some(live_stopped);
+    if !deferred {
+        let stream = start_live(&mut live_client, &progress, incarnation, false).await?;
+        live_workers.spawn(drain_live(
+            stream,
+            Arc::clone(&progress),
+            incarnation,
+            live_stopped.take().ok_or("observer_live_worker")?,
+        ));
+    }
     println!(
         "{{\"schema\":\"riffdb.ticketdesk-lifecycle-observer-ready/v1\",\"auxiliary_slots\":2}}"
     );
@@ -247,7 +303,7 @@ pub(super) async fn run() -> Result<()> {
     let mut published = 0;
     loop {
         tokio::select! {
-            result = live_workers.join_next() => {
+            result = live_workers.join_next(), if !live_workers.is_empty() => {
                 return result.ok_or("observer_live_worker")?.map_err(|_| "observer_live_worker")?
                     .and(Err("observer_live_ended"));
             }
@@ -258,6 +314,12 @@ pub(super) async fn run() -> Result<()> {
                 if started.elapsed() > Duration::from_secs(88_200) {
                     return Err("observer_duration_bound");
                 }
+                if live_stopped.is_some() && live_start.exists() {
+                    let stream = start_live(&mut live_client, &progress, incarnation, true).await?;
+                    live_workers.spawn(drain_live(stream, Arc::clone(&progress), incarnation,
+                        live_stopped.take().ok_or("observer_live_worker")?));
+                }
+                if !pause.exists() {
                 let batch = client.next_ticket_events(consumer.clone(), options).await
                     .map_err(|_| "observer_consumer")?;
                 for delivery in &batch.events {
@@ -297,26 +359,29 @@ pub(super) async fn run() -> Result<()> {
                     return Err("observer_checkpoint");
                 }
                 checkpoint = next_checkpoint;
+                }
                 let elapsed = started.elapsed().as_secs();
                 if elapsed > published {
                     println!(concat!("{{\"schema\":\"riffdb.ticketdesk-lifecycle-observation/v1\",",
                         "\"elapsed_s\":{},\"events_checked\":{},\"duplicates\":{},",
                         "\"consumer_checkpoint\":{},\"live_head\":{},\"live_updates\":{},",
-                        "\"history_incarnation\":{},\"auxiliary_slots\":2}}"),
+                        "\"history_incarnation\":{},\"consumer_paused\":{},\"auxiliary_slots\":2}}"),
                         elapsed, events, duplicates, checkpoint, progress.head.load(Ordering::Acquire),
-                        progress.updates.load(Ordering::Acquire), incarnation);
+                        progress.updates.load(Ordering::Acquire), incarnation, pause.exists());
                     io::stdout().flush().map_err(|_| "observation_output")?;
                     published = elapsed;
                 }
             }
         }
     }
-    stop_live.send(true).map_err(|_| "observer_stop")?;
-    tokio::time::timeout(Duration::from_secs(10), live_workers.join_next())
-        .await
-        .map_err(|_| "observer_live_shutdown")?
-        .ok_or("observer_live_worker")?
-        .map_err(|_| "observer_live_worker")??;
+    if !live_workers.is_empty() {
+        stop_live.send(true).map_err(|_| "observer_stop")?;
+        tokio::time::timeout(Duration::from_secs(10), live_workers.join_next())
+            .await
+            .map_err(|_| "observer_live_shutdown")?
+            .ok_or("observer_live_worker")?
+            .map_err(|_| "observer_live_worker")??;
+    }
     Ok(())
 }
 
@@ -506,5 +571,39 @@ mod tests {
             assert_eq!(progress.head.load(Ordering::Acquire), 10);
             assert_eq!(progress.updates.load(Ordering::Acquire), 1);
         }
+    }
+    // req: END-003, END-007, END-008
+    #[test]
+    fn seeded_live_snapshot_requires_the_complete_expected_top_fifty() {
+        use crate::application::{TicketQueueFound, TicketQueueFoundTickets, TimestampValue};
+        let mut queue = TicketQueueFound {
+            tickets: (0..50)
+                .map(|index| {
+                    let ticket = 1023 - index;
+                    TicketQueueFoundTickets {
+                        organization_id: crate::uuid(0x8001, 0),
+                        project_id: crate::uuid(0x8003, 0),
+                        ticket_id: crate::uuid(0x8004, ticket),
+                        reporter_id: crate::uuid(0x8002, 0),
+                        assignee_id: crate::uuid(0x8002, 0),
+                        title: format!("Lifecycle ticket {ticket}"),
+                        status: "Open".to_owned(),
+                        updated_at: TimestampValue {
+                            seconds: 0,
+                            nanos: 0,
+                        },
+                    }
+                })
+                .collect(),
+        };
+        assert_eq!(validate_seeded_queue(&queue), Ok(()));
+        queue.tickets[0].organization_id = crate::uuid(0x8001, 1);
+        assert!(validate_seeded_queue(&queue).is_err());
+        queue.tickets[0].organization_id = crate::uuid(0x8001, 0);
+        queue.tickets.swap(0, 1);
+        assert!(validate_seeded_queue(&queue).is_err());
+        queue.tickets.swap(0, 1);
+        queue.tickets.pop();
+        assert!(validate_seeded_queue(&queue).is_err());
     }
 }

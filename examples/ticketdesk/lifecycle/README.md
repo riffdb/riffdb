@@ -102,3 +102,11 @@ Generate or check the V2 compatibility closure with
 verified-TLS preparation daemon and the public parent-aware application-lock
 workflow. The V2 fixture adds one compiled version command and preserves every
 parent entity and command identity. No schema transformation is required.
+
+Full-population preparation keeps the consumer registered throughout seeding,
+then admits the live query after an explicit seed-completion gate. It verifies
+that initial view before starting offered load. Seeding runs faster than the
+campaign rate and can exceed the native bounded notification buffer; seeding
+is outside the measured load windows. The observer's private `consumer.pause`
+marker omits consumer calls while leaving live draining active. The actual
+five-minute outage and recovery drill still requires the campaign controller.

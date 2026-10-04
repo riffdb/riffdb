@@ -535,3 +535,30 @@ qualification gates preserved; Updated handbook pages: this handoff;
 Hazards/follow-ups: repeat the corrected observer population probe on the host,
 complete the fault controller and independent campaign reconciliation, freeze
 artifacts and run the required short rehearsal. No 24-hour run has started.
+
+
+## WP-825 seeding and live-watch admission
+
+The revised host attempt also reached native `buffer_pressure` while seeding;
+its independent reader did not remove that source-side notification backlog.
+Both failed observer attempts remain failed. The service retains its bounded,
+fail-closed watch behavior. Population preparation now registers the durable
+consumer before seeding, then starts the live query against the completed seed
+before any offered-load window begins. An explicit file gate and observed live
+progress coordinate that transition; the initial view must contain exactly the
+expected top fifty seeded tickets with correct partition, identities and state.
+The one-ticket CI preparation continues to cover a watch active during writes.
+
+The observer also supports a private consumer-pause marker that stops issuing
+consumer calls while the independently drained live stream continues. This is
+controller preparation, not a measured five-minute outage. All twelve Rust
+semantic/schedule cases and the integrated two-version TLS preparation pass.
+No buffer, scan, service-level or qualification limit is raised.
+
+PR note: Package WP-825 (open); Tier guarantee; Behavior: explicit admission of
+live observation after population seeding and private consumer-pause control;
+Checks: twelve Rust tests, Clippy, real two-version preparation and scoped
+acceptance; Compatibility: native bounded refusal preserved; Updated handbook
+pages: this handoff; Hazards/follow-ups: verify the host population probe with
+this gate, implement and measure actual faults and observer handover, then
+complete the frozen short rehearsal. The 24-hour run remains unstarted.

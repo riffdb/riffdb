@@ -332,6 +332,8 @@ tls_server_name = "127.0.0.1"
                 print("Exact-parent successor closure generated privately; no campaign qualification claimed.")
                 return 0
             if args.observe:
+                if args.population_probe_seconds:
+                    environment["RIFFDB_LIFECYCLE_DEFER_LIVE"] = "1"
                 environment["RIFFDB_LIFECYCLE_OBSERVER_STOP"] = str(root / "observer.stop")
                 observer_ready = queue.Queue(maxsize=1)
                 with (root / "observer.stderr").open("xb") as observer_errors:
@@ -343,6 +345,15 @@ tls_server_name = "127.0.0.1"
                 require(observer_ready.get(timeout=30) is True, "observer_startup")
             if args.population_probe_seconds:
                 invoke(root, "seed", [worker, "seed"], environment=environment, timeout=1200)
+                if observer:
+                    write(root, "live.start", "start\n")
+                    deadline = time.monotonic() + 30
+                    while True:
+                        remaining = deadline - time.monotonic()
+                        require(remaining > 0 and observer.poll() is None, "observer_live_start")
+                        observed = latest.get(timeout=remaining)
+                        if observed["live_updates"] > 0:
+                            break
                 environment["RIFFDB_LIFECYCLE_DURATION_SECONDS"] = str(args.population_probe_seconds)
                 invoke(root, "load", [worker, "probe"], environment=environment,
                        timeout=args.population_probe_seconds + 120)
