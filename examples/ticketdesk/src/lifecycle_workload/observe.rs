@@ -463,6 +463,7 @@ pub(super) async fn run() -> Result<()> {
                     };
                     incarnation = validate_handover(incarnation, checkpoint, &status,
                         root.join("observer.restore").exists())?;
+                    if release.incarnation != incarnation { return Err("observer_release_incarnation"); }
                     let live = super::current::connect_release(release.version, &release.credential).await?;
                     let stream = start_live(live, &progress, incarnation, deferred, true).await?;
                     let (sender, receiver) = tokio::sync::watch::channel(false);

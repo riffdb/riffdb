@@ -52,6 +52,17 @@ pub(super) fn validate_final(
         return Err("operation_bound");
     }
     let revision = updates / POPULATION + u64::from(ticket < updates % POPULATION);
+    validate_revision(ticket, revision, actual)
+}
+
+pub(super) fn validate_revision(
+    ticket: u64,
+    revision: u64,
+    actual: &GetTicketFoundTicket,
+) -> Result<(), &'static str> {
+    if ticket >= POPULATION || revision > MAX_COMMANDS.div_ceil(POPULATION) {
+        return Err("operation_bound");
+    }
     let organization = ticket / super::TICKETS_PER_ORGANIZATION;
     if actual.revision != revision
         || actual.status != status(revision)

@@ -48,6 +48,8 @@ mod observe;
 mod probe;
 #[path = "../lifecycle_workload/recovery.rs"]
 mod recovery;
+#[path = "../lifecycle_workload/witness.rs"]
+mod witness;
 
 type Result<T> = std::result::Result<T, &'static str>;
 const ORGANIZATIONS: u64 = 64;
@@ -162,7 +164,7 @@ async fn foundation(client: &mut TicketDeskLifecycleClient, organization: u64) -
     Ok(())
 }
 
-async fn ticket(client: &mut TicketDeskLifecycleClient, ordinal: u64) -> Result<()> {
+async fn ticket(client: &mut TicketDeskLifecycleClient, ordinal: u64) -> Result<u64> {
     let organization = ordinal / TICKETS_PER_ORGANIZATION;
     let created = client
         .create_ticket(CreateTicketInput {
@@ -180,18 +182,24 @@ async fn ticket(client: &mut TicketDeskLifecycleClient, ordinal: u64) -> Result<
     if !matches!(created.outcome, CreateTicketOutcome::Created { .. }) {
         return Err("seed_outcome");
     }
-    Ok(())
+    created.commit_sequence.ok_or("missing_commit")
 }
 
 async fn seed() -> Result<()> {
+    let witness = witness::Witness::configured("seed.witness", model::POPULATION)?;
     let mut workers = JoinSet::new();
     for worker in 0..SEED_WORKERS {
+        let witness = witness.clone();
         workers.spawn(async move {
             let mut client = connect("RIFFDB_LIFECYCLE_SEED_CREDENTIAL").await?;
             for organization in (worker..ORGANIZATIONS).step_by(SEED_WORKERS as usize) {
                 foundation(&mut client, organization).await?;
                 for local in 0..TICKETS_PER_ORGANIZATION {
-                    ticket(&mut client, organization * TICKETS_PER_ORGANIZATION + local).await?;
+                    let ordinal = organization * TICKETS_PER_ORGANIZATION + local;
+                    let sequence = ticket(&mut client, ordinal).await?;
+                    if let Some(witness) = &witness {
+                        witness.record(ordinal, sequence, 1, 1)?;
+                    }
                 }
             }
             Ok::<_, &'static str>(())
@@ -199,6 +207,9 @@ async fn seed() -> Result<()> {
     }
     while let Some(result) = workers.join_next().await {
         result.map_err(|_| "worker")??;
+    }
+    if let Some(witness) = witness {
+        witness.finish()?;
     }
     println!(
         "{{\"schema\":\"riffdb.ticketdesk-lifecycle-seed/v1\",\"organizations\":64,\"tickets\":65536,\"max_in_flight\":16}}"
@@ -369,8 +380,18 @@ async fn reconcile() -> Result<()> {
     if completed > model::MAX_COMMANDS {
         return Err("operation_bound");
     }
+    let revisions = env::var_os("RIFFDB_LIFECYCLE_RECONCILIATION_WITNESS")
+        .map(|path| witness::Reader::open(Path::new(&path))?.revisions())
+        .transpose()?
+        .map(std::sync::Arc::new);
+    if let Some(revisions) = &revisions
+        && revisions.iter().sum::<u64>() != completed
+    {
+        return Err("witness_command_count");
+    }
     let mut workers = JoinSet::new();
     for worker in 0..SEED_WORKERS {
+        let revisions = revisions.clone();
         workers.spawn(async move {
             let mut client = current::connect().await?;
             for ticket in (worker..model::POPULATION).step_by(SEED_WORKERS as usize) {
@@ -383,7 +404,11 @@ async fn reconcile() -> Result<()> {
                 else {
                     return Err("state_reconciliation");
                 };
-                model::validate_final(completed, ticket, &found.ticket)?;
+                if let Some(revisions) = &revisions {
+                    model::validate_revision(ticket, revisions[ticket as usize], &found.ticket)?;
+                } else {
+                    model::validate_final(completed, ticket, &found.ticket)?;
+                }
             }
             Ok::<_, &'static str>(())
         });

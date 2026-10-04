@@ -51,6 +51,7 @@ impl Drop for Active {
 pub(super) struct Release {
     pub(super) generation: u64,
     pub(super) version: u64,
+    pub(super) incarnation: u64,
     pub(super) credential: PathBuf,
 }
 
@@ -105,6 +106,8 @@ impl Admission {
             || release.generation <= state.release.generation
             || !(1..=2).contains(&release.version)
             || release.version < state.release.version
+            || (release.incarnation != state.release.incarnation
+                && Some(release.incarnation) != state.release.incarnation.checked_add(1))
         {
             return Err("release_change_requires_quiescence");
         }
@@ -196,29 +199,33 @@ pub(super) fn read_release(root: &Path, path: &Path) -> Result<Release> {
         .ok_or("release_input")?
         .split(' ')
         .collect::<Vec<_>>();
-    if fields.len() != 3
-        || fields[2].is_empty()
-        || fields[2].len() > 128
-        || !fields[2]
+    if fields.len() != 4
+        || fields[3].is_empty()
+        || fields[3].len() > 128
+        || !fields[3]
             .bytes()
             .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_' | b'.'))
-        || matches!(fields[2], "." | "..")
+        || matches!(fields[3], "." | "..")
     {
         return Err("release_input");
     }
     let generation = fields[0].parse::<u64>().map_err(|_| "release_input")?;
     let version = fields[1].parse::<u64>().map_err(|_| "release_input")?;
+    let incarnation = fields[2].parse::<u64>().map_err(|_| "release_input")?;
     if generation == 0
         || !(1..=2).contains(&version)
         || generation.to_string() != fields[0]
         || version.to_string() != fields[1]
+        || incarnation == 0
+        || incarnation.to_string() != fields[2]
     {
         return Err("release_input");
     }
     Ok(Release {
         generation,
         version,
-        credential: root.join(fields[2]),
+        incarnation,
+        credential: root.join(fields[3]),
     })
 }
 
@@ -356,11 +363,13 @@ pub(super) async fn run() -> Result<()> {
     let initial = Release {
         generation: 1,
         version,
+        incarnation: 1,
         credential: PathBuf::from(
             env::var_os("RIFFDB_LIFECYCLE_APPLICATION_CREDENTIAL").ok_or("configuration")?,
         ),
     };
     let admission = Arc::new(Admission::new(initial, Arc::clone(&current)));
+    let witness = super::witness::Witness::configured("updates.witness", duration * 100)?;
     let control = env::var_os("RIFFDB_LIFECYCLE_LOAD_CONTROL").map(PathBuf::from);
     if let Some(root) = &control {
         if !root.is_absolute() || root.is_symlink() || !root.is_dir() {
@@ -378,6 +387,7 @@ pub(super) async fn run() -> Result<()> {
         let peak = Arc::clone(&peak);
         let offered_commands = Arc::clone(&offered_commands);
         let control = control.clone();
+        let witness = witness.clone();
         workers.spawn(async move {
             let mut release = admission.release()?;
             let mut client = current::connect_release(release.version, &release.credential).await?;
@@ -429,6 +439,17 @@ pub(super) async fn run() -> Result<()> {
                         }
                         if changed.replayed && !recovering {
                             return Err("probe_requires_fresh_updates");
+                        }
+                        if changed.contract_version != release.version {
+                            return Err("witness_release");
+                        }
+                        if let Some(witness) = &witness {
+                            witness.record(
+                                ordinal,
+                                changed.commit_sequence.ok_or("missing_commit")?,
+                                changed.contract_version,
+                                release.incarnation,
+                            )?;
                         }
                         retries
                     }
@@ -546,6 +567,9 @@ pub(super) async fn run() -> Result<()> {
     })
     .await
     .map_err(|_| "drain_bound")??;
+    if let Some(witness) = witness {
+        witness.finish()?;
+    }
     let final_state = metrics.lock().map_err(|_| "observation_state")?;
     println!(
         concat!(
@@ -574,6 +598,7 @@ mod tests {
             Release {
                 generation: 1,
                 version: 1,
+                incarnation: 1,
                 credential: "application.credential".into(),
             },
             Arc::clone(&current),
@@ -586,6 +611,7 @@ mod tests {
         let successor = Release {
             generation: 2,
             version: 2,
+            incarnation: 1,
             credential: "application-v2.credential".into(),
         };
         assert!(admission.replace(successor.clone()).is_err());
@@ -607,6 +633,7 @@ mod tests {
             Release {
                 generation: 1,
                 version: 1,
+                incarnation: 1,
                 credential: "application.credential".into(),
             },
             Arc::new(AtomicU32::new(0)),
@@ -640,6 +667,7 @@ mod tests {
             Release {
                 generation: 1,
                 version: 2,
+                incarnation: 1,
                 credential: "application-v2.credential".into(),
             },
             Arc::new(AtomicU32::new(0)),
@@ -647,6 +675,7 @@ mod tests {
         let next = Release {
             generation: 2,
             version: 2,
+            incarnation: 1,
             credential: "rotated.credential".into(),
         };
         assert!(admission.replace(next.clone()).is_err());

@@ -692,3 +692,34 @@ input, release, idempotency and authority boundaries preserved; Updated handbook
 pages: this handoff; Hazards/follow-ups: complete independent command/archive
 witnesses, campaign fault orchestration and pruning measurements before the
 frozen short rehearsal. No 24-hour run has started.
+
+## WP-825 acknowledgement witnesses and state reconciliation
+
+Private seed and load witnesses now record each acknowledged ticket command's
+ordinal, commit sequence, exact contract version and history incarnation. The
+files have fixed, bounded slots and private permissions; records can arrive out
+of order, but a second acknowledgement cannot overwrite a slot. Completion
+requires every expected slot and synchronizes the evidence file. Missing,
+truncated, malformed, oversized and linked inputs refuse reconciliation.
+These files are independent test evidence, never authoritative database storage.
+
+An immutable witness snapshot reconstructs each ticket's acknowledged revision,
+including holes at a quiescent backup cut. A later revision without its earlier
+ticket revision refuses. Population preparation now compares every named row
+against these witnesses rather than relying only on an offered-command counter.
+Private release controls also carry the expected history incarnation; an
+observer resumption must confirm it through native consumer status.
+
+The small interruption preparations passed on the inventoried host as well:
+graceful restart took 0.375 seconds and process kill took 0.323 seconds through
+successful write, exact replay and named-state checks. Each had one retried
+generated submission. These results do not establish recovery after pruning.
+
+PR note: Package WP-825 (open); Tier guarantee; Behavior: independent bounded
+acknowledgement witnesses and witness-based named-state reconciliation; Checks:
+Rust witness identity, corruption, gap and out-of-order cases, Clippy, real TLS
+preparations and scoped acceptance; Compatibility: authoritative formats and
+application interfaces unchanged; Updated handbook pages: this handoff;
+Hazards/follow-ups: validate archive payloads against these witnesses, complete
+campaign actions and actual physical-retention measurements, then pass the
+frozen short rehearsal. The 24-hour run remains unstarted.

@@ -584,6 +584,7 @@ tls_server_name = "127.0.0.1"
                 observer_pump.start()
                 require(observer_ready.get(timeout=30) is True, "observer_startup")
             if args.population_probe_seconds:
+                environment["RIFFDB_LIFECYCLE_WITNESS_ROOT"] = str(root)
                 invoke(root, "seed", [worker, "seed"], environment=environment, timeout=1200)
                 if observer:
                     write(root, "live.start", "start\n")
@@ -600,6 +601,7 @@ tls_server_name = "127.0.0.1"
                 observed_load(root, worker, environment, args.population_probe_seconds,
                               observer, latest, args.consumer_outage)
                 environment["RIFFDB_LIFECYCLE_COMPLETED_COMMANDS"] = str(args.population_probe_seconds * 100)
+                environment["RIFFDB_LIFECYCLE_RECONCILIATION_WITNESS"] = str(root / "updates.witness")
                 invoke(root, "reconciliation", [worker, "reconcile"], environment=environment, timeout=900)
                 require((root / "load.stdout").stat().st_size <= 65536, "probe_observation")
                 samples = [json.loads(line) for line in (root / "load.stdout").read_bytes().splitlines()]
@@ -744,7 +746,7 @@ tls_server_name = "127.0.0.1"
                     require(sought.get("schema") == "riffdb.cli.output/v1"
                             and sought.get("command") == "event.seek" and sought["ok"] is True
                             and sought["result"] == {"result": "applied"}, "consumer_handover_seek")
-                    write(root, "load.phase", "2 2 application-v2.credential\n")
+                    write(root, "load.phase", "2 2 1 application-v2.credential\n")
                     (root / "observer.quiesce").unlink()
                     deadline = time.monotonic() + 15
                     while True:
