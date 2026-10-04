@@ -247,6 +247,32 @@ impl ExecutablePlanView {
     }
 }
 
+/// One graph-owned proof cache serves command admission and commit readers.
+/// Every hit is qualified by the current durable active pointer; cold reads
+/// still perform the complete existing lineage and exact-plan validation.
+fn resolve_executable_plan_cached(
+    storage: &impl CatalogRepository,
+    cache: &Mutex<ExecutablePlanView>,
+    reference: &ExecutablePlanRef,
+) -> Result<ResolvedExecutablePlan, CatalogError> {
+    let before = storage
+        .read_active_catalog()?
+        .ok_or_else(|| CatalogError::new(CatalogErrorKind::UnknownExecutablePlan))?;
+    let mut cache = cache
+        .lock()
+        .map_err(|_| CatalogError::new(CatalogErrorKind::InvalidHistoricalEvidence))?;
+    if let Some(plan) = cache.get(reference, &before) {
+        return Ok(plan);
+    }
+    let plan = resolve_executable_plan(storage, reference)?;
+    // A concurrent deployment can yield a coherent old or successor result,
+    // but only an unchanged exact pointer qualifies a reusable publication.
+    if storage.read_active_catalog()?.as_ref() == Some(&before) {
+        cache.insert(reference.clone(), before, plan.clone());
+    }
+    Ok(plan)
+}
+
 #[derive(Default)]
 struct HistoricalContractView {
     bundles: BTreeMap<ContractVersionRequest, ValidatedContractBundle>,
@@ -409,6 +435,7 @@ pub(crate) struct ServerCatalogReadPort<S = SharedRedbOperationalPorts> {
     /// Shared reads let generated clients reuse their pinned contract identity
     /// without resubmitting every named query to the blocking worker pool.
     exact_contract_cache: Arc<RwLock<HistoricalContractView>>,
+    executable_plan_cache: Arc<Mutex<ExecutablePlanView>>,
     active: BlockingPortExecutor<(), Option<ActiveCatalogSnapshot>, CatalogError>,
     contract_version:
         BlockingPortExecutor<ContractVersionRequest, Option<ValidatedContractBundle>, CatalogError>,
@@ -473,6 +500,7 @@ impl<S: CatalogReadSource> ServerCatalogReadPort<S> {
 
         let plan_storage = storage.clone();
         let plan_cache = Arc::new(Mutex::new(ExecutablePlanView::default()));
+        let resolver_cache = Arc::clone(&plan_cache);
         let executable_plan = driver.executor(move |request: CatalogExecutablePlanRequest| {
             let reference = ExecutablePlanRef::new(
                 request.lineage().clone(),
@@ -481,29 +509,7 @@ impl<S: CatalogReadSource> ServerCatalogReadPort<S> {
                 request.command_id(),
                 request.plan_hash(),
             );
-            let before = plan_storage
-                .read_active_catalog()?
-                .ok_or_else(|| CatalogError::new(CatalogErrorKind::UnknownExecutablePlan))?;
-            if let Some(plan) = plan_cache
-                .lock()
-                .map_err(|_| CatalogError::new(CatalogErrorKind::InvalidHistoricalEvidence))?
-                .get(&reference, &before)
-            {
-                return Ok(plan);
-            }
-
-            let plan = resolve_executable_plan(&plan_storage, &reference)?;
-            // Cache only across an unchanged exact active pointer. If deployment
-            // raced resolution, this invocation may use the coherent snapshot it
-            // observed, while the next invocation must resolve against the new
-            // active lineage proof.
-            if plan_storage.read_active_catalog()?.as_ref() == Some(&before) {
-                plan_cache
-                    .lock()
-                    .map_err(|_| CatalogError::new(CatalogErrorKind::InvalidHistoricalEvidence))?
-                    .insert(reference, before, plan.clone());
-            }
-            Ok(plan)
+            resolve_executable_plan_cached(&plan_storage, &resolver_cache, &reference)
         });
 
         let module_storage = storage.clone();
@@ -539,6 +545,7 @@ impl<S: CatalogReadSource> ServerCatalogReadPort<S> {
             active_storage,
             active_cache,
             exact_contract_cache: historical,
+            executable_plan_cache: plan_cache,
             active,
             contract_version,
             executable_plan,
@@ -919,7 +926,7 @@ impl ServerAuthoritativeReadPort {
         reason = "WP-130 composition constructs this adapter after staged storage activation"
     )]
     pub(crate) fn new(
-        storage: SharedRedbOperationalPorts,
+        catalog: &ServerCatalogReadPort,
         digest_provider: Arc<dyn IdempotencyDigestProvider>,
         readable_digests: ReadableIdempotencyDigestInventory,
         database_id: DatabaseId,
@@ -927,6 +934,7 @@ impl ServerAuthoritativeReadPort {
         notifications: FirstCommitNotificationHub,
         driver: &BlockingPortDriver,
     ) -> Self {
+        let storage = catalog.active_storage.clone();
         let vector_observation_storage = storage.clone();
         let vector_observation = driver.executor(move |target| {
             follower::read_vector_observation(&vector_observation_storage, target)
@@ -1077,12 +1085,16 @@ impl ServerAuthoritativeReadPort {
         });
 
         let commit_storage = storage.clone();
-        let commit = driver.executor(move |sequence| read_commit(&commit_storage, sequence));
+        let commit_cache = Arc::clone(&catalog.executable_plan_cache);
+        let commit =
+            driver.executor(move |sequence| read_commit(&commit_storage, &commit_cache, sequence));
 
         let head_storage = storage.clone();
+        let head_cache = Arc::clone(&catalog.executable_plan_cache);
         let application_head = driver.executor(move |()| {
             scan_commits(
                 &head_storage,
+                &head_cache,
                 AuthoritativeCommitScanRequest::initial(
                     riffdb_service::PageLimit::new(1)
                         .expect("one application-head observation is bounded"),
@@ -1092,7 +1104,9 @@ impl ServerAuthoritativeReadPort {
         });
 
         let scan_storage = storage.clone();
-        let commit_scan = driver.executor(move |request| scan_commits(&scan_storage, request));
+        let scan_cache = Arc::clone(&catalog.executable_plan_cache);
+        let commit_scan =
+            driver.executor(move |request| scan_commits(&scan_storage, &scan_cache, request));
 
         let subscription =
             driver.executor(move |request: AuthoritativeCommitSubscriptionRequest| {
@@ -1886,20 +1900,23 @@ fn outcome_locator_digest(
 
 fn read_commit(
     storage: &(impl AuthoritativePointReader + CatalogRepository),
+    cache: &Mutex<ExecutablePlanView>,
     sequence: CommitSequence,
 ) -> Result<Option<AuthoritativeCommitSnapshot>, AuthoritativeReadError> {
     storage
         .read_commit(sequence)
         .map_err(map_storage_error)?
-        .map(|record| map_commit_record(storage, record))
+        .map(|record| map_commit_record(storage, cache, record))
         .transpose()
 }
 
 fn map_commit_record(
     catalog: &impl CatalogRepository,
+    cache: &Mutex<ExecutablePlanView>,
     record: StoredCommitRecordV1,
 ) -> Result<AuthoritativeCommitSnapshot, AuthoritativeReadError> {
-    let plan = resolve_executable_plan(catalog, record.plan()).map_err(map_catalog_error)?;
+    let plan =
+        resolve_executable_plan_cached(catalog, cache, record.plan()).map_err(map_catalog_error)?;
     let outcome = DeclaredOutcomeView::from_bundle(
         plan.bundle(),
         record.plan().command_id(),
@@ -1956,6 +1973,7 @@ fn map_durability(mode: DurabilityMode) -> Result<CommandDurability, Authoritati
 
 fn scan_commits(
     storage: &(impl AuthoritativeScanReader + CatalogRepository),
+    cache: &Mutex<ExecutablePlanView>,
     request: AuthoritativeCommitScanRequest,
 ) -> Result<AuthoritativeCommitPage, AuthoritativeReadError> {
     let limit = StorageScanLimit::new(request.limit().get().get())
@@ -1985,7 +2003,7 @@ fn scan_commits(
     };
     let commits = records
         .into_iter()
-        .map(|record| map_commit_record(storage, record.into_parts().0))
+        .map(|record| map_commit_record(storage, cache, record.into_parts().0))
         .collect::<Result<Vec<_>, _>>()?;
     AuthoritativeCommitPage::new(request, inclusive_upper, commits, next_after)
         .map_err(|_| AuthoritativeReadError::Integrity)
@@ -2105,6 +2123,10 @@ fn read_revoke_target(
     .map_err(|_| AuthoritativeReadError::Integrity)?;
     Ok(CapabilityRevokeTargetSnapshot::Present(Box::new(snapshot)))
 }
+
+#[cfg(test)]
+#[path = "read_adapters_commit_tests.rs"]
+mod commit_tests;
 
 #[cfg(test)]
 mod tests {
@@ -2581,7 +2603,12 @@ mod tests {
             limit: riffdb_service::PageLimit::new(5).expect("page limit"),
         };
 
-        let page = scan_commits(&EmptyCatalog, request).expect("empty commit page");
+        let page = scan_commits(
+            &EmptyCatalog,
+            &Mutex::new(ExecutablePlanView::default()),
+            request,
+        )
+        .expect("empty commit page");
 
         assert!(page.commits().is_empty());
         assert_eq!(page.next_after(), None);

@@ -103,6 +103,22 @@ validation, current authorization and terminal semantics. Automatic reconnect,
 discarded checkpoints, larger buffers or slower offered load cannot repair the
 observed availability failure.
 
+The native commit reader independently reconstructed the complete catalog
+lineage for every notification, bypassing the command-admission adapter's
+existing bounded exact-plan cache. A real catalog regression measured 17
+durable bundle reads for 17 translations of the same commit. The candidate
+shares that graph-owned cache with commit point and scan readers, checks the
+current durable pointer on every lookup, retains full cold resolution and exact
+plan identity, and does not increase the existing 4,096-plan capacity.
+The regression now loads once across the unchanged pointer. Controlled competing
+readers also load once; a raced deployment cannot publish a result under the
+wrong pointer. Historical outcome preservation, successor validation, forged
+plan refusal and absent-current-pointer refusal pass. All 25 read-adapter tests
+and scoped server Clippy pass. The complete server unit suite also passes:
+556 tests, one existing skip. This removes measured repeated native work; it
+does not establish the cause or resolution of the host buffer-pressure failure.
+A new continuing-load host probe and the complete rehearsal are still required.
+
 ### Source-receipt reclamation: deterministic starvation reproduction
 
 The failed preparation logically pruned 115,460 application sequences across

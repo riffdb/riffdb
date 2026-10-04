@@ -856,3 +856,25 @@ pages: application errors, known limitations, native findings and this handoff;
 Hazards/follow-ups: accept the reclamation amendment, resolve native starvation
 and explain live-query and backup readiness behavior before resuming campaign
 implementation. Full CI and the complete short rehearsal remain pending.
+
+The next native candidate makes authoritative commit readers use the existing
+graph-owned command-admission plan cache. A real catalog regression measured
+17 full bundle reads for 17 mappings of one commit; reuse needs one. Every
+lookup still checks the current durable active pointer, and cold or changed
+identity still requires full native validation. Controlled concurrent first
+reads and deployment races, historical outcomes, forged plans and missing
+current pointers are covered. All 25 read-adapter tests and scoped server
+Clippy pass; the complete server unit suite passes 556 tests with one existing
+skip. Notification buffers, workload rates and watch terminal behavior
+are unchanged. The host overflow remains an unresolved failure until actual
+load evidence explains it.
+
+PR note: Package WP-825 (open); Tier guarantee; Behavior: share the already
+bounded exact-plan owner with authoritative commit readers, preserving durable
+pointer qualification and full cold validation; Checks: red/green bundle-read
+regression, deterministic concurrency/deployment schedules, 25 adapter tests
+and scoped Clippy, 556 server unit tests, handbook checks; Compatibility: no
+public interface, error class, durable
+format, authority or capacity change; Updated handbook pages: native findings
+and this handoff; Hazards/follow-ups: actual required-host load verification,
+native reclamation repair, full CI and complete short rehearsal remain required.

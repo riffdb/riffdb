@@ -609,7 +609,7 @@ impl ProductionGraphBuilder {
         let reactive_modules: Arc<dyn ReactiveModuleReadPort> = catalog_adapter.clone();
         let authoritative: Arc<dyn AuthoritativeReadPort> =
             Arc::new(ServerAuthoritativeReadPort::new(
-                storage.clone(),
+                catalog_adapter.as_ref(),
                 Arc::clone(&idempotency_digests),
                 readable_idempotency_digests,
                 database_id,
