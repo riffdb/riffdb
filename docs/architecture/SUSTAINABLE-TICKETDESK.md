@@ -257,3 +257,40 @@ progress, repeated
 physical generations, and the campaign gates remain unqualified. A stale
 candidate is discarded rather than allowed to authorize deletion. No measured
 rehearsal or alpha qualification is claimed.
+
+## WP-823 population recovery measurement
+
+The explicit storage-fixture test
+`population_65536_first_successful_write_after_online_pruning_meets_60_seconds`
+seeds 65,536 distinct commands in atomic groups of 64, prunes through the online
+lane and restarts without refreshing prefix evidence or certifying a clean
+close. It measures the next successful durable command, then checks that the
+original first command's idempotent outcome survives. The final group is
+retained whole when the requested 16-sequence floor intersects it: 65,472
+sequences are pruned, rather than the incorrect initial expectation of 65,520.
+
+The release-profile run on the local development host measured readiness at
+24,549,339 microseconds and the first successful write at 24,552,101 microseconds,
+below the unchanged 60-second target. It passed all assertions. Run explicitly:
+
+```bash
+cargo test --release -p riffdb-storage-redb --all-features \
+  --test storage_recovery_matrix \
+  population_65536_first_successful_write_after_online_pruning_meets_60_seconds \
+  -- --ignored --nocapture
+```
+
+This is a storage recovery measurement, not TicketDesk or host qualification.
+The fixture marks its outbox events delivered while stopped; production delivery
+is covered separately by WP-822. The local machine has 32 CPUs, rather than the
+frozen 8-vCPU rehearsal shape. A debug-profile attempt was stopped after its
+structural audit validation exceeded the target; it remains a failed attempt,
+not release performance evidence. The separate rehearsal host must measure the
+real public workload and all required fault paths with its frozen artifacts.
+
+PR note: Package WP-823 (open); Tier guarantee; Behavior: explicit population-
+sized recovery measurement, including deferred validation and the next durable
+write. Checks: the release measurement, formatting, scoped Clippy and allowed
+paths pass. Compatibility: no production behavior, formats or interfaces change.
+Updated handbook page: this milestone handoff. Hazards/follow-ups: full CI,
+the integrated retention process-kill fixture and the real rehearsal remain open.

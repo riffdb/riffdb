@@ -996,3 +996,67 @@ fn interference_seed_delivery_resolves_stopped_retained_history() {
     assert_committed(&ports, 1);
     assert_committed(&ports, 2);
 }
+
+// req: STO-030, STO-031, STO-032, REC-001, REC-002, REC-005
+#[test]
+#[ignore = "explicit qualification-sized storage recovery measurement"]
+fn population_65536_first_successful_write_after_online_pruning_meets_60_seconds() {
+    use riffdb_storage_redb::OnlineRetentionStep;
+    const POPULATION: u64 = 65_536;
+    let path = TestDatabasePath::new("population-first-write-after-pruning");
+    prepare_command_database(&path.0);
+    let ports = open_operational(RedbStore::open(&path.0).unwrap());
+    for first in (1..=POPULATION).step_by(64) {
+        let batch = (first..=first + 63)
+            .map(command_fixture_at)
+            .collect::<Vec<_>>();
+        commit_command_group(&ports, &batch);
+    }
+    drop(ports);
+    assert_eq!(
+        riffdb_storage_redb::benchmark_support::mark_all_outbox_events_delivered_v1(&path.0)
+            .unwrap(),
+        POPULATION
+    );
+    let ports = open_operational(RedbStore::open(&path.0).unwrap());
+    let lane = ports.online_retention_lane();
+    let mut removed = 0;
+    for _ in 0..=POPULATION / 256 {
+        match lane
+            .step(NonZeroU64::new(16).unwrap(), NonZeroU64::new(256).unwrap())
+            .unwrap()
+        {
+            OnlineRetentionStep::Advanced { sequences, .. } => {
+                assert!(sequences <= 256);
+                removed += sequences;
+            }
+            OnlineRetentionStep::Held(_) => break,
+        }
+    }
+    // Atomic 64-command receipt groups retain the entire last group when
+    // the requested 16-sequence floor falls inside it.
+    assert_eq!(removed, POPULATION - 64);
+    drop(lane);
+    drop(ports);
+    // No prefix refresh or graceful close: include the deferred validation
+    // cost in the actual next durable write, rather than stopping at readiness.
+    let started = std::time::Instant::now();
+    let reopened = open_operational(RedbStore::open(&path.0).unwrap());
+    let readiness_us = started.elapsed().as_micros();
+    commit_command_group(&reopened, &[command_fixture_at(POPULATION + 1)]);
+    let first_write_us = started.elapsed().as_micros();
+    assert_committed(&reopened, POPULATION + 1);
+    assert!(matches!(
+        reopened
+            .lookup_admission(command_fixture_at(1).candidates)
+            .unwrap(),
+        AdmissionLookupResultV1::Found(_)
+    ));
+    println!(
+        "riffdb-storage-recovery-measurement-v1 population={POPULATION} pruned={removed} readiness_us={readiness_us} first_successful_write_us={first_write_us}"
+    );
+    assert!(
+        first_write_us <= 60_000_000,
+        "first successful write exceeded the frozen recovery target"
+    );
+}
