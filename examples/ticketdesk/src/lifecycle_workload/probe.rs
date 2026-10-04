@@ -313,7 +313,7 @@ impl Metrics {
                 "{{\"schema\":\"riffdb.ticketdesk-lifecycle-load-probe/v1\",",
                 "\"start_s\":{},\"end_s\":{},\"offered_commands\":{},\"offered_reads\":{},",
                 "\"completed_commands\":{},\"completed_reads\":{},",
-                "\"settled_submission_attempts\":{},\"retries\":{},",
+                "\"settled_submission_attempts\":{},\"transport_attempts\":{},\"retries\":{},",
                 "\"p95_us\":{},\"p99_us\":{},\"load_peak_in_flight\":{},",
                 "\"reserved_auxiliary_slots\":4,\"latency_overflow\":{}}}"
             ),
@@ -323,6 +323,7 @@ impl Metrics {
             duration * 400,
             self.commands,
             self.reads,
+            self.commands + self.reads + self.retries,
             self.commands + self.reads + self.retries,
             self.retries,
             self.quantile(95),

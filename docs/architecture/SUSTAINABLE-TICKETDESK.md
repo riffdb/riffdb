@@ -789,3 +789,29 @@ retention, archive or qualification guarantee changes; Updated handbook pages:
 this handoff; Hazards/follow-ups: measure the revised host run and online
 retention, finish campaign faults and current-language conformance, then pass
 the frozen short rehearsal. The 24-hour run remains unstarted.
+
+## WP-825 explicit workload transport accounting
+
+The private measured worker now submits updates through the existing native
+`RiffDbClient::execute_generated` API with one attempt. Compiler-generated V1/V2
+inputs and outcome decoding remain authoritative. Its retained-input recovery
+loop resubmits the original command identity; it does not invoke the SDK
+facade's automatic outcome lookup. Reads retain the generated named-query
+facade, which submits one query RPC. Measured update/read attempts therefore
+include every explicit retry while the original in-flight reservation remains
+held. Auxiliary consumer, watch and operator calls remain separate from offered
+load and must be counted separately by the campaign controller.
+
+The worker exposes `transport_attempts` alongside the earlier submission field.
+Historical preparations keep their original observations and accounting limits;
+the new field cannot retroactively qualify them. This change does not alter
+server recovery semantics, authorization, native SDK behavior or public
+application bindings.
+
+PR note: Package WP-825 (open); Tier guarantee; Behavior: private workload
+one-attempt native generated submission and explicit original-input recovery;
+Checks: workload semantic tests, Clippy, public TLS preparations and scoped
+acceptance; Compatibility: existing protocols and generated bindings preserved;
+Updated handbook pages: this handoff; Hazards/follow-ups: complete auxiliary
+accounting, all lifecycle actions and language conformance, then qualify the
+frozen short rehearsal before the 24-hour run.

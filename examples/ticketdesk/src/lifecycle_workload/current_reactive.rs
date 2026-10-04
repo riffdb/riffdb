@@ -75,8 +75,8 @@ fn consumer_v2() -> v2::TicketEventsConsumer {
 impl CurrentClient {
     pub(super) fn version(&self) -> u64 {
         match self {
-            Self::V1(_) => 1,
-            Self::V2(_) => 2,
+            Self::V1(_, _) => 1,
+            Self::V2(_, _) => 2,
         }
     }
 
@@ -85,14 +85,14 @@ impl CurrentClient {
         options: EventConsumerOptions,
     ) -> Result<Batch, ApplicationClientError> {
         match self {
-            Self::V1(client) => {
+            Self::V1(client, _) => {
                 let batch = client.next_ticket_events(consumer_v1(), options).await?;
                 Ok(Batch {
                     events: batch.events.into_iter().map(Delivery::V1).collect(),
                     status: batch.status,
                 })
             }
-            Self::V2(client) => {
+            Self::V2(client, _) => {
                 let batch = client.next_ticket_events(consumer_v2(), options).await?;
                 Ok(Batch {
                     events: batch.events.into_iter().map(Delivery::V2).collect(),
@@ -107,10 +107,10 @@ impl CurrentClient {
         delivery: &Delivery,
     ) -> Result<ApplicationEventMutationResult, ApplicationClientError> {
         match (self, delivery) {
-            (Self::V1(client), Delivery::V1(value)) => {
+            (Self::V1(client, _), Delivery::V1(value)) => {
                 client.ack_ticket_events(&consumer_v1(), value).await
             }
-            (Self::V2(client), Delivery::V2(value)) => {
+            (Self::V2(client, _), Delivery::V2(value)) => {
                 client.ack_ticket_events(&consumer_v2(), value).await
             }
             _ => Err(ApplicationClientError::InvalidInput),
@@ -121,8 +121,8 @@ impl CurrentClient {
         &mut self,
     ) -> Result<Option<ApplicationEventConsumerPublicStatus>, ApplicationClientError> {
         match self {
-            Self::V1(client) => client.ticket_events_status(&consumer_v1()).await,
-            Self::V2(client) => client.ticket_events_status(&consumer_v2()).await,
+            Self::V1(client, _) => client.ticket_events_status(&consumer_v1()).await,
+            Self::V2(client, _) => client.ticket_events_status(&consumer_v2()).await,
         }
     }
 
@@ -131,7 +131,7 @@ impl CurrentClient {
         cursor: Option<LiveQueryCursor>,
     ) -> Result<LiveStream, ApplicationClientError> {
         match self {
-            Self::V1(client) => client
+            Self::V1(client, _) => client
                 .watch_ticket_queue_watch(
                     v1::TicketQueueWatchParams {
                         organization_id: super::uuid(0x8001, 0),
@@ -141,7 +141,7 @@ impl CurrentClient {
                 )
                 .await
                 .map(LiveStream::V1),
-            Self::V2(client) => client
+            Self::V2(client, _) => client
                 .watch_ticket_queue_watch(
                     v2::TicketQueueWatchParams {
                         organization_id: super::uuid(0x8001, 0),

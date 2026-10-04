@@ -130,8 +130,9 @@ impl Budget {
     }
 }
 
-/// Counts generated method submissions. The SDK may additionally look up an
-/// uncertain command outcome; this count is deliberately not a wire-RPC count.
+/// Counts measured update/read submissions, each configured for one RPC.
+/// The private command assembly uses native generated decoding and explicit
+/// same-input resubmission without the SDK's automatic outcome lookup.
 pub(super) async fn run<A: Attempt>(
     attempt: &mut A,
     root: Option<&Path>,

@@ -159,3 +159,9 @@ bounded queue. A release can change only after every admitted original
 operation settles; each worker then constructs the exact generated V1 or V2
 facade with the selected protected credential. The controller must supervise
 the public deployment and observer handover separately.
+
+Measured update/read retries use one native generated transport attempt per
+submission and preserve the original input until recovery settles. Probe
+`transport_attempts` counts those workload calls, including explicit retries.
+Consumer, live-query and operator calls belong to separate auxiliary accounting.
+The generated application SDK's automatic outcome recovery remains unchanged.

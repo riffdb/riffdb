@@ -88,6 +88,14 @@ async fn connect_base(
 async fn connect_base_path(
     credential_path: &Path,
 ) -> Result<(StableApplicationClient, CallMetadata)> {
+    let (tls, metadata) = connection_configuration(credential_path)?;
+    let client = StableApplicationClient::connect_verified_tls(&tls)
+        .await
+        .map_err(|_| "connection")?;
+    Ok((client, metadata))
+}
+
+fn connection_configuration(credential_path: &Path) -> Result<(TlsClientConfig, CallMetadata)> {
     let endpoint = env::var("RIFFDB_LIFECYCLE_ENDPOINT").map_err(|_| "configuration")?;
     let ca = env::var_os("RIFFDB_LIFECYCLE_CA").ok_or("configuration")?;
     let credential = load_protected_bearer_credential(credential_path).map_err(|_| "credential")?;
@@ -101,12 +109,9 @@ async fn connect_base_path(
         NonZeroU32::new(32).ok_or("configuration")?,
     )
     .map_err(|_| "configuration")?;
-    let client = StableApplicationClient::connect_verified_tls(&tls)
-        .await
-        .map_err(|_| "connection")?;
     let metadata =
         CallMetadata::authenticated(credential).with_database(DatabaseAlias::default_alias());
-    Ok((client, metadata))
+    Ok((tls, metadata))
 }
 
 async fn connect(credential_variable: &str) -> Result<TicketDeskLifecycleClient> {

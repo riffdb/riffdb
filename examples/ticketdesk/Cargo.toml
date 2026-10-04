@@ -16,6 +16,7 @@ riffdb-outbox = { version = "0.1.0", path = "../../crates/riffdb-outbox", defaul
 riffdb-storage-api = { version = "0.1.0", path = "../../crates/riffdb-storage-api", default-features = false }
 riffdb-storage-redb = { version = "0.1.0", path = "../../crates/riffdb-storage-redb", default-features = false }
 riffdb-types = { version = "0.1.0", path = "../../crates/riffdb-types", default-features = false }
+riffdb-proto = { version = "0.1.0", path = "../../crates/riffdb-proto", default-features = false }
 tokio = { version = "=1.52.0", default-features = false, features = ["macros", "rt-multi-thread", "sync", "time"] }
 tonic = { version = "=0.14.6", default-features = false, features = ["channel"] }
 

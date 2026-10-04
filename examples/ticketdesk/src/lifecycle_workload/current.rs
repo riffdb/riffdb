@@ -1,11 +1,55 @@
 //! Private workload assembly for two exact generated application releases.
 
 use super::{Result, application as v1, application_v2 as v2};
-use riffdb_client_rust::{ApplicationClientError, AttemptBudget, TypedCommandResult};
+use riffdb_client_rust::{
+    ApplicationClientError, AttemptBudget, CallMetadata, RiffDbClient, TypedCommandResult,
+    generated::GeneratedCommand,
+};
+
+/// The public generated-command transport performs exactly one Execute RPC.
+/// Recovery belongs to the workload's retained-input loop, so an automatic
+/// outcome lookup cannot escape its accounting or in-flight reservation.
+pub(super) struct Submission {
+    client: RiffDbClient,
+    metadata: CallMetadata,
+}
+
+impl Submission {
+    async fn execute<C: GeneratedCommand>(
+        &mut self,
+        input: &C,
+    ) -> std::result::Result<TypedCommandResult<C::Outcome>, ApplicationClientError> {
+        let execution = self
+            .client
+            .execute_generated(
+                input,
+                AttemptBudget::new(1).ok_or(ApplicationClientError::InvalidInput)?,
+                &self.metadata,
+            )
+            .await?;
+        let (outcome, response) = execution.into_parts();
+        let workflow_revisions = input
+            .workflow_successor_revisions(&response)
+            .map_err(riffdb_client_rust::GeneratedExecutionError::CommandShape)?;
+        Ok(TypedCommandResult {
+            outcome,
+            commit_sequence: (response.commit_sequence != 0).then_some(response.commit_sequence),
+            contract_version: response.contract_version,
+            plan_hash: response
+                .plan_hash
+                .try_into()
+                .map_err(|_| ApplicationClientError::InvalidResponse)?,
+            replayed: response.status
+                == riffdb_proto::v1::execute_command_response::CompletionStatus::Replayed as i32,
+            outcome_uri: response.outcome_uri,
+            workflow_revisions,
+        })
+    }
+}
 
 pub(super) enum CurrentClient {
-    V1(v1::TicketDeskLifecycleClient),
-    V2(v2::TicketDeskLifecycleClient),
+    V1(v1::TicketDeskLifecycleClient, Submission),
+    V2(v2::TicketDeskLifecycleClient, Submission),
 }
 
 pub(super) async fn connect() -> Result<CurrentClient> {
@@ -29,14 +73,23 @@ pub(super) async fn connect_release(
     credential: &std::path::Path,
 ) -> Result<CurrentClient> {
     let (client, metadata) = super::connect_base_path(credential).await?;
+    let (tls, command_metadata) = super::connection_configuration(credential)?;
+    let commands = Submission {
+        client: RiffDbClient::connect_verified_tls(&tls)
+            .await
+            .map_err(|_| "connection")?,
+        metadata: command_metadata,
+    };
     let attempts = AttemptBudget::new(1).ok_or("configuration")?;
     match version {
-        1 => Ok(CurrentClient::V1(v1::TicketDeskLifecycleClient::new(
-            client, metadata, attempts,
-        ))),
-        2 => Ok(CurrentClient::V2(v2::TicketDeskLifecycleClient::new(
-            client, metadata, attempts,
-        ))),
+        1 => Ok(CurrentClient::V1(
+            v1::TicketDeskLifecycleClient::new(client, metadata, attempts),
+            commands,
+        )),
+        2 => Ok(CurrentClient::V2(
+            v2::TicketDeskLifecycleClient::new(client, metadata, attempts),
+            commands,
+        )),
         _ => Err("contract_version"),
     }
 }
@@ -47,8 +100,8 @@ impl CurrentClient {
         input: v1::GetTicketParams,
     ) -> std::result::Result<v1::GetTicketResult, ApplicationClientError> {
         match self {
-            Self::V1(client) => client.get_ticket(input).await,
-            Self::V2(client) => {
+            Self::V1(client, _) => client.get_ticket(input).await,
+            Self::V2(client, _) => {
                 let result = client
                     .get_ticket(v2::GetTicketParams {
                         organization_id: input.organization_id,
@@ -84,10 +137,10 @@ impl CurrentClient {
     ) -> std::result::Result<TypedCommandResult<v1::UpdateTicketOutcome>, ApplicationClientError>
     {
         match self {
-            Self::V1(client) => client.update_ticket(input).await,
-            Self::V2(client) => {
-                let result = client
-                    .update_ticket(v2::UpdateTicketInput {
+            Self::V1(_, commands) => commands.execute(&input).await,
+            Self::V2(_, commands) => {
+                let result = commands
+                    .execute(&v2::UpdateTicketInput {
                         idempotency_key: input.idempotency_key,
                         organization_id: input.organization_id,
                         ticket_id: input.ticket_id,
@@ -120,10 +173,10 @@ impl CurrentClient {
 
 pub(super) async fn smoke() -> Result<()> {
     let mut client = connect().await?;
-    if !matches!(&client, CurrentClient::V2(_)) {
+    if !matches!(&client, CurrentClient::V2(_, _)) {
         return Err("successor_required");
     }
-    let CurrentClient::V2(generated) = &mut client else {
+    let CurrentClient::V2(generated, _) = &mut client else {
         return Err("successor_required");
     };
     let denied = generated
