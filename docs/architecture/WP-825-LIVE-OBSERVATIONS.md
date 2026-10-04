@@ -64,6 +64,10 @@ SDK's strict validation must remain intact. Scope approval permits diagnosis,
 regression tests and repairs within accepted decisions; it does not accept a
 new storage, ordering, authorization or interface guarantee.
 
+The approved repair scope also includes the proposed ADR-0268 record needed to
+review the source-proof lifecycle change. Listing its path permits proposal
+and review; it does not accept the record or authorize its implementation.
+
 ### Revocation interoperability: repaired; real TLS preparation passes
 
 The real capability-rotation preparation refuses both old-bearer reads and
