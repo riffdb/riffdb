@@ -16,4 +16,9 @@ preparation_root="$(mktemp -d "${TMPDIR:-/tmp}/riffdb-lifecycle-preparation.XXXX
     --server "$task_target_dir/debug/riffdbd" \
     --cli "$task_target_dir/debug/riffdb" --worker "$task_target_dir/debug/lifecycle" \
     --driver "$task_target_dir/debug/riffdb-driverd" --observe --additive-deploy
+for preparation_fault in graceful_restart process_kill; do
+    ./scripts/ticketdesk-lifecycle-smoke --root "$preparation_root/$preparation_fault" \
+        --server "$task_target_dir/debug/riffdbd" --cli "$task_target_dir/debug/riffdb" \
+        --worker "$task_target_dir/debug/lifecycle" --restart-recovery "$preparation_fault"
+done
 rm -rf -- "$preparation_root"

@@ -47,6 +47,13 @@ independent campaign reconciliation, and real rehearsal
 remain WP-825 work. No preparation output is a qualifying campaign receipt.
 See the [milestone handoff](../../../docs/architecture/SUSTAINABLE-TICKETDESK.md).
 
+Use `--restart-recovery graceful_restart` or `--restart-recovery process_kill`
+in a fresh preparation root to interrupt an already connected generated client.
+The preparation proves a failed submission, then requires the same command input
+and key to settle, replay exactly, and reconcile state within sixty seconds.
+These modes run separately from population and observer preparation. Their
+private observations are not campaign receipts or pruning-recovery evidence.
+
 A fresh full-population preparation can also run a short offered-load probe:
 
 ```bash

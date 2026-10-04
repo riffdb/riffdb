@@ -659,3 +659,36 @@ binding; Updated handbook pages: this handoff; Hazards/follow-ups: exercise
 handover under online retention, finish original-identity fault recovery and all
 campaign actions, then freeze and pass the short rehearsal. The 24-hour run
 remains unstarted.
+
+## WP-825 original-input interruption recovery
+
+The load worker now resolves interruptions with the original generated command
+input and idempotency key. Recovery requires a private declared restart, process
+kill or restore interval and a native retry/uncertainty disposition. Permission,
+input, protocol and response failures remain immediate refusals. One operation
+keeps its original release and admission slot throughout recovery; its deadline
+is sixty seconds with at most 240 generated submissions. Clearing a fault marker
+cannot abandon an already interrupted identity or extend its deadline.
+
+The integrated TLS preparation now also stops and restarts the real daemon,
+and separately kills and reopens it. Each check first connects the generated
+client, proves an actual failed submission while the daemon is absent, resumes
+that same client, and requires a successful write, exact original-key replay
+and named-state reconciliation within sixty seconds of the interruption.
+These are small preparation databases with retained history; they do not prove
+recovery after campaign pruning or a committed command losing its reply.
+
+Load observations count settled generated submissions and their retries. The
+native SDK can additionally look up an uncertain outcome; the submission count
+is not represented as an exact wire-RPC count. Campaign accounting must preserve
+that distinction. The only added dependency is the existing first-party error
+crate, so the worker uses its canonical recovery guidance directly.
+
+PR note: Package WP-825 (open); Tier guarantee; Behavior: bounded original-input
+interruption recovery and actual daemon restart/kill preparation; Checks:
+Rust semantic/budget cases, Clippy, integrated Rust/TypeScript handover plus
+two interruption preparations, and scoped acceptance; Compatibility: generated
+input, release, idempotency and authority boundaries preserved; Updated handbook
+pages: this handoff; Hazards/follow-ups: complete independent command/archive
+witnesses, campaign fault orchestration and pruning measurements before the
+frozen short rehearsal. No 24-hour run has started.

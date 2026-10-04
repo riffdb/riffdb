@@ -236,6 +236,7 @@ struct Job {
 struct Metrics {
     commands: u64,
     reads: u64,
+    retries: u64,
     total_commands: u64,
     total_reads: u64,
     latencies: Vec<u32>,
@@ -247,6 +248,7 @@ impl Metrics {
         Self {
             commands: 0,
             reads: 0,
+            retries: 0,
             total_commands: 0,
             total_reads: 0,
             latencies: vec![0; LATENCY_CEILING + 1],
@@ -304,7 +306,7 @@ impl Metrics {
                 "{{\"schema\":\"riffdb.ticketdesk-lifecycle-load-probe/v1\",",
                 "\"start_s\":{},\"end_s\":{},\"offered_commands\":{},\"offered_reads\":{},",
                 "\"completed_commands\":{},\"completed_reads\":{},",
-                "\"settled_submission_attempts\":{},\"retries\":0,",
+                "\"settled_submission_attempts\":{},\"retries\":{},",
                 "\"p95_us\":{},\"p99_us\":{},\"load_peak_in_flight\":{},",
                 "\"reserved_auxiliary_slots\":4,\"latency_overflow\":{}}}"
             ),
@@ -314,7 +316,8 @@ impl Metrics {
             duration * 400,
             self.commands,
             self.reads,
-            self.commands + self.reads,
+            self.commands + self.reads + self.retries,
+            self.retries,
             self.quantile(95),
             self.quantile(99),
             peak,
@@ -323,6 +326,7 @@ impl Metrics {
         io::stdout().flush().map_err(|_| "observation_output")?;
         self.commands = 0;
         self.reads = 0;
+        self.retries = 0;
         self.latencies.fill(0);
         self.overflow = 0;
         Ok(())
@@ -373,6 +377,7 @@ pub(super) async fn run() -> Result<()> {
         let admission = Arc::clone(&admission);
         let peak = Arc::clone(&peak);
         let offered_commands = Arc::clone(&offered_commands);
+        let control = control.clone();
         workers.spawn(async move {
             let mut release = admission.release()?;
             let mut client = current::connect_release(release.version, &release.credential).await?;
@@ -408,29 +413,41 @@ pub(super) async fn run() -> Result<()> {
                             .await?;
                     release = next_release;
                 }
-                match job.operation {
+                let retries = match job.operation {
                     Operation::Update(ordinal) => {
-                        let changed = client
-                            .update_ticket(model::update(ordinal)?)
-                            .await
-                            .map_err(|_| "load_command")?;
+                        let (changed, retries, recovering) = super::recovery::run(
+                            &mut super::recovery::Update {
+                                client: &mut client,
+                                input: model::update(ordinal)?,
+                            },
+                            control.as_deref(),
+                        )
+                        .await?;
                         model::validate_update(ordinal, &changed.outcome)?;
                         if changed.commit_sequence.is_none() {
                             return Err("missing_commit");
                         }
-                        if changed.replayed {
+                        if changed.replayed && !recovering {
                             return Err("probe_requires_fresh_updates");
                         }
+                        retries
                     }
                     Operation::Read(ordinal) => {
                         let ticket = ordinal % model::POPULATION;
-                        let read = client
-                            .get_ticket(GetTicketParams {
-                                organization_id: uuid(0x8001, ticket / TICKETS_PER_ORGANIZATION),
-                                ticket_id: uuid(0x8004, ticket),
-                            })
-                            .await
-                            .map_err(|_| "load_read")?;
+                        let (read, retries, _) = super::recovery::run(
+                            &mut super::recovery::ReadTicket {
+                                client: &mut client,
+                                input: GetTicketParams {
+                                    organization_id: uuid(
+                                        0x8001,
+                                        ticket / TICKETS_PER_ORGANIZATION,
+                                    ),
+                                    ticket_id: uuid(0x8004, ticket),
+                                },
+                            },
+                            control.as_deref(),
+                        )
+                        .await?;
                         let GetTicketResult::Found(found) = read else {
                             return Err("state_reconciliation");
                         };
@@ -439,12 +456,16 @@ pub(super) async fn run() -> Result<()> {
                             ticket,
                             &found.ticket,
                         )?;
+                        retries
                     }
-                }
-                metrics
-                    .lock()
-                    .map_err(|_| "observation_state")?
-                    .record(job.operation, job.offered.elapsed())?;
+                };
+                let mut observation = metrics.lock().map_err(|_| "observation_state")?;
+                observation.record(job.operation, job.offered.elapsed())?;
+                observation.retries = observation
+                    .retries
+                    .checked_add(u64::from(retries))
+                    .ok_or("sample_bound")?;
+                drop(observation);
                 drop(active);
             }
         });

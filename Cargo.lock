@@ -2356,6 +2356,7 @@ dependencies = [
  "riffdb-client-rust",
  "riffdb-config",
  "riffdb-contract-compiler",
+ "riffdb-errors",
  "tokio",
  "tonic",
 ]

@@ -46,6 +46,8 @@ mod model;
 mod observe;
 #[path = "../lifecycle_workload/probe.rs"]
 mod probe;
+#[path = "../lifecycle_workload/recovery.rs"]
+mod recovery;
 
 type Result<T> = std::result::Result<T, &'static str>;
 const ORGANIZATIONS: u64 = 64;
@@ -62,6 +64,7 @@ async fn main() {
         Some("descriptor") => descriptor(),
         Some("observe") => observe::run().await,
         Some("successor-smoke") => current::smoke().await,
+        Some("recovery-smoke") => recovery::smoke().await,
         _ => Err("arguments"),
     };
     if let Err(code) = result {
