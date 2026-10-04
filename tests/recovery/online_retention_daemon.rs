@@ -13,8 +13,8 @@ use riffdb_client_rust::PublicErrorKind;
 
 /// Sequences the lane keeps below the head.
 const RETAINED_SEQUENCES: u64 = 4;
-/// Commands committed before the kill.
-const COMMANDS_BEFORE_KILL: u64 = 40;
+/// Bounded public command population large enough to checkpoint an extent.
+const MAX_COMMANDS_BEFORE_KILL: u64 = 32_768;
 /// Commands committed after the restart.
 const COMMANDS_AFTER_RESTART: u64 = 8;
 const RETENTION_DOCUMENT: &str =
@@ -87,8 +87,37 @@ pub(super) async fn run_online_retention_kill_case() -> TestResult<()> {
         parse_ready_address(&process.wait_for_readiness(READY_PREFIX, PROCESS_START_TIMEOUT)?)?;
     let mut client = connect(address).await?;
     bootstrap_and_deploy(&mut client, &retained_bootstrap, &authenticated).await?;
-    for index in 0..COMMANDS_BEFORE_KILL {
+    let sealed_prefix = format!(
+        "{}.riffjournal.sealed.",
+        fixture
+            .database_path()
+            .file_name()
+            .ok_or_else(|| test_failure("database name"))?
+            .to_string_lossy()
+    );
+    let directory = fixture
+        .database_path()
+        .parent()
+        .ok_or_else(|| test_failure("database parent"))?;
+    let mut commands_before_kill = 0;
+    for index in 0..MAX_COMMANDS_BEFORE_KILL {
         commit_create(&mut client, index, &authenticated).await?;
+        commands_before_kill = index + 1;
+        // ADR-0263 permits pruning only sealed extents. Observe the actual
+        // background checkpoint publication, rather than expect a tiny
+        // workload below its threshold to become eligible after a timeout.
+        if commands_before_kill % 64 == 0
+            && fs::read_dir(directory)?.take(64).any(|entry| {
+                entry.is_ok_and(|entry| {
+                    entry
+                        .file_name()
+                        .to_string_lossy()
+                        .starts_with(&sealed_prefix)
+                })
+            })
+        {
+            break;
+        }
     }
     if let Err(error) = await_pruned_scan(&mut client, &authenticated).await {
         drop(client);
@@ -133,7 +162,7 @@ pub(super) async fn run_online_retention_kill_case() -> TestResult<()> {
             "a pruned command's retry did not answer its original commit",
         ));
     }
-    for index in COMMANDS_BEFORE_KILL..COMMANDS_BEFORE_KILL + COMMANDS_AFTER_RESTART {
+    for index in commands_before_kill..commands_before_kill + COMMANDS_AFTER_RESTART {
         commit_create(&mut client, index, &authenticated).await?;
     }
     await_pruned_scan(&mut client, &authenticated).await?;
@@ -142,7 +171,7 @@ pub(super) async fn run_online_retention_kill_case() -> TestResult<()> {
 
     // Offline status validates the watermark and tombstone chain the online
     // lane wrote; it never ran an offline prune.
-    let head = COMMANDS_BEFORE_KILL + COMMANDS_AFTER_RESTART;
+    let head = commands_before_kill + COMMANDS_AFTER_RESTART;
     let status = riffdb_storage_redb::RedbOfflineRetention::bind(fixture.database_path())
         .status()
         .map_err(|error| test_failure(format!("offline retention status: {error:?}")))?;

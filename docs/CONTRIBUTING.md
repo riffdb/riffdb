@@ -367,6 +367,15 @@ Do not hand-edit `docs/reference/CLI.md` or `docs/assets/*.svg`. Regenerate with
 
 ### Local checks
 
+`./scripts/recovery_full` runs the real-daemon crash and restart matrix in the
+release profile. Its online-retention case uses bounded public commands until
+an actual background checkpoint seals history, then verifies pruning, a process
+kill, original-outcome replay and resumed writes. Release optimization matches
+the shipping recovery path; readiness and RPC deadlines are unchanged.
+`./scripts/recovery_all` uses the same release matrix alongside the ordinary
+testkit and offline-maintenance checks. These checks are separate from the
+24-hour TicketDesk rehearsal.
+
 Install and verify the pinned local tools before running the handbook check:
 
 ```bash

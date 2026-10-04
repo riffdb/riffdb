@@ -294,3 +294,27 @@ write. Checks: the release measurement, formatting, scoped Clippy and allowed
 paths pass. Compatibility: no production behavior, formats or interfaces change.
 Updated handbook page: this milestone handoff. Hazards/follow-ups: full CI,
 the integrated retention process-kill fixture and the real rehearsal remain open.
+
+The integrated process-kill fixture now offers at most 32,768 public commands
+and checks at most 64 directory entries per 64-command batch for an actual
+sealed checkpoint extent. Its former 40-command seed stayed below the sealing
+threshold and correctly remained ineligible for pruning. No forced checkpoint,
+offline prune or production threshold change is used. The complete real-daemon
+recovery matrix passes in release mode, including online pruning, a genuine
+process kill, retained original-outcome replay and resumed durable writes.
+Both recovery scripts select the shipping release profile; their existing
+readiness and RPC deadlines remain unchanged.
+
+Release execution also identified a race in the uncertain-replay fixture: it
+expected its first projection request to be Ready even while the derived
+generation was Building. The fixture now observes typed Building/Rebuilding
+responses until the exact required frontier arrives within its existing
+20-second deadline; failure and invalid responses still refuse the test.
+All six scoped static checks pass, including the handbook and named artifacts.
+The debug readiness failure and the first release projection assertion remain
+failed attempts. Full CI and qualification remain open.
+
+D003 decisions: seed through bounded public commands until ordinary checkpoint
+publication, run the real-process matrix in the shipping profile, and synchronize
+projection checks through typed frontier observations rather than execution speed.
+Updated handbook pages: this milestone handoff and contributing instructions.

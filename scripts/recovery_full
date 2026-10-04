@@ -4,4 +4,5 @@ set -eu
 repository_root=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
 cd "$repository_root"
 
-cargo test -p riffdb-testkit-server --test full_recovery_matrix -- --ignored
+# Exercise the real daemon with shipping optimization and unchanged deadlines.
+cargo test --release -p riffdb-testkit-server --test full_recovery_matrix -- --ignored

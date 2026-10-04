@@ -943,16 +943,29 @@ async fn run_response_loss_case(loss: ResponseLoss) -> TestResult<()> {
         ));
     }
 
-    let projection = bounded_rpc(
-        "projection frontier after uncertain replay",
-        recovered.query_projection(projection_request()?, &authenticated),
-    )
-    .await?;
-    let Some(v1::query_projection_response::Result::Ready(ready)) = projection.result else {
-        return Err(test_failure(
-            "projection did not reach the uncertain commit frontier",
-        ));
-    };
+    let ready = timeout(RPC_TIMEOUT, async {
+        loop {
+            let projection = recovered
+                .query_projection(projection_request()?, &authenticated)
+                .await?;
+            match projection.result {
+                Some(v1::query_projection_response::Result::Ready(ready)) => return Ok(ready),
+                Some(v1::query_projection_response::Result::WaitTimedOut(_)) => {}
+                Some(v1::query_projection_response::Result::Degraded(degraded))
+                    if matches!(
+                        degraded.reason.and_then(|reason| reason.reason),
+                        Some(
+                            v1::projection_unavailable_reason::Reason::Building(_)
+                                | v1::projection_unavailable_reason::Reason::Rebuilding(_)
+                        )
+                    ) => {}
+                _ => return Err(test_failure("projection recovery failed closed")),
+            }
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .map_err(|_| test_failure("projection did not reach the uncertain commit frontier"))??;
     if frontier_sequence(ready.frontier.as_ref()) != Some(2) {
         return Err(test_failure(
             "projection frontier did not account for both commits",
