@@ -1113,6 +1113,11 @@ impl ExactTextRuntime {
                 .map_err(|_| ExactTextProjectionPortError::Integrity)?;
             let (ordinal, observed) = registries.next_access(self.cursor_clock.as_ref())?;
             registries.retire_superseded_capability(&key)?;
+            registries.retire_superseded_plan(
+                &key,
+                request.query().representative_program(),
+                observed,
+            )?;
             let slots = &mut registries.slots;
             if let Some(entry) = slots.get_mut(&key) {
                 if !entry.slot.registration.matches(request) {
@@ -1232,6 +1237,11 @@ impl ExactTextRuntime {
                 .map_err(|_| ExactTextProjectionPortError::Integrity)?;
             let (ordinal, observed) = registries.next_access(self.cursor_clock.as_ref())?;
             registries.retire_superseded_capability(&key)?;
+            registries.retire_superseded_plan(
+                &key,
+                request.query().representative_program(),
+                observed,
+            )?;
             let slots = &mut registries.predicate_slots;
             if let Some(entry) = slots.get_mut(&key) {
                 if !entry.slot.registration.matches(request) {
@@ -1355,6 +1365,11 @@ impl ExactTextRuntime {
                 .map_err(|_| ExactTextProjectionPortError::Integrity)?;
             let (ordinal, observed) = registries.next_access(self.cursor_clock.as_ref())?;
             registries.retire_superseded_capability(&key)?;
+            registries.retire_superseded_plan(
+                &key,
+                request.query().representative_program(),
+                observed,
+            )?;
             let slots = &mut registries.nullable_predicate_slots;
             if let Some(entry) = slots.get_mut(&key) {
                 if !entry.slot.registration.matches(request) {
@@ -1522,6 +1537,7 @@ impl ExactTextRuntime {
                 .map_err(|_| ExactTextProjectionPortError::Integrity)?;
             let (ordinal, observed) = registries.next_access(self.cursor_clock.as_ref())?;
             registries.retire_superseded_capability(&key)?;
+            registries.retire_superseded_plan(&key, request.program(), observed)?;
             let slots = &mut registries.long_pattern_slots;
             if let Some(entry) = slots.get_mut(&key) {
                 if !entry.slot.registration.matches(request) {
@@ -1617,6 +1633,11 @@ impl ExactTextRuntime {
                 .map_err(|_| ExactTextProjectionPortError::Integrity)?;
             let (ordinal, observed) = registries.next_access(self.cursor_clock.as_ref())?;
             registries.retire_superseded_capability(&key)?;
+            registries.retire_superseded_plan(
+                &key,
+                request.query().representative_program(),
+                observed,
+            )?;
             let slots = &mut registries.tokenized_slots;
             if let Some(entry) = slots.get_mut(&key) {
                 if !entry.slot.registration.matches(request) {

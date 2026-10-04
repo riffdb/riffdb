@@ -653,7 +653,8 @@ Provider policy reads, observation copies and evaluation work now reserve
 capacity on the same captured source; resulting proofs retain their charge
 through final destruction.
 
-Qualified plan supersession remains in progress. This implementation recycles
-eligible registrations but does not yet establish the complete provider memory
-bound or qualification readiness. See the
+A strictly newer contract can retire eligible provider state for the same named
+operation and exact partition/authority identity after pins and minimum retention
+clear. Historical explicit queries can rebuild with a fresh owner. Full CI and
+lifecycle qualification remain pending. See the
 [implementation progress](architecture/WP-824-IMPLEMENTATION.md).

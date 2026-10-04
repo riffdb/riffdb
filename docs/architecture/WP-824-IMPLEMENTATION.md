@@ -1,5 +1,39 @@
 # WP-824 implementation progress
 
+## Qualified contract-plan retirement
+
+A newly authorized registration qualifies an older cache owner only when its
+partition, role, capability identity and revision match exactly, the declared
+operation name and contract lineage match, the contract version strictly
+increases and the exact bundle changes. Different module or plan hashes alone
+do not establish succession. Unnamed queries do not qualify.
+
+All five families perform this borrowed comparison under the existing discovery
+lock. Minimum retention must expire and the existing owner must atomically prove
+it has no operation, worker or epoch pin before closing admission. Background
+cleanup uses the existing exact artifact binding. No catalog pointer or durable
+identity is introduced. Historical explicit queries remain callable after cache
+retirement and receive a new owner through normal Building admission.
+
+The isolated all-family test verifies minimum retention, pinned protection,
+eventual retirement, cleanup and historical rebuilding. Its valid baseline with
+retirement calls disabled fails at the missing retirement assertion; enabling
+the calls passes. The version-2 fixture uses actual successor compilation and
+complete predecessor lineage, preserving normal field-presence proofs. Separate
+checks reject mismatched partition, authority, operation, lineage, equal or older
+versions, and unchanged bundles.
+
+D003 decision: qualify strictly newer contract versions of the same exact named
+operation; treat historical callability independently from cache eligibility.
+Do not infer ordering from hashes or disable historical explicit modules.
+
+PR note: Package WP-824; Tier guarantee; Behavior: eligible exact contract-plan
+retirement; Compatibility: preserved pins, cursor retention, historical query
+callability, authorization and durable formats; updated configuration handbook;
+Checks: all 554 selected server tests pass, including the process crash oracle;
+all six scoped static checks pass. Hazards/follow-ups: full CI and lifecycle
+qualification remain open.
+
 ## Admitted provider policy execution
 
 Provider policy observations now read from the same captured immutable root

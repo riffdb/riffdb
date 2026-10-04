@@ -42,6 +42,9 @@ struct Fixture {
 }
 impl Fixture {
     fn new() -> Self {
+        Self::for_version(1)
+    }
+    fn for_version(version: u64) -> Self {
         let root = tempfile::tempdir().unwrap();
         let clock = Arc::new(Clock(AtomicU64::new(0)));
         let runtime = ExactTextRuntime::open(
@@ -72,8 +75,18 @@ impl Fixture {
       retained_generations 8
     )"#,
         );
-        let bundle = riffdb_contract_compiler::compile_contract_source(&source).unwrap();
-        let module = QueryModule::compile(
+        let parent = riffdb_contract_compiler::compile_contract_source(&source).unwrap();
+        let mut lineage = vec![parent];
+        if version == 2 {
+            let source = source.replace(
+                "contract TextIndexShape version 1",
+                "contract TextIndexShape version 2",
+            );
+            lineage.push(
+                riffdb_contract_compiler::compile_contract_successor(&source, &lineage[0]).unwrap(),
+            );
+        }
+        let module = QueryModule::compile_with_lineage(
             QueryModuleCandidate::new(
                 QueryModuleName::new("retirement_fixture").unwrap(),
                 QueryModuleVersion::new(1).unwrap(),
@@ -149,7 +162,7 @@ query PatternDocuments($org_id: Document.org_id, $needle: Document.title,
                 ],
             )
             .unwrap(),
-            &bundle,
+            &lineage,
         )
         .unwrap();
         Self {
@@ -1139,6 +1152,95 @@ fn background_cleanup_releases_retired_artifacts_without_evicting_idle_active_ow
                 ),
                 (2, 0, 1)
             );
+        },
+    );
+}
+
+#[test]
+fn exact_newer_contract_plan_retirement_preserves_pins_retention_and_historical_rebuilds() {
+    isolated(
+        "exact_text_adapter::retirement_tests::exact_newer_contract_plan_retirement_preserves_pins_retention_and_historical_rebuilds",
+        || {
+            for family in [
+                ProviderFamily::Text,
+                ProviderFamily::Predicate,
+                ProviderFamily::NullablePredicate,
+                ProviderFamily::Tokenized,
+                ProviderFamily::LongPattern,
+            ] {
+                let older = Fixture::new();
+                let mut newer = Fixture::for_version(2);
+                newer.runtime = older.runtime.clone();
+                newer.clock = older.clock.clone();
+                older.register(family, 1);
+                let owner = {
+                    let registries = older.runtime.registries.lock().unwrap();
+                    match family {
+                        ProviderFamily::Text => {
+                            registries.slots.values().next().unwrap().slot.owner.clone()
+                        }
+                        ProviderFamily::Predicate => registries
+                            .predicate_slots
+                            .values()
+                            .next()
+                            .unwrap()
+                            .slot
+                            .owner
+                            .clone(),
+                        ProviderFamily::NullablePredicate => registries
+                            .nullable_predicate_slots
+                            .values()
+                            .next()
+                            .unwrap()
+                            .slot
+                            .owner
+                            .clone(),
+                        ProviderFamily::Tokenized => registries
+                            .tokenized_slots
+                            .values()
+                            .next()
+                            .unwrap()
+                            .slot
+                            .owner
+                            .clone(),
+                        ProviderFamily::LongPattern => registries
+                            .long_pattern_slots
+                            .values()
+                            .next()
+                            .unwrap()
+                            .slot
+                            .owner
+                            .clone(),
+                    }
+                };
+                newer.register(family, 1);
+                assert!(owner.is_active().unwrap());
+                let protected = owner.pin().unwrap();
+                older.clock.0.store(301, Ordering::SeqCst);
+                newer.register(family, 1);
+                assert!(owner.is_active().unwrap());
+                assert!(!older.runtime.cleanup_retired_one().unwrap());
+                drop(protected);
+                older.clock.0.store(302, Ordering::SeqCst);
+                newer.register(family, 1);
+                assert!(!owner.is_active().unwrap());
+                assert!(older.runtime.cleanup_retired_one().unwrap());
+                assert!(!older.runtime.cleanup_retired_one().unwrap());
+                // Historical explicit query identities remain callable; retired
+                // cache entries can rebuild without reviving their old owner.
+                older.register(family, 1);
+                assert!(!owner.is_active().unwrap());
+                assert_eq!(
+                    older
+                        .runtime
+                        .ownership_graph
+                        .budget
+                        .observation()
+                        .unwrap()
+                        .active_owners,
+                    2
+                );
+            }
         },
     );
 }

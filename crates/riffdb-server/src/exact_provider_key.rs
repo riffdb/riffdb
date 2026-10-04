@@ -16,6 +16,11 @@ impl SlotKey {
             && self.0[97..113] == prior.0[97..113]
             && self.0[113..121] > prior.0[113..121]
     }
+    /// Plan churn cannot qualify across a different partition, policy or
+    /// capability revision. Different hashes alone do not establish succession.
+    pub(super) fn same_plan_scope(&self, prior: &Self) -> bool {
+        self.0[..32] != prior.0[..32] && self.0[32..] == prior.0[32..]
+    }
     pub(super) fn new(
         plan: riffdb_types::QueryPlanHash,
         partition: PartitionKeyHash,
@@ -52,6 +57,24 @@ impl std::fmt::Debug for SlotKey {
 mod tests {
     // req: OQ-040
     use super::*;
+    #[test]
+    fn plan_scope_requires_equal_partition_role_and_complete_capability_identity() {
+        let capability = CapabilityId::from_unix_milliseconds_and_random(7, [0x44; 10]).unwrap();
+        let make = |plan, partition, role, revision| {
+            SlotKey::new(
+                riffdb_types::QueryPlanHash::from_bytes([plan; 32]),
+                PartitionKeyHash::from_bytes([partition; 32]),
+                riffdb_types::ApplicationRoleHash::from_bytes([role; 32]),
+                Some((capability, NonZeroU64::new(revision).unwrap())),
+            )
+        };
+        let prior = make(1, 2, 3, 4);
+        assert!(make(2, 2, 3, 4).same_plan_scope(&prior));
+        assert!(!prior.same_plan_scope(&prior));
+        assert!(!make(2, 3, 3, 4).same_plan_scope(&prior));
+        assert!(!make(2, 2, 4, 4).same_plan_scope(&prior));
+        assert!(!make(2, 2, 3, 5).same_plan_scope(&prior));
+    }
     #[test]
     fn capability_supersession_requires_same_authority_and_strictly_newer_revision() {
         let capability = CapabilityId::from_unix_milliseconds_and_random(7, [0x44; 10]).unwrap();

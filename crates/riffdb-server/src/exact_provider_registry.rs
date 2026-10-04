@@ -113,6 +113,34 @@ impl ExactProviderRegistries {
         retire!(long_pattern_slots);
         Ok(())
     }
+    /// Retire only an eligible cache owner for the same named operation in a
+    /// strictly newer contract. Historical query identities remain callable.
+    pub(super) fn retire_superseded_plan(
+        &self,
+        incoming: &SlotKey,
+        program: &riffdb_query_ir::QueryAccessProgramV1,
+        observed: CursorTick,
+    ) -> Result<(), ExactTextProjectionPortError> {
+        macro_rules! retire {
+            ($map:ident, $($access:tt)+) => {
+                for (key, entry) in &self.$map {
+                    let prior: &riffdb_query_ir::QueryAccessProgramV1 = &entry.slot.registration.$($access)+;
+                    if incoming.same_plan_scope(key)
+                        && plan_is_strict_successor(program, prior)
+                        && entry.access.retention_expired_at(observed)? {
+                        entry.slot.owner.retire_if_unpinned()
+                            .map_err(|_| ExactTextProjectionPortError::Unavailable)?;
+                    }
+                }
+            };
+        }
+        retire!(slots, query.representative_program());
+        retire!(predicate_slots, query.representative_program());
+        retire!(nullable_predicate_slots, query.representative_program());
+        retire!(tokenized_slots, query.representative_program());
+        retire!(long_pattern_slots, program);
+        Ok(())
+    }
     /// Admitted fixed-capacity inventory holds no pins. Each worker captures one live
     /// owner immediately before its work, leaving unrelated owners eligible.
     pub(super) fn registered_keys(
@@ -513,5 +541,64 @@ mod tests {
             Err(ExactTextProjectionPortError::Unavailable)
         );
         assert_eq!(registry.ordinal, 2);
+    }
+}
+
+fn plan_is_strict_successor(
+    incoming: &riffdb_query_ir::QueryAccessProgramV1,
+    prior: &riffdb_query_ir::QueryAccessProgramV1,
+) -> bool {
+    contract_plan_is_strict_successor(
+        incoming.contract(),
+        incoming.name(),
+        prior.contract(),
+        prior.name(),
+    )
+}
+
+fn contract_plan_is_strict_successor(
+    incoming: &riffdb_query_ir::ExactContractIdentity,
+    incoming_name: Option<&str>,
+    prior: &riffdb_query_ir::ExactContractIdentity,
+    prior_name: Option<&str>,
+) -> bool {
+    incoming_name.is_some()
+        && incoming_name == prior_name
+        && incoming.lineage() == prior.lineage()
+        && incoming.version() > prior.version()
+        && incoming.bundle_hash() != prior.bundle_hash()
+}
+
+#[cfg(test)]
+mod plan_successor_tests {
+    use super::*;
+    // req: OQ-040, PRJ-004
+    #[test]
+    fn contract_plan_succession_requires_named_operation_lineage_newer_version_and_distinct_bundle()
+    {
+        let identity = |lineage: &str, version, seed| {
+            riffdb_query_ir::ExactContractIdentity::new(
+                riffdb_types::ContractLineage::new(lineage).unwrap(),
+                riffdb_types::ContractVersion::new(version).unwrap(),
+                riffdb_types::ContractBundleHash::from_bytes([seed; 32]),
+            )
+        };
+        let prior = identity("plan", 1, 1);
+        let newer = identity("plan", 2, 2);
+        let qualifies = |incoming: &riffdb_query_ir::ExactContractIdentity, name| {
+            contract_plan_is_strict_successor(incoming, name, &prior, Some("Read"))
+        };
+        assert!(qualifies(&newer, Some("Read")));
+        assert!(!qualifies(&newer, None));
+        assert!(!qualifies(&newer, Some("Other")));
+        assert!(!qualifies(&identity("other", 2, 2), Some("Read")));
+        assert!(!qualifies(&identity("plan", 1, 2), Some("Read")));
+        assert!(!qualifies(&identity("plan", 2, 1), Some("Read")));
+        assert!(!contract_plan_is_strict_successor(
+            &prior,
+            Some("Read"),
+            &newer,
+            Some("Read")
+        ));
     }
 }
