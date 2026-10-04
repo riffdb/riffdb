@@ -2367,12 +2367,6 @@ fn resolve_field_id(
 }
 
 /// Reads the current application head via a bounded empty-or-one-row commit scan.
-pub(crate) fn read_application_head(
-    storage: &(impl AuthoritativeScanReader + ?Sized),
-) -> Result<FrontierPosition, ColumnarPortError> {
-    read_application_head_after(storage, None)
-}
-
 /// Reads the current application head, resuming the probe after `observed`.
 ///
 /// The returned frontier is independent of `observed`: `scan_commits` fixes the

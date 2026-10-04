@@ -1,5 +1,46 @@
 # WP-824 implementation progress
 
+## Admitted source receipt and pin validation
+
+Provider replay now admits native shallow receipt vectors, mutation-fold trees,
+key/value buffers, encoding/hash work and census scratch before decoding.
+Successful immutable receipts settle their final native capacity charge; aliases
+retain it through final destruction. Failed admission leaves the cursor position
+unchanged and fused. Provider-opened cursors retain their bounded source-vector
+metadata charge and reject unguarded advancement or a foreign accounting graph.
+
+Opening source pins, checking resume/interior positions, validating terminal
+roots and checking a retained fence observation all use admitted receipt work.
+Ordinary readers keep their original behavior. Archived stubs resolve the same
+retained frame hash and physical custody checks: resolver/path inventories and
+physical buffers are admitted before I/O, then borrowed frame counts admit native
+frame and receipt-fold construction before decoding. Proven retained frames skip
+command-segment count re-derivation exactly as the existing resolver does; their
+mutation values remain opaque. Journal decoding also rejects impossible mutation
+counts before allocating the declared vector. No durable bytes change.
+
+Provider head observation now admits a small snapshot descriptor and reads the
+existing immutable frontier directly, which is the same metadata used for a
+commit scan's inclusive upper fence. Captured workers check that frontier before
+pin validation. Delta history-point hashing separately reserves its encoding
+buffer after an admitted receipt has settled.
+
+Tests cover saturation without progress, fused refusal, native/final-alias
+accounting, large payloads, exact end under pressure, foreign pools, archived
+byte equality, oversized placements, hostile counts and checked overflow. The
+initial 1,693-test selection passed 1,688 tests. Four server tests failed and one
+timed out because an attempted above-head scan violates exact-end page framing.
+The implementation now reads the immutable frontier directly; all 551 selected
+server tests passed on rerun, including the daemon crash oracle. The storage API
+and redb selections had already passed. All seven scoped static checks passed.
+
+PR note: Package WP-824; Tier guarantee; Behavior: admitted source receipt and
+pin validation, retained cursor/receipt ownership and bounded frontier observation;
+Compatibility: unchanged receipts, hash/framing/custody checks, source ordering,
+query/authorization meanings and application interfaces; Handbook: Configuration;
+Hazards/follow-ups: policy execution admission, qualified plan retirement, full CI
+and measured lifecycle qualification remain open.
+
 ## Exact catalog capture from ordinary metadata publication
 
 Primary providers now probe the catalog adapter's existing ordinary-service

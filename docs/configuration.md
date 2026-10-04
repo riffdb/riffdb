@@ -643,8 +643,13 @@ ownership before capture and refuses when that publication is absent, stale or
 contended; providers cannot cold-decode a private catalog. Retained physical
 source descriptors retain their metadata charge through their final capture.
 
-Receipt and policy execution accounting and qualified plan supersession
-remain in progress. This implementation recycles
+Provider receipt replay and source-pin validation reserve native construction
+work before decoding, including archived history stubs. Retained cursors and
+receipts carry their charges through destruction; pressure refuses without
+advancing a receipt cursor. Provider head checks read the immutable snapshot
+frontier without decoding a command record.
+
+Policy execution accounting and qualified plan supersession remain in progress. This implementation recycles
 eligible registrations but does not yet establish the complete provider memory
 bound or qualification readiness. See the
 [implementation progress](architecture/WP-824-IMPLEMENTATION.md).

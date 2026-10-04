@@ -133,6 +133,7 @@ fn cursor(
         sources: suffix.sources().unwrap(),
         current,
         failure: None,
+        _provider_metadata: None,
     }
 }
 
@@ -415,4 +416,205 @@ fn receipt_source_bounds_refuse_before_linking_or_advancing_the_private_tail() {
         assert_eq!(suffix.history, Some(anchor));
         assert!(suffix.head.is_none());
     }
+}
+
+// req: OQ-040, PRJ-004
+#[test]
+fn provider_receipt_admission_refuses_before_progress_and_preserves_final_capture() {
+    use riffdb_types::exact_provider_budget_v1::{EXACT_PROVIDER_BUDGET_BYTES, ProviderBudget};
+    let (_scope, store, anchor) = fixture();
+    let root = Arc::new(CheckpointRoot::new(
+        store.shared.database.begin_read().unwrap(),
+        1,
+    ));
+    let mut suffix = ChangelogSuffix::from_checkpoint(&root).unwrap();
+    let (frame, receipt, mutations) = source(anchor, None, Some(&vec![b'x'; 262144]));
+    let history = anchor.advance(&receipt).unwrap();
+    suffix
+        .append(
+            Some((receipt.binding(), history)),
+            receipt.attribution(),
+            mutations,
+            frame.encode().unwrap().as_bytes().len(),
+        )
+        .unwrap();
+    let budget = ProviderBudget::new();
+    let mut denied = cursor(Arc::clone(&root), &suffix, anchor.tail());
+    let before = budget.observation().unwrap();
+    let pressure = budget
+        .reserve(EXACT_PROVIDER_BUDGET_BYTES - before.fixed_owner_bytes)
+        .unwrap();
+    let full = budget.observation().unwrap();
+    assert!(denied.next_receipt_admitted_v1(&budget).is_err());
+    assert_eq!(denied.current, anchor.tail());
+    assert_eq!(budget.observation().unwrap(), full);
+    drop(pressure);
+    assert!(
+        denied.next_receipt_admitted_v1(&budget).is_err(),
+        "admission failure stays fused"
+    );
+    let mut accepted = cursor(root, &suffix, anchor.tail());
+    let admitted = accepted.next_receipt_admitted_v1(&budget).unwrap().unwrap();
+    assert_eq!(&**admitted, &receipt);
+    assert_eq!(accepted.current, history.tail());
+    assert!(
+        accepted
+            .next_receipt_admitted_v1(&budget)
+            .unwrap()
+            .is_none()
+    );
+    let alias = admitted.clone();
+    let charged = budget.observation().unwrap().owned_bytes;
+    assert!(charged > 262144);
+    drop(admitted);
+    drop(accepted);
+    assert_eq!(budget.observation().unwrap().owned_bytes, charged);
+    drop(alias);
+    assert_eq!(budget.observation().unwrap().owned_bytes, 0);
+    assert_eq!(budget.observation().unwrap().reserved_bytes, 0);
+}
+
+// req: OQ-040, PRJ-004
+#[test]
+fn provider_archived_receipt_admission_preserves_proven_frame_bytes_and_refuses_pressure() {
+    use riffdb_types::exact_provider_budget_v1::{EXACT_PROVIDER_BUDGET_BYTES, ProviderBudget};
+    let (scope, _store, anchor) = fixture();
+    let (frame, expected, _) = source(anchor, None, Some(&vec![b'q'; 262144]));
+    let frame = frame.with_changelog(Some(crate::journal::FrameChangelogBinding::new(
+        &expected.binding(),
+        anchor.lineage().catalog_digest(),
+    )));
+    let encoded = frame.encode().unwrap();
+    let placement = crate::journal::frame_placement_after(0, &encoded).unwrap();
+    let database_path = scope.join("provider-archive-source.redb");
+    let path = crate::journal::journal_path(&database_path);
+    let header =
+        crate::journal::JournalFileHeader::new(anchor.lineage().database_id(), None, [0; 32]);
+    let lane = crate::journal::JournalLane::open(&path, &header).unwrap();
+    let generation = lane.generation();
+    lane.submit(encoded).unwrap().wait().unwrap();
+    drop(lane);
+    let _resolver = crate::history_stub::HistoryResolver::register(
+        anchor.lineage().database_id(),
+        &database_path,
+        Arc::new(crate::media::RealJournalMedia),
+    );
+    let stub = crate::history_stub::StubLocator {
+        database_id: anchor.lineage().database_id(),
+        generation,
+        placement,
+    }
+    .receipt_stub()
+    .unwrap();
+    let budget = ProviderBudget::new();
+    let before = budget.observation().unwrap();
+    let pressure = budget
+        .reserve(EXACT_PROVIDER_BUDGET_BYTES - before.fixed_owner_bytes)
+        .unwrap();
+    let full = budget.observation().unwrap();
+    assert!(
+        matches!(crate::history_stub::provider_receipt_from_value_v1(&stub, &budget), Err(error) if error.kind() == StorageErrorKind::Unavailable)
+    );
+    assert_eq!(budget.observation().unwrap(), full);
+    drop(pressure);
+    let candidate = crate::history_stub::provider_receipt_from_value_v1(&stub, &budget).unwrap();
+    assert_eq!(
+        candidate.receipt.encode().unwrap(),
+        crate::history_stub::resolve_history_value(&stub)
+            .unwrap()
+            .as_ref()
+    );
+    assert_eq!(candidate.receipt, expected);
+    let native = riffdb_types::OwnedCapacityInspectionV1::inspect(&candidate.receipt).unwrap();
+    assert!(native.shared_allocations().is_empty());
+    assert!(native.unshared_bytes() < budget.observation().unwrap().reserved_bytes);
+    drop(native);
+    let retained = candidate
+        .work
+        .settle_owned_value(candidate.receipt)
+        .unwrap();
+    assert!(budget.observation().unwrap().owned_bytes > 262144);
+    drop(retained);
+    assert_eq!(budget.observation().unwrap().owned_bytes, 0);
+    assert_eq!(budget.observation().unwrap().reserved_bytes, 0);
+    let mut corrupt_stub = crate::history_stub::HistoryStub::decode(&stub)
+        .unwrap()
+        .unwrap();
+    corrupt_stub.placement.padded_len = usize::MAX;
+    assert!(crate::history_stub::provider_receipt_from_stub_v1(&corrupt_stub, &budget).is_err());
+    assert_eq!(budget.observation().unwrap().reserved_bytes, 0);
+}
+
+// req: OQ-040, PRJ-004
+#[test]
+fn provider_receipt_framing_bound_checks_hostile_counts_and_overflow_without_copying() {
+    let (_scope, _store, anchor) = fixture();
+    let (frame, receipt, _) = source(anchor, None, Some(b"receipt"));
+    let encoded = frame.encode().unwrap();
+    let mut hostile_frame = encoded.as_bytes().to_vec();
+    hostile_frame[68..72].copy_from_slice(&u32::MAX.to_be_bytes());
+    let footer = hostile_frame.len() - 48;
+    let hash = crate::journal::content_digest(&hostile_frame[..footer]);
+    hostile_frame[footer + 16..].copy_from_slice(&hash);
+    assert!(matches!(
+        JournalFrame::decode(&hostile_frame),
+        Err(crate::journal::JournalCodecError::InvalidValue)
+    ));
+    let mut bytes = receipt.encode().unwrap();
+    assert!(AuthoritativeTransactionV3::provider_decode_work_bound_v1(&bytes).is_ok());
+    bytes[120..124].copy_from_slice(&u32::MAX.to_be_bytes());
+    assert!(AuthoritativeTransactionV3::provider_decode_work_bound_v1(&bytes).is_err());
+    assert!(AuthoritativeTransactionV3::provider_decode_work_bound_v1(&bytes[..127]).is_err());
+    assert!(riffdb_storage_api::provider_receipt_work_bound_v1(usize::MAX, usize::MAX).is_err());
+}
+
+// req: OQ-040, PRJ-004
+#[test]
+fn provider_receipt_open_admission_accounts_cursor_data_and_refuses_unguarded_progress() {
+    use riffdb_types::exact_provider_budget_v1::{EXACT_PROVIDER_BUDGET_BYTES, ProviderBudget};
+    let (_scope, store, anchor) = fixture();
+    let root = Arc::new(CheckpointRoot::new(
+        store.shared.database.begin_read().unwrap(),
+        1,
+    ));
+    let access = RedbReadAccess::Current(root);
+    let budget = ProviderBudget::new();
+    let mut guarded = open_admitted_v1(&access, anchor.lineage(), anchor.tail(), &budget).unwrap();
+    assert!(budget.observation().unwrap().owned_bytes >= 1024 * 1024);
+    assert!(guarded.next_receipt().is_err());
+    assert!(guarded.next_receipt_admitted_v1(&budget).is_err());
+    drop(guarded);
+    assert_eq!(budget.observation().unwrap().reserved_bytes, 0);
+    let mut foreign_capture =
+        open_admitted_v1(&access, anchor.lineage(), anchor.tail(), &budget).unwrap();
+    let foreign = ProviderBudget::new();
+    let before_foreign = foreign.observation().unwrap();
+    assert!(foreign_capture.next_receipt_admitted_v1(&foreign).is_err());
+    assert_eq!(foreign.observation().unwrap(), before_foreign);
+    assert!(foreign_capture.next_receipt_admitted_v1(&budget).is_err());
+    drop(foreign_capture);
+    let mut complete = open_admitted_v1(&access, anchor.lineage(), anchor.tail(), &budget).unwrap();
+    let before = budget.observation().unwrap();
+    let pressure = budget
+        .reserve(
+            EXACT_PROVIDER_BUDGET_BYTES
+                - before.fixed_owner_bytes
+                - before.reserved_bytes
+                - before.owned_bytes,
+        )
+        .unwrap();
+    let full = budget.observation().unwrap();
+    assert!(
+        complete
+            .next_receipt_admitted_v1(&budget)
+            .unwrap()
+            .is_none()
+    );
+    assert_eq!(budget.observation().unwrap(), full);
+    assert!(open_admitted_v1(&access, anchor.lineage(), anchor.tail(), &budget).is_err());
+    assert_eq!(budget.observation().unwrap(), full);
+    drop(pressure);
+    drop(complete);
+    assert_eq!(budget.observation().unwrap().reserved_bytes, 0);
+    assert_eq!(budget.observation().unwrap().owned_bytes, 0);
 }

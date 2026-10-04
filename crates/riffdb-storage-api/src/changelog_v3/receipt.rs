@@ -324,3 +324,8 @@ impl std::fmt::Debug for AuthoritativeTransactionV3 {
         formatter.write_str("AuthoritativeTransactionV3([redacted])")
     }
 }
+
+riffdb_types::inspect_owned_capacity_struct_v1!(AuthoritativeTransactionV3 {
+    owned: [mutations],
+    inline: [binding, attribution]
+});

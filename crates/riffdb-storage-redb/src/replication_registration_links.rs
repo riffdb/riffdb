@@ -172,6 +172,15 @@ pub(crate) fn validate_point(
     history: History,
     receipts: &impl ReadableTable<&'static [u8], &'static [u8]>,
 ) -> Result<(), StorageError> {
+    validate_point_with_admission(point, history, receipts, None)
+}
+
+pub(crate) fn validate_point_with_admission(
+    point: Point,
+    history: History,
+    receipts: &impl ReadableTable<&'static [u8], &'static [u8]>,
+    budget: Option<&riffdb_types::exact_provider_budget_v1::ProviderBudget>,
+) -> Result<(), StorageError> {
     if point.sequence() < history.minimum_resume().sequence() {
         return if point.precedes_or_equals(history.minimum_resume()) {
             Ok(())
@@ -186,6 +195,13 @@ pub(crate) fn validate_point(
         .get(point.sequence().get().to_be_bytes().as_slice())
         .map_err(precommit_storage_error)?
         .ok_or_else(corrupt)?;
+    if let Some(budget) = budget {
+        let candidate = crate::history_stub::provider_receipt_from_value_v1(row.value(), budget)?;
+        if Point::from_receipt(&candidate.receipt).map_err(|_| corrupt())? != point {
+            return Err(corrupt());
+        }
+        return Ok(());
+    }
     let receipt = AuthoritativeTransactionV3::decode(&crate::history_stub::resolve_history_value(
         row.value(),
     )?)

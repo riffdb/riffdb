@@ -260,3 +260,53 @@ impl std::fmt::Debug for AuthoritativeMutationAccumulatorV3 {
         formatter.write_str("AuthoritativeMutationAccumulatorV3([redacted])")
     }
 }
+
+// First-party admission only: native shallow receipt/fold workspace, no schema decode.
+#[doc(hidden)]
+pub fn provider_receipt_work_bound_v1(
+    count: usize,
+    payload_bytes: usize,
+) -> Result<u64, riffdb_types::exact_provider_budget_v1::BudgetUnavailable> {
+    use riffdb_types::exact_provider_budget_v1::BudgetUnavailable;
+    use std::mem::{align_of, size_of};
+    let nodes = count
+        .min(crate::MAX_CHANGELOG_FRAME_ENTRIES)
+        .checked_add(1)
+        .ok_or(BudgetUnavailable)?;
+    let node = size_of::<(AuthoritativeNamespaceV1, Box<[u8]>)>()
+        .checked_add(size_of::<NetTransition>())
+        .and_then(|bytes| bytes.checked_mul(11))
+        .and_then(|bytes| {
+            bytes.checked_add(256 + align_of::<NetTransition>() + align_of::<Box<[u8]>>())
+        })
+        .ok_or(BudgetUnavailable)?;
+    let tree = nodes
+        .checked_mul(node)
+        .and_then(|bytes| bytes.checked_mul(2))
+        .ok_or(BudgetUnavailable)?;
+    let vectors = count
+        .checked_add(4)
+        .and_then(|count| count.checked_mul(size_of::<AuthoritativeMutationV3>()))
+        .and_then(|bytes| bytes.checked_mul(8))
+        .ok_or(BudgetUnavailable)?;
+    let buffers = count
+        .checked_add(4)
+        .and_then(|count| count.checked_mul(16 * (256 + 2 * align_of::<u8>())))
+        .ok_or(BudgetUnavailable)?;
+    let bytes = payload_bytes
+        .checked_mul(16)
+        .and_then(|bytes| bytes.checked_add(tree))
+        .and_then(|bytes| bytes.checked_add(vectors))
+        .and_then(|bytes| bytes.checked_add(buffers))
+        .and_then(|bytes| bytes.checked_add(256 * 1024))
+        .and_then(|bytes| u64::try_from(bytes).ok())
+        .and_then(|bytes| {
+            bytes.checked_add(riffdb_types::OWNED_CAPACITY_INSPECTION_SCRATCH_BYTES_V1)
+        })
+        .ok_or(BudgetUnavailable)?;
+    Ok(bytes)
+}
+riffdb_types::inspect_owned_capacity_struct_v1!(AuthoritativeMutationV3 {
+    owned: [key, value],
+    inline: [namespace, expected_hash]
+});

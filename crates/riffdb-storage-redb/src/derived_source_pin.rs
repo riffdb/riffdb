@@ -125,6 +125,44 @@ impl RedbDerivedSourcePin {
         })
     }
 
+    pub(crate) fn capture_admitted_v1(
+        access: RedbReadAccess,
+        pins: Arc<DerivedSourcePins>,
+        budget: &riffdb_types::exact_provider_budget_v1::ProviderBudget,
+    ) -> Result<Self, ChangelogCursorErrorV3> {
+        let history = crate::changelog_v3_cursor::history_admitted_v1(&access, budget)?;
+        // Attached follower roots may legitimately retain only the exact applied
+        // receipt hash and no SourceOnly history rows. `history` has already
+        // validated that special root shape. It supports a full snapshot rebuild,
+        // but cannot prove deltas; a missing row in nonempty history still fails.
+        if let RedbReadAccess::Current(root) | RedbReadAccess::Durable(root) = &access {
+            use redb::ReadableTableMetadata;
+            if root
+                .open_table(crate::changelog_v3_activation::HISTORY)
+                .map_err(crate::error::table_error)?
+                .is_empty()
+                .map_err(crate::error::precommit_storage_error)?
+            {
+                return Err(storage_error(StorageErrorKind::HistoryPruned).into());
+            }
+        }
+        // Also prove the exact terminal receipt against its advertised hash and
+        // frontier, rather than upgrading an advisory observation into proof.
+        drop(crate::changelog_v3_cursor::open_admitted_v1(
+            &access,
+            history.lineage(),
+            history.tail(),
+            budget,
+        )?);
+        let position = pins.register(history.lineage(), history.tail())?;
+        Ok(Self {
+            access,
+            history,
+            position,
+            pins,
+        })
+    }
+
     /// Exact immutable lineage and retained history observed by this view.
     #[must_use]
     pub const fn history(&self) -> ChangelogHistoryStateV3 {
@@ -151,6 +189,25 @@ impl RedbDerivedSourcePin {
         crate::changelog_v3_cursor::open(&self.access, self.history.lineage(), previous.position())
     }
 
+    #[doc(hidden)]
+    pub fn receipts_after_admitted_v1(
+        &self,
+        previous: &Self,
+        budget: &riffdb_types::exact_provider_budget_v1::ProviderBudget,
+    ) -> Result<Box<dyn ChangelogReceiptCursorV3>, ChangelogCursorErrorV3> {
+        if self.history.lineage() != previous.history.lineage()
+            || !Arc::ptr_eq(&self.pins, &previous.pins)
+        {
+            return Err(ChangelogCursorErrorV3::ForeignLineage);
+        }
+        crate::changelog_v3_cursor::open_admitted_v1(
+            &self.access,
+            self.history.lineage(),
+            previous.position(),
+            budget,
+        )
+    }
+
     /// Retains a proved interior position after a bounded worker pass. The
     /// caller cannot invent an intermediate application frontier inside a receipt.
     pub fn at(&self, point: ChangelogHistoryPointV3) -> Result<Self, ChangelogCursorErrorV3> {
@@ -158,6 +215,26 @@ impl RedbDerivedSourcePin {
             &self.access,
             self.history.lineage(),
             point,
+        )?);
+        let position = self.pins.register(self.history.lineage(), point)?;
+        Ok(Self {
+            access: self.access.clone(),
+            history: self.history,
+            position,
+            pins: Arc::clone(&self.pins),
+        })
+    }
+    #[doc(hidden)]
+    pub fn at_admitted_v1(
+        &self,
+        point: ChangelogHistoryPointV3,
+        budget: &riffdb_types::exact_provider_budget_v1::ProviderBudget,
+    ) -> Result<Self, ChangelogCursorErrorV3> {
+        drop(crate::changelog_v3_cursor::open_admitted_v1(
+            &self.access,
+            self.history.lineage(),
+            point,
+            budget,
         )?);
         let position = self.pins.register(self.history.lineage(), point)?;
         Ok(Self {

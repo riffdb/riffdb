@@ -36,7 +36,9 @@ pub use history::{
     ChangelogHistoryPointV3, ChangelogHistoryStateV3, ChangelogLineageV3,
     ReplicationFollowerStateV3,
 };
-pub use mutation::{AuthoritativeMutationAccumulatorV3, AuthoritativeMutationV3};
+pub use mutation::{
+    AuthoritativeMutationAccumulatorV3, AuthoritativeMutationV3, provider_receipt_work_bound_v1,
+};
 pub use receipt::{
     AuthoritativeTransactionBindingV3, AuthoritativeTransactionV3, ChangelogAttributionV3,
 };

@@ -219,13 +219,27 @@ pub(crate) fn validate_fence_receipt(
     record: &StoredPrimaryFenceAdministrationV1,
     receipts: &impl ReadableTable<&'static [u8], &'static [u8]>,
 ) -> Result<(), StorageError> {
+    validate_fence_receipt_with_admission(history, record, receipts, None)
+}
+
+pub(crate) fn validate_fence_receipt_with_admission(
+    history: ChangelogHistoryStateV3,
+    record: &StoredPrimaryFenceAdministrationV1,
+    receipts: &impl ReadableTable<&'static [u8], &'static [u8]>,
+    budget: Option<&riffdb_types::exact_provider_budget_v1::ProviderBudget>,
+) -> Result<(), StorageError> {
     if record.lineage() != history.lineage()
         || Some(record.administration_sequence()) > history.tail().frontier().administration()
         || !record.observed().precedes_or_equals(history.tail())
     {
         return Err(corrupt());
     }
-    crate::replication_registration_links::validate_point(record.observed(), history, receipts)?;
+    crate::replication_registration_links::validate_point_with_admission(
+        record.observed(),
+        history,
+        receipts,
+        budget,
+    )?;
     let expected = receipt::reconstruct(record)?;
     let row = receipts
         .get(expected.binding().sequence.get().to_be_bytes().as_slice())

@@ -118,6 +118,28 @@ impl AuthoritativeTransactionV3 {
         )
     }
 
+    /// Borrowed framing admission for first-party provider replay. Ordinary
+    /// decoding still owns checksum, binding, namespace and canonical checks.
+    #[doc(hidden)]
+    pub fn provider_decode_work_bound_v1(bytes: &[u8]) -> Result<u64, ChangelogV3Error> {
+        if bytes.len() < HEADER_BYTES + CHECKSUM_BYTES || bytes.len() > MAX_RECEIPT_BYTES {
+            return Err(ChangelogV3Error::InvalidEncoding);
+        }
+        let count = usize::try_from(u32::from_be_bytes(
+            bytes[120..124]
+                .try_into()
+                .map_err(|_| ChangelogV3Error::InvalidEncoding)?,
+        ))
+        .map_err(|_| ChangelogV3Error::LimitExceeded)?;
+        if count > MAX_CHANGELOG_FRAME_ENTRIES
+            || count > (bytes.len() - HEADER_BYTES - CHECKSUM_BYTES) / 45
+        {
+            return Err(ChangelogV3Error::InvalidEncoding);
+        }
+        super::mutation::provider_receipt_work_bound_v1(count, bytes.len())
+            .map_err(|_| ChangelogV3Error::LimitExceeded)
+    }
+
     /// Exact receipt checksum used as the next row's prior-history hash.
     pub fn history_hash(&self) -> Result<[u8; 32], ChangelogV3Error> {
         let bytes = self.encode()?;

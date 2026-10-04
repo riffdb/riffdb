@@ -95,6 +95,22 @@ impl RedbOwnedSnapshot {
             .ok_or_else(|| storage_error(StorageErrorKind::Unavailable))?;
         crate::RedbDerivedSourcePin::capture(self.access.clone(), std::sync::Arc::clone(pins))
     }
+    /// First-party provider pin validation admits receipt/root workspace first.
+    #[doc(hidden)]
+    pub fn pin_derived_source_admitted_v1(
+        &self,
+        budget: &riffdb_types::exact_provider_budget_v1::ProviderBudget,
+    ) -> Result<crate::RedbDerivedSourcePin, riffdb_storage_api::ChangelogCursorErrorV3> {
+        let pins = self
+            .source_pins
+            .as_ref()
+            .ok_or_else(|| storage_error(StorageErrorKind::Unavailable))?;
+        crate::RedbDerivedSourcePin::capture_admitted_v1(
+            self.access.clone(),
+            std::sync::Arc::clone(pins),
+            budget,
+        )
+    }
 }
 
 impl OwnedSnapshotReader for RedbOperationalPorts {

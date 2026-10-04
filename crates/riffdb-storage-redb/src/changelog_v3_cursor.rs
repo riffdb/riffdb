@@ -225,6 +225,19 @@ pub(crate) fn history(
     }
 }
 
+pub(crate) fn history_admitted_v1(
+    access: &RedbReadAccess,
+    budget: &riffdb_types::exact_provider_budget_v1::ProviderBudget,
+) -> Result<ChangelogHistoryStateV3, ChangelogCursorErrorV3> {
+    match access {
+        RedbReadAccess::Current(root) | RedbReadAccess::Durable(root) => Ok(
+            crate::changelog_v3_roots::read_checkpoint_roots_admitted_v1(root, budget)?
+                .ok_or_else(corrupt)?,
+        ),
+        RedbReadAccess::Composite(_) => history(access),
+    }
+}
+
 pub(crate) fn open(
     access: &RedbReadAccess,
     lineage: ChangelogLineageV3,
@@ -260,9 +273,66 @@ pub(crate) fn open(
         sources,
         current: after,
         failure: None,
+        _provider_metadata: None,
     };
     let receipt = cursor.read_receipt(after.sequence())?;
     if ChangelogHistoryPointV3::from_receipt(&receipt).map_err(value_error)? != after {
+        return Err(ChangelogCursorErrorV3::InvalidPosition);
+    }
+    Ok(Box::new(cursor))
+}
+
+pub(crate) fn open_admitted_v1(
+    access: &RedbReadAccess,
+    lineage: ChangelogLineageV3,
+    after: ChangelogHistoryPointV3,
+    budget: &riffdb_types::exact_provider_budget_v1::ProviderBudget,
+) -> Result<Box<dyn ChangelogReceiptCursorV3>, ChangelogCursorErrorV3> {
+    // The existing 65,536-source suffix ceiling bounds the new Arc-vector.
+    let metadata_bytes = MAX_JOURNAL_SUFFIX_TRANSITIONS
+        .checked_add(4)
+        .and_then(|count| count.checked_mul(std::mem::size_of::<Arc<Source>>() * 2))
+        .and_then(|bytes| bytes.checked_add(32 * 1024))
+        .and_then(|bytes| u64::try_from(bytes).ok())
+        .ok_or_else(|| storage_error(StorageErrorKind::Unavailable))?;
+    let metadata = budget
+        .reserve(metadata_bytes)
+        .and_then(|work| work.commit())
+        .map_err(|_| storage_error(StorageErrorKind::Unavailable))?;
+    let history = history_admitted_v1(access, budget)?;
+    let (root, sources) = match access {
+        RedbReadAccess::Current(root) | RedbReadAccess::Durable(root) => {
+            (Arc::clone(root), Vec::new())
+        }
+        RedbReadAccess::Composite(view) => (
+            view.checkpoint_root_shared(),
+            view.changelog_suffix().sources()?,
+        ),
+    };
+    if lineage.database_id() != history.lineage().database_id()
+        || lineage.history_incarnation() != history.lineage().history_incarnation()
+    {
+        return Err(ChangelogCursorErrorV3::ForeignLineage);
+    }
+    if lineage.leadership_epoch() != history.lineage().leadership_epoch() {
+        return Err(ChangelogCursorErrorV3::StaleEpoch);
+    }
+    if after.sequence() < history.minimum_resume().sequence() {
+        return Err(storage_error(StorageErrorKind::HistoryPruned).into());
+    }
+    if after.sequence() > history.tail().sequence() {
+        return Err(ChangelogCursorErrorV3::InvalidPosition);
+    }
+    let cursor = ReceiptCursor {
+        root,
+        history,
+        sources,
+        current: after,
+        failure: None,
+        _provider_metadata: Some(metadata),
+    };
+    let receipt = cursor.read_receipt_candidate_admitted_v1(after.sequence(), budget)?;
+    if ChangelogHistoryPointV3::from_receipt(&receipt.receipt).map_err(value_error)? != after {
         return Err(ChangelogCursorErrorV3::InvalidPosition);
     }
     Ok(Box::new(cursor))
@@ -274,7 +344,11 @@ struct ReceiptCursor {
     sources: Vec<Arc<Source>>,
     current: ChangelogHistoryPointV3,
     failure: Option<ChangelogCursorErrorV3>,
+    // Last: cursor/source-vector data is destroyed before provider metadata admission.
+    _provider_metadata: Option<Arc<riffdb_types::exact_provider_budget_v1::OwnershipCharge>>,
 }
+
+use crate::history_stub::ProviderReceiptCandidate;
 
 impl ReceiptCursor {
     fn read_receipt(
@@ -317,6 +391,91 @@ impl ReceiptCursor {
         Ok(receipt)
     }
 
+    fn read_receipt_candidate_admitted_v1(
+        &self,
+        sequence: ChangelogTransactionSequence,
+        budget: &riffdb_types::exact_provider_budget_v1::ProviderBudget,
+    ) -> Result<ProviderReceiptCandidate, ChangelogCursorErrorV3> {
+        let unavailable = || storage_error(StorageErrorKind::Unavailable);
+        let (receipt, work) = if let Ok(index) = self
+            .sources
+            .binary_search_by_key(&sequence, |source| source.binding.sequence)
+        {
+            let source = &self.sources[index];
+            let bytes = riffdb_storage_api::provider_receipt_work_bound_v1(
+                source.mutations.len(),
+                source.encoded_bytes,
+            )
+            .map_err(|_| unavailable())?;
+            let work = budget.reserve(bytes).map_err(|_| unavailable())?;
+            let receipt = self.read_receipt(sequence)?;
+            (receipt, work)
+        } else {
+            let table = self.root.open_table(HISTORY).map_err(table_error)?;
+            let value = table
+                .get(sequence.get().to_be_bytes().as_slice())
+                .map_err(precommit_storage_error)?
+                .ok_or_else(corrupt)?;
+            let candidate =
+                crate::history_stub::provider_receipt_from_value_v1(value.value(), budget)?;
+            (candidate.receipt, candidate.work)
+        };
+        let candidate = ProviderReceiptCandidate { receipt, work };
+        if candidate.receipt.binding().sequence != sequence
+            || candidate.receipt.binding().database_id != self.history.lineage().database_id()
+            || candidate.receipt.binding().history_incarnation
+                != self.history.lineage().history_incarnation()
+        {
+            return Err(corrupt().into());
+        }
+        Ok(candidate)
+    }
+
+    fn advance_admitted_v1(
+        &mut self,
+        budget: &riffdb_types::exact_provider_budget_v1::ProviderBudget,
+    ) -> Result<
+        Option<
+            Arc<
+                riffdb_types::exact_provider_budget_v1::ProviderAllocation<
+                    AuthoritativeTransactionV3,
+                >,
+            >,
+        >,
+        ChangelogCursorErrorV3,
+    > {
+        if self.current.sequence() == self.history.tail().sequence() {
+            if self.current != self.history.tail() {
+                return Err(corrupt().into());
+            }
+            return Ok(None);
+        }
+        let sequence = self.current.sequence().checked_next().ok_or_else(corrupt)?;
+        let candidate = self.read_receipt_candidate_admitted_v1(sequence, budget)?;
+        let before = ChangelogHistoryStateV3::new(
+            self.history.lineage(),
+            self.history.anchor(),
+            self.current,
+            self.history.minimum_resume(),
+        )
+        .map_err(value_error)?;
+        let after = before
+            .advance(&candidate.receipt)
+            .map_err(value_error)?
+            .tail();
+        if after.sequence() != sequence
+            || (sequence == self.history.tail().sequence() && after != self.history.tail())
+        {
+            return Err(corrupt().into());
+        }
+        let receipt = candidate
+            .work
+            .settle_owned_value(candidate.receipt)
+            .map_err(|_| storage_error(StorageErrorKind::Unavailable))?;
+        self.current = after;
+        Ok(Some(receipt))
+    }
+
     fn advance(&mut self) -> Result<Option<AuthoritativeTransactionV3>, ChangelogCursorErrorV3> {
         if self.current.sequence() == self.history.tail().sequence() {
             if self.current != self.history.tail() {
@@ -352,10 +511,44 @@ impl ChangelogReceiptCursorV3 for ReceiptCursor {
     fn next_receipt(
         &mut self,
     ) -> Result<Option<AuthoritativeTransactionV3>, ChangelogCursorErrorV3> {
+        if self._provider_metadata.is_some() && self.failure.is_none() {
+            self.failure = Some(storage_error(StorageErrorKind::Unavailable).into());
+        }
         if let Some(error) = &self.failure {
             return Err(error.clone());
         }
         let result = self.advance();
+        if let Err(error) = &result {
+            self.failure = Some(error.clone());
+        }
+        result
+    }
+    fn next_receipt_admitted_v1(
+        &mut self,
+        budget: &riffdb_types::exact_provider_budget_v1::ProviderBudget,
+    ) -> Result<
+        Option<
+            Arc<
+                riffdb_types::exact_provider_budget_v1::ProviderAllocation<
+                    AuthoritativeTransactionV3,
+                >,
+            >,
+        >,
+        ChangelogCursorErrorV3,
+    > {
+        if let Some(error) = &self.failure {
+            return Err(error.clone());
+        }
+        if self
+            ._provider_metadata
+            .as_ref()
+            .is_some_and(|owner| !owner.belongs_to(budget))
+        {
+            let error: ChangelogCursorErrorV3 = storage_error(StorageErrorKind::Unavailable).into();
+            self.failure = Some(error.clone());
+            return Err(error);
+        }
+        let result = self.advance_admitted_v1(budget);
         if let Err(error) = &result {
             self.failure = Some(error.clone());
         }

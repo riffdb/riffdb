@@ -59,7 +59,7 @@ impl Delta {
         {
             return Err(RebuildFailure::Integrity);
         }
-        let mut cursor = match next.receipts_after(prior) {
+        let mut cursor = match next.receipts_after_admitted_v1(prior, &captured.budget) {
             Ok(cursor) => cursor,
             Err(ChangelogCursorErrorV3::Storage(error))
                 if error.kind() == StorageErrorKind::HistoryPruned =>
@@ -102,7 +102,7 @@ impl Delta {
         for _ in 0..MAX_RECEIPTS {
             captured.ensure_active()?;
             let Some(receipt) = cursor
-                .next_receipt()
+                .next_receipt_admitted_v1(&captured.budget)
                 .map_err(|error| cursor_failure(error, plan.generation))?
             else {
                 break;
@@ -203,6 +203,15 @@ impl Delta {
             if population.len() > maximum {
                 return Err(RebuildFailure::Capacity(plan.generation));
             }
+            let hash_bytes = u64::try_from(charge)
+                .ok()
+                .and_then(|bytes| bytes.checked_mul(2))
+                .and_then(|bytes| bytes.checked_add(4096))
+                .ok_or(RebuildFailure::Transient)?;
+            let _receipt_hash_work = captured
+                .budget
+                .reserve(hash_bytes)
+                .map_err(|_| RebuildFailure::Transient)?;
             point = ChangelogHistoryPointV3::from_receipt(&receipt)
                 .map_err(|_| RebuildFailure::Integrity)?;
         }
@@ -263,7 +272,7 @@ impl Delta {
             }
         }
         let pin = next
-            .at(point)
+            .at_admitted_v1(point, &captured.budget)
             .map_err(|error| cursor_failure(error, plan.generation))?;
         Ok(Some(Self {
             changes,

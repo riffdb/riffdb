@@ -60,7 +60,21 @@ use riffdb_types::{
 use crate::exact_provider_graph::{ProviderAdmissionError, ProviderOwnershipGraph};
 use crate::exact_provider_owner::{CapturedProviderSlot, OwnedProviderSlot, ProviderOwner};
 
-use crate::columnar_adapter::read_application_head;
+// Capture only the exact immutable frontier; do not decode a command row.
+fn read_application_head(
+    storage: &ProjectionReadSource,
+    budget: &riffdb_types::exact_provider_budget_v1::ProviderBudget,
+) -> Result<FrontierPosition, riffdb_storage_api::StorageError> {
+    use riffdb_storage_api::{SnapshotFenceReader, StorageError, StorageErrorKind};
+    let _work = budget
+        .reserve(32 * 1024)
+        .map_err(|_| StorageError::new(StorageErrorKind::Unavailable, None))?;
+    let snapshot = storage.pin()?;
+    Ok(snapshot.application_frontier()?.map_or(
+        FrontierPosition::BeforeFirst,
+        FrontierPosition::AppliedThrough,
+    ))
+}
 use crate::projection_read_source::ProjectionReadSource;
 
 #[path = "exact_text_catch_up.rs"]
@@ -1700,7 +1714,7 @@ impl ExactTextProjectionPort for ExactTextRuntime {
         if !policy_binding_is_exact {
             return Err(ExactTextProjectionPortError::Integrity);
         }
-        let head = read_application_head(&self.storage)
+        let head = read_application_head(&self.storage, &self.ownership_graph.budget)
             .map_err(|_| ExactTextProjectionPortError::Unavailable)?;
         let FrontierPosition::AppliedThrough(head) = head else {
             return Err(ExactTextProjectionPortError::Building);
@@ -1847,7 +1861,7 @@ impl LongPatternProjectionPort for ExactTextRuntime {
         {
             return Err(ExactTextProjectionPortError::Integrity);
         }
-        let head = read_application_head(&self.storage)
+        let head = read_application_head(&self.storage, &self.ownership_graph.budget)
             .map_err(|_| ExactTextProjectionPortError::Unavailable)?;
         let FrontierPosition::AppliedThrough(head) = head else {
             return Err(ExactTextProjectionPortError::Building);
@@ -1978,7 +1992,7 @@ impl TokenizedTextProjectionPort for ExactTextRuntime {
         if !policy_binding_is_exact {
             return Err(ExactTextProjectionPortError::Integrity);
         }
-        let head = read_application_head(&self.storage)
+        let head = read_application_head(&self.storage, &self.ownership_graph.budget)
             .map_err(|_| ExactTextProjectionPortError::Unavailable)?;
         let FrontierPosition::AppliedThrough(head) = head else {
             return Err(ExactTextProjectionPortError::Building);
@@ -2130,7 +2144,7 @@ impl ExactPredicateProjectionPort for ExactTextRuntime {
         if !policy_binding_is_exact {
             return Err(ExactTextProjectionPortError::Integrity);
         }
-        let head = read_application_head(&self.storage)
+        let head = read_application_head(&self.storage, &self.ownership_graph.budget)
             .map_err(|_| ExactTextProjectionPortError::Unavailable)?;
         let FrontierPosition::AppliedThrough(head) = head else {
             return Err(ExactTextProjectionPortError::Building);
@@ -2224,7 +2238,7 @@ impl ExactPredicateProjectionPort for ExactTextRuntime {
         if !policy_binding_is_exact {
             return Err(ExactTextProjectionPortError::Integrity);
         }
-        let head = read_application_head(&self.storage)
+        let head = read_application_head(&self.storage, &self.ownership_graph.budget)
             .map_err(|_| ExactTextProjectionPortError::Unavailable)?;
         let FrontierPosition::AppliedThrough(head) = head else {
             return Err(ExactTextProjectionPortError::Building);
@@ -2414,7 +2428,8 @@ fn refresh_registered_slots(runtime: &ExactTextRuntime) -> Result<(), ()> {
         let Some(slot) = runtime.registered_slots(key).map_err(|_| ())? else {
             continue;
         };
-        let head = read_application_head(&runtime.storage).map_err(|_| ())?;
+        let head = read_application_head(&runtime.storage, &runtime.ownership_graph.budget)
+            .map_err(|_| ())?;
         let FrontierPosition::AppliedThrough(head) = head else {
             continue;
         };
@@ -2519,7 +2534,8 @@ fn refresh_registered_long_pattern_slots(runtime: &ExactTextRuntime) -> Result<(
         let Some(slot) = runtime.registered_long_pattern_slots(key).map_err(|_| ())? else {
             continue;
         };
-        let head = read_application_head(&runtime.storage).map_err(|_| ())?;
+        let head = read_application_head(&runtime.storage, &runtime.ownership_graph.budget)
+            .map_err(|_| ())?;
         let FrontierPosition::AppliedThrough(head) = head else {
             continue;
         };
@@ -2842,7 +2858,8 @@ fn refresh_registered_tokenized_slots(runtime: &ExactTextRuntime) -> Result<(), 
         let Some(slot) = runtime.registered_tokenized_slots(key).map_err(|_| ())? else {
             continue;
         };
-        let head = read_application_head(&runtime.storage).map_err(|_| ())?;
+        let head = read_application_head(&runtime.storage, &runtime.ownership_graph.budget)
+            .map_err(|_| ())?;
         let FrontierPosition::AppliedThrough(head) = head else {
             continue;
         };
@@ -2947,7 +2964,8 @@ fn refresh_registered_predicate_slots(runtime: &ExactTextRuntime) -> Result<(), 
         let Some(slot) = runtime.registered_predicate_slots(key).map_err(|_| ())? else {
             continue;
         };
-        let head = read_application_head(&runtime.storage).map_err(|_| ())?;
+        let head = read_application_head(&runtime.storage, &runtime.ownership_graph.budget)
+            .map_err(|_| ())?;
         let FrontierPosition::AppliedThrough(head) = head else {
             continue;
         };
@@ -3055,7 +3073,8 @@ fn refresh_registered_nullable_predicate_slots(runtime: &ExactTextRuntime) -> Re
         else {
             continue;
         };
-        let head = read_application_head(&runtime.storage).map_err(|_| ())?;
+        let head = read_application_head(&runtime.storage, &runtime.ownership_graph.budget)
+            .map_err(|_| ())?;
         let FrontierPosition::AppliedThrough(head) = head else {
             continue;
         };

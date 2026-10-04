@@ -488,6 +488,129 @@ pub(crate) fn resolve_history_value(value: &[u8]) -> Result<Cow<'_, [u8]>, Stora
         .map_err(|_| storage_error(StorageErrorKind::CorruptData))
 }
 
+pub(crate) struct ProviderReceiptCandidate {
+    pub(crate) receipt: riffdb_storage_api::AuthoritativeTransactionV3,
+    pub(crate) work: riffdb_types::exact_provider_budget_v1::Reservation,
+}
+pub(crate) fn provider_receipt_from_value_v1(
+    value: &[u8],
+    budget: &riffdb_types::exact_provider_budget_v1::ProviderBudget,
+) -> Result<ProviderReceiptCandidate, StorageError> {
+    let (receipt, work) = match HistoryStub::decode(value)? {
+        Some(stub) => provider_receipt_from_stub_v1(&stub, budget)?,
+        None => {
+            let bytes =
+                riffdb_storage_api::AuthoritativeTransactionV3::provider_decode_work_bound_v1(
+                    value,
+                )
+                .map_err(|_| storage_error(StorageErrorKind::CorruptData))?;
+            let work = budget
+                .reserve(bytes)
+                .map_err(|_| storage_error(StorageErrorKind::Unavailable))?;
+            let receipt = riffdb_storage_api::AuthoritativeTransactionV3::decode(value)
+                .map_err(|_| storage_error(StorageErrorKind::CorruptData))?;
+            (receipt, work)
+        }
+    };
+    Ok(ProviderReceiptCandidate { receipt, work })
+}
+
+/// Provider replay resolves the same proven retained frame, with physical
+/// buffers, resolver inventory and shallow frame/receipt work admitted first.
+pub(crate) fn provider_receipt_from_stub_v1(
+    stub: &HistoryStub,
+    budget: &riffdb_types::exact_provider_budget_v1::ProviderBudget,
+) -> Result<
+    (
+        riffdb_storage_api::AuthoritativeTransactionV3,
+        riffdb_types::exact_provider_budget_v1::Reservation,
+    ),
+    StorageError,
+> {
+    if stub.kind != StubKind::Receipt {
+        return Err(storage_error(StorageErrorKind::CorruptData));
+    }
+    let registered = RESOLVERS
+        .lock()
+        .map_err(|_| storage_error(StorageErrorKind::InvariantViolation))?;
+    let inventory = registered
+        .len()
+        .checked_add(4)
+        .and_then(|count| count.checked_mul(std::mem::size_of::<Arc<HistoryResolver>>() * 4 + 256))
+        .and_then(|bytes| bytes.checked_add(32 * 1024))
+        .and_then(|bytes| u64::try_from(bytes).ok())
+        .ok_or_else(|| storage_error(StorageErrorKind::Unavailable))?;
+    let _inventory_work = budget
+        .reserve(inventory)
+        .map_err(|_| storage_error(StorageErrorKind::Unavailable))?;
+    let resolvers = registered
+        .iter()
+        .filter_map(Weak::upgrade)
+        .filter(|resolver| resolver.database_id == stub.database_id)
+        .collect::<Vec<_>>();
+    drop(registered);
+    if resolvers.is_empty() {
+        return Err(storage_error(StorageErrorKind::Unavailable));
+    }
+    struct ReservedFrame {
+        frame: JournalFrame,
+        work: riffdb_types::exact_provider_budget_v1::Reservation,
+    }
+    for resolver in &resolvers {
+        let path = match &resolver.location {
+            ExtentLocation::Database(path) | ExtentLocation::Backup(path) => path,
+        };
+        let path_bytes = path
+            .as_os_str()
+            .len()
+            .checked_mul(16)
+            .and_then(|bytes| bytes.checked_add(32 * 1024))
+            .and_then(|bytes| u64::try_from(bytes).ok())
+            .ok_or_else(|| storage_error(StorageErrorKind::Unavailable))?;
+        let _path_work = budget
+            .reserve(path_bytes)
+            .map_err(|_| storage_error(StorageErrorKind::Unavailable))?;
+        let paths: Vec<PathBuf> = match &resolver.location {
+            ExtentLocation::Database(path) => vec![
+                crate::journal::sealed_journal_path(path, stub.generation),
+                crate::journal::journal_path(path),
+                crate::journal::checkpoint_journal_path(path),
+                crate::journal::sealing_journal_path(path),
+            ],
+            ExtentLocation::Backup(directory) => {
+                crate::backup::extent_artifacts(directory, stub.generation).into()
+            }
+        };
+        let reserved = match crate::journal::read_provider_retained_frame_v1(
+            resolver.media.as_ref(),
+            &paths,
+            stub.database_id,
+            stub.placement,
+            stub.generation,
+            budget,
+        ) {
+            Ok((frame, work)) => ReservedFrame { frame, work },
+            Err(crate::journal::JournalIoError::Capacity) => {
+                return Err(storage_error(StorageErrorKind::Unavailable));
+            }
+            Err(_) => continue,
+        };
+        let recorded = reserved
+            .frame
+            .changelog()
+            .ok_or_else(|| storage_error(StorageErrorKind::CorruptData))?;
+        let receipt = crate::changelog_v3::receipt_from_journal_for_catalog(
+            &reserved.frame,
+            recorded.binding(&reserved.frame),
+            recorded.catalog_digest(),
+        )
+        .map_err(|_| storage_error(StorageErrorKind::CorruptData))?;
+        drop(reserved.frame);
+        return Ok((receipt, reserved.work));
+    }
+    Err(storage_error(StorageErrorKind::CorruptData))
+}
+
 /// Rows one hydration transaction rewrites.
 const HYDRATION_BATCH_ROWS: usize = 256;
 

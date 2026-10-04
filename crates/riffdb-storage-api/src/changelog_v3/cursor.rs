@@ -50,4 +50,22 @@ pub trait ChangelogReceiptCursorV3: Send {
     fn next_receipt(
         &mut self,
     ) -> Result<Option<AuthoritativeTransactionV3>, ChangelogCursorErrorV3>;
+    /// First-party provider replay admits construction and continuity work before
+    /// allocation; the returned immutable receipt retains its final data charge.
+    #[doc(hidden)]
+    fn next_receipt_admitted_v1(
+        &mut self,
+        _budget: &riffdb_types::exact_provider_budget_v1::ProviderBudget,
+    ) -> Result<
+        Option<
+            std::sync::Arc<
+                riffdb_types::exact_provider_budget_v1::ProviderAllocation<
+                    AuthoritativeTransactionV3,
+                >,
+            >,
+        >,
+        ChangelogCursorErrorV3,
+    > {
+        Err(StorageError::new(crate::StorageErrorKind::Unavailable, None).into())
+    }
 }

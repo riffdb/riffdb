@@ -87,6 +87,39 @@ pub(crate) fn read_checkpoint_roots(
         history.as_ref(),
         source_holds.as_ref(),
         audit.as_ref(),
+        None,
+    )
+}
+
+pub(crate) fn read_checkpoint_roots_admitted_v1(
+    transaction: &ReadTransaction,
+    budget: &riffdb_types::exact_provider_budget_v1::ProviderBudget,
+) -> Result<Option<ChangelogHistoryStateV3>, StorageError> {
+    let _work = budget
+        .reserve(512 * 1024)
+        .map_err(|_| storage_error(StorageErrorKind::Unavailable))?;
+    let meta = transaction.open_table(META).map_err(table_error)?;
+    let history = match transaction.open_table(HISTORY) {
+        Ok(table) => Some(table),
+        Err(TableError::TableDoesNotExist(_)) => None,
+        Err(error) => return Err(table_error(error)),
+    };
+    let source_holds = match transaction.open_table(SOURCE_HOLDS) {
+        Ok(table) => Some(table),
+        Err(TableError::TableDoesNotExist(_)) => None,
+        Err(error) => return Err(table_error(error)),
+    };
+    let audit = match transaction.open_table(crate::layout::AUDIT) {
+        Ok(table) => Some(table),
+        Err(TableError::TableDoesNotExist(_)) => None,
+        Err(error) => return Err(table_error(error)),
+    };
+    validate_roots(
+        &meta,
+        history.as_ref(),
+        source_holds.as_ref(),
+        audit.as_ref(),
+        Some(budget),
     )
 }
 
@@ -306,6 +339,7 @@ pub(crate) fn read_checkpoint_roots_for_write(
         history.as_ref(),
         source_holds.as_ref(),
         audit.as_ref(),
+        None,
     )
 }
 
@@ -314,6 +348,7 @@ fn validate_roots(
     history_table: Option<&impl ReadableTable<&'static [u8], &'static [u8]>>,
     source_holds: Option<&impl ReadableTable<&'static [u8], &'static [u8]>>,
     audit: Option<&impl ReadableTable<&'static [u8], &'static [u8]>>,
+    budget: Option<&riffdb_types::exact_provider_budget_v1::ProviderBudget>,
 ) -> Result<Option<ChangelogHistoryStateV3>, StorageError> {
     let read = |key: &str| -> Result<Vec<u8>, StorageError> {
         let value = meta
@@ -410,12 +445,13 @@ fn validate_roots(
     history
         .validate_allocator(allocator)
         .map_err(|_| storage_error(StorageErrorKind::CorruptData))?;
-    crate::primary_admission_roots::validate(
+    crate::primary_admission_roots::validate_with_admission(
         meta,
         history,
         follower.attached_state().is_some(),
         audit,
         history_table,
+        budget,
     )?;
     // SourceOnly tables exist in the shared engine layout, but follower
     // bootstrap transfers no rows into them. Its existing durable applied
@@ -445,6 +481,15 @@ fn validate_roots(
         .get(history.tail().sequence().get().to_be_bytes().as_slice())
         .map_err(precommit_storage_error)?
         .ok_or_else(|| storage_error(StorageErrorKind::CorruptData))?;
+    // Provider validation keeps construction admission through the terminal hash.
+    if let Some(budget) = budget {
+        let candidate =
+            crate::history_stub::provider_receipt_from_value_v1(receipt.value(), budget)?;
+        history
+            .validate_terminal_receipt(&candidate.receipt)
+            .map_err(|_| storage_error(StorageErrorKind::CorruptData))?;
+        return Ok(Some(history));
+    }
     // The decoder checks its frame-adjusted hard bound before hashing/copying.
     let receipt = AuthoritativeTransactionV3::decode(&crate::history_stub::resolve_history_value(
         receipt.value(),

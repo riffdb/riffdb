@@ -9,13 +9,16 @@ use riffdb_catalog::ActiveCatalogSnapshot;
 use riffdb_query_ir::QueryAccessProgramV1;
 use riffdb_storage_api::{
     AdmittedProviderEntityRecordV1, ChangelogCursorErrorV3, DurableKeySchemaBindingV1,
-    StorageErrorKind,
+    SnapshotFenceReader, StorageErrorKind,
 };
 use riffdb_storage_redb::RedbDerivedSourcePin;
-use riffdb_types::{CommitSequence, FrontierPosition, ProjectionGeneration};
+#[cfg(test)]
+use riffdb_types::FrontierPosition;
+use riffdb_types::{CommitSequence, ProjectionGeneration};
 
+#[cfg(test)]
+use super::read_application_head;
 use super::{ExactTextRuntime, MAX_PROJECTED_POLICY_CANDIDATES_V1, RebuildFailure};
-use crate::columnar_adapter::read_application_head;
 use crate::exact_provider_owner::ProviderPin;
 use crate::projection_read_source::ProjectionReadSource;
 
@@ -84,12 +87,14 @@ impl CapturedSource {
             .storage
             .pin()
             .map_err(|_| RebuildFailure::Transient)?;
-        if read_application_head(&snapshot).map_err(|_| RebuildFailure::Transient)?
-            != FrontierPosition::AppliedThrough(head)
+        if snapshot
+            .application_frontier()
+            .map_err(|_| RebuildFailure::Transient)?
+            != Some(head)
         {
             return Err(RebuildFailure::Transient);
         }
-        let pin = match snapshot.pin_derived_source_v3() {
+        let pin = match snapshot.pin_derived_source_admitted_v1(&runtime.ownership_graph.budget) {
             Ok(pin) => {
                 if pin.history().lineage().history_incarnation() != runtime.history_incarnation
                     || pin.position().frontier().application() != Some(head)
@@ -121,7 +126,7 @@ impl CapturedSource {
                     // Equality alone cannot substitute a different store with
                     // copied counters. Opening proves the original owner too.
                     drop(
-                        next.receipts_after(prior)
+                        next.receipts_after_admitted_v1(prior, &runtime.ownership_graph.budget)
                             .map_err(|_| RebuildFailure::Integrity)?,
                     );
                     true
@@ -728,13 +733,13 @@ query Ticket($organization_id: Ticket.organization_id, $ticket_id: Ticket.ticket
         // Explicitly ordered writes, with no sleeps or timing assumptions: the
         // captured row/policy source cannot observe the later commit.
         assert_eq!(
-            read_application_head(&captured.storage).unwrap(),
+            read_application_head(&captured.storage, &runtime.ownership_graph.budget).unwrap(),
             FrontierPosition::AppliedThrough(first)
         );
         assert!(captured.storage.read_commit(first).unwrap().is_some());
         assert!(captured.storage.read_commit(second).unwrap().is_none());
         assert_eq!(
-            read_application_head(&runtime.storage).unwrap(),
+            read_application_head(&runtime.storage, &runtime.ownership_graph.budget).unwrap(),
             FrontierPosition::AppliedThrough(second)
         );
 

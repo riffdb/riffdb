@@ -1898,6 +1898,9 @@ impl JournalFrame {
         {
             return Err(JournalCodecError::Checksum);
         }
+        if mutation_count > payload_len / MUTATION_HEADER_BYTES {
+            return Err(JournalCodecError::InvalidValue);
+        }
         let mut cursor = header_bytes;
         let mut mutations = Vec::with_capacity(mutation_count);
         for _ in 0..mutation_count {
@@ -3620,6 +3623,93 @@ pub(crate) fn read_retained_frame_from_with_media(
     placement: FramePlacement,
     generation: u64,
 ) -> Result<JournalFrame, JournalIoError> {
+    read_retained_frame_from_with_admission(
+        media,
+        candidates,
+        database_id,
+        placement,
+        generation,
+        |_| Ok(()),
+    )
+    .map(|(frame, ())| frame)
+}
+
+pub(crate) fn read_provider_retained_frame_v1(
+    media: &dyn JournalMedia,
+    candidates: &[PathBuf],
+    database_id: DatabaseId,
+    placement: FramePlacement,
+    generation: u64,
+    budget: &riffdb_types::exact_provider_budget_v1::ProviderBudget,
+) -> Result<
+    (
+        JournalFrame,
+        riffdb_types::exact_provider_budget_v1::Reservation,
+    ),
+    JournalIoError,
+> {
+    let maximum = extent_frame_bytes(MAX_JOURNAL_FRAME_BYTES).ok_or(JournalIoError::Corrupt)?;
+    if placement.padded_len > maximum {
+        return Err(JournalIoError::Corrupt);
+    }
+    let _physical_work = budget
+        .reserve(
+            u64::try_from(placement.padded_len)
+                .ok()
+                .and_then(|bytes| bytes.checked_mul(2))
+                .and_then(|bytes| bytes.checked_add(32 * 1024))
+                .ok_or(JournalIoError::Corrupt)?,
+        )
+        .map_err(|_| JournalIoError::Capacity)?;
+    read_retained_frame_from_with_admission(
+        media,
+        candidates,
+        database_id,
+        placement,
+        generation,
+        |logical| {
+            if logical.len() < FRAME_HEADER_BYTES_V2 + FRAME_FOOTER_BYTES
+                || logical.len() > MAX_JOURNAL_FRAME_BYTES
+            {
+                return Err(JournalIoError::Corrupt);
+            }
+            let count =
+                usize::try_from(read_u32(logical, 68).map_err(|_| JournalIoError::Corrupt)?)
+                    .map_err(|_| JournalIoError::Corrupt)?;
+            let payload =
+                usize::try_from(read_u32(logical, 72).map_err(|_| JournalIoError::Corrupt)?)
+                    .map_err(|_| JournalIoError::Corrupt)?;
+            if count > payload / MUTATION_HEADER_BYTES || payload > logical.len() {
+                return Err(JournalIoError::Corrupt);
+            }
+            let fold = riffdb_storage_api::provider_receipt_work_bound_v1(count, logical.len())
+                .map_err(|_| JournalIoError::Capacity)?;
+            let frame = count
+                .checked_add(4)
+                .and_then(|count| count.checked_mul(std::mem::size_of::<JournalMutation>()))
+                .and_then(|bytes| bytes.checked_mul(4))
+                .and_then(|bytes| u64::try_from(bytes).ok())
+                .and_then(|bytes| fold.checked_add(bytes))
+                .ok_or(JournalIoError::Capacity)?;
+            budget.reserve(frame).map_err(|_| JournalIoError::Capacity)
+        },
+    )
+}
+
+fn read_retained_frame_from_with_admission<R>(
+    media: &dyn JournalMedia,
+    candidates: &[PathBuf],
+    database_id: DatabaseId,
+    placement: FramePlacement,
+    generation: u64,
+    mut admit: impl FnMut(&[u8]) -> Result<R, JournalIoError>,
+) -> Result<(JournalFrame, R), JournalIoError> {
+    let maximum = extent_frame_bytes(MAX_JOURNAL_FRAME_BYTES).ok_or(JournalIoError::Corrupt)?;
+    if placement.padded_len < EXTENT_FRAME_HEADER_BYTES + EXTENT_FRAME_FOOTER_BYTES
+        || placement.padded_len > maximum
+    {
+        return Err(JournalIoError::Corrupt);
+    }
     for path in candidates {
         let mut file = match media.open_read(path) {
             Ok(file) => file,
@@ -3651,6 +3741,13 @@ pub(crate) fn read_retained_frame_from_with_media(
         let encoded_len =
             usize::try_from(read_u32(&physical, 28).map_err(|_| JournalIoError::Corrupt)?)
                 .map_err(|_| JournalIoError::Corrupt)?;
+        let logical_end = EXTENT_FRAME_HEADER_BYTES
+            .checked_add(encoded_len)
+            .ok_or(JournalIoError::Corrupt)?;
+        let logical = physical
+            .get(EXTENT_FRAME_HEADER_BYTES..logical_end)
+            .ok_or(JournalIoError::Corrupt)?;
+        let admitted = admit(logical)?;
         let (frame, frame_hash) = decode_physical_frame(
             &physical,
             generation,
@@ -3662,7 +3759,7 @@ pub(crate) fn read_retained_frame_from_with_media(
         if frame_hash != placement.frame_hash || frame.database_id() != database_id {
             return Err(JournalIoError::Corrupt);
         }
-        return Ok(frame);
+        return Ok((frame, admitted));
     }
     Err(JournalIoError::Corrupt)
 }

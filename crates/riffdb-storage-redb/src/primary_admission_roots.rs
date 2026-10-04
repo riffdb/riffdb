@@ -132,12 +132,13 @@ pub(crate) fn validate_write_receipt(
 
 /// Bounded source/follower binding and exact point lookups. Complete startup
 /// additionally scans all fence records to detect omitted or duplicate evidence.
-pub(crate) fn validate(
+pub(crate) fn validate_with_admission(
     meta: &impl ReadableTable<&'static str, &'static [u8]>,
     history: ChangelogHistoryStateV3,
     attached: bool,
     audit: Option<&impl ReadableTable<&'static [u8], &'static [u8]>>,
     receipts: &impl ReadableTable<&'static [u8], &'static [u8]>,
+    budget: Option<&riffdb_types::exact_provider_budget_v1::ProviderBudget>,
 ) -> Result<(), StorageError> {
     let corrupt = || storage_error(StorageErrorKind::CorruptData);
     let admission = read(meta)?;
@@ -159,10 +160,11 @@ pub(crate) fn validate(
             .map_err(precommit_storage_error)?
             .ok_or_else(corrupt)?;
         let retained = decode_primary_fence_administration_v1(row.value()).map_err(codec_error)?;
-        crate::primary_fence_write::state::validate_fence_receipt(
+        crate::primary_fence_write::state::validate_fence_receipt_with_admission(
             history,
             retained.value(),
             receipts,
+            budget,
         )?;
         Some(retained.value().clone())
     } else {
