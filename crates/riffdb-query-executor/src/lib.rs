@@ -4,6 +4,8 @@
 
 mod exact_result_set;
 mod storage_executor;
+#[doc(hidden)]
+pub use storage_executor::authorize_provider_projected_candidates_admitted_v1;
 mod tokenized_text;
 
 pub use exact_result_set::*;

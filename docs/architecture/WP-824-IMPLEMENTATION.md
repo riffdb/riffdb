@@ -1,5 +1,43 @@
 # WP-824 implementation progress
 
+## Admitted provider policy execution
+
+Provider policy observations now read from the same captured immutable root
+through admitted entity decoders and bounded forward relationship range pages.
+Every point/page call checks the existing worker pin for cancellation. Tokenized
+admission uses its captured source rather than reopening the live database.
+The shared authorization kernel, exact candidate coverage, partition checks,
+ordinary scan ceilings and current final authorization remain unchanged.
+
+Before row copies, probes, evaluation nodes, argument vectors and row-hash
+encoding, borrowed native ownership and compiler-owned read operands determine
+construction reservations. Observation keys and proof vectors are admitted
+before allocation. Successful proofs settle their native capacity after row
+observations drop; aliases retain the charge until final destruction. Delta
+post-image policy evaluation keeps its normalized post-images and admits their
+workspace before copying or evaluation.
+
+Tests compare admitted range pages with ordinary pages, including continuation,
+immutable source isolation, physical-key substitution and final-alias release.
+Policy observation tests prove pressure refusal before reads, missing-row denial,
+large-row construction and release of row workspace before retaining the proof.
+The first combined run passed 693 of 694 tests; the delta test exposed a missing
+proof-settlement census reservation, which was corrected before rerunning.
+
+D003 decision: use a hidden first-party admitted policy reader and the existing
+policy kernel; its relationship primitive accepts only forward requests, the
+sole direction used by policy probes. Unsupported requests fail closed before
+allocation. No application-facing interface, durable format, ordering or
+authorization guarantee changes.
+
+PR note: Package WP-824; Tier guarantee; Behavior: admitted provider policy
+source/evaluation/proof ownership; Compatibility: unchanged policy semantics,
+source checks, page ceilings and durable bytes; updated handbook configuration
+page; Hazards/follow-ups: qualified plan retirement, full CI and qualification
+remain open. Checks: all 695 selected server/policy/query-executor tests pass,
+including the process crash oracle; the focused admitted storage range test
+passes; all seven scoped static checks pass. Full CI has not yet run.
+
 ## Admitted source receipt and pin validation
 
 Provider replay now admits native shallow receipt vectors, mutation-fold trees,

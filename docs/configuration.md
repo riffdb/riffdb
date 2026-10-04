@@ -649,7 +649,11 @@ receipts carry their charges through destruction; pressure refuses without
 advancing a receipt cursor. Provider head checks read the immutable snapshot
 frontier without decoding a command record.
 
-Policy execution accounting and qualified plan supersession remain in progress. This implementation recycles
+Provider policy reads, observation copies and evaluation work now reserve
+capacity on the same captured source; resulting proofs retain their charge
+through final destruction.
+
+Qualified plan supersession remains in progress. This implementation recycles
 eligible registrations but does not yet establish the complete provider memory
 bound or qualification readiness. See the
 [implementation progress](architecture/WP-824-IMPLEMENTATION.md).

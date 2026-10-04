@@ -27,8 +27,8 @@ use riffdb_projection::{
     negotiate_result_set_epoch_v1,
 };
 use riffdb_query_executor::{
-    ExactTextResultSetV1, LongPatternCandidateBatch, QueryExecutionError, QueryExecutionPort,
-    QueryRow, execute_exact_predicate_result_set_v1, execute_exact_text_filtered_result_set_v1,
+    ExactTextResultSetV1, LongPatternCandidateBatch, QueryRow,
+    execute_exact_predicate_result_set_v1, execute_exact_text_filtered_result_set_v1,
     execute_exact_text_result_set_v1, execute_nullable_exact_predicate_result_set_v1,
     execute_tokenized_text_v1,
 };
@@ -2784,14 +2784,16 @@ fn rebuild_long_pattern_partition(
     if let Some(policy) = registration.row_policy.as_deref() {
         let candidates = records.keys().cloned().collect::<Vec<_>>();
         let candidate_set = records.keys().cloned().collect::<BTreeSet<_>>();
-        let query_executor = storage.query_executor();
-        let admission = QueryExecutionPort::authorize_projected_candidates(
-            &query_executor,
+        let policy_snapshot = storage.pin().map_err(|_| RebuildFailure::Transient)?;
+        let admission = authorize_provider_projected_candidates(
+            &policy_snapshot,
+            work,
+            &runtime.ownership_graph.budget,
             registration.step().internal_entity_id(),
             &candidates,
             policy,
         )
-        .map_err(|error| map_policy_admission_error(error, generation))?;
+        .map_err(|error| map_provider_policy_admission_error(error, generation))?;
         if !admission.covers(registration.step().internal_entity_id(), &candidate_set) {
             return Err(RebuildFailure::Integrity);
         }
@@ -3722,14 +3724,15 @@ fn read_complete_tokenized_partition(
     if let Some(policy) = registration.row_policy.as_deref() {
         row_work.reserve_keys(candidates.iter())?;
         let ordered_candidates = candidates.iter().cloned().collect::<Vec<_>>();
-        let query_executor = runtime.storage.query_executor();
-        let admission = QueryExecutionPort::authorize_projected_candidates(
-            &query_executor,
+        let admission = authorize_provider_projected_candidates(
+            &snapshot,
+            work,
+            &runtime.ownership_graph.budget,
             step.internal_entity_id(),
             &ordered_candidates,
             policy,
         )
-        .map_err(|error| map_policy_admission_error(error, generation))?;
+        .map_err(|error| map_provider_policy_admission_error(error, generation))?;
         if !admission.covers(step.internal_entity_id(), &candidates) {
             return Err(RebuildFailure::Integrity);
         }
@@ -4023,14 +4026,9 @@ fn read_complete_predicate_partition<R: ExactPredicateRegistrationView>(
     if let Some(policy) = registration.row_policy() {
         row_work.reserve_keys(candidates.iter())?;
         let ordered_candidates = candidates.iter().cloned().collect::<Vec<_>>();
-        let query_executor = captured.storage.query_executor();
-        let admission = QueryExecutionPort::authorize_projected_candidates(
-            &query_executor,
-            step.internal_entity_id(),
-            &ordered_candidates,
-            policy,
-        )
-        .map_err(|error| map_policy_admission_error(error, generation))?;
+        let admission = captured
+            .authorize_projected_candidates(step.internal_entity_id(), &ordered_candidates, policy)
+            .map_err(|error| map_provider_policy_admission_error(error, generation))?;
         if !admission.covers(step.internal_entity_id(), &candidates) {
             return Err(RebuildFailure::Integrity);
         }
@@ -4195,14 +4193,9 @@ fn read_complete_partition(
     if let Some(policy) = registration.row_policy.as_deref() {
         row_work.reserve_keys(candidates.iter())?;
         let ordered_candidates = candidates.iter().cloned().collect::<Vec<_>>();
-        let query_executor = captured.storage.query_executor();
-        let admission = QueryExecutionPort::authorize_projected_candidates(
-            &query_executor,
-            step.internal_entity_id(),
-            &ordered_candidates,
-            policy,
-        )
-        .map_err(|error| map_policy_admission_error(error, generation))?;
+        let admission = captured
+            .authorize_projected_candidates(step.internal_entity_id(), &ordered_candidates, policy)
+            .map_err(|error| map_provider_policy_admission_error(error, generation))?;
         if !admission.covers(step.internal_entity_id(), &candidates) {
             return Err(RebuildFailure::Integrity);
         }
@@ -4211,27 +4204,85 @@ fn read_complete_partition(
     Ok((row_work.guard(rows), candidates))
 }
 
-fn map_policy_admission_error(
-    error: QueryExecutionError,
+fn map_provider_policy_admission_error(
+    error: riffdb_storage_api::StorageError,
     generation: ProjectionGeneration,
 ) -> RebuildFailure {
-    match error {
-        QueryExecutionError::BackendUnavailable => RebuildFailure::Transient,
-        QueryExecutionError::BackendLimitExceeded
-        | QueryExecutionError::BoundExceeded
-        | QueryExecutionError::FuelExhausted => RebuildFailure::Capacity(generation),
-        QueryExecutionError::MissingParameter { .. }
-        | QueryExecutionError::InvalidParameter { .. }
-        | QueryExecutionError::MissingField { .. }
-        | QueryExecutionError::InvalidProgram
-        | QueryExecutionError::BackendIntegrity
-        | QueryExecutionError::AggregateOverflow
-        | QueryExecutionError::UnexpectedCardinality { .. }
-        | QueryExecutionError::UnsupportedPredicate
-        | QueryExecutionError::InvalidDependentKey { .. }
-        | QueryExecutionError::StaleCursor
-        | QueryExecutionError::InvalidContinuation => RebuildFailure::Integrity,
+    match error.kind() {
+        riffdb_storage_api::StorageErrorKind::Unavailable => RebuildFailure::Transient,
+        riffdb_storage_api::StorageErrorKind::LimitExceeded => RebuildFailure::Capacity(generation),
+        _ => RebuildFailure::Integrity,
     }
+}
+
+fn authorize_provider_projected_candidates(
+    snapshot: &riffdb_storage_redb::RedbOwnedSnapshot,
+    work: &crate::exact_provider_owner::ProviderPin,
+    budget: &riffdb_types::exact_provider_budget_v1::ProviderBudget,
+    entity: riffdb_types::EntityTypeId,
+    candidates: &[EntityKey],
+    policy: &riffdb_policy::AuthorizedQueryRowPolicyContextV1,
+) -> Result<
+    Arc<
+        riffdb_types::exact_provider_budget_v1::ProviderAllocation<
+            riffdb_policy::AuthorizedProjectedRowAdmissionV1,
+        >,
+    >,
+    riffdb_storage_api::StorageError,
+> {
+    struct Source<'a> {
+        snapshot: &'a riffdb_storage_redb::RedbOwnedSnapshot,
+        work: &'a crate::exact_provider_owner::ProviderPin,
+    }
+    impl riffdb_storage_api::ProviderPolicySourceReaderV1 for Source<'_> {
+        fn read_provider_entity_record_v1(
+            &self,
+            target: &riffdb_storage_api::EntityTarget,
+            budget: &riffdb_types::exact_provider_budget_v1::ProviderBudget,
+        ) -> Result<
+            Option<riffdb_storage_api::AdmittedProviderEntityRecordV1>,
+            riffdb_storage_api::StorageError,
+        > {
+            self.work.ensure_active().map_err(|_| {
+                riffdb_storage_api::StorageError::new(
+                    riffdb_storage_api::StorageErrorKind::Unavailable,
+                    None,
+                )
+            })?;
+            self.snapshot.read_provider_entity_record_v1(target, budget)
+        }
+        fn read_provider_policy_index_range_v1(
+            &self,
+            request: &riffdb_storage_api::SnapshotIndexRangeRequestV1,
+            budget: &riffdb_types::exact_provider_budget_v1::ProviderBudget,
+        ) -> Result<
+            Arc<
+                riffdb_types::exact_provider_budget_v1::ProviderAllocation<
+                    riffdb_storage_api::SnapshotIndexRangePageV1,
+                >,
+            >,
+            riffdb_storage_api::StorageError,
+        > {
+            self.work.ensure_active().map_err(|_| {
+                riffdb_storage_api::StorageError::new(
+                    riffdb_storage_api::StorageErrorKind::Unavailable,
+                    None,
+                )
+            })?;
+            riffdb_storage_api::ProviderPolicySourceReaderV1::read_provider_policy_index_range_v1(
+                self.snapshot,
+                request,
+                budget,
+            )
+        }
+    }
+    riffdb_query_executor::authorize_provider_projected_candidates_admitted_v1(
+        &Source { snapshot, work },
+        entity,
+        candidates,
+        policy,
+        budget,
+    )
 }
 
 fn predicate_leaf_count(node: &ExactPredicateNodeV1) -> Result<usize, RebuildFailure> {

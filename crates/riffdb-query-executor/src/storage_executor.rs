@@ -1101,3 +1101,249 @@ const fn corrupt() -> StorageError {
 const fn limit_exceeded() -> StorageError {
     StorageError::new(StorageErrorKind::LimitExceeded, None)
 }
+
+/// Evaluate the ordinary policy kernel on admitted rows from one captured view.
+/// All observations and evaluation scratch remain owned until final proof settlement.
+#[doc(hidden)]
+pub fn authorize_provider_projected_candidates_admitted_v1<
+    R: riffdb_storage_api::ProviderPolicySourceReaderV1,
+>(
+    snapshot: &R,
+    entity: EntityTypeId,
+    candidates: &[EntityKey],
+    policy: &AuthorizedQueryRowPolicyContextV1,
+    budget: &riffdb_types::exact_provider_budget_v1::ProviderBudget,
+) -> Result<
+    std::sync::Arc<
+        riffdb_types::exact_provider_budget_v1::ProviderAllocation<
+            AuthorizedProjectedRowAdmissionV1,
+        >,
+    >,
+    StorageError,
+> {
+    if candidates.len() > riffdb_policy::MAX_PROJECTED_POLICY_CANDIDATES_V1 {
+        return Err(limit_exceeded());
+    }
+    let unavailable = || StorageError::new(riffdb_storage_api::StorageErrorKind::Unavailable, None);
+    let mut maximum = riffdb_types::OWNED_CAPACITY_INSPECTION_SCRATCH_BYTES_V1 + 32 * 1024;
+    for key in candidates {
+        let bytes = key
+            .as_bytes()
+            .len()
+            .checked_mul(8)
+            .and_then(|bytes| {
+                bytes.checked_add(
+                    8 * std::mem::size_of::<ProjectedPolicyCandidateObservationV1>() + 4096,
+                )
+            })
+            .and_then(|bytes| u64::try_from(bytes).ok())
+            .ok_or_else(unavailable)?;
+        maximum = maximum.checked_add(bytes).ok_or_else(unavailable)?;
+    }
+    // Declaration order matters on failure: observations are destroyed before
+    // the construction reservation. Final settlement transfers only the proof.
+    let mut work = budget.reserve(maximum).map_err(|_| unavailable())?;
+    let mut observations = Vec::with_capacity(candidates.len());
+    for key in candidates {
+        let target = EntityTarget::new(entity, key.clone()).map_err(|_| invariant())?;
+        let Some(record) = snapshot.read_provider_entity_record_v1(&target, budget)? else {
+            observations.push(ProjectedPolicyCandidateObservationV1::missing(key.clone()));
+            continue;
+        };
+        let additional = policy
+            .provider_work_bound_v1(entity, record.fields())
+            .map_err(|_| unavailable())?;
+        work.absorb(budget.reserve(additional).map_err(|_| unavailable())?)
+            .map_err(|_| unavailable())?;
+        let lookups = policy
+            .relationship_lookups(entity, record.fields())
+            .map_err(|_| invariant())?;
+        let evidence = lookups
+            .iter()
+            .map(|lookup| admitted_indexed_relationship_exists(snapshot, lookup, budget))
+            .collect::<Result<Vec<_>, _>>()?;
+        observations.push(ProjectedPolicyCandidateObservationV1::current(
+            key.clone(),
+            record.fields().clone(),
+            evidence,
+        ));
+    }
+    let proof = policy
+        .authorize_projected_candidates(entity, observations)
+        .map_err(|_| invariant())?;
+    work.settle_owned_value(proof).map_err(|_| unavailable())
+}
+
+fn admitted_indexed_relationship_exists<R: riffdb_storage_api::ProviderPolicySourceReaderV1>(
+    snapshot: &R,
+    lookup: &AuthorizedIndexedRelationshipLookupV1,
+    budget: &riffdb_types::exact_provider_budget_v1::ProviderBudget,
+) -> Result<bool, StorageError> {
+    let upper = exclusive_prefix_end(lookup.index_prefix()).ok_or_else(invariant)?;
+    let limit = StorageScanLimit::new(
+        u16::try_from(
+            usize::try_from(MAX_QUERY_SCANNED_ROWS)
+                .unwrap_or(usize::MAX)
+                .min(riffdb_storage_api::MAX_SCAN_PAGE_ENTRIES),
+        )
+        .map_err(|_| limit_exceeded())?,
+    )
+    .ok_or_else(limit_exceeded)?;
+    let mut after = None;
+    let mut inspected = 0usize;
+    loop {
+        let request = SnapshotIndexRangeRequestV1::new(
+            lookup.index_prefix().to_vec(),
+            true,
+            upper.clone(),
+            false,
+            SnapshotIndexDirectionV1::Forward,
+            after.take(),
+            limit,
+        )
+        .map_err(|_| invariant())?;
+        let page = snapshot.read_provider_policy_index_range_v1(&request, budget)?;
+        for entry in page.entries() {
+            if inspected == usize::try_from(MAX_QUERY_SCANNED_ROWS).map_err(|_| limit_exceeded())? {
+                return Err(limit_exceeded());
+            }
+            inspected = inspected.checked_add(1).ok_or_else(limit_exceeded)?;
+            if entry.value().partition_key() == lookup.partition() {
+                return Ok(true);
+            }
+        }
+        let Some(next) = page.next_after() else {
+            return Ok(false);
+        };
+        after = Some(next.as_bytes().to_vec());
+    }
+}
+
+#[cfg(all(test, feature = "test-fixtures"))]
+mod provider_policy_admission_tests {
+    use super::*;
+    use riffdb_storage_api::{ProviderPolicySourceReaderV1, SnapshotIndexRangePageV1};
+    use riffdb_types::exact_provider_budget_v1::{
+        EXACT_PROVIDER_BUDGET_BYTES, ProviderAllocation, ProviderBudget,
+    };
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    struct Source {
+        reads: AtomicUsize,
+        encoded: Vec<u8>,
+    }
+    impl ProviderPolicySourceReaderV1 for Source {
+        fn read_provider_entity_record_v1(
+            &self,
+            target: &EntityTarget,
+            budget: &ProviderBudget,
+        ) -> Result<Option<riffdb_storage_api::AdmittedProviderEntityRecordV1>, StorageError>
+        {
+            self.reads.fetch_add(1, Ordering::Relaxed);
+            if target.key().as_bytes().last() == Some(&2) {
+                return Ok(None);
+            }
+            riffdb_storage_api::decode_provider_entity_record_admitted_v1(&self.encoded, budget)
+                .map(Some)
+                .map_err(|_| StorageError::new(StorageErrorKind::Unavailable, None))
+        }
+        fn read_provider_policy_index_range_v1(
+            &self,
+            _: &SnapshotIndexRangeRequestV1,
+            _: &ProviderBudget,
+        ) -> Result<Arc<ProviderAllocation<SnapshotIndexRangePageV1>>, StorageError> {
+            panic!("unprotected policy cannot request relationship evidence")
+        }
+    }
+
+    // req: OQ-040, PRJ-004
+    #[test]
+    fn admitted_policy_observations_refuse_before_reads_and_retain_only_exact_proof() {
+        use riffdb_types::{
+            ActorId, ActorKind, Audience, CapabilityId, CapabilityPrincipalFactsV1,
+            ContractBundleHash, ContractLineage, ContractVersion, DatabaseId, EntityKeyBuilder,
+            EntityVersion, Environment, TenantScope,
+        };
+        let entity = EntityTypeId::first();
+        let keys = (1..=2)
+            .map(|value| {
+                let mut key = EntityKeyBuilder::new(entity);
+                key.push_u64(value).unwrap();
+                key.finish().unwrap()
+            })
+            .collect::<Vec<_>>();
+        let row = riffdb_types::CanonicalRecord::new(vec![(
+            FieldId::first(),
+            CanonicalValue::string("x".repeat(262144)).unwrap(),
+        )])
+        .unwrap();
+        let record = riffdb_storage_api::StoredEntityRecordV1::new(
+            EntityTarget::new(entity, keys[0].clone()).unwrap(),
+            EntityVersion::new(1).unwrap(),
+            ContractVersion::new(1).unwrap(),
+            riffdb_storage_api::DurableKeySchemaBindingV1::new(
+                ContractLineage::new("policy-budget").unwrap(),
+                ContractVersion::new(1).unwrap(),
+                ContractBundleHash::from_bytes([2; 32]),
+            ),
+            row,
+        )
+        .unwrap();
+        let source = Source {
+            reads: AtomicUsize::new(0),
+            encoded: riffdb_storage_api::encode_entity_record_v1(&record)
+                .unwrap()
+                .as_bytes()
+                .to_vec(),
+        };
+        let principal = riffdb_auth::PrincipalFactBindingV1::new(
+            CapabilityId::from_unix_milliseconds_and_random(1, [5; 10]).unwrap(),
+            std::num::NonZeroU64::MIN,
+            DatabaseId::from_unix_milliseconds_and_random(1, [1; 10]).unwrap(),
+            Environment::new("test").unwrap(),
+            ActorId::new("reader").unwrap(),
+            ActorKind::Human,
+            vec![Audience::new("test").unwrap()],
+            TenantScope::Global,
+            Timestamp::new(1, 0).unwrap(),
+            Timestamp::new(100, 0).unwrap(),
+            CapabilityPrincipalFactsV1::empty(),
+        )
+        .unwrap();
+        let policy = AuthorizedQueryRowPolicyContextV1::test_fixture(
+            principal,
+            vec![],
+            &riffdb_contract_ir::SchemaIr::new(vec![], vec![], vec![], vec![]).unwrap(),
+        )
+        .unwrap();
+        let budget = ProviderBudget::new();
+        let occupied = budget
+            .reserve(EXACT_PROVIDER_BUDGET_BYTES - budget.observation().unwrap().fixed_owner_bytes)
+            .unwrap();
+        assert_eq!(
+            authorize_provider_projected_candidates_admitted_v1(
+                &source, entity, &keys, &policy, &budget
+            )
+            .err()
+            .unwrap()
+            .kind(),
+            StorageErrorKind::Unavailable
+        );
+        assert_eq!(source.reads.load(Ordering::Relaxed), 0);
+        drop(occupied);
+        let proof = authorize_provider_projected_candidates_admitted_v1(
+            &source, entity, &keys, &policy, &budget,
+        )
+        .unwrap();
+        assert!(proof.admits(&keys[0]));
+        assert!(!proof.admits(&keys[1]));
+        assert!(proof.covers(entity, &keys.iter().cloned().collect()));
+        assert_eq!(budget.observation().unwrap().reserved_bytes, 0);
+        assert!(budget.observation().unwrap().owned_bytes < 32 * 1024);
+        let alias = Arc::clone(&proof);
+        drop(proof);
+        assert!(budget.observation().unwrap().owned_bytes > 0);
+        drop(alias);
+        assert_eq!(budget.observation().unwrap().owned_bytes, 0);
+    }
+}

@@ -232,3 +232,27 @@ where
         T::open_owned_snapshot(*self)
     }
 }
+
+/// First-party admitted reads from one captured provider source. Implementations
+/// preserve ordinary point and range validation and never reopen a newer view.
+#[doc(hidden)]
+pub trait ProviderPolicySourceReaderV1 {
+    /// Decode an entity only after admitting its input and native workspace.
+    fn read_provider_entity_record_v1(
+        &self,
+        target: &crate::EntityTarget,
+        budget: &riffdb_types::exact_provider_budget_v1::ProviderBudget,
+    ) -> Result<Option<crate::AdmittedProviderEntityRecordV1>, StorageError>;
+
+    /// Decode a forward relationship range under the ordinary page ceilings.
+    fn read_provider_policy_index_range_v1(
+        &self,
+        request: &SnapshotIndexRangeRequestV1,
+        budget: &riffdb_types::exact_provider_budget_v1::ProviderBudget,
+    ) -> Result<
+        std::sync::Arc<
+            riffdb_types::exact_provider_budget_v1::ProviderAllocation<SnapshotIndexRangePageV1>,
+        >,
+        StorageError,
+    >;
+}

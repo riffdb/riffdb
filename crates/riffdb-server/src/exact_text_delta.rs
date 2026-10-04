@@ -4,7 +4,6 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use riffdb_policy::{AuthorizedQueryRowPolicyContextV1, ProjectedPolicyCandidateObservationV1};
-use riffdb_query_executor::QueryExecutionPort;
 use riffdb_query_ir::QueryAccessProgramV1;
 use riffdb_storage_api::{
     AdmittedProviderEntityRecordV1, AuthoritativeNamespaceV1, ChangelogCursorErrorV3,
@@ -14,7 +13,7 @@ use riffdb_storage_api::{
 use riffdb_types::{CanonicalValue, EntityKey, ProjectionGeneration};
 
 use super::super::{
-    MAX_PROJECTED_POLICY_CANDIDATES_V1, RebuildFailure, map_policy_admission_error,
+    MAX_PROJECTED_POLICY_CANDIDATES_V1, RebuildFailure, map_provider_policy_admission_error,
 };
 use super::{CandidatePopulation, CapturedSource, SelectedSource};
 
@@ -229,7 +228,21 @@ impl Delta {
                 .filter(|(_, record)| record.is_some())
                 .map(|(key, _)| key.clone())
                 .collect::<BTreeSet<_>>();
+            let proof_work = captured
+                .budget
+                .reserve(
+                    riffdb_types::OWNED_CAPACITY_INSPECTION_SCRATCH_BYTES_V1
+                        + 32 * 1024
+                        + keys
+                            .iter()
+                            .map(|key| key.as_bytes().len() as u64 + 4096)
+                            .sum::<u64>(),
+                )
+                .map_err(|_| RebuildFailure::Transient)?;
             let admission = if dependencies.is_empty() {
+                for record in changes.values().flatten() {
+                    work.reserve_policy(policy, step.internal_entity_id(), record.fields())?;
+                }
                 let observations = changes
                     .iter()
                     .filter_map(|(key, record)| {
@@ -242,9 +255,12 @@ impl Delta {
                         })
                     })
                     .collect();
-                policy
+                let proof = policy
                     .authorize_projected_candidates(step.internal_entity_id(), observations)
-                    .map_err(|_| RebuildFailure::Integrity)?
+                    .map_err(|_| RebuildFailure::Integrity)?;
+                proof_work
+                    .settle_owned_value(proof)
+                    .map_err(|_| RebuildFailure::Transient)?
             } else {
                 // Administrative receipts can change relationship evidence
                 // without advancing the application head. Only the exact
@@ -254,13 +270,9 @@ impl Delta {
                     return Ok(None);
                 }
                 let keys = keys.iter().cloned().collect::<Vec<_>>();
-                QueryExecutionPort::authorize_projected_candidates(
-                    &captured.storage.query_executor(),
-                    step.internal_entity_id(),
-                    &keys,
-                    policy,
-                )
-                .map_err(|error| map_policy_admission_error(error, plan.generation))?
+                captured
+                    .authorize_projected_candidates(step.internal_entity_id(), &keys, policy)
+                    .map_err(|error| map_provider_policy_admission_error(error, plan.generation))?
             };
             if !admission.covers(step.internal_entity_id(), &keys) {
                 return Err(RebuildFailure::Integrity);

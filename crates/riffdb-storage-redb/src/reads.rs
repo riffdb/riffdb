@@ -1950,6 +1950,116 @@ mod tests {
         ));
     }
 
+    // req: OQ-040, PRJ-004
+    #[test]
+    fn admitted_policy_ranges_preserve_snapshot_order_continuation_and_lifetime() {
+        use riffdb_storage_api::{
+            OwnedSnapshotReader, ProviderPolicySourceReaderV1, SnapshotFenceReader,
+            SnapshotIndexDirectionV1, SnapshotIndexRangeRequestV1,
+        };
+        use riffdb_types::exact_provider_budget_v1::{EXACT_PROVIDER_BUDGET_BYTES, ProviderBudget};
+        let (_path, ports) = operational("provider-policy-range");
+        let write = ports.shared.database.begin_write().unwrap();
+        {
+            let mut table = write.open_table(SECONDARY_INDEXES).unwrap();
+            for i in 1..=6 {
+                let record = filtered_row(i, 1, "budget");
+                let encoded = encode_index_entry_v2(&record).unwrap();
+                table
+                    .insert(record.key().as_bytes(), encoded.as_bytes())
+                    .unwrap();
+            }
+        }
+        write.commit().unwrap();
+        let pinned = ports.open_owned_snapshot().unwrap();
+        let budget = ProviderBudget::new();
+        let lower = filtered_index_key(1).as_bytes().to_vec();
+        let upper = filtered_index_key(6).as_bytes().to_vec();
+        let mut after = None;
+        let mut keys = Vec::new();
+        loop {
+            let request = SnapshotIndexRangeRequestV1::new(
+                lower.clone(),
+                true,
+                upper.clone(),
+                true,
+                SnapshotIndexDirectionV1::Forward,
+                after,
+                StorageScanLimit::new(2).unwrap(),
+            )
+            .unwrap();
+            let ordinary = pinned.scan_snapshot_index_range(request.clone()).unwrap();
+            let occupied = budget
+                .reserve(
+                    EXACT_PROVIDER_BUDGET_BYTES - budget.observation().unwrap().fixed_owner_bytes,
+                )
+                .unwrap();
+            assert!(
+                matches!(pinned.read_provider_policy_index_range_v1(&request, &budget),
+                Err(error) if error.kind() == StorageErrorKind::Unavailable)
+            );
+            assert_eq!(budget.observation().unwrap().owned_bytes, 0);
+            drop(occupied);
+            let page = pinned
+                .read_provider_policy_index_range_v1(&request, &budget)
+                .unwrap();
+            assert!(**page == ordinary);
+            keys.extend(
+                page.entries()
+                    .iter()
+                    .map(|entry| entry.value().key().clone()),
+            );
+            after = page.next_after().map(|key| key.as_bytes().to_vec());
+            let clone = Arc::clone(&page);
+            drop(page);
+            assert!(budget.observation().unwrap().owned_bytes > 0);
+            drop(clone);
+            assert_eq!(budget.observation().unwrap().owned_bytes, 0);
+            assert_eq!(budget.observation().unwrap().reserved_bytes, 0);
+            if after.is_none() {
+                break;
+            }
+        }
+        assert_eq!(keys, (1..=6).map(filtered_index_key).collect::<Vec<_>>());
+        let bad_physical = filtered_index_key(3);
+        let substituted = filtered_row(4, 2, "budget");
+        let encoded = encode_index_entry_v2(&substituted).unwrap();
+        let write = ports.begin_write().unwrap();
+        write
+            .transaction()
+            .unwrap()
+            .open_table(SECONDARY_INDEXES)
+            .unwrap()
+            .insert(bad_physical.as_bytes(), encoded.as_bytes())
+            .unwrap();
+        write.commit().unwrap();
+        let request = SnapshotIndexRangeRequestV1::new(
+            lower,
+            true,
+            upper,
+            true,
+            SnapshotIndexDirectionV1::Forward,
+            None,
+            StorageScanLimit::new(6).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(
+            pinned
+                .read_provider_policy_index_range_v1(&request, &budget)
+                .unwrap()
+                .entries()
+                .len(),
+            6
+        );
+        let fresh = ports.open_owned_snapshot().unwrap();
+        assert!(
+            matches!(fresh.read_provider_policy_index_range_v1(&request, &budget),
+            Err(error) if error.kind() == StorageErrorKind::CorruptData)
+        );
+        assert_eq!(budget.observation().unwrap().owned_bytes, 0);
+        assert_eq!(budget.observation().unwrap().reserved_bytes, 0);
+    }
+
     // req: OQ-040
     #[test]
     fn admitted_provider_index_pages_preserve_partition_continuation_and_epoch() {

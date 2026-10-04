@@ -662,6 +662,107 @@ impl AuthorizedQueryRowPolicyContextV1 {
             .flat_map(|selected| selected.relationships.keys().map(|(target, _)| *target))
     }
 
+    /// Native workspace required before copying a provider row or evaluating
+    /// its read policy. The caller admits ownership-inspection scratch first.
+    /// Missing operands remain ordinary policy denials, rather than admission errors.
+    #[doc(hidden)]
+    pub fn provider_work_bound_v1(
+        &self,
+        entity: EntityTypeId,
+        row: &CanonicalRecord,
+    ) -> Result<u64, riffdb_types::exact_provider_budget_v1::BudgetUnavailable> {
+        use riffdb_types::exact_provider_budget_v1::BudgetUnavailable;
+        fn capacity<T: riffdb_types::InspectOwnedCapacityV1>(
+            value: &T,
+        ) -> Result<u64, BudgetUnavailable> {
+            riffdb_types::OwnedCapacityInspectionV1::inspect(value)
+                .map(|report| report.unshared_bytes())
+                .map_err(|_| BudgetUnavailable)
+        }
+        let encoded = u64::try_from(
+            riffdb_types::canonical_record_encoded_len(row).map_err(|_| BudgetUnavailable)?,
+        )
+        .map_err(|_| BudgetUnavailable)?;
+        let mut bound = capacity(row)?
+            .checked_mul(4)
+            .and_then(|bytes| {
+                encoded
+                    .checked_mul(4)
+                    .and_then(|encoded| bytes.checked_add(encoded))
+            })
+            .and_then(|bytes| bytes.checked_add(32 * 1024))
+            .ok_or(BudgetUnavailable)?;
+        let Some(selected) = self.policies.get(&entity) else {
+            return Ok(bound);
+        };
+        let mut add = |bytes: u64| -> Result<(), BudgetUnavailable> {
+            bound = bound.checked_add(bytes).ok_or(BudgetUnavailable)?;
+            Ok(())
+        };
+        add(u64::try_from(selected.policy.name().len())
+            .map_err(|_| BudgetUnavailable)?
+            .checked_mul(4)
+            .ok_or(BudgetUnavailable)?)?;
+        for rule in selected
+            .policy
+            .rules()
+            .iter()
+            .filter(|rule| rule.operation() == RowPolicyOperationV1::Read)
+        {
+            add(u64::try_from(rule.nodes().len())
+                .map_err(|_| BudgetUnavailable)?
+                .checked_mul((4 * std::mem::size_of::<NodeValue>()) as u64)
+                .ok_or(BudgetUnavailable)?)?;
+            let mut operand = |operand: &RowPolicyOperandV1| -> Result<(), BudgetUnavailable> {
+                let value = match operand.source() {
+                    RowPolicyValueSourceV1::RowField(field) => row
+                        .fields()
+                        .binary_search_by_key(field, |(candidate, _)| *candidate)
+                        .ok()
+                        .map(|index| &row.fields()[index].1),
+                    RowPolicyValueSourceV1::PrincipalFact(name) => self
+                        .principal
+                        .internal_facts()
+                        .internal_fact(name)
+                        .map(|fact| fact.internal_value()),
+                    RowPolicyValueSourceV1::Constant(value) => Some(value),
+                    RowPolicyValueSourceV1::PrincipalId | RowPolicyValueSourceV1::PrincipalKind => {
+                        None
+                    }
+                };
+                let bytes = value.map_or(Ok(4096_u64), capacity)?;
+                add(bytes
+                    .checked_mul(4)
+                    .and_then(|bytes| {
+                        bytes.checked_add((8 * std::mem::size_of::<CanonicalValue>() + 256) as u64)
+                    })
+                    .ok_or(BudgetUnavailable)?)
+            };
+            for node in rule.nodes() {
+                match node {
+                    RowPolicyExpressionNodeV1::Operand(value) => operand(value)?,
+                    RowPolicyExpressionNodeV1::IndexedExists { arguments, .. } => {
+                        for value in arguments {
+                            operand(value)?;
+                        }
+                    }
+                    _ => {}
+                }
+            }
+            for node in rule.nodes() {
+                if matches!(node, RowPolicyExpressionNodeV1::IndexedExists { .. }) {
+                    let metadata = 4
+                        * (std::mem::size_of::<IndexedRelationshipProbeV1>()
+                            + std::mem::size_of::<IndexedRelationshipEvidenceV1>()
+                            + std::mem::size_of::<AuthorizedIndexedRelationshipLookupV1>())
+                        + 8 * (riffdb_types::MAX_KEY_BYTES + 256);
+                    add(u64::try_from(metadata).map_err(|_| BudgetUnavailable)?)?;
+                }
+            }
+        }
+        Ok(bound)
+    }
+
     /// Applies the exact selected read policy to one authoritative row and the
     /// relationship observations requested by [`Self::relationship_lookups`].
     #[doc(hidden)]
@@ -2059,6 +2160,11 @@ const fn hex_nibble(value: u8) -> Option<u8> {
 }
 
 // Exhaustive non-durable ownership inventories for exact-provider admission.
+riffdb_types::inspect_owned_capacity_struct_v1!(AuthorizedProjectedRowAdmissionV1 {
+    owned: [candidates],
+    inline: [entity, admitted_count]
+});
+
 riffdb_types::inspect_owned_capacity_struct_v1!(AuthorizedQueryRowPolicyContextV1 {
     owned: [bundle, authority, principal, policies],
     inline: [],
@@ -2110,6 +2216,24 @@ mod projected_admission_tests {
         let mut key = EntityKeyBuilder::new(entity);
         key.push_u64(value).unwrap();
         key.finish().unwrap()
+    }
+
+    // req: OQ-040, PRJ-004
+    #[test]
+    fn provider_policy_work_bound_covers_large_row_encoding_and_preserves_decision() {
+        let context = context();
+        let entity = EntityTypeId::first();
+        let row = CanonicalRecord::new(vec![(
+            FieldId::first(),
+            CanonicalValue::string("x".repeat(262144)).unwrap(),
+        )])
+        .unwrap();
+        let bound = context.provider_work_bound_v1(entity, &row).unwrap();
+        let encoded = encode_canonical_record(&row).unwrap();
+        let report = riffdb_types::OwnedCapacityInspectionV1::inspect(&row).unwrap();
+        assert!(bound > report.unshared_bytes() + (encoded.capacity() * 2) as u64);
+        assert!(context.allows(entity, &row, &[]));
+        assert!(bound < riffdb_types::exact_provider_budget_v1::EXACT_PROVIDER_BUDGET_BYTES);
     }
 
     // req: VEC-007

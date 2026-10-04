@@ -191,3 +191,87 @@ pub(super) fn provider_decode_error(
         }
     }
 }
+
+impl riffdb_storage_api::ProviderPolicySourceReaderV1 for RedbOwnedSnapshot {
+    fn read_provider_entity_record_v1(
+        &self,
+        target: &EntityTarget,
+        budget: &ProviderBudget,
+    ) -> Result<Option<riffdb_storage_api::AdmittedProviderEntityRecordV1>, StorageError> {
+        RedbOwnedSnapshot::read_provider_entity_record_v1(self, target, budget)
+    }
+
+    fn read_provider_policy_index_range_v1(
+        &self,
+        request: &riffdb_storage_api::SnapshotIndexRangeRequestV1,
+        budget: &ProviderBudget,
+    ) -> Result<
+        std::sync::Arc<
+            riffdb_types::exact_provider_budget_v1::ProviderAllocation<
+                riffdb_storage_api::SnapshotIndexRangePageV1,
+            >,
+        >,
+        StorageError,
+    > {
+        use riffdb_storage_api::{
+            EncodedContentCharge, EncodedPageItem, SnapshotIndexDirectionV1,
+            SnapshotIndexRangePageV1,
+        };
+        // This private policy primitive has only forward callers. Refuse any
+        // unsupported direction before reading or allocating.
+        if request.direction() != SnapshotIndexDirectionV1::Forward {
+            return Err(super::storage_error(
+                riffdb_storage_api::StorageErrorKind::Unavailable,
+            ));
+        }
+        let wanted = usize::from(request.limit().get());
+        let maximum = (wanted + 2)
+            .checked_mul(32 * 1024)
+            .and_then(|bytes| bytes.checked_add(32 * 1024))
+            .and_then(|bytes| u64::try_from(bytes).ok())
+            .ok_or_else(super::corrupt)?;
+        let work = budget
+            .reserve(maximum)
+            .map_err(|_| super::storage_error(riffdb_storage_api::StorageErrorKind::Unavailable))?;
+        let mut upper = request.upper().to_vec();
+        if request.upper_inclusive() {
+            upper.push(0);
+        }
+        let raw = self.access.read_provider_range_v1(
+            JournalTable::SecondaryIndexes,
+            (request.after().unwrap_or(request.lower()), &upper),
+            wanted + 2,
+            budget,
+        )?;
+        let mut entries = Vec::with_capacity(wanted);
+        let mut has_more = false;
+        for row in raw.iter() {
+            let (physical, encoded) = &***row;
+            if request
+                .after()
+                .is_some_and(|after| after == physical.as_ref())
+                || (!request.lower_inclusive() && physical.as_ref() == request.lower())
+                || (!request.upper_inclusive() && physical.as_ref() == request.upper())
+            {
+                continue;
+            }
+            let decoded =
+                riffdb_storage_api::decode_provider_index_record_admitted_v1(encoded, budget)
+                    .map_err(provider_decode_error)?;
+            if decoded.key().as_bytes() != physical.as_ref() {
+                return Err(super::corrupt());
+            }
+            if entries.len() == wanted {
+                has_more = true;
+                break;
+            }
+            let charge = EncodedContentCharge::new(encoded.len()).ok_or_else(super::corrupt)?;
+            entries.push(EncodedPageItem::new((**decoded).clone(), charge));
+        }
+        drop(raw);
+        let page = SnapshotIndexRangePageV1::new(request, entries, has_more)
+            .map_err(super::value_error)?;
+        work.commit_value(page)
+            .map_err(|_| super::storage_error(riffdb_storage_api::StorageErrorKind::Unavailable))
+    }
+}

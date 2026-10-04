@@ -65,6 +65,18 @@ impl SourceRowsWork {
             .absorb(additional)
             .map_err(|_| RebuildFailure::Transient)
     }
+    pub(super) fn reserve_policy(
+        &mut self,
+        policy: &riffdb_policy::AuthorizedQueryRowPolicyContextV1,
+        entity: riffdb_types::EntityTypeId,
+        row: &riffdb_types::CanonicalRecord,
+    ) -> Result<(), RebuildFailure> {
+        self.grow(
+            policy
+                .provider_work_bound_v1(entity, row)
+                .map_err(|_| RebuildFailure::Transient)?,
+        )
+    }
     pub(super) fn reserve_tree<K, V>(&mut self, count: usize) -> Result<(), RebuildFailure> {
         self.grow(tree::<K, V>(count)?)
     }

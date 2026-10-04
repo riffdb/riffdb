@@ -48,6 +48,32 @@ pub(super) struct CapturedSource {
 }
 
 impl CapturedSource {
+    pub(super) fn authorize_projected_candidates(
+        &self,
+        entity: riffdb_types::EntityTypeId,
+        candidates: &[riffdb_types::EntityKey],
+        policy: &riffdb_policy::AuthorizedQueryRowPolicyContextV1,
+    ) -> Result<
+        Arc<
+            riffdb_types::exact_provider_budget_v1::ProviderAllocation<
+                riffdb_policy::AuthorizedProjectedRowAdmissionV1,
+            >,
+        >,
+        riffdb_storage_api::StorageError,
+    > {
+        let _metadata = self.budget.reserve(32 * 1024).map_err(|_| {
+            riffdb_storage_api::StorageError::new(StorageErrorKind::Unavailable, None)
+        })?;
+        let snapshot = self.storage.pin()?;
+        super::authorize_provider_projected_candidates(
+            &snapshot,
+            &self.work,
+            &self.budget,
+            entity,
+            candidates,
+            policy,
+        )
+    }
     pub(super) fn capture(
         runtime: &ExactTextRuntime,
         head: CommitSequence,
