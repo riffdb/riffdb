@@ -2436,6 +2436,13 @@ impl ServerProcess {
                     .expect("test database has parent")
                     .join("backups"),
             )
+            .arg("--projections-root")
+            .arg(
+                database_path
+                    .parent()
+                    .expect("test database has parent")
+                    .join("projections"),
+            )
             .arg("--capability-keys")
             .arg(capability_keys_path)
             .arg("--idempotency-keys")

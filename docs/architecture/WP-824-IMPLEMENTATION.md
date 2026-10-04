@@ -1,5 +1,18 @@
 # WP-824 implementation progress
 
+## Restart-test custody isolation
+
+The first full-CI attempt reached daemon restart tests and failed five startup
+checks because their shared default projection root contained legacy nonprivate
+checkpoints. The test harness now supplies a projections root inside each owned
+scratch directory. All seven restart tests pass with the production custody
+checks unchanged. Product documentation already describes private custody and
+legacy-directory refusal; this test-only change does not affect configuration,
+interfaces or compatibility. Full CI must be rerun to completion.
+
+D003 decision: isolate test checkpoint ownership using the existing operator
+configuration; do not loosen custody checks or alter legacy checkpoint files.
+
 ## Qualified contract-plan retirement
 
 A newly authorized registration qualifies an older cache owner only when its
