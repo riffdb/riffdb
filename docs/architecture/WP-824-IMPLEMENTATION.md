@@ -13,6 +13,18 @@ interfaces or compatibility. Full CI must be rerun to completion.
 D003 decision: isolate test checkpoint ownership using the existing operator
 configuration; do not loosen custody checks or alter legacy checkpoint files.
 
+The second full-CI attempt passed those restart tests and reached two
+server-configuration startup failures with the same shared default root. The
+remaining single-database daemon launchers now also select owned scratch
+projection roots, including writer-failure, offline-maintenance, contract-
+migration and full-recovery tests. All six server-configuration tests, the
+injected writer-failure test, all three migration recovery tests and all three
+offline-maintenance tests pass. Formatting, scoped Clippy and handbook checks
+also pass. The larger recovery matrix reaches its online-retention case but
+fails because no pruning was observed before its deadline; this needs separate
+investigation under WP-823. Full CI still requires completion. Both failed CI
+attempts remain failures; neither counts as qualification evidence.
+
 ## Qualified contract-plan retirement
 
 A newly authorized registration qualifies an older cache owner only when its

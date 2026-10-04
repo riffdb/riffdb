@@ -360,6 +360,8 @@ impl ServerProcess {
                     .ok_or_else(|| io::Error::other("database has no parent"))?
                     .join("backups"),
             )
+            .arg("--projections-root")
+            .arg(database.with_extension("projections"))
             .arg("--capability-keys")
             .arg(capability_keys)
             .arg("--idempotency-keys")

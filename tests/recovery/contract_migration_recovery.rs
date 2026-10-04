@@ -274,6 +274,8 @@ fn artifact_mismatch_fails_closed_and_restores_predecessor_readiness() -> TestRe
         .arg(AUDIENCE)?
         .arg("--backup-root")?
         .arg(backup_root.as_os_str())?
+        .arg("--projections-root")?
+        .arg(database.with_extension("projections").as_os_str())?
         .arg("--capability-keys")?
         .arg(capability_keys.as_os_str())?
         .arg("--idempotency-keys")?
@@ -406,6 +408,8 @@ fn invalid_published_successor_rolls_back_before_readiness() -> TestResult<()> {
         .arg(AUDIENCE)?
         .arg("--backup-root")?
         .arg(backup_root.as_os_str())?
+        .arg("--projections-root")?
+        .arg(database.with_extension("projections").as_os_str())?
         .arg("--capability-keys")?
         .arg(capability_keys.as_os_str())?
         .arg("--idempotency-keys")?

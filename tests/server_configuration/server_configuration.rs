@@ -461,7 +461,8 @@ impl ProcessPaths {
              idempotency_keys = {idempotency_keys:?}\n\
              \n\
              [maintenance]\n\
-             backup_root = {backup_root:?}\n",
+             backup_root = {backup_root:?}\n\
+             projections_root = {projections_root:?}\n",
             database = database.to_str().ok_or("non-UTF-8 database path")?,
             capability_keys = self
                 .capability_keys
@@ -472,6 +473,11 @@ impl ProcessPaths {
                 .to_str()
                 .ok_or("non-UTF-8 idempotency path")?,
             backup_root = self.backup_root.to_str().ok_or("non-UTF-8 backup path")?,
+            projections_root = self
+                .root
+                .join("projections")
+                .to_str()
+                .ok_or("non-UTF-8 projections path")?,
         );
         let path = self.root.join("riffdb.toml");
         fs::write(&path, document)?;

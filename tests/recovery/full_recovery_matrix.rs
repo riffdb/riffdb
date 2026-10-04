@@ -1651,6 +1651,8 @@ impl ProcessFixture {
             .arg(AUDIENCE)?
             .arg("--backup-root")?
             .arg(self.backup_root.as_os_str())?
+            .arg("--projections-root")?
+            .arg(self.database.with_extension("projections").as_os_str())?
             .arg("--capability-keys")?
             .arg(self.capability_keys.as_os_str())?
             .arg("--idempotency-keys")?

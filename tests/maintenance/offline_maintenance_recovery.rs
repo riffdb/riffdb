@@ -1238,6 +1238,8 @@ impl ServerProcess {
             .arg(AUDIENCE)
             .arg("--backup-root")
             .arg(backup_root)
+            .arg("--projections-root")
+            .arg(database_path.with_extension("projections"))
             .arg("--capability-keys")
             .arg(capability_keys_path)
             .arg("--idempotency-keys")
