@@ -1,5 +1,24 @@
 # WP-824 implementation progress
 
+## Closure, October 4
+
+WP-824 is complete. The progress entries below preserve earlier failures and
+implementation choices; their remaining-work notes are historical snapshots.
+Full CI passes at revision `1bf6920d2`, with four concurrent tests and six build
+jobs. No failed attempt is relabelled as a pass. The real lifecycle campaign
+remains WP-825/WP-826 work and the 24-hour run has not started.
+
+PR note: Package WP-824; Tier guarantee; Behavior: aggregate admitted ownership,
+exact safe retirement and bounded artifact cleanup across all five provider
+families; Checks: full CI, deterministic churn, saturation, policy isolation,
+worker/cursor pins, final-alias accounting, crash cleanup and historical rebuild
+oracles; Compatibility: unchanged application interfaces, durable encodings,
+authorization, query semantics, ordering, retention guarantees and custody.
+Updated handbook pages: configuration and the sustainable milestone handoff.
+Hazards and follow-ups: protected saturation still refuses safely; campaign
+resource accounting must be measured on the frozen host. All nine scoped closure acceptance checks pass.
+
+
 ## Restart-test custody isolation
 
 The first full-CI attempt reached daemon restart tests and failed five startup

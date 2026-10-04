@@ -28597,6 +28597,28 @@ work_packages:
   - An accepted decision, normative requirement, guarantee, or declared path scope changes.
   - A new durable identity, public interface, or critical dependency lacks accepted authority.
   exit_gate: Sequential churn recovers slots and bytes; protected saturation refuses without cursor substitution, cross-policy reuse, premature artifact deletion, or uncharged ownership.
+  closure:
+    status: complete
+    completed_at: '2026-10-04'
+    requirements_satisfied: [PRJ-001, PRJ-004, OQ-040]
+    evidence: docs/architecture/WP-824-IMPLEMENTATION.md
+    decision: Exact owner churn, protected saturation, cancellation, crash cleanup,
+      historical rebuilding and admitted allocations pass semantic tests. Full CI
+      passes with unchanged production custody, policy, ordering and durable formats.
+      Real workload accounting remains part of WP-825/WP-826 qualification.
+    decisions_taken:
+    - Share one aggregate ownership budget; admit construction workspace before
+      allocation and retain settled charges until the final alias drops.
+    - Use borrowed payload inspection and caller-admitted decoding scratch while
+      preserving durable formats and all canonicality, checksum and semantic checks.
+    - Read policy observations through admitted readers of the original captured
+      immutable source; preserve shared authorization and existing scan ceilings.
+    - Qualify supersession only for strictly newer versions of the same exact named
+      operation, lineage, partition and authority; preserve historical callability.
+    - Protect operation, worker and epoch pins plus minimum retention; cancel safely
+      and delete only the exact owned artifact through bounded background cleanup.
+    - Select owned scratch projection roots for real-process fixtures and the demo
+      using existing configuration, preserving production custody and test deadlines.
 
 - id: WP-825
   name: TicketDesk sustainable lifecycle workload and campaign runner

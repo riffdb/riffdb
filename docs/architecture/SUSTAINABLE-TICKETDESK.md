@@ -4,8 +4,8 @@ This is the implementation handoff for the milestone selected on October 1,
 2026. Its architecture records were **accepted** in session that day. WP-822
 adds the optional [durable local archive](../operations/LOCAL-OUTBOX-ARCHIVE.md)
 and production dispatch worker; scoped acceptance and full CI pass. Source
-receipt reclamation is implemented and validated; provider retirement and the
-real rehearsal status are recorded below.
+receipt reclamation and exact-provider retirement are implemented and validated.
+WP-823 and WP-824 are complete; the real workload and rehearsal remain open.
 The evidence checker is preparatory acceptance code.
 
 The target is 65,536 seeded tickets across 64 organizations, 100 commands/s
@@ -339,3 +339,14 @@ configuration, startup integrity and this milestone handoff. Hazards and
 follow-ups: the storage fixture's stopped outbox preparation is not production
 qualification; WP-825 and WP-826 must demonstrate the real application and
 repeated physical generations on the frozen host. No 24-hour run has started.
+
+## WP-824 closure, October 4
+
+WP-824 is complete; its [implementation record](WP-824-IMPLEMENTATION.md)
+contains the accounting model, semantic tests, failure history and closure note.
+Full CI passes at the same revision recorded for WP-823. Current authority,
+minimum retention and active pins remain binding during retirement. A retired
+historical module remains callable through ordinary fresh-owner admission.
+The aggregate budget refuses protected saturation before allocating uncharged
+workspace. WP-825 can now implement the actual campaign against completed
+runtime prerequisites.
