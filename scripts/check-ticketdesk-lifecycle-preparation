@@ -15,5 +15,5 @@ preparation_root="$(mktemp -d "${TMPDIR:-/tmp}/riffdb-lifecycle-preparation.XXXX
 ./scripts/ticketdesk-lifecycle-smoke --root "$preparation_root/attempt" \
     --server "$task_target_dir/debug/riffdbd" \
     --cli "$task_target_dir/debug/riffdb" --worker "$task_target_dir/debug/lifecycle" \
-    --driver "$task_target_dir/debug/riffdb-driverd" --observe
+    --driver "$task_target_dir/debug/riffdb-driverd" --observe --additive-deploy
 rm -rf -- "$preparation_root"

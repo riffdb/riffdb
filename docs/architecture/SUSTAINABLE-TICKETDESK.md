@@ -502,3 +502,36 @@ Updated handbook pages: this handoff; Hazards/follow-ups: repeat full-population
 load with observers on the durable-SSD host, complete actual faults, freeze the
 campaign, reconcile archives/restores and run the required short rehearsal.
 The 24-hour run remains unstarted.
+
+
+## WP-825 observer scheduling and exact-parent successor
+
+The first full-population attempt with observers ended with a terminal live
+response while its serialized acknowledgement loop left the live head far
+behind the committed head. Its failure
+and logs remain preserved; it is not a passing observation result. Live-stream
+draining now has a separate task within the same two auxiliary slots. A
+deterministic bounded-channel schedule holds consumer acknowledgement while
+both live updates advance, then stops the reader explicitly. Another test
+rejects incarnation drift and decreasing frontiers without publishing them.
+
+The additive fixture is an exact-parent V2 closure. Its extra compiled
+`LifecycleVersion` command leaves all parent entities and command identities
+intact. The public TLS application-lock workflow generates all bindings against
+the active V1 parent; the independent compiler test checks the retained identity
+and exact generated V2 bundle hash. Retired V1 bindings remain refused after
+activation; preparation binds the current V2 role. Rust and TypeScript public
+V2 smoke operations pass, including a positive fenced update, original-key
+replay, unchanged stale refusal, named state and partition reconciliation.
+The one-ticket preparation stops the old observer before activation. Continuous
+observer handover and queued offered work remain actual campaign requirements.
+
+PR note: Package WP-825 (open); Tier guarantee; Behavior: independent live
+reader and exact-parent V2 preparation; Checks: eleven Rust semantic/schedule
+cases, generated V2 closure, real two-version Rust/TypeScript TLS preparation,
+Clippy, all 33 generators, three compiler/schema checks, current-role denial of
+the added command, and scoped acceptance; Compatibility: native version/policy refusal and
+qualification gates preserved; Updated handbook pages: this handoff;
+Hazards/follow-ups: repeat the corrected observer population probe on the host,
+complete the fault controller and independent campaign reconciliation, freeze
+artifacts and run the required short rehearsal. No 24-hour run has started.

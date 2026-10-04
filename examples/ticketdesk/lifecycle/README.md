@@ -88,3 +88,17 @@ compiler-bound identity and a freshness fence, then checks the exact count.
 This observer currently refuses lifecycle interruptions; fault-aware restart,
 restore and rotation handling remain campaign work. Its positive smoke and
 hostile event/projection oracle tests are preparation evidence only.
+
+The `--additive-deploy` one-ticket preparation first checks V1, stops its
+observer, deploys the exact-parent V2 application, binds its declared role, and
+checks Rust and optional TypeScript operations under V2. The positive V2 update
+retains its expected-revision fence and original-key replay. This mode cannot
+be combined with a population probe. The full campaign must quiesce outstanding
+V1 operations, account queued offered work, and reconnect current observers
+across the scheduled deployment; that controller remains incomplete.
+
+Generate or check the V2 compatibility closure with
+`scripts/generate-ticketdesk-lifecycle-successor`. Generation uses an owned
+verified-TLS preparation daemon and the public parent-aware application-lock
+workflow. The V2 fixture adds one compiled version command and preserves every
+parent entity and command identity. No schema transformation is required.

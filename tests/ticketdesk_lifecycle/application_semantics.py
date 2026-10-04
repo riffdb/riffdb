@@ -24,6 +24,21 @@ class ApplicationSemantics(unittest.TestCase):
         result = self.compile(APPLICATION / "riffdb.application.json")
         self.assertEqual(result.returncode, 0, "actual lifecycle application must compile")
 
+    def test_successor_added_command_has_closed_generated_schema_without_role_authority(self):
+        successor = APPLICATION.parent / "lifecycle-v2"
+        catalog = json.loads((successor / "generated/mcp/tools.json").read_bytes())
+        command = next(command for command in catalog["commands"] if command["name"] == "ticketdesk_lifecycle_version")
+        descriptor = command["mcp_descriptor"]
+        schema = descriptor["inputSchema"]
+        self.assertFalse(schema["additionalProperties"])
+        self.assertEqual(schema["required"], ["idempotency_key", "organization_id"])
+        self.assertEqual(schema["properties"]["idempotency_key"]["x-riffdb-maxUtf8Bytes"], 128)
+        outcomes = descriptor["outputSchema"]["$defs"]["outcome"]["oneOf"]
+        self.assertEqual({value["properties"]["type"]["const"] for value in outcomes}, {"Missing", "Version"})
+        self.assertTrue(all(value["additionalProperties"] is False for value in outcomes))
+        source = json.loads((successor / "riffdb.application.json").read_bytes())
+        self.assertTrue(all("LifecycleVersion" not in role["commands"] for role in source["roles"]))
+
     def test_replacement_without_caller_fence_is_rejected_at_both_write_spans(self):
         with tempfile.TemporaryDirectory(prefix="riffdb-lifecycle-fence-") as directory:
             root = Path(directory) / "application"

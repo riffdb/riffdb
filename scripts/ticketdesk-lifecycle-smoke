@@ -122,7 +122,7 @@ def typescript_smoke(root, repository, driver_binary, port):
     endpoint = f"https://127.0.0.1:{port}"
     identity = {"applicationManifestHash": lock["exact_manifest_hash"],
                 "operationCatalogHash": catalog["content_hash"],
-                "contractLineage": "TicketDeskLifecycle", "contractVersion": 1,
+                "contractLineage": "TicketDeskLifecycle", "contractVersion": lock["contract"]["version"],
                 "contractBundleHash": lock["contract"]["bundle_hash"], "database": "default",
                 "role": "TicketDeskLifecycleApplication", "roleDefinitionHash": role["definition_hash"],
                 "remoteIdentityHash": hashlib.sha256((endpoint + "|127.0.0.1").encode()).hexdigest()}
@@ -199,6 +199,8 @@ def main():
     parser.add_argument("--server", required=True, type=Path)
     parser.add_argument("--cli", required=True, type=Path)
     parser.add_argument("--worker", required=True, type=Path)
+    parser.add_argument("--prepare-successor", action="store_true", help="generate the exact-parent V2 closure in the private root")
+    parser.add_argument("--additive-deploy", action="store_true", help="deploy exact-parent V2 before exercising retained V1 bindings")
     parser.add_argument("--observe", action="store_true", help="register consumer and live query before seeding")
     parser.add_argument("--driver", type=Path, help="also exercise retained TypeScript bindings through native Rust driver")
     parser.add_argument("--population-probe-seconds", type=int, default=0,
@@ -312,6 +314,23 @@ tls_server_name = "127.0.0.1"
                 RIFFDB_LIFECYCLE_CA=str(root / "ca.pem"),
                 RIFFDB_LIFECYCLE_SEED_CREDENTIAL=str(root / "seed.credential"),
                 RIFFDB_LIFECYCLE_APPLICATION_CREDENTIAL=str(root / "application.credential"))
+            if args.prepare_successor:
+                successor = root / "successor"
+                shutil.copytree(root / "application", successor)
+                (successor / "riffdb.application.lock.json").unlink()
+                shutil.rmtree(successor / "generated")
+                shutil.copyfile(repository / "fixtures/ticketdesk_lifecycle/additive-v2.riff",
+                                successor / "riffdb/contract.riff")
+                manifest_path = successor / "riffdb.application.json"
+                manifest = read_json(manifest_path)
+                manifest["contract"]["version"] = 2
+                manifest_path.write_text(json.dumps(manifest, indent=2) + "\n")
+                invoke(root, "successor-lock", base + ["application", "lock", "--write",
+                       str(manifest_path), "--lock", "riffdb.application.lock.json"])
+                invoke(root, "successor-check", base + ["application", "lock", "--check",
+                       str(manifest_path), "--lock", "riffdb.application.lock.json"])
+                print("Exact-parent successor closure generated privately; no campaign qualification claimed.")
+                return 0
             if args.observe:
                 environment["RIFFDB_LIFECYCLE_OBSERVER_STOP"] = str(root / "observer.stop")
                 observer_ready = queue.Queue(maxsize=1)
@@ -384,6 +403,41 @@ tls_server_name = "127.0.0.1"
                         require(observed["live_updates"] > 1 and observed["duplicates"] == 0,
                                 "observer_reconciliation")
                         break
+            if args.additive_deploy:
+                require(not args.population_probe_seconds, "successor_preparation_mode")
+                if observer:
+                    write(root, "observer.stop", "stop\n")
+                    observer.wait(timeout=15)
+                    observer_pump.join(timeout=5)
+                    require(observer.returncode == 0 and not observer_pump.is_alive(), "observer_shutdown")
+                    observer = None
+                successor = root / "successor"
+                shutil.copytree(repository / "examples/ticketdesk/lifecycle-v2", successor)
+                source_v2 = successor / "riffdb.application.json"
+                invoke(root, "additive-deploy", base + ["application", "deploy", str(source_v2),
+                       "--lock", "riffdb.application.lock.json"])
+                deployment = read_json(root / "additive-deploy.stdout")
+                require(deployment.get("schema") == "riffdb.cli.output/v1"
+                        and deployment.get("command") == "application.deploy" and deployment.get("ok") is True
+                        and deployment["result"]["contract_version"] == "2", "additive_activation")
+                invoke(root, "bind-successor", base + ["role", "bind", str(source_v2),
+                       "--role", "TicketDeskLifecycleApplication", "--principal", "lifecycle-smoke-application",
+                       "--actor-kind", "service", "--audience", "riffdb-ticketdesk-lifecycle",
+                       "--lifetime-seconds", "3600", "--credential-output", str(root / "application-v2.credential")])
+                environment["RIFFDB_LIFECYCLE_CONTRACT_VERSION"] = "2"
+                environment["RIFFDB_LIFECYCLE_APPLICATION_CREDENTIAL"] = str(root / "application-v2.credential")
+                invoke(root, "successor-worker", [worker, "successor-smoke"], environment=environment)
+                require(read_json(root / "successor-worker.stdout", 4096) == {
+                    "schema": "riffdb.ticketdesk-lifecycle-successor-smoke/v1", "contract_version": 2,
+                    "caller_fence": True, "idempotency": True, "state_reconciled": True,
+                    "partition_isolation": True}, "successor_observation")
+                if driver_binary:
+                    successor_smoke = root / "successor-smoke"
+                    successor_smoke.mkdir(mode=0o700)
+                    shutil.copytree(successor, successor_smoke / "application")
+                    shutil.copyfile(root / "ca.pem", successor_smoke / "ca.pem")
+                    shutil.copyfile(root / "application-v2.credential", successor_smoke / "application.credential")
+                    typescript_smoke(successor_smoke, repository, driver_binary, port)
         finally:
             observer_failed = False
             if observer:

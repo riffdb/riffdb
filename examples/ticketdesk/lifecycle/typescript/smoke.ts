@@ -27,7 +27,7 @@ async function main(): Promise<void> {
     const missing = await client.getTicket({ organization_id: "01900000-0000-7000-8001-000000000001", ticket_id });
     requireResult(missing.value.outcome === "NotFound");
     const input = { organization_id, ticket_id, expected_revision: 18446744073709551615n,
-      status: "Open", idempotency_key: "ticketdesk-lifecycle-typescript-stale" };
+      status: "Open", idempotency_key: `ticketdesk-lifecycle-typescript-stale-${identity.contractVersion}` };
     const first = await client.updateTicket(input);
     const replay = await client.updateTicket(input);
     requireResult(first.outcome.outcome === "Stale" && replay.outcome.outcome === "Stale"

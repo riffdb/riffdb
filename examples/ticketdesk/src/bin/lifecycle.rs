@@ -21,6 +21,11 @@ mod application {
     include!("../../lifecycle/generated/rust/client.rs");
 }
 
+#[allow(dead_code, missing_docs, unreachable_pub, unused_imports)]
+mod application_v2 {
+    include!("../../lifecycle-v2/generated/rust/client.rs");
+}
+
 use application::{
     CreateOrganizationInput, CreateOrganizationOutcome, CreateProjectInput, CreateProjectOutcome,
     CreateTicketInput, CreateTicketOutcome, CreateUserInput, CreateUserOutcome, GetTicketParams,
@@ -29,6 +34,10 @@ use application::{
     UpdateTicketInput, UpdateTicketOutcome,
 };
 
+#[path = "../lifecycle_workload/current.rs"]
+mod current;
+#[path = "../lifecycle_workload/deployment.rs"]
+mod deployment;
 #[path = "../lifecycle_workload/model.rs"]
 mod model;
 #[path = "../lifecycle_workload/observe.rs"]
@@ -50,6 +59,7 @@ async fn main() {
         Some("probe") => probe::run().await,
         Some("descriptor") => descriptor(),
         Some("observe") => observe::run().await,
+        Some("successor-smoke") => current::smoke().await,
         _ => Err("arguments"),
     };
     if let Err(code) = result {
@@ -58,7 +68,9 @@ async fn main() {
     }
 }
 
-async fn connect(credential_variable: &str) -> Result<TicketDeskLifecycleClient> {
+async fn connect_base(
+    credential_variable: &str,
+) -> Result<(StableApplicationClient, CallMetadata)> {
     let endpoint = env::var("RIFFDB_LIFECYCLE_ENDPOINT").map_err(|_| "configuration")?;
     let ca = env::var_os("RIFFDB_LIFECYCLE_CA").ok_or("configuration")?;
     let credential_path = env::var_os(credential_variable).ok_or("configuration")?;
@@ -79,6 +91,11 @@ async fn connect(credential_variable: &str) -> Result<TicketDeskLifecycleClient>
         .map_err(|_| "connection")?;
     let metadata =
         CallMetadata::authenticated(credential).with_database(DatabaseAlias::default_alias());
+    Ok((client, metadata))
+}
+
+async fn connect(credential_variable: &str) -> Result<TicketDeskLifecycleClient> {
+    let (client, metadata) = connect_base(credential_variable).await?;
     Ok(TicketDeskLifecycleClient::new(
         client,
         metadata,
@@ -345,7 +362,7 @@ async fn reconcile() -> Result<()> {
     let mut workers = JoinSet::new();
     for worker in 0..SEED_WORKERS {
         workers.spawn(async move {
-            let mut client = connect("RIFFDB_LIFECYCLE_APPLICATION_CREDENTIAL").await?;
+            let mut client = current::connect().await?;
             for ticket in (worker..model::POPULATION).step_by(SEED_WORKERS as usize) {
                 let query = GetTicketParams {
                     organization_id: uuid(0x8001, ticket / TICKETS_PER_ORGANIZATION),

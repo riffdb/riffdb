@@ -1,0 +1,33 @@
+#!/usr/bin/env bash
+# req: END-003, END-007, END-008
+set -euo pipefail
+repo_root="$(git rev-parse --show-toplevel)"
+cd "$repo_root"
+if [[ "${1:-}" == --check ]]; then
+    cargo run --locked -p riffdb-cli --bin riffdb -- application lock --check \
+        examples/ticketdesk/lifecycle-v2/riffdb.application.json \
+        --lock riffdb.application.lock.json --output json
+    cargo test --locked -p riffdb-ticketdesk --bin lifecycle deployment::tests
+    exit
+fi
+[[ $# == 0 ]] || { echo 'usage: generate-ticketdesk-lifecycle-successor [--check]' >&2; exit 2; }
+cargo build --locked -p riffdb-server --bin riffdbd -p riffdb-cli --bin riffdb \
+    -p riffdb-ticketdesk --bin lifecycle
+task_target_dir="$(cargo metadata --no-deps --format-version 1 | python3 -c \
+    'import json,sys; print(json.load(sys.stdin)["target_directory"])')"
+task_root="$(mktemp -d "${TMPDIR:-/tmp}/riffdb-lifecycle-successor.XXXXXX")"
+./scripts/ticketdesk-lifecycle-smoke --root "$task_root/attempt" \
+    --server "$task_target_dir/debug/riffdbd" --cli "$task_target_dir/debug/riffdb" \
+    --worker "$task_target_dir/debug/lifecycle" --prepare-successor
+python3 - "$task_root/attempt/successor" <<'PY'
+from pathlib import Path
+import shutil
+import sys
+source = Path(sys.argv[1])
+target = Path("examples/ticketdesk/lifecycle-v2")
+for name in ("riffdb.application.json", "riffdb.application.lock.json"):
+    shutil.copyfile(source / name, target / name)
+for name in ("generated", "riffdb"):
+    shutil.copytree(source / name, target / name, dirs_exist_ok=True)
+PY
+rm -rf -- "$task_root"

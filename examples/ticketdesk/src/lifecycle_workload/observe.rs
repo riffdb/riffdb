@@ -4,6 +4,10 @@ use riffdb_client_rust::ApplicationEventId;
 
 use super::Result;
 use super::application::TicketEventsEvent;
+use std::sync::{
+    Arc,
+    atomic::{AtomicU64, Ordering},
+};
 
 struct EventOracle {
     latest: Vec<Option<(ApplicationEventId, TicketEventsEvent)>>,
@@ -87,6 +91,71 @@ impl EventOracle {
     }
 }
 
+struct LiveProgress {
+    head: AtomicU64,
+    updates: AtomicU64,
+}
+
+trait LiveInput: Send {
+    fn message(
+        &mut self,
+    ) -> impl std::future::Future<Output = Result<Option<riffdb_client_rust::LiveQueryCheckpoint>>> + Send;
+}
+
+impl LiveInput
+    for riffdb_client_rust::TypedLiveQueryStream<super::application::TicketQueueWatchParams>
+{
+    async fn message(&mut self) -> Result<Option<riffdb_client_rust::LiveQueryCheckpoint>> {
+        use super::application::TicketQueueWatchUpdate;
+        self.message()
+            .await
+            .map_err(|_| "observer_live_query")?
+            .map(|update| match update {
+                TicketQueueWatchUpdate::Snapshot(_) => Err("observer_duplicate_snapshot"),
+                TicketQueueWatchUpdate::Reset(_) => Err("observer_unplanned_reset"),
+                TicketQueueWatchUpdate::Patch(value) => Ok(value.checkpoint),
+                TicketQueueWatchUpdate::Checkpoint(value) => Ok(value),
+                TicketQueueWatchUpdate::Terminal(value) => Err(match value.reason.as_str() {
+                    "LIVE_QUERY_TERMINAL_REASON_BUFFER_PRESSURE" => "observer_live_buffer_pressure",
+                    "LIVE_QUERY_TERMINAL_REASON_LIFETIME_EXPIRED" => "observer_live_lifetime",
+                    "LIVE_QUERY_TERMINAL_REASON_DEFINITION_CHANGED" => "observer_live_definition",
+                    "LIVE_QUERY_TERMINAL_REASON_AUTHORIZATION_CHANGED" => {
+                        "observer_live_authorization"
+                    }
+                    "LIVE_QUERY_TERMINAL_REASON_SERVICE_UNAVAILABLE" => "observer_live_unavailable",
+                    _ => "observer_live_terminal",
+                }),
+            })
+            .transpose()
+    }
+}
+
+async fn drain_live<S: LiveInput>(
+    mut stream: S,
+    progress: Arc<LiveProgress>,
+    incarnation: u64,
+    mut stop: tokio::sync::watch::Receiver<bool>,
+) -> Result<()> {
+    let mut previous = progress.head.load(Ordering::Acquire);
+    loop {
+        tokio::select! {
+            changed = stop.changed() => {
+                changed.map_err(|_| "observer_stop")?;
+                if *stop.borrow() { return Ok(()); }
+            }
+            update = stream.message() => {
+                let next = update?.ok_or("observer_live_ended")?;
+                if next.history_incarnation != incarnation || next.application_head < previous {
+                    return Err("observer_live_frontier");
+                }
+                previous = next.application_head;
+                progress.head.store(previous, Ordering::Release);
+                progress.updates.fetch_add(1, Ordering::AcqRel);
+            }
+        }
+    }
+}
+
 pub(super) async fn run() -> Result<()> {
     use super::application::{
         TicketEventsConsumer, TicketEventsParams, TicketQueueResult, TicketQueueWatchParams,
@@ -148,7 +217,10 @@ pub(super) async fn run() -> Result<()> {
     if !queue.tickets.is_empty() {
         return Err("observer_requires_fresh_population");
     }
-    let mut live_head = snapshot.checkpoint.application_head;
+    let progress = Arc::new(LiveProgress {
+        head: AtomicU64::new(snapshot.checkpoint.application_head),
+        updates: AtomicU64::new(1),
+    });
     let incarnation = snapshot.checkpoint.history_incarnation;
     if incarnation == 0 {
         return Err("observer_incarnation");
@@ -157,7 +229,14 @@ pub(super) async fn run() -> Result<()> {
     let mut events = 0_u64;
     let mut duplicates = 0_u64;
     let mut checkpoint = 0_u64;
-    let mut live_updates = 1_u64;
+    let (stop_live, live_stopped) = tokio::sync::watch::channel(false);
+    let mut live_workers = tokio::task::JoinSet::new();
+    live_workers.spawn(drain_live(
+        stream,
+        Arc::clone(&progress),
+        incarnation,
+        live_stopped,
+    ));
     println!(
         "{{\"schema\":\"riffdb.ticketdesk-lifecycle-observer-ready/v1\",\"auxiliary_slots\":2}}"
     );
@@ -168,20 +247,9 @@ pub(super) async fn run() -> Result<()> {
     let mut published = 0;
     loop {
         tokio::select! {
-            update = stream.message() => {
-                let update = update.map_err(|_| "observer_live_query")?.ok_or("observer_live_ended")?;
-                let next = match update {
-                    TicketQueueWatchUpdate::Snapshot(_) => return Err("observer_duplicate_snapshot"),
-                    TicketQueueWatchUpdate::Reset(_) => return Err("observer_unplanned_reset"),
-                    TicketQueueWatchUpdate::Patch(value) => value.checkpoint,
-                    TicketQueueWatchUpdate::Checkpoint(value) => value,
-                    TicketQueueWatchUpdate::Terminal(_) => return Err("observer_live_terminal"),
-                };
-                if next.history_incarnation != incarnation || next.application_head < live_head {
-                    return Err("observer_live_frontier");
-                }
-                live_head = next.application_head;
-                live_updates += 1;
+            result = live_workers.join_next() => {
+                return result.ok_or("observer_live_worker")?.map_err(|_| "observer_live_worker")?
+                    .and(Err("observer_live_ended"));
             }
             _ = tick.tick() => {
                 if stop.exists() {
@@ -235,13 +303,20 @@ pub(super) async fn run() -> Result<()> {
                         "\"elapsed_s\":{},\"events_checked\":{},\"duplicates\":{},",
                         "\"consumer_checkpoint\":{},\"live_head\":{},\"live_updates\":{},",
                         "\"history_incarnation\":{},\"auxiliary_slots\":2}}"),
-                        elapsed, events, duplicates, checkpoint, live_head, live_updates, incarnation);
+                        elapsed, events, duplicates, checkpoint, progress.head.load(Ordering::Acquire),
+                        progress.updates.load(Ordering::Acquire), incarnation);
                     io::stdout().flush().map_err(|_| "observation_output")?;
                     published = elapsed;
                 }
             }
         }
     }
+    stop_live.send(true).map_err(|_| "observer_stop")?;
+    tokio::time::timeout(Duration::from_secs(10), live_workers.join_next())
+        .await
+        .map_err(|_| "observer_live_shutdown")?
+        .ok_or("observer_live_worker")?
+        .map_err(|_| "observer_live_worker")??;
     Ok(())
 }
 
@@ -327,5 +402,109 @@ mod tests {
                 .is_err()
         );
         assert_eq!(oracle.latest.len(), 1024);
+    }
+    struct FixtureLiveInput {
+        messages: tokio::sync::mpsc::Receiver<riffdb_client_rust::LiveQueryCheckpoint>,
+        third_pull: Option<tokio::sync::oneshot::Sender<()>>,
+        pulls: u32,
+    }
+
+    impl LiveInput for FixtureLiveInput {
+        async fn message(&mut self) -> Result<Option<riffdb_client_rust::LiveQueryCheckpoint>> {
+            self.pulls += 1;
+            if self.pulls == 3 {
+                self.third_pull
+                    .take()
+                    .expect("one signal")
+                    .send(())
+                    .expect("receiver");
+            }
+            Ok(self.messages.recv().await)
+        }
+    }
+
+    fn checkpoint(head: u64, incarnation: u64) -> riffdb_client_rust::LiveQueryCheckpoint {
+        riffdb_client_rust::LiveQueryCheckpoint {
+            application_head: head,
+            history_incarnation: incarnation,
+            cursor: riffdb_client_rust::LiveQueryCursor::new(vec![1])
+                .expect("bounded opaque fixture"),
+        }
+    }
+
+    // req: END-003, END-007, END-008
+    #[tokio::test]
+    async fn live_reader_progresses_and_stops_while_consumer_acknowledgement_is_held() {
+        let (resume_consumer, held) = tokio::sync::oneshot::channel();
+        let (consumer_done, mut completed) = tokio::sync::oneshot::channel();
+        let consumer = tokio::spawn(async move {
+            held.await.expect("explicit release");
+            consumer_done.send(()).expect("completion receiver");
+        });
+        let (send, messages) = tokio::sync::mpsc::channel(1);
+        let (third_pull, reached) = tokio::sync::oneshot::channel();
+        let (stop, stopped) = tokio::sync::watch::channel(false);
+        let progress = Arc::new(LiveProgress {
+            head: AtomicU64::new(0),
+            updates: AtomicU64::new(0),
+        });
+        let reader = tokio::spawn(drain_live(
+            FixtureLiveInput {
+                messages,
+                third_pull: Some(third_pull),
+                pulls: 0,
+            },
+            Arc::clone(&progress),
+            1,
+            stopped,
+        ));
+        send.send(checkpoint(1, 1)).await.expect("first update");
+        send.send(checkpoint(2, 1)).await.expect("second update");
+        reached
+            .await
+            .expect("reader requested another frame after applying both updates");
+        assert_eq!(progress.head.load(Ordering::Acquire), 2);
+        assert_eq!(progress.updates.load(Ordering::Acquire), 2);
+        assert!(matches!(
+            completed.try_recv(),
+            Err(tokio::sync::oneshot::error::TryRecvError::Empty)
+        ));
+        stop.send(true).expect("live stop");
+        assert_eq!(reader.await.expect("reader task"), Ok(()));
+        resume_consumer.send(()).expect("consumer release");
+        consumer.await.expect("consumer task");
+        completed.await.expect("consumer completion");
+    }
+
+    // req: END-003, END-007, END-008
+    #[tokio::test]
+    async fn live_reader_refuses_regression_and_incarnation_drift_without_publishing_them() {
+        for (head, incarnation) in [(9, 1), (11, 2)] {
+            let (send, messages) = tokio::sync::mpsc::channel(1);
+            let (_stop, stopped) = tokio::sync::watch::channel(false);
+            let progress = Arc::new(LiveProgress {
+                head: AtomicU64::new(10),
+                updates: AtomicU64::new(1),
+            });
+            let reader = tokio::spawn(drain_live(
+                FixtureLiveInput {
+                    messages,
+                    third_pull: None,
+                    pulls: 0,
+                },
+                Arc::clone(&progress),
+                1,
+                stopped,
+            ));
+            send.send(checkpoint(head, incarnation))
+                .await
+                .expect("invalid fixture");
+            assert_eq!(
+                reader.await.expect("reader task"),
+                Err("observer_live_frontier")
+            );
+            assert_eq!(progress.head.load(Ordering::Acquire), 10);
+            assert_eq!(progress.updates.load(Ordering::Acquire), 1);
+        }
     }
 }

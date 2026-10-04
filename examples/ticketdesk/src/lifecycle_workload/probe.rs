@@ -10,7 +10,7 @@ use tokio::sync::{Barrier, mpsc};
 use tokio::task::JoinSet;
 
 use super::application::{GetTicketParams, GetTicketResult};
-use super::{Result, TICKETS_PER_ORGANIZATION, connect, model, uuid};
+use super::{Result, TICKETS_PER_ORGANIZATION, current, model, uuid};
 
 const WORKERS: u32 = 28;
 const QUEUE: usize = 32_768;
@@ -176,7 +176,7 @@ pub(super) async fn run() -> Result<()> {
         let peak = Arc::clone(&peak);
         let offered_commands = Arc::clone(&offered_commands);
         workers.spawn(async move {
-            let mut client = connect("RIFFDB_LIFECYCLE_APPLICATION_CREDENTIAL").await?;
+            let mut client = current::connect().await?;
             // Warm named-query carriage before the offered-load clock begins.
             let warm = client
                 .get_ticket(GetTicketParams {

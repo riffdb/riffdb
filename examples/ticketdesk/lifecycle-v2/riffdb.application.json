@@ -1,0 +1,77 @@
+{
+  "schema": "riffdb.application-source/v5",
+  "application": "ticketdesk-lifecycle",
+  "contract": {
+    "source": "riffdb/contract.riff",
+    "lineage": "TicketDeskLifecycle",
+    "version": 2
+  },
+  "generation": {
+    "go": "generated/go/client.go",
+    "rust": "generated/rust/client.rs",
+    "typescript": "generated/typescript/client.ts",
+    "python": "generated/python/client.py",
+    "mcp": "generated/mcp/tools.json"
+  },
+  "migrations": [],
+  "query_modules": [
+    {
+      "name": "ticketdesk",
+      "version": 1,
+      "queries": [
+        {
+          "name": "GetTicket",
+          "source": "riffdb/queries/get_ticket.riffq"
+        },
+        {
+          "name": "TicketQueue",
+          "source": "riffdb/queries/ticket_queue.riffq"
+        }
+      ]
+    }
+  ],
+  "reactive_modules": [
+    {
+      "name": "TicketActivity",
+      "version": 1,
+      "source": "riffdb/reactive/ticket_activity.riffr"
+    }
+  ],
+  "roles": [
+    {
+      "name": "TicketDeskLifecycleSeeder",
+      "environment": "development",
+      "tenant_scope": "global",
+      "queries": [],
+      "commands": [
+        "CreateOrganization",
+        "CreateUser",
+        "CreateProject",
+        "CreateTicket"
+      ],
+      "event_streams": [],
+      "watch_queries": [],
+      "agent_subscriptions": []
+    },
+    {
+      "name": "TicketDeskLifecycleApplication",
+      "environment": "development",
+      "tenant_scope": "global",
+      "queries": [
+        "GetTicket",
+        "TicketQueue"
+      ],
+      "commands": [
+        "UpdateTicket"
+      ],
+      "event_streams": [
+        "TicketEvents"
+      ],
+      "watch_queries": [
+        "TicketQueueWatch"
+      ],
+      "agent_subscriptions": []
+    }
+  ],
+  "seed_inputs": []
+}
