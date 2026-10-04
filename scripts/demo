@@ -125,6 +125,7 @@ run_public_budget_case() {
         --environment wp200-demo \
         --audience riffdb-grpc-loopback \
         --backup-root "$case_root/backups" \
+        --projections-root "$case_root/projections" \
         --capability-keys "$case_root/capability.keys" \
         --idempotency-keys "$case_root/idempotency.keys" \
         </dev/null >"$ready_fifo" 2>"$case_root/riffdbd.stderr" &

@@ -289,6 +289,8 @@ fn write_server_config(
 fn child_specification(config: PathBuf) -> TestResult<ChildProcessSpec> {
     Ok(ChildProcessSpec::new(std::env::current_exe()?)?
         .clear_environment()
+        .arg("--projections-root")?
+        .arg(config.with_extension("projections").into_os_string())?
         .arg("--config")?
         .arg(config.into_os_string())?
         .env(CHILD_MODE, "1")?)

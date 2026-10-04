@@ -25,6 +25,17 @@ fails because no pruning was observed before its deadline; this needs separate
 investigation under WP-823. Full CI still requires completion. Both failed CI
 attempts remain failures; neither counts as qualification evidence.
 
+The third attempt passed 24 of 25 replication tests and stopped at a promoted
+backup/restore readiness timeout. That test passes on its isolated rerun. The
+fourth attempt bounded test concurrency to four, passed all 25 replication tests
+and reached deployment rotation, where another daemon launcher shared the
+legacy projection root. Deployment rotation and remote ingress now select
+owned scratch roots and both real-process tests pass. The CLI public-process
+helper and demo launcher also select owned roots; five ordinary CLI process
+tests pass, while its separately built acceptance flow remains explicitly
+ignored. No production custody or test deadline is relaxed. Full CI must run
+to completion after these fixture corrections.
+
 ## Qualified contract-plan retirement
 
 A newly authorized registration qualifies an older cache owner only when its

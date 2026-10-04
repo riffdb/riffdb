@@ -705,6 +705,8 @@ impl ServerProcess {
             .arg(database)
             .arg("--backup-root")
             .arg(backup_root)
+            .arg("--projections-root")
+            .arg(database.with_extension("projections"))
             .arg("--listen")
             .arg("127.0.0.1:0")
             .arg("--environment")
