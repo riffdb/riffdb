@@ -4,7 +4,8 @@ This is the implementation handoff for the milestone selected on October 1,
 2026. Its architecture records were **accepted** in session that day. WP-822
 adds the optional [durable local archive](../operations/LOCAL-OUTBOX-ARCHIVE.md)
 and production dispatch worker; scoped acceptance and full CI pass. Source
-receipt reclamation, provider retirement, and the real rehearsal remain open.
+receipt reclamation is implemented and validated; provider retirement and the
+real rehearsal status are recorded below.
 The evidence checker is preparatory acceptance code.
 
 The target is 65,536 seeded tickets across 64 organizations, 100 commands/s
@@ -318,3 +319,23 @@ D003 decisions: seed through bounded public commands until ordinary checkpoint
 publication, run the real-process matrix in the shipping profile, and synchronize
 projection checks through typed frontier observations rather than execution speed.
 Updated handbook pages: this milestone handoff and contributing instructions.
+
+## WP-823 closure, October 4
+
+WP-823 is complete. Earlier progress sections retain the failure history and
+are snapshots, rather than the current package status. The fifth full CI run
+passes at implementation revision `1bf6920d2`, with four concurrent tests and
+six build jobs. The full release recovery matrix separately passes all ten
+cases, including genuine process kill after online pruning. The population
+measurement reaches the first durable write in 24.55 seconds. All nine scoped
+acceptance checks pass for this closure's documentation and governance changes.
+
+PR note: Package WP-823; Tier guarantee; Behavior: composed bounded receipt
+reclamation and complete retained-prefix refresh; Checks: full CI, shipping
+recovery matrix, population recovery measurement, source hold and physical
+extent tests; Compatibility: unchanged ordering, durability, formats,
+idempotency, authorization and application interfaces. Updated handbook pages:
+configuration, startup integrity and this milestone handoff. Hazards and
+follow-ups: the storage fixture's stopped outbox preparation is not production
+qualification; WP-825 and WP-826 must demonstrate the real application and
+repeated physical generations on the frozen host. No 24-hour run has started.

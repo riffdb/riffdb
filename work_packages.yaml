@@ -28550,6 +28550,26 @@ work_packages:
   - An accepted decision, normative requirement, guarantee, or declared path scope changes.
   - A new durable identity, public interface, or critical dependency lacks accepted authority.
   exit_gate: Production delivery and legitimate consumer progress permit repeated physical reclamation with all holds preserved; first-write recovery meets the frozen milestone target.
+  closure:
+    status: complete
+    completed_at: '2026-10-04'
+    requirements_satisfied: [STO-030, STO-031, STO-032, REC-001, REC-002, REC-005]
+    evidence: docs/architecture/SUSTAINABLE-TICKETDESK.md
+    decision: Composed receipt release and prefix refresh preserve all source holds;
+      process-level recovery and retained-outcome replay pass. The release-profile
+      population measurement reaches the first durable write in 24.55 seconds.
+      Full CI passes. Real TicketDesk host qualification belongs to WP-825/WP-826.
+    decisions_taken:
+    - Retain one source-control owner across independently durable checkpoints;
+      exclude maintenance receipts from progress and release at most 256 receipts.
+    - Validate immutable source pins off gate in bounded pages; publish only exact,
+      complete, unchanged prefix evidence through the existing receipt owner.
+    - Yield during extent sealing and writer contention without adding command-path
+      drains; retain captured readers until their final reference releases.
+    - Measure readiness and first successful durable write separately in the shipping
+      release profile, preserving the 60-second deadline and original identities.
+    - Seed the process-kill fixture through bounded public commands until an actual
+      sealed extent exists; observe typed projection Building within existing waits.
 
 - id: WP-824
   name: Exact provider registration retirement and aggregate accounting
