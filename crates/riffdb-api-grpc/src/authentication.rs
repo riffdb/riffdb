@@ -18,7 +18,7 @@ pub const AUTHORIZATION_METADATA_KEY: &str = "authorization";
 pub const BOOTSTRAP_TOKEN_METADATA_KEY: &str = "riffdb-bootstrap-token-bin";
 /// Static details-free message for failed credential authentication.
 pub const UNAUTHENTICATED_MESSAGE: &str = "authentication failed";
-/// Static safe message returned only for a reciprocally matched revoked token.
+/// Legacy fixed revoked-token message; current refusals use structured errors.
 pub const CAPABILITY_REVOKED_MESSAGE: &str = "capability is revoked";
 
 /// Extracts exactly one normal bearer credential and delegates authentication.
@@ -124,7 +124,12 @@ fn authentication_failure(failure: AuthenticationFailure) -> Status {
     match failure {
         AuthenticationFailure::Unauthenticated => unauthenticated(),
         AuthenticationFailure::CapabilityRevoked => {
-            Status::new(Code::PermissionDenied, CAPABILITY_REVOKED_MESSAGE)
+            // Kernel-backed generated commands validate PublicError bytes.
+            // The symbolic boundary preserves the auth-owned revoked class
+            // when contextualizing this PermissionDenied before service entry.
+            crate::error::status_from_public_error(
+                &riffdb_errors::PublicError::authorization_denied(),
+            )
         }
         AuthenticationFailure::Internal => Status::internal(EMERGENCY_INTERNAL_MESSAGE),
     }
@@ -253,6 +258,7 @@ mod tests {
     }
 
     #[test]
+    // req: END-008
     fn reciprocally_matched_revocation_has_one_closed_transport_class() {
         const TOKEN: &str = "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA";
         let mut metadata = MetadataMap::new();
@@ -269,8 +275,23 @@ mod tests {
         )
         .expect_err("revoked capability must fail");
         assert_eq!(status.code(), Code::PermissionDenied);
-        assert_eq!(status.message(), CAPABILITY_REVOKED_MESSAGE);
-        assert!(status.details().is_empty());
+        let expected = riffdb_errors::PublicError::authorization_denied();
+        assert_eq!(
+            riffdb_proto::decode_public_error(status.details()),
+            Ok(expected.clone()),
+            "kernel clients must receive a checked structured authorization refusal"
+        );
+        assert_eq!(status.message(), expected.safe_message());
+        let context = riffdb_service::ApplicationErrorContextBuilder::without_trace(
+            riffdb_errors::ApplicationOperation::ExecuteQuery,
+        );
+        let symbolic = crate::error::status_from_application_boundary(status, &context);
+        let symbolic = riffdb_proto::decode_application_error(symbolic.details())
+            .expect("symbolic refusal must remain structured");
+        assert_eq!(
+            symbolic.code(),
+            riffdb_errors::ApplicationErrorCode::CapabilityRevoked
+        );
     }
 
     #[test]

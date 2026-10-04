@@ -243,7 +243,7 @@ mod tests {
         let context =
             ApplicationErrorContextBuilder::without_trace(ApplicationOperation::ExecuteQuery);
         let status = status_from_application_boundary(
-            Status::permission_denied(crate::CAPABILITY_REVOKED_MESSAGE),
+            status_from_public_error(&PublicError::authorization_denied()),
             &context,
         );
         let error = decode_application_error(status.details()).expect("application error");

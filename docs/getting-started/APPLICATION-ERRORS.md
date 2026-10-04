@@ -83,6 +83,13 @@ Kernel and administrative RPCs continue to carry the existing
 compatibility while making the normal application surface symbolic and
 actionable.
 
+A matched revoked credential receives a structured refusal on both boundaries.
+Symbolic application RPCs report `RDB-AUTH-0215`. Kernel command RPCs encode
+the existing authorization-denied `PublicError`; generated command facades
+therefore report `RDB-AUTH-0214`. The kernel encoding does not retain the
+application-only revoked code. Clients still reject absent or malformed error
+details rather than infer a refusal from the status message.
+
 The sole exception is emergency internal containment when the server cannot
 obtain a real incident ID. That response remains the accepted details-free
 internal error; RiffDB never invents a trace or incident identity.

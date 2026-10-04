@@ -64,7 +64,7 @@ SDK's strict validation must remain intact. Scope approval permits diagnosis,
 regression tests and repairs within accepted decisions; it does not accept a
 new storage, ordering, authorization or interface guarantee.
 
-### Revocation interoperability: reproduced
+### Revocation interoperability: repaired; real TLS preparation passes
 
 The real capability-rotation preparation refuses both old-bearer reads and
 same-key command submissions, but its command check fails. Named queries
@@ -74,7 +74,7 @@ that canonical status as `MissingPublicErrorDetails`, so applications receive a
 protocol failure instead of an authorization refusal. This cannot qualify as
 successful typed revocation handling.
 
-The proposed correction is at the server boundary: encode the existing kernel
+The correction is at the server boundary: encode the existing kernel
 `PublicError::authorization_denied()` for an exactly matched revoked credential.
 Symbolic application boundaries continue to return existing `CapabilityRevoked`.
 The current kernel encoding deliberately omits application-only hints; generated
@@ -82,6 +82,12 @@ kernel-backed command facades consequently retain `AuthorizationDenied`.
 No client may guess a semantic refusal from unvalidated peer prose. Unknown or
 malformed details remain protocol failures. The regression gate is real old-
 credential refusal and same-principal replacement replay through the native SDK.
+The regression failed against the previous details-free status. All 114 API
+gRPC unit tests and scoped Clippy now pass. A fresh TLS preparation verified
+old-bearer read and command refusal, replacement replay of the original sequence,
+version and outcome, unchanged named state, and reconciliation of the actual
+two archived events. This is preparation evidence, not continuous-load fault
+qualification or a complete milestone pass.
 
 ### Live-query notification overflow: reproduced; cause unresolved
 

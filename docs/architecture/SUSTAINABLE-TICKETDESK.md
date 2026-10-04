@@ -815,3 +815,44 @@ acceptance; Compatibility: existing protocols and generated bindings preserved;
 Updated handbook pages: this handoff; Hazards/follow-ups: complete auxiliary
 accounting, all lifecycle actions and language conformance, then qualify the
 frozen short rehearsal before the 24-hour run.
+
+## WP-825 native blockers before further harness development
+
+Harness expansion is paused for native diagnosis and repair. The required host
+preparation with online retention and a consumer outage failed with live-query
+`BufferPressure`. It logically pruned 115,460 sequences but released zero source
+receipts and zero physical extents. A deterministic storage regression now
+reproduces zero receipt progress across 24 interleaved durable writer turns;
+its positive control releases 256 receipts with the same owner and data after
+an idle validation pass and a later independent durable checkpoint.
+
+The real capability-rotation preparation initially failed because revoked-token
+command admission emits a details-free permission denial that the native SDK
+correctly rejected as a protocol violation. The native fix supplies the
+existing structured kernel authorization refusal at the server boundary and
+preserves symbolic `CapabilityRevoked` responses. Client protocol validation
+remains strict. All 114 API gRPC unit tests and scoped Clippy pass. A fresh
+actual TLS rotation preparation now proves old-credential refusal and exact
+same-principal replacement replay, state and archive reconciliation. This does
+not establish rotation under continuing campaign load.
+
+The promoted backup recovery timeout from full CI remains unexplained. Its
+isolated rerun and a complete 25-test replication rerun pass; neither erases
+the original failure or establishes full CI. The failing reclamation regression
+is intentionally unresolved. The maintainer approved necessary native repairs;
+the proposed source-proof continuation amendment, ADR-0268,
+still requires exact-text acceptance before implementation.
+See [the concrete repair scope and findings](WP-825-LIVE-OBSERVATIONS.md).
+No failed preparation qualifies the milestone, and no 24-hour run has started.
+
+PR note: Package WP-825 (open); Tier guarantee; Behavior: repair native kernel
+revocation error carriage while preserving symbolic refusal and strict SDK
+decoding; Checks: 114 API gRPC tests, scoped Clippy, actual TLS rotation
+preparation and handbook checks pass; scoped storage acceptance still fails only
+the new reclamation regression (1,141 other tests pass), and all 25 replication
+tests pass on rerun; Compatibility: existing error encodings, authorization
+decisions, durable formats and qualification gates preserved; Updated handbook
+pages: application errors, known limitations, native findings and this handoff;
+Hazards/follow-ups: accept the reclamation amendment, resolve native starvation
+and explain live-query and backup readiness behavior before resuming campaign
+implementation. Full CI and the complete short rehearsal remain pending.

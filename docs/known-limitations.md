@@ -39,6 +39,17 @@ These limits are part of the POC release posture, not hidden roadmap promises.
   promise. Release verification rejects absent, mismatched, or
   correctness-unqualified redb, budget-comparison, and semantic-workload
   reports.
+- The sustainable TicketDesk rehearsal remains blocked by native lifecycle
+  behavior. Receipt reclamation can starve when durable writes repeatedly
+  invalidate its paged validation root; a deterministic regression reproduces
+  zero progress during writes and progress at a later idle checkpoint. A real
+  preparation also ended with live-query notification buffer pressure. The
+  native revoked-command error carriage has been repaired and verified through
+  an actual TLS rotation preparation; the complete campaign remains unqualified.
+  Reclamation and notification behavior require further native diagnosis and
+  verification; maintenance pauses, automatic
+  watch reconnects or relaxed client validation cannot qualify the rehearsal.
+  See the [repair findings and scope proposal](architecture/WP-825-LIVE-OBSERVATIONS.md).
 - The shared recovery inventory contains 41 boundaries. Eighteen belong to the
   WP-190 process matrix; three replication cases run in the daemon and native
   applier tests, and the remainder have named owner-package evidence.
