@@ -65,7 +65,16 @@ These limits are part of the POC release posture, not hidden roadmap promises.
   spilled across observation windows, and the final fault-free window reached
   p95 169 ms with p99 beyond the histogram range. Native admission diagnostics
   now distinguish the remaining refusal causes; the workload
-  and qualification gates remain unchanged.
+  and qualification gates remain unchanged. Its diagnostic preparation completes
+  all offered work but fails final-window latency; it removes 8,962 receipts
+  and recycles one extent. Of 657 admission refusals, 363 encounter pending
+  journal data, 204 a busy writer, 89 the catch-up page bound and one checkpoint
+  publication. These counters do not establish the actual hold ceiling or
+  sustainable eligibility. A further native regression found
+  that a temporary reader or writer barrier could defer an eligible extent
+  across thousands of absent generation names. The reclaimer now retains that
+  candidate for retry while preserving every eligibility check; its effect on
+  required-host retirement and latency remains unmeasured.
   Native reclamation, latency, notification and recovery behavior require
   further verification; maintenance pauses, automatic
   watch reconnects or relaxed client validation cannot qualify the rehearsal.

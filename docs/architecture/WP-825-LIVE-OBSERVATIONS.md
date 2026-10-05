@@ -684,3 +684,92 @@ Compatibility: unchanged public protocols, durable formats and source admission;
 Updated handbook: known limitations; Hazards/follow-ups: identify and repair
 native admission/retirement and latency limitations, qualify the final source,
 then complete the short rehearsal. The 24-hour run has not started.
+
+
+### Native retry after a temporary extent barrier
+
+Read-only investigation of the preserved failed preparation finds five sealed
+files while the active generation is 30,285. Their indexes have valid SHA-256
+checksums, but this inspection does not validate every native frame or qualify
+campaign evidence. The native reclaimer probes at most 64 generation names per
+pass and advances its cursor before checking reader and writer barriers.
+A temporary global barrier can therefore defer a candidate across thousands of
+absent names even after that barrier clears.
+
+An isolated actual-transition regression reproduces this delay. It opens the
+genuine two-command fixture, applies real outbox claim/completion, native
+logical prune and legitimate source receipt reclamation, then seals the drained
+prune extent early and advances empty generations through the existing media
+protocol. With a real old reader retained, the file remains intact. After
+release, the unchanged reclaimer fails the next-pass retirement assertion.
+This controlled early-sealing fixture is not campaign evidence or an application
+workaround. No acknowledgement or source checkpoint is invented.
+
+The repair retains the candidate only for global reader, scrub, writer or
+publication barriers. Actual surviving authoritative references still advance
+the cursor so other candidates are visited. Every retry repeats the existing
+reference, frontier, resume-anchor, reader, exact-key and full-frame checks.
+The pass remains off-gate, probes at most 64 names and retires at most one file;
+no durable state, allocator, hold, ordering or public protocol changes.
+
+The reader regression passes after repair. Expanded deterministic coverage
+checks old application snapshots, real scrub pins and the existing writer
+lease: repeated blocked attempts preserve the file and durable epoch, followed
+by next-pass retirement after release and unchanged complete retained history.
+All 38 focused tests pass, including existing corruption refusals and the
+seven process-crash retirement/recycle windows. All seven scoped acceptance
+steps pass, including 1,178 native tests with two existing skips.
+The diagnostic preparation on clean `9a5d2e89` is separate and excludes this
+repair; full CI and required-host qualification of the final source are pending.
+
+PR note: Package WP-825 (open); Tier guarantee within accepted ADR-0263
+Amendment 4 and ADR-0265; Behavior: retry an otherwise eligible extent after a
+temporary global barrier without rescanning absent generations; Checks:
+reader regression fails before and passes after repair; all 38 focused tests
+pass; all seven scoped checks pass, including 1,178 tests and two existing
+skips; Compatibility: unchanged durable formats, public interfaces, holds
+and retirement boundary; Updated handbook: known limitations; Hazards/follow-ups:
+full CI, continuing-load retirement and latency, then the complete short
+rehearsal. No 24-hour run starts.
+
+
+### Required-host source-admission observations
+
+A separate unchanged 900-second diagnostic preparation on clean `9a5d2e89`
+completes all 90,000 commands and 360,000 reads without retries. Its final
+fault-free window fails latency; the preparation exits with `probe_latency`.
+State reconciliation completes, but archive reconciliation is not reached after
+the failed gate. This diagnostic excludes the native extent-retry repair above
+and cannot qualify WP-825 or the 24-hour campaign.
+
+| Window (seconds) | Commands | Reads | p95 (microseconds) | p99 | Overflow |
+|---|---:|---:|---:|---|---:|
+| 0–300 | 30,000 | 120,000 | 176,265 | beyond range | 7,320 |
+| 300–600 | 30,000 | 120,000 | 57,806 | beyond range | 1,784 |
+| 600–900 | 30,000 | 120,000 | beyond range | beyond range | 7,968 |
+
+The first window overlaps the planned consumer outage; it is not a normal
+service-level sample. Beyond-range percentiles are overflow sentinels, not
+measured durations. All windows retain 28 load slots and four auxiliary slots.
+
+Native shutdown counters record 8,962 removed source receipts and one recycled
+extent, with no deleted extents. Reference-held attempts are 91 and reader-held
+attempts one. The source validator visits 10,700 initial rows and 403,614
+continuation rows, with one invalidation and 657 admission refusals. The new
+closed cause counts are 204 busy writers, 363 pending-journal refusals, one
+checkpoint publication, zero changed qualifications and 89 catch-up page bounds.
+The two diagnostic emission boundaries repeat the same counters; they are not
+added together. Actual recycling is native evidence; disappearance of a file
+alone is not evidence of retirement.
+
+The consumer pauses for 300.050 seconds while live progress continues, then
+reconciles its 2,048 organization-scoped events in 7.670 seconds. This count
+does not represent aggregate archive traffic across all organizations.
+
+These observations identify the checks that refused admission, not the cause
+of all retained receipts or slow command tails. Current source and derived
+holds, the independently durable checkpoint ceiling, and actual eligible
+history need bounded periodic observation before changing admission or holds.
+The failed preparation and its private roots remain preserved. Full CI on the
+final source, sustained retirement, service levels and the complete short
+rehearsal remain outstanding. No 24-hour run has started.

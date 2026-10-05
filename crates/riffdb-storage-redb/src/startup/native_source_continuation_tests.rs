@@ -172,3 +172,199 @@ fn native_prune_then_outbox_drain_preserves_source_validation_qualification() {
         );
     }
 }
+
+// req: STO-030, STO-031, STO-032, END-008, REC-001
+#[test]
+fn eligible_native_extent_retries_after_global_barrier_release_without_scanning_generation_holes() {
+    for blocker in ["reader", "scrub", "writer"] {
+        use riffdb_storage_api::{
+            OutboxClaimV1, OutboxDestinationIdV1, OutboxPageLimit, OutboxRepository,
+            OutboxSucceedV1, OutboxTransitionResultV1, OwnedSnapshotReader, PendingOutboxScanV1,
+        };
+        let directory = crate::test_path::ScopedDirectory::new("extent-reader-retry");
+        restore_fixture_bytes(
+            &directory.join(""),
+            include_str!(
+                "../../../../fixtures/storage/redb-4.2.0-native-commands-and-backup.sparsehex"
+            ),
+            &[
+                "backup/database.redb",
+                "backup/format.riffdb",
+                "backup/journal.riffextent",
+                "backup/manifest.riffdb",
+                "db.redb",
+                "db.redb.riffdb-format-v1",
+                "expected-outcomes.hex",
+            ],
+        );
+        let path = directory.join("db.redb");
+        let store =
+            RedbStore::open_with_commit_profile(&path, crate::RedbCommitProfile::Standard).unwrap();
+        let mut session = store.begin_structural_evidence(inputs()).unwrap();
+        let structural = finish_structural(&mut session);
+        let (_, historical) = validate_catalog_history(&mut session).unwrap().into_parts();
+        let StructuralOpenOutcome::Clean(opened) = session.finish(structural, historical).unwrap()
+        else {
+            panic!("native command fixture must validate");
+        };
+        let (_, _, _, dormant) = opened.into_parts();
+        let mut ports = dormant.into_operational_after_catalog_validation().unwrap();
+        let PendingOutboxScanV1::ExactEnd { items } = ports
+            .scan_pending_outbox(
+                None,
+                OutboxPageLimit::new(NonZeroU16::new(8).unwrap()).unwrap(),
+            )
+            .unwrap()
+        else {
+            panic!("two-command fixture must have an exact pending set");
+        };
+        assert_eq!(items.len(), 2);
+        let time = Timestamp::new(1_700_000_000, 0).unwrap();
+        let lease = Timestamp::new(1_700_000_060, 0).unwrap();
+        let first = items[0].value();
+        let claim = OutboxClaimV1::new(
+            first.event_id(),
+            first.status().clone(),
+            OutboxDestinationIdV1::new("test-sink").unwrap(),
+            time,
+            lease,
+        )
+        .unwrap();
+        assert_eq!(
+            ports.claim_outbox(&claim).unwrap(),
+            OutboxTransitionResultV1::Applied(claim.updated().clone())
+        );
+        let success = OutboxSucceedV1::new(claim.updated().clone(), time).unwrap();
+        assert_eq!(
+            ports.succeed_outbox(&success).unwrap(),
+            OutboxTransitionResultV1::Applied(success.updated().clone())
+        );
+        assert!(matches!(
+            ports
+                .online_retention_step(NonZeroU64::new(1).unwrap(), NonZeroU64::new(1).unwrap())
+                .unwrap(),
+            crate::OnlineRetentionStep::Advanced {
+                through: 1,
+                sequences: 1
+            }
+        ));
+        let second = items[1].value();
+        let claim = OutboxClaimV1::new(
+            second.event_id(),
+            second.status().clone(),
+            OutboxDestinationIdV1::new("test-sink").unwrap(),
+            time,
+            lease,
+        )
+        .unwrap();
+        assert_eq!(
+            ports.claim_outbox(&claim).unwrap(),
+            OutboxTransitionResultV1::Applied(claim.updated().clone())
+        );
+        let mut control = ports.replication_source_control();
+        assert!(!control.reclaim_history().unwrap());
+        let success = OutboxSucceedV1::new(claim.updated().clone(), time).unwrap();
+        assert_eq!(
+            ports.succeed_outbox(&success).unwrap(),
+            OutboxTransitionResultV1::Applied(success.updated().clone())
+        );
+        let old_reader = (blocker == "reader").then(|| ports.open_owned_snapshot().unwrap());
+        assert!(control.reclaim_history().unwrap());
+        // Fully drained native prune bytes are immutable historical state. This
+        // isolated fixture seals them early and advances empty generations through
+        // the existing media protocol, without adding commands or campaign evidence.
+        assert_eq!(ports.shared.journal_suffix_activity().unwrap().1, 0);
+        ports.shared.join_journal_sealer();
+        let identity = crate::store::read_identity_from_read_transaction(
+            &ports.shared.database.begin_read().unwrap(),
+        )
+        .unwrap();
+        let active = crate::journal::journal_path(&path);
+        let (header, _) = crate::journal::scan_journal_with_media(
+            &crate::media::RealJournalMedia,
+            &active,
+            identity,
+            |_| Ok(()),
+        )
+        .unwrap()
+        .unwrap();
+        crate::media::JournalMedia::rename(
+            &crate::media::RealJournalMedia,
+            &active,
+            &crate::journal::sealing_journal_path(&path),
+        )
+        .unwrap();
+        let sealed = crate::journal::seal_extent_with_media(
+            &crate::media::RealJournalMedia,
+            &path,
+            identity,
+        )
+        .unwrap()
+        .unwrap();
+        let footer = crate::journal::read_sealed_extent_with_media(
+            &crate::media::RealJournalMedia,
+            &sealed,
+            identity,
+        )
+        .unwrap();
+        crate::journal::reset_journal_with_media(&crate::media::RealJournalMedia, &active, &header)
+            .unwrap();
+        crate::journal::renew_extent_above_with_media(
+            &crate::media::RealJournalMedia,
+            &active,
+            footer.generation + 256,
+        )
+        .unwrap();
+        let before = crate::changelog_v3_roots::validate_retained_history(
+            &ports.shared.database.begin_read().unwrap(),
+        )
+        .unwrap();
+        let epoch = ports.shared.durable_commit_epoch();
+        let scrub = (blocker == "scrub").then(|| ports.shared.pin_extent_scrub().unwrap());
+        let writer = (blocker == "writer").then(|| {
+            crate::store::extent_reclamation::reserve_writer_for_test(&ports.shared).unwrap()
+        });
+        let held = ports.shared.reclaim_one_extent().unwrap();
+        assert_eq!(
+            (
+                held.deleted,
+                held.recycled,
+                held.held_references,
+                held.held_readers
+            ),
+            (
+                0,
+                0,
+                u64::from(blocker == "writer"),
+                u64::from(blocker != "writer")
+            )
+        );
+        assert!(sealed.exists());
+        assert_eq!(ports.shared.durable_commit_epoch(), epoch);
+        let still_held = ports.shared.reclaim_one_extent().unwrap();
+        assert_eq!((still_held.deleted, still_held.recycled), (0, 0));
+        assert_eq!(still_held.held_readers, held.held_readers);
+        assert_eq!(still_held.held_references, held.held_references);
+        assert!(sealed.exists());
+        assert_eq!(ports.shared.durable_commit_epoch(), epoch);
+        drop(old_reader);
+        drop(scrub);
+        drop(writer);
+        let reclaimed = ports.shared.reclaim_one_extent().unwrap();
+        assert_eq!(
+            reclaimed.deleted + reclaimed.recycled,
+            1,
+            "released global barrier must not defer this eligible extent across absent generations"
+        );
+        assert_eq!(reclaimed.held_readers + reclaimed.held_references, 0);
+        assert!(!sealed.exists());
+        assert_eq!(ports.shared.durable_commit_epoch(), epoch);
+        assert_eq!(
+            crate::changelog_v3_roots::validate_retained_history(
+                &ports.shared.database.begin_read().unwrap()
+            )
+            .unwrap(),
+            before
+        );
+    }
+}

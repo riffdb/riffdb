@@ -19,6 +19,13 @@ pub(crate) struct Observation {
 
 pub(crate) struct ScrubPin(Arc<SharedRedb>);
 
+#[cfg(test)]
+pub(crate) fn reserve_writer_for_test(
+    shared: &SharedRedb,
+) -> Result<crate::gate::ExclusiveLease, StorageError> {
+    shared.mutation_gate.acquire()
+}
+
 impl Drop for ScrubPin {
     fn drop(&mut self) {
         self.0.extent_scrubs.fetch_sub(1, Ordering::AcqRel);
@@ -45,8 +52,10 @@ impl SharedRedb {
     }
 
     /// At most 64 name probes, one bounded footer/frame validation and one
-    /// whole-file retirement. A process-local cursor makes held extents fair;
-    /// restart needs no persisted progress because eligibility is authoritative.
+    /// whole-file retirement. Authoritatively referenced extents yield to the
+    /// cursor. A global reader/writer/publication barrier retains the otherwise
+    /// eligible candidate: it blocks every extent, and retry must not depend on
+    /// scanning absent generation names. Restart needs no persisted progress.
     pub(crate) fn reclaim_one_extent(&self) -> Result<Observation, StorageError> {
         if self.is_follower_mode() {
             return Ok(Observation::default());
@@ -119,6 +128,7 @@ impl SharedRedb {
         let mut roots = self.extent_roots.lock().map_err(|_| integrity())?;
         roots.retain(|root| root.strong_count() != 0);
         if self.extent_scrubs.load(Ordering::Acquire) != 0 {
+            *cursor = generation;
             return Ok(Observation {
                 held_readers: 1,
                 ..Observation::default()
@@ -126,6 +136,7 @@ impl SharedRedb {
         }
         let version = self.durable_root_publication.load(Ordering::Acquire);
         if !version.is_multiple_of(2) {
+            *cursor = generation;
             return Ok(Observation::default());
         }
         if roots
@@ -133,6 +144,7 @@ impl SharedRedb {
             .filter_map(std::sync::Weak::upgrade)
             .any(|root| root.identity() < version)
         {
+            *cursor = generation;
             return Ok(Observation {
                 held_readers: 1,
                 ..Observation::default()
@@ -140,9 +152,17 @@ impl SharedRedb {
         }
         let read = self.database.begin_read().map_err(transaction_error)?;
         if self.durable_root_publication.load(Ordering::Acquire) != version {
+            *cursor = generation;
             return Ok(Observation::default());
         }
-        if self.mutation_gate.is_busy()? || !eligible(&read, &footer)? {
+        if self.mutation_gate.is_busy()? {
+            *cursor = generation;
+            return Ok(Observation {
+                held_references: 1,
+                ..Observation::default()
+            });
+        }
+        if !eligible(&read, &footer)? {
             return Ok(Observation {
                 held_references: 1,
                 ..Observation::default()
