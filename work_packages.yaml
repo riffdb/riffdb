@@ -28677,3 +28677,49 @@ work_packages:
   - An accepted decision, normative requirement, guarantee, or declared path scope changes.
   - A new durable identity, public interface, or critical dependency lacks accepted authority.
   exit_gate: All frozen rehearsal checks pass on real uninterrupted evidence, with no ignored failure or weakened threshold; full alpha qualification remains separate.
+
+- id: WP-827
+  name: Behavior-preserving commit sort and query predicate allocation cleanup
+  tier: guarantee
+  depends_on: [WP-745]
+  objective: Implement ADR-0270's allocation-free committed-entity comparator while
+    preserving canonical record order and all atomicity and replay guarantees.
+    Cache query predicate column resolution without changing short-circuit or error timing.
+  requirements: [BLK-066, BLK-069]
+  required_adrs: [ADR-0270]
+  allowed_paths: [work_packages.yaml, adr/0270-allocation-free-committed-entity-canonical-sort.md,
+    adr/README.md, crates/riffdb-commit/src/command_records.rs,
+    crates/riffdb-columnar/src/query.rs, crates/riffdb-columnar/tests/ann.rs]
+  deliverables:
+  - Allocation-free canonical comparator with encoded-key equivalence proof
+  - Lazy per-query predicate resolution with nearest-query error-timing regression tests
+  acceptance_commands:
+  - ./scripts/acceptance --wp WP-827
+  - ./scripts/ci-all
+  exit_gate: Canonical ordering and query error timing remain unchanged; scoped
+    acceptance and the full merged-tree CI battery pass.
+  standing_design_tests:
+    interface_safety: Preserve existing public commands, query bounds, canonical
+      records, atomicity, durability, idempotency, authorization, and error semantics.
+    scale: Remove per-comparison allocations within existing mutation and key bounds;
+      allocate at most one resolution entry per already bounded query predicate.
+  human_review_triggers:
+  - Canonical order, durable formats, atomicity, replay, or query error semantics change.
+  - An accepted decision, normative requirement, or declared path scope changes.
+  closure:
+    status: complete
+    completed_at: '2026-10-05'
+    requirements_satisfied: [BLK-066, BLK-069]
+    evidence: ADR-0270's canonical_entity_sort_matches_encoded_key_order proof,
+      nearest-query error-timing regression tests, scoped package acceptance,
+      and the full integrated CI battery pass.
+    decision: Canonical record order and lazy predicate error timing are unchanged.
+      No public behavior, durable format, dependency, or handbook page changes.
+    decisions_taken:
+    - Register WP-827 as the owner of ADR-0270's existing tested equivalence
+      obligation, preserving the exact accepted decision text and proof.
+    - Compare type, key length, and bytes directly; resolve predicate columns
+      lazily once reached so empty and short-circuited scans retain prior behavior.
+    known_limitations: Query timing remains within measurement noise; merged-snapshot
+      cell cloning remains unchanged and is outside this package.
+    follow_ups: []
