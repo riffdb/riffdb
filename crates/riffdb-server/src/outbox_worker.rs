@@ -1,5 +1,6 @@
 //! One owned durable-local dispatcher, outside command acknowledgement.
 
+use std::io::Write as _;
 use std::num::{NonZeroU16, NonZeroU32, NonZeroU64};
 use std::sync::{Arc, Condvar, Mutex};
 use std::thread::{self, JoinHandle};
@@ -121,6 +122,7 @@ fn run(
     health: &NoDestinationOutboxHealth,
     stop: &Stop,
 ) {
+    let mut diagnostics = NativeStageDiagnostics::new(storage.shared_read_ports());
     let archive = loop {
         if stopping(stop) {
             return;
@@ -193,6 +195,7 @@ fn run(
             }
             match dispatcher.dispatch_once() {
                 Ok(report) => {
+                    diagnostics.emit_if_due();
                     let error = dispatcher.connector().last_error();
                     health.destination_ready(error.is_none());
                     health.refresh(&storage);
@@ -211,6 +214,7 @@ fn run(
                     }
                 }
                 Err(_) => {
+                    diagnostics.emit_if_due();
                     health.destination_ready(false);
                     let (_, saved_connector, saved_clock, _, _, _) = dispatcher.into_parts();
                     connector = saved_connector;
@@ -240,4 +244,77 @@ fn delivery_policy() -> DeliveryPolicy {
             .expect("bounded page"),
     )
     .expect("valid static delivery policy")
+}
+
+struct NativeStageDiagnostics {
+    source: riffdb_storage_redb::RedbSharedPorts,
+    began: std::time::Instant,
+    next: Option<Duration>,
+}
+impl NativeStageDiagnostics {
+    fn new(source: riffdb_storage_redb::RedbSharedPorts) -> Self {
+        Self {
+            source,
+            began: std::time::Instant::now(),
+            next: Some(Duration::ZERO),
+        }
+    }
+    fn emit(&self) {
+        // Optional diagnostic I/O happens after native operations released their
+        // writer leases. It never changes the delivery result or readiness.
+        let _ = writeln!(
+            std::io::stderr().lock(),
+            "{}",
+            format_native_stages(self.source.outbox_stage_census_v1())
+        );
+    }
+    fn emit_if_due(&mut self) {
+        let elapsed = self.began.elapsed();
+        if self.next.is_some_and(|next| elapsed >= next) {
+            self.emit();
+            self.next = elapsed.checked_add(Duration::from_secs(60));
+        }
+    }
+}
+impl Drop for NativeStageDiagnostics {
+    fn drop(&mut self) {
+        self.emit();
+    }
+}
+fn format_native_stages(values: [[u64; 3]; 8]) -> String {
+    use std::fmt::Write as _;
+    let mut line = String::from("riffdb-outbox-native-stages-v1");
+    for (label, [count, sum, maximum]) in riffdb_storage_redb::OUTBOX_NATIVE_STAGE_LABELS_V1
+        .into_iter()
+        .zip(values)
+    {
+        let _ = write!(line, "\t{label}={count},{sum},{maximum}");
+    }
+    line
+}
+
+#[cfg(test)]
+mod native_stage_diagnostic_tests {
+    // req: STO-030, STO-031, END-008
+    #[test]
+    fn outbox_native_stage_diagnostic_is_closed_bounded_and_numeric() {
+        let line = super::format_native_stages([[u64::MAX; 3]; 8]);
+        assert!(line.len() <= 1024);
+        let fields: Vec<_> = line.split('\t').skip(1).collect();
+        assert_eq!(fields.len(), 8);
+        for (field, expected) in fields
+            .into_iter()
+            .zip(riffdb_storage_redb::OUTBOX_NATIVE_STAGE_LABELS_V1)
+        {
+            let (label, values) = field.split_once('=').unwrap();
+            assert_eq!(label, expected);
+            assert_eq!(
+                values
+                    .split(',')
+                    .map(|value| value.parse::<u64>().unwrap())
+                    .collect::<Vec<_>>(),
+                vec![u64::MAX; 3]
+            );
+        }
+    }
 }

@@ -39,6 +39,9 @@ mod changelog_v3_retained_validation;
 mod changelog_v3_roots;
 mod changelog_v3_write;
 mod checkpoint_census;
+mod outbox_stage_census;
+#[doc(hidden)]
+pub use outbox_stage_census::OUTBOX_NATIVE_STAGE_LABELS_V1;
 mod checkpoint_rewrite;
 mod checkpoint_root;
 mod clean_close;

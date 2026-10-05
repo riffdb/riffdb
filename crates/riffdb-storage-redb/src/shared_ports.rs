@@ -59,6 +59,16 @@ use crate::store::{RedbOperationalPorts, SharedRedb};
 pub struct RedbSharedPorts(Arc<SharedRedb>);
 
 impl RedbSharedPorts {
+    /// Graph-owned attempt count, sum and maximum microseconds for each closed
+    /// outbox writer stage. Concurrent samples are diagnostic, not atomic
+    /// completion receipts. Begin-held includes the other begin stages.
+    #[doc(hidden)]
+    pub fn outbox_stage_census_v1(&self) -> [[u64; 3]; 8] {
+        self.0.outbox_stage_census.snapshot()
+    }
+}
+
+impl RedbSharedPorts {
     pub(crate) fn new(shared: Arc<SharedRedb>) -> Self {
         Self(shared)
     }

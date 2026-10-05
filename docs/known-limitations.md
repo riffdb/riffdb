@@ -91,6 +91,10 @@ These limits are part of the POC release posture, not hidden roadmap promises.
   admission progress limitation; revisiting the accepted nonwaiting drained
   boundary needs a new accepted decision. The plan does not prove physical
   eligibility, and the backlog cannot be classified as protected history.
+  A separate fixed-size graph-owned census now observes the outbox's existing
+  native writer stages, including queue wait and journal materialization.
+  It changes no admission or durability boundary; its scoped validation passes,
+  while required-host cost attribution remains pending.
   Native reclamation, latency, notification and recovery behavior require
   further verification; maintenance pauses, automatic
   watch reconnects or relaxed client validation cannot qualify the rehearsal.

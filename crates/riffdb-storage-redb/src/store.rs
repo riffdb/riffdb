@@ -412,6 +412,7 @@ pub(crate) struct SharedRedb {
     follower_namespace: Mutex<Option<crate::maintenance::FollowerNamespace>>,
     pub(crate) database: Database,
     pub(super) checkpoint_rewrite: Arc<crate::checkpoint_rewrite::CheckpointRewrite>,
+    pub(crate) outbox_stage_census: crate::outbox_stage_census::Census,
     /// Sidecar redb for rebuildable derived state (ADR-0240). Writes here never
     /// acquire `mutation_gate` or the primary store's write transaction.
     /// Opened on first derived read or write so archive inventories that never
@@ -5569,16 +5570,23 @@ impl RedbOperationalPorts {
         mut timing: Option<&mut WriteBeginTiming>,
     ) -> Result<Option<RedbWriteAccess>, StorageError> {
         crate::changelog_v3_write::require_direct_attribution(source)?;
+        use crate::outbox_stage_census::Stage;
+        let stage = |stage| self.shared.outbox_stage_census.measure(Some(source), stage);
+        let wait_span = stage(Stage::GateWait);
         let began = std::time::Instant::now();
         let lease = self.shared.mutation_gate.acquire()?;
         let gate_acquired = std::time::Instant::now();
+        drop(wait_span);
+        let _held_span = stage(Stage::BeginHeld);
         if let Some(timing) = timing.as_deref_mut() {
             timing.gate_wait_us = elapsed_us(began, gate_acquired);
         }
         if self.shared.write_fenced.load(Ordering::Acquire) {
             return Err(storage_error(StorageErrorKind::Unavailable));
         }
+        let publish_span = stage(Stage::PrefixPublish);
         self.shared.publish_pending_journal_prefix()?;
+        drop(publish_span);
         if yield_to_checkpoint {
             self.shared.poll_async_checkpoint_locked(false)?;
             if self.shared.async_checkpoint_in_flight()? {
@@ -5590,8 +5598,13 @@ impl RedbOperationalPorts {
             self.shared
                 .checkpoint_published_journal_suffix_for_barrier()?;
         }
+        let checkpoint_span = stage(Stage::CheckpointWait);
         self.shared.poll_async_checkpoint_locked(true)?;
+        drop(checkpoint_span);
+        let take_span = stage(Stage::JournalTake);
         let journal_checkpoint = self.shared.take_published_journal_suffix_locked(true)?;
+        drop(take_span);
+        let engine_span = stage(Stage::EngineOpen);
         let mut transaction = match self.shared.database.begin_write() {
             Ok(transaction) => transaction,
             Err(error) => {
@@ -5601,10 +5614,12 @@ impl RedbOperationalPorts {
                 return Err(transaction_error(error));
             }
         };
+        drop(engine_span);
         transaction.set_two_phase_commit(self.shared.application_commit_profile.uses_two_phase());
         transaction
             .set_durability(Durability::Immediate)
             .map_err(|_| storage_error(StorageErrorKind::InvariantViolation))?;
+        let apply_span = stage(Stage::SuffixApply);
         let footprint = if let Some(runtime) = journal_checkpoint.as_ref() {
             match self
                 .shared
@@ -5623,6 +5638,7 @@ impl RedbOperationalPorts {
         } else {
             crate::source_continuation::SourceContinuationFootprint::fresh()
         };
+        drop(apply_span);
         if let Some(timing) = timing {
             timing.drain_us = elapsed_us(gate_acquired, std::time::Instant::now());
         }
@@ -6358,6 +6374,10 @@ impl RedbWriteAccess {
         delta: Option<TransientIndexDelta>,
         execution_failure_rows: u64,
     ) -> Result<(), StorageError> {
+        let _commit_span = self.shared.outbox_stage_census.measure(
+            self.direct_changelog_attribution,
+            crate::outbox_stage_census::Stage::CommitFinish,
+        );
         if !matches!(
             self.ownership.as_ref(),
             Some(RedbWriteOwnership::Direct { .. })

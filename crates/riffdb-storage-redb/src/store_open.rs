@@ -122,6 +122,7 @@ impl RedbStore {
                 follower_namespace: Mutex::new(None),
                 database,
                 checkpoint_rewrite,
+                outbox_stage_census: crate::outbox_stage_census::Census::default(),
                 derived: std::sync::OnceLock::new(),
                 derived_open: std::sync::Mutex::new(()),
                 derived_in_memory,
