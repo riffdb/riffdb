@@ -1,22 +1,23 @@
 ---
 adr: "0270"
 title: Allocation-Free Committed Entity Canonical Sort
-status: proposed
+status: accepted
 tier: guarantee
 date: 2026-10-05
-accepted: null
-acceptance: null
+accepted: 2026-10-05
+acceptance: 'Maintainer, in session, 2026-10-05: "approved" (exact ADR-0270 text).'
 requires: []
 amends: []
 supersedes: []
 requirements: [BLK-066, BLK-069]
-packages: []
+packages: [WP-827]
 # One entry per deferred obligation. `proof` is a test function name or a
 # scripts/<name>; ./scripts/check-adr-obligations requires it to exist as a
 # definition once the owning package is complete.
 obligations:
   - id: canonical-sort-equivalence
-    text: >-
+    package: WP-827
+    says: >-
       The allocation-free comparator MUST order committed entity mutations
       identically to the canonical encoded sort key
       `[0x01, entity_type_id_be, key_len_be, key_bytes]` for every input,
