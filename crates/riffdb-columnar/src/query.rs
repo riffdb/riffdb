@@ -714,6 +714,11 @@ pub fn nearest_query_snapshot_with_cache<A: NearestCandidateAdmission>(
         .ok_or(QueryError::ScanBudgetExceeded {
             max: request.budget.max_scanned_rows,
         })?;
+    // Predicate column indices are resolved lazily on first use and cached, so
+    // an unknown predicate field surfaces only when a row actually reaches it —
+    // preserving the pre-optimization behavior where an empty or fully-filtered
+    // scan returns no rows rather than a typed `UnknownField` error.
+    let mut resolved_predicates = resolved_predicates(&request.predicates);
     let mut scanned = 0usize;
 
     // Collect only candidates admitted by both scalar predicates and the
@@ -731,7 +736,7 @@ pub fn nearest_query_snapshot_with_cache<A: NearestCandidateAdmission>(
             }
             .into());
         }
-        if !predicates_match(definition, &row, &request.predicates)? {
+        if !predicates_match(definition, &row, &mut resolved_predicates)? {
             continue;
         }
 
@@ -878,11 +883,17 @@ pub(crate) fn execute_query(
 
     let select_fields = resolve_select(definition, &request.select)?;
 
-    // Validate field references.
+    // Validate field references. The scalar/aggregate path has always rejected
+    // an unknown predicate field up front (before any scan), so this eager
+    // check is part of its contract and is preserved exactly.
     for predicate in &request.predicates {
         let field = predicate_field(predicate);
         projected_field_index(definition, field)?;
     }
+    // Lazily-cached predicate resolution removes the per-row linear field
+    // lookup. The up-front validation above already proved every field
+    // resolvable, so the cached resolution below never errors here.
+    let mut resolved_predicates = resolved_predicates(&request.predicates);
     let resolved_order = row_order::resolve(definition, &request.order)?;
     if let Some(group) = &request.group_by {
         for key in &group.keys {
@@ -944,7 +955,7 @@ pub(crate) fn execute_query(
                 max: request.budget.max_scanned_rows,
             });
         }
-        if predicates_match(definition, &row, &request.predicates)? {
+        if predicates_match(definition, &row, &mut resolved_predicates)? {
             let pk_values = decode_primary_key(definition, &key)?;
             let row = (key, pk_values, row);
             if let Some(top) = &mut top {
@@ -1211,23 +1222,85 @@ impl ColumnarAggregateFuel {
     }
 }
 
+/// A predicate paired with its projected-column resolution, computed at most
+/// once and then reused for every subsequent row in the scan.
+///
+/// Resolving a predicate's `FieldId` to a projected-column position is
+/// row-independent, but the original scan resolved it inside the per-row loop
+/// via `projected_field_index`'s linear `position` scan — repeating the lookup
+/// for every predicate on every candidate row. Caching the resolution removes
+/// that per-row cost while preserving the original error timing: resolution
+/// (and therefore any `UnknownField` error) happens only when a row actually
+/// reaches the predicate in conjunction order, exactly as the per-row
+/// `projected_field_index(...)?` call did. A scan that examines no row — an
+/// empty partition, or one whose rows are all rejected by an earlier
+/// predicate — never resolves a later predicate and so never surfaces its
+/// error, matching the pre-optimization behavior.
+struct ResolvedPredicate<'a> {
+    predicate: &'a ColumnPredicate,
+    resolution: PredicateColumn,
+}
+
+/// The cached outcome of resolving a predicate's projected column.
+#[derive(Clone, Copy)]
+enum PredicateColumn {
+    /// Not yet resolved; resolve on first evaluation.
+    Unresolved,
+    /// The predicate names the organization scope field — already selected by
+    /// the canonical partition scan and intentionally not re-evaluated as a
+    /// projected column.
+    OrgScope,
+    /// The resolved projected-column index.
+    Column(usize),
+}
+
+impl<'a> ResolvedPredicate<'a> {
+    fn new(predicate: &'a ColumnPredicate) -> Self {
+        Self {
+            predicate,
+            resolution: PredicateColumn::Unresolved,
+        }
+    }
+}
+
+fn resolved_predicates(predicates: &[ColumnPredicate]) -> Vec<ResolvedPredicate<'_>> {
+    predicates.iter().map(ResolvedPredicate::new).collect()
+}
+
 fn predicates_match(
     definition: &RegisteredDefinition,
     row: &MergedRow,
-    predicates: &[ColumnPredicate],
+    predicates: &mut [ResolvedPredicate<'_>],
 ) -> Result<bool, QueryError> {
-    for predicate in predicates {
-        let field = predicate_field(predicate);
-        // `snapshot.merged_org` already selected this exact canonical scope.
-        // The compiler retains the symbolic partition predicate for policy and
-        // explainability, but evaluating it again as a projected column would
-        // reject key-only organization fields as unknown.
-        if field == definition.org_scope_field() {
-            continue;
-        }
-        let idx = projected_field_index(definition, field)?;
+    for resolved in predicates.iter_mut() {
+        // Resolve the projected column lazily and cache it. The first row to
+        // reach this predicate pays the lookup (and surfaces any `UnknownField`
+        // error); every later row reuses the cached result.
+        let column = match resolved.resolution {
+            PredicateColumn::Unresolved => {
+                let field = predicate_field(resolved.predicate);
+                // `snapshot.merged_org` already selected this exact canonical
+                // scope. The compiler retains the symbolic partition predicate
+                // for policy and explainability, but evaluating it again as a
+                // projected column would reject key-only organization fields as
+                // unknown.
+                let column = if field == definition.org_scope_field() {
+                    PredicateColumn::OrgScope
+                } else {
+                    PredicateColumn::Column(projected_field_index(definition, field)?)
+                };
+                resolved.resolution = column;
+                column
+            }
+            cached => cached,
+        };
+        let idx = match column {
+            PredicateColumn::OrgScope => continue,
+            PredicateColumn::Column(idx) => idx,
+            PredicateColumn::Unresolved => unreachable!("resolved above"),
+        };
         let cell = &row.cells[idx];
-        let ok = match predicate {
+        let ok = match resolved.predicate {
             ColumnPredicate::Eq { value, .. } => cell == value,
             ColumnPredicate::Range { low, high, .. } => {
                 if matches!(cell, CanonicalValue::Null) {

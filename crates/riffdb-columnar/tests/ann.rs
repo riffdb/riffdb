@@ -510,3 +510,123 @@ fn review_nearest_refuses_oversized_merge_before_candidate_admission() {
     );
     assert_eq!(admission.0, 3);
 }
+
+// A field id that is not addressable by the fixture projection (title,
+// embedding) nor the org scope field. Resolving it must raise `UnknownField`.
+fn unknown_field() -> FieldId {
+    FieldId::new(99_999).expect("nonzero field id")
+}
+
+// Behavioral compatibility: a nearest query whose predicate names an unknown
+// field returns an empty result (not a typed `UnknownField` error) whenever no
+// row is actually tested against that predicate. The lazily-cached predicate
+// resolution introduced for the per-row scan optimization must preserve this
+// pre-optimization error timing, where field resolution happened per row only
+// when a row reached the predicate in conjunction order.
+//
+// req: OQ-019
+#[test]
+fn review_nearest_unknown_predicate_on_empty_scan_returns_empty_not_error() {
+    let fixture = Fixture::new();
+    let org = [7_u8; 16];
+    // Empty partition: the scan examines zero rows, so the unknown predicate is
+    // never resolved and never surfaces its error.
+    let snapshot = ColumnarSnapshot::empty();
+    let probe = CanonicalVector::new(vec![0.25_f32; 12]).expect("probe");
+    let request = query(
+        &fixture,
+        org,
+        probe,
+        5,
+        vec![ColumnPredicate::Eq {
+            field: unknown_field(),
+            value: CanonicalValue::U64(1),
+        }],
+    );
+    let result = nearest_query_snapshot(&fixture.exact, &snapshot, &request)
+        .expect("empty scan must not surface the unknown predicate field");
+    assert!(result.rows.is_empty());
+}
+
+// Behavioral compatibility: when every scanned row is rejected by an earlier
+// predicate in the conjunction, a later unknown-field predicate is never
+// reached and must not surface `UnknownField` — the scan returns empty.
+//
+// req: OQ-019
+#[test]
+fn review_nearest_unknown_predicate_behind_fully_filtering_predicate_returns_empty() {
+    let fixture = Fixture::new();
+    let org = [8_u8; 16];
+    let vector = CanonicalVector::new(vec![0.5_f32; 12]).expect("vector");
+    let mut snapshot = ColumnarSnapshot::empty();
+    snapshot.visible_frontier =
+        FrontierPosition::AppliedThrough(CommitSequence::new(1).expect("frontier"));
+    snapshot
+        .delta
+        .entry(OrgKey::from_value(&CanonicalValue::Uuid(org)).expect("org key"))
+        .or_default()
+        .insert(
+            primary_key(fixture.entity, org, 1),
+            row("stored-title", vector.clone(), 1),
+        );
+    // First predicate rejects the only row; the second names an unknown field.
+    // Conjunction short-circuits before the unknown predicate is resolved.
+    let request = query(
+        &fixture,
+        org,
+        vector,
+        5,
+        vec![
+            ColumnPredicate::Eq {
+                field: fixture.title_field,
+                value: CanonicalValue::string("no-such-title").expect("title"),
+            },
+            ColumnPredicate::Eq {
+                field: unknown_field(),
+                value: CanonicalValue::U64(1),
+            },
+        ],
+    );
+    let result = nearest_query_snapshot(&fixture.exact, &snapshot, &request)
+        .expect("fully-filtered scan must not surface the unknown predicate field");
+    assert!(result.rows.is_empty());
+}
+
+// Behavioral compatibility (the other side of the contract): when a scanned row
+// actually reaches the unknown-field predicate, resolution runs and the typed
+// `UnknownField` error is surfaced — exactly as the pre-optimization per-row
+// resolution did on the first row that reached it.
+//
+// req: OQ-019
+#[test]
+fn review_nearest_unknown_predicate_reached_by_a_row_surfaces_unknown_field() {
+    let fixture = Fixture::new();
+    let org = [9_u8; 16];
+    let vector = CanonicalVector::new(vec![0.75_f32; 12]).expect("vector");
+    let mut snapshot = ColumnarSnapshot::empty();
+    snapshot.visible_frontier =
+        FrontierPosition::AppliedThrough(CommitSequence::new(1).expect("frontier"));
+    snapshot
+        .delta
+        .entry(OrgKey::from_value(&CanonicalValue::Uuid(org)).expect("org key"))
+        .or_default()
+        .insert(
+            primary_key(fixture.entity, org, 1),
+            row("stored-title", vector.clone(), 1),
+        );
+    let unknown = unknown_field();
+    let request = query(
+        &fixture,
+        org,
+        vector,
+        5,
+        vec![ColumnPredicate::Eq {
+            field: unknown,
+            value: CanonicalValue::U64(1),
+        }],
+    );
+    assert!(matches!(
+        nearest_query_snapshot(&fixture.exact, &snapshot, &request),
+        Err(riffdb_columnar::QueryError::UnknownField { field_id }) if field_id == unknown
+    ));
+}

@@ -1227,14 +1227,27 @@ pub(super) fn prepare_sequence_free_capsule(
 }
 
 fn sort_committed_entities(entities: &mut [CommittedEntityMutationV1]) {
-    entities.sort_unstable_by_key(|mutation| {
-        let target = mutation.target();
-        let mut key = Vec::with_capacity(1 + 4 + 4 + target.key().as_bytes().len());
-        key.push(0x01);
-        key.extend_from_slice(&target.entity_type_id().to_be_bytes());
-        key.extend_from_slice(&(target.key().as_bytes().len() as u32).to_be_bytes());
-        key.extend_from_slice(target.key().as_bytes());
-        key
+    // Canonical order equals the lexicographic order of the encoded key
+    // `[0x01, entity_type_id_be, key_len_be, key_bytes]`. The leading tag is a
+    // shared constant, the type id is an unsigned integer (big-endian byte
+    // order equals numeric order), and the length-prefixed key compares by
+    // length first and then by bytes. Comparing those fields directly avoids
+    // the per-comparison heap allocation `sort_unstable_by_key` would incur by
+    // rebuilding the encoded key for every element on every comparison.
+    entities.sort_unstable_by(|left, right| {
+        let left_target = left.target();
+        let right_target = right.target();
+        left_target
+            .entity_type_id()
+            .cmp(&right_target.entity_type_id())
+            .then_with(|| {
+                let left_key = left_target.key().as_bytes();
+                let right_key = right_target.key().as_bytes();
+                left_key
+                    .len()
+                    .cmp(&right_key.len())
+                    .then_with(|| left_key.cmp(right_key))
+            })
     });
 }
 
@@ -1351,6 +1364,85 @@ mod tests {
         key.push_u64(id).expect("entity key component");
         riffdb_storage_api::EntityTarget::new(entity_type, key.finish().expect("entity key"))
             .expect("entity target")
+    }
+
+    /// Builds an entity target with an explicit type id and a variable-length
+    /// string key, so the canonical-order proof exercises differing type ids,
+    /// differing key lengths, and byte-equal prefixes.
+    fn target_typed(type_id: u32, key_text: &str) -> riffdb_storage_api::EntityTarget {
+        let entity_type = EntityTypeId::new(type_id).expect("entity type");
+        let mut key = EntityKeyBuilder::new(entity_type);
+        key.push_str(key_text).expect("entity key component");
+        riffdb_storage_api::EntityTarget::new(entity_type, key.finish().expect("entity key"))
+            .expect("entity target")
+    }
+
+    /// Materializes a committed Put mutation for an arbitrary target. Only the
+    /// target participates in `sort_committed_entities`; the fields and version
+    /// are fixed first-version values that satisfy the Put invariant.
+    fn committed_put(target: riffdb_storage_api::EntityTarget) -> CommittedEntityMutationV1 {
+        let binding = DurableKeySchemaBindingV1::from_plan(&plan());
+        let stored = StoredEntityRecordV1::new(
+            target,
+            EntityVersion::first(),
+            ContractVersion::new(7).expect("contract version"),
+            binding,
+            record(1, 1),
+        )
+        .expect("stored entity record");
+        CommittedEntityMutationV1::new(ExpectedEntityState::Absent, stored).expect("committed put")
+    }
+
+    /// The canonical encoded sort key the pre-optimization implementation used.
+    fn canonical_encoded_key(target: &riffdb_storage_api::EntityTarget) -> Vec<u8> {
+        let mut key = Vec::with_capacity(1 + 4 + 4 + target.key().as_bytes().len());
+        key.push(0x01);
+        key.extend_from_slice(&target.entity_type_id().to_be_bytes());
+        key.extend_from_slice(&(target.key().as_bytes().len() as u32).to_be_bytes());
+        key.extend_from_slice(target.key().as_bytes());
+        key
+    }
+
+    // req: BLK-066, BLK-069
+    #[test]
+    fn canonical_entity_sort_matches_encoded_key_order() {
+        // Targets chosen to exercise: equal type ids with different keys,
+        // different type ids, keys that are byte-equal prefixes of longer keys,
+        // and keys whose length ordering differs from a plain byte comparison.
+        let targets = vec![
+            target_typed(5, "beta"),
+            target_typed(5, "alpha"),
+            target_typed(2, "zzzz"),
+            target_typed(5, "al"), // prefix of "alpha"
+            target_typed(5, "alphabet"),
+            target_typed(9, ""),
+            target_typed(2, "zzzzz"), // longer than "zzzz"
+            target_typed(5, "alpha"), // duplicate of an earlier target
+        ];
+
+        let mut mutations = targets
+            .iter()
+            .cloned()
+            .map(committed_put)
+            .collect::<Vec<_>>();
+        sort_committed_entities(&mut mutations);
+
+        // Reference order: sort the same targets by the canonical encoded key.
+        let mut expected = targets.clone();
+        expected.sort_by_key(canonical_encoded_key);
+
+        let produced = mutations
+            .iter()
+            .map(|mutation| canonical_encoded_key(mutation.target()))
+            .collect::<Vec<_>>();
+        let reference = expected
+            .iter()
+            .map(canonical_encoded_key)
+            .collect::<Vec<_>>();
+        assert_eq!(
+            produced, reference,
+            "allocation-free comparator must match the canonical encoded-key order"
+        );
     }
 
     fn fixture_with_causation(
