@@ -1,6 +1,10 @@
 //! Shared engine construction and mode-specific recovery admission.
 use super::*;
 
+#[cfg(test)]
+#[path = "store_creation_sync_tests.rs"]
+mod creation_sync_tests;
+
 impl RedbStore {
     #[allow(clippy::too_many_arguments)]
     pub(super) fn open_after_format_preflight(
@@ -69,6 +73,14 @@ impl RedbStore {
         .map_err(database_error)?;
         if refuse_repair && repair_observed.load(Ordering::Acquire) {
             return Err(storage_error(StorageErrorKind::CorruptData));
+        }
+        if open_mode == OpenMode::Source {
+            // redb synchronizes file contents, not first-creation directory
+            // publication. Recheck on reopen too: a prior failed sync may have
+            // left this otherwise valid file and its CURRENT marker behind.
+            journal_media
+                .sync_parent_all(path)
+                .map_err(|_| storage_error(StorageErrorKind::Unavailable))?;
         }
         // Source-mode construction cannot reinterpret attached follower state
         // as a writable primary. Refuse before locator installation, journal

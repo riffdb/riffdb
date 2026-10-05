@@ -156,7 +156,8 @@ impl MediaFile {
 }
 
 /// The journal media port: every filesystem operation the durability journal,
-/// its checkpoint/spare rotation, and the durable-format marker perform.
+/// its checkpoint/spare rotation, the durable-format marker, and primary-file
+/// directory publication perform.
 ///
 /// The operation set is exactly what the current call sites need — no
 /// speculative surface. `io::Error` kinds are contract: `NotFound`,

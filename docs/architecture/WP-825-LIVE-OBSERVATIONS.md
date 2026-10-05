@@ -536,3 +536,39 @@ RiffDB formats and interfaces, no downgrade claim; Updated handbook pages:
 startup integrity and known limitations; Hazards/follow-ups: full compatibility
 and crash evidence, full CI, unresolved native retention
 and latency, final-host preparation and the complete short rehearsal.
+
+### Primary creation directory publication
+
+The engine review's directory-publication gap is reproducible independently of
+the workload. Two native real-file regressions first failed: ordinary source
+open performed no directory sync after engine creation, and an injected failure
+at that missing boundary could not refuse the open. Hardened databases may have
+no source side journal, so a later journal sync is not a durability proof.
+
+Ordinary source open now uses the existing media port to synchronize the parent
+after the engine file exists, before exposing a store. Every ordinary reopen
+repeats the check, preventing a failed first publication from being bypassed by
+the leftover primary and CURRENT marker. Both native regressions pass, including
+two failed attempts followed by successful initialization and identity-preserving
+reopen. Follower and private-artifact publication keep their existing custody
+owners. This is a directory-operation/failure regression, not a claim that
+process kill simulates loss of unsynchronized directory entries. Broader
+acceptance and final-host qualification remain outstanding.
+
+The first simulator suite passes 57 of 58 tests; the corpus replay refuses a
+stale historical displacement receipt after the new sync changes the seeded
+operation stream. The existing diagnostic audit completes every corpus entry
+with the state oracle holding: two historical coordinates return for a third
+time, one returns for the first time, and two restored coordinates move away.
+All successor witnesses still cover the same predicates and the retired
+commit-present window remains absent. The movement receipts must name this
+repair's exact commit before the corpus can pass. No seed, generator, fault
+model, predicate, retirement or successor will be removed or weakened.
+
+PR note: Package WP-825 (open); Tier guarantee within existing durable-write
+requirements; Behavior: require ordinary primary-directory synchronization
+before store admission, preserving typed failure on retries; Checks: two native
+regressions fail before the repair and pass afterward; Compatibility: unchanged
+formats, profiles and interfaces; Updated handbook: startup integrity;
+Hazards/follow-ups: broader acceptance, actual continuing-load reclamation and
+latency diagnosis, full CI and the complete short rehearsal.

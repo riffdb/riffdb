@@ -4,6 +4,12 @@ RiffDB chooses its startup-validation mode automatically. There is no flag,
 configuration setting, API, or maintenance shortcut that can force the faster
 mode or suppress complete validation.
 
+An ordinary primary open synchronizes its parent directory after the engine file
+exists and before returning a usable store. A failed directory sync refuses the
+open. Reopening repeats this check, including when a previous attempt left a
+valid file and format marker behind; journal creation is not required to make
+the primary filename durable.
+
 WP-772's in-progress V3 substrate adds an internal first-activation transition.
 An inactive database must complete structural and catalog validation before one
 hardened transaction publishes the V3 registry and all required roots together.
