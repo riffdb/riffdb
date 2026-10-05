@@ -7868,22 +7868,14 @@ impl SharedRedb {
             runtime.database_id,
             |frame, locator| {
                 if v3 || crate::changelog_v3_journal::has_receipt_source(frame) {
-                    let prior =
-                        crate::changelog_v3_roots::read_checkpoint_roots_for_write(transaction)
-                            .map_err(|_| crate::journal::JournalIoError::Corrupt)?
-                            .ok_or(crate::journal::JournalIoError::Corrupt)?;
-                    let receipt = crate::changelog_v3_journal::materialize_located_frame(
-                        transaction,
-                        frame,
-                        locator,
-                    )
-                    .map_err(|_| crate::journal::JournalIoError::Corrupt)?;
-                    footprint.combine(
-                        crate::source_continuation::SourceContinuationFootprint::captured(
-                            prior,
-                            receipt.mutations(),
-                        ),
-                    );
+                    let (_, checked) =
+                        crate::changelog_v3_journal::materialize_located_frame_for_continuation(
+                            transaction,
+                            frame,
+                            locator,
+                        )
+                        .map_err(|_| crate::journal::JournalIoError::Corrupt)?;
+                    footprint.combine(checked);
                 } else {
                     for mutation in frame.mutations() {
                         crate::journal::apply_located_mutation(transaction, mutation, locator)?;

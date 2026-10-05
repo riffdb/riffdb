@@ -213,6 +213,37 @@ pub(crate) fn materialize_located_frame(
     frame: &JournalFrame,
     locator: Option<crate::history_stub::StubLocator>,
 ) -> Result<AuthoritativeTransactionV3, StorageError> {
+    materialize_native_frame(transaction, frame, locator, false).map(|(receipt, _)| receipt)
+}
+
+/// The live drain additionally checks its actual native preimages before any
+/// mutation, preserving only the closed source-independent audit conversion.
+pub(crate) fn materialize_located_frame_for_continuation(
+    transaction: &WriteTransaction,
+    frame: &JournalFrame,
+    locator: Option<crate::history_stub::StubLocator>,
+) -> Result<
+    (
+        AuthoritativeTransactionV3,
+        crate::source_continuation::SourceContinuationFootprint,
+    ),
+    StorageError,
+> {
+    materialize_native_frame(transaction, frame, locator, true)
+}
+
+fn materialize_native_frame(
+    transaction: &WriteTransaction,
+    frame: &JournalFrame,
+    locator: Option<crate::history_stub::StubLocator>,
+    qualify: bool,
+) -> Result<
+    (
+        AuthoritativeTransactionV3,
+        crate::source_continuation::SourceContinuationFootprint,
+    ),
+    StorageError,
+> {
     let history = read_checkpoint_roots_for_write(transaction)?
         .ok_or_else(|| storage_error(StorageErrorKind::IncompatibleFormat))?;
     let binding = AuthoritativeTransactionBindingV3 {
@@ -252,6 +283,41 @@ pub(crate) fn materialize_located_frame(
     {
         return Err(storage_error(StorageErrorKind::CorruptData));
     }
+    let footprint = if qualify {
+        crate::source_continuation::SourceContinuationFootprint::captured_checked(
+            history,
+            receipt.mutations(),
+            |mutation| {
+                let audit = transaction
+                    .open_table(crate::layout::AUDIT)
+                    .map_err(table_error)?;
+                Ok(audit
+                    .get(mutation.key())
+                    .map_err(precommit_storage_error)?
+                    .map(|row| row.value().to_vec()))
+            },
+            |sequence| {
+                let commits = transaction
+                    .open_table(crate::layout::COMMITS)
+                    .map_err(table_error)?;
+                let key = crate::keys::encode_application_sequence_key(sequence);
+                let mut rows = commits
+                    .range::<&[u8]>((
+                        std::ops::Bound::Unbounded,
+                        std::ops::Bound::Included(key.as_slice()),
+                    ))
+                    .map_err(precommit_storage_error)?;
+                rows.next_back()
+                    .transpose()
+                    .map_err(precommit_storage_error)
+                    .map(|row| {
+                        row.map(|(key, value)| (key.value().to_vec(), value.value().to_vec()))
+                    })
+            },
+        )?
+    } else {
+        crate::source_continuation::SourceContinuationFootprint::unknown()
+    };
     for mutation in frame.mutations() {
         if AuthoritativeStateCatalogV1.lookup(mutation.table().label(), mutation.key())
             == Some(N::NextChangelogTransaction)
@@ -272,7 +338,7 @@ pub(crate) fn materialize_located_frame(
         }
         _ => advance.stage(transaction)?,
     }
-    Ok(receipt)
+    Ok((receipt, footprint))
 }
 
 /// Checks one already materialized overlap against its original journal source

@@ -582,3 +582,48 @@ regressions fail before the repair and pass afterward; Compatibility: unchanged
 formats, profiles and interfaces; Updated handbook: startup integrity;
 Hazards/follow-ups: broader acceptance, actual continuing-load reclamation and
 latency diagnosis, full CI and the complete short rehearsal.
+
+### Native prune publication followed by an outbox drain
+
+The asynchronous checkpoint already qualified canonical command-audit
+materialization using actual preimages. Its synchronous live journal-drain
+counterpart instead classified the resulting receipt after applying it. A
+canonical historical Service audit below the administration frontier therefore
+invalidated source continuation even though no source-control evidence changed.
+This is a native lifecycle defect, independent of campaign scheduling.
+
+A new regression uses the genuine predecessor command fixture, complete native
+structural/catalog validation and real outbox transitions. It completes only
+the first event's controlled transition to release that hold, publishes one
+logical prune and claims the second event, forcing the actual live drain. The
+unrepaired main checkout fails: its source-continuation epoch advances from one
+to two. This transition fixture does not qualify archive delivery or campaign
+evidence and is not a rehearsal workaround.
+
+The live drain now qualifies the canonical receipt before changing any rows.
+It shares the checkpoint's closed audit proof: exact actual preimage hash,
+canonical Service record and key/frontier agreement, and, for a locator,
+the exact command and audit member from one bounded decoded native segment.
+Changed physical audit or source-control evidence, missing command evidence,
+malformed values and unknown writers continue to invalidate qualification.
+Normal recovery still uses the unchanged materialization path. Ordered source
+mutations retain all existing preimage checks, including cancelled net changes.
+There is no additional mutation queue or snapshot pin.
+
+The repaired main regression passes and independently checks complete retained
+history, unchanged resume/frontiers, exact canonical outcomes and provenance.
+Seventy targeted native continuation, journal and architecture tests pass.
+Final scoped acceptance passes all seven steps and 1,176 native tests, with
+the two existing skips. Full CI remains pending. No measured cause is
+assigned to the previous preparation's invalidation count or latency failures;
+the required-host run must measure this repair's effect.
+
+PR note: Package WP-825 (open); Tier guarantee under accepted ADR-0268;
+Behavior: preserve qualified source continuation through a preimage-checked
+live prune drain; Checks: native regression fails before and passes after the
+repair, plus 70 targeted tests; Compatibility: unchanged durable formats,
+interfaces, ordering, profiles and hold rules; Updated handbook: known
+limitations; Final scoped checks: all seven steps and 1,176 tests pass;
+Hazards/follow-ups: full CI, unresolved
+physical retirement and latency, required-host preparation and the complete
+short rehearsal. The 24-hour campaign has not started.

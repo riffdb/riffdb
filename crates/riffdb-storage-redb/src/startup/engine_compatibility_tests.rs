@@ -51,7 +51,7 @@ fn restore_frozen_fixture(root: &Path) {
     restore_fixture_bytes(root, FIXTURE, &NAMES);
 }
 
-fn restore_fixture_bytes(root: &Path, fixture: &str, names: &[&str]) {
+pub(super) fn restore_fixture_bytes(root: &Path, fixture: &str, names: &[&str]) {
     std::fs::create_dir(root.join("backup")).unwrap();
     let mut file: Option<(std::fs::File, PathBuf, u64, String)> = None;
     let mut seen = BTreeSet::new();

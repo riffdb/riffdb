@@ -135,97 +135,149 @@ impl SourceContinuationFootprint {
             riffdb_storage_api::StorageError,
         >,
     ) -> Result<Self, riffdb_storage_api::StorageError> {
-        // One decoded native frame only, released before reading a replacement.
-        // No retained mutation queue, per-audit cache, or additional reader pin.
-        let mut segment: Option<riffdb_storage_api::StoredCommandSegmentV1> = None;
+        let mut segment = None;
         for mutation in mutations {
             if Self::composite(prior, std::slice::from_ref(mutation)).is_append_only() {
                 continue;
             }
-            if mutation.table() != T::Audit {
-                return Ok(Self::unknown());
-            }
-            let before = before(mutation)?;
-            // Reuse the checked composite preimage primitive; hashing stays
-            // within its existing reviewed integrity boundary.
-            let observed = before
-                .as_deref()
-                .map(|bytes| {
-                    CompositeMutationV1::delete_matching(T::Audit, mutation.key(), bytes)
-                        .map(|checked| checked.expected_hash())
-                })
-                .transpose();
-            let Ok(observed) = observed else {
-                return Ok(Self::unknown());
-            };
-            if observed.flatten() != mutation.expected_hash() {
-                return Ok(Self::unknown());
-            }
-            let Some(after) = mutation.value() else {
-                return Ok(Self::unknown());
-            };
-            let Ok(after) = riffdb_storage_api::decode_service_audit_record(after) else {
-                return Ok(Self::unknown());
-            };
-            let after = after.value();
-            if mutation.key() != crate::keys::encode_audit_key(after.administration_sequence())
-                || prior.is_none_or(|prior| after.administration_sequence() > prior)
+            if mutation.table() != T::Audit
+                || !checked_audit_representation(
+                    prior,
+                    (mutation.key(), mutation.expected_hash(), mutation.value()),
+                    before(mutation)?,
+                    &mut command_row,
+                    &mut segment,
+                )?
             {
-                return Ok(Self::unknown());
-            }
-            // Current command segments provide their audit through derived
-            // indexes without a physical AUDIT row. Pruning inserts a canonical
-            // Service record below the administration frontier. Actual absence
-            // is checked above: no previously validated source audit changes,
-            // and all three native source validators ignore this closed type.
-            let Some(before) = before.as_deref() else {
-                continue;
-            };
-            let Ok(locator) = riffdb_storage_api::decode_command_audit_locator_v1(before) else {
-                // A physical record may remain byte-for-byte equal, but no
-                // changed retained record or source-control audit is eligible.
-                if mutation.value() != Some(before) {
-                    return Ok(Self::unknown());
-                }
-                continue;
-            };
-            let locator = *locator.value();
-            let sequence = locator.commit_sequence();
-            if !segment.as_ref().is_some_and(|segment| {
-                segment.first_commit_sequence() <= sequence
-                    && sequence <= segment.last_commit_sequence()
-            }) {
-                drop(segment.take());
-                let Some((key, encoded)) = command_row(sequence)? else {
-                    return Ok(Self::unknown());
-                };
-                let Ok(decoded) = crate::history_stub::decode_segment_value(&encoded) else {
-                    return Ok(Self::unknown());
-                };
-                let decoded = decoded.into_parts().0;
-                if key
-                    != crate::keys::encode_application_sequence_key(decoded.first_commit_sequence())
-                {
-                    return Ok(Self::unknown());
-                }
-                segment = Some(decoded);
-            }
-            let Some(command) = segment.as_ref().and_then(|segment| {
-                sequence
-                    .get()
-                    .checked_sub(segment.first_commit_sequence().get())
-                    .and_then(|ordinal| usize::try_from(ordinal).ok())
-                    .and_then(|ordinal| segment.commands().get(ordinal))
-                    .filter(|command| command.commit_sequence() == sequence)
-            }) else {
-                return Ok(Self::unknown());
-            };
-            if command.base().audit(locator.member()) != after {
                 return Ok(Self::unknown());
             }
         }
         Ok(Self::fresh())
     }
+
+    /// Checked canonical service-audit materialization before a decoded journal
+    /// source is applied. The same closed audit proof serves both native paths.
+    pub(crate) fn captured_checked(
+        history: ChangelogHistoryStateV3,
+        mutations: &[AuthoritativeMutationV3],
+        mut before: impl FnMut(
+            &AuthoritativeMutationV3,
+        ) -> Result<Option<Vec<u8>>, riffdb_storage_api::StorageError>,
+        mut command_row: impl FnMut(
+            CommitSequence,
+        ) -> Result<
+            Option<(Vec<u8>, Vec<u8>)>,
+            riffdb_storage_api::StorageError,
+        >,
+    ) -> Result<Self, riffdb_storage_api::StorageError> {
+        let mut segment = None;
+        for mutation in mutations {
+            if Self::captured(history, std::slice::from_ref(mutation)).is_append_only() {
+                continue;
+            }
+            if mutation.namespace() != N::Audit
+                || !checked_audit_representation(
+                    history.tail().frontier().administration(),
+                    (mutation.key(), mutation.expected_hash(), mutation.value()),
+                    before(mutation)?,
+                    &mut command_row,
+                    &mut segment,
+                )?
+            {
+                return Ok(Self::unknown());
+            }
+        }
+        Ok(Self::fresh())
+    }
+}
+
+// One decoded segment, shared by the complete bounded native frame. The actual
+// preimage is checked before canonical audit classification, never afterward.
+fn checked_audit_representation(
+    prior: Option<AdministrationSequence>,
+    (key, expected_hash, value): (&[u8], Option<[u8; 32]>, Option<&[u8]>),
+    before: Option<Vec<u8>>,
+    command_row: &mut impl FnMut(
+        CommitSequence,
+    )
+        -> Result<Option<(Vec<u8>, Vec<u8>)>, riffdb_storage_api::StorageError>,
+    segment: &mut Option<riffdb_storage_api::StoredCommandSegmentV1>,
+) -> Result<bool, riffdb_storage_api::StorageError> {
+    // Reuse the checked composite preimage primitive; hashing stays
+    // within its existing reviewed integrity boundary.
+    let observed = before
+        .as_deref()
+        .map(|bytes| {
+            CompositeMutationV1::delete_matching(T::Audit, key, bytes)
+                .map(|checked| checked.expected_hash())
+        })
+        .transpose();
+    let Ok(observed) = observed else {
+        return Ok(false);
+    };
+    if observed.flatten() != expected_hash {
+        return Ok(false);
+    }
+    let Some(after) = value else {
+        return Ok(false);
+    };
+    let Ok(after) = riffdb_storage_api::decode_service_audit_record(after) else {
+        return Ok(false);
+    };
+    let after = after.value();
+    if key != crate::keys::encode_audit_key(after.administration_sequence())
+        || prior.is_none_or(|prior| after.administration_sequence() > prior)
+    {
+        return Ok(false);
+    }
+    // Current command segments provide their audit through derived
+    // indexes without a physical AUDIT row. Pruning inserts a canonical
+    // Service record below the administration frontier. Actual absence
+    // is checked above: no previously validated source audit changes,
+    // and all three native source validators ignore this closed type.
+    let Some(before) = before.as_deref() else {
+        return Ok(true);
+    };
+    let Ok(locator) = riffdb_storage_api::decode_command_audit_locator_v1(before) else {
+        // A physical record may remain byte-for-byte equal, but no
+        // changed retained record or source-control audit is eligible.
+        if value != Some(before) {
+            return Ok(false);
+        }
+        return Ok(true);
+    };
+    let locator = *locator.value();
+    let sequence = locator.commit_sequence();
+    if !segment.as_ref().is_some_and(|segment| {
+        segment.first_commit_sequence() <= sequence && sequence <= segment.last_commit_sequence()
+    }) {
+        drop(segment.take());
+        let Some((key, encoded)) = command_row(sequence)? else {
+            return Ok(false);
+        };
+        let Ok(decoded) = crate::history_stub::decode_segment_value(&encoded) else {
+            return Ok(false);
+        };
+        let decoded = decoded.into_parts().0;
+        if key != crate::keys::encode_application_sequence_key(decoded.first_commit_sequence()) {
+            return Ok(false);
+        }
+        *segment = Some(decoded);
+    }
+    let Some(command) = segment.as_ref().and_then(|segment| {
+        sequence
+            .get()
+            .checked_sub(segment.first_commit_sequence().get())
+            .and_then(|ordinal| usize::try_from(ordinal).ok())
+            .and_then(|ordinal| segment.commands().get(ordinal))
+            .filter(|command| command.commit_sequence() == sequence)
+    }) else {
+        return Ok(false);
+    };
+    if command.base().audit(locator.member()) != after {
+        return Ok(false);
+    }
+    Ok(true)
 }
 
 fn unchanged_source_or_append(

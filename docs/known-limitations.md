@@ -55,6 +55,12 @@ These limits are part of the POC release posture, not hidden roadmap promises.
   4,610 source receipts, but reclaimed no physical extents; its final fault-free
   window failed both p95 and p99 limits. Sustained retirement and latency remain
   unresolved native blockers.
+  A subsequent native regression found that an outbox write draining a published
+  prune unnecessarily invalidated source validation. The live drain now checks
+  actual preimages before applying canonical command-audit materialization,
+  preserving qualification only for that closed representation change. The
+  regression preserves exact outcomes, provenance and retained-history validity;
+  its effect on continuing-load latency and retirement is still unmeasured.
   Native reclamation, latency, notification and recovery behavior require
   further verification; maintenance pauses, automatic
   watch reconnects or relaxed client validation cannot qualify the rehearsal.
@@ -376,7 +382,7 @@ archive/export consumers composed.
 
 ## Storage reclamation
 
-Retention pruning deletes rows; it does not shrink the database file. redb 4.2
+Retention pruning deletes rows; it does not shrink the database file. redb 4.3
 exposes `Database::compact`, and nothing in RiffDB calls it, so freed pages are
 reused inside the file and the file's high-water mark is permanent for the life
 of the database. Capacity planning must size for the historical peak, not for
