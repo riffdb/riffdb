@@ -822,3 +822,52 @@ application protocols, durable formats, holds, ordering and admission; Updated
 handbook: known limitations; Hazards/follow-ups: complete validation and measure
 actual eligible history and writer-stage costs under continued load. The full
 short rehearsal and 24-hour campaign remain unqualified.
+
+
+### Native outbox writer-stage observations
+
+The native outbox claim and completion path uses the sole ordered writer. Each
+transition can publish an acknowledged journal prefix, wait for checkpoint
+installation, take and materialize the published suffix, then complete its
+engine transaction and durable source publication. These are authoritative
+storage operations below the application boundary. Aggregate command/read
+shutdown timings cannot attribute their interference with command tails.
+
+A graph-owned census observes eight existing native stages: gate wait, prefix
+publication, checkpoint wait, journal take, engine open, suffix application,
+held begin work and commit completion. Each stage retains only attempted-stage
+count, cumulative and maximum microseconds. Its fixed atomic storage is at
+most 256 bytes. Other attributions do not activate clocks or change these
+counts. Held begin overlaps its component stages; live atomic snapshots are
+diagnostic observations, not coherent completion receipts or a partition of
+wall time. An empty suffix phase still counts as a measured phase attempt.
+
+The owned local outbox emits one closed numeric private line at most once per
+minute between dispatch pages, and once when its worker retires. Diagnostic
+I/O follows release of native writer leases; failed output changes no delivery
+result, acknowledgement or readiness. No event identity, payload, tenant,
+path, capability or machine identity is recorded. The original dispatcher,
+archive durability, profiles, writer order, checkpoints and source admission
+are unchanged. This observes costs; it authorizes no transaction batching or
+sync-boundary removal.
+
+A genuine native fixture first fails when its two real claim/completion writes
+produce no attributed observations. It passes after instrumentation while
+preserving exact statuses, source qualification and retained history. Other
+administrative operations leave the outbox census unchanged. Two deterministic
+counter tests cover concurrent publication, saturation, graph/stage isolation
+and inactive attributions; a server formatter test covers closed labels and
+maximum numeric output. The final native rerun passes; all seven scoped checks
+pass, including 1,809 tests across 25 binaries with 10 existing skips, Clippy,
+formatting and handbook generation.
+Required-host measurement excludes this new instrumentation until its source
+and locked artifacts are explicitly installed.
+
+PR note: Package WP-825 (open); Tier guarantee within accepted ADR-0265 and
+ADR-0268; Behavior: observe actual native outbox writer stages with fixed
+metadata and payload-free diagnostics; Checks: native RED/GREEN and three
+focused counter/formatter tests, 1,809-test scoped acceptance; Compatibility: unchanged application
+protocols, durable formats, attribution, admission, holds and ordering;
+Updated handbook: known limitations; Hazards/follow-ups:
+required-host writer-cost measurement, source-admission progress, normal
+latency and the complete short rehearsal. No 24-hour run has started.

@@ -99,6 +99,12 @@ fn native_prune_then_outbox_drain_preserves_source_validation_qualification() {
         ports.succeed_outbox(&success).unwrap(),
         OutboxTransitionResultV1::Applied(success.updated().clone())
     );
+    let stages = ports.shared_ports().outbox_stage_census_v1();
+    assert_eq!(
+        stages.map(|stage| stage[0]),
+        [2; 8],
+        "actual claim and completion must each be attributed at the native writer"
+    );
     let epoch = ports
         .shared
         .source_continuation_epoch
@@ -124,6 +130,11 @@ fn native_prune_then_outbox_drain_preserves_source_validation_qualification() {
             .source_continuation_epoch
             .load(Ordering::Acquire),
         epoch
+    );
+    assert_eq!(
+        ports.shared_ports().outbox_stage_census_v1(),
+        stages,
+        "logical pruning and source control must not be counted as outbox writes"
     );
     let next = OutboxClaimV1::new(
         second.event_id(),
