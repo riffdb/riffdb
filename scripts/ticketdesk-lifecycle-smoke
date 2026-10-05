@@ -21,6 +21,7 @@ import time
 
 from lib.ticketdesk_lifecycle_inventory import InventoryError, InventoryMonitor
 from lib.ticketdesk_lifecycle_faults import FaultError, LocalArchiveOutage
+from lib.ticketdesk_lifecycle_observations import ObservationError, projection_backlog
 
 
 class SmokeError(ValueError):
@@ -381,7 +382,88 @@ def pump_load(process, output, messages):
         process.stdout.close()
 
 
-def observed_load(root, worker, environment, duration, observer, latest, consumer_outage, *, sink=None):
+class ProjectionSampler:
+    """One auxiliary call at a time, with actual plan-bound native fences."""
+
+    def __init__(self, root, base, identity, duration):
+        require(type(duration) is int and 1 <= duration <= 86400, "projection_sample_bound")
+        self.root, self.base, self.identity, self.duration = root, base, identity, duration
+        self.input = write(root, "projection-sample-input.json", json.dumps({"leading_components": [
+            {"type": "uuid", "value": "01900000-0000-7000-8001-000000000000"}]}))
+        self.coverage = [0] * ((duration + 299) // 300)
+        self.stopped = threading.Event()
+        self.errors = queue.Queue(maxsize=1)
+        self.thread = None
+
+    def sample(self, index, elapsed_ns):
+        require(type(index) is int and 0 <= index <= (self.duration + 4) // 5,
+                "projection_sample_bound")
+        require(type(elapsed_ns) is int and 0 <= elapsed_ns < self.duration * 1000000000,
+                "projection_sample_clock")
+        prefix = "projection-sample-" + str(index)
+        invoke(self.root, prefix + "-health", self.base + ["server", "health"], timeout=5)
+        health = read_json(self.root / (prefix + "-health.stdout"))
+        invoke(self.root, prefix + "-query", self.base + ["projection", "query",
+            str(self.identity["projection_id"]), "--contract-lineage", "TicketDeskLifecycle",
+            "--contract-version", "1", "--input", str(self.input), "--limit", "1"], timeout=5)
+        projection = read_json(self.root / (prefix + "-query.stdout"))
+        backlog = projection_backlog(health, projection, self.identity)
+        fence = projection["result"]["observed_fence"]
+        return {"schema": "riffdb.ticketdesk-lifecycle-projection-sample/v1",
+                "elapsed_ns": elapsed_ns, "sampled_head": health["result"]["last_commit_sequence"],
+                "applied_through": int(fence["frontier"]["sequence"]),
+                "generation": int(fence["generation"]), "identity": self.identity,
+                "projection_backlog": backlog, "auxiliary_slots": 1}
+
+    def start(self, started):
+        require(self.thread is None, "projection_sample_owner")
+        self.thread = threading.Thread(target=self.run, args=(started,), daemon=True)
+        self.thread.start()
+
+    def run(self, started):
+        try:
+            with (self.root / "projection-samples.jsonl").open("x") as output:
+                os.chmod(self.root / "projection-samples.jsonl", 0o600)
+                index, previous_head, previous_applied = 0, 0, 0
+                while not self.stopped.is_set():
+                    elapsed_ns = int((time.monotonic() - started) * 1000000000)
+                    if elapsed_ns >= self.duration * 1000000000:
+                        break
+                    sample = self.sample(index, elapsed_ns)
+                    completed = int((time.monotonic() - started) * 1000000000)
+                    require(sample["sampled_head"] >= previous_head
+                            and sample["applied_through"] >= previous_applied,
+                            "projection_sample_regression")
+                    previous_head, previous_applied = sample["sampled_head"], sample["applied_through"]
+                    sample["completed_elapsed_ns"] = completed
+                    encoded = json.dumps(sample, separators=(",", ":")) + "\n"
+                    require(len(encoded) <= 2048, "projection_sample_bound")
+                    output.write(encoded)
+                    output.flush()
+                    if completed < self.duration * 1000000000:
+                        self.coverage[elapsed_ns // 300000000000] += 1
+                    index += 1
+                    self.stopped.wait(5)
+        except (SmokeError, ObservationError, OSError, ValueError, TypeError, KeyError,
+                subprocess.SubprocessError):
+            self.errors.put_nowait("projection_sample_failed")
+
+    def poll(self):
+        require(self.errors.empty(), "projection_sample_failed")
+
+    def stop(self):
+        self.stopped.set()
+        if self.thread is not None:
+            self.thread.join(timeout=12)
+            require(not self.thread.is_alive(), "projection_sample_shutdown")
+        self.poll()
+
+    def validate_coverage(self):
+        require(all(count > 0 for count in self.coverage), "projection_sample_coverage")
+
+
+def observed_load(root, worker, environment, duration, observer, latest, consumer_outage, *, sink=None,
+                  projection=None):
     """Monitor child liveness and time a real outage against the offered clock."""
     messages = queue.Queue(maxsize=256)
     oracle = ConsumerOutageOracle()
@@ -411,9 +493,13 @@ def observed_load(root, worker, environment, duration, observer, latest, consume
                     if schema == "riffdb.ticketdesk-lifecycle-load-ready/v1":
                         require(started is None, "probe_clock")
                         started = time.monotonic()
+                        if projection is not None:
+                            projection.start(started)
                 except queue.Empty:
                     pass
                 now = time.monotonic()
+                if projection is not None:
+                    projection.poll()
                 if sink is not None and started is not None:
                     sink.poll(started, latest)
                 if not consumer_outage or started is None:
@@ -441,6 +527,9 @@ def observed_load(root, worker, environment, duration, observer, latest, consume
             process.wait(timeout=5)
             pump.join(timeout=5)
             require(process.returncode == 0 and not pump.is_alive(), "load")
+            if projection is not None:
+                projection.stop()
+                projection.validate_coverage()
             if sink is not None:
                 sink.finish(started)
             if consumer_outage:
@@ -466,6 +555,8 @@ def observed_load(root, worker, environment, duration, observer, latest, consume
             pump.join(timeout=5)
             if (root / "consumer.pause").exists():
                 (root / "consumer.pause").unlink()
+            if projection is not None:
+                projection.stop()
 
 
 def other_language_smokes(root, repository, python_native, port):
@@ -808,14 +899,19 @@ tls_server_name = "127.0.0.1"
                             break
                 environment["RIFFDB_LIFECYCLE_DURATION_SECONDS"] = str(args.population_probe_seconds)
                 environment["RIFFDB_LIFECYCLE_LOAD_CONTROL"] = str(root)
+                projection_sampler = ProjectionSampler(root, base, {
+                    "contract_lineage": "TicketDeskLifecycle",
+                    "projection_id": descriptor["projection_id"],
+                    "projection_plan_hash": descriptor["projection_plan_hash"]},
+                    args.population_probe_seconds)
                 if args.sink_outage:
                     with LocalArchiveOutage(root / "archive") as custody:
                         sink = SinkOutagePreparation(root, base, custody)
                         observed_load(root, worker, environment, args.population_probe_seconds,
-                                      observer, latest, False, sink=sink)
+                                      observer, latest, False, sink=sink, projection=projection_sampler)
                 else:
                     observed_load(root, worker, environment, args.population_probe_seconds,
-                                  observer, latest, args.consumer_outage)
+                                  observer, latest, args.consumer_outage, projection=projection_sampler)
                 environment["RIFFDB_LIFECYCLE_COMPLETED_COMMANDS"] = str(args.population_probe_seconds * 100)
                 environment["RIFFDB_LIFECYCLE_RECONCILIATION_WITNESS"] = str(root / "updates.witness")
                 invoke(root, "reconciliation", [worker, "reconcile"], environment=environment, timeout=900)

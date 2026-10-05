@@ -3,11 +3,15 @@
 import copy
 import importlib.machinery
 import importlib.util
+import json
 import os
 import sys
 from pathlib import Path
 import tempfile
+import threading
+import time
 import unittest
+from unittest.mock import patch
 
 SOURCE = Path(__file__).resolve().parents[2] / "scripts/ticketdesk-lifecycle-smoke"
 sys.path.insert(0, str(SOURCE.parent))
@@ -58,6 +62,92 @@ class ProjectionReconciliation(unittest.TestCase):
         preparation.validate_projection(value, 1, 7, 65537, plan_hash)
         with self.assertRaises(preparation.SmokeError):
             preparation.validate_projection(value, 1, 7, 65536, plan_hash)
+
+
+class ProjectionSampling(unittest.TestCase):
+    def test_samples_real_frontier_without_waiting_for_it_to_catch_up(self):
+        projection = observation()
+        health = {"schema": "riffdb.cli.output/v1", "command": "server.health", "ok": True,
+                  "result": {"last_commit_sequence": 10}}
+        identity = projection["result"]["observed_fence"]["identity"]
+        calls = []
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+
+            def invoke(root, name, arguments, **kwargs):
+                calls.append(arguments)
+                value = health if arguments[-2:] == ["server", "health"] else projection
+                (root / (name + ".stdout")).write_text(json.dumps(value))
+
+            with patch.object(preparation, "invoke", invoke):
+                sampler = preparation.ProjectionSampler(root, ["cli"], identity, 300)
+                sample = sampler.sample(1, 1000000000)
+            self.assertEqual(sample["projection_backlog"], 3)
+            self.assertEqual(sample["sampled_head"], 10)
+            self.assertEqual(sample["applied_through"], 7)
+            self.assertEqual(len(calls), 2)
+            self.assertNotIn("--after", calls[1])
+            self.assertNotIn("--wait-nanos", calls[1])
+
+    def test_every_load_window_needs_an_actual_projection_observation(self):
+        identity = observation()["result"]["observed_fence"]["identity"]
+        with tempfile.TemporaryDirectory() as directory:
+            sampler = preparation.ProjectionSampler(Path(directory), ["cli"], identity, 900)
+            with self.assertRaises(preparation.SmokeError):
+                sampler.validate_coverage()
+            sampler.coverage = [1, 1, 0]
+            with self.assertRaises(preparation.SmokeError):
+                sampler.validate_coverage()
+            sampler.coverage = [1, 1, 1]
+            sampler.validate_coverage()
+
+    def test_stopping_during_an_admitted_sample_joins_the_owned_observer(self):
+        projection = observation()
+        identity = projection["result"]["observed_fence"]["identity"]
+        entered, release = threading.Event(), threading.Event()
+        calls = []
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+
+            def invoke(root, name, arguments, **kwargs):
+                calls.append(arguments)
+                if len(calls) == 1:
+                    entered.set()
+                    self.assertTrue(release.wait(5))
+                value = ({"schema": "riffdb.cli.output/v1", "command": "server.health",
+                          "ok": True, "result": {"last_commit_sequence": 10}}
+                         if len(calls) == 1 else projection)
+                (root / (name + ".stdout")).write_text(json.dumps(value))
+
+            with patch.object(preparation, "invoke", invoke):
+                sampler = preparation.ProjectionSampler(root, ["cli"], identity, 300)
+                sampler.start(time.monotonic())
+                try:
+                    self.assertTrue(entered.wait(5))
+                    sampler.stopped.set()
+                finally:
+                    release.set()
+                    sampler.stop()
+            self.assertFalse(sampler.thread.is_alive())
+            rows = (root / "projection-samples.jsonl").read_text().splitlines()
+            self.assertEqual(len(rows), 1)
+            self.assertEqual(json.loads(rows[0])["projection_backlog"], 3)
+            sampler.validate_coverage()
+
+    def test_failed_native_observation_stops_the_load_instead_of_becoming_zero(self):
+        identity = observation()["result"]["observed_fence"]["identity"]
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            with patch.object(preparation, "invoke", side_effect=preparation.SmokeError("fixture")):
+                sampler = preparation.ProjectionSampler(root, ["cli"], identity, 300)
+                sampler.start(time.monotonic())
+                sampler.thread.join(timeout=5)
+                self.assertFalse(sampler.thread.is_alive())
+                with self.assertRaises(preparation.SmokeError):
+                    sampler.poll()
+                with self.assertRaises(preparation.SmokeError):
+                    sampler.stop()
+            self.assertEqual((root / "projection-samples.jsonl").read_bytes(), b"")
 
 
 class ConsumerOutageReconciliation(unittest.TestCase):

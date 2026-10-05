@@ -87,6 +87,18 @@ latency histograms are bounded. Windows exclude post-duration drain completions;
 slow tail overflow is disclosed and cannot become a fast latency sample.
 This preparation has no lifecycle faults and cannot qualify the milestone.
 
+Population preparation also samples public native health and the selected
+projection during load. One auxiliary lane issues these calls sequentially,
+at most once every five seconds, alongside the two observer lanes and one
+control lane. The query requests the current available frontier without waiting
+for a requested sequence. Each private sample binds the projection ID, plan
+hash, generation and actual applied frontier to the earlier sampled application
+head; their nonnegative difference is the observed sequence backlog. It does
+not claim a simultaneous current head or a byte count. Missing, unavailable,
+inconsistent or regressing evidence fails preparation, and every load window
+requires an actual completed sample. Final aggregate reconciliation remains a
+separate check. This sampler has unit evidence; host measurement is pending.
+
 The optional `--driver` smoke compiles retained TypeScript bindings against the
 native runtime, then checks named reads, partition isolation, a refused stale
 update and its exact replay, unchanged state, and a live-query snapshot. It

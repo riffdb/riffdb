@@ -412,6 +412,20 @@ host run before WP-825 closes. No 24-hour run has started.
 
 ## WP-825 population probe and independent oracle
 
+Population preparation now records actual public native projection observations
+during offered load rather than assuming zero backlog. One sequential auxiliary
+lane samples health, then queries the selected projection's available frontier
+without an after-sequence wait. Private bounded samples bind the exact lineage,
+projection ID and plan hash and report the nonnegative difference between the
+earlier sampled application head and the observed applied frontier. This is
+sampled sequence lag, not simultaneous head or eligible-history byte evidence.
+Every offered-load window needs a completed observation; unavailable, missing,
+inconsistent or regressing evidence refuses success. Independent final aggregate
+reconciliation is still required. The 50 evidence/preparation tests include
+positive lag, missing-window refusal, selected-plan substitution, numeric bounds,
+failure propagation and barrier-controlled observer shutdown. Real host
+measurement of this sampler remains pending; this change qualifies no campaign.
+
 The release preparation smoke also passes on the inventoried eight-vCPU host.
 This establishes the real generated command/read/event/live-query carriage
 there; it is not a campaign or a physical-reclamation result.
