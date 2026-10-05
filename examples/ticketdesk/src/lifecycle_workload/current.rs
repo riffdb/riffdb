@@ -248,3 +248,77 @@ pub(super) async fn smoke() -> Result<()> {
     );
     Ok(())
 }
+
+/// A replacement keeps the principal's original idempotency namespace while
+/// the revoked bearer loses both reads and same-key command recovery.
+pub(super) async fn rotation_smoke() -> Result<()> {
+    let old = std::env::var_os("RIFFDB_LIFECYCLE_REVOKED_CREDENTIAL").ok_or("configuration")?;
+    let mut revoked = connect_release(1, std::path::Path::new(&old)).await?;
+    let input = super::model::update(0)?;
+    let parameters = v1::GetTicketParams {
+        organization_id: super::uuid(0x8001, 0),
+        ticket_id: super::uuid(0x8004, 0),
+    };
+    for (index, error) in [
+        revoked.get_ticket(parameters.clone()).await.err(),
+        revoked.update_ticket(input.clone()).await.err(),
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        // The symbolic query carries CapabilityRevoked. Native Execute's
+        // public error bridge maps the authentication refusal to AuthorizationDenied.
+        let expected = if index == 0 {
+            riffdb_errors::ApplicationErrorCode::CapabilityRevoked
+        } else {
+            riffdb_errors::ApplicationErrorCode::AuthorizationDenied
+        };
+        if error
+            .as_ref()
+            .and_then(ApplicationClientError::semantic_error)
+            .map(|error| error.code())
+            != Some(expected)
+        {
+            return Err(if index == 0 {
+                "rotation_revoked_read"
+            } else {
+                "rotation_revoked_command"
+            });
+        }
+    }
+    let root = std::env::var_os("RIFFDB_LIFECYCLE_WITNESS_ROOT").ok_or("configuration")?;
+    let mut reader =
+        super::witness::Reader::open(&std::path::PathBuf::from(root).join("updates.witness"))?;
+    let original = reader.next()?.ok_or("rotation_witness")?;
+    if original.ordinal != 0
+        || original.version != 1
+        || original.incarnation != 1
+        || reader.next()?.is_some()
+    {
+        return Err("rotation_witness");
+    }
+    let mut replacement = connect().await?;
+    let replay = replacement
+        .update_ticket(input)
+        .await
+        .map_err(|_| "rotation_replay")?;
+    super::model::validate_update(0, &replay.outcome)?;
+    if !replay.replayed
+        || replay.commit_sequence != Some(original.sequence)
+        || replay.contract_version != original.version
+    {
+        return Err("rotation_identity");
+    }
+    let v1::GetTicketResult::Found(found) = replacement
+        .get_ticket(parameters)
+        .await
+        .map_err(|_| "rotation_read")?
+    else {
+        return Err("rotation_read");
+    };
+    super::model::validate_final(1, 0, &found.ticket)?;
+    println!(
+        "{{\"schema\":\"riffdb.ticketdesk-lifecycle-rotation-smoke/v1\",\"revoked_reads_refused\":true,\"revoked_replay_refused\":true,\"same_principal_replay\":true,\"state_reconciled\":true}}"
+    );
+    Ok(())
+}

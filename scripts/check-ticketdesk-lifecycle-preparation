@@ -6,6 +6,7 @@ repo_root="$(git rev-parse --show-toplevel)"
 cd "$repo_root"
 cargo build --locked -p riffdb-server --bin riffdbd -p riffdb-cli --bin riffdb \
     -p riffdb-ticketdesk --bin lifecycle -p riffdb-driver-host --bin riffdb-driverd
+cargo build --locked -p riffdb-client-python-native
 task_target_dir="$(cargo metadata --no-deps --format-version 1 | python3 -c \
     'import json,sys; print(json.load(sys.stdin)["target_directory"])')"
 python3 tests/ticketdesk_lifecycle/test_preparation.py
@@ -15,7 +16,8 @@ preparation_root="$(mktemp -d "${TMPDIR:-/tmp}/riffdb-lifecycle-preparation.XXXX
 ./scripts/ticketdesk-lifecycle-smoke --root "$preparation_root/attempt" \
     --server "$task_target_dir/debug/riffdbd" \
     --cli "$task_target_dir/debug/riffdb" --worker "$task_target_dir/debug/lifecycle" \
-    --driver "$task_target_dir/debug/riffdb-driverd" --observe --additive-deploy
+    --driver "$task_target_dir/debug/riffdb-driverd" \
+    --python-native "$task_target_dir/debug/lib_native.so" --observe --additive-deploy
 for preparation_fault in graceful_restart process_kill; do
     ./scripts/ticketdesk-lifecycle-smoke --root "$preparation_root/$preparation_fault" \
         --server "$task_target_dir/debug/riffdbd" --cli "$task_target_dir/debug/riffdb" \
@@ -26,4 +28,7 @@ done
     --worker "$task_target_dir/debug/lifecycle" --archive-witness --online-retention
 python3 tests/ticketdesk_lifecycle/archive_preparation.py \
     "$task_target_dir/debug/lifecycle" "$preparation_root/archive"
+./scripts/ticketdesk-lifecycle-smoke --root "$preparation_root/rotation" \
+    --server "$task_target_dir/debug/riffdbd" --cli "$task_target_dir/debug/riffdb" \
+    --worker "$task_target_dir/debug/lifecycle" --archive-witness --capability-rotation
 rm -rf -- "$preparation_root"

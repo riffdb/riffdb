@@ -70,6 +70,7 @@ async fn main() {
         Some("successor-smoke") => current::smoke().await,
         Some("recovery-smoke") => recovery::smoke().await,
         Some("archive-reconcile") => archive::run(),
+        Some("rotation-smoke") => current::rotation_smoke().await,
         _ => Err("arguments"),
     };
     if let Err(code) = result {

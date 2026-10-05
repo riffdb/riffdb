@@ -93,6 +93,20 @@ update and its exact replay, unchanged state, and a live-query snapshot. It
 creates no durable event consumer that could hold future campaign history.
 Use the already installed pinned TypeScript runtime dependencies.
 
+Add `--python-native target/debug/lib_native.so` with `--driver` to include
+actual Go and Python generated calls. Build that first-party extension separately
+with `cargo build --locked -p riffdb-client-python-native`. Go compilation uses
+private caches inside the owned preparation root. Both helpers check exact
+stale-command replay, organization isolation, unchanged state and a bounded
+live snapshot. With `--additive-deploy`, the same checks run for V1 and V2.
+These boolean preparation observations are not hash-bound campaign conformance.
+
+Use `--archive-witness --capability-rotation` in a separate fresh root to replace
+an application bearer for the same principal. Revoked reads and command replay
+must refuse; the replacement must replay the original result and reconcile
+state. The preparation runs after the initial write and does not cover rotation
+under continuing offered load.
+
 The initial durable-SSD host preparation completed all 30,000 updates and
 120,000 reads in its five-minute window, with p95 73.830 ms and p99 84.490 ms,
 zero retries, and no post-window completions. All 65,536 ticket states were

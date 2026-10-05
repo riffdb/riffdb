@@ -362,7 +362,39 @@ def observed_load(root, worker, environment, duration, observer, latest, consume
                 (root / "consumer.pause").unlink()
 
 
-def typescript_smoke(root, repository, driver_binary, port):
+def other_language_smokes(root, repository, python_native, port):
+    go_stage = root / "go"
+    (go_stage / "generated").mkdir(parents=True, mode=0o700)
+    shutil.copyfile(root / "application/generated/go/client.go", go_stage / "generated/client.go")
+    shutil.copyfile(repository / "examples/ticketdesk/lifecycle/go/smoke.go", go_stage / "main.go")
+    write(go_stage, "go.mod", "module lifecycle-preparation\n\ngo 1.24\n\n"
+        "require riffdb.dev/application v0.0.0\n\nreplace riffdb.dev/application => "
+        + json.dumps(str(repository / "clients/go/runtime")) + "\n")
+    go_environment = dict(os.environ, GOCACHE=str(go_stage / "build-cache"),
+                          GOMODCACHE=str(go_stage / "module-cache"), GOTOOLCHAIN="local")
+    invoke(root, "go-build", ["go", "-C", str(go_stage), "build", "-mod=readonly", "-buildvcs=false",
+        "-o", str(go_stage / "smoke"), "."], timeout=120, environment=go_environment)
+    invoke(root, "go-smoke", [str(go_stage / "smoke"), str(root)], timeout=40)
+    python_stage = root / "python"
+    python_stage.mkdir(mode=0o700)
+    shutil.copytree(repository / "clients/python/runtime/src/riffdb_application",
+                    python_stage / "riffdb_application",
+                    ignore=shutil.ignore_patterns("__pycache__", "*.so"))
+    shutil.copyfile(python_native, python_stage / "riffdb_application/_native.so")
+    shutil.copyfile(root / "application/generated/python/client.py", python_stage / "client.py")
+    shutil.copyfile(repository / "examples/ticketdesk/lifecycle/python/smoke.py", python_stage / "smoke.py")
+    write(root, "python.connection.json", json.dumps({"endpoint": f"https://127.0.0.1:{port}"}))
+    invoke(root, "python-smoke", [sys.executable, str(python_stage / "smoke.py"), str(root)], timeout=40,
+        environment=dict(os.environ, PYTHONDONTWRITEBYTECODE="1"))
+    for language in ("go", "python"):
+        require(read_json(root / (language + "-smoke.stdout"), 4096) == {
+            "schema": "riffdb.ticketdesk-lifecycle-" + language + "-smoke/v1",
+            "named_read": True, "partition_isolation": True, "caller_fence": True,
+            "idempotency": True, "state_unchanged": True, "live_query_snapshot": True},
+            language + "_observation")
+
+
+def typescript_smoke(root, repository, driver_binary, port, python_native=None):
     runtime = repository / "clients/typescript/runtime"
     compiler = runtime / "node_modules/.bin/tsc"
     require(compiler.is_file() and (runtime / "dist/index.js").is_file(), "typescript_runtime")
@@ -423,6 +455,8 @@ streams_per_connection = 4
                 "schema": "riffdb.ticketdesk-lifecycle-typescript-smoke/v1", "named_read": True,
                 "partition_isolation": True, "caller_fence": True, "idempotency": True,
                 "state_unchanged": True, "live_query_snapshot": True}, "typescript_observation")
+            if python_native:
+                other_language_smokes(root, repository, python_native, port)
         finally:
             if driver.poll() is None:
                 driver.terminate()
@@ -470,6 +504,10 @@ def main():
                         help="reconcile two actual archive events against independent command witnesses")
     parser.add_argument("--online-retention", action="store_true",
                         help="measure bounded online retention during an observed population preparation")
+    parser.add_argument("--capability-rotation", action="store_true",
+                        help="replace one application bearer and prove fresh revocation and same-principal replay")
+    parser.add_argument("--python-native", type=Path,
+                        help="also run Go and Python conformance with this built first-party Python extension and --driver")
     parser.add_argument("--restart-recovery", choices=("graceful_restart", "process_kill"),
                         help="interrupt and resolve one original generated update; preparation only")
     parser.add_argument("--consumer-outage", action="store_true",
@@ -488,6 +526,10 @@ def main():
             "archive_witness_mode")
     require(not args.online_retention or args.population_probe_seconds and args.observe or args.archive_witness,
             "retention_mode")
+    require(not args.capability_rotation or args.archive_witness and not
+            (args.population_probe_seconds or args.observe or args.additive_deploy or args.restart_recovery
+             or args.prepare_successor or args.driver), "rotation_mode")
+    require(not args.python_native or args.driver and not args.population_probe_seconds, "language_mode")
     root = args.root
     require(root.is_absolute() and root.resolve() == root and not root.exists(), "root")
     require(root.parent.is_dir(), "root")
@@ -495,6 +537,9 @@ def main():
     require(all(path.is_file() and os.access(path, os.X_OK) for path in executables), "binary")
     server_binary, cli, worker = map(str, executables)
     driver_binary = args.driver.resolve(strict=True) if args.driver else None
+    python_native = args.python_native.resolve(strict=True) if args.python_native else None
+    if python_native:
+        require(python_native.is_file() and not args.python_native.is_symlink(), "python_native")
     if driver_binary:
         require(driver_binary.is_file() and os.access(driver_binary, os.X_OK), "driver_binary")
     os.umask(0o077)
@@ -693,7 +738,7 @@ tls_server_name = "127.0.0.1"
                     "events_reconciled": True, "live_query_snapshot": True,
                 }, "worker_observation")
             if driver_binary:
-                typescript_smoke(root, repository, driver_binary, port)
+                typescript_smoke(root, repository, driver_binary, port, python_native)
             invoke(root, "projection-health", base + ["server", "health"])
             health = read_json(root / "projection-health.stdout")
             frontier = health["result"]["last_commit_sequence"]
@@ -727,6 +772,21 @@ tls_server_name = "127.0.0.1"
             if args.restart_recovery:
                 server, pump = interrupted_update(root, args.restart_recovery, worker, environment,
                     server, pump, server_binary, config)
+            if args.capability_rotation:
+                original = read_json(root / "bind-application.stdout")
+                capability = original["result"]["transition"]["identity"]["capability_id"]
+                invoke(root, "bind-replacement", base + ["role", "bind", str(source),
+                    "--role", "TicketDeskLifecycleApplication", "--principal", "lifecycle-smoke-application",
+                    "--actor-kind", "service", "--audience", "riffdb-ticketdesk-lifecycle",
+                    "--lifetime-seconds", "3600", "--credential-output", str(root / "replacement.credential")])
+                invoke(root, "revoke-original", base + ["capability", "revoke", capability, "--reason", "replaced"])
+                environment["RIFFDB_LIFECYCLE_REVOKED_CREDENTIAL"] = str(root / "application.credential")
+                environment["RIFFDB_LIFECYCLE_APPLICATION_CREDENTIAL"] = str(root / "replacement.credential")
+                invoke(root, "rotation-worker", [worker, "rotation-smoke"], environment=environment)
+                require(read_json(root / "rotation-worker.stdout", 4096) == {
+                    "schema": "riffdb.ticketdesk-lifecycle-rotation-smoke/v1",
+                    "revoked_reads_refused": True, "revoked_replay_refused": True,
+                    "same_principal_replay": True, "state_reconciled": True}, "rotation_observation")
             if args.additive_deploy:
                 require(not args.population_probe_seconds, "successor_preparation_mode")
                 handover = None
@@ -833,8 +893,10 @@ tls_server_name = "127.0.0.1"
                     shutil.copytree(successor, successor_smoke / "application")
                     shutil.copyfile(root / "ca.pem", successor_smoke / "ca.pem")
                     shutil.copyfile(root / "application-v2.credential", successor_smoke / "application.credential")
-                    typescript_smoke(successor_smoke, repository, driver_binary, port)
+                    typescript_smoke(successor_smoke, repository, driver_binary, port, python_native)
         finally:
+            primary_error = sys.exception()
+            cleanup_failures = []
             inventory_failed = False
             if inventory:
                 try:
@@ -854,17 +916,28 @@ tls_server_name = "127.0.0.1"
                 observer_failed |= observer.returncode != 0 or observer_pump.is_alive()
             if server.poll() is None:
                 server.terminate()
-            server.stdin.close()
+            try:
+                server.stdin.close()
+            except OSError:
+                cleanup_failures.append("shutdown")
             try:
                 server.wait(timeout=30)
             except subprocess.TimeoutExpired:
                 server.kill()
                 server.wait(timeout=5)
-                raise SmokeError("shutdown")
+                cleanup_failures.append("shutdown")
             pump.join(timeout=5)
-            require(not pump.is_alive() and server.returncode == 0, "shutdown")
-            require(not observer_failed, "observer_shutdown")
-            require(not inventory_failed, "inventory_failed")
+            if pump.is_alive() or server.returncode != 0:
+                cleanup_failures.append("shutdown")
+            if observer_failed:
+                cleanup_failures.append("observer_shutdown")
+            if inventory_failed:
+                cleanup_failures.append("inventory_failed")
+            if cleanup_failures:
+                if primary_error is None:
+                    raise SmokeError(cleanup_failures[0])
+                for code in sorted(set(cleanup_failures)):
+                    print("ticketdesk-lifecycle-smoke: cleanup_" + code, file=sys.stderr)
     if inventory:
         inventory.finish(root)
     if args.archive_witness or args.population_probe_seconds:
