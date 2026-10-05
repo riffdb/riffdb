@@ -74,7 +74,11 @@ These limits are part of the POC release posture, not hidden roadmap promises.
   that a temporary reader or writer barrier could defer an eligible extent
   across thousands of absent generation names. The reclaimer now retains that
   candidate for retry while preserving every eligibility check; its effect on
-  required-host retirement and latency remains unmeasured.
+  required-host retirement and latency remains unmeasured. New bounded native
+  diagnostics report the actual source floor plan, optional fences and the
+  attempt on which it was observed. Missing or stale samples remain explicit;
+  they do not prove deletion, continuing file eligibility or sustainable
+  history growth. Their validation and host measurement remain pending.
   Native reclamation, latency, notification and recovery behavior require
   further verification; maintenance pauses, automatic
   watch reconnects or relaxed client validation cannot qualify the rehearsal.

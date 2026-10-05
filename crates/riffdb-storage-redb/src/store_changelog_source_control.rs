@@ -60,6 +60,8 @@ pub(crate) struct ReplicationSourceControl {
     online_independent_sequence: u64,
     online_validation_phases: [u64; 4],
     online_admission_yields: [u64; 5],
+    reclamation_observation: Option<[u64; 8]>,
+    reclamation_yields: [u64; 3],
 }
 
 impl RedbOperationalPorts {
@@ -170,6 +172,8 @@ impl RedbOperationalPorts {
             online_independent_sequence: 0,
             online_validation_phases: [0; 4],
             online_admission_yields: [0; 5],
+            reclamation_observation: None,
+            reclamation_yields: [0; 3],
         }
     }
 }
@@ -290,6 +294,8 @@ impl ReplicationSourceControl {
     /// checkpoint AND all consumer fences, only after a later durable checkpoint.
     /// A first/same-root observation or a no-op creates no control transaction.
     pub(crate) fn reclaim_history(&mut self) -> Result<bool, Refusal> {
+        self.reclamation_observation = None;
+        self.reclamation_yields = [0; 3];
         // The offline owner deliberately reconstructs the complete current
         // proof. A retained online candidate cannot authorize its publication.
         self.online_validation = None;
@@ -301,6 +307,8 @@ impl ReplicationSourceControl {
     /// nonwaiting, drained-root admission. Returns actual removed receipts
     /// and gate-held time; the caller applies the existing maintenance pacing.
     pub(crate) fn reclaim_history_online(&mut self) -> Result<(u64, u64), StorageError> {
+        self.reclamation_observation = None;
+        self.reclamation_yields = [0; 3];
         self.online_validation_phases = [0; 4];
         self.online_admission_yields = [0; 5];
         if let Some(walk) = self.online_validation.as_mut() {
@@ -382,6 +390,7 @@ impl ReplicationSourceControl {
             .ok_or_else(|| storage_error(StorageErrorKind::InvariantViolation))?
             .independent_sequence();
         if independent <= self.online_independent_sequence {
+            self.reclamation_yields[1] = 1;
             return Ok((
                 0,
                 capture_us.saturating_add(elapsed_us(start, std::time::Instant::now())),
@@ -432,9 +441,18 @@ impl ReplicationSourceControl {
             .is_some_and(|walk| !walk.is_complete())
     }
 
+    pub(crate) fn reclamation_observation(&self) -> Option<[u64; 8]> {
+        self.reclamation_observation
+    }
+
+    pub(crate) fn reclamation_yields(&self) -> [u64; 3] {
+        self.reclamation_yields
+    }
+
     fn reclaim_at_barrier(&mut self, barrier: Barrier) -> Result<bool, Refusal> {
         let current = barrier.observation();
         let Some(previous) = self.observed else {
+            self.reclamation_yields[0] = 1;
             self.observed = Some(current);
             return Ok(false);
         };
@@ -443,6 +461,7 @@ impl ReplicationSourceControl {
             || previous.history.lineage() != current.history.lineage()
             || previous.history.tail().sequence() < current.history.minimum_resume().sequence()
         {
+            self.reclamation_yields[1] = 1;
             self.observed = Some(current);
             return Ok(false);
         }
@@ -453,13 +472,15 @@ impl ReplicationSourceControl {
         )?);
         let mut derived = self.shared.derived_source_pins.reclamation()?;
         let derived_floor = derived.oldest(current.history.lineage());
-        let Some(floor) = retention::floor(
+        let (floor, observation) = retention::floor(
             &barrier.root,
             current.history,
             previous.history.tail(),
             derived_floor,
-        )?
-        else {
+        )?;
+        self.reclamation_observation = Some(observation);
+        let Some(floor) = floor else {
+            self.reclamation_yields[2] = 1;
             self.observed = Some(current);
             return Ok(false);
         };

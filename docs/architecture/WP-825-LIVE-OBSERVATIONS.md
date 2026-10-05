@@ -773,3 +773,52 @@ history need bounded periodic observation before changing admission or holds.
 The failed preparation and its private roots remain preserved. Full CI on the
 final source, sustained retirement, service levels and the complete short
 rehearsal remain outstanding. No 24-hour run has started.
+
+
+### Actual source-reclamation ceilings
+
+The source owner now observes the existing native floor plan at the same exact
+drained barrier. The bounded sample records the retained resume position,
+current receipt tail, previously observed durable checkpoint, oldest derived
+source pin, oldest active durable source hold, uncapped minimum ceiling and
+active durable hold count. Presence bits distinguish absent holds from numeric
+fences. The capped deletion still removes at most 256 receipts and applies all
+original checks and writes. The sample is planning evidence, not a deletion
+receipt, validated file inventory or authority to release any hold.
+
+Separate closed counters distinguish the first observation, an unusable prior
+observation or insufficient independent progress, and a floor held at or below
+the retained resume position. Existing source-admission cause counters stay
+separate. No new scan, durable identity, mutation, writer, application API,
+admission opportunity or maintenance-pacing rule is introduced.
+
+The server keeps the last measured plan and the attempt on which it was
+observed; missing plans do not replace it with zeros or present it as fresh.
+A payload-free private diagnostic line is emitted at most once per minute
+while the retention lane runs, and at the existing shutdown boundaries. An
+unavailable sample stays explicit. The numeric observation can identify
+reclaimable receipt backlog and legitimate source fences without inferring a
+resume position from the accumulated deletion count. Periodic file eligibility
+and complete campaign resource observations remain separate required work.
+
+An actual native fixture test checks combined derived pins and each of the
+three durable hold kinds, independent publication, repeated observations and
+held floors. All 26 native source-control tests pass, including the existing
+256-receipt limit and retained-reader checks. New server checks cover sample
+age, replacement rather than summed fences, missing observations and the
+maximum-value output bound; both server tests pass. Scoped formatting, Clippy
+and all 1,806 native/server tests pass with ten existing skips. The isolated
+checkout initially lacked the pinned handbook tools on its PATH; with the
+installed tools made available, the unchanged handbook check passes. Final
+documentation and governance checks cover the recorded results.
+The required-host preparation on `f92548bc` excludes this diagnostic change.
+
+PR note: Package WP-825 (open); Tier guarantee within ADR-0265 and ADR-0268;
+Behavior: observe the actual native source-reclamation ceiling and distinguish
+its measurement age from continued attempts; Checks: 26 native source-control
+tests and both new server tests pass; scoped formatting, Clippy, 1,806 tests
+and handbook validation pass; Compatibility: unchanged public
+application protocols, durable formats, holds, ordering and admission; Updated
+handbook: known limitations; Hazards/follow-ups: complete validation and measure
+actual eligible history and writer-stage costs under continued load. The full
+short rehearsal and 24-hour campaign remain unqualified.

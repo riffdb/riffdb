@@ -91,6 +91,17 @@ pub struct OnlineRetentionPhases {
     pub source_admission_qualification: u64,
     /// Catch-up exceeded one existing receipt/audit validation page.
     pub source_admission_page_bound: u64,
+    /// One source-control attempt, including attempts without a new floor plan.
+    pub source_reclamation_attempts: u64,
+    /// Actual barrier plan: resume, tail, prior checkpoint, derived fence,
+    /// durable fence, uncapped ceiling, live durable holds, presence bits.
+    /// Bit zero marks a derived fence; bit one marks a durable fence. This
+    /// plans eligibility only and never proves deletion or file retirement.
+    pub source_reclamation_sample: Option<[u64; 8]>,
+    /// Attempt index associated with the last actual floor-plan measurement.
+    pub source_reclamation_sample_attempt: u64,
+    /// First observation, unusable prior progress, or a held floor, respectively.
+    pub source_reclamation_yields: [u64; 3],
     /// Under the gate: validated-prefix pin capture and publication.
     pub prefix_gate_us: u64,
     /// Waiting for the first-come writer gate.
@@ -224,6 +235,9 @@ impl RedbOnlineRetentionLane {
             phases.source_admission_qualification,
             phases.source_admission_page_bound,
         ] = source_control.admission_yields();
+        phases.source_reclamation_attempts = 1;
+        phases.source_reclamation_sample = source_control.reclamation_observation();
+        phases.source_reclamation_yields = source_control.reclamation_yields();
         drop(source_control);
         phases.reclaimed_receipts = removed;
         phases.receipt_gate_us = held_us;

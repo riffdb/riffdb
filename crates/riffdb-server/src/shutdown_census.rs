@@ -142,6 +142,52 @@ pub(crate) fn format_source_admission_line() -> String {
     )
 }
 
+pub(crate) fn format_source_reclamation_line() -> String {
+    let phases = RETENTION_OBSERVATION
+        .get()
+        .map(|lane| lane.phases)
+        .unwrap_or_default();
+    format_source_reclamation_sample(&phases)
+}
+
+/// Last exact native floor plan, with the attempt on which it was measured.
+/// An unavailable or stale observation never stands for an unprotected floor.
+pub(crate) fn format_source_reclamation_sample(
+    phases: &riffdb_storage_redb::OnlineRetentionPhases,
+) -> String {
+    let [first, independent, floor] = phases.source_reclamation_yields;
+    let mut line = format!(
+        "riffdb-retention-source-ceiling-v1\tattempts={}\tfirst_observation={}\tprior_unusable={}\tfloor_hold={}",
+        phases.source_reclamation_attempts, first, independent, floor,
+    );
+    let Some(sample) = phases.source_reclamation_sample else {
+        line.push_str("\tsample=unavailable");
+        return line;
+    };
+    use std::fmt::Write as _;
+    let _ = write!(
+        line,
+        "\tsample_attempt={}",
+        phases.source_reclamation_sample_attempt
+    );
+    for (name, value) in [
+        "resume",
+        "tail",
+        "checkpoint",
+        "derived",
+        "durable_hold",
+        "ceiling",
+        "hold_count",
+        "presence",
+    ]
+    .into_iter()
+    .zip(sample)
+    {
+        let _ = write!(line, "\t{name}={value}");
+    }
+    line
+}
+
 /// Renders the census as one tagged line for the shutdown evidence stream.
 pub(crate) fn format_v1_line() -> String {
     let mut line = String::from("riffdb-shutdown-release-v1");
@@ -380,6 +426,30 @@ mod tests {
         assert!(
             line.len() <= 222,
             "five u64 counters have a fixed maximum size"
+        );
+    }
+
+    // req: STO-030, STO-031, END-008
+    #[test]
+    fn source_ceiling_census_distinguishes_missing_and_stale_observations() {
+        use super::format_source_reclamation_sample;
+        let mut phases = riffdb_storage_redb::OnlineRetentionPhases::default();
+        assert!(format_source_reclamation_sample(&phases).ends_with("\tsample=unavailable"));
+        phases.source_reclamation_attempts = u64::MAX;
+        phases.source_reclamation_yields = [u64::MAX; 3];
+        phases.source_reclamation_sample_attempt = 1;
+        phases.source_reclamation_sample = Some([u64::MAX; 8]);
+        let line = format_source_reclamation_sample(&phases);
+        assert!(line.contains("\tsample_attempt=1\tresume="));
+        assert!(!line.contains("sample=unavailable"));
+        assert!(line.len() <= 768);
+        assert!(
+            line.split('\t').skip(1).all(|field| field
+                .split_once('=')
+                .unwrap()
+                .1
+                .parse::<u64>()
+                .is_ok())
         );
     }
 
