@@ -1,11 +1,11 @@
 ---
 adr: "0269"
 title: Explicit Engine Integrity Verification And Reviewed Redb Upgrade
-status: proposed
+status: accepted
 tier: guarantee
 date: 2026-10-04
-accepted: null
-acceptance: null
+accepted: 2026-10-05
+acceptance: 'maintainer, in session, 2026-10-05: "Approved" in response to the exact ADR-0269 proposal'
 requires: [ADR-0004, ADR-0156, ADR-0182, ADR-0203]
 amends: [ADR-0004, ADR-0156, ADR-0182, ADR-0203]
 supersedes: []
