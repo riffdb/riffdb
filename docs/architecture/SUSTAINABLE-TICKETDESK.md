@@ -183,8 +183,13 @@ decisions 8–10 and the receipt portion of decision 11.
 Behavior added: the production retention lane retains one source-control owner
 across checkpoint observations. Complete immutable history and source evidence
 are validated in bounded pages outside the writer gate. Only exact-end proof
-can request nonwaiting admission; queued writers retain precedence, and an
-in-flight checkpoint, journal suffix, or changed publication makes it yield.
+can request the bounded FIFO source turn accepted in ADR-0271; earlier
+writers retain precedence. One fixed request expires after 100 ms, and graph
+retirement cancels pending eligibility. An in-flight checkpoint or extent
+sealer makes it yield. A complete acknowledged suffix may be drained through
+the unchanged native protocol only with exact accounting of at most 256
+transitions and 1 MiB; unknown or larger work yields before materialization.
+Complete current qualification and every hold are rechecked before deletion.
 Pin capture also waits for extent sealing by yielding; it never joins that
 worker while holding the writer gate.
 All existing source and derived-reader holds remain binding. A later independent
@@ -195,8 +200,12 @@ At an already drained boundary, admission retires the empty internal composite
 publication cache using the existing operation. Captured readers retain their
 pins. No journal flush is added. Receipt removal, logical command pruning, and
 physical file retirement remain separate transitions, with receipt gate time
-included in the existing maintenance pacing. The closed shutdown diagnostic
-reports only removed receipts and gate microseconds.
+included in the existing maintenance pacing. Initial capture starts validation
+only; the owner rests before requesting a subsequent source turn. The closed
+shutdown diagnostics separate queue waiting from full actual source residence
+and report only numeric admission, expiry, cancellation and drain-yield counts.
+Admission changes scheduling, not deletion authority or any durable boundary;
+required-host verification remains outstanding.
 
 Checks run so far: the 24-test source-control suite, page/exact-end proof test,
 stale-hold proof refusal, four process-crash cuts with repeated reopen, numeric

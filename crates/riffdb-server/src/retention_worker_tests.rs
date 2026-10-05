@@ -50,6 +50,27 @@ fn source_ceiling_samples_preserve_measurement_age_instead_of_summing_fences() {
     assert_eq!(observed.prefix_gate_us, 7);
 }
 
+// req: STO-030, STO-031, END-008
+#[test]
+fn source_queue_wait_is_observed_without_increasing_actual_gate_pacing() {
+    let status = RetentionLaneStatus::new(RetentionLaneState::Idle);
+    status.note_phases(&OnlineRetentionPhases {
+        receipt_gate_us: 17,
+        source_admission_census: [1, 1, 0, 0, 0, 75_000, 17, 0],
+        ..OnlineRetentionPhases::default()
+    });
+    status.note_phases(&OnlineRetentionPhases {
+        source_admission_census: [1, 0, 1, 0, 0, 100_000, 0, 0],
+        ..OnlineRetentionPhases::default()
+    });
+    let phases = status.observation().phases;
+    assert_eq!(phases.gate_held_us(), 17);
+    assert_eq!(
+        phases.source_admission_census,
+        [2, 1, 1, 0, 0, 175_000, 17, 0]
+    );
+}
+
 #[derive(Default)]
 struct RecordingDiagnostics {
     incidents: Mutex<Vec<(IncidentId, DefectScope)>>,

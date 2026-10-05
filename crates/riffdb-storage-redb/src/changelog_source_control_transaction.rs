@@ -48,13 +48,16 @@ impl Barrier {
     pub(super) fn try_validation_capture(
         shared: &Arc<SharedRedb>,
     ) -> Result<Option<(Arc<crate::checkpoint_root::CheckpointRoot>, u64)>, StorageError> {
-        let Some(_lease) = shared.mutation_gate.try_acquire()? else {
+        let Some(_lease) = shared.mutation_gate.acquire_source()? else {
             return Ok(None);
         };
         if shared.write_fenced.load(Ordering::Acquire) || shared.is_follower_mode() {
             return Err(storage_error(StorageErrorKind::Unavailable));
         }
-        if !drained_for_validation(shared)? {
+        if shared.source_continuation_epoch.load(Ordering::Acquire) == u64::MAX {
+            return Ok(None);
+        }
+        if prepare_online_source_root(shared)?.is_some() {
             return Ok(None);
         }
         let epoch = shared.source_continuation_epoch.load(Ordering::Acquire);
@@ -135,13 +138,19 @@ impl Barrier {
         shared: Arc<SharedRedb>,
         walk: &mut crate::changelog_v3_retained_validation::RetainedHistoryValidation,
     ) -> Result<AdmissionAttempt<Self>, StorageError> {
-        let Some(lease) = shared.mutation_gate.try_acquire()? else {
+        let Some(lease) = shared.mutation_gate.acquire_source()? else {
             return Ok(AdmissionAttempt::Yielded(AdmissionYield::BusyWriter));
         };
         if shared.write_fenced.load(Ordering::Acquire) || shared.is_follower_mode() {
             return Err(storage_error(StorageErrorKind::Unavailable));
         }
-        if let Some(reason) = validation_drain_yield(&shared)? {
+        let epoch = shared.source_continuation_epoch.load(Ordering::Acquire);
+        if !walk.is_complete() || !walk.qualifies(epoch) {
+            return Ok(AdmissionAttempt::Yielded(
+                AdmissionYield::ChangedQualification,
+            ));
+        }
+        if let Some(reason) = prepare_online_source_root(&shared)? {
             return Ok(AdmissionAttempt::Yielded(reason));
         }
         let epoch = shared.source_continuation_epoch.load(Ordering::Acquire);
@@ -252,6 +261,18 @@ impl Barrier {
             return Err(storage_error(StorageErrorKind::CorruptData));
         }
         Ok(write)
+    }
+}
+
+fn prepare_online_source_root(
+    shared: &Arc<SharedRedb>,
+) -> Result<Option<AdmissionYield>, StorageError> {
+    match shared.prepare_online_source_root()? {
+        SourceDrainReadiness::Ready => validation_drain_yield(shared),
+        SourceDrainReadiness::PendingJournal => Ok(Some(AdmissionYield::PendingJournal)),
+        SourceDrainReadiness::CheckpointPublication => {
+            Ok(Some(AdmissionYield::CheckpointPublication))
+        }
     }
 }
 

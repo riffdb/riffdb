@@ -135,6 +135,11 @@ pub(crate) const MAX_JOURNAL_COMMANDS: usize = MAX_JOURNAL_TRANSITIONS;
 pub(crate) const MAX_JOURNAL_SUFFIX_TRANSITIONS: usize = 65_536;
 pub(crate) const MAX_JOURNAL_FRAME_BYTES: usize = 16 * 1024 * 1024;
 pub(crate) const MAX_JOURNAL_SUFFIX_BYTES: usize = 256 * 1024 * 1024;
+
+mod source_suffix_scan;
+pub(crate) use source_suffix_scan::{
+    SOURCE_SUFFIX_BYTES, SOURCE_SUFFIX_TRANSITIONS, scan_online_source_suffix_with_media,
+};
 const DELETE_VALUE_LENGTH: u32 = u32::MAX;
 
 static COMMAND_FRAME_COUNT: AtomicU64 = AtomicU64::new(0);
@@ -3772,6 +3777,17 @@ fn walk_extent_frames(
     extent: &ExtentHeader,
     walk: ExtentWalk,
     file_bytes: usize,
+    visit: impl FnMut(&JournalFrame, FramePlacement) -> Result<(), JournalIoError>,
+) -> Result<ExtentWalkResult, JournalIoError> {
+    walk_extent_frames_with_limits(file, extent, walk, file_bytes, false, visit)
+}
+
+fn walk_extent_frames_with_limits(
+    file: &mut MediaFile,
+    extent: &ExtentHeader,
+    walk: ExtentWalk,
+    file_bytes: usize,
+    online_source: bool,
     mut visit: impl FnMut(&JournalFrame, FramePlacement) -> Result<(), JournalIoError>,
 ) -> Result<ExtentWalkResult, JournalIoError> {
     let mut previous_hash = extent.logical.checkpoint_frame_hash();
@@ -3839,6 +3855,18 @@ fn walk_extent_frames(
         {
             return Err(JournalIoError::Corrupt);
         }
+        // Source admission proves a much smaller suffix before taking it.
+        // Recheck raw-media lengths before any payload allocation or decode;
+        // corrupt headers cannot turn that proof into an extent-sized read.
+        if online_source
+            && (transition_count >= SOURCE_SUFFIX_TRANSITIONS
+                || encoded_byte_count
+                    .checked_add(encoded_len)
+                    .is_none_or(|bytes| bytes > SOURCE_SUFFIX_BYTES)
+                || extent_frame_bytes(encoded_len).is_none_or(|maximum| padded_len > maximum))
+        {
+            return Err(JournalIoError::Corrupt);
+        }
         let mut physical = vec![0_u8; padded_len];
         file.read_exact_at(&mut physical, position)
             .map_err(|_| JournalIoError::Io)?;
@@ -3900,8 +3928,18 @@ fn walk_extent_frames(
             .checked_add(encoded_len)
             .ok_or(JournalIoError::Corrupt)?;
         if walk == ExtentWalk::FromAnchor
-            && (transition_count > MAX_JOURNAL_SUFFIX_TRANSITIONS
-                || encoded_byte_count > MAX_JOURNAL_SUFFIX_BYTES)
+            && (transition_count
+                > if online_source {
+                    SOURCE_SUFFIX_TRANSITIONS
+                } else {
+                    MAX_JOURNAL_SUFFIX_TRANSITIONS
+                }
+                || encoded_byte_count
+                    > if online_source {
+                        SOURCE_SUFFIX_BYTES
+                    } else {
+                        MAX_JOURNAL_SUFFIX_BYTES
+                    })
         {
             return Err(JournalIoError::Corrupt);
         }

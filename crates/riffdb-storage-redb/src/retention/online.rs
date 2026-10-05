@@ -79,11 +79,11 @@ pub struct OnlineRetentionPhases {
     pub source_continuation_rows: u64,
     /// Existing source candidates/certificates invalidated by native publication.
     pub source_validation_invalidations: u64,
-    /// Nonwaiting source admissions refused without deleting any receipt.
+    /// Bounded source admissions refused without deleting any receipt.
     pub source_admission_refusals: u64,
-    /// Nonwaiting admission yielded to an existing writer or queued writer.
+    /// FIFO admission expired, was retired or lacked its fixed request slot.
     pub source_admission_busy_writer: u64,
-    /// Nonwaiting admission found an uncheckpointed journal suffix.
+    /// Admission found unknown, unpublished or excessive journal work.
     pub source_admission_pending_journal: u64,
     /// A checkpoint or its extent sealing was still publishing.
     pub source_admission_checkpoint: u64,
@@ -102,6 +102,10 @@ pub struct OnlineRetentionPhases {
     pub source_reclamation_sample_attempt: u64,
     /// First observation, unusable prior progress, or a held floor, respectively.
     pub source_reclamation_yields: [u64; 3],
+    /// Queued, granted, expired, cancelled, capacity refusals, wait microseconds,
+    /// actual source lease microseconds and bounded-drain yields, respectively.
+    /// Per-step diagnostics, never source authority.
+    pub source_admission_census: [u64; 8],
     /// Under the gate: validated-prefix pin capture and publication.
     pub prefix_gate_us: u64,
     /// Waiting for the first-come writer gate.
@@ -171,6 +175,22 @@ pub struct RedbOnlineRetentionLane {
 }
 
 impl RedbOnlineRetentionLane {
+    /// First-party worker retirement cancels pending source requests under the
+    /// gate lock, leaving ordinary writers and granted atomic turns intact.
+    #[doc(hidden)]
+    pub fn retire_source_admission(&self) {
+        self.shared.retire_online_source_admission();
+    }
+
+    /// Releases the retired owner's nondurable source-validation pins after
+    /// its worker has joined. No durable hold or history is changed.
+    #[doc(hidden)]
+    pub fn release_source_validation(&self) {
+        self.source_control
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .retire_online_validation();
+    }
     /// Runs one step, as [`RedbOperationalPorts::online_retention_step`] does,
     /// except that history still in the journal suffix is materialized only
     /// when no transition was journaled since this lane's previous step: a busy
@@ -238,6 +258,7 @@ impl RedbOnlineRetentionLane {
         phases.source_reclamation_attempts = 1;
         phases.source_reclamation_sample = source_control.reclamation_observation();
         phases.source_reclamation_yields = source_control.reclamation_yields();
+        phases.source_admission_census = source_control.source_admission_census();
         drop(source_control);
         phases.reclaimed_receipts = removed;
         phases.receipt_gate_us = held_us;

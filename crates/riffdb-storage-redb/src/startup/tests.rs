@@ -757,6 +757,9 @@ mod physical_integrity;
 #[path = "native_source_continuation_tests.rs"]
 mod native_source_continuation;
 
+#[path = "native_source_admission_tests.rs"]
+mod native_source_admission;
+
 fn complete_authority_snapshot(path: &Path) -> CompleteAuthoritySnapshot {
     let database = redb::ReadOnlyDatabase::open(path).expect("open complete authority snapshot");
     let read = database.begin_read().expect("begin authority snapshot");

@@ -278,6 +278,13 @@ impl RetentionLaneStatus {
             total.source_reclamation_sample = Some(sample);
             total.source_reclamation_sample_attempt = total.source_reclamation_attempts;
         }
+        for (sum, add) in total
+            .source_admission_census
+            .iter_mut()
+            .zip(phases.source_admission_census)
+        {
+            *sum = sum.saturating_add(add);
+        }
     }
 
     fn note_hold(&self, reason: usize) {
@@ -321,10 +328,14 @@ struct LaneControl {
     signals: Mutex<LaneSignals>,
     changed: Condvar,
     cancellation: Arc<std::sync::atomic::AtomicBool>,
+    source_retirement: Option<RedbOnlineRetentionLane>,
 }
 
 impl LaneControl {
     fn stop(&self) {
+        if let Some(lane) = &self.source_retirement {
+            lane.retire_source_admission();
+        }
         self.cancellation.store(true, Ordering::Release);
         let mut signals = self
             .signals
@@ -400,7 +411,10 @@ impl RunningRetentionLane {
         failure: RetentionLaneFailureSinks,
         validation_inputs: riffdb_storage_api::StartupValidationInputs,
     ) -> Result<Self, std::io::Error> {
-        let control = Arc::new(LaneControl::default());
+        let control = Arc::new(LaneControl {
+            source_retirement: Some(lane.clone()),
+            ..LaneControl::default()
+        });
         let RetentionTarget::RetainSequences(retain) = config.target() else {
             return Ok(Self {
                 status: RetentionLaneStatus::new(RetentionLaneState::Holding),
@@ -416,6 +430,7 @@ impl RunningRetentionLane {
             .name("riffdb-retention".to_owned())
             .stack_size(384 * 1024)
             .spawn(move || {
+                let _source_retirement = SourceOwnerRetirement(&lane);
                 run_lane(
                     &lane,
                     retain,
@@ -455,6 +470,9 @@ impl RunningRetentionLane {
         if let Some(thread) = self.thread.take() {
             let _ = thread.join();
         }
+        if let Some(lane) = &self.control.source_retirement {
+            lane.release_source_validation();
+        }
         self.status.state()
     }
 }
@@ -464,6 +482,14 @@ impl Drop for RunningRetentionLane {
         if self.thread.is_some() {
             let _ = self.shutdown();
         }
+    }
+}
+
+struct SourceOwnerRetirement<'a>(&'a RedbOnlineRetentionLane);
+impl Drop for SourceOwnerRetirement<'_> {
+    fn drop(&mut self) {
+        self.0.retire_source_admission();
+        self.0.release_source_validation();
     }
 }
 
@@ -596,6 +622,12 @@ fn run_lane(
                 )
             );
             next_source_diagnostic = elapsed.checked_add(Duration::from_secs(60));
+            eprintln!(
+                "{}",
+                crate::shutdown_census::format_source_admission_census(
+                    status.observation().phases.source_admission_census,
+                )
+            );
         }
         // Rest in proportion to the time the attempt held the writer gate,
         // never less than the outcome's own recheck interval.

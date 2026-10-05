@@ -4,6 +4,9 @@ mod transient_access;
 
 mod read_census;
 
+mod source_reclamation_drain;
+pub(super) use source_reclamation_drain::Readiness as SourceDrainReadiness;
+
 #[cfg(test)]
 #[path = "changelog_source_continuation_tests.rs"]
 mod source_continuation_tests;
@@ -6977,6 +6980,13 @@ impl SharedRedb {
         self: &Arc<Self>,
     ) -> Result<(), StorageError> {
         self.poll_async_checkpoint_locked(true)?;
+        self.materialize_published_suffix_for_barrier(false)
+    }
+
+    fn materialize_published_suffix_for_barrier(
+        self: &Arc<Self>,
+        online_source: bool,
+    ) -> Result<(), StorageError> {
         let Some(runtime) = self.take_published_journal_suffix_locked(true)? else {
             return Ok(());
         };
@@ -6993,7 +7003,11 @@ impl SharedRedb {
             self.restore_journal_runtime(runtime)?;
             return Err(storage_error(StorageErrorKind::InvariantViolation));
         }
-        let footprint = match self.apply_published_journal_suffix(&transaction, &runtime) {
+        let footprint = match self.apply_published_journal_suffix_with_limits(
+            &transaction,
+            &runtime,
+            online_source,
+        ) {
             Ok(footprint) => footprint,
             Err(error) => {
                 let _ = transaction.abort();
@@ -7001,7 +7015,13 @@ impl SharedRedb {
                 return Err(error);
             }
         };
+        if online_source {
+            changelog_source_control::crash_edge("source-drain-staged");
+        }
         self.commit_with_source_footprint(transaction, footprint)?;
+        if online_source {
+            changelog_source_control::crash_edge("source-drain-committed");
+        }
         if let Err(error) = self.refresh_durable_read_frontier() {
             self.fence_writes();
             return Err(error);
@@ -7009,6 +7029,9 @@ impl SharedRedb {
         if let Err(error) = self.finish_journal_checkpoint(runtime) {
             self.fence_writes();
             return Err(error);
+        }
+        if online_source {
+            changelog_source_control::crash_edge("source-drain-anchored");
         }
         Ok(())
     }
@@ -7874,6 +7897,15 @@ impl SharedRedb {
         transaction: &WriteTransaction,
         runtime: &JournalRuntime,
     ) -> Result<crate::source_continuation::SourceContinuationFootprint, StorageError> {
+        self.apply_published_journal_suffix_with_limits(transaction, runtime, false)
+    }
+
+    fn apply_published_journal_suffix_with_limits(
+        &self,
+        transaction: &WriteTransaction,
+        runtime: &JournalRuntime,
+        online_source: bool,
+    ) -> Result<crate::source_continuation::SourceContinuationFootprint, StorageError> {
         let v3 = crate::changelog_v3_journal::has_write_recovery_roots(transaction)?;
         let mut footprint = if v3 {
             crate::source_continuation::SourceContinuationFootprint::fresh()
@@ -7882,28 +7914,39 @@ impl SharedRedb {
         };
         // The drained frames become history stubs, which must resolve.
         self.register_history_resolver(runtime.database_id);
-        let scanned = crate::journal::scan_located_journal_with_media(
-            self.journal_media.as_ref(),
-            &crate::journal::journal_path(&self.path),
-            runtime.database_id,
-            |frame, locator| {
-                if v3 || crate::changelog_v3_journal::has_receipt_source(frame) {
-                    let (_, checked) =
-                        crate::changelog_v3_journal::materialize_located_frame_for_continuation(
-                            transaction,
-                            frame,
-                            locator,
-                        )
-                        .map_err(|_| crate::journal::JournalIoError::Corrupt)?;
-                    footprint.combine(checked);
-                } else {
-                    for mutation in frame.mutations() {
-                        crate::journal::apply_located_mutation(transaction, mutation, locator)?;
-                    }
+        let visit = |frame: &crate::journal::JournalFrame,
+                     locator: Option<crate::history_stub::StubLocator>| {
+            if v3 || crate::changelog_v3_journal::has_receipt_source(frame) {
+                let (_, checked) =
+                    crate::changelog_v3_journal::materialize_located_frame_for_continuation(
+                        transaction,
+                        frame,
+                        locator,
+                    )
+                    .map_err(|_| crate::journal::JournalIoError::Corrupt)?;
+                footprint.combine(checked);
+            } else {
+                for mutation in frame.mutations() {
+                    crate::journal::apply_located_mutation(transaction, mutation, locator)?;
                 }
-                Ok(())
-            },
-        )
+            }
+            Ok(())
+        };
+        let scanned = if online_source {
+            crate::journal::scan_online_source_suffix_with_media(
+                self.journal_media.as_ref(),
+                &crate::journal::journal_path(&self.path),
+                runtime.database_id,
+                visit,
+            )
+        } else {
+            crate::journal::scan_located_journal_with_media(
+                self.journal_media.as_ref(),
+                &crate::journal::journal_path(&self.path),
+                runtime.database_id,
+                visit,
+            )
+        }
         .map_err(journal_io_error)?
         .ok_or_else(|| storage_error(StorageErrorKind::CorruptData))?;
         let (header, tail) = scanned;

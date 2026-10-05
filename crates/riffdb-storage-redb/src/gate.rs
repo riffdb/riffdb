@@ -9,6 +9,8 @@ use std::sync::{Arc, Condvar, Mutex};
 
 use riffdb_storage_api::{StorageError, StorageErrorKind};
 
+mod source_admission;
+
 #[derive(Default)]
 pub(crate) struct ExclusiveGate {
     inner: Arc<GateInner>,
@@ -25,10 +27,12 @@ struct GateState {
     next_ticket: u128,
     serving: u128,
     held: bool,
+    source: source_admission::State,
 }
 
 pub(crate) struct ExclusiveLease {
     inner: Arc<GateInner>,
+    source_started: Option<std::time::Instant>,
 }
 
 impl ExclusiveGate {
@@ -44,6 +48,7 @@ impl ExclusiveGate {
         drop(state);
         Ok(Some(ExclusiveLease {
             inner: Arc::clone(&self.inner),
+            source_started: None,
         }))
     }
 
@@ -63,6 +68,7 @@ impl ExclusiveGate {
         drop(state);
         Ok(ExclusiveLease {
             inner: Arc::clone(&self.inner),
+            source_started: None,
         })
     }
 
@@ -83,7 +89,7 @@ impl ExclusiveGate {
             .held
     }
 
-    /// Total leases ever handed out, granted or still queued.
+    /// Total tickets ever issued, granted, queued or cancelled.
     ///
     /// Every write transaction and every indexed read lease takes exactly one
     /// ticket, so an unchanged count across an operation proves the operation
@@ -125,11 +131,15 @@ impl Drop for ExclusiveLease {
             state.held,
             "an exclusive lease must own the gate it releases"
         );
+        if let Some(started) = self.source_started {
+            state.source.note_held(started.elapsed());
+        }
         state.held = false;
         state.serving = state
             .serving
             .checked_add(1)
             .expect("a granted ticket always has a representable successor");
+        state.skip_cancelled_source();
         self.inner.released.notify_all();
     }
 }

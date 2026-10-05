@@ -1006,3 +1006,128 @@ protocols, durable formats, attribution, admission, holds and ordering;
 Updated handbook: known limitations; Hazards/follow-ups:
 required-host writer-cost measurement, source-admission progress, normal
 latency and the complete short rehearsal. No 24-hour run has started.
+
+
+### Combined source validation and required-host preparation
+
+Frozen clean source `819fdfbd` passes the full `ci-all` battery, ending with
+verified source installation. This combines the actual-directory reclaimer,
+source-floor and outbox-stage observations, and the independently merged
+allocation repairs. The result qualifies that source's correctness checks;
+it does not qualify the host workload or the subsequent ADR-0271 implementation.
+
+The unchanged 900-second preparation, built from locked release artifacts on
+8 vCPU, 32 GiB Linux with persistent SSD storage, again fails `probe_latency`.
+It completes all 90,000 commands and 360,000 reads without retries, using
+28 load slots and four auxiliary slots. Independent state reconciliation
+completes; final archive reconciliation is not reached after the latency gate.
+No 24-hour qualification has started.
+
+| Window (seconds) | p95 (microseconds) | p99 (microseconds) | Overflow |
+|---|---:|---:|---:|
+| 0–300 | 106,222 | beyond range | 6,888 |
+| 300–600 | 57,878 | beyond range | 1,784 |
+| 600–900 | beyond range | beyond range | 7,852 |
+
+The first two windows overlap the measured consumer pause or its recovery;
+the pause lasts 300.049 seconds. Live progress continues; recovery takes 6.568 seconds and covers
+2,048 organization-scoped events in 308 samples. Those events are not a global
+archive count. The wholly fault-free final window fails both p95 and p99.
+Beyond-range values are histogram sentinels, not measured quantiles.
+
+Native receipt removal totals 12,802 and actual receipt gate residence totals
+1,348,381 microseconds. Physical work records one recycled extent, zero deleted
+extents, 1,452 reference-held attempts and 15 reader-held attempts, with
+12,570,077 microseconds of work. The complete source walk reads 10,629 initial
+and 411,154 continuation rows. Its 835 admission refusals comprise 394 busy
+writers, 304 pending journals and 137 catch-up page bounds, with one proof
+invalidation. Duplicate shutdown emissions are not added.
+
+The last available floor sample is attempt 2,435 of 2,466: resume 12,547,
+prior checkpoint ceiling 355,534 and tail 376,473. Every measured sample
+reports no derived or durable source hold. The last plan permits 342,987
+positions beyond resume; its 31-attempt age remains explicit. This is a
+pre-deletion plan, not final state, a physical inventory or permission to
+remove the interval. The backlog remains a native admission/progress problem.
+
+The final outbox worker-retirement stage sample reports 311,072 attempts for
+each stage. Values are cumulative whole-run observations, including preparation
+and post-load work; successive samples are not summed.
+
+| Stage | Total microseconds | Maximum microseconds |
+|---|---:|---:|
+| Gate wait | 21,370,601 | 4,026,084 |
+| Prefix publication | 13,599,149 | 338,352 |
+| Checkpoint wait | 52,314 | 35,882 |
+| Journal take | 573 | 15 |
+| Engine open | 280,922 | 397 |
+| Suffix application | 61,824,652 | 87,130 |
+| Held begin | 97,634,199 | 351,553 |
+| Commit completion | 374,436,207 | 318,987 |
+
+Held begin overlaps its component stages, so this table is not a partition of
+writer time. Checkpoint waiting is rare in this aggregate; commit completion
+and materialization remain substantial costs. These observations do not locate
+individual normal-window spikes or authorize batching, profile or sync changes.
+
+### Accepted fair source admission implementation
+
+The maintainer accepts exact ADR-0271 version `9d70c483` on 2026-10-05. Its
+standalone acceptance commit records that approval. The implementation gives
+the graph's sole source owner one fixed FIFO ticket behind existing writers,
+with a compiled 100-ms admission deadline and irreversible graph retirement.
+Grant, expiration and cancellation resolve under the gate mutex. A cancelled
+slot remains fixed until its turn is consumed; an ordinary successor cannot
+be stranded, and another source attempt cannot allocate a second slot.
+
+A granted turn inspects existing metadata without initializing a journal lane.
+It checks for unfinished checkpoint or extent sealing before attempting
+root capture, then yields without waiting for native publication. A separate
+regression exhausts the actual 4,096 reader-pin capacity with sealing held:
+the earlier ordering wrongly attempts another pin; the revised ordering yields
+and leaves ordinary writers available. Owner retirement releases its actual
+registered validation pin, not just its bookkeeping flag. Only a complete
+acknowledged suffix with exact native accounting of at most 256 transitions and
+1 MiB may use the unchanged canonical checkpoint/drain machinery. Unknown,
+unpublished or excessive work yields before taking the suffix. Raw scanner
+bounds precede payload allocation and decoding, while existing frame, checksum,
+canonicality, preimage and final-frontier checks remain active. Ordinary recovery
+keeps its previous larger limits. No durable format or sync boundary changes.
+
+Initial capture authorizes no removal and returns before a second source turn,
+allowing the owner to apply its existing rest discipline. The complete walk
+stays outside the gate. Admission of a completed candidate rechecks lineage,
+qualification, the exact closed materialization footprint, every hold and the
+existing independent-checkpoint rules. Queue waiting is separately observed;
+full actual lease residence, including drain and error cleanup, is charged to
+existing pacing. Owner retirement cancels pending eligibility and releases
+retained validation pins after in-progress atomic work finishes.
+
+A genuine predecessor fixture provides a semantic RED/GREEN: the predecessor
+leaves an acknowledged published prune undrained, whereas the repair durably
+materializes it while removing no source receipt and preserving the exact
+original outcomes, provenance and source frontier. The fixture explicitly
+settles the existing extent sealer outside admission; production still yields
+to unfinished sealing. Deterministic gate tests cover FIFO order, expiry,
+grant-versus-retire in both orders, dropped requests, fixed capacity and ticket
+exhaustion. Scanner and accounting tests exercise exact byte/transition limits,
+oversized raw headers, extra padding and uncertain/unpublished counts. Process
+crash tests cut before commit, after commit and after anchor publication and
+check complete recovered native authority before startup lifecycle receipts.
+
+PR note: Package WP-825 (open); Tier guarantee, accepted ADR-0271; Behavior:
+one cancellable bounded FIFO source turn and exact small native drain, with
+separate queue/residence diagnostics and prompt owner retirement; Checks:
+103 focused native source tests, including three process crash cuts, pass;
+52 focused server tests, five drain/cancellation cases and the complete
+26-test source-control suite pass. The first scoped run passes six checks and
+fails three fixtures that assumed capture and validation shared a turn; those
+fixtures now observe the proved first checkpoint explicitly and preserve every
+exact hold, crash and no-self-stimulation assertion. Final scoped validation
+passes all seven checks and all 1,831 tests across 25 binaries, with ten existing
+skips; Compatibility: unchanged application
+protocols, ordering, acknowledgement, durable formats, hold authority and fsync
+boundaries; Updated handbook: known limitations and sustainable milestone;
+Hazards/follow-ups: final-source full CI, unchanged required-host latency
+and sustained retirement, all lifecycle faults and complete short rehearsal.
+Acceptance of the decision does not qualify a rehearsal or start the 24-hour run.

@@ -83,13 +83,24 @@ fn hold(kind: Kind, state: ChangelogHistoryStateV3) -> Hold {
     )
 }
 
+// Finish bounded off-gate pages and observe the actual first checkpoint before
+// publishing the later independent transition. Capture alone proves no cut.
+fn observe_first_online_checkpoint(control: &mut crate::store::ReplicationSourceControl) {
+    for _ in 0..16 {
+        assert_eq!(control.reclaim_history_online().unwrap().0, 0);
+        if control.reclamation_yields()[0] == 1 {
+            return;
+        }
+    }
+    panic!("bounded fixture must establish its first actual checkpoint observation");
+}
+
 // req: STO-030, STO-031, STO-032, REC-001
 #[test]
 fn online_receipt_reclamation_yields_to_writers_preserves_holds_and_cannot_stimulate_itself() {
     let (_scope, ports, states) = fixture();
     let mut control = ports.replication_source_control();
-    assert_eq!(control.reclaim_history_online().unwrap().0, 0);
-    assert_eq!(control.reclaim_history_online().unwrap().0, 0);
+    observe_first_online_checkpoint(&mut control);
     let bootstrap = hold(Kind::Bootstrap, states[3]);
     control.register(bootstrap).unwrap();
     let lease = ports.acquire_indexed_read_lease().unwrap();
@@ -441,11 +452,9 @@ fn v3_source_control_crash_child() {
     if edge.starts_with("hold-") {
         control.register(hold(Kind::Bootstrap, initial)).unwrap();
     } else if std::env::var("RIFFDB_V3_SOURCE_CONTROL_ONLINE").as_deref() == Ok("true") {
-        for _ in 0..2 {
-            assert_eq!(control.reclaim_history_online().unwrap().0, 0);
-        }
+        observe_first_online_checkpoint(&mut control);
         append(&ports, b"known-later-checkpoint");
-        for _ in 0..2 {
+        for _ in 0..16 {
             control.reclaim_history_online().unwrap();
         }
     } else {

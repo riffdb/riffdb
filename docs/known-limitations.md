@@ -81,20 +81,30 @@ These limits are part of the POC release posture, not hidden roadmap promises.
   names. The reclaimer now visits at most 64 actual directory entries per pass,
   retaining one directory handle rather than a list of the file population.
   All seven scoped checks and 1,241 native/simulator tests pass, with ten
-  existing skips. Final-source full CI and continuing-load qualification of
-  this repair remain pending.
+  existing skips. Full CI subsequently passes on combined source `819fdfbd`,
+  including the final source-install smoke. Continuing-load qualification of
+  this repair remains pending.
   Bounded source-floor observations pass 1,806 native/server tests. Their
   required-host preparation again fails final-window latency. Available plans
   report no derived or durable source holds; the last pre-deletion plan permits
   more than 211,000 positions beyond resume, while removal totals only 8,962
   receipts. Missing and stale samples remain explicit. This is a native source-
-  admission progress limitation; revisiting the accepted nonwaiting drained
-  boundary needs a new accepted decision. The plan does not prove physical
+  admission progress limitation. Accepted ADR-0271 amends the nonwaiting drained
+  boundary with one cancellable FIFO source request and a bounded native drain.
+  Its implementation remains under validation. The plan does not prove physical
   eligibility, and the backlog cannot be classified as protected history.
   A separate fixed-size graph-owned census now observes the outbox's existing
   native writer stages, including queue wait and journal materialization.
   It changes no admission or durability boundary; its scoped validation passes,
-  while required-host cost attribution remains pending.
+  while its unchanged required-host preparation completes all offered work but
+  fails normal-window latency. Its final plan again records no source holds,
+  with more than 342,000 planning positions beyond resume and only 12,802
+  receipts removed. Whole-run outbox measurements attribute about 374 seconds
+  to commit completion, 98 seconds to overlapping held-begin work and 62 seconds
+  to suffix application; checkpoint waiting totals about 52 milliseconds.
+  These aggregates cannot locate individual latency spikes or prove a safe
+  durability change. The accepted admission repair still needs full checks and
+  unchanged continuing-load verification before qualification.
   Native reclamation, latency, notification and recovery behavior require
   further verification; maintenance pauses, automatic
   watch reconnects or relaxed client validation cannot qualify the rehearsal.

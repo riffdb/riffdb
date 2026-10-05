@@ -62,6 +62,7 @@ pub(crate) struct ReplicationSourceControl {
     online_admission_yields: [u64; 5],
     reclamation_observation: Option<[u64; 8]>,
     reclamation_yields: [u64; 3],
+    source_admission_census: [u64; 8],
 }
 
 impl RedbOperationalPorts {
@@ -174,6 +175,7 @@ impl RedbOperationalPorts {
             online_admission_yields: [0; 5],
             reclamation_observation: None,
             reclamation_yields: [0; 3],
+            source_admission_census: [0; 8],
         }
     }
 }
@@ -304,7 +306,7 @@ impl ReplicationSourceControl {
     }
 
     /// One bounded validation page, followed only at exact end by a
-    /// nonwaiting, drained-root admission. Returns actual removed receipts
+    /// bounded FIFO, drained-root admission. Returns actual removed receipts
     /// and gate-held time; the caller applies the existing maintenance pacing.
     pub(crate) fn reclaim_history_online(&mut self) -> Result<(u64, u64), StorageError> {
         self.reclamation_observation = None;
@@ -314,7 +316,29 @@ impl ReplicationSourceControl {
         if let Some(walk) = self.online_validation.as_mut() {
             walk.clear_step_rows();
         }
+        self.source_admission_census = [0; 8];
+        let before = match self.shared.mutation_gate.source_census() {
+            Ok(sample) => sample,
+            Err(error) => {
+                self.online_validation = None;
+                return Err(error);
+            }
+        };
         let result = self.reclaim_history_online_step();
+        let after = match self.shared.mutation_gate.source_census() {
+            Ok(sample) => sample,
+            Err(error) => {
+                self.online_validation = None;
+                return Err(error);
+            }
+        };
+        self.source_admission_census = std::array::from_fn(|index| {
+            if after[index] == u64::MAX {
+                u64::MAX
+            } else {
+                after[index].saturating_sub(before[index])
+            }
+        });
         if let Some(walk) = self.online_validation.as_ref() {
             let [initial, continued] = walk.step_rows();
             self.online_validation_phases[0] = initial;
@@ -325,10 +349,10 @@ impl ReplicationSourceControl {
         } else if let Some(walk) = self.online_validation.as_mut() {
             walk.release_completed_pin();
         }
-        result
+        result.map(|removed| (removed, self.source_admission_census[6]))
     }
 
-    fn reclaim_history_online_step(&mut self) -> Result<(u64, u64), StorageError> {
+    fn reclaim_history_online_step(&mut self) -> Result<u64, StorageError> {
         use crate::changelog_v3_retained_validation::RetainedHistoryValidation;
         let epoch = self
             .shared
@@ -342,21 +366,21 @@ impl ReplicationSourceControl {
             self.online_validation = None;
             self.online_validation_phases[2] = 1;
         }
-        let mut capture_us = 0;
         if self.online_validation.is_none() {
-            let start = std::time::Instant::now();
             let captured = Barrier::try_validation_capture(&self.shared)?;
-            capture_us = elapsed_us(start, std::time::Instant::now());
             let Some((root, qualification)) = captured else {
-                return Ok((0, capture_us));
+                return Ok(0);
             };
             self.online_validation = RetainedHistoryValidation::new(root)?;
             if let Some(walk) = self.online_validation.as_mut() {
                 walk.bind_qualification(qualification);
             }
+            // A capture is one source turn. Return its actual residence to the
+            // owner for rest before requesting any subsequent admission.
+            return Ok(0);
         }
         let Some(walk) = self.online_validation.as_mut() else {
-            return Ok((0, capture_us));
+            return Ok(0);
         };
         if !walk.is_complete()
             && !walk.advance(
@@ -364,20 +388,16 @@ impl ReplicationSourceControl {
                     .ok_or_else(|| storage_error(StorageErrorKind::InvariantViolation))?,
             )?
         {
-            return Ok((0, capture_us));
+            return Ok(0);
         }
         crash_edge("continuation-qualified");
-        let start = std::time::Instant::now();
         let admission = Barrier::try_from_continuation_observed(Arc::clone(&self.shared), walk);
         let barrier = match admission {
             Ok(transaction::AdmissionAttempt::Admitted(barrier)) => barrier,
             Ok(transaction::AdmissionAttempt::Yielded(reason)) => {
                 self.online_validation_phases[3] = 1;
                 self.online_admission_yields[reason.index()] = 1;
-                return Ok((
-                    0,
-                    capture_us.saturating_add(elapsed_us(start, std::time::Instant::now())),
-                ));
+                return Ok(0);
             }
             Err(error) => {
                 self.online_validation = None;
@@ -391,10 +411,7 @@ impl ReplicationSourceControl {
             .independent_sequence();
         if independent <= self.online_independent_sequence {
             self.reclamation_yields[1] = 1;
-            return Ok((
-                0,
-                capture_us.saturating_add(elapsed_us(start, std::time::Instant::now())),
-            ));
+            return Ok(0);
         }
         let before = barrier
             .observation()
@@ -421,10 +438,15 @@ impl ReplicationSourceControl {
         } else {
             0
         };
-        Ok((
-            removed,
-            capture_us.saturating_add(elapsed_us(start, std::time::Instant::now())),
-        ))
+        Ok(removed)
+    }
+
+    pub(crate) fn source_admission_census(&self) -> [u64; 8] {
+        self.source_admission_census
+    }
+
+    pub(crate) fn retire_online_validation(&mut self) {
+        self.online_validation = None;
     }
 
     pub(crate) fn validation_phases(&self) -> [u64; 4] {
@@ -554,7 +576,7 @@ fn prepare_control_receipt(
     ))
 }
 
-fn crash_edge(_edge: &str) {
+pub(super) fn crash_edge(_edge: &str) {
     #[cfg(test)]
     if std::env::var("RIFFDB_V3_SOURCE_CONTROL_EDGE")
         .ok()

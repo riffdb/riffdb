@@ -150,6 +150,35 @@ pub(crate) fn format_source_reclamation_line() -> String {
     format_source_reclamation_sample(&phases)
 }
 
+pub(crate) fn format_source_turn_line() -> String {
+    let phases = RETENTION_OBSERVATION
+        .get()
+        .map(|lane| lane.phases)
+        .unwrap_or_default();
+    format_source_admission_census(phases.source_admission_census)
+}
+
+pub(crate) fn format_source_admission_census(values: [u64; 8]) -> String {
+    use std::fmt::Write as _;
+    let mut line = String::from("riffdb-retention-source-turns-v1");
+    for (name, value) in [
+        "queued",
+        "granted",
+        "expired",
+        "cancelled",
+        "capacity",
+        "wait_us",
+        "held_us",
+        "drain_yields",
+    ]
+    .into_iter()
+    .zip(values)
+    {
+        let _ = write!(line, "\t{name}={value}");
+    }
+    line
+}
+
 /// Last exact native floor plan, with the attempt on which it was measured.
 /// An unavailable or stale observation never stands for an unprotected floor.
 pub(crate) fn format_source_reclamation_sample(
@@ -451,6 +480,30 @@ mod tests {
                 .parse::<u64>()
                 .is_ok())
         );
+    }
+
+    // req: STO-030, STO-031, END-008
+    #[test]
+    fn source_turn_census_is_closed_numeric_and_bounded_at_saturation() {
+        let line = super::format_source_admission_census([u64::MAX; 8]);
+        let mut fields = line.split('\t');
+        assert_eq!(fields.next(), Some("riffdb-retention-source-turns-v1"));
+        for (field, expected) in fields.zip([
+            "queued",
+            "granted",
+            "expired",
+            "cancelled",
+            "capacity",
+            "wait_us",
+            "held_us",
+            "drain_yields",
+        ]) {
+            let (name, value) = field.split_once('=').unwrap();
+            assert_eq!(name, expected);
+            assert_eq!(value.parse::<u64>().unwrap(), u64::MAX);
+        }
+        assert_eq!(line.split('\t').count(), 9);
+        assert!(line.len() <= 384);
     }
 
     #[test]

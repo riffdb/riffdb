@@ -274,6 +274,10 @@ fn changed_receipt_preimages_and_gaps_refuse_continuation_and_release_failed_pin
         drop(current);
         drop(walk);
         let mut control = ports.replication_source_control();
+        // Initial admission captures a pin only. Complete row validation is
+        // the next bounded off-gate page, after the owner rests for capture.
+        assert_eq!(control.reclaim_history_online().unwrap().0, 0);
+        assert!(control.receipt_validation_pending());
         assert_eq!(
             control.reclaim_history_online().unwrap_err().kind(),
             StorageErrorKind::CorruptData

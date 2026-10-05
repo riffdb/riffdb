@@ -637,6 +637,7 @@ fn run_from_process(recovery: MaintenanceRecoveryController) -> Result<(), Daemo
         crate::shutdown_census::format_source_validation_line()
     );
     eprintln!("{}", crate::shutdown_census::format_source_admission_line());
+    eprintln!("{}", crate::shutdown_census::format_source_turn_line());
     eprintln!(
         "{}",
         crate::shutdown_census::format_source_reclamation_line()
@@ -3608,6 +3609,7 @@ async fn supervise_ready_process(
             crate::shutdown_census::format_source_validation_line()
         );
         eprintln!("{}", crate::shutdown_census::format_source_admission_line());
+        eprintln!("{}", crate::shutdown_census::format_source_turn_line());
         eprintln!(
             "{}",
             crate::shutdown_census::format_source_reclamation_line()
