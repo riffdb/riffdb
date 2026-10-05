@@ -162,6 +162,16 @@ ten minutes after resumption. All three load windows and every final ticket are
 checked. Timings and logs stay in the private preparation root. This covers one
 fault only and cannot produce a campaign qualification receipt.
 
+The separate `--population-probe-seconds 900 --observe --sink-outage`
+preparation removes access to its owned private archive directory for five
+minutes. The native connector must report degraded delivery while application
+writes and the live query keep progressing. Recovery restores access to the
+same directory and archive file and requires public delivery-drained health
+within ten minutes while the offered load continues. Cleanup restores the pinned
+directory even after a preparation failure. It changes no database record,
+quota, retry policy, durability boundary or offered rate. Sink and consumer
+outages use separate preparation roots; neither is a campaign receipt.
+
 Latency limits apply to normal preparation windows. Only windows overlapping
 the measured pause and backlog drain receive the campaign checker's fault
 exception; all offered/completed counts, errors, concurrency and final state

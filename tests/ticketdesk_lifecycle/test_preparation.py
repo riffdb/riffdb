@@ -114,6 +114,49 @@ class ConsumerOutageReconciliation(unittest.TestCase):
                 preparation.outage_window(0, 300, invalid)
 
 
+class SinkOutageReconciliation(unittest.TestCase):
+    def health(self, *, ready=False, frontier=100):
+        return {"schema": "riffdb.cli.output/v1", "command": "server.health", "ok": True,
+                "result": {"last_commit_sequence": frontier, "components": [
+                    {"component": "outbox", "status": "healthy" if ready else "degraded"}]}}
+
+    def live(self, *, head=100, updates=10):
+        return {"live_head": head, "live_updates": updates, "auxiliary_slots": 2,
+                "history_incarnation": 1, "observer_quiesced": False}
+
+    def test_denied_access_alone_cannot_prove_a_live_production_outage(self):
+        oracle = preparation.SinkOutageOracle()
+        with self.assertRaises(preparation.SmokeError):
+            oracle.finish_pause()
+        with self.assertRaises(preparation.SmokeError):
+            oracle.observe(self.health(ready=True), self.live())
+        oracle.observe(self.health(), self.live())
+        oracle.observe(self.health(), self.live())
+        with self.assertRaises(preparation.SmokeError):
+            oracle.finish_pause()
+
+    def test_recovery_requires_actual_drained_health_and_preserved_live_progress(self):
+        oracle = preparation.SinkOutageOracle()
+        oracle.observe(self.health(), self.live())
+        oracle.observe(self.health(frontier=200), self.live(head=200, updates=20))
+        oracle.finish_pause()
+        self.assertFalse(oracle.recovered(self.health(frontier=200)))
+        self.assertTrue(oracle.recovered(self.health(ready=True, frontier=200)))
+        with self.assertRaises(preparation.SmokeError):
+            oracle.recovered(self.health(ready=True, frontier=99))
+
+    def test_changed_incarnation_or_stopped_live_query_cannot_count_as_progress(self):
+        for changed in ({"history_incarnation": 2}, {"observer_quiesced": True},
+                        {"auxiliary_slots": 3}, {"live_head": 0}):
+            with self.subTest(changed=changed):
+                oracle = preparation.SinkOutageOracle()
+                oracle.observe(self.health(), self.live())
+                live = self.live(head=200, updates=20)
+                live.update(changed)
+                with self.assertRaises(preparation.SmokeError):
+                    oracle.observe(self.health(frontier=200), live)
+
+
 class ChildOwnership(unittest.TestCase):
     def test_invalid_or_oversized_load_output_stops_the_owned_child(self):
         for output in ('{"schema":"unknown"}', 'x' * 8192):

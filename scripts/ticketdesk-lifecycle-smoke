@@ -20,6 +20,7 @@ import threading
 import time
 
 from lib.ticketdesk_lifecycle_inventory import InventoryError, InventoryMonitor
+from lib.ticketdesk_lifecycle_faults import FaultError, LocalArchiveOutage
 
 
 class SmokeError(ValueError):
@@ -254,6 +255,107 @@ class ConsumerOutageOracle:
         return value["events_checked"] == expected
 
 
+class SinkOutageOracle:
+    """Native degraded delivery plus independently observed writes and watch."""
+    def __init__(self):
+        self.first = None
+        self.last = None
+        self.samples = 0
+
+    def observe(self, health, live):
+        require(not outbox_drained(health), "sink_outage_not_observed")
+        frontier = health["result"].get("last_commit_sequence")
+        require(type(frontier) is int and 0 < frontier <= 2**64 - 1
+                and type(live) is dict and live.get("auxiliary_slots") == 2
+                and live.get("observer_quiesced") is False, "sink_outage_observation")
+        values = (frontier, live.get("live_head"), live.get("live_updates"),
+                  live.get("history_incarnation"))
+        require(all(type(value) is int and 0 < value <= 2**64 - 1 for value in values),
+                "sink_outage_observation")
+        if self.last is not None:
+            require(values[3] == self.last[3]
+                    and all(value >= previous for value, previous in zip(values[:3], self.last[:3])),
+                    "sink_outage_continuity")
+        else:
+            self.first = values
+        self.last = values
+        self.samples += 1
+
+    def finish_pause(self):
+        require(self.samples >= 2
+                and all(last > first for last, first in zip(self.last[:3], self.first[:3])),
+                "sink_outage_load_inactive")
+
+    def recovered(self, health):
+        ready = outbox_drained(health)
+        frontier = health["result"].get("last_commit_sequence")
+        require(self.last is not None and type(frontier) is int
+                and self.last[0] <= frontier <= 2**64 - 1, "sink_outage_continuity")
+        return ready
+
+
+class SinkOutagePreparation:
+    def __init__(self, root, base, custody):
+        self.root, self.base, self.custody = root, base, custody
+        self.oracle = SinkOutageOracle()
+        self.requested = self.resumed = self.recovered = None
+        self.next_sample = 0
+        self.sample = 0
+        self.live = None
+
+    def poll(self, started, latest):
+        now = time.monotonic()
+        if self.requested is None:
+            if now - started < 5:
+                return
+            self.custody.pause()
+            self.requested = time.monotonic()
+        if self.resumed is None and now - self.requested >= 300:
+            self.oracle.finish_pause()
+            self.custody.resume()
+            self.resumed = time.monotonic()
+        try:
+            self.live = latest.get_nowait()
+        except queue.Empty:
+            pass
+        if self.recovered is not None or now < self.next_sample:
+            return
+        name = "sink-health-" + str(self.sample)
+        self.sample += 1
+        require(self.sample <= 1000, "sink_outage_sample_bound")
+        invoke(self.root, name, self.base + ["server", "health"], timeout=5)
+        health = read_json(self.root / (name + ".stdout"))
+        now = time.monotonic()
+        self.next_sample = now + 1
+        if self.resumed is None:
+            if not outbox_drained(health):
+                self.oracle.observe(health, self.live)
+            else:
+                require(self.oracle.samples == 0 and now - self.requested <= 10,
+                        "sink_outage_not_observed")
+            require(self.oracle.samples > 0 or now - self.requested <= 10,
+                    "sink_outage_not_observed")
+        else:
+            require(now - self.resumed <= 600, "sink_outage_recovery")
+            if self.oracle.recovered(health):
+                self.recovered = now
+
+    def finish(self, started):
+        require(self.requested is not None and self.resumed is not None
+                and self.recovered is not None, "sink_outage_incomplete")
+        pause_ns = int((self.resumed - self.requested) * 1000000000)
+        recovery_ns = int((self.recovered - self.resumed) * 1000000000)
+        require(300000000000 <= pause_ns <= 302000000000
+                and 0 <= recovery_ns <= 600000000000, "sink_outage_timing")
+        write(self.root, "sink-outage.json", json.dumps({
+            "schema": "riffdb.ticketdesk-lifecycle-sink-outage-preparation/v1",
+            "start_elapsed_ns": int((self.requested - started) * 1000000000),
+            "pause_elapsed_ns": pause_ns, "recovery_elapsed_ns": recovery_ns,
+            "observed_samples": self.oracle.samples, "same_archive_custody": True,
+            "public_write_progress": self.oracle.last[0] - self.oracle.first[0],
+            "live_progress_during_pause": True, "delivery_drained_under_load": True}))
+
+
 def outage_window(start, end, outage):
     low, pause, recovery = (outage[key] for key in
                            ("start_elapsed_ns", "pause_elapsed_ns", "recovery_elapsed_ns"))
@@ -279,7 +381,7 @@ def pump_load(process, output, messages):
         process.stdout.close()
 
 
-def observed_load(root, worker, environment, duration, observer, latest, consumer_outage):
+def observed_load(root, worker, environment, duration, observer, latest, consumer_outage, *, sink=None):
     """Monitor child liveness and time a real outage against the offered clock."""
     messages = queue.Queue(maxsize=256)
     oracle = ConsumerOutageOracle()
@@ -312,6 +414,8 @@ def observed_load(root, worker, environment, duration, observer, latest, consume
                 except queue.Empty:
                     pass
                 now = time.monotonic()
+                if sink is not None and started is not None:
+                    sink.poll(started, latest)
                 if not consumer_outage or started is None:
                     continue
                 if requested_at is None and now - started >= 5:
@@ -337,6 +441,8 @@ def observed_load(root, worker, environment, duration, observer, latest, consume
             process.wait(timeout=5)
             pump.join(timeout=5)
             require(process.returncode == 0 and not pump.is_alive(), "load")
+            if sink is not None:
+                sink.finish(started)
             if consumer_outage:
                 require(pause_finished and recovered_at is not None, "consumer_outage_incomplete")
                 pause_ns = int((resumed_at - paused_at) * 1000000000)
@@ -512,14 +618,20 @@ def main():
                         help="interrupt and resolve one original generated update; preparation only")
     parser.add_argument("--consumer-outage", action="store_true",
                         help="time a five-minute consumer pause in a 900-second observed preparation")
+    parser.add_argument("--sink-outage", action="store_true",
+                        help="deny archive directory access for five minutes under a 900-second observed load")
     parser.add_argument("--driver", type=Path, help="also exercise retained TypeScript bindings through native Rust driver")
     parser.add_argument("--population-probe-seconds", type=int, default=0,
                         help="fresh 65536-ticket load preparation; never a campaign receipt")
     args = parser.parse_args()
+    outage_mode = args.consumer_outage or args.sink_outage
+    require(not (args.consumer_outage and args.sink_outage), "separate_outage_preparations")
     require(0 <= args.population_probe_seconds <= 300
-            or args.consumer_outage and args.population_probe_seconds == 900, "probe_duration")
+            or outage_mode and args.population_probe_seconds == 900, "probe_duration")
     require(not args.consumer_outage or args.observe and args.population_probe_seconds == 900,
             "consumer_outage_mode")
+    require(not args.sink_outage or args.observe and args.population_probe_seconds == 900,
+            "sink_outage_mode")
     require(not args.restart_recovery or not (args.observe or args.additive_deploy or args.population_probe_seconds
                                              or args.prepare_successor or args.driver), "restart_recovery_mode")
     require(not args.archive_witness or not (args.additive_deploy or args.restart_recovery or args.prepare_successor),
@@ -696,8 +808,14 @@ tls_server_name = "127.0.0.1"
                             break
                 environment["RIFFDB_LIFECYCLE_DURATION_SECONDS"] = str(args.population_probe_seconds)
                 environment["RIFFDB_LIFECYCLE_LOAD_CONTROL"] = str(root)
-                observed_load(root, worker, environment, args.population_probe_seconds,
-                              observer, latest, args.consumer_outage)
+                if args.sink_outage:
+                    with LocalArchiveOutage(root / "archive") as custody:
+                        sink = SinkOutagePreparation(root, base, custody)
+                        observed_load(root, worker, environment, args.population_probe_seconds,
+                                      observer, latest, False, sink=sink)
+                else:
+                    observed_load(root, worker, environment, args.population_probe_seconds,
+                                  observer, latest, args.consumer_outage)
                 environment["RIFFDB_LIFECYCLE_COMPLETED_COMMANDS"] = str(args.population_probe_seconds * 100)
                 environment["RIFFDB_LIFECYCLE_RECONCILIATION_WITNESS"] = str(root / "updates.witness")
                 invoke(root, "reconciliation", [worker, "reconcile"], environment=environment, timeout=900)
@@ -706,7 +824,7 @@ tls_server_name = "127.0.0.1"
                 samples = [json.loads(line) for line in (root / "load.stdout").read_bytes().splitlines()]
                 require(samples[0]["schema"] == "riffdb.ticketdesk-lifecycle-load-ready/v1", "probe_observation")
                 windows = samples[1:-1]
-                require(len(windows) == (3 if args.consumer_outage else 1), "probe_observation")
+                require(len(windows) == (3 if outage_mode else 1), "probe_observation")
                 normal_windows = 0
                 for index, window in enumerate(windows):
                     start, end = index * 300, min((index + 1) * 300, args.population_probe_seconds)
@@ -715,8 +833,9 @@ tls_server_name = "127.0.0.1"
                             and window["completed_reads"] == window["offered_reads"] == (end - start) * 400,
                             "probe_rate")
                     fault = False
-                    if args.consumer_outage:
-                        outage = read_json(root / "consumer-outage.json", 4096)
+                    if outage_mode:
+                        name = "consumer-outage.json" if args.consumer_outage else "sink-outage.json"
+                        outage = read_json(root / name, 4096)
                         fault = outage_window(start, end, outage)
                     if not fault:
                         normal_windows += 1
@@ -958,7 +1077,7 @@ tls_server_name = "127.0.0.1"
 if __name__ == "__main__":
     try:
         sys.exit(main())
-    except (SmokeError, InventoryError) as error:
+    except (SmokeError, InventoryError, FaultError) as error:
         print("ticketdesk-lifecycle-smoke: " + str(error), file=sys.stderr)
         sys.exit(1)
     except (OSError, ValueError, TypeError, KeyError, queue.Empty, subprocess.SubprocessError):

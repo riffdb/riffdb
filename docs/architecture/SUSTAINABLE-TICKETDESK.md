@@ -592,6 +592,18 @@ pause, requires frozen consumer progress and advancing live observation, times
 the subsequent backlog drain, and reconciles all 65,536 final tickets. Private
 nanosecond timings remain measurements, not a synthetic campaign receipt.
 
+The separate sink preparation uses
+`--population-probe-seconds 900 --observe --sink-outage`. It denies access to
+the owned private archive directory for five minutes. The production connector
+checks custody before claiming delivery; the preparation requires actual
+degraded delivery health, advancing public write and live-query frontiers, and
+delivery-drained health within ten minutes after restoring the same archive
+objects, with offered load continuing. Pinned read-only descriptors serve only
+identity checks and cleanup; no archive engine is opened by the controller.
+Missing, changed or unavailable observations refuse preparation. Unit checks
+cover custody preservation, substitution, cleanup and observation refusal;
+real sink-fault measurement remains pending and no campaign is qualified.
+
 PR note: Package WP-825 (open); Tier guarantee; Behavior: counted public cursor
 renewal, supervised population load, and consumer-outage preparation; Checks:
 twelve Rust cases, six preparation oracle/child-ownership cases, Clippy,
