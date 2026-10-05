@@ -278,32 +278,40 @@ pub(crate) fn supersession_should_replace(existing_version: u64, incoming_versio
 }
 
 /// Extracts projected cells + org value from a field map.
+///
+/// `fields` is a [`CanonicalRecord`] field slice, which is guaranteed to be in
+/// strictly increasing stable-`FieldId` order with no duplicates. That lets each
+/// projected field be located with a binary search rather than a linear scan,
+/// so projection is O(projected × log fields) instead of O(projected × fields)
+/// per record on the apply, rebuild, and generation-build paths.
 pub(crate) fn project_cells(
     fields: &[(FieldId, CanonicalValue)],
     projected: &[FieldId],
     org_field: FieldId,
 ) -> Result<(CanonicalValue, Vec<CanonicalValue>), ColumnarError> {
-    let mut org = None;
+    // The slice is sorted by `FieldId::get()` (see `CanonicalRecord::new`), so a
+    // key-wise binary search over that ordering is exact.
+    let find = |field_id: FieldId| {
+        fields
+            .binary_search_by_key(&field_id.get(), |(id, _)| id.get())
+            .ok()
+            .map(|index| &fields[index].1)
+    };
+
     let mut cells = Vec::with_capacity(projected.len());
     for field_id in projected {
-        let value = fields
-            .iter()
-            .find(|(id, _)| id == field_id)
-            .map(|(_, value)| value.clone())
+        let value = find(*field_id)
             .ok_or(ColumnarError::Projection(
                 "projected field missing from entity",
-            ))?;
+            ))?
+            .clone();
         cells.push(value);
     }
-    for (id, value) in fields {
-        if *id == org_field {
-            org = Some(value.clone());
-            break;
-        }
-    }
-    let org = org.ok_or(ColumnarError::Projection(
-        "org scope field missing from entity",
-    ))?;
+    let org = find(org_field)
+        .ok_or(ColumnarError::Projection(
+            "org scope field missing from entity",
+        ))?
+        .clone();
     Ok((org, cells))
 }
 
