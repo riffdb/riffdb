@@ -295,6 +295,8 @@ pub(crate) fn begin_background_scrub_on_shared(
         rows_walked: 0,
         retained_history_validated: false,
         catalog_history_validated: false,
+        prefix_refresh_publication: None,
+        prefix_refresh_stale: None,
     })
 }
 
@@ -305,6 +307,10 @@ pub struct RedbBackgroundScrubSession {
     rows_walked: u64,
     retained_history_validated: bool,
     catalog_history_validated: bool,
+    // Ordinary scrubs retain their original pin beside live writes. Only an
+    // optional prefix publication candidate discards work on a changed root.
+    prefix_refresh_publication: Option<u64>,
+    prefix_refresh_stale: Option<Arc<AtomicBool>>,
 }
 
 impl RedbBackgroundScrubSession {
@@ -333,6 +339,7 @@ impl RedbBackgroundScrubSession {
         &mut self,
         limit: EvidencePageLimit,
     ) -> Result<BackgroundScrubPage, StorageError> {
+        self.check_prefix_refresh_current()?;
         let cursor = self.session.next_structural;
         match self.session.read_structural_evidence(cursor, limit)? {
             StructuralEvidencePage::Page { findings, next, .. } => {
@@ -380,6 +387,8 @@ impl RedbBackgroundScrubSession {
             session: &mut self.session,
             rows_per_step,
             proceed,
+            prefix_refresh_publication: self.prefix_refresh_publication,
+            prefix_refresh_stale: self.prefix_refresh_stale.clone(),
         };
         let validation = validate_catalog_history(&mut view).map_err(|error| {
             storage_error(
@@ -420,6 +429,8 @@ struct ScrubCatalogView<'a, F> {
     session: &'a mut RedbStructuralEvidenceSession,
     rows_per_step: EvidencePageLimit,
     proceed: F,
+    prefix_refresh_publication: Option<u64>,
+    prefix_refresh_stale: Option<Arc<AtomicBool>>,
 }
 
 impl<F: FnMut() -> bool> StructuralEvidenceSession for ScrubCatalogView<'_, F> {
@@ -449,7 +460,21 @@ impl<F: FnMut() -> bool> StructuralEvidenceSession for ScrubCatalogView<'_, F> {
         cursor: HistoricalEvidenceCursor,
         limit: EvidencePageLimit,
     ) -> Result<HistoricalEvidencePage<Self::HistoricalEnd>, StorageError> {
+        if !background_history::prefix_refresh_current(
+            &self.session.shared,
+            self.prefix_refresh_publication,
+            self.prefix_refresh_stale.as_deref(),
+        ) {
+            return Err(storage_error(StorageErrorKind::Unavailable));
+        }
         if !(self.proceed)() {
+            return Err(storage_error(StorageErrorKind::Unavailable));
+        }
+        if !background_history::prefix_refresh_current(
+            &self.session.shared,
+            self.prefix_refresh_publication,
+            self.prefix_refresh_stale.as_deref(),
+        ) {
             return Err(storage_error(StorageErrorKind::Unavailable));
         }
         let limit = if limit.get() > self.rows_per_step.get() {

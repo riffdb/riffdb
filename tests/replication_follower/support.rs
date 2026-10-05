@@ -173,9 +173,13 @@ hold_id = "01010101010101010101010101010101"
         let process = self.spawn(name, mode);
         // Debug recovery on hosted runners can exceed 30s after a populated
         // primary is killed. This bounds fixture startup, not a product SLA.
-        process
-            .wait_for_readiness("riffdbd-ready-v1\t", STARTUP_TIMEOUT)
+        let readiness = process
+            .wait_for_readiness("riffdbd-", STARTUP_TIMEOUT)
             .unwrap();
+        if readiness.starts_with("riffdbd-test-failure-v1\t") {
+            panic!("daemon startup refused with closed evidence: {readiness}");
+        }
+        assert!(readiness.starts_with("riffdbd-ready-v1\t"));
         process
     }
 
@@ -211,6 +215,12 @@ hold_id = "01010101010101010101010101010101"
             .unwrap()
             .arg(self.config(name))
             .unwrap();
+        #[cfg(feature = "test-fixtures")]
+        {
+            spec = spec
+                .env("RIFFDB_TEST_DAEMON_FAILURE_EVIDENCE", "1")
+                .unwrap();
+        }
         if let Some(mode) = mode {
             spec = spec.arg("--mode").unwrap().arg(mode).unwrap();
         }
@@ -280,13 +290,31 @@ hold_id = "01010101010101010101010101010101"
 }
 
 pub(super) fn stop(child: &mut ChildProcessController) {
-    assert!(
-        child
-            .shutdown_cleanly(b"shutdown\n", TIMEOUT)
-            .unwrap()
-            .status
-            .success()
-    );
+    match child.shutdown_cleanly(b"shutdown\n", TIMEOUT) {
+        Ok(exit) => assert!(exit.status.success()),
+        Err(error) => {
+            let evidence = closed_failure_evidence(child);
+            panic!("daemon shutdown failed: {error:?}; closed evidence: {evidence:?}");
+        }
+    }
+}
+
+pub(super) fn closed_failure_evidence(
+    child: &ChildProcessController,
+) -> Result<String, riffdb_testkit_server::process::ChildProcessError> {
+    use riffdb_testkit_server::process::ChildProcessError;
+    let deadline = std::time::Instant::now() + Duration::from_millis(100);
+    // Diagnostic consumption after an unsuccessful exit, never a successful
+    // lifecycle protocol check. A trigger refusal can follow the census block;
+    // a graph refusal can precede that entire block.
+    for _ in 0..32 {
+        let remaining = deadline.saturating_duration_since(std::time::Instant::now());
+        match child.wait_for_readiness("riffdbd-test-failure-v1\t", remaining) {
+            Err(ChildProcessError::UnexpectedReadiness) => {}
+            result => return result,
+        }
+    }
+    Err(ChildProcessError::UnexpectedReadiness)
 }
 
 fn protected(path: &Path, bytes: &[u8]) {

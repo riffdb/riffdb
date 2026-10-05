@@ -500,7 +500,17 @@ fn restore_request_from_receipt(
 /// diagnostics. All later process failures retain one static nonsecret message.
 #[must_use]
 pub fn riffdbd_main() -> ExitCode {
-    match run_from_process(MaintenanceRecoveryController::disabled()) {
+    let result = run_from_process(MaintenanceRecoveryController::disabled());
+    #[cfg(feature = "test-fixtures")]
+    if std::env::var_os("RIFFDB_TEST_DAEMON_FAILURE_EVIDENCE").is_some_and(|value| value == "1")
+        && let Err(error) = &result
+    {
+        // The recovery controller drains stderr without retaining its contents.
+        // A fixture may request this closed kind on its bounded readiness pipe;
+        // never forward the error's source, stored values, paths or identities.
+        let _ = writeln!(std::io::stdout(), "{}", test_failure_evidence(error));
+    }
+    match result {
         Ok(()) => ExitCode::SUCCESS,
         Err(DaemonError::Config(error)) => {
             eprintln!("RDB-CONFIG-0001: {error}");
@@ -564,6 +574,31 @@ pub fn riffdbd_main() -> ExitCode {
             ExitCode::FAILURE
         }
     }
+}
+
+#[cfg(feature = "test-fixtures")]
+fn test_failure_evidence(error: &DaemonError) -> String {
+    let mut evidence = format!("riffdbd-test-failure-v1\tkind={}", error.kind());
+    match error {
+        DaemonError::Startup(RedbStartupError::Storage(storage)) => {
+            use std::fmt::Write as _;
+            let _ = write!(evidence, " class={:?}", storage.kind());
+        }
+        DaemonError::Startup(RedbStartupError::Integrity(reason)) => {
+            use std::fmt::Write as _;
+            let _ = write!(evidence, " integrity={reason:?}");
+        }
+        DaemonError::Startup(RedbStartupError::Catalog(catalog)) => {
+            use std::fmt::Write as _;
+            let _ = write!(evidence, " catalog={:?}", catalog.kind());
+        }
+        DaemonError::GraphBuild(source) => {
+            use std::fmt::Write as _;
+            let _ = write!(evidence, " class={}", source.class());
+        }
+        _ => {}
+    }
+    evidence
 }
 
 #[cfg(feature = "test-fixtures")]
@@ -5112,6 +5147,19 @@ mod tests {
                 receipt
             );
         }
+    }
+
+    // req: REC-001, END-008
+    #[cfg(feature = "test-fixtures")]
+    #[test]
+    fn fixture_failure_evidence_exposes_only_the_closed_daemon_kind() {
+        let error = DaemonError::Listener(std::io::Error::other(
+            "sensitive child source must stay private",
+        ));
+        let evidence = test_failure_evidence(&error);
+        assert_eq!(evidence, "riffdbd-test-failure-v1\tkind=listener");
+        assert!(!evidence.contains("sensitive"));
+        assert!(evidence.len() <= 64);
     }
 
     #[test]

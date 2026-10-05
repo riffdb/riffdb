@@ -32,6 +32,7 @@ impl PendingPrefixRefresh {
             return Ok((None, elapsed_us(started, std::time::Instant::now())));
         }
         let read = shared.capture_checkpoint_root()?;
+        let publication = read.identity();
         let meta = read.open_table(META).map_err(table_error)?;
         if meta
             .get(META_VALIDATED_PREFIX_CHECKPOINT)
@@ -44,6 +45,7 @@ impl PendingPrefixRefresh {
         drop(read);
         let mut scrub = crate::startup::begin_background_scrub_on_shared(shared, inputs)?;
         scrub.set_cancellation(cancellation);
+        scrub.bind_prefix_refresh(publication);
         let held_us = elapsed_us(started, std::time::Instant::now());
         drop(lease);
         Ok((Some(scrub), held_us))
@@ -51,7 +53,7 @@ impl PendingPrefixRefresh {
 
     /// Building and all entity-head planning remain outside the writer gate.
     pub(crate) fn prepare(proof: ValidatedPrefixRefreshState) -> Result<Self, StorageError> {
-        if proof.cancelled() {
+        if proof.cancelled() || !proof.publication_current() {
             return Err(storage_error(StorageErrorKind::Unavailable));
         }
         let history = crate::changelog_v3_roots::read_checkpoint_roots(proof.read())?
@@ -79,6 +81,9 @@ impl PendingPrefixRefresh {
         if self.proof.cancelled() {
             return Ok((PrefixRefreshPublication::Cancelled, 0));
         }
+        if !self.proof.publication_current() {
+            return Ok((PrefixRefreshPublication::Stale, 0));
+        }
         let shared = self.proof.shared();
         let start = std::time::Instant::now();
         let Some(_lease) = shared.mutation_gate.try_acquire()? else {
@@ -94,7 +99,9 @@ impl PendingPrefixRefresh {
             ));
         }
         let current = shared.capture_checkpoint_root()?;
-        if crate::changelog_v3_roots::read_checkpoint_roots(&current)? != Some(self.history) {
+        if !self.proof.publication_current()
+            || crate::changelog_v3_roots::read_checkpoint_roots(&current)? != Some(self.history)
+        {
             return Ok((
                 PrefixRefreshPublication::Stale,
                 elapsed_us(start, std::time::Instant::now()),

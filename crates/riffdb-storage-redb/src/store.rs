@@ -1173,6 +1173,12 @@ impl SharedRedb {
         );
     }
 
+    /// Read-only early-discard check, never a validation or publication permit.
+    pub(crate) fn checkpoint_publication_matches(&self, publication: u64) -> bool {
+        publication.is_multiple_of(2)
+            && self.durable_root_publication.load(Ordering::Acquire) == publication
+    }
+
     pub(crate) fn commit_durable(&self, transaction: WriteTransaction) -> Result<(), StorageError> {
         self.commit_with_source_footprint(
             transaction,

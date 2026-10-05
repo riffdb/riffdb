@@ -932,3 +932,43 @@ TypeScript, Go and Python, plus graceful restart, kill, archive/retention and
 capability rotation preparations. These checks retain exact replay, revision,
 organization and bounded snapshot assertions. They do not establish the
 hash-bound campaign, continuous-load fault coverage or required-host gates.
+
+The subsequent scoped acceptance observed an unsuccessful daemon shutdown in
+the repeated-kill replication test. Its isolated repeat passes; the refusal
+remains unexplained. Test-only, bounded closed failure-code evidence now makes
+the next occurrence diagnosable without retaining raw child diagnostics.
+The [native findings](WP-825-LIVE-OBSERVATIONS.md) record that limitation.
+
+PR note: Package WP-825 (open); Tier internal within the guarantee package;
+Behavior: closed fixture failure-code evidence after unsuccessful daemon exit;
+Checks: source-redaction unit test, real invalid-shutdown process test and
+isolated repeated-kill replication test pass; Compatibility: no production
+interface, format, deadline or successful lifecycle check changes;
+Documentation: this handoff and native findings; Hazards/follow-ups: the original
+shutdown refusal and promoted-backup timeout still require diagnosis, and the
+final CI receipt must bind a clean final revision.
+
+The unprofiled required-host probe of `2fb963b7` still refuses normal-window p99.
+It completed 450,000 requests with zero retries, but production removed zero
+receipts or extents. New counters reveal 288 source-proof invalidations and no
+continued suffix work. The append-only regression does not cover that native
+composition; repair its invalidation/proof handling before campaign expansion.
+The [native findings](WP-825-LIVE-OBSERVATIONS.md) preserve the failed run.
+
+Optional prefix refresh now discards a changed root at history, structural and
+catalog page boundaries while preserving complete exact-root publication.
+This is an implementation choice within the existing full-proof requirement,
+not permission to publish partial evidence. Actual source progress and latency,
+stable refresh scheduling, intermittent recovery and the complete rehearsal
+remain open. No 24-hour qualification has started.
+
+PR note: Package WP-825 (open); Tier guarantee; Behavior: exact-root early
+discard of stale optional prefix work, closed fixture diagnostics and bounded
+read-only namespace forensics; Checks: 11 native prefix/publication tests and
+six static scoped acceptance steps pass; the previous full scoped acceptance
+had three replication process failures; Compatibility: unchanged full prefix
+proof, durable encodings, application semantics, deadlines and fail-closed
+backend refusals; Documentation: this handoff and native findings;
+Hazards/follow-ups: actual composition still invalidates every source candidate,
+normal-window p99 fails, stable refresh paging and recovery diagnosis remain
+open, and clean final CI plus the complete short rehearsal are still required.

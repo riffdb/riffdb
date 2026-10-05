@@ -240,6 +240,17 @@ ADR-0268 deliberately preserves this separate proof boundary; its source-only
 continuation must not be treated as permission to reuse a partial structural or
 catalog proof. Complete validation and exact current publication remain required.
 
+A deterministic native regression now changes publication after the first
+history page. Previously the optional prefix scrub completed the entire stale
+walk; it now stops before its second page. Structural and catalog page boundaries,
+proof completion and publication also check the original exact root. Ordinary
+background scrubs continue to validate their original immutable pin beside live
+writes. A dedicated stale flag identifies this discard; unrelated native
+`Unavailable` errors and cancellation still propagate. Ten background-proof
+tests pass, including equal-history/new-publication refusal. This reduces stale
+population work; it does not yet make every stable complete refresh a single
+bounded lane turn or establish a required-host latency improvement.
+
 ### Promoted backup recovery: unresolved intermittent failure
 
 Full CI timed out waiting for promoted maintenance to regain source readiness.
@@ -248,3 +259,59 @@ tests in 148.51 seconds. Passing repeats do not erase the original failure or
 explain it. Preserve the 30-second operation deadline and investigate native
 recovery progress and test
 interference before deciding whether a production repair is needed.
+
+### Replication shutdown: additional unresolved process failure
+
+The scoped server/storage acceptance run after native continuation observed
+`replication_stream_resumes_gap_free_after_repeated_kills` failing during the
+fixture's required clean shutdown. The child exited unsuccessfully; the old
+controller retained only stdout/stderr byte counts, so the closed native failure
+class was unavailable. Its isolated repeat passed in 114.13 seconds. That pass
+does not explain or erase the original refusal.
+
+Test fixtures can now request one bounded stdout line containing only the
+existing closed daemon kind. Failed fixture shutdowns inspect that line after
+the unsuccessful exit; successful shutdown and ordered lifecycle evidence
+checks remain strict. A real malformed shutdown verifies `shutdown_input`,
+and a source-redaction test verifies that internal error text is absent. This
+instrumentation is compiled only with `test-fixtures`, does not expose an
+application or operator control, and is not a production repair. Diagnose the
+shutdown refusal before claiming milestone readiness.
+
+The subsequent scoped acceptance completed 1,773 tests: 1,770 passed and three
+failed (the repeated-kill shutdown and both promoted backup crash/restore
+readiness waits). All eight other acceptance steps passed. The full `ci-all`
+script completed successfully after starting at `08aa6e8a`, but diagnostic
+changes were made during its execution; it is not a clean final-revision CI
+receipt. Later diagnostic repeats pass the two promoted cases in 47.68 seconds.
+Those repeats do not diagnose the failures. Receipt polling now records only
+bounded started/completed/refused counts and the last closed numeric phase/kind
+on the original 30-second timeout.
+
+### Required-host continuation probe: fails composition and normal latency
+
+An unprofiled preparation from clean committed native source `2fb963b7` ran on
+the same 8-vCPU, nominal 32-GiB, persistent-SSD host. All 90,000 updates and
+360,000 reads settled, with zero retries and at most 28 workload requests plus
+four reserved auxiliary slots. Five-minute window p95 values were 67.691,
+68.116 and 97.159 ms. The first p99 was 112.323 ms; the second and third
+overflowed the 250-ms histogram bound. The final normal window had 2,661
+overflows among 150,000 requests, so preparation refuses `probe_latency`.
+
+The consumer pause was 300.048 seconds, and its 2,048-event recovery took
+11.983 seconds. Live observation continued, recording 45 renewals and 89,991
+updates without resetting its cursor. None of these facts waive the latency
+failure or qualify the campaign. Final offline archive reconciliation was not
+run after refusal.
+
+Production shutdown reported zero receipt and extent reclamation, 26 reference-
+held retirement attempts, zero reader-held attempts, and 2,418 microseconds
+of receipt-gate time. The source-validation counters reported 155,651 initial
+row reads, zero continuation rows, 288 invalidations and zero admission refusals.
+The append-only unit regression therefore does not prove sustainable progress
+in the actual writer/retention composition. Trace the invalidating native paths
+and repair their proof handling before advancing the harness or starting the
+24-hour run. A bounded, read-only test child can census rejecting namespaces in
+the failed database's actual receipts; it emits only closed namespace names and
+counts, never keys, payloads, identities or paths. It is forensic evidence,
+not a passing workload, benchmark or proof of deletion eligibility.

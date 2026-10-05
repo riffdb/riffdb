@@ -2002,6 +2002,10 @@ fn durable_root_capture_retries_the_engine_visible_before_identity_window() {
             .expect("commit exact successor");
     });
     schedule.wait_until_commit_is_visible();
+    assert!(
+        !shared.checkpoint_publication_matches(predecessor_identity),
+        "an in-flight engine root must discard optional prefix work"
+    );
     assert_ne!(
         shared.source_continuation_epoch.load(Ordering::Acquire),
         predecessor_qualification,
@@ -2029,6 +2033,8 @@ fn durable_root_capture_retries_the_engine_visible_before_identity_window() {
         "captured successor must include the visible commit"
     );
     assert_ne!(successor_identity, predecessor_identity);
+    assert!(shared.checkpoint_publication_matches(successor_identity));
+    assert!(!shared.checkpoint_publication_matches(predecessor_identity));
     assert_eq!(
         successor_identity,
         shared.durable_root_publication.load(Ordering::Acquire)

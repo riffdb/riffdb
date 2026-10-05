@@ -188,6 +188,65 @@ const _: () = assert!(
 mod tests {
     use super::*;
 
+    // req: STO-030, END-008
+    #[test]
+    fn source_continuation_read_only_forensic_census_child() {
+        let Some(path) = std::env::var_os("RIFFDB_TEST_SOURCE_FOOTPRINT_CENSUS") else {
+            return;
+        };
+        use redb::{ReadableDatabase, ReadableTable};
+        let path = std::path::PathBuf::from(path);
+        assert!(path.is_absolute() && path.as_os_str().len() <= 4096);
+        assert!(
+            std::fs::symlink_metadata(&path)
+                .unwrap()
+                .file_type()
+                .is_file()
+        );
+        let database = redb::ReadOnlyDatabase::open(&path).unwrap();
+        let read = database.begin_read().unwrap();
+        let _resolver =
+            crate::history_stub::HistoryResolver::register_beside(&path, &read).unwrap();
+        let rows = read
+            .open_table(crate::changelog_v3_activation::HISTORY)
+            .unwrap();
+        let mut rejected = std::collections::BTreeMap::<String, u64>::new();
+        let mut receipts = 0_u64;
+        let mut invalid_receipts = 0_u64;
+        for row in rows.iter().unwrap() {
+            receipts += 1;
+            assert!(
+                receipts <= 10_000_000,
+                "forensic receipt scan exceeds its bound"
+            );
+            let (_, value) = row.unwrap();
+            let bytes = crate::history_stub::resolve_history_value(value.value()).unwrap();
+            let receipt = riffdb_storage_api::AuthoritativeTransactionV3::decode(&bytes).unwrap();
+            let mut invalid = false;
+            for mutation in receipt.mutations() {
+                if !unchanged_source_or_append(
+                    mutation.namespace(),
+                    mutation.key(),
+                    mutation.expected_hash(),
+                    mutation.value(),
+                    receipt.binding().predecessor_frontier.administration(),
+                ) {
+                    invalid = true;
+                    let namespace = format!("{:?}", mutation.namespace());
+                    assert!(namespace.len() <= 128 && rejected.len() <= 256);
+                    *rejected.entry(namespace).or_default() += 1;
+                }
+            }
+            invalid_receipts += u64::from(invalid);
+        }
+        println!(
+            "riffdb-source-footprint-forensic-v1 receipts={receipts} rejected_receipts={invalid_receipts}"
+        );
+        for (namespace, count) in rejected {
+            println!("riffdb-source-footprint-forensic-v1 namespace={namespace} count={count}");
+        }
+    }
+
     // req: STO-030, STO-031, STO-032, END-008
     #[test]
     fn continuation_footprint_refuses_old_audit_preimages_and_control_changes() {

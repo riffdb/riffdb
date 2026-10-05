@@ -187,6 +187,23 @@ async fn bootstrap_to_tail_fence_is_gap_free_across_crash() {
     );
 }
 
+// req: REC-001, END-008
+#[cfg(feature = "test-fixtures")]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn malformed_shutdown_preserves_closed_process_failure_evidence() {
+    let fixture = Fixture::new();
+    let mut child = fixture.start("primary", None);
+    let failure = child
+        .shutdown_cleanly(b"invalid shutdown\n", std::time::Duration::from_secs(30))
+        .unwrap_err();
+    assert!(matches!(
+        failure,
+        riffdb_testkit_server::process::ChildProcessError::UnsuccessfulExit(_)
+    ));
+    let evidence = closed_failure_evidence(&child).unwrap();
+    assert_eq!(evidence, "riffdbd-test-failure-v1\tkind=shutdown_input");
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 // req: REP-004
 async fn replication_stream_resumes_gap_free_after_repeated_kills() {

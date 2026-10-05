@@ -471,45 +471,62 @@ async fn maintenance_terminal(
     operation_id: &[u8],
     request_base: u64,
 ) -> v1::OfflineMaintenanceOperation {
-    tokio::time::timeout(std::time::Duration::from_secs(30), async {
-            // Public receipt observations are the synchronization barrier. The
-            // outer deadline bounds the complete operation, including fast
-            // refused reads while the route is deliberately offline.
-            for ordinal in 0..u64::MAX - request_base {
-                let request_id =
-                    RequestId::from_unix_milliseconds_and_random(request_base + ordinal, [0x79; 10])
-                        .unwrap()
-                        .as_bytes()
-                        .to_vec();
-                if let Ok(observed) = client
-                    .get_offline_maintenance_operation(
-                        v1::GetOfflineMaintenanceOperationRequest {
-                            request_id,
-                            operation_id: operation_id.to_vec(),
-                        },
-                        metadata,
-                    )
-                    .await
-                    && let Some(v1::get_offline_maintenance_operation_response::Result::Found(
+    let mut started = 0_u64;
+    let mut completed = 0_u64;
+    let mut refused = 0_u64;
+    let mut last_phase = None;
+    let mut last_kind = None;
+    let result = tokio::time::timeout(std::time::Duration::from_secs(30), async {
+        // Public receipt observations are the synchronization barrier. The
+        // original deadline covers the complete operation, including refusals.
+        for ordinal in 0..u64::MAX - request_base {
+            let request_id =
+                RequestId::from_unix_milliseconds_and_random(request_base + ordinal, [0x79; 10])
+                    .unwrap()
+                    .as_bytes()
+                    .to_vec();
+            started = started.saturating_add(1);
+            let observation = client
+                .get_offline_maintenance_operation(
+                    v1::GetOfflineMaintenanceOperationRequest {
+                        request_id,
+                        operation_id: operation_id.to_vec(),
+                    },
+                    metadata,
+                )
+                .await;
+            completed = completed.saturating_add(1);
+            match observation {
+                Ok(observed) => {
+                    if let Some(v1::get_offline_maintenance_operation_response::Result::Found(
                         receipt,
                     )) = observed.result
-                {
-                    assert_ne!(
-                        receipt.phase,
-                        v1::OfflineMaintenancePhase::FailedClosed as i32,
-                        "promoted maintenance failed closed with class {}",
-                        receipt.failure
-                    );
-                    if receipt.phase == v1::OfflineMaintenancePhase::Succeeded as i32 {
-                        return receipt;
+                    {
+                        last_phase = Some(receipt.phase);
+                        last_kind = Some(receipt.kind);
+                        assert_ne!(
+                            receipt.phase,
+                            v1::OfflineMaintenancePhase::FailedClosed as i32,
+                            "promoted maintenance failed closed with class {}",
+                            receipt.failure
+                        );
+                        if receipt.phase == v1::OfflineMaintenancePhase::Succeeded as i32 {
+                            return receipt;
+                        }
                     }
                 }
-                tokio::task::yield_now().await;
+                Err(_) => refused = refused.saturating_add(1),
             }
-            panic!("promoted maintenance exhausted the request identifier range");
-        })
-        .await
-        .expect("promoted maintenance must regain source readiness")
+            tokio::task::yield_now().await;
+        }
+        panic!("promoted maintenance exhausted the request identifier range");
+    })
+    .await;
+    result.unwrap_or_else(|_| {
+        panic!(
+            "promoted maintenance must regain source readiness: started={started} completed={completed} refused={refused} phase={last_phase:?} kind={last_kind:?}"
+        )
+    })
 }
 
 fn armed_follower(

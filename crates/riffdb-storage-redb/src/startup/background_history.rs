@@ -12,6 +12,8 @@ pub(crate) struct ValidatedPrefixRefreshState {
     retained: RetainedMetadataV1,
     execution_failed_rows: u64,
     cancellation: Option<Arc<AtomicBool>>,
+    publication: Option<u64>,
+    stale: Option<Arc<AtomicBool>>,
     // Last: keep files protected until the read transaction has been dropped.
     _extent_pin: crate::store::extent_reclamation::ScrubPin,
 }
@@ -34,9 +36,48 @@ impl ValidatedPrefixRefreshState {
             .as_ref()
             .is_some_and(|stop| stop.load(Ordering::Acquire))
     }
+    pub(crate) fn publication_current(&self) -> bool {
+        prefix_refresh_current(&self.shared, self.publication, self.stale.as_deref())
+    }
+}
+
+/// A stale flag is set only by this explicit early-discard check, never by a
+/// backend refusal. It lets the lane yield stale work without swallowing an
+/// unrelated `Unavailable` error that happens during a concurrent publication.
+pub(super) fn prefix_refresh_current(
+    shared: &crate::store::SharedRedb,
+    publication: Option<u64>,
+    stale: Option<&AtomicBool>,
+) -> bool {
+    if publication.is_some_and(|publication| !shared.checkpoint_publication_matches(publication)) {
+        if let Some(stale) = stale {
+            stale.store(true, Ordering::Release);
+        }
+        return false;
+    }
+    true
 }
 
 impl RedbBackgroundScrubSession {
+    pub(crate) fn bind_prefix_refresh(&mut self, publication: u64) {
+        self.prefix_refresh_publication = Some(publication);
+        self.prefix_refresh_stale = Some(Arc::new(AtomicBool::new(false)));
+    }
+
+    pub(crate) fn prefix_refresh_staleness(&self) -> Option<Arc<AtomicBool>> {
+        self.prefix_refresh_stale.clone()
+    }
+
+    pub(super) fn check_prefix_refresh_current(&self) -> Result<(), StorageError> {
+        if !prefix_refresh_current(
+            &self.session.shared,
+            self.prefix_refresh_publication,
+            self.prefix_refresh_stale.as_deref(),
+        ) {
+            return Err(storage_error(StorageErrorKind::Unavailable));
+        }
+        Ok(())
+    }
     /// Validates the complete retained V3 history and retained-fence evidence
     /// over the original pin. It yields between bounded pages and observes
     /// cancellation before every page. Exact end is required before the scrub
@@ -58,6 +99,7 @@ impl RedbBackgroundScrubSession {
     ) -> Result<(), StorageError> {
         self.retained_history_validated = false;
         self.session.check_cancellation()?;
+        self.check_prefix_refresh_current()?;
         let transaction = self.session.validation_read.take().ok_or_else(invariant)?;
         // The scrub's existing extent pin protects this original read for the
         // complete pass. The local identity is never a publication permit.
@@ -65,9 +107,11 @@ impl RedbBackgroundScrubSession {
         if let Some(mut walk) = RetainedHistoryValidation::new(Arc::clone(&root))? {
             loop {
                 self.session.check_cancellation()?;
+                self.check_prefix_refresh_current()?;
                 if !proceed() {
                     return Err(storage_error(StorageErrorKind::Unavailable));
                 }
+                self.check_prefix_refresh_current()?;
                 if walk.advance(limit)? {
                     drop(walk.complete()?);
                     break;
@@ -76,6 +120,7 @@ impl RedbBackgroundScrubSession {
         } else if !proceed() {
             return Err(storage_error(StorageErrorKind::Unavailable));
         }
+        self.check_prefix_refresh_current()?;
         let root = Arc::try_unwrap(root).map_err(|_| invariant())?;
         self.session.validation_read = Some(root.into_transaction());
         self.retained_history_validated = true;
@@ -87,6 +132,7 @@ impl RedbBackgroundScrubSession {
         structural_end: RedbStructuralEvidenceEnd,
         historical_end: RedbHistoricalEvidenceEnd,
     ) -> Result<ValidatedPrefixRefreshState, StorageError> {
+        self.check_prefix_refresh_current()?;
         if !self.retained_history_validated || !self.catalog_history_validated {
             return Err(invariant());
         }
@@ -100,6 +146,8 @@ impl RedbBackgroundScrubSession {
             retained: self.session.retained_metadata,
             execution_failed_rows: self.session.terminal_execution_failure_rows,
             cancellation: self.session.cancellation,
+            publication: self.prefix_refresh_publication,
+            stale: self.prefix_refresh_stale,
             _extent_pin: self._extent_pin,
         })
     }
@@ -314,5 +362,138 @@ mod tests {
             before
         );
         assert_eq!(ports.shared.durable_commit_epoch(), epoch);
+    }
+
+    // req: STO-030, STO-031, STO-032, END-008
+    #[test]
+    fn prefix_refresh_discards_changed_publication_before_repeating_history_work() {
+        let (_scope, ports, _) = crate::changelog_v3_control_tests::fixture();
+        let (scrub, _) = crate::store::PendingPrefixRefresh::begin_if_needed(
+            &ports.shared,
+            inputs(),
+            Arc::new(AtomicBool::new(false)),
+        )
+        .unwrap();
+        let mut scrub = scrub.unwrap();
+        let mut pages = 0;
+        let error = scrub
+            .validate_retained_history_pages(EvidencePageLimit::new(1).unwrap(), || {
+                pages += 1;
+                if pages == 2 {
+                    let write = crate::changelog_v3_write::CapturedImmediateWrite::begin(
+                        &ports.shared.database,
+                        crate::RedbCommitProfile::Hardened,
+                        riffdb_storage_api::ChangelogAttributionV3::OutboxTransition,
+                    )
+                    .unwrap();
+                    write
+                        .open_table(crate::layout::OUTBOX_STATUS)
+                        .unwrap()
+                        .insert(
+                            b"prefix-refresh-interleaving".as_slice(),
+                            b"changed".as_slice(),
+                        )
+                        .unwrap();
+                    write.finish().unwrap().commit(&ports.shared).unwrap();
+                }
+                true
+            })
+            .unwrap_err();
+        assert_eq!(error.kind(), StorageErrorKind::Unavailable);
+        assert_eq!(pages, 2);
+        assert!(!scrub.retained_history_validated);
+        // An independent ordinary scrub still validates its original pin while
+        // the writer stays live; only a prefix publication candidate is stale.
+        drop(scrub);
+        let mut ordinary = begin_background_scrub_on_shared(&ports.shared, inputs()).unwrap();
+        ordinary.validate_retained_history().unwrap();
+    }
+
+    // req: STO-030, STO-031, STO-032, END-008
+    #[test]
+    fn prefix_refresh_discards_stale_structural_and_catalog_pages() {
+        for catalog in [false, true] {
+            let (_scope, store) = initialized();
+            let (scrub, _) = crate::store::PendingPrefixRefresh::begin_if_needed(
+                &store.shared,
+                inputs(),
+                Arc::new(AtomicBool::new(false)),
+            )
+            .unwrap();
+            let mut scrub = scrub.unwrap();
+            let stale = scrub.prefix_refresh_staleness().unwrap();
+            scrub.validate_retained_history().unwrap();
+            let limit = EvidencePageLimit::new(1).unwrap();
+            if catalog {
+                while let BackgroundScrubPage::Page { findings, .. } =
+                    scrub.read_structural_page(limit).unwrap()
+                {
+                    assert!(findings.is_empty());
+                }
+            }
+            store
+                .shared
+                .commit_durable(store.shared.database.begin_write().unwrap())
+                .unwrap();
+            let error = if catalog {
+                scrub.validate_catalog_history(limit, || true).unwrap_err()
+            } else {
+                scrub
+                    .read_structural_page(limit)
+                    .err()
+                    .expect("stale structural page must refuse")
+            };
+            assert_eq!(error.kind(), StorageErrorKind::Unavailable);
+            assert!(stale.load(Ordering::Acquire));
+            assert!(!scrub.catalog_history_validated);
+        }
+    }
+
+    // req: STO-030, STO-032, REC-001
+    #[test]
+    fn completed_prefix_requires_the_exact_original_publication_even_with_equal_history() {
+        let (_scope, store) = initialized();
+        let (scrub, _) = crate::store::PendingPrefixRefresh::begin_if_needed(
+            &store.shared,
+            inputs(),
+            Arc::new(AtomicBool::new(false)),
+        )
+        .unwrap();
+        let mut scrub = scrub.unwrap();
+        scrub.validate_retained_history().unwrap();
+        let limit = EvidencePageLimit::new(64).unwrap();
+        let structural = loop {
+            match scrub.read_structural_page(limit).unwrap() {
+                BackgroundScrubPage::Page { findings, .. } => assert!(findings.is_empty()),
+                BackgroundScrubPage::ExactEnd(end) => break end,
+            }
+        };
+        let historical = scrub.validate_catalog_history(limit, || true).unwrap();
+        let proof = scrub
+            .finish_for_prefix_refresh(structural, historical)
+            .unwrap();
+        let candidate = crate::store::PendingPrefixRefresh::prepare(proof).unwrap();
+        store
+            .shared
+            .commit_durable(store.shared.database.begin_write().unwrap())
+            .unwrap();
+        let epoch = store.shared.durable_commit_epoch();
+        assert_eq!(
+            candidate.publish().unwrap().0,
+            crate::store::PrefixRefreshPublication::Stale
+        );
+        assert_eq!(store.shared.durable_commit_epoch(), epoch);
+        assert!(
+            store
+                .shared
+                .database
+                .begin_read()
+                .unwrap()
+                .open_table(crate::layout::META)
+                .unwrap()
+                .get(crate::layout::META_VALIDATED_PREFIX_CHECKPOINT)
+                .unwrap()
+                .is_none()
+        );
     }
 }
