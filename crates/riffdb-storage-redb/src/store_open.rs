@@ -116,7 +116,7 @@ impl RedbStore {
             shared: Arc::new(SharedRedb {
                 extent_roots: Mutex::new(Vec::new()),
                 extent_scrubs: std::sync::atomic::AtomicUsize::new(0),
-                extent_cursor: Mutex::new(1),
+                extent_cursor: Mutex::new(crate::store::extent_reclamation::Cursor::default()),
                 derived_source_pins: Arc::default(),
                 open_mode: open_mode.clone(),
                 follower_namespace: Mutex::new(None),

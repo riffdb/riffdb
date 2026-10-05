@@ -15,6 +15,7 @@
 //! (non-virtual) call, keeping the journal worker's write/sync hot loop free
 //! of `dyn` dispatch. Only the simulated arm pays a virtual call.
 
+use std::ffi::OsString;
 use std::fs::{File, OpenOptions};
 use std::io::{self, Read, Write};
 use std::path::Path;
@@ -165,6 +166,9 @@ impl MediaFile {
 /// sites, so implementations must preserve them.
 #[doc(hidden)]
 pub trait JournalMedia: std::fmt::Debug + Send + Sync {
+    /// Opens bounded caller-driven iteration of actual names in one directory.
+    /// The iterator owns no mutation or reclamation authority.
+    fn open_directory(&self, path: &Path) -> io::Result<Box<dyn JournalMediaDirectory>>;
     /// Whether the path exists (distinguishing absence from probe failure).
     fn try_exists(&self, path: &Path) -> io::Result<bool>;
     /// File-kind and length metadata (`NotFound` when absent).
@@ -195,6 +199,24 @@ pub trait JournalMedia: std::fmt::Debug + Send + Sync {
 #[derive(Clone, Copy, Debug, Default)]
 pub struct RealJournalMedia;
 
+/// One directory cursor. Callers bound advances, and verify every selected file.
+#[doc(hidden)]
+pub trait JournalMediaDirectory: std::fmt::Debug + Send {
+    fn next_entry(&mut self) -> io::Result<Option<OsString>>;
+}
+
+#[derive(Debug)]
+struct RealMediaDirectory(std::fs::ReadDir);
+
+impl JournalMediaDirectory for RealMediaDirectory {
+    fn next_entry(&mut self) -> io::Result<Option<OsString>> {
+        self.0
+            .next()
+            .map(|entry| entry.map(|entry| entry.file_name()))
+            .transpose()
+    }
+}
+
 fn parent_of(path: &Path) -> io::Result<&Path> {
     path.parent().ok_or_else(|| {
         io::Error::new(
@@ -205,6 +227,9 @@ fn parent_of(path: &Path) -> io::Result<&Path> {
 }
 
 impl JournalMedia for RealJournalMedia {
+    fn open_directory(&self, path: &Path) -> io::Result<Box<dyn JournalMediaDirectory>> {
+        std::fs::read_dir(path).map(|entries| Box::new(RealMediaDirectory(entries)) as _)
+    }
     fn try_exists(&self, path: &Path) -> io::Result<bool> {
         path.try_exists()
     }

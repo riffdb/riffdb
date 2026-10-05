@@ -7,7 +7,79 @@ use super::*;
 use crate::journal;
 
 pub(super) const MAX_EXTENT_READ_ROOTS: usize = 4096;
-const GENERATIONS_PER_PASS: usize = 64;
+const DIRECTORY_ENTRIES_PER_PASS: usize = 64;
+
+#[derive(Default)]
+pub(crate) struct Cursor {
+    directory: Option<Box<dyn crate::media::JournalMediaDirectory>>,
+    retry: Option<u64>,
+}
+
+impl Cursor {
+    fn candidate(
+        &mut self,
+        media: &dyn crate::media::JournalMedia,
+        database_path: &std::path::Path,
+        active: u64,
+    ) -> Result<Option<(u64, PathBuf)>, StorageError> {
+        let mut candidate = self.retry.take().map(|generation| {
+            (
+                generation,
+                journal::sealed_journal_path(database_path, generation),
+            )
+        });
+        if candidate.is_none() {
+            if self.directory.is_none() {
+                let parent = database_path
+                    .parent()
+                    .filter(|parent| !parent.as_os_str().is_empty())
+                    .unwrap_or_else(|| std::path::Path::new("."));
+                self.directory = Some(
+                    media
+                        .open_directory(parent)
+                        .map_err(|_| storage_error(StorageErrorKind::Unavailable))?,
+                );
+            }
+            let zero = journal::sealed_journal_path(database_path, 0);
+            let name = zero.file_name().ok_or_else(integrity)?.as_encoded_bytes();
+            let prefix = name
+                .get(..name.len().checked_sub(20).ok_or_else(integrity)?)
+                .ok_or_else(integrity)?;
+            for _ in 0..DIRECTORY_ENTRIES_PER_PASS {
+                let next = self
+                    .directory
+                    .as_mut()
+                    .ok_or_else(integrity)?
+                    .next_entry()
+                    .map_err(|_| storage_error(StorageErrorKind::Unavailable))?;
+                let Some(next) = next else {
+                    self.directory = None;
+                    break;
+                };
+                let Some(suffix) = next
+                    .as_encoded_bytes()
+                    .strip_prefix(prefix)
+                    .filter(|suffix| suffix.len() == 20 && suffix.iter().all(u8::is_ascii_digit))
+                else {
+                    continue;
+                };
+                let Some(generation) = std::str::from_utf8(suffix)
+                    .ok()
+                    .and_then(|suffix| suffix.parse::<u64>().ok())
+                    .filter(|generation| *generation > 0 && *generation < active)
+                else {
+                    continue;
+                };
+                candidate = Some((
+                    generation,
+                    journal::sealed_journal_path(database_path, generation),
+                ));
+                break;
+            }
+        }
+        Ok(candidate)
+    }
+}
 
 #[derive(Clone, Copy, Default)]
 pub(crate) struct Observation {
@@ -51,7 +123,7 @@ impl SharedRedb {
             .map_err(|_| storage_error(StorageErrorKind::Unavailable))
     }
 
-    /// At most 64 name probes, one bounded footer/frame validation and one
+    /// At most 64 actual directory entries, one bounded footer/frame validation and one
     /// whole-file retirement. Authoritatively referenced extents yield to the
     /// cursor. A global reader/writer/publication barrier retains the otherwise
     /// eligible candidate: it blocks every extent, and retry must not depend on
@@ -68,23 +140,7 @@ impl SharedRedb {
         else {
             return Ok(Observation::default());
         };
-        let mut candidate = None;
-        for _ in 0..GENERATIONS_PER_PASS {
-            if *cursor >= active {
-                *cursor = 1;
-                break;
-            }
-            let generation = *cursor;
-            *cursor = cursor.checked_add(1).ok_or_else(integrity)?;
-            let path = journal::sealed_journal_path(&self.path, generation);
-            if media
-                .try_exists(&path)
-                .map_err(|_| storage_error(StorageErrorKind::Unavailable))?
-            {
-                candidate = Some((generation, path));
-                break;
-            }
-        }
+        let candidate = cursor.candidate(media, &self.path, active)?;
         let Some((generation, path)) = candidate else {
             return Ok(Observation::default());
         };
@@ -128,7 +184,7 @@ impl SharedRedb {
         let mut roots = self.extent_roots.lock().map_err(|_| integrity())?;
         roots.retain(|root| root.strong_count() != 0);
         if self.extent_scrubs.load(Ordering::Acquire) != 0 {
-            *cursor = generation;
+            cursor.retry = Some(generation);
             return Ok(Observation {
                 held_readers: 1,
                 ..Observation::default()
@@ -136,7 +192,7 @@ impl SharedRedb {
         }
         let version = self.durable_root_publication.load(Ordering::Acquire);
         if !version.is_multiple_of(2) {
-            *cursor = generation;
+            cursor.retry = Some(generation);
             return Ok(Observation::default());
         }
         if roots
@@ -144,7 +200,7 @@ impl SharedRedb {
             .filter_map(std::sync::Weak::upgrade)
             .any(|root| root.identity() < version)
         {
-            *cursor = generation;
+            cursor.retry = Some(generation);
             return Ok(Observation {
                 held_readers: 1,
                 ..Observation::default()
@@ -152,11 +208,11 @@ impl SharedRedb {
         }
         let read = self.database.begin_read().map_err(transaction_error)?;
         if self.durable_root_publication.load(Ordering::Acquire) != version {
-            *cursor = generation;
+            cursor.retry = Some(generation);
             return Ok(Observation::default());
         }
         if self.mutation_gate.is_busy()? {
-            *cursor = generation;
+            cursor.retry = Some(generation);
             return Ok(Observation {
                 held_references: 1,
                 ..Observation::default()
@@ -282,6 +338,94 @@ fn eligible(
 
 #[cfg(test)]
 mod tests {
+    use std::collections::VecDeque;
+    use std::ffi::OsString;
+    use std::sync::atomic::{AtomicUsize, Ordering as AtomicOrdering};
+
+    #[derive(Debug)]
+    struct CountingDirectory {
+        entries: VecDeque<OsString>,
+        calls: std::sync::Arc<AtomicUsize>,
+        fail: bool,
+    }
+
+    impl crate::media::JournalMediaDirectory for CountingDirectory {
+        fn next_entry(&mut self) -> std::io::Result<Option<OsString>> {
+            self.calls.fetch_add(1, AtomicOrdering::SeqCst);
+            if self.fail {
+                return Err(std::io::Error::other("isolated directory refusal"));
+            }
+            Ok(self.entries.pop_front())
+        }
+    }
+
+    // req: STO-030, STO-031, END-008
+    #[test]
+    fn discovery_bounds_real_entries_and_never_walks_absent_generations() {
+        let calls = std::sync::Arc::new(AtomicUsize::new(0));
+        let mut entries = (0..128)
+            .map(|index| OsString::from(format!("unrelated-{index}")))
+            .collect::<VecDeque<_>>();
+        let database = std::path::Path::new("/virtual/database.redb");
+        let expected = crate::journal::sealed_journal_path(database, 1_000_000);
+        entries.push_back(expected.file_name().unwrap().to_owned());
+        let mut cursor = super::Cursor {
+            directory: Some(Box::new(CountingDirectory {
+                entries,
+                calls: calls.clone(),
+                fail: false,
+            })),
+            retry: None,
+        };
+        for count in [64, 128] {
+            assert!(
+                cursor
+                    .candidate(&crate::media::RealJournalMedia, database, 2_000_000)
+                    .unwrap()
+                    .is_none()
+            );
+            assert_eq!(calls.load(AtomicOrdering::SeqCst), count);
+        }
+        assert_eq!(
+            cursor
+                .candidate(&crate::media::RealJournalMedia, database, 2_000_000)
+                .unwrap(),
+            Some((1_000_000, expected))
+        );
+        assert_eq!(calls.load(AtomicOrdering::SeqCst), 129);
+        cursor.retry = Some(1_000_000);
+        assert!(
+            cursor
+                .candidate(&crate::media::RealJournalMedia, database, 2_000_000)
+                .unwrap()
+                .is_some()
+        );
+        assert_eq!(calls.load(AtomicOrdering::SeqCst), 129);
+    }
+
+    // req: STO-030, STO-031, END-008
+    #[test]
+    fn directory_discovery_errors_refuse_instead_of_becoming_exact_end() {
+        let mut cursor = super::Cursor {
+            directory: Some(Box::new(CountingDirectory {
+                entries: VecDeque::new(),
+                calls: Default::default(),
+                fail: true,
+            })),
+            retry: None,
+        };
+        let error = cursor
+            .candidate(
+                &crate::media::RealJournalMedia,
+                std::path::Path::new("/virtual/database.redb"),
+                10,
+            )
+            .unwrap_err();
+        assert_eq!(
+            error.kind(),
+            riffdb_storage_api::StorageErrorKind::Unavailable
+        );
+    }
     use super::*;
 
     // req: STO-030, STO-032

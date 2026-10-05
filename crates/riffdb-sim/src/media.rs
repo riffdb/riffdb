@@ -15,7 +15,9 @@
 use std::io;
 use std::path::Path;
 
-use riffdb_storage_redb::{JournalMedia, JournalMediaFile, MediaFile, MediaFileMetadata};
+use riffdb_storage_redb::{
+    JournalMedia, JournalMediaDirectory, JournalMediaFile, MediaFile, MediaFileMetadata,
+};
 
 use crate::disk::SimDisk;
 
@@ -51,6 +53,32 @@ fn parent_name(path: &Path) -> io::Result<String> {
         )
     })?;
     media_name(parent)
+}
+
+#[derive(Debug)]
+struct SimMediaDirectory {
+    disk: SimDisk,
+    directory: String,
+    after: Option<(String, bool)>,
+    epoch: u64,
+}
+
+impl JournalMediaDirectory for SimMediaDirectory {
+    fn next_entry(&mut self) -> io::Result<Option<std::ffi::OsString>> {
+        let next = self.disk.media_directory_next(
+            self.epoch,
+            &self.directory,
+            self.after
+                .as_ref()
+                .map(|(name, inclusive)| (name.as_str(), *inclusive)),
+        )?;
+        let Some((entry, boundary, inclusive)) = next else {
+            return Ok(None);
+        };
+        self.after = Some((boundary, inclusive));
+        let entry = std::ffi::OsString::from(entry);
+        Ok(Some(entry))
+    }
 }
 
 /// One simulated media file handle: name-keyed, epoch-bound, carrying the
@@ -154,6 +182,17 @@ impl SimJournalMedia {
 }
 
 impl JournalMedia for SimJournalMedia {
+    fn open_directory(&self, path: &Path) -> io::Result<Box<dyn JournalMediaDirectory>> {
+        let directory = media_name(path)?;
+        let epoch = self.disk.epoch();
+        self.disk.media_directory_open(epoch, &directory)?;
+        Ok(Box::new(SimMediaDirectory {
+            disk: self.disk.clone(),
+            directory,
+            after: None,
+            epoch,
+        }))
+    }
     fn try_exists(&self, path: &Path) -> io::Result<bool> {
         let name = media_name(path)?;
         self.disk
@@ -211,5 +250,98 @@ impl JournalMedia for SimJournalMedia {
         let directory = parent_name(path)?;
         self.disk
             .media_parent_sync(self.disk.epoch(), &directory, true)
+    }
+}
+
+#[cfg(test)]
+mod directory_tests {
+    use super::*;
+    use crate::FaultConfig;
+
+    fn populated() -> (SimDisk, SimJournalMedia) {
+        let disk = SimDisk::new(FaultConfig::quiet(73));
+        let media = SimJournalMedia::new(&disk);
+        for name in ["a", "nested/b", "nested/c", "nested0", "z"] {
+            drop(
+                media
+                    .create_new_write_only(Path::new(&format!("/virtual/{name}")))
+                    .unwrap(),
+            );
+        }
+        (disk, media)
+    }
+
+    // req: SIM-001, SIM-005, STO-031
+    #[test]
+    fn directory_iteration_matches_real_siblings_and_has_a_reproducible_trace() {
+        let scratch = riffdb_testkit::scratch::ScratchDir::new_in(
+            Path::new(env!("CARGO_MANIFEST_DIR")).join("../../target"),
+            "directory-media",
+        )
+        .unwrap();
+        std::fs::create_dir(scratch.join("nested")).unwrap();
+        for name in ["a", "nested/b", "nested/c", "nested0", "z"] {
+            drop(std::fs::File::create(scratch.join(name)).unwrap());
+        }
+        let mut real = riffdb_storage_redb::RealJournalMedia
+            .open_directory(&scratch.join(""))
+            .unwrap();
+        let mut expected = Vec::new();
+        while let Some(name) = real.next_entry().unwrap() {
+            expected.push(name);
+        }
+        expected.sort();
+        assert_eq!(
+            expected,
+            ["a", "nested", "nested0", "z"].map(std::ffi::OsString::from)
+        );
+        let mut traces = Vec::new();
+        for _ in 0..2 {
+            let (disk, media) = populated();
+            let before = disk.trace_digest();
+            let mut cursor = media.open_directory(Path::new("/virtual")).unwrap();
+            let mut observed = Vec::new();
+            while let Some(name) = cursor.next_entry().unwrap() {
+                observed.push(name);
+            }
+            assert_eq!(observed, expected);
+            assert!(cursor.next_entry().unwrap().is_none());
+            assert_ne!(disk.trace_digest(), before);
+            traces.push(disk.trace_digest());
+        }
+        assert_eq!(traces[0], traces[1]);
+    }
+
+    // req: SIM-001, SIM-002, SIM-005
+    #[test]
+    fn directory_handle_from_before_recovery_refuses_instead_of_serving_new_names() {
+        let (disk, media) = populated();
+        let mut old = media.open_directory(Path::new("/virtual")).unwrap();
+        assert_eq!(old.next_entry().unwrap(), Some("a".into()));
+        disk.crash();
+        disk.recover_after_crash();
+        assert!(old.next_entry().is_err());
+        let mut current = media.open_directory(Path::new("/virtual")).unwrap();
+        assert_eq!(current.next_entry().unwrap(), Some("a".into()));
+    }
+
+    // req: SIM-001, SIM-005, STO-031
+    #[test]
+    fn directory_open_refuses_missing_parent_and_file_as_directory() {
+        let (_, media) = populated();
+        assert_eq!(
+            media
+                .open_directory(Path::new("/absent"))
+                .unwrap_err()
+                .kind(),
+            io::ErrorKind::NotFound
+        );
+        assert_eq!(
+            media
+                .open_directory(Path::new("/virtual/a"))
+                .unwrap_err()
+                .kind(),
+            io::ErrorKind::NotADirectory
+        );
     }
 }

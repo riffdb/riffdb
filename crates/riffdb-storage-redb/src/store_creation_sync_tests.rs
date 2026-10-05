@@ -21,6 +21,12 @@ impl PrimaryPublicationMedia {
 }
 
 impl JournalMedia for PrimaryPublicationMedia {
+    fn open_directory(
+        &self,
+        path: &Path,
+    ) -> io::Result<Box<dyn crate::media::JournalMediaDirectory>> {
+        RealJournalMedia.open_directory(path)
+    }
     fn try_exists(&self, path: &Path) -> io::Result<bool> {
         RealJournalMedia.try_exists(path)
     }

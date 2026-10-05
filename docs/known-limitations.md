@@ -73,8 +73,16 @@ These limits are part of the POC release posture, not hidden roadmap promises.
   sustainable eligibility. A further native regression found
   that a temporary reader or writer barrier could defer an eligible extent
   across thousands of absent generation names. The reclaimer now retains that
-  candidate for retry while preserving every eligibility check; its effect on
-  required-host retirement and latency remains unmeasured.
+  candidate for retry while preserving every eligibility check. Its required-host
+  preparation completed all offered work, reclaimed 8,194 receipts and recycled
+  one extent, but failed normal-window latency; this does not establish a
+  retirement improvement. A second native regression found that releasing an
+  actual source reference still deferred retirement across absent generation
+  names. The reclaimer now visits at most 64 actual directory entries per pass,
+  retaining one directory handle rather than a list of the file population.
+  All seven scoped checks and 1,241 native/simulator tests pass, with ten
+  existing skips. Final-source full CI and continuing-load qualification of
+  this repair remain pending.
   Native reclamation, latency, notification and recovery behavior require
   further verification; maintenance pauses, automatic
   watch reconnects or relaxed client validation cannot qualify the rehearsal.

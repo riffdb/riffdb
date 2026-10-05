@@ -406,7 +406,7 @@ pub(crate) mod extent_reclamation;
 pub(crate) struct SharedRedb {
     extent_roots: Mutex<Vec<std::sync::Weak<CheckpointRoot>>>,
     extent_scrubs: std::sync::atomic::AtomicUsize,
-    extent_cursor: Mutex<u64>,
+    extent_cursor: Mutex<extent_reclamation::Cursor>,
     pub(crate) derived_source_pins: Arc<crate::derived_source_pin::DerivedSourcePins>,
     open_mode: OpenMode,
     follower_namespace: Mutex<Option<crate::maintenance::FollowerNamespace>>,

@@ -176,7 +176,7 @@ fn native_prune_then_outbox_drain_preserves_source_validation_qualification() {
 // req: STO-030, STO-031, STO-032, END-008, REC-001
 #[test]
 fn eligible_native_extent_retries_after_global_barrier_release_without_scanning_generation_holes() {
-    for blocker in ["reader", "scrub", "writer"] {
+    for blocker in ["reader", "scrub", "writer", "source"] {
         use riffdb_storage_api::{
             OutboxClaimV1, OutboxDestinationIdV1, OutboxPageLimit, OutboxRepository,
             OutboxSucceedV1, OutboxTransitionResultV1, OwnedSnapshotReader, PendingOutboxScanV1,
@@ -269,7 +269,9 @@ fn eligible_native_extent_retries_after_global_barrier_release_without_scanning_
             OutboxTransitionResultV1::Applied(success.updated().clone())
         );
         let old_reader = (blocker == "reader").then(|| ports.open_owned_snapshot().unwrap());
-        assert!(control.reclaim_history().unwrap());
+        if blocker != "source" {
+            assert!(control.reclaim_history().unwrap());
+        }
         // Fully drained native prune bytes are immutable historical state. This
         // isolated fixture seals them early and advances empty generations through
         // the existing media protocol, without adding commands or campaign evidence.
@@ -315,11 +317,11 @@ fn eligible_native_extent_retries_after_global_barrier_release_without_scanning_
             footer.generation + 256,
         )
         .unwrap();
-        let before = crate::changelog_v3_roots::validate_retained_history(
+        let mut before = crate::changelog_v3_roots::validate_retained_history(
             &ports.shared.database.begin_read().unwrap(),
         )
         .unwrap();
-        let epoch = ports.shared.durable_commit_epoch();
+        let mut epoch = ports.shared.durable_commit_epoch();
         let scrub = (blocker == "scrub").then(|| ports.shared.pin_extent_scrub().unwrap());
         let writer = (blocker == "writer").then(|| {
             crate::store::extent_reclamation::reserve_writer_for_test(&ports.shared).unwrap()
@@ -335,8 +337,8 @@ fn eligible_native_extent_retries_after_global_barrier_release_without_scanning_
             (
                 0,
                 0,
-                u64::from(blocker == "writer"),
-                u64::from(blocker != "writer")
+                u64::from(matches!(blocker, "writer" | "source")),
+                u64::from(matches!(blocker, "reader" | "scrub"))
             )
         );
         assert!(sealed.exists());
@@ -344,17 +346,27 @@ fn eligible_native_extent_retries_after_global_barrier_release_without_scanning_
         let still_held = ports.shared.reclaim_one_extent().unwrap();
         assert_eq!((still_held.deleted, still_held.recycled), (0, 0));
         assert_eq!(still_held.held_readers, held.held_readers);
-        assert_eq!(still_held.held_references, held.held_references);
+        if blocker != "source" {
+            assert_eq!(still_held.held_references, held.held_references);
+        }
         assert!(sealed.exists());
         assert_eq!(ports.shared.durable_commit_epoch(), epoch);
         drop(old_reader);
         drop(scrub);
         drop(writer);
+        if blocker == "source" {
+            assert!(control.reclaim_history().unwrap());
+            before = crate::changelog_v3_roots::validate_retained_history(
+                &ports.shared.database.begin_read().unwrap(),
+            )
+            .unwrap();
+            epoch = ports.shared.durable_commit_epoch();
+        }
         let reclaimed = ports.shared.reclaim_one_extent().unwrap();
         assert_eq!(
             reclaimed.deleted + reclaimed.recycled,
             1,
-            "released global barrier must not defer this eligible extent across absent generations"
+            "released {blocker} must not defer this eligible extent across absent generations"
         );
         assert_eq!(reclaimed.held_readers + reclaimed.held_references, 0);
         assert!(!sealed.exists());

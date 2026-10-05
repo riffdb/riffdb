@@ -336,8 +336,8 @@ pub use maintenance::{
 };
 #[doc(hidden)]
 pub use media::{
-    JournalMedia, JournalMediaFile, MediaFile, MediaFileMetadata, RealJournalMedia,
-    RedbStorageMedia,
+    JournalMedia, JournalMediaDirectory, JournalMediaFile, MediaFile, MediaFileMetadata,
+    RealJournalMedia, RedbStorageMedia,
 };
 pub use migration_stage::{
     RedbContractMigrationContext, RedbContractMigrationImmutableWitness,

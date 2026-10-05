@@ -44,6 +44,9 @@ pub(crate) const TRACE_MEDIA_PARENT_SYNC: u64 = 24;
 pub(crate) const TRACE_MEDIA_SYNC: u64 = 25;
 const TRACE_MEDIA_NOT_FOUND: u64 = 26;
 const TRACE_MEDIA_ALREADY_EXISTS: u64 = 27;
+const TRACE_MEDIA_DIRECTORY_OPEN: u64 = 28;
+const TRACE_MEDIA_DIRECTORY_NEXT: u64 = 29;
+const TRACE_MEDIA_NOT_A_DIRECTORY: u64 = 30;
 
 // Recovery decisions for one unsynced mutation.
 const DECISION_KEEP: u64 = 0;
@@ -664,6 +667,95 @@ impl SimDisk {
             .trace
             .fold_u64(length.map_or(0, |length| length.saturating_add(1)));
         Ok(length)
+    }
+
+    pub(crate) fn media_directory_open(&self, epoch: u64, directory: &str) -> io::Result<()> {
+        let mut inner = self.lock();
+        check_epoch(&mut inner, epoch, directory, TRACE_MEDIA_DIRECTORY_OPEN)?;
+        if inner.files.contains_key(directory) {
+            inner.trace.fold_u64(TRACE_MEDIA_NOT_A_DIRECTORY);
+            inner.fold_name(directory);
+            inner.trace.fold_u64(TRACE_MEDIA_DIRECTORY_OPEN);
+            return Err(io::Error::new(
+                io::ErrorKind::NotADirectory,
+                "not a directory",
+            ));
+        }
+        // The simulator represents directories implicitly through descendant
+        // files. One ordered lookup proves this directory exists; it does not
+        // manufacture an empty directory when the requested parent is absent.
+        let prefix = if matches!(directory, "" | ".") {
+            String::new()
+        } else {
+            format!("{}/", directory.trim_end_matches('/'))
+        };
+        if !inner
+            .files
+            .range(prefix.clone()..)
+            .next()
+            .is_some_and(|(name, _)| name.starts_with(&prefix))
+        {
+            inner.fold_media_not_found(directory, TRACE_MEDIA_DIRECTORY_OPEN);
+            return Err(media_not_found_error());
+        }
+        inner.fault_gate(false)?;
+        inner.trace.fold_u64(TRACE_MEDIA_DIRECTORY_OPEN);
+        inner.fold_name(directory);
+        Ok(())
+    }
+
+    /// One namespace lookup, retaining only the caller's last name. No snapshot
+    /// vector of the file population is allocated by a directory handle.
+    pub(crate) fn media_directory_next(
+        &self,
+        epoch: u64,
+        directory: &str,
+        after: Option<(&str, bool)>,
+    ) -> io::Result<Option<(String, String, bool)>> {
+        use std::ops::Bound::{Excluded, Included, Unbounded};
+        let prefix = if matches!(directory, "" | ".") {
+            String::new()
+        } else {
+            format!("{}/", directory.trim_end_matches('/'))
+        };
+        let mut inner = self.lock();
+        check_epoch(&mut inner, epoch, directory, TRACE_MEDIA_DIRECTORY_NEXT)?;
+        let lower = after.map_or(Included(prefix.as_str()), |(name, inclusive)| {
+            if inclusive {
+                Included(name)
+            } else {
+                Excluded(name)
+            }
+        });
+        let next = inner
+            .files
+            .range::<str, _>((lower, Unbounded))
+            .next()
+            .filter(|(name, _)| name.starts_with(&prefix))
+            .map(|(name, _)| {
+                let relative = &name[prefix.len()..];
+                if let Some((directory, _)) = relative.split_once('/') {
+                    // '/' precedes '0': this inclusive boundary skips the whole
+                    // subtree but preserves a sibling named exactly `<dir>0`.
+                    (directory.to_owned(), format!("{prefix}{directory}0"), true)
+                } else {
+                    (relative.to_owned(), name.clone(), false)
+                }
+            });
+        inner.trace.fold_u64(TRACE_MEDIA_DIRECTORY_NEXT);
+        inner.fold_name(directory);
+        inner.trace.fold_u64(u64::from(after.is_some()));
+        if let Some((after, inclusive)) = after {
+            inner.fold_name(after);
+            inner.trace.fold_u64(u64::from(inclusive));
+        }
+        inner.trace.fold_u64(u64::from(next.is_some()));
+        if let Some((entry, boundary, inclusive)) = &next {
+            inner.fold_name(entry);
+            inner.fold_name(boundary);
+            inner.trace.fold_u64(u64::from(*inclusive));
+        }
+        Ok(next)
     }
 
     /// Opens an existing file; fails closed with `NotFound` when absent.

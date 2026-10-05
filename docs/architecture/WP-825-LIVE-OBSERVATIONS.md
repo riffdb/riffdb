@@ -773,3 +773,90 @@ history need bounded periodic observation before changing admission or holds.
 The failed preparation and its private roots remain preserved. Full CI on the
 final source, sustained retirement, service levels and the complete short
 rehearsal remain outstanding. No 24-hour run has started.
+
+
+### Global-barrier repair: full CI passes; required-host latency still fails
+
+Clean source `f92548bc` passes full CI, including the source-install checks,
+with unchanged source throughout the run. Its separate locked release build
+and unchanged 900-second preparation use the required 8-vCPU AMD EPYC 9B14,
+nominal 32-GiB host with a 500-GiB persistent SSD-backed disk. This source
+excludes the later allocation work and the directory-discovery repair below.
+
+The preparation completes 90,000 commands and 360,000 reads without retries,
+but exits with `probe_latency`. State reconciliation completes; final archive
+reconciliation is not reached after the failed latency gate.
+
+| Window (seconds) | Commands | Reads | p95 (microseconds) | p99 | Overflow |
+|---|---:|---:|---:|---|---:|
+| 0–300 | 30,000 | 120,000 | 218,560 | beyond range | 7,420 |
+| 300–600 | 30,000 | 120,000 | 59,863 | beyond range | 1,784 |
+| 600–900 | 30,000 | 120,000 | 105,631 | beyond range | 6,053 |
+
+The first window overlaps the planned consumer outage. Beyond-range values
+are histogram overflow sentinels, not measured durations. Every window retains
+28 load slots and four auxiliary slots. The actual consumer pause lasts
+300.049 seconds; live progress continues, and recovery reconciles its 2,048
+organization-scoped events in 9.076 seconds.
+
+Native shutdown records 8,194 removed source receipts, 761,933 microseconds of
+receipt-gate work and one recycled extent, with no deleted extents. Reference
+holds are 95 blocked attempts; reader holds are zero. Validation visits 10,688
+initial and 406,363 continuation rows, with one invalidation. The 666 admission
+refusals comprise 205 busy writers, 383 pending-journal cases and 78 catch-up
+page bounds; checkpoint and changed-qualification refusals are zero. Logical
+pruning advances 121,850 sequences over 572 steps. Repeated shutdown emission
+boundaries report the same counters and are not added together.
+
+The earlier diagnostic preparation also recycled one extent. These runs do
+not establish a retirement or latency improvement from the global-barrier
+repair. Actual source ceilings and continuing physical eligibility remain
+unmeasured. Failed preparation roots and receipts remain preserved privately;
+WP-825 and the 24-hour campaign remain unqualified.
+
+### Native extent discovery after legitimate source-reference release
+
+Extending the genuine two-command fixture reproduces a separate defect. A
+sealed extent is correctly retained by its actual source receipt references.
+After legitimate native source reclamation releases those references, the
+numeric cursor still walks absent generation names and misses next-pass
+retirement. The failure is below the harness: no workload change or invented
+checkpoint is involved.
+
+The repair advances through actual directory entries instead of numeric
+names. Each pass advances at most 64 entries and performs at most one existing
+extent operation. One process-local directory handle and one globally blocked
+candidate replace the numeric cursor; no population-sized file list, durable
+identity or mutation authority is added. Exact filename parsing selects only
+this database's older sealed generations. Every original authoritative
+reference, reader, footer, frame, source-anchor and file-retirement check stays
+in place, outside the ordered writer gate and under existing maintenance pacing.
+Iterator errors refuse progress rather than become successful end of history.
+
+The hidden media seam now owns read-only directory iteration for both real and
+simulated media. The simulator uses bounded ordered namespace lookups, traces
+open/advance/refusal operations and refuses stale handles after recovery.
+Its directories remain implicit in descendant files; these tests establish
+namespace iteration behavior, not directory power-loss durability.
+
+The source-release regression fails before and passes after repair, alongside
+the existing reader, scrub and writer cases. Five focused native tests check
+bounded discovery, directory-error refusal and existing reader reservation.
+Three simulator tests establish real sibling-name agreement, deterministic
+traces, stale-handle refusal and missing/non-directory refusal. The daemon
+restart interrupts the first scoped run before a completion receipt; that
+partial log stays preserved and is not counted as a pass. The fresh run passes
+all seven scoped checks and all 1,241 native/simulator tests, with ten existing
+skips, including the existing corruption and process-crash coverage.
+Final-source full CI and continuing-load measurement remain pending.
+
+PR note: Package WP-825 (open); Tier guarantee within accepted ADR-0263
+Amendment 4 and ADR-0265; Behavior: bound discovery by actual directory entries
+so released references do not defer retirement across generation holes;
+Checks: source-release RED/GREEN, five native unit tests, three simulator tests,
+all seven scoped checks and 1,241 tests with ten existing skips;
+Compatibility: unchanged application interfaces, durable formats, holds,
+ordering and retirement validation; Updated handbook: known limitations;
+Hazards/follow-ups: full CI, required-host measurement,
+latency and continuing retirement, then the complete short rehearsal.
+No 24-hour run has started.
