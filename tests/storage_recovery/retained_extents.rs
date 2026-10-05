@@ -329,6 +329,70 @@ fn production_receipt_reclamation_progresses_with_interleaved_durable_writes() {
     );
 }
 
+// req: STO-030, STO-031, STO-032, END-008
+#[test]
+fn production_receipt_continuation_survives_command_audit_materialization() {
+    use riffdb_storage_redb::OnlineRetentionStep;
+    use std::num::NonZeroU64;
+
+    let path = TestDatabasePath::new("receipt-continuation-command-audit");
+    prepare_command_database(&path.0);
+    let (controller, schedule) = RedbTestController::checkpoint_schedule();
+    let ports =
+        open_operational(RedbStore::open_with_test_controller(&path.0, controller).unwrap());
+    for ordinal in 1..=600 {
+        seal(&ports, ordinal).wait().unwrap();
+    }
+    complete_checkpoint(&ports, &schedule);
+    drop(ports);
+    drop(schedule);
+    {
+        let database = Database::open(&path.0).unwrap();
+        for ordinal in 1..=600 {
+            retention_deliver_outbox_status_at(&database, ordinal);
+        }
+    }
+    let (controller, schedule) = RedbTestController::checkpoint_schedule();
+    let ports =
+        open_operational(RedbStore::open_with_test_controller(&path.0, controller).unwrap());
+    let lane = ports.online_retention_lane();
+    let mut removed = 0;
+    let mut pruned = 0;
+    let mut invalidations = 0;
+    // Each logical prune materializes two exact command-audit records from
+    // their locators. Those representations grant no source-control authority.
+    // A writer/checkpoint follows every page, with no idle validation window.
+    for ordinal in 601..=624 {
+        let (step, phases) = lane
+            .step_timed(
+                NonZeroU64::new(1).unwrap(),
+                NonZeroU64::new(1).unwrap(),
+                true,
+            )
+            .unwrap();
+        if matches!(step, OnlineRetentionStep::Advanced { .. }) {
+            pruned += 1;
+        }
+        removed += phases.reclaimed_receipts;
+        invalidations += phases.source_validation_invalidations;
+        assert!(phases.reclaimed_receipts <= 256);
+        seal(&ports, ordinal).wait().unwrap();
+        complete_checkpoint(&ports, &schedule);
+    }
+    assert_eq!(pruned, 24, "exercise actual logical pruning every turn");
+    assert!(
+        removed > 0,
+        "command-audit materialization starved source reclamation; invalidations={invalidations}"
+    );
+    assert!(matches!(
+        ports
+            .lookup_admission(command_fixture_at(1).candidates)
+            .unwrap(),
+        AdmissionLookupResultV1::Found(_)
+    ));
+    assert_committed(&ports, 624);
+}
+
 // req: STO-030, STO-031, STO-032
 #[test]
 fn logical_pruning_crosses_a_large_sealed_extent_in_bounded_steps() {

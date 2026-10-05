@@ -49,6 +49,9 @@ These limits are part of the POC release posture, not hidden roadmap promises.
   A later required-host preparation completed all offered requests and live
   progress, but its final normal window exceeded the p99 latency gate and again
   reclaimed no source receipts or extents.
+  Native inspection identified incorrect audit-key classification and rejected
+  command-audit materialization during pruning. Both cases now have native
+  repairs and deterministic coverage; required-host verification remains open.
   Native reclamation, latency, notification and recovery behavior require
   further verification; maintenance pauses, automatic
   watch reconnects or relaxed client validation cannot qualify the rehearsal.

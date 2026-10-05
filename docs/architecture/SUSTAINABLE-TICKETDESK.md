@@ -912,6 +912,24 @@ diagnostics. Required-host load, prefix-refresh scheduling, latency, the
 intermittent recovery failure, full CI and the complete short rehearsal remain
 open. No 24-hour qualification has started.
 
+The failed required-host database exposed two further native qualification
+defects: canonical audit keys were misclassified, and command pruning's retained
+Service audit materialization invalidated source proof. The native repair uses
+actual preimages and the existing key/record decoders. A new 600-command,
+24-turn composition regression now reclaims receipts with a write, checkpoint
+and logical prune on every turn; malformed or mismatched evidence still refuses
+qualification. Required-host physical progress and latency remain unverified.
+
+PR note: Package WP-825 (open); Tier guarantee; Behavior: qualify canonical
+audit appends and checked command-audit representation changes during native
+journal admission and checkpoint materialization; Checks: deterministic native
+composition, full-source oracle and hostile evidence tests, scoped Clippy;
+Compatibility: unchanged durable formats, audit semantics, source-control
+fences, ordering and public interfaces; Updated handbook pages: this handoff,
+native findings and known limitations; Hazards/follow-ups: required-host
+continuing-load verification, full acceptance, intermittent recovery failures
+and complete short rehearsal remain required.
+
 PR note: Package WP-825 (open); Tier guarantee; Behavior: bounded native source
 continuation under accepted ADR-0268, exact deletion preimages, completed-pin
 release and drained source-allocation publication repair; Checks: targeted

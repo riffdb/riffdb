@@ -292,13 +292,32 @@ impl RedbWriteAccess {
             )?;
             let composite_successor = Arc::new(composite_successor);
             let retained_frame = frame.clone();
-            if changelog_successor.is_none()
-                || !crate::source_continuation::SourceContinuationFootprint::composite(
+            let predecessor = RedbReadAccess::Composite(Arc::clone(&composite_predecessor));
+            let footprint =
+                crate::source_continuation::SourceContinuationFootprint::composite_checked(
                     predecessor_administration_sequence,
                     &checkpoint_mutations,
-                )
-                .is_append_only()
-            {
+                    |mutation| {
+                        predecessor.read_value(crate::journal::JournalTable::Audit, mutation.key())
+                    },
+                    |sequence| {
+                        let end = crate::keys::encode_application_sequence_key(
+                            sequence.checked_next().ok_or_else(|| {
+                                storage_error(StorageErrorKind::SequenceExhausted)
+                            })?,
+                        );
+                        Ok(predecessor
+                            .read_range_reverse(
+                                crate::journal::JournalTable::Commits,
+                                &[],
+                                &end,
+                                1,
+                            )?
+                            .pop()
+                            .map(|(key, value)| (key.into_vec(), value.into_vec())))
+                    },
+                )?;
+            if changelog_successor.is_none() || !footprint.is_append_only() {
                 self.shared.invalidate_source_continuation();
             }
             let receipt = runtime.lane.submit(frame).map_err(journal_io_error)?;

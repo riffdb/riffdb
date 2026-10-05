@@ -37,6 +37,67 @@ fn qualified_walk(ports: &crate::RedbOperationalPorts) -> RetainedHistoryValidat
 
 // req: STO-030, STO-031, STO-032, END-008
 #[test]
+fn canonical_service_audit_appends_continue_against_the_complete_native_source_oracle() {
+    let (_scope, ports, _) = crate::changelog_v3_control_tests::fixture();
+    let mut walk = qualified_walk(&ports);
+    while !walk.advance(EvidencePageLimit::new(64).unwrap()).unwrap() {}
+    let epoch = ports
+        .shared
+        .source_continuation_epoch
+        .load(Ordering::Acquire);
+    {
+        let _lease = ports.shared.mutation_gate.acquire().unwrap();
+        let write = crate::changelog_v3_write::CapturedImmediateWrite::begin(
+            &ports.shared.database,
+            crate::RedbCommitProfile::Hardened,
+            ChangelogAttributionV3::DirectApplicationOrServiceAuditGroup,
+        )
+        .unwrap();
+        let sequence = riffdb_types::AdministrationSequence::new(1).unwrap();
+        write
+            .open_table(crate::layout::AUDIT)
+            .unwrap()
+            .insert(
+                crate::keys::encode_audit_key(sequence).as_slice(),
+                crate::test_audit::canonical_denied_service_audit(sequence).as_slice(),
+            )
+            .unwrap();
+        let allocator =
+            riffdb_storage_api::proto_codec::encode_administration_sequence_allocator_v1(
+                riffdb_storage_api::AdministrationSequenceAllocator::next(
+                    sequence.checked_next().unwrap(),
+                ),
+            )
+            .unwrap();
+        write
+            .open_table(crate::layout::META)
+            .unwrap()
+            .insert(
+                crate::layout::META_ADMINISTRATION_SEQUENCE,
+                allocator.as_bytes(),
+            )
+            .unwrap();
+        write.finish().unwrap().commit(&ports.shared).unwrap();
+    }
+    assert_eq!(
+        ports
+            .shared
+            .source_continuation_epoch
+            .load(Ordering::Acquire),
+        epoch
+    );
+    let root = ports.shared.capture_checkpoint_root().unwrap();
+    let oracle = crate::changelog_v3_roots::validate_retained_history(&root)
+        .unwrap()
+        .unwrap();
+    assert!(walk.continue_on(root, epoch).unwrap());
+    assert!(walk.close_suffix_page().unwrap());
+    assert_eq!(walk.proof().unwrap().history(), oracle);
+    assert_eq!(walk.rows_read(), [8, 1]);
+}
+
+// req: STO-030, STO-031, STO-032, END-008
+#[test]
 fn native_continuation_reads_one_initial_population_then_only_added_receipts() {
     for population in [7_u64, 300, 600] {
         let (_scope, ports, _) = crate::changelog_v3_control_tests::fixture();

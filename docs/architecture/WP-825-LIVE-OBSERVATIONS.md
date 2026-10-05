@@ -315,3 +315,38 @@ and repair their proof handling before advancing the harness or starting the
 the failed database's actual receipts; it emits only closed namespace names and
 counts, never keys, payloads, identities or paths. It is forensic evidence,
 not a passing workload, benchmark or proof of deletion eligibility.
+
+### Native audit qualification repair
+
+The read-only census of that failed database, using the preceding classifier,
+decoded 375,364 receipts. It rejected 39,768 receipts and counted 268,100 audit
+mutations; the remaining rejected namespaces were one-time bootstrap/catalog
+installation. Inspection and deterministic native reproduction identified two
+missing cases:
+
+- The classifier assumed an eight-byte audit key. Native audit keys have a
+  canonical prefix and nine bytes. It now uses the existing native key decoder,
+  rather than an artificial key shape, for append succession.
+- Logical command pruning inserts retained Service audit records where command
+  segments previously provided audit through derived indexes. These inserts can
+  lie below the administration frontier. The native owner now checks actual
+  absence, the mutation preimage, canonical Service decoding and exact audit key.
+  These rows grant no replication registration, primary fence or promotion
+  evidence. Every previously validated source-control audit stays unchanged.
+
+For historical physical command-audit locators, qualification additionally
+resolves the authoritative native command segment and compares the entire
+selected audit record. Wrong members, changed records, missing commands and
+preimage substitutions refuse qualification. Only one existing bounded decoded
+segment is held temporarily; no evidence queue or additional snapshot is retained.
+Journal admission and actual checkpoint materialization both perform the checks.
+Unclassified writes and source-control changes continue to invalidate the proof.
+
+The new native composition regression retains 600 real commands and interleaves
+24 writer/checkpoint/prune turns without an idle validation window. It failed
+with zero receipt progress and 23 invalidations before this repair, and passes
+afterward without changing its schedule or limits. A canonical audit append also
+agrees with the independent complete native source validator. Targeted hostile
+preimage, locator, key and decoding checks pass. This is development evidence;
+the required-host preparation and full acceptance still must establish sustained
+receipt/extent progress and normal latency. No 24-hour run has started.

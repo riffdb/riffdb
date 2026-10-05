@@ -6,7 +6,7 @@ use riffdb_storage_api::{
     AuthoritativeMutationV3, AuthoritativeNamespaceV1 as N, ChangelogHistoryStateV3,
     CompositeMutationV1, CompositeTableV1 as T,
 };
-use riffdb_types::AdministrationSequence;
+use riffdb_types::{AdministrationSequence, CommitSequence};
 
 /// Produced only by the sealed native write/materialization owners. Absence
 /// of source changes is established from their complete actual mutation set.
@@ -117,6 +117,115 @@ impl SourceContinuationFootprint {
             }),
         }
     }
+
+    /// Qualifies the source-independent representation change performed by
+    /// native command pruning. Inspect actual predecessor bytes, not merely
+    /// the namespace or a claimed retention attribution. A locator and its
+    /// materialized record must name the exact same canonical command audit.
+    pub(crate) fn composite_checked(
+        prior: Option<AdministrationSequence>,
+        mutations: &[CompositeMutationV1],
+        mut before: impl FnMut(
+            &CompositeMutationV1,
+        ) -> Result<Option<Vec<u8>>, riffdb_storage_api::StorageError>,
+        mut command_row: impl FnMut(
+            CommitSequence,
+        ) -> Result<
+            Option<(Vec<u8>, Vec<u8>)>,
+            riffdb_storage_api::StorageError,
+        >,
+    ) -> Result<Self, riffdb_storage_api::StorageError> {
+        // One decoded native frame only, released before reading a replacement.
+        // No retained mutation queue, per-audit cache, or additional reader pin.
+        let mut segment: Option<riffdb_storage_api::StoredCommandSegmentV1> = None;
+        for mutation in mutations {
+            if Self::composite(prior, std::slice::from_ref(mutation)).is_append_only() {
+                continue;
+            }
+            if mutation.table() != T::Audit {
+                return Ok(Self::unknown());
+            }
+            let before = before(mutation)?;
+            // Reuse the checked composite preimage primitive; hashing stays
+            // within its existing reviewed integrity boundary.
+            let observed = before
+                .as_deref()
+                .map(|bytes| {
+                    CompositeMutationV1::delete_matching(T::Audit, mutation.key(), bytes)
+                        .map(|checked| checked.expected_hash())
+                })
+                .transpose();
+            let Ok(observed) = observed else {
+                return Ok(Self::unknown());
+            };
+            if observed.flatten() != mutation.expected_hash() {
+                return Ok(Self::unknown());
+            }
+            let Some(after) = mutation.value() else {
+                return Ok(Self::unknown());
+            };
+            let Ok(after) = riffdb_storage_api::decode_service_audit_record(after) else {
+                return Ok(Self::unknown());
+            };
+            let after = after.value();
+            if mutation.key() != crate::keys::encode_audit_key(after.administration_sequence())
+                || prior.is_none_or(|prior| after.administration_sequence() > prior)
+            {
+                return Ok(Self::unknown());
+            }
+            // Current command segments provide their audit through derived
+            // indexes without a physical AUDIT row. Pruning inserts a canonical
+            // Service record below the administration frontier. Actual absence
+            // is checked above: no previously validated source audit changes,
+            // and all three native source validators ignore this closed type.
+            let Some(before) = before.as_deref() else {
+                continue;
+            };
+            let Ok(locator) = riffdb_storage_api::decode_command_audit_locator_v1(before) else {
+                // A physical record may remain byte-for-byte equal, but no
+                // changed retained record or source-control audit is eligible.
+                if mutation.value() != Some(before) {
+                    return Ok(Self::unknown());
+                }
+                continue;
+            };
+            let locator = *locator.value();
+            let sequence = locator.commit_sequence();
+            if !segment.as_ref().is_some_and(|segment| {
+                segment.first_commit_sequence() <= sequence
+                    && sequence <= segment.last_commit_sequence()
+            }) {
+                drop(segment.take());
+                let Some((key, encoded)) = command_row(sequence)? else {
+                    return Ok(Self::unknown());
+                };
+                let Ok(decoded) = crate::history_stub::decode_segment_value(&encoded) else {
+                    return Ok(Self::unknown());
+                };
+                let decoded = decoded.into_parts().0;
+                if key
+                    != crate::keys::encode_application_sequence_key(decoded.first_commit_sequence())
+                {
+                    return Ok(Self::unknown());
+                }
+                segment = Some(decoded);
+            }
+            let Some(command) = segment.as_ref().and_then(|segment| {
+                sequence
+                    .get()
+                    .checked_sub(segment.first_commit_sequence().get())
+                    .and_then(|ordinal| usize::try_from(ordinal).ok())
+                    .and_then(|ordinal| segment.commands().get(ordinal))
+                    .filter(|command| command.commit_sequence() == sequence)
+            }) else {
+                return Ok(Self::unknown());
+            };
+            if command.base().audit(locator.member()) != after {
+                return Ok(Self::unknown());
+            }
+        }
+        Ok(Self::fresh())
+    }
 }
 
 fn unchanged_source_or_append(
@@ -128,10 +237,10 @@ fn unchanged_source_or_append(
 ) -> bool {
     match namespace {
         N::Audit => {
-            key.len() == 8
-                && before.is_none()
+            before.is_none()
                 && after.is_some()
-                && prior.is_none_or(|prior| key > prior.get().to_be_bytes().as_slice())
+                && crate::keys::decode_audit_key(key)
+                    .is_ok_and(|sequence| prior.is_none_or(|prior| sequence > prior))
         }
         N::AuditByRequest => before.is_none() && after.is_some(),
         // Explicitly independent of retained source receipts/audit/lineage.
@@ -185,124 +294,5 @@ const _: () = assert!(
 );
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-
-    // req: STO-030, END-008
-    #[test]
-    fn source_continuation_read_only_forensic_census_child() {
-        let Some(path) = std::env::var_os("RIFFDB_TEST_SOURCE_FOOTPRINT_CENSUS") else {
-            return;
-        };
-        use redb::{ReadableDatabase, ReadableTable};
-        let path = std::path::PathBuf::from(path);
-        assert!(path.is_absolute() && path.as_os_str().len() <= 4096);
-        assert!(
-            std::fs::symlink_metadata(&path)
-                .unwrap()
-                .file_type()
-                .is_file()
-        );
-        let database = redb::ReadOnlyDatabase::open(&path).unwrap();
-        let read = database.begin_read().unwrap();
-        let _resolver =
-            crate::history_stub::HistoryResolver::register_beside(&path, &read).unwrap();
-        let rows = read
-            .open_table(crate::changelog_v3_activation::HISTORY)
-            .unwrap();
-        let mut rejected = std::collections::BTreeMap::<String, u64>::new();
-        let mut receipts = 0_u64;
-        let mut invalid_receipts = 0_u64;
-        for row in rows.iter().unwrap() {
-            receipts += 1;
-            assert!(
-                receipts <= 10_000_000,
-                "forensic receipt scan exceeds its bound"
-            );
-            let (_, value) = row.unwrap();
-            let bytes = crate::history_stub::resolve_history_value(value.value()).unwrap();
-            let receipt = riffdb_storage_api::AuthoritativeTransactionV3::decode(&bytes).unwrap();
-            let mut invalid = false;
-            for mutation in receipt.mutations() {
-                if !unchanged_source_or_append(
-                    mutation.namespace(),
-                    mutation.key(),
-                    mutation.expected_hash(),
-                    mutation.value(),
-                    receipt.binding().predecessor_frontier.administration(),
-                ) {
-                    invalid = true;
-                    let namespace = format!("{:?}", mutation.namespace());
-                    assert!(namespace.len() <= 128 && rejected.len() <= 256);
-                    *rejected.entry(namespace).or_default() += 1;
-                }
-            }
-            invalid_receipts += u64::from(invalid);
-        }
-        println!(
-            "riffdb-source-footprint-forensic-v1 receipts={receipts} rejected_receipts={invalid_receipts}"
-        );
-        for (namespace, count) in rejected {
-            println!("riffdb-source-footprint-forensic-v1 namespace={namespace} count={count}");
-        }
-    }
-
-    // req: STO-030, STO-031, STO-032, END-008
-    #[test]
-    fn continuation_footprint_refuses_old_audit_preimages_and_control_changes() {
-        let prior = AdministrationSequence::new(7).unwrap();
-        assert!(unchanged_source_or_append(
-            N::Audit,
-            &8_u64.to_be_bytes(),
-            None,
-            Some(b"row"),
-            Some(prior)
-        ));
-        for sequence in [6_u64, 7] {
-            assert!(!unchanged_source_or_append(
-                N::Audit,
-                &sequence.to_be_bytes(),
-                None,
-                Some(b"row"),
-                Some(prior)
-            ));
-        }
-        assert!(!unchanged_source_or_append(
-            N::Audit,
-            &8_u64.to_be_bytes(),
-            Some([1; 32]),
-            Some(b"row"),
-            Some(prior)
-        ));
-        assert!(!unchanged_source_or_append(
-            N::AuditByRequest,
-            b"key",
-            Some([1; 32]),
-            None,
-            Some(prior)
-        ));
-        for namespace in [
-            N::CatalogActive,
-            N::RecordRegistry,
-            N::HistoryIncarnation,
-            N::ReplicationSourceHolds,
-            N::ChangelogHistory,
-            N::ChangelogHistoryState,
-            N::LeadershipEpoch,
-            N::AuthoritativeStateCatalog,
-            N::CleanCloseLifecycle,
-        ] {
-            assert!(!unchanged_source_or_append(
-                namespace,
-                b"key",
-                None,
-                Some(b"row"),
-                Some(prior)
-            ));
-        }
-        let mut unknown = SourceContinuationFootprint::fresh();
-        unknown.combine(SourceContinuationFootprint::unknown());
-        unknown.combine(SourceContinuationFootprint::fresh());
-        assert!(!unknown.is_append_only());
-    }
-}
+#[path = "source_continuation_tests.rs"]
+mod tests;

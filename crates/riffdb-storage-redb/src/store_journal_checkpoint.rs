@@ -2,7 +2,7 @@
 //! Receipt integration must retain this existing single durable transaction and
 //! its exact retained mutation proofs; it must not reconstruct from latest rows.
 
-use redb::Durability;
+use redb::{Durability, ReadableTable};
 use riffdb_storage_api::{
     AuthoritativeNamespaceV1 as N, AuthoritativeTransactionBindingV3, ChangelogAttributionV3,
     CompositeTableV1, StorageError, StorageErrorKind,
@@ -116,10 +116,39 @@ impl SharedRedb {
                 None
             };
             footprint.combine(
-                crate::source_continuation::SourceContinuationFootprint::composite(
+                crate::source_continuation::SourceContinuationFootprint::composite_checked(
                     last_administration_sequence,
                     &frame.mutations,
-                ),
+                    |mutation| {
+                        let table = transaction
+                            .open_table(crate::layout::AUDIT)
+                            .map_err(crate::error::table_error)?;
+                        Ok(table
+                            .get(mutation.key())
+                            .map_err(crate::error::precommit_storage_error)?
+                            .map(|row| row.value().to_vec()))
+                    },
+                    |sequence| {
+                        let table = transaction
+                            .open_table(crate::layout::COMMITS)
+                            .map_err(crate::error::table_error)?;
+                        let key = crate::keys::encode_application_sequence_key(sequence);
+                        let mut rows = table
+                            .range::<&[u8]>((
+                                std::ops::Bound::Unbounded,
+                                std::ops::Bound::Included(key.as_slice()),
+                            ))
+                            .map_err(crate::error::precommit_storage_error)?;
+                        rows.next_back()
+                            .transpose()
+                            .map_err(crate::error::precommit_storage_error)
+                            .map(|row| {
+                                row.map(|(key, value)| {
+                                    (key.value().to_vec(), value.value().to_vec())
+                                })
+                            })
+                    },
+                )?,
             );
             for (index, mutation) in frame.mutations.iter().enumerate() {
                 if mutation.table() == CompositeTableV1::Meta
