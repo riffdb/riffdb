@@ -860,3 +860,101 @@ ordering and retirement validation; Updated handbook: known limitations;
 Hazards/follow-ups: full CI, required-host measurement,
 latency and continuing retirement, then the complete short rehearsal.
 No 24-hour run has started.
+
+
+### Actual source-reclamation ceilings
+
+The source owner now observes the existing native floor plan at the same exact
+drained barrier. The bounded sample records the retained resume position,
+current receipt tail, previously observed durable checkpoint, oldest derived
+source pin, oldest active durable source hold, uncapped minimum ceiling and
+active durable hold count. Presence bits distinguish absent holds from numeric
+fences. The capped deletion still removes at most 256 receipts and applies all
+original checks and writes. The sample is planning evidence, not a deletion
+receipt, validated file inventory or authority to release any hold.
+
+Separate closed counters distinguish the first observation, an unusable prior
+observation or insufficient independent progress, and a floor held at or below
+the retained resume position. Existing source-admission cause counters stay
+separate. No new scan, durable identity, mutation, writer, application API,
+admission opportunity or maintenance-pacing rule is introduced.
+
+The server keeps the last measured plan and the attempt on which it was
+observed; missing plans do not replace it with zeros or present it as fresh.
+A payload-free private diagnostic line is emitted at most once per minute
+while the retention lane runs, and at the existing shutdown boundaries. An
+unavailable sample stays explicit. The numeric observation can identify
+reclaimable receipt backlog and legitimate source fences without inferring a
+resume position from the accumulated deletion count. Periodic file eligibility
+and complete campaign resource observations remain separate required work.
+
+An actual native fixture test checks combined derived pins and each of the
+three durable hold kinds, independent publication, repeated observations and
+held floors. All 26 native source-control tests pass, including the existing
+256-receipt limit and retained-reader checks. New server checks cover sample
+age, replacement rather than summed fences, missing observations and the
+maximum-value output bound; both server tests pass. Scoped formatting, Clippy
+and all 1,806 native/server tests pass with ten existing skips. The isolated
+checkout initially lacked the pinned handbook tools on its PATH; with the
+installed tools made available, the unchanged handbook check passes. Final
+documentation and governance checks cover the recorded results.
+The required-host preparation on `f92548bc` excludes this diagnostic change.
+
+PR note: Package WP-825 (open); Tier guarantee within ADR-0265 and ADR-0268;
+Behavior: observe the actual native source-reclamation ceiling and distinguish
+its measurement age from continued attempts; Checks: 26 native source-control
+tests and both new server tests pass; scoped formatting, Clippy, 1,806 tests
+and handbook validation pass; Compatibility: unchanged public
+application protocols, durable formats, holds, ordering and admission; Updated
+handbook: known limitations; Hazards/follow-ups: complete validation and measure
+actual eligible history and writer-stage costs under continued load. The full
+short rehearsal and 24-hour campaign remain unqualified.
+
+
+### Required-host source ceilings: unheld ranges outpace native removal
+
+Clean diagnostic source `645cda9f`, with a locked release build, completes the
+unchanged 900-second preparation on the required host. This source includes
+floor observations and the global-barrier retry; it excludes later allocation,
+actual-directory discovery and outbox-stage instrumentation.
+
+| Window (seconds) | Commands | Reads | p95 (microseconds) | p99 (microseconds) | Overflow |
+|---|---:|---:|---:|---:|---:|
+| 0–300 | 30,000 | 120,000 | 101,138 | beyond range | 5,918 |
+| 300–600 | 30,000 | 120,000 | 55,541 | 88,550 | 892 |
+| 600–900 | 30,000 | 120,000 | beyond range | beyond range | 8,185 |
+
+All 90,000 commands and 360,000 reads complete without retries, with 28 load
+slots and four auxiliary slots. The first window overlaps the planned outage;
+the final fault-free window fails both latency limits. Beyond-range values are
+histogram sentinels. The preparation exits with `probe_latency`; independent
+state reconciliation completes, but final archive reconciliation is not reached.
+The consumer pauses for 300.050 seconds while live progress continues, and
+recovers its 2,048 organization-scoped events in 7.972 seconds.
+
+Every available measured floor plan records no derived or durable source hold.
+At attempt 1,337, the source resume is 8,451 and its prior checkpoint ceiling
+219,562. The final pre-deletion plan, measured at attempt 2,404 of 2,437,
+records resume 8,707, ceiling 219,782 and tail 366,549. These are exact planning
+positions, not final post-deletion state, a physical inventory or authority to
+delete the whole interval. The unheld plan permits a range exceeding 211,000
+positions beyond the resume, while native removal totals only 8,962 receipts.
+A large unheld range therefore remains; source-admission progress needs a
+native repair, not a workload pause or classification as protected history.
+
+The owner visits 10,793 initial and 403,942 continuation rows, with one
+invalidation and 834 admission refusals: 391 busy writers, 316 pending journals
+and 127 catch-up page bounds. Other admission causes, unusable prior progress
+and held-floor yields remain zero; the first-observation counter is one.
+The snapshot's 33-attempt measurement age is explicit. Shutdown emission
+boundaries repeat counters and are not added together. Native physical work
+records one recycled extent, zero deletions, 102 reference-held attempts and
+27 reader-held attempts; its total work duration is 14,816,211 microseconds.
+These counters establish neither sustained retirement nor the cause of latency.
+
+ADR-0268's nonwaiting drained admission gives the source owner no FIFO ticket.
+The gate correctly refuses it whenever another writer is held or queued, and
+published journal data independently refuses entry. Revisiting that accepted
+scheduling boundary requires an exact architecture decision. The source,
+failed preparation, complete floor stream and native counters stay preserved;
+WP-825 and the 24-hour campaign remain unqualified.

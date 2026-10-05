@@ -252,6 +252,10 @@ impl RetentionLaneStatus {
                 &mut total.source_admission_page_bound,
                 phases.source_admission_page_bound,
             ),
+            (
+                &mut total.source_reclamation_attempts,
+                phases.source_reclamation_attempts,
+            ),
             (&mut total.prefix_gate_us, phases.prefix_gate_us),
             (&mut total.gate_wait_us, phases.gate_wait_us),
             (&mut total.drain_us, phases.drain_us),
@@ -262,6 +266,17 @@ impl RetentionLaneStatus {
             (&mut total.commit_us, phases.commit_us),
         ] {
             *sum = sum.saturating_add(add);
+        }
+        for (sum, add) in total
+            .source_reclamation_yields
+            .iter_mut()
+            .zip(phases.source_reclamation_yields)
+        {
+            *sum = sum.saturating_add(add);
+        }
+        if let Some(sample) = phases.source_reclamation_sample {
+            total.source_reclamation_sample = Some(sample);
+            total.source_reclamation_sample_attempt = total.source_reclamation_attempts;
         }
     }
 
@@ -462,6 +477,8 @@ fn run_lane(
     validation_inputs: &riffdb_storage_api::StartupValidationInputs,
 ) {
     let mut after_checkpoint = false;
+    let diagnostic_start = std::time::Instant::now();
+    let mut next_source_diagnostic = Some(Duration::ZERO);
     loop {
         std::thread::yield_now();
         if control.stop_requested() {
@@ -569,6 +586,16 @@ fn run_lane(
                     return;
                 }
             }
+        }
+        let elapsed = diagnostic_start.elapsed();
+        if next_source_diagnostic.is_some_and(|next| elapsed >= next) {
+            eprintln!(
+                "{}",
+                crate::shutdown_census::format_source_reclamation_sample(
+                    &status.observation().phases
+                )
+            );
+            next_source_diagnostic = elapsed.checked_add(Duration::from_secs(60));
         }
         // Rest in proportion to the time the attempt held the writer gate,
         // never less than the outcome's own recheck interval.

@@ -9,6 +9,47 @@ use riffdb_storage_api::{
 use riffdb_storage_redb::{RedbOperationalPorts, RedbStore};
 use riffdb_types::{DatabaseId, DigestKeyId, IncidentId, Timestamp};
 
+// req: STO-030, STO-031, END-008
+#[test]
+fn source_ceiling_samples_preserve_measurement_age_instead_of_summing_fences() {
+    let status = RetentionLaneStatus::new(RetentionLaneState::Idle);
+    let first = [1, 50, 40, 20, 30, 20, 1, 3];
+    status.note_phases(&OnlineRetentionPhases {
+        source_reclamation_attempts: 1,
+        source_reclamation_sample: Some(first),
+        ..OnlineRetentionPhases::default()
+    });
+    status.note_phases(&OnlineRetentionPhases {
+        source_reclamation_attempts: 1,
+        source_reclamation_yields: [0, 1, 0],
+        ..OnlineRetentionPhases::default()
+    });
+    // An independently accounted prefix-refresh phase is not another source
+    // attempt and cannot replace a real floor plan with zero-filled fields.
+    status.note_phases(&OnlineRetentionPhases {
+        prefix_gate_us: 7,
+        ..OnlineRetentionPhases::default()
+    });
+    let prior = status.observation().phases;
+    assert_eq!(prior.source_reclamation_attempts, 2);
+    assert_eq!(prior.source_reclamation_sample_attempt, 1);
+    assert_eq!(prior.source_reclamation_sample, Some(first));
+    assert_eq!(prior.source_reclamation_yields, [0, 1, 0]);
+    let next = [20, 80, 70, 0, 60, 60, 1, 2];
+    status.note_phases(&OnlineRetentionPhases {
+        source_reclamation_attempts: 1,
+        source_reclamation_sample: Some(next),
+        source_reclamation_yields: [0, 0, 1],
+        ..OnlineRetentionPhases::default()
+    });
+    let observed = status.observation().phases;
+    assert_eq!(observed.source_reclamation_attempts, 3);
+    assert_eq!(observed.source_reclamation_sample_attempt, 3);
+    assert_eq!(observed.source_reclamation_sample, Some(next));
+    assert_eq!(observed.source_reclamation_yields, [0, 1, 1]);
+    assert_eq!(observed.prefix_gate_us, 7);
+}
+
 #[derive(Default)]
 struct RecordingDiagnostics {
     incidents: Mutex<Vec<(IncidentId, DefectScope)>>,

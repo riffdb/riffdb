@@ -83,6 +83,14 @@ These limits are part of the POC release posture, not hidden roadmap promises.
   All seven scoped checks and 1,241 native/simulator tests pass, with ten
   existing skips. Final-source full CI and continuing-load qualification of
   this repair remain pending.
+  Bounded source-floor observations pass 1,806 native/server tests. Their
+  required-host preparation again fails final-window latency. Available plans
+  report no derived or durable source holds; the last pre-deletion plan permits
+  more than 211,000 positions beyond resume, while removal totals only 8,962
+  receipts. Missing and stale samples remain explicit. This is a native source-
+  admission progress limitation; revisiting the accepted nonwaiting drained
+  boundary needs a new accepted decision. The plan does not prove physical
+  eligibility, and the backlog cannot be classified as protected history.
   Native reclamation, latency, notification and recovery behavior require
   further verification; maintenance pauses, automatic
   watch reconnects or relaxed client validation cannot qualify the rehearsal.

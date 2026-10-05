@@ -14,13 +14,15 @@ pub(super) fn floor(
     history: History,
     prior_checkpoint: Point,
     derived_floor: Option<u64>,
-) -> Result<Option<Point>, StorageError> {
+) -> Result<(Option<Point>, [u64; 8]), StorageError> {
     // The barrier completely validated the bounded holds and retained chain.
     let mut maximum = prior_checkpoint.sequence().get();
     if let Some(derived_floor) = derived_floor {
         maximum = maximum.min(derived_floor);
     }
     let holds = root.open_table(SOURCE_HOLDS).map_err(table_error)?;
+    let mut hold_floor: Option<u64> = None;
+    let mut hold_count = 0_u64;
     for row in holds.iter().map_err(precommit_storage_error)? {
         let (_, value) = row.map_err(precommit_storage_error)?;
         let state = *decode_replication_source_hold(value.value())
@@ -35,12 +37,28 @@ pub(super) fn floor(
                 policy.hold()
             }
         };
+        hold_count = hold_count.saturating_add(1);
+        hold_floor = Some(hold_floor.map_or(hold.fence().sequence().get(), |prior| {
+            prior.min(hold.fence().sequence().get())
+        }));
         maximum = maximum.min(hold.fence().sequence().get());
     }
     let first = history.minimum_resume().sequence().get();
+    // Planning-only numbers from this exact barrier. Optional fences have
+    // explicit presence bits; zero never stands for a missing protected fence.
+    let observation = [
+        first,
+        history.tail().sequence().get(),
+        prior_checkpoint.sequence().get(),
+        derived_floor.unwrap_or(0),
+        hold_floor.unwrap_or(0),
+        maximum,
+        hold_count,
+        u64::from(derived_floor.is_some()) | (u64::from(hold_floor.is_some()) << 1),
+    ];
     maximum = maximum.min(first.saturating_add(MAX_RECLAIMED_RECEIPTS));
     if maximum <= first {
-        return Ok(None);
+        return Ok((None, observation));
     }
     let table = root.open_table(HISTORY).map_err(table_error)?;
     let row = table
@@ -51,7 +69,9 @@ pub(super) fn floor(
         row.value(),
     )?)
     .map_err(value_error)?;
-    Point::from_receipt(&receipt).map(Some).map_err(value_error)
+    Point::from_receipt(&receipt)
+        .map(|point| (Some(point), observation))
+        .map_err(value_error)
 }
 
 pub(super) fn stage(

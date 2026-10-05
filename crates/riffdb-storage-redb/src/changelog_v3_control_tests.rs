@@ -229,6 +229,83 @@ fn derived_source_pin_retains_exact_tail_until_successor_selection() {
     assert_eq!(history(&ports).minimum_resume(), successor.position());
 }
 
+// req: STO-030, STO-031, END-008, REP-003
+#[test]
+fn source_ceiling_observation_uses_actual_pins_holds_and_prior_checkpoint() {
+    use riffdb_storage_api::OwnedSnapshotReader;
+    for kind in [
+        None,
+        Some(Kind::Bootstrap),
+        Some(Kind::FollowerAcknowledgement),
+        Some(Kind::ArchiveAcknowledgement),
+    ] {
+        for derived in [false, true] {
+            let (_scope, ports, states) = fixture();
+            let pin = derived.then(|| {
+                ports
+                    .open_owned_snapshot()
+                    .unwrap()
+                    .pin_derived_source_v3()
+                    .unwrap()
+                    .at(states[2].tail())
+                    .unwrap()
+            });
+            let mut control = ports.replication_source_control();
+            if let Some(kind) = kind {
+                assert!(control.register(hold(kind, states[3])).unwrap());
+            }
+            let prior = history(&ports);
+            assert!(!control.reclaim_history().unwrap());
+            assert!(control.reclamation_observation().is_none());
+            assert_eq!(control.reclamation_yields(), [1, 0, 0]);
+            let current = append(&ports, b"independent publication for observed ceiling");
+            assert!(control.reclaim_history().unwrap());
+            let maximum = if derived {
+                states[2].tail().sequence().get()
+            } else if kind.is_some() {
+                states[3].tail().sequence().get()
+            } else {
+                prior.tail().sequence().get()
+            };
+            assert_eq!(
+                control.reclamation_observation(),
+                Some([
+                    prior.minimum_resume().sequence().get(),
+                    current.tail().sequence().get(),
+                    prior.tail().sequence().get(),
+                    pin.as_ref()
+                        .map_or(0, |pin| pin.position().sequence().get()),
+                    kind.map_or(0, |_| states[3].tail().sequence().get()),
+                    maximum,
+                    u64::from(kind.is_some()),
+                    u64::from(derived) | (u64::from(kind.is_some()) << 1),
+                ])
+            );
+            assert_eq!(history(&ports).minimum_resume().sequence().get(), maximum);
+            let retained = history(&ports);
+            assert!(!control.reclaim_history().unwrap());
+            assert!(
+                control.reclamation_observation().is_none(),
+                "a prior observation is never reported as a new measurement"
+            );
+            assert_eq!(history(&ports), retained);
+            assert_eq!(control.reclamation_yields(), [0, 1, 0]);
+            if derived || kind.is_some() {
+                append(
+                    &ports,
+                    b"independent publication with actual custody retained",
+                );
+                assert!(!control.reclaim_history().unwrap());
+                let sample = control.reclamation_observation().unwrap();
+                assert_eq!((sample[0], sample[5]), (maximum, maximum));
+                assert_eq!(control.reclamation_yields(), [0, 0, 1]);
+                assert_eq!(history(&ports).minimum_resume(), retained.minimum_resume());
+            }
+            drop(pin);
+        }
+    }
+}
+
 // req: PRJ-001, PRJ-002, PRJ-004, REP-003
 #[test]
 fn derived_source_pin_cannot_resurrect_pruned_history_or_substitute_a_source() {
@@ -306,6 +383,9 @@ fn v3_reclamation_is_bounded_and_pinned_readers_keep_original_receipts() {
     append(&ports, b"later bounded checkpoint");
     assert!(control.reclaim_history().unwrap());
     let after = history(&ports);
+    let observed = control.reclamation_observation().unwrap();
+    assert_eq!(observed[5], before.tail().sequence().get());
+    assert!(observed[5] > after.minimum_resume().sequence().get());
     assert_eq!(
         after.minimum_resume().sequence().get(),
         before.minimum_resume().sequence().get() + 256
