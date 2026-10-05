@@ -36,6 +36,7 @@ use crate::{
 /// subsequent unreceipted writes cannot be added before commit. Dropping aborts.
 pub(crate) struct PreparedImmediateReceipt {
     transaction: WriteTransaction,
+    footprint: crate::source_continuation::SourceContinuationFootprint,
 }
 
 impl PreparedImmediateReceipt {
@@ -53,6 +54,12 @@ impl PreparedImmediateReceipt {
         require_direct_attribution(receipt.attribution())?;
         let mut transaction = database.begin_write().map_err(transaction_error)?;
         transaction.set_two_phase_commit(profile.uses_two_phase());
+        let history = read_checkpoint_roots_for_write(&transaction)?
+            .ok_or_else(|| storage_error(StorageErrorKind::CorruptData))?;
+        let footprint = crate::source_continuation::SourceContinuationFootprint::captured(
+            history,
+            receipt.mutations(),
+        );
         let advance = PreparedHistoryAdvance::prepare(&transaction, receipt)?;
         let tables = table_inventory(&transaction)?;
         for mutation in receipt.mutations() {
@@ -72,12 +79,15 @@ impl PreparedImmediateReceipt {
         #[cfg(test)]
         crash_edge("mutations");
         advance.stage(&transaction)?;
-        Ok(Self { transaction })
+        Ok(Self {
+            transaction,
+            footprint,
+        })
     }
 
     /// Commits through the existing durable-root publication/fault owner.
     pub(crate) fn commit(self, shared: &SharedRedb) -> Result<(), StorageError> {
-        shared.commit_durable(self.transaction)?;
+        shared.commit_with_source_footprint(self.transaction, self.footprint)?;
         #[cfg(test)]
         crash_edge("committed");
         Ok(())
@@ -127,6 +137,7 @@ pub(crate) struct CapturedImmediateWrite {
     capture: MutationCapture,
     tables: BTreeSet<&'static str>,
     source: ChangelogAttributionV3,
+    footprint: crate::source_continuation::SourceContinuationFootprint,
 }
 
 impl CapturedImmediateWrite {
@@ -141,7 +152,11 @@ impl CapturedImmediateWrite {
         transaction
             .set_durability(Durability::Immediate)
             .map_err(|_| storage_error(StorageErrorKind::InvariantViolation))?;
-        let captured = Self::from_drained(transaction, source)?;
+        let captured = Self::from_checked_drain(
+            transaction,
+            source,
+            crate::source_continuation::SourceContinuationFootprint::fresh(),
+        )?;
         if captured.history.is_none() {
             return Err(storage_error(StorageErrorKind::IncompatibleFormat));
         }
@@ -155,6 +170,18 @@ impl CapturedImmediateWrite {
     pub(crate) fn from_drained(
         transaction: WriteTransaction,
         source: ChangelogAttributionV3,
+    ) -> Result<Self, StorageError> {
+        Self::from_checked_drain(
+            transaction,
+            source,
+            crate::source_continuation::SourceContinuationFootprint::unknown(),
+        )
+    }
+
+    pub(crate) fn from_checked_drain(
+        transaction: WriteTransaction,
+        source: ChangelogAttributionV3,
+        footprint: crate::source_continuation::SourceContinuationFootprint,
     ) -> Result<Self, StorageError> {
         require_direct_attribution(source)?;
         // Transitional routing matches the existing journal owner. Any V3
@@ -185,6 +212,7 @@ impl CapturedImmediateWrite {
             },
             tables,
             source,
+            footprint,
         })
     }
 
@@ -205,6 +233,15 @@ impl CapturedImmediateWrite {
 
     pub(crate) fn finish(self) -> Result<PreparedImmediateReceipt, StorageError> {
         let mutations = self.capture.finish()?;
+        let mut footprint = self.footprint;
+        footprint.combine(self.history.map_or(
+            crate::source_continuation::SourceContinuationFootprint::unknown(),
+            |history| {
+                crate::source_continuation::SourceContinuationFootprint::captured(
+                    history, &mutations,
+                )
+            },
+        ));
         if !mutations.is_empty() {
             let history = self
                 .history
@@ -252,6 +289,7 @@ impl CapturedImmediateWrite {
         }
         Ok(PreparedImmediateReceipt {
             transaction: self.transaction,
+            footprint,
         })
     }
 

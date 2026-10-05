@@ -94,3 +94,11 @@ update, emitted update events and a counting projection for the accepted
 named reads, event acknowledgements and a live-query snapshot against an owned
 TLS daemon. It proves neither sustained service levels nor 24-hour duration.
 The original example and alpha endurance gate retain their existing identities.
+
+Native shutdown observations distinguish receipt removal and gate time from
+streamed source validation work. The fixed numeric
+`riffdb-retention-source-validation-v1` line reports initial and continuation
+rows, invalidated proofs and refused admissions. Existing extent counters
+report actual retirement and reference/reader holds. Passing a preparation or a
+native regression still does not qualify the complete sustainable rehearsal;
+see the [native repair findings](../architecture/WP-825-LIVE-OBSERVATIONS.md).

@@ -292,6 +292,15 @@ impl RedbWriteAccess {
             )?;
             let composite_successor = Arc::new(composite_successor);
             let retained_frame = frame.clone();
+            if changelog_successor.is_none()
+                || !crate::source_continuation::SourceContinuationFootprint::composite(
+                    predecessor_administration_sequence,
+                    &checkpoint_mutations,
+                )
+                .is_append_only()
+            {
+                self.shared.invalidate_source_continuation();
+            }
             let receipt = runtime.lane.submit(frame).map_err(journal_io_error)?;
             runtime.changelog_history = changelog_successor.map(|(_, history)| history);
             runtime.last_administration_sequence = covered_administration_sequence;

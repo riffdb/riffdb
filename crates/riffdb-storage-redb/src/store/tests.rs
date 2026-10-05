@@ -1971,7 +1971,7 @@ fn empty_armed_ports(
 
 // req: OUT-001, OUT-002, TXN-042, REC-004, PERF-019
 
-// req: OUT-001, OUT-002, TXN-042, REC-004
+// req: OUT-001, OUT-002, TXN-042, REC-004, STO-030, STO-032
 #[test]
 fn durable_root_capture_retries_the_engine_visible_before_identity_window() {
     let path = TestDatabasePath::new("durable-root-publication-seqlock");
@@ -1986,6 +1986,7 @@ fn durable_root_capture_retries_the_engine_visible_before_identity_window() {
     let shared = Arc::clone(&store.shared);
     let predecessor = shared.current_read_root().expect("predecessor root");
     let predecessor_identity = predecessor.identity();
+    let predecessor_qualification = shared.source_continuation_epoch.load(Ordering::Acquire);
     drop(predecessor);
 
     let writer_shared = Arc::clone(&shared);
@@ -2001,6 +2002,11 @@ fn durable_root_capture_retries_the_engine_visible_before_identity_window() {
             .expect("commit exact successor");
     });
     schedule.wait_until_commit_is_visible();
+    assert_ne!(
+        shared.source_continuation_epoch.load(Ordering::Acquire),
+        predecessor_qualification,
+        "invalidate before an uncovered successor is visible"
+    );
 
     let reader_shared = Arc::clone(&shared);
     let reader = std::thread::spawn(move || {

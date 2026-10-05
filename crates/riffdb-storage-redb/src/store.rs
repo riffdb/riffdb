@@ -4,6 +4,10 @@ mod transient_access;
 
 mod read_census;
 
+#[cfg(test)]
+#[path = "changelog_source_continuation_tests.rs"]
+mod source_continuation_tests;
+
 mod provider_read_access;
 mod provider_read_range;
 pub(crate) use provider_read_access::{ProviderSourceBytesV1, copy_provider_bytes_v1};
@@ -382,6 +386,7 @@ pub(crate) struct SharedRedb {
     /// dirty path, which reports `complete_validation`.
     pub(crate) clean_certificate_startup: AtomicBool,
     durable_commit_epoch: AtomicU64,
+    pub(crate) source_continuation_epoch: AtomicU64,
     /// Even values name stable redb roots; odd values mean an engine commit is
     /// in flight or visible but has not yet published its exact root identity.
     /// Readers use the adjacent condition variable only while an odd value is
@@ -1159,7 +1164,30 @@ impl SharedRedb {
         Ok(())
     }
 
+    pub(crate) fn invalidate_source_continuation(&self) {
+        // MAX is permanently unqualified. Failure cannot wrap to an old proof.
+        let _ = self.source_continuation_epoch.fetch_update(
+            Ordering::AcqRel,
+            Ordering::Acquire,
+            |epoch| epoch.checked_add(1),
+        );
+    }
+
     pub(crate) fn commit_durable(&self, transaction: WriteTransaction) -> Result<(), StorageError> {
+        self.commit_with_source_footprint(
+            transaction,
+            crate::source_continuation::SourceContinuationFootprint::unknown(),
+        )
+    }
+
+    pub(crate) fn commit_with_source_footprint(
+        &self,
+        transaction: WriteTransaction,
+        footprint: crate::source_continuation::SourceContinuationFootprint,
+    ) -> Result<(), StorageError> {
+        if !footprint.is_append_only() {
+            self.invalidate_source_continuation();
+        }
         if self.durable_commit_epoch.load(Ordering::Acquire) == u64::MAX {
             self.fence_writes();
             return Err(storage_error(StorageErrorKind::SequenceExhausted));
@@ -1210,6 +1238,7 @@ impl SharedRedb {
             }
         };
         if let Err(error) = committed {
+            self.invalidate_source_continuation();
             self.fence_writes();
             return Err(commit_error(error));
         }
@@ -2603,6 +2632,7 @@ impl RedbStore {
                 bounded_clean_startup: AtomicBool::new(false),
                 clean_certificate_startup: AtomicBool::new(false),
                 durable_commit_epoch: AtomicU64::new(0),
+                source_continuation_epoch: AtomicU64::new(0),
                 durable_root_publication: AtomicU64::new(0),
                 durable_root_publication_wait: Mutex::new(()),
                 durable_root_publication_changed: Condvar::new(),
@@ -5683,31 +5713,38 @@ impl RedbOperationalPorts {
         transaction
             .set_durability(Durability::Immediate)
             .map_err(|_| storage_error(StorageErrorKind::InvariantViolation))?;
-        if let Some(runtime) = journal_checkpoint.as_ref()
-            && let Err(error) = self
+        let footprint = if let Some(runtime) = journal_checkpoint.as_ref() {
+            match self
                 .shared
                 .apply_published_journal_suffix(&transaction, runtime)
-        {
-            let _ = transaction.abort();
-            if let Some(runtime) = journal_checkpoint {
-                let _ = self.shared.restore_journal_runtime(runtime);
+            {
+                Ok(footprint) => footprint,
+                Err(error) => {
+                    let _ = transaction.abort();
+                    if let Some(runtime) = journal_checkpoint {
+                        let _ = self.shared.restore_journal_runtime(runtime);
+                    }
+                    self.shared.fence_writes();
+                    return Err(error);
+                }
             }
-            self.shared.fence_writes();
-            return Err(error);
-        }
+        } else {
+            crate::source_continuation::SourceContinuationFootprint::fresh()
+        };
         if let Some(timing) = timing {
             timing.drain_us = elapsed_us(gate_acquired, std::time::Instant::now());
         }
-        let transaction = match OperationalWriteTransaction::from_drained(transaction, source) {
-            Ok(transaction) => transaction,
-            Err(error) => {
-                if let Some(runtime) = journal_checkpoint {
-                    self.shared.restore_journal_runtime(runtime)?;
+        let transaction =
+            match OperationalWriteTransaction::from_checked_drain(transaction, source, footprint) {
+                Ok(transaction) => transaction,
+                Err(error) => {
+                    if let Some(runtime) = journal_checkpoint {
+                        self.shared.restore_journal_runtime(runtime)?;
+                    }
+                    self.shared.fence_writes();
+                    return Err(error);
                 }
-                self.shared.fence_writes();
-                return Err(error);
-            }
-        };
+            };
         Ok(Some(RedbWriteAccess {
             shared: Arc::clone(&self.shared),
             transaction: Some(transaction),
@@ -6887,6 +6924,15 @@ impl RedbDurabilityEpoch {
                 )?;
                 let composite_successor = Arc::new(composite_successor);
                 let retained_frame = frame.clone();
+                if changelog_successor.is_none()
+                    || !crate::source_continuation::SourceContinuationFootprint::composite(
+                        predecessor_administration_sequence,
+                        &checkpoint_mutations,
+                    )
+                    .is_append_only()
+                {
+                    self.shared.invalidate_source_continuation();
+                }
                 let receipt = runtime.lane.submit(frame).map_err(journal_io_error)?;
                 runtime.changelog_history = changelog_successor.map(|(_, history)| history);
                 runtime.last_sequence = Some(last_sequence);
@@ -7035,12 +7081,15 @@ impl SharedRedb {
             self.restore_journal_runtime(runtime)?;
             return Err(storage_error(StorageErrorKind::InvariantViolation));
         }
-        if let Err(error) = self.apply_published_journal_suffix(&transaction, &runtime) {
-            let _ = transaction.abort();
-            self.restore_journal_runtime(runtime)?;
-            return Err(error);
-        }
-        self.commit_durable(transaction)?;
+        let footprint = match self.apply_published_journal_suffix(&transaction, &runtime) {
+            Ok(footprint) => footprint,
+            Err(error) => {
+                let _ = transaction.abort();
+                self.restore_journal_runtime(runtime)?;
+                return Err(error);
+            }
+        };
+        self.commit_with_source_footprint(transaction, footprint)?;
         if let Err(error) = self.refresh_durable_read_frontier() {
             self.fence_writes();
             return Err(error);
@@ -7912,8 +7961,13 @@ impl SharedRedb {
         &self,
         transaction: &WriteTransaction,
         runtime: &JournalRuntime,
-    ) -> Result<(), StorageError> {
+    ) -> Result<crate::source_continuation::SourceContinuationFootprint, StorageError> {
         let v3 = crate::changelog_v3_journal::has_write_recovery_roots(transaction)?;
+        let mut footprint = if v3 {
+            crate::source_continuation::SourceContinuationFootprint::fresh()
+        } else {
+            crate::source_continuation::SourceContinuationFootprint::unknown()
+        };
         // The drained frames become history stubs, which must resolve.
         self.register_history_resolver(runtime.database_id);
         let scanned = crate::journal::scan_located_journal_with_media(
@@ -7922,12 +7976,22 @@ impl SharedRedb {
             runtime.database_id,
             |frame, locator| {
                 if v3 || crate::changelog_v3_journal::has_receipt_source(frame) {
-                    crate::changelog_v3_journal::materialize_located_frame(
+                    let prior =
+                        crate::changelog_v3_roots::read_checkpoint_roots_for_write(transaction)
+                            .map_err(|_| crate::journal::JournalIoError::Corrupt)?
+                            .ok_or(crate::journal::JournalIoError::Corrupt)?;
+                    let receipt = crate::changelog_v3_journal::materialize_located_frame(
                         transaction,
                         frame,
                         locator,
                     )
                     .map_err(|_| crate::journal::JournalIoError::Corrupt)?;
+                    footprint.combine(
+                        crate::source_continuation::SourceContinuationFootprint::captured(
+                            prior,
+                            receipt.mutations(),
+                        ),
+                    );
                 } else {
                     for mutation in frame.mutations() {
                         crate::journal::apply_located_mutation(transaction, mutation, locator)?;
@@ -7950,7 +8014,7 @@ impl SharedRedb {
         {
             return Err(storage_error(StorageErrorKind::CorruptData));
         }
-        Ok(())
+        Ok(footprint)
     }
 
     fn take_published_journal_suffix_locked(

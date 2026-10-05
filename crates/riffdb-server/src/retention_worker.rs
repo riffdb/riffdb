@@ -219,6 +219,19 @@ impl RetentionLaneStatus {
             (&mut total.extent_reader_holds, phases.extent_reader_holds),
             (&mut total.reclaimed_receipts, phases.reclaimed_receipts),
             (&mut total.receipt_gate_us, phases.receipt_gate_us),
+            (&mut total.source_initial_rows, phases.source_initial_rows),
+            (
+                &mut total.source_continuation_rows,
+                phases.source_continuation_rows,
+            ),
+            (
+                &mut total.source_validation_invalidations,
+                phases.source_validation_invalidations,
+            ),
+            (
+                &mut total.source_admission_refusals,
+                phases.source_admission_refusals,
+            ),
             (&mut total.prefix_gate_us, phases.prefix_gate_us),
             (&mut total.gate_wait_us, phases.gate_wait_us),
             (&mut total.drain_us, phases.drain_us),

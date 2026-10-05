@@ -165,6 +165,9 @@ fn promotion_cutover_atomically_stamps_lineage_audit_and_complete_anchor() {
     let (database_path, mut owner, record, history) = fixture(&scope);
     owner.apply_promotion_cutover(&record).unwrap();
     let database = redb::Database::open(&database_path).unwrap();
+    crate::changelog_v3_retained_validation::assert_full_pinned_oracle(
+        database.begin_read().unwrap(),
+    );
     let read = database.begin_read().unwrap();
     let after = crate::changelog_v3_roots::validate_retained_history(&read)
         .unwrap()

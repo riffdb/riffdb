@@ -35,6 +35,11 @@ impl SharedRedb {
             .set_durability(Durability::Immediate)
             .map_err(|_| storage_error(StorageErrorKind::InvariantViolation))?;
         let v3 = crate::changelog_v3_journal::has_write_recovery_roots(&transaction)?;
+        let mut footprint = if v3 {
+            crate::source_continuation::SourceContinuationFootprint::fresh()
+        } else {
+            crate::source_continuation::SourceContinuationFootprint::unknown()
+        };
         let mut last_sequence = batch.checkpoint_sequence;
         let mut last_administration_sequence = batch.checkpoint_administration_sequence;
         let mut last_hash = batch.checkpoint_hash;
@@ -110,6 +115,12 @@ impl SharedRedb {
                 }
                 None
             };
+            footprint.combine(
+                crate::source_continuation::SourceContinuationFootprint::composite(
+                    last_administration_sequence,
+                    &frame.mutations,
+                ),
+            );
             for (index, mutation) in frame.mutations.iter().enumerate() {
                 if mutation.table() == CompositeTableV1::Meta
                     && Some(mutation.key())
@@ -191,7 +202,7 @@ impl SharedRedb {
             .checkpoint_rewrite
             .enter()
             .map_err(|_| storage_error(StorageErrorKind::Unavailable))?;
-        self.commit_durable(transaction)?;
+        self.commit_with_source_footprint(transaction, footprint)?;
         #[cfg(test)]
         crate::changelog_v3_journal::recovery_crash_edge("checkpoint-committed");
         Ok(())

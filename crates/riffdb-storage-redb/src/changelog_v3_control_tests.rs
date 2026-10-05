@@ -512,3 +512,63 @@ fn source_control_crash_cases(online: bool) {
         }
     }
 }
+
+// req: STO-030, STO-031, STO-032, REC-001, REC-002
+#[test]
+fn continuation_process_exit_never_reuses_a_certificate_at_recovery() {
+    use std::process::{Command, Stdio};
+    for edge in ["continuation-qualified", "continuation-certificate"] {
+        let scope = crate::test_path::ScopedDirectory::new("source-continuation-crash");
+        let path = scope.join("db.redb");
+        let (ports, _) = initialize(&path);
+        let original = history(&ports);
+        drop(ports);
+        let status = Command::new(std::env::current_exe().unwrap())
+            .args([
+                "--exact",
+                "changelog_v3_control_tests::v3_source_control_crash_child",
+            ])
+            .env("RIFFDB_V3_SOURCE_CONTROL_PATH", &path)
+            .env("RIFFDB_V3_SOURCE_CONTROL_EDGE", edge)
+            .env("RIFFDB_V3_SOURCE_CONTROL_ONLINE", "true")
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status()
+            .unwrap();
+        assert_eq!(status.code(), Some(93), "{edge}");
+        let committed = edge == "continuation-certificate";
+        let mut expected = None;
+        for _ in 0..2 {
+            let store = RedbStore::open(&path).unwrap();
+            let ports = RedbOperationalPorts {
+                shared: store.shared,
+            };
+            let recovered = history(&ports);
+            assert_eq!(
+                recovered.tail().sequence().get(),
+                original.tail().sequence().get() + if committed { 2 } else { 0 }
+            );
+            assert_eq!(
+                recovered.minimum_resume(),
+                if committed {
+                    original.tail()
+                } else {
+                    original.minimum_resume()
+                }
+            );
+            if let Some(expected) = expected {
+                assert_eq!(recovered, expected);
+            }
+            expected = Some(recovered);
+            let mut control = ports.replication_source_control();
+            // A recovered owner has no authority from the exited process. It
+            // starts the complete native pass and needs a later independent
+            // checkpoint before any further deletion can be admitted.
+            assert_eq!(control.reclaim_history_online().unwrap().0, 0);
+            assert!(control.receipt_validation_pending());
+            assert_eq!(control.reclaim_history_online().unwrap().0, 0);
+            assert_eq!(history(&ports), recovered);
+        }
+    }
+}

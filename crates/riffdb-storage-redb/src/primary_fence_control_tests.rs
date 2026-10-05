@@ -1,5 +1,5 @@
 // Live drained storage owner; policy/coordinator activation remains separate.
-// req: REP-005, REC-001, STO-012
+// req: REP-005, REC-001, STO-012, STO-030, STO-032
 use super::*;
 use riffdb_storage_api::{
     PrimaryFenceAwaitingDecision, PrimaryFenceCandidateTransaction, PrimaryFenceCandidateV1,
@@ -131,6 +131,8 @@ fn primary_fence_control_publishes_once_and_replays_the_original_receipt() {
         assert_eq!(history(&ports), before, "uncommitted fence stays private");
         let record = staged.commit().unwrap();
         assert!(!ports.primary_fence_lease_is_held());
+        crate::changelog_v3_retained_validation::assert_full_pinned_oracle(
+            ports.shared.database.begin_read().unwrap());
         let after = history(&ports);
         assert_eq!(
             after.tail().sequence(),

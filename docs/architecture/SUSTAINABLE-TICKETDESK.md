@@ -899,3 +899,36 @@ workload, concurrency, latency, source authority and recovery requirements;
 Updated handbook pages: this handoff and native findings; Hazards/follow-ups:
 accept ADR-0268 exactly, repair reclamation, diagnose latency and prefix refresh,
 explain the intermittent recovery failure, then complete all rehearsal gates.
+
+
+ADR-0268 was accepted exactly on 2026-10-04 in standalone commit `313f8e77`.
+Native continuation now passes the unchanged 600-command, 24-writer-turn
+starvation regression. It also repairs the drained journal source allocator
+after reclamation and live validated-prefix publication. Completed certificates
+retain checked native state without an obsolete reader pin between turns.
+The [native findings](WP-825-LIVE-OBSERVATIONS.md) describe mutation coverage,
+corruption and recovery checks, streamed-row measurements and bounded numeric
+diagnostics. Required-host load, prefix-refresh scheduling, latency, the
+intermittent recovery failure, full CI and the complete short rehearsal remain
+open. No 24-hour qualification has started.
+
+PR note: Package WP-825 (open); Tier guarantee; Behavior: bounded native source
+continuation under accepted ADR-0268, exact deletion preimages, completed-pin
+release and drained source-allocation publication repair; Checks: targeted
+native progress, corruption, hold, population, pin and process-exit tests,
+registered/fence/promotion oracles and scoped Clippy; the full storage suite
+ran 1,151 tests (1,148 passed, three architecture layout assertions failed).
+All 59 architecture tests pass after updating those assertions to the sealed
+footprint commit owner; full package acceptance/CI are not yet established; Compatibility:
+unchanged durable formats, ordering, authorization, application semantics and
+validated-prefix proof requirements; Updated handbook pages: this handoff,
+native findings, TicketDesk acceptance and known limitations;
+Hazards/follow-ups: source acknowledgement changes conservatively invalidate;
+required-host physical progress and latency, refresh scheduling, recovery
+investigation and the complete short rehearsal remain required.
+
+The real local preparation also passes V1/V2 TLS checks through Rust,
+TypeScript, Go and Python, plus graceful restart, kill, archive/retention and
+capability rotation preparations. These checks retain exact replay, revision,
+organization and bounded snapshot assertions. They do not establish the
+hash-bound campaign, continuous-load fault coverage or required-host gates.

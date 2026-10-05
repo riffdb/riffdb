@@ -73,6 +73,14 @@ pub struct OnlineRetentionPhases {
     pub receipt_gate_us: u64,
     /// Another bounded off-gate receipt page remains before exact end.
     pub receipt_validation_pending: bool,
+    /// Receipt/audit rows streamed during the complete initial source pass.
+    pub source_initial_rows: u64,
+    /// Receipt/audit rows streamed after closed publication qualification.
+    pub source_continuation_rows: u64,
+    /// Existing source candidates/certificates invalidated by native publication.
+    pub source_validation_invalidations: u64,
+    /// Nonwaiting source admissions refused without deleting any receipt.
+    pub source_admission_refusals: u64,
     /// Under the gate: validated-prefix pin capture and publication.
     pub prefix_gate_us: u64,
     /// Waiting for the first-come writer gate.
@@ -193,6 +201,12 @@ impl RedbOnlineRetentionLane {
             .map_err(|_| storage_error(StorageErrorKind::InvariantViolation))?;
         let (removed, held_us) = source_control.reclaim_history_online()?;
         phases.receipt_validation_pending = source_control.receipt_validation_pending();
+        [
+            phases.source_initial_rows,
+            phases.source_continuation_rows,
+            phases.source_validation_invalidations,
+            phases.source_admission_refusals,
+        ] = source_control.validation_phases();
         drop(source_control);
         phases.reclaimed_receipts = removed;
         phases.receipt_gate_us = held_us;

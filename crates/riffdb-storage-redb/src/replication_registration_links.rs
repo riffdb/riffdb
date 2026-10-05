@@ -88,6 +88,16 @@ impl RegistrationLinksValidation {
         Ok(Self { history, evidence })
     }
 
+    /// Only after the storage publication owner proved the current hold rows
+    /// and prior audit interval unchanged. Retains the native evidence census.
+    pub(crate) fn rebind_unchanged(&mut self, history: History) -> Result<(), StorageError> {
+        if self.history.lineage() != history.lineage() {
+            return Err(corrupt());
+        }
+        self.history = history;
+        Ok(())
+    }
+
     pub(crate) fn observe(
         &mut self,
         key: &[u8],

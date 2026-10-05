@@ -1,4 +1,4 @@
-// req: REP-006, STO-012
+// req: REP-006, STO-012, STO-030, STO-032
 use redb::{ReadableDatabase, ReadableTable};
 use riffdb_storage_api::{
     AuditPrincipalV1, ChangelogHistoryPointV3 as Point, ChangelogHistoryStateV3 as History,
@@ -383,6 +383,9 @@ fn complete_source_validation_uses_one_pin_and_refuses_erased_registration_evide
             .unwrap()
             .as_bytes(),
         encoded.as_bytes()
+    );
+    crate::changelog_v3_retained_validation::assert_full_pinned_oracle(
+        ports.shared.database.begin_read().unwrap(),
     );
     let old_pin = ports.shared.database.begin_read().unwrap();
     let before = crate::changelog_v3_roots::validate_retained_history(&old_pin).unwrap();

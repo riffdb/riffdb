@@ -1109,7 +1109,7 @@ fn every_live_database_engine_commit_routes_through_the_epoch_boundary() {
                     // Derived persistence under that same move-only owner.
                     || name == "store_follower_projection.rs"
                     // The extracted store-owned checkpoint is checked below:
-                    // one begin, one commit_durable, no native commit bypass.
+                    // One begin, one sealed-footprint commit, no native bypass.
                     || name == "store_journal_checkpoint.rs"
                     // Closed private store-child control owner, checked below.
                     || name == "changelog_source_control_transaction.rs"
@@ -1138,6 +1138,38 @@ fn every_live_database_engine_commit_routes_through_the_epoch_boundary() {
     assert!(store.contains("fncommit_durable("));
     assert!(store.contains("self.shared.commit_durable(transaction)?"));
     assert!(store.contains("self.shared.commit_durable(transaction)"));
+    let unclassified_commit = store
+        .split_once("pub(crate)fncommit_durable(")
+        .expect("unclassified commit boundary")
+        .1
+        .split_once("pub(crate)fncommit_with_source_footprint(")
+        .expect("sealed-footprint commit boundary")
+        .0;
+    assert!(unclassified_commit.contains(
+        "self.commit_with_source_footprint(transaction,crate::source_continuation::SourceContinuationFootprint::unknown(),)"
+    ));
+    assert!(!unclassified_commit.contains("transaction.commit()"));
+    let engine_commit = store
+        .split_once("pub(crate)fncommit_with_source_footprint(")
+        .unwrap()
+        .1
+        .split_once("fnbegin_operational_read(")
+        .expect("common commit boundary end")
+        .0;
+    assert_eq!(engine_commit.matches("transaction.commit()").count(), 1);
+    assert!(
+        engine_commit
+            .contains("if!footprint.is_append_only(){self.invalidate_source_continuation();}")
+    );
+    assert!(
+        engine_commit
+            .find("self.invalidate_source_continuation()")
+            .unwrap()
+            < engine_commit.find("transaction.commit()").unwrap()
+    );
+    assert!(engine_commit.contains("publication.checked_add(2)"));
+    assert!(engine_commit.contains("current.checked_add(1)"));
+    assert!(engine_commit.contains("self.fence_writes()"));
     let export_migration = without_whitespace(&production_source(
         source_dir.join("store_export_ledger.rs"),
     ));
@@ -1259,7 +1291,7 @@ fn every_live_database_engine_commit_routes_through_the_epoch_boundary() {
     assert_eq!(checkpoint.matches("self.database.begin_write()").count(), 1);
     assert_eq!(
         checkpoint
-            .matches("self.commit_durable(transaction)")
+            .matches("self.commit_with_source_footprint(transaction,footprint)")
             .count(),
         1
     );
@@ -1345,7 +1377,7 @@ fn every_live_database_engine_commit_routes_through_the_epoch_boundary() {
         .0;
     assert_eq!(
         sealed_commit
-            .matches("shared.commit_durable(self.transaction)?")
+            .matches("shared.commit_with_source_footprint(self.transaction,self.footprint)?")
             .count(),
         1
     );
@@ -1369,7 +1401,9 @@ fn captured_immediate_owner_keeps_one_transaction_and_no_raw_mutation_escape() {
     let finish = captured.split_once("pub(crate)fnfinish(").unwrap().1;
     assert!(!finish.contains("begin_write("));
     assert!(!finish.contains(".commit("));
-    assert!(finish.contains("PreparedImmediateReceipt{transaction:self.transaction,}"));
+    assert!(finish.contains("PreparedImmediateReceipt{transaction:self.transaction,footprint,}"));
+    assert!(finish.contains("letmutations=self.capture.finish()?"));
+    assert!(finish.contains("SourceContinuationFootprint::captured(history,&mutations,)"));
     assert!(!captured.contains("->&WriteTransaction"));
     assert!(!captured.contains("Result<WriteTransaction"));
     let store = without_whitespace(&production_source(crate_root().join("src/store.rs")));
@@ -1387,7 +1421,7 @@ fn captured_immediate_owner_keeps_one_transaction_and_no_raw_mutation_escape() {
     assert!(
         direct.find("apply_published_journal_suffix(").unwrap()
             < direct
-                .find("OperationalWriteTransaction::from_drained(")
+                .find("OperationalWriteTransaction::from_checked_drain(")
                 .unwrap()
     );
     let commit = store
@@ -1953,7 +1987,9 @@ fn source_controls_are_crate_private_closed_barrier_owners_without_application_e
         "previous.durable_epoch >= current.durable_epoch",
         "previous.publication == current.publication",
         "Kind::Bootstrap",
-        "self.observed = Some(write.commit()?)",
+        "let (observation, root, qualification) = write.commit_reclamation()?",
+        "self.observed = Some(observation)",
+        "walk.rebase_own_deletion(root, qualification)",
     ] {
         assert!(source.contains(check));
     }

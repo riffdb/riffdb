@@ -167,6 +167,19 @@ impl FenceValidation {
         }
     }
 
+    /// Rebind only the unchanged, completely validated native admission state.
+    pub(crate) fn rebind_unchanged(
+        &mut self,
+        history: ChangelogHistoryStateV3,
+        admission: ReplicationPrimaryAdmissionV1,
+    ) -> Result<(), StorageError> {
+        if history.lineage() != self.history.lineage() || admission != self.admission {
+            return Err(corrupt());
+        }
+        self.history = history;
+        Ok(())
+    }
+
     pub(crate) fn observe(
         &mut self,
         key: &[u8],

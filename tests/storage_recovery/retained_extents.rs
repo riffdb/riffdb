@@ -269,6 +269,66 @@ fn complete_checkpoint(
     riffdb_storage_redb::join_extent_sealing_fixture(ports);
 }
 
+// req: STO-030, STO-031, STO-032, END-008
+#[test]
+fn production_receipt_reclamation_progresses_with_interleaved_durable_writes() {
+    use std::num::NonZeroU64;
+
+    let path = TestDatabasePath::new("receipt-reclamation-writer-progress");
+    prepare_command_database(&path.0);
+    let (controller, schedule) = RedbTestController::checkpoint_schedule();
+    let ports =
+        open_operational(RedbStore::open_with_test_controller(&path.0, controller).unwrap());
+    // More than one validation page prevents a small idle fixture from hiding
+    // the exact-root admission problem. Every command uses the existing full
+    // command/provenance/outcome/event fixture; no history row is injected.
+    for ordinal in 1..=600 {
+        seal(&ports, ordinal).wait().unwrap();
+    }
+    complete_checkpoint(&ports, &schedule);
+    let lane = ports.online_retention_lane();
+    // Keep application history throughout this diagnostic so logical pruning
+    // cannot explain an absent commit or supply the required source progress.
+    let retain = NonZeroU64::new(u64::MAX).unwrap();
+    let budget = NonZeroU64::new(256).unwrap();
+    let mut removed_during_writes = 0;
+    let mut pending_pages = 0;
+    for ordinal in 601..=624 {
+        let (_, phases) = lane.step_timed(retain, budget, false).unwrap();
+        assert!(phases.reclaimed_receipts <= 256);
+        removed_during_writes += phases.reclaimed_receipts;
+        pending_pages += u64::from(phases.receipt_validation_pending);
+        // Explicit checkpoint hooks, rather than sleeps, publish another
+        // independently durable root before the next validation page.
+        seal(&ports, ordinal).wait().unwrap();
+        complete_checkpoint(&ports, &schedule);
+    }
+    assert!(pending_pages > 0, "exercise the paged validation owner");
+    // Give the same owner an idle exact-end pass, then publish the later
+    // independent checkpoint required by the source-reclamation protocol.
+    for _ in 0..24 {
+        let (_, phases) = lane.step_timed(retain, budget, false).unwrap();
+        assert!(phases.reclaimed_receipts <= 256);
+    }
+    seal(&ports, 625).wait().unwrap();
+    complete_checkpoint(&ports, &schedule);
+    let mut removed_after_writes = 0;
+    for _ in 0..24 {
+        let (_, phases) = lane.step_timed(retain, budget, false).unwrap();
+        assert!(phases.reclaimed_receipts <= 256);
+        removed_after_writes += phases.reclaimed_receipts;
+    }
+    assert!(
+        removed_after_writes > 0,
+        "the same fixture must permit receipt reclamation at an idle checkpoint"
+    );
+    assert!(
+        removed_during_writes > 0,
+        "source reclamation starved during 24 durable writer turns; \
+         removed after writes stopped={removed_after_writes}"
+    );
+}
+
 // req: STO-030, STO-031, STO-032
 #[test]
 fn logical_pruning_crosses_a_large_sealed_extent_in_bounded_steps() {
@@ -1059,4 +1119,49 @@ fn population_65536_first_successful_write_after_online_pruning_meets_60_seconds
         first_write_us <= 60_000_000,
         "first successful write exceeded the frozen recovery target"
     );
+}
+
+// req: STO-030, STO-031, STO-032, REC-001, REC-005
+#[test]
+fn live_prefix_refresh_preserves_the_next_native_journal_allocation() {
+    use std::num::NonZeroU64;
+    let path = TestDatabasePath::new("live-prefix-source-allocation");
+    prepare_two_sealed_commands(&path.0);
+    let (controller, schedule) = RedbTestController::checkpoint_schedule();
+    let ports =
+        open_operational(RedbStore::open_with_test_controller(&path.0, controller).unwrap());
+    seal(&ports, 3).wait().unwrap();
+    complete_checkpoint(&ports, &schedule);
+    let lane = ports.online_retention_lane();
+    let retain = NonZeroU64::new(1).unwrap();
+    let budget = NonZeroU64::new(256).unwrap();
+    for _ in 0..4 {
+        lane.step(retain, budget).unwrap();
+    }
+    seal(&ports, 4).wait().unwrap();
+    complete_checkpoint(&ports, &schedule);
+    for _ in 0..4 {
+        lane.step(retain, budget).unwrap();
+    }
+    lane.refresh_validated_prefix(
+        startup_inputs(),
+        std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
+    )
+    .unwrap();
+    // No close/reopen between publishing the complete prefix proof and this
+    // ordinary command. Restarting here would conceal the stale live allocator.
+    seal(&ports, 5).wait().unwrap();
+    assert_committed(&ports, 5);
+    complete_checkpoint(&ports, &schedule);
+    drop(lane);
+    drop(ports);
+    drop(schedule);
+    let reopened = open_operational(RedbStore::open(&path.0).unwrap());
+    assert_committed(&reopened, 5);
+    assert!(matches!(
+        reopened
+            .lookup_admission(command_fixture_at(1).candidates)
+            .unwrap(),
+        AdmissionLookupResultV1::Found(_)
+    ));
 }

@@ -132,6 +132,8 @@ impl PendingPrefixRefresh {
             prepared.commit(shared)?;
             shared.after_test_commit(RedbTestOperation::ValidatedPrefixCheckpoint)?;
             shared.refresh_durable_read_frontier()?;
+            let successor = self.history.advance(&receipt).map_err(value_error)?;
+            shared.refresh_drained_journal_source(self.history, successor)?;
             PrefixRefreshPublication::Published
         } else {
             PrefixRefreshPublication::Unchanged

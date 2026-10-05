@@ -40,17 +40,17 @@ These limits are part of the POC release posture, not hidden roadmap promises.
   correctness-unqualified redb, budget-comparison, and semantic-workload
   reports.
 - The sustainable TicketDesk rehearsal remains blocked by native lifecycle
-  behavior. Receipt reclamation can starve when durable writes repeatedly
-  invalidate its paged validation root; a deterministic regression reproduces
-  zero progress during writes and progress at a later idle checkpoint. A real
+  behavior. The deterministic receipt-starvation regression now passes with
+  accepted bounded native continuation; required-host continuing-load receipt
+  and physical retirement verification remains outstanding. A real
   preparation also ended with live-query notification buffer pressure. The
   native revoked-command error carriage has been repaired and verified through
   an actual TLS rotation preparation; the complete campaign remains unqualified.
   A later required-host preparation completed all offered requests and live
   progress, but its final normal window exceeded the p99 latency gate and again
   reclaimed no source receipts or extents.
-  Reclamation and notification behavior require further native diagnosis and
-  verification; maintenance pauses, automatic
+  Native reclamation, latency, notification and recovery behavior require
+  further verification; maintenance pauses, automatic
   watch reconnects or relaxed client validation cannot qualify the rehearsal.
   See the [repair findings and scope proposal](architecture/WP-825-LIVE-OBSERVATIONS.md).
 - The shared recovery inventory contains 41 boundaries. Eighteen belong to the

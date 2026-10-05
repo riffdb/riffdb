@@ -30,7 +30,8 @@ enum Phase {
 }
 
 pub(crate) struct RetainedHistoryValidation {
-    root: Arc<CheckpointRoot>,
+    root: Option<Arc<CheckpointRoot>>,
+    root_identity: u64,
     history: ChangelogHistoryStateV3,
     covered: ChangelogHistoryStateV3,
     first: bool,
@@ -41,6 +42,11 @@ pub(crate) struct RetainedHistoryValidation {
     fence: Option<FenceValidation>,
     promotion: PromotionValidation,
     phase: Phase,
+    qualification: Option<u64>,
+    initial_pass_complete: bool,
+    step_rows: [u64; 2],
+    #[cfg(test)]
+    rows_read: [u64; 2],
 }
 
 /// Sealed result of the exhaustive exact-end pass over this one immutable pin.
@@ -92,7 +98,8 @@ impl RetainedHistoryValidation {
         )
         .map_err(|_| corrupt())?;
         Ok(Some(Self {
-            root,
+            root_identity: root.identity(),
+            root: Some(root),
             history,
             covered,
             first: true,
@@ -105,7 +112,175 @@ impl RetainedHistoryValidation {
             // Existing full validation skips ancillary source checks for the
             // exact attached empty history admitted by read_checkpoint_roots.
             phase: if empty { Phase::Done } else { Phase::Receipts },
+            qualification: None,
+            initial_pass_complete: empty,
+            step_rows: [0; 2],
+            #[cfg(test)]
+            rows_read: [0; 2],
         }))
+    }
+
+    #[cfg(test)]
+    pub(crate) fn rows_read(&self) -> [u64; 2] {
+        self.rows_read
+    }
+
+    pub(crate) fn clear_step_rows(&mut self) {
+        self.step_rows = [0; 2];
+    }
+    pub(crate) fn step_rows(&self) -> [u64; 2] {
+        self.step_rows
+    }
+
+    pub(crate) fn root_identity(&self) -> u64 {
+        self.root_identity
+    }
+
+    /// A completed certificate consists of checked native state and an exact
+    /// qualification binding. It needs no obsolete reader pin between turns.
+    pub(crate) fn release_completed_pin(&mut self) {
+        if self.is_complete() {
+            self.root = None;
+        }
+    }
+
+    pub(crate) fn independent_sequence(&self) -> u64 {
+        self.independent_sequence
+    }
+
+    pub(crate) fn bind_qualification(&mut self, epoch: u64) {
+        self.qualification = (epoch != u64::MAX).then_some(epoch);
+    }
+
+    pub(crate) fn qualifies(&self, epoch: u64) -> bool {
+        epoch != u64::MAX && self.qualification == Some(epoch)
+    }
+
+    pub(crate) fn is_complete(&self) -> bool {
+        self.phase == Phase::Done
+    }
+
+    pub(crate) fn proof(&self) -> Result<ValidatedRetainedHistory, StorageError> {
+        if !self.is_complete() {
+            return Err(storage_error(StorageErrorKind::Unavailable));
+        }
+        Ok(ValidatedRetainedHistory {
+            root: Arc::clone(
+                self.root
+                    .as_ref()
+                    .ok_or_else(|| storage_error(StorageErrorKind::Unavailable))?,
+            ),
+            history: self.history,
+            independent_sequence: self.independent_sequence,
+        })
+    }
+
+    /// Previously visited rows are reusable only through the native mutation
+    /// owner's closed qualification. Canonical metadata and every appended row
+    /// still have to agree with the exact successor pin.
+    pub(crate) fn continue_on(
+        &mut self,
+        root: Arc<CheckpointRoot>,
+        epoch: u64,
+    ) -> Result<bool, StorageError> {
+        if !self.qualifies(epoch) || !self.is_complete() {
+            return Ok(false);
+        }
+        if root.identity() == self.root_identity {
+            self.root = Some(root);
+            return Ok(true);
+        }
+        let history =
+            crate::changelog_v3_roots::read_checkpoint_roots(&root)?.ok_or_else(corrupt)?;
+        if history.lineage() != self.history.lineage()
+            || history.anchor() != self.history.anchor()
+            || history.minimum_resume() != self.history.minimum_resume()
+            || history.tail().sequence() < self.history.tail().sequence()
+        {
+            return Ok(false);
+        }
+        self.rebind_native_evidence(&root, history)?;
+        self.root_identity = root.identity();
+        self.root = Some(root);
+        self.history = history;
+        self.phase = if self.covered == history {
+            Phase::Done
+        } else {
+            Phase::Receipts
+        };
+        Ok(true)
+    }
+
+    fn rebind_native_evidence(
+        &mut self,
+        root: &CheckpointRoot,
+        history: ChangelogHistoryStateV3,
+    ) -> Result<(), StorageError> {
+        self.registrations.rebind_unchanged(history)?;
+        if let Some(fence) = &mut self.fence {
+            let meta = root.open_table(META).map_err(table_error)?;
+            let admission = crate::primary_admission_roots::read(&meta)?.ok_or_else(corrupt)?;
+            fence.rebind_unchanged(history, admission)?;
+        }
+        Ok(())
+    }
+
+    /// At most one native receipt page and one native audit page under the
+    /// drained gate. An unfinished suffix yields; never walk population here.
+    pub(crate) fn close_suffix_page(&mut self) -> Result<bool, StorageError> {
+        if self.phase == Phase::Receipts {
+            self.receipts(MAX_ROWS_PER_STEP)?;
+            if self.phase == Phase::Receipts {
+                return Ok(false);
+            }
+        }
+        if self.phase == Phase::Audit {
+            return self.audit(MAX_ROWS_PER_STEP);
+        }
+        Ok(self.is_complete())
+    }
+
+    /// Only the single owner's sealed, predecessor-checked deletion may supply
+    /// this root. Deleted evidence is dropped; the new receipt is validated
+    /// canonically before the rebased certificate is published.
+    pub(crate) fn rebase_own_deletion(
+        &mut self,
+        root: Arc<CheckpointRoot>,
+        epoch: u64,
+    ) -> Result<(), StorageError> {
+        if !self.is_complete() || epoch == u64::MAX {
+            return Err(storage_error(StorageErrorKind::Unavailable));
+        }
+        let history =
+            crate::changelog_v3_roots::read_checkpoint_roots(&root)?.ok_or_else(corrupt)?;
+        if history.lineage() != self.history.lineage()
+            || history.anchor() != self.history.anchor()
+            || history.minimum_resume().sequence() <= self.history.minimum_resume().sequence()
+            || history.minimum_resume().sequence().get()
+                - self.history.minimum_resume().sequence().get()
+                > MAX_ROWS_PER_STEP as u64
+            || self.history.tail().sequence().get().checked_add(1)
+                != Some(history.tail().sequence().get())
+        {
+            return Err(corrupt());
+        }
+        self.rebind_native_evidence(&root, history)?;
+        self.covered = ChangelogHistoryStateV3::new(
+            history.lineage(),
+            history.anchor(),
+            self.covered.tail(),
+            history.minimum_resume(),
+        )
+        .map_err(|_| corrupt())?;
+        self.root_identity = root.identity();
+        self.root = Some(root);
+        self.history = history;
+        self.phase = Phase::Receipts;
+        self.bind_qualification(epoch);
+        if !self.close_suffix_page()? {
+            return Err(corrupt());
+        }
+        Ok(())
     }
 
     pub(crate) fn advance(&mut self, limit: EvidencePageLimit) -> Result<bool, StorageError> {
@@ -124,14 +299,20 @@ impl RetainedHistoryValidation {
             return Err(storage_error(StorageErrorKind::Unavailable));
         }
         Ok(ValidatedRetainedHistory {
-            root: self.root,
+            root: self
+                .root
+                .ok_or_else(|| storage_error(StorageErrorKind::Unavailable))?,
             history: self.history,
             independent_sequence: self.independent_sequence,
         })
     }
 
     fn receipts(&mut self, limit: usize) -> Result<bool, StorageError> {
-        let table = self.root.open_table(HISTORY).map_err(table_error)?;
+        let root = self
+            .root
+            .as_ref()
+            .ok_or_else(|| storage_error(StorageErrorKind::Unavailable))?;
+        let table = root.open_table(HISTORY).map_err(table_error)?;
         let low = self
             .after_receipt
             .as_ref()
@@ -155,6 +336,12 @@ impl RetainedHistoryValidation {
                 return Ok(false);
             }
             let receipt = AuthoritativeTransactionV3::decode(&encoded).map_err(|_| corrupt())?;
+            self.step_rows[usize::from(self.initial_pass_complete)] =
+                self.step_rows[usize::from(self.initial_pass_complete)].saturating_add(1);
+            #[cfg(test)]
+            {
+                self.rows_read[0] += 1;
+            }
             if key.value() != receipt.binding().sequence.get().to_be_bytes()
                 || receipt.binding().sequence > self.history.tail().sequence()
             {
@@ -181,19 +368,20 @@ impl RetainedHistoryValidation {
         if self.first || self.covered != self.history {
             return Err(corrupt());
         }
-        let holds = self.root.open_table(SOURCE_HOLDS).map_err(table_error)?;
+        let holds = root.open_table(SOURCE_HOLDS).map_err(table_error)?;
         crate::changelog_v3_roots::validate_source_holds(&holds, self.history, &table)?;
         self.phase = Phase::Audit;
         Ok(false)
     }
 
     fn audit(&mut self, limit: usize) -> Result<bool, StorageError> {
-        let audit = self.root.open_table(AUDIT).map_err(table_error)?;
-        let indexes = self
+        let root = self
             .root
-            .open_table(AUDIT_BY_REQUEST)
-            .map_err(table_error)?;
-        let receipts = self.root.open_table(HISTORY).map_err(table_error)?;
+            .as_ref()
+            .ok_or_else(|| storage_error(StorageErrorKind::Unavailable))?;
+        let audit = root.open_table(AUDIT).map_err(table_error)?;
+        let indexes = root.open_table(AUDIT_BY_REQUEST).map_err(table_error)?;
+        let receipts = root.open_table(HISTORY).map_err(table_error)?;
         let low = self
             .after_audit
             .as_ref()
@@ -219,6 +407,12 @@ impl RetainedHistoryValidation {
             if next > AUDIT_PAGE_BYTES {
                 return Ok(false);
             }
+            self.step_rows[usize::from(self.initial_pass_complete)] =
+                self.step_rows[usize::from(self.initial_pass_complete)].saturating_add(1);
+            #[cfg(test)]
+            {
+                self.rows_read[1] += 1;
+            }
             self.registrations
                 .observe(key.value(), encoded.value(), &receipts)?;
             if let Some(fence) = &mut self.fence {
@@ -240,12 +434,24 @@ impl RetainedHistoryValidation {
         }
         self.promotion.finish(self.history, &receipts)?;
         self.phase = Phase::Done;
+        self.initial_pass_complete = true;
         Ok(true)
     }
 }
 
 fn corrupt() -> StorageError {
     storage_error(StorageErrorKind::CorruptData)
+}
+
+#[cfg(test)]
+pub(crate) fn assert_full_pinned_oracle(read: redb::ReadTransaction) {
+    let root = Arc::new(CheckpointRoot::new(read, 0));
+    let expected = crate::changelog_v3_roots::validate_retained_history(&root)
+        .unwrap()
+        .unwrap();
+    let mut walk = RetainedHistoryValidation::new(root).unwrap().unwrap();
+    while !walk.advance(EvidencePageLimit::new(1).unwrap()).unwrap() {}
+    assert_eq!(walk.complete().unwrap().history(), expected);
 }
 
 #[cfg(test)]

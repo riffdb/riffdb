@@ -10,6 +10,41 @@ use riffdb_storage_api::{
 };
 
 impl SharedRedb {
+    /// A drained online control receipt advances source history without moving
+    /// either application frontier. Keep the existing journal/extent open, but
+    /// replace its exact predecessor allocation before the next command starts.
+    pub(super) fn refresh_drained_journal_source(
+        &self,
+        predecessor: ChangelogHistoryStateV3,
+        successor: ChangelogHistoryStateV3,
+    ) -> Result<(), StorageError> {
+        let mut runtime = self
+            .journal_runtime
+            .lock()
+            .map_err(|_| storage_error(StorageErrorKind::InvariantViolation))?;
+        let Some(runtime) = runtime.as_mut() else {
+            return Ok(());
+        };
+        if runtime.changelog_history != Some(predecessor)
+            || predecessor.lineage() != successor.lineage()
+            || predecessor.tail().frontier() != successor.tail().frontier()
+            || successor.tail().frontier()
+                != DualFrontier::new(runtime.last_sequence, runtime.last_administration_sequence)
+            || runtime.published_sequence != runtime.last_sequence
+            || runtime.published_administration_sequence != runtime.last_administration_sequence
+            || runtime.published_hash != runtime.last_hash
+            || runtime.suffix_transitions != 0
+            || runtime.suffix_bytes != 0
+            || !runtime.suffix_frames.is_empty()
+            || runtime.unpublished_transitions != 0
+            || runtime.unpublished_bytes != 0
+        {
+            return Err(storage_error(StorageErrorKind::CorruptData));
+        }
+        runtime.changelog_history = Some(successor);
+        Ok(())
+    }
+
     pub(super) fn stage_changelog_allocator(
         &self,
         mutations: &mut crate::journal::JournalMutationBuffer,

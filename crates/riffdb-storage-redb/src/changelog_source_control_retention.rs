@@ -56,6 +56,7 @@ pub(super) fn floor(
 
 pub(super) fn stage(
     transaction: &WriteTransaction,
+    validated: &crate::checkpoint_root::CheckpointRoot,
     predecessor: History,
     successor: History,
     floor: Point,
@@ -75,13 +76,19 @@ pub(super) fn stage(
     .map_err(value_error)?;
     let encoded = encode_changelog_history_state_v3(retained).map_err(crate::error::codec_error)?;
     {
+        let prior = validated.open_table(HISTORY).map_err(table_error)?;
         let mut table = transaction.open_table(HISTORY).map_err(table_error)?;
         for sequence in first..end {
-            if table
-                .remove(sequence.to_be_bytes().as_slice())
+            let key = sequence.to_be_bytes();
+            let expected = prior
+                .get(key.as_slice())
                 .map_err(precommit_storage_error)?
-                .is_none()
-            {
+                .ok_or_else(|| storage_error(StorageErrorKind::CorruptData))?;
+            let removed = table
+                .remove(key.as_slice())
+                .map_err(precommit_storage_error)?
+                .ok_or_else(|| storage_error(StorageErrorKind::CorruptData))?;
+            if removed.value() != expected.value() {
                 return Err(storage_error(StorageErrorKind::CorruptData));
             }
         }

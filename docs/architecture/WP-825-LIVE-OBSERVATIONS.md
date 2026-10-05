@@ -64,9 +64,10 @@ SDK's strict validation must remain intact. Scope approval permits diagnosis,
 regression tests and repairs within accepted decisions; it does not accept a
 new storage, ordering, authorization or interface guarantee.
 
-The approved repair scope also includes the proposed ADR-0268 record needed to
-review the source-proof lifecycle change. Listing its path permits proposal
-and review; it does not accept the record or authorize its implementation.
+The maintainer accepted the exact text of ADR-0268 in session on 2026-10-04.
+The standalone acceptance commit is `313f8e77`. It authorizes bounded native
+source-proof continuation; the separate validated-prefix refresh boundary and
+all rehearsal gates remain intact.
 
 ### Revocation interoperability: repaired; real TLS preparation passes
 
@@ -142,7 +143,7 @@ Shutdown again reported zero source receipts removed and zero extents deleted
 or recycled. Final archive reconciliation did not run after the latency refusal.
 No complete rehearsal, full CI receipt or 24-hour qualification is established.
 
-### Source-receipt reclamation: deterministic starvation reproduction
+### Source-receipt reclamation: starvation regression repaired; load verification pending
 
 The failed preparation logically pruned 115,460 application sequences across
 582 steps, but removed zero source receipts and zero physical extents. It had
@@ -157,7 +158,7 @@ The same lane performs logical pruning between validation pages, and ordinary
 writes also advance the root. This creates a starvation candidate under ongoing
 load. Existing small tests primarily establish safe refusal and idle progress.
 
-The new failing regression
+The original failing regression
 `production_receipt_reclamation_progresses_with_interleaved_durable_writes`
 uses 600 complete command fixtures and explicit checkpoint hooks. It removed
 zero receipts across 24 interleaved independently durable writer turns. Its
@@ -176,6 +177,55 @@ independently durable checkpoint evidence, every hold, 256-receipt steps and
 maintenance pacing. If bounded progress requires changing ADR-0265's validation
 or scheduling decision, propose that exact change for separate human acceptance;
 do not implement weaker evidence or a harness maintenance pause.
+
+The implementation now qualifies complete actual mutation sets at the closed
+native capture, journal submission and checkpoint owners. Raw or uncovered
+transactions invalidate the process-local epoch before publication. Catalog,
+lineage, source authority, registration and other incompatible changes require
+a fresh complete pass. Source acknowledgement changes currently take that
+conservative invalidation path; no hold or acknowledgement is manufactured.
+
+One native validation owner retains its registration, fence and promotion
+census, validates new receipt/audit suffixes to exact end, and rechecks every
+current hold under the existing nonwaiting drained gate. Suffix closure is
+bounded by one existing receipt page and one audit page. Own prefix deletion
+checks exact removed preimages, the surviving floor and canonical control
+receipt before rebasing. Reclamation and prefix-refresh receipts remain excluded
+from independent progress. Completed certificates release their read pins
+between turns; incomplete candidates retain one pin and replacement uses at
+most two. No ancestor chain or mutation queue was added.
+
+The original writer schedule and idle positive control now pass. Native
+population tests count streamed source rows at 7, 300 and 600 receipts: one
+initial walk plus exactly five added receipts, with no repeated idle walk.
+Additional tests cover uncovered publication with equal source roots, overflow,
+changed receipt preimages, gaps, hold registration, failed-pin release and
+process exit before admission and after durable certificate rebasing. Separate
+full pinned-state oracles cover registered evidence, primary fences and
+promotion. These are implementation checks; they do not establish actual
+required-host latency or physical retirement under continuous load.
+
+The first green-progress attempt exposed an additional native publication bug:
+a drained journal runtime retained the source allocator preceding a control
+receipt. Its next ordinary command returned `CorruptData`. Both source
+reclamation and validated-prefix refresh now rebind that runtime only after
+checking its exact predecessor, drained state and unchanged application and
+administration frontiers. A separate live-prefix regression failed before the
+repair and passes after it without an intervening restart. Formats, ordering,
+startup validation and public application semantics remain unchanged.
+
+Shutdown adds the fixed numeric `riffdb-retention-source-validation-v1` line:
+`initial_rows`, `continuation_rows`, `invalidations` and `admission_refusals`.
+Row counts describe streamed receipt/audit rows, excluding ancillary point
+lookups. Existing actual receipt, physical retirement and hold counters remain
+separate. These observations never grant deletion authority.
+
+The full storage suite ran 1,151 tests: 1,148 passed and three static architecture
+assertions failed because they named the former commit/layout owners. Updating
+those assertions preserves the sole engine commit, unknown-write invalidation,
+sealed transaction and closed control ownership checks. All 59 architecture
+tests subsequently pass. Scoped Clippy and handbook checks pass; this is not a
+claim of full CI or package acceptance.
 
 ### Validated-prefix refresh: additional scheduling concern
 

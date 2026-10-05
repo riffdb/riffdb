@@ -58,6 +58,7 @@ pub(crate) struct ReplicationSourceControl {
     observed: Option<Observation>,
     online_validation: Option<crate::changelog_v3_retained_validation::RetainedHistoryValidation>,
     online_independent_sequence: u64,
+    online_validation_phases: [u64; 4],
 }
 
 impl RedbOperationalPorts {
@@ -166,6 +167,7 @@ impl RedbOperationalPorts {
             observed: None,
             online_validation: None,
             online_independent_sequence: 0,
+            online_validation_phases: [0; 4],
         }
     }
 }
@@ -286,6 +288,9 @@ impl ReplicationSourceControl {
     /// checkpoint AND all consumer fences, only after a later durable checkpoint.
     /// A first/same-root observation or a no-op creates no control transaction.
     pub(crate) fn reclaim_history(&mut self) -> Result<bool, Refusal> {
+        // The offline owner deliberately reconstructs the complete current
+        // proof. A retained online candidate cannot authorize its publication.
+        self.online_validation = None;
         let barrier = Barrier::acquire(Arc::clone(&self.shared))?;
         self.reclaim_at_barrier(barrier)
     }
@@ -294,44 +299,89 @@ impl ReplicationSourceControl {
     /// nonwaiting, drained-root admission. Returns actual removed receipts
     /// and gate-held time; the caller applies the existing maintenance pacing.
     pub(crate) fn reclaim_history_online(&mut self) -> Result<(u64, u64), StorageError> {
+        self.online_validation_phases = [0; 4];
+        if let Some(walk) = self.online_validation.as_mut() {
+            walk.clear_step_rows();
+        }
+        let result = self.reclaim_history_online_step();
+        if let Some(walk) = self.online_validation.as_ref() {
+            let [initial, continued] = walk.step_rows();
+            self.online_validation_phases[0] = initial;
+            self.online_validation_phases[1] = continued;
+        }
+        if result.is_err() {
+            self.online_validation = None;
+        } else if let Some(walk) = self.online_validation.as_mut() {
+            walk.release_completed_pin();
+        }
+        result
+    }
+
+    fn reclaim_history_online_step(&mut self) -> Result<(u64, u64), StorageError> {
         use crate::changelog_v3_retained_validation::RetainedHistoryValidation;
+        let epoch = self
+            .shared
+            .source_continuation_epoch
+            .load(Ordering::Acquire);
+        if self
+            .online_validation
+            .as_ref()
+            .is_some_and(|walk| !walk.qualifies(epoch))
+        {
+            self.online_validation = None;
+            self.online_validation_phases[2] = 1;
+        }
         let mut capture_us = 0;
         if self.online_validation.is_none() {
             let start = std::time::Instant::now();
-            let root = Barrier::try_validation_root(&self.shared)?;
+            let captured = Barrier::try_validation_capture(&self.shared)?;
             capture_us = elapsed_us(start, std::time::Instant::now());
-            let Some(root) = root else {
+            let Some((root, qualification)) = captured else {
                 return Ok((0, capture_us));
             };
             self.online_validation = RetainedHistoryValidation::new(root)?;
+            if let Some(walk) = self.online_validation.as_mut() {
+                walk.bind_qualification(qualification);
+            }
         }
         let Some(walk) = self.online_validation.as_mut() else {
             return Ok((0, capture_us));
         };
-        if !walk.advance(
-            riffdb_storage_api::EvidencePageLimit::new(256)
-                .ok_or_else(|| storage_error(StorageErrorKind::InvariantViolation))?,
-        )? {
+        if !walk.is_complete()
+            && !walk.advance(
+                riffdb_storage_api::EvidencePageLimit::new(256)
+                    .ok_or_else(|| storage_error(StorageErrorKind::InvariantViolation))?,
+            )?
+        {
             return Ok((0, capture_us));
         }
-        let proof = self
-            .online_validation
-            .take()
-            .ok_or_else(|| storage_error(StorageErrorKind::InvariantViolation))?
-            .complete()?;
-        let independent = proof.independent_sequence();
-        if independent <= self.online_independent_sequence {
-            return Ok((0, capture_us));
-        }
+        crash_edge("continuation-qualified");
         let start = std::time::Instant::now();
-        let Some(barrier) = Barrier::try_from_validated(Arc::clone(&self.shared), proof)? else {
-            // Charge even a stale or undrained admission conservatively; the
-            // nonwaiting try also includes its short refusal overhead.
+        let admission = Barrier::try_from_continuation(Arc::clone(&self.shared), walk);
+        let Some(barrier) = (match admission {
+            Ok(barrier) => barrier,
+            Err(error) => {
+                self.online_validation = None;
+                return Err(error);
+            }
+        }) else {
+            self.online_validation_phases[3] = 1;
             return Ok((
                 0,
                 capture_us.saturating_add(elapsed_us(start, std::time::Instant::now())),
             ));
         };
+        let independent = self
+            .online_validation
+            .as_ref()
+            .ok_or_else(|| storage_error(StorageErrorKind::InvariantViolation))?
+            .independent_sequence();
+        if independent <= self.online_independent_sequence {
+            return Ok((
+                0,
+                capture_us.saturating_add(elapsed_us(start, std::time::Instant::now())),
+            ));
+        }
         let before = barrier
             .observation()
             .history
@@ -363,8 +413,14 @@ impl ReplicationSourceControl {
         ))
     }
 
+    pub(crate) fn validation_phases(&self) -> [u64; 4] {
+        self.online_validation_phases
+    }
+
     pub(crate) fn receipt_validation_pending(&self) -> bool {
-        self.online_validation.is_some()
+        self.online_validation
+            .as_ref()
+            .is_some_and(|walk| !walk.is_complete())
     }
 
     fn reclaim_at_barrier(&mut self, barrier: Barrier) -> Result<bool, Refusal> {
@@ -398,6 +454,7 @@ impl ReplicationSourceControl {
             self.observed = Some(current);
             return Ok(false);
         };
+        let validated = Arc::clone(&barrier.root);
         let write = barrier.begin()?;
         let (receipt, successor) = prepare_control_receipt(
             write.transaction()?,
@@ -407,6 +464,7 @@ impl ReplicationSourceControl {
         crash_edge("reclamation-planned");
         retention::stage(
             write.transaction()?,
+            &validated,
             current.history,
             successor,
             floor,
@@ -416,7 +474,15 @@ impl ReplicationSourceControl {
         crash_edge("reclamation-staged");
         derived.reserve(current.history.lineage(), floor);
         // Observe the post-commit root so this receipt cannot stimulate itself.
-        self.observed = Some(write.commit()?);
+        let (observation, root, qualification) = write.commit_reclamation()?;
+        self.observed = Some(observation);
+        if let Some(walk) = self.online_validation.as_mut()
+            && let Err(error) = walk.rebase_own_deletion(root, qualification)
+        {
+            self.online_validation = None;
+            return Err(Refusal::Storage(error));
+        }
+        crash_edge("continuation-certificate");
         crash_edge("reclamation-committed");
         Ok(true)
     }

@@ -109,6 +109,22 @@ pub(crate) fn format_receipt_line() -> String {
     )
 }
 
+/// Fixed-cardinality native proof lifecycle diagnostics. Counts are streamed
+/// receipt/audit rows, rather than payloads or authority/source identities.
+pub(crate) fn format_source_validation_line() -> String {
+    let phases = RETENTION_OBSERVATION
+        .get()
+        .map(|lane| lane.phases)
+        .unwrap_or_default();
+    format!(
+        "riffdb-retention-source-validation-v1\tinitial_rows={}\tcontinuation_rows={}\tinvalidations={}\tadmission_refusals={}",
+        phases.source_initial_rows,
+        phases.source_continuation_rows,
+        phases.source_validation_invalidations,
+        phases.source_admission_refusals
+    )
+}
+
 /// Renders the census as one tagged line for the shutdown evidence stream.
 pub(crate) fn format_v1_line() -> String {
     let mut line = String::from("riffdb-shutdown-release-v1");
@@ -260,6 +276,26 @@ mod tests {
             assert!(value.parse::<u64>().is_ok());
         }
         assert!(line.len() <= 96);
+    }
+
+    // req: STO-030, STO-031, END-008
+    #[test]
+    fn source_validation_census_contains_only_bounded_numeric_fields() {
+        let line = super::format_source_validation_line();
+        let fields = line.split('\t').collect::<Vec<_>>();
+        assert_eq!(fields[0], "riffdb-retention-source-validation-v1");
+        assert_eq!(fields.len(), 5);
+        for (field, expected) in fields[1..].iter().zip([
+            "initial_rows",
+            "continuation_rows",
+            "invalidations",
+            "admission_refusals",
+        ]) {
+            let (name, value) = field.split_once('=').unwrap();
+            assert_eq!(name, expected);
+            assert!(value.parse::<u64>().is_ok());
+        }
+        assert!(line.len() <= 224);
     }
 
     // req: STO-031

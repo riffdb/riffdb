@@ -12,9 +12,16 @@ pub(super) struct Barrier {
 }
 
 impl Barrier {
+    #[cfg(test)]
     pub(super) fn try_validation_root(
         shared: &Arc<SharedRedb>,
     ) -> Result<Option<Arc<crate::checkpoint_root::CheckpointRoot>>, StorageError> {
+        Ok(Self::try_validation_capture(shared)?.map(|(root, _)| root))
+    }
+
+    pub(super) fn try_validation_capture(
+        shared: &Arc<SharedRedb>,
+    ) -> Result<Option<(Arc<crate::checkpoint_root::CheckpointRoot>, u64)>, StorageError> {
         let Some(_lease) = shared.mutation_gate.try_acquire()? else {
             return Ok(None);
         };
@@ -24,7 +31,11 @@ impl Barrier {
         if !drained_for_validation(shared)? {
             return Ok(None);
         }
-        shared.capture_checkpoint_root().map(Some)
+        let epoch = shared.source_continuation_epoch.load(Ordering::Acquire);
+        if epoch == u64::MAX {
+            return Ok(None);
+        }
+        Ok(Some((shared.capture_checkpoint_root()?, epoch)))
     }
     pub(super) fn acquire(shared: Arc<SharedRedb>) -> Result<Self, StorageError> {
         let lease = shared.mutation_gate.acquire()?;
@@ -73,6 +84,7 @@ impl Barrier {
     /// Admit only the exact root exhaustively validated outside the gate.
     /// A queued writer, checkpoint, or unpublished suffix causes a yield;
     /// this path never drains or waits for another maintenance operation.
+    #[cfg(test)]
     pub(super) fn try_from_validated(
         shared: Arc<SharedRedb>,
         proof: crate::changelog_v3_retained_validation::ValidatedRetainedHistory,
@@ -90,9 +102,48 @@ impl Barrier {
         if root.identity() != proof.root().identity() {
             return Ok(None);
         }
+        Self::finish_validated(shared, lease, root, proof)
+    }
+
+    pub(super) fn try_from_continuation(
+        shared: Arc<SharedRedb>,
+        walk: &mut crate::changelog_v3_retained_validation::RetainedHistoryValidation,
+    ) -> Result<Option<Self>, StorageError> {
+        let Some(lease) = shared.mutation_gate.try_acquire()? else {
+            return Ok(None);
+        };
+        if shared.write_fenced.load(Ordering::Acquire) || shared.is_follower_mode() {
+            return Err(storage_error(StorageErrorKind::Unavailable));
+        }
+        if !drained_for_validation(&shared)? {
+            return Ok(None);
+        }
+        let epoch = shared.source_continuation_epoch.load(Ordering::Acquire);
+        let root = shared.capture_checkpoint_root()?;
+        if walk.is_complete() && !walk.continue_on(Arc::clone(&root), epoch)? {
+            return Ok(None);
+        }
+        if !walk.qualifies(epoch)
+            || walk.root_identity() != root.identity()
+            || !walk.close_suffix_page()?
+        {
+            return Ok(None);
+        }
+        Self::finish_validated(shared, lease, root, walk.proof()?)
+    }
+
+    fn finish_validated(
+        shared: Arc<SharedRedb>,
+        lease: ExclusiveLease,
+        root: Arc<crate::checkpoint_root::CheckpointRoot>,
+        proof: crate::changelog_v3_retained_validation::ValidatedRetainedHistory,
+    ) -> Result<Option<Self>, StorageError> {
         let history = crate::changelog_v3_roots::read_checkpoint_roots(&root)?
             .ok_or_else(|| storage_error(StorageErrorKind::IncompatibleFormat))?;
-        if history != proof.history() {
+        if history != proof.history()
+            || root.identity() != proof.root().identity()
+            || proof.independent_sequence() > history.tail().sequence().get()
+        {
             return Err(storage_error(StorageErrorKind::CorruptData));
         }
         let meta = root.open_table(META).map_err(table_error)?;
@@ -110,6 +161,11 @@ impl Barrier {
             }
         }
         drop(meta);
+        let holds = root.open_table(SOURCE_HOLDS).map_err(table_error)?;
+        let receipts = root.open_table(HISTORY).map_err(table_error)?;
+        crate::changelog_v3_roots::validate_source_holds(&holds, history, &receipts)?;
+        drop(holds);
+        drop(receipts);
         // An installed asynchronous checkpoint can retain an empty composite
         // publication over its old base. With no suffix or unpublished work,
         // retire that internal cache exactly as the existing drained barrier
@@ -217,10 +273,38 @@ impl ControlWrite {
         self.commit_with_test_operation(Some(RedbTestOperation::PrimaryFence))?;
         Ok(())
     }
+    pub(super) fn commit_reclamation(
+        self,
+    ) -> Result<
+        (
+            Observation,
+            Arc<crate::checkpoint_root::CheckpointRoot>,
+            u64,
+        ),
+        StorageError,
+    > {
+        self.commit_published(None)
+    }
+
     fn commit_with_test_operation(
-        mut self,
+        self,
         operation: Option<RedbTestOperation>,
     ) -> Result<Observation, StorageError> {
+        self.commit_published(operation)
+            .map(|(observation, _, _)| observation)
+    }
+
+    fn commit_published(
+        mut self,
+        operation: Option<RedbTestOperation>,
+    ) -> Result<
+        (
+            Observation,
+            Arc<crate::checkpoint_root::CheckpointRoot>,
+            u64,
+        ),
+        StorageError,
+    > {
         if let Some(operation) = operation {
             self.barrier.shared.before_test_commit(operation)?;
         }
@@ -239,26 +323,40 @@ impl ControlWrite {
             shared.fence_writes();
             return Err(error);
         }
-        let published = finish_publication(shared);
+        let published = finish_publication(shared, self.barrier.observation.history);
         if published.is_err() {
             shared.fence_writes();
             return Err(storage_error(StorageErrorKind::CommitStatusUnknown));
         }
-        published
+        // The original drained writer lease remains held while binding this
+        // exact durable successor and invalidation epoch for its sole owner.
+        let (observation, root) = published?;
+        Ok((
+            observation,
+            root,
+            shared.source_continuation_epoch.load(Ordering::Acquire),
+        ))
     }
 }
 
-fn finish_publication(shared: &SharedRedb) -> Result<Observation, StorageError> {
+fn finish_publication(
+    shared: &SharedRedb,
+    predecessor: History,
+) -> Result<(Observation, Arc<crate::checkpoint_root::CheckpointRoot>), StorageError> {
     shared.refresh_durable_read_frontier()?;
     let root = shared.capture_checkpoint_root()?;
     let history = crate::changelog_v3_roots::read_checkpoint_roots(&root)?
         .ok_or_else(|| storage_error(StorageErrorKind::CorruptData))?;
+    shared.refresh_drained_journal_source(predecessor, history)?;
     shared.observe_changelog_snapshot_v3(RedbReadAccess::Durable(Arc::clone(&root)));
-    Ok(Observation {
-        publication: root.identity(),
-        durable_epoch: shared.durable_commit_epoch(),
-        history,
-    })
+    Ok((
+        Observation {
+            publication: root.identity(),
+            durable_epoch: shared.durable_commit_epoch(),
+            history,
+        },
+        root,
+    ))
 }
 
 impl Drop for ControlWrite {
@@ -415,5 +513,57 @@ mod tests {
             before
         );
         assert!(pin.open_table(SOURCE_HOLDS).unwrap().is_empty().unwrap());
+    }
+
+    // req: STO-030, STO-031, STO-032, REC-001
+    #[test]
+    fn continued_admission_rechecks_registration_and_never_discards_a_bootstrap_hold() {
+        let (_scope, ports, states) = crate::changelog_v3_control_tests::fixture();
+        let (root, epoch) = Barrier::try_validation_capture(&ports.shared)
+            .unwrap()
+            .unwrap();
+        let mut walk =
+            crate::changelog_v3_retained_validation::RetainedHistoryValidation::new(root)
+                .unwrap()
+                .unwrap();
+        walk.bind_qualification(epoch);
+        while !walk
+            .advance(riffdb_storage_api::EvidencePageLimit::new(64).unwrap())
+            .unwrap()
+        {}
+        walk.release_completed_pin();
+        let bootstrap = Hold::new(
+            riffdb_storage_api::ReplicationSourceHoldIdV1::new([0x64; 16]).unwrap(),
+            Kind::Bootstrap,
+            states[1].lineage(),
+            states[1].tail(),
+        );
+        ports
+            .replication_source_control()
+            .register(bootstrap)
+            .unwrap();
+        let before = ports.shared.durable_commit_epoch();
+        assert!(
+            Barrier::try_from_continuation(Arc::clone(&ports.shared), &mut walk)
+                .unwrap()
+                .is_none()
+        );
+        assert_eq!(ports.shared.durable_commit_epoch(), before);
+        assert!(!ports.shared.mutation_gate.is_held());
+        let read = ports.shared.capture_checkpoint_root().unwrap();
+        crate::changelog_v3_roots::validate_retained_history(&read)
+            .unwrap()
+            .unwrap();
+        let holds = read.open_table(SOURCE_HOLDS).unwrap();
+        let retained = holds
+            .get(bootstrap.storage_key().as_slice())
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            *decode_replication_source_hold_v1(retained.value())
+                .unwrap()
+                .value(),
+            bootstrap
+        );
     }
 }
