@@ -59,14 +59,14 @@ These limits are part of the POC release posture, not hidden roadmap promises.
   further verification; maintenance pauses, automatic
   watch reconnects or relaxed client validation cannot qualify the rehearsal.
   See the [repair findings and scope proposal](architecture/WP-825-LIVE-OBSERVATIONS.md).
-- Offline storage scrub currently drives complete structural and catalog-semantic
-  validation, but does not invoke redb's physical page-tree integrity checker.
-  redb 4.2.0 does not verify those page checksums during ordinary reads; native
-  envelope, CRC, schema and record/key validation remain active. Physical engine
-  verification is an unresolved native gap. Proposed
-  ADR-0269
-  covers a reviewed engine upgrade and verification that preserves the original
-  artifact; it requires exact acceptance before implementation.
+- Ordinary redb reads do not verify every engine page checksum; native envelope,
+  CRC, schema and record/key validation remain active. ADR-0269 adds explicit
+  physical verification on a private copy before the complete offline record
+  walk. It requires additional disk space for one primary-sized copy and refuses
+  repair, uncertain custody and a journal suffix needing recovery. The upgraded
+  engine and verifier still require full acceptance, crash evidence and final-host
+  preparation before the sustainable milestone qualifies. See
+  [startup integrity](operations/STARTUP-INTEGRITY.md).
 - The shared recovery inventory contains 41 boundaries. Eighteen belong to the
   WP-190 process matrix; three replication cases run in the daemon and native
   applier tests, and the remainder have named owner-package evidence.
@@ -273,8 +273,9 @@ These limits are part of the POC release posture, not hidden roadmap promises.
   readiness or by `riffdb storage scrub`. The offline scrub takes the database
   offline for the whole pass, has no target, scope, resume, or repair option,
   and serializes with every other maintenance operation. There is no MCP scrub
-  tool. At the production benchmark population the complete pass took about
-  four minutes on the WP-760 benchmark host.
+  tool. The earlier logical-only pass took about four minutes at the production
+  benchmark population on the WP-760 host; that observation does not measure
+  the added private-copy and physical-verification work.
 - Restart after an abrupt stop pays a storage-engine repair proportional to
   the database file size (about 53 seconds at the production benchmark
   population on the WP-760 host), and the first write after any restart

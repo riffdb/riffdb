@@ -9,6 +9,9 @@
     reason = "validated journal frames have closed tags, bounded widths, and complete segment payloads"
 )]
 
+#[path = "journal_offline_integrity.rs"]
+mod offline_integrity;
+
 use crate::history_stub::StubLocator;
 use std::collections::BTreeMap;
 use std::fs::File;
@@ -4145,117 +4148,17 @@ pub(crate) fn recover_journal_path_with_media(
     path: &Path,
     database_id: DatabaseId,
 ) -> Result<(), JournalIoError> {
-    let mut frames = Vec::new();
-    let mut locators = Vec::new();
-    let Some((header, tail)) =
-        scan_located_journal_with_media(media, path, database_id, |frame, locator| {
-            frames.push(frame.clone());
-            locators.push(locator);
-            Ok(())
-        })?
-    else {
-        return Ok(());
-    };
-    let redb_frontier = read_redb_frontier(database)?;
-    let checkpoint_frontier = (
-        header.checkpoint_sequence(),
-        header.checkpoint_administration_sequence(),
-    );
-    let tail_frontier = (tail.last_sequence, tail.last_administration_sequence);
-    let snapshot = database.begin_read().map_err(|_| JournalIoError::Io)?;
-    let v3 = crate::changelog_v3_journal::has_recovery_roots(&snapshot)
-        .map_err(|_| JournalIoError::Corrupt)?
-        || frames
-            .iter()
-            .any(crate::changelog_v3_journal::has_receipt_source);
-    if v3 {
-        let plan = crate::changelog_v3_journal::plan_recovery(
-            &snapshot,
-            &frames,
-            riffdb_types::DualFrontier::new(redb_frontier.0, redb_frontier.1),
-        )
-        .map_err(|_| JournalIoError::Corrupt)?;
-        drop(snapshot);
-        if frames.is_empty() && !tail.incomplete_tail && redb_frontier == checkpoint_frontier {
-            return Ok(());
-        }
-        if frames.is_empty()
-            && (checkpoint_frontier.0 > redb_frontier.0 || checkpoint_frontier.1 > redb_frontier.1)
-        {
-            return Err(JournalIoError::Corrupt);
-        }
-        if plan.replay_from < frames.len() {
-            replay_frames(
-                database,
-                &frames[plan.replay_from..],
-                &locators[plan.replay_from..],
-            )?;
-        }
-        #[cfg(test)]
-        crate::changelog_v3_journal::recovery_crash_edge("before-reclaim");
-        advance_journal_anchor_with_media(
-            media,
-            path,
-            &JournalFileHeader::with_frontiers(
-                database_id,
-                plan.covered.application(),
-                plan.covered.administration(),
-                tail.last_hash,
-            ),
-        )?;
-        #[cfg(test)]
-        crate::changelog_v3_journal::recovery_crash_edge("reclaimed");
-        return Ok(());
-    }
-    drop(snapshot);
-    // An exact empty recovered extent needs no mutation. Preserving its
-    // selected canonical header is required by ADR-0157 clean-close binding;
-    // recycling an already-empty exact extent would manufacture a new header
-    // generation on every otherwise read-only open.
-    if frames.is_empty()
-        && !tail.incomplete_tail
-        && tail_frontier == checkpoint_frontier
-        && redb_frontier == checkpoint_frontier
-    {
-        return Ok(());
-    }
-    if frames.is_empty()
-        && !tail.incomplete_tail
-        && tail_frontier == checkpoint_frontier
-        && checkpoint_frontier.0 <= redb_frontier.0
-        && checkpoint_frontier.1 <= redb_frontier.1
-        && checkpoint_frontier != redb_frontier
-    {
-        return advance_journal_anchor_with_media(
-            media,
-            path,
-            &JournalFileHeader::with_frontiers(
-                database_id,
-                redb_frontier.0,
-                redb_frontier.1,
-                tail.last_hash,
-            ),
-        );
-    }
-    if redb_frontier == checkpoint_frontier {
-        if !frames.is_empty() {
-            replay_frames(database, &frames, &locators)?;
-        }
-    } else if redb_frontier == tail_frontier && !frames.is_empty() {
-        verify_replayed_tail(database, &frames)?;
-    } else {
-        return Err(JournalIoError::Corrupt);
-    }
-    advance_journal_anchor_with_media(
-        media,
-        path,
-        &JournalFileHeader::with_frontiers(
-            database_id,
-            tail.last_sequence,
-            tail.last_administration_sequence,
-            tail.last_hash,
-        ),
-    )
+    offline_integrity::inspect_journal_with_media(media, database, path, database_id, true)
+}
+
+/// The same complete recovery plan, without replay or journal mutation.
+pub(crate) fn verify_materialized_journal_with_media(
+    media: &dyn JournalMedia,
+    database: &Database,
+    path: &Path,
+    database_id: DatabaseId,
+) -> Result<(), JournalIoError> {
+    offline_integrity::inspect_journal_with_media(media, database, path, database_id, false)
 }
 
 fn read_redb_frontier(
@@ -6748,6 +6651,52 @@ mod tests {
             scan_journal(&path.0, database_id, |_| Ok(())),
             Err(JournalIoError::Corrupt)
         );
+    }
+
+    // req: REC-001, REC-002, REC-005, REC-008
+    #[test]
+    fn offline_journal_verification_requires_exact_materialization_without_replay_or_reanchor() {
+        let path = TestPath::new("offline-materialized-journal");
+        let database = create_database(&path.0);
+        let database_id = database_id(0x69);
+        let frame = recovery_frame(database_id);
+        let encoded = frame.encode().unwrap();
+        write_recovery_journal(&path.0, database_id, &encoded, None);
+        let journal = journal_path(&path.0);
+        let before = std::fs::read(&journal).unwrap();
+        assert_eq!(
+            verify_materialized_journal_with_media(
+                &RealJournalMedia,
+                &database,
+                &journal,
+                database_id,
+            ),
+            Err(JournalIoError::Io)
+        );
+        assert_eq!(std::fs::read(&journal).unwrap(), before);
+        assert_eq!(read_redb_frontier(&database).unwrap(), (None, None));
+        replay_frames(&database, std::slice::from_ref(&frame), &[None]).unwrap();
+        verify_materialized_journal_with_media(&RealJournalMedia, &database, &journal, database_id)
+            .unwrap();
+        assert_eq!(std::fs::read(&journal).unwrap(), before);
+        assert_eq!(read_redb_frontier(&database).unwrap().0, Some(sequence(1)));
+        let write = database.begin_write().unwrap();
+        write
+            .open_table(ENTITIES)
+            .unwrap()
+            .insert([0x10].as_slice(), [0x21].as_slice())
+            .unwrap();
+        write.commit().unwrap();
+        assert_eq!(
+            verify_materialized_journal_with_media(
+                &RealJournalMedia,
+                &database,
+                &journal,
+                database_id,
+            ),
+            Err(JournalIoError::Corrupt)
+        );
+        assert_eq!(std::fs::read(&journal).unwrap(), before);
     }
 
     // req: REC-005

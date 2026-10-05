@@ -404,10 +404,11 @@ custom-backend locking methods. The inspected manifests additionally introduce
 Linux/Apple libc locking code. Upgrading therefore requires dependency, unsafe-
 surface, wrapper file-lock and compatibility review, rather than just a pin edit.
 
-Proposed ADR-0269, `adr/0269-explicit-engine-integrity-verification-and-reviewed-redb-upgrade.md`,
+ADR-0269, `adr/0269-explicit-engine-integrity-verification-and-reviewed-redb-upgrade.md`,
 records private-copy physical verification, original preservation, deterministic
-corruption evidence and the reviewed upgrade. Its exact text is awaiting human
-acceptance. No dependency or production scrub behavior has changed under it.
+corruption evidence and the reviewed upgrade. At this observation the proposal
+was awaiting exact acceptance and production behavior was unchanged; the
+accepted implementation progress is recorded below.
 The current C3D preparation of `577f2445` measures the audit/retention repair;
 it cannot qualify the final dependency revision or the complete campaign.
 
@@ -452,7 +453,8 @@ and the unchanged wrapper inherits unsupported locking methods, which the
 engine permits in exclusive-writer mode. This proves why every file-backed
 wrapper must delegate the new methods before upgrading. It is upgrade-hazard
 evidence, not a claim that the current 4.2.0 production writer admits two owners.
-Production pins and scrub behavior remain unchanged pending ADR-0269 acceptance.
+At that isolated reproduction the production pins and scrub behavior remained
+unchanged pending ADR-0269 acceptance.
 
 PR note: Package WP-825 (open); Tier internal documentation; Behavior: disclose
 the physical-verification gap, isolated upgrade-lock hazard and failed continuing-
@@ -464,3 +466,73 @@ interfaces unchanged; Updated handbook pages: known limitations and native
 findings; Hazards/follow-ups: exact ADR-0269 acceptance and implementation,
 unresolved retirement, latency and intermittent daemon failures, final-hash full
 CI and rehearsal gates.
+
+
+### Accepted engine-integrity repair: implementation progress
+
+The maintainer accepted the exact ADR-0269 text on 2026-10-05. The standalone
+acceptance commit records that response and widens the implementation scope.
+Production pins and the simulator's existing test-only pin now select exactly
+redb 4.3.0 with default features disabled. The root graph retains libc 0.2.186;
+root dependency-policy and advisory checks pass. Every existing file-backed
+wrapper delegates all six new locking methods. A native two-process test proves
+exclusion and release for ordinary, dynamic-media and external-kill owners.
+
+A deterministic corruption regression first demonstrated the missing guarantee:
+changing an engine leaf byte covered by its checksum left the exact canonical
+contract envelope readable, and the old scrub incorrectly returned success.
+The repaired scrub captures one fully allocated private copy under original-file
+custody, verifies its bytes against the original, invokes the engine checker with
+repair refusal, and runs the unchanged complete exact-end logical validator on
+that same copy. Native journals are validated through the existing recovery plan
+without replay or anchor mutation. Pending recovery refuses a partial receipt.
+No original primary, marker, journal or extent is opened for engine repair or
+published from the verification copy.
+
+Targeted native evidence passes corruption refusal, full allocator-repair
+refusal, healthy repeated scrub with byte preservation, cancellation, capacity
+refusal, substituted source binding, unknown scratch and original-hardlink
+refusal, and process-exit cleanup on the next scrub. An intermediate targeted run passes
+79 native/simulator architecture, physical, journal, wrong-key and genuine
+predecessor-fixture tests after extracting
+the affected code into focused modules without raising file-size limits.
+The first genuine 4.2.0 source and offline backup were generated before the pin
+changed; current open, physical scrub and restore pass the complete native
+validator. That fixture has a compiler-backed catalog and administration history
+but no command outcomes. A second fixture was generated in an isolated accepted
+predecessor checkout with the exact 4.2.0 pins, two complete native commands and
+public point-read outcomes. Repeated current open, physical/logical scrub and
+backup restore preserve both semantic outcomes and their exact canonical bytes.
+This Hardened fixture has no source side journal; verification follows the
+existing optional-journal recovery rules, validates every journal that exists,
+and refuses a damaged journal without rewriting it.
+
+Two simulator cases reuse existing traced positional writes and sync outside
+engine transactions to represent deterministic durable leaf damage and an
+unsynced mutation whose actual recovery counter proves it was dropped. Both
+replay identical trace hashes. These add no RNG, seed-corpus or trace-format
+change. The existing native wrong-key entity test remains a typed corruption
+refusal and now names its REC-006/REC-008 proof tags.
+
+An expanded scoped acceptance run passed all eleven steps, including 1,257
+native/simulator/outbox tests with ten existing skips; it preceded the final
+module extraction and compatibility additions. The extracted architecture and
+new behavior have targeted passing evidence. The final-source scoped run then
+passed all eleven steps, including 1,262 tests with ten existing skips and the
+generated-reference, handbook, workspace, dependency and architecture checks.
+Full CI remains required; scoped acceptance is not campaign qualification.
+The earlier preparation's zero physical extent retirement, fault-free latency
+failure and intermittent daemon failures still require native diagnosis and
+repair. No workload, retirement hold, journal, sync boundary, commit profile or
+qualification gate is weakened; the 24-hour campaign has not started.
+
+PR note: Package WP-825 (open); Tier guarantee under accepted ADR-0269;
+Behavior: add private-copy physical verification to selector-free offline scrub,
+preserve original artifacts, retain exact-end logical and native journal proofs,
+and delegate reviewed engine locks; Checks: targeted native and simulated-media
+regressions, root dependency/advisory checks and final scoped acceptance (1,262
+tests, all eleven steps); Compatibility: genuine predecessor source/backup fixtures, unchanged
+RiffDB formats and interfaces, no downgrade claim; Updated handbook pages:
+startup integrity and known limitations; Hazards/follow-ups: full compatibility
+and crash evidence, full CI, unresolved native retention
+and latency, final-host preparation and the complete short rehearsal.

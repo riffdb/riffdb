@@ -748,6 +748,12 @@ fn certify_clean_close(store: RedbStore) {
     drop(ports);
 }
 
+#[path = "engine_compatibility_tests.rs"]
+mod engine_compatibility;
+
+#[path = "physical_integrity_tests.rs"]
+mod physical_integrity;
+
 fn complete_authority_snapshot(path: &Path) -> CompleteAuthoritySnapshot {
     let database = redb::ReadOnlyDatabase::open(path).expect("open complete authority snapshot");
     let read = database.begin_read().expect("begin authority snapshot");

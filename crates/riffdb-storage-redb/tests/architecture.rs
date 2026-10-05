@@ -375,7 +375,7 @@ fn production_sized_storage_tests_never_allocate_under_the_ambient_temp_director
 fn dependency_surface_keeps_redb_private_and_excludes_infrastructure_assemblies() {
     let manifest = read(crate_root().join("Cargo.toml"));
     assert!(manifest.contains("cap-std = { version = \"=4.0.2\", default-features = false }"));
-    assert!(manifest.contains("redb = { version = \"=4.2.0\", default-features = false }"));
+    assert!(manifest.contains("redb = { version = \"=4.3.0\", default-features = false }"));
     assert!(manifest.contains("sha2 = { version = \"=0.11.0\", default-features = false }"));
     assert!(manifest.contains(
         "riffdb-catalog = { version = \"0.1.0\", path = \"../riffdb-catalog\", default-features = false }"
@@ -510,7 +510,11 @@ fn redb_startup_produces_evidence_only_and_drives_no_migration() {
 // req: PERF-019
 #[test]
 fn production_redb_cache_is_explicitly_bounded_on_every_authoritative_open() {
-    let source = read(crate_root().join("src/store.rs"));
+    let source = format!(
+        "{}\n{}",
+        read(crate_root().join("src/store.rs")),
+        read(crate_root().join("src/store_open.rs")),
+    );
     assert!(
         source.contains("const REDB_CACHE_SIZE_BYTES: usize = 4 * 1024 * 1024;"),
         "the derived sidecar retains its fixed small cache budget"
@@ -542,6 +546,20 @@ fn production_redb_cache_is_explicitly_bounded_on_every_authoritative_open() {
             .matches("sidecar_builder.set_cache_size(sidecar_cache);")
             .count(),
         1
+    );
+    let physical = read(crate_root().join("src/maintenance/physical_scrub.rs"));
+    assert_eq!(
+        physical
+            .matches("let mut builder = redb::Builder::new();")
+            .count(),
+        1
+    );
+    assert_eq!(
+        physical
+            .matches("builder.set_cache_size(crate::store::PRIMARY_REDB_CACHE_SIZE_BYTES);")
+            .count(),
+        1,
+        "the private physical verifier must use the same bounded primary cache"
     );
 }
 

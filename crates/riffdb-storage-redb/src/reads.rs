@@ -2519,6 +2519,7 @@ mod tests {
         ));
     }
 
+    // req: REC-006, REC-008
     #[test]
     fn entity_key_payload_mismatch_is_corruption() {
         let (_path, ports) = operational("entity-mismatch");

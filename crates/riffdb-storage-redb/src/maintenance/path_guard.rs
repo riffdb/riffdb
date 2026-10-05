@@ -316,6 +316,19 @@ impl PinnedDirectory {
             .map_err(io_unavailable)
     }
 
+    pub(super) fn create_new_read_write_file(&self, name: &OsStr) -> Result<CapFile, StorageError> {
+        let relative = checked_child_name(name)?;
+        self.directory
+            .open_with(
+                relative,
+                CapOpenOptions::new()
+                    .read(true)
+                    .write(true)
+                    .create_new(true),
+            )
+            .map_err(io_unavailable)
+    }
+
     /// Atomically renames one direct child over another within this retained
     /// directory.
     pub(super) fn rename(&self, from: &OsStr, to: &OsStr) -> Result<(), StorageError> {

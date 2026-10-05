@@ -81,6 +81,11 @@ output, delivery, projection, or mutation. Latent corruption unrelated to the
 bounded roots can therefore be reported when the affected row is first
 accessed.
 
+Those checks validate RiffDB records and their relationships. Ordinary redb
+reads do not verify every traversed engine page checksum. Bounded readiness
+and the background semantic scrub therefore do not certify the entire physical
+engine tree; explicit physical verification belongs to the offline scrub.
+
 Databases created by current binaries carry the V2 authoritative state
 catalog. A V2 database never takes the clean-certificate fast path; each of its
 restarts that meets the preconditions above uses the bounded recovery path,
@@ -123,6 +128,23 @@ operation with `riffdb backup operation <maintenance-operation-id>`. Its phases
 are `accepted`, `draining`, `offline`, `validating`, and then `succeeded` or
 `failed_closed`. A scrub observation has kind `storage_scrub` and no backup
 name.
+
+Before the complete record walk, offline scrub captures one private verification
+copy of the primary under exclusive original-file ownership and runs redb's
+complete engine-integrity checker on it. The record walk uses that same copy
+and reads the original native journals and retained extents. Neither pass
+replays a journal or repairs the original. A repair callback, an unsuccessful
+integrity result, source substitution, cancellation or unavailable capacity
+refuses success. A journal suffix needing recovery must first pass ordinary
+startup recovery; scrub cannot certify a partially materialized frontier.
+
+Reserve additional local disk space for one fully allocated copy of the primary
+file, plus filesystem overhead. The copy cannot grow beyond the captured primary
+size; inability to allocate or verify within that capacity fails closed. The
+verifier uses a private directory beside the primary, releases the copy after
+success or ordinary failure, and reclaims its single recognized scratch artifact
+after process exit. Unexpected files, symlinks, an original-file alias or
+uncertain custody refuse cleanup and verification. No repaired copy is published.
 
 A `validation_failed` scrub means the pass refused the database: incomplete,
 contradictory, corrupt, or over-limit evidence all fail closed. The server

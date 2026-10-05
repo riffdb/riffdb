@@ -7,6 +7,8 @@ impl SharedRedb {
         match &self.open_mode {
             OpenMode::PrivateRestore(binding) => Some(**binding),
             OpenMode::Source
+            | OpenMode::OfflineSource
+            | OpenMode::OfflineFollower
             | OpenMode::Follower
             | OpenMode::PrivatePromotion(_)
             | OpenMode::ReconciledPromotion(_) => None,

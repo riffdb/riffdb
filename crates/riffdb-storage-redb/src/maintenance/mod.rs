@@ -38,7 +38,9 @@ pub use follower_columnar_scratch::{RedbFollowerColumnarBuild, RedbFollowerColum
 mod follower_columnar_scratch_tests;
 mod follower_namespace;
 mod path_guard;
+mod physical_scrub;
 pub(crate) use follower_namespace::FollowerNamespace;
+pub(crate) use physical_scrub::PhysicalScrubCopy;
 mod staged;
 mod store;
 

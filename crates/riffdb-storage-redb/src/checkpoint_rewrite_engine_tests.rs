@@ -26,6 +26,54 @@ struct RealBackend {
 }
 
 impl StorageBackend for RealBackend {
+    fn try_lock_range(
+        &self,
+        start: std::ops::Bound<u64>,
+        end: std::ops::Bound<u64>,
+    ) -> Result<bool, redb::BackendError> {
+        self.file.try_lock_range(start, end)
+    }
+
+    fn try_lock_shared_range(
+        &self,
+        start: std::ops::Bound<u64>,
+        end: std::ops::Bound<u64>,
+    ) -> Result<bool, redb::BackendError> {
+        self.file.try_lock_shared_range(start, end)
+    }
+
+    fn lock_range(
+        &self,
+        start: std::ops::Bound<u64>,
+        end: std::ops::Bound<u64>,
+    ) -> Result<(), redb::BackendError> {
+        self.file.lock_range(start, end)
+    }
+
+    fn lock_shared_range(
+        &self,
+        start: std::ops::Bound<u64>,
+        end: std::ops::Bound<u64>,
+    ) -> Result<(), redb::BackendError> {
+        self.file.lock_shared_range(start, end)
+    }
+
+    fn unlock_range(
+        &self,
+        start: std::ops::Bound<u64>,
+        end: std::ops::Bound<u64>,
+    ) -> Result<(), redb::BackendError> {
+        self.file.unlock_range(start, end)
+    }
+
+    fn query_lock_range(
+        &self,
+        start: std::ops::Bound<u64>,
+        end: std::ops::Bound<u64>,
+    ) -> Result<bool, redb::BackendError> {
+        self.file.query_lock_range(start, end)
+    }
+
     fn len(&self) -> io::Result<u64> {
         self.file.len()
     }
@@ -207,5 +255,74 @@ fn rewrite_final_fence_crashes_reopen_atomically_and_idempotently() {
             assert!([1, 2].contains(&first));
         }
         assert_eq!(generation(&redb::Database::open(&path).unwrap()), first);
+    }
+}
+
+// req: STO-001, REC-001, REC-002
+#[test]
+fn file_backend_wrappers_exclude_another_process_and_release_ownership() {
+    const CHILD_LOCK_PATH: &str = "RIFFDB_ENGINE_LOCK_PROOF_PATH";
+    const CHILD_LOCK_EXPECTED: &str = "RIFFDB_ENGINE_LOCK_PROOF_EXPECTED";
+    if let Some(path) = std::env::var_os(CHILD_LOCK_PATH) {
+        let expected = std::env::var(CHILD_LOCK_EXPECTED).unwrap();
+        let result = crate::RedbStore::open(std::path::Path::new(&path));
+        match expected.as_str() {
+            "held" => {
+                let Err(error) = result else {
+                    panic!("a second process must not acquire the file");
+                };
+                assert_eq!(
+                    error.kind(),
+                    riffdb_storage_api::StorageErrorKind::Unavailable
+                );
+            }
+            "released" => assert!(result.is_ok(), "closed ownership must be released"),
+            _ => panic!("unknown lock proof state"),
+        }
+        return;
+    }
+    let directory = crate::test_path::ScopedDirectory::new("file-wrapper-lock");
+    for medium in ["native", "dynamic", "external-kill"] {
+        let path = directory.join(medium);
+        let store = match medium {
+            "native" => crate::RedbStore::open(&path).unwrap(),
+            "dynamic" => {
+                let file = std::fs::OpenOptions::new()
+                    .read(true)
+                    .write(true)
+                    .create_new(true)
+                    .open(&path)
+                    .unwrap();
+                let backend = redb::backends::FileBackend::new(file).unwrap();
+                crate::RedbStore::open_with_storage_media(
+                    &path,
+                    crate::RedbStorageMedia::new(backend, Arc::new(crate::RealJournalMedia)),
+                )
+                .unwrap()
+            }
+            "external-kill" => {
+                drop(crate::RedbStore::open(&path).unwrap());
+                crate::RedbStore::open_with_external_kill_barrier(
+                    &path,
+                    crate::RedbCommitProfile::Hardened,
+                    crate::RedbTestController::observe_index_migration(),
+                )
+                .unwrap()
+            }
+            _ => unreachable!(),
+        };
+        let child = |expected| {
+            let status = std::process::Command::new(std::env::current_exe().unwrap())
+            .arg("--exact")
+            .arg("checkpoint_rewrite::tests::engine::file_backend_wrappers_exclude_another_process_and_release_ownership")
+            .env(CHILD_LOCK_PATH, &path)
+            .env(CHILD_LOCK_EXPECTED, expected)
+            .status()
+            .unwrap();
+            assert!(status.success(), "two-process lock proof failed");
+        };
+        child("held");
+        drop(store);
+        child("released");
     }
 }

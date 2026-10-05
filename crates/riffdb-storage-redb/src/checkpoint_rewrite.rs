@@ -85,6 +85,54 @@ impl<T> Drop for CheckpointRewriteBackend<T> {
 }
 
 impl<T: StorageBackend> StorageBackend for CheckpointRewriteBackend<T> {
+    fn try_lock_range(
+        &self,
+        start: std::ops::Bound<u64>,
+        end: std::ops::Bound<u64>,
+    ) -> Result<bool, redb::BackendError> {
+        self.inner.try_lock_range(start, end)
+    }
+
+    fn try_lock_shared_range(
+        &self,
+        start: std::ops::Bound<u64>,
+        end: std::ops::Bound<u64>,
+    ) -> Result<bool, redb::BackendError> {
+        self.inner.try_lock_shared_range(start, end)
+    }
+
+    fn lock_range(
+        &self,
+        start: std::ops::Bound<u64>,
+        end: std::ops::Bound<u64>,
+    ) -> Result<(), redb::BackendError> {
+        self.inner.lock_range(start, end)
+    }
+
+    fn lock_shared_range(
+        &self,
+        start: std::ops::Bound<u64>,
+        end: std::ops::Bound<u64>,
+    ) -> Result<(), redb::BackendError> {
+        self.inner.lock_shared_range(start, end)
+    }
+
+    fn unlock_range(
+        &self,
+        start: std::ops::Bound<u64>,
+        end: std::ops::Bound<u64>,
+    ) -> Result<(), redb::BackendError> {
+        self.inner.unlock_range(start, end)
+    }
+
+    fn query_lock_range(
+        &self,
+        start: std::ops::Bound<u64>,
+        end: std::ops::Bound<u64>,
+    ) -> Result<bool, redb::BackendError> {
+        self.inner.query_lock_range(start, end)
+    }
+
     fn len(&self) -> io::Result<u64> {
         self.inner.len()
     }

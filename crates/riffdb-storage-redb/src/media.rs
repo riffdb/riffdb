@@ -292,6 +292,54 @@ impl RedbStorageMedia {
 pub(crate) struct DynStorageBackend(pub(crate) Box<dyn redb::StorageBackend>);
 
 impl redb::StorageBackend for DynStorageBackend {
+    fn try_lock_range(
+        &self,
+        start: std::ops::Bound<u64>,
+        end: std::ops::Bound<u64>,
+    ) -> Result<bool, redb::BackendError> {
+        self.0.try_lock_range(start, end)
+    }
+
+    fn try_lock_shared_range(
+        &self,
+        start: std::ops::Bound<u64>,
+        end: std::ops::Bound<u64>,
+    ) -> Result<bool, redb::BackendError> {
+        self.0.try_lock_shared_range(start, end)
+    }
+
+    fn lock_range(
+        &self,
+        start: std::ops::Bound<u64>,
+        end: std::ops::Bound<u64>,
+    ) -> Result<(), redb::BackendError> {
+        self.0.lock_range(start, end)
+    }
+
+    fn lock_shared_range(
+        &self,
+        start: std::ops::Bound<u64>,
+        end: std::ops::Bound<u64>,
+    ) -> Result<(), redb::BackendError> {
+        self.0.lock_shared_range(start, end)
+    }
+
+    fn unlock_range(
+        &self,
+        start: std::ops::Bound<u64>,
+        end: std::ops::Bound<u64>,
+    ) -> Result<(), redb::BackendError> {
+        self.0.unlock_range(start, end)
+    }
+
+    fn query_lock_range(
+        &self,
+        start: std::ops::Bound<u64>,
+        end: std::ops::Bound<u64>,
+    ) -> Result<bool, redb::BackendError> {
+        self.0.query_lock_range(start, end)
+    }
+
     fn len(&self) -> Result<u64, io::Error> {
         self.0.len()
     }
