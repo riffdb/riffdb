@@ -137,11 +137,15 @@ pub(crate) struct CorpusWitnessRotation {
     /// A later displacement of that second restoration. Retain all earlier
     /// movements and continue asserting the same forward successor territory.
     pub second_restoration_moved_by: Option<&'static str>,
+    /// A third return, preserving both earlier restorations and displacements.
+    pub second_restoration_returned_by: Option<&'static str>,
 }
 
 impl CorpusWitnessRotation {
     fn currently_restored(self) -> bool {
-        (self.restoration_returned_by.is_some() && self.second_restoration_moved_by.is_none())
+        self.second_restoration_returned_by.is_some()
+            || (self.restoration_returned_by.is_some()
+                && self.second_restoration_moved_by.is_none())
             || (self.restored_by.is_some() && self.restoration_moved_by.is_none())
     }
 }
@@ -156,12 +160,14 @@ fn moved_restoration_preserves_both_historical_receipts() {
         restoration_moved_by: None,
         restoration_returned_by: None,
         second_restoration_moved_by: None,
+        second_restoration_returned_by: None,
     };
     assert!(original.currently_restored());
     let moved = CorpusWitnessRotation {
         restoration_moved_by: Some("a29312ffbfd3cd464f4803b1a32ce8e294279d83"),
         restoration_returned_by: None,
         second_restoration_moved_by: None,
+        second_restoration_returned_by: None,
         ..original
     };
     assert!(!moved.currently_restored());
@@ -171,6 +177,7 @@ fn moved_restoration_preserves_both_historical_receipts() {
     let returned = CorpusWitnessRotation {
         restoration_returned_by: Some("d32e1182889cc338b44808448c13f4539ee9253e"),
         second_restoration_moved_by: None,
+        second_restoration_returned_by: None,
         ..moved
     };
     assert!(returned.currently_restored());
@@ -183,6 +190,7 @@ fn moved_restoration_preserves_both_historical_receipts() {
     assert_eq!(returned.successor_seed, original.successor_seed);
     let displaced_again = CorpusWitnessRotation {
         second_restoration_moved_by: Some("9aa49dabf14f3b5511f3541b685084610ea61580"),
+        second_restoration_returned_by: None,
         ..returned
     };
     assert!(!displaced_again.currently_restored());
@@ -200,6 +208,29 @@ fn moved_restoration_preserves_both_historical_receipts() {
         returned.invalidated_by_commit
     );
     assert_eq!(displaced_again.successor_seed, original.successor_seed);
+    let third_return = CorpusWitnessRotation {
+        second_restoration_returned_by: Some("f07a5ae0d7755af86cb8835398c83b88d484ad22"),
+        ..displaced_again
+    };
+    assert!(third_return.currently_restored());
+    assert_eq!(third_return.restored_by, original.restored_by);
+    assert_eq!(
+        third_return.restoration_moved_by,
+        moved.restoration_moved_by
+    );
+    assert_eq!(
+        third_return.restoration_returned_by,
+        returned.restoration_returned_by
+    );
+    assert_eq!(
+        third_return.second_restoration_moved_by,
+        displaced_again.second_restoration_moved_by
+    );
+    assert_eq!(
+        third_return.invalidated_by_commit,
+        original.invalidated_by_commit
+    );
+    assert_eq!(third_return.successor_seed, original.successor_seed);
 }
 
 /// Receipted retirement of one expectation whose territory an intentional
@@ -252,6 +283,7 @@ pub(crate) const REGRESSION_CORPUS: &[CorpusEntry] = &[
             restoration_moved_by: None,
             restoration_returned_by: None,
             second_restoration_moved_by: None,
+            second_restoration_returned_by: None,
         }),
         retirement: None,
     },
@@ -293,6 +325,9 @@ pub(crate) const REGRESSION_CORPUS: &[CorpusEntry] = &[
             // stream: the corpus passes at its parent 5d3c41b70 and this
             // coordinate changes at 0d9edbce0, unchanged through the closure.
             second_restoration_moved_by: Some("0d9edbce0593ec1227f66fd9af2ea934ee09ecf9"),
+            // Ordinary primary directory publication adds a fault-eligible sync.
+            // The unchanged corpus audit establishes this coordinate movement.
+            second_restoration_returned_by: Some("f07a5ae0d7755af86cb8835398c83b88d484ad22"),
         }),
         retirement: None,
     },
@@ -321,6 +356,7 @@ pub(crate) const REGRESSION_CORPUS: &[CorpusEntry] = &[
             restoration_moved_by: None,
             restoration_returned_by: None,
             second_restoration_moved_by: None,
+            second_restoration_returned_by: None,
         }),
         retirement: None,
     },
@@ -353,6 +389,7 @@ pub(crate) const REGRESSION_CORPUS: &[CorpusEntry] = &[
             restoration_moved_by: None,
             restoration_returned_by: None,
             second_restoration_moved_by: None,
+            second_restoration_returned_by: None,
         }),
         retirement: None,
     },
@@ -377,6 +414,7 @@ pub(crate) const REGRESSION_CORPUS: &[CorpusEntry] = &[
             restoration_moved_by: None,
             restoration_returned_by: None,
             second_restoration_moved_by: None,
+            second_restoration_returned_by: None,
         }),
         retirement: None,
     },
@@ -417,6 +455,9 @@ pub(crate) const REGRESSION_CORPUS: &[CorpusEntry] = &[
             // V2 initialization moves the second restoration below the unchanged
             // 30-decision threshold. Preserve every earlier movement.
             second_restoration_moved_by: Some("9aa49dabf14f3b5511f3541b685084610ea61580"),
+            // Ordinary primary directory publication adds a fault-eligible sync.
+            // The unchanged corpus audit establishes this coordinate movement.
+            second_restoration_returned_by: Some("f07a5ae0d7755af86cb8835398c83b88d484ad22"),
         }),
         retirement: None,
     },
@@ -445,6 +486,7 @@ pub(crate) const REGRESSION_CORPUS: &[CorpusEntry] = &[
             restoration_moved_by: None,
             restoration_returned_by: None,
             second_restoration_moved_by: None,
+            second_restoration_returned_by: None,
         }),
         retirement: None,
     },
@@ -481,6 +523,7 @@ pub(crate) const REGRESSION_CORPUS: &[CorpusEntry] = &[
             // admission and four absent commits, identical through 12 reruns.
             restoration_returned_by: Some("d32e1182889cc338b44808448c13f4539ee9253e"),
             second_restoration_moved_by: None,
+            second_restoration_returned_by: None,
         }),
         retirement: None,
     },
@@ -526,6 +569,7 @@ pub(crate) const REGRESSION_CORPUS: &[CorpusEntry] = &[
             restoration_moved_by: None,
             restoration_returned_by: None,
             second_restoration_moved_by: None,
+            second_restoration_returned_by: None,
         }),
         retirement: None,
     },
@@ -554,9 +598,12 @@ pub(crate) const REGRESSION_CORPUS: &[CorpusEntry] = &[
             // stream: the corpus passes at its parent 5d3c41b70 and this
             // coordinate changes at 0d9edbce0, unchanged through the closure.
             restored_by: Some("0d9edbce0593ec1227f66fd9af2ea934ee09ecf9"),
-            restoration_moved_by: None,
+            // Ordinary primary directory publication adds a fault-eligible sync.
+            // The unchanged corpus audit establishes this coordinate movement.
+            restoration_moved_by: Some("f07a5ae0d7755af86cb8835398c83b88d484ad22"),
             restoration_returned_by: None,
             second_restoration_moved_by: None,
+            second_restoration_returned_by: None,
         }),
         retirement: None,
     },
@@ -607,6 +654,7 @@ pub(crate) const REGRESSION_CORPUS: &[CorpusEntry] = &[
             // original predicate; the existing successor remains checked.
             restoration_returned_by: Some("9aa49dabf14f3b5511f3541b685084610ea61580"),
             second_restoration_moved_by: None,
+            second_restoration_returned_by: None,
         }),
         retirement: None,
     },
@@ -640,6 +688,7 @@ pub(crate) const REGRESSION_CORPUS: &[CorpusEntry] = &[
             restoration_moved_by: None,
             restoration_returned_by: None,
             second_restoration_moved_by: None,
+            second_restoration_returned_by: None,
         }),
         // Only the live admission/absent territory moves. The original
         // commit-PRESENT retirement remains asserted even on this rotated
@@ -679,6 +728,7 @@ pub(crate) const REGRESSION_CORPUS: &[CorpusEntry] = &[
             restoration_moved_by: None,
             restoration_returned_by: None,
             second_restoration_moved_by: None,
+            second_restoration_returned_by: None,
         }),
         retirement: None,
     },
@@ -724,7 +774,10 @@ pub(crate) const REGRESSION_CORPUS: &[CorpusEntry] = &[
             // stream: the corpus passes at its parent 5d3c41b70 and this
             // coordinate changes at 0d9edbce0, unchanged through the closure.
             restoration_returned_by: Some("0d9edbce0593ec1227f66fd9af2ea934ee09ecf9"),
-            second_restoration_moved_by: None,
+            // Ordinary primary directory publication adds a fault-eligible sync.
+            // The unchanged corpus audit establishes this coordinate movement.
+            second_restoration_moved_by: Some("f07a5ae0d7755af86cb8835398c83b88d484ad22"),
+            second_restoration_returned_by: None,
         }),
         retirement: None,
     },
@@ -770,6 +823,7 @@ pub(crate) const REGRESSION_CORPUS: &[CorpusEntry] = &[
             restoration_moved_by: None,
             restoration_returned_by: None,
             second_restoration_moved_by: None,
+            second_restoration_returned_by: None,
         }),
         retirement: None,
     },
@@ -807,6 +861,7 @@ pub(crate) const REGRESSION_CORPUS: &[CorpusEntry] = &[
             restoration_moved_by: None,
             restoration_returned_by: None,
             second_restoration_moved_by: None,
+            second_restoration_returned_by: None,
         }),
         retirement: None,
     },
@@ -828,10 +883,13 @@ pub(crate) const REGRESSION_CORPUS: &[CorpusEntry] = &[
             successor_seed: 0x51C2_C508,
             invalidated_by_commit: "9aa49dabf14f3b5511f3541b685084610ea61580",
             rotated: "2026-09-19",
-            restored_by: None,
+            // Ordinary primary directory publication adds a fault-eligible sync.
+            // The unchanged corpus audit establishes this coordinate movement.
+            restored_by: Some("f07a5ae0d7755af86cb8835398c83b88d484ad22"),
             restoration_moved_by: None,
             restoration_returned_by: None,
             second_restoration_moved_by: None,
+            second_restoration_returned_by: None,
         }),
         retirement: None,
     },
@@ -1030,6 +1088,17 @@ fn regression_corpus_replays_and_reproduces_its_territory() {
                         && commit.len() == 40
                         && commit.bytes().all(|byte| byte.is_ascii_hexdigit()),
                     "a second displaced restoration retains every preceding movement"
+                );
+            }
+            if let Some(commit) = rotation.second_restoration_returned_by {
+                assert!(
+                    rotation.restored_by.is_some()
+                        && rotation.restoration_moved_by.is_some()
+                        && rotation.restoration_returned_by.is_some()
+                        && rotation.second_restoration_moved_by.is_some()
+                        && commit.len() == 40
+                        && commit.bytes().all(|byte| byte.is_ascii_hexdigit()),
+                    "a third restoration retains every preceding movement"
                 );
             }
             // Retirement still applies if the surviving territory moves.

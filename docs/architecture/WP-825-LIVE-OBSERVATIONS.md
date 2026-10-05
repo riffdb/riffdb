@@ -565,6 +565,16 @@ commit-present window remains absent. The movement receipts must name this
 repair's exact commit before the corpus can pass. No seed, generator, fault
 model, predicate, retirement or successor will be removed or weakened.
 
+The repair is committed as `f07a5ae0`. Append-only corpus receipts now record
+those five movements against that exact causal revision, adding a third-return
+slot that requires all preceding receipts. The existing history-preservation
+test covers that slot; the full corpus replay and deliberately drifted-pin
+refusal pass (five targeted tests, two existing ignored diagnostics). All 59
+native architecture tests and 15 native creation, scrub, predecessor and lock
+tests also pass. Full scoped acceptance for the repair and receipts then passes
+all seven steps and 1,233 native/simulator tests, with ten existing skips. Full
+CI and required-host qualification remain outstanding.
+
 PR note: Package WP-825 (open); Tier guarantee within existing durable-write
 requirements; Behavior: require ordinary primary-directory synchronization
 before store admission, preserving typed failure on retries; Checks: two native
