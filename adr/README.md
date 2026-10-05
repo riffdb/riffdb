@@ -305,6 +305,7 @@ record with no front matter.
 | [0268](0268-bounded-native-continuation-of-source-reclamation-proofs.md) | Bounded Native Continuation Of Source Reclamation Proofs | Accepted | guarantee |
 | [0269](0269-explicit-engine-integrity-verification-and-reviewed-redb-upgrade.md) | Explicit Engine Integrity Verification And Reviewed Redb Upgrade | Accepted | guarantee |
 | [0270](0270-allocation-free-committed-entity-canonical-sort.md) | Allocation-Free Committed Entity Canonical Sort | Accepted | guarantee |
+| [0271](0271-fair-bounded-native-source-reclamation-admission.md) | Fair Bounded Native Source-Reclamation Admission | Accepted | guarantee |
 <!-- adr-index:end -->
 
 The human architecture review on 2026-07-12 approved the direction represented
