@@ -51,7 +51,10 @@ These limits are part of the POC release posture, not hidden roadmap promises.
   reclaimed no source receipts or extents.
   Native inspection identified incorrect audit-key classification and rejected
   command-audit materialization during pruning. Both cases now have native
-  repairs and deterministic coverage; required-host verification remains open.
+  repairs and deterministic coverage. Their required-host preparation removed
+  4,610 source receipts, but reclaimed no physical extents; its final fault-free
+  window failed both p95 and p99 limits. Sustained retirement and latency remain
+  unresolved native blockers.
   Native reclamation, latency, notification and recovery behavior require
   further verification; maintenance pauses, automatic
   watch reconnects or relaxed client validation cannot qualify the rehearsal.

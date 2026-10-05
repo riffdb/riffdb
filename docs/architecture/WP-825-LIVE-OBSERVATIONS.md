@@ -351,6 +351,41 @@ preimage, locator, key and decoding checks pass. This is development evidence;
 the required-host preparation and full acceptance still must establish sustained
 receipt/extent progress and normal latency. No 24-hour run has started.
 
+### Required-host audit repair: receipt progress, failed normal latency
+
+Preparation from clean committed native source `577f2445` completed all 90,000
+updates and 360,000 reads on the required 8-vCPU, nominal 32-GiB, persistent-SSD
+host, with zero retries. The original population, offered rates and request
+limits were preserved. The three five-minute observations were:
+
+| Window (seconds) | p95 (ms) | p99 (ms) | Requests at least 250 ms |
+| --- | ---: | ---: | ---: |
+| 0–300 | 92.528 | at least 250 | 3,595 |
+| 300–600 | 57.066 | 74.782 | 0 |
+| 600–900 | 112.198 | at least 250 | 4,601 |
+
+The consumer outage overlapped the first two windows. Its actual pause lasted
+300.050 seconds; recovery of 2,048 events took 8.824 seconds, while live progress
+continued. The final window was fault-free and failed both latency limits.
+Preparation therefore exited unsuccessfully with `probe_latency`; final offline
+archive reconciliation was not run after refusal.
+
+Shutdown reported 4,610 source receipts removed, 109,594 continuation rows,
+434,305 initial validation rows, 315 invalidations and 109 admission refusals.
+Receipt-gate work totaled 67,881 microseconds. Physical extent deletion and
+recycling both remained zero, with 122 reference-held retirement attempts and
+zero reader-held attempts. These are accumulated shutdown observations, not
+periodic proof of physical eligibility or final-six-hour resource stability.
+The audit repair restores some real continuing-load receipt progress; it does
+not establish sustainable retirement or explain the remaining invalidations,
+reference holds or tail latency. Preserve the failed artifact for diagnosis.
+
+Scoped acceptance for that native change passed all seven planned steps,
+including 1,159 native storage tests with two skips, formatting, Clippy, handbook,
+file-size and panic-allowance checks. The three previously failing daemon recovery
+tests also passed a reproduction, but the earlier intermittent failures remain
+unexplained. Neither receipt qualifies a final dependency revision or full CI.
+
 ### Engine reliance review: a separate qualification blocker
 
 The supplied read-only redb review was checked against the pinned engine and
@@ -382,10 +417,50 @@ review; merging follower apply/acknowledgement would change durable protocol
 boundaries and is not authorized by the dependency proposal. Preserve the journal
 and record CRC: they protect different artifacts and semantic boundaries from
 redb's own engine checks. Process kills also do not establish power-loss coverage.
+The cited `retention.rs` helper is not the Standard online logical-prune hot path:
+that transition uses the journal, followed by its existing one-phase checkpoint.
+Source-receipt control writes have their own hardened boundary. Do not infer a
+measured latency improvement from removing the cited helper's extra sync.
+
+#### Isolated dependency and locking preparation
+
+An isolated graph comparison preserves disabled default features and no enabled
+redb features. On Linux, 4.2.0 has no normal dependency edge; 4.3.0 introduces
+`libc`, while the cross-target graph already contains that package for WASI.
+The isolated candidate can retain the workspace's existing `libc` 0.2.186.
+Both engine versions require Rust 1.90 and use MIT OR Apache-2.0 licensing.
+The candidate registry checksum is
+`fb338a6c67830a61bed824b78c2bb034ab1ff401a20616bd7957524f4fdc2f22`.
+Isolated `cargo deny` passes advisories, licenses, bans and sources using the
+repository policy; isolated `cargo audit` passes. The first license check rejected
+the temporary review crate's missing license declaration; declaring its actual
+license fixes that fixture, without changing the policy. These checks do not
+replace a final resolved-workspace review or root-lock security checks.
+
+Source comparison finds seven added textual unsafe occurrences, all in the new
+platform-gated range-lock implementation. Linux GNU uses checked lock bounds,
+an initialized `flock64` and the large-file kernel syscall; Apple and other Linux
+environments use their corresponding `fcntl` ABI. Windows has separate handle
+and overlapped-operation ownership. These dependency internals grant no first-
+party unsafe exception. Target execution and lock-failure checks remain required.
+
+A sacrificial two-process reproduction compiles the actual current native
+`CheckpointRewriteBackend` unchanged against each isolated engine version.
+Under 4.2.0 the second process receives `DatabaseAlreadyOpen`; under 4.3.0 it
+opens the same file successfully. The constructor no longer acquires the lock,
+and the unchanged wrapper inherits unsupported locking methods, which the
+engine permits in exclusive-writer mode. This proves why every file-backed
+wrapper must delegate the new methods before upgrading. It is upgrade-hazard
+evidence, not a claim that the current 4.2.0 production writer admits two owners.
+Production pins and scrub behavior remain unchanged pending ADR-0269 acceptance.
 
 PR note: Package WP-825 (open); Tier internal documentation; Behavior: disclose
-the physical-verification reliance gap and proposed repair; Checks: pinned-source
-and native code inspection, ADR form/index/obligation checks; Compatibility:
-production code, dependency pins, formats and interfaces unchanged; Updated
-handbook pages: known limitations and native findings; Hazards/follow-ups: exact
-ADR-0269 review and implementation, final-hash acceptance and rehearsal gates.
+the physical-verification gap, isolated upgrade-lock hazard and failed continuing-
+load preparation with actual receipt progress; Checks: engine/native source and
+isolated graph inspection, two-process wrapper reproduction, isolated dependency
+policy/security checks, scoped documentation acceptance and separately recorded
+native acceptance; Compatibility: production code, dependency pins, formats and
+interfaces unchanged; Updated handbook pages: known limitations and native
+findings; Hazards/follow-ups: exact ADR-0269 acceptance and implementation,
+unresolved retirement, latency and intermittent daemon failures, final-hash full
+CI and rehearsal gates.
