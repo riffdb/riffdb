@@ -1025,3 +1025,37 @@ backend refusals; Documentation: this handoff and native findings;
 Hazards/follow-ups: actual composition still invalidates every source candidate,
 normal-window p99 fails, stable refresh paging and recovery diagnosis remain
 open, and clean final CI plus the complete short rehearsal are still required.
+
+## WP-825 fair-admission host diagnostic
+
+Native revision `1841f1f1` passes full CI and the release source installation
+check. Its unchanged 900-second consumer-outage preparation on the required
+8-vCPU, 32-GiB durable-SSD host still fails normal-window latency. All 90,000
+commands and 360,000 reads complete without retries, and full population state
+reconciliation passes. The final five-minute window has 11,565 requests above
+250 ms, so both p95 and p99 fail. The measured consumer pause starts at 5.267
+seconds, lasts 300.048 seconds and drains in 5.715 seconds; only the first two
+windows overlap that outage and recovery. The failed preparation is preserved.
+
+Whole-preparation native counters report 61,884 source receipts removed, one
+extent recycled and none deleted. Source admission grants 570 of 572 queued
+turns, with two expirations; continuation streams 413,586 rows after 178 initial
+rows. Its last planning sample has resume 61,629, checkpoint ceiling 364,681
+and tail 372,644, with no source holds observed at that barrier. These are
+planning positions and cumulative counters, not eligible bytes, per-pass
+durations or proof of physical reclamation for the retained range.
+
+The production scheduling regression separately demonstrates that actual
+source deletion still receives a one-second idle recheck when logical retention
+is held or at its target. Refining that policy requires exact review under
+ADR-0271; it has not been implemented. The new sink-outage and queried-projection
+preparations pass 50 semantic tests and five integrated scoped checks. Their
+separate host diagnostic remains unqualified. Native performance, measured
+resource classification, complete fault coverage and the qualifying short
+rehearsal remain open. No 24-hour run has started.
+
+PR note: Package WP-825 (open); Tier internal; Behavior: record measured failed
+host preparation and its limits; Checks: 50 evidence/preparation tests and five
+integrated scoped checks pass; Compatibility: no native behavior or guarantee
+changes; Updated handbook: this handoff; Hazards/follow-ups: exact pacing review,
+normal-window performance repair and complete milestone evidence remain pending.
