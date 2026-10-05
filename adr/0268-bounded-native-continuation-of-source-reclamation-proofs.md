@@ -1,11 +1,11 @@
 ---
 adr: "0268"
 title: Bounded Native Continuation Of Source Reclamation Proofs
-status: proposed
+status: accepted
 tier: guarantee
 date: 2026-10-04
-accepted: null
-acceptance: null
+accepted: '2026-10-04'
+acceptance: 'maintainer, in session, 2026-10-04: Approved, in response to the request for exact acceptance of ADR-0268'
 requires: [ADR-0265, ADR-0186, ADR-0263]
 amends: [ADR-0265, ADR-0186]
 supersedes: []

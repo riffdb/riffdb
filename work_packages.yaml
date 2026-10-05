@@ -28628,8 +28628,8 @@ work_packages:
     emitted events, consumers, projection use, additive deployment, and lifecycle faults.
     Produce a separate hash-bound rehearsal protocol with 64 organizations, 65,536 seeded
     tickets, 100 commands/s, 400 reads/s, and at most 32 requests in flight.
-  requirements: [END-001, END-002, END-003, END-004, END-007, END-008, END-009, END-010]
-  required_adrs: [ADR-0265, ADR-0266, ADR-0267]
+  requirements: [STO-030, STO-031, STO-032, REC-001, END-001, END-002, END-003, END-004, END-007, END-008, END-009, END-010]
+  required_adrs: [ADR-0265, ADR-0266, ADR-0267, ADR-0268]
   # Maintainer approved necessary native fixes in session, 2026-10-04.
   allowed_paths: [examples/ticketdesk/**, scripts/**, tests/ticketdesk_lifecycle/**, fixtures/**, release/evidence/ticketdesk-lifecycle/**, docs/**, crates/riffdb-api-grpc/src/**, crates/riffdb-service/src/**, crates/riffdb-server/src/**, crates/riffdb-storage-redb/src/**, adr/0268-bounded-native-continuation-of-source-reclamation-proofs.md]
   deliverables:
