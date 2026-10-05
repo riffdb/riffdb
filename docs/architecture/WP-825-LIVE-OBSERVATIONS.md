@@ -350,3 +350,42 @@ agrees with the independent complete native source validator. Targeted hostile
 preimage, locator, key and decoding checks pass. This is development evidence;
 the required-host preparation and full acceptance still must establish sustained
 receipt/extent progress and normal latency. No 24-hour run has started.
+
+### Engine reliance review: a separate qualification blocker
+
+The supplied read-only redb review was checked against the pinned engine and
+native scrub implementation. Ordinary redb reads do not run the page-tree
+checksum walk. RiffDB's offline scrub consumes the complete structural and
+catalog-semantic streams but never calls `Database::check_integrity`. Native
+row decoding, CRC, schema and key/identity comparisons remain necessary;
+they do not prove physical-tree integrity. Query entity and stored-outcome
+readers do compare decoded identities, so the review's possible wrong-record
+case is not evidence that those paths omit that check.
+
+The engine checker can repair and return `Ok(false)`. Its result must not be
+treated as a successful diagnostic of an unchanged authoritative artifact.
+The 4.3.0 release notes describe a recovery fix after integrity repair and new
+custom-backend locking methods. The inspected manifests additionally introduce
+Linux/Apple libc locking code. Upgrading therefore requires dependency, unsafe-
+surface, wrapper file-lock and compatibility review, rather than just a pin edit.
+
+Proposed ADR-0269, `adr/0269-explicit-engine-integrity-verification-and-reviewed-redb-upgrade.md`,
+records private-copy physical verification, original preservation, deterministic
+corruption evidence and the reviewed upgrade. Its exact text is awaiting human
+acceptance. No dependency or production scrub behavior has changed under it.
+The current C3D preparation of `577f2445` measures the audit/retention repair;
+it cannot qualify the final dependency revision or the complete campaign.
+
+Recurring hard-coded two-phase commits in follower, archive and retention paths
+are also confirmed. Consolidating profile selection deserves a separate native
+review; merging follower apply/acknowledgement would change durable protocol
+boundaries and is not authorized by the dependency proposal. Preserve the journal
+and record CRC: they protect different artifacts and semantic boundaries from
+redb's own engine checks. Process kills also do not establish power-loss coverage.
+
+PR note: Package WP-825 (open); Tier internal documentation; Behavior: disclose
+the physical-verification reliance gap and proposed repair; Checks: pinned-source
+and native code inspection, ADR form/index/obligation checks; Compatibility:
+production code, dependency pins, formats and interfaces unchanged; Updated
+handbook pages: known limitations and native findings; Hazards/follow-ups: exact
+ADR-0269 review and implementation, final-hash acceptance and rehearsal gates.

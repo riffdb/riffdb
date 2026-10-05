@@ -56,6 +56,14 @@ These limits are part of the POC release posture, not hidden roadmap promises.
   further verification; maintenance pauses, automatic
   watch reconnects or relaxed client validation cannot qualify the rehearsal.
   See the [repair findings and scope proposal](architecture/WP-825-LIVE-OBSERVATIONS.md).
+- Offline storage scrub currently drives complete structural and catalog-semantic
+  validation, but does not invoke redb's physical page-tree integrity checker.
+  redb 4.2.0 does not verify those page checksums during ordinary reads; native
+  envelope, CRC, schema and record/key validation remain active. Physical engine
+  verification is an unresolved native gap. Proposed
+  ADR-0269
+  covers a reviewed engine upgrade and verification that preserves the original
+  artifact; it requires exact acceptance before implementation.
 - The shared recovery inventory contains 41 boundaries. Eighteen belong to the
   WP-190 process matrix; three replication cases run in the daemon and native
   applier tests, and the remainder have named owner-package evidence.
