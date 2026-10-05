@@ -232,6 +232,26 @@ impl RetentionLaneStatus {
                 &mut total.source_admission_refusals,
                 phases.source_admission_refusals,
             ),
+            (
+                &mut total.source_admission_busy_writer,
+                phases.source_admission_busy_writer,
+            ),
+            (
+                &mut total.source_admission_pending_journal,
+                phases.source_admission_pending_journal,
+            ),
+            (
+                &mut total.source_admission_checkpoint,
+                phases.source_admission_checkpoint,
+            ),
+            (
+                &mut total.source_admission_qualification,
+                phases.source_admission_qualification,
+            ),
+            (
+                &mut total.source_admission_page_bound,
+                phases.source_admission_page_bound,
+            ),
             (&mut total.prefix_gate_us, phases.prefix_gate_us),
             (&mut total.gate_wait_us, phases.gate_wait_us),
             (&mut total.drain_us, phases.drain_us),

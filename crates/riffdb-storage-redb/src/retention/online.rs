@@ -81,6 +81,16 @@ pub struct OnlineRetentionPhases {
     pub source_validation_invalidations: u64,
     /// Nonwaiting source admissions refused without deleting any receipt.
     pub source_admission_refusals: u64,
+    /// Nonwaiting admission yielded to an existing writer or queued writer.
+    pub source_admission_busy_writer: u64,
+    /// Nonwaiting admission found an uncheckpointed journal suffix.
+    pub source_admission_pending_journal: u64,
+    /// A checkpoint or its extent sealing was still publishing.
+    pub source_admission_checkpoint: u64,
+    /// The candidate no longer qualified for the captured source state.
+    pub source_admission_qualification: u64,
+    /// Catch-up exceeded one existing receipt/audit validation page.
+    pub source_admission_page_bound: u64,
     /// Under the gate: validated-prefix pin capture and publication.
     pub prefix_gate_us: u64,
     /// Waiting for the first-come writer gate.
@@ -207,6 +217,13 @@ impl RedbOnlineRetentionLane {
             phases.source_validation_invalidations,
             phases.source_admission_refusals,
         ] = source_control.validation_phases();
+        [
+            phases.source_admission_busy_writer,
+            phases.source_admission_pending_journal,
+            phases.source_admission_checkpoint,
+            phases.source_admission_qualification,
+            phases.source_admission_page_bound,
+        ] = source_control.admission_yields();
         drop(source_control);
         phases.reclaimed_receipts = removed;
         phases.receipt_gate_us = held_us;

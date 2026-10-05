@@ -125,6 +125,23 @@ pub(crate) fn format_source_validation_line() -> String {
     )
 }
 
+/// Closed refusal causes from the actual native admission checks. No payloads,
+/// paths, source identities or application-facing controls.
+pub(crate) fn format_source_admission_line() -> String {
+    let phases = RETENTION_OBSERVATION
+        .get()
+        .map(|lane| lane.phases)
+        .unwrap_or_default();
+    format!(
+        "riffdb-retention-source-admission-v1\tbusy_writer={}\tpending_journal={}\tcheckpoint={}\tqualification={}\tpage_bound={}",
+        phases.source_admission_busy_writer,
+        phases.source_admission_pending_journal,
+        phases.source_admission_checkpoint,
+        phases.source_admission_qualification,
+        phases.source_admission_page_bound
+    )
+}
+
 /// Renders the census as one tagged line for the shutdown evidence stream.
 pub(crate) fn format_v1_line() -> String {
     let mut line = String::from("riffdb-shutdown-release-v1");
@@ -262,6 +279,45 @@ pub(crate) fn record_online_retention(
 #[cfg(test)]
 mod tests {
     use super::{ShutdownReleaseStage, format_v1_line};
+
+    // req: STO-030, STO-031, END-007, END-008
+    #[test]
+    fn source_admission_census_is_bounded_even_at_counter_capacity() {
+        use crate::retention_worker::{RetentionLaneObservation, RetentionLaneState};
+        use riffdb_storage_redb::OnlineRetentionPhases;
+        let previous = super::RETENTION_OBSERVATION.replace(Some(RetentionLaneObservation {
+            state: RetentionLaneState::Idle,
+            fence: None,
+            steps: 0,
+            sequences: 0,
+            holds: [0; 4],
+            phases: OnlineRetentionPhases {
+                source_admission_busy_writer: u64::MAX,
+                source_admission_pending_journal: u64::MAX,
+                source_admission_checkpoint: u64::MAX,
+                source_admission_qualification: u64::MAX,
+                source_admission_page_bound: u64::MAX,
+                ..OnlineRetentionPhases::default()
+            },
+        }));
+        let line = super::format_source_admission_line();
+        super::RETENTION_OBSERVATION.set(previous);
+        assert!(line.len() <= 256);
+        let fields: Vec<_> = line.split('\t').collect();
+        assert_eq!(fields[0], "riffdb-retention-source-admission-v1");
+        assert_eq!(fields.len(), 6);
+        for (field, expected) in fields[1..].iter().zip([
+            "busy_writer",
+            "pending_journal",
+            "checkpoint",
+            "qualification",
+            "page_bound",
+        ]) {
+            let (name, value) = field.split_once('=').unwrap();
+            assert_eq!(name, expected);
+            assert_eq!(value.parse::<u64>().unwrap(), u64::MAX);
+        }
+    }
 
     // req: STO-030, STO-031, STO-032
     #[test]

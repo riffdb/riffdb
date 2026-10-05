@@ -59,8 +59,13 @@ These limits are part of the POC release posture, not hidden roadmap promises.
   prune unnecessarily invalidated source validation. The live drain now checks
   actual preimages before applying canonical command-audit materialization,
   preserving qualification only for that closed representation change. The
-  regression preserves exact outcomes, provenance and retained-history validity;
-  its effect on continuing-load latency and retirement is still unmeasured.
+  regression preserves exact outcomes, provenance and retained-history validity.
+  The next required-host preparation reduced proof invalidations to one and
+  removed 9,730 source receipts, but again retired no physical extents. Work
+  spilled across observation windows, and the final fault-free window reached
+  p95 169 ms with p99 beyond the histogram range. Native admission diagnostics
+  now distinguish the remaining refusal causes; the workload
+  and qualification gates remain unchanged.
   Native reclamation, latency, notification and recovery behavior require
   further verification; maintenance pauses, automatic
   watch reconnects or relaxed client validation cannot qualify the rehearsal.

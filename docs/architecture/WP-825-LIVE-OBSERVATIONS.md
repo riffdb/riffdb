@@ -614,7 +614,10 @@ The repaired main regression passes and independently checks complete retained
 history, unchanged resume/frontiers, exact canonical outcomes and provenance.
 Seventy targeted native continuation, journal and architecture tests pass.
 Final scoped acceptance passes all seven steps and 1,176 native tests, with
-the two existing skips. Full CI remains pending. No measured cause is
+the two existing skips. Full CI then passes on clean revision `bf067f23`,
+including operator acceptance, generated artifacts and source-install smoke.
+All three previously intermittent daemon tests pass in that run; their earlier
+failures remain unexplained. No measured cause is
 assigned to the previous preparation's invalidation count or latency failures;
 the required-host run must measure this repair's effect.
 
@@ -624,6 +627,60 @@ live prune drain; Checks: native regression fails before and passes after the
 repair, plus 70 targeted tests; Compatibility: unchanged durable formats,
 interfaces, ordering, profiles and hold rules; Updated handbook: known
 limitations; Final scoped checks: all seven steps and 1,176 tests pass;
-Hazards/follow-ups: full CI, unresolved
-physical retirement and latency, required-host preparation and the complete
-short rehearsal. The 24-hour campaign has not started.
+Hazards/follow-ups: unresolved physical retirement and latency, required-host
+preparation and the complete short rehearsal. The 24-hour campaign has not started.
+
+### Required-host preparation of the complete repaired revision
+
+Clean source `bf067f23` passes full CI and a locked release build on the required
+8-vCPU, nominal 32-GiB, persistent-SSD host. The unchanged 900-second preparation
+uses 64 organizations, 65,536 seeded tickets, 100 commands/s, 400 reads/s,
+28 load slots plus four auxiliary slots, live observation, a real consumer
+outage and online retention. Its three windows report:
+
+| Seconds | Completed commands | Completed reads | p95 ms | p99 | Histogram overflow |
+| --- | ---: | ---: | ---: | --- | ---: |
+| 0–300 | 29,800 | 119,308 | 194.345 | beyond range | 7,172 |
+| 300–600 | 30,200 | 120,692 | 63.580 | beyond range | 2,795 |
+| 600–900 | 30,000 | 120,000 | 169.229 | beyond range | 6,960 |
+
+Every window offered 30,000 commands and 120,000 reads. All 90,000 commands and
+360,000 reads eventually complete with zero retries, but work spills from the
+first window into the second. The preparation correctly refuses `probe_rate`.
+The final window is fault-free and also independently fails both latency gates.
+The overflow sentinel is not a measured microsecond percentile. State
+reconciliation completes; final offline archive reconciliation is not reached.
+
+The consumer pauses for 300.002 seconds, recovers 2,048 events in 9.979 seconds
+and reports continuing live progress. Final native counters show 9,730 reclaimed
+source receipts and 1,099,347 microseconds of receipt-gate work; initial
+validation streams 10,103 rows, continuation 408,771 rows, with one invalidation
+and 674 admission refusals. Physical deletion and recycling remain zero, with
+91 reference-held and one reader-held attempt. Logical pruning advances 121,959
+sequences over 555 steps. These accumulated shutdown counters do not identify
+the admission-refusal causes or establish continuing physical eligibility.
+
+This revision establishes native proof continuation and integrity checks, not
+sustainable service levels or retirement. The source barrier's existing checks
+currently merge busy/queued writers, pending journal data, checkpoint/sealing
+publication, changed qualification and oversized catch-up into one refusal
+counter. A diagnostic-only continuation of WP-825 separates those actual native
+checks into five bounded numeric counters. It preserves the original aggregate
+line, adds a private diagnostic line, and changes no admission, pacing, hold,
+durability, ordering or application interface. Deterministic tests check refusal
+state preservation, bootstrap-hold preservation and per-step counter reset;
+maximum-value formatting stays bounded and payload-free. Fifteen targeted
+tests pass, followed by all seven scoped acceptance steps and 1,802 tests,
+with the ten existing skips. The checkpoint-sealing fixture also checks the
+exact refusal cause. Full CI and required-host measurement of this diagnostic
+revision remain pending. No latency or retirement repair is claimed.
+
+PR note: Package WP-825 (open); Tier guarantee within accepted ADR-0268;
+Behavior: distinguish closed native source-admission refusal causes;
+Checks: prior complete source passes full CI; actual required-host preparation
+fails rate, normal latency and retirement; 15 targeted tests and all seven
+scoped checks pass, including 1,802 tests with ten existing skips;
+Compatibility: unchanged public protocols, durable formats and source admission;
+Updated handbook: known limitations; Hazards/follow-ups: identify and repair
+native admission/retirement and latency limitations, qualify the final source,
+then complete the short rehearsal. The 24-hour run has not started.

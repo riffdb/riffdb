@@ -3,6 +3,32 @@
 
 use super::*;
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(super) enum AdmissionYield {
+    BusyWriter,
+    PendingJournal,
+    CheckpointPublication,
+    ChangedQualification,
+    CatchupPageBound,
+}
+
+impl AdmissionYield {
+    pub(super) const fn index(self) -> usize {
+        match self {
+            Self::BusyWriter => 0,
+            Self::PendingJournal => 1,
+            Self::CheckpointPublication => 2,
+            Self::ChangedQualification => 3,
+            Self::CatchupPageBound => 4,
+        }
+    }
+}
+
+pub(super) enum AdmissionAttempt<T> {
+    Admitted(T),
+    Yielded(AdmissionYield),
+}
+
 pub(super) struct Barrier {
     shared: Arc<SharedRedb>,
     _lease: ExclusiveLease,
@@ -105,31 +131,40 @@ impl Barrier {
         Self::finish_validated(shared, lease, root, proof)
     }
 
-    pub(super) fn try_from_continuation(
+    pub(super) fn try_from_continuation_observed(
         shared: Arc<SharedRedb>,
         walk: &mut crate::changelog_v3_retained_validation::RetainedHistoryValidation,
-    ) -> Result<Option<Self>, StorageError> {
+    ) -> Result<AdmissionAttempt<Self>, StorageError> {
         let Some(lease) = shared.mutation_gate.try_acquire()? else {
-            return Ok(None);
+            return Ok(AdmissionAttempt::Yielded(AdmissionYield::BusyWriter));
         };
         if shared.write_fenced.load(Ordering::Acquire) || shared.is_follower_mode() {
             return Err(storage_error(StorageErrorKind::Unavailable));
         }
-        if !drained_for_validation(&shared)? {
-            return Ok(None);
+        if let Some(reason) = validation_drain_yield(&shared)? {
+            return Ok(AdmissionAttempt::Yielded(reason));
         }
         let epoch = shared.source_continuation_epoch.load(Ordering::Acquire);
         let root = shared.capture_checkpoint_root()?;
         if walk.is_complete() && !walk.continue_on(Arc::clone(&root), epoch)? {
-            return Ok(None);
+            return Ok(AdmissionAttempt::Yielded(
+                AdmissionYield::ChangedQualification,
+            ));
         }
-        if !walk.qualifies(epoch)
-            || walk.root_identity() != root.identity()
-            || !walk.close_suffix_page()?
-        {
-            return Ok(None);
+        if !walk.qualifies(epoch) || walk.root_identity() != root.identity() {
+            return Ok(AdmissionAttempt::Yielded(
+                AdmissionYield::ChangedQualification,
+            ));
         }
-        Self::finish_validated(shared, lease, root, walk.proof()?)
+        if !walk.close_suffix_page()? {
+            return Ok(AdmissionAttempt::Yielded(AdmissionYield::CatchupPageBound));
+        }
+        Self::finish_validated(shared, lease, root, walk.proof()?).map(|barrier| {
+            barrier.map_or(
+                AdmissionAttempt::Yielded(AdmissionYield::ChangedQualification),
+                AdmissionAttempt::Admitted,
+            )
+        })
     }
 
     fn finish_validated(
@@ -221,8 +256,15 @@ impl Barrier {
 }
 
 pub(super) fn drained_for_validation(shared: &SharedRedb) -> Result<bool, StorageError> {
-    if shared.async_checkpoint_in_flight()? || shared.journal_suffix_activity()?.1 != 0 {
-        return Ok(false);
+    validation_drain_yield(shared).map(|reason| reason.is_none())
+}
+
+fn validation_drain_yield(shared: &SharedRedb) -> Result<Option<AdmissionYield>, StorageError> {
+    if shared.async_checkpoint_in_flight()? {
+        return Ok(Some(AdmissionYield::CheckpointPublication));
+    }
+    if shared.journal_suffix_activity()?.1 != 0 {
+        return Ok(Some(AdmissionYield::PendingJournal));
     }
     // Materialization publication precedes off-gate extent sealing. Starting
     // a walk during that rename window can select a locator whose durable
@@ -231,9 +273,10 @@ pub(super) fn drained_for_validation(shared: &SharedRedb) -> Result<bool, Storag
         .journal_sealer
         .lock()
         .map_err(|_| storage_error(StorageErrorKind::InvariantViolation))?;
-    Ok(sealer
+    Ok((!sealer
         .as_ref()
         .is_none_or(std::thread::JoinHandle::is_finished))
+    .then_some(AdmissionYield::CheckpointPublication))
 }
 
 pub(crate) struct ControlWrite {
@@ -374,6 +417,43 @@ impl Drop for ControlWrite {
 mod tests {
     use super::*;
 
+    // req: STO-030, STO-031, STO-032, END-007, END-008, REC-001
+    #[test]
+    fn admission_observations_preserve_busy_writer_state_and_reset_per_step() {
+        let (_scope, ports, _) = crate::changelog_v3_control_tests::fixture();
+        let mut control = ports.replication_source_control();
+        for _ in 0..32 {
+            control.reclaim_history_online().unwrap();
+            if !control.receipt_validation_pending() {
+                break;
+            }
+        }
+        assert!(!control.receipt_validation_pending());
+        let before = crate::changelog_v3_roots::validate_retained_history(
+            &ports.shared.capture_checkpoint_root().unwrap(),
+        )
+        .unwrap();
+        let epoch = ports.shared.durable_commit_epoch();
+        let lease = ports.shared.mutation_gate.acquire().unwrap();
+        assert_eq!(control.reclaim_history_online().unwrap().0, 0);
+        assert_eq!(control.validation_phases()[3], 1);
+        assert_eq!(control.admission_yields(), [1, 0, 0, 0, 0]);
+        assert_eq!(ports.shared.durable_commit_epoch(), epoch);
+        assert!(ports.shared.mutation_gate.is_held());
+        drop(lease);
+        assert_eq!(control.reclaim_history_online().unwrap().0, 0);
+        assert_eq!(control.validation_phases()[3], 0);
+        assert_eq!(control.admission_yields(), [0; 5]);
+        assert!(!ports.shared.mutation_gate.is_held());
+        assert_eq!(
+            crate::changelog_v3_roots::validate_retained_history(
+                &ports.shared.capture_checkpoint_root().unwrap()
+            )
+            .unwrap(),
+            before
+        );
+    }
+
     // req: STO-030, STO-031, STO-032, REC-001
     #[test]
     fn online_validation_capture_and_admission_yield_until_extent_sealing_finishes() {
@@ -399,6 +479,10 @@ mod tests {
         *ports.shared.journal_sealer.lock().unwrap() = Some(worker);
         entry.recv().unwrap();
         let epoch = ports.shared.durable_commit_epoch();
+        assert_eq!(
+            validation_drain_yield(&ports.shared).unwrap(),
+            Some(AdmissionYield::CheckpointPublication)
+        );
         assert!(
             Barrier::try_validation_root(&ports.shared)
                 .unwrap()
@@ -413,6 +497,7 @@ mod tests {
         assert_eq!(ports.shared.durable_commit_epoch(), epoch);
         release.send(()).unwrap();
         ports.shared.join_journal_sealer();
+        assert_eq!(validation_drain_yield(&ports.shared).unwrap(), None);
         assert!(
             Barrier::try_validation_root(&ports.shared)
                 .unwrap()
@@ -543,11 +628,10 @@ mod tests {
             .register(bootstrap)
             .unwrap();
         let before = ports.shared.durable_commit_epoch();
-        assert!(
-            Barrier::try_from_continuation(Arc::clone(&ports.shared), &mut walk)
-                .unwrap()
-                .is_none()
-        );
+        assert!(matches!(
+            Barrier::try_from_continuation_observed(Arc::clone(&ports.shared), &mut walk).unwrap(),
+            AdmissionAttempt::Yielded(AdmissionYield::ChangedQualification)
+        ));
         assert_eq!(ports.shared.durable_commit_epoch(), before);
         assert!(!ports.shared.mutation_gate.is_held());
         let read = ports.shared.capture_checkpoint_root().unwrap();

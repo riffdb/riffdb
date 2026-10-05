@@ -59,6 +59,7 @@ pub(crate) struct ReplicationSourceControl {
     online_validation: Option<crate::changelog_v3_retained_validation::RetainedHistoryValidation>,
     online_independent_sequence: u64,
     online_validation_phases: [u64; 4],
+    online_admission_yields: [u64; 5],
 }
 
 impl RedbOperationalPorts {
@@ -168,6 +169,7 @@ impl RedbOperationalPorts {
             online_validation: None,
             online_independent_sequence: 0,
             online_validation_phases: [0; 4],
+            online_admission_yields: [0; 5],
         }
     }
 }
@@ -300,6 +302,7 @@ impl ReplicationSourceControl {
     /// and gate-held time; the caller applies the existing maintenance pacing.
     pub(crate) fn reclaim_history_online(&mut self) -> Result<(u64, u64), StorageError> {
         self.online_validation_phases = [0; 4];
+        self.online_admission_yields = [0; 5];
         if let Some(walk) = self.online_validation.as_mut() {
             walk.clear_step_rows();
         }
@@ -357,19 +360,21 @@ impl ReplicationSourceControl {
         }
         crash_edge("continuation-qualified");
         let start = std::time::Instant::now();
-        let admission = Barrier::try_from_continuation(Arc::clone(&self.shared), walk);
-        let Some(barrier) = (match admission {
-            Ok(barrier) => barrier,
+        let admission = Barrier::try_from_continuation_observed(Arc::clone(&self.shared), walk);
+        let barrier = match admission {
+            Ok(transaction::AdmissionAttempt::Admitted(barrier)) => barrier,
+            Ok(transaction::AdmissionAttempt::Yielded(reason)) => {
+                self.online_validation_phases[3] = 1;
+                self.online_admission_yields[reason.index()] = 1;
+                return Ok((
+                    0,
+                    capture_us.saturating_add(elapsed_us(start, std::time::Instant::now())),
+                ));
+            }
             Err(error) => {
                 self.online_validation = None;
                 return Err(error);
             }
-        }) else {
-            self.online_validation_phases[3] = 1;
-            return Ok((
-                0,
-                capture_us.saturating_add(elapsed_us(start, std::time::Instant::now())),
-            ));
         };
         let independent = self
             .online_validation
@@ -415,6 +420,10 @@ impl ReplicationSourceControl {
 
     pub(crate) fn validation_phases(&self) -> [u64; 4] {
         self.online_validation_phases
+    }
+
+    pub(crate) fn admission_yields(&self) -> [u64; 5] {
+        self.online_admission_yields
     }
 
     pub(crate) fn receipt_validation_pending(&self) -> bool {
