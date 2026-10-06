@@ -1,11 +1,11 @@
 ---
 adr: "0276"
 title: Registry Completion Writer Compatibility Edge
-status: proposed
+status: accepted
 tier: guarantee
 date: 2026-10-06
-accepted: null
-acceptance: null
+accepted: '2026-10-06'
+acceptance: 'maintainer, in session, 2026-10-06: Approved, in response to the request for exact acceptance of ADR-0276 and its implementation scope extension'
 requires: [ADR-0112, ADR-0263, ADR-0269, ADR-0275]
 amends: [ADR-0275 compatibility transition, ADR-0263 Amendment 5 release graph]
 supersedes: []
