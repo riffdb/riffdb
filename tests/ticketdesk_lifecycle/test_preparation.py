@@ -24,6 +24,40 @@ preparation = importlib.util.module_from_spec(spec)
 loader.exec_module(preparation)
 
 
+class PreparationDurationBoundaries(unittest.TestCase):
+    def invoke_invalid_owned_root(self, duration, faults):
+        arguments = ["ticketdesk-lifecycle-smoke", "--root", "/", "--server", sys.executable,
+                     "--cli", sys.executable, "--worker", sys.executable, "--observe",
+                     "--population-probe-seconds", str(duration), *faults]
+        with patch.object(sys, "argv", arguments):
+            preparation.main()
+
+    def test_extended_outage_preparation_reaches_owned_root_validation(self):
+        for duration in (900, 1500):
+            for fault in ("--sink-outage", "--consumer-outage"):
+                with self.subTest(duration=duration, fault=fault):
+                    with self.assertRaisesRegex(preparation.SmokeError, "^root$"):
+                        self.invoke_invalid_owned_root(duration, [fault])
+
+    def test_extended_duration_remains_outage_only_and_bounded(self):
+        for duration, faults in ((1500, []), (1501, ["--sink-outage"]),
+                                 (86400, ["--sink-outage"])):
+            with self.subTest(duration=duration, faults=faults):
+                with self.assertRaisesRegex(preparation.SmokeError, "^probe_duration$"):
+                    self.invoke_invalid_owned_root(duration, faults)
+
+    def test_worst_permitted_recovery_leaves_a_whole_normal_window(self):
+        outage = {"start_elapsed_ns": 5000000000, "pause_elapsed_ns": 302000000000,
+                  "recovery_elapsed_ns": 600000000000}
+        self.assertTrue(all(preparation.outage_window(start, start + 300, outage)
+                            for start in (0, 300, 600)))
+        self.assertTrue(preparation.outage_window(900, 1200, outage))
+        self.assertFalse(preparation.outage_window(1200, 1500, outage))
+        outage["recovery_elapsed_ns"] += 1
+        with self.assertRaisesRegex(preparation.SmokeError, "^consumer_outage_timing$"):
+            preparation.outage_window(1200, 1500, outage)
+
+
 def observation():
     return {"schema": "riffdb.cli.output/v1", "command": "projection.query", "ok": True,
             "result": {"status": "ready", "rows": [{"group": [

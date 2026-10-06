@@ -17,6 +17,7 @@ ALLOCATOR_BASIS = "whole_process_virtual_address_space_upper_bound"
 MAX_STATUS_BYTES = 65536
 MAX_STAT_BYTES = 8192
 MAX_U64 = 2**64 - 1
+MAX_PREPARATION_SAMPLE_SECONDS = 1500
 
 
 class ResourceError(ValueError):
@@ -154,7 +155,8 @@ class PreparationMemorySamples:
     """Caller-polled diagnostics, with no extra request slot or sampling thread."""
 
     def __init__(self, root, pids, duration, *, proc_root=Path("/proc")):
-        require(type(duration) is int and 1 <= duration <= 900, "resource_sample_bound")
+        require(type(duration) is int and 1 <= duration <= MAX_PREPARATION_SAMPLE_SECONDS,
+                "resource_sample_bound")
         self.inventory = PersistentProcessMemory(pids, proc_root=proc_root)
         self.duration_ns = duration * 1000000000
         self.coverage = [0] * ((duration + 299) // 300)

@@ -121,6 +121,26 @@ class ResourceObservations(unittest.TestCase):
                 with PreparationMemorySamples(root, roles, 900, proc_root=root):
                     pass
 
+    def test_extended_preparation_requires_all_five_memory_windows(self):
+        roles = {"controller": 123, "server": 124, "load": 125, "observer": 126}
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            for pid in roles.values():
+                self.fixture(root, pid=pid)
+            with PreparationMemorySamples(root, roles, 1500, proc_root=root) as samples:
+                for elapsed in (0, 300000000000, 600000000000, 900000000000):
+                    samples.poll(elapsed)
+                with self.assertRaisesRegex(ResourceError, "^resource_sample_coverage$"):
+                    samples.finish()
+                samples.poll(1200000000000)
+                samples.finish()
+                samples.poll(1500000000000)
+            self.assertEqual(len(samples.path.read_bytes().splitlines()), 5)
+            for duration in (1501, 86400, True):
+                with self.subTest(duration=duration):
+                    with self.assertRaisesRegex(ResourceError, "^resource_sample_bound$"):
+                        PreparationMemorySamples(root, roles, duration, proc_root=root)
+
     def test_complete_coverage_still_records_no_sample_for_a_dead_process(self):
         roles = {"controller": 123, "server": 124, "load": 125, "observer": 126}
         with tempfile.TemporaryDirectory() as directory:

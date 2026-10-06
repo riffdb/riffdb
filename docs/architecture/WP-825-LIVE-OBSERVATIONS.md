@@ -1417,3 +1417,32 @@ controller launches one unchanged 900-second sink diagnostic with 100 commands/s
 300-second sink outage. Its result remains pending. Component validation does
 not establish delivery catch-up, sustained reclamation, normal-window latency,
 the complete short campaign or 24-hour readiness. WP-825 remains open.
+
+That diagnostic completes all 90,000 commands and 360,000 reads with zero
+retries. The actual pause lasts 300.030 seconds and delivery drains under
+continuing load in 311.675 seconds after access returns, meeting the unchanged
+600-second recovery bound. Public writes and the live query progress throughout
+the pause. No panic, stack overflow, fatal runtime or retention refusal is
+reported. Joined retention remains Cancelled with no active terminal fence,
+637 steps and 121,856 sequences. These observations do not prove archive
+payload reconciliation.
+
+The final sampled native census reports 83,107 removed source receipts, zero
+deleted extents and one recycled extent. This does not meet the required three
+distinct physically reclaimed generations. Longer observation must establish
+sustained receipt release and extent reclamation independently of delivery.
+
+The run exits with `probe_normal_window`: the outage starts at 5.017 seconds,
+so its recovery ends at approximately 616.722 seconds. Every five-minute window
+in the 900-second diagnostic therefore overlaps the pause or recovery. The
+reported latency overflow sentinels cannot qualify normal latency, including
+the first window. The failed run and exact timing receipt remain retained.
+
+Preparation now additionally accepts a bounded 1,500-second outage mode, with
+five complete measured windows and required observation coverage in each.
+This permits a whole normal window after the full existing recovery budget.
+The outage length, recovery deadline, rates, latency limits, request slots,
+archive semantics and final reconciliation requirements are unchanged. The
+900-second mode and its refusal remain intact. Duration and memory-coverage
+regressions fail on the earlier controller and pass after this change; fresh
+controller acceptance and a measured normal window remain required.

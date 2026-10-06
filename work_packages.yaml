@@ -28698,6 +28698,11 @@ work_packages:
       commit and real commit-failure index invalidation. Native group tests
       verify typed refusal, fenced following writes and exact reopened statuses
       rather than treating injected uncertainty as successful delivery.
+    - Offer a separate bounded 1500-second outage preparation after measured
+      recovery passes its 600-second limit but leaves no whole normal window
+      inside 900 seconds. Preserve both modes and every outage, latency, rate,
+      concurrency, resource coverage and final reconciliation gate; the added
+      windows provide observations rather than an exemption or qualification.
 
 - id: WP-826
   name: Twenty-four-hour sustainable TicketDesk qualification

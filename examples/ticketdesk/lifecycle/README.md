@@ -195,6 +195,12 @@ Latency limits apply to normal preparation windows. Only windows overlapping
 the measured pause and backlog drain receive the campaign checker's fault
 exception; all offered/completed counts, errors, concurrency and final state
 checks remain binding. At least one complete normal window is required.
+For either outage, `--population-probe-seconds 1500` adds two measured windows.
+This bounded preparation allows the full ten-minute recovery budget after the
+five-minute pause and still leaves a complete normal window. The 900-second
+mode remains available, but can refuse `probe_normal_window` when recovery
+passes its budget and overlaps the third window. Neither duration relaxes the
+outage, recovery, rate, latency, concurrency, observation or reconciliation checks.
 Online-retention preparations also require the native lane's normal cancelled
 shutdown state. A refused lane, missing terminal observation or malformed census
 fails preparation even if workload latency and reconciliation pass. Measured

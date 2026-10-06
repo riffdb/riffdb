@@ -22,7 +22,9 @@ import time
 from lib.ticketdesk_lifecycle_inventory import InventoryError, InventoryMonitor
 from lib.ticketdesk_lifecycle_faults import FaultError, LocalArchiveOutage
 from lib.ticketdesk_lifecycle_observations import ObservationError, health_head, projection_backlog
-from lib.ticketdesk_lifecycle_resources import ResourceError, PreparationMemorySamples
+from lib.ticketdesk_lifecycle_resources import (
+    MAX_PREPARATION_SAMPLE_SECONDS, ResourceError, PreparationMemorySamples,
+)
 
 
 class SmokeError(ValueError):
@@ -729,20 +731,21 @@ def main():
     parser.add_argument("--restart-recovery", choices=("graceful_restart", "process_kill"),
                         help="interrupt and resolve one original generated update; preparation only")
     parser.add_argument("--consumer-outage", action="store_true",
-                        help="time a five-minute consumer pause in a 900-second observed preparation")
+                        help="time a five-minute consumer pause in an observed preparation of 900 or 1500 seconds")
     parser.add_argument("--sink-outage", action="store_true",
-                        help="deny archive directory access for five minutes under a 900-second observed load")
+                        help="deny archive access for five minutes under an observed load of 900 or 1500 seconds")
     parser.add_argument("--driver", type=Path, help="also exercise retained TypeScript bindings through native Rust driver")
     parser.add_argument("--population-probe-seconds", type=int, default=0,
                         help="fresh 65536-ticket load preparation; never a campaign receipt")
     args = parser.parse_args()
     outage_mode = args.consumer_outage or args.sink_outage
+    outage_durations = (900, MAX_PREPARATION_SAMPLE_SECONDS)
     require(not (args.consumer_outage and args.sink_outage), "separate_outage_preparations")
     require(0 <= args.population_probe_seconds <= 300
-            or outage_mode and args.population_probe_seconds == 900, "probe_duration")
-    require(not args.consumer_outage or args.observe and args.population_probe_seconds == 900,
+            or outage_mode and args.population_probe_seconds in outage_durations, "probe_duration")
+    require(not args.consumer_outage or args.observe and args.population_probe_seconds in outage_durations,
             "consumer_outage_mode")
-    require(not args.sink_outage or args.observe and args.population_probe_seconds == 900,
+    require(not args.sink_outage or args.observe and args.population_probe_seconds in outage_durations,
             "sink_outage_mode")
     require(not args.restart_recovery or not (args.observe or args.additive_deploy or args.population_probe_seconds
                                              or args.prepare_successor or args.driver), "restart_recovery_mode")
@@ -943,7 +946,8 @@ tls_server_name = "127.0.0.1"
                 samples = [json.loads(line) for line in (root / "load.stdout").read_bytes().splitlines()]
                 require(samples[0]["schema"] == "riffdb.ticketdesk-lifecycle-load-ready/v1", "probe_observation")
                 windows = samples[1:-1]
-                require(len(windows) == (3 if outage_mode else 1), "probe_observation")
+                require(len(windows) == (args.population_probe_seconds // 300 if outage_mode else 1),
+                        "probe_observation")
                 normal_windows = 0
                 for index, window in enumerate(windows):
                     start, end = index * 300, min((index + 1) * 300, args.population_probe_seconds)

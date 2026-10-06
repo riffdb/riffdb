@@ -1389,6 +1389,15 @@ separately tested below and still requires integrated final-source acceptance.
 
 ## Native archive cost observations
 
+Observed outage preparations accept `--population-probe-seconds 900` or
+`--population-probe-seconds 1500` with `--observe` and one of `--sink-outage`
+or `--consumer-outage`. The longer bounded mode leaves a complete five-minute
+normal window after a pause of five minutes and the existing recovery budget
+of ten minutes. Every measured window retains its rate, concurrency and
+observation checks; normal windows retain p95 below 100 ms and p99 below 250 ms.
+The shorter mode can refuse `probe_normal_window` despite meeting the recovery
+budget. Both are preparation evidence; neither qualifies the 24-hour campaign.
+
 The native worker now emits bounded timing observations for archive admission,
 acceptance and per-record commit beside its existing primary-writer stages.
 Each graph owns its counters; restart starts a new census and the worker's
