@@ -1,11 +1,11 @@
 ---
 adr: "0275"
 title: Retention Independent Bounded Startup Eligibility
-status: proposed
+status: accepted
 tier: guarantee
 date: 2026-10-06
-accepted: null
-acceptance: null
+accepted: '2026-10-06'
+acceptance: 'maintainer, in session, 2026-10-06: Approved, in response to the request for exact acceptance of ADR-0275 and its implementation scope extension'
 requires: [ADR-0182, ADR-0260, ADR-0265, ADR-0186]
 amends: [ADR-0260 Decision 1, ADR-0182 bounded dirty eligibility]
 supersedes: []
