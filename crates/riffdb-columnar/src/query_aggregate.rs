@@ -40,7 +40,7 @@ impl Accumulator {
 
     pub(super) fn push(
         &mut self,
-        row: &MergedRow,
+        row: &MergedRowRef<'_>,
         fuel: &mut ColumnarAggregateFuel,
     ) -> Result<(), QueryError> {
         fuel.consume_operations(1)?;
@@ -191,11 +191,12 @@ mod tests {
         };
         let mut fuel = ColumnarAggregateFuel::new();
         for value in values {
+            let cells = [value.clone()];
             state
                 .push(
-                    &MergedRow {
+                    &MergedRowRef {
                         entity_version: EntityVersion::new(1).unwrap(),
-                        cells: vec![value.clone()],
+                        cells: &cells,
                     },
                     &mut fuel,
                 )

@@ -217,6 +217,67 @@ impl ColumnarSnapshot {
 
         Some(merged)
     }
+
+    /// Borrowing counterpart of [`Self::merged_org_bounded_with_segment_filter`]
+    /// for the query read path.
+    ///
+    /// Produces the same key-ordered, supersession-resolved view, but each entry
+    /// borrows the winning row's key and cells from the segment or delta rather
+    /// than deep-cloning them. The borrows are valid for the snapshot borrow
+    /// `&self`, which every query executor holds for the whole call, so no row
+    /// is cloned up front — including rows a predicate later rejects and cells a
+    /// query never projects. Only cells actually selected into a result are
+    /// cloned, at the point they must outlive the snapshot.
+    pub(crate) fn merged_org_ref_bounded_with_segment_filter<'s>(
+        &'s self,
+        org: &OrgKey,
+        maximum: usize,
+        mut include_segment: impl FnMut(&Segment) -> bool,
+    ) -> Option<BTreeMap<&'s PrimaryKeyBytes, MergedRowRef<'s>>> {
+        let mut merged: BTreeMap<&'s PrimaryKeyBytes, MergedRowRef<'s>> = BTreeMap::new();
+
+        // Segments oldest → newest so later segments overwrite.
+        for segment in &self.segments {
+            if &segment.org != org || !include_segment(segment) {
+                continue;
+            }
+            for (key, row) in &segment.rows {
+                merged.insert(key, MergedRowRef::from_live(row));
+                if merged.len() > maximum {
+                    return None;
+                }
+            }
+        }
+
+        if let Some(delta) = self.delta.get(org) {
+            for (key, row) in delta {
+                let replace = match merged.get(key) {
+                    None => true,
+                    Some(existing) => supersession_should_replace(
+                        existing.entity_version.get(),
+                        row.entity_version.get(),
+                    ),
+                };
+                if replace {
+                    merged.insert(key, MergedRowRef::from_live(row));
+                    if merged.len() > maximum {
+                        return None;
+                    }
+                }
+            }
+        }
+
+        Some(merged)
+    }
+
+    /// Bounded borrowing merge over every segment for one org.
+    pub(crate) fn merged_org_ref_bounded<'s>(
+        &'s self,
+        org: &OrgKey,
+        maximum: usize,
+    ) -> Option<BTreeMap<&'s PrimaryKeyBytes, MergedRowRef<'s>>> {
+        self.merged_org_ref_bounded_with_segment_filter(org, maximum, |_| true)
+    }
 }
 
 /// One row after merge (live only).
@@ -226,6 +287,30 @@ pub struct MergedRow {
     pub entity_version: EntityVersion,
     /// Projected cells.
     pub cells: Vec<CanonicalValue>,
+}
+
+/// A borrowed merged row for the query read path.
+///
+/// Mirrors [`MergedRow`] but borrows its cells from the snapshot's segment or
+/// delta instead of owning a cloned `Vec`. Field names match `MergedRow` so the
+/// `row.cells[idx]` / `row.entity_version` access shape is identical at every
+/// consumer. The lifetime `'s` is the snapshot borrow held for the whole query.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) struct MergedRowRef<'s> {
+    /// Entity version of the surviving image.
+    pub entity_version: EntityVersion,
+    /// Projected cells borrowed from the winning segment or delta row.
+    pub cells: &'s [CanonicalValue],
+}
+
+impl<'s> MergedRowRef<'s> {
+    #[inline]
+    fn from_live(row: &'s LiveRow) -> Self {
+        Self {
+            entity_version: row.entity_version,
+            cells: &row.cells,
+        }
+    }
 }
 
 /// Working (unpublished) state mutated by apply; published via Arc swap.

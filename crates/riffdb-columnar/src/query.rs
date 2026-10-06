@@ -20,7 +20,7 @@ mod row_order;
 
 use crate::definition::RegisteredDefinition;
 use crate::segment_v2::SegmentV2Predicate;
-use crate::store::{ColumnarSnapshot, MergedRow, OrgKey, PrimaryKeyBytes, Segment};
+use crate::store::{ColumnarSnapshot, MergedRowRef, OrgKey, PrimaryKeyBytes, Segment};
 
 /// Hard budgets for scan-based prototype execution.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -710,7 +710,7 @@ pub fn nearest_query_snapshot_with_cache<A: NearestCandidateAdmission>(
     }
 
     let merged = snapshot
-        .merged_org_bounded(&org, request.budget.max_scanned_rows)
+        .merged_org_ref_bounded(&org, request.budget.max_scanned_rows)
         .ok_or(QueryError::ScanBudgetExceeded {
             max: request.budget.max_scanned_rows,
         })?;
@@ -724,9 +724,10 @@ pub fn nearest_query_snapshot_with_cache<A: NearestCandidateAdmission>(
     // Collect only candidates admitted by both scalar predicates and the
     // domain-specific principal-policy gate. Admission happens before the
     // vector cell is read or validated, so a denied row cannot affect exact
-    // scoring even when its stored vector is malformed.
-    let mut candidate_rows: Vec<(PrimaryKeyBytes, Vec<CanonicalValue>, MergedRow)> = Vec::new();
-    let mut candidate_vectors: Vec<riffdb_types::CanonicalVector> = Vec::new();
+    // scoring even when its stored vector is malformed. Candidate rows borrow
+    // their cells from the snapshot; only the returned rows clone.
+    let mut candidate_rows: Vec<(&PrimaryKeyBytes, Vec<CanonicalValue>, MergedRowRef<'_>)> =
+        Vec::new();
 
     for (key, row) in merged {
         scanned = scanned.saturating_add(1);
@@ -740,14 +741,14 @@ pub fn nearest_query_snapshot_with_cache<A: NearestCandidateAdmission>(
             continue;
         }
 
-        let pk_values = decode_primary_key(definition, &key)?;
+        let pk_values = decode_primary_key(definition, key)?;
         let candidate = NearestCandidate {
             entity_type_id: definition.entity_type_id(),
             entity_version: row.entity_version,
             primary_key_fields: definition.primary_key_fields(),
             primary_key: &pk_values,
             projected_fields: definition.projected_fields(),
-            cells: &row.cells,
+            cells: row.cells,
         };
         if !admission
             .admit(candidate)
@@ -768,7 +769,6 @@ pub fn nearest_query_snapshot_with_cache<A: NearestCandidateAdmission>(
                 }
                 .into());
             }
-            candidate_vectors.push(vec_val.clone());
             candidate_rows.push((key, pk_values, row));
         }
     }
@@ -776,15 +776,27 @@ pub fn nearest_query_snapshot_with_cache<A: NearestCandidateAdmission>(
     // Route only from compiler-owned metadata and the admitted vector count
     // for this one organization. ANN graph topology is constructed after all
     // predicates and policy admission, so denied rows and other organizations
-    // cannot shape its statistics or traversal.
-    let candidate_refs: Vec<&riffdb_types::CanonicalVector> = candidate_vectors.iter().collect();
+    // cannot shape its statistics or traversal. The candidate vectors are
+    // borrowed from the (snapshot-backed) candidate rows rather than cloned;
+    // the vector cell for each admitted row was already validated above.
+    let candidate_refs: Vec<&riffdb_types::CanonicalVector> = candidate_rows
+        .iter()
+        .map(|(_, _, row)| match &row.cells[vector_field_index] {
+            CanonicalValue::Vector(vec_val) => vec_val,
+            _ => unreachable!("only vector-typed admitted rows enter candidate_rows"),
+        })
+        .collect();
     let ann_config = definition.vector_ann_config(request.vector_field);
     let config = ann_config.filter(|config| candidate_refs.len() > config.row_threshold() as usize);
     let graph = if config.is_some() {
         cache.and_then(|(cache, context)| {
             let rows = candidate_rows
                 .iter()
-                .map(|(key, _, row)| (key.clone(), row.entity_version))
+                .map(|(key, _, row)| ((*key).clone(), row.entity_version))
+                .collect::<Vec<_>>();
+            let vectors = candidate_refs
+                .iter()
+                .map(|vec_val| (*vec_val).clone())
                 .collect::<Vec<_>>();
             cache.lookup_or_offer(crate::ann_cache::PopulationView {
                 context,
@@ -792,7 +804,7 @@ pub fn nearest_query_snapshot_with_cache<A: NearestCandidateAdmission>(
                 field: request.vector_field,
                 metric: request.metric,
                 rows: &rows,
-                vectors: &candidate_vectors,
+                vectors: &vectors,
             })
         })
     } else {
@@ -838,7 +850,7 @@ pub fn nearest_query_snapshot_with_cache<A: NearestCandidateAdmission>(
             let (_, pk_values, merged_row) = &candidate_rows[scored_candidate.index];
             NearestResultRow {
                 primary_key: pk_values.clone(),
-                cells: merged_row.cells.clone(),
+                cells: merged_row.cells.to_vec(),
                 distance: scored_candidate.distance,
             }
         })
@@ -909,12 +921,12 @@ pub(crate) fn execute_query(
 
     let merged = match admission {
         Some(_) => snapshot
-            .merged_org_bounded(&org, MAX_PROJECTED_POLICY_CANDIDATES_V1)
+            .merged_org_ref_bounded(&org, MAX_PROJECTED_POLICY_CANDIDATES_V1)
             .ok_or(QueryError::ScanBudgetExceeded {
                 max: MAX_PROJECTED_POLICY_CANDIDATES_V1,
             })?,
         None => snapshot
-            .merged_org_bounded_with_segment_filter(&org, usize::MAX, |segment| {
+            .merged_org_ref_bounded_with_segment_filter(&org, usize::MAX, |segment| {
                 segment_may_match(definition, segment, &request.predicates)
             })
             .expect("usize::MAX cannot be exceeded by an in-memory map"),
@@ -956,7 +968,7 @@ pub(crate) fn execute_query(
             });
         }
         if predicates_match(definition, &row, &mut resolved_predicates)? {
-            let pk_values = decode_primary_key(definition, &key)?;
+            let pk_values = decode_primary_key(definition, key)?;
             let row = (key, pk_values, row);
             if let Some(top) = &mut top {
                 top.push(row);
@@ -998,7 +1010,7 @@ pub(crate) fn execute_query(
         rows: matched
             .into_iter()
             .map(|(_, pk_values, row)| QueryRow {
-                cells: project_selected_cells(&row.cells, &select_indexes),
+                cells: project_selected_cells(row.cells, &select_indexes),
                 primary_key: pk_values,
             })
             .collect(),
@@ -1082,7 +1094,7 @@ pub(crate) fn project_selected_cells(
 
 fn execute_group_by(
     definition: &RegisteredDefinition,
-    matched: &[(PrimaryKeyBytes, Vec<CanonicalValue>, MergedRow)],
+    matched: &[row_order::MatchedRow<'_>],
     group: &GroupBySpec,
     budget: &QueryBudget,
 ) -> Result<QueryResult, QueryError> {
@@ -1150,14 +1162,15 @@ fn execute_group_by(
     })
 }
 
-fn compute_aggregate<'a, I>(
+fn compute_aggregate<'a, 's, I>(
     definition: &RegisteredDefinition,
     rows: I,
     agg: &AggregateOp,
     fuel: &mut ColumnarAggregateFuel,
 ) -> Result<AggregateValue, QueryError>
 where
-    I: Iterator<Item = &'a MergedRow>,
+    I: Iterator<Item = &'a MergedRowRef<'s>>,
+    's: 'a,
 {
     let mut state = row_aggregate::Accumulator::new(definition, agg)?;
     for row in rows {
@@ -1269,7 +1282,7 @@ fn resolved_predicates(predicates: &[ColumnPredicate]) -> Vec<ResolvedPredicate<
 
 fn predicates_match(
     definition: &RegisteredDefinition,
-    row: &MergedRow,
+    row: &MergedRowRef<'_>,
     predicates: &mut [ResolvedPredicate<'_>],
 ) -> Result<bool, QueryError> {
     for resolved in predicates.iter_mut() {
