@@ -28659,6 +28659,9 @@ work_packages:
       release, supported overlay limits and the 384 KiB maintenance stack.
       Process-isolated regression, release-profile test and scoped acceptance pass;
       the host abort call path and full lifecycle qualification remain unproven.
+    - Replace the daemon's live retention shutdown-trigger sample with the
+      joined owner's actual terminal observation after source-pin release,
+      preserving refused owners and the existing closed census registry.
 
 - id: WP-826
   name: Twenty-four-hour sustainable TicketDesk qualification
