@@ -13,7 +13,7 @@ class ActualProjectionFence(unittest.TestCase):
     identity = {"contract_lineage": "TicketDeskLifecycle", "projection_id": 1,
                 "projection_plan_hash": "a" * 64}
 
-    def health(self, head=7):
+    def health(self, head="7"):
         return {"schema": "riffdb.cli.output/v1", "command": "server.health", "ok": True,
                 "result": {"last_commit_sequence": head}}
 
@@ -69,7 +69,7 @@ class ActualProjectionFence(unittest.TestCase):
         for frontier in (True, 5.0, "05", "-1", str(2**64), "1" * 100):
             with self.subTest(frontier=frontier), self.assertRaises(ObservationError):
                 projection_backlog(self.health(), self.projection(frontier), self.identity)
-        for head in (True, -1, 1.0, 2**64, None):
+        for head in (True, -1, 1.0, 7, 2**64, None, "07", "-1", str(2**64)):
             with self.subTest(head=head), self.assertRaises(ObservationError):
                 projection_backlog(self.health(head), self.projection(), self.identity)
 

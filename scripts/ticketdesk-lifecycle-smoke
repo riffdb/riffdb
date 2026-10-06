@@ -21,7 +21,7 @@ import time
 
 from lib.ticketdesk_lifecycle_inventory import InventoryError, InventoryMonitor
 from lib.ticketdesk_lifecycle_faults import FaultError, LocalArchiveOutage
-from lib.ticketdesk_lifecycle_observations import ObservationError, projection_backlog
+from lib.ticketdesk_lifecycle_observations import ObservationError, health_head, projection_backlog
 
 
 class SmokeError(ValueError):
@@ -265,7 +265,10 @@ class SinkOutageOracle:
 
     def observe(self, health, live):
         require(not outbox_drained(health), "sink_outage_not_observed")
-        frontier = health["result"].get("last_commit_sequence")
+        try:
+            frontier = health_head(health)
+        except ObservationError as error:
+            raise SmokeError("sink_outage_observation") from error
         require(type(frontier) is int and 0 < frontier <= 2**64 - 1
                 and type(live) is dict and live.get("auxiliary_slots") == 2
                 and live.get("observer_quiesced") is False, "sink_outage_observation")
@@ -289,7 +292,10 @@ class SinkOutageOracle:
 
     def recovered(self, health):
         ready = outbox_drained(health)
-        frontier = health["result"].get("last_commit_sequence")
+        try:
+            frontier = health_head(health)
+        except ObservationError as error:
+            raise SmokeError("sink_outage_continuity") from error
         require(self.last is not None and type(frontier) is int
                 and self.last[0] <= frontier <= 2**64 - 1, "sink_outage_continuity")
         return ready
@@ -410,7 +416,7 @@ class ProjectionSampler:
         backlog = projection_backlog(health, projection, self.identity)
         fence = projection["result"]["observed_fence"]
         return {"schema": "riffdb.ticketdesk-lifecycle-projection-sample/v1",
-                "elapsed_ns": elapsed_ns, "sampled_head": health["result"]["last_commit_sequence"],
+                "elapsed_ns": elapsed_ns, "sampled_head": health_head(health),
                 "applied_through": int(fence["frontier"]["sequence"]),
                 "generation": int(fence["generation"]), "identity": self.identity,
                 "projection_backlog": backlog, "auxiliary_slots": 1}

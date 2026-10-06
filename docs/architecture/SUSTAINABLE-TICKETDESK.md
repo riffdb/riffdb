@@ -1081,3 +1081,16 @@ full CI; Compatibility: unchanged public controls, formats, ordering, holds,
 checkpoint evidence and durability; Updated handbook: this handoff;
 Hazards/follow-ups: required-host latency and all remaining campaign gates must
 still pass. This repair does not qualify a rehearsal or start the 24-hour run.
+
+## WP-825 native health wire correction
+
+The separate sink/projection diagnostic stopped before fault injection because
+the harness incorrectly expected an integer health sequence. Native CLI health
+correctly returns a canonical decimal string. The real projection query was
+Ready at sequence 65,731 after health sampled 65,744, proving an observed lag
+of 13 sequences; the harness failed to record it. Both the projection sampler
+and sink oracle now validate the native decimal representation before numeric
+comparison. All 51 evidence/preparation tests pass, including rejection of
+JSON numbers, malformed decimals and overflow. The failed preparation remains
+preserved. This correction changes no native interface, query semantics or
+milestone gate; its host repetition remains pending.

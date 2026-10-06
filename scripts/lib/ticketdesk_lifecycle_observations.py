@@ -30,6 +30,10 @@ def native_result(value, command):
     return value["result"]
 
 
+def health_head(health):
+    return decimal(native_result(health, "server.health").get("last_commit_sequence"))
+
+
 def projection_backlog(health, projection, expected_identity):
     """Application sequences behind a sampled head, bound to the exact plan.
 
@@ -37,7 +41,7 @@ def projection_backlog(health, projection, expected_identity):
     This reports lag against that sampled head; it neither fabricates a current
     head nor treats an unavailable projection as a caught-up projection.
     """
-    head = integer(native_result(health, "server.health").get("last_commit_sequence"))
+    head = health_head(health)
     result = native_result(projection, "projection.query")
     require(result.get("status") == "ready", "projection_unavailable")
     frontier = result.get("frontier")

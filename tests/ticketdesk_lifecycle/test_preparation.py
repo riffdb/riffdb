@@ -68,7 +68,7 @@ class ProjectionSampling(unittest.TestCase):
     def test_samples_real_frontier_without_waiting_for_it_to_catch_up(self):
         projection = observation()
         health = {"schema": "riffdb.cli.output/v1", "command": "server.health", "ok": True,
-                  "result": {"last_commit_sequence": 10}}
+                  "result": {"last_commit_sequence": "10"}}
         identity = projection["result"]["observed_fence"]["identity"]
         calls = []
         with tempfile.TemporaryDirectory() as directory:
@@ -115,7 +115,7 @@ class ProjectionSampling(unittest.TestCase):
                     entered.set()
                     self.assertTrue(release.wait(5))
                 value = ({"schema": "riffdb.cli.output/v1", "command": "server.health",
-                          "ok": True, "result": {"last_commit_sequence": 10}}
+                          "ok": True, "result": {"last_commit_sequence": "10"}}
                          if len(calls) == 1 else projection)
                 (root / (name + ".stdout")).write_text(json.dumps(value))
 
@@ -207,7 +207,7 @@ class ConsumerOutageReconciliation(unittest.TestCase):
 class SinkOutageReconciliation(unittest.TestCase):
     def health(self, *, ready=False, frontier=100):
         return {"schema": "riffdb.cli.output/v1", "command": "server.health", "ok": True,
-                "result": {"last_commit_sequence": frontier, "components": [
+                "result": {"last_commit_sequence": str(frontier), "components": [
                     {"component": "outbox", "status": "healthy" if ready else "degraded"}]}}
 
     def live(self, *, head=100, updates=10):
@@ -245,6 +245,18 @@ class SinkOutageReconciliation(unittest.TestCase):
                 live.update(changed)
                 with self.assertRaises(preparation.SmokeError):
                     oracle.observe(self.health(frontier=200), live)
+
+    def test_sink_health_requires_the_native_canonical_decimal_sequence(self):
+        for frontier in (True, 100, 1.0, None, "0100", "-1", str(2**64)):
+            with self.subTest(frontier=frontier):
+                oracle = preparation.SinkOutageOracle()
+                oracle.observe(self.health(), self.live())
+                health = self.health(frontier=200)
+                health["result"]["last_commit_sequence"] = frontier
+                with self.assertRaises(preparation.SmokeError):
+                    oracle.observe(health, self.live(head=200, updates=20))
+                with self.assertRaises(preparation.SmokeError):
+                    oracle.recovered(health)
 
 
 class ChildOwnership(unittest.TestCase):

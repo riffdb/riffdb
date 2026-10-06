@@ -99,6 +99,13 @@ inconsistent or regressing evidence fails preparation, and every load window
 requires an actual completed sample. Final aggregate reconciliation remains a
 separate check. This sampler has unit evidence; host measurement is pending.
 
+The public CLI encodes health sequences as canonical decimal strings. The
+projection sampler and sink oracle validate that native representation before
+converting it to bounded numeric observations. JSON numbers, leading zeros,
+negative values, missing fields and overflow fail observation. The first host
+attempt exposed an incorrect integer assumption in the harness; its failed
+preparation is preserved and does not qualify the milestone.
+
 The optional `--driver` smoke compiles retained TypeScript bindings against the
 native runtime, then checks named reads, partition isolation, a refused stale
 update and its exact replay, unchanged state, and a live-query snapshot. It
