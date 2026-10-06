@@ -123,7 +123,7 @@ use riffdb_storage_api::{
     StorageFormatVersion, StoredIndexEpochV1,
     proto_codec::{
         decode_administration_sequence_allocator_v1, decode_application_sequence_allocator_v1,
-        decode_database_identity_v1, decode_history_incarnation_v1, decode_record_registry_v2,
+        decode_database_identity_v1, decode_history_incarnation_v1, decode_record_registry_digest,
         decode_storage_format_version_v1, encode_administration_sequence_allocator_v1,
         encode_application_sequence_allocator_v1, encode_database_identity_v1,
         encode_history_incarnation_v1, encode_record_registry_v2, encode_storage_format_version_v1,
@@ -1589,7 +1589,7 @@ impl RedbOfflineRetentionPreparation<'_> {
 /// is not an operational-readiness proof.
 pub struct RedbDormantPorts {
     pub(crate) shared: Arc<SharedRedb>,
-    pub(crate) pending_v3_activation: Option<crate::startup::PendingV3Activation>,
+    pub(crate) pending_v3_activation: Option<Box<crate::startup::PendingV3Activation>>,
 }
 
 /// Activated redb-backed semantic storage ports.
@@ -2138,6 +2138,7 @@ enum LayoutState {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum RegistryMigration {
     Current,
+    RegistryCompletion,
     V3Activation,
     EventRoute,
     EventReferencesThenGenerations,
@@ -2159,6 +2160,11 @@ enum RegistryMigration {
     CleanCloseLifecycle,
     ColumnarProjectionControls,
 }
+
+pub(crate) const PRE_COMPLETION_REGISTRY: SchemaHash = SchemaHash::from_bytes([
+    0xa1, 0x41, 0xb7, 0x65, 0xc2, 0xd4, 0x68, 0xa7, 0xc2, 0x70, 0x46, 0x15, 0x53, 0xaa, 0xd6, 0xa5,
+    0x6f, 0x9d, 0x2a, 0xf3, 0xa0, 0xe4, 0xf6, 0x30, 0x27, 0x15, 0x12, 0x27, 0xed, 0x4b, 0x40, 0xa3,
+]);
 
 const FORMAT_MIGRATION_MAX_ROWS: usize = 500;
 const FORMAT_MIGRATION_MAX_BYTES: usize = 4 * 1024 * 1024;
@@ -2537,6 +2543,7 @@ impl RedbStore {
     pub(crate) fn open_for_durable_format_upgrade(
         path: &Path,
         format_preflight: RedbDurableFormatPreflight,
+        backend: Option<Box<dyn redb::StorageBackend>>,
     ) -> Result<Self, StorageError> {
         if !matches!(
             format_preflight,
@@ -2553,7 +2560,7 @@ impl RedbStore {
             None,
             default_changelog_port(),
             None,
-            None,
+            backend,
             Arc::new(RealJournalMedia),
         )
     }
@@ -2787,12 +2794,14 @@ impl RedbStore {
                 let registry = registry
                     .as_ref()
                     .ok_or_else(|| storage_error(StorageErrorKind::IncompatibleFormat))?;
-                let observed = decode_record_registry_v2(registry.value())
+                let observed = decode_record_registry_digest(registry.value())
                     .map_err(crate::error::codec_error)?;
                 if observed.value()
                     == &riffdb_storage_api::proto_codec::current_record_registry_digest()
                 {
                     RegistryMigration::Current
+                } else if observed.value() == &PRE_COMPLETION_REGISTRY {
+                    RegistryMigration::RegistryCompletion
                 } else if observed.value() == &crate::changelog_v3_activation::PRE_V3_REGISTRY {
                     RegistryMigration::V3Activation
                 } else if observed.value()
@@ -3196,7 +3205,12 @@ impl RedbStore {
         // string-encoded), and a pre-current V2 registry can carry non-compact
         // rows from before a rotation.
         let require_compact = format == StorageFormatVersion::V2;
-        if !require_compact || registry_migration != RegistryMigration::Current {
+        if !require_compact
+            || !matches!(
+                registry_migration,
+                RegistryMigration::Current | RegistryMigration::RegistryCompletion
+            )
+        {
             migrate_string_table(&self.shared, META, require_compact)?;
             for table in BYTE_TABLES {
                 migrate_byte_table(&self.shared, table, require_compact)?;
@@ -3363,6 +3377,80 @@ impl RedbStore {
         Ok(())
     }
 
+    /// The additive registry transition follows acknowledged journal recovery,
+    /// so it cannot overtake or invalidate a predecessor's durable suffix.
+    fn upgrade_registry_completion_pending(&self) -> Result<(), StorageError> {
+        use riffdb_storage_api::{
+            AuthoritativeMutationV3, AuthoritativeNamespaceV1 as N,
+            AuthoritativeTransactionBindingV3, AuthoritativeTransactionV3, ChangelogAttributionV3,
+            StoredRecordRegistry, current_record_registry_digest, decode_record_registry,
+            encode_record_registry_v3,
+        };
+        let _lease = self.acquire_mutation_lease()?;
+        let read = self
+            .shared
+            .database
+            .begin_read()
+            .map_err(transaction_error)?;
+        if classify_read_layout(&read)? == LayoutState::Empty {
+            return Ok(());
+        }
+        let meta = read.open_table(META).map_err(table_error)?;
+        let prior = meta
+            .get(META_RECORD_REGISTRY)
+            .map_err(precommit_storage_error)?
+            .ok_or_else(|| storage_error(StorageErrorKind::CorruptData))?;
+        let observed = decode_record_registry(prior.value()).map_err(crate::error::codec_error)?;
+        if observed.value().digest() != PRE_COMPLETION_REGISTRY {
+            return Ok(());
+        }
+        let history = crate::changelog_v3_roots::read_checkpoint_roots(&read)?
+            .ok_or_else(|| storage_error(StorageErrorKind::CorruptData))?;
+        let pending = encode_record_registry_v3(StoredRecordRegistry::pending(
+            current_record_registry_digest(),
+        ))
+        .map_err(crate::error::codec_error)?;
+        let mutation = AuthoritativeMutationV3::replace(
+            N::RecordRegistry,
+            META_RECORD_REGISTRY.as_bytes(),
+            prior.value(),
+            pending.as_bytes(),
+        )
+        .map_err(|_| storage_error(StorageErrorKind::CorruptData))?;
+        let (sequence, _) = history
+            .expected_allocator()
+            .allocate_one()
+            .map_err(|_| storage_error(StorageErrorKind::SequenceExhausted))?;
+        let receipt = AuthoritativeTransactionV3::new_for_catalog(
+            AuthoritativeTransactionBindingV3 {
+                database_id: history.lineage().database_id(),
+                history_incarnation: history.lineage().history_incarnation(),
+                predecessor: Some(history.tail().sequence()),
+                sequence,
+                predecessor_frontier: history.tail().frontier(),
+                covered_frontier: history.tail().frontier(),
+                prior_history_hash: history.tail().history_hash(),
+            },
+            ChangelogAttributionV3::StorageFormatMigration,
+            vec![mutation],
+            history.lineage().catalog_digest(),
+        )
+        .map_err(|_| storage_error(StorageErrorKind::CorruptData))?;
+        drop(prior);
+        drop(meta);
+        drop(read);
+        let prepared = crate::changelog_v3_write::PreparedImmediateReceipt::apply(
+            &self.shared.database,
+            RedbCommitProfile::Hardened,
+            &receipt,
+        )?;
+        self.shared
+            .before_test_commit(RedbTestOperation::StorageFormatMigrationBatch)?;
+        prepared.commit(&self.shared)?;
+        self.shared
+            .after_test_commit(RedbTestOperation::StorageFormatMigrationBatch)
+    }
+
     pub(crate) fn complete_partition_index_generation_migration(&self) -> Result<(), StorageError> {
         let observed = {
             let transaction = self
@@ -3375,7 +3463,7 @@ impl RedbStore {
                 .get(META_RECORD_REGISTRY)
                 .map_err(precommit_storage_error)?
                 .ok_or_else(|| storage_error(StorageErrorKind::CorruptData))?;
-            *decode_record_registry_v2(encoded.value())
+            *decode_record_registry_digest(encoded.value())
                 .map_err(crate::error::codec_error)?
                 .value()
         };
@@ -4377,7 +4465,7 @@ fn publish_record_registry(
             .get(META_RECORD_REGISTRY)
             .map_err(precommit_storage_error)?
             .ok_or_else(|| storage_error(StorageErrorKind::CorruptData))?;
-        *decode_record_registry_v2(encoded.value())
+        *decode_record_registry_digest(encoded.value())
             .map_err(crate::error::codec_error)?
             .value()
     };
@@ -4405,7 +4493,7 @@ fn observed_registry_digest(shared: &SharedRedb) -> Result<SchemaHash, StorageEr
         .get(META_RECORD_REGISTRY)
         .map_err(precommit_storage_error)?
         .ok_or_else(|| storage_error(StorageErrorKind::CorruptData))?;
-    Ok(*decode_record_registry_v2(encoded.value())
+    Ok(*decode_record_registry_digest(encoded.value())
         .map_err(crate::error::codec_error)?
         .value())
 }
@@ -9083,10 +9171,11 @@ where
                 .map_err(crate::error::codec_error)?;
             }
             META_RECORD_REGISTRY => {
-                let observed =
-                    decode_record_registry_v2(value.value()).map_err(crate::error::codec_error)?;
+                let observed = decode_record_registry_digest(value.value())
+                    .map_err(crate::error::codec_error)?;
                 if observed.value()
                     != &riffdb_storage_api::proto_codec::current_record_registry_digest()
+                    && observed.value() != &PRE_COMPLETION_REGISTRY
                     && observed.value() != &crate::changelog_v3_activation::PRE_V3_REGISTRY
                 {
                     return Err(storage_error(StorageErrorKind::IncompatibleFormat));

@@ -99,7 +99,7 @@ fn fresh_v3_activation_waits_for_catalog_join_and_cancelled_handoff_is_read_only
 #[test]
 fn actual_fresh_activation_crashes_leave_exact_inactive_or_complete_v3_and_retry_once() {
     use riffdb_storage_api::proto_codec::{
-        current_record_registry_digest, decode_record_registry_v2,
+        current_record_registry_digest, decode_record_registry_digest,
     };
     for edge in ["preflight", "roots", "receipt", "committed"] {
         let path = TestDatabasePath::new("v3-fresh-activation-crash");
@@ -135,7 +135,9 @@ fn actual_fresh_activation_crashes_leave_exact_inactive_or_complete_v3_and_retry
             if edge == "committed" {
                 assert_eq!(history.unwrap().tail().sequence().get(), 1);
                 assert_eq!(
-                    *decode_record_registry_v2(registry.value()).unwrap().value(),
+                    *decode_record_registry_digest(registry.value())
+                        .unwrap()
+                        .value(),
                     current_record_registry_digest()
                 );
                 let receipt = receipts(&store.shared).remove(0);

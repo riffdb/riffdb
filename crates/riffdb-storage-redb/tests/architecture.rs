@@ -1790,15 +1790,17 @@ fn v3_prefix_checkpoint_plans_from_its_builder_pin_and_uses_one_sealed_commit() 
         .0;
     assert!(
         writer
-            .find("build_checkpoint_from_snapshot(&transaction")
+            .find("build_checkpoint_from_snapshot_with_completion(&transaction")
             .unwrap()
             < writer
-                .find("plan_checkpoint_receipt(&transaction,&checkpoint)")
+                .find(
+                    "plan_checkpoint_receipt_with_completion(&transaction,&checkpoint,completion)"
+                )
                 .unwrap()
     );
     assert!(
         writer
-            .find("plan_checkpoint_receipt(&transaction,&checkpoint)")
+            .find("plan_checkpoint_receipt_with_completion(&transaction,&checkpoint,completion)")
             .unwrap()
             < writer.find("drop(transaction)").unwrap()
     );

@@ -83,7 +83,7 @@ fn has_metadata_roots(
         if registry.value().len() > 512 {
             return Err(storage_error(StorageErrorKind::LimitExceeded));
         }
-        if *riffdb_storage_api::proto_codec::decode_record_registry_v2(registry.value())
+        if *riffdb_storage_api::proto_codec::decode_record_registry_digest(registry.value())
             .map_err(crate::error::codec_error)?
             .value()
             == riffdb_storage_api::proto_codec::current_record_registry_digest()

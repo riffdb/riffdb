@@ -114,6 +114,40 @@ pub(super) fn restore_fixture_bytes(root: &Path, fixture: &str, names: &[&str]) 
     assert_eq!(seen.len(), names.len());
 }
 
+fn current_backup(source: &Path, directory: &Path) -> PathBuf {
+    use riffdb_storage_api::OfflineBackupPersistencePort;
+    let destination = directory.join("current-backup");
+    let build = riffdb_storage_api::BackupBuildMetadataV1::new(
+        "0.1.0",
+        "registry-completion-compatibility",
+        "rustc-test",
+        1,
+        Vec::new(),
+    )
+    .unwrap();
+    crate::backup::RedbOfflineBackup::bind(source, &destination)
+        .create_offline_backup(&build)
+        .unwrap();
+    destination
+}
+
+fn refuse_predecessor_restore(backup: &Path, target: &Path) {
+    use riffdb_storage_api::{OfflineRestoreOverwritePolicyV1, OfflineRestorePersistencePort};
+    let before = std::fs::read(backup.join("database.redb")).unwrap();
+    assert_eq!(
+        crate::backup::RedbOfflineRestore::bind(backup, target)
+            .restore_offline_backup(OfflineRestoreOverwritePolicyV1::RefuseNonEmpty)
+            .unwrap_err()
+            .kind(),
+        StorageErrorKind::IncompatibleFormat
+    );
+    assert!(
+        !target.exists(),
+        "predecessor restore refuses before creating a target"
+    );
+    assert_eq!(std::fs::read(backup.join("database.redb")).unwrap(), before);
+}
+
 // req: REC-001, REC-002, REC-005, REC-006
 #[test]
 fn genuine_engine_42_source_and_backup_reopen_with_the_complete_native_validator() {
@@ -122,6 +156,9 @@ fn genuine_engine_42_source_and_backup_reopen_with_the_complete_native_validator
     };
     let directory = crate::test_path::ScopedDirectory::new("engine42-native-compatibility");
     restore_frozen_fixture(&directory.join(""));
+    crate::RedbDurableFormatUpgrade::bind(directory.join("db.redb"), directory.join("backup"))
+        .run()
+        .unwrap();
     let source = directory.join("db.redb");
     RedbOfflineIntegrityScrub::from_inputs(&source, inputs())
         .run()
@@ -142,7 +179,9 @@ fn genuine_engine_42_source_and_backup_reopen_with_the_complete_native_validator
     validate(&source);
     validate(&source);
     let target = directory.join("restored");
-    let result = crate::backup::RedbOfflineRestore::bind(directory.join("backup"), &target)
+    refuse_predecessor_restore(&directory.join("backup"), &target);
+    let backup = current_backup(&source, &directory.join(""));
+    let result = crate::backup::RedbOfflineRestore::bind(backup, &target)
         .restore_offline_backup(OfflineRestoreOverwritePolicyV1::RefuseNonEmpty)
         .unwrap();
     assert!(matches!(result, OfflineRestoreResultV1::Restored { .. }));
@@ -171,6 +210,9 @@ fn genuine_engine_42_commands_preserve_exact_outcomes_through_current_open_scrub
             "expected-outcomes.hex",
         ],
     );
+    crate::RedbDurableFormatUpgrade::bind(directory.join("db.redb"), directory.join("backup"))
+        .run()
+        .unwrap();
     let source = directory.join("db.redb");
     assert!(
         !crate::journal::journal_path(&source).exists(),
@@ -233,7 +275,9 @@ fn genuine_engine_42_commands_preserve_exact_outcomes_through_current_open_scrub
     validate(&source);
     validate(&source);
     let target = directory.join("restored");
-    crate::backup::RedbOfflineRestore::bind(directory.join("backup"), &target)
+    refuse_predecessor_restore(&directory.join("backup"), &target);
+    let backup = current_backup(&source, &directory.join(""));
+    crate::backup::RedbOfflineRestore::bind(backup, &target)
         .restore_offline_backup(OfflineRestoreOverwritePolicyV1::RefuseNonEmpty)
         .unwrap();
     validate(&target.join("database.redb"));

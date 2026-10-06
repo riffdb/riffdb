@@ -78,15 +78,16 @@ impl SourceState {
         // Compare canonical bounded envelopes directly, without copying unchecked
         // metadata. Includes registry, catalog, both allocators and detached mode.
         for (key, expected) in transaction::source_metadata(history, allocator, &admission)? {
-            if meta
+            let row = meta
                 .get(key)
                 .map_err(precommit_storage_error)?
-                .ok_or_else(corrupt)?
-                .value()
-                != expected.as_bytes()
-            {
-                return Err(corrupt());
-            }
+                .ok_or_else(corrupt)?;
+            transaction::validate_source_metadata_row(
+                key,
+                row.value(),
+                expected.as_bytes(),
+                lineage,
+            )?;
         }
         let holds = transaction.open_table(SOURCE_HOLDS).map_err(table_error)?;
         let receipts = transaction.open_table(HISTORY).map_err(table_error)?;

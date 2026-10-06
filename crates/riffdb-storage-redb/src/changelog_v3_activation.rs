@@ -52,7 +52,7 @@ pub(crate) fn stage_validated(
     if lineage.catalog_digest() != AuthoritativeStateCatalogV1.digest() {
         return Err(storage_error(StorageErrorKind::IncompatibleFormat));
     }
-    stage(transaction, lineage, frontier)
+    stage(transaction, lineage, frontier, None)
 }
 
 /// Called exclusively by the Empty arm of database initialization, in the SAME
@@ -69,13 +69,26 @@ pub(crate) fn stage_new_source(
         AuthoritativeStateCatalogV2.digest(),
     )
     .map_err(|_| storage_error(StorageErrorKind::InvariantViolation))?;
-    stage(transaction, lineage, DualFrontier::INITIAL)
+    stage(transaction, lineage, DualFrontier::INITIAL, None)
+}
+
+pub(crate) fn stage_validated_completed(
+    transaction: &mut WriteTransaction,
+    lineage: ChangelogLineageV3,
+    frontier: DualFrontier,
+    proof: &crate::startup::CompleteRegistryValidation,
+) -> Result<ChangelogHistoryStateV3, StorageError> {
+    if lineage.catalog_digest() != AuthoritativeStateCatalogV1.digest() {
+        return Err(storage_error(StorageErrorKind::IncompatibleFormat));
+    }
+    stage(transaction, lineage, frontier, Some(proof))
 }
 
 fn stage(
     transaction: &mut WriteTransaction,
     lineage: ChangelogLineageV3,
     frontier: DualFrontier,
+    completion: Option<&crate::startup::CompleteRegistryValidation>,
 ) -> Result<ChangelogHistoryStateV3, StorageError> {
     let catalog = if lineage.catalog_digest() == AuthoritativeStateCatalogV1.digest() {
         encode_authoritative_state_catalog_v1(AuthoritativeStateCatalogV1)
@@ -170,15 +183,21 @@ fn stage(
         return Err(storage_error(StorageErrorKind::CorruptData));
     }
     let before_registry = read(META_RECORD_REGISTRY)?;
-    let before_digest = decode_record_registry_v2(&before_registry)
+    let before_digest = decode_record_registry_digest(&before_registry)
         .map_err(codec_error)?
         .into_parts()
         .0;
     if before_digest != PRE_V3_REGISTRY {
         return Err(storage_error(StorageErrorKind::IncompatibleFormat));
     }
-    let registry =
-        encode_record_registry_v2(current_record_registry_digest()).map_err(codec_error)?;
+    let registry = if let Some(proof) = completion {
+        proof.activation_registry(&before_registry, lineage)?
+    } else {
+        encode_record_registry_v3(StoredRecordRegistry::pending(
+            current_record_registry_digest(),
+        ))
+        .map_err(codec_error)?
+    };
     // Exact inactive registry replacement, never a current-registry repair.
     // The canonical expected-state helper owns SHA-256.
     let mutations = vec![

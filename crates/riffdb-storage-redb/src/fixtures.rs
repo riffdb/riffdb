@@ -305,15 +305,23 @@ pub fn downgrade_all_index_rows_to_v1_fixture(path: &Path) -> Result<usize, Stor
         }
     }
     // This test-only stopped-database rewrite happens after the source process
-    // closed. It must invalidate that process's clean evidence and its
-    // validated-prefix checkpoint (a real database never holds V1 rows under a
-    // current-registry checkpoint) so startup takes the complete
+    // closed. It must invalidate that process's clean evidence, independent
+    // registry completion and validated-prefix checkpoint (a real database
+    // never holds V1 rows under completed current-registry validation), so startup takes the complete
     // migration-discovery path rather than the ADR-0182 bounded dirty path.
     {
         let mut meta = transaction.open_table(META).map_err(table_error)?;
         meta.remove(META_CLEAN_CLOSE_LIFECYCLE)
             .map_err(precommit_storage_error)?;
         meta.remove(META_VALIDATED_PREFIX_CHECKPOINT)
+            .map_err(precommit_storage_error)?;
+        let pending = riffdb_storage_api::encode_record_registry_v3(
+            riffdb_storage_api::StoredRecordRegistry::pending(
+                riffdb_storage_api::current_record_registry_digest(),
+            ),
+        )
+        .map_err(codec_error)?;
+        meta.insert(crate::layout::META_RECORD_REGISTRY, pending.as_bytes())
             .map_err(precommit_storage_error)?;
     }
     transaction.commit().map_err(commit_error)?;

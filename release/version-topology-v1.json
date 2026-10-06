@@ -450,31 +450,33 @@
         {
           "kind": "literal",
           "path": "crates/riffdb-storage-api/src/durable_format.rs",
-          "literal": "const CURRENT_WRITER: DurableFormatWriter = DurableFormatWriter(2);"
+          "literal": "const CURRENT_WRITER: DurableFormatWriter = DurableFormatWriter(3);"
         }
       ],
       "readable_identities": [
         "epoch-1/writer-0",
         "epoch-1/writer-1",
-        "epoch-1/writer-2"
+        "epoch-1/writer-2",
+        "epoch-1/writer-3"
       ],
       "writable_identities": [
-        "epoch-1/writer-2"
+        "epoch-1/writer-3"
       ],
       "current_identities": [
-        "epoch-1/writer-2"
+        "epoch-1/writer-3"
       ],
       "writer_policy": "single_current",
       "compatibility_rule": "Only manifest-declared release edges authorize an offline transition; decoder success alone does not.",
       "breaking_when": "The epoch changes, or a writer transition lacks the exact receipted upgrade and refusal ceremony.",
-      "supported_release_posture": "Writers 0 and 1 require the declared backup-bound offline upgrade; writer 2 is current in alpha epoch 1.",
+      "supported_release_posture": "Writers 0, 1 and 2 require declared backup-bound offline upgrades; writer 3 is current in alpha epoch 1.",
       "lifecycle": {
         "active": [
-          "epoch-1/writer-2"
+          "epoch-1/writer-3"
         ],
         "read_only": [
           "epoch-1/writer-0",
-          "epoch-1/writer-1"
+          "epoch-1/writer-1",
+          "epoch-1/writer-2"
         ],
         "retirement_candidate": [],
         "retired": []
@@ -488,11 +490,11 @@
       ],
       "last_change": {
         "classification": "writer_transition",
-        "decision": "ADR-0263 Amendment 5/WP-815 marker advertises logical V4 before writing"
+        "decision": "ADR-0276/WP-825 declares the exact registry-completion writer edge"
       },
       "manifest_scalar_assertions": {
         "alpha_epoch": 1,
-        "writer": 2,
+        "writer": 3,
         "minimum_supported_source_release": "0.1.0-pre-format-manifest",
         "maximum_supported_source_release": "0.1.0"
       }

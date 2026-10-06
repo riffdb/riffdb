@@ -26,6 +26,7 @@ fn native_prune_then_outbox_drain_preserves_source_validation_qualification() {
             "expected-outcomes.hex",
         ],
     );
+    super::native_source_admission::upgrade_fixture(&directory.join(""));
     let path = directory.join("db.redb");
     let store =
         RedbStore::open_with_commit_profile(&path, crate::RedbCommitProfile::Standard).unwrap();
@@ -208,6 +209,7 @@ fn eligible_native_extent_retries_after_global_barrier_release_without_scanning_
                 "expected-outcomes.hex",
             ],
         );
+        super::native_source_admission::upgrade_fixture(&directory.join(""));
         let path = directory.join("db.redb");
         let store =
             RedbStore::open_with_commit_profile(&path, crate::RedbCommitProfile::Standard).unwrap();

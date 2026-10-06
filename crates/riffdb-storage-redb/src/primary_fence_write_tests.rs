@@ -336,6 +336,97 @@ fn fence_transaction_commits_complete_bundle_and_drop_aborts_every_row() {
     }
 }
 
+// req: REC-005, REC-006, REC-007, STO-032, REP-005
+#[test]
+fn primary_fence_preserves_pending_and_completed_registry_bytes() {
+    for completed in [false, true] {
+        let f = Fixture::new(5);
+        let scope = crate::test_path::ScopedDirectory::new("primary-fence-registry-v3");
+        let database = f.database(&scope.join("db.redb"));
+        let digest = riffdb_proto::durable::record_registry_digest();
+        let lineage = f.history.lineage();
+        let registry = if completed {
+            StoredRecordRegistry::completed(
+                digest,
+                lineage.database_id(),
+                lineage.history_incarnation(),
+            )
+            .unwrap()
+        } else {
+            StoredRecordRegistry::pending(digest)
+        };
+        let encoded = encode_record_registry_v3(registry).unwrap();
+        let key = crate::layout::META_RECORD_REGISTRY;
+        let write = database.begin_write().unwrap();
+        write
+            .open_table(META)
+            .unwrap()
+            .insert(key, encoded.as_bytes())
+            .unwrap();
+        write.commit().unwrap();
+        let expected = f.plan().unwrap().record;
+        let record = f
+            .plan()
+            .unwrap()
+            .stage(&database)
+            .unwrap()
+            .commit_for_test()
+            .unwrap();
+        assert_eq!(record, expected);
+        let after = snapshot(&database);
+        let retry = f.plan().unwrap().stage(&database).unwrap();
+        assert!(matches!(
+            retry,
+            authority::PrimaryFenceCompletion::Replay(_)
+        ));
+        assert_eq!(retry.commit_for_test().unwrap(), record);
+        assert_eq!(snapshot(&database), after);
+        let read = database.begin_read().unwrap();
+        let meta = read.open_table(META).unwrap();
+        assert_eq!(meta.get(key).unwrap().unwrap().value(), encoded.as_bytes());
+    }
+}
+
+// req: REC-005, REC-006, REC-007, STO-032, REP-005
+#[test]
+fn primary_fence_refuses_mismatched_registry_completion_without_mutation() {
+    for mismatch in ["database", "incarnation", "registry"] {
+        let f = Fixture::new(5);
+        let scope = crate::test_path::ScopedDirectory::new("primary-fence-registry-binding");
+        let database = f.database(&scope.join("db.redb"));
+        let lineage = f.history.lineage();
+        let database_id = if mismatch == "database" {
+            DatabaseId::from_unix_milliseconds_and_random(1_700_000_000_000, [9; 10]).unwrap()
+        } else {
+            lineage.database_id()
+        };
+        let incarnation = lineage.history_incarnation() + u64::from(mismatch == "incarnation");
+        let digest = if mismatch == "registry" {
+            riffdb_types::SchemaHash::from_bytes([0; 32])
+        } else {
+            riffdb_proto::durable::record_registry_digest()
+        };
+        let registry = encode_record_registry_v3(
+            StoredRecordRegistry::completed(digest, database_id, incarnation).unwrap(),
+        )
+        .unwrap();
+        let write = database.begin_write().unwrap();
+        write
+            .open_table(META)
+            .unwrap()
+            .insert(crate::layout::META_RECORD_REGISTRY, registry.as_bytes())
+            .unwrap();
+        write.commit().unwrap();
+        let before = snapshot(&database);
+        assert_eq!(
+            f.plan().unwrap().stage(&database).err().unwrap().kind(),
+            StorageErrorKind::CorruptData,
+            "{mismatch}"
+        );
+        assert_eq!(snapshot(&database), before, "{mismatch}");
+    }
+}
+
 use crate::changelog_v3_activation::{HISTORY, SOURCE_HOLDS};
 use crate::layout::{AUDIT, META};
 use redb::{Database, ReadableDatabase, ReadableTable, TableDefinition, TableHandle};

@@ -34,8 +34,9 @@ readiness therefore cannot leave reusable clean evidence.
 Missing, dirty, malformed, stale, copied, or contradictory lifecycle evidence
 does not select a population walk. Such a startup opens the storage engine,
 checks the durable-format identity, recovers the complete journal suffix,
-validates the same bounded roots the clean path verifies against the retained
-validated-prefix checkpoint, consumes the dirty generation, and only then
+validates the same bounded roots the clean path verifies, admits the current
+registry through a retained checkpoint or exact Completed binding, consumes
+the dirty generation, and only then
 publishes readiness. It does not enumerate entity, index, history, event,
 audit, provenance, projection, outbox, or idempotency rows, and repeating it
 creates no command, event, outcome, provenance, audit, projection, outbox, or
@@ -59,20 +60,37 @@ benchmark population that rebuild holds writes for tens of seconds; reads and
 readiness are unaffected, and later writes run at normal speed.
 
 Complete startup validation is still used when those bounded-recovery
-preconditions do not hold: a database with no loadable validated-prefix
-checkpoint (such as its first start, or a restart after online retention
-deleted it and before a complete background refresh published its replacement)
-or without an active, current
-durable-format registry, and a follower start without a valid clean-close
-certificate. A mismatch in a bound root fails closed. None of these cases asks
-the operator to classify the preceding shutdown.
+preconditions do not hold: a database with neither a loadable validated-prefix
+checkpoint nor an exact Completed registry binding, an inactive or incompatible
+registry, or a follower start without a valid clean-close certificate. Pending
+registry metadata provides no shortcut. A mismatch in a bound root fails
+closed. None of these cases asks the operator to classify the preceding shutdown.
 
-With sequence retention enabled, maintenance can rebuild the deleted optional
-checkpoint from a complete pinned structural, catalog, and retained-history
-validation. Publication refuses a changed history binding and yields to busy
-writers or unfinished checkpoints. It does not reuse the invalidated proof or
-force a journal drain. A published replacement permits bounded dirty recovery;
-an absent replacement retains complete validation. See [retention configuration](../configuration.md)
+Complete native structural and catalog-semantic validation publishes the
+private Completed registry binding through the sole ordered writer, atomically
+with its prefix-completion receipt. It binds the exact database, history
+incarnation and current registry. Partial validation, cancellation, migration,
+a bounded restart and background refresh cannot create that witness. An
+uncertain commit fences writes until normal recovery resolves it.
+
+Restore advances the history incarnation. Copied completion and checkpoint
+bindings cannot certify that successor. Its complete validation can replace
+the exact predecessor checkpoint bytes with a new proof chain and publish its
+own completion binding in the same durable receipt. An ordinary checkpoint
+refresh cannot perform that renewal.
+
+Online retention still deletes the optional validated-prefix checkpoint in its
+first prune step. Ordinary writes and prune preserve the Completed binding,
+so its absence does not require another population walk. This binding proves
+completed format/catalog validation; it grants no source-reclamation authority
+or evidence that every current row is intact. First-access checks and the
+complete rate-bounded background scrub remain required.
+
+With sequence retention enabled, maintenance can independently rebuild the
+deleted optional checkpoint from complete pinned structural, catalog, and
+retained-history validation. Publication refuses a changed history binding and
+yields to busy writers or unfinished checkpoints. It does not reuse the
+invalidated proof or force a journal drain. See [retention configuration](../configuration.md)
 for the maintenance bounds. The sustainable TicketDesk milestone separately
 measures the first successful write after restart.
 

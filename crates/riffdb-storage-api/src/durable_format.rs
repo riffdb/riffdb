@@ -409,7 +409,17 @@ impl DurableFormatReleaseEdge {
 }
 
 const CURRENT_EPOCH: AlphaFormatEpoch = AlphaFormatEpoch(NonZeroU32::MIN);
-const CURRENT_WRITER: DurableFormatWriter = DurableFormatWriter(2);
+const CURRENT_WRITER: DurableFormatWriter = DurableFormatWriter(3);
+// Exact retained writer-1/2 registry and writer-2 corpus (ADR-0276).
+const PRE_COMPLETION_REGISTRY: [u8; 32] = [
+    0xa1, 0x41, 0xb7, 0x65, 0xc2, 0xd4, 0x68, 0xa7, 0xc2, 0x70, 0x46, 0x15, 0x53, 0xaa, 0xd6, 0xa5,
+    0x6f, 0x9d, 0x2a, 0xf3, 0xa0, 0xe4, 0xf6, 0x30, 0x27, 0x15, 0x12, 0x27, 0xed, 0x4b, 0x40, 0xa3,
+];
+const PRE_COMPLETION_FIXTURE_DIGEST: [u8; 32] = [
+    0x09, 0xb3, 0x89, 0xc8, 0x27, 0xda, 0x34, 0xe5, 0x52, 0x73, 0x85, 0xff, 0x74, 0x3b, 0xde, 0x7a,
+    0x8a, 0x8b, 0xd6, 0x10, 0x1f, 0xc6, 0x20, 0x19, 0x1c, 0x9b, 0x68, 0x42, 0xb7, 0x7f, 0xad, 0xc0,
+];
+const PRE_COMPLETION_WRITER: DurableFormatWriter = DurableFormatWriter(2);
 const PRE_PRUNE_WRITER: DurableFormatWriter = DurableFormatWriter(1);
 // Frozen corpus advertised by the last logical-V3 writer (ADR-0263 Amendment 5).
 const PRE_PRUNE_FIXTURE_DIGEST: [u8; 32] = [
@@ -448,13 +458,22 @@ const PRE_PRUNE_EDGE: DurableFormatReleaseEdge = DurableFormatReleaseEdge {
         next_command: SafeFormatCommand::Upgrade,
     },
 };
-const RELEASE_EDGES: &[DurableFormatReleaseEdge] = &[PRE_MANIFEST_EDGE, PRE_PRUNE_EDGE];
+const PRE_COMPLETION_EDGE: DurableFormatReleaseEdge = DurableFormatReleaseEdge {
+    source_release: "0.1.0-retention-journal-v4",
+    target_release: CURRENT_RELEASE,
+    source: DurableFormatIdentity::new(CURRENT_EPOCH, PRE_COMPLETION_WRITER),
+    target: CURRENT_IDENTITY,
+    action: PRE_PRUNE_EDGE.action,
+};
+const RELEASE_EDGES: &[DurableFormatReleaseEdge] =
+    &[PRE_MANIFEST_EDGE, PRE_PRUNE_EDGE, PRE_COMPLETION_EDGE];
 
 /// Exact generated durable-format statement carried by one release artifact.
 #[derive(Clone, Copy, Debug)]
 pub struct DurableFormatManifest {
     identity: DurableFormatIdentity,
     release: &'static str,
+    release_edges: &'static [DurableFormatReleaseEdge],
     registry_digest: SchemaHash,
     compatibility_fixture_digest: CompatibilityFixtureDigest,
 }
@@ -637,7 +656,7 @@ impl DurableFormatManifest {
     /// Returns every supported release transition.
     #[must_use]
     pub const fn release_edges(self) -> &'static [DurableFormatReleaseEdge] {
-        RELEASE_EDGES
+        self.release_edges
     }
 
     /// Returns the oldest retained source-release label accepted by this binary.
@@ -675,6 +694,7 @@ pub fn current_durable_format_manifest() -> DurableFormatManifest {
     DurableFormatManifest {
         identity: CURRENT_IDENTITY,
         release: CURRENT_RELEASE,
+        release_edges: RELEASE_EDGES,
         registry_digest: riffdb_proto::durable::record_registry_digest(),
         compatibility_fixture_digest,
     }
@@ -696,12 +716,24 @@ pub fn current_durable_format_marker() -> DurableFormatMarker {
 pub fn preflight_durable_format_marker(
     marker: DurableFormatMarker,
 ) -> Result<DurableFormatAction, DurableFormatMarkerError> {
-    let action = preflight_durable_format(marker.identity())
+    preflight_marker_for_manifest(marker, current_durable_format_manifest())
+}
+
+fn preflight_marker_for_manifest(
+    marker: DurableFormatMarker,
+    manifest: DurableFormatManifest,
+) -> Result<DurableFormatAction, DurableFormatMarkerError> {
+    let action = preflight_for_manifest(marker.identity(), manifest)
         .map_err(|_| DurableFormatMarkerError::ManifestMismatch)?;
-    let manifest = current_durable_format_manifest();
     if marker.identity() == PRE_PRUNE_EDGE.source
-        && (marker.registry_digest() != manifest.registry_digest()
+        && (marker.registry_digest().as_bytes() != &PRE_COMPLETION_REGISTRY
             || marker.compatibility_fixture_digest().as_bytes() != &PRE_PRUNE_FIXTURE_DIGEST)
+    {
+        return Err(DurableFormatMarkerError::ManifestMismatch);
+    }
+    if marker.identity() == PRE_COMPLETION_EDGE.source
+        && (marker.registry_digest().as_bytes() != &PRE_COMPLETION_REGISTRY
+            || marker.compatibility_fixture_digest().as_bytes() != &PRE_COMPLETION_FIXTURE_DIGEST)
     {
         return Err(DurableFormatMarkerError::ManifestMismatch);
     }
@@ -762,7 +794,13 @@ impl Error for DurableFormatPreflightError {}
 pub fn preflight_durable_format(
     current: DurableFormatIdentity,
 ) -> Result<DurableFormatAction, DurableFormatPreflightError> {
-    let manifest = current_durable_format_manifest();
+    preflight_for_manifest(current, current_durable_format_manifest())
+}
+
+fn preflight_for_manifest(
+    current: DurableFormatIdentity,
+    manifest: DurableFormatManifest,
+) -> Result<DurableFormatAction, DurableFormatPreflightError> {
     let binary = manifest.identity();
     if current == binary {
         return Ok(DurableFormatAction::OpenCurrent);
@@ -785,4 +823,70 @@ pub fn preflight_durable_format(
         binary,
         next_command,
     })
+}
+
+#[cfg(test)]
+mod predecessor_tests {
+    use super::*;
+
+    // Exact predecessor release policy, frozen before the writer-3 edge.
+    const OLD_IDENTITY: DurableFormatIdentity =
+        DurableFormatIdentity::new(CURRENT_EPOCH, PRE_COMPLETION_WRITER);
+    const OLD_EDGES: &[DurableFormatReleaseEdge] = &[
+        DurableFormatReleaseEdge {
+            target: OLD_IDENTITY,
+            ..PRE_MANIFEST_EDGE
+        },
+        DurableFormatReleaseEdge {
+            target: OLD_IDENTITY,
+            ..PRE_PRUNE_EDGE
+        },
+    ];
+
+    // req: AFC-001, AFC-002, REC-005, REC-006, REC-007
+    #[test]
+    fn frozen_writer_two_preopen_policy_refuses_writer_three() {
+        let predecessor = DurableFormatManifest {
+            identity: OLD_IDENTITY,
+            release: CURRENT_RELEASE,
+            release_edges: OLD_EDGES,
+            registry_digest: SchemaHash::from_bytes(PRE_COMPLETION_REGISTRY),
+            compatibility_fixture_digest: CompatibilityFixtureDigest::from_bytes(
+                PRE_COMPLETION_FIXTURE_DIGEST,
+            ),
+        };
+        let old_marker = DurableFormatMarker::new(
+            OLD_IDENTITY,
+            predecessor.registry_digest(),
+            predecessor.compatibility_fixture_digest(),
+        );
+        assert_eq!(
+            preflight_marker_for_manifest(old_marker, predecessor),
+            Ok(DurableFormatAction::OpenCurrent)
+        );
+        let successor = current_durable_format_marker();
+        assert_eq!(
+            preflight_marker_for_manifest(successor, predecessor),
+            Err(DurableFormatMarkerError::ManifestMismatch)
+        );
+        assert_eq!(
+            preflight_for_manifest(successor.identity(), predecessor)
+                .unwrap_err()
+                .next_command(),
+            SafeFormatCommand::UseMatchingBinary
+        );
+        // The predecessor also refuses a substituted successor registry under
+        // its own writer identity, independent of decoder readability.
+        assert_eq!(
+            preflight_marker_for_manifest(
+                DurableFormatMarker::new(
+                    OLD_IDENTITY,
+                    successor.registry_digest(),
+                    predecessor.compatibility_fixture_digest()
+                ),
+                predecessor
+            ),
+            Err(DurableFormatMarkerError::ManifestMismatch)
+        );
+    }
 }

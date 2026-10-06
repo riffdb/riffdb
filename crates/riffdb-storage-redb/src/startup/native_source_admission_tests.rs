@@ -7,6 +7,13 @@ fn fixture() -> (
     crate::test_path::ScopedDirectory,
     crate::RedbOperationalPorts,
 ) {
+    let directory = restored_fixture();
+    upgrade_fixture(&directory.join(""));
+    let ports = open_existing(&directory.join(""));
+    (directory, ports)
+}
+
+fn restored_fixture() -> crate::test_path::ScopedDirectory {
     let directory = crate::test_path::ScopedDirectory::new("source-admission");
     restore_fixture_bytes(
         &directory.join(""),
@@ -23,8 +30,72 @@ fn fixture() -> (
             "expected-outcomes.hex",
         ],
     );
-    let ports = open_existing(&directory.join(""));
-    (directory, ports)
+    directory
+}
+
+pub(super) fn upgrade_fixture(directory: &std::path::Path) {
+    crate::RedbDurableFormatUpgrade::bind(directory.join("db.redb"), directory.join("backup"))
+        .run()
+        .expect("explicit backup-bound predecessor upgrade");
+}
+
+// req: AFC-001, AFC-002, REC-005, REC-006, REC-007, STO-032, END-008
+#[test]
+fn registry_completion_writer_upgrade_preserves_predecessor_and_refuses_old_binary() {
+    let directory = restored_fixture();
+    let database = directory.join("db.redb");
+    let marker_path = crate::durable_format_marker_path(&database);
+    let old_marker_bytes = std::fs::read(&marker_path).unwrap();
+    let old_marker = riffdb_storage_api::decode_durable_format_marker(&old_marker_bytes).unwrap();
+    assert_eq!(old_marker.identity().writer().get(), 2);
+    let before = std::fs::read(&database).unwrap();
+    assert_eq!(
+        RedbStore::open(&database).err().unwrap().kind(),
+        StorageErrorKind::IncompatibleFormat
+    );
+    assert_eq!(std::fs::read(&database).unwrap(), before);
+    assert_eq!(std::fs::read(&marker_path).unwrap(), old_marker_bytes);
+    assert!(
+        crate::RedbDurableFormatUpgrade::bind(&database, directory.join("missing-backup"))
+            .run()
+            .is_err()
+    );
+    assert_eq!(std::fs::read(&database).unwrap(), before);
+    let backup_before = std::fs::read(directory.join("backup/database.redb")).unwrap();
+    let backup_marker_before = std::fs::read(directory.join("backup/format.riffdb")).unwrap();
+    upgrade_fixture(&directory.join(""));
+    assert_eq!(
+        std::fs::read(directory.join("backup/database.redb")).unwrap(),
+        backup_before
+    );
+    assert_eq!(
+        std::fs::read(directory.join("backup/format.riffdb")).unwrap(),
+        backup_marker_before
+    );
+    let current =
+        riffdb_storage_api::decode_durable_format_marker(&std::fs::read(&marker_path).unwrap())
+            .unwrap();
+    assert_eq!(current.identity().writer().get(), 3);
+    // These are distinct physical identities. The frozen predecessor pre-open
+    // policy is exercised by frozen_writer_two_preopen_policy_refuses_writer_three
+    // in the API crate, using the same source-free classifier as production.
+    assert_ne!(current.identity(), old_marker.identity());
+    assert_ne!(current.registry_digest(), old_marker.registry_digest());
+    let store = RedbStore::open(&database).unwrap();
+    let read = store.shared.database.begin_read().unwrap();
+    let meta = read.open_table(META).unwrap();
+    let registry = riffdb_storage_api::proto_codec::decode_record_registry(
+        meta.get(META_RECORD_REGISTRY).unwrap().unwrap().value(),
+    )
+    .unwrap();
+    assert_eq!(
+        registry.value().validation(),
+        riffdb_storage_api::proto_codec::RecordRegistryValidation::Pending
+    );
+    drop(meta);
+    drop(read);
+    drop(store);
+    let _ports = open_existing(&directory.join(""));
 }
 
 fn open_existing(directory: &std::path::Path) -> crate::RedbOperationalPorts {
@@ -52,7 +123,10 @@ fn open_existing_at(
     }
     let mut session = store.begin_structural_evidence(inputs()).unwrap();
     let structural = finish_structural(&mut session);
-    let (_, historical) = validate_catalog_history(&mut session).unwrap().into_parts();
+    let (_, historical) = session
+        .validate_startup_catalog_history()
+        .unwrap()
+        .into_parts();
     let StructuralOpenOutcome::Clean(opened) = session.finish(structural, historical).unwrap()
     else {
         panic!("genuine predecessor source must validate");
@@ -191,6 +265,86 @@ fn complete_first_event(ports: &mut crate::RedbOperationalPorts) {
     );
 }
 
+// req: REC-005, REC-006, REC-007, STO-030, STO-032, END-008
+#[test]
+fn pruned_v2_startup_uses_registry_completion_without_population_walk() {
+    let directory = restored_fixture();
+    upgrade_fixture(&directory.join(""));
+    // Remove only optional predecessor shortcut evidence so this fixture earns
+    // completion from a real full structural and catalog-semantic pass.
+    {
+        let database = redb::Database::open(directory.join("db.redb")).unwrap();
+        let write = database.begin_write().unwrap();
+        write
+            .open_table(META)
+            .unwrap()
+            .remove("validated_prefix_checkpoint/v1")
+            .unwrap();
+        write.commit().unwrap();
+    }
+    let mut ports = open_existing(&directory.join(""));
+    assert!(ports.shared.startup_validation_clean());
+    complete_first_event(&mut ports);
+    assert!(matches!(
+        ports
+            .online_retention_step(NonZeroU64::MIN, NonZeroU64::MIN)
+            .unwrap(),
+        crate::OnlineRetentionStep::Advanced {
+            through: 1,
+            sequences: 1
+        }
+    ));
+    drop(ports);
+    // Reopen reconciles the acknowledged journaled prune before inspecting
+    // physical metadata; no prefix refresh or further validation has run.
+    let store = RedbStore::open(directory.join("db.redb")).unwrap();
+    {
+        let read = store.shared.database.begin_read().unwrap();
+        let meta = read.open_table(META).unwrap();
+        assert!(
+            meta.get("validated_prefix_checkpoint/v1")
+                .unwrap()
+                .is_none()
+        );
+        let history = crate::changelog_v3_roots::read_checkpoint_roots(&read)
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            history.lineage().catalog_digest(),
+            riffdb_storage_api::AuthoritativeStateCatalogV2.digest()
+        );
+    }
+    let mut session = store.begin_structural_evidence(inputs()).unwrap();
+    assert!(!session.clean_close_fast_path());
+    assert!(
+        session.bounded_dirty_startup_path(),
+        "online prune must preserve completed registry eligibility after deleting the prefix checkpoint"
+    );
+    let structural = finish_structural(&mut session);
+    let (catalog, historical) = session
+        .validate_startup_catalog_history()
+        .unwrap()
+        .into_parts();
+    assert!(matches!(catalog, CatalogHistoryOutcome::Ready(_)));
+    assert_eq!(session.command_history_rows_decoded(), 0);
+    assert_eq!(
+        session.walked_suffix_counts[3..],
+        [0; STRUCTURAL_TABLE_COUNT - 3]
+    );
+    assert_eq!(
+        session.walked_prefix_counts[3..],
+        [0; STRUCTURAL_TABLE_COUNT - 3]
+    );
+    let StructuralOpenOutcome::Clean(opened) = session.finish(structural, historical).unwrap()
+    else {
+        panic!("pruned current-format source must remain operational");
+    };
+    let (_, _, _, dormant) = opened.into_parts();
+    let ports = dormant.into_operational_after_catalog_validation().unwrap();
+    assert_eq!(ports.transient_index_rebuilds(), 0);
+    assert!(ports.clean_close_fast_startup());
+}
+
 // req: STO-030, STO-031, STO-032, REC-001, LOG-001
 #[test]
 fn source_drain_crash_child() {
@@ -309,5 +463,55 @@ fn source_drain_process_crashes_preserve_acknowledged_prune_outcomes_and_provena
                 Some(provenance)
             );
         }
+    }
+}
+
+// req: AFC-001, AFC-002, REC-005, REC-006, REC-007, STO-032, END-008
+#[test]
+fn registry_completion_upgrade_process_child() {
+    let Some(path) = std::env::var_os("RIFFDB_REGISTRY_UPGRADE_CRASH_PATH") else {
+        return;
+    };
+    upgrade_fixture(&std::path::PathBuf::from(path));
+}
+
+// req: AFC-001, AFC-002, REC-005, REC-006, REC-007, STO-032, END-008
+#[test]
+fn registry_completion_upgrade_crash_retry_never_grants_completed_eligibility() {
+    for (variable, edge, exit_code) in [
+        ("RIFFDB_FORMAT_UPGRADE_EDGE", "accepted", 95),
+        ("RIFFDB_FORMAT_UPGRADE_EDGE", "migration", 95),
+        ("RIFFDB_FORMAT_UPGRADE_EDGE", "migrated", 95),
+        ("RIFFDB_FORMAT_UPGRADE_EDGE", "marker", 95),
+        ("RIFFDB_FORMAT_UPGRADE_EDGE", "complete", 95),
+        ("RIFFDB_V3_DIRECT_EDGE", "mutations", 93),
+        ("RIFFDB_V3_DIRECT_EDGE", "receipt", 93),
+        ("RIFFDB_V3_DIRECT_EDGE", "roots", 93),
+        ("RIFFDB_V3_DIRECT_EDGE", "committed", 93),
+    ] {
+        let directory = restored_fixture();
+        let backup_before = std::fs::read(directory.join("backup/database.redb")).unwrap();
+        let status = std::process::Command::new(std::env::current_exe().unwrap())
+            .arg("startup::tests::native_source_admission::registry_completion_upgrade_process_child")
+            .args(["--exact", "--nocapture"])
+            .env("RIFFDB_REGISTRY_UPGRADE_CRASH_PATH", directory.join(""))
+            .env(variable, edge).status().unwrap();
+        assert_eq!(status.code(), Some(exit_code), "{variable}/{edge}");
+        upgrade_fixture(&directory.join(""));
+        upgrade_fixture(&directory.join(""));
+        assert_eq!(
+            std::fs::read(directory.join("backup/database.redb")).unwrap(),
+            backup_before
+        );
+        let store = RedbStore::open(directory.join("db.redb")).unwrap();
+        let read = store.shared.database.begin_read().unwrap();
+        let meta = read.open_table(META).unwrap();
+        let row = meta.get(META_RECORD_REGISTRY).unwrap().unwrap();
+        let registry = riffdb_storage_api::decode_record_registry(row.value()).unwrap();
+        assert_eq!(
+            registry.value().validation(),
+            riffdb_storage_api::RecordRegistryValidation::Pending,
+            "{variable}/{edge}"
+        );
     }
 }

@@ -993,12 +993,7 @@ fn validate_manifest_format_marker(
     {
         return Err(incompatible());
     }
-    let current = riffdb_storage_api::current_durable_format_manifest();
-    if marker.identity() == current.identity()
-        && marker.registry_digest() != current.registry_digest()
-    {
-        return Err(incompatible());
-    }
+    riffdb_storage_api::preflight_durable_format_marker(marker).map_err(|_| incompatible())?;
     Ok(())
 }
 

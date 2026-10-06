@@ -65,10 +65,10 @@ copied_codec!(
 );
 copied_codec!(
     encode_record_registry_v2,
-    decode_record_registry_v2,
+    decode_record_registry_digest,
     riffdb_types::SchemaHash,
     encode_record_registry_v2,
-    decode_record_registry_v2
+    decode_record_registry_digest
 );
 copied_codec!(
     encode_database_identity_v1,

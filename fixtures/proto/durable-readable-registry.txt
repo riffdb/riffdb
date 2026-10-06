@@ -1,5 +1,5 @@
 riffdb-durable-registry-v1
-records 115
+records 116
 riffdb.storage.v1.StoredStorageFormatVersionV1 source=metadata.proto message=StoredStorageFormatVersionV1 descriptor-bytes=1498 max-payload-bytes=8192 max-envelope-bytes=8284 schema-hash=07371c0b9eba9bfcad3118b345064b3d33a20a13641c6bde017e5c99dc6020ab
 riffdb.storage.v1.StoredDatabaseIdentityV1 source=metadata.proto message=StoredDatabaseIdentityV1 descriptor-bytes=1498 max-payload-bytes=8192 max-envelope-bytes=8280 schema-hash=de6f4f35fa52ca7664a85d9ffaa0041c506f3c5eb22632ba0ecd757dc6df1dea
 riffdb.storage.v1.StoredApplicationSequenceAllocatorV1 source=metadata.proto message=StoredApplicationSequenceAllocatorV1 descriptor-bytes=1498 max-payload-bytes=8192 max-envelope-bytes=8292 schema-hash=ff01f9e77e1d0ae47de12badcd541131a58fc6926b27543c681f0151f49aa24a
@@ -115,3 +115,4 @@ riffdb.storage.v1.CapabilityRecordV1 source=capability.proto message=CapabilityR
 riffdb.storage.v1.CapabilityTokenLookupV1 source=capability.proto message=CapabilityTokenLookupV1 descriptor-bytes=6685 max-payload-bytes=8192 max-envelope-bytes=8279 schema-hash=e00696f3d2c110c5b2b99685e7987f7204d2f9576f8b41c5fcd5a894c746bc86
 riffdb.storage.v1.CapabilityBootstrapMarkerV1 source=capability.proto message=CapabilityBootstrapMarkerV1 descriptor-bytes=6685 max-payload-bytes=8192 max-envelope-bytes=8283 schema-hash=1204e270169688244bc489071db70c7d2481111a970d5a9da420ad7b9334e4ea
 riffdb.storage.v1.CapabilityAdministrationAuditV1 source=capability.proto message=CapabilityAdministrationAuditV1 descriptor-bytes=6685 max-payload-bytes=8192 max-envelope-bytes=8287 schema-hash=28d4a9d5f63eb9f5bacb2042af50d47ea39532bc2ef60c3dc52a450cc7b49a46
+riffdb.storage.v1.StoredRecordRegistryV3 source=registry_v3.proto message=StoredRecordRegistryV3 descriptor-bytes=456 max-payload-bytes=170 max-envelope-bytes=256 schema-hash=debb45889f4e4aecf77f4bf406c9c25e6b96eedac1771babdd59957456a62e5d

@@ -193,6 +193,7 @@ impl RedbStore {
             store.ensure_current_storage_format()?;
             store.install_command_locator_tables()?;
             store.recover_durability_journal()?;
+            store.upgrade_registry_completion_pending()?;
         }
         if open_mode == OpenMode::OfflineSource {
             store.verify_materialized_journals()?;

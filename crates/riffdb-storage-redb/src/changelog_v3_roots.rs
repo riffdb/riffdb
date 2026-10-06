@@ -369,10 +369,13 @@ fn validate_roots(
                 .ok_or_else(|| storage_error(StorageErrorKind::InvariantViolation))?,
         )
     };
-    let registry = *decode_record_registry_v2(&read(META_RECORD_REGISTRY)?)
+    let registry = *decode_record_registry_digest(&read(META_RECORD_REGISTRY)?)
         .map_err(codec_error)?
         .value();
-    if registry != PRE_V3_REGISTRY && registry != current_record_registry_digest() {
+    if registry != PRE_V3_REGISTRY
+        && registry != current_record_registry_digest()
+        && registry != crate::store::PRE_COMPLETION_REGISTRY
+    {
         return Err(storage_error(StorageErrorKind::IncompatibleFormat));
     }
     let mut present = 0;
@@ -397,7 +400,10 @@ fn validate_roots(
         }
         return Ok(None);
     }
-    if registry != current_record_registry_digest() || present != required || source_holds.is_none()
+    if (registry != current_record_registry_digest()
+        && registry != crate::store::PRE_COMPLETION_REGISTRY)
+        || present != required
+        || source_holds.is_none()
     {
         return Err(storage_error(StorageErrorKind::CorruptData));
     }

@@ -1,0 +1,22 @@
+syntax = "proto3";
+
+package riffdb.storage.v1;
+
+// ADR-0275: completion of current-format structural/catalog validation is
+// independent of a retained-history prefix checkpoint.
+message StoredRecordRegistryV3 {
+  bytes registry_digest = 1;
+
+  message Pending {}
+
+  message Completed {
+    bytes database_id = 1;
+    uint64 history_incarnation = 2;
+    bytes registry_digest = 3;
+  }
+
+  oneof state {
+    Pending pending = 2;
+    Completed completed = 3;
+  }
+}

@@ -115,7 +115,7 @@ impl PrivateArchiveValidationBinding {
             .map_err(|_| corrupt())?
             .value()
             != StorageFormatVersion::V2
-            || *decode_record_registry_v2(&read(N::RecordRegistry)?)
+            || *decode_record_registry_digest(&read(N::RecordRegistry)?)
                 .map_err(|_| corrupt())?
                 .value()
                 != current_record_registry_digest()

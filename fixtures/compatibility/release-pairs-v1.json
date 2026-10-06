@@ -2,8 +2,9 @@
   "schema": "riffdb.durable-release-pairs/v1",
   "downgrade": "unsupported",
   "edges": [
-    {"source_release":"0.1.0-pre-format-manifest","target_release":"0.1.0","source":{"epoch":1,"writer":0},"target":{"epoch":1,"writer":2},"action":"offline_in_place","backup_required":true,"free_space_source_multiples":2,"downtime_required":true,"one_way":true,"next_command":"riffdb storage upgrade"},
-    {"source_release":"0.1.0-journal-frame-v3","target_release":"0.1.0","source":{"epoch":1,"writer":1},"target":{"epoch":1,"writer":2},"action":"offline_in_place","backup_required":true,"free_space_source_multiples":2,"downtime_required":true,"one_way":true,"next_command":"riffdb storage upgrade"}
+    {"source_release":"0.1.0-pre-format-manifest","target_release":"0.1.0","source":{"epoch":1,"writer":0},"target":{"epoch":1,"writer":3},"action":"offline_in_place","backup_required":true,"free_space_source_multiples":2,"downtime_required":true,"one_way":true,"next_command":"riffdb storage upgrade"},
+    {"source_release":"0.1.0-journal-frame-v3","target_release":"0.1.0","source":{"epoch":1,"writer":1},"target":{"epoch":1,"writer":3},"action":"offline_in_place","backup_required":true,"free_space_source_multiples":2,"downtime_required":true,"one_way":true,"next_command":"riffdb storage upgrade"},
+    {"source_release":"0.1.0-retention-journal-v4","target_release":"0.1.0","source":{"epoch":1,"writer":2},"target":{"epoch":1,"writer":3},"action":"offline_in_place","backup_required":true,"free_space_source_multiples":2,"downtime_required":true,"one_way":true,"next_command":"riffdb storage upgrade"}
   ],
   "breaking_epochs": []
 }

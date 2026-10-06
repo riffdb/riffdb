@@ -166,9 +166,10 @@ fn current_registry_initialization_never_advertises_missing_v3_roots() {
     );
     let meta = read.open_table(META).unwrap();
     let registry = meta.get(META_RECORD_REGISTRY).unwrap().unwrap();
-    let registry = *riffdb_storage_api::proto_codec::decode_record_registry_v2(registry.value())
-        .unwrap()
-        .value();
+    let registry =
+        *riffdb_storage_api::proto_codec::decode_record_registry_digest(registry.value())
+            .unwrap()
+            .value();
     if let Some(history) = roots {
         assert_eq!(
             registry,

@@ -35,7 +35,7 @@ fn current_manifest_names_every_closed_format_family() {
     let manifest = current_durable_format_manifest();
 
     assert_eq!(manifest.epoch(), AlphaFormatEpoch::new(1).unwrap());
-    assert_eq!(manifest.writer(), DurableFormatWriter::new(2));
+    assert_eq!(manifest.writer(), DurableFormatWriter::new(3));
     assert_eq!(manifest.release(), env!("CARGO_PKG_VERSION"));
     assert_eq!(manifest.readable_storage_versions(), &[1, 2]);
     assert_eq!(manifest.writable_storage_versions(), &[2]);
@@ -192,6 +192,49 @@ fn prune_writer_requires_backup_bound_offline_upgrade_from_prior_writer() {
         preflight_durable_format_marker(wrong_prior_marker),
         Err(DurableFormatMarkerError::ManifestMismatch)
     );
-    let future = DurableFormatIdentity::new(current.epoch(), DurableFormatWriter::new(3));
+    let future = DurableFormatIdentity::new(current.epoch(), DurableFormatWriter::new(4));
     assert!(preflight_durable_format(future).is_err());
+}
+
+// req: AFC-001, AFC-002, REC-005, REC-006, REC-007
+#[test]
+fn registry_completion_marker_requires_exact_backup_bound_writer_edge() {
+    let registry = SchemaHash::from_bytes([
+        0xa1, 0x41, 0xb7, 0x65, 0xc2, 0xd4, 0x68, 0xa7, 0xc2, 0x70, 0x46, 0x15, 0x53, 0xaa, 0xd6,
+        0xa5, 0x6f, 0x9d, 0x2a, 0xf3, 0xa0, 0xe4, 0xf6, 0x30, 0x27, 0x15, 0x12, 0x27, 0xed, 0x4b,
+        0x40, 0xa3,
+    ]);
+    let corpus = CompatibilityFixtureDigest::from_bytes([
+        0x09, 0xb3, 0x89, 0xc8, 0x27, 0xda, 0x34, 0xe5, 0x52, 0x73, 0x85, 0xff, 0x74, 0x3b, 0xde,
+        0x7a, 0x8a, 0x8b, 0xd6, 0x10, 0x1f, 0xc6, 0x20, 0x19, 0x1c, 0x9b, 0x68, 0x42, 0xb7, 0x7f,
+        0xad, 0xc0,
+    ]);
+    let identity = DurableFormatIdentity::new(
+        AlphaFormatEpoch::new(1).unwrap(),
+        DurableFormatWriter::new(2),
+    );
+    let predecessor = DurableFormatMarker::new(identity, registry, corpus);
+    assert_eq!(
+        preflight_durable_format_marker(predecessor),
+        Ok(DurableFormatAction::OfflineInPlace {
+            backup_required: true,
+            free_space_source_multiples: 2,
+            downtime_required: true,
+            one_way: true,
+            next_command: SafeFormatCommand::Upgrade,
+        })
+    );
+    assert_eq!(
+        current_durable_format_manifest().writer(),
+        DurableFormatWriter::new(3)
+    );
+    for (registry, corpus) in [
+        (SchemaHash::from_bytes([0; 32]), corpus),
+        (registry, CompatibilityFixtureDigest::from_bytes([0; 32])),
+    ] {
+        assert_eq!(
+            preflight_durable_format_marker(DurableFormatMarker::new(identity, registry, corpus)),
+            Err(DurableFormatMarkerError::ManifestMismatch)
+        );
+    }
 }

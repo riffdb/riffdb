@@ -154,7 +154,7 @@ fn assert_complete(
         );
     }
     assert_eq!(
-        *decode_record_registry_v2(&actual[META_RECORD_REGISTRY])
+        *decode_record_registry_digest(&actual[META_RECORD_REGISTRY])
             .unwrap()
             .value(),
         current_record_registry_digest()

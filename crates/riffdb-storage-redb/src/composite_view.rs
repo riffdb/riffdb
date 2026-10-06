@@ -28,9 +28,9 @@ use crate::codec::{
     decode_database_identity_v1, decode_durable_event_v1, decode_entity_record_v1,
     decode_event_route_v1, decode_history_incarnation_v1, decode_idempotency_record_v1,
     decode_index_entry_v2, decode_index_epoch_v1, decode_pending_admission_v1,
-    decode_provenance_record_v1, decode_record_registry_v2, decode_service_audit_request_index_v1,
-    decode_vector_evidence_index_v1, decode_vector_evidence_v1,
-    decode_vector_health_observation_v1, decode_vector_observation_v1,
+    decode_provenance_record_v1, decode_record_registry_digest,
+    decode_service_audit_request_index_v1, decode_vector_evidence_index_v1,
+    decode_vector_evidence_v1, decode_vector_health_observation_v1, decode_vector_observation_v1,
 };
 use crate::error::{precommit_storage_error, storage_error, table_error};
 use crate::journal::JournalFrame;
@@ -775,7 +775,9 @@ fn checkpoint_identity(
     let history_incarnation = decode_history_incarnation_v1(&history_bytes)?
         .into_parts()
         .0;
-    let registry_digest: SchemaHash = decode_record_registry_v2(&registry_bytes)?.into_parts().0;
+    let registry_digest: SchemaHash = decode_record_registry_digest(&registry_bytes)?
+        .into_parts()
+        .0;
     let application_frontier = read_commit_tail(root)?;
     let administration_frontier = read_administration_tail(root)?;
     CompositeCheckpointV1::new(

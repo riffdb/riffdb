@@ -12057,6 +12057,9 @@ fn storage_command(command: StorageCommand) -> Terminal {
                         | riffdb_storage_redb::RedbDurableFormatUpgradeError::UnsupportedAction => {
                             "run riffdb storage preflight and follow its exact safe action"
                         }
+                        riffdb_storage_redb::RedbDurableFormatUpgradeError::InsufficientSpace => {
+                            "provision sufficient space on the source filesystem, leave the database closed, and retry the same command with the same verified backup"
+                        }
                         riffdb_storage_redb::RedbDurableFormatUpgradeError::Storage(_)
                         | riffdb_storage_redb::RedbDurableFormatUpgradeError::Unavailable => {
                             "leave the database closed and retry the same command with the same verified backup"

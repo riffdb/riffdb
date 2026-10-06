@@ -28709,6 +28709,21 @@ work_packages:
       Preserve complete validation and stale-candidate refusal; deterministic
       writer-admission and intervening-publication regressions prove the boundary.
       This implementation repair grants no new checkpoint or recovery authority.
+    - Implement ADR-0275 with one central semantic registry value and a private
+      full structural/catalog completion token. Publish completion in the existing
+      Immediate checkpoint receipt, preserving frozen V2 codecs and role order.
+    - Permit successor checkpoint genesis only under that exact sealed full proof
+      when a copied checkpoint belongs to an earlier incarnation of the same
+      database. Generic prefix refresh retains its existing exact-binding refusal.
+      Archive comparison folds only bounded startup certificate transitions,
+      preserving initial preimages, every intermediate edge and all other rows.
+    - Apply ADR-0276 through the existing exclusive offline owner, retaining both
+      engine custody locks until marker and Complete receipt publication. Reuse
+      exact predecessor backups without rewriting or promoting their identity.
+    - Apply ADR-0277 with safe principal-available fstatvfs on the source directory
+      and a streamed logical-length inventory. Include retained lifecycle working
+      and publication staging files, reject nonregular artifacts before receipt
+      open, and keep deterministic space observations private to native tests.
 
 - id: WP-826
   name: Twenty-four-hour sustainable TicketDesk qualification

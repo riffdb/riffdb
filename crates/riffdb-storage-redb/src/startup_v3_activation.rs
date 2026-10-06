@@ -10,6 +10,7 @@ pub(crate) struct PendingV3Activation {
     durable_commit_epoch: u64,
     retained: RetainedMetadataV1,
     terminal_execution_failure_rows: u64,
+    registry_completion: Option<CompleteRegistryValidation>,
 }
 
 impl PendingV3Activation {
@@ -20,12 +21,14 @@ impl PendingV3Activation {
         durable_commit_epoch: u64,
         retained: RetainedMetadataV1,
         terminal_execution_failure_rows: u64,
+        registry_completion: Option<CompleteRegistryValidation>,
     ) -> Self {
         Self {
             lease,
             durable_commit_epoch,
             retained,
             terminal_execution_failure_rows,
+            registry_completion,
         }
     }
 
@@ -50,11 +53,21 @@ impl PendingV3Activation {
             AdministrationSequenceAllocator::Exhausted => AdministrationSequence::new(u64::MAX),
         };
         let mut transaction = shared.database.begin_write().map_err(transaction_error)?;
-        crate::changelog_v3_activation::stage_validated(
-            &mut transaction,
-            lineage,
-            DualFrontier::new(application, administration),
-        )?;
+        if let Some(proof) = self.registry_completion.as_ref() {
+            proof.check_epoch(shared)?;
+            crate::changelog_v3_activation::stage_validated_completed(
+                &mut transaction,
+                lineage,
+                DualFrontier::new(application, administration),
+                proof,
+            )?;
+        } else {
+            crate::changelog_v3_activation::stage_validated(
+                &mut transaction,
+                lineage,
+                DualFrontier::new(application, administration),
+            )?;
+        }
         shared.commit_durable(transaction)?;
         crate::changelog_v3_activation::activation_edge("committed");
 

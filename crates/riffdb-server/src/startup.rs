@@ -3,6 +3,8 @@
 // The complete component graph consumes these private values during WP-130 composition.
 #![allow(dead_code)]
 
+#[path = "startup_archive_evidence.rs"]
+mod archive_evidence;
 #[path = "startup_promotion.rs"]
 pub(crate) mod promotion;
 
@@ -13,7 +15,7 @@ use std::path::Path;
 use riffdb_catalog::{
     CatalogError, CatalogHistoryOutcome, CatalogIndexMigrationContext,
     CatalogIndexMigrationDriveError, CatalogIndexMigrationDriver, ValidatedCatalogHistory,
-    ValidatedContractBundle, validate_catalog_history,
+    ValidatedContractBundle,
 };
 use riffdb_commit::{
     DatabaseInitializationDecision, DatabaseInitializationExecutor, InitializedDatabase,
@@ -105,44 +107,9 @@ impl CheckedRedbStartup {
     /// remain exact. Both cursors retain at most one bounded item at a time.
     pub(crate) fn matches_archive_restore_evidence(
         &self,
-        mut expected: Box<dyn riffdb_storage_api::AuthoritativeStateCursorV3>,
+        expected: Box<dyn riffdb_storage_api::AuthoritativeStateCursorV3>,
     ) -> Result<bool, ()> {
-        let snapshot = self
-            .operational_ports
-            .published_changelog_snapshot_v3()
-            .map_err(|_| ())?;
-        let mut actual = snapshot.authoritative_state_v3().map_err(|_| ())?;
-        let before = expected.history();
-        let after = actual.history();
-        if before.lineage() != after.lineage()
-            || before.anchor() != after.anchor()
-            || before.minimum_resume() != after.minimum_resume()
-            || before.tail().frontier() != after.tail().frontier()
-        {
-            return Ok(false);
-        }
-        let mut receipts = snapshot
-            .changelog_receipts_v3(before.lineage(), before.tail())
-            .map_err(|_| ())?;
-        while let Some(receipt) = receipts.next_receipt().map_err(|_| ())? {
-            if receipt.attribution() != riffdb_storage_api::ChangelogAttributionV3::DirtyActivation
-                || !receipt.mutations().is_empty()
-                || receipt.binding().predecessor_frontier != before.tail().frontier()
-                || receipt.binding().covered_frontier != before.tail().frontier()
-            {
-                return Ok(false);
-            }
-        }
-        loop {
-            let left = expected.next_item().map_err(|_| ())?;
-            let right = actual.next_item().map_err(|_| ())?;
-            if left != right {
-                return Ok(false);
-            }
-            if left.is_none() {
-                return Ok(true);
-            }
-        }
+        archive_evidence::matches(&self.operational_ports, expected)
     }
 
     /// Immutable original control, retained only after complete source validation
@@ -518,7 +485,7 @@ fn run_redb_evidence_session(
         drive_structural_evidence(&mut session)
     })?;
     let validation = timed(StartupStage::CatalogHistory, || {
-        validate_catalog_history(&mut session)
+        session.validate_startup_catalog_history()
     })?;
     let (catalog_outcome, historical_end) = validation.into_parts();
     crate::startup_census::record_recovery_owned_bytes(session.recovery_owned_peak_bytes());
@@ -1030,7 +997,7 @@ mod tests {
         };
         assert_eq!(current.epoch().get(), binary.epoch().get());
         assert_eq!(current.writer().get(), 0);
-        assert_eq!(binary.writer().get(), 2);
+        assert_eq!(binary.writer().get(), 3);
         assert!(matches!(
             action,
             DurableFormatAction::OfflineInPlace {
@@ -1050,7 +1017,7 @@ mod tests {
             action,
         })
         .to_string();
-        assert!(rendered.contains("current=alpha-1.0 binary=alpha-1.2"));
+        assert!(rendered.contains("current=alpha-1.0 binary=alpha-1.3"));
         assert!(rendered.contains("backup_required=true"));
         assert!(rendered.contains("next: riffdb storage upgrade"));
         assert!(rendered.ends_with("no data was changed"));

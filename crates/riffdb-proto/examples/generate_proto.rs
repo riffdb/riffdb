@@ -79,6 +79,7 @@ const STORAGE_SOURCES: &[&str] = &[
     "riffdb/storage/v1/projection.proto",
     "riffdb/storage/v1/reactive_module_v1.proto",
     "riffdb/storage/v1/registry_v2.proto",
+    "riffdb/storage/v1/registry_v3.proto",
     "riffdb/storage/v1/service_audit_request_index_v1.proto",
     "riffdb/storage/v1/service_audit_v2.proto",
     "riffdb/storage/v1/service_audit_v3.proto",
@@ -144,6 +145,7 @@ const PRODUCTION_SOURCES: &[&str] = &[
     "riffdb/storage/v1/projection.proto",
     "riffdb/storage/v1/reactive_module_v1.proto",
     "riffdb/storage/v1/registry_v2.proto",
+    "riffdb/storage/v1/registry_v3.proto",
     "riffdb/storage/v1/service_audit_request_index_v1.proto",
     "riffdb/storage/v1/service_audit_v2.proto",
     "riffdb/storage/v1/service_audit_v3.proto",
@@ -226,6 +228,7 @@ enum PayloadBound {
     Admission,
     Document,
     EnvelopeMaximum,
+    EncodedMaximum(usize),
     Exact(usize),
 }
 
@@ -783,6 +786,11 @@ const DURABLE_RECORDS: &[DurableRecord] = &[
         "StoredPromotionAdministrationV1",
         PayloadBound::Exact(8192),
     ),
+    durable(
+        "registry_v3.proto",
+        "StoredRecordRegistryV3",
+        PayloadBound::EncodedMaximum(256),
+    ),
 ];
 
 const LEGACY_DURABLE_RECORD_COUNT: usize = 26;
@@ -1207,6 +1215,22 @@ fn main() -> Result<(), Box<dyn Error>> {
             &output_root,
             &format!("{prefix}/durable-local-outbox-archive-v1-record-bound.bin"),
             &archive_bounds,
+        )?;
+    }
+    let registry_v3_record = durable_registry
+        .iter()
+        .find(|record| record.name == "StoredRecordRegistryV3")
+        .ok_or_else(|| io::Error::other("durable registry is missing StoredRecordRegistryV3"))?;
+    for prefix in ["fixtures/proto", "crates/riffdb-proto/fixtures"] {
+        write_artifact(
+            &output_root,
+            &format!("{prefix}/durable-registry-v3-schema-hash.bin"),
+            &registry_v3_record.schema_hash,
+        )?;
+        write_artifact(
+            &output_root,
+            &format!("{prefix}/durable-registry-v3-record-bound.bin"),
+            &durable_record_bounds(std::slice::from_ref(registry_v3_record)),
         )?;
     }
     let legacy_registry = durable_registry
@@ -2184,9 +2208,9 @@ struct BuiltDurableRecord {
 fn build_durable_registry(
     storage: &FileDescriptorSet,
 ) -> Result<Vec<BuiltDurableRecord>, Box<dyn Error>> {
-    if DURABLE_RECORDS.len() != 110 {
+    if DURABLE_RECORDS.len() != 111 {
         return Err(
-            io::Error::other("readable durable registry must contain exactly 110 records").into(),
+            io::Error::other("readable durable registry must contain exactly 111 records").into(),
         );
     }
     if storage.file.len() != STORAGE_SOURCES.len()
@@ -2210,9 +2234,9 @@ fn build_durable_registry(
         .iter()
         .map(|file| file.enum_type.len())
         .sum::<usize>();
-    if message_count != 210 || enum_count != 30 {
+    if message_count != 211 || enum_count != 30 {
         return Err(io::Error::other(format!(
-            "storage schema must contain exactly 210 messages and 30 enums; found {message_count} messages and {enum_count} enums"
+            "storage schema must contain exactly 211 messages and 30 enums; found {message_count} messages and {enum_count} enums"
         ))
         .into());
     }
@@ -2258,6 +2282,9 @@ fn build_durable_registry(
             PayloadBound::Admission => ADMISSION_PAYLOAD_BOUND,
             PayloadBound::Document => DOCUMENT_PAYLOAD_BOUND,
             PayloadBound::EnvelopeMaximum => maximum_payload_for_envelope(&record_type),
+            PayloadBound::EncodedMaximum(bytes) => {
+                maximum_payload_for_encoded_bound(&record_type, bytes)
+            }
             PayloadBound::Exact(bytes) => bytes,
         };
         let max_envelope_bytes =
@@ -2276,11 +2303,16 @@ fn build_durable_registry(
 }
 
 fn maximum_payload_for_envelope(record_type: &str) -> usize {
+    maximum_payload_for_encoded_bound(record_type, MAX_STORED_ENVELOPE_BYTES)
+}
+
+fn maximum_payload_for_encoded_bound(record_type: &str, bound: usize) -> usize {
     let mut lower = 0_usize;
-    let mut upper = MAX_STORED_ENVELOPE_BYTES;
+    let mut upper = bound;
     while lower < upper {
         let middle = lower + (upper - lower).div_ceil(2);
-        if maximum_encoded_envelope_bytes_for(record_type, middle).is_ok() {
+        if maximum_encoded_envelope_bytes_for(record_type, middle).is_ok_and(|bytes| bytes <= bound)
+        {
             lower = middle;
         } else {
             upper = middle - 1;
@@ -2353,9 +2385,15 @@ fn durable_readable_registry_fixture(
         .iter()
         .find(|record| record.name == "CapabilityRecordV1")
         .ok_or_else(|| io::Error::other("durable registry is missing CapabilityRecordV1"))?;
-    let mut output = durable_registry_fixture(records);
+    let (completion, previous) = records
+        .split_last()
+        .ok_or_else(|| io::Error::other("durable registry is empty"))?;
+    if completion.name != "StoredRecordRegistryV3" {
+        return Err(io::Error::other("completion registry must be append-only").into());
+    }
+    let mut output = durable_registry_fixture(previous);
     output = output.replacen(
-        &format!("records {}", records.len()),
+        &format!("records {}", previous.len()),
         &format!("records {}", records.len() + 5),
         1,
     );
@@ -2393,6 +2431,12 @@ fn durable_readable_registry_fixture(
         }
         output.push('\n');
     }
+    // Keep every historical readable role in its frozen position, matching
+    // READABLE_RECORD_SCHEMAS, then append the new completion schema.
+    let completion_fixture = durable_registry_fixture(std::slice::from_ref(completion));
+    for line in completion_fixture.lines().skip(2) {
+        writeln!(output, "{line}")?;
+    }
     Ok(output)
 }
 
@@ -2409,6 +2453,10 @@ fn durable_writable_registry_fixture(
     let v2 = records
         .get(current_v1_record_count)
         .ok_or_else(|| io::Error::other("durable registry is missing StoredIndexEntryV2"))?;
+    let registry_v3 = records
+        .iter()
+        .find(|record| record.name == "StoredRecordRegistryV3")
+        .ok_or_else(|| io::Error::other("durable registry is missing StoredRecordRegistryV3"))?;
     let registry_v2 = records
         .get(current_v1_record_count + 1)
         .ok_or_else(|| io::Error::other("durable registry is missing StoredRecordRegistryV2"))?;
@@ -2650,10 +2698,11 @@ fn durable_writable_registry_fixture(
         .chain(std::iter::once(catalog_v2))
         .chain(std::iter::once(primary_admission))
         .chain(std::iter::once(primary_fence))
-        .chain(std::iter::once(promotion));
+        .chain(std::iter::once(promotion))
+        .chain(std::iter::once(registry_v3));
 
     let mut output = String::from("riffdb-durable-writable-registry-v1\n");
-    let _ = writeln!(output, "records {}", current_v1_record_count + 63);
+    let _ = writeln!(output, "records {}", current_v1_record_count + 64);
     for record in writable {
         let _ = write!(output, "{} schema-hash=", record.record_type);
         for byte in record.schema_hash {

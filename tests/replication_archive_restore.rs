@@ -46,10 +46,15 @@ const SHUTDOWN: [&str; 14] = [
     "riffdb-writer-checkpoint-census-v1\t",
     "riffdb-writer-overlay-census-v1\t",
 ];
-fn rebound(process: &ChildProcessController) {
-    process
-        .wait_for_evidence_then_readiness(&SHUTDOWN, "riffdbd-ready-v1\t", TIMEOUT)
-        .unwrap();
+fn rebound(process: &ChildProcessController) -> Result<(), String> {
+    let transition = process
+        .wait_for_evidence_then_readiness(&SHUTDOWN, "riffdbd-", TIMEOUT)
+        .map_err(|error| error.to_string())?;
+    if transition.readiness.starts_with("riffdbd-ready-v1\t") {
+        Ok(())
+    } else {
+        Err(transition.readiness)
+    }
 }
 async fn terminal(
     client: &mut RiffDbClient,
@@ -192,7 +197,7 @@ async fn scenario(
         .await
         .unwrap();
     drop(client);
-    rebound(&process);
+    rebound(&process).expect("baseline backup rebound readiness");
     let mut client = fixture.client("primary").await;
     terminal(&mut client, baseline.operation_id(), &admin).await;
     drop(client);
@@ -324,7 +329,24 @@ async fn scenario(
         assert!(receipt.published_history_incarnation().is_none());
         return;
     }
-    rebound(&process);
+    if let Err(evidence) = rebound(&process) {
+        assert!(!process.wait_for_exit(TIMEOUT).unwrap().status.success());
+        use riffdb_storage_api::OfflineArchiveReceiptPersistencePort;
+        let (mut storage, _) = riffdb_storage_redb::RedbMaintenanceStorage::open(
+            &database,
+            root.join("primary-backups"),
+        )
+        .unwrap();
+        let receipt = storage
+            .read_archive_receipt(restore.operation_id())
+            .unwrap()
+            .unwrap();
+        panic!(
+            "archive restore rebound refused: {evidence}; phase={:?}; failure={:?}",
+            receipt.current_phase(),
+            receipt.transitions().last().unwrap().failure()
+        );
+    }
     let mut client = fixture.client("primary").await;
     let receipt = terminal(&mut client, restore.operation_id(), &admin).await;
     if let Some(cli) = &cli {

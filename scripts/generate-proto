@@ -63,12 +63,20 @@ generate_promotion_administration_vectors() {
             cutover::codec::promotion_administration_vectors_preserve_exact_attempts_and_refuse_old_readers -- --exact
 }
 
+generate_registry_completion_vectors() {
+    LC_ALL=C TZ=UTC \
+        RIFFDB_REGISTRY_COMPLETION_V3_VECTOR_OUTPUT="$output_root/fixtures/proto/durable-registry-v3-wire-vectors.txt" \
+        cargo test --quiet --locked -p riffdb-storage-api --lib \
+            proto_codec::metadata::registry_completion_tests::registry_completion_successor_wire_vectors_are_exact -- --exact
+}
+
 generate
 if [[ "$mode" == "" ]]; then
     # The checked-in Prost types are inputs to public wire-vector generation.
     # A second pass reaches a fixed point after a schema edit changes those types.
     generate
 fi
+generate_registry_completion_vectors
 generate_durable_vectors
 generate_durable_relationship_vectors
 generate_command_prefix_vectors
@@ -76,6 +84,11 @@ generate_replication_administration_vectors
 generate_promotion_administration_vectors
 
 artifacts=(
+    fixtures/proto/durable-registry-v3-wire-vectors.txt
+    fixtures/proto/durable-registry-v3-schema-hash.bin
+    fixtures/proto/durable-registry-v3-record-bound.bin
+    crates/riffdb-proto/fixtures/durable-registry-v3-schema-hash.bin
+    crates/riffdb-proto/fixtures/durable-registry-v3-record-bound.bin
     fixtures/replication/promotion-administration-v1.hex
     fixtures/proto/durable-promotion-administration-v1-schema-hash.bin
     fixtures/proto/durable-promotion-administration-v1-record-bound.bin
