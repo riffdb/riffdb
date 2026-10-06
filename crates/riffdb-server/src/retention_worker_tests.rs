@@ -19,6 +19,19 @@ fn completed_source_deletion_is_progress_even_when_logical_retention_is_idle() {
         ..OnlineRetentionPhases::default()
     };
     assert_eq!(idle_recheck_pause(&validating), Duration::ZERO);
+    let planned = OnlineRetentionPhases {
+        source_reclamation_attempts: 1,
+        source_reclamation_sample: Some([1, 1_000, 900, 0, 0, 900, 0, 0]),
+        source_initial_rows: 256,
+        source_continuation_rows: 256,
+        source_admission_census: [1, 1, 0, 0, 0, 100_000, 17, 0],
+        ..OnlineRetentionPhases::default()
+    };
+    assert_eq!(
+        idle_recheck_pause(&planned),
+        RETENTION_LANE_RECHECK,
+        "a floor plan, completed validation and granted turn are not deletion"
+    );
     // These are actual removed receipts in the production phase type, not a
     // planning ceiling or a fabricated pending-validation flag. The separate
     // writer-residence rest remains mandatory after this progress.
@@ -53,6 +66,12 @@ fn source_progress_rechecks_preserve_gate_rest_and_idle_backoff() {
     // The complete native residence is charged once. Neither ordinary nor
     // source queue waits add budget or replace residence with a deadline.
     assert_eq!(phases.gate_held_us(), 124);
+    assert_eq!(
+        idle_recheck_pause(&phases).max(gate_residence_rest(Duration::from_micros(
+            phases.gate_held_us()
+        ))),
+        Duration::from_micros(2_356)
+    );
     assert_eq!(
         gate_residence_rest(Duration::from_micros(phases.gate_held_us())),
         Duration::from_micros(2_356)

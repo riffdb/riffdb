@@ -494,7 +494,10 @@ impl Drop for SourceOwnerRetirement<'_> {
 }
 
 fn idle_recheck_pause(phases: &OnlineRetentionPhases) -> Duration {
-    if phases.receipt_validation_pending {
+    // Actual durable source deletion is progress even when the separate
+    // logical watermark is at its target or fenced. The full writer-residence
+    // rest below still applies; zero-progress source attempts retain backoff.
+    if phases.receipt_validation_pending || phases.reclaimed_receipts > 0 {
         Duration::ZERO
     } else {
         RETENTION_LANE_RECHECK

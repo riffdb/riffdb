@@ -1059,3 +1059,25 @@ host preparation and its limits; Checks: 50 evidence/preparation tests and five
 integrated scoped checks pass; Compatibility: no native behavior or guarantee
 changes; Updated handbook: this handoff; Hazards/follow-ups: exact pacing review,
 normal-window performance repair and complete milestone evidence remain pending.
+
+## WP-825 source-progress rechecks
+
+ADR-0272 is accepted. Source steps that actually commit receipt deletion use a
+progress recheck even when the separate logical watermark is held or at its
+target. They still rest for the complete actual writer residence using the
+unchanged factor and cap. Zero removal keeps the existing idle backoff; floor
+plans, validation counters and granted requests cannot select progress. The
+production scheduling regression passes after failing on the preceding policy.
+The deterministic rest test covers complete phase accounting, exclusion of
+queue waits, idle backoff and cancellation before every rest duration. Public
+health labels, checkpoint waits, safety checks and deletion bounds are unchanged.
+Scoped acceptance, full CI and unchanged required-host preparation remain
+required before this repair can support milestone closure.
+
+PR note: Package WP-825 (open); Tier guarantee; Behavior: actual committed source
+deletion receives progress rechecks with unchanged gate rest; Checks: native
+scheduling, rest and worker lifecycle tests, followed by scoped acceptance and
+full CI; Compatibility: unchanged public controls, formats, ordering, holds,
+checkpoint evidence and durability; Updated handbook: this handoff;
+Hazards/follow-ups: required-host latency and all remaining campaign gates must
+still pass. This repair does not qualify a rehearsal or start the 24-hour run.
