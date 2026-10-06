@@ -61,3 +61,21 @@ memory and every public fault/recovery path on the final artifact identity.
 A free-space observation reserves no capacity; later I/O failures retain the
 existing fencing and backup-bound recovery. The 24-hour run is not started or
 approved by this implementation.
+
+## Preflight assertion repair
+
+The maintainer approved the frozen implementation fixture review for `5d610fb0`.
+Its scoped acceptance then exposed two CLI unit assertions still expecting
+writer 2. The manifest and native preflight correctly report the accepted
+writer 3. The repair changes those two expected values in the canonical CLI
+adapter source, regenerates the adapter and its source checksum, and changes
+no production behavior or error envelope. Both reproduced failing preflight
+cases now pass; all 195 CLI unit tests, the operation-adapter generator check
+and all seven scoped non-test acceptance checks pass.
+
+PR note: Package WP-825 (open); Tier surface fixture consequence of accepted
+ADR-0276; Behavior: align preflight regression expectations with the approved
+writer identity; Checks: two preflight regressions and generator check pass;
+Compatibility: identical runtime and public output; Updated handbook: this
+implementation review; Hazards and follow-ups: preserve the failed frozen
+acceptance log and rerun final-source acceptance and full CI before host load.
