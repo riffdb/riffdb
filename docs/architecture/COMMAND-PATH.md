@@ -35,6 +35,20 @@ observations before accepting that proof. Rejection discards the whole graph;
 all-no-effect still commits the normal outcome, audit, provenance, and
 sequence without an application mutation.
 
+## Outcome retention
+
+The evaluated command, stored outcome, commit record, and retained expected
+outcome share one immutable canonical outcome tree through `DeclaredOutcome`.
+Cloning it increments reference counts; encoding and equality continue to use
+the same canonical value and bytes. There is no mutable outcome accessor.
+
+Construction adds one allocation for the shared record. Commands that clone
+large outcomes avoid repeated copies, while empty outcomes and paths without
+clones can cost more. Clone benchmarks describe this operation only; they do
+not establish an end-to-end commit speedup. Service values remain separately
+owned canonical records. Storage adapter authors should read the
+[source compatibility note](../compatibility.md#storage-adapter-rust-source-compatibility).
+
 ## Boundaries that must remain closed
 
 - Transports cannot construct an already-authorized command.

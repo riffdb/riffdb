@@ -800,7 +800,9 @@ impl EventIntent {
 #[derive(Clone, Eq, PartialEq)]
 pub struct DeclaredOutcome {
     outcome_id: OutcomeId,
-    value: CanonicalRecord,
+    // Immutable outcome trees are shared across the live command record graph.
+    // The canonical encoding below remains the durable representation.
+    value: Arc<CanonicalRecord>,
     value_encoded: Arc<[u8]>,
 }
 
@@ -811,7 +813,7 @@ impl DeclaredOutcome {
             .map_err(|error| canonical_codec_storage_error(&error))?;
         Ok(Self {
             outcome_id,
-            value,
+            value: Arc::new(value),
             value_encoded: Arc::from(value_encoded),
         })
     }
@@ -823,8 +825,10 @@ impl DeclaredOutcome {
     }
 
     /// Borrows the complete canonical outcome value.
+    ///
+    /// This accessor is not const because the immutable record is Arc-backed.
     #[must_use]
-    pub const fn value(&self) -> &CanonicalRecord {
+    pub fn value(&self) -> &CanonicalRecord {
         &self.value
     }
 
@@ -1636,6 +1640,42 @@ mod tests {
     fn outcome(length: usize) -> DeclaredOutcome {
         DeclaredOutcome::new(OutcomeId::new(1).expect("outcome"), payload_record(length))
             .expect("declared outcome")
+    }
+
+    #[test]
+    // req: OUT-001
+    fn cloned_outcomes_retain_exact_values_and_bytes_after_original_drop() {
+        let record = CanonicalRecord::new(vec![(
+            FieldId::first(),
+            CanonicalValue::list(vec![
+                CanonicalValue::string("outcome-value-canary").expect("string"),
+                CanonicalValue::Record(payload_record(64)),
+            ])
+            .expect("nested list"),
+        )])
+        .expect("record");
+        let expected_bytes = encode_canonical_record(&record).expect("canonical bytes");
+        let original = DeclaredOutcome::new(OutcomeId::first(), record.clone()).expect("outcome");
+        let retained = original.clone();
+        drop(original);
+
+        let reconstructed =
+            DeclaredOutcome::new(OutcomeId::first(), record.clone()).expect("reconstructed");
+        assert_eq!(retained, reconstructed);
+        assert_eq!(retained.value(), &record);
+        assert_eq!(retained.value_encoded(), expected_bytes);
+        assert_eq!(retained.value_encoded_len(), expected_bytes.len());
+        assert_eq!(
+            retained.semantic_bytes().expect("semantic charge"),
+            reconstructed.semantic_bytes().expect("semantic charge")
+        );
+        assert_ne!(
+            retained,
+            DeclaredOutcome::new(OutcomeId::new(2).expect("different ID"), record)
+                .expect("different identity")
+        );
+        assert_ne!(retained, outcome(63));
+        assert!(!format!("{retained:?}").contains("outcome-value-canary"));
     }
 
     fn budget_with_semantic_limit(maximum_semantic_bytes: usize) -> EvaluationBudget {

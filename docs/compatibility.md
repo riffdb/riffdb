@@ -3,6 +3,16 @@
 RiffDB 0.1.0 is a pre-release POC. Compatibility is checked at explicit
 boundaries; it is not a blanket promise that arbitrary commits can be mixed.
 
+## Storage adapter Rust source compatibility
+
+`riffdb_storage_api::DeclaredOutcome` shares its immutable canonical value
+across clones. `value()` still returns `&CanonicalRecord`, but it is no longer
+a `const fn`. Storage adapters calling it inside a const function must make
+that caller an ordinary function. Generated application interfaces and stored
+outcome bytes retain their existing contracts. See
+ADR-0274, Shared Immutable Declared Outcome Values, in the repository's
+decision records.
+
 ## Per-write evidence in V25
 
 ADR-0262 introduces grammar, executable IR, and bundle V25 for newly compiled
