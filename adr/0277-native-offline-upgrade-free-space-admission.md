@@ -1,11 +1,11 @@
 ---
 adr: "0277"
 title: Native Offline Upgrade Free Space Admission
-status: proposed
+status: accepted
 tier: guarantee
 date: 2026-10-06
-accepted: null
-acceptance: null
+accepted: '2026-10-06'
+acceptance: 'maintainer, in session, 2026-10-06: Approved, in response to the renewed exact-text acceptance request for ADR-0277 and WP-825 scope extension'
 requires: [ADR-0112, ADR-0276]
 amends: []
 supersedes: []
