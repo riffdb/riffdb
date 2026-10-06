@@ -1293,3 +1293,18 @@ binaries are unoptimized debug tools, not the frozen production server or a
 backup/rehearsal arm; their elapsed times cannot establish production restart
 performance or weaken its 60-second gate. The canonical archive count remains
 valid, while source pending-count and full event reconciliation remain unproved.
+
+Final-source full CI on `52d03291` stops at the capture-retirement test:
+the process-wide released-owner counter increases by two where the test expects
+its own one release. That exact test passes alone on the same compiled binary.
+Its runtime uses the production process-wide budget, so concurrent tests can
+change both the byte and lifetime counters between observations. The test now
+runs in a bounded dedicated process, retaining all assertions and the real
+production budget rather than relaxing equality or replacing accounting.
+This is a test-isolation repair; it does not explain the host delivery deficit.
+The host release build succeeds, but the CI guard launches no workload on this
+failed revision. The failed receipt remains retained and full CI is required
+again for the repaired source. No 24-hour run has started.
+The repaired production-budget test passes with its complete capture-lifetime
+and accounting assertions. Handbook, requirement coverage and ADR obligations
+also pass; integrated acceptance and full CI remain pending.

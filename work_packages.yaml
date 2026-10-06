@@ -28680,6 +28680,11 @@ work_packages:
       writer timings after leases are released and at worker retirement; counts
       are attempts and overlapping durations confer no delivery authority.
       Preserve two-phase Immediate commits, syncs, quota and equal-retry rules.
+    - Run the exact capture-retirement accounting test in a bounded dedicated
+      process with the production process-wide budget. Preserve all equality,
+      pin-lifetime and refusal assertions; unrelated parallel test owners must
+      not change its observations. Retain the failed full CI attempt and
+      require new final-source CI before any guarded host workload.
 
 - id: WP-826
   name: Twenty-four-hour sustainable TicketDesk qualification

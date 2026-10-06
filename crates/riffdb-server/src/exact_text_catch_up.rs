@@ -392,6 +392,34 @@ query Ticket($organization_id: Ticket.organization_id, $ticket_id: Ticket.ticket
     // req: OQ-040, PRJ-004
     #[test]
     fn source_delta_and_materialization_stop_after_owner_retirement_without_dropping_captures() {
+        // Exact lifetime counters belong to the production process graph.
+        // Another parallel test may release its own owner between observations.
+        // Keep every assertion and the real shared budget in a dedicated process.
+        const CHILD_MARKER: &str = "RIFFDB_CAPTURE_RETIREMENT_TEST_CHILD";
+        if std::env::var_os(CHILD_MARKER).is_none() {
+            use riffdb_testkit_server::process::{ChildProcessController, ChildProcessSpec};
+            let item_name = std::any::type_name_of_val(
+                &source_delta_and_materialization_stop_after_owner_retirement_without_dropping_captures,
+            );
+            let test_name = item_name.split_once("::").unwrap().1;
+            let specification = ChildProcessSpec::new(std::env::current_exe().unwrap())
+                .unwrap()
+                .arg(test_name)
+                .unwrap()
+                .arg("--exact")
+                .unwrap()
+                .env(CHILD_MARKER, "1")
+                .unwrap();
+            let mut child = ChildProcessController::spawn(&specification).unwrap();
+            let exit = child
+                .wait_for_exit(std::time::Duration::from_secs(60))
+                .unwrap();
+            assert!(
+                exit.status.success(),
+                "isolated capture-retirement assertions failed"
+            );
+            return;
+        }
         use riffdb_types::{CanonicalValue, EntityKeyBuilder};
         let (board, scope) = board_runtime("retired-exact-source");
         let module = board_program();
