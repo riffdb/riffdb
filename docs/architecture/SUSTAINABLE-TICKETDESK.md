@@ -1252,3 +1252,33 @@ Compatibility: unchanged public interfaces, durable bytes, ordering and limits;
 Updated handbook: this handoff and live observations; Hazards/follow-ups: confirm
 the host crash call path, diagnose terminal refusal, run final-source full CI
 and repeat the unchanged required-host workload.
+
+## WP-825 joined retention shutdown census
+
+The daemon's shutdown-trigger observation is captured before the retention
+thread joins. Previously it remained the final census even when that thread
+later cancelled normally. A healthy lane could therefore report its live idle
+or fenced state, causing the terminal-state collector to reject it. This does
+not invalidate the earlier measured refusal: refused owners retain that state.
+
+The retention owner now replaces the live observation after joining its thread
+and releasing source-validation pins. It records the actual final state and
+counters; it never substitutes cancellation for refusal. The real native-worker
+regression fails on the old census and passes after the repair, checking both
+healthy cancellation and preserved terminal refusal. All six focused worker
+tests pass with all features enabled. Scoped acceptance passes all 13 checks and
+all 633 server tests, with eight existing skips, using an owned temporary root.
+The initial broad run fails six tests while concurrent runners share temporary
+storage across separate PID namespaces. Observed stale-directory sweeps can
+remove another runner's live fixtures. That failed run and diagnostic traces
+are retained; the isolated rerun keeps every assertion and deadline unchanged.
+Final-source full CI and host testing remain pending; the public health labels
+and census field registry are unchanged.
+
+PR note: Package WP-825 (open); Tier guarantee; Behavior: record retention
+shutdown evidence after owner join; Checks: baseline regression fails, six
+focused all-feature worker tests and all 633 scoped server tests pass, with
+13 scoped checks; Compatibility: unchanged storage, public
+interfaces, ordering and maintenance policy; Updated handbook: this handoff and
+live observations; Hazards/follow-ups: final-source acceptance, CI, native refusal
+diagnosis and unchanged host workload before lifecycle qualification.

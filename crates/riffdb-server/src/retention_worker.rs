@@ -503,6 +503,9 @@ impl RunningRetentionLane {
         if let Some(lane) = &self.control.source_retirement {
             lane.release_source_validation();
         }
+        // Replace any live shutdown-trigger sample with the joined owner's
+        // actual terminal result. In particular, preserve Refused as Refused.
+        crate::shutdown_census::record_online_retention(self.observation());
         self.status.state()
     }
 }

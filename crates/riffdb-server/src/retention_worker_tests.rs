@@ -313,6 +313,7 @@ fn await_state(lane: &RunningRetentionLane, wanted: RetentionLaneState) {
 /// ADR-0182 sections 6 and 7 lane health: a hold starts nothing, a lane at
 /// its target idles, shutdown cancels it, and a refused step records one
 /// internal incident and stops the lane without retrying.
+// req: STO-030, STO-031, END-007, END-008
 #[test]
 fn retention_lane_states_are_closed_and_shutdown_cancels_the_lane() {
     let diagnostics = Arc::new(RecordingDiagnostics::default());
@@ -367,6 +368,10 @@ fn retention_lane_states_are_closed_and_shutdown_cancels_the_lane() {
     );
     assert_eq!(phases.reclaimed_receipts, 0);
     assert_eq!(lane.shutdown(), RetentionLaneState::Cancelled);
+    assert!(
+        crate::shutdown_census::format_v1_line().contains("\tonline_retention=cancelled\t"),
+        "shutdown evidence must describe the joined owner, not its live state"
+    );
     assert_eq!(
         lane.observation(),
         RetentionLaneObservation {
@@ -396,6 +401,10 @@ fn retention_lane_states_are_closed_and_shutdown_cancels_the_lane() {
     .expect("start refused lane");
     await_state(&lane, RetentionLaneState::Refused);
     assert_eq!(lane.shutdown(), RetentionLaneState::Refused);
+    assert!(
+        crate::shutdown_census::format_v1_line().contains("\tonline_retention=refused\t"),
+        "joining a refused owner must preserve its actual terminal failure"
+    );
     assert_eq!(
         *diagnostics.incidents.lock().unwrap(),
         vec![(

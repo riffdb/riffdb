@@ -1157,5 +1157,14 @@ An isolated storage test independently reproduces recursive destruction of the
 supported publication-lineage depth on the existing maintenance stack. Iterative
 retirement passes the storage unit suite; the exact host abort call path and
 required-host repair validation remain pending.
+The daemon also captured its retention census before joining the owner, which
+could reject a healthy lane's live idle/fenced state. A failing real-worker
+regression now proves that the owner records its actual terminal state after
+join and preserves refusal. Six focused all-feature worker tests, all 633
+scoped server tests and 13 acceptance checks pass in an owned temporary root.
+An earlier interfered run fails six tests and is retained: PID-based scratch
+sweeping can remove another runner's live files across PID namespaces sharing
+temporary storage. The isolated rerun changes no native assertion or deadline.
+Final-source CI and host validation remain pending.
 Native refusal diagnosis, complete resource evidence and the continuous short
 rehearsal remain required. No 24-hour run has started.
