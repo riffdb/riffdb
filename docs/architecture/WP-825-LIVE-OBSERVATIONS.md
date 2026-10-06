@@ -1521,3 +1521,37 @@ native behavior and application interfaces are unchanged. Updated handbook:
 this observation page. All five scoped acceptance checks also pass.
 Hazards/follow-ups: reproduce and fix any native lifecycle
 defect, repeat final-source full CI, and complete required-host preparations.
+
+## Native driver cancellation ownership repair
+
+Deterministic regressions prove that dropping a pending invocation or batch
+leaves its entry in the Rust host's cancellation registry. Cleanup previously
+ran only after an ordinary return; socket-owner aborts could skip it. Repeated
+aborts retained local request identities and prevented their reuse. This is a
+native resource defect, separately established from the intermittent
+`driver_shutdown` refusal; it is not evidence of that refusal's cause.
+
+Within accepted ADR-0106 and `DRV-011`, each registered request now retains an
+ownership guard. The guard synchronously retires only its exact cancellation
+channel on return or future drop. Registry critical sections contain no await;
+command execution remains outside the lock. Dropping a batch aborts its owned
+children, whose guards release registration when cancellation is polled. Pool
+admission, compiled dispatch, deadlines, structured errors and original
+idempotency recovery remain unchanged. No protocol or fixture changes occur.
+
+The baseline fails both future-drop regressions. Tests cover repeated
+invocation ID reuse, a batch dropped before its child starts, a batch dropped
+after the child's actual transport connection begins, explicit cancellation
+with uncertain command status, and an old guard preserving a newer exact
+owner. Connection acceptance and released admission provide schedule barriers;
+correctness tests use no sleeps. These tests and the existing driver suite pass.
+
+Package: WP-825, open. Tier: surface. Authority: ADR-0106 cancellation ownership,
+`DRV-010`, `DRV-011`, and D-003 implementation discretion. Behavior: retire
+nondurable native request registrations on cancellation. Checks: failing
+baseline regressions, all 42 driver-host tests and all seven scoped acceptance
+checks. Final-source full CI remains required. Compatibility: public signatures,
+protocol bytes, durable formats and command uncertainty are unchanged. Updated
+handbook: `sdks/DRIVER-HOST.md`. Hazards/follow-ups: retain the intermittent
+shutdown failure as unresolved and repeat the exact-source real preparation;
+this repair does not establish rehearsal readiness.

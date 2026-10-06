@@ -131,6 +131,13 @@ commit claim. Cancelling or timing out a command after submission reports
 identity. It never reports that the command failed merely because the local
 caller stopped waiting.
 
+Rust task cancellation also releases the local in-flight request registration
+and pool admission. Dropping a batch releases its parent registration and
+aborts its owned child tasks, whose registrations retire when their cancellation
+is polled. A completed or aborted request does not reserve its local request ID
+for the host's lifetime. This cleanup makes no claim about the durable outcome
+of a submitted command; recovery still uses the original idempotency identity.
+
 On SIGINT/SIGTERM integration, the host stops accepting work, asks established
 connections to drain, allows a bounded 30-second completion interval, then
 closes the private socket. Remote command uncertainty remains represented by
