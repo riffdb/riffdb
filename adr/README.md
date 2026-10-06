@@ -307,7 +307,7 @@ record with no front matter.
 | [0270](0270-allocation-free-committed-entity-canonical-sort.md) | Allocation-Free Committed Entity Canonical Sort | Accepted | guarantee |
 | [0271](0271-fair-bounded-native-source-reclamation-admission.md) | Fair Bounded Native Source-Reclamation Admission | Accepted | guarantee |
 | [0272](0272-source-progress-aware-maintenance-rechecks.md) | Source Progress Aware Maintenance Rechecks | Accepted | guarantee |
-| [0273](0273-bounded-native-outbox-completion-groups.md) | Bounded Native Outbox Completion Groups | Proposed | guarantee |
+| [0273](0273-bounded-native-outbox-completion-groups.md) | Bounded Native Outbox Completion Groups | Accepted | guarantee |
 <!-- adr-index:end -->
 
 The human architecture review on 2026-07-12 approved the direction represented

@@ -1,11 +1,11 @@
 ---
 adr: "0273"
 title: Bounded Native Outbox Completion Groups
-status: proposed
+status: accepted
 tier: guarantee
 date: 2026-10-06
-accepted: null
-acceptance: null
+accepted: 2026-10-06
+acceptance: 'maintainer, in session, 2026-10-06: "Approved" in response to the exact ADR-0273 proposal at 4ed57e5a'
 requires: [ADR-0265, ADR-0267, ADR-0269]
 amends: [ADR-0269]
 supersedes: []
