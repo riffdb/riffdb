@@ -1322,3 +1322,29 @@ handbook: backup and restore, this handoff and live observations;
 Hazards/follow-ups: final-source full CI and host repetition, the unresolved
 earlier archive-publication failure, native eligible-history bytes and complete
 lifecycle qualification. No 24-hour run has started.
+
+## WP-825 final native CI and scratch isolation
+
+Full CI passes on frozen native revision `f7402c87`, including workspace tests,
+four-language operational conformance, lifecycle preparations and release source
+installation. Its clean source and CI-log digest are retained privately. The
+unchanged 900-second sink-outage diagnostic has started on the required host;
+its result remains pending. This is diagnostic work, not the seven-fault short
+rehearsal or a 24-hour qualification.
+
+A separate failing test reproduces shared testkit scratch cleanup deleting
+a directory whose PID namespace is unknown. Linux scratch names and sweeps now
+bind the actual kernel PID namespace. Same-namespace dead-session cleanup,
+panic cleanup and kept-evidence behavior remain required; foreign namespace
+and legacy names of unknown ownership survive. The change affects test fixture
+lifecycle only. It does not explain the earlier archive-publication failure:
+that storage suite already has its own namespace isolation.
+
+PR note: Package WP-825 (open); Tier internal implementation within the
+guarantee package; Behavior: isolate testkit stale-scratch cleanup by PID
+namespace; Checks: baseline deletion reproduced, all 42 testkit tests and all
+13 scoped acceptance checks pass; Compatibility: no database/application API,
+storage format, workload, native validation or test-deadline changes; Updated
+handbook: contributing, this handoff and live observations; Hazards/follow-ups:
+unknown legacy scratch directories need deliberate owner cleanup, and the host
+diagnostic, native byte measurements and full short rehearsal remain required.

@@ -28666,6 +28666,10 @@ work_packages:
       maintenance coordinator drain and DrainComplete boundary, matching ordinary
       shutdown. Verify actual owned tasks in the dedicated process-crash fixture;
       preserve the public maintenance receipt, authority and CLEAN protocol.
+    - Bind shared testkit scratch names and stale sweeps to the kernel PID
+      namespace on Linux; preserve foreign and unknown legacy ownership instead
+      of interpreting peer PIDs through the current sandbox's proc inventory.
+      Keep same-namespace orphan cleanup, panic cleanup and kept evidence.
 
 - id: WP-826
   name: Twenty-four-hour sustainable TicketDesk qualification

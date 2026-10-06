@@ -376,6 +376,14 @@ the shipping recovery path; readiness and RPC deadlines are unchanged.
 testkit and offline-maintenance checks. These checks are separate from the
 24-hour TicketDesk rehearsal.
 
+On Linux, `riffdb_testkit::scratch::ScratchDir` binds each scratch name to the
+kernel PID namespace as well as the process ID. Construction sweeps dead
+same-prefix peers only in that namespace; legacy names with unknown namespace
+ownership and other namespaces remain untouched. This prevents one sandbox
+from deleting another sandbox's live fixtures when they share temporary
+storage. Kept evidence remains outside sweep scope. Allow for the namespace
+component when choosing short roots for local-socket tests.
+
 Install and verify the pinned local tools before running the handbook check:
 
 ```bash

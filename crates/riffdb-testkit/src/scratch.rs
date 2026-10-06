@@ -8,6 +8,8 @@
 //! `SIGKILL`/Ctrl-C skips `Drop`, every directory name embeds the owning pid
 //! and each construction first sweeps same-prefix directories whose pid is
 //! dead (or whose mtime is older than 24 hours, guarding against pid reuse).
+//! On Linux, names also bind the PID namespace: a sweep never interprets
+//! another namespace's PIDs or legacy names with unknown namespace ownership.
 //! The sweep mirrors `riffdb-bench-root`'s stale-dir sweep, the house
 //! precedent for crash-orphan hygiene.
 //!
@@ -20,7 +22,8 @@
 //!   touch it or disarm it with [`ScratchDir::keep`] (which also moves it
 //!   out of sweep scope entirely).
 //! - **Path length.** A scratch path costs `TMPDIR` plus roughly 34 bytes of
-//!   scope name before the caller's own file names. Unix local-socket paths
+//!   scope name (plus the PID namespace on Linux) before the caller's own
+//!   file names. Unix local-socket paths
 //!   are capped at 100 bytes (`riffdb-config`'s
 //!   `MAX_LOCAL_SOCKET_PATH_BYTES`), so socket tests should use a
 //!   deliberately short-prefix `tempfile::TempDir` instead — see the
@@ -41,7 +44,8 @@ const MAX_STALE_AGE: Duration = Duration::from_secs(24 * 60 * 60);
 
 static NEXT_SCRATCH: AtomicU64 = AtomicU64::new(0);
 
-/// One per-test scratch directory: `<root>/riffdb-scratch-<prefix>-<pid>-<n>`.
+/// One per-test scratch directory, with a prefix, PID and ordinal. Linux
+/// names additionally include the owning PID namespace before the PID.
 ///
 /// Removed recursively on `Drop` unless [`ScratchDir::keep`] was called.
 /// Creating one first sweeps sibling directories with the same prefix whose
@@ -68,14 +72,12 @@ impl ScratchDir {
     pub fn new_in(root: impl Into<PathBuf>, prefix: &str) -> io::Result<Self> {
         let root = root.into();
         validate_prefix(prefix)?;
+        let family = scratch_family(prefix)?;
         // Best-effort: a sweep failure must never fail the test being set up.
         let _swept = sweep_stale(&root, prefix);
         loop {
             let ordinal = NEXT_SCRATCH.fetch_add(1, Ordering::Relaxed);
-            let path = root.join(format!(
-                "{SCRATCH_COMPONENT}-{prefix}-{}-{ordinal}",
-                std::process::id()
-            ));
+            let path = root.join(format!("{family}{}-{ordinal}", std::process::id()));
             match fs::create_dir(&path) {
                 Ok(()) => return Ok(Self { path, keep: false }),
                 Err(error) if error.kind() == io::ErrorKind::AlreadyExists => {}
@@ -132,16 +134,17 @@ impl Drop for ScratchDir {
     }
 }
 
-/// Removes `<root>/riffdb-scratch-<prefix>-<pid>-<n>` directories whose pid
+/// Removes same-prefix, same-PID-namespace scratch directories whose pid
 /// is dead or whose mtime is older than 24 hours (the module docs explain
 /// why staleness outranks liveness). Returns how many were removed; racing
 /// sweeps of one root are safe but the count may over-report, so treat it
 /// as best-effort. Only exact same-prefix scratch names are ever touched —
 /// in particular, directories renamed by [`ScratchDir::keep`] fail the tail
-/// parse and always survive.
+/// parse and always survive. Linux legacy names lacking namespace ownership
+/// are left untouched; their PID cannot be judged using the current `/proc`.
 pub fn sweep_stale(root: &Path, prefix: &str) -> io::Result<usize> {
     validate_prefix(prefix)?;
-    let family = format!("{SCRATCH_COMPONENT}-{prefix}-");
+    let family = scratch_family(prefix)?;
     let entries = match fs::read_dir(root) {
         Ok(entries) => entries,
         Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(0),
@@ -195,6 +198,22 @@ pub fn sweep_stale(root: &Path, prefix: &str) -> io::Result<usize> {
     Ok(removed)
 }
 
+fn scratch_family(prefix: &str) -> io::Result<String> {
+    #[cfg(target_os = "linux")]
+    {
+        let namespace = fs::read_link("/proc/self/ns/pid")?;
+        let namespace = namespace
+            .to_str()
+            .and_then(|name| name.strip_prefix("pid:["))
+            .and_then(|name| name.strip_suffix(']'))
+            .filter(|id| !id.is_empty() && id.bytes().all(|byte| byte.is_ascii_digit()))
+            .ok_or_else(|| io::Error::other("unrecognized PID namespace identity"))?;
+        Ok(format!("{SCRATCH_COMPONENT}-{prefix}-n{namespace}-"))
+    }
+    #[cfg(not(target_os = "linux"))]
+    Ok(format!("{SCRATCH_COMPONENT}-{prefix}-"))
+}
+
 fn validate_prefix(prefix: &str) -> io::Result<()> {
     let valid = prefix
         .chars()
@@ -234,6 +253,49 @@ mod tests {
     use super::*;
     use std::panic::{AssertUnwindSafe, catch_unwind};
     use std::sync::Mutex;
+
+    // req: END-008, TEST-003
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn scratch_cleanup_does_not_interpret_foreign_or_unknown_namespace_pids() {
+        let root = ScratchDir::new("namespace-fixture").expect("owned fixture root");
+        // A legacy name has no namespace ownership. Its PID may be alive in
+        // another sandbox even though it is absent from this sandbox's /proc.
+        let unknown = root.join("riffdb-scratch-namespace-peer-999999-1");
+        let foreign = root.join("riffdb-scratch-namespace-peer-n0-999999-2");
+        for directory in [&unknown, &foreign] {
+            fs::create_dir(directory).expect("peer fixture");
+            fs::write(directory.join("live.redb"), b"peer database").expect("peer bytes");
+        }
+        assert_eq!(sweep_stale(root.path(), "namespace-peer").unwrap(), 0);
+        for directory in [&unknown, &foreign] {
+            assert_eq!(
+                fs::read(directory.join("live.redb")).unwrap(),
+                b"peer database"
+            );
+        }
+    }
+
+    // req: END-008, TEST-003
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn scratch_names_bind_the_actual_kernel_pid_namespace() {
+        let scratch = ScratchDir::new("namespace-owner").unwrap();
+        let namespace = fs::read_link("/proc/self/ns/pid").unwrap();
+        let namespace = namespace
+            .to_str()
+            .unwrap()
+            .strip_prefix("pid:[")
+            .unwrap()
+            .strip_suffix(']')
+            .unwrap();
+        let family = format!("riffdb-scratch-namespace-owner-n{namespace}-");
+        let name = scratch.path().file_name().unwrap().to_str().unwrap();
+        assert_eq!(
+            name.strip_prefix(&family).and_then(extract_scratch_pid),
+            Some(std::process::id())
+        );
+    }
 
     /// The guard's reason to exist: cleanup must happen on the panic path.
     /// With `Drop` neutered this test observes the leak and fails.
@@ -278,18 +340,19 @@ mod tests {
     #[test]
     fn sweep_removes_dead_pid_dirs_and_keeps_live_and_foreign_ones() {
         let root = ScratchDir::new("sweep-root").expect("create sweep root");
+        let family = scratch_family("swp").unwrap();
         // Mirror riffdb-bench-root: a very high never-started pid reads as dead.
-        let dead = root.join(format!("{SCRATCH_COMPONENT}-swp-999999-1"));
-        let live = root.join(format!("{SCRATCH_COMPONENT}-swp-{}-2", std::process::id()));
+        let dead = root.join(format!("{family}999999-1"));
+        let live = root.join(format!("{family}{}-2", std::process::id()));
         let foreign = root.join("keep-me");
-        let malformed = root.join(format!("{SCRATCH_COMPONENT}-swp-notapid-3"));
+        let malformed = root.join(format!("{family}notapid-3"));
         let other_prefix = root.join(format!("{SCRATCH_COMPONENT}-other-999999-4"));
         for dir in [&dead, &live, &foreign, &malformed, &other_prefix] {
             fs::create_dir(dir).expect("seed sweep candidate");
         }
         // The live dir belongs to "another" process for the sweep's purposes:
         // rewrite it under a pid that is alive but not ours (init, pid 1).
-        let live_other = root.join(format!("{SCRATCH_COMPONENT}-swp-1-5"));
+        let live_other = root.join(format!("{family}1-5"));
         fs::create_dir(&live_other).expect("seed live foreign candidate");
 
         let removed = sweep_stale(root.path(), "swp").expect("sweep");
@@ -312,7 +375,7 @@ mod tests {
     #[test]
     fn constructing_a_scratch_dir_reaps_a_dead_sessions_orphan() {
         let root = ScratchDir::new("kill-pin-root").expect("create pin root");
-        let orphan = root.join(format!("{SCRATCH_COMPONENT}-kill-pin-999999-1"));
+        let orphan = root.join(format!("{}999999-1", scratch_family("kill-pin").unwrap()));
         fs::create_dir(&orphan).expect("seed dead-pid orphan");
         fs::write(orphan.join("leaked.redb"), b"leak").expect("seed leaked database");
 
@@ -343,12 +406,13 @@ mod tests {
     #[test]
     fn kept_directories_survive_a_subsequent_sweep_even_with_a_dead_pid() {
         let root = ScratchDir::new("keep-sweep-root").expect("create root");
+        let family = scratch_family("ks").unwrap();
         // Model a kept dir from an exited session: dead pid, renamed tail.
-        let kept = root.join(format!("{SCRATCH_COMPONENT}-ks-999999-1-kept"));
+        let kept = root.join(format!("{family}999999-1-kept"));
         fs::create_dir(&kept).expect("seed kept dir");
         fs::write(kept.join("evidence.bin"), b"evidence").expect("seed evidence");
         // Control: the same dead pid without the rename must be reaped.
-        let unkept = root.join(format!("{SCRATCH_COMPONENT}-ks-999999-2"));
+        let unkept = root.join(format!("{family}999999-2"));
         fs::create_dir(&unkept).expect("seed unkept control");
 
         let removed = sweep_stale(root.path(), "ks").expect("sweep");
@@ -375,8 +439,7 @@ mod tests {
             .and_then(|name| name.to_str())
             .expect("kept scratch name");
         assert_eq!(
-            name.strip_prefix(&format!("{SCRATCH_COMPONENT}-ks-"))
-                .and_then(extract_scratch_pid),
+            name.strip_prefix(&family).and_then(extract_scratch_pid),
             None,
             "keep() must rename the directory so the sweep's tail parse \
              rejects it after this pid dies"
