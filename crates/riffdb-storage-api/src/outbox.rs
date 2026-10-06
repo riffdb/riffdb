@@ -1030,6 +1030,24 @@ pub enum OutboxStatusReadResultV1 {
 
 /// Specialized synchronous derived delivery-state repository.
 pub trait OutboxRepository {
+    /// Declares real atomic successful-completion support. A repository that
+    /// retains individual commits must keep this false.
+    fn supports_outbox_succeed_groups(&self) -> bool {
+        false
+    }
+
+    /// Completes matching successes in one durable transaction. The default
+    /// refuses; it never disguises separate commits as an atomic group.
+    fn succeed_outbox_group(
+        &mut self,
+        _group: &crate::OutboxSucceedGroupV1,
+    ) -> Result<crate::OutboxSucceedGroupResultV1, StorageError> {
+        Err(StorageError::new(
+            crate::StorageErrorKind::InvariantViolation,
+            None,
+        ))
+    }
+
     /// Returns whether any reciprocal authoritative intent remains undelivered.
     ///
     /// The default uses the bounded status scan. Stores with an exact

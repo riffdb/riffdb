@@ -3,9 +3,10 @@
 use std::num::NonZeroU32;
 
 use riffdb_storage_api::{
-    OutboxClaimV1, OutboxDeadLetterV1, OutboxDeliveryStateV1, OutboxRetryV1, OutboxSafeErrorV1,
-    OutboxStatusObservationV1, OutboxSucceedV1, OutboxTransitionResultV1, PendingOutboxItemV1,
-    PendingOutboxScanV1, StoredOutboxStatusV1,
+    MAX_OUTBOX_SUCCESS_GROUP_ENTRIES, OutboxClaimV1, OutboxDeadLetterV1, OutboxDeliveryStateV1,
+    OutboxRetryV1, OutboxSafeErrorV1, OutboxStatusObservationV1, OutboxSucceedGroupCompletionV1,
+    OutboxSucceedGroupResultV1, OutboxSucceedGroupV1, OutboxSucceedV1, OutboxTransitionResultV1,
+    PendingOutboxItemV1, PendingOutboxScanV1, StoredOutboxStatusV1,
 };
 use riffdb_types::{EventId, Timestamp};
 
@@ -177,14 +178,28 @@ where
             next_after,
             ..OutboxDispatchReport::default()
         };
+        let mut successes = Vec::with_capacity(MAX_OUTBOX_SUCCESS_GROUP_ENTRIES);
 
         for encoded in items {
             OutboxDispatchReport::increment(&mut report.scanned)?;
             let (item, _) = encoded.into_parts();
-            self.dispatch_item(&item, &mut report)?;
+            if let Err(error) = self.dispatch_item(&item, &mut report, &mut successes) {
+                // Storage uncertainty, missing authority and abrupt-loss
+                // failpoints retain Delivering and its recovery/retention fence.
+                if matches!(
+                    error,
+                    OutboxWorkerError::Clock(_)
+                        | OutboxWorkerError::InvalidWorkerValue(_)
+                        | OutboxWorkerError::StateChanged { .. }
+                ) {
+                    self.flush_successes(&mut successes, &mut report)?;
+                }
+                return Err(error);
+            }
             // An interrupted item and the rest of its page remain reachable.
             self.scan_after = Some(item.event_id());
         }
+        self.flush_successes(&mut successes, &mut report)?;
         self.scan_after = next_after;
         Ok(report)
     }
@@ -193,18 +208,22 @@ where
         &mut self,
         item: &PendingOutboxItemV1,
         report: &mut OutboxDispatchReport,
+        successes: &mut Vec<OutboxSucceedV1>,
     ) -> Result<(), OutboxWorkerError> {
         let event_id = item.event_id();
         let started_at = self.clock.now()?;
         if !is_eligible(item.status(), started_at) {
+            self.flush_successes(successes, report)?;
             OutboxDispatchReport::increment(&mut report.deferred)?;
             return Ok(());
         }
         if !self.connector.ready_to_deliver(item.event()) {
+            self.flush_successes(successes, report)?;
             OutboxDispatchReport::increment(&mut report.deferred)?;
             return Ok(());
         }
         if !self.policy.permits_attempt_after(item.status().attempts()) {
+            self.flush_successes(successes, report)?;
             return self.dead_letter_pending(item, started_at, report);
         }
 
@@ -218,6 +237,7 @@ where
         let delivering = match self.repository.claim_outbox(&claim) {
             Ok(OutboxTransitionResultV1::Applied(status)) => status,
             Ok(OutboxTransitionResultV1::StateChanged(_)) => {
+                self.flush_successes(successes, report)?;
                 self.telemetry
                     .record(OutboxTelemetryEvent::StateChanged { event_id });
                 OutboxDispatchReport::increment(&mut report.state_changes)?;
@@ -255,9 +275,10 @@ where
                     OutboxFailpoint::DeliveryAfterConnectorAcceptedBeforeSuccess,
                     event_id,
                 )?;
-                self.complete_success(delivering, attempt, report)
+                self.complete_success(delivering, attempt, report, successes)
             }
             ConnectorDisposition::Retryable { safe_error } => {
+                self.flush_successes(successes, report)?;
                 self.stop_at(
                     OutboxFailpoint::DeliveryAfterConnectorRetryableBeforeRetry,
                     event_id,
@@ -265,6 +286,7 @@ where
                 self.complete_retry(delivering, attempt, safe_error, report)
             }
             ConnectorDisposition::PermanentFailure { safe_error } => {
+                self.flush_successes(successes, report)?;
                 self.stop_at(
                     OutboxFailpoint::DeliveryAfterConnectorRejectedBeforeDeadLetter,
                     event_id,
@@ -279,9 +301,17 @@ where
         delivering: StoredOutboxStatusV1,
         attempt: NonZeroU32,
         report: &mut OutboxDispatchReport,
+        successes: &mut Vec<OutboxSucceedV1>,
     ) -> Result<(), OutboxWorkerError> {
         let event_id = delivering.event_id();
         let transition = OutboxSucceedV1::new(delivering, self.clock.now()?)?;
+        if self.repository.supports_outbox_succeed_groups() {
+            successes.push(transition);
+            if successes.len() == MAX_OUTBOX_SUCCESS_GROUP_ENTRIES {
+                self.flush_successes(successes, report)?;
+            }
+            return Ok(());
+        }
         match self.repository.succeed_outbox(&transition) {
             Ok(OutboxTransitionResultV1::Applied(_)) => {
                 OutboxDispatchReport::increment(&mut report.delivered)?;
@@ -299,6 +329,60 @@ where
             }
             Err(error) => self.storage_failure(error),
         }
+    }
+
+    fn flush_successes(
+        &mut self,
+        successes: &mut Vec<OutboxSucceedV1>,
+        report: &mut OutboxDispatchReport,
+    ) -> Result<(), OutboxWorkerError> {
+        if successes.is_empty() {
+            return Ok(());
+        }
+        let group = OutboxSucceedGroupV1::new(std::mem::take(successes))?;
+        let completion = match self.repository.succeed_outbox_group(&group) {
+            Ok(OutboxSucceedGroupResultV1::Complete(completion)) => completion,
+            Ok(OutboxSucceedGroupResultV1::AuthoritativeIntentMissing) => {
+                return Err(OutboxWorkerError::AuthoritativeIntentMissing);
+            }
+            Err(error) => return self.storage_failure(error),
+        };
+        // The result is bounded by its semantic type; also bind it to this
+        // request before publishing any report or Delivered telemetry.
+        if OutboxSucceedGroupCompletionV1::new(&group, completion.results().to_vec()).is_err() {
+            return self.storage_failure(riffdb_storage_api::StorageError::new(
+                riffdb_storage_api::StorageErrorKind::InvariantViolation,
+                None,
+            ));
+        }
+        let mut state_changed = false;
+        for (transition, result) in group.transitions().iter().zip(completion.results()) {
+            match result {
+                OutboxTransitionResultV1::Applied(_) => {
+                    OutboxDispatchReport::increment(&mut report.delivered)?;
+                    self.telemetry.record(OutboxTelemetryEvent::Delivered {
+                        event_id: transition.event_id(),
+                        attempt: delivering_attempt(transition.expected())?.get(),
+                    });
+                }
+                OutboxTransitionResultV1::StateChanged(_) => {
+                    self.telemetry.record(OutboxTelemetryEvent::StateChanged {
+                        event_id: transition.event_id(),
+                    });
+                    OutboxDispatchReport::increment(&mut report.state_changes)?;
+                    state_changed = true;
+                }
+                OutboxTransitionResultV1::AuthoritativeIntentMissing => {
+                    return Err(OutboxWorkerError::AuthoritativeIntentMissing);
+                }
+            }
+        }
+        if state_changed {
+            return Err(OutboxWorkerError::StateChanged {
+                phase: OutboxTransitionPhase::Succeed,
+            });
+        }
+        Ok(())
     }
 
     fn complete_retry(

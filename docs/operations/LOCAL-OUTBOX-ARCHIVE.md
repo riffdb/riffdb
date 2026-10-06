@@ -37,6 +37,13 @@ transaction storing the exact event and its quota charge atomically. A crash
 between acceptance and source completion can replay the event; equal retries
 preserve one record, and different bytes under the same identity are refused.
 Database identity, history incarnation, and event identity form the key.
+Each event keeps its own durable claim and archive transaction. The worker
+completes up to sixteen already accepted events in one primary transaction,
+flushing at the bound, page end, or before ordinary failure handling. It adds
+no wait to fill a group. Source completion of an earlier event can therefore
+follow a later event's claim; until completion, every such event remains
+undelivered for retention. A crash can replay the whole bounded group using
+the same immutable archive identities and existing recovery rules.
 Failures discovered after a claim use the existing bounded retry and dead-letter
 rules. Dead letters remain undelivered and continue to fence source retention.
 

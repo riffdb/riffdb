@@ -1365,3 +1365,38 @@ includes receipt sealing, engine commit, frontier refresh, journal cleanup and
 index publication. These measurements neither isolate fsync nor prove a causal
 delivery rate. They identify native transaction granularity as the next concrete
 review target, while preserving archive durability and all campaign gates.
+
+## Bounded success-completion implementation
+
+ADR-0273 is accepted before runtime implementation. An actual sixteen-event
+dispatcher regression on the previous runtime performs 32 primary commits and
+fails the expected 17-commit assertion. The repaired native dispatcher performs
+sixteen individual claims and one successful-completion commit, while retaining
+sixteen separate archive record commits and all exact archive bytes. A separate
+storage regression first observes sixteen completion commits, then proves one
+canonical OutboxTransition receipt with sixteen exact preimages/post-images and
+an unchanged application/administration frontier.
+
+Focused native evidence covers ordinary CAS mismatches without overwriting raced
+rows, atomic refusal for missing authority and corruption, input count/order
+bounds, unchanged all-mismatch groups, and uncertain completion fencing later
+writes. Real process aborts after archive acceptance and immediately before and
+after grouped completion preserve all records and statuses. Existing recovery
+redelivers uncertain groups with zero new archive record commits. These are
+process-crash tests, not power-loss persistence evidence.
+
+Dispatcher tests verify sixteen-entry and page-end flushes, flushing accepted
+successes before ordinary retry handling, and no Delivered telemetry after an
+uncertain group. Repositories without atomic group support retain sequential
+completion; the production mutation bridge forwards the new port and the
+read-only bridge retains its refusal. The handbook describes the bounded source
+completion delay. Focused native/outbox tests and four-crate Clippy pass;
+integrated acceptance, frozen final-source CI and the unchanged host diagnostic
+remain required. WP-825 remains open and no 24-hour run has started.
+
+The first integrated run also detects two failures caused by an unnecessary
+change to the shared after-commit test controller: invalidating already updated
+indexes prevents catalog and command identity resolution after a known successful
+commit. That change is removed. Actual commit/publication failure invalidation
+and write fencing remain unchanged. The failed run is retained; fresh validation
+of the corrected final source is required.

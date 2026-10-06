@@ -34,6 +34,10 @@ struct FakeState {
     authoritative: BTreeMap<EventId, (StoredDurableEventV1, StoredOutboxIntentV1)>,
     statuses: BTreeMap<EventId, StoredOutboxStatusV1>,
     change_during_next_retry: Option<StoredOutboxStatusV1>,
+    atomic_success_groups: bool,
+    success_group_sizes: Vec<usize>,
+    groups_seen_by_retry: Vec<usize>,
+    fail_next_group: Option<StorageErrorKind>,
 }
 
 impl FakeRepository {
@@ -147,6 +151,49 @@ impl FakeRepository {
 }
 
 impl OutboxRepository for FakeRepository {
+    fn supports_outbox_succeed_groups(&self) -> bool {
+        self.lock().unwrap().atomic_success_groups
+    }
+
+    fn succeed_outbox_group(
+        &mut self,
+        group: &riffdb_storage_api::OutboxSucceedGroupV1,
+    ) -> Result<riffdb_storage_api::OutboxSucceedGroupResultV1, StorageError> {
+        use riffdb_storage_api::{OutboxSucceedGroupCompletionV1, OutboxSucceedGroupResultV1};
+        let mut state = self.lock()?;
+        assert!(state.atomic_success_groups);
+        Self::validate_source(&state)?;
+        state.success_group_sizes.push(group.transitions().len());
+        if let Some(kind) = state.fail_next_group.take() {
+            return Err(storage_error(kind));
+        }
+        let mut results = Vec::new();
+        for transition in group.transitions() {
+            if !state.authoritative.contains_key(&transition.event_id()) {
+                return Ok(OutboxSucceedGroupResultV1::AuthoritativeIntentMissing);
+            }
+            let current = state.statuses.get(&transition.event_id()).cloned().map_or(
+                OutboxStatusObservationV1::AbsentInitialPending,
+                OutboxStatusObservationV1::Present,
+            );
+            results.push(
+                if current == OutboxStatusObservationV1::Present(transition.expected().clone()) {
+                    OutboxTransitionResultV1::Applied(transition.updated().clone())
+                } else {
+                    OutboxTransitionResultV1::StateChanged(current)
+                },
+            );
+        }
+        for result in &results {
+            if let OutboxTransitionResultV1::Applied(status) = result {
+                state.statuses.insert(status.event_id(), status.clone());
+            }
+        }
+        Ok(OutboxSucceedGroupResultV1::Complete(
+            OutboxSucceedGroupCompletionV1::new(group, results).unwrap(),
+        ))
+    }
+
     fn read_outbox_status(
         &self,
         event_id: EventId,
@@ -300,6 +347,8 @@ impl OutboxRepository for FakeRepository {
     ) -> Result<OutboxTransitionResultV1, StorageError> {
         let changed = {
             let mut state = self.lock()?;
+            let groups = state.success_group_sizes.len();
+            state.groups_seen_by_retry.push(groups);
             state.change_during_next_retry.take()
         };
         if let Some(changed) = changed {
@@ -328,9 +377,98 @@ impl OutboxRepository for FakeRepository {
     }
 }
 
+// req: EFF-002, EFF-003, REC-001, END-008
+#[test]
+fn outbox_completion_group_flushes_at_bounds_and_before_retry() {
+    let repository = FakeRepository::with_events(35);
+    repository.lock().unwrap().atomic_success_groups = true;
+    let mut script = vec![ConnectorDisposition::Accepted; 19];
+    script.push(ConnectorDisposition::Retryable { safe_error: None });
+    let connector = SharedConnector::new(script, ConnectorDisposition::Accepted);
+    let clock = SharedClock::new(10);
+    let policy = policy(3);
+    let mut dispatcher = OutboxDispatcher::new(
+        recovered(repository.clone(), &policy, &clock),
+        connector.clone(),
+        clock,
+        NoOutboxFailpoints,
+        NoOutboxTelemetry,
+        policy,
+    );
+    let report = dispatcher.dispatch_once().unwrap();
+    assert_eq!(report.claims(), 35);
+    assert_eq!(report.delivered(), 34);
+    assert_eq!(report.retries_scheduled(), 1);
+    assert_eq!(repository.lock().unwrap().success_group_sizes, [16, 3, 15]);
+    assert_eq!(repository.lock().unwrap().groups_seen_by_retry, [2]);
+    assert_eq!(connector.observations().len(), 35);
+    for ordinal in 0..35 {
+        let status = repository.status(event_id(ordinal)).unwrap();
+        assert_eq!(status.state().attempts(), 1);
+        assert_eq!(
+            matches!(status.state(), OutboxDeliveryStateV1::Delivered { .. }),
+            ordinal != 19
+        );
+    }
+}
+
+// req: EFF-002, EFF-003, REC-001, END-008
+#[test]
+fn uncertain_group_retains_all_delivering_fences_and_publishes_no_success() {
+    let repository = FakeRepository::with_events(16);
+    {
+        let mut state = repository.lock().unwrap();
+        state.atomic_success_groups = true;
+        state.fail_next_group = Some(StorageErrorKind::CommitStatusUnknown);
+    }
+    let connector = SharedConnector::new(vec![], ConnectorDisposition::Accepted);
+    let clock = SharedClock::new(10);
+    let policy = policy(3);
+    let telemetry = SharedTelemetry::default();
+    let mut dispatcher = OutboxDispatcher::new(
+        recovered(repository.clone(), &policy, &clock),
+        connector.clone(),
+        clock,
+        NoOutboxFailpoints,
+        telemetry.clone(),
+        policy,
+    );
+    assert!(
+        matches!(dispatcher.dispatch_once(), Err(OutboxWorkerError::Storage(error)) if error.kind() == StorageErrorKind::CommitStatusUnknown)
+    );
+    assert_eq!(connector.observations().len(), 16);
+    for ordinal in 0..16 {
+        assert!(matches!(
+            repository.status(event_id(ordinal)).unwrap().state(),
+            OutboxDeliveryStateV1::Delivering { .. }
+        ));
+    }
+    assert!(
+        !telemetry
+            .events()
+            .iter()
+            .any(|event| matches!(event, OutboxTelemetryEvent::Delivered { .. }))
+    );
+}
+
 #[derive(Clone)]
 struct SharedClock {
     now: Arc<Mutex<Timestamp>>,
+}
+
+#[derive(Clone, Default)]
+struct SharedTelemetry(Arc<Mutex<Vec<OutboxTelemetryEvent>>>);
+
+impl SharedTelemetry {
+    fn events(&self) -> Vec<OutboxTelemetryEvent> {
+        self.0.lock().unwrap().clone()
+    }
+}
+
+impl OutboxTelemetry for SharedTelemetry {
+    fn record(&mut self, event: OutboxTelemetryEvent) {
+        self.0.lock().unwrap().push(event);
+    }
 }
 
 impl SharedClock {

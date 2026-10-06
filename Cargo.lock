@@ -2281,6 +2281,7 @@ dependencies = [
  "riffdb-catalog",
  "riffdb-columnar",
  "riffdb-contract-compiler",
+ "riffdb-outbox",
  "riffdb-policy",
  "riffdb-projection",
  "riffdb-proto",

@@ -1931,6 +1931,18 @@ impl FilteredAuthoritativeScanReader for SharedRedbOperationalPorts {
 }
 
 impl OutboxRepository for SharedRedbOperationalPorts {
+    fn supports_outbox_succeed_groups(&self) -> bool {
+        true
+    }
+
+    fn succeed_outbox_group(
+        &mut self,
+        group: &riffdb_storage_api::OutboxSucceedGroupV1,
+    ) -> Result<riffdb_storage_api::OutboxSucceedGroupResultV1, StorageError> {
+        self.cell
+            .with_mut(|ports| OutboxRepository::succeed_outbox_group(ports, group))
+    }
+
     fn has_undelivered_outbox(&self) -> Result<bool, StorageError> {
         OutboxRepository::has_undelivered_outbox(&self.shared)
     }
@@ -2081,6 +2093,42 @@ impl ProjectionRecoveryRepository for SharedRedbOperationalPorts {
 
 #[cfg(test)]
 mod tests {
+    // req: EFF-002, REC-001, END-008
+    #[test]
+    fn production_outbox_bridge_forwards_atomic_completion_without_widening_read_only_authority() {
+        use riffdb_storage_api::{
+            OutboxClaimV1, OutboxRepository, OutboxStatusObservationV1, OutboxSucceedGroupResultV1,
+            OutboxSucceedGroupV1, OutboxSucceedV1,
+        };
+        let mut real = crate::real_storage_support::RealStorage::open("outbox-group-bridge");
+        assert!(real.storage.supports_outbox_succeed_groups());
+        let event_id = riffdb_types::EventId::new(riffdb_types::CommitSequence::first(), 0);
+        let claim = OutboxClaimV1::new(
+            event_id,
+            OutboxStatusObservationV1::AbsentInitialPending,
+            riffdb_storage_api::OutboxDestinationIdV1::new("test").unwrap(),
+            riffdb_types::Timestamp::new(10, 0).unwrap(),
+            riffdb_types::Timestamp::new(20, 0).unwrap(),
+        )
+        .unwrap();
+        let success = OutboxSucceedV1::new(
+            claim.updated().clone(),
+            riffdb_types::Timestamp::new(11, 0).unwrap(),
+        )
+        .unwrap();
+        let group = OutboxSucceedGroupV1::new(vec![success]).unwrap();
+        assert_eq!(
+            real.storage.succeed_outbox_group(&group).unwrap(),
+            OutboxSucceedGroupResultV1::AuthoritativeIntentMissing
+        );
+        let mut read_only = real.storage.shared.clone();
+        assert!(!read_only.supports_outbox_succeed_groups());
+        assert_eq!(
+            read_only.succeed_outbox_group(&group).unwrap_err().kind(),
+            riffdb_storage_api::StorageErrorKind::InvariantViolation
+        );
+    }
+
     use std::num::{NonZeroU16, NonZeroU32, NonZeroU64};
     use std::thread;
 

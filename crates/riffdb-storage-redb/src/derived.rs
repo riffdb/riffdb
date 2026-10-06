@@ -1,6 +1,7 @@
 //! Durable outbox and projection ports over the frozen redb layout.
 
 mod batch;
+mod outbox_success_group;
 
 use std::ops::Bound::{Excluded, Unbounded};
 use std::ops::Deref;
@@ -57,6 +58,17 @@ use crate::store::{RedbOperationalPorts, RedbReadAccess};
 use crate::transient::TransientIndexDelta;
 
 impl OutboxRepository for RedbOperationalPorts {
+    fn supports_outbox_succeed_groups(&self) -> bool {
+        true
+    }
+
+    fn succeed_outbox_group(
+        &mut self,
+        group: &riffdb_storage_api::OutboxSucceedGroupV1,
+    ) -> Result<riffdb_storage_api::OutboxSucceedGroupResultV1, StorageError> {
+        outbox_success_group::complete(self, group)
+    }
+
     fn has_undelivered_outbox(&self) -> Result<bool, StorageError> {
         self.shared.ensure_transient_indexes_ready()?;
         let _lease = self.acquire_indexed_read_lease()?;
@@ -1903,6 +1915,9 @@ mod tests {
     mod bootstrap_projection;
     mod follower_indexes;
     mod follower_projection;
+    mod outbox_completion;
+    #[cfg(target_os = "linux")]
+    mod outbox_delivery_native;
     mod projection_batch;
     use std::num::{NonZeroU16, NonZeroU32};
     use std::path::PathBuf;

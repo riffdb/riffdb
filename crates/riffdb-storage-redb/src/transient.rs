@@ -87,6 +87,9 @@ pub(crate) enum TransientIndexState {
 
 pub(crate) enum TransientIndexDelta {
     PendingOutboxInserted(Vec<EventId>),
+    /// At most sixteen exact Delivering-to-Delivered transitions committed
+    /// together under the sole writer's mutation lease.
+    OutboxSucceeded(Vec<EventId>),
     /// A published command segment, with the exact canonical `COMMITS` row
     /// bytes the writer encoded when it has them. Those bytes seed the
     /// byte-checked payload cache, so the next writer's tail lookup does not
@@ -113,6 +116,7 @@ impl TransientIndexDelta {
         match self {
             Self::CommandSegmentPublished(segment, _) => Some(segment),
             Self::PendingOutboxInserted(_)
+            | Self::OutboxSucceeded(_)
             | Self::PendingOutboxMembership { .. }
             | Self::HistoryPruned { .. } => None,
         }
@@ -490,6 +494,17 @@ impl TransientIndexes {
 
     pub(crate) fn apply(&mut self, delta: TransientIndexDelta) {
         match delta {
+            TransientIndexDelta::OutboxSucceeded(events) => {
+                for event_id in events {
+                    self.apply(TransientIndexDelta::PendingOutboxMembership {
+                        event_id,
+                        was_pending: false,
+                        pending: false,
+                        was_undelivered: true,
+                        undelivered: false,
+                    });
+                }
+            }
             TransientIndexDelta::PendingOutboxInserted(events) => {
                 let (Some(pending), Some(undelivered)) = (
                     self.pending_outbox.as_mut(),

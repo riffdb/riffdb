@@ -28687,6 +28687,17 @@ work_packages:
       pin-lifetime and refusal assertions; unrelated parallel test owners must
       not change its observations. Retain the failed full CI attempt and
       require new final-source CI before any guarded host workload.
+    - Apply accepted ADR-0273 through a checked sixteen-success completion port
+      and the production mutation owner. Preserve individual claims, archive
+      commits, retries and dead letters; publish exact per-event results only
+      after one captured primary receipt and committed membership updates.
+      Keep read-only shared ports mutation-denying. Use the existing first-party
+      outbox crate only as a storage-test dependency for real dispatch/archive
+      crash evidence; production dependencies are unchanged.
+    - Preserve existing fault-controller resolution after a known successful
+      commit and real commit-failure index invalidation. Native group tests
+      verify typed refusal, fenced following writes and exact reopened statuses
+      rather than treating injected uncertainty as successful delivery.
 
 - id: WP-826
   name: Twenty-four-hour sustainable TicketDesk qualification
