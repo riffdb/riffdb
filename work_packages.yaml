@@ -28634,8 +28634,9 @@ work_packages:
   # Exact ADR-0269 accepted in session, 2026-10-05; engine, offline scrub and simulator repair scope.
   # Exact revised ADR-0271 accepted in session, 2026-10-05; bounded FIFO source admission and native drain.
   # Exact ADR-0272 accepted in session, 2026-10-05; source-progress rechecks with unchanged gate rest.
+  # Existing broad native-fix approval also covers the first-party test-only outbox dependency.
   # Exact ADR-0273 accepted in session, 2026-10-06; bounded successful-completion groups only.
-  allowed_paths: [examples/ticketdesk/**, scripts/**, tests/ticketdesk_lifecycle/**, fixtures/**, release/evidence/ticketdesk-lifecycle/**, docs/**, crates/riffdb-api-grpc/src/**, crates/riffdb-service/src/**, crates/riffdb-server/src/**, crates/riffdb-storage-redb/src/**, crates/riffdb-outbox/src/**, crates/riffdb-sim/src/**, crates/riffdb-cli/src/**, crates/riffdb-storage-api/src/**, adr/0268-bounded-native-continuation-of-source-reclamation-proofs.md, adr/0269-explicit-engine-integrity-verification-and-reviewed-redb-upgrade.md, adr/0271-fair-bounded-native-source-reclamation-admission.md, adr/0272-source-progress-aware-maintenance-rechecks.md]
+  allowed_paths: [examples/ticketdesk/**, scripts/**, tests/ticketdesk_lifecycle/**, fixtures/**, release/evidence/ticketdesk-lifecycle/**, docs/**, crates/riffdb-api-grpc/src/**, crates/riffdb-service/src/**, crates/riffdb-server/src/**, crates/riffdb-storage-redb/src/**, crates/riffdb-storage-redb/Cargo.toml, crates/riffdb-outbox/src/**, crates/riffdb-sim/src/**, crates/riffdb-cli/src/**, crates/riffdb-storage-api/src/**, adr/0268-bounded-native-continuation-of-source-reclamation-proofs.md, adr/0269-explicit-engine-integrity-verification-and-reviewed-redb-upgrade.md, adr/0271-fair-bounded-native-source-reclamation-admission.md, adr/0272-source-progress-aware-maintenance-rechecks.md]
   deliverables:
   - Generated command updates with explicit write evidence and retained TypeScript smoke coverage
   - Frozen workload/fault/resource manifest, redacted actual observations, and independent result reconciliation
