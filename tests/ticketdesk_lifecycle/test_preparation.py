@@ -5,6 +5,9 @@ import importlib.machinery
 import importlib.util
 import json
 import os
+import select
+import signal
+import subprocess
 import sys
 from pathlib import Path
 import tempfile
@@ -260,6 +263,49 @@ class SinkOutageReconciliation(unittest.TestCase):
 
 
 class ChildOwnership(unittest.TestCase):
+    def test_observed_load_collects_owned_process_memory_without_an_extra_request_thread(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            children = []
+            try:
+                for _role in ("server", "observer"):
+                    child = subprocess.Popen([sys.executable, "-c",
+                        "import sys; print('ready', flush=True); sys.stdin.buffer.read()"],
+                        stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+                    children.append(child)
+                    self.assertTrue(select.select([child.stdout], [], [], 5)[0])
+                    self.assertEqual(child.stdout.readline(), b"ready\n")
+                worker = root / "fixture-worker"
+                worker.write_text("#!/usr/bin/env python3\nimport signal, sys\n"
+                    "def done(*_args):\n"
+                    " print('{\"schema\":\"riffdb.ticketdesk-lifecycle-load-stopped/v1\"}', flush=True)\n"
+                    " sys.exit(0)\n"
+                    "signal.signal(signal.SIGUSR1, done)\n"
+                    "print('{\"schema\":\"riffdb.ticketdesk-lifecycle-load-ready/v1\"}', flush=True)\n"
+                    "signal.pause()\n")
+                worker.chmod(0o700)
+                original = preparation.PreparationMemorySamples.poll
+                released = False
+
+                def release_after_observation(samples, elapsed_ns):
+                    nonlocal released
+                    original(samples, elapsed_ns)
+                    if samples.count == 1 and not released:
+                        released = True
+                        os.kill(samples.inventory.owners["load"].pid, signal.SIGUSR1)
+
+                with patch.object(preparation.PreparationMemorySamples, "poll", release_after_observation):
+                    preparation.observed_load(root, str(worker), dict(os.environ), 1,
+                        children[1], preparation.queue.Queue(maxsize=1), False, server=children[0])
+                records = [json.loads(line) for line in (root / "memory-samples.jsonl").read_bytes().splitlines()]
+                self.assertEqual(len(records), 1)
+                self.assertEqual(records[0]["processes"].keys(), {"controller", "server", "load", "observer"})
+                self.assertIs(records[0]["qualifies_resource_model"], False)
+                self.assertTrue(all(value["rss_bytes"] > 0 for value in records[0]["processes"].values()))
+            finally:
+                for child in children:
+                    child.communicate(timeout=5)
+
     def test_invalid_or_oversized_load_output_stops_the_owned_child(self):
         for output in ('{"schema":"unknown"}', 'x' * 8192):
             with self.subTest(bytes=len(output)), tempfile.TemporaryDirectory() as directory:

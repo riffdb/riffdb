@@ -208,3 +208,12 @@ submission and preserve the original input until recovery settles. Probe
 `transport_attempts` counts those workload calls, including explicit retries.
 Consumer, live-query and operator calls belong to separate auxiliary accounting.
 The generated application SDK's automatic outcome recovery remains unchanged.
+
+Population preparations also record private `memory-samples.jsonl` diagnostics
+for the controller, daemon, Rust load worker and Rust observer. They require
+real observations in every load window and refuse process exit, replacement,
+missing memory fields and overflow. `allocator_bytes` is labeled as the whole
+virtual address space upper bound, including mappings, stacks and reservations;
+it is not live allocator ownership. The scope excludes transient CLI children
+and peaks between samples, and every record sets `qualifies_resource_model`
+to false. Complete frozen campaign resource accounting is still required.

@@ -1094,3 +1094,39 @@ comparison. All 51 evidence/preparation tests pass, including rejection of
 JSON numbers, malformed decimals and overflow. The failed preparation remains
 preserved. This correction changes no native interface, query semantics or
 milestone gate; its host repetition remains pending.
+
+## WP-825 preparation memory observations
+
+Population preparations now write private `memory-samples.jsonl` observations
+of the controller, server, Rust load worker and Rust observer every five seconds.
+Every load window needs an actual sample. The collector reads bounded Linux
+process status, checks process start-time identity before and after collection,
+and refuses missing fields, exit, zombie state, substitution, duplicate fields,
+overflow and reused process identifiers. It reports counts without process
+identifiers, process names or filesystem paths. Collection uses the controller
+thread and adds no application request slot.
+
+The `allocator_bytes` diagnostic is explicitly a **whole-process virtual address
+space upper bound**, including executable/file mappings, thread stacks and
+reserved or free address space. It is not allocator live bytes. `VmData` is not
+used as a substitute for allocator accounting. The record names its basis and
+sets `qualifies_resource_model` to false. These four-process samples exclude
+transient CLI children and unobserved peaks between samples; they cannot set
+the campaign's `resource_model_verified` check. Qualifying accounting still
+requires the complete process inventory, a frozen disclosed resource model and
+native eligible-history byte observations. No per-command allowance may excuse
+process-memory or reclaimable-history growth.
+
+All 61 checker/preparation tests pass, including real owned child collection,
+deterministic replacement during a sample, reused process identity, missing
+window coverage and preservation of private failed observations. Required-host
+repetition and complete campaign resource accounting remain pending.
+
+PR note: Package WP-825 (open); Tier internal; Behavior: bounded private
+preparation memory diagnostics with explicit incomplete scope and conservative
+basis; Checks: 61 evidence/preparation tests pass, including a signal-scheduled
+real child collection test; Compatibility: unchanged native/public interfaces,
+request limit and campaign gates; Documentation: this handoff and the lifecycle
+example; Hazards/follow-ups: transient process accounting, observed peaks,
+native eligible-history bytes, host repetition and the complete short rehearsal
+remain required before qualification.
