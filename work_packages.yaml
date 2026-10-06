@@ -28662,6 +28662,10 @@ work_packages:
     - Replace the daemon's live retention shutdown-trigger sample with the
       joined owner's actual terminal observation after source-pin release,
       preserving refused owners and the existing closed census registry.
+    - Join local outbox, retention and scrub owners explicitly before the
+      maintenance coordinator drain and DrainComplete boundary, matching ordinary
+      shutdown. Verify actual owned tasks in the dedicated process-crash fixture;
+      preserve the public maintenance receipt, authority and CLEAN protocol.
 
 - id: WP-826
   name: Twenty-four-hour sustainable TicketDesk qualification

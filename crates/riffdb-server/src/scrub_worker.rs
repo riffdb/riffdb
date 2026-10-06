@@ -344,6 +344,11 @@ impl RunningScrubWorker {
         }
     }
 
+    #[cfg(feature = "test-fixtures")]
+    pub(crate) fn is_joined(&self) -> bool {
+        self.thread.is_none()
+    }
+
     /// Requests cancellation and joins the worker. The observation names how
     /// the scrub ended; it carries no diagnostic detail.
     pub(crate) fn shutdown(&mut self) -> ScrubStopObservation {

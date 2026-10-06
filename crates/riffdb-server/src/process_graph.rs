@@ -1419,6 +1419,14 @@ impl RunningProductionGraph {
         let graph_started = Instant::now();
         let mut elapsed_us = [0_u64; PRODUCTION_SHUTDOWN_STAGE_COUNT];
         self.lifecycle.stop();
+        if let Some(worker) = &mut self.outbox_worker {
+            worker.shutdown();
+        }
+        // Maintenance has the same writer and reader owners as ordinary
+        // shutdown. Join them before draining the coordinator or declaring
+        // DrainComplete; field Drop after CLEAN is too late.
+        let _retention_stop = self.retention_lane.shutdown();
+        let _scrub_stop = self.scrub_worker.shutdown();
         let started = Instant::now();
         self.registration_worker.shutdown();
         self.spawner.wait_for_idle().await;
@@ -1463,6 +1471,14 @@ impl RunningProductionGraph {
             .expect("a running graph retains one coordinator")
             .shutdown()
             .err();
+        #[cfg(feature = "test-fixtures")]
+        recovery.verify_background_drain([
+            self.outbox_worker
+                .as_ref()
+                .is_none_or(crate::outbox_worker::RunningLocalOutbox::is_joined),
+            self.retention_lane.is_joined(),
+            self.scrub_worker.is_joined(),
+        ]);
         recovery.reached(
             crate::maintenance_recovery_controller::MaintenanceRecoveryBoundary::DrainComplete,
         );

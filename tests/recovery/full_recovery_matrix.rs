@@ -8,7 +8,7 @@ use std::fs::{self, File, OpenOptions};
 use std::future::Future;
 use std::io::{self, Write};
 use std::net::SocketAddr;
-use std::os::unix::fs::OpenOptionsExt;
+use std::os::unix::fs::{DirBuilderExt, OpenOptionsExt};
 use std::os::unix::process::ExitStatusExt;
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
@@ -203,8 +203,11 @@ fn main() -> ExitCode {
         std::env::args().any(|argument| argument == "--multi-database-recovery-only");
     let online_retention_only =
         std::env::args().any(|argument| argument == "--online-retention-only");
+    let maintenance_drain_only =
+        std::env::args().any(|argument| argument == "--maintenance-drain-only");
     if !multi_database_only
         && !online_retention_only
+        && !maintenance_drain_only
         && !std::env::args().any(|argument| argument == "--ignored")
     {
         println!("full_recovery_matrix: 10 ignored");
@@ -226,6 +229,10 @@ fn main() -> ExitCode {
         runtime.block_on(run_multi_database_staged_authorization_case())
     } else if online_retention_only {
         runtime.block_on(online_retention_daemon::run_online_retention_kill_case())
+    } else if maintenance_drain_only {
+        runtime.block_on(run_maintenance_daemon_case(
+            MaintenanceDaemonCrash::DrainComplete,
+        ))
     } else {
         runtime.block_on(run_matrix())
     };
@@ -235,6 +242,8 @@ fn main() -> ExitCode {
                 println!("full_recovery_matrix: multi-database recovery passed");
             } else if online_retention_only {
                 println!("full_recovery_matrix: online retention recovery passed");
+            } else if maintenance_drain_only {
+                println!("full_recovery_matrix: maintenance background drain recovery passed");
             } else {
                 println!("full_recovery_matrix: 10 passed");
             }
@@ -339,6 +348,7 @@ async fn run_bootstrap_retention_case(crash: BootstrapRetentionCrash) -> TestRes
     Ok(())
 }
 
+// req: END-003, END-008, STO-030, STO-032, REC-001
 async fn run_maintenance_daemon_case(crash: MaintenanceDaemonCrash) -> TestResult<()> {
     let fixture = ProcessFixture::new(crash.mode())?;
     let retained = fixture.retained_bootstrap()?;
@@ -364,11 +374,41 @@ async fn run_maintenance_daemon_case(crash: MaintenanceDaemonCrash) -> TestResul
     drop(seed_client);
     seed_process.shutdown_cleanly(SHUTDOWN_COMMAND, PROCESS_STOP_TIMEOUT)?;
 
-    let mut armed_process = fixture.spawn_riffdbd_with_mode(crash.mode(), "127.0.0.1:0")?;
+    let mut armed_process = if matches!(crash, MaintenanceDaemonCrash::DrainComplete) {
+        let archive = fixture._directory.path().join("local-outbox");
+        fs::DirBuilder::new().mode(0o700).create(&archive)?;
+        let document = format!(
+            "[maintenance.retention]\nretained_sequences = 4\nsequences_per_epoch = 2\n\
+             [maintenance.outbox]\nkind = 'durable_local'\ndirectory = '{}'\n\
+             quota_encoded_bytes = 1048576\n",
+            archive.display()
+        );
+        fs::write(&fixture.single_config, document)?;
+        let specification = fixture
+            .riffdbd_specification(crash.mode(), "127.0.0.1:0")?
+            .arg("--config")?
+            .arg(fixture.single_config.as_os_str())?;
+        ChildProcessController::spawn(&specification)?
+    } else {
+        fixture.spawn_riffdbd_with_mode(crash.mode(), "127.0.0.1:0")?
+    };
     let armed_address = parse_ready_address(
         &armed_process.wait_for_readiness(READY_PREFIX, PROCESS_START_TIMEOUT)?,
     )?;
     let mut armed_client = connect(armed_address).await?;
+    let drain_command = if matches!(crash, MaintenanceDaemonCrash::DrainComplete) {
+        Some(CreateBudget {
+            idempotency_key: "maintenance-background-drain-create".into(),
+            organization_id: ORGANIZATION_ID,
+            fiscal_year: FISCAL_YEAR,
+            approved_amount: amount(APPROVED_MINOR_UNITS)?,
+        })
+    } else {
+        None
+    };
+    if let Some(create) = &drain_command {
+        seed_create_budget(&mut armed_client, create, &authenticated).await?;
+    }
     let operation_id = generate_offline_maintenance_operation_id()?;
 
     if matches!(crash, MaintenanceDaemonCrash::StagedAuthorizationComplete) {
@@ -454,6 +494,51 @@ async fn run_maintenance_daemon_case(crash: MaintenanceDaemonCrash) -> TestResul
         )?;
         let mut ready_client = connect(address).await?;
         poll_terminal_maintenance(&mut ready_client, operation_id, &authenticated).await?;
+        if let Some(create) = &drain_command {
+            let replay = bounded_rpc(
+                "maintenance drain original command replay",
+                ready_client.execute_generated(create, one_attempt(), &authenticated),
+            )
+            .await?;
+            if replay.response().status
+                != v1::execute_command_response::CompletionStatus::Replayed as i32
+                || replay.response().commit_sequence != 1
+                || replay.response().provenance_uri.is_empty()
+                || replay.response().outcome_uri.is_none()
+                || !matches!(replay.outcome(), CreateBudgetOutcome::BudgetCreated { budget }
+                    if budget.allocated_amount.minor_units() == 0)
+            {
+                return Err(test_failure(
+                    "maintenance drain changed the original command outcome",
+                ));
+            }
+            let allocate = AllocateBudget {
+                idempotency_key: "maintenance-background-drain-allocate".into(),
+                organization_id: ORGANIZATION_ID,
+                fiscal_year: FISCAL_YEAR,
+                matter_id: MATTER_ID,
+                amount: amount(ALLOCATED_MINOR_UNITS)?,
+            };
+            let committed = bounded_rpc(
+                "maintenance drain first successful write",
+                ready_client.execute_generated(&allocate, one_attempt(), &authenticated),
+            )
+            .await?;
+            if committed.response().status
+                != v1::execute_command_response::CompletionStatus::Committed as i32
+                || committed.response().commit_sequence != 2
+            {
+                return Err(test_failure(
+                    "maintenance drain could not commit its next command",
+                ));
+            }
+            let replay = bounded_rpc(
+                "maintenance drain new command replay",
+                ready_client.execute_generated(&allocate, one_attempt(), &authenticated),
+            )
+            .await?;
+            assert_replayed_allocate(replay.response(), &allocate)?;
+        }
         drop(ready_client);
         restarted.shutdown_cleanly(SHUTDOWN_COMMAND, PROCESS_STOP_TIMEOUT)?;
     }

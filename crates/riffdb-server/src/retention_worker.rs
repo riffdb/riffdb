@@ -493,6 +493,11 @@ impl RunningRetentionLane {
         self.control.wake();
     }
 
+    #[cfg(feature = "test-fixtures")]
+    pub(crate) fn is_joined(&self) -> bool {
+        self.thread.is_none()
+    }
+
     /// Requests cancellation and joins the lane. A step in progress finishes
     /// (it is one atomic transition); no further step starts.
     pub(crate) fn shutdown(&mut self) -> RetentionLaneState {
