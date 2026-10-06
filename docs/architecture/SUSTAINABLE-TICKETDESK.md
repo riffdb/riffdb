@@ -1071,13 +1071,19 @@ production scheduling regression passes after failing on the preceding policy.
 The deterministic rest test covers complete phase accounting, exclusion of
 queue waits, idle backoff and cancellation before every rest duration. Public
 health labels, checkpoint waits, safety checks and deletion bounds are unchanged.
-Scoped acceptance, full CI and unchanged required-host preparation remain
-required before this repair can support milestone closure.
+All nine scoped checks pass, including 632 server tests with eight existing
+skips. Full CI passes at native revision `6a6128fb`, including conformance and
+the final source-installation check. The first CI attempt stopped because its
+environment omitted the pinned TypeScript compiler from `PATH`; that attempt
+is preserved. Repeating the complete battery with the repository's locked
+TypeScript 7.0.2 compiler passes on unchanged source. A fresh required-host
+900-second consumer-outage preparation has started with the exact verified
+native binaries. Its result remains pending and cannot support closure yet.
 
 PR note: Package WP-825 (open); Tier guarantee; Behavior: actual committed source
 deletion receives progress rechecks with unchanged gate rest; Checks: native
-scheduling, rest and worker lifecycle tests, followed by scoped acceptance and
-full CI; Compatibility: unchanged public controls, formats, ordering, holds,
+scheduling, rest and worker lifecycle tests, nine scoped checks and full CI at
+`6a6128fb`; Compatibility: unchanged public controls, formats, ordering, holds,
 checkpoint evidence and durability; Updated handbook: this handoff;
 Hazards/follow-ups: required-host latency and all remaining campaign gates must
 still pass. This repair does not qualify a rehearsal or start the 24-hour run.
