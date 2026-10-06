@@ -44,6 +44,8 @@ mod current_reactive;
 mod deployment;
 #[path = "../lifecycle_workload/model.rs"]
 mod model;
+#[path = "../lifecycle_workload/native_observer.rs"]
+mod native_observer;
 #[path = "../lifecycle_workload/observe.rs"]
 mod observe;
 #[path = "../lifecycle_workload/probe.rs"]
@@ -67,6 +69,7 @@ async fn main() {
         Some("probe") => probe::run().await,
         Some("descriptor") => descriptor(),
         Some("observe") => observe::run().await,
+        Some("native-observer") => native_observer::run().await,
         Some("successor-smoke") => current::smoke().await,
         Some("recovery-smoke") => recovery::smoke().await,
         Some("archive-reconcile") => archive::run(),

@@ -59,6 +59,16 @@ use crate::store::{RedbOperationalPorts, SharedRedb};
 pub struct RedbSharedPorts(Arc<SharedRedb>);
 
 impl RedbSharedPorts {
+    /// Current count of every undelivered intent, including claims, scheduled
+    /// retries and dead letters. Delivered intents are excluded. This reads
+    /// only the existing commit-coupled index; it never rebuilds, scans, drains,
+    /// changes a hold or supplies deletion authority. Unknown index state is
+    /// unavailable, never a zero observation.
+    #[doc(hidden)]
+    pub fn pending_outbox_delivery_count(&self) -> Result<u64, StorageError> {
+        self.operational().pending_outbox_delivery_count()
+    }
+
     /// Graph-owned attempt count, sum and maximum microseconds for each closed
     /// outbox writer stage. Concurrent samples are diagnostic, not atomic
     /// completion receipts. Begin-held includes the other begin stages.

@@ -17,6 +17,7 @@ impl ProductionOperationalStatusPort {
         driver: &BlockingPortDriver,
     ) -> ReplicationOperationalStatus {
         let base = self.clone();
+        let outbox_storage = self.vector_storage.clone();
         let source = publications.clone();
         let health = driver.executor(move |()| {
             let snapshot = required_health_snapshot(
@@ -73,15 +74,28 @@ impl ProductionOperationalStatusPort {
             )
         });
         let statistics = driver.executor(move |()| {
-            // Preserve the existing stopped-cache refusal, then use a single
-            // durable publication for both local head and replication counters.
+            // Preserve the existing stopped-cache refusal and use one durable
+            // publication for local head and replication counters. Outbox
+            // cardinality is a separate current committed-index observation;
+            // it is not labeled as a count at the earlier publication frontier.
             self.notifications
                 .latest_sequence()
                 .map_err(map_notification_status_error)?;
             let (progress, _) = observe(publications.as_ref())?;
+            let pending_outbox = outbox_storage
+                .as_ref()
+                .map(|storage| storage.pending_outbox_delivery_count())
+                .transpose();
+            let pending_outbox = match pending_outbox {
+                Ok(count) => count,
+                Err(error) if error.kind() == riffdb_storage_api::StorageErrorKind::Unavailable => {
+                    None
+                }
+                Err(_) => return Err(OperationalStatusError::Integrity),
+            };
             Ok(OperationalStatisticsSnapshot::new(
                 progress.applied_frontier().application(),
-                None,
+                pending_outbox,
                 None,
             )
             .with_replication(progress))
@@ -139,6 +153,10 @@ impl OperationalStatusPort for ReplicationOperationalStatus {
         Box::pin(self.statistics.reserve_async(control))
     }
 }
+
+#[cfg(test)]
+#[path = "replication_operational_status_tests.rs"]
+mod native_tests;
 
 #[cfg(test)]
 mod tests {

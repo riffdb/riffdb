@@ -118,6 +118,47 @@ of action and artifact identities, and tests of that producer. No receipt is
 eligible for WP-826 closure until those producer checks and every prerequisite
 have passed. No campaign receipt is included in this change.
 
+### Native observation preparation
+
+WP-825 adds a persistent Rust `lifecycle native-observer` worker that uses the
+existing verified TLS client and an operator credential. Its closed stdin
+protocol accepts only `sample 1`, `sample 2`, or `stop`, each followed by a
+newline. A sample performs one health, statistics and one-row projection call
+sequentially in one auxiliary slot, with no retries and a five-second total
+deadline. Output contains numeric measurements and the exact projection plan
+identity, with no event payloads, credentials or process identifiers. The worker
+refuses missing counters, changed incarnations, unavailable projections and
+substituted plan/frontier identity. It remains preparation code until integrated
+and measured with the final campaign controller.
+
+The production statistics provider previously always omitted delivery counts.
+It now reads the cardinality of the existing validated, commit-coupled
+undelivered index on its bounded read worker. Claims, retries and dead letters
+remain counted; delivery completion removes membership. Unbuilt or degraded
+membership remains unavailable. This adds no durable record, population walk,
+writer, deletion authority or authorization exception. See
+[live delivery counts](../operations/LOCAL-OUTBOX-ARCHIVE.md#live-delivery-counts).
+
+The owned-process collector verifies all thread child lists against an exact
+tree of named persistent owners. It refuses untracked children, replacement,
+disconnected ownership and missing memory measurements. It records current
+RSS/address space and per-incarnation lifetime high-water marks; the sum of
+lifetime peaks is a conservative upper bound, not a simultaneous measured peak.
+Transient descendants between censuses still require launch/exit accounting.
+These collector tests do not establish the campaign resource-model check.
+
+Package: WP-825, open. Tier: guarantee under accepted ADR-0265 decision 11.
+Behavior: native delivery-count observation and preparatory public-client/process
+collection. Compatibility: existing statistics fields and capability checks;
+durable formats and command ordering are unchanged. Checks: 88 lifecycle
+checker tests, native mixed-state/reopen and completion tests, a deterministic
+durable-but-unpublished event schedule, and scoped Clippy pass. Final source
+acceptance, full CI and actual observer host integration remain required; no
+qualifying rehearsal is claimed.
+Updated handbook pages: this handoff and local archive operations. Follow-ups:
+integrate the observer, inventory transient lifecycle processes, measure eligible
+history bytes, and complete all seven fault paths with six final fault-free hours.
+
 ## Current handoff
 
 Package: WP-821; tier: guarantee. This preparation adds accepted decisions,

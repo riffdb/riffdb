@@ -18,6 +18,10 @@ MAX_STATUS_BYTES = 65536
 MAX_STAT_BYTES = 8192
 MAX_U64 = 2**64 - 1
 MAX_PREPARATION_SAMPLE_SECONDS = 1500
+MAX_OWNED_THREADS = 512
+MAX_OWNED_PROCESSES = 8
+OWNED_ROLES = frozenset({"controller", "server", "load", "observer", "native_sampler",
+                         "typescript_driver", "operator"})
 
 
 class ResourceError(ValueError):
@@ -88,6 +92,59 @@ def memory(encoded, expected_pid):
             "allocator_basis": ALLOCATOR_BASIS}
 
 
+def memory_peaks(encoded, current):
+    selected = {}
+    for line in encoded.splitlines():
+        key, separator, value = line.partition(b":")
+        if key not in (b"VmHWM", b"VmPeak"):
+            continue
+        require(separator and key not in selected, "resource_measurement")
+        fields = value.split()
+        require(len(fields) == 2 and fields[1] == b"kB", "resource_measurement")
+        selected[key] = number(fields[0]) * 1024
+    require(selected.keys() == {b"VmHWM", b"VmPeak"}, "resource_measurement")
+    rss, virtual = selected[b"VmHWM"], selected[b"VmPeak"]
+    require(current["rss_bytes"] <= rss <= virtual <= MAX_U64
+            and current["allocator_bytes"] <= virtual, "resource_measurement")
+    return {"rss_peak_bytes": rss, "allocator_peak_bytes": virtual}
+
+
+def thread_children(directory):
+    """Inspect every bounded task, since children belong to the spawning thread."""
+    task = os.open("task", os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=directory)
+    try:
+        children = set()
+        count = 0
+        with os.scandir(task) as entries:
+            for entry in entries:
+                count += 1
+                require(count <= MAX_OWNED_THREADS, "resource_process_inventory")
+                tid = number(entry.name.encode())
+                require(0 < tid <= 2**31 - 1, "resource_process_inventory")
+                thread = os.open(entry.name, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW,
+                                 dir_fd=task)
+                try:
+                    descriptor = os.open("children", os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK,
+                                         dir_fd=thread)
+                    with os.fdopen(descriptor, "rb") as source:
+                        require(stat.S_ISREG(os.fstat(source.fileno()).st_mode),
+                                "resource_process_inventory")
+                        encoded = source.read(MAX_STAT_BYTES + 1)
+                    require(len(encoded) <= MAX_STAT_BYTES, "resource_process_inventory")
+                    for field in encoded.split():
+                        pid = number(field)
+                        require(0 < pid <= 2**31 - 1 and pid not in children
+                                and len(children) < MAX_OWNED_PROCESSES,
+                                "resource_process_inventory")
+                        children.add(pid)
+                finally:
+                    os.close(thread)
+        require(count > 0, "resource_process_inventory")
+        return children
+    finally:
+        os.close(task)
+
+
 class ProcessMemory:
     """One owned process incarnation; replacement needs a separate owner.
 
@@ -101,6 +158,7 @@ class ProcessMemory:
         self.pid = pid
         self.root = Path(proc_root)
         self.start = None
+        self.peaks = None
 
     def sample(self):
         descriptor = None
@@ -119,6 +177,89 @@ class ProcessMemory:
         finally:
             if descriptor is not None:
                 os.close(descriptor)
+
+    def tree_sample(self):
+        """Bracket memory with task-child and process-incarnation observations."""
+        directory = None
+        try:
+            directory = os.open(self.root / str(self.pid),
+                                os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+            before = identity(read_bounded(directory, "stat", MAX_STAT_BYTES), self.pid)
+            require(self.start is None or before == self.start, "resource_process_identity")
+            children = thread_children(directory)
+            encoded = read_bounded(directory, "status", MAX_STATUS_BYTES)
+            current = memory(encoded, self.pid)
+            value = dict(current, **memory_peaks(encoded, current))
+            peaks = (value["rss_peak_bytes"], value["allocator_peak_bytes"])
+            require(self.peaks is None or all(current >= previous for current, previous
+                    in zip(peaks, self.peaks)), "resource_measurement")
+            require(children == thread_children(directory), "resource_process_inventory")
+            require(before == identity(read_bounded(directory, "stat", MAX_STAT_BYTES), self.pid),
+                    "resource_process_identity")
+            self.start = before
+            self.peaks = peaks
+            return value, children
+        except OSError as error:
+            raise ResourceError("resource_process_unavailable") from error
+        finally:
+            if directory is not None:
+                os.close(directory)
+
+
+class OwnedProcessMemory:
+    """Known persistent owners, with an exact descendant census at each sample.
+
+    This refuses untracked CLI children. Lifetime high-water observations cover
+    peaks of the inventoried live incarnations; their sum is conservative rather
+    than a claim that each peak occurred simultaneously. Transient descendants
+    between censuses still require an independent launch/exit inventory. This
+    collector alone never establishes the campaign resource-model check.
+    """
+
+    def __init__(self, pids, *, proc_root=Path("/proc")):
+        require(type(pids) is dict and {"controller", "server", "load", "observer"} <= pids.keys()
+                and pids.keys() <= OWNED_ROLES and len(pids) <= MAX_OWNED_PROCESSES,
+                "resource_process_inventory")
+        require(all(type(pid) is int for pid in pids.values())
+                and len(set(pids.values())) == len(pids), "resource_process_inventory")
+        self.controller = pids["controller"]
+        self.owners = {role: ProcessMemory(pid, proc_root=proc_root) for role, pid in pids.items()}
+
+    def sample(self, elapsed_ns):
+        require(type(elapsed_ns) is int and 0 <= elapsed_ns <= MAX_U64, "resource_measurement")
+        values, edges = {}, {}
+        known = {owner.pid for owner in self.owners.values()}
+        fields = ("rss_bytes", "allocator_bytes", "rss_peak_bytes", "allocator_peak_bytes")
+        for role, owner in self.owners.items():
+            sample, children = owner.tree_sample()
+            require(children <= known and owner.pid not in children, "resource_process_inventory")
+            edges[owner.pid] = children
+            values[role] = {name: sample[name] for name in fields}
+        # Every non-root belongs to exactly one owner, and all owners connect
+        # to the controller. A disconnected cycle must not look like a tree.
+        parents = [pid for children in edges.values() for pid in children]
+        require(len(parents) == len(set(parents))
+                and set(parents) == known - {self.controller}, "resource_process_inventory")
+        reached, pending = set(), [self.controller]
+        while pending:
+            current = pending.pop()
+            require(current not in reached, "resource_process_inventory")
+            reached.add(current)
+            pending.extend(edges[current])
+        require(reached == known, "resource_process_inventory")
+        for role, owner in self.owners.items():
+            later, children = owner.tree_sample()
+            require(children == edges[owner.pid], "resource_process_inventory")
+            for name in ("rss_peak_bytes", "allocator_peak_bytes"):
+                values[role][name] = max(values[role][name], later[name])
+        totals = {name: sum(value[name] for value in values.values()) for name in fields}
+        require(all(value <= MAX_U64 for value in totals.values()), "resource_measurement")
+        return {"schema": "riffdb.ticketdesk-lifecycle-owned-memory/v1", "elapsed_ns": elapsed_ns,
+                "allocator_basis": ALLOCATOR_BASIS,
+                "scope": "verified_owned_descendant_tree_at_sample", "processes": values,
+                "rss_bytes": totals["rss_bytes"], "allocator_bytes": totals["allocator_bytes"],
+                "rss_peak_upper_bound_bytes": totals["rss_peak_bytes"],
+                "allocator_peak_upper_bound_bytes": totals["allocator_peak_bytes"]}
 
 
 class PersistentProcessMemory:

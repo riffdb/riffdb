@@ -55,6 +55,13 @@ fn complete_group(
 fn outbox_completion_group_preserves_exact_status_cas_and_atomic_receipt() {
     let (_path, mut ports) = operational("outbox-completion-group");
     let transitions = claimed_successes(&mut ports, 16);
+    assert_eq!(
+        ports
+            .shared_ports()
+            .pending_outbox_delivery_count()
+            .unwrap(),
+        16
+    );
     let before = ports.shared.outbox_stage_census.snapshot()[7][0];
     let prior_history = history(&ports);
     let results = complete_group(&mut ports, transitions.clone());
@@ -72,6 +79,13 @@ fn outbox_completion_group_preserves_exact_status_cas_and_atomic_receipt() {
         );
     }
     assert!(!ports.has_undelivered_outbox().unwrap());
+    assert_eq!(
+        ports
+            .shared_ports()
+            .pending_outbox_delivery_count()
+            .unwrap(),
+        0
+    );
     let next_history = history(&ports);
     assert_eq!(
         next_history.tail().sequence().get(),
@@ -127,6 +141,13 @@ fn outbox_completion_group_preserves_exact_status_cas_and_atomic_receipt() {
             .all(|result| matches!(result, OutboxTransitionResultV1::StateChanged(_)))
     );
     assert_eq!(history(&ports), next_history);
+    assert_eq!(
+        ports
+            .shared_ports()
+            .pending_outbox_delivery_count()
+            .unwrap(),
+        0
+    );
     assert_eq!(
         ports.shared.outbox_stage_census.snapshot()[7][0] - before,
         1

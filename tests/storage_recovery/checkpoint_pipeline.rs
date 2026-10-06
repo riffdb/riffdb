@@ -1,5 +1,5 @@
 //! Real journal, materializer and ordered-publication schedules for WP-810.
-// req: STO-001, STO-002, REC-001, REC-002
+// req: STO-001, STO-002, REC-001, REC-002, END-007, END-008
 
 use super::*;
 use riffdb_storage_redb::RedbCheckpointTestPoint as Point;
@@ -64,6 +64,13 @@ fn checkpoint_materialization_allows_pipeline_but_installation_requires_publicat
     );
     assert!(command_audit_phases(&ports).is_empty()); // warm before the mutation lease
     seal(&ports, 1).wait().expect("publish checkpoint source");
+    assert_eq!(
+        ports
+            .shared_ports()
+            .pending_outbox_delivery_count()
+            .unwrap(),
+        1
+    );
 
     schedule.arm(Point::BeforeMaterialization);
     schedule.arm(Point::Materialized);
@@ -88,6 +95,13 @@ fn checkpoint_materialization_allows_pipeline_but_installation_requires_publicat
             .is_none()
     );
     assert_visible(&ports, 2, false);
+    assert_eq!(
+        ports
+            .shared_ports()
+            .pending_outbox_delivery_count()
+            .unwrap(),
+        1
+    );
 
     // A second real group can be staged on the private frontier while both the
     // checkpoint and its predecessor's durability are independently paused.
@@ -110,6 +124,14 @@ fn checkpoint_materialization_allows_pipeline_but_installation_requires_publicat
     // Durability alone cannot release a result, entity, event or outcome.
     assert_visible(&ports, 2, false);
     assert_visible(&ports, 3, false);
+    assert_eq!(
+        ports
+            .shared_ports()
+            .pending_outbox_delivery_count()
+            .unwrap(),
+        1,
+        "a synced but unpublished event cannot inflate delivery backlog"
+    );
     assert!(matches!(
         completion.try_recv(),
         Err(mpsc::TryRecvError::Empty)
@@ -122,6 +144,13 @@ fn checkpoint_materialization_allows_pipeline_but_installation_requires_publicat
     publisher.join().expect("publisher joins");
     assert_visible(&ports, 2, true);
     assert_visible(&ports, 3, false);
+    assert_eq!(
+        ports
+            .shared_ports()
+            .pending_outbox_delivery_count()
+            .unwrap(),
+        2
+    );
 
     schedule.release(Point::BeforeMaterialization);
     schedule.wait(Point::Materialized);

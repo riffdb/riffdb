@@ -242,6 +242,12 @@ impl TransientIndexes {
         page_event_index(self.undelivered_outbox.as_ref()?, after, limit)
     }
 
+    /// Cardinality of commit-coupled undelivered membership, without a scan.
+    /// Missing/degraded membership remains unknown rather than zero.
+    pub(crate) fn undelivered_outbox_count(&self) -> Option<u64> {
+        u64::try_from(self.undelivered_outbox.as_ref()?.len()).ok()
+    }
+
     pub(crate) fn pending_outbox_page(
         &self,
         after: Option<EventId>,

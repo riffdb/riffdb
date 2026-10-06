@@ -7,6 +7,23 @@ use riffdb_storage_api::{
 };
 
 impl RedbOperationalPorts {
+    pub(crate) fn pending_outbox_delivery_count(&self) -> Result<u64, StorageError> {
+        let _lease = self.acquire_indexed_read_lease()?;
+        let indexes = self
+            .shared
+            .transient_indexes
+            .read()
+            .map_err(|_| storage_error(StorageErrorKind::InvariantViolation))?;
+        match &*indexes {
+            TransientIndexState::Ready(indexes) => indexes
+                .undelivered_outbox_count()
+                .ok_or_else(|| storage_error(StorageErrorKind::Unavailable)),
+            TransientIndexState::Dormant | TransientIndexState::Invalid => {
+                Err(storage_error(StorageErrorKind::Unavailable))
+            }
+        }
+    }
+
     fn with_command_indexes<T>(
         &self,
         required: bool,
@@ -286,6 +303,50 @@ thread_local! { static PAYLOAD_PIN_CAPTURES: std::cell::Cell<usize> = const { st
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // req: END-007, END-008
+    #[test]
+    fn delivery_cardinality_never_rebuilds_or_turns_an_unknown_index_into_zero() {
+        let directory = crate::test_path::ScopedDirectory::new("outbox-count-only");
+        let store = RedbStore::open(directory.join("db.redb")).unwrap();
+        let ports = RedbOperationalPorts {
+            shared: store.shared,
+        };
+        assert_eq!(
+            ports
+                .shared_ports()
+                .pending_outbox_delivery_count()
+                .unwrap_err()
+                .kind(),
+            StorageErrorKind::Unavailable
+        );
+        assert!(matches!(
+            *ports.shared.transient_indexes.read().unwrap(),
+            TransientIndexState::Dormant
+        ));
+        *ports.shared.transient_indexes.write().unwrap() =
+            TransientIndexState::Ready(TransientIndexes::default());
+        assert_eq!(
+            ports
+                .shared_ports()
+                .pending_outbox_delivery_count()
+                .unwrap(),
+            0
+        );
+        *ports.shared.transient_indexes.write().unwrap() = TransientIndexState::Invalid;
+        assert_eq!(
+            ports
+                .shared_ports()
+                .pending_outbox_delivery_count()
+                .unwrap_err()
+                .kind(),
+            StorageErrorKind::Unavailable
+        );
+        assert!(matches!(
+            *ports.shared.transient_indexes.read().unwrap(),
+            TransientIndexState::Invalid
+        ));
+    }
 
     // req: REP-002, OUT-001
     #[test]

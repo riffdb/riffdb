@@ -2370,6 +2370,7 @@ contract Recovery version 1 {
         );
     }
 
+    // req: END-007, END-008
     #[test]
     fn outbox_accelerators_rebuild_every_undelivered_state_after_reopen() {
         let (path, mut ports) = operational("outbox-index-rebuild");
@@ -2378,6 +2379,13 @@ contract Recovery version 1 {
             .iter()
             .map(StoredDurableEventV1::event_id)
             .collect::<Vec<_>>();
+        assert_eq!(
+            ports
+                .shared_ports()
+                .pending_outbox_delivery_count()
+                .unwrap(),
+            5
+        );
         let claim = |event_id, started, deadline| {
             OutboxClaimV1::new(
                 event_id,
@@ -2401,6 +2409,13 @@ contract Recovery version 1 {
                 .expect("success result"),
             OutboxTransitionResultV1::Applied(_)
         ));
+        assert_eq!(
+            ports
+                .shared_ports()
+                .pending_outbox_delivery_count()
+                .unwrap(),
+            4
+        );
         assert!(matches!(
             ports
                 .claim_outbox(&claim(event_ids[1], 30, 40))
@@ -2476,8 +2491,16 @@ contract Recovery version 1 {
             event_ids[1..].to_vec()
         );
         assert_eq!(undelivered.continuation(), None);
+        assert_eq!(
+            reopened
+                .shared_ports()
+                .pending_outbox_delivery_count()
+                .unwrap(),
+            4
+        );
     }
 
+    // req: END-007, END-008
     #[test]
     fn malformed_delivery_status_degrades_outbox_without_blocking_core_activation() {
         let (path, ports) = operational("outbox-index-degraded");
@@ -2517,6 +2540,14 @@ contract Recovery version 1 {
             reopened
                 .scan_pending_outbox(None, limit)
                 .expect_err("degraded outbox index is unavailable")
+                .kind(),
+            StorageErrorKind::Unavailable
+        );
+        assert_eq!(
+            reopened
+                .shared_ports()
+                .pending_outbox_delivery_count()
+                .unwrap_err()
                 .kind(),
             StorageErrorKind::Unavailable
         );

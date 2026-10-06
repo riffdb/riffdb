@@ -109,6 +109,11 @@ pub(crate) struct SharedRedbOperationalPorts {
 }
 
 impl SharedRedbOperationalPorts {
+    /// Sample committed undelivered membership without rebuilding or scanning.
+    pub(crate) fn pending_outbox_delivery_count(&self) -> Result<u64, StorageError> {
+        self.shared.pending_outbox_delivery_count()
+    }
+
     /// Wraps the exact activated port bundle released by staged startup.
     #[allow(
         dead_code,
