@@ -11,6 +11,77 @@ use riffdb_types::{DatabaseId, DigestKeyId, IncidentId, Timestamp};
 
 // req: STO-030, STO-031, END-008
 #[test]
+fn completed_source_deletion_is_progress_even_when_logical_retention_is_idle() {
+    let idle = OnlineRetentionPhases::default();
+    assert_eq!(idle_recheck_pause(&idle), RETENTION_LANE_RECHECK);
+    let validating = OnlineRetentionPhases {
+        receipt_validation_pending: true,
+        ..OnlineRetentionPhases::default()
+    };
+    assert_eq!(idle_recheck_pause(&validating), Duration::ZERO);
+    // These are actual removed receipts in the production phase type, not a
+    // planning ceiling or a fabricated pending-validation flag. The separate
+    // writer-residence rest remains mandatory after this progress.
+    for removed in [1, 256] {
+        let progressed = OnlineRetentionPhases {
+            reclaimed_receipts: removed,
+            receipt_gate_us: 1_000,
+            ..OnlineRetentionPhases::default()
+        };
+        assert_eq!(progressed.gate_held_us(), 1_000);
+        assert_eq!(idle_recheck_pause(&progressed), Duration::ZERO);
+    }
+}
+
+// req: STO-030, STO-031, END-008
+#[test]
+fn source_progress_rechecks_preserve_gate_rest_and_idle_backoff() {
+    let phases = OnlineRetentionPhases {
+        reclaimed_receipts: 256,
+        receipt_gate_us: 17,
+        prefix_gate_us: 23,
+        drain_us: 5,
+        plan_us: 7,
+        digest_us: 11,
+        materialize_us: 13,
+        delete_us: 19,
+        commit_us: 29,
+        gate_wait_us: 100_000,
+        source_admission_census: [1, 1, 0, 0, 0, 100_000, 17, 0],
+        ..OnlineRetentionPhases::default()
+    };
+    // The complete native residence is charged once. Neither ordinary nor
+    // source queue waits add budget or replace residence with a deadline.
+    assert_eq!(phases.gate_held_us(), 124);
+    assert_eq!(
+        gate_residence_rest(Duration::from_micros(phases.gate_held_us())),
+        Duration::from_micros(2_356)
+    );
+    assert_eq!(gate_residence_rest(Duration::ZERO), Duration::ZERO);
+    for held in [
+        Duration::from_secs(1),
+        Duration::from_secs(2),
+        Duration::MAX,
+    ] {
+        assert_eq!(gate_residence_rest(held), Duration::from_secs(19));
+    }
+    let idle = OnlineRetentionPhases::default();
+    assert_eq!(idle_recheck_pause(&idle), Duration::from_secs(1));
+    let control = LaneControl::default();
+    control.stop();
+    for pause in [
+        Duration::ZERO,
+        Duration::from_micros(2_356),
+        Duration::from_secs(19),
+    ] {
+        assert!(control.pause(pause), "stop cancels every rest policy");
+    }
+    assert!(control.stop_requested());
+    assert!(control.cancellation.load(Ordering::Acquire));
+}
+
+// req: STO-030, STO-031, END-008
+#[test]
 fn source_ceiling_samples_preserve_measurement_age_instead_of_summing_fences() {
     let status = RetentionLaneStatus::new(RetentionLaneState::Idle);
     let first = [1, 50, 40, 20, 30, 20, 1, 3];

@@ -493,6 +493,20 @@ impl Drop for SourceOwnerRetirement<'_> {
     }
 }
 
+fn idle_recheck_pause(phases: &OnlineRetentionPhases) -> Duration {
+    if phases.receipt_validation_pending {
+        Duration::ZERO
+    } else {
+        RETENTION_LANE_RECHECK
+    }
+}
+
+fn gate_residence_rest(gate_held: Duration) -> Duration {
+    gate_held
+        .saturating_mul(RETENTION_LANE_REST_FACTOR)
+        .min(RETENTION_LANE_RECHECK.saturating_mul(RETENTION_LANE_REST_FACTOR))
+}
+
 fn run_lane(
     lane: &RedbOnlineRetentionLane,
     retain: NonZeroU64,
@@ -544,21 +558,13 @@ fn run_lane(
                         status.note_hold(0);
                         status.note_fence(None);
                         status.set(RetentionLaneState::Idle);
-                        if receipt_validation_pending {
-                            Duration::ZERO
-                        } else {
-                            RETENTION_LANE_RECHECK
-                        }
+                        idle_recheck_pause(&phases)
                     }
                     OnlineRetentionStep::Held(OnlineRetentionHold::Fenced(binding)) => {
                         status.note_hold(1);
                         status.note_fence(Some(binding));
                         status.set(RetentionLaneState::Fenced);
-                        if receipt_validation_pending {
-                            Duration::ZERO
-                        } else {
-                            RETENTION_LANE_RECHECK
-                        }
+                        idle_recheck_pause(&phases)
                     }
                 };
                 (pause, Duration::from_micros(phases.gate_held_us()))
@@ -631,9 +637,7 @@ fn run_lane(
         }
         // Rest in proportion to the time the attempt held the writer gate,
         // never less than the outcome's own recheck interval.
-        let rest = gate_held
-            .saturating_mul(RETENTION_LANE_REST_FACTOR)
-            .min(RETENTION_LANE_RECHECK.saturating_mul(RETENTION_LANE_REST_FACTOR));
+        let rest = gate_residence_rest(gate_held);
         if await_checkpoint && rest.is_zero() {
             // Step right after the next journal checkpoint, while its suffix
             // is nearly empty; look for shutdown between short waits.
