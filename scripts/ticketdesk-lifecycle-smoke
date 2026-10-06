@@ -23,6 +23,7 @@ from lib.ticketdesk_lifecycle_inventory import InventoryError, InventoryMonitor
 from lib.ticketdesk_lifecycle_faults import FaultError, LocalArchiveOutage
 from lib.ticketdesk_lifecycle_observations import ObservationError, health_head, projection_backlog
 from lib.ticketdesk_lifecycle_provider_budget import ProviderBudgetError, ProviderLog
+from lib.ticketdesk_lifecycle_native_observer import NativeObserverProcess, NativeObservationError
 from lib.ticketdesk_lifecycle_resources import (
     MAX_PREPARATION_SAMPLE_SECONDS, ResourceError, PreparationMemorySamples,
 )
@@ -454,7 +455,7 @@ class ProjectionSampler:
                         self.coverage[elapsed_ns // 300000000000] += 1
                     index += 1
                     self.stopped.wait(5)
-        except (SmokeError, ObservationError, OSError, ValueError, TypeError, KeyError,
+        except (SmokeError, NativeObservationError, ObservationError, OSError, ValueError, TypeError, KeyError,
                 subprocess.SubprocessError):
             self.errors.put_nowait("projection_sample_failed")
 
@@ -470,6 +471,32 @@ class ProjectionSampler:
 
     def validate_coverage(self):
         require(all(count > 0 for count in self.coverage), "projection_sample_coverage")
+
+
+
+class NativeProjectionSampler(ProjectionSampler):
+    """Same reserved slot, with a persistent native child instead of query CLI children."""
+
+    def __init__(self, root, worker, environment, identity, duration):
+        require(type(duration) is int and 1 <= duration <= 86400, "projection_sample_bound")
+        self.root, self.identity, self.duration = root, identity, duration
+        self.coverage = [0] * ((duration + 299) // 300)
+        self.stopped = threading.Event()
+        self.errors = queue.Queue(maxsize=1)
+        self.thread = None
+        self.native = NativeObserverProcess(root, [worker, "native-observer"], environment,
+            {"projection_id": identity["projection_id"], "projection_plan_hash": identity["projection_plan_hash"]})
+
+    def sample(self, index, elapsed_ns):
+        value = self.native.sample(elapsed_ns)
+        require(value["index"] == index, "native_sample_continuity")
+        return value
+
+    def stop(self):
+        try:
+            super().stop()
+        finally:
+            self.native.close(failed=not self.errors.empty())
 
 
 def observed_load(root, worker, environment, duration, observer, latest, consumer_outage, *, sink=None,
@@ -508,9 +535,11 @@ def observed_load(root, worker, environment, duration, observer, latest, consume
                         started = time.monotonic()
                         if server is not None:
                             require(observer is not None, "resource_process_inventory")
-                            memory = PreparationMemorySamples(root, {
-                                "controller": os.getpid(), "server": server.pid,
-                                "load": process.pid, "observer": observer.pid}, duration)
+                            owners = {"controller": os.getpid(), "server": server.pid,
+                                      "load": process.pid, "observer": observer.pid}
+                            if isinstance(projection, NativeProjectionSampler):
+                                owners["native_sampler"] = projection.native.process.pid
+                            memory = PreparationMemorySamples(root, owners, duration)
                             memory.__enter__()
                             providers = ProviderLog(root, duration)
                             providers.__enter__()
@@ -759,10 +788,14 @@ def main():
                         help="time a five-minute consumer pause in an observed preparation of 900 or 1500 seconds")
     parser.add_argument("--sink-outage", action="store_true",
                         help="deny archive access for five minutes under an observed load of 900 or 1500 seconds")
+    parser.add_argument("--native-observations", action="store_true",
+                        help="use one persistent Rust health/statistics/projection sampler during population preparation")
     parser.add_argument("--driver", type=Path, help="also exercise retained TypeScript bindings through native Rust driver")
     parser.add_argument("--population-probe-seconds", type=int, default=0,
                         help="fresh 65536-ticket load preparation; never a campaign receipt")
     args = parser.parse_args()
+    require(not args.native_observations or args.population_probe_seconds and args.observe,
+            "native_sample_mode")
     outage_mode = args.consumer_outage or args.sink_outage
     outage_durations = (900, MAX_PREPARATION_SAMPLE_SECONDS)
     require(not (args.consumer_outage and args.sink_outage), "separate_outage_preparations")
@@ -861,7 +894,7 @@ tls_server_name = "127.0.0.1"
                       "validate_contract", "read_contract", "deploy_contract")] + [
                       {"type": "query_projection", "contract_lineage": "TicketDeskLifecycle",
                        "stable_id": descriptor["projection_id"]}] + [
-                      {"type": permission} for permission in ("read_health", "create_capability",
+                      {"type": permission} for permission in ("read_health", "read_statistics", "create_capability",
                                                                "revoke_capability", "administer_capabilities")] + [
                       {"type": "seek_event_stream_consumer", "contract_lineage": "TicketDeskLifecycle",
                        "reactive_module_hash": module, "operation_name": "TicketEvents"}
@@ -900,7 +933,8 @@ tls_server_name = "127.0.0.1"
                 RIFFDB_LIFECYCLE_ENDPOINT=f"https://127.0.0.1:{port}",
                 RIFFDB_LIFECYCLE_CA=str(root / "ca.pem"),
                 RIFFDB_LIFECYCLE_SEED_CREDENTIAL=str(root / "seed.credential"),
-                RIFFDB_LIFECYCLE_APPLICATION_CREDENTIAL=str(root / "application.credential"))
+                RIFFDB_LIFECYCLE_APPLICATION_CREDENTIAL=str(root / "application.credential"),
+                RIFFDB_LIFECYCLE_OPERATOR_CREDENTIAL=str(root / "operator.credential"))
             if args.archive_witness:
                 environment["RIFFDB_LIFECYCLE_WITNESS_ROOT"] = str(root)
             if args.prepare_successor:
@@ -948,21 +982,25 @@ tls_server_name = "127.0.0.1"
                             break
                 environment["RIFFDB_LIFECYCLE_DURATION_SECONDS"] = str(args.population_probe_seconds)
                 environment["RIFFDB_LIFECYCLE_LOAD_CONTROL"] = str(root)
-                projection_sampler = ProjectionSampler(root, base, {
-                    "contract_lineage": "TicketDeskLifecycle",
+                projection_identity = {"contract_lineage": "TicketDeskLifecycle",
                     "projection_id": descriptor["projection_id"],
-                    "projection_plan_hash": descriptor["projection_plan_hash"]},
-                    args.population_probe_seconds)
-                if args.sink_outage:
-                    with LocalArchiveOutage(root / "archive") as custody:
-                        sink = SinkOutagePreparation(root, base, custody)
+                    "projection_plan_hash": descriptor["projection_plan_hash"]}
+                projection_sampler = (NativeProjectionSampler(root, worker, environment, projection_identity,
+                    args.population_probe_seconds) if args.native_observations else
+                    ProjectionSampler(root, base, projection_identity, args.population_probe_seconds))
+                try:
+                    if args.sink_outage:
+                        with LocalArchiveOutage(root / "archive") as custody:
+                            sink = SinkOutagePreparation(root, base, custody)
+                            observed_load(root, worker, environment, args.population_probe_seconds,
+                                          observer, latest, False, sink=sink, projection=projection_sampler,
+                                          server=server)
+                    else:
                         observed_load(root, worker, environment, args.population_probe_seconds,
-                                      observer, latest, False, sink=sink, projection=projection_sampler,
+                                      observer, latest, args.consumer_outage, projection=projection_sampler,
                                       server=server)
-                else:
-                    observed_load(root, worker, environment, args.population_probe_seconds,
-                                  observer, latest, args.consumer_outage, projection=projection_sampler,
-                                  server=server)
+                finally:
+                    projection_sampler.stop()
                 environment["RIFFDB_LIFECYCLE_COMPLETED_COMMANDS"] = str(args.population_probe_seconds * 100)
                 environment["RIFFDB_LIFECYCLE_RECONCILIATION_WITNESS"] = str(root / "updates.witness")
                 invoke(root, "reconciliation", [worker, "reconcile"], environment=environment, timeout=900)
@@ -1225,7 +1263,7 @@ tls_server_name = "127.0.0.1"
 if __name__ == "__main__":
     try:
         sys.exit(main())
-    except (SmokeError, InventoryError, FaultError, ResourceError, ProviderBudgetError) as error:
+    except (SmokeError, NativeObservationError, InventoryError, FaultError, ResourceError, ProviderBudgetError) as error:
         print("ticketdesk-lifecycle-smoke: " + str(error), file=sys.stderr)
         sys.exit(1)
     except (OSError, ValueError, TypeError, KeyError, queue.Empty, subprocess.SubprocessError):

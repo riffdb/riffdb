@@ -334,53 +334,61 @@ class SinkOutageReconciliation(unittest.TestCase):
 
 class ChildOwnership(unittest.TestCase):
     def test_observed_load_collects_owned_process_memory_without_an_extra_request_thread(self):
-        with tempfile.TemporaryDirectory() as directory:
-            root = Path(directory)
-            children = []
-            try:
-                for _role in ("server", "observer"):
-                    child = subprocess.Popen([sys.executable, "-c",
-                        "import sys; print('ready', flush=True); sys.stdin.buffer.read()"],
-                        stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
-                    children.append(child)
-                    self.assertTrue(select.select([child.stdout], [], [], 5)[0])
-                    self.assertEqual(child.stdout.readline(), b"ready\n")
-                worker = root / "fixture-worker"
-                worker.write_text("#!/usr/bin/env python3\nimport signal, sys\n"
-                    "def done(*_args):\n"
-                    " print('{\"schema\":\"riffdb.ticketdesk-lifecycle-load-stopped/v1\"}', flush=True)\n"
-                    " sys.exit(0)\n"
-                    "signal.signal(signal.SIGUSR1, done)\n"
-                    "print('{\"schema\":\"riffdb.ticketdesk-lifecycle-load-ready/v1\"}', flush=True)\n"
-                    "signal.pause()\n")
-                worker.chmod(0o700)
-                original = preparation.PreparationMemorySamples.poll
-                released = False
+        for native in (False, True):
+            with tempfile.TemporaryDirectory() as directory:
+                root = Path(directory)
+                children = []
+                try:
+                    for _role in (("server", "observer", "native_sampler") if native else ("server", "observer")):
+                        child = subprocess.Popen([sys.executable, "-c",
+                            "import sys; print('ready', flush=True); sys.stdin.buffer.read()"],
+                            stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+                        children.append(child)
+                        self.assertTrue(select.select([child.stdout], [], [], 5)[0])
+                        self.assertEqual(child.stdout.readline(), b"ready\n")
+                    worker = root / "fixture-worker"
+                    worker.write_text("#!/usr/bin/env python3\nimport signal, sys\n"
+                        "def done(*_args):\n"
+                        " print('{\"schema\":\"riffdb.ticketdesk-lifecycle-load-stopped/v1\"}', flush=True)\n"
+                        " sys.exit(0)\n"
+                        "signal.signal(signal.SIGUSR1, done)\n"
+                        "print('{\"schema\":\"riffdb.ticketdesk-lifecycle-load-ready/v1\"}', flush=True)\n"
+                        "signal.pause()\n")
+                    worker.chmod(0o700)
+                    original = preparation.PreparationMemorySamples.poll
+                    released = False
 
-                def release_after_observation(samples, elapsed_ns):
-                    nonlocal released
-                    original(samples, elapsed_ns)
-                    if samples.count == 1 and not released:
-                        released = True
-                        os.kill(samples.inventory.owners["load"].pid, signal.SIGUSR1)
+                    def release_after_observation(samples, elapsed_ns):
+                        nonlocal released
+                        original(samples, elapsed_ns)
+                        if samples.count == 1 and not released:
+                            released = True
+                            os.kill(samples.inventory.owners["load"].pid, signal.SIGUSR1)
 
-                # These child fixtures produce process memory, not native pool diagnostics.
-                # Keep the real process-memory oracle; pool semantics have independent tests.
-                with patch.object(preparation.PreparationMemorySamples, "poll", release_after_observation), \
-                        patch.object(preparation, "ProviderLog", autospec=True) as provider_log:
-                    provider_log.return_value.finish.return_value = {}
-                    preparation.observed_load(root, str(worker), dict(os.environ), 1,
-                        children[1], preparation.queue.Queue(maxsize=1), False, server=children[0])
-                    self.assertTrue(provider_log.return_value.poll.called)
-                    provider_log.return_value.__exit__.assert_called_once()
-                records = [json.loads(line) for line in (root / "memory-samples.jsonl").read_bytes().splitlines()]
-                self.assertEqual(len(records), 1)
-                self.assertEqual(records[0]["processes"].keys(), {"controller", "server", "load", "observer"})
-                self.assertIs(records[0]["qualifies_resource_model"], False)
-                self.assertTrue(all(value["rss_bytes"] > 0 for value in records[0]["processes"].values()))
-            finally:
-                for child in children:
-                    child.communicate(timeout=5)
+                    # These child fixtures produce process memory, not native pool diagnostics.
+                    # Keep the real process-memory oracle; pool semantics have independent tests.
+                    with patch.object(preparation.PreparationMemorySamples, "poll", release_after_observation), \
+                            patch.object(preparation, "ProviderLog", autospec=True) as provider_log:
+                        provider_log.return_value.finish.return_value = {}
+                        sampler = Mock(spec=preparation.NativeProjectionSampler) if native else None
+                        if sampler is not None:
+                            sampler.native = Mock(process=children[2])
+                        preparation.observed_load(root, str(worker), dict(os.environ), 1,
+                            children[1], preparation.queue.Queue(maxsize=1), False, server=children[0], projection=sampler)
+                        self.assertTrue(provider_log.return_value.poll.called)
+                        provider_log.return_value.__exit__.assert_called_once()
+                    records = [json.loads(line) for line in (root / "memory-samples.jsonl").read_bytes().splitlines()]
+                    self.assertEqual(len(records), 1)
+                    roles = {"controller", "server", "load", "observer"} | ({"native_sampler"} if native else set())
+                    self.assertEqual(records[0]["processes"].keys(), roles)
+                    if native:
+                        self.assertEqual(records[0]["scope"], "verified_owned_descendant_tree_at_sample")
+                        self.assertGreater(records[0]["rss_peak_upper_bound_bytes"], 0)
+                    self.assertIs(records[0]["qualifies_resource_model"], False)
+                    self.assertTrue(all(value["rss_bytes"] > 0 for value in records[0]["processes"].values()))
+                finally:
+                    for child in children:
+                        child.communicate(timeout=5)
 
     def test_invalid_or_oversized_load_output_stops_the_owned_child(self):
         for output in ('{"schema":"unknown"}', 'x' * 8192):

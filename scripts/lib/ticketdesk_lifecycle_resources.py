@@ -298,7 +298,8 @@ class PreparationMemorySamples:
     def __init__(self, root, pids, duration, *, proc_root=Path("/proc")):
         require(type(duration) is int and 1 <= duration <= MAX_PREPARATION_SAMPLE_SECONDS,
                 "resource_sample_bound")
-        self.inventory = PersistentProcessMemory(pids, proc_root=proc_root)
+        self.inventory = (OwnedProcessMemory(pids, proc_root=proc_root) if "native_sampler" in pids
+                          else PersistentProcessMemory(pids, proc_root=proc_root))
         self.duration_ns = duration * 1000000000
         self.coverage = [0] * ((duration + 299) // 300)
         self.last_elapsed_ns = None
@@ -324,6 +325,8 @@ class PreparationMemorySamples:
             return
         require(self.output is not None and self.count < 2048, "resource_sample_bound")
         value = self.inventory.sample(elapsed_ns)
+        # A persistent census still cannot prove transient launch/exit coverage.
+        value["qualifies_resource_model"] = False
         encoded = json.dumps(value, sort_keys=True).encode() + b"\n"
         require(len(encoded) <= 4096, "resource_sample_bound")
         self.output.write(encoded)

@@ -159,6 +159,43 @@ Updated handbook pages: this handoff and local archive operations. Follow-ups:
 integrate the observer, inventory transient lifecycle processes, measure eligible
 history bytes, and complete all seven fault paths with six final fault-free hours.
 
+## Persistent native observation in population preparation
+
+`ticketdesk-lifecycle-smoke --native-observations` selects the persistent Rust
+health/statistics/projection sampler for an observed population preparation.
+It requires `--observe` and a supported positive `--population-probe-seconds`.
+The preparation operator receives the existing `read_statistics` capability;
+application credentials and public authorization behavior are unchanged.
+
+One reserved auxiliary slot issues three sequential public RPCs per successful
+sample, with no retry. The controller checks the exact projection identity,
+contract selector, sample sequence, history incarnation and monotonic frontiers.
+Missing output, a changed identity, partial RPC failure or expired child shutdown
+refuses the preparation. Samples retain actual delivery counts and projection
+lag. The existing five-second cadence and every-window coverage check remain.
+
+Memory collection includes the native sampler in a verified five-process
+persistent tree and records lifetime peak upper bounds. It still sets
+`qualifies_resource_model` to false: transient CLI launch/exit accounting,
+eligible-history bytes, fault integration and final-source host validation
+remain required. This preparation does not establish a qualifying campaign.
+
+Package: WP-825, open. Tier: internal. Behavior: connect the native sampler to
+population preparation while preserving load, latency and refusal gates.
+Checks: closed observation/continuity tests, actual child ownership and shutdown
+tests, and all 98 lifecycle checker tests. Compatibility: no native interface,
+durable format, application permission or fixture changes. Updated handbook:
+this page. Scoped acceptance: all five checks pass. The first local population
+preparation failed before sampler startup: the event observer refused a consumer
+acknowledgement during seeding, and cleanup exceeded its shutdown bounds.
+That failed run is diagnostic evidence only; its unoptimized binaries and local
+host do not qualify performance. A separate small public TLS smoke successfully
+used the real native sampler for health, statistics and the compiled projection,
+then joined it normally; this does not prove population-load sampling.
+Hazards/follow-ups: identify the acknowledgement
+result, measure real public RPCs and the five-process census together, then run
+final-source full CI and required-host preparation.
+
 ## Current handoff
 
 Package: WP-821; tier: guarantee. This preparation adds accepted decisions,
